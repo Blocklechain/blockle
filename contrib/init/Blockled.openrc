@@ -1,0 +1,92 @@
+#!/sbin/openrc-run
+
+# backward compatibility for existing gentoo layout 
+#
+if [ -d "/var/lib/blockle/.blockle" ]; then
+	PALLADIUMD_DEFAULT_DATADIR="/var/lib/blockle/.blockle"
+else
+	PALLADIUMD_DEFAULT_DATADIR="/var/lib/blockled"
+fi
+
+PALLADIUMD_CONFIGFILE=${PALLADIUMD_CONFIGFILE:-/etc/blockle/blockle.conf}
+PALLADIUMD_PIDDIR=${PALLADIUMD_PIDDIR:-/var/run/blockled}
+PALLADIUMD_PIDFILE=${PALLADIUMD_PIDFILE:-${PALLADIUMD_PIDDIR}/blockled.pid}
+PALLADIUMD_DATADIR=${PALLADIUMD_DATADIR:-${PALLADIUMD_DEFAULT_DATADIR}}
+PALLADIUMD_USER=${PALLADIUMD_USER:-${PALLADIUM_USER:-blockle}}
+PALLADIUMD_GROUP=${PALLADIUMD_GROUP:-blockle}
+PALLADIUMD_BIN=${PALLADIUMD_BIN:-/usr/bin/blockled}
+PALLADIUMD_NICE=${PALLADIUMD_NICE:-${NICELEVEL:-0}}
+PALLADIUMD_OPTS="${PALLADIUMD_OPTS:-${PALLADIUM_OPTS}}"
+
+name="Blockle Core Daemon"
+description="Blockle cryptocurrency P2P network daemon"
+
+command="/usr/bin/blockled"
+command_args="-pid=\"${PALLADIUMD_PIDFILE}\" \
+		-conf=\"${PALLADIUMD_CONFIGFILE}\" \
+		-datadir=\"${PALLADIUMD_DATADIR}\" \
+		-daemon \
+		${PALLADIUMD_OPTS}"
+
+required_files="${PALLADIUMD_CONFIGFILE}"
+start_stop_daemon_args="-u ${PALLADIUMD_USER} \
+			-N ${PALLADIUMD_NICE} -w 2000"
+pidfile="${PALLADIUMD_PIDFILE}"
+
+# The retry schedule to use when stopping the daemon. Could be either
+# a timeout in seconds or multiple signal/timeout pairs (like
+# "SIGKILL/180 SIGTERM/300")
+retry="${PALLADIUMD_SIGTERM_TIMEOUT}"
+
+depend() {
+	need localmount net
+}
+
+# verify
+# 1) that the datadir exists and is writable (or create it)
+# 2) that a directory for the pid exists and is writable
+# 3) ownership and permissions on the config file
+start_pre() {
+	checkpath \
+	-d \
+	--mode 0750 \
+	--owner "${PALLADIUMD_USER}:${PALLADIUMD_GROUP}" \
+	"${PALLADIUMD_DATADIR}"
+
+	checkpath \
+	-d \
+	--mode 0755 \
+	--owner "${PALLADIUMD_USER}:${PALLADIUMD_GROUP}" \
+	"${PALLADIUMD_PIDDIR}"
+
+	checkpath -f \
+	-o ${PALLADIUMD_USER}:${PALLADIUMD_GROUP} \
+	-m 0660 \
+	${PALLADIUMD_CONFIGFILE}
+
+	checkconfig || return 1
+}
+
+checkconfig()
+{
+	if ! grep -qs '^rpcpassword=' "${PALLADIUMD_CONFIGFILE}" ; then
+		eerror ""
+		eerror "ERROR: You must set a secure rpcpassword to run blockled."
+		eerror "The setting must appear in ${PALLADIUMD_CONFIGFILE}"
+		eerror ""
+		eerror "This password is security critical to securing wallets "
+		eerror "and must not be the same as the rpcuser setting."
+		eerror "You can generate a suitable random password using the following "
+		eerror "command from the shell:"
+		eerror ""
+		eerror "bash -c 'tr -dc a-zA-Z0-9 < /dev/urandom | head -c32 && echo'"
+		eerror ""
+		eerror "It is recommended that you also set alertnotify so you are "
+		eerror "notified of problems:"
+		eerror ""
+		eerror "ie: alertnotify=echo %%s | mail -s \"Blockle Alert\"" \
+			"admin@foo.com"
+		eerror ""
+		return 1
+	fi
+}

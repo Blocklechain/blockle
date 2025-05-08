@@ -1,0 +1,10 @@
+prefix=/root/blockle/depends/x86_64-linux-gnu
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: Blockle Core consensus library
+Description: Library for the Blockle consensus protocol.
+Version: 1.3.0
+Libs: -L${libdir} -lblockleconsensus
+Cflags: -I${includedir}

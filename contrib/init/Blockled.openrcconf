@@ -1,0 +1,33 @@
+# /etc/conf.d/blockled: config file for /etc/init.d/blockled
+
+# Config file location
+#PALLADIUMD_CONFIGFILE="/etc/blockle/blockle.conf"
+
+# What directory to write pidfile to?  (created and owned by $PALLADIUMD_USER)
+#PALLADIUMD_PIDDIR="/var/run/blockled"
+
+# What filename to give the pidfile
+#PALLADIUMD_PIDFILE="${PALLADIUMD_PIDDIR}/blockled.pid"
+
+# Where to write blockled data (be mindful that the blockchain is large)
+#PALLADIUMD_DATADIR="/var/lib/blockled"
+
+# User and group to own blockled process
+#PALLADIUMD_USER="blockle"
+#PALLADIUMD_GROUP="blockle"
+
+# Path to blockled executable
+#PALLADIUMD_BIN="/usr/bin/blockled"
+
+# Nice value to run blockled under
+#PALLADIUMD_NICE=0
+
+# Additional options (avoid -conf and -datadir, use flags above)
+#PALLADIUMD_OPTS=""
+
+# The timeout in seconds OpenRC will wait for blockled to terminate
+# after a SIGTERM has been raised.
+# Note that this will be mapped as argument to start-stop-daemon's
+# '--retry' option, which means you can specify a retry schedule
+# here. For more information see man 8 start-stop-daemon.
+PALLADIUMD_SIGTERM_TIMEOUT=600

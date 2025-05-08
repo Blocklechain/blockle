@@ -1,0 +1,87 @@
+# ====================
+# Blockle Core .gitignore
+# ====================
+
+# Binaries and executables
+/src/blockled
+/src/blockle-cli
+/src/blockle-wallet
+/src/bench/bench_blockle
+/src/qt/blockle-qt
+/src/qt/test/test_blockle-qt
+
+# Static libraries
+/src/*.a
+/src/libblockle*.a
+
+# Object files and shared libs
+**/*.o
+**/*.lo
+**/*.la
+**/*.al
+**/*.lai
+**/*.so
+**/*.so.*
+**/*.dll
+**/*.dylib
+
+# Autotools build files
+autom4te.cache
+config.cache
+config.log
+configure
+Makefile
+Makefile.in
+aclocal.m4
+ltmain.sh
+
+# Generated version/data files
+src/version.txt
+
+# Qt Creator / QMake
+*.pro.user
+*.pro.user.*
+*.qmake.stash
+*.creator.*
+
+# Qt moc and qrc generated sources
+src/qt/moc_*.cpp
+src/qt/qrc_*.cpp
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs and databases
+debug.log
+*.pid
+*.lock
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# CMake (if ever used)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Temporary and swap files
+*~
+*.swp
+*.tmp
+
+# Node modules (if any in ancillary tools)
+node_modules/
+
+# Coverage reports (if any)
+coverage/

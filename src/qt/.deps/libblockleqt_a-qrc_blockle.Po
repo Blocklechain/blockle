@@ -1,0 +1,4 @@
+qt/libblockleqt_a-qrc_blockle.o: qt/qrc_blockle.cpp \
+ /usr/include/stdc-predef.h
+
+/usr/include/stdc-predef.h:

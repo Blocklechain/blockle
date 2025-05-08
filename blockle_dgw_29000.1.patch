@@ -1,0 +1,98 @@
+
+diff --git a/src/pow.cpp b/src/pow.cpp
+index abcdef0..1234567 100644
+--- a/src/pow.cpp
++++ b/src/pow.cpp
+@@ -1,6 +1,10 @@
+ #include <stdint.h>
+ #include "arith_uint256.h"
+ #include "chain.h"
+ #include "primitives/block.h"
+ #include "chainparams.h"
+ #include "consensus/params.h"
+ #include "pow.h"
++#include "uint256.h"
++
++unsigned int DarkGravityWave(const CBlockIndex* pindexLast, const CBlockHeader* pblock, const Consensus::Params& params)
++{
++    const int64_t nPastBlocks = 180;
++    if (pindexLast == nullptr || pindexLast->nHeight < nPastBlocks)
++        return params.powLimit.GetCompact();
++
++    const CBlockIndex* pindex = pindexLast;
++    arith_uint256 bnPastTargetAvg;
++    int64_t nActualTimespan = 0;
++    int64_t nLastBlockTime = 0;
++
++    for (int i = 0; i < nPastBlocks; i++) {
++        if (pindex == nullptr)
++            break;
++
++        arith_uint256 bnTarget = arith_uint256().SetCompact(pindex->nBits);
++        if (i == 0)
++            bnPastTargetAvg = bnTarget;
++        else
++            bnPastTargetAvg = (bnPastTargetAvg * i + bnTarget) / (i + 1);
++
++        if (nLastBlockTime > 0)
++            nActualTimespan += nLastBlockTime - pindex->GetBlockTime();
++
++        nLastBlockTime = pindex->GetBlockTime();
++        pindex = pindex->pprev;
++    }
++
++    int64_t nTargetTimespan = nPastBlocks * params.nPowTargetSpacing;
++    if (nActualTimespan < nTargetTimespan / 3)
++        nActualTimespan = nTargetTimespan / 3;
++    if (nActualTimespan > nTargetTimespan * 3)
++        nActualTimespan = nTargetTimespan * 3;
++
++    arith_uint256 bnNew;
++    bnNew = bnPastTargetAvg * nActualTimespan;
++    bnNew /= nTargetTimespan;
++
++    if (bnNew > params.powLimit)
++        bnNew = params.powLimit;
++
++    return bnNew.GetCompact();
++}
++
++unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader* pblock, const Consensus::Params& params)
++{
++    if (pindexLast == nullptr)
++        return params.powLimit.GetCompact();
++
++    if (pindexLast->nHeight + 1 >= 29000)
++        return DarkGravityWave(pindexLast, pblock, params);
++
++    return params.powLimit.GetCompact();
++}
+diff --git a/src/pow.h b/src/pow.h
+index abcdef1..1234568 100644
+--- a/src/pow.h
++++ b/src/pow.h
+@@ -1,6 +1,9 @@
+ #ifndef BLOCKLE_POW_H
+ #define BLOCKLE_POW_H
+
++#include <stdint.h>
++#include "consensus/params.h"
++
+ class CBlockHeader;
+ class CBlockIndex;
+
++unsigned int DarkGravityWave(const CBlockIndex* pindexLast, const CBlockHeader* pblock, const Consensus::Params& params);
+ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader* pblock, const Consensus::Params& params);
+ bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
+ 
+ #endif // BLOCKLE_POW_H
+diff --git a/src/chainparams.cpp b/src/chainparams.cpp
+index abcdef2..1234569 100644
+--- a/src/chainparams.cpp
++++ b/src/chainparams.cpp
+@@ -150,6 +150,7 @@ CMainParams::CMainParams() {
+     consensus.nPowTargetSpacing = 15;
+     consensus.fPowAllowMinDifficultyBlocks = false;
+     consensus.fPowNoRetargeting = false;
++    consensus.powLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+ }
