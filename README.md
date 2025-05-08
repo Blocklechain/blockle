@@ -1,6 +1,6 @@
 Blockle Core Integration/Staging Tree
 
-https://blockle-coin.com
+https://blockle.org
 
 Blockle is a decentralized digital currency forked from Bitcoin, designed to offer enhanced features and capabilities specific to the blockle market. Built upon the solid foundation of the Bitcoin protocol, Blockle aims to provide a secure, efficient, and transparent means of transacting within the blockle ecosystem.
 
