@@ -118,13 +118,18 @@ class ChainWallet:
     datadir: Path
     network: str = "mainnet"
     node: str | None = None
+    #: Session passphrase for an encrypted wallet (never written to disk).
+    passphrase: str | None = None
 
     def _run(self, *args: str, json_mode: bool = False, timeout: float = 600) -> str:
         cmd = [find_chain_binary(), "--datadir", str(self.datadir), "--network", self.network]
         if json_mode:
             cmd.append("--json")
         cmd += list(args)
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        env = os.environ.copy()
+        if self.passphrase:
+            env["BLOCKLE_WALLET_PASSPHRASE"] = self.passphrase
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         if out.returncode != 0:
             msg = (out.stderr.strip() or out.stdout.strip()).splitlines()
             raise WalletError(msg[-1] if msg else f"blockle-chain {args[0]} failed")
@@ -206,6 +211,50 @@ class ChainWallet:
     def scan(self) -> str:
         """Scan the chain for encrypted incoming notes; returns the report."""
         return self._run("scan")
+
+    # ---- Bitcoin-Core-style wallet management ----
+
+    def encrypt(self, passphrase: str) -> dict:
+        """Encrypt the wallet (scrypt + ChaCha20-Poly1305 over the keys)."""
+        old, self.passphrase = self.passphrase, passphrase
+        try:
+            return self._run_json("wallet", "encrypt")
+        except WalletError:
+            self.passphrase = old
+            raise
+
+    def decrypt_wallet(self) -> dict:
+        """Remove encryption (requires :attr:`passphrase`)."""
+        out = self._run_json("wallet", "decrypt")
+        self.passphrase = None
+        return out
+
+    def change_passphrase(self, new_passphrase: str) -> dict:
+        out = self._run_json("wallet", "change-passphrase", "--new-passphrase", new_passphrase)
+        self.passphrase = new_passphrase
+        return out
+
+    def backup(self, out_path: str | Path) -> dict:
+        return self._run_json("wallet", "backup", str(out_path))
+
+    def export_keys(self) -> str:
+        """Portable secret export (treat as cash)."""
+        return self._run_json("wallet", "export")["export"]
+
+    def import_keys(self, source: str, force: bool = False) -> dict:
+        args = ["wallet", "import", source]
+        if force:
+            args.append("--force")
+        return self._run_json(*args)
+
+    def sign_message(self, message: str) -> dict:
+        """Sign with the wallet key; returns {signature, address}."""
+        return self._run_json("wallet", "sign-message", message)
+
+    def verify_message(self, address: str, signature: str, message: str) -> bool:
+        return bool(
+            self._run_json("wallet", "verify-message", address, signature, message)["valid"]
+        )
 
     # ---- regtest helpers ----
 

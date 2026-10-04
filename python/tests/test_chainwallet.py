@@ -96,6 +96,52 @@ class ChainWalletTest(unittest.TestCase):
             n1.stop()
             n2.stop()
 
+    def test_wallet_parity_encrypt_sign_export(self):
+        from blockle.chainwallet import WalletError
+        w = ChainWallet(datadir=self.datadir, network="regtest")
+        w.init_chain()
+        w.mine(1)
+        addr = w.snapshot()["wallet"]["address"]
+
+        # encrypt → locked ops fail → unlock works
+        w.encrypt("hunter2")
+        self.assertTrue(w.snapshot()["wallet"]["encrypted"])
+        w.passphrase = None
+        with self.assertRaises(WalletError):
+            w.send(addr, "1")
+        w.passphrase = "wrong"
+        with self.assertRaises(WalletError):
+            w.send(addr, "1")
+        w.passphrase = "hunter2"
+        self.assertTrue(w.send(addr, "1")["ok"])
+
+        # sign / verify (and tamper rejection)
+        out = w.sign_message("proof of ownership")
+        self.assertEqual(out["address"], addr)
+        self.assertTrue(w.verify_message(addr, out["signature"], "proof of ownership"))
+        self.assertFalse(w.verify_message(addr, out["signature"], "tampered"))
+
+        # passphrase rotation
+        w.change_passphrase("hunter3")
+        w.passphrase = "hunter2"
+        with self.assertRaises(WalletError):
+            w.export_keys()
+        w.passphrase = "hunter3"
+
+        # export → import roundtrip restores the same address
+        blob = w.export_keys()
+        self.assertTrue(blob.startswith("blockleexport1"))
+        d2 = Path(self.tmp.name) / "restored"
+        w2 = ChainWallet(datadir=d2, network="regtest")
+        imported = w2.import_keys(blob)
+        self.assertEqual(imported["address"], addr)
+
+        # backup copies the (encrypted) wallet file
+        backup = Path(self.tmp.name) / "backup.json"
+        w.backup(backup)
+        self.assertTrue(backup.exists())
+        self.assertIn('"encrypted": true', backup.read_text())
+
     def test_format_block(self):
         self.assertEqual(format_block(100_000_000), "1")
         self.assertEqual(format_block(150_000_000), "1.5")

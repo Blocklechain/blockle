@@ -32,12 +32,34 @@ struct Cli {
     /// Emit machine-readable JSON from transaction commands (GUIs/tooling).
     #[arg(long, global = true)]
     json: bool,
+    /// Wallet passphrase for encrypted wallets (or set
+    /// BLOCKLE_WALLET_PASSPHRASE; interactive runs prompt).
+    #[arg(long, global = true)]
+    passphrase: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
 static JSON_MODE: OnceLock<bool> = OnceLock::new();
 fn json_mode() -> bool { *JSON_MODE.get().unwrap_or(&false) }
+static PASSPHRASE: OnceLock<Option<String>> = OnceLock::new();
+
+/// The wallet passphrase: --passphrase, else the environment, else (on a
+/// terminal) an interactive prompt the first time it is needed.
+fn passphrase() -> Option<String> {
+    PASSPHRASE
+        .get_or_init(|| {
+            std::env::var("BLOCKLE_WALLET_PASSPHRASE").ok().filter(|s| !s.is_empty()).or_else(
+                || {
+                    if json_mode() {
+                        return None;
+                    }
+                    rpassword::prompt_password("wallet passphrase: ").ok().filter(|s| !s.is_empty())
+                },
+            )
+        })
+        .clone()
+}
 fn emit_json(v: serde_json::Value) { if json_mode() { println!("{v}"); } }
 
 #[derive(Subcommand)]
@@ -184,12 +206,50 @@ enum Cmd {
     /// Export the incoming viewing key (allows *detecting and decrypting*
     /// incoming notes, but not spending them... except bearer-note caveats).
     Viewkey,
+    /// Wallet management: encryption, backup, import/export, signing —
+    /// everything you'd expect from a Bitcoin Core wallet.
+    Wallet {
+        #[command(subcommand)]
+        cmd: WalletCmd,
+    },
     /// Dump wallet + chain state as one JSON document (for GUIs/tooling).
     UiSnapshot,
     /// Produce a payment disclosure for a note (proof you were paid).
     NoteDisclose { note: usize },
     /// Verify a payment disclosure against the chain.
     VerifyDisclosure { disclosure: String },
+}
+
+#[derive(Subcommand)]
+enum WalletCmd {
+    /// Encrypt the wallet with a passphrase (Bitcoin Core `encryptwallet`).
+    Encrypt,
+    /// Remove wallet encryption (requires the current passphrase).
+    Decrypt,
+    /// Re-encrypt under a new passphrase (current via --passphrase/env).
+    ChangePassphrase {
+        #[arg(long)]
+        new_passphrase: String,
+    },
+    /// Copy wallet.json to a backup location (`backupwallet`).
+    Backup { out: PathBuf },
+    /// Print a portable secret-key export (`dumpwallet`). Treat as cash.
+    Export,
+    /// Import an export blob, a wallet.json, or a path to either
+    /// (`importwallet`). Refuses to overwrite without --force.
+    Import {
+        source: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Sign a message with the wallet key (`signmessage`).
+    SignMessage { message: String },
+    /// Verify a signed message against an address (`verifymessage`).
+    VerifyMessage {
+        address: String,
+        signature: String,
+        message: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -247,17 +307,7 @@ enum ContractCmd {
     List,
 }
 
-#[derive(Serialize, Deserialize)]
-struct WalletFile {
-    secret_hex: String,
-    public_hex: String,
-    address: String,
-    /// ML-KEM-768 keys for receiving encrypted shielded notes.
-    #[serde(default)]
-    kem_public_hex: String,
-    #[serde(default)]
-    kem_secret_hex: String,
-}
+use blockle_node::walletfile::WalletFile;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -265,6 +315,9 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("unknown network {:?} (mainnet or regtest)", cli.network))?;
     let datadir = cli.datadir;
     let _ = JSON_MODE.set(cli.json || matches!(cli.cmd, Cmd::UiSnapshot));
+    if let Some(p) = cli.passphrase {
+        let _ = PASSPHRASE.set(Some(p));
+    }
     match cli.cmd {
         Cmd::Init => init(&datadir, params),
         Cmd::Keygen => {
@@ -299,6 +352,7 @@ fn main() -> Result<()> {
         Cmd::Zaddress => zaddress(&datadir),
         Cmd::Scan { viewkey } => scan(&datadir, params, viewkey),
         Cmd::Viewkey => viewkey(&datadir),
+        Cmd::Wallet { cmd } => wallet_cmd(&datadir, cmd),
         Cmd::UiSnapshot => ui_snapshot(&datadir, params),
         Cmd::NoteDisclose { note } => note_disclose(&datadir, note),
         Cmd::VerifyDisclosure { disclosure } => verify_disclosure(&datadir, params, &disclosure),
@@ -307,13 +361,18 @@ fn main() -> Result<()> {
 
 // ---------- wallet ----------
 
-fn load_wallet(datadir: &Path) -> Result<Keypair> {
+fn read_wallet_file(datadir: &Path) -> Result<WalletFile> {
     let path = storage::wallet_path(datadir);
     if !path.exists() {
         bail!("no wallet in {} — run `blockle keygen` first", datadir.display());
     }
-    let wf: WalletFile = serde_json::from_str(&fs::read_to_string(&path)?)?;
-    Keypair::from_bytes(&hex::decode(&wf.secret_hex)?, &hex::decode(&wf.public_hex)?)
+    Ok(serde_json::from_str(&fs::read_to_string(&path)?)?)
+}
+
+fn load_wallet(datadir: &Path) -> Result<Keypair> {
+    let wf = read_wallet_file(datadir)?;
+    let (secret, _) = wf.secrets(passphrase().as_deref())?;
+    Keypair::from_bytes(&secret, &hex::decode(&wf.public_hex)?)
         .map_err(|_| anyhow!("corrupt wallet key material"))
 }
 
@@ -327,8 +386,8 @@ fn load_or_create_wallet(datadir: &Path) -> Result<Keypair> {
         secret_hex: hex::encode(kp.secret_bytes()),
         public_hex: hex::encode(kp.public_bytes()),
         address: encode_address(&kp.address()),
-        kem_public_hex: String::new(), // generated lazily on first shielded use
-        kem_secret_hex: String::new(),
+        // KEM keys are generated lazily on first shielded use.
+        ..WalletFile::default()
     };
     fs::write(storage::wallet_path(datadir), serde_json::to_string_pretty(&wf)?)?;
     println!("new wallet written to {}", storage::wallet_path(datadir).display());
@@ -1139,20 +1198,17 @@ const MEMO_LEN: usize = ml_kem_768::CT_LEN + 8 + 32; // kem ct || enc(value) || 
 /// Load (or lazily create and persist) this wallet's ML-KEM keypair.
 fn load_or_create_kem(datadir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let path = storage::wallet_path(datadir);
-    if !path.exists() {
-        bail!("no wallet in {} — run `blockle keygen` first", datadir.display());
-    }
-    let mut wf: WalletFile = serde_json::from_str(&fs::read_to_string(&path)?)?;
+    let mut wf = read_wallet_file(datadir)?;
     if wf.kem_public_hex.is_empty() {
         let (ek, dk) = ml_kem_768::KG::try_keygen().map_err(|e| anyhow!("kem keygen: {e}"))?;
-        wf.kem_public_hex = hex::encode(ek.into_bytes());
-        wf.kem_secret_hex = hex::encode(dk.into_bytes());
+        wf.set_kem_secret(&ek.into_bytes(), &dk.into_bytes(), passphrase().as_deref())?;
         fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
         if !json_mode() {
             println!("(generated ML-KEM shielded-address keys for this wallet)");
         }
     }
-    Ok((hex::decode(&wf.kem_public_hex)?, hex::decode(&wf.kem_secret_hex)?))
+    let (_, kem_secret) = wf.secrets(passphrase().as_deref())?;
+    Ok((hex::decode(&wf.kem_public_hex)?, kem_secret))
 }
 
 /// Derive deterministic note secrets from a KEM shared secret — both sender
@@ -1534,6 +1590,159 @@ fn zbalance(datadir: &Path, params: ChainParams) -> Result<()> {
     Ok(())
 }
 
+const EXPORT_PREFIX: &str = "blockleexport1";
+const SIG_PREFIX: &str = "blocklesig1";
+
+fn message_digest(message: &str) -> [u8; 32] {
+    blockle_core::hash::blake2b_256_personal(b"BlklMsgS", message.as_bytes())
+}
+
+fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
+    let path = storage::wallet_path(datadir);
+    match cmd {
+        WalletCmd::Encrypt => {
+            let mut wf = read_wallet_file(datadir)?;
+            let pass = passphrase()
+                .ok_or_else(|| anyhow!("pass --passphrase (or BLOCKLE_WALLET_PASSPHRASE)"))?;
+            wf.encrypt(&pass)?;
+            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            emit_json(json!({"ok": true, "encrypted": true}));
+            if !json_mode() {
+                println!("wallet encrypted — keep the passphrase safe; without it the funds are gone");
+            }
+            Ok(())
+        }
+        WalletCmd::Decrypt => {
+            let mut wf = read_wallet_file(datadir)?;
+            let pass = passphrase().ok_or_else(|| anyhow!("passphrase required"))?;
+            wf.decrypt(&pass)?;
+            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            emit_json(json!({"ok": true, "encrypted": false}));
+            if !json_mode() {
+                println!("wallet decrypted (keys stored in plain text again)");
+            }
+            Ok(())
+        }
+        WalletCmd::ChangePassphrase { new_passphrase } => {
+            let mut wf = read_wallet_file(datadir)?;
+            let old = passphrase().ok_or_else(|| anyhow!("current passphrase required"))?;
+            wf.change_passphrase(&old, &new_passphrase)?;
+            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            emit_json(json!({"ok": true}));
+            if !json_mode() {
+                println!("passphrase changed");
+            }
+            Ok(())
+        }
+        WalletCmd::Backup { out } => {
+            read_wallet_file(datadir)?; // validate before copying
+            fs::copy(&path, &out)?;
+            emit_json(json!({"ok": true, "backup": out.display().to_string()}));
+            if !json_mode() {
+                println!("wallet backed up to {}", out.display());
+            }
+            Ok(())
+        }
+        WalletCmd::Export => {
+            let wf = read_wallet_file(datadir)?;
+            let (secret, kem) = wf.secrets(passphrase().as_deref())?;
+            let payload = json!({
+                "secret_hex": hex::encode(secret),
+                "public_hex": wf.public_hex,
+                "address": wf.address,
+                "kem_public_hex": wf.kem_public_hex,
+                "kem_secret_hex": hex::encode(kem),
+            });
+            let blob = format!("{EXPORT_PREFIX}{}", hex::encode(payload.to_string()));
+            emit_json(json!({"ok": true, "export": blob}));
+            if !json_mode() {
+                println!("{blob}");
+                println!("(anyone with this string owns the wallet — treat it as cash)");
+            }
+            Ok(())
+        }
+        WalletCmd::Import { source, force } => {
+            if path.exists() && !force {
+                bail!("a wallet already exists in {} — pass --force to replace it", datadir.display());
+            }
+            let raw = if std::path::Path::new(&source).exists() {
+                fs::read_to_string(&source)?
+            } else {
+                source
+            };
+            let raw = raw.trim();
+            let parsed: serde_json::Value = if let Some(hexpart) = raw.strip_prefix(EXPORT_PREFIX) {
+                serde_json::from_slice(&hex::decode(hexpart.trim())?)?
+            } else {
+                serde_json::from_str(raw).map_err(|_| {
+                    anyhow!("not an export blob (blockleexport1…) or wallet.json")
+                })?
+            };
+            let get = |k: &str| parsed.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let secret = hex::decode(get("secret_hex"))
+                .map_err(|_| anyhow!("import has no plaintext secret (decrypt-export it first)"))?;
+            if secret.is_empty() {
+                bail!("import has no secret key material");
+            }
+            let public = hex::decode(get("public_hex"))?;
+            let kp = Keypair::from_bytes(&secret, &public)
+                .map_err(|_| anyhow!("import key material is invalid"))?;
+            let address = encode_address(&kp.address());
+            let wf = WalletFile {
+                secret_hex: hex::encode(&secret),
+                public_hex: hex::encode(&public),
+                address: address.clone(),
+                kem_public_hex: get("kem_public_hex"),
+                kem_secret_hex: get("kem_secret_hex"),
+                ..WalletFile::default()
+            };
+            fs::create_dir_all(datadir)?;
+            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            emit_json(json!({"ok": true, "address": address}));
+            if !json_mode() {
+                println!("wallet imported: {address}");
+                println!("(run `blockle wallet encrypt` to protect it with a passphrase)");
+            }
+            Ok(())
+        }
+        WalletCmd::SignMessage { message } => {
+            let kp = load_wallet(datadir)?;
+            let sig = kp.sign(&message_digest(&message));
+            let payload = json!({
+                "p": hex::encode(kp.public_bytes()),
+                "s": hex::encode(sig),
+            });
+            let blob = format!("{SIG_PREFIX}{}", hex::encode(payload.to_string()));
+            emit_json(json!({"ok": true, "signature": blob, "address": encode_address(&kp.address())}));
+            if !json_mode() {
+                println!("{blob}");
+            }
+            Ok(())
+        }
+        WalletCmd::VerifyMessage { address, signature, message } => {
+            let hexpart = signature
+                .trim()
+                .strip_prefix(SIG_PREFIX)
+                .ok_or_else(|| anyhow!("signature must start with {SIG_PREFIX}"))?;
+            let payload: serde_json::Value = serde_json::from_slice(&hex::decode(hexpart)?)?;
+            let pubkey = hex::decode(payload.get("p").and_then(|v| v.as_str()).unwrap_or(""))?;
+            let sig = hex::decode(payload.get("s").and_then(|v| v.as_str()).unwrap_or(""))?;
+            let claimed = decode_address(&address).map_err(|e| anyhow!("{e}"))?;
+            let valid = blockle_core::keys::pubkey_to_address(&pubkey) == claimed
+                && blockle_core::keys::verify_signature(&pubkey, &message_digest(&message), &sig)
+                    .is_ok();
+            emit_json(json!({"ok": true, "valid": valid}));
+            if !json_mode() {
+                println!("{}", if valid { "VALID — signed by the key behind that address" } else { "INVALID" });
+            }
+            if !valid && !json_mode() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+    }
+}
+
 /// One JSON document with everything a wallet GUI needs: wallet keys and
 /// balances, shielded notes, chain status, and the wallet's transaction
 /// history (computed by walking the chain with a running UTXO-ownership map).
@@ -1546,9 +1755,15 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
     let mut wallet = json!(null);
     let mut history: Vec<serde_json::Value> = vec![];
     if wallet_exists {
-        let kp = load_wallet(datadir)?;
-        let addr = kp.address();
-        let (ek, _) = load_or_create_kem(datadir)?;
+        let mut wf = read_wallet_file(datadir)?;
+        // Plain wallets get their shielded keys on first look; encrypted
+        // wallets defer until an unlock provides the passphrase.
+        if wf.kem_public_hex.is_empty() && !wf.encrypted {
+            let _ = load_or_create_kem(datadir);
+            wf = read_wallet_file(datadir)?;
+        }
+        let addr = decode_address(&wf.address).map_err(|e| anyhow!("{e}"))?;
+        let ek = hex::decode(&wf.kem_public_hex).unwrap_or_default();
         let notes = storage::load_notes(datadir)?;
         let mut notes_json = vec![];
         let mut zbal = 0u64;
@@ -1632,7 +1847,12 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
         let balance = chain.balance(&addr);
         wallet = json!({
             "address": encode_address(&addr),
-            "zaddress": format!("{ZADDR_PREFIX}{}", hex::encode(&ek)),
+            "zaddress": if ek.is_empty() {
+                String::new()
+            } else {
+                format!("{ZADDR_PREFIX}{}", hex::encode(&ek))
+            },
+            "encrypted": wf.encrypted,
             "balance": balance,
             "balance_fmt": format_amount(balance),
             "zbalance": zbal,

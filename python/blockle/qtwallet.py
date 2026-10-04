@@ -19,10 +19,10 @@ try:
     from PySide6.QtCore import Qt, QThread, QTimer, Signal, QSettings
     from PySide6.QtGui import QFont, QGuiApplication, QIcon
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QFormLayout, QFrame, QGridLayout, QGroupBox,
-        QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
-        QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget,
-        QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+        QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
+        QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+        QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
+        QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
     )
 except ImportError:  # pragma: no cover
     print("blockle-qt needs PySide6 — install with: pip install 'blockle[qt]'", file=sys.stderr)
@@ -121,6 +121,7 @@ class WalletWindow(QMainWindow):
         tabs.addTab(self._send_tab(), "Send")
         tabs.addTab(self._receive_tab(), "Receive")
         tabs.addTab(self._shielded_tab(), "Shielded")
+        tabs.addTab(self._wallet_tab(), "Wallet")
         tabs.addTab(self._node_tab(), "Node")
         self.setCentralWidget(tabs)
 
@@ -229,6 +230,198 @@ class WalletWindow(QMainWindow):
         lay.addLayout(row)
         return w
 
+    def _wallet_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        self.enc_lbl = QLabel("…")
+        self.enc_lbl.setObjectName("sub")
+        lay.addWidget(self.enc_lbl)
+
+        sec = QGroupBox("Security")
+        srow = QHBoxLayout(sec)
+        for text, fn in (("Encrypt wallet…", self._do_encrypt),
+                         ("Unlock for this session…", self._do_unlock),
+                         ("Change passphrase…", self._do_change_pass)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            srow.addWidget(b)
+        lay.addWidget(sec)
+
+        keys = QGroupBox("Backup & keys")
+        krow = QHBoxLayout(keys)
+        for text, fn in (("Backup wallet…", self._do_backup),
+                         ("Export private keys…", self._do_export),
+                         ("Import wallet…", self._do_import_wallet)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            krow.addWidget(b)
+        lay.addWidget(keys)
+
+        msg = QGroupBox("Messages")
+        mrow = QHBoxLayout(msg)
+        for text, fn in (("Sign message…", self._do_sign),
+                         ("Verify message…", self._do_verify)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            mrow.addWidget(b)
+        lay.addWidget(msg)
+        lay.addStretch(1)
+        return w
+
+    # ---------- wallet-parity actions ----------
+
+    def _ask_password(self, title: str, label: str) -> str | None:
+        text, ok = QInputDialog.getText(self, title, label, QLineEdit.Password)
+        return text if ok and text else None
+
+    def _ensure_unlocked(self) -> bool:
+        """If the wallet is encrypted and no session passphrase is set,
+        prompt for one (verified on first use by the operation itself)."""
+        if not self.snap.get("wallet", {}).get("encrypted"):
+            return True
+        if self.wallet.passphrase:
+            return True
+        p = self._ask_password("Unlock wallet", "Wallet passphrase:")
+        if p is None:
+            return False
+        self.wallet.passphrase = p
+        return True
+
+    def _do_encrypt(self):
+        if self.snap.get("wallet", {}).get("encrypted"):
+            QMessageBox.information(self, "Blockle", "The wallet is already encrypted.")
+            return
+        p1 = self._ask_password("Encrypt wallet", "New passphrase:")
+        if p1 is None:
+            return
+        p2 = self._ask_password("Encrypt wallet", "Repeat passphrase:")
+        if p1 != p2:
+            QMessageBox.critical(self, "Blockle", "Passphrases do not match.")
+            return
+        if QMessageBox.warning(
+            self, "Encrypt wallet",
+            "If you forget this passphrase, your BLOCK are LOST.\n\nEncrypt the wallet?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+        ) != QMessageBox.Yes:
+            return
+        self._guarded(lambda: self.wallet.encrypt(p1), "Wallet encrypted.")
+
+    def _do_unlock(self):
+        if not self.snap.get("wallet", {}).get("encrypted"):
+            QMessageBox.information(self, "Blockle", "The wallet is not encrypted.")
+            return
+        self.wallet.passphrase = None
+        if not self._ensure_unlocked():
+            return
+        try:  # verify by signing a probe message
+            self.wallet.sign_message("blockle-unlock-check")
+        except WalletError as e:
+            self.wallet.passphrase = None
+            QMessageBox.critical(self, "Blockle", str(e))
+            return
+        QMessageBox.information(self, "Blockle", "Wallet unlocked for this session.")
+        self.refresh()
+
+    def _do_change_pass(self):
+        if not self.snap.get("wallet", {}).get("encrypted"):
+            QMessageBox.information(self, "Blockle", "Encrypt the wallet first.")
+            return
+        if not self._ensure_unlocked():
+            return
+        p1 = self._ask_password("Change passphrase", "New passphrase:")
+        if p1 is None:
+            return
+        p2 = self._ask_password("Change passphrase", "Repeat new passphrase:")
+        if p1 != p2:
+            QMessageBox.critical(self, "Blockle", "Passphrases do not match.")
+            return
+        self._guarded(lambda: self.wallet.change_passphrase(p1), "Passphrase changed.")
+
+    def _do_backup(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Backup wallet", "blockle-wallet-backup.json", "Wallet (*.json)")
+        if path:
+            self._guarded(lambda: self.wallet.backup(path), f"Wallet backed up to {path}.")
+
+    def _do_export(self):
+        if QMessageBox.warning(
+            self, "Export private keys",
+            "Anyone with the export string OWNS this wallet.\nTreat it like cash. Continue?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+        ) != QMessageBox.Yes:
+            return
+        if not self._ensure_unlocked():
+            return
+        try:
+            blob = self.wallet.export_keys()
+        except WalletError as e:
+            QMessageBox.critical(self, "Blockle", str(e))
+            return
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Private key export")
+        dlg.setText("Copy the export string from the details below and store it offline.")
+        dlg.setDetailedText(blob)
+        dlg.exec()
+
+    def _do_import_wallet(self):
+        blob, ok = QInputDialog.getMultiLineText(
+            self, "Import wallet",
+            "Paste an export string (blockleexport1…) or wallet.json contents:")
+        if not ok or not blob.strip():
+            return
+        force = False
+        if self.wallet.exists():
+            if QMessageBox.warning(
+                self, "Import wallet",
+                "This REPLACES the current wallet on this machine.\n"
+                "Back it up first! Replace it?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+            ) != QMessageBox.Yes:
+                return
+            force = True
+        self.wallet.passphrase = None
+        result = self._guarded(
+            lambda: self.wallet.import_keys(blob.strip(), force=force), "Wallet imported.")
+        if result:
+            self.refresh()
+
+    def _do_sign(self):
+        msg, ok = QInputDialog.getMultiLineText(self, "Sign message", "Message to sign:")
+        if not ok or not msg:
+            return
+        if not self._ensure_unlocked():
+            return
+        try:
+            out = self.wallet.sign_message(msg)
+        except WalletError as e:
+            QMessageBox.critical(self, "Blockle", str(e))
+            return
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Signed message")
+        dlg.setText(f"Signed as {out['address'][:24]}…\nSignature in details below.")
+        dlg.setDetailedText(out["signature"])
+        dlg.exec()
+
+    def _do_verify(self):
+        addr, ok = QInputDialog.getText(self, "Verify message", "Signer address (block1…):")
+        if not ok or not addr.strip():
+            return
+        sig, ok = QInputDialog.getMultiLineText(self, "Verify message", "Signature (blocklesig1…):")
+        if not ok or not sig.strip():
+            return
+        msg, ok = QInputDialog.getMultiLineText(self, "Verify message", "Message:")
+        if not ok:
+            return
+        try:
+            valid = self.wallet.verify_message(addr.strip(), sig.strip(), msg)
+        except WalletError as e:
+            QMessageBox.critical(self, "Blockle", str(e))
+            return
+        if valid:
+            QMessageBox.information(self, "Blockle", "VALID — signed by the key behind that address.")
+        else:
+            QMessageBox.critical(self, "Blockle", "INVALID signature.")
+
     def _node_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -288,6 +481,12 @@ class WalletWindow(QMainWindow):
             self._fill_notes(wal.get("notes", []))
         self.height_lbl.setText(str(chain.get("height", "—")))
         self._fill_history(snap.get("history", []))
+        if wal:
+            if wal.get("encrypted"):
+                lock = "locked" if not self.wallet.passphrase else "unlocked (session)"
+                self.enc_lbl.setText(f"Encryption: encrypted · {lock}")
+            else:
+                self.enc_lbl.setText("Encryption: not encrypted — consider Encrypt wallet…")
         node_state = f"node {'running' if self.node.running else 'stopped'}"
         self.status_lbl.setText(
             f"{chain.get('name', '?')} · height {chain.get('height')} · "
