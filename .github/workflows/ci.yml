@@ -73,6 +73,7 @@ jobs:
         # Windows is informational for now: the suite drives real sockets and
         # subprocesses and is tuned on unix; the GUI build below still gates.
         continue-on-error: ${{ runner.os == 'Windows' }}
+        timeout-minutes: 25
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen

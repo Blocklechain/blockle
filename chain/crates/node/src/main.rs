@@ -51,7 +51,10 @@ fn passphrase() -> Option<String> {
         .get_or_init(|| {
             std::env::var("BLOCKLE_WALLET_PASSPHRASE").ok().filter(|s| !s.is_empty()).or_else(
                 || {
-                    if json_mode() {
+                    use std::io::IsTerminal;
+                    // Prompt only on a real terminal: headless runs (CI,
+                    // services, GUIs) must fail fast, not block on CONIN$.
+                    if json_mode() || !std::io::stdin().is_terminal() {
                         return None;
                     }
                     rpassword::prompt_password("wallet passphrase: ").ok().filter(|s| !s.is_empty())
