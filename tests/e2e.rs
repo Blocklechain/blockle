@@ -29,6 +29,8 @@ fn pool_mines_parent_and_aux_blocks() {
             chain_id: 1,
             create_method: "createauxblock".into(),
             submit_method: "submitauxblock".into(),
+            payout_address: String::new(),
+            algorithm: String::new(),
         }],
     );
     let engine = stratum::Engine::new(

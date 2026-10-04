@@ -87,6 +87,10 @@ enum Cmd {
         /// e.g. 127.0.0.1:8445.
         #[arg(long)]
         aux_http: Option<String>,
+        /// Dedicated direct BLOCK pool for one parent algorithm:
+        /// "algo=listen" (repeatable), e.g. sha256d=0.0.0.0:3340.
+        #[arg(long = "stratum-direct")]
+        stratum_direct: Vec<String>,
         /// Seconds to pause after each locally mined block (regtest pacing).
         #[arg(long)]
         mine_interval: Option<u64>,
@@ -273,9 +277,10 @@ fn main() -> Result<()> {
             println!("{}", encode_address(&kp.address()));
             Ok(())
         }
-        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, mine_interval } => start(
+        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, stratum_direct, mine_interval } => start(
             &datadir, params, listen, connect, mine, mine_blocks, address, stratum,
-            stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, mine_interval,
+            stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, stratum_direct,
+            mine_interval,
         ),
         Cmd::Mine { blocks, address } => mine_cmd(&datadir, params, blocks, address),
         Cmd::Balance { address } => balance(&datadir, params, address),
@@ -402,10 +407,11 @@ fn start(
     pplns_window: usize,
     pool_host: Option<String>,
     aux_http: Option<String>,
+    stratum_direct: Vec<String>,
     mine_interval: Option<u64>,
 ) -> Result<()> {
     use blockle_node::stratum::{PoolMode, PoolOpts};
-    let has_pool = stratum.is_some() || stratum_pplns.is_some();
+    let has_pool = stratum.is_some() || stratum_pplns.is_some() || !stratum_direct.is_empty();
     // The local miner, the pools, and the payout executor all need a
     // wallet: it is the reward / fee / payout-funding address.
     let kp = if mine || has_pool { Some(load_or_create_wallet(datadir)?) } else { None };
@@ -482,6 +488,30 @@ fn start(
         mempool,
     );
     blockle_node::pool::spawn_explorer_writer(node.clone(), datadir.join("explorer.json"));
+    for spec in &stratum_direct {
+        let Some((algo, listen_addr)) = spec.split_once('=') else {
+            bail!("--stratum-direct expects algo=listen, got {spec:?}");
+        };
+        let algo: &'static str = blockle_pow::parent::FIXED_HEADER_ALGOS
+            .iter()
+            .find(|a| **a == algo)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown direct-pool algorithm {algo:?}"))?;
+        blockle_node::stratum_btc::serve(
+            node.clone(),
+            listen_addr.to_string(),
+            algo,
+            PoolOpts {
+                mode: PoolMode::Solo,
+                fee_bp,
+                window: pplns_window,
+                pool_address: mine_to.expect("pool implies wallet"),
+                stats_path: Some(datadir.join(format!("stratum-{algo}.json"))),
+                ledger_path: None,
+                endpoint: format!("stratum+tcp://{}", endpoint_for(listen_addr)),
+            },
+        );
+    }
     if let Some(aux_addr) = aux_http {
         blockle_node::pool::spawn_aux_http(node.clone(), aux_addr);
     }

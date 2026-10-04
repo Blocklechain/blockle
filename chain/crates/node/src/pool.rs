@@ -99,7 +99,7 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
 /// - `submitauxblock [hash, auxpow]` → `true` once the parent proof is
 ///   attached and the block connects.
 pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
-    let pending: Arc<Mutex<HashMap<String, Block>>> = Arc::new(Mutex::new(HashMap::new()));
+    let pending: Arc<Mutex<HashMap<String, (Block, String)>>> = Arc::new(Mutex::new(HashMap::new()));
     thread::spawn(move || {
         let listener = match TcpListener::bind(&listen) {
             Ok(l) => {
@@ -119,7 +119,7 @@ pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
     });
 }
 
-fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, Block>>>, mut stream: TcpStream) {
+fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>, mut stream: TcpStream) {
     let Some(body) = read_http_body(&mut stream) else { return };
     let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -152,20 +152,23 @@ fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, Block>>>, mut stre
 
 fn createauxblock(
     node: &Arc<Node>,
-    pending: &Arc<Mutex<HashMap<String, Block>>>,
+    pending: &Arc<Mutex<HashMap<String, (Block, String)>>>,
     params: &Value,
 ) -> Result<Value, String> {
-    let addr_s = params
-        .get(0)
-        .and_then(|v| v.as_str())
-        .ok_or("params: [payout_address, parent_algo]")?;
+    // Namecoin-style callers send []; ours send [address] or
+    // [address, algo]. Default: the node wallet + sha256d.
     let algo = params
         .get(1)
         .and_then(|v| v.as_str())
         .unwrap_or("sha256d")
         .to_string();
-    let address: Address =
-        decode_address(addr_s).map_err(|_| "bad BLOCK payout address".to_string())?;
+    let address: Address = match params.get(0).and_then(|v| v.as_str()) {
+        Some(addr_s) => decode_address(addr_s).map_err(|_| "bad BLOCK payout address".to_string())?,
+        None => node
+            .config
+            .mine_to
+            .ok_or("no default payout address — pass one or start the node with a wallet")?,
+    };
     let lane_ok = algo == "equihash"
         || blockle_pow::parent::FIXED_HEADER_ALGOS.contains(&algo.as_str());
     if !lane_ok {
@@ -187,7 +190,7 @@ fn createauxblock(
             hex::encode(be)
         })
         .unwrap_or_default();
-    pending.lock().unwrap().insert(hash.clone(), block.clone());
+    pending.lock().unwrap().insert(hash.clone(), (block.clone(), algo.clone()));
     // Keep the pending set bounded.
     let mut p = pending.lock().unwrap();
     if p.len() > 256 {
@@ -209,23 +212,33 @@ fn createauxblock(
 
 fn submitauxblock(
     node: &Arc<Node>,
-    pending: &Arc<Mutex<HashMap<String, Block>>>,
+    pending: &Arc<Mutex<HashMap<String, (Block, String)>>>,
     params: &Value,
 ) -> Result<Value, String> {
     let hash = params
         .get(0)
         .and_then(|v| v.as_str())
         .ok_or("params: [hash, auxpow]")?;
-    let auxpow: AuxPow = serde_json::from_value(
-        params.get(1).cloned().ok_or("params: [hash, auxpow]")?,
-    )
-    .map_err(|e| format!("bad auxpow: {e}"))?;
-    let mut block = pending
+    let (mut block, algo) = pending
         .lock()
         .unwrap()
         .get(hash)
         .cloned()
         .ok_or("unknown aux work (expired?)")?;
+    let auxpow: AuxPow = match params.get(1) {
+        // Our native JSON form…
+        Some(v @ Value::Object(_)) => {
+            serde_json::from_value(v.clone()).map_err(|e| format!("bad auxpow: {e}"))?
+        }
+        // …or the Namecoin hex blob merged-mining software produces
+        // (coinbase tx ‖ parent hash ‖ branches ‖ 80-byte parent header);
+        // the parent algorithm comes from the matching createauxblock.
+        Some(Value::String(hexblob)) => {
+            let raw = hex::decode(hexblob.trim()).map_err(|_| "bad auxpow hex")?;
+            parse_namecoin_auxpow(&raw, &algo)?
+        }
+        _ => return Err("params: [hash, auxpow]".into()),
+    };
     block.aux_pow = Some(auxpow);
     if node.submit_block(block, None) {
         println!("[aux] merged-mined block {hash} accepted");
@@ -267,4 +280,85 @@ fn read_http_body(stream: &mut TcpStream) -> Option<Vec<u8>> {
         buf.extend_from_slice(&tmp[..n]);
     }
     Some(buf[header_end..].to_vec())
+}
+
+/// Length of a serialized legacy bitcoin transaction starting at `b[0]`.
+fn legacy_tx_len(b: &[u8]) -> Option<usize> {
+    let mut pos = 4usize; // version
+    let (vin, n) = read_varint(b, pos)?;
+    pos = n;
+    for _ in 0..vin {
+        pos += 36; // prevout
+        let (slen, n) = read_varint(b, pos)?;
+        pos = n + slen as usize + 4; // script + sequence
+    }
+    let (vout, n) = read_varint(b, pos)?;
+    pos = n;
+    for _ in 0..vout {
+        pos += 8; // value
+        let (slen, n) = read_varint(b, pos)?;
+        pos = n + slen as usize;
+    }
+    pos += 4; // locktime
+    (pos <= b.len()).then_some(pos)
+}
+
+fn read_varint(b: &[u8], pos: usize) -> Option<(u64, usize)> {
+    match *b.get(pos)? {
+        n @ 0..=0xfc => Some((n as u64, pos + 1)),
+        0xfd => Some((u16::from_le_bytes(b.get(pos + 1..pos + 3)?.try_into().ok()?) as u64, pos + 3)),
+        0xfe => Some((u32::from_le_bytes(b.get(pos + 1..pos + 5)?.try_into().ok()?) as u64, pos + 5)),
+        _ => Some((u64::from_le_bytes(b.get(pos + 1..pos + 9)?.try_into().ok()?), pos + 9)),
+    }
+}
+
+/// Parse the Namecoin merged-mining proof wire format into our [`AuxPow`].
+fn parse_namecoin_auxpow(raw: &[u8], algo: &str) -> Result<AuxPow, String> {
+    let bad = |m: &str| m.to_string();
+    let cb_len = legacy_tx_len(raw).ok_or_else(|| bad("malformed parent coinbase"))?;
+    let coinbase = raw[..cb_len].to_vec();
+    let mut pos = cb_len;
+    let _parent_hash = raw.get(pos..pos + 32).ok_or_else(|| bad("truncated"))?;
+    pos += 32;
+    let (n, p2) = read_varint(raw, pos).ok_or_else(|| bad("truncated"))?;
+    pos = p2;
+    let mut coinbase_branch = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let h: [u8; 32] = raw
+            .get(pos..pos + 32)
+            .and_then(|x| x.try_into().ok())
+            .ok_or_else(|| bad("truncated branch"))?;
+        coinbase_branch.push(h);
+        pos += 32;
+    }
+    pos += 4; // coinbase index (always 0)
+    let (n, p2) = read_varint(raw, pos).ok_or_else(|| bad("truncated"))?;
+    pos = p2;
+    let mut chain_branch = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        let h: [u8; 32] = raw
+            .get(pos..pos + 32)
+            .and_then(|x| x.try_into().ok())
+            .ok_or_else(|| bad("truncated branch"))?;
+        chain_branch.push(h);
+        pos += 32;
+    }
+    let chain_index = u32::from_le_bytes(
+        raw.get(pos..pos + 4)
+            .and_then(|x| x.try_into().ok())
+            .ok_or_else(|| bad("truncated index"))?,
+    );
+    pos += 4;
+    let parent_header = raw.get(pos..).ok_or_else(|| bad("missing header"))?.to_vec();
+    if parent_header.len() != 80 {
+        return Err(bad("parent header must be 80 bytes in the blob form"));
+    }
+    Ok(AuxPow {
+        parent_algo: algo.to_string(),
+        parent_header,
+        parent_coinbase: coinbase,
+        coinbase_branch,
+        chain_branch,
+        chain_index,
+    })
 }

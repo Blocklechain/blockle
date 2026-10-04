@@ -3,6 +3,7 @@
 
 pub mod httpc;
 pub mod pool;
+pub mod stratum_btc;
 pub mod p2p;
 pub mod storage;
 pub mod stratum;

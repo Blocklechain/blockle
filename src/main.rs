@@ -700,6 +700,8 @@ fn demo(blocks: u64) -> Result<()> {
                 rpc: "http://127.0.0.1:18981/".into(),
                 chain_id: 1,
                 create_method: "createauxblock".into(),
+                payout_address: String::new(),
+                algorithm: String::new(),
                 submit_method: "submitauxblock".into(),
             }],
         },

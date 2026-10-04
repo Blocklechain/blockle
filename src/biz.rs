@@ -271,18 +271,30 @@ fn pool_stats(name: &str) -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
 }
 
+/// Our dedicated direct BLOCK pools: (stats-feed name, row title, port).
+const DIRECT_POOLS: &[(&str, &str, u16)] = &[
+    ("sha256d", "BLOCK · SHA-256d direct", 3340),
+    ("scrypt", "BLOCK · Scrypt direct", 3341),
+    ("x11", "BLOCK · X11 direct", 3342),
+    ("blake2b", "BLOCK · Blake2b direct", 3343),
+    ("blake2s", "BLOCK · Blake2s direct", 3344),
+    ("blake3", "BLOCK · Blake3 direct", 3345),
+    ("eaglesong", "BLOCK · Eaglesong direct", 3346),
+    ("kheavyhash", "BLOCK · kHeavyHash direct", 3347),
+];
+
 /// Major ASIC ecosystems BLOCK merge-mines with: (chain, algorithm,
 /// hardware note). Status is configured at deploy time — never fabricated.
-const PARENT_ROSTER: &[(&str, &str, &str)] = &[
-    ("Bitcoin", "sha256d", "SHA-256 ASICs (S19 / S21 class)"),
-    ("Litecoin + Dogecoin", "scrypt", "Scrypt ASICs (L7 / L9 class)"),
-    ("Zcash", "equihash", "Equihash 200,9 ASICs (Z15 class)"),
-    ("Dash", "x11", "X11 ASICs"),
-    ("Kaspa-class", "kheavyhash", "kHeavyHash ASICs"),
-    ("Alephium-class", "blake3", "Blake3 ASICs"),
-    ("Nervos-class", "eaglesong", "Eaglesong ASICs"),
-    ("Sia-class", "blake2b", "Blake2b ASICs"),
-    ("Kadena-class", "blake2s", "Blake2s ASICs"),
+const PARENT_ROSTER: &[(&str, &str, &str, &str)] = &[
+    ("Bitcoin", "sha256d", "SHA-256 ASICs (S19 / S21 class)", "parent node syncing on this server · direct pool live :3340"),
+    ("Litecoin + Dogecoin", "scrypt", "Scrypt ASICs (L7 / L9 class)", "parent nodes syncing on this server · direct pool live :3341"),
+    ("Zcash", "equihash", "Equihash 200,9 ASICs (Z15 class)", "same algorithm as BLOCK — native pools live :3333 / :3334"),
+    ("Dash", "x11", "X11 ASICs", "direct pool live :3342"),
+    ("Kaspa-class", "kheavyhash", "kHeavyHash ASICs", "direct pool live :3347"),
+    ("Alephium-class", "blake3", "Blake3 ASICs", "direct pool live :3345"),
+    ("Nervos-class", "eaglesong", "Eaglesong ASICs", "direct pool live :3346"),
+    ("Sia-class", "blake2b", "Blake2b ASICs", "direct pool live :3343"),
+    ("Kadena-class", "blake2s", "Blake2s ASICs", "direct pool live :3344"),
 ];
 
 pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
@@ -1012,9 +1024,9 @@ fn own_pool_row(name: &str, title: &str) -> String {
 fn parent_rows() -> String {
     PARENT_ROSTER
         .iter()
-        .map(|(chain, algo, hw)| {
+        .map(|(chain, algo, hw, status)| {
             format!(
-                r#"<tr><td><b>{chain}</b></td><td class="mono">{algo}</td><td>{hw}</td><td><span class="pill ver"><i></i>merge-ready</span></td><td class="mono">consensus live · pool launching</td></tr>"#
+                r#"<tr><td><b>{chain}</b></td><td class="mono">{algo}</td><td>{hw}</td><td><span class="pill ver"><i></i>merge-ready</span></td><td class="mono">{status}</td></tr>"#
             )
         })
         .collect()
@@ -1045,8 +1057,9 @@ fn page_home(reg: &Registry) -> String {
 </div>
 </div>
 <h2>Our pools <span class="badge">1% fee · payouts in the coinbase or on-chain</span></h2>
+<p class="sub">Native Equihash pools for Zcash-class hardware, plus a <b>dedicated direct BLOCK pool for every ASIC algorithm</b> — point any supported ASIC straight at BLOCK; the reward lands in your own coinbase.</p>
 <table><tr><th>pool</th><th>status</th><th>endpoint</th><th>fee</th><th>pool hashrate</th><th>miners</th><th>blocks</th></tr>
-{solo}{pplns}</table>
+{solo}{pplns}{direct}</table>
 <h2>Merge lanes <span class="badge">one chain · ten proof-of-work lanes</span></h2>
 <p class="sub">BLOCK's consensus accepts a parent block's proof-of-work from any of these ASIC ecosystems in place of a native solution — each lane retargets independently. Parent-chain pools attach BLOCK via the <a href="/mine#operators">merged-mining work API</a>.</p>
 <table><tr><th>parent ecosystem</th><th>algorithm</th><th>hardware</th><th>consensus</th><th>pool status</th></tr>
@@ -1062,8 +1075,12 @@ fn page_home(reg: &Registry) -> String {
 </div>
 <p class="note">Pool statistics above come live from our stratum servers; parent-chain pool launches are listed only once real endpoints exist — nothing on this page is simulated. The <a href="/pools">directory</a> additionally lists third-party pools with operator-reported figures.</p>"##,
         github = reg.github,
-        solo = own_pool_row("solo", "BLOCK · Solo"),
-        pplns = own_pool_row("pplns", "BLOCK · PPLNS"),
+        solo = own_pool_row("solo", "BLOCK · Solo (equihash)"),
+        pplns = own_pool_row("pplns", "BLOCK · PPLNS (equihash)"),
+        direct = DIRECT_POOLS
+            .iter()
+            .map(|(name, title, _)| own_pool_row(name, title))
+            .collect::<String>(),
         parents = parent_rows(),
         c1 = card("Height", height),
         c2 = card("Supply", supply),
@@ -1373,6 +1390,10 @@ username: block1…youraddress.rig1     password: x</code></pre>
 username: block1…youraddress.rig1     password: x</code></pre>
 <p class="sub">Shares are difficulty-weighted over a rolling window; each found block's payouts are settled on-chain automatically once the coinbase matures (100 blocks). The ledger is public.</p>
 
+<h2>Direct pools — every ASIC algorithm <span class="badge">solo semantics · reward in your coinbase</span></h2>
+<p class="sub">No parent coin needed: your ASIC grinds a minimal synthetic parent header committing to a BLOCK template that pays <b>you</b>. Classic bitcoin stratum v1; username = your BLOCK address.</p>
+<table><tr><th>algorithm</th><th>endpoint</th><th>stats API</th></tr>{direct_rows}</table>
+
 <h2>Hardware</h2>
 <p class="sub">BLOCK's native lane is Equihash (200,9) — Zcash-class ASICs and GPU miners (EWBF/lolMiner-compatible stratum) connect directly today. Other ASIC families join by merge-mining through a parent pool (below). Miner-firmware byte-order quirks are still being shaken down against real hardware; if your ASIC rejects jobs, <a href="/developers">tell us</a>.</p>
 
@@ -1401,6 +1422,12 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
 <p class="sub">Each algorithm is an independent difficulty lane, so a Scrypt parent competes only with Scrypt parents. Full validation rules are in the <a href="{github}">source</a> (<span class="mono">chain/crates/chain/src/chain.rs · check_aux_pow</span>).</p>"##,
         domain = domain,
         github = "https://github.com/blocklechain/blockle",
+        direct_rows = DIRECT_POOLS
+            .iter()
+            .map(|(name, _, port)| format!(
+                r#"<tr><td class="mono">{name}</td><td class="mono">stratum+tcp://{domain}:{port}</td><td class="mono"><a href="/api/mps/{name}">/api/mps/{name}</a></td></tr>"#
+            ))
+            .collect::<String>(),
     );
     page_shell("Mine with us", body)
 }

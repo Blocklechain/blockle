@@ -70,6 +70,13 @@ pub struct AuxConfig {
     pub create_method: String,
     #[serde(default = "default_submit_method")]
     pub submit_method: String,
+    /// Payout address sent with createauxblock (aux chains that mint to
+    /// the caller, like BLOCK's aux-work interface).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub payout_address: String,
+    /// Parent algorithm declared to the aux chain (BLOCK lanes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub algorithm: String,
 }
 
 fn default_chain_id() -> u32 {
@@ -164,7 +171,14 @@ impl BitcoinAdapter {
     fn refresh_aux(&mut self) -> bool {
         let mut changed = false;
         for chain in &mut self.aux {
-            match chain.rpc.require(&chain.cfg.create_method.clone(), json!([])) {
+            let create_params = if chain.cfg.payout_address.is_empty() {
+                json!([])
+            } else if chain.cfg.algorithm.is_empty() {
+                json!([chain.cfg.payout_address])
+            } else {
+                json!([chain.cfg.payout_address, chain.cfg.algorithm])
+            };
+            match chain.rpc.require(&chain.cfg.create_method.clone(), create_params) {
                 Ok(v) => {
                     let hash = v
                         .get("hash")
