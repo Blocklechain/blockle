@@ -2,9 +2,11 @@
 //! construction: consensus rejects any mainnet/testnet chain whose first
 //! block differs from the embedded one. Regtest mines its own genesis.
 //!
-//! The genesis premine is paid to a dedicated genesis wallet whose keys live
-//! in `genesis-wallet-<net>.DO-NOT-USE-IN-PRODUCTION.json` at the repo root —
-//! a real launch regenerates both the wallet and these blocks.
+//! The mainnet genesis is the real one: mined 2026-10-04, its 210,000 BLOCK
+//! premine pays a cold wallet held by the project (keys are NOT in this
+//! repository). The testnet genesis remains a dev fixture whose wallet lives
+//! in `genesis-wallet-testnet.DO-NOT-USE-IN-PRODUCTION.json` at the repo
+//! root.
 
 use blockle_core::Block;
 

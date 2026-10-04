@@ -8,7 +8,7 @@ fn mainnet_genesis_is_pinned_and_valid() {
     let g = embedded_genesis("blockle-main").expect("embedded mainnet genesis");
     assert_eq!(
         display_hash(&g.header.hash()),
-        "0c80040ece3d6af148ef197592392bfb194ea7ac6283cd599510b0c77f57b314"
+        "069209f0e9e7cb0188975b2bfa0dfa1f7b0a76c0c3ac1da6e091afd263954b4e"
     );
     let mut chain = Chain::new(ChainParams::mainnet());
     chain.connect_block(g).expect("genesis validates");
