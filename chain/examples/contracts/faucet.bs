@@ -1,0 +1,22 @@
+// faucet.bs — deposit BLOCK, let anyone withdraw up to 1 BLOCK per call.
+// fn 0: deposit()  — call with value attached
+// fn 1: drip()     — pays 1 BLOCK (or the remainder) to the caller
+contract Faucet {
+    state total_dripped: u64
+
+    fn deposit() {
+        // value() is credited to the contract automatically; nothing to do
+        log(value())
+    }
+
+    fn drip() -> u64 {
+        let amount = 100000000
+        if balance() < amount {
+            amount = balance()
+        }
+        require(amount > 0)
+        send_caller(amount)
+        total_dripped = total_dripped + amount
+        return amount
+    }
+}

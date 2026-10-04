@@ -1,0 +1,16 @@
+// counter.bs — the counter contract, in Blockle Script.
+// fn 0: add(amount) — adds to the counter (amount must be > 0)
+// fn 1: get()       — returns the current count
+contract Counter {
+    state count: u64
+
+    fn add(amount: u64) -> u64 {
+        require(amount > 0)
+        count = count + amount
+        return count
+    }
+
+    fn get() -> u64 {
+        return count
+    }
+}

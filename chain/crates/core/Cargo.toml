@@ -1,0 +1,15 @@
+[package]
+name = "blockle-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core data structures for the Blockle blockchain: blocks, transactions, keys, addresses"
+
+[dependencies]
+blake2b_simd = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+fips204 = { workspace = true }
+bech32 = { workspace = true }

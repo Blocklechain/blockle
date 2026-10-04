@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/pow",
+    "crates/chain",
+    "crates/vm",
+    "crates/zk",
+    "crates/node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+blake2b_simd = "1"
+primitive-types = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+thiserror = "1"
+anyhow = "1"
+hex = "0.4"
+sha2 = "0.10"
+fips204 = "0.4"
+fips203 = "0.4"
+winterfell = "0.13"
+bech32 = "0.11"
+clap = { version = "4", features = ["derive"] }
+
+blockle-core = { path = "crates/core" }
+blockle-zk = { path = "crates/zk" }
+blockle-pow = { path = "crates/pow" }
+blockle-chain = { path = "crates/chain" }
+blockle-vm = { path = "crates/vm" }
+
+[profile.release]
+lto = "thin"

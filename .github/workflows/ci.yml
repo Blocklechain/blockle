@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            gui-artifact: BlockleWallet-linux-x86_64
+            bin-artifact: blockle-binaries-linux-x86_64
+          - os: macos-latest
+            gui-artifact: BlockleWallet-macos-arm64
+            bin-artifact: blockle-binaries-macos-arm64
+          - os: windows-latest
+            gui-artifact: BlockleWallet-windows-x86_64
+            bin-artifact: blockle-binaries-windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            chain
+
+      - name: Build pool workspace
+        run: cargo build --release
+
+      - name: Build BLOCK chain workspace
+        run: cargo build --release --manifest-path chain/Cargo.toml
+
+      - name: Rust tests (pool)
+        run: cargo test --release
+
+      - name: Rust tests (chain)
+        run: cargo test --release --manifest-path chain/Cargo.toml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libfontconfig1 libdbus-1-3 libglib2.0-0
+
+      - name: Install Python package + Qt
+        run: pip install ./python "PySide6>=6.6" pyinstaller
+
+      - name: Python integration tests (headless Qt)
+        # Windows is informational for now: the suite drives real sockets and
+        # subprocesses and is tuned on unix; the GUI build below still gates.
+        continue-on-error: ${{ runner.os == 'Windows' }}
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          EXE=""; [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
+          export BLOCKLE_BIN="$PWD/target/release/blockle$EXE"
+          export BLOCKLE_BIZ_BIN="$PWD/target/release/blockle-biz$EXE"
+          export BLOCKLE_CHAIN_BIN="$PWD/chain/target/release/blockle-chain$EXE"
+          cd python && python -m unittest discover -s tests -v
+
+      - name: Package Qt wallet GUI (PyInstaller)
+        shell: bash
+        run: |
+          EXE=""; SEP=":"
+          if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; SEP=";"; fi
+          pyinstaller --noconfirm --clean --windowed --name BlockleWallet \
+            --add-binary "chain/target/release/blockle-chain$EXE$SEP"blockle/bin \
+            python/launcher.py
+
+      - name: Smoke-test packaged chain binary
+        shell: bash
+        run: |
+          EXE=""; [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
+          BUNDLED=$(find dist -name "blockle-chain$EXE" | head -1)
+          test -n "$BUNDLED"
+          "$BUNDLED" --help | head -3
+
+      - name: Upload GUI bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.gui-artifact }}
+          path: dist/
+
+      - name: Collect CLI binaries
+        shell: bash
+        run: |
+          EXE=""; [ "$RUNNER_OS" = "Windows" ] && EXE=".exe"
+          mkdir -p cli-bin
+          cp "target/release/blockle$EXE" "target/release/blockle-biz$EXE" \
+             "chain/target/release/blockle-chain$EXE" cli-bin/
+
+      - name: Upload CLI binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bin-artifact }}
+          path: cli-bin/

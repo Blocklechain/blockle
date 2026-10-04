@@ -1,0 +1,16 @@
+[package]
+name = "blockle-chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Consensus rules, chain state, and mining for the Blockle blockchain"
+
+[dependencies]
+blockle-core = { workspace = true }
+blockle-pow = { workspace = true }
+blockle-vm = { workspace = true }
+blockle-zk = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }

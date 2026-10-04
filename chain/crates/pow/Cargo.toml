@@ -1,0 +1,11 @@
+[package]
+name = "blockle-pow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Equihash proof-of-work and difficulty adjustment for the Blockle blockchain"
+
+[dependencies]
+blake2b_simd = { workspace = true }
+primitive-types = { workspace = true }
+thiserror = { workspace = true }

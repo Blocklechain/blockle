@@ -1,0 +1,12 @@
+[package]
+name = "blockle-zk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Blockle shielded pool: STARK spend proofs (winterfell), Rescue note commitments, note tree"
+
+[dependencies]
+winterfell = { workspace = true }
+core-utils = { package = "winter-utils", version = "0.13" }
+thiserror = { workspace = true }
+rand = "0.8"
