@@ -140,10 +140,18 @@ fn weak_parent_pow_is_rejected() {
     let (mut chain, addr) = new_chain();
     let mut block = aux_candidate(&chain, addr, "sha256d");
     let cb = parent_coinbase(block.header.hash());
-    // Unground header: overwhelmingly unlikely to meet even regtest bits.
+    // Deliberately weak parent: grind for a nonce whose hash MISSES the
+    // (easy) regtest target — deterministic, unlike a fixed header which
+    // would pass it one time in sixteen.
+    let limit = compact_to_target(block.header.bits).expect("bits");
     let mut header = vec![0u8; 80];
     header[36..68].copy_from_slice(&sha256d(&cb));
-    header[0] = 0xFF;
+    for n in 0u32.. {
+        header[76..80].copy_from_slice(&n.to_le_bytes());
+        if !hash_meets_target(&sha256d(&header), block.header.bits, limit) {
+            break;
+        }
+    }
     attach(&mut block, "sha256d", header, cb);
     assert!(matches!(
         chain.connect_block(block),
