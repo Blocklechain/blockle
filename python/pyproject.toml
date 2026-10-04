@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blockle"
-version = "0.2.0"
+version = "0.2.1"
 description = "Blockle — the universal deployment system for PoW mining pools. Python wrapper around the Blockle core."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,4 +32,4 @@ Homepage = "https://blockle.org"
 include = ["blockle*"]
 
 [tool.setuptools.package-data]
-blockle = ["assets/*.png"]
+blockle = ["assets/*.png", "assets/*.ico", "assets/*.icns"]

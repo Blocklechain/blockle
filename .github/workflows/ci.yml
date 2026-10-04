@@ -88,7 +88,10 @@ jobs:
         run: |
           EXE=""; SEP=":"
           if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; SEP=";"; fi
-          pyinstaller --noconfirm --clean --windowed --name BlockleWallet \
+          ICON=""
+          [ "$RUNNER_OS" = "Windows" ] && ICON="--icon python/blockle/assets/icon.ico"
+          [ "$RUNNER_OS" = "macOS" ] && ICON="--icon python/blockle/assets/icon.icns"
+          pyinstaller --noconfirm --clean --windowed --name BlockleWallet $ICON \
             --add-binary "chain/target/release/blockle-chain$EXE$SEP"blockle/bin \
             --add-data "python/blockle/assets/logo.png${SEP}blockle/assets" \
             python/launcher.py

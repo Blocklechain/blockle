@@ -450,6 +450,9 @@ def main() -> int:
     logo = Path(__file__).parent / "assets" / "logo.png"
     if logo.exists():
         app.setWindowIcon(QIcon(str(logo)))
+    if sys.platform == "win32":  # taskbar shows the exe icon without this
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("blockle.wallet")
 
     settings = QSettings("blockle", "wallet")
     datadir = Path(args.datadir)

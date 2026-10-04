@@ -50,12 +50,16 @@ def _chain_workspace() -> Path | None:
     return None
 
 
+EXE = ".exe" if os.name == "nt" else ""
+
+
 @lru_cache(maxsize=1)
 def find_chain_binary() -> str:
     """Locate (or build) the ``blockle-chain`` binary.
 
-    Order: ``BLOCKLE_CHAIN_BIN`` env var → bundled wheel binary → PATH →
-    a ``chain/`` Cargo workspace next to this checkout (built on demand).
+    Order: ``BLOCKLE_CHAIN_BIN`` env var → bundled binary (wheel or
+    PyInstaller app) → PATH → a ``chain/`` Cargo workspace next to this
+    checkout (built on demand).
     """
     env = os.environ.get("BLOCKLE_CHAIN_BIN")
     if env:
@@ -63,17 +67,28 @@ def find_chain_binary() -> str:
             return env
         raise BinaryNotFound(f"BLOCKLE_CHAIN_BIN points to {env!r}, which does not exist")
 
-    bundled = Path(__file__).parent / "bin" / "blockle-chain"
-    if bundled.exists():
-        return str(bundled)
+    candidates = [Path(__file__).parent / "bin" / f"blockle-chain{EXE}"]
+    # PyInstaller bundles: next to the executable (onedir `_internal`
+    # layout and onefile `_MEIPASS` extraction).
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        candidates += [
+            exe_dir / "_internal" / "blockle" / "bin" / f"blockle-chain{EXE}",
+            exe_dir / "blockle" / "bin" / f"blockle-chain{EXE}",
+        ]
+        if meipass := getattr(sys, "_MEIPASS", None):
+            candidates.append(Path(meipass) / "blockle" / "bin" / f"blockle-chain{EXE}")
+    for bundled in candidates:
+        if bundled.exists():
+            return str(bundled)
 
-    hit = shutil.which("blockle-chain")
+    hit = shutil.which(f"blockle-chain{EXE}") or shutil.which("blockle-chain")
     if hit and _is_chain_binary(hit):
         return hit
 
     root = _chain_workspace()
     if root is not None:
-        built = root / "target" / "release" / "blockle-chain"
+        built = root / "target" / "release" / f"blockle-chain{EXE}"
         if not built.exists() and shutil.which("cargo"):
             print(f"[blockle] building blockle-chain from {root} (first run)…", file=sys.stderr)
             subprocess.run(["cargo", "build", "--release"], cwd=root, check=True)
