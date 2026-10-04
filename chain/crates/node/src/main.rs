@@ -361,6 +361,16 @@ fn main() -> Result<()> {
 
 // ---------- wallet ----------
 
+/// Atomic wallet write (tmp + rename): concurrent readers never see a
+/// torn file.
+fn write_wallet_file(datadir: &Path, wf: &WalletFile) -> Result<()> {
+    let path = storage::wallet_path(datadir);
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_string_pretty(wf)?)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 fn read_wallet_file(datadir: &Path) -> Result<WalletFile> {
     let path = storage::wallet_path(datadir);
     if !path.exists() {
@@ -389,7 +399,7 @@ fn load_or_create_wallet(datadir: &Path) -> Result<Keypair> {
         // KEM keys are generated lazily on first shielded use.
         ..WalletFile::default()
     };
-    fs::write(storage::wallet_path(datadir), serde_json::to_string_pretty(&wf)?)?;
+    write_wallet_file(datadir, &wf)?;
     println!("new wallet written to {}", storage::wallet_path(datadir).display());
     Ok(kp)
 }
@@ -1202,7 +1212,7 @@ fn load_or_create_kem(datadir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     if wf.kem_public_hex.is_empty() {
         let (ek, dk) = ml_kem_768::KG::try_keygen().map_err(|e| anyhow!("kem keygen: {e}"))?;
         wf.set_kem_secret(&ek.into_bytes(), &dk.into_bytes(), passphrase().as_deref())?;
-        fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+        write_wallet_file(datadir, &wf)?;
         if !json_mode() {
             println!("(generated ML-KEM shielded-address keys for this wallet)");
         }
@@ -1605,7 +1615,7 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
             let pass = passphrase()
                 .ok_or_else(|| anyhow!("pass --passphrase (or BLOCKLE_WALLET_PASSPHRASE)"))?;
             wf.encrypt(&pass)?;
-            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            write_wallet_file(datadir, &wf)?;
             emit_json(json!({"ok": true, "encrypted": true}));
             if !json_mode() {
                 println!("wallet encrypted — keep the passphrase safe; without it the funds are gone");
@@ -1616,7 +1626,7 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
             let mut wf = read_wallet_file(datadir)?;
             let pass = passphrase().ok_or_else(|| anyhow!("passphrase required"))?;
             wf.decrypt(&pass)?;
-            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            write_wallet_file(datadir, &wf)?;
             emit_json(json!({"ok": true, "encrypted": false}));
             if !json_mode() {
                 println!("wallet decrypted (keys stored in plain text again)");
@@ -1627,7 +1637,7 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
             let mut wf = read_wallet_file(datadir)?;
             let old = passphrase().ok_or_else(|| anyhow!("current passphrase required"))?;
             wf.change_passphrase(&old, &new_passphrase)?;
-            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            write_wallet_file(datadir, &wf)?;
             emit_json(json!({"ok": true}));
             if !json_mode() {
                 println!("passphrase changed");
@@ -1697,7 +1707,7 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
                 ..WalletFile::default()
             };
             fs::create_dir_all(datadir)?;
-            fs::write(&path, serde_json::to_string_pretty(&wf)?)?;
+            write_wallet_file(datadir, &wf)?;
             emit_json(json!({"ok": true, "address": address}));
             if !json_mode() {
                 println!("wallet imported: {address}");
