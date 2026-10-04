@@ -371,7 +371,7 @@ fn init(datadir: &Path, params: ChainParams) -> Result<()> {
             display_hash(&genesis.header.hash())
         );
         println!(
-            "note: the {} {} premine belongs to the genesis wallet (see repo root), not this wallet",
+            "note: the {} {} premine belongs to the project's genesis wallet, not this wallet",
             format_amount(chain.params.premine),
             chain.params.ticker
         );
