@@ -17,7 +17,7 @@ from pathlib import Path
 
 try:
     from PySide6.QtCore import Qt, QThread, QTimer, Signal, QSettings
-    from PySide6.QtGui import QFont, QGuiApplication
+    from PySide6.QtGui import QFont, QGuiApplication, QIcon
     from PySide6.QtWidgets import (
         QApplication, QCheckBox, QFormLayout, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -447,6 +447,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Blockle Wallet")
     app.setFont(QFont(app.font().family(), 13))
+    logo = Path(__file__).parent / "assets" / "logo.png"
+    if logo.exists():
+        app.setWindowIcon(QIcon(str(logo)))
 
     settings = QSettings("blockle", "wallet")
     datadir = Path(args.datadir)
@@ -465,7 +468,9 @@ def main() -> int:
     node = NodeProcess(
         datadir=datadir, network=args.network,
         listen=args.listen or settings.value("listen", "0.0.0.0:18444"),
-        peers=args.connect or [p for p in str(settings.value("peers", "")).split(",") if p],
+        peers=args.connect
+        or [p for p in str(settings.value("peers", "")).split(",") if p]
+        or ["blockle.org:18444"],
     )
     win = WalletWindow(wallet, node)
     win.show()

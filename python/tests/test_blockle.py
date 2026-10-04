@@ -1,6 +1,6 @@
 """Integration tests: the Python wrapper driving the real Blockle core —
-simulated chain, interrogation, pool generation, mining, blockle.biz
-registration, and Proof-of-Blocks attribution for an external pool."""
+simulated chain, interrogation, pool generation, mining, and blockle.org
+registration/monitoring."""
 
 import tempfile
 import time
@@ -18,8 +18,6 @@ class TestBlockle(unittest.TestCase):
         ) as aux, blockle.biz_server(
             port=28490,
             data=tmp / "registry.json",
-            pob_whitelist="PyCoin:0:pysim",
-            algo_weights="pysim=1e18",
             monitor_interval=2,
         ) as bizproc:
             # 1. interrogation
@@ -61,55 +59,9 @@ class TestBlockle(unittest.TestCase):
                 pools = biz.pools()
                 self.assertEqual(len(pools), 1)
                 self.assertIn(pools[0]["status"], ("online", "verified"))
-                pob = biz.pob()
-                # difficulty 4.66e-10 x weight 1e18 ≈ 4.66 BLOCK (4.66e8 base units) per block
-                self.assertGreaterEqual(pob["totals"]["block_minted_base_units"], 4e8)
-                batch = biz.settlement_batch()
-                self.assertTrue(batch["epochs"])
-                entry = batch["epochs"][0]["entries"][0]
-                self.assertEqual(entry["address"], "block1pytest")
-                self.assertGreater(entry["amount_base_units"], 0)
+                stats_api = biz.stats()
+                self.assertGreaterEqual(stats_api["total_pools"], 1)
             _ = bizproc, chain, aux
-
-    def test_external_pool_watcher(self):
-        tmp = Path(tempfile.mkdtemp(prefix="blockle-py-ext-"))
-        with blockle.simchain(port=28580, name="LegacyCoin"), blockle.biz_server(
-            port=28590,
-            data=tmp / "registry.json",
-            pob_whitelist="LegacyCoin:0:legacysim",
-            algo_weights="legacysim=1e18",
-            monitor_interval=2,
-        ):
-            # A "legacy" pool: Blockle only knows its coinbase tag + RPC.
-            pool = blockle.add_chain(
-                "LegacyCoin",
-                "http://127.0.0.1:28580/",
-                config=tmp / "legacy.toml",
-                stratum="127.0.0.1:28334",
-                dashboard="127.0.0.1:28582",
-            )
-            biz = blockle.BizClient("http://127.0.0.1:28590")
-            reg = biz.register_external(
-                name="Legacy Mining Co",
-                chain="LegacyCoin",
-                stratum="127.0.0.1:28334",
-                chain_rpc="http://127.0.0.1:28580/",
-                coinbase_tag="/blockle/",
-                payout_address="block1legacy",
-            )
-            self.assertIn("pool_id", reg)
-            with pool.serve():  # the pool itself never talks to blockle.biz
-                blockle.mine("127.0.0.1:28334", worker="zed", shares=20)
-                time.sleep(10)
-            pob = biz.pob()
-            credited = [
-                c for c in pob["claims"] if c["status"]["state"] == "Credited"
-            ]
-            self.assertGreaterEqual(len(credited), 1, pob["totals"])
-            self.assertEqual(credited[0]["pool_id"], reg["pool_id"])
-            self.assertGreater(credited[0]["credits"], 0)
-            self.assertGreater(credited[0]["difficulty"], 0)
-
 
 if __name__ == "__main__":
     unittest.main()

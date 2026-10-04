@@ -34,7 +34,6 @@ fn build_shield_tx(chain: &Chain, kp: &Keypair, commitment: [u8; 32], value: u64
             transfers: vec![],
         }),
         contract: None,
-        settlement: None,
     };
     let sighash = tx.sighash();
     tx.inputs[0].signature = kp.sign(&sighash);
@@ -69,7 +68,6 @@ fn build_unshield_tx(
             transfers: vec![],
         }),
         contract: None,
-        settlement: None,
     };
     // The sighash excludes proofs, so we can compute it, prove, then attach.
     let sighash = zk::bytes_to_felts_reduced(&tx.sighash());
@@ -215,7 +213,6 @@ fn shielded_transfer_z_to_z() {
             transfers: vec![],
         }),
         contract: None,
-        settlement: None,
     };
     let sighash = zk::bytes_to_felts_reduced(&tx.sighash());
     let proof = zk::prove_spend(
@@ -291,7 +288,6 @@ fn hidden_amount_transfer_through_blocks() {
             }],
         }),
         contract: None,
-        settlement: None,
     };
     let sighash = zk::bytes_to_felts_reduced(&tx.sighash());
     let proof = zk::prove_transfer(

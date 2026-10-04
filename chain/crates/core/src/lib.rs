@@ -6,6 +6,7 @@
 //! encoding used for hashing and signing.
 
 pub mod amount;
+pub mod auxpow;
 pub mod block;
 pub mod encode;
 pub mod hash;
@@ -14,10 +15,11 @@ pub mod merkle;
 pub mod transaction;
 
 pub use amount::{format_amount, parse_amount, COIN};
+pub use auxpow::AuxPow;
 pub use block::{Block, BlockHeader};
 pub use hash::{blake2b_256, display_hash, sha256d, Hash32};
 pub use keys::{decode_address, encode_address, Address, Keypair};
 pub use transaction::{
-    ContractAction, OutPoint, SettlementEntry, SettlementMint, ShieldedBundle, ShieldedOutput,
+    ContractAction, OutPoint, ShieldedBundle, ShieldedOutput,
     ShieldedSpend, ShieldedTransfer, Transaction, TxInput, TxOutput,
 };

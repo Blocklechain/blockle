@@ -8,6 +8,6 @@ pub mod params;
 
 pub use chain::{Chain, ChainError, UtxoEntry};
 pub use contracts::{contract_id, CallResult, ContractInfo};
-pub use miner::{build_template, mine_block, mine_block_cancellable};
+pub use miner::{build_template, build_template_split, mine_block, mine_block_cancellable};
 pub use params::ChainParams;
 pub use blockle_pow::U256;

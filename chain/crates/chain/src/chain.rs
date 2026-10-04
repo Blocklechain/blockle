@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use blockle_core::hash::Hash32;
 use blockle_core::keys::{pubkey_to_address, verify_signature};
-use blockle_core::{Block, ContractAction, OutPoint, SettlementMint, Transaction, TxOutput};
+use blockle_core::{auxpow, sha256d, AuxPow, Block, BlockHeader, ContractAction, OutPoint, Transaction, TxOutput};
+use blockle_pow::parent;
 use blockle_pow::difficulty::{block_work, hash_meets_target, lwma_next_bits};
 use blockle_pow::equihash;
 use blockle_pow::U256;
@@ -24,6 +25,8 @@ pub enum ChainError {
     TimeTooOld(i64, i64),
     #[error("timestamp too far in the future")]
     TimeTooNew,
+    #[error("merged-mining proof invalid: {0}")]
+    BadAuxPow(String),
     #[error("invalid equihash solution: {0}")]
     BadEquihash(#[from] equihash::EquihashError),
     #[error("header hash does not meet difficulty target")]
@@ -48,12 +51,6 @@ pub enum ChainError {
     UnknownAnchor,
     #[error("block 0 does not match this network's fixed genesis")]
     WrongGenesis,
-    #[error("settlement rule violated: {0}")]
-    SettlementRules(String),
-    #[error("settlement epoch already minted")]
-    SettlementEpochReplayed,
-    #[error("settlement signature invalid or no authority configured")]
-    SettlementUnauthorized,
     #[error("transaction {0} is malformed")]
     MalformedTx(String),
     #[error("input spends unknown or already-spent output")]
@@ -94,8 +91,6 @@ pub struct Chain {
     pub note_anchors: HashSet<Hash32>,
     /// Revealed nullifiers (spent notes).
     pub nullifiers: HashSet<Hash32>,
-    /// Proof-of-Blocks settlement epochs already minted (replay protection).
-    pub settled_epochs: HashSet<u64>,
 }
 
 pub fn now_unix() -> i64 {
@@ -118,7 +113,6 @@ impl Chain {
             note_leaves: Vec::new(),
             note_anchors,
             nullifiers: HashSet::new(),
-            settled_epochs: HashSet::new(),
         }
     }
 
@@ -163,18 +157,122 @@ impl Chain {
     }
 
     /// Expected difficulty bits for the next block (LWMA, per-block).
+    /// Native-lane difficulty (see [`Chain::next_bits_for`]).
     pub fn next_bits(&self) -> u32 {
+        self.next_bits_for("native")
+    }
+
+    /// The mining lane a block belongs to: `"native"` for its own Equihash
+    /// solution, otherwise the merged-mining parent algorithm.
+    pub fn lane_of(block: &Block) -> &'static str {
+        match &block.aux_pow {
+            None => "native",
+            Some(ap) => {
+                if ap.parent_algo == "equihash" {
+                    return "equihash";
+                }
+                parent::FIXED_HEADER_ALGOS
+                    .iter()
+                    .find(|a| **a == ap.parent_algo)
+                    .copied()
+                    .unwrap_or("unknown")
+            }
+        }
+    }
+
+    /// All mining lanes this chain accepts: the native solver plus every
+    /// registered ASIC parent algorithm.
+    pub fn lanes(&self) -> Vec<&'static str> {
+        let mut lanes = vec!["native"];
+        if self.params.aux_pow {
+            lanes.extend(parent::FIXED_HEADER_ALGOS);
+            lanes.push("equihash");
+        }
+        lanes
+    }
+
+    /// Per-lane LWMA difficulty: each lane retargets over its own blocks at
+    /// `target_spacing × lane_count`, so the lanes together emit one block
+    /// per `target_spacing` while staying independently calibrated to their
+    /// hardware (an S19's sha256d and an L7's scrypt share nothing).
+    pub fn next_bits_for(&self, lane: &str) -> u32 {
+        let spacing = self.params.target_spacing * self.lanes().len() as u64;
         let headers: Vec<(u32, i64)> = self
             .blocks
             .iter()
+            .filter(|b| Self::lane_of(b) == lane)
             .map(|b| (b.header.bits, b.header.time as i64))
             .collect();
-        lwma_next_bits(
-            self.params.target_spacing,
-            self.params.lwma_window,
-            self.params.pow_limit,
-            &headers,
-        )
+        lwma_next_bits(spacing, self.params.lwma_window, self.params.pow_limit, &headers)
+    }
+
+    /// Validate a merged-mining proof: the parent header's PoW (under the
+    /// parent's own algorithm) must meet OUR lane difficulty, and its
+    /// coinbase must commit to this block's header hash through the
+    /// Namecoin-shaped commitment tree.
+    fn check_aux_pow(&self, header: &BlockHeader, ap: &AuxPow) -> Result<(), ChainError> {
+        let bad = |m: &str| ChainError::BadAuxPow(m.into());
+        if !header.solution.is_empty() || header.nonce != [0u8; 32] {
+            return Err(bad("aux blocks must carry no native solution"));
+        }
+        let pow_hash = match ap.parent_algo.as_str() {
+            "equihash" => {
+                if ap.parent_header.len() < 141 {
+                    return Err(bad("equihash parent header too short"));
+                }
+                let input = &ap.parent_header[..108];
+                let nonce: [u8; 32] = ap.parent_header[108..140]
+                    .try_into()
+                    .expect("length checked");
+                let (sol_len, sol_start) = match ap.parent_header[140] {
+                    n @ 0..=252 => (n as usize, 141usize),
+                    253 => {
+                        if ap.parent_header.len() < 143 {
+                            return Err(bad("equihash parent header truncated"));
+                        }
+                        let n = u16::from_le_bytes(
+                            ap.parent_header[141..143].try_into().expect("len"),
+                        );
+                        (n as usize, 143usize)
+                    }
+                    _ => return Err(bad("oversized parent solution")),
+                };
+                if ap.parent_header.len() != sol_start + sol_len {
+                    return Err(bad("equihash parent header length mismatch"));
+                }
+                let sol = &ap.parent_header[sol_start..];
+                let indices = equihash::unpack_solution(&self.params.equihash, sol)
+                    .map_err(|_| bad("parent equihash solution malformed"))?;
+                equihash::verify(&self.params.equihash, input, &nonce, &indices)
+                    .map_err(|_| bad("parent equihash solution invalid"))?;
+                sha256d(&ap.parent_header)
+            }
+            algo => parent::pow_hash(algo, &ap.parent_header)
+                .ok_or_else(|| bad("unknown parent algorithm or bad header length"))?,
+        };
+        if !hash_meets_target(&pow_hash, header.bits, self.params.pow_limit) {
+            return Err(ChainError::InsufficientWork);
+        }
+
+        let (root, size, cnonce) = auxpow::find_commitment(&ap.parent_coinbase)
+            .ok_or_else(|| bad("no merged-mining commitment in parent coinbase"))?;
+        if !size.is_power_of_two() || ap.chain_branch.len() as u32 != size.trailing_zeros() {
+            return Err(bad("commitment tree size/branch mismatch"));
+        }
+        if auxpow::aux_slot(self.params.aux_chain_id, size, cnonce) != ap.chain_index {
+            return Err(bad("chain index does not match slot derivation"));
+        }
+        if auxpow::fold_branch(header.hash(), &ap.chain_branch, ap.chain_index) != root {
+            return Err(bad("header hash does not fold to committed root"));
+        }
+
+        let txid = sha256d(&ap.parent_coinbase);
+        let parent_root = auxpow::parent_merkle_root(&ap.parent_header)
+            .ok_or_else(|| bad("parent header too short for merkle root"))?;
+        if auxpow::fold_coinbase_branch(txid, &ap.coinbase_branch) != parent_root {
+            return Err(bad("coinbase not proven in parent block"));
+        }
+        Ok(())
     }
 
     pub fn balance(&self, address: &[u8; 32]) -> u64 {
@@ -211,9 +309,6 @@ impl Chain {
         view: &HashMap<OutPoint, UtxoEntry>,
         height: u64,
     ) -> Result<u64, ChainError> {
-        if let Some(stl) = &tx.settlement {
-            return self.check_settlement(tx, stl);
-        }
         self.check_shielded(tx)?;
         match &tx.contract {
             None => {}
@@ -306,43 +401,6 @@ impl Chain {
         Ok(fee)
     }
 
-    /// Validate a Proof-of-Blocks settlement mint. Returns the fee (always
-    /// zero — settlement mints create value, they don't pay fees).
-    fn check_settlement(&self, tx: &Transaction, stl: &SettlementMint) -> Result<u64, ChainError> {
-        let rules = |m: &str| ChainError::SettlementRules(m.into());
-        if !tx.inputs.is_empty() || tx.shielded.is_some() || tx.contract.is_some() {
-            return Err(rules("settlement transactions carry nothing but the mint"));
-        }
-        if !tx.coinbase_data.is_empty() {
-            return Err(rules("coinbase_data on settlement tx"));
-        }
-        if stl.entries.is_empty() || stl.entries.len() > 10_000 {
-            return Err(rules("entry count out of range"));
-        }
-        if stl.entries.iter().any(|e| e.amount == 0) {
-            return Err(rules("zero-amount entry"));
-        }
-        stl.total().ok_or_else(|| rules("amount overflow"))?;
-        // Outputs must mirror the signed entries exactly.
-        if tx.outputs.len() != stl.entries.len()
-            || tx
-                .outputs
-                .iter()
-                .zip(&stl.entries)
-                .any(|(o, e)| o.recipient != e.address || o.amount != e.amount)
-        {
-            return Err(rules("outputs do not mirror the signed entries"));
-        }
-        if self.settled_epochs.contains(&stl.epoch) {
-            return Err(ChainError::SettlementEpochReplayed);
-        }
-        let Some(authority) = &self.params.settlement_authority else {
-            return Err(ChainError::SettlementUnauthorized);
-        };
-        verify_signature(authority, &stl.signing_message(), &stl.signature)
-            .map_err(|_| ChainError::SettlementUnauthorized)?;
-        Ok(0)
-    }
 
     /// Validate a transaction's shielded bundle against chain-level state:
     /// canonical encodings, known anchors, unused nullifiers, pool capacity,
@@ -432,11 +490,7 @@ impl Chain {
         storage: &mut StorageMap,
         nullifiers: &mut HashSet<Hash32>,
         note_leaves: &mut Vec<Hash32>,
-        settled_epochs: &mut HashSet<u64>,
     ) {
-        if let Some(stl) = &tx.settlement {
-            settled_epochs.insert(stl.epoch);
-        }
         if let Some(bundle) = &tx.shielded {
             for spend in &bundle.spends {
                 nullifiers.insert(spend.nullifier);
@@ -490,7 +544,14 @@ impl Chain {
                 }
             }
         }
-        let expected_bits = self.next_bits();
+        let lane = Self::lane_of(&block);
+        if lane == "unknown" {
+            return Err(ChainError::BadAuxPow("unknown parent algorithm".into()));
+        }
+        if block.aux_pow.is_some() && !self.params.aux_pow {
+            return Err(ChainError::BadAuxPow("merged mining not enabled".into()));
+        }
+        let expected_bits = self.next_bits_for(lane);
         if header.bits != expected_bits {
             return Err(ChainError::BadBits { got: header.bits, expected: expected_bits });
         }
@@ -505,16 +566,21 @@ impl Chain {
             return Err(ChainError::BadStateRoot);
         }
 
-        // -- Proof of work --
-        let indices = equihash::unpack_solution(&self.params.equihash, &header.solution)?;
-        equihash::verify(
-            &self.params.equihash,
-            &header.equihash_input(),
-            &header.nonce,
-            &indices,
-        )?;
-        if !hash_meets_target(&header.hash(), header.bits, self.params.pow_limit) {
-            return Err(ChainError::InsufficientWork);
+        // -- Proof of work: native Equihash, or a parent chain's via AuxPoW --
+        match &block.aux_pow {
+            None => {
+                let indices = equihash::unpack_solution(&self.params.equihash, &header.solution)?;
+                equihash::verify(
+                    &self.params.equihash,
+                    &header.equihash_input(),
+                    &header.nonce,
+                    &indices,
+                )?;
+                if !hash_meets_target(&header.hash(), header.bits, self.params.pow_limit) {
+                    return Err(ChainError::InsufficientWork);
+                }
+            }
+            Some(ap) => self.check_aux_pow(header, ap)?,
         }
 
         // -- Block body --
@@ -537,7 +603,6 @@ impl Chain {
         let mut sview = self.contract_storage.clone();
         let mut nview = self.nullifiers.clone();
         let mut lview = self.note_leaves.clone();
-        let mut eview = self.settled_epochs.clone();
         let mut fees: u64 = 0;
         let mut gas_total: u64 = 0;
         for tx in &block.transactions[1..] {
@@ -547,11 +612,6 @@ impl Chain {
             // duplicates across transactions within this block here.
             if tx.nullifiers().iter().any(|n| nview.contains(n)) {
                 return Err(ChainError::NullifierReused);
-            }
-            if let Some(stl) = &tx.settlement {
-                if eview.contains(&stl.epoch) {
-                    return Err(ChainError::SettlementEpochReplayed);
-                }
             }
             if let Some(action) = &tx.contract {
                 gas_total = gas_total
@@ -564,7 +624,6 @@ impl Chain {
             let txid = tx.txid();
             Self::apply_tx_effects(
                 tx, &txid, height, &mut view, &mut cview, &mut sview, &mut nview, &mut lview,
-                &mut eview,
             );
         }
 
@@ -605,7 +664,6 @@ impl Chain {
         self.contract_storage = sview;
         self.nullifiers = nview;
         self.note_leaves = lview;
-        self.settled_epochs = eview;
         self.blocks.push(block);
         Ok(())
     }

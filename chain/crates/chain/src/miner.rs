@@ -1,7 +1,7 @@
 //! Block assembly and CPU mining.
 
 use blockle_core::keys::Address;
-use blockle_core::{Block, BlockHeader, Transaction};
+use blockle_core::{Block, BlockHeader, Transaction, TxOutput};
 use blockle_pow::difficulty::hash_meets_target;
 use blockle_pow::equihash;
 
@@ -38,7 +38,6 @@ pub fn build_template(
     let mut sview = chain.contract_storage.clone();
     let mut nview = chain.nullifiers.clone();
     let mut lview = chain.note_leaves.clone();
-    let mut eview = chain.settled_epochs.clone();
     let mut included = Vec::new();
     let mut included_ids = Vec::new();
     let mut fees: u64 = 0;
@@ -52,11 +51,6 @@ pub fn build_template(
         if tx.nullifiers().iter().any(|n| nview.contains(n)) {
             continue;
         }
-        if let Some(stl) = &tx.settlement {
-            if eview.contains(&stl.epoch) {
-                continue;
-            }
-        }
         let fee = match chain.check_transaction(tx, &view, height) {
             Ok(fee) => fee,
             Err(_) => continue, // stale or conflicting candidate — skip it
@@ -64,7 +58,6 @@ pub fn build_template(
         let txid = tx.txid();
         Chain::apply_tx_effects(
             tx, &txid, height, &mut view, &mut cview, &mut sview, &mut nview, &mut lview,
-            &mut eview,
         );
         gas_total += gas;
         fees = fees.checked_add(fee).ok_or(ChainError::ValueOutOfRange)?;
@@ -82,6 +75,7 @@ pub fn build_template(
     transactions.extend(included);
 
     let mut block = Block {
+        aux_pow: None,
         header: BlockHeader {
             version: 1,
             prev_hash: chain.tip_hash(),
@@ -96,6 +90,34 @@ pub fn build_template(
     };
     block.header.merkle_root = block.compute_merkle_root();
     Ok((block, included_ids))
+}
+
+/// Like [`build_template`], but splits the coinbase among `recipients` by
+/// basis points (summing to 10_000); rounding dust goes to the last entry.
+/// Zero-amount outputs are dropped.
+pub fn build_template_split(
+    chain: &Chain,
+    recipients: &[(Address, u32)],
+    candidates: &[Transaction],
+) -> Result<(Block, Vec<[u8; 32]>), ChainError> {
+    let (mut block, ids) = build_template(chain, recipients[0].0, candidates)?;
+    let reward = block.transactions[0].outputs[0].amount;
+    let mut outs = Vec::with_capacity(recipients.len());
+    let mut assigned = 0u64;
+    for (i, (addr, bp)) in recipients.iter().enumerate() {
+        let amount = if i == recipients.len() - 1 {
+            reward - assigned
+        } else {
+            (reward as u128 * *bp as u128 / 10_000) as u64
+        };
+        assigned += amount;
+        if amount > 0 {
+            outs.push(TxOutput { recipient: *addr, amount });
+        }
+    }
+    block.transactions[0].outputs = outs;
+    block.header.merkle_root = block.compute_merkle_root();
+    Ok((block, ids))
 }
 
 /// Assemble the next block and grind nonces until an Equihash solution also

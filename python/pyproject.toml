@@ -30,3 +30,6 @@ Homepage = "https://blockle.org"
 
 [tool.setuptools.packages.find]
 include = ["blockle*"]
+
+[tool.setuptools.package-data]
+blockle = ["assets/*.png"]

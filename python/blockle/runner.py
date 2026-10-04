@@ -70,14 +70,10 @@ def simchain(port: int = 18980, name: str = "SimCoin") -> Process:
 def biz_server(
     port: int = 8900,
     data: str | Path = "blockle-biz-registry.json",
-    pob_whitelist: str = "",
-    algo_weights: str = "",
     monitor_interval: int = 30,
 ) -> Process:
     """Launch a blockle.biz directory/monitoring server.
 
-    ``pob_whitelist``: extra entries "Name[:floor[:algorithm]]".
-    ``algo_weights``: per-algorithm emission overrides "algo=weight,…".
     """
     args = [
         find_biz_binary(),
@@ -88,10 +84,6 @@ def biz_server(
         "--monitor-interval",
         str(monitor_interval),
     ]
-    if pob_whitelist:
-        args += ["--pob-whitelist", pob_whitelist]
-    if algo_weights:
-        args += ["--algo-weight", algo_weights]
     return Process(args, ready_port=port)
 
 

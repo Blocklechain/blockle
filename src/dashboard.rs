@@ -11,6 +11,8 @@ use serde_json::json;
 use crate::http;
 use crate::stratum::Engine;
 
+const LOGO_MARK_PNG: &[u8] = include_bytes!("assets/logo-mark-128.png");
+
 pub fn serve(engine: Arc<Engine>, listen: &str) -> Result<()> {
     let listener = TcpListener::bind(listen)
         .map_err(|e| anyhow!("dashboard cannot listen on {listen}: {e}"))?;
@@ -22,6 +24,9 @@ pub fn serve(engine: Arc<Engine>, listen: &str) -> Result<()> {
                 let mut stream = stream;
                 let Ok(req) = http::read_request(&mut stream) else { return };
                 match req.path.as_str() {
+                    "/logo.png" | "/favicon.png" | "/favicon.ico" => {
+                        http::respond(&mut stream, "200 OK", "image/png", LOGO_MARK_PNG);
+                    }
                     "/stats.json" => {
                         let ledger = engine.ledger.lock().unwrap();
                         let body = json!({
@@ -65,7 +70,7 @@ pub fn serve(engine: Arc<Engine>, listen: &str) -> Result<()> {
                         }
                         let html = format!(
                             r##"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>⬡</text></svg>">
+<link rel="icon" type="image/png" href="/favicon.png">
 <title>{chain} · Blockle pool</title><style>
 :root{{--bg:#0a0b0e;--surface:#13151a;--border:#23262e;--ink:#f2f4f8;--muted:#7d8495;--accent:#3987e5}}
 *{{box-sizing:border-box}}body{{background:var(--bg);color:var(--ink);font:15px/1.65 system-ui,sans-serif;margin:0;padding:2rem clamp(1rem,4vw,3rem)}}
@@ -79,7 +84,7 @@ tr:last-child td{{border-bottom:none}}tr:hover td{{background:rgba(255,255,255,.
 td{{font-variant-numeric:tabular-nums}}code{{font-family:ui-monospace,Menlo,monospace;font-size:.8rem;color:#8ebcf2}}
 @media(max-width:700px){{body{{padding:1.2rem .9rem}}table{{display:block;overflow-x:auto;white-space:nowrap}}td,th{{padding:.5rem .6rem}}.sub{{font-size:.76rem;word-break:break-all}}}}
 </style></head><body>
-<h1><span class="hex">⬡</span> {chain} pool</h1>
+<h1><img src="/logo.png" style="width:26px;height:26px;border-radius:6px;vertical-align:-4px"> {chain} pool</h1>
 <p class="sub">stratum+tcp://{stratum} · height {height} · {miners} miner(s) · ≈{hr:.0} H/s · <a style="color:#6da7ec" href="/stats.json">stats.json</a></p>
 <h2>Workers</h2><table><tr><th>worker</th><th>accepted</th><th>rejected</th><th>weight</th></tr>{workers}</table>
 <h2>Blocks found ({nblocks})</h2><table><tr><th>height</th><th>hash</th><th>finder</th></tr>{blocks}</table>

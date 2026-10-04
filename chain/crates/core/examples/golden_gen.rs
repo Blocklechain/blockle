@@ -35,7 +35,6 @@ fn main() {
             value: 55,
             gas_limit: 1000,
         }),
-        settlement: None,
     };
     println!("txid:    {}", hex::encode(tx.txid()));
     println!("sighash: {}", hex::encode(tx.sighash()));

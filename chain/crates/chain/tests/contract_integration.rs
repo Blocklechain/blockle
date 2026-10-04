@@ -80,7 +80,6 @@ fn build_tx(
         coinbase_data: vec![],
         shielded: None,
         contract: action,
-        settlement: None,
     };
     let sighash = tx.sighash();
     tx.inputs[0].signature = kp.sign(&sighash);

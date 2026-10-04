@@ -9,8 +9,12 @@ pub struct ChainParams {
     pub name: String,
     pub ticker: String,
     pub equihash: equihash::Params,
-    /// Target seconds between blocks.
+    /// Target seconds between blocks (combined across all mining lanes).
     pub target_spacing: u64,
+    /// Accept merged-mining (AuxPoW) blocks from parent chains.
+    pub aux_pow: bool,
+    /// This chain's id in merged-mining commitment trees.
+    pub aux_chain_id: u32,
     /// LWMA difficulty window (blocks).
     pub lwma_window: usize,
     /// Easiest allowed target.
@@ -33,9 +37,6 @@ pub struct ChainParams {
     pub block_gas_limit: u64,
     pub max_contract_code: usize,
     pub max_contract_input: usize,
-    /// ML-DSA-44 public key authorized to sign Proof-of-Blocks settlement
-    /// mints (federated settlement v1). None = settlement disabled.
-    pub settlement_authority: Option<Vec<u8>>,
 }
 
 impl ChainParams {
@@ -53,6 +54,8 @@ impl ChainParams {
             ticker: "BLOCK".into(),
             equihash: equihash::Params::new(200, 9).expect("valid params"),
             target_spacing: 600,
+            aux_pow: true,
+            aux_chain_id: 16972,
             lwma_window: 17,
             pow_limit: U256::MAX >> 1,
             initial_subsidy: 50 * COIN,
@@ -66,7 +69,6 @@ impl ChainParams {
             block_gas_limit: 10_000_000,
             max_contract_code: 24_576,
             max_contract_input: 8_192,
-            settlement_authority: None,
         }
     }
 
@@ -80,6 +82,8 @@ impl ChainParams {
             coinbase_maturity: 5,
             pow_limit: U256::MAX >> 4,
             target_spacing: 1,
+            aux_pow: true,
+            aux_chain_id: 16972,
             ..Self::mainnet()
         }
     }

@@ -69,46 +69,7 @@ pub struct ShieldedTransfer {
     pub proof: Vec<u8>,
 }
 
-/// One settlement payout: mints `amount` base units to `address`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SettlementEntry {
-    pub address: Address,
-    pub amount: u64,
-}
-
-/// A Proof-of-Blocks settlement mint: creates BLOCK for verified work done
-/// on foreign chains, per blockle.biz settlement batches. Authorized by the
-/// network's settlement-authority ML-DSA key (federated settlement v1);
-/// consensus enforces one mint per epoch. The transaction has no inputs —
-/// its outputs must mirror `entries` exactly.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SettlementMint {
-    pub epoch: u64,
-    pub entries: Vec<SettlementEntry>,
-    /// ML-DSA-44 signature by the settlement authority over
-    /// [`SettlementMint::signing_message`].
-    pub signature: Vec<u8>,
-}
-
-impl SettlementMint {
-    /// The domain-separated message the authority signs.
-    pub fn signing_message(&self) -> Hash32 {
-        let mut data = Vec::with_capacity(12 + self.entries.len() * 40);
-        data.extend_from_slice(&self.epoch.to_le_bytes());
-        data.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
-        for e in &self.entries {
-            data.extend_from_slice(&e.address);
-            data.extend_from_slice(&e.amount.to_le_bytes());
-        }
-        crate::hash::blake2b_256_personal(b"BlklStl1", &data)
-    }
-
-    pub fn total(&self) -> Option<u64> {
-        self.entries.iter().try_fold(0u64, |acc, e| acc.checked_add(e.amount))
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ShieldedBundle {
     pub spends: Vec<ShieldedSpend>,
     pub outputs: Vec<ShieldedOutput>,
@@ -160,16 +121,13 @@ pub struct Transaction {
     /// Optional Blockle VM deploy/call.
     #[serde(default)]
     pub contract: Option<ContractAction>,
-    /// Optional Proof-of-Blocks settlement mint.
-    #[serde(default)]
-    pub settlement: Option<SettlementMint>,
 }
 
 impl Transaction {
     /// Coinbase: no transparent inputs, no shielded bundle, and no
-    /// settlement mint (those are the other input-less transaction kinds).
+    /// (the other input-less transaction kind).
     pub fn is_coinbase(&self) -> bool {
-        self.inputs.is_empty() && self.shielded.is_none() && self.settlement.is_none()
+        self.inputs.is_empty() && self.shielded.is_none()
     }
 
     /// Total value entering from the shielded pool.
@@ -282,19 +240,6 @@ impl Transaction {
                 put_u64(&mut out, *gas_limit);
             }
         }
-        // Settlement section: appended only when present, so every
-        // pre-settlement transaction (including the embedded genesis
-        // blocks) keeps its frozen encoding.
-        if let Some(stl) = &self.settlement {
-            put_u32(&mut out, 0x53544c31); // "STL1"
-            put_u64(&mut out, stl.epoch);
-            put_u32(&mut out, stl.entries.len() as u32);
-            for e in &stl.entries {
-                put_fixed(&mut out, &e.address);
-                put_u64(&mut out, e.amount);
-            }
-            put_bytes(&mut out, &stl.signature);
-        }
         out
     }
 
@@ -328,7 +273,6 @@ impl Transaction {
             coinbase_data,
             shielded: None,
             contract: None,
-            settlement: None,
         }
     }
 }
@@ -352,7 +296,6 @@ mod tests {
             coinbase_data: vec![],
             shielded: None,
             contract: None,
-            settlement: None,
         };
         let sighash_before = tx.sighash();
         let txid_before = tx.txid();

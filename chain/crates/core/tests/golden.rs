@@ -40,7 +40,6 @@ fn reference_tx() -> Transaction {
             value: 55,
             gas_limit: 1000,
         }),
-        settlement: None,
     }
 }
 

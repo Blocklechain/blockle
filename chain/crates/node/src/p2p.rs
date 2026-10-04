@@ -122,7 +122,8 @@ pub struct NodeConfig {
     /// Seconds to pause after each locally mined block (regtest pacing).
     pub mine_interval: Option<u64>,
     /// Stratum server bind address, if enabled.
-    pub stratum: Option<String>,
+    /// Stratum pool listeners: (address, pool options).
+    pub pools: Vec<(String, crate::stratum::PoolOpts)>,
 }
 
 struct SharedState {
@@ -182,6 +183,17 @@ impl Node {
     }
 
     /// Build an unsolved block template for external miners.
+    /// Template whose coinbase is split among `recipients` by basis points
+    /// (pool use: miner + fee outputs).
+    pub fn block_template_split(&self, recipients: &[(Address, u32)]) -> Result<Block> {
+        let (chain, mempool) = self.snapshot();
+        if chain.blocks.is_empty() && !self.config.connect.is_empty() {
+            return Err(anyhow!("chain not yet synced"));
+        }
+        let (block, _) = blockle_chain::build_template_split(&chain, recipients, &mempool)?;
+        Ok(block)
+    }
+
     pub fn block_template(&self) -> Result<Block> {
         let reward = self
             .config
@@ -223,8 +235,8 @@ impl Node {
             }
         }
 
-        if let Some(stratum_addr) = self.config.stratum.clone() {
-            crate::stratum::serve(self.clone(), stratum_addr);
+        for (addr, opts) in self.config.pools.clone() {
+            crate::stratum::serve(self.clone(), addr, opts);
         }
 
         // Heartbeat + discovery loop.

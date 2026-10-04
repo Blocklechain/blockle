@@ -80,6 +80,13 @@ impl BlockHeader {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Block {
     pub header: BlockHeader,
+    /// Merged-mining proof: present when this block's PoW is a parent
+    /// chain's (any registered ASIC algorithm) rather than a native
+    /// solution. `default` keeps pre-auxpow JSON (e.g. the embedded
+    /// genesis) readable; no `skip_serializing_if` — bincode (the p2p wire
+    /// format) is not self-describing and must always see the Option tag.
+    #[serde(default)]
+    pub aux_pow: Option<crate::auxpow::AuxPow>,
     pub transactions: Vec<Transaction>,
 }
 
@@ -91,6 +98,7 @@ impl Block {
 
     pub fn serialized_size(&self) -> usize {
         self.header.serialize().len()
+            + self.aux_pow.as_ref().map(|a| a.serialized_size()).unwrap_or(0)
             + self.transactions.iter().map(|t| t.serialized_size()).sum::<usize>()
     }
 }

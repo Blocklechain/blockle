@@ -82,6 +82,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then EXE=".exe"; SEP=";"; fi
           pyinstaller --noconfirm --clean --windowed --name BlockleWallet \
             --add-binary "chain/target/release/blockle-chain$EXE$SEP"blockle/bin \
+            --add-data "python/blockle/assets/logo.png${SEP}blockle/assets" \
             python/launcher.py
 
       - name: Smoke-test packaged chain binary

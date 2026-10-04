@@ -4,6 +4,7 @@ use blockle_node::{httpc, p2p, storage};
 
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::thread;
 use std::sync::OnceLock;
 use std::collections::HashMap;
 
@@ -28,11 +29,6 @@ struct Cli {
     /// Network: mainnet (Equihash 200,9) or regtest (48,5 — fast, for dev).
     #[arg(long, global = true, default_value = "mainnet")]
     network: String,
-    /// Settlement-authority public key: path to a wallet.json (public_hex)
-    /// or a file containing raw hex. Enables Proof-of-Blocks settlement
-    /// mints signed by this key.
-    #[arg(long, global = true)]
-    settlement_authority: Option<PathBuf>,
     /// Emit machine-readable JSON from transaction commands (GUIs/tooling).
     #[arg(long, global = true)]
     json: bool,
@@ -70,9 +66,27 @@ enum Cmd {
         /// Reward address for mined blocks (defaults to your wallet).
         #[arg(long)]
         address: Option<String>,
-        /// Serve stratum mining jobs on this address (e.g. 0.0.0.0:3333).
+        /// Solo pool: stratum endpoint where each miner's coinbase pays
+        /// their own authorized BLOCK address (e.g. 0.0.0.0:3333).
         #[arg(long)]
         stratum: Option<String>,
+        /// PPLNS pool: stratum endpoint with share-weighted payouts
+        /// (e.g. 0.0.0.0:3334).
+        #[arg(long)]
+        stratum_pplns: Option<String>,
+        /// Pool fee percent, applied in both modes.
+        #[arg(long, default_value_t = 1.0)]
+        pool_fee: f64,
+        /// PPLNS share window (shares).
+        #[arg(long, default_value_t = 10_000)]
+        pplns_window: usize,
+        /// Public hostname miners use, for stats/labels (e.g. blockle.org).
+        #[arg(long)]
+        pool_host: Option<String>,
+        /// Merged-mining work interface (createauxblock/submitauxblock),
+        /// e.g. 127.0.0.1:8445.
+        #[arg(long)]
+        aux_http: Option<String>,
         /// Seconds to pause after each locally mined block (regtest pacing).
         #[arg(long)]
         mine_interval: Option<u64>,
@@ -166,29 +180,6 @@ enum Cmd {
     /// Export the incoming viewing key (allows *detecting and decrypting*
     /// incoming notes, but not spending them... except bearer-note caveats).
     Viewkey,
-    /// Execute Proof-of-Blocks settlement: fetch a blockle.biz settlement
-    /// batch, sign one mint transaction per epoch with the authority
-    /// wallet, and submit to the BLOCK chain.
-    Settle {
-        /// Batch source: a blockle.biz …/api/pob/settlement-batch URL or a
-        /// local JSON file.
-        #[arg(long)]
-        batch: String,
-        /// Authority wallet.json (ML-DSA keys matching
-        /// --settlement-authority).
-        #[arg(long)]
-        wallet: PathBuf,
-        /// Running BLOCK-chain node to submit through (else the local
-        /// mempool file).
-        #[arg(long)]
-        node: Option<String>,
-        /// blockle.biz base URL to mark epochs settled on afterwards.
-        #[arg(long)]
-        mark_settled: Option<String>,
-        /// Shared settlement key for mark-settled authentication.
-        #[arg(long, default_value = "")]
-        settle_key: String,
-    },
     /// Dump wallet + chain state as one JSON document (for GUIs/tooling).
     UiSnapshot,
     /// Produce a payment disclosure for a note (proof you were paid).
@@ -266,11 +257,8 @@ struct WalletFile {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut params = ChainParams::by_name(&cli.network)
+    let params = ChainParams::by_name(&cli.network)
         .ok_or_else(|| anyhow!("unknown network {:?} (mainnet or regtest)", cli.network))?;
-    if let Some(path) = &cli.settlement_authority {
-        params.settlement_authority = Some(load_authority_pubkey(path)?);
-    }
     let datadir = cli.datadir;
     let _ = JSON_MODE.set(cli.json || matches!(cli.cmd, Cmd::UiSnapshot));
     match cli.cmd {
@@ -285,8 +273,9 @@ fn main() -> Result<()> {
             println!("{}", encode_address(&kp.address()));
             Ok(())
         }
-        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, mine_interval } => start(
-            &datadir, params, listen, connect, mine, mine_blocks, address, stratum, mine_interval,
+        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, mine_interval } => start(
+            &datadir, params, listen, connect, mine, mine_blocks, address, stratum,
+            stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, mine_interval,
         ),
         Cmd::Mine { blocks, address } => mine_cmd(&datadir, params, blocks, address),
         Cmd::Balance { address } => balance(&datadir, params, address),
@@ -305,9 +294,6 @@ fn main() -> Result<()> {
         Cmd::Zaddress => zaddress(&datadir),
         Cmd::Scan { viewkey } => scan(&datadir, params, viewkey),
         Cmd::Viewkey => viewkey(&datadir),
-        Cmd::Settle { batch, wallet, node, mark_settled, settle_key } => {
-            settle(&datadir, params, &batch, &wallet, node, mark_settled, &settle_key)
-        }
         Cmd::UiSnapshot => ui_snapshot(&datadir, params),
         Cmd::NoteDisclose { note } => note_disclose(&datadir, note),
         Cmd::VerifyDisclosure { disclosure } => verify_disclosure(&datadir, params, &disclosure),
@@ -411,17 +397,65 @@ fn start(
     mine_blocks: Option<u64>,
     address: Option<String>,
     stratum: Option<String>,
+    stratum_pplns: Option<String>,
+    pool_fee: f64,
+    pplns_window: usize,
+    pool_host: Option<String>,
+    aux_http: Option<String>,
     mine_interval: Option<u64>,
 ) -> Result<()> {
-    // Both the local miner and the stratum server need a reward address.
-    let mine_to = if mine || stratum.is_some() {
+    use blockle_node::stratum::{PoolMode, PoolOpts};
+    let has_pool = stratum.is_some() || stratum_pplns.is_some();
+    // The local miner, the pools, and the payout executor all need a
+    // wallet: it is the reward / fee / payout-funding address.
+    let kp = if mine || has_pool { Some(load_or_create_wallet(datadir)?) } else { None };
+    let mine_to = if mine || has_pool {
         Some(match address {
             Some(s) => decode_address(&s).map_err(|e| anyhow!("{e}"))?,
-            None => load_or_create_wallet(datadir)?.address(),
+            None => kp.as_ref().expect("created above").address(),
         })
     } else {
         None
     };
+    let fee_bp = (pool_fee.clamp(0.0, 100.0) * 100.0) as u32;
+    let endpoint_for = |listen_addr: &str| -> String {
+        match (&pool_host, listen_addr.rsplit(':').next()) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            _ => listen_addr.to_string(),
+        }
+    };
+    let mut pools = Vec::new();
+    if let Some(addr) = stratum {
+        pools.push((
+            addr.clone(),
+            PoolOpts {
+                mode: PoolMode::Solo,
+                fee_bp,
+                window: pplns_window,
+                pool_address: mine_to.expect("pool implies wallet"),
+                stats_path: Some(datadir.join("stratum-solo.json")),
+                ledger_path: None,
+                endpoint: format!("stratum+tcp://{}", endpoint_for(&addr)),
+            },
+        ));
+    }
+    let ledger_path = datadir.join("pplns-ledger.jsonl");
+    if let Some(addr) = stratum_pplns {
+        pools.push((
+            addr.clone(),
+            PoolOpts {
+                mode: PoolMode::Pplns,
+                fee_bp,
+                window: pplns_window,
+                pool_address: mine_to.expect("pool implies wallet"),
+                stats_path: Some(datadir.join("stratum-pplns.json")),
+                ledger_path: Some(ledger_path.clone()),
+                endpoint: format!("stratum+tcp://{}", endpoint_for(&addr)),
+            },
+        ));
+    }
+    let run_payouts = pools.iter().any(|(_, o)| o.mode == PoolMode::Pplns);
+
     let chain = storage::load_chain_or_empty(datadir, params.clone())?;
     let mempool = storage::load_mempool(datadir)?;
     match chain.height() {
@@ -431,6 +465,7 @@ fn start(
         ),
         None => println!("[chain] empty chain — waiting to sync from peers"),
     }
+    let self_addr = listen.replace("0.0.0.0", "127.0.0.1").replace("[::]", "127.0.0.1");
     let node = p2p::Node::new(
         p2p::NodeConfig {
             datadir: datadir.to_path_buf(),
@@ -441,12 +476,107 @@ fn start(
             local_mine: mine,
             mine_blocks,
             mine_interval,
-            stratum,
+            pools,
         },
         chain,
         mempool,
     );
+    blockle_node::pool::spawn_explorer_writer(node.clone(), datadir.join("explorer.json"));
+    if let Some(aux_addr) = aux_http {
+        blockle_node::pool::spawn_aux_http(node.clone(), aux_addr);
+    }
+    if run_payouts {
+        let kp = kp.expect("pool implies wallet");
+        let node2 = node.clone();
+        thread::spawn(move || payout_executor(node2, kp, ledger_path, self_addr));
+    }
     node.run()
+}
+
+/// PPLNS payout executor: once a found block matures (and is still in the
+/// main chain), pay its share-weighted entries from the pool wallet in one
+/// transaction, then mark the ledger record settled with the txid.
+fn payout_executor(
+    node: std::sync::Arc<p2p::Node>,
+    kp: Keypair,
+    ledger: PathBuf,
+    self_addr: String,
+) {
+    use blockle_node::stratum::PayoutRecord;
+    loop {
+        thread::sleep(std::time::Duration::from_secs(60));
+        let Ok(raw) = fs::read_to_string(&ledger) else { continue };
+        let mut records: Vec<PayoutRecord> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let (chain, mempool) = node.snapshot();
+        let Some(tip) = chain.height() else { continue };
+        let maturity = chain.params.coinbase_maturity;
+        let mut changed = false;
+        for rec in records.iter_mut().filter(|r| !r.paid) {
+            if tip < rec.height + maturity {
+                continue;
+            }
+            let still_in_chain = chain
+                .blocks
+                .get(rec.height as usize)
+                .map(|b| display_hash(&b.header.hash()) == rec.block_hash)
+                .unwrap_or(false);
+            if !still_in_chain {
+                // Orphaned find: drop the record as unpayable.
+                rec.paid = true;
+                rec.txid = Some("orphaned".into());
+                changed = true;
+                continue;
+            }
+            let outputs: Vec<TxOutput> = rec
+                .entries
+                .iter()
+                .filter_map(|(addr, amount)| {
+                    decode_address(addr).ok().map(|recipient| TxOutput {
+                        recipient,
+                        amount: *amount,
+                    })
+                })
+                .collect();
+            if outputs.is_empty() {
+                rec.paid = true;
+                rec.txid = Some("no-entries".into());
+                changed = true;
+                continue;
+            }
+            match build_funded_tx(&kp, &chain, &mempool, outputs, 10_000, None, None) {
+                Ok(tx) => {
+                    let txid = display_hash(&tx.txid());
+                    match p2p::push_tx_to_node(&self_addr, &chain.params, &tx) {
+                        Ok(()) => {
+                            println!(
+                                "[payout] block {} settled: {} entr{} → txid {txid}",
+                                rec.height,
+                                rec.entries.len(),
+                                if rec.entries.len() == 1 { "y" } else { "ies" },
+                            );
+                            rec.paid = true;
+                            rec.txid = Some(txid);
+                            changed = true;
+                        }
+                        Err(e) => println!("[payout] submit failed (will retry): {e}"),
+                    }
+                }
+                Err(e) => println!("[payout] cannot fund payout yet (will retry): {e}"),
+            }
+        }
+        if changed {
+            let out: String = records
+                .iter()
+                .filter_map(|r| serde_json::to_string(r).ok())
+                .map(|l| l + "\n")
+                .collect();
+            let _ = fs::write(&ledger, out);
+        }
+    }
 }
 
 fn mine_cmd(datadir: &Path, params: ChainParams, blocks: u32, address: Option<String>) -> Result<()> {
@@ -621,7 +751,6 @@ fn build_funded_tx(
         coinbase_data: vec![],
         shielded,
         contract,
-        settlement: None,
     };
     let sighash = tx.sighash();
     let signature = kp.sign(&sighash);
@@ -904,7 +1033,6 @@ fn build_spend_note_tx(
             transfers: vec![],
         }),
         contract: None,
-        settlement: None,
     };
     let sighash = zk::bytes_to_felts_reduced(&tx.sighash());
     let nullifier = zk::bytes_to_felts(&nullifier_bytes).map_err(|e| anyhow!("{e}"))?;
@@ -1176,7 +1304,6 @@ fn zsend(
             }],
         }),
         contract: None,
-        settlement: None,
     };
     let sighash = zk::bytes_to_felts_reduced(&tx.sighash());
     let proof = zk::prove_transfer(
@@ -1439,9 +1566,7 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
             if received == 0 && spent == 0 {
                 return None;
             }
-            let kind = if tx.settlement.is_some() {
-                "settlement"
-            } else if tx.is_coinbase() {
+            let kind = if tx.is_coinbase() {
                 "coinbase"
             } else if tx.shielded.is_some() {
                 "shielded"
@@ -1508,136 +1633,3 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
     Ok(())
 }
 
-// ---------- Proof-of-Blocks settlement executor ----------
-
-/// Load the settlement-authority PUBLIC key from a wallet.json (public_hex)
-/// or a file containing raw hex.
-fn load_authority_pubkey(path: &Path) -> Result<Vec<u8>> {
-    let raw = fs::read_to_string(path)
-        .map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?;
-    if let Ok(wf) = serde_json::from_str::<WalletFile>(&raw) {
-        return Ok(hex::decode(wf.public_hex)?);
-    }
-    Ok(hex::decode(raw.trim())?)
-}
-
-fn settle(
-    datadir: &Path,
-    params: ChainParams,
-    batch: &str,
-    wallet_path: &Path,
-    node: Option<String>,
-    mark_settled: Option<String>,
-    settle_key: &str,
-) -> Result<()> {
-    // Authority wallet (signing key).
-    let raw = fs::read_to_string(wallet_path)?;
-    let wf: WalletFile = serde_json::from_str(&raw)?;
-    let authority = Keypair::from_bytes(&hex::decode(&wf.secret_hex)?, &hex::decode(&wf.public_hex)?)
-        .map_err(|_| anyhow!("corrupt authority wallet"))?;
-    match &params.settlement_authority {
-        Some(pk) if *pk == authority.public_bytes() => {}
-        Some(_) => bail!("wallet does not match --settlement-authority"),
-        None => bail!("pass --settlement-authority so the chain accepts these mints"),
-    }
-
-    // Batch: URL or file.
-    let raw = if batch.starts_with("http://") {
-        String::from_utf8(httpc::get(batch)?)?
-    } else {
-        fs::read_to_string(batch)?
-    };
-    let parsed: serde_json::Value = serde_json::from_str(&raw)?;
-    let epochs = parsed
-        .get("epochs")
-        .and_then(|e| e.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if epochs.is_empty() {
-        println!("nothing to settle — batch has no pending epochs");
-        return Ok(());
-    }
-
-    let chain = storage::load_chain(datadir, params)?;
-    let mut mempool = storage::load_mempool(datadir)?;
-    let mut settled: Vec<(u64, String)> = Vec::new();
-
-    for epoch_val in epochs {
-        let epoch = epoch_val.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0);
-        if chain.settled_epochs.contains(&epoch) {
-            println!("epoch {epoch}: already minted on-chain, skipping");
-            continue;
-        }
-        let mut entries = Vec::new();
-        for e in epoch_val.get("entries").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
-            let addr_str = e.get("address").and_then(|a| a.as_str()).unwrap_or("");
-            let amount = e.get("amount_base_units").and_then(|a| a.as_u64()).unwrap_or(0);
-            match decode_address(addr_str) {
-                Ok(address) if amount > 0 => {
-                    entries.push(blockle_core::SettlementEntry { address, amount })
-                }
-                _ => println!(
-                    "epoch {epoch}: skipping entry with unusable address {addr_str:?} ({amount} base units withheld)"
-                ),
-            }
-        }
-        if entries.is_empty() {
-            println!("epoch {epoch}: no mintable entries, skipping");
-            continue;
-        }
-        let mut mint = blockle_core::SettlementMint { epoch, entries, signature: vec![] };
-        mint.signature = authority.sign(&mint.signing_message());
-        let tx = Transaction {
-            version: 1,
-            inputs: vec![],
-            outputs: mint
-                .entries
-                .iter()
-                .map(|e| TxOutput { recipient: e.address, amount: e.amount })
-                .collect(),
-            coinbase_data: vec![],
-            shielded: None,
-            contract: None,
-            settlement: Some(mint),
-        };
-        chain
-            .check_transaction(&tx, &chain.utxos, chain.blocks.len() as u64)
-            .map_err(|e| anyhow!("epoch {epoch}: settlement tx failed validation: {e}"))?;
-        let txid = tx.txid();
-        let total: u64 = tx.outputs.iter().map(|o| o.amount).sum();
-        match &node {
-            Some(addr) => p2p::push_tx_to_node(addr, &chain.params, &tx)?,
-            None => {
-                mempool.push(tx);
-                storage::save_mempool(datadir, &mempool)?;
-            }
-        }
-        println!(
-            "epoch {epoch}: minted {} {} → txid {}",
-            format_amount(total),
-            chain.params.ticker,
-            display_hash(&txid)
-        );
-        settled.push((epoch, display_hash(&txid)));
-    }
-
-    if let Some(biz) = mark_settled {
-        for (epoch, txid) in &settled {
-            let url = format!("{}/api/pob/mark-settled", biz.trim_end_matches('/'));
-            let body = serde_json::json!({"epoch": epoch, "txid": txid, "key": settle_key});
-            match httpc::post_json(&url, body.to_string().as_bytes()) {
-                Ok(resp) => {
-                    let v: serde_json::Value = serde_json::from_slice(&resp).unwrap_or_default();
-                    println!("epoch {epoch}: marked settled on blockle.biz ({v})");
-                }
-                Err(e) => println!("epoch {epoch}: mark-settled failed: {e}"),
-            }
-        }
-    }
-    if settled.is_empty() {
-        println!("no new settlements executed");
-    } else {
-        println!("{} epoch(s) settled — mine a block to confirm the mint(s)", settled.len());
-    }
-    Ok(())
-}

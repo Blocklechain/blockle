@@ -1,4 +1,4 @@
-//! Minimal HTTP client for the settlement executor (batch fetch + biz
+//! Minimal HTTP client (kept for node tooling: fetches + posts
 //! mark-settled). Plain HTTP, std sockets.
 
 use std::io::{BufRead, BufReader, Read, Write};

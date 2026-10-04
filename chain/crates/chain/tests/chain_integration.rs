@@ -52,7 +52,6 @@ fn spend_premine_and_reject_bad_blocks() {
         coinbase_data: vec![],
         shielded: None,
             contract: None,
-            settlement: None,
     };
     let sighash = tx.sighash();
     tx.inputs[0].signature = miner.sign(&sighash);
@@ -124,7 +123,6 @@ fn coinbase_maturity_enforced() {
         coinbase_data: vec![],
         shielded: None,
             contract: None,
-            settlement: None,
     };
     let sighash = tx.sighash();
     tx.inputs[0].signature = miner.sign(&sighash);

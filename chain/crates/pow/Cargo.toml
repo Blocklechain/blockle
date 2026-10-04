@@ -7,5 +7,12 @@ description = "Equihash proof-of-work and difficulty adjustment for the Blockle 
 
 [dependencies]
 blake2b_simd = { workspace = true }
+scrypt = { workspace = true }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+blake2 = { workspace = true }
+tiny-keccak = { workspace = true }
+eaglesong = { workspace = true }
+rs-x11-hash = { workspace = true }
 primitive-types = { workspace = true }
 thiserror = { workspace = true }

@@ -1,32 +1,44 @@
-//! Stratum server for Equihash miners (ASICs / mining software).
+//! Stratum pool server for Equihash miners (ASICs / mining software).
 //!
 //! Speaks the Zcash-flavor stratum dialect over line-delimited JSON-RPC:
 //! `mining.subscribe` → `[session_id, nonce1]`, `mining.authorize`,
 //! server-pushed `mining.set_target` + `mining.notify`, and `mining.submit`
 //! with `[worker, job_id, ntime, nonce2, solution]`.
 //!
+//! Two pool modes, both trust-minimized:
+//!
+//! - **Solo** — miners authorize with their own BLOCK address as the
+//!   username; every job's coinbase pays THAT miner directly (minus the
+//!   pool fee), so a found block needs no payout step at all.
+//! - **PPLNS** — one shared job paying the pool wallet; accepted shares are
+//!   weighted by share difficulty in a rolling window, and every found
+//!   block appends a payout record to the ledger that the node's payout
+//!   executor settles on-chain once the coinbase matures.
+//!
 //! Conventions: the 32-byte header nonce is `nonce1 (16 bytes, ours) ||
 //! nonce2 (16 bytes, miner's)`; `version`/`ntime`/`nbits` are hex of the
 //! little-endian header bytes; `prevhash`/`merkleroot`/`reserved` are hex of
 //! the header bytes in internal order; the solution may be sent with or
-//! without its compactsize length prefix. This is a **solo** endpoint: a
-//! submit is accepted only if it is a fully valid block, which is then
-//! connected and gossiped like any other. (Share-difficulty accounting for
-//! pools is a later step; specific miner firmwares may also need byte-order
-//! flips, which is a config matter once tested against real hardware.)
+//! without its compactsize length prefix. Specific miner firmwares may
+//! need byte-order flips, which is a config matter once tested against
+//! real hardware.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use blockle_chain::U256;
+use blockle_core::keys::{decode_address, encode_address, Address};
 use blockle_core::Block;
 use blockle_pow::difficulty::compact_to_target;
 use blockle_pow::equihash;
@@ -39,10 +51,69 @@ use crate::p2p::Node;
 const TARGET_SHARE_SECS: u64 = 10;
 const RETARGET_SECS: u64 = 30;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PoolMode {
+    Solo,
+    Pplns,
+}
+
+impl PoolMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PoolMode::Solo => "solo",
+            PoolMode::Pplns => "pplns",
+        }
+    }
+}
+
+/// Pool configuration for one stratum listener.
+#[derive(Clone)]
+pub struct PoolOpts {
+    pub mode: PoolMode,
+    /// Pool fee in basis points (100 = 1%).
+    pub fee_bp: u32,
+    /// PPLNS share window (number of shares).
+    pub window: usize,
+    /// Pool wallet address: receives the fee (solo) or the whole coinbase
+    /// pending share-weighted payout (PPLNS).
+    pub pool_address: Address,
+    /// Where to write live pool statistics JSON (for the website / MPS).
+    pub stats_path: Option<PathBuf>,
+    /// PPLNS payout ledger (JSONL; consumed by the payout executor).
+    pub ledger_path: Option<PathBuf>,
+    /// Public endpoint label shown in stats (e.g. "blockle.org:3333").
+    pub endpoint: String,
+}
+
+/// One pending or settled PPLNS payout record.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PayoutRecord {
+    pub height: u64,
+    pub block_hash: String,
+    pub time: u64,
+    /// Total coinbase value of the found block (base units).
+    pub reward: u64,
+    pub fee_bp: u32,
+    /// (address, base units) owed per miner after the fee.
+    pub entries: Vec<(String, u64)>,
+    pub paid: bool,
+    pub txid: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct FoundBlock {
+    height: u64,
+    hash: String,
+    time: u64,
+    finder: String,
+}
+
 struct Client {
     sender: Sender<String>,
     nonce1: [u8; 16],
     subscribed: bool,
+    address: Option<Address>,
+    worker: String,
     share_target: U256,
     window_start: Instant,
     window_shares: u32,
@@ -52,20 +123,38 @@ struct Client {
 
 struct StratumState {
     node: Arc<Node>,
+    opts: PoolOpts,
     clients: Mutex<HashMap<u64, Client>>,
     jobs: Mutex<HashMap<String, Block>>,
     current_job: Mutex<Option<String>>,
+    /// PPLNS rolling share window: (address, difficulty weight).
+    shares: Mutex<VecDeque<(Address, f64)>>,
+    found: Mutex<Vec<FoundBlock>>,
     next_client: AtomicU64,
     next_job: AtomicU64,
 }
 
-/// Start the stratum server on `addr` (spawns threads; returns immediately).
-pub fn serve(node: Arc<Node>, addr: String) {
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn u256_f64(v: U256) -> f64 {
+    v.0[0] as f64
+        + v.0[1] as f64 * 2f64.powi(64)
+        + v.0[2] as f64 * 2f64.powi(128)
+        + v.0[3] as f64 * 2f64.powi(192)
+}
+
+/// Start the stratum pool on `addr` (spawns threads; returns immediately).
+pub fn serve(node: Arc<Node>, addr: String, opts: PoolOpts) {
     let state = Arc::new(StratumState {
         node,
+        opts,
         clients: Mutex::new(HashMap::new()),
         jobs: Mutex::new(HashMap::new()),
         current_job: Mutex::new(None),
+        shares: Mutex::new(VecDeque::new()),
+        found: Mutex::new(Vec::new()),
         next_client: AtomicU64::new(1),
         next_job: AtomicU64::new(1),
     });
@@ -75,7 +164,10 @@ pub fn serve(node: Arc<Node>, addr: String) {
         thread::spawn(move || {
             let listener = match TcpListener::bind(&addr) {
                 Ok(l) => {
-                    println!("[stratum] listening on {addr}");
+                    println!(
+                        "[stratum:{}] listening on {addr}",
+                        state.opts.mode.as_str()
+                    );
                     l
                 }
                 Err(e) => {
@@ -90,11 +182,29 @@ pub fn serve(node: Arc<Node>, addr: String) {
         });
     }
 
+    {
+        let state = state.clone();
+        thread::spawn(move || stats_loop(state));
+    }
+
     thread::spawn(move || job_loop(state));
 }
 
-/// Rebuild the template when the tip changes (or periodically for fresh
-/// timestamps/mempool) and notify miners.
+/// Build this pool's coinbase recipients for a given miner.
+fn recipients(state: &StratumState, miner: Option<Address>) -> Vec<(Address, u32)> {
+    let fee = state.opts.fee_bp.min(10_000);
+    match (state.opts.mode, miner) {
+        (PoolMode::Solo, Some(addr)) if fee > 0 && addr != state.opts.pool_address => {
+            vec![(addr, 10_000 - fee), (state.opts.pool_address, fee)]
+        }
+        (PoolMode::Solo, Some(addr)) => vec![(addr, 10_000)],
+        _ => vec![(state.opts.pool_address, 10_000)],
+    }
+}
+
+/// Rebuild templates when the tip changes (or periodically for fresh
+/// timestamps/mempool) and notify miners. Solo mode builds one job per
+/// authorized miner so each coinbase pays its own finder.
 fn job_loop(state: Arc<StratumState>) {
     let mut last_gen = u64::MAX;
     let mut last_refresh = Instant::now();
@@ -102,39 +212,86 @@ fn job_loop(state: Arc<StratumState>) {
         let gen = state.node.tip_generation();
         let tip_changed = gen != last_gen;
         if tip_changed || last_refresh.elapsed() > Duration::from_secs(30) {
-            match state.node.block_template() {
-                Ok(block) => {
-                    last_gen = gen;
-                    last_refresh = Instant::now();
-                    let job_id =
-                        format!("{:x}", state.next_job.fetch_add(1, Ordering::SeqCst));
-                    state.jobs.lock().unwrap().insert(job_id.clone(), block.clone());
-                    *state.current_job.lock().unwrap() = Some(job_id.clone());
-                    // Keep only recent jobs.
-                    let mut jobs = state.jobs.lock().unwrap();
-                    if jobs.len() > 8 {
-                        let keep: Vec<String> = {
-                            let mut ids: Vec<u64> = jobs
-                                .keys()
-                                .filter_map(|k| u64::from_str_radix(k, 16).ok())
-                                .collect();
-                            ids.sort_unstable();
-                            ids.iter().rev().take(8).map(|i| format!("{i:x}")).collect()
-                        };
-                        jobs.retain(|k, _| keep.contains(k));
+            last_gen = gen;
+            last_refresh = Instant::now();
+            match state.opts.mode {
+                PoolMode::Pplns => {
+                    if let Ok(block) = state.node.block_template_split(&recipients(&state, None))
+                    {
+                        let job_id =
+                            format!("{:x}", state.next_job.fetch_add(1, Ordering::SeqCst));
+                        state.jobs.lock().unwrap().insert(job_id.clone(), block.clone());
+                        *state.current_job.lock().unwrap() = Some(job_id.clone());
+                        prune_jobs(&state);
+                        let clients = state.clients.lock().unwrap();
+                        for client in clients.values().filter(|c| c.subscribed) {
+                            send_job(client, &job_id, &block, tip_changed);
+                        }
                     }
-                    drop(jobs);
-                    broadcast_job(&state, &job_id, &block, tip_changed);
                 }
-                Err(e) => {
-                    if tip_changed {
-                        println!("[stratum] no template yet: {e}");
+                PoolMode::Solo => {
+                    let targets: Vec<(u64, Address)> = {
+                        let clients = state.clients.lock().unwrap();
+                        clients
+                            .iter()
+                            .filter(|(_, c)| c.subscribed && c.address.is_some())
+                            .map(|(id, c)| (*id, c.address.expect("filtered")))
+                            .collect()
+                    };
+                    for (client_id, addr) in targets {
+                        push_solo_job(&state, client_id, addr, tip_changed);
                     }
+                    prune_jobs(&state);
                 }
             }
         }
         thread::sleep(Duration::from_millis(500));
     }
+}
+
+fn push_solo_job(state: &Arc<StratumState>, client_id: u64, addr: Address, clean: bool) {
+    let Ok(block) = state.node.block_template_split(&recipients(state, Some(addr))) else {
+        return;
+    };
+    let job_id = format!(
+        "{:x}-{client_id:x}",
+        state.next_job.fetch_add(1, Ordering::SeqCst)
+    );
+    state.jobs.lock().unwrap().insert(job_id.clone(), block.clone());
+    let clients = state.clients.lock().unwrap();
+    if let Some(client) = clients.get(&client_id) {
+        send_job(client, &job_id, &block, clean);
+    }
+}
+
+fn prune_jobs(state: &StratumState) {
+    let mut jobs = state.jobs.lock().unwrap();
+    if jobs.len() > 64 {
+        let mut ids: Vec<(u64, String)> = jobs
+            .keys()
+            .filter_map(|k| {
+                let head = k.split('-').next().unwrap_or(k);
+                u64::from_str_radix(head, 16).ok().map(|n| (n, k.clone()))
+            })
+            .collect();
+        ids.sort_unstable();
+        let cutoff = ids.len().saturating_sub(64);
+        for (_, k) in ids.into_iter().take(cutoff) {
+            jobs.remove(&k);
+        }
+    }
+}
+
+fn send_job(client: &Client, job_id: &str, block: &Block, clean: bool) {
+    let share = client.share_target.max(block_target(block.header.bits));
+    push(
+        client,
+        json!({"id": null, "method": "mining.set_target", "params": [target_hex_u256(share)]}),
+    );
+    push(
+        client,
+        json!({"id": null, "method": "mining.notify", "params": notify_params(job_id, block, clean)}),
+    );
 }
 
 fn notify_params(job_id: &str, block: &Block, clean: bool) -> Value {
@@ -165,22 +322,6 @@ fn push(client: &Client, msg: Value) {
     let _ = client.sender.send(msg.to_string());
 }
 
-fn broadcast_job(state: &StratumState, job_id: &str, block: &Block, clean: bool) {
-    let clients = state.clients.lock().unwrap();
-    for client in clients.values().filter(|c| c.subscribed) {
-        // Shares may be easier than blocks, but never harder.
-        let share = client.share_target.max(block_target(block.header.bits));
-        push(
-            client,
-            json!({"id": null, "method": "mining.set_target", "params": [target_hex_u256(share)]}),
-        );
-        push(
-            client,
-            json!({"id": null, "method": "mining.notify", "params": notify_params(job_id, block, clean)}),
-        );
-    }
-}
-
 fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
     let peer = stream
         .peer_addr()
@@ -201,7 +342,9 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
             sender: tx,
             nonce1,
             subscribed: false,
-            share_target: state.node.params().pow_limit, // easiest; vardiff tightens
+            address: None,
+            worker: String::new(),
+            share_target: state.node.params().pow_limit,
             window_start: Instant::now(),
             window_shares: 0,
             accepted: 0,
@@ -260,28 +403,43 @@ fn handle_request(
                 client.subscribed = true;
                 client.nonce1
             };
-            // Send the current job right after the subscribe response.
-            if let Some(job_id) = state.current_job.lock().unwrap().clone() {
-                if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
-                    let clients = state.clients.lock().unwrap();
-                    if let Some(client) = clients.get(&client_id) {
-                        let share = client.share_target.max(block_target(block.header.bits));
-                        push(
-                            client,
-                            json!({"id": null, "method": "mining.set_target",
-                                   "params": [target_hex_u256(share)]}),
-                        );
-                        push(
-                            client,
-                            json!({"id": null, "method": "mining.notify",
-                                   "params": notify_params(&job_id, &block, true)}),
-                        );
+            // PPLNS: send the shared job right away. Solo: the job comes
+            // after authorize (we need the miner's address first).
+            if state.opts.mode == PoolMode::Pplns {
+                if let Some(job_id) = state.current_job.lock().unwrap().clone() {
+                    if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
+                        let clients = state.clients.lock().unwrap();
+                        if let Some(client) = clients.get(&client_id) {
+                            send_job(client, &job_id, &block, true);
+                        }
                     }
                 }
             }
             Ok(json!(["blockle-session", hex::encode(nonce1)]))
         }
-        "mining.authorize" => Ok(json!(true)),
+        "mining.authorize" => {
+            let worker = params
+                .get(0)
+                .and_then(|v| v.as_str())
+                .ok_or("authorize needs a username")?
+                .to_string();
+            // The username is the miner's BLOCK address, optionally with a
+            // ".rigname" suffix.
+            let addr_part = worker.split('.').next().unwrap_or(&worker);
+            let address = decode_address(addr_part).map_err(|_| {
+                "authorize with your BLOCK address (block1…) as the username".to_string()
+            })?;
+            {
+                let mut clients = state.clients.lock().unwrap();
+                let client = clients.get_mut(&client_id).ok_or("gone")?;
+                client.address = Some(address);
+                client.worker = worker;
+            }
+            if state.opts.mode == PoolMode::Solo {
+                push_solo_job(state, client_id, address, true);
+            }
+            Ok(json!(true))
+        }
         "mining.extranonce.subscribe" => Ok(json!(true)),
         "mining.submit" => {
             let p = params.as_array().ok_or("bad params")?;
@@ -291,7 +449,7 @@ fn handle_request(
             let job_id = p[1].as_str().ok_or("bad job id")?;
             let ntime: [u8; 4] = decode_fixed(p[2].as_str().ok_or("bad ntime")?)?;
             let nonce2: [u8; 16] = decode_fixed(p[3].as_str().ok_or("bad nonce2")?)?;
-            let solution = hex::decode(p[4].as_str().ok_or("bad solution")?)
+            let solution = hex::decode(p[4].as_str().ok_or("bad solution hex")?)
                 .map_err(|_| "bad solution hex".to_string())?;
 
             let mut block = state
@@ -301,13 +459,14 @@ fn handle_request(
                 .get(job_id)
                 .cloned()
                 .ok_or("unknown job")?;
-            let nonce1 = state
-                .clients
-                .lock()
-                .unwrap()
-                .get(&client_id)
-                .map(|c| c.nonce1)
-                .ok_or("gone")?;
+            let (nonce1, miner_addr, worker) = {
+                let clients = state.clients.lock().unwrap();
+                let c = clients.get(&client_id).ok_or("gone")?;
+                (c.nonce1, c.address, c.worker.clone())
+            };
+            if miner_addr.is_none() {
+                return Err("authorize before submitting".into());
+            }
 
             let expected = state.node.params().equihash.solution_bytes();
             let solution = strip_compact_size(solution, expected)?;
@@ -340,20 +499,162 @@ fn handle_request(
             let (share_target, bt) = {
                 let clients = state.clients.lock().unwrap();
                 let c = clients.get(&client_id).ok_or("gone")?;
-                (c.share_target.max(block_target(block.header.bits)), block_target(block.header.bits))
+                (
+                    c.share_target.max(block_target(block.header.bits)),
+                    block_target(block.header.bits),
+                )
             };
             if hash_val > share_target {
                 bump_rejected(state, client_id);
                 return Err("low difficulty share".into());
             }
 
+            // PPLNS: weight the share by its difficulty in the window.
+            if state.opts.mode == PoolMode::Pplns {
+                let weight =
+                    u256_f64(state.node.params().pow_limit) / u256_f64(share_target).max(1.0);
+                let mut shares = state.shares.lock().unwrap();
+                shares.push_back((miner_addr.expect("checked"), weight));
+                while shares.len() > state.opts.window {
+                    shares.pop_front();
+                }
+            }
+
             record_share_and_retarget(state, client_id, bt);
-            if hash_val <= bt && state.node.submit_block(block, None) {
-                println!("[stratum] miner {client_id} found a block!");
+            if hash_val <= bt {
+                let height = coinbase_height(&block).unwrap_or_default();
+                let hash_hex = {
+                    let mut h = block.header.hash();
+                    h.reverse();
+                    hex::encode(h)
+                };
+                let reward: u64 = block.transactions[0]
+                    .outputs
+                    .iter()
+                    .map(|o| o.amount)
+                    .sum();
+                if state.node.submit_block(block, None) {
+                    println!(
+                        "[stratum:{}] miner {client_id} ({worker}) found block {height}!",
+                        state.opts.mode.as_str()
+                    );
+                    state.found.lock().unwrap().push(FoundBlock {
+                        height,
+                        hash: hash_hex.clone(),
+                        time: now_unix(),
+                        finder: worker.clone(),
+                    });
+                    if state.opts.mode == PoolMode::Pplns {
+                        append_payout_record(state, height, &hash_hex, reward);
+                    }
+                }
             }
             Ok(json!(true))
         }
         other => Err(format!("unknown method {other}")),
+    }
+}
+
+fn coinbase_height(block: &Block) -> Option<u64> {
+    let d = &block.transactions.first()?.coinbase_data;
+    Some(u64::from_le_bytes(d.get(..8)?.try_into().ok()?))
+}
+
+/// Snapshot the PPLNS window into a payout record and append it to the
+/// ledger file. Settlement happens later, after coinbase maturity.
+fn append_payout_record(state: &Arc<StratumState>, height: u64, hash: &str, reward: u64) {
+    let Some(path) = &state.opts.ledger_path else { return };
+    let shares = state.shares.lock().unwrap();
+    let mut by_addr: HashMap<Address, f64> = HashMap::new();
+    for (addr, w) in shares.iter() {
+        *by_addr.entry(*addr).or_default() += w;
+    }
+    let total: f64 = by_addr.values().sum();
+    if total <= 0.0 {
+        return;
+    }
+    let payable = reward as u128 * (10_000 - state.opts.fee_bp.min(10_000)) as u128 / 10_000;
+    let mut entries: Vec<(String, u64)> = by_addr
+        .into_iter()
+        .map(|(addr, w)| {
+            let amount = (payable as f64 * (w / total)) as u64;
+            (encode_address(&addr), amount)
+        })
+        .filter(|(_, amount)| *amount > 0)
+        .collect();
+    entries.sort();
+    let record = PayoutRecord {
+        height,
+        block_hash: hash.to_string(),
+        time: now_unix(),
+        reward,
+        fee_bp: state.opts.fee_bp,
+        entries,
+        paid: false,
+        txid: None,
+    };
+    if let Ok(line) = serde_json::to_string(&record) {
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut f| writeln!(f, "{line}"));
+    }
+}
+
+/// Periodically write live pool statistics for the website / external
+/// aggregators (MiningPoolStats-style JSON).
+fn stats_loop(state: Arc<StratumState>) {
+    loop {
+        thread::sleep(Duration::from_secs(15));
+        let Some(path) = &state.opts.stats_path else { continue };
+        let (miners, workers, accepted, rejected, hashrate) = {
+            let clients = state.clients.lock().unwrap();
+            let miners = clients.len();
+            let workers = clients.values().filter(|c| c.address.is_some()).count();
+            let accepted: u64 = clients.values().map(|c| c.accepted).sum();
+            let rejected: u64 = clients.values().map(|c| c.rejected).sum();
+            let pow_limit = u256_f64(state.node.params().pow_limit);
+            let hashrate: f64 = clients
+                .values()
+                .map(|c| {
+                    let diff = pow_limit / u256_f64(c.share_target).max(1.0);
+                    let secs = c.window_start.elapsed().as_secs_f64().max(1.0);
+                    diff * c.window_shares as f64 / secs
+                })
+                .sum();
+            (miners, workers, accepted, rejected, hashrate)
+        };
+        let found = state.found.lock().unwrap();
+        let last = found.last().cloned();
+        let blocks: Vec<&FoundBlock> = found.iter().rev().take(25).collect();
+        let stats = json!({
+            "pool": "blockle",
+            "coin": "BLOCK",
+            "algorithm": "equihash",
+            "mode": state.opts.mode.as_str(),
+            "endpoint": state.opts.endpoint,
+            "fee_percent": state.opts.fee_bp as f64 / 100.0,
+            "miners": miners,
+            "workers": workers,
+            "hashrate_sols_est": hashrate,
+            "shares_accepted": accepted,
+            "shares_rejected": rejected,
+            "pplns_window_shares": state.shares.lock().unwrap().len(),
+            "blocks_found": found.len(),
+            "last_block": last,
+            "recent_blocks": blocks,
+            "pool_address": encode_address(&state.opts.pool_address),
+            "updated": now_unix(),
+        });
+        drop(found);
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(path, stats.to_string());
     }
 }
 
@@ -416,5 +717,5 @@ fn strip_compact_size(solution: Vec<u8>, expected: usize) -> Result<Vec<u8>, Str
     {
         return Ok(solution[3..].to_vec());
     }
-    Err(format!("solution must be {expected} bytes (got {})", solution.len()))
+    Err("bad solution length".into())
 }
