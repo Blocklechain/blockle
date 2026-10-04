@@ -20,6 +20,9 @@ jobs:
           - os: macos-latest
             gui-artifact: BlockleWallet-macos-arm64
             bin-artifact: blockle-binaries-macos-arm64
+          - os: macos-13
+            gui-artifact: BlockleWallet-macos-x86_64
+            bin-artifact: blockle-binaries-macos-x86_64
           - os: windows-latest
             gui-artifact: BlockleWallet-windows-x86_64
             bin-artifact: blockle-binaries-windows-x86_64

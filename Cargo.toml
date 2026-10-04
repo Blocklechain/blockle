@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Blockle AutoPool — the universal deployment system for PoW mining pools: point it at a chain, get a pool"
+repository = "https://github.com/blocklechain/blockle"
+homepage = "https://blockle.org"
+readme = "README.md"
+keywords = ["mining", "pool", "stratum", "proof-of-work", "blockchain"]
+categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
+exclude = ["chain/", "python/", ".github/", "tests/"]
 
 [[bin]]
 name = "blockle"
