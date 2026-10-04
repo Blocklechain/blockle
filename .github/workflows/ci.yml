@@ -38,6 +38,14 @@ jobs:
       - name: Build pool workspace
         run: cargo build --release
 
+      - name: POSIX header shim for rs-x11-hash (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p .win-posix-shim
+          touch .win-posix-shim/unistd.h
+          echo "CFLAGS=-I$(cygpath -w "$PWD/.win-posix-shim")" >> $GITHUB_ENV
+
       - name: Build BLOCK chain workspace
         run: cargo build --release --manifest-path chain/Cargo.toml
 
