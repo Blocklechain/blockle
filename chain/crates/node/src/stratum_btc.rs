@@ -537,9 +537,56 @@ fn handle_request(
                 if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
                     c.rejected += 1;
                 }
+                // One reject tells us the firmware's dialect: rebuild the
+                // header under common quirk variants and report which one
+                // (if any) would have met the share target.
+                let variants: [(&str, [u8; 4], u32, u32); 5] = [
+                    ("nonce-be", en2, ntime, nonce.swap_bytes()),
+                    ("ntime-be", en2, ntime.swap_bytes(), nonce),
+                    ("both-be", en2, ntime.swap_bytes(), nonce.swap_bytes()),
+                    ("en2-rev", {
+                        let mut r = en2;
+                        r.reverse();
+                        r
+                    }, ntime, nonce),
+                    ("en2rev+nonce-be", {
+                        let mut r = en2;
+                        r.reverse();
+                        r
+                    }, ntime, nonce.swap_bytes()),
+                ];
+                let mut hits = Vec::new();
+                for (name, e2, nt, nn) in variants {
+                    let mut cb = Vec::with_capacity(coinbase.len());
+                    let jobs = state.jobs.lock().unwrap();
+                    if let Some((_, job)) = jobs.get(job_id) {
+                        cb.extend_from_slice(&job.coinb1);
+                        cb.extend_from_slice(&en1);
+                        cb.extend_from_slice(&e2);
+                        cb.extend_from_slice(&job.coinb2);
+                        let mut h = [0u8; 80];
+                        let version = match version_bits {
+                            Some(bits) => (job.version & !vmask) | (bits & vmask),
+                            None => job.version,
+                        };
+                        h[0..4].copy_from_slice(&version.to_le_bytes());
+                        h[36..68].copy_from_slice(&sha256d(&cb));
+                        h[68..72].copy_from_slice(&nt.to_le_bytes());
+                        h[72..76].copy_from_slice(&job.nbits.to_le_bytes());
+                        h[76..80].copy_from_slice(&nn.to_le_bytes());
+                        if let Some(powh) = parent::pow_hash(state.algo, &h) {
+                            if U256::from_little_endian(&powh) <= share_target {
+                                hits.push(name);
+                            }
+                        }
+                    }
+                }
                 println!(
-                    "[stratum-direct:{}] miner {client_id} share REJECTED (low diff) job={job_id}",
-                    state.algo
+                    "[stratum-direct:{}] miner {client_id} REJECTED job={job_id} nparams={} vbits={} variant_hits={:?}",
+                    state.algo,
+                    p.len(),
+                    version_bits.map(|v| format!("{v:08x}")).unwrap_or_else(|| "-".into()),
+                    hits,
                 );
                 return Err("low difficulty share".into());
             }
