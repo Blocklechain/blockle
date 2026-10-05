@@ -532,8 +532,18 @@ impl Node {
             return;
         }
         let params = &self.config.params;
-        // Standalone PoW check per header before spending bandwidth on bodies.
+        // Standalone PoW check per header before spending bandwidth on
+        // bodies — but ONLY for native-solution headers. Merged-mined
+        // (AuxPoW) blocks carry an empty solution and zero nonce; their
+        // proof is in the block body, so they can only be verified once
+        // the body arrives (connect_block does the full AuxPoW check).
+        // Checking the native solution here would reject every merged
+        // block's header and stall the sync.
         for h in &headers {
+            let is_merged = h.solution.is_empty() && h.nonce == [0u8; 32];
+            if is_merged {
+                continue;
+            }
             let Ok(indices) = equihash::unpack_solution(&params.equihash, &h.solution) else {
                 return;
             };

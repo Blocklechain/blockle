@@ -215,3 +215,20 @@ fn lanes_retarget_independently() {
         "untouched lane stays at its floor"
     );
 }
+
+#[test]
+fn merged_block_header_has_no_native_solution() {
+    // Headers-first sync skips the native PoW check for these; this pins
+    // the invariant that lets that skip be safe (empty solution + zero
+    // nonce uniquely identify a merged-mined block's header).
+    let (mut chain, addr) = new_chain();
+    let mut block = aux_candidate(&chain, addr, "sha256d");
+    let cb = parent_coinbase(block.header.hash());
+    let header = grind_parent80(sha256d(&cb), block.header.bits, |h| sha256d(h));
+    attach(&mut block, "sha256d", header, cb);
+    assert!(block.header.solution.is_empty());
+    assert_eq!(block.header.nonce, [0u8; 32]);
+    chain.connect_block(block).expect("merged block accepted");
+    let h = &chain.blocks.last().unwrap().header;
+    assert!(h.solution.is_empty() && h.nonce == [0u8; 32]);
+}
