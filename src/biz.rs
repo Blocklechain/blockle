@@ -759,7 +759,7 @@ fn pool_json(p: &PoolRecord) -> Value {
         "name": p.name,
         "chain": p.chain,
         "algorithm": p.algorithm,
-        "stratum": p.stratum,
+        "stratum": public_stratum(&p.stratum),
         "website": p.website,
         "location": p.location,
         "version": p.version,
@@ -1237,7 +1237,7 @@ fn page_pools(reg: &Registry, query: &str) -> String {
                 fee = p.fee_percent,
                 blocks = p.blocks.len(),
                 status = status_dot(p),
-                stratum = p.stratum,
+                stratum = public_stratum(&p.stratum),
             )
         })
         .collect();
@@ -1354,7 +1354,7 @@ fn page_pool(reg: &Registry, p: &PoolRecord) -> String {
         algo = p.algorithm,
         fee = p.fee_percent,
         version = if p.version.is_empty() { "?" } else { &p.version },
-        stratum = p.stratum,
+        stratum = public_stratum(&p.stratum),
         hb = ago(p.last_heartbeat),
         probe = if p.stratum_reachable { "reachable ✓" } else { "unreachable" },
         probe_ago = ago(p.last_probe),
@@ -1489,8 +1489,29 @@ fn stat_algo(st: &Value) -> String {
     norm_stat(st, &["algorithm"]).and_then(|v| v.as_str()).unwrap_or("equihash").to_string()
 }
 
+/// Replace a bind/unroutable host (0.0.0.0, [::], 127.0.0.1) in a stratum
+/// address with the public site domain, preserving the port. Pools bind
+/// to 0.0.0.0 but must advertise a reachable host.
+fn public_stratum(addr: &str) -> String {
+    let body = addr.strip_prefix("stratum+tcp://").unwrap_or(addr);
+    let port = body.rsplit(':').next().unwrap_or("");
+    let host = body.rsplitn(2, ':').nth(1).unwrap_or(body);
+    let needs = host == "0.0.0.0" || host == "[::]" || host == "127.0.0.1" || host == "localhost";
+    let out = if needs {
+        format!("{}:{}", site_domain(), port)
+    } else {
+        body.to_string()
+    };
+    if addr.starts_with("stratum+tcp://") {
+        format!("stratum+tcp://{out}")
+    } else {
+        out
+    }
+}
+
 fn stat_endpoint(st: &Value) -> String {
-    norm_stat(st, &["endpoint", "stratum"]).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    let raw = norm_stat(st, &["endpoint", "stratum"]).and_then(|v| v.as_str()).unwrap_or("");
+    public_stratum(raw)
 }
 
 fn stat_coin(st: &Value) -> String {
