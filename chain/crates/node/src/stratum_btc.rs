@@ -93,6 +93,26 @@ fn diff1() -> U256 {
     compact_to_target(0x1d00ffff).expect("static bits")
 }
 
+/// Starting share difficulty per algorithm — roughly one share / 10 s for
+/// mid-range hardware of that family; vardiff corrects from there.
+fn initial_diff(algo: &str) -> u64 {
+    match algo {
+        "sha256d" => 4096,
+        "scrypt" => 16,
+        "x11" => 64,
+        "kheavyhash" | "blake3" => 1024,
+        "eaglesong" | "blake2b" | "blake2s" => 256,
+        _ => 64,
+    }
+}
+
+fn floor_target(state: &DirectState) -> U256 {
+    state
+        .opts
+        .share_floor_target
+        .unwrap_or_else(|| diff1() / U256::from(initial_diff(state.algo)))
+}
+
 /// Serve a direct BLOCK pool for one fixed-header parent algorithm.
 pub fn serve(node: Arc<Node>, addr: String, algo: &'static str, opts: PoolOpts) {
     let state = Arc::new(DirectState {
@@ -246,15 +266,14 @@ fn notify_params_for(job_id: &str, job: &DirectJob) -> Value {
     ])
 }
 
-fn send_notify(client: &Client, params: &Value, lane_target: U256, clean: bool) {
+fn send_notify(client: &Client, params: &Value, _lane_target: U256, clean: bool) {
     let mut params = params.clone();
     if let Some(a) = params.as_array_mut() {
         if let Some(last) = a.last_mut() {
             *last = json!(clean);
         }
     }
-    let share = client.share_target.max(lane_target);
-    let d = u256_f64(diff1()) / u256_f64(share).max(1.0);
+    let d = u256_f64(diff1()) / u256_f64(client.share_target).max(1.0);
     push(client, json!({"id": null, "method": "mining.set_difficulty", "params": [d]}));
     push(client, json!({"id": null, "method": "mining.notify", "params": params}));
 }
@@ -295,7 +314,7 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
             subscribed: false,
             address: None,
             worker: String::new(),
-            share_target: state.node.params().pow_limit,
+            share_target: floor_target(&state),
             window_start: Instant::now(),
             window_shares: 0,
             accepted: 0,
@@ -425,7 +444,7 @@ fn handle_request(
             let share_target = {
                 let clients = state.clients.lock().unwrap();
                 let c = clients.get(&client_id).ok_or("gone")?;
-                c.share_target.max(lane_target)
+                c.share_target
             };
             if pow_val > share_target {
                 if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
@@ -494,7 +513,8 @@ fn handle_request(
     }
 }
 
-fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, lane_t: U256) {
+fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, _lane_t: U256) {
+    let floor = floor_target(state);
     let mut clients = state.clients.lock().unwrap();
     let Some(c) = clients.get_mut(&client_id) else { return };
     c.accepted += 1;
@@ -503,14 +523,21 @@ fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, lane_t: U
     if elapsed < RETARGET_SECS {
         return;
     }
-    let expected = (elapsed / TARGET_SHARE_SECS).max(1) as u32;
+    // Multiplicative retarget toward one share / TARGET_SHARE_SECS,
+    // clamped to ×256 per step so a 100 TH/s ASIC converges in seconds,
+    // never easier than the per-algorithm floor.
+    let expected = (elapsed / TARGET_SHARE_SECS).max(1) as u64;
     let old = c.share_target;
-    if c.window_shares > expected * 2 {
-        c.share_target = c.share_target >> 1;
-    } else if c.window_shares * 2 < expected {
-        c.share_target = (c.share_target << 1).min(state.node.params().pow_limit);
+    let ratio = (c.window_shares as u64).max(1) as f64 / expected as f64;
+    if ratio > 1.5 || ratio < 0.5 {
+        let factor = ratio.clamp(1.0 / 256.0, 256.0);
+        let scaled = u256_f64(c.share_target) / factor;
+        let mut t = U256::zero();
+        // reconstruct a U256 from the f64 magnitude (coarse is fine here)
+        let exp = scaled.log2().clamp(10.0, 255.0) as u32;
+        t = (U256::one() << exp) | (U256::one() << exp.saturating_sub(1));
+        c.share_target = t.min(floor);
     }
-    c.share_target = c.share_target.max(lane_t);
     c.window_start = Instant::now();
     c.window_shares = 0;
     if c.share_target != old {

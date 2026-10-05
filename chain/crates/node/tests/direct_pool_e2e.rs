@@ -81,6 +81,7 @@ fn run_direct(mode: PoolMode, port_off: u16) -> (std::path::PathBuf, std::sync::
             stats_path: None,
             ledger_path: (mode == PoolMode::Pplns).then(|| datadir.join("pplns-ledger.jsonl")),
             endpoint: direct_addr.clone(),
+            share_floor_target: Some(params.pow_limit),
         },
     );
 

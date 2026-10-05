@@ -69,6 +69,7 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
         stats_path: Some(datadir.join(format!("stratum-{mode}.json"))),
         ledger_path: if mode == "pplns" { Some(datadir.join("pplns-ledger.jsonl")) } else { None },
         endpoint: stratum_addr.clone(),
+        share_floor_target: None,
     };
     let node = p2p::Node::new(
         p2p::NodeConfig {

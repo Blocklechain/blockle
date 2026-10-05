@@ -83,6 +83,10 @@ pub struct PoolOpts {
     pub ledger_path: Option<PathBuf>,
     /// Public endpoint label shown in stats (e.g. "blockle.org:3333").
     pub endpoint: String,
+    /// Easiest share target a bitcoin-dialect pool will hand out (None →
+    /// a per-algorithm default). Real ASIC firmware chokes on the absurd
+    /// fractional difficulties a bootstrap-easy lane would imply.
+    pub share_floor_target: Option<blockle_chain::U256>,
 }
 
 /// One pending or settled PPLNS payout record.

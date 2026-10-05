@@ -524,6 +524,7 @@ fn start(
                 stats_path: Some(datadir.join("stratum-solo.json")),
                 ledger_path: None,
                 endpoint: format!("stratum+tcp://{}", endpoint_for(&addr)),
+                share_floor_target: None,
             },
         ));
     }
@@ -539,6 +540,7 @@ fn start(
                 stats_path: Some(datadir.join("stratum-pplns.json")),
                 ledger_path: Some(ledger_path.clone()),
                 endpoint: format!("stratum+tcp://{}", endpoint_for(&addr)),
+                share_floor_target: None,
             },
         ));
     }
@@ -594,6 +596,7 @@ fn start(
                     stats_path: Some(datadir.join(format!("stratum-{algo}{suffix}.json"))),
                     ledger_path: (mode == PoolMode::Pplns).then(|| ledger_path.clone()),
                     endpoint: format!("stratum+tcp://{}", endpoint_for(listen_addr)),
+                    share_floor_target: None,
                 },
             );
         }
