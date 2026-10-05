@@ -27,7 +27,12 @@ const BAN_AFTER_REJECTS: u32 = 20;
 struct Session {
     sender: Sender<String>,
     extranonce1: [u8; 4],
+    /// Resolved payout key: the miner's address in this chain (password
+    /// if supplied there, else the username's address part). Ledger
+    /// balances accrue here so all of an address's rigs aggregate.
     worker: Option<String>,
+    /// Full stratum username, for display/logs.
+    label: Option<String>,
     /// Share difficulty = 2^diff_k (negative = fractional difficulty).
     diff_k: i32,
     window_start: Instant,
@@ -177,6 +182,7 @@ impl Engine {
                 sender: tx,
                 extranonce1,
                 worker: None,
+                label: None,
                 diff_k: 0,
                 window_start: Instant::now(),
                 window_shares: 0,
@@ -245,13 +251,28 @@ impl Engine {
                 ]))
             }
             "mining.authorize" => {
-                let worker = params
+                // Convention: username is the miner's payout address in
+                // THIS chain (optionally address.rigname). A payout address
+                // may instead be supplied in the password field (for mining
+                // software / rentals that fix the username).
+                let username = params
                     .get(0)
                     .and_then(|v| v.as_str())
                     .unwrap_or("anonymous")
                     .to_string();
+                let password = params.get(1).and_then(|v| v.as_str()).unwrap_or("");
+                let payout = if !password.is_empty()
+                    && password != "x"
+                    && password.len() > 8
+                {
+                    password.to_string()
+                } else {
+                    username.split('.').next().unwrap_or(&username).to_string()
+                };
+                println!("[pool] authorize: payout={payout} (user={username:?})");
                 if let Some(s) = self.sessions.lock().unwrap().get_mut(&sid) {
-                    s.worker = Some(worker);
+                    s.worker = Some(payout);
+                    s.label = Some(username);
                 }
                 Ok(json!(true))
             }

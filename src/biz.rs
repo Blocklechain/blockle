@@ -1523,14 +1523,16 @@ fn stat_mode(st: &Value) -> String {
 }
 
 /// Example miner invocation per algorithm family for the pool pages.
-fn miner_example(algo: &str, endpoint: &str) -> String {
+/// `addr_hint` is the username placeholder — a BLOCK address for the BLOCK
+/// pools, or the parent chain's own address for merged-mining parent pools.
+fn miner_example(algo: &str, endpoint: &str, addr_hint: &str) -> String {
     let (prog, extra) = match algo {
         "equihash" => ("<equihash miner (EWBF/lolMiner-class)>", " --pers auto"),
         "scrypt" => ("cgminer --scrypt", ""),
         "x11" => ("<x11 miner>", ""),
         _ => ("cgminer", ""),
     };
-    format!("{prog} -o stratum+tcp://{endpoint} -u block1YOURADDRESS.rig1 -p x{extra}")
+    format!("{prog} -o stratum+tcp://{endpoint} -u {addr_hint}.rig1 -p x{extra}")
 }
 
 fn page_pool_detail(name: &str, st: &Value) -> String {
@@ -1539,6 +1541,7 @@ fn page_pool_detail(name: &str, st: &Value) -> String {
     let endpoint = stat_endpoint(st);
     let coin = stat_coin(st);
     let is_block_pool = coin == "BLOCK";
+    let addr_hint = if is_block_pool { "block1YOURADDRESS".to_string() } else { format!("your{coin}ADDRESS") };
     let miners_rows: String = st.get("miners_detail").and_then(|v| v.as_array()).map(|ms| {
         ms.iter().map(|m| format!(
             r#"<tr><td class="mono">{}</td><td class="mono">{:.2}</td><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
@@ -1582,10 +1585,11 @@ fn page_pool_detail(name: &str, st: &Value) -> String {
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Connect</h2>
 <pre><code>stratum+tcp://{endpoint}
-username: block1…youraddress.rigname     password: x
+username: {user_line}     password: {pass_line}
 
 # example
 {example}</code></pre>
+<p class="sub">{payout_note}</p>
 <p class="sub">{payout_copy}</p>
 <h2>Miners connected <span class="badge">live</span></h2>
 {miners_section}
@@ -1602,7 +1606,14 @@ username: block1…youraddress.rigname     password: x
         c3 = card("Blocks found", stat_blocks_found(st).to_string()),
         c4 = card("Fee", format!("{}%", norm_stat(st, &["fee_percent"]).and_then(|v| v.as_f64()).unwrap_or(1.0))),
         endpoint = endpoint,
-        example = miner_example(&algo, &endpoint),
+        user_line = if is_block_pool { "block1…youraddress.rigname".to_string() } else { format!("your {coin} payout address . rigname") },
+        pass_line = if is_block_pool { "x".to_string() } else { format!("x  (or your {coin} address, if your miner fixes the username)") },
+        payout_note = if is_block_pool {
+            "Mining BLOCK — paid in BLOCK.".to_string()
+        } else {
+            format!("This pool mines <b>{coin}</b> (you're paid in {coin}) and merge-mines <b>BLOCK</b> for free. Put your {coin} address as the username — all your rigs under one address aggregate for payout.")
+        },
+        example = miner_example(&algo, &endpoint, &addr_hint),
         payout_copy = payout_copy,
         miners_section = miners_section,
         blocks_rows = blocks_rows,
