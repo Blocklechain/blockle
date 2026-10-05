@@ -142,10 +142,12 @@ class WalletWindow(QMainWindow):
 
         tiles = QHBoxLayout()
         self.bal_lbl = QLabel("—")
+        self.immature_lbl = QLabel("—")
         self.zbal_lbl = QLabel("—")
         self.height_lbl = QLabel("—")
-        for title, lbl in (("TRANSPARENT BALANCE", self.bal_lbl),
-                           ("SHIELDED BALANCE", self.zbal_lbl),
+        for title, lbl in (("SPENDABLE", self.bal_lbl),
+                           ("IMMATURE (MINED)", self.immature_lbl),
+                           ("SHIELDED", self.zbal_lbl),
                            ("CHAIN HEIGHT", self.height_lbl)):
             box = QFrame()
             box.setStyleSheet("QFrame{background:#13151a;border:1px solid #23262e;border-radius:10px}")
@@ -474,7 +476,12 @@ class WalletWindow(QMainWindow):
         self.snap = snap
         wal, chain = snap.get("wallet"), snap.get("chain", {})
         if wal:
-            self.bal_lbl.setText(wal["balance_fmt"])
+            self.bal_lbl.setText(wal.get("spendable_fmt", wal["balance_fmt"]))
+            imm = wal.get("immature", 0)
+            self.immature_lbl.setText(wal.get("immature_fmt", "0") if imm else "0")
+            self.immature_lbl.setToolTip(
+                f"Mined rewards unlock {wal.get('coinbase_maturity', 100)} blocks after the block that earned them."
+            )
             self.zbal_lbl.setText(wal["zbalance_fmt"])
             self.addr_row.findChild(QLineEdit).setText(wal["address"])
             self.zaddr_row.findChild(QLineEdit).setText(wal["zaddress"])

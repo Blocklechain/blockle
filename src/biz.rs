@@ -299,15 +299,16 @@ const DIRECT_POOLS: &[(&str, &str, u16)] = &[
 const PARENT_ROSTER: &[(&str, &str, &str, &str)] = &[
     ("Bitcoin", "sha256d", "SHA-256 ASICs (S19 / S21 class)", "parent node syncing on this server · direct pool live :3340"),
     ("Bitcoin Cash", "sha256d", "SHA-256 ASICs", "parent node syncing on this server · direct pool live :3340"),
+    ("eCash + Syscoin", "sha256d", "SHA-256 ASICs (merge-stack)", "parent nodes syncing on this server"),
     ("Litecoin + Dogecoin", "scrypt", "Scrypt ASICs (L7 / L9 class)", "parent nodes syncing on this server · direct pool live :3341"),
-    ("Zcash", "equihash", "Equihash 200,9 ASICs (Z15 class)", "same algorithm as BLOCK — native pools live :3333 / :3334"),
+    ("Zcash-family (Hush)", "equihash", "Equihash 200,9 ASICs (Z15 class)", "parent node syncing · native BLOCK pools live :3333 / :3334"),
     ("Dash", "x11", "X11 ASICs", "parent node syncing on this server · direct pool live :3342"),
     ("DigiByte", "sha256d + scrypt", "multi-algo", "parent node syncing on this server"),
     ("Kaspa-class", "kheavyhash", "kHeavyHash ASICs", "direct pool live :3347"),
     ("Alephium-class", "blake3", "Blake3 ASICs", "direct pool live :3345"),
     ("Nervos-class", "eaglesong", "Eaglesong ASICs", "direct pool live :3346"),
     ("Sia-class", "blake2b", "Blake2b ASICs", "direct pool live :3343"),
-    ("Kadena-class", "blake2s", "Blake2s ASICs", "direct pool live :3344"),
+    ("Verge", "blake2s", "Blake2s-capable miners", "parent node syncing on this server · direct pool live :3344"),
 ];
 
 pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {

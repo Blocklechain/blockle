@@ -829,9 +829,16 @@ fn build_funded_tx(
     }
     if total < needed {
         bail!(
-            "insufficient spendable funds: have {}, need {}",
+            "insufficient spendable funds: have {} spendable{}, need {} (coinbase rewards mature after {} blocks)",
             format_amount(total),
-            format_amount(needed)
+            {
+                let immature = chain.balance(&kp.address()).saturating_sub(
+                    chain.spendable_utxos(&kp.address()).iter().map(|(_, e)| e.output.amount).sum::<u64>(),
+                );
+                if immature > 0 { format!(" ({} immature)", format_amount(immature)) } else { String::new() }
+            },
+            format_amount(needed),
+            chain.params.coinbase_maturity
         );
     }
 
@@ -1858,6 +1865,12 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
         history.reverse();
 
         let balance = chain.balance(&addr);
+        let spendable: u64 = chain
+            .spendable_utxos(&addr)
+            .iter()
+            .map(|(_, e)| e.output.amount)
+            .sum();
+        let immature = balance.saturating_sub(spendable);
         wallet = json!({
             "address": encode_address(&addr),
             "zaddress": if ek.is_empty() {
@@ -1868,6 +1881,11 @@ fn ui_snapshot(datadir: &Path, params: ChainParams) -> Result<()> {
             "encrypted": wf.encrypted,
             "balance": balance,
             "balance_fmt": format_amount(balance),
+            "spendable": spendable,
+            "spendable_fmt": format_amount(spendable),
+            "immature": immature,
+            "immature_fmt": format_amount(immature),
+            "coinbase_maturity": chain.params.coinbase_maturity,
             "zbalance": zbal,
             "zbalance_fmt": format_amount(zbal),
             "notes": notes_json,

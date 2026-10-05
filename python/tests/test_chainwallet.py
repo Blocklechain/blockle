@@ -174,7 +174,10 @@ class QtWalletSmokeTest(unittest.TestCase):
             win = WalletWindow(wallet, node)
             win._apply_snapshot(wallet.snapshot())
             self.assertEqual(win.height_lbl.text(), "1")
-            self.assertEqual(win.bal_lbl.text(), "210050")
+            # The genesis premine is maturity-exempt by consensus; the
+            # height-1 subsidy (50) is still immature (regtest maturity 5).
+            self.assertEqual(win.bal_lbl.text(), "210000")
+            self.assertEqual(win.immature_lbl.text(), "50")
             self.assertEqual(win.history.rowCount(), 2)  # premine + subsidy
             from PySide6.QtWidgets import QLineEdit
             self.assertTrue(win.addr_row.findChild(QLineEdit).text().startswith("block1"))
