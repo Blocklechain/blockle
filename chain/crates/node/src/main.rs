@@ -368,7 +368,9 @@ fn main() -> Result<()> {
 /// torn file.
 fn write_wallet_file(datadir: &Path, wf: &WalletFile) -> Result<()> {
     let path = storage::wallet_path(datadir);
-    let tmp = path.with_extension("json.tmp");
+    // Per-process tmp name: two concurrent writers must never share a
+    // scratch file, or one renames the other's half-written bytes.
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     fs::write(&tmp, serde_json::to_string_pretty(wf)?)?;
     fs::rename(&tmp, &path)?;
     Ok(())
