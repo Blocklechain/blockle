@@ -21,6 +21,7 @@ fn pool_mines_parent_and_aux_blocks() {
     let adapter = BitcoinAdapter::new(
         "http://127.0.0.1:28980/",
         "TestCoin",
+        "SHA-256d",
         profile.field_map.clone().unwrap(),
         vec![0x51],
         vec![AuxConfig {
