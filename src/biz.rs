@@ -1674,7 +1674,7 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
 }
 
 fn page_wallet() -> String {
-    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.2";
+    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.3";
     let body = format!(
         r##"<h1>Blockle Wallet</h1>
 <p class="sub">A desktop wallet for BLOCK, built on Qt 6. Decentralized by construction: it embeds a full node that syncs from the network peer-to-peer; keys never leave your machine (post-quantum ML-DSA). Transparent + shielded funds, hidden-amount private sends, and regtest tooling for developers.</p>
