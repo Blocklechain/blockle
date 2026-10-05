@@ -1518,6 +1518,13 @@ fn stat_coin(st: &Value) -> String {
     norm_stat(st, &["coin", "chain"]).and_then(|v| v.as_str()).unwrap_or("BLOCK").to_string()
 }
 
+/// How the pool's coin is shown to miners: parent pools mine the parent
+/// AND BLOCK, so advertise both.
+fn display_coin(st: &Value) -> String {
+    let c = stat_coin(st);
+    if c == "BLOCK" { c } else { format!("{c} + BLOCK") }
+}
+
 fn stat_mode(st: &Value) -> String {
     norm_stat(st, &["mode", "scheme"]).and_then(|v| v.as_str()).unwrap_or("solo").to_string()
 }
@@ -1540,6 +1547,7 @@ fn page_pool_detail(name: &str, st: &Value) -> String {
     let algo = stat_algo(st);
     let endpoint = stat_endpoint(st);
     let coin = stat_coin(st);
+    let shown = display_coin(st);
     let is_block_pool = coin == "BLOCK";
     let addr_hint = if is_block_pool { "block1YOURADDRESS".to_string() } else { format!("your{coin}ADDRESS") };
     let miners_rows: String = st.get("miners_detail").and_then(|v| v.as_array()).map(|ms| {
@@ -1581,7 +1589,7 @@ fn page_pool_detail(name: &str, st: &Value) -> String {
         _ => "Payouts per the pool's configured scheme (1% fee).",
     };
     let body = format!(
-        r##"<h1>{coin} · {name} <span class="badge">{algo}</span></h1>
+        r##"<h1>{shown} · {name} <span class="badge">{algo}</span></h1>
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Connect</h2>
 <pre><code>stratum+tcp://{endpoint}
@@ -1598,7 +1606,7 @@ username: {user_line}     password: {pass_line}
 <h2>Stats API</h2>
 <p class="sub mono"><a href="/api/mps/{name}">https://{domain}/api/mps/{name}</a> — MiningPoolStats-compatible JSON, updated every 15 s.</p>
 <p class="sub"><a href="/mine">← all pools</a></p>"##,
-        coin = coin,
+        shown = shown,
         name = name,
         algo = algo,
         c1 = card("Pool hashrate", format!("{:.2}", stat_hashrate(st))),
@@ -1619,7 +1627,7 @@ username: {user_line}     password: {pass_line}
         blocks_rows = blocks_rows,
         domain = site_domain(),
     );
-    page_shell(&format!("{coin} {name} pool"), body)
+    page_shell(&format!("{shown} {name} pool"), body)
 }
 
 fn page_mine(_reg: &Registry) -> String {
@@ -1686,7 +1694,7 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
                     let rows: String = pools.iter().map(|(name, st)| format!(
                         r#"<tr><td><a href="/mine/{name}"><b>{coin} · {name}</b></a></td><td class="mono">{endpoint}</td><td class="mono">{mode}</td><td class="mono">{hr:.2}</td><td class="mono">{miners}</td><td class="mono">{blocks}</td></tr>"#,
                         name = name,
-                        coin = stat_coin(st),
+                        coin = display_coin(st),
                         endpoint = stat_endpoint(st),
                         mode = stat_mode(st),
                         hr = stat_hashrate(st),
