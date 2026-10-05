@@ -153,6 +153,32 @@ pub fn serve(node: Arc<Node>, addr: String, algo: &'static str, opts: PoolOpts) 
     thread::spawn(move || job_loop(state));
 }
 
+fn ease_idle_miners(state: &Arc<DirectState>) {
+    // A miner that has been silent for 60 s is probably too small for the
+    // current difficulty (or its firmware clamped ours): ease ×16 per
+    // minute down to difficulty 0.25 so even toy hardware gets traction.
+    let min_target = diff1() * U256::from(4u64); // difficulty 0.25
+    let mut clients = state.clients.lock().unwrap();
+    for c in clients.values_mut() {
+        if c.address.is_some()
+            && c.accepted == 0
+            && c.window_start.elapsed().as_secs() >= 60
+        {
+            let eased = (c.share_target << 4).min(min_target);
+            if eased != c.share_target {
+                c.share_target = eased;
+                c.window_start = Instant::now();
+                let d = u256_f64(diff1()) / u256_f64(c.share_target).max(1.0);
+                println!(
+                    "[stratum-direct:{}] easing idle miner to difficulty {d:.4}",
+                    state.algo
+                );
+                push(c, json!({"id": null, "method": "mining.set_difficulty", "params": [d]}));
+            }
+        }
+    }
+}
+
 fn job_loop(state: Arc<DirectState>) {
     let mut last_gen = u64::MAX;
     let mut last_refresh = Instant::now();
@@ -162,6 +188,7 @@ fn job_loop(state: Arc<DirectState>) {
         if fresh || last_refresh.elapsed() > Duration::from_secs(30) {
             last_gen = gen;
             last_refresh = Instant::now();
+            ease_idle_miners(&state);
             if state.opts.mode == PoolMode::Pplns {
                 if let Some(job) = build_direct_job(&state, state.opts.pool_address) {
                     let n = state.next_job.fetch_add(1, Ordering::SeqCst);
@@ -366,6 +393,15 @@ fn handle_request(
 ) -> Result<Value, String> {
     match method {
         "mining.subscribe" => {
+            let agent = params
+                .get(0)
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            println!(
+                "[stratum-direct:{}] miner {client_id} subscribe agent={agent:?}",
+                state.algo
+            );
             let en1 = {
                 let mut clients = state.clients.lock().unwrap();
                 let c = clients.get_mut(&client_id).ok_or("gone")?;
@@ -388,6 +424,11 @@ fn handle_request(
             let address = decode_address(addr_part).map_err(|_| {
                 "authorize with your BLOCK address (block1…) as the username".to_string()
             })?;
+            println!(
+                "[stratum-direct:{}] miner {client_id} authorized {}",
+                state.algo,
+                &worker[..24.min(worker.len())]
+            );
             {
                 let mut clients = state.clients.lock().unwrap();
                 let c = clients.get_mut(&client_id).ok_or("gone")?;
@@ -420,7 +461,13 @@ fn handle_request(
             };
             let (block, coinbase, header, nbits) = {
                 let jobs = state.jobs.lock().unwrap();
-                let (_, job) = jobs.get(job_id).ok_or("unknown job")?;
+                let Some((_, job)) = jobs.get(job_id) else {
+                    println!(
+                        "[stratum-direct:{}] miner {client_id} submit for UNKNOWN job {job_id:?}",
+                        state.algo
+                    );
+                    return Err("unknown job".into());
+                };
                 let mut coinbase =
                     Vec::with_capacity(job.coinb1.len() + 8 + job.coinb2.len());
                 coinbase.extend_from_slice(&job.coinb1);
@@ -450,8 +497,16 @@ fn handle_request(
                 if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
                     c.rejected += 1;
                 }
+                println!(
+                    "[stratum-direct:{}] miner {client_id} share REJECTED (low diff) job={job_id}",
+                    state.algo
+                );
                 return Err("low difficulty share".into());
             }
+            println!(
+                "[stratum-direct:{}] miner {client_id} share accepted",
+                state.algo
+            );
             if state.opts.mode == PoolMode::Pplns {
                 let weight =
                     u256_f64(state.node.params().pow_limit) / u256_f64(share_target).max(1.0);
