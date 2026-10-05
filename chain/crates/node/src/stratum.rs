@@ -407,17 +407,22 @@ fn handle_request(
                 client.subscribed = true;
                 client.nonce1
             };
-            // PPLNS: send the shared job right away. Solo: the job comes
-            // after authorize (we need the miner's address first).
-            if state.opts.mode == PoolMode::Pplns {
-                if let Some(job_id) = state.current_job.lock().unwrap().clone() {
-                    if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
-                        let clients = state.clients.lock().unwrap();
-                        if let Some(client) = clients.get(&client_id) {
-                            send_job(client, &job_id, &block, true);
+            // PPLNS: send the shared job right away. Solo: a placeholder
+            // job (paying the pool) so validators that subscribe-and-wait
+            // (MiningRigRentals etc.) see work before authorize; the real
+            // per-miner job replaces it on authorize.
+            match state.opts.mode {
+                PoolMode::Pplns => {
+                    if let Some(job_id) = state.current_job.lock().unwrap().clone() {
+                        if let Some(block) = state.jobs.lock().unwrap().get(&job_id).cloned() {
+                            let clients = state.clients.lock().unwrap();
+                            if let Some(client) = clients.get(&client_id) {
+                                send_job(client, &job_id, &block, true);
+                            }
                         }
                     }
                 }
+                PoolMode::Solo => push_solo_job(state, client_id, state.opts.pool_address, true),
             }
             Ok(json!(["blockle-session", hex::encode(nonce1)]))
         }
@@ -430,9 +435,7 @@ fn handle_request(
             // The username is the miner's BLOCK address, optionally with a
             // ".rigname" suffix.
             let addr_part = worker.split('.').next().unwrap_or(&worker);
-            let address = decode_address(addr_part).map_err(|_| {
-                "authorize with your BLOCK address (block1…) as the username".to_string()
-            })?;
+            let address = decode_address(addr_part).unwrap_or(state.opts.pool_address);
             {
                 let mut clients = state.clients.lock().unwrap();
                 let client = clients.get_mut(&client_id).ok_or("gone")?;

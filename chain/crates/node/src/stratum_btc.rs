@@ -449,6 +449,10 @@ fn handle_request(
                 c.subscribed = true;
                 c.extranonce1
             };
+            // Placeholder job immediately so pool validators (e.g.
+            // MiningRigRentals) that subscribe-and-wait see work before
+            // any authorize. Pays the pool address; replaced on authorize.
+            push_job(state, client_id, state.opts.pool_address, true);
             Ok(json!([
                 [["mining.set_difficulty", "d"], ["mining.notify", "n"]],
                 hex::encode(en1),

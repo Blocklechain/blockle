@@ -124,10 +124,18 @@ fn run_pool_test(mode: &str, port_off: u16) -> (std::path::PathBuf, std::sync::A
     let auth = read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(2))).clone();
     assert_eq!(auth["result"], json!(true), "authorize rejected: {auth}");
 
-    let notify = read_until(&mut reader, &mut lines, |v| {
+    // Ensure a job is buffered, then take the LATEST notify — solo queues
+    // the per-miner job before the authorize reply, so it is already in the
+    // buffer and is the one that pays the miner.
+    read_until(&mut reader, &mut lines, |v| {
         v.get("method").and_then(|m| m.as_str()) == Some("mining.notify")
-    })
-    .clone();
+    });
+    let notify = lines
+        .iter()
+        .rev()
+        .find(|v| v.get("method").and_then(|m| m.as_str()) == Some("mining.notify"))
+        .cloned()
+        .unwrap();
     let p = notify["params"].as_array().unwrap().clone();
     let job_id = p[0].as_str().unwrap().to_string();
 

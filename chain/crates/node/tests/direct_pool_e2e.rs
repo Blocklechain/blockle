@@ -113,10 +113,17 @@ fn run_direct(mode: PoolMode, port_off: u16) -> (std::path::PathBuf, std::sync::
     let sub = read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(1))).clone();
     let en1: Vec<u8> = hex::decode(sub["result"][1].as_str().unwrap()).unwrap();
     assert_eq!(en1.len(), 4);
-    let notify = read_until(&mut reader, &mut lines, |v| {
+    read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(2)));
+    // Take the latest buffered job (post-authorize pays the miner).
+    read_until(&mut reader, &mut lines, |v| {
         v.get("method").and_then(|m| m.as_str()) == Some("mining.notify")
-    })
-    .clone();
+    });
+    let notify = lines
+        .iter()
+        .rev()
+        .find(|v| v.get("method").and_then(|m| m.as_str()) == Some("mining.notify"))
+        .cloned()
+        .unwrap();
     let p = notify["params"].as_array().unwrap().clone();
     let job_id = p[0].as_str().unwrap().to_string();
     let coinb1 = hex::decode(p[2].as_str().unwrap()).unwrap();
