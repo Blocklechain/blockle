@@ -24,6 +24,18 @@ pub fn parse_url(url: &str) -> Result<(String, String)> {
 }
 
 /// POST a body and return the response body. Timeouts keep probing snappy.
+pub fn get(url: &str, timeout: Duration) -> Result<Vec<u8>> {
+    let (host, path) = parse_url(url)?;
+    let mut stream = TcpStream::connect(&host)?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )?;
+    read_response(&mut stream)
+}
+
 pub fn post(url: &str, content_type: &str, body: &[u8], timeout: Duration) -> Result<Vec<u8>> {
     let (hostport, path) = parse_url(url)?;
     let mut stream = TcpStream::connect(&hostport)

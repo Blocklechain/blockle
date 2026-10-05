@@ -67,8 +67,9 @@ enum Cmd {
         /// prune support; zcashd cannot prune and is listed for reference).
         #[arg(long)]
         coin: String,
-        /// Prune target in MB (bitcoind-style; ≥550).
-        #[arg(long, default_value_t = 4096)]
+        /// Prune target in MB (bitcoind-style; ≥550). Mining needs only
+        /// the tip, so near-minimum pruning fits many parents per box.
+        #[arg(long, default_value_t = 1024)]
         prune_mb: u64,
         #[arg(long, default_value = "/var/lib")]
         data_root: PathBuf,
@@ -225,10 +226,13 @@ fn parent_node(coin: &str, prune_mb: u64, data_root: &std::path::Path, out_dir: 
         "bitcoin" => ("bitcoind", 8332, ""),
         "litecoin" => ("litecoind", 9332, ""),
         "dogecoin" => ("dogecoind", 22555, ""),
+        "dash" => ("dashd", 9998, "port=9999\n"),
+        "bitcoincash" => ("bitcoind-bch", 18832, "port=18833\n"),
+        "digibyte" => ("digibyted", 14022, "port=12024\n"),
         "zcash" => {
             bail!("zcashd does not support pruning — budget ~60 GB unpruned, or run the BLOCK equihash pools natively instead");
         }
-        other => bail!("unknown parent coin {other} (bitcoin | litecoin | dogecoin)"),
+        other => bail!("unknown parent coin {other} (bitcoin | litecoin | dogecoin | dash | bitcoincash | digibyte)"),
     };
     let prune_mb = prune_mb.max(550);
     let datadir = data_root.join(coin);

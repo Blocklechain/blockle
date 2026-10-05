@@ -253,22 +253,33 @@ pub struct BizConfig {
     /// Live pool statistics files written by the chain's stratum pools:
     /// (name, path) — served at /api/mps/{name}.
     pub mps_files: Vec<(String, PathBuf)>,
+    /// Base URL of the node's explorer API (the aux-work listener),
+    /// e.g. http://127.0.0.1:8445 — powers block/tx/address pages.
+    pub chain_api: Option<String>,
 }
 
-static EXTRAS: OnceLock<(Option<PathBuf>, Vec<(String, PathBuf)>)> = OnceLock::new();
+static EXTRAS: OnceLock<(Option<PathBuf>, Vec<(String, PathBuf)>, Option<String>)> = OnceLock::new();
 
 /// The BLOCK chain snapshot, if the node's explorer file is configured.
 fn chain_snapshot() -> Option<Value> {
-    let (chain_file, _) = EXTRAS.get()?;
+    let (chain_file, _, _) = EXTRAS.get()?;
     let raw = fs::read_to_string(chain_file.as_ref()?).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
 /// Live stats for one of our own pools (stratum stats file).
 fn pool_stats(name: &str) -> Option<Value> {
-    let (_, mps) = EXTRAS.get()?;
+    let (_, mps, _) = EXTRAS.get()?;
     let path = mps.iter().find(|(n, _)| n == name).map(|(_, p)| p)?;
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+/// GET from the node's explorer API; None when unconfigured/unreachable.
+fn chain_api(path: &str) -> Option<Value> {
+    let (_, _, api) = EXTRAS.get()?;
+    let base = api.as_ref()?;
+    let raw = http::get(&format!("{base}{path}"), Duration::from_secs(5)).ok()?;
+    serde_json::from_slice(&raw).ok()
 }
 
 /// Our dedicated direct BLOCK pools: (stats-feed name, row title, port).
@@ -287,9 +298,11 @@ const DIRECT_POOLS: &[(&str, &str, u16)] = &[
 /// hardware note). Status is configured at deploy time — never fabricated.
 const PARENT_ROSTER: &[(&str, &str, &str, &str)] = &[
     ("Bitcoin", "sha256d", "SHA-256 ASICs (S19 / S21 class)", "parent node syncing on this server · direct pool live :3340"),
+    ("Bitcoin Cash", "sha256d", "SHA-256 ASICs", "parent node syncing on this server · direct pool live :3340"),
     ("Litecoin + Dogecoin", "scrypt", "Scrypt ASICs (L7 / L9 class)", "parent nodes syncing on this server · direct pool live :3341"),
     ("Zcash", "equihash", "Equihash 200,9 ASICs (Z15 class)", "same algorithm as BLOCK — native pools live :3333 / :3334"),
-    ("Dash", "x11", "X11 ASICs", "direct pool live :3342"),
+    ("Dash", "x11", "X11 ASICs", "parent node syncing on this server · direct pool live :3342"),
+    ("DigiByte", "sha256d + scrypt", "multi-algo", "parent node syncing on this server"),
     ("Kaspa-class", "kheavyhash", "kHeavyHash ASICs", "direct pool live :3347"),
     ("Alephium-class", "blake3", "Blake3 ASICs", "direct pool live :3345"),
     ("Nervos-class", "eaglesong", "Eaglesong ASICs", "direct pool live :3346"),
@@ -298,7 +311,7 @@ const PARENT_ROSTER: &[(&str, &str, &str, &str)] = &[
 ];
 
 pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
-    let _ = EXTRAS.set((cfg.chain_file.clone(), cfg.mps_files.clone()));
+    let _ = EXTRAS.set((cfg.chain_file.clone(), cfg.mps_files.clone(), cfg.chain_api.clone()));
     let _ = SITE_DOMAIN.set(if cfg.domain.is_empty() {
         "blockle.biz".into()
     } else {
@@ -435,6 +448,13 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
             ("200 OK", "application/json", json!({"pools": pools}).to_string().into_bytes())
         }
         "/api/chains" => ("200 OK", "application/json", chains_json(&reg).to_string().into_bytes()),
+        p if p.starts_with("/api/explorer/") => {
+            let sub = &p["/api/explorer".len()..];
+            match chain_api(&format!("/explorer{sub}")) {
+                Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                None => jerr("503 Service Unavailable", "chain api not configured"),
+            }
+        }
         "/api/chain" => match chain_snapshot() {
             Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
             None => jerr("503 Service Unavailable", "chain snapshot not configured"),
@@ -490,6 +510,45 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         }
         "/algorithms" => ("200 OK", "text/html; charset=utf-8", page_algorithms(&reg).into_bytes()),
         "/explorer" => ("200 OK", "text/html; charset=utf-8", page_explorer(&reg).into_bytes()),
+        p if p.starts_with("/explorer/block/") => {
+            let id = &p["/explorer/block/".len()..];
+            match chain_api(&format!("/explorer/block/{id}")) {
+                Some(b) if b.get("error").is_none() => ("200 OK", "text/html; charset=utf-8", page_block(&b).into_bytes()),
+                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("block", id).into_bytes()),
+            }
+        }
+        p if p.starts_with("/explorer/tx/") => {
+            let id = &p["/explorer/tx/".len()..];
+            match chain_api(&format!("/explorer/tx/{id}")) {
+                Some(t) if t.get("error").is_none() => ("200 OK", "text/html; charset=utf-8", page_tx(&t).into_bytes()),
+                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("transaction", id).into_bytes()),
+            }
+        }
+        p if p.starts_with("/explorer/address/") => {
+            let id = &p["/explorer/address/".len()..];
+            match chain_api(&format!("/explorer/address/{id}")) {
+                Some(a) if a.get("error").is_none() => ("200 OK", "text/html; charset=utf-8", page_address(&a).into_bytes()),
+                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("address", id).into_bytes()),
+            }
+        }
+        "/explorer/search" => {
+            let q = query_get(query, "q").unwrap_or("").trim();
+            match chain_api(&format!("/explorer/search/{q}")) {
+                Some(r) if r.get("error").is_none() => {
+                    let kind = r["type"].as_str().unwrap_or("");
+                    let id = r["id"].as_str().unwrap_or("");
+                    let loc = match kind {
+                        "block" => format!("/explorer/block/{id}"),
+                        "tx" => format!("/explorer/tx/{id}"),
+                        "address" => format!("/explorer/address/{id}"),
+                        _ => "/explorer".into(),
+                    };
+                    ("302 Found", "text/html; charset=utf-8",
+                     format!("<meta http-equiv=\"refresh\" content=\"0;url={loc}\">").into_bytes())
+                }
+                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("result for", q).into_bytes()),
+            }
+        }
         "/mine" => ("200 OK", "text/html; charset=utf-8", page_mine(&reg).into_bytes()),
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
@@ -1463,6 +1522,183 @@ git clone https://github.com/blocklechain/blockle &amp;&amp; cd blockle/chain &a
     page_shell("Wallet", body)
 }
 
+fn kv(rows: &[(&str, String)]) -> String {
+    let body: String = rows
+        .iter()
+        .map(|(k, v)| format!(r#"<tr><td style="color:var(--muted)">{k}</td><td class="mono">{v}</td></tr>"#))
+        .collect();
+    format!("<table>{body}</table>")
+}
+
+fn ago_ts(ts: u64) -> String {
+    if ts == 0 { return "—".into(); }
+    ago(ts)
+}
+
+fn explorer_search_box() -> String {
+    r##"<form class="filters" method="get" action="/explorer/search">
+<input type="text" name="q" placeholder="height · block hash · txid · block1… address" style="flex:1;min-width:16rem">
+<button class="btn primary" type="submit">Search</button></form>"##.into()
+}
+
+fn page_block(b: &Value) -> String {
+    let txs: String = b["txs"].as_array().map(|ts| ts.iter().map(|t| format!(
+        r#"<tr><td class="mono"><a href="/explorer/tx/{id}">{short}…</a></td><td>{kind}</td><td class="mono">{nin}</td><td class="mono">{nout}</td><td class="mono">{out} BLOCK</td><td class="mono">{fee}</td></tr>"#,
+        id = t["txid"].as_str().unwrap_or(""),
+        short = &t["txid"].as_str().unwrap_or("")[..20.min(t["txid"].as_str().unwrap_or("").len())],
+        kind = t["kind"].as_str().unwrap_or("?"),
+        nin = t["inputs"].as_array().map(|a| a.len()).unwrap_or(0),
+        nout = t["outputs"].as_array().map(|a| a.len()).unwrap_or(0),
+        out = fmt_block(t["total_out"].as_u64().unwrap_or(0)),
+        fee = t["fee"].as_u64().map(|f| fmt_block(f)).unwrap_or_else(|| "—".into()),
+    )).collect()).unwrap_or_default();
+    let aux = match b.get("aux_pow").filter(|a| !a.is_null()) {
+        Some(a) => format!(
+            r#"<h2>Merged-mining proof</h2>{}"#,
+            kv(&[
+                ("parent algorithm", a["parent_algo"].as_str().unwrap_or("?").into()),
+                ("parent pow hash", a["parent_pow_hash"].as_str().unwrap_or("?").into()),
+                ("parent header size", format!("{} bytes", a["parent_header_size"].as_u64().unwrap_or(0))),
+                ("commitment slot", a["chain_index"].as_u64().unwrap_or(0).to_string()),
+            ])
+        ),
+        None => String::new(),
+    };
+    let height = b["height"].as_u64().unwrap_or(0);
+    let body = format!(
+        r##"{search}<h1>Block {height}</h1>
+<p class="sub mono">{hash}</p>
+{meta}
+{aux}
+<h2>Transactions ({ntx})</h2>
+<table><tr><th>txid</th><th>kind</th><th>in</th><th>out</th><th>value</th><th>fee</th></tr>{txs}</table>
+<p class="sub"><a href="/explorer/block/{prev_link}">← previous block</a> · <a href="/explorer">explorer home</a></p>"##,
+        search = explorer_search_box(),
+        height = height,
+        hash = b["hash"].as_str().unwrap_or(""),
+        meta = kv(&[
+            ("lane", b["lane"].as_str().unwrap_or("?").into()),
+            ("time", format!("{} ({})", b["time"].as_u64().unwrap_or(0), ago_ts(b["time"].as_u64().unwrap_or(0)))),
+            ("confirmations", b["confirmations"].as_u64().unwrap_or(0).to_string()),
+            ("bits", b["bits"].as_str().unwrap_or("?").into()),
+            ("size", format!("{} bytes", b["size"].as_u64().unwrap_or(0))),
+            ("merkle root", b["merkle_root"].as_str().unwrap_or("?").into()),
+            ("previous block", b["prev_hash"].as_str().unwrap_or("?").into()),
+            ("native solution", format!("{} bytes", b["solution_bytes"].as_u64().unwrap_or(0))),
+        ]),
+        aux = aux,
+        ntx = b["txs"].as_array().map(|a| a.len()).unwrap_or(0),
+        txs = txs,
+        prev_link = height.saturating_sub(1),
+    );
+    page_shell(&format!("Block {height}"), body)
+}
+
+fn page_tx(t: &Value) -> String {
+    let tx = &t["tx"];
+    let inputs: String = tx["inputs"].as_array().map(|is| if is.is_empty() {
+        r#"<tr><td colspan="3" style="color:var(--muted)">none — this transaction creates new coins (coinbase)</td></tr>"#.to_string()
+    } else {
+        is.iter().map(|i| format!(
+            r#"<tr><td class="mono"><a href="/explorer/tx/{ptx}">{pshort}…</a>:{vout}</td><td class="mono">{addr}</td><td class="mono">{amt}</td></tr>"#,
+            ptx = i["prev_txid"].as_str().unwrap_or(""),
+            pshort = &i["prev_txid"].as_str().unwrap_or("")[..16.min(i["prev_txid"].as_str().unwrap_or("").len())],
+            vout = i["prev_vout"].as_u64().unwrap_or(0),
+            addr = i["address"].as_str().map(|a| format!(r#"<a href="/explorer/address/{a}">{}…</a>"#, &a[..24.min(a.len())])).unwrap_or_else(|| "?".into()),
+            amt = i["amount"].as_u64().map(fmt_block).unwrap_or_else(|| "?".into()),
+        )).collect()
+    }).unwrap_or_default();
+    let outputs: String = tx["outputs"].as_array().map(|os| os.iter().map(|o| format!(
+        r#"<tr><td class="mono">{vout}</td><td class="mono"><a href="/explorer/address/{addr}">{ashort}…</a></td><td class="mono">{amt} BLOCK</td></tr>"#,
+        vout = o["vout"].as_u64().unwrap_or(0),
+        addr = o["address"].as_str().unwrap_or(""),
+        ashort = &o["address"].as_str().unwrap_or("")[..24.min(o["address"].as_str().unwrap_or("").len())],
+        amt = fmt_block(o["amount"].as_u64().unwrap_or(0)),
+    )).collect()).unwrap_or_default();
+    let shielded = match tx.get("shielded").filter(|x| !x.is_null()) {
+        Some(sh) => format!(
+            r#"<h2>Shielded activity</h2><p class="note">{} spend(s), {} output(s), {} hidden-amount transfer(s). {}</p>"#,
+            sh["spends"].as_u64().unwrap_or(0),
+            sh["outputs"].as_u64().unwrap_or(0),
+            sh["hidden_transfers"].as_u64().unwrap_or(0),
+            sh["note"].as_str().unwrap_or(""),
+        ),
+        None => String::new(),
+    };
+    let txid = tx["txid"].as_str().unwrap_or("");
+    let block_row = match tx["block_height"].as_u64() {
+        Some(h) => format!(r#"<a href="/explorer/block/{h}">block {h}</a>"#),
+        None => "mempool (unconfirmed)".into(),
+    };
+    let body = format!(
+        r##"{search}<h1>Transaction</h1>
+<p class="sub mono">{txid}</p>
+{meta}
+{shielded}
+<h2>Inputs</h2>
+<table><tr><th>outpoint</th><th>address</th><th>amount</th></tr>{inputs}</table>
+<h2>Outputs</h2>
+<table><tr><th>#</th><th>address</th><th>amount</th></tr>{outputs}</table>"##,
+        search = explorer_search_box(),
+        txid = txid,
+        meta = kv(&[
+            ("kind", tx["kind"].as_str().unwrap_or("?").into()),
+            ("in block", block_row),
+            ("confirmations", tx["confirmations"].as_u64().map(|c| c.to_string()).unwrap_or_else(|| "0".into())),
+            ("total output", format!("{} BLOCK", fmt_block(tx["total_out"].as_u64().unwrap_or(0)))),
+            ("fee", tx["fee"].as_u64().map(|f| format!("{} BLOCK", fmt_block(f))).unwrap_or_else(|| "—".into())),
+            ("size", format!("{} bytes", tx["size"].as_u64().unwrap_or(0))),
+            ("contract action", if tx["contract"].as_bool().unwrap_or(false) { "yes".into() } else { "no".to_string() }),
+        ]),
+        shielded = shielded,
+        inputs = inputs,
+        outputs = outputs,
+    );
+    page_shell("Transaction", body)
+}
+
+fn page_address(a: &Value) -> String {
+    let card = |k: &str, v: String| format!(r#"<div class="card"><div class="v">{v}</div><div class="k">{k}</div></div>"#);
+    let history: String = a["history"].as_array().map(|hs| hs.iter().map(|h| {
+        let net = h["net"].as_i64().unwrap_or(0);
+        let sign = if net < 0 { "-" } else { "+" };
+        format!(
+            r#"<tr><td class="mono">{height}</td><td class="mono"><a href="/explorer/tx/{txid}">{tshort}…</a></td><td>{kind}</td><td class="mono" style="color:{color}">{sign}{amt} BLOCK</td><td class="mono">{when}</td></tr>"#,
+            height = h["height"].as_u64().unwrap_or(0),
+            txid = h["txid"].as_str().unwrap_or(""),
+            tshort = &h["txid"].as_str().unwrap_or("")[..16.min(h["txid"].as_str().unwrap_or("").len())],
+            kind = h["kind"].as_str().unwrap_or("?"),
+            color = if net < 0 { "#f0948f" } else { "#4ade80" },
+            sign = sign,
+            amt = fmt_block(net.unsigned_abs()),
+            when = ago_ts(h["time"].as_u64().unwrap_or(0)),
+        )
+    }).collect()).unwrap_or_default();
+    let body = format!(
+        r##"{search}<h1>Address</h1>
+<p class="sub mono">{addr}</p>
+<div class="cards">{c1}{c2}{c3}{c4}</div>
+<h2>History <span class="badge">latest {n}</span></h2>
+<table><tr><th>height</th><th>txid</th><th>kind</th><th>net</th><th>when</th></tr>{history}</table>"##,
+        search = explorer_search_box(),
+        addr = a["address"].as_str().unwrap_or(""),
+        c1 = card("Balance", format!("{} BLOCK", fmt_block(a["balance"].as_u64().unwrap_or(0)))),
+        c2 = card("Received", fmt_block(a["total_received"].as_u64().unwrap_or(0))),
+        c3 = card("Sent", fmt_block(a["total_sent"].as_u64().unwrap_or(0))),
+        c4 = card("Transactions", a["tx_count"].as_u64().unwrap_or(0).to_string()),
+        n = a["history"].as_array().map(|h| h.len()).unwrap_or(0),
+        history = history,
+    );
+    page_shell("Address", body)
+}
+
+fn page_notfound(what: &str, id: &str) -> String {
+    page_shell("Not found", format!(
+        r##"{search}<h1>Not found</h1><p class="note">No {what} <span class="mono">{id}</span> on this chain.</p><p class="sub"><a href="/explorer">← explorer</a></p>"##,
+        search = explorer_search_box(), what = what, id = clean(id),
+    ))
+}
+
 fn page_explorer(_reg: &Registry) -> String {
     let body = match chain_snapshot() {
         Some(c) => {
@@ -1474,22 +1710,26 @@ fn page_explorer(_reg: &Registry) -> String {
                 l["next_bits"].as_str().unwrap_or("?"),
             )).collect()).unwrap_or_default();
             let blocks: String = c["blocks"].as_array().map(|bs| bs.iter().map(|b| format!(
-                r#"<tr><td class="mono">{}</td><td class="mono">{}…</td><td class="mono">{}</td><td class="mono">{}</td><td class="mono">{}</td><td class="mono">{}…</td></tr>"#,
-                b["height"].as_u64().unwrap_or(0),
-                &b["hash"].as_str().unwrap_or("")[..16.min(b["hash"].as_str().unwrap_or("").len())],
-                b["lane"].as_str().unwrap_or("?"),
-                b["txs"].as_u64().unwrap_or(0),
-                fmt_block(b["reward"].as_u64().unwrap_or(0)),
-                &b["miner"].as_str().unwrap_or("")[..20.min(b["miner"].as_str().unwrap_or("").len())],
+                r#"<tr><td class="mono"><a href="/explorer/block/{h}">{h}</a></td><td class="mono"><a href="/explorer/block/{hash}">{hshort}…</a></td><td class="mono">{lane}</td><td class="mono">{txs}</td><td class="mono">{reward}</td><td class="mono"><a href="/explorer/address/{miner}">{mshort}…</a></td></tr>"#,
+                h = b["height"].as_u64().unwrap_or(0),
+                hash = b["hash"].as_str().unwrap_or(""),
+                hshort = &b["hash"].as_str().unwrap_or("")[..16.min(b["hash"].as_str().unwrap_or("").len())],
+                lane = b["lane"].as_str().unwrap_or("?"),
+                txs = b["txs"].as_u64().unwrap_or(0),
+                reward = fmt_block(b["reward"].as_u64().unwrap_or(0)),
+                miner = b["miner"].as_str().unwrap_or(""),
+                mshort = &b["miner"].as_str().unwrap_or("")[..20.min(b["miner"].as_str().unwrap_or("").len())],
             )).collect()).unwrap_or_default();
             format!(
                 r##"<h1>BLOCK Explorer</h1>
-<p class="sub">Live from this site's own <span class="mono">blockle-chain</span> node (updated every 30 s).</p>
+<p class="sub">Live from this site's own <span class="mono">blockle-chain</span> node. Search any height, block hash, transaction id, or address.</p>
+{search}
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Proof-of-work lanes</h2>
 <table><tr><th>lane</th><th>blocks</th><th>next bits</th></tr>{lanes}</table>
 <h2>Recent blocks</h2>
 <table><tr><th>height</th><th>hash</th><th>lane</th><th>txs</th><th>reward</th><th>miner</th></tr>{blocks}</table>"##,
+                search = explorer_search_box(),
                 c1 = card("Height", c["height"].as_u64().map(|h| h.to_string()).unwrap_or("—".into())),
                 c2 = card("Supply", format!("{} BLOCK", fmt_block(c["supply"].as_u64().unwrap_or(0)))),
                 c3 = card("Mempool", c["mempool"].as_u64().unwrap_or(0).to_string()),

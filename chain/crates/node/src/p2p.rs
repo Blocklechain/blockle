@@ -149,6 +149,9 @@ pub struct Node {
     peers: Mutex<HashMap<u64, PeerHandle>>,
     syncs: Mutex<HashMap<u64, SyncState>>,
     known_addrs: Mutex<HashSet<String>>,
+    /// Resolved socket addresses of live/in-flight outbound dials — the
+    /// dedupe that string comparison (hostname vs IP) cannot provide.
+    outbound_targets: Mutex<HashSet<std::net::SocketAddr>>,
     next_peer_id: AtomicU64,
     /// Bumped on every tip change; miners poll it to abandon stale work.
     pub(crate) tip_version: AtomicU64,
@@ -163,6 +166,7 @@ impl Node {
             peers: Mutex::new(HashMap::new()),
             syncs: Mutex::new(HashMap::new()),
             known_addrs: Mutex::new(known),
+            outbound_targets: Mutex::new(HashSet::new()),
             next_peer_id: AtomicU64::new(1),
             tip_version: AtomicU64::new(0),
         })
@@ -249,10 +253,23 @@ impl Node {
     }
 
     fn dial(self: &Arc<Self>, addr: String) {
+        use std::net::ToSocketAddrs;
+        let Some(resolved) = addr.to_socket_addrs().ok().and_then(|mut i| i.next()) else {
+            println!("[p2p] cannot resolve {addr}");
+            return;
+        };
+        // One outbound connection per resolved endpoint, however it's
+        // spelled (blockle.org:18444 == 144.126.133.21:18444).
+        if !self.outbound_targets.lock().unwrap().insert(resolved) {
+            return;
+        }
         let node = self.clone();
-        thread::spawn(move || match TcpStream::connect(&addr) {
-            Ok(stream) => node.handle_peer(stream),
-            Err(e) => println!("[p2p] could not connect to {addr}: {e}"),
+        thread::spawn(move || {
+            match TcpStream::connect(resolved) {
+                Ok(stream) => node.clone().handle_peer(stream),
+                Err(e) => println!("[p2p] could not connect to {addr}: {e}"),
+            }
+            node.outbound_targets.lock().unwrap().remove(&resolved);
         });
     }
 
@@ -398,7 +415,9 @@ impl Node {
                     if let Some(peer) = self.peers.lock().unwrap().get_mut(&peer_id) {
                         peer.listen = Some(addr.clone());
                     }
-                    self.known_addrs.lock().unwrap().insert(addr);
+                    if !addr.starts_with("0.0.0.0") && !addr.starts_with("[::]") {
+                        self.known_addrs.lock().unwrap().insert(addr);
+                    }
                 }
                 self.maybe_sync(peer_id, &total_work);
             }
@@ -433,7 +452,9 @@ impl Node {
             Message::Addr { addrs } => {
                 let mut known = self.known_addrs.lock().unwrap();
                 for a in addrs.into_iter().take(100) {
-                    known.insert(a);
+                    if !a.starts_with("0.0.0.0") && !a.starts_with("[::]") {
+                        known.insert(a);
+                    }
                 }
             }
             Message::Ping => self.send_to(peer_id, Message::Pong),

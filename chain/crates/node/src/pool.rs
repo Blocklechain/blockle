@@ -120,7 +120,20 @@ pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
 }
 
 fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>, mut stream: TcpStream) {
-    let Some(body) = read_http_body(&mut stream) else { return };
+    let Some((method_line, body)) = read_http_request(&mut stream) else { return };
+    let mut parts = method_line.split_whitespace();
+    let http_method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("/").to_string();
+    if http_method == "GET" {
+        let (status, payload) = explorer_get(&node, &path);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        return;
+    }
     let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
@@ -248,7 +261,13 @@ fn submitauxblock(
     }
 }
 
-fn read_http_body(stream: &mut TcpStream) -> Option<Vec<u8>> {
+fn read_http_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+    let (head, body) = read_http_raw(stream)?;
+    let first = head.lines().next().unwrap_or("").to_string();
+    Some((first, body))
+}
+
+fn read_http_raw(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     let header_end;
@@ -266,8 +285,9 @@ fn read_http_body(stream: &mut TcpStream) -> Option<Vec<u8>> {
             return None;
         }
     }
-    let headers = String::from_utf8_lossy(&buf[..header_end]).to_lowercase();
-    let len: usize = headers
+    let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+    let len: usize = head
+        .to_lowercase()
         .lines()
         .find_map(|l| l.strip_prefix("content-length:"))
         .and_then(|v| v.trim().parse().ok())
@@ -279,7 +299,7 @@ fn read_http_body(stream: &mut TcpStream) -> Option<Vec<u8>> {
         }
         buf.extend_from_slice(&tmp[..n]);
     }
-    Some(buf[header_end..].to_vec())
+    Some((head, buf[header_end..].to_vec()))
 }
 
 /// Length of a serialized legacy bitcoin transaction starting at `b[0]`.
@@ -361,4 +381,347 @@ fn parse_namecoin_auxpow(raw: &[u8], algo: &str) -> Result<AuxPow, String> {
         chain_branch,
         chain_index,
     })
+}
+
+// ================================================================================================
+// Explorer API (GET endpoints on the aux/work listener)
+// ================================================================================================
+
+fn jhash(h: &[u8; 32]) -> String {
+    display_hash(h)
+}
+
+/// Resolve every historical outpoint to (recipient, amount) — the chain is
+/// the index. Linear, fine at prototype scale.
+fn outpoint_index(chain: &Chain) -> HashMap<(blockle_core::Hash32, u32), (Address, u64)> {
+    let mut map = HashMap::new();
+    for b in &chain.blocks {
+        for tx in &b.transactions {
+            let txid = tx.txid();
+            for (vout, o) in tx.outputs.iter().enumerate() {
+                map.insert((txid, vout as u32), (o.recipient, o.amount));
+            }
+        }
+    }
+    map
+}
+
+fn tx_kind(tx: &blockle_core::Transaction) -> &'static str {
+    if tx.is_coinbase() {
+        "coinbase"
+    } else if tx.shielded.is_some() {
+        "shielded"
+    } else if tx.contract.is_some() {
+        "contract"
+    } else {
+        "transfer"
+    }
+}
+
+fn tx_json(
+    chain: &Chain,
+    idx: &HashMap<(blockle_core::Hash32, u32), (Address, u64)>,
+    tx: &blockle_core::Transaction,
+    height: Option<u64>,
+    time: Option<u32>,
+) -> Value {
+    let txid = tx.txid();
+    let inputs: Vec<Value> = tx
+        .inputs
+        .iter()
+        .map(|i| {
+            let resolved = idx.get(&(i.prev.txid, i.prev.vout));
+            json!({
+                "prev_txid": jhash(&i.prev.txid),
+                "prev_vout": i.prev.vout,
+                "address": resolved.map(|(a, _)| encode_address(a)),
+                "amount": resolved.map(|(_, v)| *v),
+            })
+        })
+        .collect();
+    let outputs: Vec<Value> = tx
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(vout, o)| {
+            json!({
+                "vout": vout,
+                "address": encode_address(&o.recipient),
+                "amount": o.amount,
+            })
+        })
+        .collect();
+    let in_total: u64 = tx
+        .inputs
+        .iter()
+        .filter_map(|i| idx.get(&(i.prev.txid, i.prev.vout)).map(|(_, v)| *v))
+        .sum();
+    let out_total: u64 = tx.outputs.iter().map(|o| o.amount).sum();
+    let fee = if tx.is_coinbase() || tx.shielded.is_some() {
+        None
+    } else {
+        in_total.checked_sub(out_total)
+    };
+    let confirmations = height
+        .and_then(|h| chain.height().map(|tip| tip - h + 1));
+    json!({
+        "txid": jhash(&txid),
+        "kind": tx_kind(tx),
+        "block_height": height,
+        "time": time,
+        "confirmations": confirmations,
+        "inputs": inputs,
+        "outputs": outputs,
+        "total_out": out_total,
+        "fee": fee,
+        "shielded": tx.shielded.as_ref().map(|b| json!({
+            "spends": b.spends.len(),
+            "outputs": b.outputs.len(),
+            "hidden_transfers": b.transfers.len(),
+            "note": "amounts in the shielded pool are not visible on chain",
+        })),
+        "contract": tx.contract.is_some(),
+        "size": tx.serialized_size(),
+    })
+}
+
+fn block_summary(chain: &Chain, height: usize, b: &Block) -> Value {
+    let reward: u64 = b.transactions[0].outputs.iter().map(|o| o.amount).sum();
+    json!({
+        "height": height,
+        "hash": jhash(&b.header.hash()),
+        "time": b.header.time,
+        "lane": Chain::lane_of(b),
+        "txs": b.transactions.len(),
+        "reward": reward,
+        "miner": b.transactions[0].outputs.first().map(|o| encode_address(&o.recipient)),
+        "size": b.serialized_size(),
+    })
+}
+
+fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
+    let (chain, mempool) = node.snapshot();
+    let ok = |v: Value| ("200 OK", v.to_string());
+    let err404 = |m: &str| ("404 Not Found", json!({"error": m}).to_string());
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let qget = |k: &str| {
+        query
+            .split('&')
+            .find_map(|kv| kv.split_once('=').filter(|(key, _)| *key == k).map(|(_, v)| v))
+    };
+
+    match route {
+        "/explorer/stats" => {
+            let supply: u64 = chain
+                .blocks
+                .iter()
+                .map(|b| b.transactions[0].outputs.iter().map(|o| o.amount).sum::<u64>())
+                .sum();
+            let lanes: Vec<Value> = chain
+                .lanes()
+                .iter()
+                .map(|lane| {
+                    let blocks: Vec<(usize, &Block)> = chain
+                        .blocks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, b)| Chain::lane_of(b) == *lane)
+                        .collect();
+                    let avg_interval = if blocks.len() >= 2 {
+                        let times: Vec<i64> =
+                            blocks.iter().map(|(_, b)| b.header.time as i64).collect();
+                        Some((times.last().unwrap() - times.first().unwrap()) / (times.len() as i64 - 1).max(1))
+                    } else {
+                        None
+                    };
+                    json!({
+                        "lane": lane,
+                        "blocks": blocks.len(),
+                        "next_bits": format!("{:08x}", chain.next_bits_for(lane)),
+                        "last_block_height": blocks.last().map(|(h, _)| h),
+                        "avg_interval_secs": avg_interval,
+                    })
+                })
+                .collect();
+            ok(json!({
+                "name": chain.params.name,
+                "ticker": chain.params.ticker,
+                "height": chain.height(),
+                "tip": chain.blocks.last().map(|b| json!({
+                    "hash": jhash(&b.header.hash()), "time": b.header.time})),
+                "supply": supply,
+                "premine": chain.params.premine,
+                "mined": supply.saturating_sub(chain.params.premine),
+                "subsidy": chain.params.block_subsidy(chain.blocks.len() as u64),
+                "halving_interval": chain.params.halving_interval,
+                "utxos": chain.utxos.len(),
+                "mempool": mempool.len(),
+                "lanes": lanes,
+            }))
+        }
+        "/explorer/blocks" => {
+            let tip = chain.blocks.len().saturating_sub(1);
+            let from: usize = qget("from").and_then(|v| v.parse().ok()).unwrap_or(tip);
+            let limit: usize = qget("limit").and_then(|v| v.parse().ok()).unwrap_or(25).min(50);
+            let from = from.min(tip);
+            let blocks: Vec<Value> = (0..=from)
+                .rev()
+                .take(limit)
+                .filter_map(|h| chain.blocks.get(h).map(|b| block_summary(&chain, h, b)))
+                .collect();
+            ok(json!({"tip": tip, "from": from, "blocks": blocks}))
+        }
+        p if p.starts_with("/explorer/block/") => {
+            let id = &p["/explorer/block/".len()..];
+            let found = if let Ok(h) = id.parse::<usize>() {
+                chain.blocks.get(h).map(|b| (h, b))
+            } else {
+                chain
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .find(|(_, b)| jhash(&b.header.hash()) == id)
+            };
+            let Some((height, b)) = found else { return err404("no such block") };
+            let idx = outpoint_index(&chain);
+            let txs: Vec<Value> = b
+                .transactions
+                .iter()
+                .map(|t| tx_json(&chain, &idx, t, Some(height as u64), Some(b.header.time)))
+                .collect();
+            let aux = b.aux_pow.as_ref().map(|a| json!({
+                "parent_algo": a.parent_algo,
+                "parent_header_size": a.parent_header.len(),
+                "parent_pow_hash": blockle_pow::parent::pow_hash(&a.parent_algo, &a.parent_header)
+                    .map(|h| jhash(&h)),
+                "chain_index": a.chain_index,
+                "commitment_tree_depth": a.chain_branch.len(),
+            }));
+            ok(json!({
+                "height": height,
+                "hash": jhash(&b.header.hash()),
+                "prev_hash": jhash(&b.header.prev_hash),
+                "merkle_root": jhash(&b.header.merkle_root),
+                "time": b.header.time,
+                "bits": format!("{:08x}", b.header.bits),
+                "nonce": hex::encode(b.header.nonce),
+                "solution_bytes": b.header.solution.len(),
+                "lane": Chain::lane_of(b),
+                "aux_pow": aux,
+                "size": b.serialized_size(),
+                "confirmations": chain.height().map(|t| t - height as u64 + 1),
+                "txs": txs,
+            }))
+        }
+        p if p.starts_with("/explorer/tx/") => {
+            let id = &p["/explorer/tx/".len()..];
+            let idx = outpoint_index(&chain);
+            for (h, b) in chain.blocks.iter().enumerate() {
+                for tx in &b.transactions {
+                    if jhash(&tx.txid()) == id {
+                        return ok(json!({
+                            "block_hash": jhash(&b.header.hash()),
+                            "tx": tx_json(&chain, &idx, tx, Some(h as u64), Some(b.header.time)),
+                        }));
+                    }
+                }
+            }
+            for tx in &mempool {
+                if jhash(&tx.txid()) == id {
+                    return ok(json!({
+                        "block_hash": null,
+                        "tx": tx_json(&chain, &idx, tx, None, None),
+                    }));
+                }
+            }
+            err404("no such transaction")
+        }
+        p if p.starts_with("/explorer/address/") => {
+            let addr_s = &p["/explorer/address/".len()..];
+            let Ok(addr) = decode_address(addr_s) else { return err404("bad address") };
+            let idx = outpoint_index(&chain);
+            let mut history = Vec::new();
+            let mut received = 0u64;
+            let mut sent = 0u64;
+            for (h, b) in chain.blocks.iter().enumerate() {
+                for tx in &b.transactions {
+                    let got: u64 = tx
+                        .outputs
+                        .iter()
+                        .filter(|o| o.recipient == addr)
+                        .map(|o| o.amount)
+                        .sum();
+                    let spent: u64 = tx
+                        .inputs
+                        .iter()
+                        .filter_map(|i| idx.get(&(i.prev.txid, i.prev.vout)))
+                        .filter(|(a, _)| *a == addr)
+                        .map(|(_, v)| *v)
+                        .sum();
+                    if got == 0 && spent == 0 {
+                        continue;
+                    }
+                    received += got;
+                    sent += spent;
+                    history.push(json!({
+                        "txid": jhash(&tx.txid()),
+                        "height": h,
+                        "time": b.header.time,
+                        "kind": tx_kind(tx),
+                        "net": got as i128 - spent as i128,
+                    }));
+                }
+            }
+            let cut = history.len().saturating_sub(100);
+            ok(json!({
+                "address": addr_s,
+                "balance": chain.balance(&addr),
+                "utxos": chain.utxos.values().filter(|e| e.output.recipient == addr).count(),
+                "total_received": received,
+                "total_sent": sent,
+                "tx_count": history.len(),
+                "history": history.split_off(cut).into_iter().rev().collect::<Vec<_>>(),
+            }))
+        }
+        "/explorer/mempool" => {
+            let idx = outpoint_index(&chain);
+            let txs: Vec<Value> = mempool
+                .iter()
+                .map(|t| tx_json(&chain, &idx, t, None, None))
+                .collect();
+            ok(json!({"count": txs.len(), "txs": txs}))
+        }
+        p if p.starts_with("/explorer/search/") => {
+            let q = p["/explorer/search/".len()..].trim().to_string();
+            if q.chars().all(|c| c.is_ascii_digit()) && !q.is_empty() {
+                if chain.blocks.len() > q.parse::<usize>().unwrap_or(usize::MAX) {
+                    return ok(json!({"type": "block", "id": q}));
+                }
+                return err404("no block at that height");
+            }
+            if q.starts_with("block1") {
+                if decode_address(&q).is_ok() {
+                    return ok(json!({"type": "address", "id": q}));
+                }
+                return err404("bad address");
+            }
+            if q.len() == 64 && q.chars().all(|c| c.is_ascii_hexdigit()) {
+                if chain.blocks.iter().any(|b| jhash(&b.header.hash()) == q) {
+                    return ok(json!({"type": "block", "id": q}));
+                }
+                let is_tx = chain
+                    .blocks
+                    .iter()
+                    .flat_map(|b| b.transactions.iter())
+                    .chain(mempool.iter())
+                    .any(|t| jhash(&t.txid()) == q);
+                if is_tx {
+                    return ok(json!({"type": "tx", "id": q}));
+                }
+                return err404("no block or transaction with that hash");
+            }
+            err404("unrecognized query (height, hash, txid, or block1… address)")
+        }
+        _ => err404("unknown endpoint"),
+    }
 }

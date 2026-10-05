@@ -35,6 +35,10 @@ struct Cli {
     /// /api/mps/{name} and rendered on the homepage.
     #[arg(long = "mps")]
     mps: Vec<String>,
+    /// Node explorer API base URL (aux-work listener), e.g.
+    /// http://127.0.0.1:8445 — enables block/tx/address pages.
+    #[arg(long)]
+    chain_api: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -55,6 +59,7 @@ fn main() -> Result<()> {
         domain: cli.domain,
         chain_file: cli.chain_file,
         mps_files,
+        chain_api: cli.chain_api,
     })?;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
