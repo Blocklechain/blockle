@@ -41,6 +41,9 @@ const RETARGET_SECS: u64 = 30;
 struct Client {
     sender: Sender<String>,
     extranonce1: [u8; 4],
+    /// Negotiated version-rolling mask (mining.configure / BIP 310);
+    /// zero when the miner didn't negotiate.
+    version_mask: u32,
     subscribed: bool,
     address: Option<Address>,
     worker: String,
@@ -338,6 +341,7 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
         Client {
             sender: tx,
             extranonce1,
+            version_mask: 0,
             subscribed: false,
             address: None,
             worker: String::new(),
@@ -392,6 +396,33 @@ fn handle_request(
     params: &Value,
 ) -> Result<Value, String> {
     match method {
+        "mining.configure" => {
+            // BIP 310: modern sha256d ASICs roll header version bits.
+            // Without this negotiation their reconstructed headers never
+            // match ours and every share dies as "low diff".
+            const MASK: u32 = 0x1fff_e000;
+            let wants_rolling = params
+                .get(0)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().any(|x| x.as_str() == Some("version-rolling")))
+                .unwrap_or(false);
+            if wants_rolling {
+                if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
+                    c.version_mask = MASK;
+                }
+                println!(
+                    "[stratum-direct:{}] miner {client_id} negotiated version-rolling",
+                    state.algo
+                );
+                Ok(json!({
+                    "version-rolling": true,
+                    "version-rolling.mask": format!("{MASK:08x}"),
+                    "version-rolling.min-bit-count": 2,
+                }))
+            } else {
+                Ok(json!({}))
+            }
+        }
         "mining.subscribe" => {
             let agent = params
                 .get(0)
@@ -450,14 +481,19 @@ fn handle_request(
                 .map_err(|_| "bad ntime hex")?;
             let nonce = u32::from_str_radix(p[4].as_str().ok_or("bad nonce")?, 16)
                 .map_err(|_| "bad nonce hex")?;
+            // BIP 310 version-rolling: 6th param carries the rolled bits.
+            let version_bits = p
+                .get(5)
+                .and_then(|v| v.as_str())
+                .and_then(|h| u32::from_str_radix(h, 16).ok());
 
-            let (en1, worker, miner_addr) = {
+            let (en1, worker, miner_addr, vmask) = {
                 let clients = state.clients.lock().unwrap();
                 let c = clients.get(&client_id).ok_or("gone")?;
                 let Some(addr) = c.address else {
                     return Err("authorize before submitting".into());
                 };
-                (c.extranonce1, c.worker.clone(), addr)
+                (c.extranonce1, c.worker.clone(), addr, c.version_mask)
             };
             let (block, coinbase, header, nbits) = {
                 let jobs = state.jobs.lock().unwrap();
@@ -475,8 +511,12 @@ fn handle_request(
                 coinbase.extend_from_slice(&en2);
                 coinbase.extend_from_slice(&job.coinb2);
                 let merkle = sha256d(&coinbase);
+                let version = match version_bits {
+                    Some(bits) => (job.version & !vmask) | (bits & vmask),
+                    None => job.version,
+                };
                 let mut header = [0u8; 80];
-                header[0..4].copy_from_slice(&job.version.to_le_bytes());
+                header[0..4].copy_from_slice(&version.to_le_bytes());
                 // prevhash stays zero
                 header[36..68].copy_from_slice(&merkle);
                 header[68..72].copy_from_slice(&ntime.to_le_bytes());
