@@ -252,6 +252,20 @@ impl Node {
         }
     }
 
+    fn listen_port_of(listen: &str) -> u16 {
+        listen.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(0)
+    }
+
+    /// Addresses that must never be gossiped or auto-dialed: wildcard
+    /// binds and loopback (a gossiped 127.0.0.1 is someone else's
+    /// loopback — dialing it connects a node to itself).
+    fn is_unroutable(addr: &str) -> bool {
+        addr.starts_with("0.0.0.0")
+            || addr.starts_with("[::]")
+            || addr.starts_with("127.")
+            || addr.starts_with("localhost")
+    }
+
     fn dial(self: &Arc<Self>, addr: String) {
         use std::net::ToSocketAddrs;
         let Some(resolved) = addr.to_socket_addrs().ok().and_then(|mut i| i.next()) else {
@@ -260,9 +274,24 @@ impl Node {
         };
         // One outbound connection per resolved endpoint, however it's
         // spelled (blockle.org:18444 == 144.126.133.21:18444).
+        // Self-detection without a wire change: ask the OS which local
+        // address would route to the target — if that's the target's own
+        // IP and the port is our listen port, the "peer" is this node.
+        if resolved.port() == Self::listen_port_of(&self.config.listen) {
+            if let Ok(probe) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if probe.connect(resolved).is_ok() {
+                    if let Ok(local) = probe.local_addr() {
+                        if local.ip() == resolved.ip() {
+                            return; // that's us — never dial ourselves
+                        }
+                    }
+                }
+            }
+        }
         if !self.outbound_targets.lock().unwrap().insert(resolved) {
             return;
         }
+        println!("[p2p] dialing {addr}");
         let node = self.clone();
         thread::spawn(move || {
             match TcpStream::connect(resolved) {
@@ -287,13 +316,16 @@ impl Node {
             let known = self.known_addrs.lock().unwrap();
             known
                 .iter()
-                .filter(|a| !connected.contains(*a) && **a != self.config.listen)
+                .filter(|a| {
+                    !connected.contains(*a)
+                        && **a != self.config.listen
+                        && !Self::is_unroutable(a)
+                })
                 .take(OUTBOUND_TARGET - peer_count)
                 .cloned()
                 .collect()
         };
         for addr in candidates {
-            println!("[p2p] discovered peer {addr}, dialing");
             self.dial(addr);
         }
     }
@@ -415,7 +447,7 @@ impl Node {
                     if let Some(peer) = self.peers.lock().unwrap().get_mut(&peer_id) {
                         peer.listen = Some(addr.clone());
                     }
-                    if !addr.starts_with("0.0.0.0") && !addr.starts_with("[::]") {
+                    if !Self::is_unroutable(&addr) {
                         self.known_addrs.lock().unwrap().insert(addr);
                     }
                 }
@@ -444,6 +476,7 @@ impl Node {
                     .lock()
                     .unwrap()
                     .iter()
+                    .filter(|a| !Self::is_unroutable(a))
                     .take(100)
                     .cloned()
                     .collect();
@@ -452,7 +485,7 @@ impl Node {
             Message::Addr { addrs } => {
                 let mut known = self.known_addrs.lock().unwrap();
                 for a in addrs.into_iter().take(100) {
-                    if !a.starts_with("0.0.0.0") && !a.starts_with("[::]") {
+                    if !Self::is_unroutable(&a) {
                         known.insert(a);
                     }
                 }
