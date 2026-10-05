@@ -9,6 +9,7 @@ pub mod btc;
 pub mod config;
 pub mod dashboard;
 pub mod discover;
+pub mod explorer;
 pub mod genadapter;
 pub mod http;
 pub mod ledger;

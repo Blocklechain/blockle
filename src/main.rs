@@ -6,7 +6,7 @@
 
 use blockle::{
     adapter, adapters, config, dashboard, discover, genadapter, http, ledger, miner, probe,
-    simchain, stratum,
+    explorer, simchain, stratum,
 };
 
 use std::path::PathBuf;
@@ -76,6 +76,20 @@ enum Cmd {
         /// Where to write <coin>.conf and <coin>.service.
         #[arg(long, default_value = ".")]
         out_dir: PathBuf,
+    },
+    /// Serve a block explorer for a Bitcoin-family chain over its RPC.
+    Explorer {
+        /// Node JSON-RPC URL, e.g. http://user:pass@127.0.0.1:9342/
+        #[arg(long)]
+        rpc: String,
+        #[arg(long, default_value = "0.0.0.0:8700")]
+        listen: String,
+        /// Coin ticker shown in the UI (e.g. PERBUG).
+        #[arg(long, default_value = "COIN")]
+        coin: String,
+        /// Public domain for titles/footer (e.g. perbug.com).
+        #[arg(long, default_value = "")]
+        domain: String,
     },
     /// Run a pool from a generated configuration.
     Serve {
@@ -177,6 +191,10 @@ fn main() -> Result<()> {
             add_chain(name, rpc, out, serve, payout_script, stratum, dashboard, scheme, fee, blockle_address)
         }
         Cmd::ParentNode { coin, prune_mb, data_root, out_dir } => parent_node(&coin, prune_mb, &data_root, &out_dir),
+        Cmd::Explorer { rpc, listen, coin, domain } => {
+            let domain = if domain.is_empty() { coin.to_lowercase() } else { domain };
+            explorer::serve(explorer::ExplorerConfig { rpc, listen, coin, domain })
+        }
         Cmd::Serve { config } => serve_pool(&PoolConfig::load(&config)?, true),
         Cmd::Inspect { rpc, name, generate_adapter, json, out_dir } => {
             let profile = probe::probe(&rpc);
