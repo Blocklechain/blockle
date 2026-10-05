@@ -1009,9 +1009,9 @@ fn page_shell(title: &str, body: String) -> String {
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
 <a href="/mine">Mine with us</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
 <span class="spacer"></span>
-<a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
+<a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
-<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a></footer>
+<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -1133,6 +1133,7 @@ fn page_home(reg: &Registry) -> String {
 <a class="btn primary" href="/mine">Mine with us</a>
 <a class="btn" href="/wallet">Download Wallet</a>
 <a class="btn" href="/explorer">Explorer</a>
+<a class="btn" href="https://discord.gg/tx4MfyD9Vu">Discord ↗</a>
 <a class="btn" href="{github}">GitHub ↗</a>
 </div>
 </div>
@@ -1601,7 +1602,7 @@ username: block1…youraddress.rig1     password: x</code></pre>
 {algo_sections}
 
 <h2>Hardware</h2>
-<p class="sub">BLOCK's native lane is Equihash (200,9) — Zcash-class ASICs and GPU miners (EWBF/lolMiner-compatible stratum) connect directly today. Other ASIC families join by merge-mining through a parent pool (below). Miner-firmware byte-order quirks are still being shaken down against real hardware; if your ASIC rejects jobs, <a href="/developers">tell us</a>.</p>
+<p class="sub">BLOCK's native lane is Equihash (200,9) — Zcash-class ASICs and GPU miners (EWBF/lolMiner-compatible stratum) connect directly today. Other ASIC families join by merge-mining through a parent pool (below). Miner-firmware byte-order quirks are still being shaken down against real hardware; if your ASIC rejects jobs, tell us on <a href="https://discord.gg/tx4MfyD9Vu">Discord</a>.</p>
 
 <h2 id="stats">Pool stats APIs <span class="badge">MiningPoolStats-compatible JSON</span></h2>
 <table><tr><th>pool</th><th>endpoint</th></tr>
