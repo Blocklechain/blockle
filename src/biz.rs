@@ -1497,16 +1497,12 @@ fn public_stratum(addr: &str) -> String {
     let port = body.rsplit(':').next().unwrap_or("");
     let host = body.rsplitn(2, ':').nth(1).unwrap_or(body);
     let needs = host == "0.0.0.0" || host == "[::]" || host == "127.0.0.1" || host == "localhost";
-    let out = if needs {
+    let hostport = if needs {
         format!("{}:{}", site_domain(), port)
     } else {
         body.to_string()
     };
-    if addr.starts_with("stratum+tcp://") {
-        format!("stratum+tcp://{out}")
-    } else {
-        out
-    }
+    format!("stratum+tcp://{hostport}")
 }
 
 fn stat_endpoint(st: &Value) -> String {
@@ -1539,7 +1535,7 @@ fn miner_example(algo: &str, endpoint: &str, addr_hint: &str) -> String {
         "x11" => ("<x11 miner>", ""),
         _ => ("cgminer", ""),
     };
-    format!("{prog} -o stratum+tcp://{endpoint} -u {addr_hint}.rig1 -p x{extra}")
+    format!("{prog} -o {endpoint} -u {addr_hint}.rig1 -p x{extra}")
 }
 
 fn page_pool_detail(name: &str, st: &Value) -> String {
@@ -1592,7 +1588,7 @@ fn page_pool_detail(name: &str, st: &Value) -> String {
         r##"<h1>{shown} · {name} <span class="badge">{algo}</span></h1>
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Connect</h2>
-<pre><code>stratum+tcp://{endpoint}
+<pre><code>{endpoint}
 username: {user_line}     password: {pass_line}
 
 # example
