@@ -3,6 +3,7 @@
 
 pub mod httpc;
 pub mod pool;
+pub mod rpc;
 pub mod stratum_btc;
 pub mod walletfile;
 pub mod p2p;

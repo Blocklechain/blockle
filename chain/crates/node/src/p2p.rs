@@ -172,6 +172,10 @@ impl Node {
         })
     }
 
+    pub fn peer_count(&self) -> usize {
+        self.peers.lock().unwrap().len()
+    }
+
     pub fn tip_generation(&self) -> u64 {
         self.tip_version.load(Ordering::SeqCst)
     }

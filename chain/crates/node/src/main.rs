@@ -112,6 +112,16 @@ enum Cmd {
         /// e.g. 127.0.0.1:8445.
         #[arg(long)]
         aux_http: Option<String>,
+        /// Bitcoin-compatible JSON-RPC server (for explorers, wallets,
+        /// tooling), e.g. 127.0.0.1:9790.
+        #[arg(long)]
+        rpc: Option<String>,
+        /// HTTP basic-auth user for --rpc (optional).
+        #[arg(long, default_value = "")]
+        rpc_user: String,
+        /// HTTP basic-auth password for --rpc (optional).
+        #[arg(long, default_value = "")]
+        rpc_password: String,
         /// Dedicated direct BLOCK pool for one parent algorithm:
         /// "algo=listen" (repeatable), e.g. sha256d=0.0.0.0:3340.
         #[arg(long = "stratum-direct")]
@@ -337,10 +347,10 @@ fn main() -> Result<()> {
             println!("{}", encode_address(&kp.address()));
             Ok(())
         }
-        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, stratum_direct, stratum_direct_pplns, mine_interval } => start(
+        Cmd::Start { listen, connect, mine, mine_blocks, address, stratum, stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, rpc, rpc_user, rpc_password, stratum_direct, stratum_direct_pplns, mine_interval } => start(
             &datadir, params, listen, connect, mine, mine_blocks, address, stratum,
-            stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, stratum_direct,
-            stratum_direct_pplns, mine_interval,
+            stratum_pplns, pool_fee, pplns_window, pool_host, aux_http, rpc, rpc_user,
+            rpc_password, stratum_direct, stratum_direct_pplns, mine_interval,
         ),
         Cmd::Mine { blocks, address } => mine_cmd(&datadir, params, blocks, address),
         Cmd::Balance { address } => balance(&datadir, params, address),
@@ -485,6 +495,9 @@ fn start(
     pplns_window: usize,
     pool_host: Option<String>,
     aux_http: Option<String>,
+    rpc: Option<String>,
+    rpc_user: String,
+    rpc_password: String,
     stratum_direct: Vec<String>,
     stratum_direct_pplns: Vec<String>,
     mine_interval: Option<u64>,
@@ -603,6 +616,11 @@ fn start(
     }
     if let Some(aux_addr) = aux_http {
         blockle_node::pool::spawn_aux_http(node.clone(), aux_addr);
+    }
+    if let Some(rpc_addr) = rpc {
+        let auth = (!rpc_user.is_empty() || !rpc_password.is_empty())
+            .then(|| blockle_node::rpc::RpcAuth { user: rpc_user, pass: rpc_password });
+        blockle_node::rpc::serve(node.clone(), rpc_addr, auth);
     }
     if run_payouts {
         let kp = kp.expect("pool implies wallet");
