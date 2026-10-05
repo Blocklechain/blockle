@@ -444,6 +444,7 @@ fn build_adapter(cfg: &PoolConfig) -> Result<Box<dyn adapter::PoolAdapter>> {
             Ok(Box::new(BitcoinAdapter::new(
                 &cfg.chain.rpc,
                 &cfg.chain.name,
+                &cfg.chain.algorithm,
                 cfg.chain.field_map.clone(),
                 script,
                 cfg.chain.aux.clone(),

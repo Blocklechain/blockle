@@ -120,6 +120,7 @@ struct JobData {
 }
 
 pub struct BitcoinAdapter {
+    pow: PowAlgo,
     rpc: RpcClient,
     map: FieldMap,
     chain: String,
@@ -134,16 +135,54 @@ pub struct BitcoinAdapter {
     last_reward: Option<u64>,
 }
 
+/// Parent proof-of-work hash family for share/block validation. The block
+/// id (display, submitblock) stays sha256d for every bitcoin-family chain;
+/// only the difficulty-relevant hash differs.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PowAlgo {
+    Sha256d,
+    Scrypt,
+    X11,
+}
+
+impl PowAlgo {
+    pub fn from_name(algorithm: &str) -> Self {
+        let a = algorithm.to_lowercase();
+        if a.contains("scrypt") {
+            PowAlgo::Scrypt
+        } else if a.contains("x11") {
+            PowAlgo::X11
+        } else {
+            PowAlgo::Sha256d
+        }
+    }
+
+    fn hash(&self, header: &[u8]) -> [u8; 32] {
+        match self {
+            PowAlgo::Sha256d => btc::dsha256(header),
+            PowAlgo::Scrypt => {
+                let params = scrypt::Params::new(10, 1, 1, 32).expect("static");
+                let mut out = [0u8; 32];
+                scrypt::scrypt(header, header, &params, &mut out).expect("len");
+                out
+            }
+            PowAlgo::X11 => rs_x11_hash::get_x11_hash(header),
+        }
+    }
+}
+
 impl BitcoinAdapter {
     pub fn new(
         rpc_url: &str,
         chain: &str,
+        algorithm: &str,
         map: FieldMap,
         payout_script: Vec<u8>,
         aux: Vec<AuxConfig>,
     ) -> Self {
         BitcoinAdapter {
             rpc: RpcClient::new(rpc_url),
+            pow: PowAlgo::from_name(algorithm),
             map,
             chain: chain.to_string(),
             payout_script,
@@ -330,7 +369,9 @@ impl BitcoinAdapter {
         let nonce = u32::from_str_radix(&s.nonce_hex, 16)?;
         let header =
             btc::header_bytes(data.version, &data.prev_le, &root, ntime, data.nbits, nonce);
-        let hash = btc::dsha256(&header);
+        // Target comparisons use the chain's PoW hash; the block id (for
+        // display and submit bookkeeping) is always sha256d.
+        let hash = self.pow.hash(&header);
         Ok((header, coinbase, hash))
     }
 }

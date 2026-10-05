@@ -10,17 +10,43 @@ use anyhow::{anyhow, bail, Result};
 
 /// Parse `http://host:port[/path]` into (host:port, path).
 pub fn parse_url(url: &str) -> Result<(String, String)> {
+    let (host, path, _) = parse_url_auth(url)?;
+    Ok((host, path))
+}
+
+/// Like [`parse_url`] but also extracts `user:pass@` credentials as a
+/// ready-made basic-auth token (bitcoind-style RPC URLs).
+pub fn parse_url_auth(url: &str) -> Result<(String, String, Option<String>)> {
     let rest = url
         .strip_prefix("http://")
         .ok_or_else(|| anyhow!("only http:// URLs are supported (got {url:?})"))?;
-    let (hostport, path) = match rest.find('/') {
+    let (mut hostport, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
+    let mut auth = None;
+    if let Some(at) = hostport.rfind('@') {
+        auth = Some(base64(hostport[..at].as_bytes()));
+        hostport = &hostport[at + 1..];
+    }
     if hostport.is_empty() {
         bail!("empty host in {url:?}");
     }
-    Ok((hostport.to_string(), path.to_string()))
+    Ok((hostport.to_string(), path.to_string(), auth))
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// POST a body and return the response body. Timeouts keep probing snappy.
@@ -37,14 +63,17 @@ pub fn get(url: &str, timeout: Duration) -> Result<Vec<u8>> {
 }
 
 pub fn post(url: &str, content_type: &str, body: &[u8], timeout: Duration) -> Result<Vec<u8>> {
-    let (hostport, path) = parse_url(url)?;
+    let (hostport, path, auth) = parse_url_auth(url)?;
     let mut stream = TcpStream::connect(&hostport)
         .map_err(|e| anyhow!("cannot connect to {hostport}: {e}"))?;
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
+    let auth_header = auth
+        .map(|a| format!("Authorization: Basic {a}\r\n"))
+        .unwrap_or_default();
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nHost: {hostport}\r\n{auth_header}Content-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;

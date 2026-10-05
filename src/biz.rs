@@ -267,11 +267,24 @@ fn chain_snapshot() -> Option<Value> {
     serde_json::from_str(&raw).ok()
 }
 
-/// Live stats for one of our own pools (stratum stats file).
+/// Live stats for one of our own pools: a stratum stats file, or (when the
+/// configured value is a URL) a pool dashboard's stats endpoint.
 fn pool_stats(name: &str) -> Option<Value> {
     let (_, mps, _) = EXTRAS.get()?;
     let path = mps.iter().find(|(n, _)| n == name).map(|(_, p)| p)?;
+    let spec = path.to_string_lossy();
+    if spec.starts_with("http://") {
+        return serde_json::from_slice(&http::get(&spec, Duration::from_secs(4)).ok()?).ok();
+    }
     serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+/// All configured pool-stat feed names, in configuration order.
+fn pool_feed_names() -> Vec<String> {
+    EXTRAS
+        .get()
+        .map(|(_, mps, _)| mps.iter().map(|(n, _)| n.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// GET from the node's explorer API; None when unconfigured/unreachable.
@@ -551,6 +564,13 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
             }
         }
         "/mine" => ("200 OK", "text/html; charset=utf-8", page_mine(&reg).into_bytes()),
+        p if p.starts_with("/mine/") => {
+            let name = &p["/mine/".len()..];
+            match pool_stats(name) {
+                Some(st) => ("200 OK", "text/html; charset=utf-8", page_pool_detail(name, &st).into_bytes()),
+                None => ("404 Not Found", "text/html; charset=utf-8", page_notfound("pool", name).into_bytes()),
+            }
+        }
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
@@ -1434,6 +1454,133 @@ fn page_status(reg: &Registry) -> String {
     page_shell("Status", body)
 }
 
+/// Normalize the two live-stats shapes (chain-node stratum files and
+/// AutoPool dashboard stats.json) into one view.
+fn norm_stat<'a>(st: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|k| st.get(*k)).filter(|v| !v.is_null())
+}
+
+fn stat_hashrate(st: &Value) -> f64 {
+    norm_stat(st, &["hashrate_sols_est", "hashrate_est"]).and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+fn stat_miners(st: &Value) -> u64 {
+    norm_stat(st, &["workers", "miners_connected", "miners"]).and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+fn stat_blocks_found(st: &Value) -> u64 {
+    match norm_stat(st, &["blocks_found"]) {
+        Some(Value::Array(a)) => a.len() as u64,
+        Some(v) => v.as_u64().unwrap_or(0),
+        None => 0,
+    }
+}
+
+fn stat_algo(st: &Value) -> String {
+    norm_stat(st, &["algorithm"]).and_then(|v| v.as_str()).unwrap_or("equihash").to_string()
+}
+
+fn stat_endpoint(st: &Value) -> String {
+    norm_stat(st, &["endpoint", "stratum"]).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+fn stat_coin(st: &Value) -> String {
+    norm_stat(st, &["coin", "chain"]).and_then(|v| v.as_str()).unwrap_or("BLOCK").to_string()
+}
+
+fn stat_mode(st: &Value) -> String {
+    norm_stat(st, &["mode", "scheme"]).and_then(|v| v.as_str()).unwrap_or("solo").to_string()
+}
+
+/// Example miner invocation per algorithm family for the pool pages.
+fn miner_example(algo: &str, endpoint: &str) -> String {
+    let (prog, extra) = match algo {
+        "equihash" => ("<equihash miner (EWBF/lolMiner-class)>", " --pers auto"),
+        "scrypt" => ("cgminer --scrypt", ""),
+        "x11" => ("<x11 miner>", ""),
+        _ => ("cgminer", ""),
+    };
+    format!("{prog} -o stratum+tcp://{endpoint} -u block1YOURADDRESS.rig1 -p x{extra}")
+}
+
+fn page_pool_detail(name: &str, st: &Value) -> String {
+    let card = |k: &str, v: String| format!(r#"<div class="card"><div class="v">{v}</div><div class="k">{k}</div></div>"#);
+    let algo = stat_algo(st);
+    let endpoint = stat_endpoint(st);
+    let coin = stat_coin(st);
+    let is_block_pool = coin == "BLOCK";
+    let miners_rows: String = st.get("miners_detail").and_then(|v| v.as_array()).map(|ms| {
+        ms.iter().map(|m| format!(
+            r#"<tr><td class="mono">{}</td><td class="mono">{:.2}</td><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
+            clean(m["worker"].as_str().unwrap_or("?")),
+            m["hashrate_est"].as_f64().unwrap_or(0.0),
+            m["accepted"].as_u64().unwrap_or(0),
+            m["rejected"].as_u64().unwrap_or(0),
+        )).collect()
+    }).unwrap_or_default();
+    let miners_section = if miners_rows.is_empty() {
+        r#"<p class="sub">No miners connected right now — be the first.</p>"#.to_string()
+    } else {
+        format!(
+            r#"<p class="sub">Find your rig by the address you authorized with.</p>
+<table><tr><th>worker</th><th>hashrate est</th><th>accepted</th><th>rejected</th></tr>{miners_rows}</table>"#
+        )
+    };
+    let blocks_rows: String = st.get("recent_blocks").and_then(|v| v.as_array()).map(|bs| {
+        bs.iter().map(|b| {
+            let h = b["height"].as_u64().unwrap_or(0);
+            let hash = b["hash"].as_str().unwrap_or("");
+            let link = if is_block_pool {
+                format!(r#"<a href="/explorer/block/{hash}">{}…</a>"#, &hash[..16.min(hash.len())])
+            } else {
+                format!("{}…", &hash[..16.min(hash.len())])
+            };
+            format!(
+                r#"<tr><td class="mono">{h}</td><td class="mono">{link}</td><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
+                clean(b["finder"].as_str().unwrap_or("?")),
+                ago_ts(b["time"].as_u64().unwrap_or(0)),
+            )
+        }).collect()
+    }).unwrap_or_default();
+    let payout_copy = match stat_mode(st).as_str() {
+        "solo" | "solo-direct" => "Solo: every job's coinbase pays <b>your</b> address directly (minus the 1% fee). A block you find is yours at coinbase maturity — the pool never holds your funds.",
+        "pplns" => "PPLNS: shares are difficulty-weighted over a rolling window; found blocks settle on-chain to every contributor automatically after coinbase maturity (1% fee).",
+        _ => "Payouts per the pool's configured scheme (1% fee).",
+    };
+    let body = format!(
+        r##"<h1>{coin} · {name} <span class="badge">{algo}</span></h1>
+<div class="cards">{c1}{c2}{c3}{c4}</div>
+<h2>Connect</h2>
+<pre><code>stratum+tcp://{endpoint}
+username: block1…youraddress.rigname     password: x
+
+# example
+{example}</code></pre>
+<p class="sub">{payout_copy}</p>
+<h2>Miners connected <span class="badge">live</span></h2>
+{miners_section}
+<h2>Recent blocks</h2>
+<table><tr><th>height</th><th>hash</th><th>finder</th><th>when</th></tr>{blocks_rows}</table>
+<h2>Stats API</h2>
+<p class="sub mono"><a href="/api/mps/{name}">https://{domain}/api/mps/{name}</a> — MiningPoolStats-compatible JSON, updated every 15 s.</p>
+<p class="sub"><a href="/mine">← all pools</a></p>"##,
+        coin = coin,
+        name = name,
+        algo = algo,
+        c1 = card("Pool hashrate", format!("{:.2}", stat_hashrate(st))),
+        c2 = card("Miners", stat_miners(st).to_string()),
+        c3 = card("Blocks found", stat_blocks_found(st).to_string()),
+        c4 = card("Fee", format!("{}%", norm_stat(st, &["fee_percent"]).and_then(|v| v.as_f64()).unwrap_or(1.0))),
+        endpoint = endpoint,
+        example = miner_example(&algo, &endpoint),
+        payout_copy = payout_copy,
+        miners_section = miners_section,
+        blocks_rows = blocks_rows,
+        domain = site_domain(),
+    );
+    page_shell(&format!("{coin} {name} pool"), body)
+}
+
 fn page_mine(_reg: &Registry) -> String {
     let domain = site_domain();
     let body = format!(
@@ -1450,9 +1597,8 @@ username: block1…youraddress.rig1     password: x</code></pre>
 username: block1…youraddress.rig1     password: x</code></pre>
 <p class="sub">Shares are difficulty-weighted over a rolling window; each found block's payouts are settled on-chain automatically once the coinbase matures (100 blocks). The ledger is public.</p>
 
-<h2>Direct pools — every ASIC algorithm <span class="badge">solo semantics · reward in your coinbase</span></h2>
-<p class="sub">No parent coin needed: your ASIC grinds a minimal synthetic parent header committing to a BLOCK template that pays <b>you</b>. Classic bitcoin stratum v1; username = your BLOCK address.</p>
-<table><tr><th>algorithm</th><th>endpoint</th><th>stats API</th></tr>{direct_rows}</table>
+<h2>All pools by algorithm <span class="badge">live · click any pool for stats, miner lookup & connect guide</span></h2>
+{algo_sections}
 
 <h2>Hardware</h2>
 <p class="sub">BLOCK's native lane is Equihash (200,9) — Zcash-class ASICs and GPU miners (EWBF/lolMiner-compatible stratum) connect directly today. Other ASIC families join by merge-mining through a parent pool (below). Miner-firmware byte-order quirks are still being shaken down against real hardware; if your ASIC rejects jobs, <a href="/developers">tell us</a>.</p>
@@ -1482,12 +1628,38 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
 <p class="sub">Each algorithm is an independent difficulty lane, so a Scrypt parent competes only with Scrypt parents. Full validation rules are in the <a href="{github}">source</a> (<span class="mono">chain/crates/chain/src/chain.rs · check_aux_pow</span>).</p>"##,
         domain = domain,
         github = "https://github.com/blocklechain/blockle",
-        direct_rows = DIRECT_POOLS
-            .iter()
-            .map(|(name, _, port)| format!(
-                r#"<tr><td class="mono">{name}</td><td class="mono">stratum+tcp://{domain}:{port}</td><td class="mono"><a href="/api/mps/{name}">/api/mps/{name}</a></td></tr>"#
-            ))
-            .collect::<String>(),
+        algo_sections = {
+            // group every configured feed by its live algorithm
+            let mut by_algo: Vec<(String, Vec<(String, Value)>)> = Vec::new();
+            for name in pool_feed_names() {
+                let Some(st) = pool_stats(&name) else { continue };
+                let algo = stat_algo(&st);
+                match by_algo.iter_mut().find(|(a, _)| *a == algo) {
+                    Some((_, v)) => v.push((name, st)),
+                    None => by_algo.push((algo, vec![(name, st)])),
+                }
+            }
+            by_algo
+                .iter()
+                .map(|(algo, pools)| {
+                    let rows: String = pools.iter().map(|(name, st)| format!(
+                        r#"<tr><td><a href="/mine/{name}"><b>{coin} · {name}</b></a></td><td class="mono">{endpoint}</td><td class="mono">{mode}</td><td class="mono">{hr:.2}</td><td class="mono">{miners}</td><td class="mono">{blocks}</td></tr>"#,
+                        name = name,
+                        coin = stat_coin(st),
+                        endpoint = stat_endpoint(st),
+                        mode = stat_mode(st),
+                        hr = stat_hashrate(st),
+                        miners = stat_miners(st),
+                        blocks = stat_blocks_found(st),
+                    )).collect();
+                    format!(
+                        r#"<h2 style="margin-top:1.6rem">{algo} <span class="badge">{n} pool{s}</span></h2>
+<table><tr><th>pool</th><th>endpoint</th><th>scheme</th><th>hashrate</th><th>miners</th><th>blocks</th></tr>{rows}</table>"#,
+                        algo = algo, n = pools.len(), s = if pools.len() == 1 { "" } else { "s" }, rows = rows,
+                    )
+                })
+                .collect::<String>()
+        },
     );
     page_shell("Mine with us", body)
 }

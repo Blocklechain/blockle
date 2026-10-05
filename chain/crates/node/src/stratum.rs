@@ -611,22 +611,29 @@ fn stats_loop(state: Arc<StratumState>) {
     loop {
         thread::sleep(Duration::from_secs(15));
         let Some(path) = &state.opts.stats_path else { continue };
-        let (miners, workers, accepted, rejected, hashrate) = {
+        let (miners, workers, accepted, rejected, hashrate, miners_detail) = {
             let clients = state.clients.lock().unwrap();
             let miners = clients.len();
             let workers = clients.values().filter(|c| c.address.is_some()).count();
             let accepted: u64 = clients.values().map(|c| c.accepted).sum();
             let rejected: u64 = clients.values().map(|c| c.rejected).sum();
             let pow_limit = u256_f64(state.node.params().pow_limit);
-            let hashrate: f64 = clients
+            let per_client = |c: &Client| {
+                let diff = pow_limit / u256_f64(c.share_target).max(1.0);
+                diff * c.window_shares as f64 / c.window_start.elapsed().as_secs_f64().max(1.0)
+            };
+            let hashrate: f64 = clients.values().map(per_client).sum();
+            let miners_detail: Vec<serde_json::Value> = clients
                 .values()
-                .map(|c| {
-                    let diff = pow_limit / u256_f64(c.share_target).max(1.0);
-                    let secs = c.window_start.elapsed().as_secs_f64().max(1.0);
-                    diff * c.window_shares as f64 / secs
-                })
-                .sum();
-            (miners, workers, accepted, rejected, hashrate)
+                .filter(|c| c.address.is_some())
+                .map(|c| json!({
+                    "worker": c.worker,
+                    "hashrate_est": per_client(c),
+                    "accepted": c.accepted,
+                    "rejected": c.rejected,
+                }))
+                .collect();
+            (miners, workers, accepted, rejected, hashrate, miners_detail)
         };
         let found = state.found.lock().unwrap();
         let last = found.last().cloned();
@@ -643,6 +650,7 @@ fn stats_loop(state: Arc<StratumState>) {
             "hashrate_sols_est": hashrate,
             "shares_accepted": accepted,
             "shares_rejected": rejected,
+            "miners_detail": miners_detail,
             "pplns_window_shares": state.shares.lock().unwrap().len(),
             "blocks_found": found.len(),
             "last_block": last,

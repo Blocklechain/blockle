@@ -464,22 +464,30 @@ fn stats_loop(state: Arc<DirectState>) {
     loop {
         thread::sleep(Duration::from_secs(15));
         let Some(path) = &state.opts.stats_path else { continue };
-        let (miners, workers, accepted, rejected, hashrate) = {
+        let (miners, workers, accepted, rejected, hashrate, miners_detail) = {
             let clients = state.clients.lock().unwrap();
             let pow_limit = u256_f64(state.node.params().pow_limit);
+            let per_client = |c: &Client| {
+                let diff = pow_limit / u256_f64(c.share_target).max(1.0);
+                diff * c.window_shares as f64 / c.window_start.elapsed().as_secs_f64().max(1.0)
+            };
+            let miners_detail: Vec<serde_json::Value> = clients
+                .values()
+                .filter(|c| c.address.is_some())
+                .map(|c| json!({
+                    "worker": c.worker,
+                    "hashrate_est": per_client(c),
+                    "accepted": c.accepted,
+                    "rejected": c.rejected,
+                }))
+                .collect();
             (
                 clients.len(),
                 clients.values().filter(|c| c.address.is_some()).count(),
                 clients.values().map(|c| c.accepted).sum::<u64>(),
                 clients.values().map(|c| c.rejected).sum::<u64>(),
-                clients
-                    .values()
-                    .map(|c| {
-                        let diff = pow_limit / u256_f64(c.share_target).max(1.0);
-                        diff * c.window_shares as f64
-                            / c.window_start.elapsed().as_secs_f64().max(1.0)
-                    })
-                    .sum::<f64>(),
+                clients.values().map(per_client).sum::<f64>(),
+                miners_detail,
             )
         };
         let found = state.found.lock().unwrap();
@@ -495,6 +503,7 @@ fn stats_loop(state: Arc<DirectState>) {
             "hashrate_sols_est": hashrate,
             "shares_accepted": accepted,
             "shares_rejected": rejected,
+            "miners_detail": miners_detail,
             "blocks_found": found.len(),
             "last_block": found.last(),
             "recent_blocks": found.iter().rev().take(25).collect::<Vec<_>>(),
