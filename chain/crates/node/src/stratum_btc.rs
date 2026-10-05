@@ -573,10 +573,6 @@ fn handle_request(
                 }
                 return Err("low difficulty share".into());
             }
-            println!(
-                "[stratum-direct:{}] miner {client_id} share accepted",
-                state.algo
-            );
             if state.opts.mode == PoolMode::Pplns {
                 let weight =
                     u256_f64(state.node.params().pow_limit) / u256_f64(share_target).max(1.0);
