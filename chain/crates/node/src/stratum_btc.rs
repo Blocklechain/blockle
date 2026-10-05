@@ -37,10 +37,13 @@ use crate::stratum::{append_ledger_record, PoolMode, PoolOpts};
 
 const TARGET_SHARE_SECS: u64 = 10;
 const RETARGET_SECS: u64 = 30;
+/// BIP 310 version-rolling mask every modern SHA-256 ASIC uses.
+const STD_VERSION_MASK: u32 = 0x1fff_e000;
 
 struct Client {
     sender: Sender<String>,
     extranonce1: [u8; 4],
+    dumped: bool,
     /// Negotiated version-rolling mask (mining.configure / BIP 310);
     /// zero when the miner didn't negotiate.
     version_mask: u32,
@@ -94,6 +97,12 @@ fn u256_f64(v: U256) -> f64 {
 /// bitcoin "difficulty 1" target (0x1d00ffff).
 fn diff1() -> U256 {
     compact_to_target(0x1d00ffff).expect("static bits")
+}
+
+fn target_hex(t: U256) -> String {
+    let mut be = [0u8; 32];
+    t.to_big_endian(&mut be);
+    hex::encode(be)
 }
 
 /// Starting share difficulty per algorithm — roughly one share / 10 s for
@@ -342,6 +351,7 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
             sender: tx,
             extranonce1,
             version_mask: 0,
+            dumped: false,
             subscribed: false,
             address: None,
             worker: String::new(),
@@ -400,7 +410,7 @@ fn handle_request(
             // BIP 310: modern sha256d ASICs roll header version bits.
             // Without this negotiation their reconstructed headers never
             // match ours and every share dies as "low diff".
-            const MASK: u32 = 0x1fff_e000;
+            const MASK: u32 = STD_VERSION_MASK;
             let wants_rolling = params
                 .get(0)
                 .and_then(|v| v.as_array())
@@ -511,8 +521,9 @@ fn handle_request(
                 coinbase.extend_from_slice(&en2);
                 coinbase.extend_from_slice(&job.coinb2);
                 let merkle = sha256d(&coinbase);
+                let _ = vmask;
                 let version = match version_bits {
-                    Some(bits) => (job.version & !vmask) | (bits & vmask),
+                    Some(bits) => (job.version & !STD_VERSION_MASK) | (bits & STD_VERSION_MASK),
                     None => job.version,
                 };
                 let mut header = [0u8; 80];
@@ -537,57 +548,29 @@ fn handle_request(
                 if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
                     c.rejected += 1;
                 }
-                // One reject tells us the firmware's dialect: rebuild the
-                // header under common quirk variants and report which one
-                // (if any) would have met the share target.
-                let variants: [(&str, [u8; 4], u32, u32); 5] = [
-                    ("nonce-be", en2, ntime, nonce.swap_bytes()),
-                    ("ntime-be", en2, ntime.swap_bytes(), nonce),
-                    ("both-be", en2, ntime.swap_bytes(), nonce.swap_bytes()),
-                    ("en2-rev", {
-                        let mut r = en2;
-                        r.reverse();
-                        r
-                    }, ntime, nonce),
-                    ("en2rev+nonce-be", {
-                        let mut r = en2;
-                        r.reverse();
-                        r
-                    }, ntime, nonce.swap_bytes()),
-                ];
-                let mut hits = Vec::new();
-                for (name, e2, nt, nn) in variants {
-                    let mut cb = Vec::with_capacity(coinbase.len());
+                let first = {
+                    let mut clients = state.clients.lock().unwrap();
+                    match clients.get_mut(&client_id) {
+                        Some(c) if !c.dumped => { c.dumped = true; true }
+                        _ => false,
+                    }
+                };
+                if first {
                     let jobs = state.jobs.lock().unwrap();
                     if let Some((_, job)) = jobs.get(job_id) {
-                        cb.extend_from_slice(&job.coinb1);
-                        cb.extend_from_slice(&en1);
-                        cb.extend_from_slice(&e2);
-                        cb.extend_from_slice(&job.coinb2);
-                        let mut h = [0u8; 80];
-                        let version = match version_bits {
-                            Some(bits) => (job.version & !vmask) | (bits & vmask),
-                            None => job.version,
-                        };
-                        h[0..4].copy_from_slice(&version.to_le_bytes());
-                        h[36..68].copy_from_slice(&sha256d(&cb));
-                        h[68..72].copy_from_slice(&nt.to_le_bytes());
-                        h[72..76].copy_from_slice(&job.nbits.to_le_bytes());
-                        h[76..80].copy_from_slice(&nn.to_le_bytes());
-                        if let Some(powh) = parent::pow_hash(state.algo, &h) {
-                            if U256::from_little_endian(&powh) <= share_target {
-                                hits.push(name);
-                            }
-                        }
+                        println!(
+                            "[shakedown:{}] miner {client_id} job={job_id}\n  params={}\n  en1={} en2={} ntime={ntime:08x} nonce={nonce:08x} vbits={}\n  job.version={:08x} nbits={:08x} coinb1={}\n  coinb2={} reconstructed_header={}\n  pow={} share_target={}",
+                            state.algo,
+                            serde_json::to_string(p).unwrap_or_default(),
+                            hex::encode(en1), hex::encode(en2),
+                            version_bits.map(|v| format!("{v:08x}")).unwrap_or_else(|| "-".into()),
+                            job.version, job.nbits,
+                            hex::encode(&job.coinb1), hex::encode(&job.coinb2),
+                            hex::encode(header),
+                            hex::encode(pow), target_hex(share_target),
+                        );
                     }
                 }
-                println!(
-                    "[stratum-direct:{}] miner {client_id} REJECTED job={job_id} nparams={} vbits={} variant_hits={:?}",
-                    state.algo,
-                    p.len(),
-                    version_bits.map(|v| format!("{v:08x}")).unwrap_or_else(|| "-".into()),
-                    hits,
-                );
                 return Err("low difficulty share".into());
             }
             println!(
