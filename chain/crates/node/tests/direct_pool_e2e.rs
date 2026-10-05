@@ -36,10 +36,9 @@ fn read_until<'a>(
     }
 }
 
-#[test]
-fn sha256d_asic_mines_block_directly() {
+fn run_direct(mode: PoolMode, port_off: u16) -> (std::path::PathBuf, std::sync::Arc<p2p::Node>, Keypair, Keypair) {
     let params = ChainParams::regtest();
-    let datadir = std::env::temp_dir().join(format!("blockle-direct-{}", process::id()));
+    let datadir = std::env::temp_dir().join(format!("blockle-direct-{}-{}", process::id(), port_off));
     let _ = std::fs::remove_dir_all(&datadir);
 
     let pool = Keypair::generate();
@@ -49,7 +48,7 @@ fn sha256d_asic_mines_block_directly() {
     chain.connect_block(genesis.clone()).unwrap();
     storage::append_block(&datadir, &genesis).unwrap();
 
-    let p2p_port = 24000 + (process::id() % 1500) as u16;
+    let p2p_port = 24000 + (process::id() % 1500) as u16 + port_off;
     let direct_addr = format!("127.0.0.1:{}", p2p_port + 1);
     let node = p2p::Node::new(
         p2p::NodeConfig {
@@ -75,12 +74,12 @@ fn sha256d_asic_mines_block_directly() {
         direct_addr.clone(),
         "sha256d",
         PoolOpts {
-            mode: PoolMode::Solo,
+            mode,
             fee_bp: 100,
             window: 1000,
             pool_address: pool.address(),
             stats_path: None,
-            ledger_path: None,
+            ledger_path: (mode == PoolMode::Pplns).then(|| datadir.join("pplns-ledger.jsonl")),
             endpoint: direct_addr.clone(),
         },
     );
@@ -161,18 +160,49 @@ fn sha256d_asic_mines_block_directly() {
     loop {
         let (chain, _) = node.snapshot();
         if chain.height() == Some(1) {
-            // The merged block is on the sha256d lane and pays the miner.
-            let b = chain.blocks.last().unwrap();
-            assert_eq!(Chain::lane_of(b), "sha256d");
-            let cb = &b.transactions[0];
-            assert_eq!(cb.outputs[0].recipient, miner.address());
-            assert_eq!(cb.outputs[1].recipient, pool.address());
-            let total: u64 = cb.outputs.iter().map(|o| o.amount).sum();
-            assert_eq!(cb.outputs[1].amount, total / 100);
             break;
         }
         assert!(Instant::now() < deadline, "merged block never connected");
         thread::sleep(Duration::from_millis(50));
     }
+    (datadir, node, pool, miner)
+}
+
+#[test]
+fn sha256d_asic_mines_block_directly() {
+    let (datadir, node, pool, miner) = run_direct(PoolMode::Solo, 0);
+    let (chain, _) = node.snapshot();
+    // The merged block is on the sha256d lane and pays the miner.
+    let b = chain.blocks.last().unwrap();
+    assert_eq!(Chain::lane_of(b), "sha256d");
+    let cb = &b.transactions[0];
+    assert_eq!(cb.outputs[0].recipient, miner.address());
+    assert_eq!(cb.outputs[1].recipient, pool.address());
+    let total: u64 = cb.outputs.iter().map(|o| o.amount).sum();
+    assert_eq!(cb.outputs[1].amount, total / 100);
+    let _ = std::fs::remove_dir_all(&datadir);
+}
+
+#[test]
+fn direct_pplns_records_payout_ledger() {
+    let (datadir, node, pool, miner) = run_direct(PoolMode::Pplns, 700);
+    let (chain, _) = node.snapshot();
+    // PPLNS coinbase pays the pool; the ledger owes the miner 99%.
+    let cb = &chain.blocks.last().unwrap().transactions[0];
+    assert_eq!(cb.outputs.len(), 1);
+    assert_eq!(cb.outputs[0].recipient, pool.address());
+    let ledger =
+        std::fs::read_to_string(datadir.join("pplns-ledger.jsonl")).expect("ledger written");
+    let rec: Value = serde_json::from_str(ledger.lines().next().unwrap()).unwrap();
+    let entries = rec["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0][0].as_str().unwrap(),
+        encode_address(&miner.address())
+    );
+    assert_eq!(
+        entries[0][1].as_u64().unwrap(),
+        rec["reward"].as_u64().unwrap() * 99 / 100
+    );
     let _ = std::fs::remove_dir_all(&datadir);
 }

@@ -565,6 +565,21 @@ fn coinbase_height(block: &Block) -> Option<u64> {
 fn append_payout_record(state: &Arc<StratumState>, height: u64, hash: &str, reward: u64) {
     let Some(path) = &state.opts.ledger_path else { return };
     let shares = state.shares.lock().unwrap();
+    append_ledger_record(path, &shares, height, hash, reward, state.opts.fee_bp);
+}
+
+/// Shared PPLNS ledger writer: split `reward` (minus the fee) across the
+/// window's difficulty-weighted shares and append one JSONL record. Used by
+/// the Equihash pool and every direct-algorithm pool; the node's payout
+/// executor settles records regardless of which pool produced them.
+pub fn append_ledger_record(
+    path: &PathBuf,
+    shares: &VecDeque<(Address, f64)>,
+    height: u64,
+    hash: &str,
+    reward: u64,
+    fee_bp: u32,
+) {
     let mut by_addr: HashMap<Address, f64> = HashMap::new();
     for (addr, w) in shares.iter() {
         *by_addr.entry(*addr).or_default() += w;
@@ -573,7 +588,7 @@ fn append_payout_record(state: &Arc<StratumState>, height: u64, hash: &str, rewa
     if total <= 0.0 {
         return;
     }
-    let payable = reward as u128 * (10_000 - state.opts.fee_bp.min(10_000)) as u128 / 10_000;
+    let payable = reward as u128 * (10_000 - fee_bp.min(10_000)) as u128 / 10_000;
     let mut entries: Vec<(String, u64)> = by_addr
         .into_iter()
         .map(|(addr, w)| {
@@ -588,7 +603,7 @@ fn append_payout_record(state: &Arc<StratumState>, height: u64, hash: &str, rewa
         block_hash: hash.to_string(),
         time: now_unix(),
         reward,
-        fee_bp: state.opts.fee_bp,
+        fee_bp,
         entries,
         paid: false,
         txid: None,

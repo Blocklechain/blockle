@@ -30,8 +30,10 @@ use blockle_core::{auxpow, sha256d, AuxPow, Block};
 use blockle_pow::difficulty::compact_to_target;
 use blockle_pow::parent;
 
+use std::collections::VecDeque;
+
 use crate::p2p::Node;
-use crate::stratum::PoolOpts;
+use crate::stratum::{append_ledger_record, PoolMode, PoolOpts};
 
 const TARGET_SHARE_SECS: u64 = 10;
 const RETARGET_SECS: u64 = 30;
@@ -66,6 +68,10 @@ struct DirectState {
     opts: PoolOpts,
     clients: Mutex<HashMap<u64, Client>>,
     jobs: Mutex<HashMap<String, (u64, DirectJob)>>,
+    /// PPLNS: the shared job every miner works on.
+    current_job: Mutex<Option<String>>,
+    /// PPLNS rolling share window: (address, difficulty weight).
+    shares: Mutex<VecDeque<(Address, f64)>>,
     found: Mutex<Vec<Value>>,
     next_client: AtomicU64,
     next_job: AtomicU64,
@@ -95,6 +101,8 @@ pub fn serve(node: Arc<Node>, addr: String, algo: &'static str, opts: PoolOpts) 
         opts,
         clients: Mutex::new(HashMap::new()),
         jobs: Mutex::new(HashMap::new()),
+        current_job: Mutex::new(None),
+        shares: Mutex::new(VecDeque::new()),
         found: Mutex::new(Vec::new()),
         next_client: AtomicU64::new(1),
         next_job: AtomicU64::new(1),
@@ -134,16 +142,31 @@ fn job_loop(state: Arc<DirectState>) {
         if fresh || last_refresh.elapsed() > Duration::from_secs(30) {
             last_gen = gen;
             last_refresh = Instant::now();
-            let targets: Vec<(u64, Address)> = {
-                let clients = state.clients.lock().unwrap();
-                clients
-                    .iter()
-                    .filter(|(_, c)| c.subscribed && c.address.is_some())
-                    .map(|(id, c)| (*id, c.address.expect("filtered")))
-                    .collect()
-            };
-            for (client_id, addr) in targets {
-                push_job(&state, client_id, addr, fresh);
+            if state.opts.mode == PoolMode::Pplns {
+                if let Some(job) = build_direct_job(&state, state.opts.pool_address) {
+                    let n = state.next_job.fetch_add(1, Ordering::SeqCst);
+                    let job_id = format!("p{n:x}");
+                    let params = notify_params_for(&job_id, &job);
+                    let lane_target = compact_to_target(job.nbits).unwrap_or_default();
+                    state.jobs.lock().unwrap().insert(job_id.clone(), (n, job));
+                    *state.current_job.lock().unwrap() = Some(job_id);
+                    let clients = state.clients.lock().unwrap();
+                    for c in clients.values().filter(|c| c.subscribed && c.address.is_some()) {
+                        send_notify(c, &params, lane_target, fresh);
+                    }
+                }
+            } else {
+                let targets: Vec<(u64, Address)> = {
+                    let clients = state.clients.lock().unwrap();
+                    clients
+                        .iter()
+                        .filter(|(_, c)| c.subscribed && c.address.is_some())
+                        .map(|(id, c)| (*id, c.address.expect("filtered")))
+                        .collect()
+                };
+                for (client_id, addr) in targets {
+                    push_job(&state, client_id, addr, fresh);
+                }
             }
             let mut jobs = state.jobs.lock().unwrap();
             if jobs.len() > 256 {
@@ -156,6 +179,9 @@ fn job_loop(state: Arc<DirectState>) {
 }
 
 fn recipients(state: &DirectState, miner: Address) -> Vec<(Address, u32)> {
+    if state.opts.mode == PoolMode::Pplns {
+        return vec![(state.opts.pool_address, 10_000)];
+    }
     let fee = state.opts.fee_bp.min(10_000);
     if fee > 0 && miner != state.opts.pool_address {
         vec![(miner, 10_000 - fee), (state.opts.pool_address, fee)]
@@ -206,11 +232,8 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
     })
 }
 
-fn push_job(state: &Arc<DirectState>, client_id: u64, addr: Address, clean: bool) {
-    let Some(job) = build_direct_job(state, addr) else { return };
-    let n = state.next_job.fetch_add(1, Ordering::SeqCst);
-    let job_id = format!("{n:x}-{client_id:x}");
-    let params = json!([
+fn notify_params_for(job_id: &str, job: &DirectJob) -> Value {
+    json!([
         job_id,
         hex::encode([0u8; 32]), // synthetic prevhash
         hex::encode(&job.coinb1),
@@ -219,16 +242,33 @@ fn push_job(state: &Arc<DirectState>, client_id: u64, addr: Address, clean: bool
         format!("{:08x}", job.version),
         format!("{:08x}", job.nbits),
         format!("{:08x}", job.ntime),
-        clean,
-    ]);
+        true,
+    ])
+}
+
+fn send_notify(client: &Client, params: &Value, lane_target: U256, clean: bool) {
+    let mut params = params.clone();
+    if let Some(a) = params.as_array_mut() {
+        if let Some(last) = a.last_mut() {
+            *last = json!(clean);
+        }
+    }
+    let share = client.share_target.max(lane_target);
+    let d = u256_f64(diff1()) / u256_f64(share).max(1.0);
+    push(client, json!({"id": null, "method": "mining.set_difficulty", "params": [d]}));
+    push(client, json!({"id": null, "method": "mining.notify", "params": params}));
+}
+
+fn push_job(state: &Arc<DirectState>, client_id: u64, addr: Address, clean: bool) {
+    let Some(job) = build_direct_job(state, addr) else { return };
+    let n = state.next_job.fetch_add(1, Ordering::SeqCst);
+    let job_id = format!("{n:x}-{client_id:x}");
+    let params = notify_params_for(&job_id, &job);
     let lane_target = compact_to_target(job.nbits).unwrap_or_default();
     state.jobs.lock().unwrap().insert(job_id, (n, job));
     let clients = state.clients.lock().unwrap();
     if let Some(client) = clients.get(&client_id) {
-        let share = client.share_target.max(lane_target);
-        let d = u256_f64(diff1()) / u256_f64(share).max(1.0);
-        push(client, json!({"id": null, "method": "mining.set_difficulty", "params": [d]}));
-        push(client, json!({"id": null, "method": "mining.notify", "params": params}));
+        send_notify(client, &params, lane_target, clean);
     }
 }
 
@@ -351,13 +391,13 @@ fn handle_request(
             let nonce = u32::from_str_radix(p[4].as_str().ok_or("bad nonce")?, 16)
                 .map_err(|_| "bad nonce hex")?;
 
-            let (en1, worker) = {
+            let (en1, worker, miner_addr) = {
                 let clients = state.clients.lock().unwrap();
                 let c = clients.get(&client_id).ok_or("gone")?;
-                if c.address.is_none() {
+                let Some(addr) = c.address else {
                     return Err("authorize before submitting".into());
-                }
-                (c.extranonce1, c.worker.clone())
+                };
+                (c.extranonce1, c.worker.clone(), addr)
             };
             let (block, coinbase, header, nbits) = {
                 let jobs = state.jobs.lock().unwrap();
@@ -393,6 +433,15 @@ fn handle_request(
                 }
                 return Err("low difficulty share".into());
             }
+            if state.opts.mode == PoolMode::Pplns {
+                let weight =
+                    u256_f64(state.node.params().pow_limit) / u256_f64(share_target).max(1.0);
+                let mut shares = state.shares.lock().unwrap();
+                shares.push_back((miner_addr, weight));
+                while shares.len() > state.opts.window {
+                    shares.pop_front();
+                }
+            }
             record_share_and_retarget(state, client_id, lane_target);
 
             if pow_val <= lane_target {
@@ -416,10 +465,12 @@ fn handle_request(
                     h.reverse();
                     hex::encode(h)
                 };
+                let reward: u64 = full.transactions[0].outputs.iter().map(|o| o.amount).sum();
                 if state.node.submit_block(full, None) {
                     println!(
-                        "[stratum-direct:{}] miner {client_id} ({worker}) found BLOCK {height}!",
-                        state.algo
+                        "[stratum-direct:{}:{}] miner {client_id} ({worker}) found BLOCK {height}!",
+                        state.algo,
+                        state.opts.mode.as_str(),
                     );
                     state.found.lock().unwrap().push(json!({
                         "height": height,
@@ -427,6 +478,14 @@ fn handle_request(
                         "time": now_unix(),
                         "finder": worker,
                     }));
+                    if state.opts.mode == PoolMode::Pplns {
+                        if let Some(path) = &state.opts.ledger_path {
+                            let shares = state.shares.lock().unwrap();
+                            append_ledger_record(
+                                path, &shares, height, &hash_hex, reward, state.opts.fee_bp,
+                            );
+                        }
+                    }
                 }
             }
             Ok(json!(true))
@@ -495,7 +554,8 @@ fn stats_loop(state: Arc<DirectState>) {
             "pool": "blockle",
             "coin": "BLOCK",
             "algorithm": state.algo,
-            "mode": "solo-direct",
+            "mode": if state.opts.mode == PoolMode::Pplns { "pplns-direct" } else { "solo-direct" },
+            "pplns_window_shares": state.shares.lock().unwrap().len(),
             "endpoint": state.opts.endpoint,
             "fee_percent": state.opts.fee_bp as f64 / 100.0,
             "miners": miners,

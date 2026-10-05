@@ -305,6 +305,14 @@ const DIRECT_POOLS: &[(&str, &str, u16)] = &[
     ("blake3", "BLOCK · Blake3 direct", 3345),
     ("eaglesong", "BLOCK · Eaglesong direct", 3346),
     ("kheavyhash", "BLOCK · kHeavyHash direct", 3347),
+    ("sha256d-pplns", "BLOCK · SHA-256d PPLNS", 3360),
+    ("scrypt-pplns", "BLOCK · Scrypt PPLNS", 3361),
+    ("x11-pplns", "BLOCK · X11 PPLNS", 3362),
+    ("blake2b-pplns", "BLOCK · Blake2b PPLNS", 3363),
+    ("blake2s-pplns", "BLOCK · Blake2s PPLNS", 3364),
+    ("blake3-pplns", "BLOCK · Blake3 PPLNS", 3365),
+    ("eaglesong-pplns", "BLOCK · Eaglesong PPLNS", 3366),
+    ("kheavyhash-pplns", "BLOCK · kHeavyHash PPLNS", 3367),
 ];
 
 /// Major ASIC ecosystems BLOCK merge-mines with: (chain, algorithm,
