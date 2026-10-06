@@ -39,6 +39,7 @@ fn pool_mines_parent_and_aux_blocks() {
         "127.0.0.1:23334",
         Scheme::Pplns { window: 1000 },
         1.0,
+        "sha256d",
     );
     engine.start().unwrap();
     std::thread::sleep(Duration::from_millis(500));
