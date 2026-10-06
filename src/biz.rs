@@ -580,6 +580,7 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
             }
         }
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
+        "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
         "/developers" => ("200 OK", "text/html; charset=utf-8", page_developers(&reg).into_bytes()),
@@ -1015,7 +1016,7 @@ fn page_shell(title: &str, body: String) -> String {
 <meta property="og:image" content="https://{domain}/logo.png">
 <title>{title} · {domain}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
@@ -1485,8 +1486,15 @@ fn stat_blocks_found(st: &Value) -> u64 {
     }
 }
 
+/// Canonical lane name: lowercase, strip separators so "SHA-256d",
+/// "sha256d" and "Sha256D" all land in the same group.
+fn canonical_algo(raw: &str) -> String {
+    raw.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+}
+
 fn stat_algo(st: &Value) -> String {
-    norm_stat(st, &["algorithm"]).and_then(|v| v.as_str()).unwrap_or("equihash").to_string()
+    let raw = norm_stat(st, &["algorithm"]).and_then(|v| v.as_str()).unwrap_or("equihash");
+    canonical_algo(raw)
 }
 
 /// Replace a bind/unroutable host (0.0.0.0, [::], 127.0.0.1) in a stratum
@@ -1961,6 +1969,172 @@ fn page_explorer(_reg: &Registry) -> String {
     };
     page_shell("BLOCK Explorer", body)
 }
+
+fn page_guide() -> String {
+    let body = GUIDE_HTML.replace("{domain}", &site_domain());
+    page_shell("Guide", body)
+}
+
+/// The how-to guide. Plain raw string (not a format! template) so the JSON /
+/// shell snippets can use literal braces; `{domain}` is substituted at render.
+const GUIDE_HTML: &str = r##"<h1>Blockle Guide</h1>
+<p class="lede">Everything you can do with BLOCK — the universal auxiliary chain — in one place: get a wallet, mine BLOCK directly with any ASIC algorithm, merge-mine it for free alongside a major coin, run your own pool, and explore the chain. Pick a section below.</p>
+
+<div class="feature"><div class="fi">◆</div><b>Two ways to earn BLOCK</b><p><b>Mine it directly</b> — point hardware at a BLOCK pool and the reward is yours. Or <b>merge-mine it free</b> — mine a parent coin (Bitcoin, Litecoin, Dash, Perbug…) and every share also works for BLOCK at no extra energy cost.</p></div>
+
+<h2>Contents</h2>
+<p class="sub">
+<a href="#what">1. What BLOCK is</a> ·
+<a href="#wallet">2. Get a wallet &amp; address</a> ·
+<a href="#direct">3. Mine BLOCK directly</a> ·
+<a href="#merge">4. Merge-mine via a parent</a> ·
+<a href="#scheme">5. Solo vs PPLNS</a> ·
+<a href="#hardware">6. Point your hardware</a> ·
+<a href="#send">7. Send &amp; receive</a> ·
+<a href="#operator">8. Run your own pool</a> ·
+<a href="#parent">9. Run a parent node</a> ·
+<a href="#explorer">10. Explorer &amp; APIs</a> ·
+<a href="#fees">11. Fees</a> ·
+<a href="#trouble">12. Troubleshooting</a> ·
+<a href="#links">13. Links</a>
+</p>
+
+<h2 id="what">1. What BLOCK is</h2>
+<p class="sub">BLOCK is a layer-1 built to be merge-mined by <b>every major ASIC algorithm</b>. Its consensus accepts a parent block's proof-of-work — SHA-256d, Scrypt, X11, Equihash, Blake2b/2s/3, Eaglesong or kHeavyHash — in place of a native solution, each as an independent difficulty lane. It pays <b>50 BLOCK</b> per block with Bitcoin-style halvings (210,000-block interval), a 210,000 BLOCK premine, post-quantum signatures (ML-DSA), a shielded pool for private sends, and the Blockle VM. You never mine BLOCK <i>instead</i> of something — you mine it <i>as well</i>.</p>
+<div class="feature"><div class="fi">∞</div><b>The chain can't stall</b><p>Because any lane can spike in difficulty when a big miner arrives and then leaves, BLOCK's consensus <b>decays a quiet lane's difficulty over time</b>: once a lane goes silent past a grace window, the work it demands halves at a steady cadence until a block is found again — all the way down to the minimum if needed. That caps the practical time between blocks, so a lane that loses its hashrate always becomes mineable again instead of freezing the chain.</p></div>
+
+<h2 id="wallet">2. Get a wallet &amp; address</h2>
+<p class="sub">You need a BLOCK address (starts with <span class="mono">block1…</span>) to be paid. Get one from the desktop wallet or the CLI.</p>
+<p class="sub"><b>Desktop wallet:</b> download it from the <a href="/wallet">Wallet page</a> (Linux / Windows / macOS Apple Silicon), launch it, and copy your address from the <b>Receive</b> tab. It embeds a full node and syncs peer-to-peer — your keys never leave your machine.</p>
+<p class="sub"><b>CLI:</b></p>
+<pre><code># install the node + wallet binary
+cargo install blockle-node
+
+# print a fresh mainnet address
+blockle-chain --datadir ~/.blockle --network mainnet address</code></pre>
+<p class="sub">Back up <span class="mono">~/.blockle/wallet.json</span> (or the desktop wallet's <span class="mono">wallet.json</span>) somewhere safe and offline — <b>it is your money</b>. Nobody can recover it for you.</p>
+
+<h2 id="direct">3. Mine BLOCK directly</h2>
+<p class="sub">Point any supported ASIC or GPU straight at a BLOCK pool. The block reward lands in <b>your</b> coinbase (solo) or is shared by the pool (PPLNS). Use your <span class="mono">block1…</span> address as the stratum <b>username</b>; the password can be anything (<span class="mono">x</span>).</p>
+<p class="sub"><b>Native Equihash (200,9)</b> — Zcash-class ASICs (Z15) and GPU miners (EWBF / lolMiner):</p>
+<pre><code>stratum+tcp://{domain}:3333     # Solo
+stratum+tcp://{domain}:3334     # PPLNS
+username: your block1… address   password: x</code></pre>
+<p class="sub"><b>Dedicated direct pool for every ASIC algorithm</b> — one stratum port per lane, solo and PPLNS:</p>
+<table><tr><th>algorithm</th><th>hardware</th><th>solo</th><th>PPLNS</th></tr>
+<tr><td>SHA-256d</td><td class="mono">S19 / S21, Bitaxe</td><td class="mono">:3340</td><td class="mono">:3360</td></tr>
+<tr><td>Scrypt</td><td class="mono">L7 / L9</td><td class="mono">:3341</td><td class="mono">:3361</td></tr>
+<tr><td>X11</td><td class="mono">Dash ASICs</td><td class="mono">:3342</td><td class="mono">:3362</td></tr>
+<tr><td>Blake2b</td><td class="mono">Sia-class</td><td class="mono">:3343</td><td class="mono">:3363</td></tr>
+<tr><td>Blake2s</td><td class="mono">—</td><td class="mono">:3344</td><td class="mono">:3364</td></tr>
+<tr><td>Blake3</td><td class="mono">Alephium-class</td><td class="mono">:3345</td><td class="mono">:3365</td></tr>
+<tr><td>Eaglesong</td><td class="mono">CKB ASICs</td><td class="mono">:3346</td><td class="mono">:3366</td></tr>
+<tr><td>kHeavyHash</td><td class="mono">Kaspa ASICs</td><td class="mono">:3347</td><td class="mono">:3367</td></tr>
+</table>
+<p class="sub">All ports are on <span class="mono">{domain}</span>, e.g. <span class="mono">stratum+tcp://{domain}:3340</span>. These are direct BLOCK pools — you are mining BLOCK only, no parent coin involved. See every pool with live stats on the <a href="/mine">Mine page</a>.</p>
+
+<h2 id="merge">4. Merge-mine BLOCK via a parent coin</h2>
+<p class="sub">This is the point of BLOCK. Point your hardware at a <b>parent pool</b> and you mine the parent coin <i>and</i> BLOCK at the same time — the same share counts for both, so BLOCK is free hashrate. Your stratum <b>username is your payout address on the parent chain</b> (that's the coin you're paid in); BLOCK is merge-mined alongside every block the pool finds.</p>
+<table><tr><th>parent pool</th><th>algorithm</th><th>solo</th><th>PPLNS</th><th>you're paid in</th></tr>
+<tr><td><b>Perbug + BLOCK</b></td><td class="mono">sha256d</td><td class="mono">:3357</td><td class="mono">:3377</td><td>PERBUG (+ BLOCK)</td></tr>
+<tr><td><b>Dash + BLOCK</b></td><td class="mono">x11</td><td class="mono">:3356</td><td class="mono">:3376</td><td>DASH (+ BLOCK)</td></tr>
+</table>
+<p class="sub">More parent pools (Bitcoin, Bitcoin Cash, eCash, Syscoin, Litecoin, Dogecoin) come online automatically as their nodes finish syncing on our server — the live set is always on the <a href="/mine">Mine page</a>, grouped by algorithm. Example: connect an L7 to the Litecoin pool when it is live and you mine LTC + BLOCK together.</p>
+<pre><code># example: mine Dash + BLOCK (PPLNS), paid in DASH
+stratum+tcp://{domain}:3376
+username: your Dash (X…) address   password: x</code></pre>
+
+<h2 id="scheme">5. Solo vs PPLNS — which to pick</h2>
+<p class="sub"><b>Solo</b> — when you find a block you keep the <b>entire</b> reward (the coinbase pays the finder directly). High variance: you may wait a long time, then get a whole block at once. Best for large hashrate.</p>
+<p class="sub"><b>PPLNS</b> — payouts are shared across recent contributors weighted by submitted shares, paid out from blocks the pool finds. Steadier, lower-variance income. Best for small and mid-size miners.</p>
+<p class="sub">Both carry the same <b>1% fee</b> (see <a href="#fees">Fees</a>). Every algorithm and every parent pool offers both — just pick the matching port above.</p>
+
+<h2 id="hardware">6. Point your hardware (quick recipes)</h2>
+<p class="sub">In your miner's pool/stratum settings, set <b>URL</b>, <b>worker/username</b>, and <b>password</b>. Version-rolling (BIP-310) and vardiff are negotiated automatically.</p>
+<table><tr><th>hardware</th><th>URL</th><th>username</th></tr>
+<tr><td>Bitaxe / S19 (SHA-256d)</td><td class="mono">stratum+tcp://{domain}:3340</td><td class="mono">block1… (BLOCK)</td></tr>
+<tr><td>Antminer L7 (Scrypt)</td><td class="mono">stratum+tcp://{domain}:3341</td><td class="mono">block1… (BLOCK)</td></tr>
+<tr><td>Dash ASIC (X11) — also earn DASH</td><td class="mono">stratum+tcp://{domain}:3356</td><td class="mono">X… (Dash addr)</td></tr>
+<tr><td>Equihash GPU / Z15</td><td class="mono">stratum+tcp://{domain}:3333</td><td class="mono">block1… (BLOCK)</td></tr>
+</table>
+<p class="sub">Rule of thumb: a <span class="mono">:334x</span>/<span class="mono">:336x</span> port = direct BLOCK (username is a BLOCK address); a parent port (Perbug/Dash and friends) = you're paid in the parent coin, so the username is your <i>parent</i> address.</p>
+
+<h2 id="send">7. Send &amp; receive BLOCK</h2>
+<p class="sub">In the desktop wallet: <b>Receive</b> shows your address and a QR code; <b>Send</b> takes a destination address and amount. Toggle <b>shielded</b> for a private, hidden-amount transfer through the STARK shielded pool.</p>
+<pre><code># CLI equivalents
+blockle-chain --datadir ~/.blockle balance
+blockle-chain --datadir ~/.blockle send block1…recipient 12.5</code></pre>
+<p class="sub">If a send fails with <span class="mono">insufficient spendable funds</span>, your coins may still be maturing (coinbase rewards need confirmations) or you forgot to leave room for the network fee — wait for confirmations or lower the amount.</p>
+
+<h2 id="operator">8. Run your own pool &amp; merge-mine BLOCK</h2>
+<p class="sub">Already run a pool on Bitcoin, Litecoin, Dash, Zcash — or any chain on a supported algorithm? Add BLOCK to every block you mine and your miners earn it for free. Two paths:</p>
+<p class="sub"><b>A. Use the Blockle pool engine</b> (adapters, stratum, payouts, dashboard built in):</p>
+<pre><code># 1. generate a pool config pointed at your parent node's RPC
+blockle add-chain --name Litecoin \
+  --rpc http://user:pass@127.0.0.1:9332/ \
+  --out ltc.toml --scheme pplns \
+  --stratum 0.0.0.0:3374 --dashboard 127.0.0.1:4874 \
+  --fee 1.0 --blockle-address block1…yourpooladdr
+
+# 2. add BLOCK as an aux chain in ltc.toml
+#    [[chain.aux]]
+#    name = "BLOCK"
+#    rpc = "http://{domain}:8445/"
+#    chain_id = 16972
+#    payout_address = "block1…yourpooladdr"
+#    algorithm = "scrypt"
+
+# 3. run it, then register so it appears in the public directory
+blockle serve ltc.toml
+blockle register --config ltc.toml --biz https://{domain} \
+  --public-stratum {domain}:3374</code></pre>
+<p class="sub"><b>B. Bring your own pool software</b> — talk to BLOCK's merged-mining work API directly (Namecoin-style, chain id 16972):</p>
+<pre><code># discover the lanes BLOCK accepts
+curl -s http://{domain}:8445/ -d '{"method":"getauxchaininfo","params":[]}'
+# → {"chainid":16972,"algorithms":["sha256d","scrypt","x11","blake2b","blake2s","blake3","eaglesong","kheavyhash","equihash"]}
+
+# fetch aux work for your payout address + your parent algorithm
+curl -s http://{domain}:8445/ -d '{"method":"createauxblock","params":["block1…pooladdr","scrypt"]}'
+
+# submit when your parent block commits the BLOCK hash
+curl -s http://{domain}:8445/ -d '{"method":"submitauxblock","params":["…hash…", {"parent_algo":"scrypt","parent_header":[],"parent_coinbase":[],"coinbase_branch":[],"chain_branch":[],"chain_index":0}]}'</code></pre>
+<p class="sub">Full validation rules: <span class="mono">chain/crates/chain/src/chain.rs · check_aux_pow</span> in the <a href="https://github.com/blocklechain/blockle">source</a>.</p>
+
+<h2 id="parent">9. Run a parent node (pruned)</h2>
+<p class="sub">Pools need a parent daemon serving <span class="mono">getblocktemplate</span>. Pruned nodes work fine for mining (no history required) and keep disk small enough to run several on one box.</p>
+<pre><code># generate a pruned config + systemd unit for a parent coin
+blockle parent-node --coin litecoin --prune 2000 --out ./ltc-node
+
+# supported: bitcoin · litecoin · dogecoin · dash · bitcoincash · digibyte
+# then install the official daemon, start it, and point add-chain at its RPC</code></pre>
+<p class="sub">For a block explorer, use the built-in <span class="mono">blockle explorer --rpc …</span> (Bitcoin-family) or Eiquidus against the node's JSON-RPC.</p>
+
+<h2 id="explorer">10. Explorer &amp; APIs</h2>
+<p class="sub">Browse blocks, transactions and addresses — including each block's merged-mining proof and lane — on the <a href="/explorer">BLOCK explorer</a>. Search by height, block hash, txid or <span class="mono">block1…</span> address.</p>
+<p class="sub">Every pool exposes <b>MiningPoolStats-compatible JSON</b> and BLOCK runs a <b>Bitcoin-compatible JSON-RPC</b> (getblockchaininfo, getblock, getrawtransaction, …) so existing tooling works unchanged. See the <a href="/api">API page</a> for endpoints and the <a href="/developers">Developers page</a> for integration.</p>
+
+<h2 id="fees">11. Fees</h2>
+<p class="sub">A flat <b>1% fee</b> on every pool — solo and PPLNS, BLOCK-direct and every parent chain, no exceptions. The merge-mined BLOCK you earn on a parent pool carries no extra fee.</p>
+
+<h2 id="trouble">12. Troubleshooting</h2>
+<table><tr><th>symptom</th><th>fix</th></tr>
+<tr><td>ASIC connects but 0% accepted</td><td>Make sure the port matches your algorithm, and that version-rolling is enabled on the miner. If it persists, tell us on <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> with your model — some firmware byte-orders are still being shaken down against real hardware.</td></tr>
+<tr><td>0 hashrate on the dashboard</td><td>Your username must be a <i>valid address</i> for that pool (BLOCK address on direct pools, parent address on parent pools). An invalid username is rejected.</td></tr>
+<tr><td>Wallet not syncing</td><td>Check the Node tab has peers; add <span class="mono">{domain}:18444</span> as a peer and restart the node.</td></tr>
+<tr><td>"insufficient spendable funds"</td><td>Coins are still maturing or you left no room for the fee — wait for confirmations or send a smaller amount.</td></tr>
+</table>
+
+<h2 id="links">13. Links</h2>
+<p class="sub">
+<a href="/mine">Mine</a> ·
+<a href="/explorer">Explorer</a> ·
+<a href="/wallet">Wallet</a> ·
+<a href="/api">API</a> ·
+<a href="/developers">Developers</a> ·
+<a href="https://discord.gg/tx4MfyD9Vu">Discord</a> ·
+<a href="https://github.com/blocklechain/blockle">GitHub</a> ·
+<a href="https://crates.io/crates/blockle">crates.io</a>
+</p>"##;
 
 fn page_api() -> String {
     let body = r#"<h1>Public API</h1>

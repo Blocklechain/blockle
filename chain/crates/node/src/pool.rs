@@ -39,7 +39,7 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
             .map(|lane| {
                 json!({
                     "lane": lane,
-                    "next_bits": format!("{:08x}", chain.next_bits_for(lane)),
+                    "next_bits": format!("{:08x}", chain.next_bits_for_at(lane, now_unix() as i64)),
                     "blocks": chain.blocks.iter().filter(|b| Chain::lane_of(b) == *lane).count(),
                 })
             })
@@ -191,7 +191,7 @@ fn createauxblock(
         .block_template_split(&[(address, 10_000)])
         .map_err(|e| e.to_string())?;
     let (chain, _) = node.snapshot();
-    block.header.bits = chain.next_bits_for(&algo);
+    block.header.bits = chain.next_bits_for_at(&algo, block.header.time as i64);
     block.header.nonce = [0u8; 32];
     block.header.solution = vec![];
     let hash = display_hash(&block.header.hash());
@@ -537,7 +537,7 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                     json!({
                         "lane": lane,
                         "blocks": blocks.len(),
-                        "next_bits": format!("{:08x}", chain.next_bits_for(lane)),
+                        "next_bits": format!("{:08x}", chain.next_bits_for_at(lane, now_unix() as i64)),
                         "last_block_height": blocks.last().map(|(h, _)| h),
                         "avg_interval_secs": avg_interval,
                     })

@@ -110,6 +110,54 @@ pub fn lwma_next_bits(
     target_to_compact(next)
 }
 
+/// Quiet-lane difficulty decay. `base` is the LWMA target for the lane; `gap`
+/// is (candidate block time − last block time on that lane). Within `grace`
+/// seconds the base target is returned unchanged. Past the grace window the
+/// target doubles (difficulty halves) once per `halflife` seconds of overdue
+/// time, capped at `pow_limit`.
+///
+/// This caps the practical inter-block time: when hashrate leaves and a lane
+/// goes quiet, its required difficulty decays until a block becomes findable
+/// again — so the chain cannot stall indefinitely at a difficulty nobody can
+/// still meet.
+pub fn decayed_target(base: U256, pow_limit: U256, gap: i64, grace: u64, halflife: u64) -> U256 {
+    let base = if base > pow_limit { pow_limit } else { base };
+    if gap <= 0 {
+        return base;
+    }
+    let gap = gap as u64;
+    if gap <= grace {
+        return base;
+    }
+    let steps = (gap - grace) / halflife.max(1);
+    let mut t = base;
+    for _ in 0..steps {
+        let doubled = t << 1;
+        // Stop at the limit (and guard the wraparound at 2^256).
+        if doubled >= pow_limit || doubled < t {
+            return pow_limit;
+        }
+        t = doubled;
+    }
+    if t > pow_limit {
+        pow_limit
+    } else {
+        t
+    }
+}
+
+/// [`decayed_target`] in compact-bits form, decoding `base_bits` first.
+pub fn decayed_next_bits(
+    base_bits: u32,
+    pow_limit: U256,
+    gap: i64,
+    grace: u64,
+    halflife: u64,
+) -> u32 {
+    let base = compact_to_target(base_bits).unwrap_or(pow_limit);
+    target_to_compact(decayed_target(base, pow_limit, gap, grace, halflife))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +227,39 @@ mod tests {
         let next_target = compact_to_target(next).unwrap();
         // On-target solvetimes keep difficulty within a whisker of current.
         assert!(next_target >= limit() >> 1);
+    }
+
+    #[test]
+    fn decay_is_a_noop_within_grace() {
+        let base = limit() >> 20; // a hard target
+        assert_eq!(decayed_target(base, limit(), 500, 1000, 100), base);
+        assert_eq!(decayed_target(base, limit(), 1000, 1000, 100), base);
+    }
+
+    #[test]
+    fn decay_halves_difficulty_per_halflife() {
+        let base = limit() >> 20;
+        // 3 halflifes past grace → target doubles 3× (difficulty /8).
+        let t = decayed_target(base, limit(), 1000 + 3 * 100, 1000, 100);
+        assert_eq!(t, base << 3);
+    }
+
+    #[test]
+    fn decay_caps_at_pow_limit() {
+        let base = limit() >> 8;
+        // A very long silence can never exceed the easiest allowed target.
+        let t = decayed_target(base, limit(), 1_000_000, 1000, 100);
+        assert_eq!(t, limit());
+        // And compact form round-trips to the limit's bits.
+        assert_eq!(
+            decayed_next_bits(target_to_compact(base), limit(), 1_000_000, 1000, 100),
+            target_to_compact(limit())
+        );
+    }
+
+    #[test]
+    fn decay_never_raises_difficulty() {
+        // A base already at the limit stays at the limit (can't get easier).
+        assert_eq!(decayed_target(limit(), limit(), 1_000_000, 1000, 100), limit());
     }
 }

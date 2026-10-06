@@ -29,7 +29,7 @@ pub fn serve(engine: Arc<Engine>, listen: &str) -> Result<()> {
                     }
                     "/stats.json" => {
                         let ledger = engine.ledger.lock().unwrap();
-                        let body = json!({
+                        let mut body = json!({
                             "chain": engine.chain_name,
                             "stratum": engine.stratum_listen,
                             "height": engine.current_height(),
@@ -40,6 +40,12 @@ pub fn serve(engine: Arc<Engine>, listen: &str) -> Result<()> {
                             "workers": ledger.workers,
                             "blocks_found": ledger.blocks,
                         });
+                        // Parent pools declare their algorithm so the site
+                        // groups them correctly; native equihash pools leave
+                        // it empty and the site defaults them to equihash.
+                        if !engine.algorithm.is_empty() {
+                            body["algorithm"] = json!(engine.algorithm);
+                        }
                         http::respond(&mut stream, "200 OK", "application/json", body.to_string().as_bytes());
                     }
                     "/payouts.json" => {

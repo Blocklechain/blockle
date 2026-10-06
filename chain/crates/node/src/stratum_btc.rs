@@ -257,7 +257,11 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
         .block_template_split(&recipients(state, addr))
         .ok()?;
     let (chain, _) = state.node.snapshot();
-    block.header.bits = chain.next_bits_for(state.algo);
+    // Quiet-lane decay keys off the aux block's own timestamp; nbits (below)
+    // must carry the same value, since check_aux_pow verifies the parent PoW
+    // against this lane difficulty.
+    let bits = chain.next_bits_for_at(state.algo, block.header.time as i64);
+    block.header.bits = bits;
     block.header.nonce = [0u8; 32];
     block.header.solution = vec![];
     let aux_hash = block.header.hash();
@@ -286,7 +290,7 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
         coinb1,
         coinb2,
         version: 0x2000_0000,
-        nbits: chain.next_bits_for(state.algo),
+        nbits: bits,
         ntime: now_unix() as u32,
     })
 }

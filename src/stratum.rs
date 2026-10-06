@@ -50,6 +50,9 @@ pub struct Engine {
     pub ledger: Mutex<Ledger>,
     next_session: AtomicU64,
     pub stratum_listen: String,
+    /// Parent-chain PoW algorithm (e.g. "sha256d", "x11"). Empty for the
+    /// native BLOCK equihash pools, which the site groups as equihash.
+    pub algorithm: String,
 }
 
 impl Engine {
@@ -58,6 +61,7 @@ impl Engine {
         stratum_listen: &str,
         scheme: Scheme,
         fee_percent: f64,
+        algorithm: &str,
     ) -> Arc<Self> {
         let chain_name = adapter.chain_name();
         let extranonce2_size = adapter.extranonce2_size();
@@ -71,6 +75,7 @@ impl Engine {
             ledger: Mutex::new(Ledger::new(scheme, fee_percent)),
             next_session: AtomicU64::new(1),
             stratum_listen: stratum_listen.to_string(),
+            algorithm: algorithm.to_string(),
         })
     }
 

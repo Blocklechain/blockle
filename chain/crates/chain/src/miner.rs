@@ -74,6 +74,10 @@ pub fn build_template(
     let mut transactions = vec![coinbase];
     transactions.extend(included);
 
+    // Stamp the timestamp first, then derive bits from it: the quiet-lane
+    // decay keys off the block's own time, and the validator recomputes the
+    // expected bits from that same timestamp.
+    let time = now_unix().max(chain.median_time_past() + 1);
     let mut block = Block {
         aux_pow: None,
         header: BlockHeader {
@@ -81,8 +85,8 @@ pub fn build_template(
             prev_hash: chain.tip_hash(),
             merkle_root: [0u8; 32],
             state_root: [0u8; 32],
-            time: now_unix().max(chain.median_time_past() + 1) as u32,
-            bits: chain.next_bits(),
+            time: time as u32,
+            bits: chain.next_bits_for_at("native", time),
             nonce: [0u8; 32],
             solution: vec![],
         },

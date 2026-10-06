@@ -206,6 +206,49 @@ impl Chain {
         lwma_next_bits(spacing, self.params.lwma_window, self.params.pow_limit, &headers)
     }
 
+    /// Grace window and halflife for the quiet-lane difficulty decay. Grace is
+    /// twice a lane's own target spacing (`target_spacing × lane_count`), so
+    /// ordinary variance never triggers it; past that, difficulty halves once
+    /// per `target_spacing` of overdue time until a block is found.
+    fn decay_params(&self) -> (u64, u64) {
+        let spacing = self.params.target_spacing * self.lanes().len() as u64;
+        (2 * spacing, self.params.target_spacing.max(1))
+    }
+
+    /// Timestamp of the most recent block mined on `lane`, if any.
+    fn lane_last_time(&self, lane: &str) -> Option<i64> {
+        self.blocks
+            .iter()
+            .rev()
+            .find(|b| Self::lane_of(b) == lane)
+            .map(|b| b.header.time as i64)
+    }
+
+    /// Difficulty bits required for the next block on `lane` given the
+    /// candidate block's timestamp: the LWMA target (see [`Chain::next_bits_for`]),
+    /// plus the quiet-lane decay once the lane has been silent past the grace
+    /// window. Pure LWMA below `decay_activation_height`.
+    pub fn next_bits_for_at(&self, lane: &str, now_ts: i64) -> u32 {
+        let base = self.next_bits_for(lane);
+        let height = self.blocks.len() as u64;
+        if height < self.params.decay_activation_height {
+            return base;
+        }
+        match self.lane_last_time(lane) {
+            Some(last) => {
+                let (grace, halflife) = self.decay_params();
+                blockle_pow::difficulty::decayed_next_bits(
+                    base,
+                    self.params.pow_limit,
+                    now_ts - last,
+                    grace,
+                    halflife,
+                )
+            }
+            None => base,
+        }
+    }
+
     /// Validate a merged-mining proof: the parent header's PoW (under the
     /// parent's own algorithm) must meet OUR lane difficulty, and its
     /// coinbase must commit to this block's header hash through the
@@ -551,7 +594,7 @@ impl Chain {
         if block.aux_pow.is_some() && !self.params.aux_pow {
             return Err(ChainError::BadAuxPow("merged mining not enabled".into()));
         }
-        let expected_bits = self.next_bits_for(lane);
+        let expected_bits = self.next_bits_for_at(lane, header.time as i64);
         if header.bits != expected_bits {
             return Err(ChainError::BadBits { got: header.bits, expected: expected_bits });
         }

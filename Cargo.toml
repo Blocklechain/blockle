@@ -1,6 +1,6 @@
 [package]
 name = "blockle"
-version = "0.2.6"
+version = "0.2.7"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Blockle AutoPool — the universal deployment system for PoW mining pools: point it at a chain, get a pool"

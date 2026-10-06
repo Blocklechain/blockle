@@ -485,6 +485,7 @@ fn serve_pool(cfg: &PoolConfig, block_forever: bool) -> Result<()> {
         &cfg.pool.stratum,
         pool_scheme(cfg)?,
         cfg.pool.fee_percent,
+        &cfg.chain.algorithm,
     );
     engine.start()?;
     dashboard::serve(engine.clone(), &cfg.pool.dashboard)?;
@@ -741,6 +742,7 @@ fn demo(blocks: u64) -> Result<()> {
         &config.pool.stratum,
         pool_scheme(&config)?,
         config.pool.fee_percent,
+        &config.chain.algorithm,
     );
     engine.start()?;
     dashboard::serve(engine.clone(), &config.pool.dashboard)?;
