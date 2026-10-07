@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blockle Wallet</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- LOADING -->
+      <section class="screen" data-screen="loading">
+        <div class="center">
+          <canvas class="logo logo-sm" id="logo-loading"></canvas>
+        </div>
+      </section>
+
+      <!-- WELCOME -->
+      <section class="screen" data-screen="welcome" hidden>
+        <div class="hero">
+          <canvas class="logo" id="logo-welcome"></canvas>
+          <h1 class="wordmark">blockle</h1>
+          <p class="tagline">A post-quantum wallet for BLOCK.<br />Hover and tap the logo.</p>
+        </div>
+        <div class="stack">
+          <button class="btn primary" data-go="create">Create a new wallet</button>
+          <button class="btn ghost" data-go="import">Import wallet file</button>
+        </div>
+        <div class="foot mono" id="welcome-net">BLOCK · <span data-height>—</span></div>
+      </section>
+
+      <!-- CREATE -->
+      <section class="screen" data-screen="create" hidden>
+        <header class="bar"><button class="back" data-go="welcome">‹</button><span>Create wallet</span></header>
+        <div class="pad">
+          <p class="muted">Set a password. It encrypts your wallet on this device — we never see it and it can't be recovered.</p>
+          <label class="field"><span>Password</span><input type="password" id="create-pw" placeholder="At least 8 characters" /></label>
+          <label class="field"><span>Confirm password</span><input type="password" id="create-pw2" placeholder="Re-enter password" /></label>
+          <div class="meter"><i id="pw-meter"></i></div>
+          <div class="err" id="create-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn primary" id="create-go">Create wallet</button>
+        </div>
+      </section>
+
+      <!-- IMPORT -->
+      <section class="screen" data-screen="import" hidden>
+        <header class="bar"><button class="back" data-go="welcome">‹</button><span>Import wallet</span></header>
+        <div class="pad">
+          <p class="muted">Import a Blockle wallet file (<span class="mono">.json</span>). Your own exported file restores full access; a desktop <span class="mono">wallet.json</span> imports as watch-only.</p>
+          <label class="file-drop" id="import-drop">
+            <input type="file" id="import-file" accept="application/json,.json" hidden />
+            <span class="fd-icon">⬇</span>
+            <span id="import-filename">Choose a wallet .json file</span>
+          </label>
+          <label class="field"><span>File password <span class="muted">(if the file is encrypted)</span></span><input type="password" id="import-filepw" placeholder="Password the file was saved with" /></label>
+          <label class="field"><span>New password for this wallet</span><input type="password" id="import-pw" placeholder="Set a password (≥ 8 characters)" /></label>
+          <div class="err" id="import-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn primary" id="import-go" disabled>Import</button>
+        </div>
+      </section>
+
+      <!-- UNLOCK -->
+      <section class="screen" data-screen="unlock" hidden>
+        <div class="hero small">
+          <canvas class="logo logo-md" id="logo-unlock"></canvas>
+          <h1 class="wordmark sm">blockle</h1>
+        </div>
+        <div class="pad">
+          <label class="field"><span>Password</span><input type="password" id="unlock-pw" placeholder="Enter password" autofocus /></label>
+          <div class="err" id="unlock-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn primary" id="unlock-go">Unlock</button>
+          <button class="btn link" id="unlock-reset">Reset wallet</button>
+        </div>
+      </section>
+
+      <!-- DASHBOARD -->
+      <section class="screen" data-screen="dashboard" hidden>
+        <header class="topbar">
+          <button class="wallet-switch" data-go="wallets" title="Switch wallet">
+            <canvas class="logo logo-xs" id="logo-top"></canvas>
+            <span id="active-label">Wallet</span>
+            <span class="caret">▾</span>
+          </button>
+          <div class="top-actions">
+            <span class="pill" id="watch-pill" hidden>watch-only</span>
+            <button class="icon-btn" id="lock-btn" title="Lock">🔒</button>
+          </div>
+        </header>
+        <div class="balance-card">
+          <div class="bc-label">Balance</div>
+          <div class="bc-amount"><span id="bal">—</span> <span class="bc-ticker">BLOCK</span></div>
+          <button class="addr-chip" id="addr-chip" title="Copy address"><span id="addr-short">—</span><span class="copy">⧉</span></button>
+        </div>
+        <div class="grid3">
+          <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
+          <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
+          <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
+        </div>
+        <div class="section-h">Activity</div>
+        <div class="list" id="activity"><div class="empty">No transactions yet.</div></div>
+        <nav class="tabbar">
+          <button class="tab active" data-go="dashboard">Home</button>
+          <button class="tab" data-go="connections">Connections</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- WALLETS -->
+      <section class="screen" data-screen="wallets" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Your wallets</span></header>
+        <div class="list" id="wallet-list"><div class="empty">No wallets yet.</div></div>
+        <div class="stack">
+          <button class="btn primary" data-go="create">Create new wallet</button>
+          <button class="btn ghost" data-go="import">Import wallet file</button>
+        </div>
+      </section>
+
+      <!-- RECEIVE -->
+      <section class="screen" data-screen="receive" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Receive BLOCK</span></header>
+        <div class="pad center-col">
+          <canvas id="identicon" width="180" height="180" class="identicon"></canvas>
+          <div class="addr-full mono" id="addr-full">—</div>
+          <button class="btn ghost" id="copy-addr">Copy address</button>
+        </div>
+      </section>
+
+      <!-- SEND -->
+      <section class="screen" data-screen="send" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Send BLOCK</span></header>
+        <div class="pad">
+          <label class="field"><span>To address</span><input type="text" id="send-to" placeholder="block1…" class="mono" /></label>
+          <label class="field"><span>Amount (BLOCK)</span><input type="text" id="send-amt" placeholder="0.00" inputmode="decimal" /></label>
+          <label class="field"><span>Note (optional)</span><input type="text" id="send-note" placeholder="" /></label>
+          <div class="notice" id="send-notice">
+            Signed with your post-quantum key (ML-DSA-44) and broadcast to the BLOCK network. A 0.0001 BLOCK fee applies; change returns to you.
+          </div>
+          <div class="err" id="send-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn primary" id="send-go">Send</button>
+        </div>
+      </section>
+
+      <!-- CONNECTIONS -->
+      <section class="screen" data-screen="connections" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Connected apps</span></header>
+        <div class="list" id="sites"><div class="empty">No apps connected yet.</div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="connections">Connections</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="screen" data-screen="settings" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Settings</span></header>
+        <div class="pad">
+          <label class="field"><span>Chain API endpoint</span><input type="text" id="api-base" class="mono" /></label>
+          <div class="row-btns">
+            <button class="btn ghost" id="export-wallet">Export wallet file</button>
+            <button class="btn ghost" id="lock-now">Lock now</button>
+          </div>
+          <button class="btn danger" id="reset-wallet">Reset wallet</button>
+          <div class="about mono">Blockle Wallet · v0.1.0</div>
+        </div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab" data-go="connections">Connections</button>
+          <button class="tab active" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- APPROVE: CONNECT -->
+      <section class="screen approve" data-screen="approve-connect" hidden>
+        <div class="hero small">
+          <canvas class="logo logo-md" id="logo-approve"></canvas>
+        </div>
+        <div class="pad center-col">
+          <div class="origin-chip" id="connect-origin">—</div>
+          <h2 class="approve-h">Connect to this app?</h2>
+          <p class="muted">It will see your BLOCK address and can request message signatures. It cannot move funds without your approval.</p>
+          <div class="perm-box">
+            <div class="perm"><span>✓</span> View your address</div>
+            <div class="perm"><span>✓</span> See your balance &amp; activity</div>
+            <div class="perm"><span>✓</span> Request message signatures (you approve each)</div>
+          </div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="connect-reject">Reject</button>
+          <button class="btn primary" id="connect-approve">Connect</button>
+        </div>
+      </section>
+
+      <!-- APPROVE: SIGN -->
+      <section class="screen approve" data-screen="approve-sign" hidden>
+        <div class="pad center-col">
+          <div class="origin-chip" id="sign-origin">—</div>
+          <h2 class="approve-h">Signature request</h2>
+          <p class="muted">Signing proves you control this address. It does not authorize any transfer.</p>
+          <div class="msg-box mono" id="sign-msg"></div>
+          <div id="sign-unlock" hidden>
+            <label class="field"><span>Unlock to sign</span><input type="password" id="sign-pw" placeholder="Password" /></label>
+            <div class="err" id="sign-err"></div>
+          </div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="sign-reject">Reject</button>
+          <button class="btn primary" id="sign-approve">Sign</button>
+        </div>
+      </section>
+
+      <!-- APPROVE: DEPLOY CONTRACT -->
+      <section class="screen approve" data-screen="approve-deploy" hidden>
+        <div class="pad center-col">
+          <div class="origin-chip" id="deploy-origin">—</div>
+          <h2 class="approve-h">Deploy contract</h2>
+          <p class="muted">This publishes a contract to BLOCK mainnet and pays the gas fee from this wallet.</p>
+          <div class="perm-box">
+            <div class="perm"><span>⬡</span> Code size: <b id="deploy-size">—</b></div>
+            <div class="perm"><span>⛽</span> Gas limit: <b id="deploy-gas">—</b></div>
+            <div class="perm"><span>₿</span> Fee: <b id="deploy-fee">—</b></div>
+          </div>
+          <div id="deploy-unlock" hidden>
+            <label class="field"><span>Unlock to deploy</span><input type="password" id="deploy-pw" placeholder="Password" /></label>
+          </div>
+          <div class="err" id="deploy-err"></div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="deploy-reject">Reject</button>
+          <button class="btn primary" id="deploy-approve">Deploy</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="storage.js"></script>
+    <script src="vault.js"></script>
+    <script src="blockle_wasm.js"></script>
+    <script src="signer.js"></script>
+    <script src="wallet.js"></script>
+    <script src="chain.js"></script>
+    <script src="particles.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

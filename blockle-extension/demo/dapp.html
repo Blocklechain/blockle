@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blockle dApp demo</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; min-height: 100vh; font: 15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
+        background: radial-gradient(120% 80% at 50% -10%, #1b2140, #05070c 60%); color: #eef0f6;
+        display: flex; align-items: center; justify-content: center; padding: 30px; }
+      .card { width: 440px; max-width: 100%; background: #12141d; border: 1px solid rgba(255,255,255,.08);
+        border-radius: 20px; padding: 28px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+      h1 { font-size: 22px; margin: 0 0 4px; background: linear-gradient(90deg,#22d3ee,#c084fc);
+        -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+      p.sub { color: #8a90a6; margin: 0 0 20px; font-size: 13px; }
+      button { border: 0; border-radius: 10px; padding: 11px 15px; font-weight: 600; cursor: pointer;
+        background: linear-gradient(90deg,#22d3ee,#6366f1); color: #05070c; font-size: 14px; }
+      button.ghost { background: #171a25; color: #eef0f6; border: 1px solid rgba(255,255,255,.12); }
+      button:disabled { opacity: .4; cursor: not-allowed; }
+      .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+      input { flex: 1; min-width: 160px; background: #0d1018; border: 1px solid rgba(255,255,255,.12);
+        border-radius: 10px; padding: 10px 12px; color: #eef0f6; }
+      .out { background: #0d1018; border: 1px solid rgba(255,255,255,.1); border-radius: 12px;
+        padding: 14px; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap;
+        word-break: break-all; max-height: 240px; overflow: auto; margin-top: 16px; color: #b7c0d8; }
+      .status { font-size: 13px; color: #8a90a6; margin-bottom: 16px; }
+      .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #fb7185; margin-right: 6px; }
+      .dot.on { background: #34d399; }
+      .ok { color: #34d399; } .bad { color: #fb7185; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Blockle dApp demo</h1>
+      <p class="sub">A sample app using <code>window.blockle</code> — connect, read balance, and sign a message that we verify in the page.</p>
+      <div class="status"><span class="dot" id="dot"></span><span id="status">Provider not detected</span></div>
+      <div class="row">
+        <button id="connect">Connect wallet</button>
+        <button id="disconnect" class="ghost" disabled>Disconnect</button>
+      </div>
+      <div class="row">
+        <button id="balance" class="ghost" disabled>Get balance</button>
+        <button id="height" class="ghost" disabled>Chain height</button>
+      </div>
+      <div class="row">
+        <input id="msg" placeholder="Message to sign" value="Sign in to Blockle dApp demo" />
+        <button id="sign" disabled>Sign &amp; verify</button>
+      </div>
+      <div class="out" id="out">Waiting…</div>
+    </div>
+    <script src="dapp.js"></script>
+  </body>
+</html>

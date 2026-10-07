@@ -295,6 +295,14 @@ fn chain_api(path: &str) -> Option<Value> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// POST a JSON-RPC call to the node's work/submit interface (chain-api base).
+fn chain_api_post(body: &[u8]) -> Option<Value> {
+    let (_, _, api) = EXTRAS.get()?;
+    let base = api.as_ref()?;
+    let raw = http::post(&format!("{base}/"), "application/json", body, Duration::from_secs(10)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
 /// Our dedicated direct BLOCK pools: (stats-feed name, row title, port).
 const DIRECT_POOLS: &[(&str, &str, u16)] = &[
     ("sha256d", "BLOCK · SHA-256d direct", 3340),
@@ -446,6 +454,19 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         return match path {
             "/api/register" => api_register(registry, &body),
             "/api/heartbeat" => api_heartbeat(registry, &body),
+            "/api/submit" => {
+                // Light wallets POST { raw: "<bincode-hex tx>" }; relay it to
+                // the node, which fully validates before mempool + gossip.
+                let raw_hex = body.get("raw").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_hex.is_empty() {
+                    return jerr("400 Bad Request", "missing raw transaction");
+                }
+                let rpc = json!({"jsonrpc":"1.0","id":"ext","method":"submitrawtransaction","params":[raw_hex]});
+                match chain_api_post(rpc.to_string().as_bytes()) {
+                    Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                    None => jerr("503 Service Unavailable", "chain api not reachable"),
+                }
+            }
             _ => jerr("404 Not Found", "unknown endpoint"),
         };
     }
@@ -580,6 +601,10 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
             }
         }
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
+        "/studio" => ("200 OK", "text/html; charset=utf-8", page_studio().into_bytes()),
+        "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
+        "/blockle_wasm.js" => serve_web_file("blockle_wasm.js", "application/javascript; charset=utf-8"),
+        "/blockle.wasm" => serve_web_file("blockle_wasm_bg.wasm", "application/wasm"),
         "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
@@ -1016,7 +1041,7 @@ fn page_shell(title: &str, body: String) -> String {
 <meta property="og:image" content="https://{domain}/logo.png">
 <title>{title} · {domain}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
@@ -1717,8 +1742,104 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
     page_shell("Mine with us", body)
 }
 
+/// Serve a static studio asset from the web dir on disk.
+fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, Vec<u8>) {
+    match std::fs::read(format!("/opt/blockle/web/{name}")) {
+        Ok(b) => ("200 OK", ct, b),
+        Err(_) => ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec()),
+    }
+}
+
+fn page_studio() -> String {
+    page_shell("Studio", STUDIO_HTML.to_string())
+}
+
+const STUDIO_HTML: &str = r##"<style>
+.studio-intro{color:var(--muted);margin:0 0 16px}
+.studio-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.studio-bar select,.studio-bar input{background:var(--surface);border:1px solid var(--line2);color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px}
+.cstat{font-size:13px;margin-left:auto;font-family:ui-monospace,monospace}
+.cstat.ok{color:#34d399}.cstat.bad{color:#fb7185}
+.studio-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:860px){.studio-grid{grid-template-columns:1fr}}
+#src{width:100%;height:440px;resize:vertical;background:#0b0e16;border:1px solid var(--line2);border-radius:12px;color:#dfe6f5;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;padding:14px;outline:none;tab-size:2}
+#src:focus{border-color:var(--c1)}
+.ed-foot{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:6px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;min-height:440px;display:flex;flex-direction:column}
+.tabs{display:flex;border-bottom:1px solid var(--line)}
+.tab-btn{flex:1;background:none;border:0;color:var(--muted);padding:12px;font-weight:600;font-size:13px;cursor:pointer}
+.tab-btn.active{color:var(--c1);box-shadow:inset 0 -2px 0 var(--c1)}
+.tabpane{padding:14px;overflow:auto;flex:1}
+.callrow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;background:var(--bg2)}
+.cfn{font-size:13px;margin-bottom:8px}.fidx{color:var(--muted);font-family:ui-monospace,monospace}
+.cargs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.cargs input{flex:1;min-width:90px;background:var(--surface);border:1px solid var(--line2);color:var(--text);border-radius:8px;padding:7px 9px;font-size:12px}
+.btn.sm{padding:7px 14px;font-size:13px}
+.res{border:1px solid var(--line2);border-radius:10px;padding:12px;margin-bottom:12px}
+.res.ok{border-color:rgba(52,211,153,.4)}.res.bad{border-color:rgba(251,113,133,.4)}
+.resline{margin:2px 0;font-size:14px}.resline.bad{color:#fb7185}
+.resmeta{color:var(--muted);font-size:12px;margin-top:4px}
+.pill.good{color:#34d399;border:1px solid rgba(52,211,153,.4);border-radius:999px;padding:2px 8px;font-size:11px}
+.pill.err{color:#fb7185;border:1px solid rgba(251,113,133,.4);border-radius:999px;padding:2px 8px;font-size:11px}
+.statehdr{margin:12px 0 6px;font-size:13px}
+.sttable{width:100%;border-collapse:collapse;font-size:12px}
+.sttable th{text-align:left;color:var(--muted);font-weight:500;padding:4px 6px;border-bottom:1px solid var(--line)}
+.sttable td{padding:5px 6px;border-bottom:1px solid var(--line)}
+.histnote{font-size:12px;margin-top:10px}
+#bytecode,#asm{white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,monospace;background:#0b0e16;border:1px solid var(--line2);border-radius:10px;padding:12px;color:#aeb8d0}
+#asm{white-space:pre}
+.deploy-net{display:flex;gap:8px;margin-bottom:12px}
+.netpill{border:1px solid var(--line2);border-radius:999px;padding:6px 12px;font-size:12px;color:var(--muted)}
+.netpill.on{color:var(--c1);border-color:var(--c1)}
+#deploy-out{margin-top:12px;font-size:13px;word-break:break-all}
+.good{color:#34d399}.bad{color:#fb7185}
+.lbl{font-size:12px;color:var(--muted);display:block;margin:10px 0 4px}
+</style>
+<h1>Studio <span class="badge">contract IDE</span></h1>
+<p class="studio-intro">Write Blockle VM contracts, run them in a built-in <b>testnet sandbox</b> (right here, no wallet needed), and deploy to mainnet through the Blockle Wallet extension. Pick an example to start.</p>
+
+<div class="studio-bar">
+  <select id="examples" title="Load an example"></select>
+  <button class="btn primary" id="compile-btn">Compile ▶</button>
+  <span class="cstat" id="compile-status">—</span>
+</div>
+
+<div class="studio-grid">
+  <div>
+    <textarea id="src" spellcheck="false"></textarea>
+    <div class="ed-foot"><span>Blockle Script · ⌘/Ctrl+Enter to compile</span><span id="contract-size">—</span></div>
+  </div>
+  <div class="panel">
+    <div class="tabs">
+      <button class="tab-btn active" data-pane="testnet">Testnet sandbox</button>
+      <button class="tab-btn" data-pane="bytecode">Bytecode</button>
+      <button class="tab-btn" data-pane="deploy">Deploy</button>
+    </div>
+    <div class="tabpane" id="pane-testnet">
+      <div id="calls"></div>
+      <div id="output"></div>
+    </div>
+    <div class="tabpane" id="pane-bytecode" hidden>
+      <label class="lbl">Bytecode (hex)</label>
+      <div id="bytecode"></div>
+      <label class="lbl">Assembly</label>
+      <div id="asm"></div>
+    </div>
+    <div class="tabpane" id="pane-deploy" hidden>
+      <p class="muted">The testnet sandbox needs no wallet. To deploy on <b>mainnet</b>, the Blockle Wallet extension signs and broadcasts the deploy transaction with your post-quantum key.</p>
+      <label class="lbl">Gas limit</label>
+      <input class="mono" id="gas" value="200000" style="width:160px;background:var(--surface);border:1px solid var(--line2);color:var(--text);border-radius:10px;padding:9px 12px">
+      <div style="margin-top:14px"><button class="btn primary" id="deploy-btn">Deploy to mainnet</button></div>
+      <div id="deploy-out"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/blockle_wasm.js"></script>
+<script src="/studio.js"></script>"##;
+
 fn page_wallet() -> String {
-    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.10";
+    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.11";
     let body = format!(
         r##"<h1>Blockle Wallet</h1>
 <p class="sub">A desktop wallet for BLOCK, built on Qt 6. Decentralized by construction: it embeds a full node that syncs from the network peer-to-peer; keys never leave your machine (post-quantum ML-DSA). Transparent + shielded funds, hidden-amount private sends, and regtest tooling for developers.</p>
@@ -1729,6 +1850,24 @@ fn page_wallet() -> String {
 <tr><td>macOS (Apple Silicon)</td><td class="mono"><a href="{rel}/BlockleWallet-macos-arm64.zip">BlockleWallet-macos-arm64.zip</a></td></tr>
 </table>
 <p class="sub">Every build is produced by the public <a href="https://github.com/blocklechain/blockle/actions">CI pipeline</a> — verify provenance there, or build from source.</p>
+
+<h2>Browser extension <span class="badge">beta</span></h2>
+<p class="sub">A post-quantum BLOCK wallet in your browser, with <b>dApp connections</b>. Real ML-DSA-44 keys (compiled from the chain code to WebAssembly), a password-locked vault, send/receive, wallet-file import/export, and a <span class="mono">window.blockle</span> provider apps can connect to.</p>
+<table><tr><th>browser</th><th>download</th></tr>
+<tr><td>Chrome · Edge · Brave</td><td class="mono"><a href="{rel}/BlockleWallet-extension.zip">BlockleWallet-extension.zip</a></td></tr>
+</table>
+<p class="sub">Install (unpacked, while in beta):</p>
+<pre><code>1. Download and unzip BlockleWallet-extension.zip
+2. Open  chrome://extensions   (or edge://extensions , brave://extensions)
+3. Turn on  Developer mode  (top-right)
+4. Click  Load unpacked  and select the  blockle-wallet  folder
+5. Pin "Blockle Wallet" and open it — create a wallet with a password</code></pre>
+<p class="sub">For dApp developers: once a user connects, call
+<span class="mono">window.blockle.connect()</span>,
+<span class="mono">.getBalance()</span>,
+<span class="mono">.signMessage(msg)</span>, and listen for
+<span class="mono">accountsChanged</span> events.</p>
+
 <h2>Other installs</h2>
 <pre><code># Python (wallet GUI + pool tooling)
 pip install 'blockle[qt]'   &amp;&amp;   blockle-qt

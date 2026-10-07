@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use blockle_chain::Chain;
 use blockle_core::keys::{decode_address, encode_address, Address};
-use blockle_core::{display_hash, AuxPow, Block};
+use blockle_core::{display_hash, AuxPow, Block, Transaction};
 use blockle_pow::difficulty::compact_to_target;
 
 use crate::p2p::Node;
@@ -148,6 +148,7 @@ fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>
                 .chain(["equihash"].iter())
                 .collect::<Vec<_>>(),
         })),
+        "submitrawtransaction" => submitrawtransaction(&node, &params),
         _ => Err("method not found".to_string()),
     };
     let reply = match result {
@@ -161,6 +162,25 @@ fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>
         payload.len(),
         payload
     );
+}
+
+/// Accept a light-wallet transaction: `submitrawtransaction [raw_hex]` where
+/// raw_hex is the bincode-serialized transaction. The node fully validates it
+/// (signatures, UTXOs, fees) before adding it to the mempool and gossiping.
+fn submitrawtransaction(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
+    let raw_hex = params
+        .get(0)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "expected [raw_hex]".to_string())?;
+    let raw = hex::decode(raw_hex).map_err(|_| "raw transaction is not valid hex".to_string())?;
+    let tx: Transaction =
+        bincode::deserialize(&raw).map_err(|_| "could not decode transaction".to_string())?;
+    let txid = hex::encode(tx.txid());
+    if node.submit_tx(tx, None) {
+        Ok(json!({ "accepted": true, "txid": txid }))
+    } else {
+        Err("transaction rejected — invalid, double-spend, or already in the mempool".to_string())
+    }
 }
 
 fn createauxblock(
@@ -681,6 +701,31 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 "total_sent": sent,
                 "tx_count": history.len(),
                 "history": history.split_off(cut).into_iter().rev().collect::<Vec<_>>(),
+            }))
+        }
+        p if p.starts_with("/explorer/utxos/") => {
+            let addr_s = &p["/explorer/utxos/".len()..];
+            let Ok(addr) = decode_address(addr_s) else { return err404("bad address") };
+            // Spendable (mature) outputs, so a light wallet can build inputs.
+            // txid is RAW hex (not display-reversed) so it round-trips straight
+            // back into an OutPoint when the wallet rebuilds the transaction.
+            let spendable = chain.spendable_utxos(&addr);
+            let total: u64 = spendable.iter().map(|(_, e)| e.output.amount).sum();
+            let utxos: Vec<Value> = spendable
+                .into_iter()
+                .map(|(op, e)| {
+                    json!({
+                        "txid": hex::encode(op.txid),
+                        "vout": op.vout,
+                        "amount": e.output.amount,
+                    })
+                })
+                .collect();
+            ok(json!({
+                "address": addr_s,
+                "spendable": total,
+                "count": utxos.len(),
+                "utxos": utxos,
             }))
         }
         "/explorer/mempool" => {
