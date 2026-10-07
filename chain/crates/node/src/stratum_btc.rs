@@ -388,13 +388,43 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req.get("params").cloned().unwrap_or(Value::Null);
         let reply = handle_request(&state, client_id, method, &params);
-        let clients = state.clients.lock().unwrap();
-        if let Some(client) = clients.get(&client_id) {
-            match reply {
-                Ok(result) => push(client, json!({"id": id, "result": result, "error": null})),
-                Err(msg) => {
-                    push(client, json!({"id": id, "result": null, "error": [20, msg, null]}))
+        let ok = reply.is_ok();
+        {
+            let clients = state.clients.lock().unwrap();
+            if let Some(client) = clients.get(&client_id) {
+                match &reply {
+                    Ok(result) => {
+                        push(client, json!({"id": id, "result": result, "error": null}))
+                    }
+                    Err(msg) => {
+                        push(client, json!({"id": id, "result": null, "error": [20, msg, null]}))
+                    }
                 }
+            }
+        }
+        // Standard stratum ordering: the mining.subscribe / mining.authorize
+        // REPLY (carrying extranonce1 / auth result) must reach the miner
+        // BEFORE any set_difficulty + notify. Sending work first makes real
+        // ASIC firmware (e.g. a Bitaxe / BM1370) receive a job with no
+        // extranonce1 and reboot. So we push the initial job only now, after
+        // the reply has been enqueued — never from inside the handlers.
+        if ok {
+            match method {
+                "mining.subscribe" => {
+                    push_job(&state, client_id, state.opts.pool_address, true);
+                }
+                "mining.authorize" => {
+                    let addr = state
+                        .clients
+                        .lock()
+                        .unwrap()
+                        .get(&client_id)
+                        .and_then(|c| c.address);
+                    if let Some(a) = addr {
+                        push_job(&state, client_id, a, true);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -453,10 +483,9 @@ fn handle_request(
                 c.subscribed = true;
                 c.extranonce1
             };
-            // Placeholder job immediately so pool validators (e.g.
-            // MiningRigRentals) that subscribe-and-wait see work before
-            // any authorize. Pays the pool address; replaced on authorize.
-            push_job(state, client_id, state.opts.pool_address, true);
+            // The placeholder job (for subscribe-and-wait validators like
+            // MiningRigRentals) is pushed by the caller AFTER this reply is
+            // sent, so the miner always receives extranonce1 first.
             Ok(json!([
                 [["mining.set_difficulty", "d"], ["mining.notify", "n"]],
                 hex::encode(en1),
@@ -484,7 +513,8 @@ fn handle_request(
                 c.address = Some(address);
                 c.worker = worker;
             }
-            push_job(state, client_id, address, true);
+            // Fresh job (paying the authorized address) is pushed by the caller
+            // after this authorize reply, keeping standard reply-then-work order.
             Ok(json!(true))
         }
         "mining.extranonce.subscribe" => Ok(json!(true)),

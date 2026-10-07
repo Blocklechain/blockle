@@ -317,7 +317,16 @@ impl Chain {
         if auxpow::aux_slot(self.params.aux_chain_id, size, cnonce) != ap.chain_index {
             return Err(bad("chain index does not match slot derivation"));
         }
-        if auxpow::fold_branch(header.hash(), &ap.chain_branch, ap.chain_index) != root {
+        // Standard Namecoin-style merge-mining pools (Myriad, Doichain,
+        // Syscoin, Unobtanium…) write the aux merkle root BYTE-REVERSED after
+        // the magic — hashes are uint256 internally and many codebases emit
+        // the display (reversed) order. Our own pools write it unreversed.
+        // Accept either orientation so an existing multi-coin pool can add
+        // BLOCK at chain id 16972 without maintaining a special coinbase.
+        let folded = auxpow::fold_branch(header.hash(), &ap.chain_branch, ap.chain_index);
+        let mut root_rev = root;
+        root_rev.reverse();
+        if folded != root && folded != root_rev {
             return Err(bad("header hash does not fold to committed root"));
         }
 
