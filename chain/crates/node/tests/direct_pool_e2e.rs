@@ -114,16 +114,24 @@ fn run_direct(mode: PoolMode, port_off: u16) -> (std::path::PathBuf, std::sync::
     let en1: Vec<u8> = hex::decode(sub["result"][1].as_str().unwrap()).unwrap();
     assert_eq!(en1.len(), 4);
     read_until(&mut reader, &mut lines, |v| v.get("id") == Some(&json!(2)));
-    // Take the latest buffered job (post-authorize pays the miner).
-    read_until(&mut reader, &mut lines, |v| {
-        v.get("method").and_then(|m| m.as_str()) == Some("mining.notify")
-    });
-    let notify = lines
-        .iter()
-        .rev()
-        .find(|v| v.get("method").and_then(|m| m.as_str()) == Some("mining.notify"))
-        .cloned()
-        .unwrap();
+    // Standard stratum order now sends the subscribe/authorize replies BEFORE
+    // any work, so the job paying the miner is the mining.notify that arrives
+    // AFTER the authorize reply (an earlier placeholder paid the pool). Read
+    // fresh lines until that post-authorize notify, rather than reusing a
+    // buffered one.
+    let notify = loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("stratum line");
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(&line).expect("json line");
+        let is_notify = v.get("method").and_then(|m| m.as_str()) == Some("mining.notify");
+        lines.push(v);
+        if is_notify {
+            break lines.last().unwrap().clone();
+        }
+    };
     let p = notify["params"].as_array().unwrap().clone();
     let job_id = p[0].as_str().unwrap().to_string();
     let coinb1 = hex::decode(p[2].as_str().unwrap()).unwrap();
