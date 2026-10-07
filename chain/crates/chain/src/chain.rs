@@ -215,8 +215,13 @@ impl Chain {
     fn decay_params(&self, height: u64) -> (u64, u64) {
         let s = self.params.target_spacing.max(1);
         if height >= self.params.decay_v2_height {
-            (2 * s, (s / 2).max(1))
+            // v2: grace of one block interval, difficulty halving every fifth
+            // of an interval — a quiet lane recovers within an hour even from
+            // a badly-overshot difficulty (mainnet: 10min grace, ~2min halving).
+            (s, (s / 5).max(1))
         } else {
+            // v1 (frozen for blocks mined before the v2 activation height):
+            // grace = twice the per-lane spacing, halve every chain interval.
             let spacing = s * self.lanes().len() as u64;
             (2 * spacing, s)
         }

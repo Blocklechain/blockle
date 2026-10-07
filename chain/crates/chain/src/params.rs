@@ -71,9 +71,10 @@ impl ChainParams {
             // Live-chain fork point: enforced from the first block after the
             // current tip so blocks 0..=297 keep validating under pure LWMA.
             decay_activation_height: 298,
-            // Faster recovery schedule, activated above the live tip at the
-            // time of this fork so earlier decayed blocks keep their schedule.
-            decay_v2_height: 400,
+            // Faster recovery schedule, activated at the first block after the
+            // live tip (359) at fork time so it takes effect immediately and
+            // earlier blocks keep validating under the schedule they used.
+            decay_v2_height: 360,
             pow_limit: U256::MAX >> 1,
             initial_subsidy: 50 * COIN,
             halving_interval: 210_000,
