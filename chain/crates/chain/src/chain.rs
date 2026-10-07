@@ -206,13 +206,20 @@ impl Chain {
         lwma_next_bits(spacing, self.params.lwma_window, self.params.pow_limit, &headers)
     }
 
-    /// Grace window and halflife for the quiet-lane difficulty decay. Grace is
-    /// twice a lane's own target spacing (`target_spacing × lane_count`), so
-    /// ordinary variance never triggers it; past that, difficulty halves once
-    /// per `target_spacing` of overdue time until a block is found.
-    fn decay_params(&self) -> (u64, u64) {
-        let spacing = self.params.target_spacing * self.lanes().len() as u64;
-        (2 * spacing, self.params.target_spacing.max(1))
+    /// Grace window and halflife (seconds) for the quiet-lane difficulty decay
+    /// at a given block height. Two schedules so the live fork doesn't rewrite
+    /// history: below `decay_v2_height` the original v1 schedule (grace = twice
+    /// the per-lane spacing; halve every chain interval); at/above it the
+    /// faster v2 schedule (grace = two chain intervals; halve every half
+    /// interval) so a quiet lane recovers in minutes instead of hours.
+    fn decay_params(&self, height: u64) -> (u64, u64) {
+        let s = self.params.target_spacing.max(1);
+        if height >= self.params.decay_v2_height {
+            (2 * s, (s / 2).max(1))
+        } else {
+            let spacing = s * self.lanes().len() as u64;
+            (2 * spacing, s)
+        }
     }
 
     /// Timestamp of the most recent block mined on `lane`, if any.
@@ -236,7 +243,7 @@ impl Chain {
         }
         match self.lane_last_time(lane) {
             Some(last) => {
-                let (grace, halflife) = self.decay_params();
+                let (grace, halflife) = self.decay_params(height);
                 blockle_pow::difficulty::decayed_next_bits(
                     base,
                     self.params.pow_limit,

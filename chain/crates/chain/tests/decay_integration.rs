@@ -30,7 +30,7 @@ fn quiet_lane_difficulty_decays_past_grace() {
     assert!(base < limit, "LWMA did not tighten difficulty (base == limit)");
 
     // Within the grace window the demanded difficulty is unchanged.
-    let within = chain.next_bits_for_at("native", last + 5);
+    let within = chain.next_bits_for_at("native", last + 1);
     assert_eq!(within, base_bits, "difficulty moved inside the grace window");
 
     // Well past the grace window it decays — a strictly easier (larger) target.

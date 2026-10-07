@@ -22,6 +22,12 @@ pub struct ChainParams {
     /// and above it, a lane's required difficulty decays once it goes silent
     /// past the grace window, so the chain cannot stall when hashrate leaves.
     pub decay_activation_height: u64,
+    /// Height from which the faster "v2" decay schedule applies (shorter grace,
+    /// quicker halving) so a quiet lane recovers in minutes rather than hours.
+    /// Below it the original (v1) schedule is used — set above the live tip at
+    /// fork time so already-mined blocks keep validating under the schedule
+    /// they were mined with.
+    pub decay_v2_height: u64,
     /// Easiest allowed target.
     pub pow_limit: U256,
     /// Subsidy for block 1 (base units). Halves every `halving_interval`.
@@ -65,6 +71,9 @@ impl ChainParams {
             // Live-chain fork point: enforced from the first block after the
             // current tip so blocks 0..=297 keep validating under pure LWMA.
             decay_activation_height: 298,
+            // Faster recovery schedule, activated above the live tip at the
+            // time of this fork so earlier decayed blocks keep their schedule.
+            decay_v2_height: 400,
             pow_limit: U256::MAX >> 1,
             initial_subsidy: 50 * COIN,
             halving_interval: 210_000,
@@ -92,8 +101,9 @@ impl ChainParams {
             target_spacing: 1,
             aux_pow: true,
             aux_chain_id: 16972,
-            // Exercise the decay from genesis in tests/dev.
+            // Exercise the decay (v2 schedule) from genesis in tests/dev.
             decay_activation_height: 0,
+            decay_v2_height: 0,
             ..Self::mainnet()
         }
     }
@@ -105,6 +115,7 @@ impl ChainParams {
             name: "blockle-test".into(),
             coinbase_maturity: 10,
             decay_activation_height: 0,
+            decay_v2_height: 0,
             ..Self::mainnet()
         }
     }

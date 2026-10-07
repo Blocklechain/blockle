@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,10 @@ const MAX_HEADERS_PER_MSG: usize = 2000;
 const MAX_BLOCKS_PER_REQUEST: usize = 2000;
 const OUTBOUND_TARGET: usize = 8;
 const HEARTBEAT: Duration = Duration::from_secs(10);
+/// How often the local miner abandons and rebuilds its block template so the
+/// quiet-lane difficulty decay (which is a function of wall-clock time) takes
+/// effect even when nothing else is moving the tip.
+const MINE_TEMPLATE_REFRESH: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Message {
@@ -778,7 +782,17 @@ impl Node {
                 (st.chain.clone(), st.mempool.clone())
             };
             let version = self.tip_version.load(Ordering::SeqCst);
-            let cancel = || self.tip_version.load(Ordering::SeqCst) != version;
+            // Abandon the current template when the tip changes OR after a short
+            // refresh interval, then loop to rebuild. The periodic rebuild is
+            // essential: the quiet-lane difficulty decay lowers the required
+            // target as wall-clock time advances, but only a freshly-built
+            // template (new timestamp) picks that up. Without it a solo miner
+            // whose lane difficulty has outrun its hashrate would grind one
+            // impossible template forever — the tip never changes, so it would
+            // never rebuild and never benefit from the decay. (This is exactly
+            // how the chain stalled for hours.)
+            let deadline = Instant::now() + MINE_TEMPLATE_REFRESH;
+            let cancel = || self.tip_version.load(Ordering::SeqCst) != version || Instant::now() >= deadline;
             match mine_block_cancellable(&chain, address, &mempool, cancel) {
                 Ok(Some((block, _))) => {
                     if self.submit_block(block, None) {
@@ -788,7 +802,7 @@ impl Node {
                         }
                     }
                 }
-                Ok(None) => continue, // tip changed under us — rebuild template
+                Ok(None) => continue, // tip changed or refresh elapsed — rebuild template
                 Err(e) => {
                     println!("[miner] error: {e}");
                     thread::sleep(Duration::from_secs(1));
