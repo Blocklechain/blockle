@@ -137,8 +137,14 @@ struct SharedState {
 
 struct PeerHandle {
     sender: Sender<Message>,
-    /// The peer's listening address, once learned from its Version.
+    /// The peer's listening address, once learned from its Version — stored as
+    /// the peer's real source IP plus the port it advertises.
     listen: Option<String>,
+    /// The peer's source IP (from the TCP connection). Authoritative: a peer
+    /// can't lie about the address it's connecting from, so we reconstruct its
+    /// dialable address from this + the advertised port rather than trusting
+    /// the advertised host (which is typically a 0.0.0.0 bind).
+    src: Option<std::net::IpAddr>,
 }
 
 /// An in-flight headers-first download from one peer.
@@ -178,6 +184,24 @@ impl Node {
 
     pub fn peer_count(&self) -> usize {
         self.peers.lock().unwrap().len()
+    }
+
+    /// Connected peers: (id, dialable listen address, source ip).
+    pub fn peer_list(&self) -> Vec<(u64, Option<String>, Option<String>)> {
+        let mut v: Vec<_> = self
+            .peers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, p)| (*id, p.listen.clone(), p.src.map(|ip| ip.to_string())))
+            .collect();
+        v.sort_by_key(|(id, _, _)| *id);
+        v
+    }
+
+    /// Number of distinct dialable peer addresses this node has learned.
+    pub fn known_addr_count(&self) -> usize {
+        self.known_addrs.lock().unwrap().len()
     }
 
     pub fn tip_generation(&self) -> u64 {
@@ -405,11 +429,12 @@ impl Node {
             Ok(s) => s,
             Err(_) => return,
         };
+        let src_ip = stream.peer_addr().ok().map(|a| a.ip());
         let (tx, rx) = channel::<Message>();
         self.peers
             .lock()
             .unwrap()
-            .insert(peer_id, PeerHandle { sender: tx, listen: None });
+            .insert(peer_id, PeerHandle { sender: tx, listen: None, src: src_ip });
         println!("[p2p] peer {peer_id} connected ({label})");
 
         let writer = thread::spawn(move || {
@@ -452,11 +477,30 @@ impl Node {
                     return Err(anyhow!("unsupported protocol {protocol}"));
                 }
                 if let Some(addr) = listen {
-                    if let Some(peer) = self.peers.lock().unwrap().get_mut(&peer_id) {
-                        peer.listen = Some(addr.clone());
-                    }
-                    if !Self::is_unroutable(&addr) {
-                        self.known_addrs.lock().unwrap().insert(addr);
+                    // Peers bind and advertise 0.0.0.0, which is unroutable and
+                    // would never be gossiped — leaving the network a star around
+                    // the seed. Reconstruct a dialable address from the peer's
+                    // real source IP plus the port it advertises, so every
+                    // reachable node's address propagates through GetAddr/Addr.
+                    let port = addr
+                        .parse::<std::net::SocketAddr>()
+                        .map(|s| s.port())
+                        .ok()
+                        .or_else(|| addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()));
+                    let dialable = {
+                        let mut peers = self.peers.lock().unwrap();
+                        let src = peers.get(&peer_id).and_then(|p| p.src);
+                        let d = match (src, port) {
+                            (Some(ip), Some(p)) => std::net::SocketAddr::new(ip, p).to_string(),
+                            _ => addr.clone(),
+                        };
+                        if let Some(peer) = peers.get_mut(&peer_id) {
+                            peer.listen = Some(d.clone());
+                        }
+                        d
+                    };
+                    if !Self::is_unroutable(&dialable) {
+                        self.known_addrs.lock().unwrap().insert(dialable);
                     }
                 }
                 self.maybe_sync(peer_id, &total_work);

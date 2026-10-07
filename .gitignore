@@ -1,5 +1,6 @@
 /target
 /chain/target
+/blockle-wasm/target
 __pycache__/
 *.egg-info/
 /python/build/

@@ -728,6 +728,42 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 "utxos": utxos,
             }))
         }
+        "/explorer/peers" => {
+            let peers: Vec<Value> = node
+                .peer_list()
+                .into_iter()
+                .map(|(id, listen, src)| json!({ "id": id, "address": listen, "ip": src }))
+                .collect();
+            ok(json!({ "count": peers.len(), "known": node.known_addr_count(), "peers": peers }))
+        }
+        "/explorer/richlist" => {
+            let mut bal: HashMap<blockle_core::keys::Address, u64> = HashMap::new();
+            for e in chain.utxos.values() {
+                *bal.entry(e.output.recipient).or_insert(0) += e.output.amount;
+            }
+            let supply: u64 = chain
+                .blocks
+                .iter()
+                .map(|b| b.transactions[0].outputs.iter().map(|o| o.amount).sum::<u64>())
+                .sum();
+            let holders = bal.len();
+            let mut v: Vec<(blockle_core::keys::Address, u64)> = bal.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.truncate(100);
+            let rows: Vec<Value> = v
+                .iter()
+                .enumerate()
+                .map(|(i, (addr, amt))| {
+                    json!({
+                        "rank": i + 1,
+                        "address": encode_address(addr),
+                        "balance": amt,
+                        "pct": if supply > 0 { *amt as f64 / supply as f64 * 100.0 } else { 0.0 },
+                    })
+                })
+                .collect();
+            ok(json!({ "count": rows.len(), "supply": supply, "holders": holders, "richlist": rows }))
+        }
         "/explorer/mempool" => {
             let idx = outpoint_index(&chain);
             let txs: Vec<Value> = mempool

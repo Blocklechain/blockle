@@ -553,6 +553,8 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         }
         "/algorithms" => ("200 OK", "text/html; charset=utf-8", page_algorithms(&reg).into_bytes()),
         "/explorer" => ("200 OK", "text/html; charset=utf-8", page_explorer(&reg).into_bytes()),
+        "/explorer/peers" => ("200 OK", "text/html; charset=utf-8", page_peers().into_bytes()),
+        "/explorer/richlist" => ("200 OK", "text/html; charset=utf-8", page_richlist().into_bytes()),
         p if p.starts_with("/explorer/block/") => {
             let id = &p["/explorer/block/".len()..];
             match chain_api(&format!("/explorer/block/{id}")) {
@@ -1839,7 +1841,7 @@ const STUDIO_HTML: &str = r##"<style>
 <script src="/studio.js"></script>"##;
 
 fn page_wallet() -> String {
-    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.11";
+    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.12";
     let body = format!(
         r##"<h1>Blockle Wallet</h1>
 <p class="sub">A desktop wallet for BLOCK, built on Qt 6. Decentralized by construction: it embeds a full node that syncs from the network peer-to-peer; keys never leave your machine (post-quantum ML-DSA). Transparent + shielded funds, hidden-amount private sends, and regtest tooling for developers.</p>
@@ -1903,7 +1905,78 @@ fn ago_ts(ts: u64) -> String {
 fn explorer_search_box() -> String {
     r##"<form class="filters" method="get" action="/explorer/search">
 <input type="text" name="q" placeholder="height · block hash · txid · block1… address" style="flex:1;min-width:16rem">
-<button class="btn primary" type="submit">Search</button></form>"##.into()
+<button class="btn primary" type="submit">Search</button></form>
+<p class="sub" style="margin-top:.4rem"><a href="/explorer">Blocks</a> · <a href="/explorer/richlist">Rich list</a> · <a href="/explorer/peers">Peers</a></p>"##.into()
+}
+
+fn page_peers() -> String {
+    let body = match chain_api("/explorer/peers") {
+        Some(d) => {
+            let rows: String = d["peers"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|p| {
+                    format!(
+                        r#"<tr><td class="mono">{id}</td><td class="mono">{addr}</td><td class="mono">{ip}</td></tr>"#,
+                        id = p["id"],
+                        addr = p["address"].as_str().unwrap_or("—"),
+                        ip = p["ip"].as_str().unwrap_or("—"),
+                    )
+                })
+                .collect();
+            format!(
+                r##"{search}<h1>Network peers</h1>
+<p class="sub">Connected to <b>{conn}</b> peer(s); learned <b>{known}</b> dialable address(es) via gossip. Peers advertise their real address (source IP + port), so the network propagates as a mesh — every reachable node is discoverable, not just the seed.</p>
+<table><tr><th>peer</th><th>address</th><th>source ip</th></tr>{rows}</table>
+<p class="sub"><a href="/explorer">← explorer home</a> · <a href="/explorer/richlist">rich list →</a></p>"##,
+                search = explorer_search_box(),
+                conn = d["count"],
+                known = d["known"],
+                rows = rows,
+            )
+        }
+        None => "<h1>Network peers</h1><p class=\"sub\">Peer data is unavailable right now.</p>".into(),
+    };
+    page_shell("Peers", body)
+}
+
+fn page_richlist() -> String {
+    let body = match chain_api("/explorer/richlist") {
+        Some(d) => {
+            let rows: String = d["richlist"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|r| {
+                    let addr = r["address"].as_str().unwrap_or("");
+                    let short = &addr[..24.min(addr.len())];
+                    format!(
+                        r#"<tr><td class="mono">{rank}</td><td class="mono"><a href="/explorer/address/{addr}">{short}…</a></td><td class="mono">{bal} BLOCK</td><td class="mono">{pct:.2}%</td></tr>"#,
+                        rank = r["rank"],
+                        addr = addr,
+                        short = short,
+                        bal = fmt_block(r["balance"].as_u64().unwrap_or(0)),
+                        pct = r["pct"].as_f64().unwrap_or(0.0),
+                    )
+                })
+                .collect();
+            format!(
+                r##"{search}<h1>Rich list</h1>
+<p class="sub"><b>{holders}</b> holders · circulating supply <b>{supply} BLOCK</b>. Top 100 addresses by balance.</p>
+<table><tr><th>#</th><th>address</th><th>balance</th><th>share</th></tr>{rows}</table>
+<p class="sub"><a href="/explorer">← explorer home</a> · <a href="/explorer/peers">peers →</a></p>"##,
+                search = explorer_search_box(),
+                holders = d["holders"],
+                supply = fmt_block(d["supply"].as_u64().unwrap_or(0)),
+                rows = rows,
+            )
+        }
+        None => "<h1>Rich list</h1><p class=\"sub\">Rich-list data is unavailable right now.</p>".into(),
+    };
+    page_shell("Rich list", body)
 }
 
 fn page_block(b: &Value) -> String {
