@@ -1061,7 +1061,7 @@ fn page_shell(title: &str, body: String) -> String {
 <meta property="og:image" content="https://{domain}/logo.png">
 <title>{title} · {domain}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="/buy" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Buy / Sell</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>

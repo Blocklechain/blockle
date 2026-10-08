@@ -34,6 +34,10 @@
   .chg.pos{color:var(--good)} .chg.neg{color:var(--bad)}
   canvas{width:100%;height:160px;display:block;margin-top:14px}
   .note{color:var(--muted);font-size:13px;margin-top:8px}
+  .raisewrap{margin-top:16px}
+  .raisehead{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .bar{height:8px;background:var(--surface2);border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .barfill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--teal));transition:width .4s ease}
   .por{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
   .por .box{background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px}
   .por .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
@@ -97,33 +101,38 @@
     <section class="card">
       <div class="price">
         <span class="v" id="price">—</span>
-        <span class="u">USDC / BLOCK</span>
+        <span class="u">USDC / BLOCK · floor $0.10</span>
         <span class="chg" id="chg"></span>
       </div>
       <canvas id="chart" width="640" height="160"></canvas>
       <p class="note" id="chartnote">Loading price history…</p>
 
+      <div class="raisewrap">
+        <div class="raisehead"><span>Raised toward target</span><span id="raised" class="mono">—</span></div>
+        <div class="bar"><div class="barfill" id="raisedBar"></div></div>
+      </div>
+
       <div class="por">
-        <div class="box">
-          <div class="k">BLOCK reserve</div>
-          <div class="val" id="rBlock">—</div>
-          <div class="lnk"><a id="rBlockLink" href="#" target="_blank" rel="noopener">verify on explorer ↗</a></div>
-        </div>
         <div class="box">
           <div class="k">USDC reserve (Base)</div>
           <div class="val" id="rUsdc">—</div>
           <div class="lnk"><a id="rUsdcLink" href="#" target="_blank" rel="noopener">verify on Basescan ↗</a></div>
         </div>
         <div class="box">
-          <div class="k">Reserve coverage</div>
-          <div class="val" id="coverage">—</div>
+          <div class="k">BLOCK released</div>
+          <div class="val" id="sold">—</div>
+          <div class="lnk"><a id="rBlockLink" href="#" target="_blank" rel="noopener">reserve on explorer ↗</a></div>
         </div>
         <div class="box">
-          <div class="k">Constant product k</div>
-          <div class="val" id="kval">—</div>
+          <div class="k">BLOCK remaining</div>
+          <div class="val" id="remain">—</div>
+        </div>
+        <div class="box">
+          <div class="k">Selling</div>
+          <div class="val" id="sellStatus">—</div>
         </div>
       </div>
-      <p class="note">Proof-of-reserves: both figures are read live from their own chains. The curve can only pay sells from the USDC actually held.</p>
+      <p class="note">Price is a pure function of the USDC raised (verifiable on Base) and starts at the $0.10 floor. BLOCK is released only at the matching curve price.</p>
     </section>
 
     <section class="card">
@@ -136,9 +145,9 @@
       <div class="inp"><input id="amt" type="text" inputmode="decimal" placeholder="0.00"><span class="cur" id="inCur">USDC</span></div>
 
       <div class="rows">
-        <div class="r"><span id="spotLbl">Price</span><b id="spot">—</b></div>
+        <div class="r"><span>Current price</span><b id="spot">—</b></div>
         <div class="r"><span>Blockle fee (5%)</span><b id="fee">—</b></div>
-        <div class="r"><span>Price impact</span><b id="impact">—</b></div>
+        <div class="r"><span>Avg price</span><b id="avg">—</b></div>
         <div class="r total"><span id="outLbl">You receive</span><b id="out">—</b></div>
       </div>
 
