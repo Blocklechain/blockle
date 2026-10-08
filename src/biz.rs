@@ -1954,6 +1954,7 @@ fn page_wallet() -> String {
 <tr><td>Linux (x86_64)</td><td class="mono"><a href="{rel}/BlockleWallet-linux-x86_64.zip">BlockleWallet-linux-x86_64.zip</a></td></tr>
 <tr><td>Windows (x86_64)</td><td class="mono"><a href="{rel}/BlockleWallet-windows-x86_64.zip">BlockleWallet-windows-x86_64.zip</a></td></tr>
 <tr><td>macOS (Apple Silicon)</td><td class="mono"><a href="{rel}/BlockleWallet-macos-arm64.zip">BlockleWallet-macos-arm64.zip</a></td></tr>
+<tr><td>Android (sideload)</td><td class="mono"><a href="{rel}/BlockleWallet-android.apk">BlockleWallet-android.apk</a></td></tr>
 </table>
 <p class="sub">Every build is produced by the public <a href="https://github.com/blocklechain/blockle/actions">CI pipeline</a> — verify provenance there, or build from source.</p>
 
