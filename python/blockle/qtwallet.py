@@ -24,7 +24,7 @@ try:
     from PySide6.QtCore import Qt, QThread, QTimer, Signal, QSettings
     from PySide6.QtGui import QFont, QGuiApplication, QIcon
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
+        QApplication, QCheckBox, QCompleter, QFileDialog, QFormLayout, QFrame, QGridLayout,
         QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
         QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -71,7 +71,16 @@ QCheckBox { color: #b7bcc8; }
 
 #: Public BLOCK-20 token API (metadata + per-holder balance).
 TOKEN_API = "https://blockle.org/api/token"
+#: Public site API base (DEX pools, buy-curve price history).
+API_BASE = "https://blockle.org/api"
 _BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _http_json(url: str, timeout: float = 10.0):
+    """GET `url` and parse JSON (raises on network/parse error)."""
+    req = urllib.request.Request(url, headers={"accept": "application/json", "user-agent": "blockle-qt"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
 
 
 def _bech32_data(addr: str) -> list[int] | None:
@@ -205,22 +214,42 @@ class SnapshotWorker(QThread):
             self.failed.emit(str(e))
 
 
-CONSOLE_HELP = """Blockle console — type a command and press Enter (↑/↓ for history).
+#: Friendly built-ins (also fed to the input's autocomplete).
+BUILTIN_COMMANDS = [
+    "help", "clear", "balance", "address", "height", "info", "history",
+    "peers", "price", "pools", "tokeninfo", "snapshot", "send", "sign",
+    "verify", "mine", "scan", "backup",
+]
 
-Built-in commands:
-  help [command]            this help, or a subcommand's own options
+CONSOLE_HELP = """Blockle console — type a command and press Enter (↑/↓ history, Tab to complete).
+
+Wallet & chain:
+  balance                   spendable / total / immature / shielded
+  address                   your transparent + shielded addresses
+  height                    current chain height
+  info                      network / name / height / mempool / tip
+  history [n]               recent transactions (default 10)
   snapshot                  full wallet + chain state (pretty JSON)
   send <to> <amount> [fee]  send BLOCK (fee defaults to 0.0001)
   sign <message...>         sign a message with your key
   verify <addr> <sig> <message...>   verify a signed message
-  mine [n]                  mine n blocks (regtest / new chains)
   scan                      rescan for shielded notes
   backup <path>             write a wallet backup
+  mine [n]                  mine n blocks (regtest / new chains)
+
+Network & DEX:
+  peers                     connected peers (if in snapshot)
+  price                     latest BLOCK curve price
+  pools                     native AMM liquidity pools
+  tokeninfo <contract-id>   a BLOCK-20 token's metadata + your balance
+
+Console:
+  help [command]            this help, or a subcommand's flags
   clear                     clear the console
 
 Anything else is passed straight to the blockle-chain CLI, so every node and
-wallet subcommand works here too — e.g. `balance`, `address`, `getblockcount`,
-`getblockchaininfo`, `ui-snapshot`. Use `help <command>` for its flags."""
+wallet subcommand works here too — e.g. `getblockcount`, `getblockchaininfo`,
+`ui-snapshot`. Use `help <command>` for its flags."""
 
 
 def run_console_command(wallet: "ChainWallet", line: str) -> tuple[str, bool]:
@@ -269,6 +298,56 @@ def run_console_command(wallet: "ChainWallet", line: str) -> tuple[str, bool]:
             if not args:
                 return ("usage: backup <path>", True)
             return (json.dumps(wallet.backup(args[0]), indent=2), False)
+        if cmd == "height":
+            return (str(wallet.snapshot().get("chain", {}).get("height", "—")), False)
+        if cmd in ("balance", "bal"):
+            w = wallet.snapshot().get("wallet", {})
+            return ("\n".join([
+                f"spendable: {w.get('spendable_fmt', w.get('balance_fmt', '—'))} BLOCK",
+                f"total:     {w.get('balance_fmt', '—')} BLOCK",
+                f"immature:  {w.get('immature_fmt', '0')} BLOCK",
+                f"shielded:  {w.get('zbalance_fmt', '—')}",
+            ]), False)
+        if cmd == "address":
+            w = wallet.snapshot().get("wallet", {})
+            return (f"transparent: {w.get('address', '—')}\nshielded:    {w.get('zaddress', '—')}", False)
+        if cmd == "info":
+            c = wallet.snapshot().get("chain", {})
+            return (json.dumps({"network": wallet.network, "name": c.get("name"),
+                                "height": c.get("height"), "mempool": c.get("mempool"),
+                                "tip": c.get("tip")}, indent=2), False)
+        if cmd == "history":
+            n = int(args[0]) if args and args[0].isdigit() else 10
+            hist = wallet.snapshot().get("history", [])[:n]
+            return (json.dumps(hist, indent=2) if hist else "(no transactions yet)", False)
+        if cmd == "peers":
+            p = wallet.snapshot().get("chain", {}).get("peers")
+            return (json.dumps(p, indent=2) if p is not None
+                    else "(peer detail isn't in the snapshot — see the Node tab)", False)
+        if cmd == "price":
+            hist = _http_json(API_BASE + "/buy/history")
+            if not hist:
+                return ("no price yet — the reserve curve is unfunded", False)
+            return (f"BLOCK ≈ ${hist[-1].get('price')} ({len(hist)} snapshots)", False)
+        if cmd == "pools":
+            pools = _http_json(API_BASE + "/dex/pools").get("pools", [])
+            if not pools:
+                return ("no liquidity pools yet", False)
+            out = [f"{'SYMBOL':<8} {'PRICE(BLOCK)':>16} {'LIQ(BLOCK)':>12}  CONTRACT"]
+            for p in pools:
+                dec = p.get("decimals") or 0
+                br = (p.get("blockReserve", 0) or 0) / 1e8
+                tr = (p.get("tokenReserve", 0) or 0) / (10 ** dec)
+                price = (br / tr) if tr else 0
+                out.append(f"{(p.get('symbol') or '?'):<8} {price:>16.8f} {br * 2:>12.2f}  {(p.get('token') or '')[:16]}…")
+            return ("\n".join(out), False)
+        if cmd in ("tokeninfo", "token"):
+            if not args:
+                return ("usage: tokeninfo <contract-id>", True)
+            holder = _address_to_holder_hex(wallet.snapshot().get("wallet", {}).get("address"))
+            url = f"{TOKEN_API}/{args[0]}" + (f"?holder={holder}" if holder else "")
+            j = _http_json(url)
+            return (json.dumps(j.get("result", j), indent=2), False)
         # raw CLI passthrough — every node/wallet subcommand
         return (wallet._run(*toks).rstrip("\n"), False)
     except Exception as e:
@@ -304,6 +383,9 @@ class _ConsoleInput(QLineEdit):
         self._idx = len(self._hist)
 
     def keyPressEvent(self, e):  # noqa: D102, N802
+        comp = self.completer()
+        if comp and comp.popup().isVisible():
+            return super().keyPressEvent(e)  # let the completer handle ↑/↓/Enter
         if e.key() == Qt.Key_Up and self._hist:
             self._idx = max(0, self._idx - 1)
             self.setText(self._hist[self._idx])
@@ -800,6 +882,10 @@ class WalletWindow(QMainWindow):
         self.console_in = _ConsoleInput()
         self.console_in.setFont(mono)
         self.console_in.setPlaceholderText("help")
+        completer = QCompleter(BUILTIN_COMMANDS, self.console_in)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.console_in.setCompleter(completer)
         run = QPushButton("Run")
         run.setObjectName("primary")
         row.addWidget(self.console_in, 1)
