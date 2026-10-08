@@ -113,9 +113,20 @@
         <div class="list" id="activity"><div class="empty">No transactions yet.</div></div>
         <nav class="tabbar">
           <button class="tab active" data-go="dashboard">Home</button>
-          <button class="tab" data-go="connections">Connections</button>
+          <button class="tab" data-go="queue">Queue</button>
+          <button class="tab" data-go="connections">Apps</button>
           <button class="tab" data-go="settings">Settings</button>
         </nav>
+      </section>
+
+      <!-- TRANSACTION QUEUE -->
+      <section class="screen" data-screen="queue" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Transaction queue</span>
+          <button class="back" id="queue-refresh" style="margin-left:auto">⟳</button></header>
+        <div class="pad">
+          <div class="notice">Blocks are ~10 minutes, so submitted transactions sit here until a block confirms them.</div>
+          <div class="list" id="queue-list"><div class="empty">No recent transactions.</div></div>
+        </div>
       </section>
 
       <!-- WALLETS -->

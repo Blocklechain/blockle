@@ -76,6 +76,18 @@
         secretHex, publicHex, utxosJson, codeHex, BigInt(gasLimit), BigInt(gasPrice));
     },
 
+    async buildPoolSwapBuy(secretHex, publicHex, utxosJson, tokenHex, blockIn, minOut, gasLimit, gasPrice) {
+      await initWasm();
+      return wasm_bindgen.build_pool_swap_buy(
+        secretHex, publicHex, utxosJson, tokenHex, BigInt(blockIn), BigInt(minOut), BigInt(gasLimit), BigInt(gasPrice));
+    },
+
+    async buildPoolSwapSell(secretHex, publicHex, utxosJson, tokenHex, tokenIn, minOut, gasLimit, gasPrice) {
+      await initWasm();
+      return wasm_bindgen.build_pool_swap_sell(
+        secretHex, publicHex, utxosJson, tokenHex, BigInt(tokenIn), BigInt(minOut), BigInt(gasLimit), BigInt(gasPrice));
+    },
+
     // Password vault — identical format to the extension: {v,salt,iv,data} b64.
     async seal(objJson, password) {
       const salt = crypto.getRandomValues(new Uint8Array(16));

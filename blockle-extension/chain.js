@@ -74,6 +74,20 @@
         }
     },
 
+    // Look up a transaction by id. Returns the tx JSON (with block height +
+    // confirmations if mined) or null if not found / still unconfirmed.
+    async tx(txid) {
+        const base = await endpoint();
+        try {
+            const r = await fetch(base + '/tx/' + txid, { headers: { accept: 'application/json' } });
+            if (!r.ok) return null;
+            const j = await r.json();
+            return j && !j.error ? j : null;
+        } catch {
+            return null;
+        }
+    },
+
     // List native AMM pools (DEX). Returns [] on failure.
     async pools() {
         const base = (await endpoint()).replace(/\/explorer$/, '');

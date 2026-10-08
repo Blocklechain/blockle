@@ -303,6 +303,8 @@
     });
     const impBtn = $('#import-token');
     if (impBtn) impBtn.addEventListener('click', importToken);
+    const qref = $('#queue-refresh');
+    if (qref) qref.addEventListener('click', renderQueue);
     $('#addr-chip').addEventListener('click', () => copy(Wallet.address));
     $('#copy-addr').addEventListener('click', () => copy(Wallet.address));
 
@@ -326,6 +328,7 @@
         if (!u || !u.utxos.length) throw new Error('no spendable funds (coinbase matures after 100 blocks)');
         const built = await Wallet.buildTransfer(u.utxos, to, amountBase, feeBase);
         const res = await Chain.submit(built.raw);
+        await recordPending(res.txid || built.txid, 'Send');
         toast('Sent · ' + (res.txid || built.txid).slice(0, 14) + '…');
         $('#send-to').value = '';
         $('#send-amt').value = '';
@@ -462,16 +465,55 @@
         const minOut = BigInt(Math.floor(amountOut(raw, tokRes, blockRes) * (1 - SLIPPAGE) * COIN));
         built = await Wallet.buildPoolSwapSell(u.utxos, p.token, tokIn.toString(), minOut.toString(), 200000, GAS_PRICE);
       }
-      await Chain.submit(built.raw);
+      const sres = await Chain.submit(built.raw);
+      await recordPending(sres.txid || built.txid, swapSide === 'buy' ? 'Buy' : 'Sell');
       toast('Swap submitted');
-      route('dashboard');
+      route('queue');
     } catch (e) {
       btn.disabled = false; btn.textContent = 'Swap';
       err.textContent = /locked|password|no wallet/i.test(e.message) ? 'Wrong password.' : 'Swap failed: ' + e.message;
     }
   }
 
+  // ---- transaction queue (blocks are ~10 min; show pending until mined) ---
+  async function recordPending(txid, kind) {
+    if (!txid) return;
+    const list = (await Store.get('pending')).pending || [];
+    if (!list.some((x) => x.txid === txid)) {
+      list.unshift({ txid, kind, time: Date.now() });
+      await Store.set({ pending: list.slice(0, 30) });
+    }
+  }
+
+  async function renderQueue() {
+    const box = $('#queue-list');
+    if (!box) return;
+    const list = (await Store.get('pending')).pending || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">No recent transactions. Submitted sends, swaps and deploys appear here until they confirm.</div>';
+      return;
+    }
+    box.innerHTML = list
+      .map((x) => `<div class="row"><div class="l"><b>${x.kind}</b><small class="mono">${x.txid.slice(0, 22)}…</small></div><div class="r" data-tx="${x.txid}">checking…</div></div>`)
+      .join('');
+    const infos = await Promise.all(list.map((x) => Chain.tx(x.txid)));
+    list.forEach((x, i) => {
+      const cell = box.querySelector(`[data-tx="${x.txid}"]`);
+      if (!cell) return;
+      const t = infos[i];
+      const confd = t && (t.confirmations != null || t.height != null);
+      cell.innerHTML = confd
+        ? `<span style="color:#34d399">confirmed${t.confirmations != null ? ' · ' + t.confirmations + ' conf' : ''}</span>`
+        : '<span style="color:#f2b04a">pending…</span>';
+    });
+  }
+
   async function route(name) {
+    if (name === 'queue') {
+      show('queue');
+      renderQueue();
+      return;
+    }
     if (name === 'dashboard') {
       const rec = await Wallet.selected();
       $('#watch-pill').hidden = !(rec && rec.watchOnly);
@@ -588,6 +630,7 @@
           if (!u || !u.utxos.length) throw new Error('no spendable funds for gas');
           const built = await Wallet.buildDeploy(u.utxos, detail.code, gas, GAS_PRICE);
           const res = await Chain.submit(built.raw);
+          await recordPending(res.txid || built.txid, 'Deploy');
           respond(true, { txid: res.txid || built.txid, contractId: built.contractId });
         } catch (e) {
           btn.disabled = false;
@@ -635,6 +678,9 @@
             built = await Wallet.buildCall(u.utxos, detail.contractId, '00', 0, gas, GAS_PRICE);
           }
           const res = await Chain.submit(built.raw);
+          const kindLabel = detail.kind === 'pool' ? 'Create pool'
+            : detail.kind === 'swap' ? (detail.side === 'buy' ? 'Buy' : 'Sell') : 'Init';
+          await recordPending(res.txid || built.txid, kindLabel);
           respond(true, { txid: res.txid || built.txid });
         } catch (e) {
           btn.disabled = false;
