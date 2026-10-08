@@ -168,6 +168,16 @@
       return Signer.buildPoolCreate(session.secret, session.pub, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice);
     },
 
+    async buildPoolSwapBuy(utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolSwapBuy(session.secret, session.pub, utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice);
+    },
+
+    async buildPoolSwapSell(utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolSwapSell(session.secret, session.pub, utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice);
+    },
+
     // --- import / export ---------------------------------------------------
 
     // Export the active wallet's sealed record.

@@ -97,6 +97,18 @@
       await init();
       return wb().build_block20_token(name, symbol, BigInt(decimals), BigInt(supply));
     },
+    async buildPoolSwapBuy(secretHex, publicHex, utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_pool_swap_buy(secretHex, publicHex, JSON.stringify(utxos), tokenHex, BigInt(blockIn), BigInt(minTokenOut), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
+    async buildPoolSwapSell(secretHex, publicHex, utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_pool_swap_sell(secretHex, publicHex, JSON.stringify(utxos), tokenHex, BigInt(tokenIn), BigInt(minBlockOut), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
   };
 
   global.Signer = Signer;

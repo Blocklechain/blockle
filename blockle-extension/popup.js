@@ -376,6 +376,101 @@
     route('welcome');
   }
 
+  // ---- swap (native AMM) --------------------------------------------------
+  let swapPools = [], swapSide = 'buy';
+  const SWAP_FEE = 0.003, SLIPPAGE = 0.01, GAS_PRICE = 10, COIN = 100000000;
+  const sfmt = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 6 });
+  const curPool = () => swapPools[parseInt($('#swap-pool').value, 10)];
+  function amountOut(inAmt, inRes, outRes) {
+    if (inAmt <= 0 || inRes <= 0 || outRes <= 0) return 0;
+    const ain = inAmt * (1 - SWAP_FEE);
+    return (outRes * ain) / (inRes + ain);
+  }
+
+  async function initSwap() {
+    $('#swap-err').textContent = '';
+    $('#swap-amt').value = '';
+    swapPools = await Chain.pools();
+    const sel = $('#swap-pool');
+    if (!swapPools.length) {
+      sel.innerHTML = '<option value="">No liquidity pools yet</option>';
+      $('#swap-go').disabled = true;
+      swapQuote();
+      return;
+    }
+    $('#swap-go').disabled = false;
+    sel.innerHTML = swapPools
+      .map((p, i) => `<option value="${i}">${p.symbol || '?'} — ${p.name || p.token.slice(0, 10)}</option>`)
+      .join('');
+    sel.onchange = () => setSwapSide(swapSide);
+    $('#swap-amt').oninput = swapQuote;
+    $('#swap-buy').onclick = () => setSwapSide('buy');
+    $('#swap-sell').onclick = () => setSwapSide('sell');
+    $('#swap-go').onclick = doSwap;
+    $('#swap-unlock').hidden = Wallet.isUnlocked();
+    setSwapSide('buy');
+  }
+
+  function setSwapSide(s) {
+    swapSide = s;
+    $('#swap-buy').classList.toggle('ghost', s !== 'buy');
+    $('#swap-sell').classList.toggle('ghost', s !== 'sell');
+    const p = curPool();
+    const sym = (p && p.symbol) || 'token';
+    $('#swap-in-label').textContent = s === 'buy' ? 'You pay (BLOCK)' : `You pay (${sym})`;
+    swapQuote();
+  }
+
+  function swapQuote() {
+    const p = curPool();
+    const raw = parseFloat($('#swap-amt').value);
+    if (!p || !(raw > 0)) {
+      $('#swap-rate').textContent = '—'; $('#swap-out').textContent = '—'; $('#swap-min').textContent = '—';
+      return;
+    }
+    const dec = Number(p.decimals || 0);
+    const blockRes = p.blockReserve / COIN;
+    const tokRes = p.tokenReserve / Math.pow(10, dec);
+    const sym = p.symbol || 'token';
+    let out, rate, outSym;
+    if (swapSide === 'buy') { out = amountOut(raw, blockRes, tokRes); rate = `1 BLOCK ≈ ${sfmt(amountOut(1, blockRes, tokRes))} ${sym}`; outSym = sym; }
+    else { out = amountOut(raw, tokRes, blockRes); rate = `1 ${sym} ≈ ${sfmt(amountOut(1, tokRes, blockRes))} BLOCK`; outSym = 'BLOCK'; }
+    $('#swap-rate').textContent = rate;
+    $('#swap-out').textContent = `${sfmt(out)} ${outSym}`;
+    $('#swap-min').textContent = `${sfmt(out * (1 - SLIPPAGE))} ${outSym}`;
+  }
+
+  async function doSwap() {
+    const p = curPool();
+    const raw = parseFloat($('#swap-amt').value);
+    const err = $('#swap-err'); err.textContent = '';
+    if (!p || !(raw > 0)) { err.textContent = 'Enter an amount.'; return; }
+    const btn = $('#swap-go'); btn.disabled = true; btn.textContent = 'Swapping…';
+    try {
+      if (!Wallet.isUnlocked()) await Wallet.unlock($('#swap-pw').value);
+      const u = await Chain.utxos(Wallet.address);
+      if (!u || !u.utxos.length) throw new Error('no spendable funds for gas');
+      const dec = Number(p.decimals || 0);
+      const blockRes = p.blockReserve / COIN, tokRes = p.tokenReserve / Math.pow(10, dec);
+      let built;
+      if (swapSide === 'buy') {
+        const blockIn = BigInt(Math.round(raw * COIN));
+        const minOut = BigInt(Math.floor(amountOut(raw, blockRes, tokRes) * (1 - SLIPPAGE) * Math.pow(10, dec)));
+        built = await Wallet.buildPoolSwapBuy(u.utxos, p.token, blockIn.toString(), minOut.toString(), 200000, GAS_PRICE);
+      } else {
+        const tokIn = BigInt(Math.round(raw * Math.pow(10, dec)));
+        const minOut = BigInt(Math.floor(amountOut(raw, tokRes, blockRes) * (1 - SLIPPAGE) * COIN));
+        built = await Wallet.buildPoolSwapSell(u.utxos, p.token, tokIn.toString(), minOut.toString(), 200000, GAS_PRICE);
+      }
+      await Chain.submit(built.raw);
+      toast('Swap submitted');
+      route('dashboard');
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Swap';
+      err.textContent = /locked|password|no wallet/i.test(e.message) ? 'Wrong password.' : 'Swap failed: ' + e.message;
+    }
+  }
+
   async function route(name) {
     if (name === 'dashboard') {
       const rec = await Wallet.selected();
@@ -395,6 +490,11 @@
       show('receive');
       $('#addr-full').textContent = Wallet.address;
       identicon($('#identicon'), Wallet.address || 'block1');
+      return;
+    }
+    if (name === 'swap') {
+      show('swap');
+      initSwap();
       return;
     }
     if (name === 'connections') {

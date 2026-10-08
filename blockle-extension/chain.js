@@ -74,6 +74,19 @@
         }
     },
 
+    // List native AMM pools (DEX). Returns [] on failure.
+    async pools() {
+        const base = (await endpoint()).replace(/\/explorer$/, '');
+        try {
+            const r = await fetch(base + '/dex/pools', { headers: { accept: 'application/json' } });
+            if (!r.ok) return [];
+            const j = await r.json();
+            return (j.pools || []);
+        } catch {
+            return [];
+        }
+    },
+
     // Broadcast a bincode-hex transaction via the submit proxy.
     async submit(rawHex) {
       const base = (await endpoint()).replace(/\/api\/explorer$/, '/api');

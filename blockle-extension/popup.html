@@ -100,6 +100,7 @@
         <div class="grid3">
           <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
+          <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
           <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
@@ -151,6 +152,29 @@
         </div>
         <div class="stack bottom">
           <button class="btn primary" id="send-go">Send</button>
+        </div>
+      </section>
+
+      <!-- SWAP -->
+      <section class="screen" data-screen="swap" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Swap</span></header>
+        <div class="pad">
+          <label class="field"><span>Pool</span><select id="swap-pool" class="mono" style="width:100%;background:#181b21;border:1px solid #2e323c;border-radius:10px;color:#dfe6f5;padding:10px"></select></label>
+          <div style="display:flex;gap:8px;margin:4px 0 12px">
+            <button class="btn" id="swap-buy" style="flex:1">Buy token</button>
+            <button class="btn ghost" id="swap-sell" style="flex:1">Sell token</button>
+          </div>
+          <label class="field"><span id="swap-in-label">You pay (BLOCK)</span><input type="text" id="swap-amt" placeholder="0.00" inputmode="decimal" /></label>
+          <div class="notice">
+            <div>Rate: <b id="swap-rate">—</b></div>
+            <div>You receive ≈ <b id="swap-out">—</b></div>
+            <div>Min received (1% slippage): <b id="swap-min">—</b></div>
+          </div>
+          <div id="swap-unlock" hidden><label class="field"><span>Unlock to swap</span><input type="password" id="swap-pw" placeholder="Password" /></label></div>
+          <div class="err" id="swap-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn primary" id="swap-go">Swap</button>
         </div>
       </section>
 
