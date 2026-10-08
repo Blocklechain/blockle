@@ -1,0 +1,32 @@
+name: blockle_app
+description: "Blockle Wallet — post-quantum BLOCK wallet, explorer & dApp browser"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_inappwebview: ^6.1.5
+  flutter_secure_storage: ^9.2.2
+  provider: ^6.1.2
+  http: ^1.2.2
+  qr_flutter: ^4.1.0
+  file_picker: ^8.1.2
+  share_plus: ^10.1.2
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/engine/
+    - assets/wasm/
+    - assets/provider/
+    - assets/icons/

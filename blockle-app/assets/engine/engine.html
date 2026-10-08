@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blockle Engine</title>
+</head>
+<body>
+<!--
+  engine.html — the Blockle crypto core, run inside a hidden WebView.
+
+  It loads the SAME WASM module (post-quantum ML-DSA-44, built from
+  blockle-core) and the SAME password-vault crypto (PBKDF2-SHA256 ->
+  AES-256-GCM) that the browser extension and desktop wallet use, so keys,
+  addresses, signatures, transaction bytes and wallet-file encryption are all
+  byte-identical across every Blockle wallet. Dart calls window.Engine.* via
+  callAsyncJavaScript and gets JSON strings back.
+-->
+<script src="../wasm/blockle_wasm.js"></script>
+<script>
+(function (global) {
+  'use strict';
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const KDF_ITERS = 310000;
+
+  function b64(buf) { return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+  function unb64(s) { return Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); }
+
+  async function deriveKey(password, salt) {
+    const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: KDF_ITERS, hash: 'SHA-256' },
+      base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+
+  // --- WASM signer init (no-modules: `wasm_bindgen` is a lexical global) ------
+  let ready = null;
+  function initWasm() {
+    if (ready) return ready;
+    if (typeof wasm_bindgen !== 'function') {
+      ready = Promise.reject(new Error('blockle_wasm.js not loaded'));
+      return ready;
+    }
+    ready = wasm_bindgen('../wasm/blockle_wasm_bg.wasm');
+    return ready;
+  }
+
+  const Engine = {
+    async ready() { await initWasm(); return true; },
+
+    async keygen() { await initWasm(); return wasm_bindgen.keygen(); },
+
+    async addressFromPubkey(pubHex) { await initWasm(); return wasm_bindgen.address_from_pubkey(pubHex); },
+
+    async signMessage(secretHex, publicHex, msg) {
+      await initWasm();
+      return wasm_bindgen.sign_message(secretHex, publicHex, msg);
+    },
+
+    async verify(publicHex, msg, sigHex) {
+      await initWasm();
+      return wasm_bindgen.verify(publicHex, msg, sigHex);
+    },
+
+    // utxosJson = [{txid,vout,amount}]; amounts are decimal strings (base units).
+    async buildTransfer(secretHex, publicHex, utxosJson, toAddr, amountBase, feeBase) {
+      await initWasm();
+      return wasm_bindgen.build_transfer(
+        secretHex, publicHex, utxosJson, toAddr, BigInt(amountBase), BigInt(feeBase));
+    },
+
+    async buildDeploy(secretHex, publicHex, utxosJson, codeHex, gasLimit, gasPrice) {
+      await initWasm();
+      return wasm_bindgen.build_deploy(
+        secretHex, publicHex, utxosJson, codeHex, BigInt(gasLimit), BigInt(gasPrice));
+    },
+
+    // Password vault — identical format to the extension: {v,salt,iv,data} b64.
+    async seal(objJson, password) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const key = await deriveKey(password, salt);
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(objJson));
+      return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), data: b64(ct) });
+    },
+
+    async open(sealedJson, password) {
+      const sealed = JSON.parse(sealedJson);
+      const key = await deriveKey(password, unb64(sealed.salt));
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(sealed.iv) }, key, unb64(sealed.data));
+      return dec.decode(pt);
+    },
+  };
+
+  global.Engine = Engine;
+  global.__engineLoaded = true;
+})(window);
+</script>
+</body>
+</html>
