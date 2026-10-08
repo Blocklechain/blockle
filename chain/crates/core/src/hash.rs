@@ -29,6 +29,16 @@ pub fn blake2b_256(data: &[u8]) -> Hash32 {
     blake2b_256_personal(b"BlklHash", data)
 }
 
+/// Un-personalized Blake2b-256 — byte-identical to the VM's `BLAKE2B` opcode.
+/// Used to derive BLOCK-20 balance-storage keys (`H(0x01 ‖ address)`) from
+/// native code so the native AMM and the token contract share the same slots.
+pub fn blake2b_256_raw(data: &[u8]) -> Hash32 {
+    let mut out = [0u8; 32];
+    let hash = Params::new().hash_length(32).to_state().update(data).finalize();
+    out.copy_from_slice(hash.as_bytes());
+    out
+}
+
 /// Double-SHA256 — the block (header) hash.
 pub fn sha256d(data: &[u8]) -> Hash32 {
     let first = Sha256::digest(data);

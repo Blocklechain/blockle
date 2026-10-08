@@ -36,6 +36,7 @@ pub fn build_template(
     let mut view = chain.utxos.clone();
     let mut cview = chain.contracts.clone();
     let mut sview = chain.contract_storage.clone();
+    let mut pview = chain.pools.clone();
     let mut nview = chain.nullifiers.clone();
     let mut lview = chain.note_leaves.clone();
     let mut included = Vec::new();
@@ -57,7 +58,8 @@ pub fn build_template(
         };
         let txid = tx.txid();
         Chain::apply_tx_effects(
-            tx, &txid, height, &mut view, &mut cview, &mut sview, &mut nview, &mut lview,
+            tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
+            &mut lview,
         );
         gas_total += gas;
         fees = fees.checked_add(fee).ok_or(ChainError::ValueOutOfRange)?;

@@ -11,7 +11,36 @@
 
 use std::collections::HashMap;
 
+use blockle_core::hash::blake2b_256_raw;
+use blockle_core::{ContractAction, Transaction};
+
+use crate::contracts::StorageMap;
+
 pub type Hash32 = [u8; 32];
+
+// ---- BLOCK-20 balance access from native code --------------------------
+// BLOCK-20 stores balances as 8 LE bytes at key = H(0x01 ‖ address) using the
+// VM's un-personalized Blake2b (see token asm). The native AMM reads/writes the
+// same slots so pool token legs settle without a contract-to-contract call.
+fn tok_key(addr: &Hash32) -> [u8; 32] {
+    let mut buf = [0u8; 33];
+    buf[0] = 1;
+    buf[1..].copy_from_slice(addr);
+    blake2b_256_raw(&buf)
+}
+fn get_tok(storage: &StorageMap, token: &Hash32, addr: &Hash32) -> u64 {
+    match storage.get(&(*token, tok_key(addr))) {
+        Some(v) if v.len() >= 8 => {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&v[..8]);
+            u64::from_le_bytes(b)
+        }
+        _ => 0,
+    }
+}
+fn set_tok(storage: &mut StorageMap, token: &Hash32, addr: &Hash32, amt: u64) {
+    storage.insert((*token, tok_key(addr)), amt.to_le_bytes().to_vec());
+}
 
 /// One week of blocks at the 600s mainnet spacing.
 pub const LP_LOCK_BLOCKS: u64 = 7 * 24 * 60 * 60 / 600; // = 1008
@@ -206,6 +235,118 @@ impl PoolState {
             return None;
         }
         Some(p.block_reserve as f64 / p.token_reserve as f64)
+    }
+}
+
+/// Apply a pool `ContractAction` during block processing. Mutates pool state
+/// and the BLOCK-20 token storage; returns BLOCK payouts (UTXOs to mint):
+/// liquidity/swap proceeds, or a refund of the BLOCK `value` if the action
+/// can't execute (slippage, missing pool, insufficient balance, lock). The
+/// gas fee is always consumed (anti-spam), like a reverted contract call.
+pub fn apply_pool_action(
+    action: &ContractAction,
+    tx: &Transaction,
+    height: u64,
+    pools: &mut PoolState,
+    storage: &mut StorageMap,
+) -> Vec<([u8; 32], u64)> {
+    let caller = blockle_core::keys::pubkey_to_address(&tx.inputs[0].pubkey);
+    match action {
+        ContractAction::PoolCreate { token, block_amt, token_amt, .. } => {
+            if get_tok(storage, token, &caller) < *token_amt {
+                return vec![(caller, *block_amt)]; // refund BLOCK
+            }
+            match pools.create_pool(*token, caller, *block_amt, *token_amt, height) {
+                Ok((id, _)) => {
+                    let cb = get_tok(storage, token, &caller);
+                    set_tok(storage, token, &caller, cb - *token_amt);
+                    let pb = get_tok(storage, token, &id);
+                    set_tok(storage, token, &id, pb + *token_amt);
+                    vec![]
+                }
+                Err(_) => vec![(caller, *block_amt)],
+            }
+        }
+        ContractAction::PoolAdd { token, block_amt, token_max, .. } => {
+            let id = pool_id(token);
+            let token_used = match pools.pools.get(&id) {
+                Some(p) if p.block_reserve > 0 => {
+                    (*block_amt as u128 * p.token_reserve as u128 / p.block_reserve as u128) as u64
+                }
+                _ => return vec![(caller, *block_amt)],
+            };
+            if token_used == 0 || token_used > *token_max || get_tok(storage, token, &caller) < token_used {
+                return vec![(caller, *block_amt)];
+            }
+            match pools.add_liquidity(&id, caller, *block_amt, *token_max, height) {
+                Ok((used, _)) => {
+                    let cb = get_tok(storage, token, &caller);
+                    set_tok(storage, token, &caller, cb - used);
+                    let pb = get_tok(storage, token, &id);
+                    set_tok(storage, token, &id, pb + used);
+                    vec![]
+                }
+                Err(_) => vec![(caller, *block_amt)],
+            }
+        }
+        ContractAction::PoolRemove { token, shares, .. } => {
+            let id = pool_id(token);
+            match pools.remove_liquidity(&id, caller, *shares, height) {
+                Ok((block_out, token_out)) => {
+                    let pb = get_tok(storage, token, &id);
+                    set_tok(storage, token, &id, pb.saturating_sub(token_out));
+                    let cb = get_tok(storage, token, &caller);
+                    set_tok(storage, token, &caller, cb + token_out);
+                    if block_out > 0 { vec![(caller, block_out)] } else { vec![] }
+                }
+                Err(_) => vec![], // value is 0; nothing to refund
+            }
+        }
+        ContractAction::PoolSwapBuy { token, block_in, min_token_out, .. } => {
+            let id = pool_id(token);
+            // Pre-check slippage against current reserves (swap mutates).
+            let out = match pools.pools.get(&id) {
+                Some(p) => amount_out(*block_in, p.block_reserve, p.token_reserve),
+                None => 0,
+            };
+            if out == 0 || out < *min_token_out {
+                return vec![(caller, *block_in)]; // refund
+            }
+            match pools.swap_block_for_token(&id, *block_in) {
+                Ok(o) => {
+                    let pb = get_tok(storage, token, &id);
+                    set_tok(storage, token, &id, pb.saturating_sub(o));
+                    let cb = get_tok(storage, token, &caller);
+                    set_tok(storage, token, &caller, cb + o);
+                    vec![]
+                }
+                Err(_) => vec![(caller, *block_in)],
+            }
+        }
+        ContractAction::PoolSwapSell { token, token_in, min_block_out, .. } => {
+            let id = pool_id(token);
+            if get_tok(storage, token, &caller) < *token_in {
+                return vec![]; // nothing taken, no BLOCK was supplied
+            }
+            let out = match pools.pools.get(&id) {
+                Some(p) => amount_out(*token_in, p.token_reserve, p.block_reserve),
+                None => 0,
+            };
+            if out == 0 || out < *min_block_out {
+                return vec![];
+            }
+            match pools.swap_token_for_block(&id, *token_in) {
+                Ok(bout) => {
+                    let cb = get_tok(storage, token, &caller);
+                    set_tok(storage, token, &caller, cb - *token_in);
+                    let pb = get_tok(storage, token, &id);
+                    set_tok(storage, token, &id, pb + *token_in);
+                    vec![(caller, bout)]
+                }
+                Err(_) => vec![],
+            }
+        }
+        _ => vec![],
     }
 }
 

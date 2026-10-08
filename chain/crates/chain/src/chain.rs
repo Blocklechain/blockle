@@ -85,6 +85,7 @@ pub struct Chain {
     pub utxos: HashMap<OutPoint, UtxoEntry>,
     pub contracts: ContractMap,
     pub contract_storage: StorageMap,
+    pub pools: crate::pools::PoolState,
     /// Shielded pool: note commitments in insertion order.
     pub note_leaves: Vec<Hash32>,
     /// Note-tree roots as of the end of every block (valid spend anchors).
@@ -110,6 +111,7 @@ impl Chain {
             utxos: HashMap::new(),
             contracts: HashMap::new(),
             contract_storage: HashMap::new(),
+            pools: crate::pools::PoolState::default(),
             note_leaves: Vec::new(),
             note_anchors,
             nullifiers: HashSet::new(),
@@ -392,6 +394,14 @@ impl Chain {
                     return Err(ChainError::ContractRules("gas limit too high".into()));
                 }
             }
+            // Native AMM pool actions — bound gas like other actions. Economic
+            // validity (balances, slippage, lock) is enforced at apply time,
+            // which refunds the BLOCK value if the action can't execute.
+            Some(action) => {
+                if action.gas_limit() > self.params.block_gas_limit {
+                    return Err(ChainError::ContractRules("gas limit too high".into()));
+                }
+            }
         }
         let has_spends = tx
             .shielded
@@ -552,6 +562,7 @@ impl Chain {
         utxos: &mut HashMap<OutPoint, UtxoEntry>,
         contracts: &mut ContractMap,
         storage: &mut StorageMap,
+        pools: &mut crate::pools::PoolState,
         nullifiers: &mut HashSet<Hash32>,
         note_leaves: &mut Vec<Hash32>,
     ) {
@@ -577,7 +588,19 @@ impl Chain {
                 UtxoEntry { output: output.clone(), height, coinbase: false },
             );
         }
-        let payouts = contracts::apply_contract_action(tx, txid, height, contracts, storage);
+        let mut payouts = contracts::apply_contract_action(tx, txid, height, contracts, storage);
+        if let Some(action) = &tx.contract {
+            if matches!(
+                action,
+                ContractAction::PoolCreate { .. }
+                    | ContractAction::PoolAdd { .. }
+                    | ContractAction::PoolRemove { .. }
+                    | ContractAction::PoolSwapBuy { .. }
+                    | ContractAction::PoolSwapSell { .. }
+            ) {
+                payouts.extend(crate::pools::apply_pool_action(action, tx, height, pools, storage));
+            }
+        }
         let pay_txid = contracts::payout_txid(txid);
         for (vout, (recipient, amount)) in payouts.into_iter().enumerate() {
             utxos.insert(
@@ -665,6 +688,7 @@ impl Chain {
         let mut view = self.utxos.clone();
         let mut cview = self.contracts.clone();
         let mut sview = self.contract_storage.clone();
+        let mut pview = self.pools.clone();
         let mut nview = self.nullifiers.clone();
         let mut lview = self.note_leaves.clone();
         let mut fees: u64 = 0;
@@ -687,7 +711,8 @@ impl Chain {
             }
             let txid = tx.txid();
             Self::apply_tx_effects(
-                tx, &txid, height, &mut view, &mut cview, &mut sview, &mut nview, &mut lview,
+                tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
+                &mut lview,
             );
         }
 
@@ -726,6 +751,7 @@ impl Chain {
         self.utxos = view;
         self.contracts = cview;
         self.contract_storage = sview;
+        self.pools = pview;
         self.nullifiers = nview;
         self.note_leaves = lview;
         self.blocks.push(block);

@@ -90,6 +90,22 @@ pub enum ContractAction {
     /// inputs into the contract's balance before execution (refunded to the
     /// sender if the call fails).
     Call { contract: Hash32, input: Vec<u8>, value: u64, gas_limit: u64 },
+    /// Native AMM — create a BLOCK/`token` pool seeded with `block_amt` BLOCK
+    /// (from inputs) and `token_amt` of the BLOCK-20 token (from the sender's
+    /// token balance). LP shares lock for one week.
+    PoolCreate { token: Hash32, block_amt: u64, token_amt: u64, gas_limit: u64 },
+    /// Add liquidity at the current ratio: `block_amt` BLOCK plus up to
+    /// `token_max` of the token. Re-locks the position for one week.
+    PoolAdd { token: Hash32, block_amt: u64, token_max: u64, gas_limit: u64 },
+    /// Withdraw `shares` of LP (BLOCK paid out, token credited). Fails if the
+    /// position is still within its one-week lock.
+    PoolRemove { token: Hash32, shares: u64, gas_limit: u64 },
+    /// Swap `block_in` BLOCK (from inputs) for the token; reverts (refund) if
+    /// the output would be below `min_token_out`.
+    PoolSwapBuy { token: Hash32, block_in: u64, min_token_out: u64, gas_limit: u64 },
+    /// Swap `token_in` of the token for BLOCK (paid out); no-op if the output
+    /// would be below `min_block_out`.
+    PoolSwapSell { token: Hash32, token_in: u64, min_block_out: u64, gas_limit: u64 },
 }
 
 impl ContractAction {
@@ -97,13 +113,24 @@ impl ContractAction {
         match self {
             ContractAction::Deploy { gas_limit, .. } => *gas_limit,
             ContractAction::Call { gas_limit, .. } => *gas_limit,
+            ContractAction::PoolCreate { gas_limit, .. } => *gas_limit,
+            ContractAction::PoolAdd { gas_limit, .. } => *gas_limit,
+            ContractAction::PoolRemove { gas_limit, .. } => *gas_limit,
+            ContractAction::PoolSwapBuy { gas_limit, .. } => *gas_limit,
+            ContractAction::PoolSwapSell { gas_limit, .. } => *gas_limit,
         }
     }
 
+    /// BLOCK that moves from this tx's inputs into a pool/contract.
     pub fn value(&self) -> u64 {
         match self {
             ContractAction::Deploy { .. } => 0,
             ContractAction::Call { value, .. } => *value,
+            ContractAction::PoolCreate { block_amt, .. } => *block_amt,
+            ContractAction::PoolAdd { block_amt, .. } => *block_amt,
+            ContractAction::PoolRemove { .. } => 0,
+            ContractAction::PoolSwapBuy { block_in, .. } => *block_in,
+            ContractAction::PoolSwapSell { .. } => 0,
         }
     }
 }
@@ -237,6 +264,40 @@ impl Transaction {
                 put_fixed(&mut out, contract);
                 put_bytes(&mut out, input);
                 put_u64(&mut out, *value);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::PoolCreate { token, block_amt, token_amt, gas_limit }) => {
+                put_u32(&mut out, 3);
+                put_fixed(&mut out, token);
+                put_u64(&mut out, *block_amt);
+                put_u64(&mut out, *token_amt);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::PoolAdd { token, block_amt, token_max, gas_limit }) => {
+                put_u32(&mut out, 4);
+                put_fixed(&mut out, token);
+                put_u64(&mut out, *block_amt);
+                put_u64(&mut out, *token_max);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::PoolRemove { token, shares, gas_limit }) => {
+                put_u32(&mut out, 5);
+                put_fixed(&mut out, token);
+                put_u64(&mut out, *shares);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::PoolSwapBuy { token, block_in, min_token_out, gas_limit }) => {
+                put_u32(&mut out, 6);
+                put_fixed(&mut out, token);
+                put_u64(&mut out, *block_in);
+                put_u64(&mut out, *min_token_out);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::PoolSwapSell { token, token_in, min_block_out, gas_limit }) => {
+                put_u32(&mut out, 7);
+                put_fixed(&mut out, token);
+                put_u64(&mut out, *token_in);
+                put_u64(&mut out, *min_block_out);
                 put_u64(&mut out, *gas_limit);
             }
         }

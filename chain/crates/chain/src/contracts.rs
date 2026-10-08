@@ -196,5 +196,8 @@ pub fn apply_contract_action(
             );
             result.payouts
         }
+        // Native AMM pool actions are applied separately (they need pool state);
+        // see crate::pools::apply_pool_action.
+        _ => vec![],
     }
 }

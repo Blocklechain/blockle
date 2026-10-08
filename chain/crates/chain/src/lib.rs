@@ -1,5 +1,6 @@
 //! Consensus rules, chain state, and mining for the Blockle blockchain.
 
+pub mod block20;
 pub mod chain;
 pub mod contracts;
 pub mod genesis;
