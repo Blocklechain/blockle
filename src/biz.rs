@@ -2122,7 +2122,7 @@ fn page_block(b: &Value) -> String {
             ("lane", b["lane"].as_str().unwrap_or("?").into()),
             ("time", format!("{} ({})", b["time"].as_u64().unwrap_or(0), ago_ts(b["time"].as_u64().unwrap_or(0)))),
             ("confirmations", b["confirmations"].as_u64().unwrap_or(0).to_string()),
-            ("bits", b["bits"].as_str().unwrap_or("?").into()),
+            ("difficulty", human_diff(b["difficulty"].as_f64().unwrap_or(0.0))),
             ("size", format!("{} bytes", b["size"].as_u64().unwrap_or(0))),
             ("merkle root", b["merkle_root"].as_str().unwrap_or("?").into()),
             ("previous block", b["prev_hash"].as_str().unwrap_or("?").into()),
@@ -2241,6 +2241,19 @@ fn page_notfound(what: &str, id: &str) -> String {
     ))
 }
 
+/// Standardized (Bitcoin-style) difficulty, formatted for humans.
+fn human_diff(d: f64) -> String {
+    if !d.is_finite() || d <= 0.0 {
+        "—".into()
+    } else if d >= 1e6 {
+        format!("{d:.3e}")
+    } else if d >= 1.0 {
+        format!("{d:.3}")
+    } else {
+        format!("{d:.6}")
+    }
+}
+
 fn page_explorer(_reg: &Registry) -> String {
     let body = match chain_snapshot() {
         Some(c) => {
@@ -2249,14 +2262,15 @@ fn page_explorer(_reg: &Registry) -> String {
                 r#"<tr><td class="mono">{}</td><td class="mono">{}</td><td class="mono">{}</td></tr>"#,
                 l["lane"].as_str().unwrap_or("?"),
                 l["blocks"].as_u64().unwrap_or(0),
-                l["next_bits"].as_str().unwrap_or("?"),
+                human_diff(l["next_difficulty"].as_f64().unwrap_or(0.0)),
             )).collect()).unwrap_or_default();
             let blocks: String = c["blocks"].as_array().map(|bs| bs.iter().map(|b| format!(
-                r#"<tr><td class="mono"><a href="/explorer/block/{h}">{h}</a></td><td class="mono"><a href="/explorer/block/{hash}">{hshort}…</a></td><td class="mono">{lane}</td><td class="mono">{txs}</td><td class="mono">{reward}</td><td class="mono"><a href="/explorer/address/{miner}">{mshort}…</a></td></tr>"#,
+                r#"<tr><td class="mono"><a href="/explorer/block/{h}">{h}</a></td><td class="mono"><a href="/explorer/block/{hash}">{hshort}…</a></td><td class="mono">{lane}</td><td class="mono">{diff}</td><td class="mono">{txs}</td><td class="mono">{reward}</td><td class="mono"><a href="/explorer/address/{miner}">{mshort}…</a></td></tr>"#,
                 h = b["height"].as_u64().unwrap_or(0),
                 hash = b["hash"].as_str().unwrap_or(""),
                 hshort = &b["hash"].as_str().unwrap_or("")[..16.min(b["hash"].as_str().unwrap_or("").len())],
                 lane = b["lane"].as_str().unwrap_or("?"),
+                diff = human_diff(b["difficulty"].as_f64().unwrap_or(0.0)),
                 txs = b["txs"].as_u64().unwrap_or(0),
                 reward = fmt_block(b["reward"].as_u64().unwrap_or(0)),
                 miner = b["miner"].as_str().unwrap_or(""),
@@ -2268,9 +2282,10 @@ fn page_explorer(_reg: &Registry) -> String {
 {search}
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Proof-of-work lanes</h2>
-<table><tr><th>lane</th><th>blocks</th><th>next bits</th></tr>{lanes}</table>
+<p class="sub">Each algorithm retargets independently, so difficulty differs per lane.</p>
+<table><tr><th>lane</th><th>blocks</th><th>difficulty</th></tr>{lanes}</table>
 <h2>Recent blocks</h2>
-<table><tr><th>height</th><th>hash</th><th>lane</th><th>txs</th><th>reward</th><th>miner</th></tr>{blocks}</table>"##,
+<table><tr><th>height</th><th>hash</th><th>lane</th><th>difficulty</th><th>txs</th><th>reward</th><th>miner</th></tr>{blocks}</table>"##,
                 search = explorer_search_box(),
                 c1 = card("Height", c["height"].as_u64().map(|h| h.to_string()).unwrap_or("—".into())),
                 c2 = card("Supply", format!("{} BLOCK", fmt_block(c["supply"].as_u64().unwrap_or(0)))),

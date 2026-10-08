@@ -30,6 +30,30 @@ pub fn compact_to_target(bits: u32) -> Option<U256> {
     }
 }
 
+/// Approximate a U256 as f64 (keeps the top ~52 significant bits).
+fn u256_to_f64(x: U256) -> f64 {
+    let bits = x.bits();
+    if bits == 0 {
+        return 0.0;
+    }
+    if bits <= 52 {
+        return x.low_u64() as f64;
+    }
+    let shift = bits - 52;
+    (x >> shift).low_u64() as f64 * 2f64.powi(shift as i32)
+}
+
+/// Standardized difficulty for a compact-bits value: `pow_limit / target`
+/// (1.0 at the easiest allowed target, higher as the target tightens). This is
+/// the Bitcoin-style difficulty metric, per-lane since each lane sets its own
+/// bits. Returns 0.0 for a degenerate target.
+pub fn difficulty_from_bits(bits: u32, pow_limit: U256) -> f64 {
+    match compact_to_target(bits) {
+        Some(target) if !target.is_zero() => u256_to_f64(pow_limit) / u256_to_f64(target),
+        _ => 0.0,
+    }
+}
+
 /// Encode a 256-bit target into compact bits.
 pub fn target_to_compact(target: U256) -> u32 {
     let mut size = (target.bits() as u32 + 7) / 8;

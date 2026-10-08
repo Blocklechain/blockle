@@ -37,9 +37,11 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
             .lanes()
             .iter()
             .map(|lane| {
+                let nb = chain.next_bits_for_at(lane, now_unix() as i64);
                 json!({
                     "lane": lane,
-                    "next_bits": format!("{:08x}", chain.next_bits_for_at(lane, now_unix() as i64)),
+                    "next_bits": format!("{:08x}", nb),
+                    "next_difficulty": blockle_pow::difficulty::difficulty_from_bits(nb, chain.params.pow_limit),
                     "blocks": chain.blocks.iter().filter(|b| Chain::lane_of(b) == *lane).count(),
                 })
             })
@@ -57,6 +59,7 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
                     "hash": display_hash(&b.header.hash()),
                     "time": b.header.time,
                     "lane": Chain::lane_of(b),
+                    "difficulty": blockle_pow::difficulty::difficulty_from_bits(b.header.bits, chain.params.pow_limit),
                     "txs": b.transactions.len(),
                     "reward": reward,
                     "miner": b.transactions[0]
@@ -684,6 +687,7 @@ fn block_summary(chain: &Chain, height: usize, b: &Block) -> Value {
         "hash": jhash(&b.header.hash()),
         "time": b.header.time,
         "lane": Chain::lane_of(b),
+        "difficulty": blockle_pow::difficulty::difficulty_from_bits(b.header.bits, chain.params.pow_limit),
         "txs": b.transactions.len(),
         "reward": reward,
         "miner": b.transactions[0].outputs.first().map(|o| encode_address(&o.recipient)),
@@ -726,10 +730,12 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                     } else {
                         None
                     };
+                    let nb = chain.next_bits_for_at(lane, now_unix() as i64);
                     json!({
                         "lane": lane,
                         "blocks": blocks.len(),
-                        "next_bits": format!("{:08x}", chain.next_bits_for_at(lane, now_unix() as i64)),
+                        "next_bits": format!("{:08x}", nb),
+                        "difficulty": blockle_pow::difficulty::difficulty_from_bits(nb, chain.params.pow_limit),
                         "last_block_height": blocks.last().map(|(h, _)| h),
                         "avg_interval_secs": avg_interval,
                     })
@@ -796,6 +802,7 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 "merkle_root": jhash(&b.header.merkle_root),
                 "time": b.header.time,
                 "bits": format!("{:08x}", b.header.bits),
+                "difficulty": blockle_pow::difficulty::difficulty_from_bits(b.header.bits, chain.params.pow_limit),
                 "nonce": hex::encode(b.header.nonce),
                 "solution_bytes": b.header.solution.len(),
                 "lane": Chain::lane_of(b),
