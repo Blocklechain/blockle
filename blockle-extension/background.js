@@ -147,6 +147,19 @@ async function handle(method, params, origin) {
       return { result: dec.payload };
     }
 
+    case 'blockle_swap': {
+      if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
+      const token = params && params[0] != null ? String(params[0]) : '';
+      const side = params && params[1] === 'sell' ? 'sell' : 'buy';
+      const amountIn = String((params && params[2]) || 0);
+      const minOut = String((params && params[3]) || 0);
+      const gas = String((params && params[4]) || 200000);
+      if (!/^[0-9a-fA-F]{64}$/.test(token)) return err(4200, 'invalid token id');
+      const dec = await openApproval('action', origin, { kind: 'swap', token, side, amountIn, minOut, gas });
+      if (!dec.approved) return err(4001, 'User rejected the swap');
+      return { result: dec.payload };
+    }
+
     case 'blockle_createPool': {
       if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
       const token = params && params[0] != null ? String(params[0]) : '';

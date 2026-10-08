@@ -81,8 +81,92 @@
         '<div class="crow"><span class="k">Token reserve</span><span class="v">' + fmt(p.tokenReserve / Math.pow(10, Number(p.decimals || 0)), 2) + ' ' + sym + '</span></div>' +
         '<div class="crow"><span class="k">Created</span><span class="v">block #' + (p.createdHeight || 0) + '</span></div>' +
         '<div class="caddr">' + p.token + '</div>' +
+        '<button class="trade" data-t="' + p.token + '">Trade ⇄</button>' +
       '</div>';
     }).join('');
+    [].forEach.call(grid.querySelectorAll('.trade'), function (b) {
+      b.onclick = function () { openTrade(b.getAttribute('data-t')); };
+    });
+  }
+
+  // ---- in-page swap (via the wallet provider) ---------------------------
+  var SWAP_FEE = 0.003, SLIP = 0.01, COIN = 100000000, tSide = 'buy', tPool = null;
+  function amountOut(inAmt, inRes, outRes) {
+    if (inAmt <= 0 || inRes <= 0 || outRes <= 0) return 0;
+    var ain = inAmt * (1 - SWAP_FEE);
+    return (outRes * ain) / (inRes + ain);
+  }
+  function openTrade(token) {
+    tPool = pools.filter(function (p) { return p.token === token; })[0];
+    if (!tPool) return;
+    tSide = 'buy';
+    renderTrade();
+    $('tradeModal').classList.add('show');
+  }
+  function closeTrade() { $('tradeModal').classList.remove('show'); }
+  function renderTrade() {
+    var p = tPool, sym = p.symbol || 'token';
+    $('tradeSheet').innerHTML =
+      '<h3>Trade ' + sym + '</h3>' +
+      '<div class="tabs2"><button id="t-buy" class="' + (tSide === 'buy' ? 'on' : '') + '">Buy ' + sym + '</button>' +
+      '<button id="t-sell" class="' + (tSide === 'sell' ? 'on' : '') + '">Sell ' + sym + '</button></div>' +
+      '<label class="tnote" id="t-inlabel"></label>' +
+      '<input class="t" id="t-amt" inputmode="decimal" placeholder="0.00">' +
+      '<div style="margin-top:10px">' +
+        '<div class="qrow"><span>Rate</span><b id="t-rate">—</b></div>' +
+        '<div class="qrow"><span>You receive ≈</span><b id="t-out">—</b></div>' +
+        '<div class="qrow"><span>Min received (1%)</span><b id="t-min">—</b></div>' +
+      '</div>' +
+      '<div class="terr" id="t-err"></div>' +
+      '<div class="act"><button class="cancel" id="t-cancel">Cancel</button><button class="go" id="t-go">Swap</button></div>' +
+      '<div class="tnote">Approve in the Blockle wallet extension. Needs the extension installed &amp; connected.</div>';
+    $('t-inlabel').textContent = tSide === 'buy' ? 'You pay (BLOCK)' : 'You pay (' + sym + ')';
+    $('t-buy').onclick = function () { tSide = 'buy'; renderTrade(); };
+    $('t-sell').onclick = function () { tSide = 'sell'; renderTrade(); };
+    $('t-cancel').onclick = closeTrade;
+    $('t-amt').oninput = tradeQuote;
+    $('t-go').onclick = doTrade;
+    tradeQuote();
+  }
+  function tradeReserves() {
+    var p = tPool, dec = Number(p.decimals || 0);
+    return { dec: dec, block: p.blockReserve / COIN, tok: p.tokenReserve / Math.pow(10, dec), sym: p.symbol || 'token' };
+  }
+  function tradeQuote() {
+    var raw = parseFloat($('t-amt').value), r = tradeReserves();
+    if (!(raw > 0)) { $('t-rate').textContent = '—'; $('t-out').textContent = '—'; $('t-min').textContent = '—'; return; }
+    var out, rate, outSym;
+    if (tSide === 'buy') { out = amountOut(raw, r.block, r.tok); rate = '1 BLOCK ≈ ' + fmt(amountOut(1, r.block, r.tok)) + ' ' + r.sym; outSym = r.sym; }
+    else { out = amountOut(raw, r.tok, r.block); rate = '1 ' + r.sym + ' ≈ ' + fmt(amountOut(1, r.tok, r.block)) + ' BLOCK'; outSym = 'BLOCK'; }
+    $('t-rate').textContent = rate;
+    $('t-out').textContent = fmt(out) + ' ' + outSym;
+    $('t-min').textContent = fmt(out * (1 - SLIP)) + ' ' + outSym;
+  }
+  async function doTrade() {
+    var raw = parseFloat($('t-amt').value), r = tradeReserves(), err = $('t-err');
+    err.textContent = '';
+    if (!(raw > 0)) { err.textContent = 'Enter an amount.'; return; }
+    if (typeof window.blockle === 'undefined') { err.textContent = 'Install the Blockle wallet extension to trade.'; return; }
+    var btn = $('t-go'); btn.disabled = true; btn.textContent = 'Confirm in wallet…';
+    try {
+      await window.blockle.connect();
+      var amountIn, minOut;
+      if (tSide === 'buy') {
+        amountIn = BigInt(Math.round(raw * COIN)).toString();
+        minOut = BigInt(Math.floor(amountOut(raw, r.block, r.tok) * (1 - SLIP) * Math.pow(10, r.dec))).toString();
+      } else {
+        amountIn = BigInt(Math.round(raw * Math.pow(10, r.dec))).toString();
+        minOut = BigInt(Math.floor(amountOut(raw, r.tok, r.block) * (1 - SLIP) * COIN)).toString();
+      }
+      var res = await window.blockle.swap(tPool.token, tSide, amountIn, minOut, 200000);
+      $('tradeSheet').innerHTML = '<h3>Swap submitted ✓</h3><div class="qrow"><span>Transaction</span></div>' +
+        '<div class="caddr">' + ((res && res.txid) || '') + '</div>' +
+        '<div class="act"><button class="go" id="t-done">Done</button></div>';
+      $('t-done').onclick = function () { closeTrade(); load(); };
+    } catch (e) {
+      btn.disabled = false; btn.textContent = 'Swap';
+      err.textContent = (e && e.message) || 'Swap rejected.';
+    }
   }
 
   $('q').addEventListener('input', function (e) { q = e.target.value.trim(); render(); });

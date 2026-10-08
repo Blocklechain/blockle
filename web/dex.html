@@ -45,6 +45,24 @@
   .caddr{font:11px var(--mono);color:var(--muted);word-break:break-all}
   .empty{color:var(--muted);text-align:center;padding:50px 0}
   .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding:22px 0 50px}
+  .trade{margin-top:4px;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px;font:600 13px var(--sans);cursor:pointer}
+  .trade:hover{border-color:var(--accent)}
+  .modal{position:fixed;inset:0;background:rgba(5,5,12,.7);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
+  .modal.show{display:flex}
+  .sheet{background:var(--surface);border:1px solid var(--line);border-radius:18px;max-width:420px;width:100%;padding:22px}
+  .sheet h3{margin:0 0 10px;font-size:18px;display:flex;align-items:center;gap:10px}
+  .tabs2{display:flex;gap:6px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:12px}
+  .tabs2 button{flex:1;background:none;border:0;color:var(--muted);font:600 14px var(--sans);padding:9px;border-radius:9px;cursor:pointer}
+  .tabs2 button.on{background:var(--accent);color:#fff}
+  .sheet input.t{width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:12px;color:var(--text);font:700 18px var(--mono);padding:11px 13px;outline:none}
+  .qrow{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;padding:5px 0}
+  .qrow b{color:var(--text);font-family:var(--mono)}
+  .sheet .act{display:flex;gap:10px;margin-top:14px}
+  .sheet .act button{flex:1;border:0;border-radius:11px;padding:12px;font:700 14px var(--sans);cursor:pointer}
+  .sheet .act .go{background:var(--accent);color:#fff}
+  .sheet .act .cancel{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .tnote{font-size:12px;color:var(--muted);margin-top:10px}
+  .terr{color:var(--bad);font-size:13px;margin-top:8px}
 </style>
 </head>
 <body>
@@ -65,8 +83,9 @@
     <a href="/launch" style="background:linear-gradient(135deg,#8b6dff,#37e0c8);color:#fff;padding:10px 14px;border-radius:12px;font-weight:700">+ Launch a token</a>
   </div>
   <div id="grid" class="grid"><div class="empty">Loading pools…</div></div>
-  <div class="foot">Prices and reserves are read live from the chain. Logos are pulled from IPFS. The 1-week LP lock is enforced in consensus — see each pool's unlock countdown.</div>
+  <div class="foot">Prices and reserves are read live from the chain. Logos are pulled from IPFS. The 1-week LP lock is enforced in consensus — see each pool's unlock countdown. Trading uses the Blockle wallet extension.</div>
 </main>
+<div class="modal" id="tradeModal"><div class="sheet" id="tradeSheet"></div></div>
 <script src="/dex.js"></script>
 </body>
 </html>

@@ -83,6 +83,11 @@
     createPool(token, blockAmt, tokenAmt, gasLimit) {
       return rpc('blockle_createPool', [token, blockAmt, tokenAmt, gasLimit]);
     },
+    // Swap against a pool. side = 'buy' (BLOCK->token) | 'sell' (token->BLOCK).
+    // amountIn / minOut are base units (strings).
+    swap(token, side, amountIn, minOut, gasLimit) {
+      return rpc('blockle_swap', [token, side, amountIn, minOut, gasLimit]);
+    },
     on(event, cb) {
       (listeners[event] = listeners[event] || []).push(cb);
       return provider;

@@ -600,12 +600,17 @@
     } else if (detail.type === 'action') {
       const GAS_PRICE = 10, COIN = 100000000;
       const gas = parseInt(detail.gas) || 200000;
-      const isPool = detail.kind === 'pool';
       $('#action-origin').textContent = detail.origin;
-      $('#action-title').textContent = isPool ? 'Create liquidity pool' : 'Initialize token (mint supply)';
-      $('#action-detail').textContent = isPool
-        ? 'Seed ' + (Number(detail.blockAmt) / COIN) + ' BLOCK + ' + detail.tokenAmt + ' base-unit tokens. LP locks for 1 week.'
-        : 'Mint the full supply of ' + (detail.contractId || '').slice(0, 12) + '… to your wallet.';
+      const titles = { pool: 'Create liquidity pool', init: 'Initialize token (mint supply)', swap: 'Swap' };
+      $('#action-title').textContent = titles[detail.kind] || 'Confirm';
+      $('#action-detail').textContent =
+        detail.kind === 'pool'
+          ? 'Seed ' + (Number(detail.blockAmt) / COIN) + ' BLOCK + ' + detail.tokenAmt + ' base-unit tokens. LP locks for 1 week.'
+          : detail.kind === 'swap'
+          ? (detail.side === 'buy'
+              ? 'Spend ' + (Number(detail.amountIn) / COIN) + ' BLOCK for ' + (detail.token || '').slice(0, 10) + '… tokens (min ' + detail.minOut + ' base units).'
+              : 'Sell ' + detail.amountIn + ' base-unit tokens for BLOCK (min ' + (Number(detail.minOut) / COIN) + ' BLOCK).')
+          : 'Mint the full supply of ' + (detail.contractId || '').slice(0, 12) + '… to your wallet.';
       $('#action-fee').textContent = (gas * GAS_PRICE) / COIN + ' BLOCK';
       show('approve-action');
       $('#action-unlock').hidden = Wallet.isUnlocked();
@@ -620,8 +625,12 @@
           const u = await Chain.utxos(Wallet.address);
           if (!u || !u.utxos.length) throw new Error('no spendable funds');
           let built;
-          if (isPool) {
+          if (detail.kind === 'pool') {
             built = await Wallet.buildPoolCreate(u.utxos, detail.token, detail.blockAmt, detail.tokenAmt, gas, GAS_PRICE);
+          } else if (detail.kind === 'swap') {
+            built = detail.side === 'buy'
+              ? await Wallet.buildPoolSwapBuy(u.utxos, detail.token, detail.amountIn, detail.minOut, gas, GAS_PRICE)
+              : await Wallet.buildPoolSwapSell(u.utxos, detail.token, detail.amountIn, detail.minOut, gas, GAS_PRICE);
           } else {
             built = await Wallet.buildCall(u.utxos, detail.contractId, '00', 0, gas, GAS_PRICE);
           }
