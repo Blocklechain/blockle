@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 import urllib.error
 import urllib.parse
@@ -204,6 +205,116 @@ class SnapshotWorker(QThread):
             self.failed.emit(str(e))
 
 
+CONSOLE_HELP = """Blockle console — type a command and press Enter (↑/↓ for history).
+
+Built-in commands:
+  help [command]            this help, or a subcommand's own options
+  snapshot                  full wallet + chain state (pretty JSON)
+  send <to> <amount> [fee]  send BLOCK (fee defaults to 0.0001)
+  sign <message...>         sign a message with your key
+  verify <addr> <sig> <message...>   verify a signed message
+  mine [n]                  mine n blocks (regtest / new chains)
+  scan                      rescan for shielded notes
+  backup <path>             write a wallet backup
+  clear                     clear the console
+
+Anything else is passed straight to the blockle-chain CLI, so every node and
+wallet subcommand works here too — e.g. `balance`, `address`, `getblockcount`,
+`getblockchaininfo`, `ui-snapshot`. Use `help <command>` for its flags."""
+
+
+def run_console_command(wallet: "ChainWallet", line: str) -> tuple[str, bool]:
+    """Execute one console line → (output, is_error). Friendly wrappers map to
+    ChainWallet methods; everything else is a raw blockle-chain CLI call."""
+    try:
+        toks = shlex.split(line)
+    except ValueError as e:
+        return (f"parse error: {e}", True)
+    if not toks:
+        return ("", False)
+    cmd, args = toks[0].lower(), toks[1:]
+    try:
+        if cmd == "clear":
+            return ("\x00clear", False)
+        if cmd == "help":
+            if args:
+                return (wallet._run(args[0], "--help").rstrip("\n"), False)
+            try:
+                cli = "\n\n— blockle-chain —\n" + wallet._run("--help").rstrip("\n")
+            except Exception:
+                cli = ""
+            return (CONSOLE_HELP + cli, False)
+        if cmd == "snapshot":
+            return (json.dumps(wallet.snapshot(), indent=2), False)
+        if cmd == "send":
+            if len(args) < 2:
+                return ("usage: send <to> <amount> [fee]", True)
+            fee = args[2] if len(args) > 2 else "0.0001"
+            return (json.dumps(wallet.send(args[0], args[1], fee), indent=2), False)
+        if cmd == "sign":
+            if not args:
+                return ("usage: sign <message>", True)
+            return (json.dumps(wallet.sign_message(" ".join(args)), indent=2), False)
+        if cmd == "verify":
+            if len(args) < 3:
+                return ("usage: verify <address> <signature> <message>", True)
+            ok = wallet.verify_message(args[0], args[1], " ".join(args[2:]))
+            return ("valid ✓" if ok else "INVALID ✗", not ok)
+        if cmd == "mine":
+            n = int(args[0]) if args else 1
+            return (wallet.mine(n).rstrip("\n"), False)
+        if cmd == "scan":
+            return (wallet.scan().rstrip("\n"), False)
+        if cmd == "backup":
+            if not args:
+                return ("usage: backup <path>", True)
+            return (json.dumps(wallet.backup(args[0]), indent=2), False)
+        # raw CLI passthrough — every node/wallet subcommand
+        return (wallet._run(*toks).rstrip("\n"), False)
+    except Exception as e:
+        return (str(e), True)
+
+
+class ConsoleWorker(QThread):
+    """Runs one console command off the UI thread."""
+
+    done = Signal(str, bool)
+
+    def __init__(self, wallet: ChainWallet, line: str):
+        super().__init__()
+        self.wallet = wallet
+        self.line = line
+
+    def run(self):  # noqa: D102
+        text, is_err = run_console_command(self.wallet, self.line)
+        self.done.emit(text, is_err)
+
+
+class _ConsoleInput(QLineEdit):
+    """A command input with ↑/↓ history recall."""
+
+    def __init__(self):
+        super().__init__()
+        self._hist: list[str] = []
+        self._idx = 0
+
+    def add_history(self, line: str) -> None:
+        if not self._hist or self._hist[-1] != line:
+            self._hist.append(line)
+        self._idx = len(self._hist)
+
+    def keyPressEvent(self, e):  # noqa: D102, N802
+        if e.key() == Qt.Key_Up and self._hist:
+            self._idx = max(0, self._idx - 1)
+            self.setText(self._hist[self._idx])
+            return
+        if e.key() == Qt.Key_Down and self._hist:
+            self._idx = min(len(self._hist), self._idx + 1)
+            self.setText(self._hist[self._idx] if self._idx < len(self._hist) else "")
+            return
+        super().keyPressEvent(e)
+
+
 def _copy_row(label: str, value: str) -> QWidget:
     w = QWidget()
     lay = QHBoxLayout(w)
@@ -246,6 +357,7 @@ class WalletWindow(QMainWindow):
         tabs.addTab(self._tokens_tab(), "Tokens")
         tabs.addTab(self._wallet_tab(), "Wallet")
         tabs.addTab(self._node_tab(), "Node")
+        tabs.addTab(self._console_tab(), "Console")
         self.setCentralWidget(tabs)
 
         self.status_lbl = QLabel("starting…")
@@ -667,6 +779,64 @@ class WalletWindow(QMainWindow):
             QMessageBox.information(self, "Blockle", "VALID — signed by the key behind that address.")
         else:
             QMessageBox.critical(self, "Blockle", "INVALID signature.")
+
+    def _console_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.addWidget(QLabel("Debug console — drive the node & wallet directly. Type "
+                             "<b>help</b> and press Enter."))
+        self.console_out = QPlainTextEdit()
+        self.console_out.setReadOnly(True)
+        mono = QFont("Menlo")
+        mono.setStyleHint(QFont.Monospace)
+        mono.setPointSize(11)
+        self.console_out.setFont(mono)
+        self.console_out.setStyleSheet(
+            "QPlainTextEdit { background: #0b0e16; color: #cdd6f4; border: 1px solid #23262e; "
+            "border-radius: 8px; padding: 10px; }")
+        self.console_out.setPlainText("Blockle console ready. Type `help` for commands.\n")
+        lay.addWidget(self.console_out, 1)
+        row = QHBoxLayout()
+        self.console_in = _ConsoleInput()
+        self.console_in.setFont(mono)
+        self.console_in.setPlaceholderText("help")
+        run = QPushButton("Run")
+        run.setObjectName("primary")
+        row.addWidget(self.console_in, 1)
+        row.addWidget(run)
+        lay.addLayout(row)
+        self.console_in.returnPressed.connect(self._console_submit)
+        run.clicked.connect(self._console_submit)
+        self._console_worker = None
+        return w
+
+    def _console_append(self, text: str) -> None:
+        self.console_out.appendPlainText(text)
+        sb = self.console_out.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _console_submit(self) -> None:
+        line = self.console_in.text().strip()
+        if not line:
+            return
+        self.console_in.clear()
+        self.console_in.add_history(line)
+        self._console_append("» " + line)
+        if line.lower() == "clear":
+            self.console_out.clear()
+            return
+        self.console_in.setEnabled(False)
+        self._console_worker = ConsoleWorker(self.wallet, line)
+        self._console_worker.done.connect(self._console_done)
+        self._console_worker.start()
+
+    def _console_done(self, text: str, is_err: bool) -> None:
+        if text == "\x00clear":
+            self.console_out.clear()
+        elif text:
+            self._console_append(("error: " + text) if is_err else text)
+        self.console_in.setEnabled(True)
+        self.console_in.setFocus()
 
     def _node_tab(self) -> QWidget:
         w = QWidget()
