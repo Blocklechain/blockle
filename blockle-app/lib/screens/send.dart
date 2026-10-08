@@ -56,6 +56,7 @@ class _SendScreenState extends State<SendScreen> {
       if (raw == null) throw Exception('could not build transaction');
       final res = await app.chain.submit(raw);
       final txid = (res is Map ? (res['txid'] ?? built['txid']) : built['txid']).toString();
+      await app.addPending(txid, 'Send');
       setState(() {
         _busy = false;
         _ok = txid;

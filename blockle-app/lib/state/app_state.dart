@@ -40,6 +40,7 @@ class AppState extends ChangeNotifier {
   late final Chain chain;
 
   static const _kSites = 'bk_sites';
+  static const _kPending = 'bk_pending';
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
@@ -49,6 +50,19 @@ class AppState extends ChangeNotifier {
   bool hasWallet = false;
   bool get unlocked => store.isUnlocked;
   Map<String, dynamic> _sites = {};
+
+  // ---- transaction queue (BLOCK blocks are ~10 min) ----
+  List<Map<String, dynamic>> _pending = [];
+  List<Map<String, dynamic>> get pending => _pending;
+
+  Future<void> addPending(String? txid, String kind) async {
+    if (txid == null || txid.isEmpty) return;
+    if (_pending.any((e) => e['txid'] == txid)) return;
+    _pending.insert(0, {'txid': txid, 'kind': kind, 'time': DateTime.now().millisecondsSinceEpoch});
+    if (_pending.length > 30) _pending = _pending.sublist(0, 30);
+    await _storage.write(key: _kPending, value: jsonEncode(_pending));
+    notifyListeners();
+  }
 
   // ---- navigation (bottom tabs + browser deep-link) ----
   int tabIndex = 0;
@@ -86,6 +100,10 @@ class AppState extends ChangeNotifier {
       final raw = await _storage.read(key: _kSites);
       if (raw != null && raw.isNotEmpty) {
         _sites = jsonDecode(raw) as Map<String, dynamic>;
+      }
+      final praw = await _storage.read(key: _kPending);
+      if (praw != null && praw.isNotEmpty) {
+        _pending = (jsonDecode(praw) as List).cast<Map<String, dynamic>>();
       }
     } catch (e) {
       bootError = e.toString();

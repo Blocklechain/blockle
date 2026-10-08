@@ -190,6 +190,22 @@ class WalletStore {
         _session.secret!, _session.pub!, utxosJson, codeHex, gasLimit, gasPrice);
   }
 
+  Future<Map<String, dynamic>> buildPoolSwapBuy(String utxosJson, String token,
+      String amountIn, String minOut, int gasLimit, int gasPrice) {
+    if (!isUnlocked) throw Exception('locked');
+    _touch();
+    return _engine.buildPoolSwapBuy(
+        _session.secret!, _session.pub!, utxosJson, token, amountIn, minOut, gasLimit, gasPrice);
+  }
+
+  Future<Map<String, dynamic>> buildPoolSwapSell(String utxosJson, String token,
+      String amountIn, String minOut, int gasLimit, int gasPrice) {
+    if (!isUnlocked) throw Exception('locked');
+    _touch();
+    return _engine.buildPoolSwapSell(
+        _session.secret!, _session.pub!, utxosJson, token, amountIn, minOut, gasLimit, gasPrice);
+  }
+
   // ---- import / export ----
   Future<Map<String, dynamic>> exportRecord([String? id]) async {
     final target = id ?? _session.id;

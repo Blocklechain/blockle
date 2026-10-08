@@ -220,6 +220,7 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
         final raw = built['raw'] as String?;
         if (raw == null) throw Exception('could not build deployment');
         await app.chain.submit(raw);
+        await app.addPending(built['txid']?.toString(), 'Deploy');
         payload = {'txid': built['txid'], 'contractId': built['contractId']};
       }
       if (mounted) Navigator.pop(context, ApprovalResult(true, payload));

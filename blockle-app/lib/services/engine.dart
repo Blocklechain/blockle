@@ -122,6 +122,38 @@ class Engine {
     return _json(v);
   }
 
+  /// Swap BLOCK -> token against a pool. amountIn/minOut are decimal strings
+  /// in base units.
+  Future<Map<String, dynamic>> buildPoolSwapBuy(
+      String secretHex,
+      String publicHex,
+      String utxosJson,
+      String tokenHex,
+      String amountIn,
+      String minOut,
+      int gasLimit,
+      int gasPrice) async {
+    final v = await _call(
+        'return await window.Engine.buildPoolSwapBuy(${_s(secretHex)}, ${_s(publicHex)}, ${_s(utxosJson)}, ${_s(tokenHex)}, ${_s(amountIn)}, ${_s(minOut)}, $gasLimit, $gasPrice);');
+    return _json(v);
+  }
+
+  /// Swap token -> BLOCK against a pool. amountIn/minOut are decimal strings
+  /// in base units.
+  Future<Map<String, dynamic>> buildPoolSwapSell(
+      String secretHex,
+      String publicHex,
+      String utxosJson,
+      String tokenHex,
+      String amountIn,
+      String minOut,
+      int gasLimit,
+      int gasPrice) async {
+    final v = await _call(
+        'return await window.Engine.buildPoolSwapSell(${_s(secretHex)}, ${_s(publicHex)}, ${_s(utxosJson)}, ${_s(tokenHex)}, ${_s(amountIn)}, ${_s(minOut)}, $gasLimit, $gasPrice);');
+    return _json(v);
+  }
+
   /// Seal plaintext JSON under a password -> sealed-vault JSON string.
   Future<String> seal(String objJson, String password) async {
     final v = await _call(

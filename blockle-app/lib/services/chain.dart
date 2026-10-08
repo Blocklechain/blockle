@@ -61,6 +61,29 @@ class Chain {
     return {'utxos': u['utxos'] ?? [], 'spendable': u['spendable'] ?? 0};
   }
 
+  /// Native AMM pools (DEX). Returns the pool list, or [] on failure.
+  Future<List<Map<String, dynamic>>> pools() async {
+    final base = apiBase.replaceFirst(RegExp(r'/explorer$'), '');
+    try {
+      final r = await http
+          .get(Uri.parse('$base/dex/pools'), headers: {'accept': 'application/json'})
+          .timeout(const Duration(seconds: 8));
+      if (r.statusCode != 200) return [];
+      final j = jsonDecode(r.body) as Map<String, dynamic>;
+      return ((j['pools'] ?? []) as List).cast<Map<String, dynamic>>();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Look up a transaction by id. Returns its JSON (with `confirmations`/
+  /// `height` once mined) or null if not found / still unconfirmed.
+  Future<Map<String, dynamic>?> tx(String txid) async {
+    final t = await _get('/tx/$txid');
+    if (t == null || t['error'] != null) return null;
+    return t;
+  }
+
   /// Broadcast a bincode-hex transaction via the submit proxy.
   Future<dynamic> submit(String rawHex) async {
     final base = apiBase.replaceFirst(RegExp(r'/api/explorer$'), '/api');

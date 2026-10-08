@@ -10,6 +10,8 @@ import '../theme.dart';
 import '../widgets/particle_logo.dart';
 import 'send.dart';
 import 'receive.dart';
+import 'swap.dart';
+import 'queue.dart';
 
 const _kTokens = 'bk_tokens';
 const _storage = FlutterSecureStorage(
@@ -229,6 +231,23 @@ class _WalletTabState extends State<WalletTab> {
                 const SizedBox(width: 10),
                 _action(Icons.swap_vert, 'Buy / Sell',
                     () => app.openBrowser('https://blockle.org/buy')),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                _action(Icons.swap_horiz, 'Swap', () {
+                  Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => const SwapScreen()))
+                      .then((_) => _refresh());
+                }),
+                const SizedBox(width: 10),
+                _action(Icons.receipt_long, 'Queue', () {
+                  Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const QueueScreen()));
+                }),
+                const SizedBox(width: 10),
+                const Spacer(),
               ],
             ),
             const SizedBox(height: 22),
