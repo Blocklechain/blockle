@@ -277,6 +277,14 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
         .block_template_split(&recipients(state, addr))
         .ok()?;
     let (chain, _) = state.node.snapshot();
+    // Stamp the aux block at "now" (floored just above the median-time-past) so
+    // its difficulty tracks the live quiet-lane decay. The job is rebuilt every
+    // 30s, so the advertised nbits follows the decay down and stays in step with
+    // the explorer's current per-lane difficulty, instead of lagging at a stale
+    // (harder) template timestamp.
+    let now = now_unix() as i64;
+    let floor = chain.median_time_past() + 1;
+    block.header.time = now.max(floor) as u32;
     // Quiet-lane decay keys off the aux block's own timestamp; nbits (below)
     // must carry the same value, since check_aux_pow verifies the parent PoW
     // against this lane difficulty.
