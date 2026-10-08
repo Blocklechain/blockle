@@ -1,0 +1,35 @@
+name: Android APK
+
+# Builds the Flutter mobile wallet APK on a clean Linux runner (local macOS
+# builds from the external volume hit AAPT2 daemon failures). Dispatch manually
+# or on a v* tag; the APK is uploaded as an artifact to attach to the release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Pub get
+        working-directory: blockle-app
+        run: flutter pub get
+      - name: Build release APK
+        working-directory: blockle-app
+        run: flutter build apk --release
+      - name: Rename
+        working-directory: blockle-app
+        run: cp build/app/outputs/flutter-apk/app-release.apk BlockleWallet-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlockleWallet-android
+          path: blockle-app/BlockleWallet-android.apk
