@@ -5,6 +5,7 @@ pub mod contracts;
 pub mod genesis;
 pub mod miner;
 pub mod params;
+pub mod pools;
 
 pub use chain::{Chain, ChainError, UtxoEntry};
 pub use contracts::{contract_id, CallResult, ContractInfo};
