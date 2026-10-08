@@ -135,11 +135,10 @@
   function offrampReady() { return !!(cfg && cfg.offramp && cfg.offramp.apiKey); }
   function transakUrl(product) {
     var o = cfg.offramp;
-    var base = (o.environment === 'PRODUCTION') ? 'https://global.transak.com' : 'https://staging-global.transak.com';
-    var q = new URLSearchParams({
-      apiKey: o.apiKey, productsAvailed: product,
-      defaultCryptoCurrency: o.defaultCryptoCurrency || 'USDC', network: o.network || 'base',
-    });
+    var base = (o.environment === 'PRODUCTION') ? 'https://global.transak.com' : 'https://global-stg.transak.com';
+    // Minimal, widely-accepted params. Extra currency/network params are a
+    // common source of T-INF init errors, so let the widget default those.
+    var q = new URLSearchParams({ apiKey: o.apiKey, productsAvailed: product });
     return base + '?' + q.toString();
   }
 

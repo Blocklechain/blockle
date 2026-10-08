@@ -12,7 +12,11 @@ Run with ``blockle-qt`` (``pip install blockle[qt]``).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 try:
@@ -63,6 +67,124 @@ QHeaderView::section { background: #0e1014; color: #7d8495; border: none;
 QPlainTextEdit { font-family: Menlo, monospace; font-size: 11px; }
 QCheckBox { color: #b7bcc8; }
 """
+
+#: Public BLOCK-20 token API (metadata + per-holder balance).
+TOKEN_API = "https://blockle.org/api/token"
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _bech32_data(addr: str) -> list[int] | None:
+    """Return the 5-bit data symbols of a bech32 string (checksum dropped),
+    or ``None`` if it does not look like bech32. The checksum is not verified
+    (the chain may use bech32 or bech32m); we only need the payload."""
+    if not addr or any(ord(c) < 33 or ord(c) > 126 for c in addr):
+        return None
+    if addr.lower() != addr and addr.upper() != addr:
+        return None  # mixed case
+    addr = addr.lower()
+    pos = addr.rfind("1")
+    if pos < 1 or pos + 7 > len(addr):
+        return None
+    data: list[int] = []
+    for c in addr[pos + 1:]:
+        d = _BECH32_CHARSET.find(c)
+        if d == -1:
+            return None
+        data.append(d)
+    return data[:-6]  # drop the 6-symbol checksum
+
+
+def _convertbits(data: list[int], frombits: int, tobits: int) -> list[int] | None:
+    """Convert between bit groups (BIP173), requiring exact, zero padding."""
+    acc = bits = 0
+    maxv = (1 << tobits) - 1
+    ret: list[int] = []
+    for value in data:
+        if value < 0 or (value >> frombits):
+            return None
+        acc = (acc << frombits) | value
+        bits += frombits
+        while bits >= tobits:
+            bits -= tobits
+            ret.append((acc >> bits) & maxv)
+    if bits >= frombits or ((acc << (tobits - bits)) & maxv):
+        return None  # excess or non-zero padding
+    return ret
+
+
+def _address_to_holder_hex(addr: str | None) -> str | None:
+    """Decode a ``block1…`` address to the 32-byte holder id in hex, or
+    ``None`` if it cannot be decoded to a 32-byte payload."""
+    if not addr:
+        return None
+    data = _bech32_data(addr)
+    if not data:
+        return None
+    decoded = _convertbits(data, 5, 8)
+    if not decoded:
+        return None
+    raw = bytes(decoded)
+    if len(raw) == 32:
+        return raw.hex()
+    if len(raw) == 33:  # leading version/witness byte
+        return raw[1:].hex()
+    return None
+
+
+def _format_token_amount(balance, decimals) -> str:
+    """Format a base-unit token balance by its decimals."""
+    if balance is None:
+        return "—"
+    try:
+        value = int(balance)
+    except (TypeError, ValueError):
+        return str(balance)
+    try:
+        d = int(decimals) if decimals is not None else 0
+    except (TypeError, ValueError):
+        d = 0
+    if d <= 0:
+        return str(value)
+    sign = "-" if value < 0 else ""
+    whole, frac = divmod(abs(value), 10 ** d)
+    frac_str = str(frac).zfill(d).rstrip("0")
+    return f"{sign}{whole}.{frac_str}" if frac_str else f"{sign}{whole}"
+
+
+def _fetch_token(contract_id: str, holder_hex: str | None = None, timeout: float = 15) -> dict:
+    """GET token metadata (+ balance when ``holder_hex`` is given) from the
+    public API. Handles both ``{"result": {...}}`` and a bare object."""
+    url = f"{TOKEN_API}/{contract_id}"
+    if holder_hex:
+        url += "?" + urllib.parse.urlencode({"holder": holder_hex})
+    req = urllib.request.Request(url, headers={"User-Agent": "blockle-qt"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if isinstance(payload, dict) and "result" in payload:
+        payload = payload["result"]
+    if not isinstance(payload, dict):
+        raise ValueError("unexpected token API response")
+    return payload
+
+
+class TokenWorker(QThread):
+    """Fetches BLOCK-20 token metadata/balances off the UI thread."""
+
+    ready = Signal(list)  # list[tuple[contract_id, dict | None, str | None]]
+
+    def __init__(self, contract_ids: list[str], holder_hex: str | None):
+        super().__init__()
+        self.contract_ids = contract_ids
+        self.holder_hex = holder_hex
+
+    def run(self):  # noqa: D102
+        results = []
+        for cid in self.contract_ids:
+            try:
+                results.append((cid, _fetch_token(cid, self.holder_hex), None))
+            except Exception as e:  # pragma: no cover - surfaced in UI
+                results.append((cid, None, str(e)))
+        self.ready.emit(results)
 
 
 class SnapshotWorker(QThread):
@@ -121,6 +243,7 @@ class WalletWindow(QMainWindow):
         tabs.addTab(self._send_tab(), "Send")
         tabs.addTab(self._receive_tab(), "Receive")
         tabs.addTab(self._shielded_tab(), "Shielded")
+        tabs.addTab(self._tokens_tab(), "Tokens")
         tabs.addTab(self._wallet_tab(), "Wallet")
         tabs.addTab(self._node_tab(), "Node")
         self.setCentralWidget(tabs)
@@ -231,6 +354,127 @@ class WalletWindow(QMainWindow):
             row.addWidget(b)
         lay.addLayout(row)
         return w
+
+    def _tokens_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+
+        box = QGroupBox("Import BLOCK-20 token")
+        row = QHBoxLayout(box)
+        self.token_input = QLineEdit()
+        self.token_input.setPlaceholderText("contract id (64 hex characters)")
+        self.token_input.setObjectName("mono")
+        self.token_input.returnPressed.connect(self._do_import_token)
+        import_btn = QPushButton("Import")
+        import_btn.setObjectName("primary")
+        import_btn.clicked.connect(self._do_import_token)
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._do_refresh_tokens)
+        row.addWidget(self.token_input, 1)
+        row.addWidget(import_btn)
+        row.addWidget(refresh_btn)
+        lay.addWidget(box)
+
+        lay.addWidget(QLabel("Imported BLOCK-20 tokens (balances for this wallet)"))
+        self.tokens_table = QTableWidget(0, 5)
+        self.tokens_table.setHorizontalHeaderLabels(
+            ["Symbol", "Name", "Decimals", "Balance", "Contract"])
+        self.tokens_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tokens_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tokens_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tokens_table.verticalHeader().hide()
+        lay.addWidget(self.tokens_table, 1)
+
+        self.token_worker: TokenWorker | None = None
+        self.token_data: dict[str, dict] = {}
+        self.token_ids: list[str] = self._tokens_load()
+        self._fill_tokens_table()
+        # Kick off an initial fetch once the event loop is running.
+        QTimer.singleShot(0, self._do_refresh_tokens)
+        return w
+
+    # ---------- BLOCK-20 tokens ----------
+
+    def _tokens_file(self) -> Path:
+        return Path(self.wallet.datadir) / "block20_tokens.json"
+
+    def _tokens_load(self) -> list[str]:
+        try:
+            data = json.loads(self._tokens_file().read_text())
+        except (OSError, ValueError):
+            return []
+        if isinstance(data, list):
+            return [str(c).strip().lower() for c in data if str(c).strip()]
+        return []
+
+    def _tokens_save(self):
+        try:
+            self._tokens_file().write_text(json.dumps(self.token_ids, indent=2))
+        except OSError as e:
+            QMessageBox.warning(self, "Blockle", f"Could not save token list: {e}")
+
+    def _token_holder_hex(self) -> str | None:
+        addr = (self.snap or {}).get("wallet", {}).get("address")
+        return _address_to_holder_hex(addr)
+
+    def _do_import_token(self):
+        cid = self.token_input.text().strip().lower()
+        if cid.startswith("0x"):
+            cid = cid[2:]
+        if len(cid) != 64 or any(c not in "0123456789abcdef" for c in cid):
+            QMessageBox.warning(self, "Blockle", "Enter a 64-character hex contract id.")
+            return
+        if cid in self.token_ids:
+            QMessageBox.information(self, "Blockle", "That token is already imported.")
+            return
+        try:
+            meta = _fetch_token(cid, self._token_holder_hex())
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not fetch token:\n{e}")
+            return
+        if not (meta.get("isToken") or meta.get("symbol") or meta.get("name")):
+            QMessageBox.critical(
+                self, "Blockle", "That contract id is not a BLOCK-20 token.")
+            return
+        self.token_ids.append(cid)
+        self.token_data[cid] = meta
+        self._tokens_save()
+        self.token_input.clear()
+        self._fill_tokens_table()
+
+    def _do_refresh_tokens(self):
+        if not self.token_ids:
+            self._fill_tokens_table()
+            return
+        if self.token_worker is not None and self.token_worker.isRunning():
+            return
+        self.token_worker = TokenWorker(list(self.token_ids), self._token_holder_hex())
+        self.token_worker.ready.connect(self._on_tokens_fetched)
+        self.token_worker.start()
+
+    def _on_tokens_fetched(self, results: list):
+        for cid, meta, _err in results:
+            if meta is not None:
+                self.token_data[cid] = meta
+        self._fill_tokens_table()
+
+    def _fill_tokens_table(self):
+        self.tokens_table.setRowCount(len(self.token_ids))
+        for r, cid in enumerate(self.token_ids):
+            meta = self.token_data.get(cid, {})
+            decimals = meta.get("decimals")
+            vals = [
+                meta.get("symbol") or "—",
+                meta.get("name") or "—",
+                str(decimals) if decimals is not None else "—",
+                _format_token_amount(meta.get("balance"), decimals),
+                f"{cid[:10]}…{cid[-6:]}",
+            ]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                if c == 4:
+                    item.setToolTip(cid)
+                self.tokens_table.setItem(r, c, item)
 
     def _wallet_tab(self) -> QWidget:
         w = QWidget()

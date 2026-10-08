@@ -55,6 +55,13 @@
     return balance()
   }
 }`,
+    'BLOCK-20 Token': `# BLOCK-20 token — a fungible token on Blockle.
+# Edit the fields below, Compile, then Deploy. After deploying,
+# call init() once from your wallet to mint the supply to yourself.
+name: My Meme Token
+symbol: MEME
+decimals: 8
+supply: 1000000`,
   };
 
   let wasmReady = null;
@@ -73,6 +80,19 @@
     return wasmReady;
   }
   const W = () => wasm_bindgen;
+
+  function parseBlock20(src) {
+    if (!/^\s*#\s*BLOCK-20/i.test(src)) return null;
+    const g = (k) => {
+      const m = src.match(new RegExp('^\\s*' + k + '\\s*:\\s*(.+)$', 'mi'));
+      return m ? m[1].trim() : '';
+    };
+    const name = g('name'), symbol = g('symbol');
+    const decimals = parseInt(g('decimals') || '8', 10);
+    const supply = (g('supply') || '0').replace(/[^0-9]/g, '');
+    if (!name || !symbol || !supply) return null;
+    return { name, symbol, decimals: isNaN(decimals) ? 8 : decimals, supply };
+  }
 
   function parseFunctions(src) {
     const re = /\bfn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)/g;
@@ -106,6 +126,26 @@
       return setStatus('engine not loaded', true);
     }
     const src = $('src').value;
+    // BLOCK-20 token spec? Build bytecode via the token builder, not the script compiler.
+    const tok = parseBlock20(src);
+    if (tok) {
+      try {
+        bytecode = W().build_block20_token(tok.name, tok.symbol, BigInt(tok.decimals), BigInt(tok.supply));
+      } catch (e) {
+        bytecode = null;
+        return setStatus('token build failed: ' + (e && e.message || e), true);
+      }
+      functions = [];
+      history = [];
+      $('bytecode').textContent = bytecode;
+      $('asm').textContent = '(BLOCK-20 token: ' + tok.name + ' / ' + tok.symbol + ' · ' + tok.decimals + ' decimals)';
+      $('contract-size').textContent = (bytecode.length / 2) + ' bytes';
+      setStatus('BLOCK-20 token compiled · deploy, then call init() once to mint ' + tok.supply + ' ' + tok.symbol, false);
+      $('calls').innerHTML = '<p class="muted">After deploying, call <code>init()</code> once from your wallet to mint the full supply to yourself. '
+        + '<code>transfer(to, amount)</code> and <code>balanceOf(addr)</code> take addresses, so interact from a wallet rather than the sandbox.</p>';
+      clearOutput();
+      return;
+    }
     const r = JSON.parse(W().compile_script(src));
     if (!r.ok) {
       bytecode = null;

@@ -357,9 +357,156 @@ pub fn build_deploy(
     .to_string())
 }
 
+/// Emit the BLOCK-20 assembly for a token with metadata + supply baked in.
+/// (Mirrors the conformance-tested builder in the chain crate.)
+fn block20_asm(name: &str, symbol: &str, decimals: u64, supply: u64) -> String {
+    fn return_bytes(label: &str, s: &str, strbuf: u64) -> String {
+        let mut out = format!("{label}:\n");
+        for (i, b) in s.bytes().enumerate() {
+            out += &format!("  PUSH {}\n  PUSH8 {}\n  MSTORE8\n", strbuf + i as u64, b);
+        }
+        out += &format!("  PUSH {strbuf}\n  PUSH8 {}\n  RETURN\n", s.len());
+        out
+    }
+    fn return_u64(label: &str, v: u64, scratch: u64) -> String {
+        format!("{label}:\n  PUSH {scratch}\n  PUSH {v}\n  MSTORE64\n  PUSH {scratch}\n  PUSH8 8\n  RETURN\n")
+    }
+    let (sel, keya, val, hbuf, amt, nf, nt, one, flag, fixed, strbuf) =
+        (0x00u64, 0x40u64, 0x80u64, 0xC0u64, 0x100u64, 0xA0u64, 0xB0u64, 0xA8u64, 0x90u64, 0x240u64, 0x300u64);
+    let mut a = String::new();
+    a += &format!("  PUSH {sel}\n  PUSH8 0\n  PUSH8 1\n  CALLDATACOPY\n  PUSH {sel}\n  MLOAD8\n");
+    for (s, label) in [
+        (0u64, "fn_init"), (1, "fn_balanceOf"), (2, "fn_transfer"),
+        (3, "fn_totalSupply"), (4, "fn_decimals"), (5, "fn_name"), (6, "fn_symbol"),
+    ] {
+        a += &format!("  DUP 0\n  PUSH8 {s}\n  EQ\n  PUSH @{label}\n  JUMPI\n");
+    }
+    a += "  PUSH @revert\n  JUMP\n";
+    let build_bal_key = format!(
+        "  PUSH {hbuf}\n  PUSH8 1\n  MSTORE8\n  PUSH {hbuf}\n  PUSH8 33\n  PUSH {keya}\n  BLAKE2B\n");
+    a += "fn_init:\n";
+    a += &format!("  PUSH {fixed}\n  PUSH8 7\n  MSTORE8\n");
+    a += &format!("  PUSH {flag}\n  PUSH8 0\n  MSTORE64\n");
+    a += &format!("  PUSH {fixed}\n  PUSH {flag}\n  SLOAD\n  POP\n");
+    a += &format!("  PUSH {flag}\n  MLOAD64\n  PUSH @revert\n  JUMPI\n");
+    a += &format!("  PUSH {}\n  CALLER\n", hbuf + 1);
+    a += &build_bal_key;
+    a += &format!("  PUSH {val}\n  PUSH {supply}\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {val}\n  PUSH8 8\n  SSTORE\n");
+    a += &format!("  PUSH {fixed}\n  PUSH8 7\n  MSTORE8\n");
+    a += &format!("  PUSH {flag}\n  PUSH8 1\n  MSTORE64\n");
+    a += &format!("  PUSH {fixed}\n  PUSH {flag}\n  PUSH8 8\n  SSTORE\n");
+    a += &format!("  PUSH {one}\n  PUSH8 1\n  MSTORE64\n  PUSH {one}\n  PUSH8 8\n  RETURN\n");
+    a += "fn_balanceOf:\n";
+    a += &format!("  PUSH {}\n  PUSH8 1\n  PUSH8 32\n  CALLDATACOPY\n", hbuf + 1);
+    a += &build_bal_key;
+    a += &format!("  PUSH {val}\n  PUSH8 0\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {val}\n  SLOAD\n  POP\n");
+    a += &format!("  PUSH {val}\n  PUSH8 8\n  RETURN\n");
+    a += "fn_transfer:\n";
+    a += &format!("  PUSH {amt}\n  PUSH8 33\n  PUSH8 8\n  CALLDATACOPY\n");
+    a += &format!("  PUSH {}\n  CALLER\n", hbuf + 1);
+    a += &build_bal_key;
+    a += &format!("  PUSH {val}\n  PUSH8 0\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {val}\n  SLOAD\n  POP\n");
+    a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  LT\n  PUSH @revert\n  JUMPI\n");
+    a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  SUB\n");
+    a += &format!("  PUSH {nf}\n  SWAP 1\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {nf}\n  PUSH8 8\n  SSTORE\n");
+    a += &format!("  PUSH {}\n  PUSH8 1\n  PUSH8 32\n  CALLDATACOPY\n", hbuf + 1);
+    a += &build_bal_key;
+    a += &format!("  PUSH {nt}\n  PUSH8 0\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {nt}\n  SLOAD\n  POP\n");
+    a += &format!("  PUSH {nt}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  ADD\n");
+    a += &format!("  PUSH {nt}\n  SWAP 1\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {nt}\n  PUSH8 8\n  SSTORE\n");
+    a += &format!("  PUSH {one}\n  PUSH8 1\n  MSTORE64\n  PUSH {one}\n  PUSH8 8\n  RETURN\n");
+    a += &return_u64("fn_totalSupply", supply, val);
+    a += &return_u64("fn_decimals", decimals, val);
+    a += &return_bytes("fn_name", name, strbuf);
+    a += &return_bytes("fn_symbol", symbol, strbuf);
+    a += "revert:\n  PUSH8 0\n  PUSH8 0\n  REVERT\n";
+    a
+}
+
+/// Build BLOCK-20 token bytecode (hex) for the given metadata + supply.
+#[wasm_bindgen]
+pub fn build_block20_token(name: &str, symbol: &str, decimals: u64, supply: u64) -> Result<String, JsError> {
+    let code = blockle_vm::asm::assemble(&block20_asm(name, symbol, decimals, supply))
+        .map_err(|e| JsError::new(&format!("asm error: {e:?}")))?;
+    Ok(hexs(&code))
+}
+
+/// Build a signed contract-call transaction (ContractAction::Call). Used for
+/// init(), transfer(), and any BLOCK-20/contract method. `value` moves into
+/// the contract; fee = gas_limit * gas_price. Inputs must cover value + fee.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_call(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    contract_hex: &str,
+    input_hex: &str,
+    value: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let kp = load_kp(secret_hex, public_hex)?;
+    let contract_bytes = hex::decode(contract_hex).map_err(|_| JsError::new("bad contract hex"))?;
+    let contract: [u8; 32] = contract_bytes.as_slice().try_into().map_err(|_| JsError::new("contract id len"))?;
+    let input = hex::decode(input_hex).map_err(|_| JsError::new("bad input hex"))?;
+    let utxos: Vec<Utxo> = serde_json::from_str(utxos_json).map_err(|_| JsError::new("bad utxos json"))?;
+    let fee = gas_limit.checked_mul(gas_price).ok_or_else(|| JsError::new("gas overflow"))?;
+    let need = fee.checked_add(value).ok_or_else(|| JsError::new("amount overflow"))?;
+
+    let mut selected: Vec<OutPoint> = Vec::new();
+    let mut total: u64 = 0;
+    for u in &utxos {
+        let bytes = hex::decode(&u.txid).map_err(|_| JsError::new("bad utxo txid hex"))?;
+        let txid: [u8; 32] = bytes.as_slice().try_into().map_err(|_| JsError::new("utxo txid len"))?;
+        selected.push(OutPoint { txid, vout: u.vout });
+        total = total.saturating_add(u.amount);
+        if total >= need {
+            break;
+        }
+    }
+    if total < need {
+        return Err(JsError::new("insufficient funds for value + gas fee"));
+    }
+    let mut outputs = Vec::new();
+    let change = total - need;
+    if change > 0 {
+        outputs.push(TxOutput { recipient: kp.address(), amount: change });
+    }
+    let mut tx = Transaction {
+        version: 1,
+        inputs: selected.iter()
+            .map(|op| TxInput { prev: *op, pubkey: kp.public_bytes(), signature: vec![] })
+            .collect(),
+        outputs,
+        coinbase_data: vec![],
+        shielded: None,
+        contract: Some(ContractAction::Call { contract, input, value, gas_limit }),
+    };
+    let sighash = tx.sighash();
+    let signature = kp.sign(&sighash);
+    for inp in &mut tx.inputs {
+        inp.signature = signature.clone();
+    }
+    let txid = tx.txid();
+    let raw = bincode::serialize(&tx).map_err(|_| JsError::new("serialize failed"))?;
+    Ok(serde_json::json!({ "txid": hexs(&txid), "raw": hexs(&raw), "fee": fee }).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn block20_builder_assembles() {
+        let hex = build_block20_token("Blockle Meme", "MEME", 8, 1_000_000).unwrap();
+        assert!(!hex.is_empty() && hex.len() % 2 == 0);
+    }
     #[test]
     fn keygen_address_sign_verify_roundtrip() {
         let kp = serde_json::from_str::<serde_json::Value>(&keygen()).unwrap();

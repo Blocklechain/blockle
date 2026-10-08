@@ -271,9 +271,18 @@ fn tokeninfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
     let decimals = as_u64(&call(4, &[]));
     let total = as_u64(&call(3, &[]));
     let is_token = name.is_some() || symbol.is_some() || total.is_some();
-    let balance = o.get("holder").and_then(|v| v.as_str()).and_then(|h| {
-        parse_hash32(h).ok().and_then(|addr| as_u64(&call(1, &addr)))
-    });
+    let balance = o
+        .get("holder")
+        .and_then(|v| v.as_str())
+        .filter(|h| !h.is_empty())
+        .and_then(|h| {
+            let addr = if h.starts_with("block1") {
+                decode_address(h).ok()
+            } else {
+                parse_hash32(h).ok()
+            };
+            addr.and_then(|a| as_u64(&call(1, &a)))
+        });
     Ok(json!({
         "contract": hex::encode(contract),
         "isToken": is_token,

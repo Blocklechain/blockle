@@ -91,6 +91,39 @@
         })
         .join('');
     }
+    await renderTokens();
+  }
+
+  async function renderTokens() {
+    const box = $('#tokens');
+    if (!box) return;
+    const ids = (await Store.get('tokens')).tokens || [];
+    if (!ids.length) {
+      box.innerHTML = '<div class="empty">No BLOCK-20 tokens imported.</div>';
+      return;
+    }
+    const infos = await Promise.all(ids.map((id) => Chain.token(id, Wallet.address)));
+    box.innerHTML = ids
+      .map((id, i) => {
+        const t = infos[i];
+        if (!t) return `<div class="row"><div class="l"><b class="mono">${id.slice(0, 12)}…</b><small>unavailable</small></div></div>`;
+        const dec = Number(t.decimals || 0);
+        const bal = t.balance != null ? (Number(t.balance) / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: dec }) : '—';
+        const sym = t.symbol || '?';
+        return `<div class="row"><div class="l"><b>${sym}</b><small>${t.name || ''}</small></div><div class="r">${bal} ${sym}</div></div>`;
+      })
+      .join('');
+  }
+
+  async function importToken() {
+    const id = (prompt('BLOCK-20 token contract id (64 hex chars):') || '').trim().toLowerCase();
+    if (!id) return;
+    if (!/^[0-9a-f]{64}$/.test(id)) { alert('That is not a 64-hex-char contract id.'); return; }
+    const t = await Chain.token(id, Wallet.address);
+    if (!t || !t.isToken) { alert('No BLOCK-20 token found at that contract id.'); return; }
+    const ids = (await Store.get('tokens')).tokens || [];
+    if (!ids.includes(id)) { ids.push(id); await Store.set({ tokens: ids }); }
+    await renderTokens();
   }
   async function refreshConnections() {
     const sites = (await Store.get('sites')).sites || {};
@@ -268,6 +301,8 @@
       await Wallet.lock();
       route('unlock');
     });
+    const impBtn = $('#import-token');
+    if (impBtn) impBtn.addEventListener('click', importToken);
     $('#addr-chip').addEventListener('click', () => copy(Wallet.address));
     $('#copy-addr').addEventListener('click', () => copy(Wallet.address));
 

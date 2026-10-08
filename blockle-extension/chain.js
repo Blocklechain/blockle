@@ -56,6 +56,24 @@
       const u = await get('/utxos/' + address);
       return u ? { utxos: u.utxos || [], spendable: u.spendable || 0 } : null;
     },
+    // Read a BLOCK-20 token by contract id (hex). `holderHex` optional (32-byte
+    // address hex) to include the holder's balance. Returns the token info or null.
+    async token(contractId, holderHex) {
+        const base = (await endpoint()).replace(/\/explorer$/, '');
+        const q = holderHex ? '?holder=' + encodeURIComponent(holderHex) : '';
+        try {
+            const r = await fetch(base + '/token/' + encodeURIComponent(contractId) + q, {
+                headers: { accept: 'application/json' },
+            });
+            if (!r.ok) return null;
+            const j = await r.json();
+            const t = j && j.result ? j.result : j;
+            return t && (t.isToken || t.name || t.symbol) ? t : (t || null);
+        } catch {
+            return null;
+        }
+    },
+
     // Broadcast a bincode-hex transaction via the submit proxy.
     async submit(rawHex) {
       const base = (await endpoint()).replace(/\/api\/explorer$/, '/api');
