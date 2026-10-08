@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buy &amp; Sell BLOCK — Blockle</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --accent-soft:#211d3d;
+    --teal:#37E0C8; --good:#4ADE80; --warn:#F2B04A; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)} header.top nav a:hover{color:var(--text)}
+  h1{font-size:clamp(26px,4vw,38px);letter-spacing:-.02em;margin:26px 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .grid{display:grid;grid-template-columns:1.2fr .9fr;gap:18px;align-items:start}
+  @media(max-width:820px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .price{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .price .v{font:800 34px/1 var(--mono);font-variant-numeric:tabular-nums}
+  .price .u{color:var(--muted);font-size:14px}
+  .chg.pos{color:var(--good)} .chg.neg{color:var(--bad)}
+  canvas{width:100%;height:160px;display:block;margin-top:14px}
+  .note{color:var(--muted);font-size:13px;margin-top:8px}
+  .por{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px}
+  .por .box{background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .por .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .por .val{font:700 18px/1.2 var(--mono);font-variant-numeric:tabular-nums;margin-top:4px}
+  .por .lnk{font-size:11px;margin-top:6px}
+  .tabs{display:flex;gap:6px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px}
+  .tabs button{flex:1;background:none;border:0;color:var(--muted);font:600 14px var(--sans);padding:9px;border-radius:9px;cursor:pointer}
+  .tabs button.on{background:var(--accent);color:#fff}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  .inp{display:flex;align-items:center;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+  .inp input{flex:1;background:none;border:0;color:var(--text);font:700 20px var(--mono);outline:none;width:100%}
+  .inp .cur{color:var(--muted);font-weight:700;font-size:14px}
+  .rows{margin:14px 0;font-size:14px}
+  .rows .r{display:flex;justify-content:space-between;padding:5px 0;color:var(--muted)}
+  .rows .r b{color:var(--text);font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .rows .r.total b{color:var(--teal)}
+  .cta{width:100%;background:var(--accent);color:#fff;border:0;border-radius:12px;padding:14px;font:700 16px var(--sans);cursor:pointer;margin-top:4px}
+  .cta:disabled{opacity:.5;cursor:not-allowed}
+  .cta.sec{background:transparent;border:1px solid var(--line);color:var(--text);margin-top:10px}
+  .banner{background:var(--accent-soft);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:12px;padding:12px 14px;font-size:13.5px;color:var(--text);margin:16px 0}
+  .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);margin-top:30px;padding:22px 0 50px}
+  .mono{font-family:var(--mono)}
+  /* settlement modal */
+  .modal{position:fixed;inset:0;background:rgba(5,5,12,.7);display:none;align-items:center;justify-content:center;z-index:50;padding:18px}
+  .modal.show{display:flex}
+  .sheet{background:var(--surface);border:1px solid var(--line);border-radius:18px;max-width:440px;width:100%;padding:22px}
+  .sheet h3{margin:0 0 4px;font-size:19px}
+  .sheet .step{font-size:13.5px;color:var(--muted);margin:10px 0 4px}
+  .addrbox{display:flex;gap:8px;align-items:center;background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:10px;font:600 12px var(--mono);word-break:break-all}
+  .addrbox button{background:var(--accent);border:0;color:#fff;border-radius:7px;padding:6px 9px;font-size:12px;cursor:pointer;flex:none}
+  .sheet input.t{width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:10px;color:var(--text);font:600 13px var(--mono);padding:10px;margin-top:4px;outline:none}
+  .sheet .act{display:flex;gap:10px;margin-top:16px}
+  .sheet .act button{flex:1;border-radius:11px;padding:12px;font:700 14px var(--sans);cursor:pointer;border:0}
+  .sheet .act .go{background:var(--accent);color:#fff}
+  .sheet .act .cancel{background:transparent;border:1px solid var(--line);color:var(--text)}
+  .spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite;margin:14px auto}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.spin{animation-duration:2s}}
+  .result{text-align:center;padding:8px 0}
+  .result .big{font:800 20px var(--sans);margin:6px 0}
+  .result.ok .big{color:var(--good)} .result.err .big{color:var(--bad)}
+  .result a{font-family:var(--mono);font-size:13px;word-break:break-all}
+  .err{color:var(--bad);font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle</a>
+  <nav><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/studio">Studio</a><a href="/buy">Buy</a></nav>
+</div></header>
+
+<main class="wrap">
+  <h1>Buy &amp; Sell BLOCK</h1>
+  <p class="sub">Priced by a treasury-backed reserve curve. Every quote includes a flat <b>5% fee</b>. Reserves are verifiable on-chain below.</p>
+
+  <div id="zerobanner" class="banner" hidden>
+    <b>Price discovery hasn't started.</b> The BLOCK and USDC reserves backing the curve aren't funded yet, so there's no executable price. This page goes live automatically once the reserves hold value.
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <div class="price">
+        <span class="v" id="price">—</span>
+        <span class="u">USDC / BLOCK</span>
+        <span class="chg" id="chg"></span>
+      </div>
+      <canvas id="chart" width="640" height="160"></canvas>
+      <p class="note" id="chartnote">Loading price history…</p>
+
+      <div class="por">
+        <div class="box">
+          <div class="k">BLOCK reserve</div>
+          <div class="val" id="rBlock">—</div>
+          <div class="lnk"><a id="rBlockLink" href="#" target="_blank" rel="noopener">verify on explorer ↗</a></div>
+        </div>
+        <div class="box">
+          <div class="k">USDC reserve (Base)</div>
+          <div class="val" id="rUsdc">—</div>
+          <div class="lnk"><a id="rUsdcLink" href="#" target="_blank" rel="noopener">verify on Basescan ↗</a></div>
+        </div>
+        <div class="box">
+          <div class="k">Reserve coverage</div>
+          <div class="val" id="coverage">—</div>
+        </div>
+        <div class="box">
+          <div class="k">Constant product k</div>
+          <div class="val" id="kval">—</div>
+        </div>
+      </div>
+      <p class="note">Proof-of-reserves: both figures are read live from their own chains. The curve can only pay sells from the USDC actually held.</p>
+    </section>
+
+    <section class="card">
+      <div class="tabs">
+        <button id="tabBuy" class="on">Buy</button>
+        <button id="tabSell">Sell</button>
+      </div>
+
+      <label class="fld" id="inLabel">You pay (USDC)</label>
+      <div class="inp"><input id="amt" type="text" inputmode="decimal" placeholder="0.00"><span class="cur" id="inCur">USDC</span></div>
+
+      <div class="rows">
+        <div class="r"><span id="spotLbl">Price</span><b id="spot">—</b></div>
+        <div class="r"><span>Blockle fee (5%)</span><b id="fee">—</b></div>
+        <div class="r"><span>Price impact</span><b id="impact">—</b></div>
+        <div class="r total"><span id="outLbl">You receive</span><b id="out">—</b></div>
+      </div>
+
+      <button class="cta" id="cta" disabled>Enter an amount</button>
+      <button class="cta sec" id="offramp" hidden>Cash out USDC to your bank ↗</button>
+      <p class="note" id="execnote"></p>
+    </section>
+  </div>
+
+  <div class="foot">
+    <p>Quotes are indicative and move with reserve depth; large orders have price impact. The 5% fee funds the Blockle treasury. Cashing USDC to a bank is handled by a licensed third-party off-ramp (Transak) — Blockle does not custody your fiat. This is not investment advice.</p>
+  </div>
+</main>
+
+<div class="modal" id="sellModal"><div class="sheet" id="sellSheet">
+  <!-- filled by buy.js -->
+</div></div>
+
+<script src="/buy.js"></script>
+</body>
+</html>

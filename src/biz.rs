@@ -467,6 +467,20 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                     None => jerr("503 Service Unavailable", "chain api not reachable"),
                 }
             }
+            // Forward a sell settlement to the local settlement service, which
+            // verifies the inbound BLOCK on-chain and sends USDC from the
+            // reserve. The service holds the key; biz never sees it.
+            "/api/buy/settle" => {
+                match http::post(
+                    "http://127.0.0.1:8790/settle",
+                    "application/json",
+                    &req.body,
+                    Duration::from_secs(90),
+                ) {
+                    Ok(raw) => ("200 OK", "application/json", raw),
+                    Err(_) => jerr("503 Service Unavailable", "settlement service not reachable"),
+                }
+            }
             _ => jerr("404 Not Found", "unknown endpoint"),
         };
     }
@@ -607,6 +621,10 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
         "/blockle_wasm.js" => serve_web_file("blockle_wasm.js", "application/javascript; charset=utf-8"),
         "/blockle.wasm" => serve_web_file("blockle_wasm_bg.wasm", "application/wasm"),
+        "/buy" => serve_web_file("buy.html", "text/html; charset=utf-8"),
+        "/buy.js" => serve_web_file("buy.js", "application/javascript; charset=utf-8"),
+        "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
+        "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
         "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
@@ -1750,6 +1768,33 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
         Ok(b) => ("200 OK", ct, b),
         Err(_) => ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec()),
     }
+}
+
+/// /buy configuration — operator-set at /var/lib/blockle-biz/buy-config.json.
+/// Falls back to an honest "not configured" default (empty reserve addresses →
+/// the page shows "price discovery not started"). Never fabricates values.
+fn buy_config() -> String {
+    const DEFAULT: &str = r#"{
+  "ticker": "BLOCK",
+  "feeBps": 500,
+  "explorerApi": "https://blockle.org/api/explorer",
+  "blockReserveAddr": "",
+  "usdc": {
+    "network": "base",
+    "rpc": "https://mainnet.base.org",
+    "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "decimals": 6,
+    "reserveAddr": ""
+  },
+  "offramp": { "provider": "transak", "apiKey": "", "environment": "STAGING", "network": "base", "defaultCryptoCurrency": "USDC" }
+}"#;
+    fs::read_to_string("/var/lib/blockle-biz/buy-config.json").unwrap_or_else(|_| DEFAULT.to_string())
+}
+
+/// Recorded curve-price snapshots (written by the buy-snapshot timer on the
+/// box). Empty array until the reserve is funded and the first snapshot runs.
+fn buy_history() -> String {
+    fs::read_to_string("/var/lib/blockle-biz/buy-history.json").unwrap_or_else(|_| "[]".to_string())
 }
 
 fn page_studio() -> String {
