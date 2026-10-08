@@ -249,6 +249,26 @@ fn recipients(state: &DirectState, miner: Address) -> Vec<(Address, u32)> {
     }
 }
 
+/// Serialize `height` as a BIP34 coinbase scriptSig prefix: a minimal
+/// little-endian CScriptNum, length-prefixed as a data push.
+fn bip34_height(height: u64) -> Vec<u8> {
+    if height == 0 {
+        return vec![0x00]; // OP_0
+    }
+    let mut n = height;
+    let mut bytes = Vec::new();
+    while n > 0 {
+        bytes.push((n & 0xff) as u8);
+        n >>= 8;
+    }
+    if bytes.last().is_some_and(|b| b & 0x80 != 0) {
+        bytes.push(0x00); // keep it positive
+    }
+    let mut out = vec![bytes.len() as u8]; // small push (len < 0x4c)
+    out.extend_from_slice(&bytes);
+    out
+}
+
 /// Build the synthetic parent coinbase around the extranonce slot and the
 /// BLOCK commitment, split for stratum (coinb1 ‖ en1 ‖ en2 ‖ coinb2).
 fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
@@ -267,20 +287,30 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
     let aux_hash = block.header.hash();
     let commitment = auxpow::mm_commitment(&aux_hash, 1, 0);
 
-    // scriptSig = extranonce1(4) ‖ extranonce2(4) ‖ commitment(44)
-    let script_len = 4 + 4 + commitment.len();
+    // BIP34 height at the start of the scriptSig, and a non-zero coinbase
+    // output (the BLOCK reward), so ASIC firmware coinbase decoders (e.g.
+    // ESP-Miner on Bitaxe) can parse the job and show the block header panel.
+    // These bytes are cosmetic for consensus — check_aux_pow locates the
+    // merge-mining commitment by scanning, not by offset.
+    let height = chain.blocks.len() as u64;
+    let bip34 = bip34_height(height);
+    let reward: u64 = block.transactions[0].outputs.iter().map(|o| o.amount).sum();
+
+    // scriptSig = bip34_height ‖ extranonce1(4) ‖ extranonce2(4) ‖ commitment(44)
+    let script_len = bip34.len() + 4 + 4 + commitment.len();
     let mut coinb1 = Vec::new();
     coinb1.extend_from_slice(&1u32.to_le_bytes()); // tx version
     coinb1.push(1); // one input
     coinb1.extend_from_slice(&[0u8; 32]); // null prevout hash
     coinb1.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // prevout index
     coinb1.push(script_len as u8); // script length (always < 0xfd)
+    coinb1.extend_from_slice(&bip34); // BIP34 block height push
     // …extranonce1 ‖ extranonce2 go here…
     let mut coinb2 = Vec::new();
     coinb2.extend_from_slice(&commitment);
     coinb2.extend_from_slice(&0xffff_ffffu32.to_le_bytes()); // sequence
     coinb2.push(1); // one output
-    coinb2.extend_from_slice(&0u64.to_le_bytes()); // zero value
+    coinb2.extend_from_slice(&reward.to_le_bytes()); // non-zero value (BLOCK reward)
     coinb2.push(1); // script len
     coinb2.push(0x51); // OP_TRUE
     coinb2.extend_from_slice(&0u32.to_le_bytes()); // locktime
@@ -518,6 +548,9 @@ fn handle_request(
             Ok(json!(true))
         }
         "mining.extranonce.subscribe" => Ok(json!(true)),
+        // Accepted but ignored: we set difficulty from the lane target, not the
+        // miner's hint. Returning ok avoids a spurious "unknown method" error.
+        "mining.suggest_difficulty" | "mining.suggest_target" => Ok(json!(true)),
         "mining.submit" => {
             let p = params.as_array().ok_or("bad params")?;
             if p.len() < 5 {
