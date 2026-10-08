@@ -21,7 +21,7 @@ jobs:
         with:
           # Match the Flutter that generated the app's android/ config (its
           # Gradle wrapper is 8.12); newer stable Flutter demands Gradle >= 8.14.
-          flutter-version: 3.29.3
+          flutter-version: 3.35.7
           channel: stable
       - name: Pub get
         working-directory: blockle-app
