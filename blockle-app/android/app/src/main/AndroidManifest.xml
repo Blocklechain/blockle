@@ -1,7 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Release builds don't get these automatically (Flutter only injects
+         INTERNET into debug/profile manifests). The wallet needs network for
+         the chain API, and cleartext so the crypto-engine WebView can load the
+         local http://localhost asset server and the in-app dApp browser. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="blockle_app"
+        android:label="Blockle Wallet"
         android:name="${applicationName}"
+        android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"

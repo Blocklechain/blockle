@@ -19,7 +19,13 @@ class Engine {
   Future<void>? _booting;
 
   Future<void> ensureStarted() {
-    return _booting ??= _boot();
+    // Clear the cached future on failure so a retry re-attempts the boot
+    // instead of replaying the same error forever.
+    _booting ??= _boot().catchError((e) {
+      _booting = null;
+      throw e;
+    });
+    return _booting!;
   }
 
   Future<void> _boot() async {
@@ -43,7 +49,13 @@ class Engine {
           debugPrint('[engine] load error: ${err.description}'),
     );
     await _headless!.run();
-    await _loaded.future;
+    // If the WebView never loads (e.g. cleartext blocked), fail loudly instead
+    // of spinning on the splash forever.
+    await _loaded.future.timeout(
+      const Duration(seconds: 25),
+      onTimeout: () => throw Exception(
+          'crypto engine timed out loading — check network/WebView permissions'),
+    );
     // Wait for the WASM module to finish instantiating.
     await _ready();
   }
