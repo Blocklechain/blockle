@@ -169,6 +169,200 @@ let wasm_bindgen = (function(exports) {
     exports.build_deploy = build_deploy;
 
     /**
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} token_hex
+     * @param {bigint} block_amt
+     * @param {bigint} token_max
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_pool_add(secret_hex, public_hex, utxos_json, token_hex, block_amt, token_max, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(token_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_pool_add(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, block_amt, token_max, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_pool_add = build_pool_add;
+
+    /**
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} token_hex
+     * @param {bigint} block_amt
+     * @param {bigint} token_amt
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_pool_create(secret_hex, public_hex, utxos_json, token_hex, block_amt, token_amt, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(token_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_pool_create(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, block_amt, token_amt, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_pool_create = build_pool_create;
+
+    /**
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} token_hex
+     * @param {bigint} shares
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_pool_remove(secret_hex, public_hex, utxos_json, token_hex, shares, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(token_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_pool_remove(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, shares, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_pool_remove = build_pool_remove;
+
+    /**
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} token_hex
+     * @param {bigint} block_in
+     * @param {bigint} min_token_out
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_pool_swap_buy(secret_hex, public_hex, utxos_json, token_hex, block_in, min_token_out, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(token_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_pool_swap_buy(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, block_in, min_token_out, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_pool_swap_buy = build_pool_swap_buy;
+
+    /**
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} token_hex
+     * @param {bigint} token_in
+     * @param {bigint} min_block_out
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_pool_swap_sell(secret_hex, public_hex, utxos_json, token_hex, token_in, min_block_out, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(token_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_pool_swap_sell(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, token_in, min_block_out, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_pool_swap_sell = build_pool_swap_sell;
+
+    /**
      * Build and sign a transfer. `utxos_json` is `[{txid, vout, amount}]` (base
      * units). Selects inputs greedily, adds change back to the sender, signs every
      * input with ML-DSA over the tx sighash, and returns JSON:

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockle DEX — native liquidity pools</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --teal:#37E0C8;
+    --good:#4ADE80; --warn:#F2B04A; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)} header.top nav a:hover{color:var(--text)}
+  h1{font-size:clamp(26px,4vw,36px);letter-spacing:-.02em;margin:26px 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:16px 0}
+  .bar input{flex:1;min-width:200px;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:11px 14px;font:14px var(--sans);outline:none}
+  .bar input:focus{border-color:var(--accent)}
+  .seg{display:flex;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px}
+  .seg button{background:none;border:0;color:var(--muted);font:600 13px var(--sans);padding:7px 12px;border-radius:9px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin:8px 0 50px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:10px}
+  .chead{display:flex;align-items:center;gap:12px}
+  .logo{width:44px;height:44px;border-radius:12px;background:var(--surface2);border:1px solid var(--line);object-fit:cover;display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--accent);font-size:18px;overflow:hidden;flex:none}
+  .logo img{width:100%;height:100%;object-fit:cover}
+  .csym{font-weight:800;font-size:17px}
+  .cname{color:var(--muted);font-size:13px}
+  .crow{display:flex;justify-content:space-between;font-size:13px}
+  .crow .k{color:var(--muted)} .crow .v{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .lock{display:inline-flex;align-items:center;gap:6px;font:600 12px var(--sans);padding:3px 9px;border-radius:999px}
+  .lock.locked{background:#2e2512;color:var(--warn)} .lock.open{background:#132a1f;color:var(--good)}
+  .caddr{font:11px var(--mono);color:var(--muted);word-break:break-all}
+  .empty{color:var(--muted);text-align:center;padding:50px 0}
+  .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding:22px 0 50px}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle</a>
+  <nav><a href="/buy">Buy</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a></nav>
+</div></header>
+<main class="wrap">
+  <h1>DEX — native liquidity pools</h1>
+  <p class="sub">Every BLOCK-20 token with a pool is listed automatically. Liquidity is locked for at least one week; the countdown is public per pool.</p>
+  <div class="bar">
+    <input id="q" type="text" placeholder="Search by name, symbol, or contract id…">
+    <div class="seg" id="sort">
+      <button data-s="lp" class="on">Liquidity</button>
+      <button data-s="new">Newest</button>
+      <button data-s="price">Price</button>
+    </div>
+    <a href="/launch" style="background:linear-gradient(135deg,#8b6dff,#37e0c8);color:#fff;padding:10px 14px;border-radius:12px;font-weight:700">+ Launch a token</a>
+  </div>
+  <div id="grid" class="grid"><div class="empty">Loading pools…</div></div>
+  <div class="foot">Prices and reserves are read live from the chain. Logos are pulled from IPFS. The 1-week LP lock is enforced in consensus — see each pool's unlock countdown.</div>
+</main>
+<script src="/dex.js"></script>
+</body>
+</html>

@@ -499,6 +499,109 @@ pub fn build_call(
     Ok(serde_json::json!({ "txid": hexs(&txid), "raw": hexs(&raw), "fee": fee }).to_string())
 }
 
+// ---- native AMM pool transactions ------------------------------------------
+fn parse_token(contract_hex: &str) -> Result<[u8; 32], JsError> {
+    let b = hex::decode(contract_hex).map_err(|_| JsError::new("bad token hex"))?;
+    b.as_slice().try_into().map_err(|_| JsError::new("token id len"))
+}
+
+/// Sign + serialize a tx carrying `action`; `value` BLOCK moves from inputs
+/// into the pool, fee = gas_limit*gas_price. Inputs must cover value + fee.
+fn finalize_action_tx(
+    kp: &blockle_core::keys::Keypair,
+    utxos: &[Utxo],
+    action: ContractAction,
+    value: u64,
+    fee: u64,
+) -> Result<String, JsError> {
+    let need = fee.checked_add(value).ok_or_else(|| JsError::new("amount overflow"))?;
+    let mut selected: Vec<OutPoint> = Vec::new();
+    let mut total: u64 = 0;
+    for u in utxos {
+        let bytes = hex::decode(&u.txid).map_err(|_| JsError::new("bad utxo txid hex"))?;
+        let txid: [u8; 32] = bytes.as_slice().try_into().map_err(|_| JsError::new("utxo txid len"))?;
+        selected.push(OutPoint { txid, vout: u.vout });
+        total = total.saturating_add(u.amount);
+        if total >= need {
+            break;
+        }
+    }
+    if total < need {
+        return Err(JsError::new("insufficient funds for value + gas fee"));
+    }
+    let mut outputs = Vec::new();
+    let change = total - need;
+    if change > 0 {
+        outputs.push(TxOutput { recipient: kp.address(), amount: change });
+    }
+    let mut tx = Transaction {
+        version: 1,
+        inputs: selected.iter()
+            .map(|op| TxInput { prev: *op, pubkey: kp.public_bytes(), signature: vec![] })
+            .collect(),
+        outputs,
+        coinbase_data: vec![],
+        shielded: None,
+        contract: Some(action),
+    };
+    let sighash = tx.sighash();
+    let signature = kp.sign(&sighash);
+    for inp in &mut tx.inputs {
+        inp.signature = signature.clone();
+    }
+    let txid = tx.txid();
+    let raw = bincode::serialize(&tx).map_err(|_| JsError::new("serialize failed"))?;
+    Ok(serde_json::json!({ "txid": hexs(&txid), "raw": hexs(&raw), "fee": fee }).to_string())
+}
+
+macro_rules! load_common {
+    ($sk:expr, $pk:expr, $utx:expr, $gl:expr, $gp:expr) => {{
+        let kp = load_kp($sk, $pk)?;
+        let utxos: Vec<Utxo> = serde_json::from_str($utx).map_err(|_| JsError::new("bad utxos json"))?;
+        let fee = $gl.checked_mul($gp).ok_or_else(|| JsError::new("gas overflow"))?;
+        (kp, utxos, fee)
+    }};
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_pool_create(secret_hex: &str, public_hex: &str, utxos_json: &str, token_hex: &str, block_amt: u64, token_amt: u64, gas_limit: u64, gas_price: u64) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let token = parse_token(token_hex)?;
+    finalize_action_tx(&kp, &utxos, ContractAction::PoolCreate { token, block_amt, token_amt, gas_limit }, block_amt, fee)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_pool_add(secret_hex: &str, public_hex: &str, utxos_json: &str, token_hex: &str, block_amt: u64, token_max: u64, gas_limit: u64, gas_price: u64) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let token = parse_token(token_hex)?;
+    finalize_action_tx(&kp, &utxos, ContractAction::PoolAdd { token, block_amt, token_max, gas_limit }, block_amt, fee)
+}
+
+#[wasm_bindgen]
+pub fn build_pool_remove(secret_hex: &str, public_hex: &str, utxos_json: &str, token_hex: &str, shares: u64, gas_limit: u64, gas_price: u64) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let token = parse_token(token_hex)?;
+    finalize_action_tx(&kp, &utxos, ContractAction::PoolRemove { token, shares, gas_limit }, 0, fee)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_pool_swap_buy(secret_hex: &str, public_hex: &str, utxos_json: &str, token_hex: &str, block_in: u64, min_token_out: u64, gas_limit: u64, gas_price: u64) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let token = parse_token(token_hex)?;
+    finalize_action_tx(&kp, &utxos, ContractAction::PoolSwapBuy { token, block_in, min_token_out, gas_limit }, block_in, fee)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_pool_swap_sell(secret_hex: &str, public_hex: &str, utxos_json: &str, token_hex: &str, token_in: u64, min_block_out: u64, gas_limit: u64, gas_price: u64) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let token = parse_token(token_hex)?;
+    finalize_action_tx(&kp, &utxos, ContractAction::PoolSwapSell { token, token_in, min_block_out, gas_limit }, 0, fee)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

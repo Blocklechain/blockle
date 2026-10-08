@@ -467,6 +467,28 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                     None => jerr("503 Service Unavailable", "chain api not reachable"),
                 }
             }
+            // Register a DEX token's logo (IPFS URI) + creation time, so /dex
+            // can display it. Keyed by contract id; first registration wins the
+            // created timestamp.
+            "/api/dex/register" => {
+                let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                let logo = body.get("logo").and_then(|v| v.as_str()).unwrap_or("");
+                if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return jerr("400 Bad Request", "token must be a 64-hex contract id");
+                }
+                let path = "/var/lib/blockle-biz/dex-tokens.json";
+                let mut map: Value = fs::read_to_string(path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_else(|| json!({}));
+                let created = map
+                    .get(token)
+                    .and_then(|e| e.get("created").and_then(|c| c.as_u64()))
+                    .unwrap_or_else(now_unix);
+                map[token] = json!({ "logo": logo, "created": created });
+                let _ = fs::write(path, map.to_string());
+                ("200 OK", "application/json", json!({"ok": true}).to_string().into_bytes())
+            }
             // Forward a sell settlement to the local settlement service, which
             // verifies the inbound BLOCK on-chain and sends USDC from the
             // reserve. The service holds the key; biz never sees it.
@@ -531,6 +553,24 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                     json!({"error":"chain api not reachable"}).to_string().into_bytes()),
             }
         }
+        "/api/dex/pools" => {
+            let rpc = json!({"jsonrpc":"1.0","id":"dex","method":"listpools","params":[]});
+            match chain_api_post(rpc.to_string().as_bytes()) {
+                Some(v) => ("200 OK", "application/json",
+                    v.get("result").cloned().unwrap_or(v).to_string().into_bytes()),
+                None => ("503 Service Unavailable", "application/json",
+                    json!({"error":"chain api not reachable"}).to_string().into_bytes()),
+            }
+        }
+        "/api/dex/tokens" => {
+            let body = fs::read_to_string("/var/lib/blockle-biz/dex-tokens.json")
+                .unwrap_or_else(|_| "{}".to_string());
+            ("200 OK", "application/json", body.into_bytes())
+        }
+        "/dex" => serve_web_file("dex.html", "text/html; charset=utf-8"),
+        "/dex.js" => serve_web_file("dex.js", "application/javascript; charset=utf-8"),
+        "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
+        "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/api/chain" => match chain_snapshot() {
             Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
             None => jerr("503 Service Unavailable", "chain snapshot not configured"),
@@ -1080,7 +1120,7 @@ fn page_shell(title: &str, body: String) -> String {
 <meta property="og:image" content="https://{domain}/logo.png">
 <title>{title} · {domain}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="/buy" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Buy / Sell</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="/buy" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Buy / Sell</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>

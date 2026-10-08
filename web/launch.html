@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch a token — Blockle</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --teal:#37E0C8;
+    --good:#4ADE80; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:640px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px;max-width:1040px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)}
+  h1{font-size:clamp(26px,4vw,34px);letter-spacing:-.02em;margin:26px 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  .row{display:flex;gap:12px}.row>*{flex:1}
+  input.t{width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:11px 13px;font:14px var(--sans);outline:none}
+  input.t:focus{border-color:var(--accent)}
+  .logo-pick{display:flex;align-items:center;gap:14px;margin-top:6px}
+  .logo-prev{width:56px;height:56px;border-radius:14px;background:var(--surface2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px;overflow:hidden;flex:none}
+  .logo-prev img{width:100%;height:100%;object-fit:cover}
+  .cta{width:100%;background:var(--accent);color:#fff;border:0;border-radius:12px;padding:14px;font:700 16px var(--sans);cursor:pointer;margin-top:18px}
+  .cta:disabled{opacity:.5;cursor:not-allowed}
+  .steps{list-style:none;padding:0;margin:0}
+  .steps li{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line);font-size:14px}
+  .steps li:first-child{border-top:0}
+  .dot{width:22px;height:22px;border-radius:50%;background:var(--surface2);border:1px solid var(--line);color:var(--muted);font:700 12px var(--sans);display:flex;align-items:center;justify-content:center;flex:none}
+  .steps li.done .dot{background:var(--good);color:#06240f;border-color:transparent}
+  .steps li.active .dot{background:var(--accent);color:#fff;border-color:transparent}
+  .steps .lx small{color:var(--muted);display:block;font-family:var(--mono);word-break:break-all}
+  .note{color:var(--muted);font-size:12.5px;margin-top:10px}
+  .err{color:var(--bad);font-size:13px;margin-top:10px}
+  .ok{color:var(--good)}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle</a>
+  <nav><a href="/buy">Buy</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/wallet">Wallet</a></nav>
+</div></header>
+<main class="wrap">
+  <h1>Launch a token</h1>
+  <p class="sub">Create a BLOCK-20 token, add a logo, and seed a liquidity pool — all in one flow. Liquidity locks for one week automatically.</p>
+
+  <div class="card" id="form">
+    <div class="row">
+      <div><label class="fld">Name</label><input class="t" id="name" placeholder="Doge of Blockle" maxlength="40"></div>
+      <div><label class="fld">Symbol</label><input class="t" id="symbol" placeholder="DOGEB" maxlength="10"></div>
+    </div>
+    <div class="row">
+      <div><label class="fld">Decimals</label><input class="t" id="decimals" type="number" value="8" min="0" max="18"></div>
+      <div><label class="fld">Total supply</label><input class="t" id="supply" type="number" value="1000000" min="1"></div>
+    </div>
+    <label class="fld">Logo (IPFS CID, URL, or pick a file)</label>
+    <div class="logo-pick">
+      <span class="logo-prev" id="prev">logo</span>
+      <input class="t" id="logo" placeholder="ipfs://… or https://…">
+      <input type="file" id="file" accept="image/*" style="display:none">
+      <button class="t" style="flex:none;cursor:pointer;width:auto" id="pick">Browse</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <div><label class="fld">Seed liquidity — BLOCK</label><input class="t" id="seedBlock" type="number" value="100" min="0"></div>
+      <div><label class="fld">Seed liquidity — tokens</label><input class="t" id="seedToken" type="number" value="500000" min="0"></div>
+    </div>
+    <button class="cta" id="go">Launch token</button>
+    <div class="err" id="err"></div>
+    <div class="note">Your wallet (the Blockle extension) will ask you to approve each step. The seed BLOCK + tokens form the pool; LP is locked 1 week.</div>
+  </div>
+
+  <div class="card" id="progress" hidden>
+    <ol class="steps" id="stepList">
+      <li data-k="build"><span class="dot">1</span><div class="lx">Build token bytecode</div></li>
+      <li data-k="connect"><span class="dot">2</span><div class="lx">Connect wallet</div></li>
+      <li data-k="deploy"><span class="dot">3</span><div class="lx">Deploy token <small id="s-contract"></small></div></li>
+      <li data-k="logo"><span class="dot">4</span><div class="lx">Register logo for the DEX</div></li>
+      <li data-k="init"><span class="dot">5</span><div class="lx">Mint supply to you <small id="s-init"></small></div></li>
+      <li data-k="pool"><span class="dot">6</span><div class="lx">Create &amp; lock liquidity pool <small id="s-pool"></small></div></li>
+    </ol>
+    <div class="err" id="perr"></div>
+    <a class="cta" id="done" href="/dex" hidden style="display:block;text-align:center">View it on the DEX →</a>
+  </div>
+</main>
+<script src="/blockle_wasm.js"></script>
+<script src="/launch.js"></script>
+</body>
+</html>

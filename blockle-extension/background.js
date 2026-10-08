@@ -137,6 +137,28 @@ async function handle(method, params, origin) {
       return { result: dec.payload };
     }
 
+    case 'blockle_tokenInit': {
+      if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
+      const contractId = params && params[0] != null ? String(params[0]) : '';
+      const gas = String((params && params[1]) || 100000);
+      if (!/^[0-9a-fA-F]{64}$/.test(contractId)) return err(4200, 'invalid contract id');
+      const dec = await openApproval('action', origin, { kind: 'init', contractId, gas });
+      if (!dec.approved) return err(4001, 'User rejected the token init');
+      return { result: dec.payload };
+    }
+
+    case 'blockle_createPool': {
+      if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
+      const token = params && params[0] != null ? String(params[0]) : '';
+      const blockAmt = String((params && params[1]) || 0);
+      const tokenAmt = String((params && params[2]) || 0);
+      const gas = String((params && params[3]) || 200000);
+      if (!/^[0-9a-fA-F]{64}$/.test(token)) return err(4200, 'invalid token id');
+      const dec = await openApproval('action', origin, { kind: 'pool', token, blockAmt, tokenAmt, gas });
+      if (!dec.approved) return err(4001, 'User rejected the pool creation');
+      return { result: dec.payload };
+    }
+
     default:
       return err(4200, 'Unsupported method: ' + method);
   }

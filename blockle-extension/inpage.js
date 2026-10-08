@@ -75,6 +75,14 @@
     deployContract(codeHex, gasLimit) {
       return rpc('blockle_deployContract', [codeHex, gasLimit]);
     },
+    // Mint a freshly-deployed BLOCK-20's supply to the caller (once).
+    tokenInit(contractId, gasLimit) {
+      return rpc('blockle_tokenInit', [contractId, gasLimit]);
+    },
+    // Create a native AMM pool: seed `blockAmt` (base units) BLOCK + `tokenAmt` of the token.
+    createPool(token, blockAmt, tokenAmt, gasLimit) {
+      return rpc('blockle_createPool', [token, blockAmt, tokenAmt, gasLimit]);
+    },
     on(event, cb) {
       (listeners[event] = listeners[event] || []).push(cb);
       return provider;

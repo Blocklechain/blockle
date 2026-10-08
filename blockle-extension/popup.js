@@ -497,6 +497,43 @@
             : 'Deploy failed: ' + e.message;
         }
       });
+    } else if (detail.type === 'action') {
+      const GAS_PRICE = 10, COIN = 100000000;
+      const gas = parseInt(detail.gas) || 200000;
+      const isPool = detail.kind === 'pool';
+      $('#action-origin').textContent = detail.origin;
+      $('#action-title').textContent = isPool ? 'Create liquidity pool' : 'Initialize token (mint supply)';
+      $('#action-detail').textContent = isPool
+        ? 'Seed ' + (Number(detail.blockAmt) / COIN) + ' BLOCK + ' + detail.tokenAmt + ' base-unit tokens. LP locks for 1 week.'
+        : 'Mint the full supply of ' + (detail.contractId || '').slice(0, 12) + '… to your wallet.';
+      $('#action-fee').textContent = (gas * GAS_PRICE) / COIN + ' BLOCK';
+      show('approve-action');
+      $('#action-unlock').hidden = Wallet.isUnlocked();
+      $('#action-reject').addEventListener('click', () => respond(false));
+      $('#action-approve').addEventListener('click', async () => {
+        $('#action-err').textContent = '';
+        const btn = $('#action-approve');
+        btn.disabled = true;
+        btn.textContent = 'Submitting…';
+        try {
+          if (!Wallet.isUnlocked()) await Wallet.unlock($('#action-pw').value);
+          const u = await Chain.utxos(Wallet.address);
+          if (!u || !u.utxos.length) throw new Error('no spendable funds');
+          let built;
+          if (isPool) {
+            built = await Wallet.buildPoolCreate(u.utxos, detail.token, detail.blockAmt, detail.tokenAmt, gas, GAS_PRICE);
+          } else {
+            built = await Wallet.buildCall(u.utxos, detail.contractId, '00', 0, gas, GAS_PRICE);
+          }
+          const res = await Chain.submit(built.raw);
+          respond(true, { txid: res.txid || built.txid });
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = 'Approve';
+          $('#action-err').textContent = /locked|no wallet|password/i.test(e.message)
+            ? 'Wrong password.' : 'Failed: ' + e.message;
+        }
+      });
     } else {
       window.close();
     }

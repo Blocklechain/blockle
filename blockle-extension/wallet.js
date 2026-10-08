@@ -158,6 +158,16 @@
       return Signer.buildDeploy(session.secret, session.pub, utxos, codeHex, gasLimit, gasPrice);
     },
 
+    async buildCall(utxos, contractHex, inputHex, value, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildCall(session.secret, session.pub, utxos, contractHex, inputHex, value, gasLimit, gasPrice);
+    },
+
+    async buildPoolCreate(utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolCreate(session.secret, session.pub, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice);
+    },
+
     // --- import / export ---------------------------------------------------
 
     // Export the active wallet's sealed record.

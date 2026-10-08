@@ -81,6 +81,22 @@
         )
       );
     },
+    async buildCall(secretHex, publicHex, utxos, contractHex, inputHex, value, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_call(secretHex, publicHex, JSON.stringify(utxos), contractHex, inputHex, BigInt(value), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
+    async buildPoolCreate(secretHex, publicHex, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_pool_create(secretHex, publicHex, JSON.stringify(utxos), tokenHex, BigInt(blockAmt), BigInt(tokenAmt), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
+    async buildBlock20(name, symbol, decimals, supply) {
+      await init();
+      return wb().build_block20_token(name, symbol, BigInt(decimals), BigInt(supply));
+    },
   };
 
   global.Signer = Signer;

@@ -244,6 +244,25 @@
           <button class="btn primary" id="deploy-approve">Deploy</button>
         </div>
       </section>
+
+      <section class="screen approve" data-screen="approve-action" hidden>
+        <div class="pad center-col">
+          <div class="origin-chip" id="action-origin">—</div>
+          <h2 class="approve-h" id="action-title">Confirm</h2>
+          <p class="muted" id="action-detail">—</p>
+          <div class="perm-box">
+            <div class="perm"><span>₿</span> Fee: <b id="action-fee">—</b></div>
+          </div>
+          <div id="action-unlock" hidden>
+            <label class="field"><span>Unlock to sign</span><input type="password" id="action-pw" placeholder="Password" /></label>
+          </div>
+          <div class="err" id="action-err"></div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="action-reject">Reject</button>
+          <button class="btn primary" id="action-approve">Approve</button>
+        </div>
+      </section>
     </div>
 
     <div id="toast" class="toast" hidden></div>

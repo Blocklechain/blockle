@@ -151,6 +151,8 @@ fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>
         "submitrawtransaction" => submitrawtransaction(&node, &params),
         "callcontract" => callcontract(&node, &params),
         "tokeninfo" => tokeninfo(&node, &params),
+        "listpools" => listpools(&node),
+        "poolinfo" => poolinfo(&node, &params),
         _ => Err("method not found".to_string()),
     };
     let reply = match result {
@@ -292,6 +294,65 @@ fn tokeninfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
         "totalSupply": total,
         "balance": balance,
     }))
+}
+
+/// Metadata helper: read a BLOCK-20 getter and decode as u64 / utf8.
+fn token_meta(chain: &blockle_chain::chain::Chain, token: &[u8; 32]) -> (Option<String>, Option<String>, Option<u64>) {
+    let call = |sel: u8| chain.simulate_call(token, [0u8; 32], &[sel], 0, 5_000_000);
+    let as_str = |r: blockle_chain::contracts::CallResult| {
+        if r.success { String::from_utf8(r.return_data).ok().map(|s| s.trim_end_matches('\u{0}').to_string()) } else { None }
+    };
+    let as_u64 = |r: blockle_chain::contracts::CallResult| {
+        if r.success && r.return_data.len() >= 8 {
+            let mut b = [0u8; 8]; b.copy_from_slice(&r.return_data[..8]); Some(u64::from_le_bytes(b))
+        } else { None }
+    };
+    (as_str(call(5)), as_str(call(6)), as_u64(call(4)))
+}
+
+fn pool_json(chain: &blockle_chain::chain::Chain, id: &[u8; 32], p: &blockle_chain::pools::Pool, height: u64) -> Value {
+    let (name, symbol, decimals) = token_meta(chain, &p.token);
+    let locked_until = chain.pools.lp.iter()
+        .filter(|((pid, _), _)| pid == id)
+        .map(|(_, pos)| pos.unlock_height)
+        .max()
+        .unwrap_or(0);
+    json!({
+        "poolId": hex::encode(id),
+        "token": hex::encode(p.token),
+        "name": name, "symbol": symbol, "decimals": decimals,
+        "blockReserve": p.block_reserve,
+        "tokenReserve": p.token_reserve,
+        "lpTotal": p.lp_total,
+        "createdHeight": p.created_height,
+        "lockedUntil": locked_until,
+        "height": height,
+    })
+}
+
+/// List every native AMM pool with reserves, LP total, creation height, the
+/// public LP-lock expiry, and the paired token's metadata.
+fn listpools(node: &Arc<Node>) -> Result<Value, String> {
+    let (chain, _) = node.snapshot();
+    let height = chain.blocks.len() as u64;
+    let mut pools: Vec<Value> = chain.pools.pools.iter()
+        .map(|(id, p)| pool_json(&chain, id, p, height))
+        .collect();
+    pools.sort_by(|a, b| b["lpTotal"].as_u64().unwrap_or(0).cmp(&a["lpTotal"].as_u64().unwrap_or(0)));
+    Ok(json!({ "height": height, "count": pools.len(), "pools": pools }))
+}
+
+/// Pool detail for one token (hex contract id).
+fn poolinfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
+    let o = first_obj(params);
+    let token = parse_hash32(o.get("token").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let (chain, _) = node.snapshot();
+    let height = chain.blocks.len() as u64;
+    let id = blockle_chain::pools::pool_id(&token);
+    match chain.pools.pools.get(&id) {
+        Some(p) => Ok(pool_json(&chain, &id, p, height)),
+        None => Ok(json!({ "poolId": hex::encode(id), "token": hex::encode(token), "exists": false })),
+    }
 }
 
 fn createauxblock(
