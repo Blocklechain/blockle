@@ -68,10 +68,13 @@ class _WalletTabState extends State<WalletTab> {
     if (raw == null || raw.isEmpty) return [];
     final ids = (jsonDecode(raw) as List).cast<String>();
     final out = <Map<String, dynamic>>[];
+    final hq = (holderHex != null && holderHex.isNotEmpty)
+        ? '?holder=${Uri.encodeQueryComponent(holderHex)}'
+        : '';
     for (final id in ids) {
       try {
         final r = await http
-            .get(Uri.parse('https://blockle.org/api/token/$id'))
+            .get(Uri.parse('https://blockle.org/api/token/$id$hq'))
             .timeout(const Duration(seconds: 6));
         final j = jsonDecode(r.body) as Map<String, dynamic>;
         final res = (j['result'] ?? j) as Map<String, dynamic>;
