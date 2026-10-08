@@ -512,6 +512,25 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                 None => jerr("503 Service Unavailable", "chain api not configured"),
             }
         }
+        p if p.starts_with("/api/token/") => {
+            // Read a BLOCK-20 token by contract id (hex). Optional ?holder=<hex>
+            // returns that address's balance too. Proxies the node's read-only
+            // `tokeninfo` view call.
+            let id = &p["/api/token/".len()..];
+            let holder = query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("holder="))
+                .unwrap_or("");
+            let rpc = json!({
+                "jsonrpc": "1.0", "id": "tok", "method": "tokeninfo",
+                "params": [{ "contract": id, "holder": holder }],
+            });
+            match chain_api_post(rpc.to_string().as_bytes()) {
+                Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                None => ("503 Service Unavailable", "application/json",
+                    json!({"error":"chain api not reachable"}).to_string().into_bytes()),
+            }
+        }
         "/api/chain" => match chain_snapshot() {
             Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
             None => jerr("503 Service Unavailable", "chain snapshot not configured"),

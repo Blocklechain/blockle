@@ -149,6 +149,8 @@ fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>
                 .collect::<Vec<_>>(),
         })),
         "submitrawtransaction" => submitrawtransaction(&node, &params),
+        "callcontract" => callcontract(&node, &params),
+        "tokeninfo" => tokeninfo(&node, &params),
         _ => Err("method not found".to_string()),
     };
     let reply = match result {
@@ -181,6 +183,106 @@ fn submitrawtransaction(node: &Arc<Node>, params: &Value) -> Result<Value, Strin
     } else {
         Err("transaction rejected — invalid, double-spend, or already in the mempool".to_string())
     }
+}
+
+/// JSON-RPC params may arrive as `[obj]` or bare `obj`; normalize to the obj.
+fn first_obj(params: &Value) -> Value {
+    if let Some(a) = params.as_array() {
+        a.first().cloned().unwrap_or(Value::Null)
+    } else {
+        params.clone()
+    }
+}
+
+fn parse_hash32(s: &str) -> Result<[u8; 32], String> {
+    let b = hex::decode(s).map_err(|_| "expected hex".to_string())?;
+    if b.len() != 32 {
+        return Err("expected 32-byte (64 hex char) value".to_string());
+    }
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&b);
+    Ok(a)
+}
+
+/// Read-only contract view call. Executes the contract against current state
+/// via `Chain::simulate_call` (clones+discards state — no chain mutation) and
+/// returns the raw return bytes plus a convenience LE-u64 decode.
+///   params: { contract: <64hex>, calldata: <hex>, caller?: <64hex>, gas?: u64 }
+fn callcontract(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
+    let o = first_obj(params);
+    let contract = parse_hash32(o.get("contract").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let calldata = hex::decode(o.get("calldata").and_then(|v| v.as_str()).unwrap_or(""))
+        .map_err(|_| "calldata must be hex".to_string())?;
+    let caller = match o.get("caller").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => parse_hash32(s)?,
+        _ => [0u8; 32],
+    };
+    let gas = o.get("gas").and_then(|v| v.as_u64()).unwrap_or(10_000_000);
+    let (chain, _) = node.snapshot();
+    let r = chain.simulate_call(&contract, caller, &calldata, 0, gas);
+    let mut u64v: Option<u64> = None;
+    if r.return_data.len() >= 8 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&r.return_data[..8]);
+        u64v = Some(u64::from_le_bytes(b));
+    }
+    Ok(json!({
+        "success": r.success,
+        "gasUsed": r.gas_used,
+        "returnHex": hex::encode(&r.return_data),
+        "u64": u64v,
+    }))
+}
+
+/// Convenience reader for BLOCK-20 tokens: runs the standard getters and
+/// returns metadata + (optional) a balance for `holder`.
+///   params: { contract: <64hex>, holder?: <64hex address> }
+/// BLOCK-20 selectors: 1 balanceOf(addr32) · 3 totalSupply() · 4 decimals()
+/// · 5 name() · 6 symbol().
+fn tokeninfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
+    let o = first_obj(params);
+    let contract = parse_hash32(o.get("contract").and_then(|v| v.as_str()).unwrap_or(""))?;
+    let (chain, _) = node.snapshot();
+    let call = |sel: u8, extra: &[u8]| -> blockle_chain::contracts::CallResult {
+        let mut input = vec![sel];
+        input.extend_from_slice(extra);
+        chain.simulate_call(&contract, [0u8; 32], &input, 0, 10_000_000)
+    };
+    let as_u64 = |r: &blockle_chain::contracts::CallResult| -> Option<u64> {
+        if r.success && r.return_data.len() >= 8 {
+            let mut b = [0u8; 8];
+            b.copy_from_slice(&r.return_data[..8]);
+            Some(u64::from_le_bytes(b))
+        } else {
+            None
+        }
+    };
+    let as_str = |r: &blockle_chain::contracts::CallResult| -> Option<String> {
+        if r.success {
+            String::from_utf8(r.return_data.clone())
+                .ok()
+                .map(|s| s.trim_end_matches('\u{0}').to_string())
+        } else {
+            None
+        }
+    };
+    let name = as_str(&call(5, &[]));
+    let symbol = as_str(&call(6, &[]));
+    let decimals = as_u64(&call(4, &[]));
+    let total = as_u64(&call(3, &[]));
+    let is_token = name.is_some() || symbol.is_some() || total.is_some();
+    let balance = o.get("holder").and_then(|v| v.as_str()).and_then(|h| {
+        parse_hash32(h).ok().and_then(|addr| as_u64(&call(1, &addr)))
+    });
+    Ok(json!({
+        "contract": hex::encode(contract),
+        "isToken": is_token,
+        "name": name,
+        "symbol": symbol,
+        "decimals": decimals,
+        "totalSupply": total,
+        "balance": balance,
+    }))
 }
 
 fn createauxblock(
