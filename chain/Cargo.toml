@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/blocklechain/blockle"
@@ -40,11 +40,11 @@ winterfell = "0.13"
 bech32 = "0.11"
 clap = { version = "4", features = ["derive"] }
 
-blockle-core = { path = "crates/core", version = "0.1.7" }
-blockle-zk = { path = "crates/zk", version = "0.1.7" }
-blockle-pow = { path = "crates/pow", version = "0.1.7" }
-blockle-chain = { path = "crates/chain", version = "0.1.7" }
-blockle-vm = { path = "crates/vm", version = "0.1.7" }
+blockle-core = { path = "crates/core", version = "0.1.8" }
+blockle-zk = { path = "crates/zk", version = "0.1.8" }
+blockle-pow = { path = "crates/pow", version = "0.1.8" }
+blockle-chain = { path = "crates/chain", version = "0.1.8" }
+blockle-vm = { path = "crates/vm", version = "0.1.8" }
 
 [profile.release]
 lto = "thin"

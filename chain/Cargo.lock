@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-chain"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blockle-core",
  "blockle-pow",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "bech32",
  "blake2b_simd",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-node"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "bincode",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-pow"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake2",
  "blake2b_simd",
@@ -252,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-vm"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "blake2b_simd",
  "thiserror",
@@ -260,7 +260,7 @@ dependencies = [
 
 [[package]]
 name = "blockle-zk"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "rand",
  "thiserror",
