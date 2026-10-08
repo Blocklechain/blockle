@@ -567,10 +567,31 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                 .unwrap_or_else(|_| "{}".to_string());
             ("200 OK", "application/json", body.into_bytes())
         }
+        p if p.starts_with("/api/dex/pool/") => {
+            let id = &p["/api/dex/pool/".len()..];
+            let rpc = json!({"jsonrpc":"1.0","id":"pool","method":"poolinfo","params":[{"token":id}]});
+            match chain_api_post(rpc.to_string().as_bytes()) {
+                Some(v) => ("200 OK", "application/json",
+                    v.get("result").cloned().unwrap_or(v).to_string().into_bytes()),
+                None => ("503 Service Unavailable", "application/json",
+                    json!({"error":"chain api not reachable"}).to_string().into_bytes()),
+            }
+        }
+        "/api/dex/history" => {
+            // Per-pool price snapshots recorded by the buy-snapshot timer.
+            // ?token=<hex> filters to one token's series.
+            let token = query.split('&').find_map(|kv| kv.strip_prefix("token=")).unwrap_or("");
+            let all: Value = fs::read_to_string("/var/lib/blockle-biz/dex-history.json")
+                .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+            let series = all.get(token).cloned().unwrap_or_else(|| json!([]));
+            ("200 OK", "application/json", series.to_string().into_bytes())
+        }
         "/dex" => serve_web_file("dex.html", "text/html; charset=utf-8"),
         "/dex.js" => serve_web_file("dex.js", "application/javascript; charset=utf-8"),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
+        "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
+        p if p.starts_with("/token/") => serve_web_file("token.html", "text/html; charset=utf-8"),
         "/api/chain" => match chain_snapshot() {
             Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
             None => jerr("503 Service Unavailable", "chain snapshot not configured"),

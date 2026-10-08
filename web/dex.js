@@ -71,11 +71,11 @@
         ? '<span class="logo"><img src="' + logo + '" alt="" onerror="this.parentNode.textContent=\'' + sym.slice(0, 2).toUpperCase() + '\'"></span>'
         : '<span class="logo">' + sym.slice(0, 2).toUpperCase() + '</span>';
       return '<div class="card">' +
-        '<div class="chead">' + avatar +
+        '<a class="chead" href="/token/' + p.token + '" style="color:inherit;text-decoration:none">' + avatar +
           '<div><div class="csym">' + sym + '</div><div class="cname">' + (p.name || 'BLOCK-20 token') + '</div></div>' +
           '<span style="margin-left:auto" class="lock ' + (locked ? 'locked' : 'open') + '">' +
             (locked ? '🔒 ' + dur(lockBlocks) : '🔓 unlocked') + '</span>' +
-        '</div>' +
+        '</a>' +
         '<div class="crow"><span class="k">Price</span><span class="v">' + (pr != null ? fmt(pr, 8) + ' BLOCK' : '—') + '</span></div>' +
         '<div class="crow"><span class="k">Liquidity</span><span class="v">' + fmt(tvlBlock(p), 2) + ' BLOCK</span></div>' +
         '<div class="crow"><span class="k">Token reserve</span><span class="v">' + fmt(p.tokenReserve / Math.pow(10, Number(p.decimals || 0)), 2) + ' ' + sym + '</span></div>' +

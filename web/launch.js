@@ -102,7 +102,10 @@
       var poolRes = await window.blockle.createPool(contract, blockBase, tokenBase, 250000);
       setStep('pool', 'done', (poolRes && poolRes.txid) || '');
 
-      $('done').hidden = false;
+      var done = $('done');
+      done.href = '/token/' + contract;
+      done.textContent = 'View your token →';
+      done.hidden = false;
     } catch (e) {
       $('perr').textContent = (e && e.message) || String(e);
     }
