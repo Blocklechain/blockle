@@ -5,10 +5,10 @@
   "description": "Blockle sell/redemption settlement service (deliverable D) — the http://127.0.0.1:8790 that verifies inbound BLOCK on the BLOCK chain and pays USDC out of the Base reserve hot wallet on the sqrt curve sell side, with an availability clamp so the reserve can never be drained. TESTNET-FIRST; mainnet gated behind a recorded legal review.",
   "license": "MIT",
   "type": "commonjs",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "test": "npm run build && node --test dist/test/"
   },
   "devDependencies": {
