@@ -724,6 +724,8 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
         "/developers" => ("200 OK", "text/html; charset=utf-8", page_developers(&reg).into_bytes()),
         "/open-source" => ("200 OK", "text/html; charset=utf-8", page_open_source(&reg).into_bytes()),
+        "/privacy" => ("200 OK", "text/html; charset=utf-8", page_privacy().into_bytes()),
+        "/terms" => ("200 OK", "text/html; charset=utf-8", page_terms().into_bytes()),
         _ => ("404 Not Found", "text/html; charset=utf-8", page_shell("Not found", "<p>404.</p>".into()).into_bytes()),
     }
 }
@@ -1209,7 +1211,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
-<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a></footer>
+<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -2118,6 +2120,89 @@ git clone https://github.com/blocklechain/blockle &amp;&amp; cd blockle/chain &a
         "Blockle Wallet — desktop, mobile & extension",
         "Download the Blockle wallet for Qt desktop, Flutter mobile and browser extension. Hold BLOCK and BLOCK-20 tokens with post-quantum ML-DSA keys.",
         "/wallet", WALLET_SOFTWARE_JSONLD, body)
+}
+
+const LEGAL_EFFECTIVE: &str = "9 October 2026";
+
+fn page_privacy() -> String {
+    let body = format!(
+        r##"<h1>Privacy Policy</h1>
+<p class="sub">Effective {date}. Blockle is non-custodial, open-source software. This policy explains the little data the Blockle website and apps touch. It is written in plain language and is not legal advice.</p>
+
+<h2>The short version</h2>
+<ul>
+<li><b>We never hold your keys, seeds, funds, or wallet passwords.</b> They are generated and stored <b>on your device</b>, encrypted (scrypt + AES-256-GCM), and are never transmitted to us.</li>
+<li><b>We do not perform KYC</b> and do not collect your name, email, or identity to use the wallets or the non-custodial exchange.</li>
+<li>Your AI-agent provider key (if you connect one) stays in your device's encrypted vault and is sent only to the AI provider you chose (e.g. Anthropic/OpenAI), never to us.</li>
+</ul>
+
+<h2>What is processed</h2>
+<ul>
+<li><b>Public blockchain data.</b> Transactions you broadcast are recorded on public ledgers (BLOCK and the chains you use). That data is public and permanent by design — not controlled by us.</li>
+<li><b>Server logs.</b> Like any website, blockle.org and exchange.blockle.org web servers log standard request metadata (IP address, timestamp, user agent, URL) transiently for security and operations.</li>
+<li><b>Node / RPC / indexer calls.</b> To show balances and tokens the apps query configurable providers (public RPCs, Esplora, and — if you enable it — Alchemy). Those third parties receive the addresses/requests you look up under their own policies. You can change or self-host every endpoint in settings.</li>
+<li><b>Optional, anonymized agent telemetry.</b> The in-wallet agent can send <b>anonymized, bucketed</b> performance stats (strategy, venue, P&amp;L %, size bucket) to improve the product. It is <b>off by default</b>, contains <b>no keys, seeds, credentials, or raw addresses</b>, uses a rotating pseudonymous id, and you can leave it off.</li>
+</ul>
+
+<h2>What we do NOT collect</h2>
+<p>Private keys, seed phrases, wallet passwords, AI provider credentials, and personal identity information. There is no account to create to use the wallets.</p>
+
+<h2>Cookies</h2>
+<p>The marketing site uses only essential cookies/local storage needed for the pages to work. The exchange uses a session cookie after you sign in with your wallet signature.</p>
+
+<h2>Your choices</h2>
+<p>Use your own RPC/indexer endpoints, keep agent telemetry off, and remember that on-chain activity is public. You control your keys and data on your device.</p>
+
+<h2>Contact</h2>
+<p>Questions: <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> or <a href="{github}">GitHub</a>.</p>
+
+<p class="sub" style="font-size:13px;margin-top:24px">See also our <a href="/terms">Terms of Service</a>.</p>"##,
+        date = LEGAL_EFFECTIVE,
+        github = "https://github.com/blocklechain/blockle",
+    );
+    page_shell_seo(
+        "Privacy Policy",
+        "How the non-custodial Blockle website and wallets handle data — we never hold your keys, funds, or identity; minimal, mostly on-device.",
+        "/privacy", "", body)
+}
+
+fn page_terms() -> String {
+    let body = format!(
+        r##"<h1>Terms of Service</h1>
+<p class="sub">Effective {date}. These terms govern your use of the Blockle open-source software, website, and the non-custodial exchange. By using them you agree to the following. This is not legal or financial advice.</p>
+
+<h2>1. Non-custodial, self-responsibility</h2>
+<p>Blockle software is <b>non-custodial</b>: you alone hold your keys and control your funds. We cannot access, freeze, recover, or reverse your keys or transactions. <b>If you lose your seed/password, your funds are permanently lost.</b> Back up your secrets. On-chain transactions are irreversible.</p>
+
+<h2>2. "As is", no warranty</h2>
+<p>The software is provided <b>“AS IS”, without warranty of any kind</b>, express or implied. It is open-source and, where labelled, <b>beta</b> — it may contain bugs. Test with small amounts. To the maximum extent permitted by law, the authors and contributors are <b>not liable</b> for any loss (including loss of funds) arising from use of the software.</p>
+
+<h2>3. Crypto risk</h2>
+<p>Digital assets are volatile and risky. Smart-contract, bridge, network, counterparty, and regulatory risks can cause total loss. You are solely responsible for your decisions. Nothing here is investment advice.</p>
+
+<h2>4. The in-wallet AI agent</h2>
+<p>The optional AI trading agent acts <b>only on your instructions and under your configured limits</b> (spending caps, confirmations, kill switch) using an AI provider key you supply. You are responsible for its configuration and for every action you authorize. AI output can be wrong; the agent is experimental. We are not responsible for trades it executes with your authorization.</p>
+
+<h2>5. Exchange</h2>
+<p>The exchange is a <b>non-custodial</b> venue: trades settle wallet-to-wallet via atomic swaps; we never hold user funds. A small protocol fee may apply per trade/listing as shown in the interface. You are responsible for the assets you list and trade.</p>
+
+<h2>6. Your compliance</h2>
+<p>You are responsible for complying with the laws of your jurisdiction, including tax, securities, and sanctions law. You must <b>not</b> use Blockle if you are barred by applicable sanctions or law, and must not use it for illegal activity, fraud, or to evade KYC/sanctions/geographic restrictions. Some features may be gated or unavailable in certain regions.</p>
+
+<h2>7. No intermediary / open source</h2>
+<p>Blockle is open-source software (see <a href="{github}">GitHub</a>). Running a public website or interface does not make us a custodian, broker, exchange operator, or money transmitter for your self-custodied activity. You may inspect, build, and run the code yourself.</p>
+
+<h2>8. Changes</h2>
+<p>These terms may be updated; the effective date above reflects the latest version. Continued use means acceptance. If any provision is unenforceable, the rest remains in effect.</p>
+
+<p class="sub" style="font-size:13px;margin-top:24px">See also our <a href="/privacy">Privacy Policy</a>.</p>"##,
+        date = LEGAL_EFFECTIVE,
+        github = "https://github.com/blocklechain/blockle",
+    );
+    page_shell_seo(
+        "Terms of Service",
+        "Terms for the non-custodial Blockle software, wallets, and exchange — as-is, you control your keys, crypto risk, and your own legal compliance.",
+        "/terms", "", body)
 }
 
 fn kv(rows: &[(&str, String)]) -> String {
