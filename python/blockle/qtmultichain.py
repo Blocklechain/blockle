@@ -34,7 +34,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import agent as agentpkg
+from . import moonpay
 from .multichain import crypto as K
 from .multichain import exchange as exmod
 from .multichain import venues as venuesmod
@@ -584,8 +586,9 @@ class AccountsTab(QWidget):
         row.addStretch(1)
         lay.addLayout(row)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Chain", "Scheme", "Address", "Balance", ""])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["Chain", "Scheme", "Address", "Balance", "", "Buy with card"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -677,6 +680,87 @@ class AccountsTab(QWidget):
             self.table.setItem(r, 2, QTableWidgetItem(addr or "—"))
             self.table.setItem(r, 3, QTableWidgetItem("…"))
             self.table.setItem(r, 4, QTableWidgetItem("PQ" if CHAIN_PQ.get(cid) else ""))
+            self.table.setCellWidget(r, 5, self._buy_cell(cid, addr))
+
+    # ---- MoonPay fiat on-ramp (buy with card) ----
+    def _supported_assets_for(self, cid):
+        """``[(symbol, moonpayCode), …]`` MoonPay can sell on ``cid`` (native +
+        known/held tokens). Empty => hide the buy button."""
+        reg = self.ctrl.registry
+        native_symbol = None
+        token_symbols = []
+        try:
+            adapter = reg.get(cid)
+            native_symbol = getattr(getattr(adapter, "native", None), "symbol", None)
+            for t in reg.tokens_for(cid):
+                sym = getattr(t, "symbol", None)
+                if sym:
+                    token_symbols.append(sym)
+        except Exception:
+            pass
+        return moonpay.supported_assets(
+            cid, native_symbol=native_symbol, token_symbols=token_symbols)
+
+    def _buy_cell(self, cid, addr):
+        """A 'Buy with card' button for a supported row, a short note for BLOCK,
+        or an empty cell when the asset is not on MoonPay / has no address yet."""
+        if moonpay.is_block(cid):
+            lbl = QLabel("Not on MoonPay")
+            lbl.setObjectName("sub")
+            lbl.setToolTip(moonpay.BLOCK_NOTE)
+            lbl.setAlignment(Qt.AlignCenter)
+            return lbl
+        assets = self._supported_assets_for(cid)
+        if not assets or not addr or addr == "—":
+            return QWidget()  # unsupported / no address -> blank cell
+        btn = QPushButton("Buy with card…")
+        syms = ", ".join(s for s, _ in assets)
+        btn.setToolTip(f"Buy {syms} with a card or bank via MoonPay — "
+                       "delivered to your address on this chain.")
+        btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._buy(cid, addr))
+        return btn
+
+    def _buy(self, cid, addr):
+        assets = self._supported_assets_for(cid)
+        if not assets:
+            return
+        if len(assets) == 1:
+            symbol, code = assets[0]
+        else:
+            labels = [f"{s}" for s, _ in assets]
+            choice, ok = QInputDialog.getItem(
+                self, "Buy with card",
+                f"Which asset to buy on {self.ctrl.chain_label(cid)}?",
+                labels, 0, False)
+            if not ok:
+                return
+            symbol, code = assets[labels.index(choice)]
+
+        try:
+            url = moonpay.build_widget_url(
+                wallet_address=addr, currency_code=code, base_currency_code="usd")
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not build MoonPay URL:\n{e}")
+            return
+        # Optional: if a server signing endpoint is configured, get a signed URL
+        # (the secret stays on that server). Falls back to the unsigned URL.
+        try:
+            signed = moonpay.fetch_signed_url(url)
+            if signed:
+                url = signed
+        except Exception:
+            pass
+
+        base = moonpay.base_url()
+        if QMessageBox.question(
+            self, "Buy with card",
+            f"Open MoonPay to buy {symbol} with a card or bank?\n\n"
+            f"MoonPay ({base}) runs its own identity + payment flow and sends "
+            f"{symbol} to your address:\n{addr}\n\n"
+            "Blockle never sees your card or personal details.",
+        ) != QMessageBox.Yes:
+            return
+        QDesktopServices.openUrl(QUrl(url))
 
     def _refresh_balances(self):
         if not self.ctrl.is_unlocked():

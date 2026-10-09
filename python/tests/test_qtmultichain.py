@@ -112,6 +112,36 @@ class MultiChainControllerTest(unittest.TestCase):
         self.assertIs(widgets[0].ctrl, widgets[2].ctrl)
         widgets[0].ctrl.loop and widgets[0].ctrl.loop.stop() if widgets[0].ctrl.loop else None
 
+    def test_accounts_tab_moonpay_buy_cells(self):
+        try:
+            import PySide6  # noqa: F401
+        except ImportError:
+            self.skipTest("PySide6 not installed")
+        plugins = Path(PySide6.__file__).parent / "Qt" / "plugins" / "platforms"
+        if plugins.exists():
+            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(plugins))
+        from PySide6.QtWidgets import QApplication, QPushButton, QLabel
+        from blockle.qtmultichain import AccountsTab
+        QApplication.instance() or QApplication([])
+
+        ctrl = self._ctrl()
+        ctrl.create("pw")
+        tab = AccountsTab(ctrl)
+        tab._fill_accounts()  # unlocked -> rows + buy cells
+
+        rows = {cid: r for r, cid in enumerate(tab._rows)}
+        # BLOCK is not on MoonPay -> a note label, never a button
+        block_cell = tab.table.cellWidget(rows["block"], 5)
+        self.assertIsInstance(block_cell, QLabel)
+        self.assertNotIsInstance(block_cell, QPushButton)
+        # a supported chain with a derived address -> a 'Buy with card' button
+        eth_cell = tab.table.cellWidget(rows["ethereum"], 5)
+        self.assertIsInstance(eth_cell, QPushButton)
+        # supported-asset resolution matches the helper map
+        self.assertEqual(tab._supported_assets_for("bitcoin"), [("BTC", "btc")])
+        self.assertEqual(tab._supported_assets_for("block"), [])
+        ctrl.loop.stop()
+
     def test_value_moving_channel_refuses_to_start_without_caps(self):
         ctrl = self._ctrl()
         ctrl.create("pw")

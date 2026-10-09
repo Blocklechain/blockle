@@ -503,6 +503,11 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
                     Err(_) => jerr("503 Service Unavailable", "settlement service not reachable"),
                 }
             }
+            // Sign a MoonPay buy-widget URL (production). Body: {"url": "<widget url>"}.
+            "/api/moonpay/sign" => {
+                let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                moonpay_sign(url)
+            }
             _ => jerr("404 Not Found", "unknown endpoint"),
         };
     }
@@ -719,6 +724,19 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
              </section>".into()).into_bytes()),
         "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
         "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
+        // Sign a MoonPay buy-widget URL for production. The `url` query param is
+        // the URL-encoded widget URL; we HMAC-SHA256 its query string with the
+        // server-side secret and append &signature=. With no secret configured
+        // (e.g. sandbox + pk_test key), the URL is returned unchanged with
+        // "signed": false — sandbox widgets work without a signature.
+        "/api/moonpay/sign" => {
+            let url = query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("url="))
+                .map(url_decode)
+                .unwrap_or_default();
+            moonpay_sign(&url)
+        }
         "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
         "/status" => ("200 OK", "text/html; charset=utf-8", page_status(&reg).into_bytes()),
         "/api" => ("200 OK", "text/html; charset=utf-8", page_api().into_bytes()),
@@ -1947,6 +1965,166 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
 ///   perSellAvailabilityFraction  — 0 (no sell liquidity exposed until set)
 ///   mainnet_enabled              — false; flip to true ONLY after a recorded
 ///                                  legal/compliance review (see AGENTS.md).
+// ================================================================================================
+// MoonPay URL signing (production security)
+// ================================================================================================
+//
+// MoonPay recommends signing the buy-widget URL's query string with the secret
+// key (HMAC-SHA256 → base64 → url-encoded → appended as &signature=). The
+// *publishable* key (pk_test_/pk_live_) is embedded client-side; the *secret*
+// key is NEVER hardcoded, committed, or logged — it only ever lives here,
+// loaded from env MOONPAY_SECRET or /var/lib/blockle-biz/moonpay-secret. For
+// sandbox (pk_test) no secret is required and unsigned URLs work; the secret is
+// only needed for production (pk_live) signed URLs.
+
+/// Load the MoonPay secret key, preferring the env var over the on-disk file.
+/// Returns None when nothing is configured (sandbox path). The value is never
+/// logged.
+fn moonpay_secret() -> Option<String> {
+    if let Ok(s) = std::env::var("MOONPAY_SECRET") {
+        let s = s.trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    fs::read_to_string("/var/lib/blockle-biz/moonpay-secret")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Sign a MoonPay widget URL. With a secret configured, appends
+/// `&signature=<urlencoded base64 HMAC-SHA256(secret, query-string)>` and
+/// returns `{"url": <signed>, "signed": true}`. Without a secret, returns
+/// `{"url": <unchanged>, "signed": false}` (sandbox works unsigned).
+fn moonpay_sign(widget_url: &str) -> (&'static str, &'static str, Vec<u8>) {
+    let widget_url = widget_url.trim();
+    if widget_url.is_empty() {
+        return (
+            "400 Bad Request",
+            "application/json",
+            json!({"error": "missing url"}).to_string().into_bytes(),
+        );
+    }
+    let secret = match moonpay_secret() {
+        Some(s) => s,
+        None => {
+            return (
+                "200 OK",
+                "application/json",
+                json!({"url": widget_url, "signed": false}).to_string().into_bytes(),
+            );
+        }
+    };
+    // Sign the query string INCLUDING the leading '?'. If the URL somehow has
+    // no query string there is nothing meaningful to sign — return unchanged.
+    let Some(qs_start) = widget_url.find('?') else {
+        return (
+            "200 OK",
+            "application/json",
+            json!({"url": widget_url, "signed": false}).to_string().into_bytes(),
+        );
+    };
+    let query_string = &widget_url[qs_start..];
+    let mac = hmac_sha256(secret.as_bytes(), query_string.as_bytes());
+    let signature = url_encode(&base64_encode(&mac));
+    let signed = format!("{widget_url}&signature={signature}");
+    (
+        "200 OK",
+        "application/json",
+        json!({"url": signed, "signed": true}).to_string().into_bytes(),
+    )
+}
+
+/// HMAC-SHA256 (RFC 2104) over `sha2::Sha256`. Avoids pulling in an `hmac`
+/// crate — the block size is 64 bytes, the digest 32.
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        let digest = Sha256::digest(key);
+        block[..32].copy_from_slice(&digest);
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..64 {
+        ipad[i] ^= block[i];
+        opad[i] ^= block[i];
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    inner.update(msg);
+    let inner_digest = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner_digest);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&outer.finalize());
+    out
+}
+
+/// Standard base64 (RFC 4648, `+`/`/`, `=` padding).
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Percent-encode everything that is not an RFC 3986 unreserved character.
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Percent-decode a query-param value (also turns '+' into a space).
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn buy_config() -> String {
     const DEFAULT: &str = r#"{
   "ticker": "BLOCK",
@@ -2724,7 +2902,18 @@ POST /api/register       register a pool  {name, chain, algorithm, stratum, pool
                          → {pool_id, token}
 POST /api/heartbeat      {pool_id, token, timestamp, pool_hashrate, miners, workers,
                           blocks_found, block_height, network_hashrate,
-                          network_difficulty, shares_submitted, blocks:[{chain,height,hash}]}</code></pre>
+                          network_difficulty, shares_submitted, blocks:[{chain,height,hash}]}
+
+GET  /api/moonpay/sign?url=<encoded widget url>   sign a MoonPay buy-widget URL
+POST /api/moonpay/sign   {url}  → {url, signed}    (same, URL in the JSON body)</code></pre>
+<p class="sub">MoonPay URL signing for the wallets' "Buy with card" flow. A <code>pk_test_</code>
+publishable key uses the MoonPay sandbox, whose widget URLs work <em>unsigned</em>; when no
+server-side secret is configured this endpoint returns the URL unchanged with
+<code>"signed": false</code>. A signature is only required for production (<code>pk_live_</code>)
+URLs: configure the MoonPay secret server-side (env <code>MOONPAY_SECRET</code> or
+<code>/var/lib/blockle-biz/moonpay-secret</code>) and the endpoint appends
+<code>&amp;signature=</code> (base64 HMAC-SHA256 of the query string). The secret never leaves
+the server and is never logged.</p>
 <h2>Data honesty</h2>
 <p class="sub">Responses separate <code>verified</code> (heartbeat recency, stratum reachability probes) from <code>operator_reported</code> (hashrates, miner counts). Heartbeats are token-authenticated, schema- and range-validated, freshness-checked, and rate limited.</p>"#;
     page_shell_seo(

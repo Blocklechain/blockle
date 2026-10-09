@@ -534,6 +534,16 @@ class WalletWindow(QMainWindow):
         self.zaddr_row = _copy_row("", "")
         v.addWidget(self.zaddr_row)
         lay.addWidget(box)
+
+        from . import moonpay
+        fund = QGroupBox("Fund with a card")
+        fv = QVBoxLayout(fund)
+        note = QLabel(moonpay.BLOCK_NOTE)
+        note.setWordWrap(True)
+        note.setObjectName("sub")
+        fv.addWidget(note)
+        lay.addWidget(fund)
+
         lay.addStretch(1)
         return w
 

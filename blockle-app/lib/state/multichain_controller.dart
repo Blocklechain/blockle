@@ -33,6 +33,7 @@ import '../multichain/vault_store.dart';
 import '../multichain/venues.dart' show VenueRegistry;
 import '../services/agent_service.dart';
 import '../services/block_signer_bridge.dart';
+import '../services/moonpay.dart';
 import '../services/exchange_client.dart';
 import '../services/transports.dart';
 import '../state/app_state.dart';
@@ -115,6 +116,8 @@ class MultichainController extends ChangeNotifier {
   static const _kEndpoints = 'bk_mc_endpoints';
   static const _kTokens = 'bk_mc_tokens';
   static const _kCustomNets = 'bk_mc_custom_nets';
+  static const _kMoonpayApiKey = 'bk_mc_moonpay_apikey';
+  static const _kMoonpaySigner = 'bk_mc_moonpay_signer';
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
@@ -135,6 +138,24 @@ class MultichainController extends ChangeNotifier {
   Map<String, List<AssetRef>> _customTokens = {};
   List<CustomNetwork> _customNets = [];
 
+  // MoonPay fiat on-ramp config. The publishable key is CLIENT-side (safe);
+  // the optional signer URL points at a SERVER-SIDE signing endpoint. Neither
+  // the MoonPay secret key nor any card/PII ever touches this wallet.
+  String? _moonpayApiKey; // null -> use the built-in default (pk_test_…)
+  String? _moonpaySignerUrl;
+
+  /// The effective MoonPay config (default publishable key unless overridden).
+  MoonPayConfig get moonpayConfig => MoonPayConfig(
+        apiKey: (_moonpayApiKey != null && _moonpayApiKey!.isNotEmpty)
+            ? _moonpayApiKey!
+            : kMoonPayDefaultApiKey,
+        signerUrl: _moonpaySignerUrl,
+      );
+
+  /// Whether the user has overridden the built-in publishable key.
+  bool get hasMoonpayApiKeyOverride =>
+      _moonpayApiKey != null && _moonpayApiKey!.isNotEmpty;
+
   bool get vaultUnlocked => vault.isUnlocked && accounts.isUnlocked();
 
   // ---- lifecycle -----------------------------------------------------------
@@ -146,6 +167,7 @@ class MultichainController extends ChangeNotifier {
     await _loadEndpoints();
     await _loadTokens();
     await _loadCustomNets();
+    await _loadMoonpay();
     _buildRegistryAndAccounts();
     venues = VenueRegistry.create(); // treasury unset -> agent fee fail-closed
     agent = AgentService(
@@ -357,6 +379,45 @@ class MultichainController extends ChangeNotifier {
 
   bool alchemyEnabled(String chain) =>
       (effectiveEndpoint(chain).alchemyUrl ?? '').isNotEmpty;
+
+  // ---- MoonPay on-ramp config ----------------------------------------------
+
+  Future<void> _loadMoonpay() async {
+    try {
+      _moonpayApiKey = await _storage.read(key: _kMoonpayApiKey);
+      _moonpaySignerUrl = await _storage.read(key: _kMoonpaySigner);
+    } catch (_) {
+      _moonpayApiKey = null;
+      _moonpaySignerUrl = null;
+    }
+  }
+
+  /// Override (or clear) the MoonPay publishable key. Pass null/empty to fall
+  /// back to the built-in default. The publishable key is CLIENT-side and safe;
+  /// swap in a pk_live_… key here on approval.
+  Future<void> setMoonpayApiKey(String? key) async {
+    final v = key?.trim();
+    _moonpayApiKey = (v == null || v.isEmpty) ? null : v;
+    if (_moonpayApiKey == null) {
+      await _storage.delete(key: _kMoonpayApiKey);
+    } else {
+      await _storage.write(key: _kMoonpayApiKey, value: _moonpayApiKey!);
+    }
+    notifyListeners();
+  }
+
+  /// Set (or clear) the optional SERVER-SIDE MoonPay signing endpoint. This is
+  /// a plain URL (no secret) — the secret key lives only on that server.
+  Future<void> setMoonpaySignerUrl(String? url) async {
+    final v = url?.trim();
+    _moonpaySignerUrl = (v == null || v.isEmpty) ? null : v;
+    if (_moonpaySignerUrl == null) {
+      await _storage.delete(key: _kMoonpaySigner);
+    } else {
+      await _storage.write(key: _kMoonpaySigner, value: _moonpaySignerUrl!);
+    }
+    notifyListeners();
+  }
 
   Future<void> resetEndpoint(String chain) async {
     _endpoints.remove(chain);

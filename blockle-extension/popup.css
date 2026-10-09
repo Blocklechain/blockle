@@ -237,8 +237,16 @@ canvas.logo {
 .mc-name { font-weight: 700; display: flex; align-items: center; gap: 6px; }
 .mc-addr { margin-bottom: 8px; max-width: 100%; }
 .mc-bal { display: flex; flex-direction: column; gap: 4px; }
-.mc-bal-row { display: flex; justify-content: space-between; font-size: 13px; }
+.mc-bal-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .mc-bal-row span { color: var(--muted); }
+.mc-bal-right { display: flex; align-items: center; gap: 8px; }
+.mc-bal-right b { color: var(--text); }
+.mc-head-btns { display: flex; align-items: center; gap: 6px; }
+/* MoonPay "Buy with card" buttons — green accent to read as buy/on-ramp */
+.mc-buy-btn, .mc-buy-tok { background: rgba(126,231,135,.12); color: #7ee787; border: 1px solid rgba(126,231,135,.35); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.mc-buy-tok { padding: 2px 8px; }
+.mc-buy-note { margin-top: 6px; font-size: 11px; line-height: 1.4; }
+.mc-buy-note a { color: var(--c1, #7ee787); }
 
 /* ---- agent cockpit ---- */
 .agent-card { background: var(--surface); border: 1px solid var(--line2); border-radius: 12px; padding: 12px; margin: 6px 0 12px; }
