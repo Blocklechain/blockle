@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockle for Agents — SDK + MCP</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --teal:#37E0C8;
+    --good:#4ADE80; --warn:#F2B04A; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:900px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)} header.top nav a:hover{color:var(--text);text-decoration:none}
+  h1{font-size:clamp(26px,4vw,36px);letter-spacing:-.02em;margin:28px 0 4px}
+  h2{font-size:20px;margin:34px 0 10px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:20px 0 6px;color:var(--teal)}
+  .sub{color:var(--muted);margin:0 0 10px;font-size:16px}
+  p{margin:10px 0}
+  ul{margin:10px 0;padding-left:20px} li{margin:4px 0}
+  code{font-family:var(--mono);font-size:13px;background:var(--surface2);border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  pre{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto;margin:12px 0}
+  pre code{background:none;border:0;padding:0;font-size:12.5px;line-height:1.55}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:13px}
+  td code{white-space:nowrap}
+  .notice{border:1px solid var(--warn);background:rgba(242,176,74,.08);border-radius:12px;padding:14px 16px;margin:20px 0;color:var(--text)}
+  .notice strong{color:var(--warn)}
+  .muted{color:var(--muted)}
+  footer{border-top:1px solid var(--line);margin-top:48px;padding:24px 0;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span>Blockle</a>
+  <nav>
+    <a href="/dex">DEX</a><a href="/launch">Launch</a>
+    <a href="/explorer">Explorer</a><a href="/agents">Agents</a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <h1>Blockle for Agents</h1>
+  <p class="sub">Run a wallet, launch a BLOCK-20 token, seed the native AMM, trade, and
+  sell — programmatically, with signing byte-identical to consensus (ML-DSA-44).</p>
+
+  <h2>Install</h2>
+  <h3>TypeScript SDK</h3>
+  <pre><code># from the monorepo (the SDK links the wasm signer locally)
+cd blockle-wasm &amp;&amp; wasm-pack build --target nodejs --out-dir pkg-node
+cd ../sdk &amp;&amp; npm install &amp;&amp; npm run build</code></pre>
+
+  <h3>MCP server (any MCP-capable agent)</h3>
+  <pre><code>cd mcp &amp;&amp; npm install &amp;&amp; npm run build
+# stdio (for a desktop/agent client):
+node dist/src/index.js
+# or streamable-HTTP:
+node dist/src/index.js --http</code></pre>
+  <p class="muted">Point your MCP client at the <code>blockle-mcp</code> binary (stdio) or its HTTP
+  endpoint. Tools wrap the SDK one-to-one; see <code>mcp/README.md</code> and
+  <code>sdk/AGENTS.md</code>.</p>
+
+  <h2>The full loop</h2>
+  <p>Every step is one SDK call / one MCP tool. Amounts are always in base units
+  (<code>1 BLOCK = 100,000,000 base units</code>).</p>
+  <ul>
+    <li><strong>Buy BLOCK</strong> — primary sale over the sqrt buy-curve
+      (x402 payment rail, <code>services/x402-buy</code>). 5% buy fee.</li>
+    <li><strong>Launch a token</strong> — deploy a BLOCK-20 token
+      (<code>build_block20_token</code>); selectors 0 init … 6 symbol.</li>
+    <li><strong>Create a pool</strong> — one constant-product AMM pool per token
+      (<code>build_pool_create</code> + <code>build_pool_add</code>). LP locked 1008 blocks.</li>
+    <li><strong>Trade</strong> — <code>build_pool_swap_buy</code> /
+      <code>build_pool_swap_sell</code>; 0.30% swap fee. Quote/slippage math in
+      <code>web/dex.js</code>.</li>
+    <li><strong>Sell BLOCK → USDC</strong> — redemption through
+      <code>services/settlement</code> (reorg-safe depth, daily cap, idempotent ledger).</li>
+    <li><strong>Cross-chain</strong> — non-custodial atomic swaps (HTLC) and
+      permissionless listings at <code>exchange.blockle.org</code>.</li>
+  </ul>
+
+  <h2>Base-unit conventions</h2>
+  <ul>
+    <li><code>1 BLOCK = 1e8</code> base units. Keep everything in base units;
+      convert only at display edges.</li>
+    <li><code>gas_price = 10</code> base units / gas. <code>fee = gas_limit * 10</code>.</li>
+    <li>Inputs must cover <code>block_amt</code>/<code>block_in</code> <em>plus</em> the fee.</li>
+    <li>Per-action gas: deploy <code>300000</code>, init <code>120000</code>,
+      pool create <code>250000</code>, swap/call <code>200000</code>.</li>
+  </ul>
+
+  <h2>Fee table</h2>
+  <table>
+    <thead><tr><th>Action</th><th>Fee</th><th>Who charges it</th></tr></thead>
+    <tbody>
+      <tr><td>AMM swap (native pools)</td><td><code>0.30%</code> (SWAP_FEE_BPS=30)</td><td>protocol → LPs</td></tr>
+      <tr><td>Buy-curve primary sale</td><td><code>5%</code></td><td>buy curve</td></tr>
+      <tr><td>Cross-chain atomic swap</td><td><code>0.1%</code> protocol fee</td><td>non-custodial exchange</td></tr>
+      <tr><td>Exchange deposit / withdrawal</td><td><code>none</code></td><td>— the exchange holds no funds</td></tr>
+      <tr><td>Self-serve listing</td><td><code>$5</code> per asset (includes the mandatory BLOCK pair)</td><td>exchange</td></tr>
+      <tr><td>Extra trading pair</td><td><code>$1</code> per extra pair</td><td>exchange</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Tradable assets: BLOCK / ETH / SOL / USDC / USDT plus anything listed.</p>
+
+  <div class="notice">
+    <strong>Compliance notice.</strong> Every fiat / USDC / SOL / ETH money path
+    is <strong>disabled by default</strong> behind <code>mainnet_enabled</code> (defaults
+    <code>false</code>). Dev runs on testnets (Base Sepolia, Solana devnet, ETH Sepolia)
+    with no-op KYC/geo hooks. <strong>An operator MUST obtain and record a completed
+    legal / compliance review before enabling mainnet.</strong> See the repo-root
+    <code>AGENTS.md</code> and each module's README.
+  </div>
+
+  <footer>
+    Blockle L1 — <a href="/">home</a> ·
+    <a href="/dex">DEX</a> · <a href="/launch">Launch</a> ·
+    <a href="/explorer">Explorer</a>. Keys stay with their owner; agent keys live in
+    the SDK, never on the server.
+  </footer>
+</main>
+</body>
+</html>

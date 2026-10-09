@@ -7,6 +7,36 @@
   var COIN = 100000000, SWAP_FEE = 0.003, SLIP = 0.01, BLOCK_SECS = 600;
   var pool = null, meta = null, logo = null, tSide = 'buy';
   var $ = function (x) { return document.getElementById(x); };
+  function setAttr(sel, attr, key, val) {
+    var el = document.head.querySelector(sel);
+    if (!el) { el = document.createElement(sel.indexOf('link') === 0 ? 'link' : 'meta'); el.setAttribute(attr, key); document.head.appendChild(el); }
+    el.setAttribute(sel.indexOf('link') === 0 ? 'href' : 'content', val);
+  }
+  function seo(sym, name) {
+    var url = 'https://blockle.org/token/' + id;
+    var title = sym + ' (' + name + ') — BLOCK-20 token on Blockle';
+    var desc = name + ' ($' + sym + ') price, liquidity and live trades on Blockle’s native AMM DEX — a BLOCK-20 token on the post-quantum Blockle layer-1.';
+    document.title = title;
+    setAttr('meta[name="description"]', 'name', 'description', desc);
+    setAttr('link[rel="canonical"]', 'rel', 'canonical', url);
+    setAttr('meta[property="og:url"]', 'property', 'og:url', url);
+    setAttr('meta[property="og:title"]', 'property', 'og:title', title);
+    setAttr('meta[property="og:description"]', 'property', 'og:description', desc);
+    setAttr('meta[name="twitter:title"]', 'name', 'twitter:title', title);
+    setAttr('meta[name="twitter:description"]', 'name', 'twitter:description', desc);
+    var lu = ipfs(logo);
+    if (lu) { setAttr('meta[property="og:image"]', 'property', 'og:image', lu); setAttr('meta[name="twitter:image"]', 'name', 'twitter:image', lu); setAttr('meta[property="og:image:alt"]', 'property', 'og:image:alt', name + ' logo'); }
+    var ld = document.getElementById('ld-token');
+    if (!ld) { ld = document.createElement('script'); ld.type = 'application/ld+json'; ld.id = 'ld-token'; document.head.appendChild(ld); }
+    ld.textContent = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'DEX', item: 'https://blockle.org/dex' },
+        { '@type': 'ListItem', position: 2, name: sym + ' (' + name + ')', item: url }
+      ]
+    });
+  }
   function fmt(n, d) { if (n == null || !isFinite(n)) return '—'; return Number(n).toLocaleString(undefined, { maximumFractionDigits: d == null ? 6 : d }); }
   function ipfs(u) { if (!u) return null; if (u.indexOf('ipfs://') === 0) return 'https://ipfs.io/ipfs/' + u.slice(7); if (/^[a-zA-Z0-9]{46,}$/.test(u)) return 'https://ipfs.io/ipfs/' + u; return u; }
   function dur(b) { var s = b * BLOCK_SECS; if (s <= 0) return 'unlocked'; var d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return d > 0 ? d + 'd ' + h + 'h' : (h > 0 ? h + 'h ' + m + 'm' : m + 'm'); }
@@ -21,6 +51,7 @@
     try { var t = await (await fetch('/api/dex/tokens')).json(); logo = t[id] && t[id].logo; } catch (e) {}
     if (!pool || pool.exists === false) {
       var sym0 = (meta && meta.symbol) || 'token';
+      seo(sym0, (meta && meta.name) || 'BLOCK-20 token');
       $('body').innerHTML = '<div class="empty"><h2>' + sym0 + '</h2><p>No liquidity pool for this token yet.</p>'
         + '<p><a href="/launch">Create one on Launch →</a></p></div>';
       return;
@@ -32,6 +63,7 @@
   function render() {
     var sym = pool.symbol || (meta && meta.symbol) || '?';
     var name = pool.name || (meta && meta.name) || 'BLOCK-20 token';
+    seo(sym, name);
     var d = dec();
     var p = price();
     var height = pool.height || 0;
