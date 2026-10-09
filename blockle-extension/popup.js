@@ -407,6 +407,19 @@
     const alk = $('#ep-alchemy');
     if (alk) alk.addEventListener('change', (e) => saveEndpoint('alchemy', 'apiKey', e.target.value));
 
+    // MoonPay "Buy with card" config (publishable key + optional signing URL).
+    // The publishable key is client-side and not a secret; the secret key is
+    // never stored here (signing is server-side at the signing endpoint).
+    const saveMoonPay = async (patch) => {
+      if (!window.MoonPay) return;
+      await MoonPay.saveConfig(patch);
+      toast('MoonPay settings saved');
+    };
+    const mpKey = $('#mp-apikey');
+    if (mpKey) mpKey.addEventListener('change', (e) => saveMoonPay({ apiKey: e.target.value.trim() || MoonPay.DEFAULT_API_KEY }));
+    const mpSign = $('#mp-signurl');
+    if (mpSign) mpSign.addEventListener('change', (e) => saveMoonPay({ signingEndpoint: e.target.value.trim() }));
+
     // ---- custom networks (user-added EVM networks; config, not secrets) ----
     const cnAdd = $('#cn-add');
     if (cnAdd) cnAdd.addEventListener('click', () => openCustomNetForm(null));
@@ -1026,6 +1039,11 @@
       if ($('#ep-ltc')) $('#ep-ltc').value = (ep.litecoin && ep.litecoin.esplora) || '';
       if ($('#ep-doge')) $('#ep-doge').value = (ep.dogecoin && ep.dogecoin.esplora) || '';
       if ($('#ep-alchemy')) $('#ep-alchemy').value = (ep.alchemy && ep.alchemy.apiKey) || '';
+      if (window.MoonPay && ($('#mp-apikey') || $('#mp-signurl'))) {
+        const mp = await MoonPay.loadConfig();
+        if ($('#mp-apikey')) $('#mp-apikey').value = mp.apiKey || '';
+        if ($('#mp-signurl')) $('#mp-signurl').value = mp.signingEndpoint || '';
+      }
       closeCustomNetForm();
       await renderCustomNetworks();
       return;

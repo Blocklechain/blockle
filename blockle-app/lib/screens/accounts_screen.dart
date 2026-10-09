@@ -6,12 +6,16 @@
 // chain labelled post-quantum; every other chain is honestly labelled classical
 // (secp256k1 / ed25519).
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart' show CustomNetwork, slugifyNetworkName;
+import '../services/moonpay.dart';
+import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 
@@ -196,7 +200,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 ),
               ),
             const SizedBox(height: 10),
-            ...bals.map(_balanceRow),
+            ...bals.map((b) => _balanceRow(c, chain, addr, b)),
+            if (isPq) _blockBuyNote(),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -230,10 +235,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
-  Widget _balanceRow(Balance b) {
+  Widget _balanceRow(
+      MultichainController c, String chain, String addr, Balance b) {
     final err = b.error != null;
     final logo = b.asset.logo;
     final isToken = b.asset.kind != 'native';
+    // "Buy with card" is offered per asset that MoonPay supports — never for
+    // BLOCK, and only when we have a receive address to deliver to.
+    final canBuy = addr.isNotEmpty &&
+        !moonpayIsBlock(chain) &&
+        moonpayCurrencyCode(chain, kind: b.asset.kind, symbol: b.asset.symbol) !=
+            null;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -267,8 +279,88 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 style: TextStyle(color: Bk.bad, fontSize: 12))
           else
             Text(b.display, style: kMono.copyWith(fontSize: 13)),
+          if (canBuy) ...[
+            const SizedBox(width: 8),
+            _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _buyChip(VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Bk.accent.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.credit_card, size: 12, color: Bk.accent),
+            SizedBox(width: 4),
+            Text('Buy',
+                style: TextStyle(
+                    color: Bk.accent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// BLOCK is not on MoonPay — show a short swap note instead of a Buy button.
+  Widget _blockBuyNote() {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Bk.surface2,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: const Text(
+        'BLOCK isn’t available to buy with a card. Buy a supported asset '
+        '(ETH, USDC, BTC…) with a card, then swap it to BLOCK on the '
+        'exchange or via the /buy curve.',
+        style: TextStyle(color: Bk.muted, fontSize: 11),
+      ),
+    );
+  }
+
+  /// Build the MoonPay widget URL for [asset] on [chain] and open it — the
+  /// in-app webview on mobile/desktop, a new browser tab on web. MoonPay hosts
+  /// the KYC + payment flow; this wallet never sees card data.
+  Future<void> _buyWithCard(
+      MultichainController c, String chain, String addr, AssetRef asset) async {
+    final url = await moonpayBuyUrl(
+      config: c.moonpayConfig,
+      chain: chain,
+      walletAddress: addr,
+      kind: asset.kind,
+      symbol: asset.symbol,
+      baseCurrencyCode: 'usd',
+      theme: 'dark',
+      colorCode: '#7C5CFF',
+    );
+    if (url == null) {
+      _snack('Buying ${asset.symbol} with a card isn’t available yet.');
+      return;
+    }
+    if (!mounted) return;
+    if (kIsWeb) {
+      openExternal(url);
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) =>
+              MoonPayBuyScreen(url: url, assetLabel: asset.symbol)),
     );
   }
 
@@ -775,9 +867,140 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
               style: TextStyle(color: Bk.muted, fontSize: 12)),
           const SizedBox(height: 8),
           for (final chain in kAlchemyChains) _alchemyTile(c, chain),
+          const SizedBox(height: 20),
+          const Text('Buy with card (MoonPay)',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text(
+              'Buy crypto with a card or bank via MoonPay. The publishable key '
+              'below is client-side and safe. MoonPay handles KYC and payment — '
+              'this wallet never sees card data. BLOCK is not on MoonPay; buy a '
+              'supported asset then swap to BLOCK.',
+              style: TextStyle(color: Bk.muted, fontSize: 12)),
+          const SizedBox(height: 8),
+          _moonpayTile(c),
+          _moonpaySignerTile(c),
         ],
       ),
     );
+  }
+
+  Widget _moonpayTile(MultichainController c) {
+    final cfg = c.moonpayConfig;
+    final live = cfg.isLive;
+    return Card(
+      child: ListTile(
+        title: const Text('MoonPay publishable key'),
+        subtitle: Text(
+            '${c.hasMoonpayApiKeyOverride ? 'custom' : 'default'} · '
+            '${live ? 'LIVE' : 'sandbox'}\n${cfg.apiKey}',
+            style: kMono.copyWith(
+                fontSize: 11, color: live ? Bk.good : Bk.muted),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis),
+        isThreeLine: true,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (c.hasMoonpayApiKeyOverride)
+              IconButton(
+                icon: const Icon(Icons.restore, size: 18, color: Bk.muted),
+                onPressed: () => c.setMoonpayApiKey(null),
+              ),
+            IconButton(
+              icon: const Icon(Icons.edit, size: 18, color: Bk.muted),
+              onPressed: () => _editMoonpayKeyDialog(c),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _moonpaySignerTile(MultichainController c) {
+    final signer = c.moonpayConfig.signerUrl ?? '';
+    return Card(
+      child: ListTile(
+        title: const Text('MoonPay URL signer (optional)'),
+        subtitle: Text(
+            signer.isEmpty
+                ? 'not set — unsigned sandbox URLs (production needs a signer)'
+                : signer,
+            style: kMono.copyWith(fontSize: 11),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (signer.isNotEmpty)
+              IconButton(
+                icon: const Icon(Icons.clear, size: 18, color: Bk.muted),
+                onPressed: () => c.setMoonpaySignerUrl(null),
+              ),
+            IconButton(
+              icon: const Icon(Icons.edit, size: 18, color: Bk.muted),
+              onPressed: () => _editMoonpaySignerDialog(c),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editMoonpayKeyDialog(MultichainController c) async {
+    final ctrl = TextEditingController(
+        text: c.hasMoonpayApiKeyOverride ? c.moonpayConfig.apiKey : '');
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('MoonPay publishable key'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+              labelText: 'pk_test_… or pk_live_…',
+              hintText: 'leave blank to use the default'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (res != true) return;
+    await c.setMoonpayApiKey(ctrl.text.trim());
+  }
+
+  Future<void> _editMoonpaySignerDialog(MultichainController c) async {
+    final ctrl = TextEditingController(text: c.moonpayConfig.signerUrl ?? '');
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('MoonPay URL signer'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(
+              labelText: 'Signer endpoint URL',
+              hintText: 'https://…/moonpay/sign'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (res != true) return;
+    await c.setMoonpaySignerUrl(ctrl.text.trim());
   }
 
   Widget _customNetTile(MultichainController c, CustomNetwork n) {
@@ -1152,6 +1375,32 @@ class _CustomNetworkEditScreenState extends State<CustomNetworkEditScreen> {
               child: const Text('Done'),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Hosts the MoonPay hosted buy widget in an in-app webview (mobile/desktop).
+/// MoonPay runs the entire KYC + card/bank payment flow inside this webview and
+/// delivers the purchased crypto to the wallet address baked into the URL — the
+/// wallet itself never sees card numbers or PII.
+class MoonPayBuyScreen extends StatelessWidget {
+  const MoonPayBuyScreen(
+      {super.key, required this.url, required this.assetLabel});
+  final String url;
+  final String assetLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Buy $assetLabel with card')),
+      body: InAppWebView(
+        initialUrlRequest: URLRequest(url: WebUri(url)),
+        initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
+          // MoonPay's card flow may hand off to the bank's 3-D Secure page.
+          useOnLoadResource: false,
+        ),
       ),
     );
   }

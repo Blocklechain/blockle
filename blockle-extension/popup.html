@@ -283,6 +283,11 @@
           <label class="field"><span>Alchemy API key</span><input type="password" id="ep-alchemy" class="mono" placeholder="(optional — enables ERC-20 auto-detect)" autocomplete="off" /></label>
           <p class="muted" style="margin:2px 0 0;font-size:11px">Read-only indexer key. Enables auto-detection of all ERC-20s you hold on Ethereum, Base, Arbitrum, Optimism and Polygon. Stored locally; never sent anywhere but Alchemy.</p>
 
+          <div class="section-h" style="padding-left:0">Buy with card (MoonPay)</div>
+          <label class="field"><span>MoonPay publishable key</span><input type="text" id="mp-apikey" class="mono" placeholder="pk_test_… or pk_live_…" autocomplete="off" /></label>
+          <label class="field"><span>URL signing endpoint <small class="muted">(optional)</small></span><input type="text" id="mp-signurl" class="mono" placeholder="https://blockle.org/api/moonpay/sign" autocomplete="off" /></label>
+          <p class="muted" style="margin:2px 0 0;font-size:11px">The publishable key (pk_test_ = sandbox, pk_live_ = production) is client-side and not a secret. It powers the "Buy" buttons on the Accounts screen, which open MoonPay's hosted card/bank flow in a new tab. The MoonPay secret key is never stored here — production URL signing runs server-side at the signing endpoint.</p>
+
           <div class="section-h" style="padding-left:0;display:flex;align-items:center;justify-content:space-between">Custom networks
             <button class="mini-btn" id="cn-add">+ Add</button></div>
           <p class="muted" style="margin:2px 0 6px;font-size:11px">Add any EVM-compatible network (MetaMask-style). Uses the same address as your other EVM chains. Network definitions are stored locally; they are not secrets.</p>
@@ -507,6 +512,7 @@
     <!-- Pass-2 wiring + UI controllers -->
     <script src="wiring.js"></script>
     <script src="agent-store.js"></script>
+    <script src="moonpay.js"></script>
     <script src="accounts-ui.js"></script>
     <script src="agent-ui.js"></script>
     <script src="particles.js"></script>
