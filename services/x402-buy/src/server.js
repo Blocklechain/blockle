@@ -34,6 +34,7 @@ const { releaseBlock } = require("./release");
 const { signReceipt } = require("./receipts");
 const { buildRequirements, challengeBody, verifyAndSettle } = require("./x402");
 const { buildManifest, buildDiscoveryList } = require("./discovery");
+const { buildOpenApi } = require("./openapi");
 
 const BLOCK_ADDR = /^block1[0-9a-z]+$/i;
 
@@ -52,6 +53,29 @@ function createApp(overrides = {}) {
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));
+
+  // paywall-first: advertise a 402 challenge BEFORE input validation so x402
+  // crawlers (x402scan.com) can discover the price without supplying params.
+  function send402(res, { payTo, usdcMicro, resource, description }) {
+    // compliance gate still wins over the paywall: a gated mainnet path must
+    // return 503 (not advertise a 402 challenge) until legal review is recorded.
+    try {
+      assertMoneyAllowed(cfg, cfg.network);
+    } catch (e) {
+      return res.status(503).json({ error: String(e.message) });
+    }
+    const requirements = [
+      buildRequirements({
+        network: cfg.network,
+        payTo: payTo || "0x0000000000000000000000000000000000000000",
+        maxAmountRequired: String(usdcMicro),
+        resource,
+        description,
+        maxTimeoutSeconds: cfg.maxTimeoutSeconds,
+      }),
+    ];
+    return res.status(402).json(challengeBody(requirements, "payment required"));
+  }
 
   // ---- core priced-request handler (402 → verify → screen → settle → act) --
   async function handlePriced(req, res, spec) {
@@ -175,6 +199,14 @@ function createApp(overrides = {}) {
     const src = req.method === "GET" ? req.query : req.body || {};
     const to = String(src.to || src.recipient || "").trim();
     const usdc = src.usdc;
+    if (!req.header("X-PAYMENT")) {
+      return send402(res, {
+        payTo: reservePayTo(),
+        usdcMicro: Number(usdc) > 0 ? usdToMicroUsdc(Number(usdc)) : 1_000_000,
+        resource: `${cfg.publicBaseUrl.replace(/\/+$/, "")}/x402/buy`,
+        description: "Buy BLOCK on the sqrt primary-sale curve (USDC over x402).",
+      });
+    }
     if (!BLOCK_ADDR.test(to)) {
       return res.status(400).json({ error: "invalid or missing `to` (expected a block1… address)" });
     }
@@ -238,6 +270,14 @@ function createApp(overrides = {}) {
     const body = req.body || {};
     const asset = body.asset;
     const extraPairs = Array.isArray(body.extraPairs) ? body.extraPairs : [];
+    if (!req.header("X-PAYMENT")) {
+      return send402(res, {
+        payTo: treasuryAddr(),
+        usdcMicro: usdToMicroUsdc(cfg.listingFeeUsd + cfg.perPairFeeUsd * extraPairs.length),
+        resource: `${cfg.publicBaseUrl.replace(/\/+$/, "")}/x402/list`,
+        description: `Self-serve listing fee ($${cfg.listingFeeUsd} + $${cfg.perPairFeeUsd}/extra pair).`,
+      });
+    }
     if (!asset || !asset.symbol || !asset.chain || !asset.kind) {
       return res
         .status(400)
@@ -291,6 +331,14 @@ function createApp(overrides = {}) {
     const body = req.body || {};
     const actionId = String(body.actionId || "").trim();
     const usd = Number(body.usd);
+    if (!req.header("X-PAYMENT")) {
+      return send402(res, {
+        payTo: treasuryAddr(),
+        usdcMicro: usd > 0 ? usdToMicroUsdc(usd) : 1_000_000,
+        resource: `${cfg.publicBaseUrl.replace(/\/+$/, "")}/x402/pay`,
+        description: "Generic priced action over x402.",
+      });
+    }
     if (!actionId) return res.status(400).json({ error: "missing actionId" });
     if (!(usd > 0)) return res.status(400).json({ error: "invalid or missing usd amount" });
     const usdcMicro = usdToMicroUsdc(usd);
@@ -325,6 +373,10 @@ function createApp(overrides = {}) {
   });
 
   // ---- discovery -----------------------------------------------------------
+  // OpenAPI spec — the discovery document x402scan.com reads. Paid ops carry
+  // the x402 security scheme; free ops carry security:[] (not payment-probed).
+  app.get("/openapi.json", (_req, res) => res.json(buildOpenApi(cfg)));
+  app.get("/.well-known/x402", (_req, res) => res.json(buildOpenApi(cfg)));
   app.get("/x402-resources.json", (_req, res) => res.json(buildManifest(cfg)));
   app.get("/discovery/resources", (_req, res) =>
     res.json(buildDiscoveryList(cfg, { treasuryPayTo: treasuryAddr(), reservePayTo: reservePayTo() })),

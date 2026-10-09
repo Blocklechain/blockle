@@ -106,16 +106,22 @@ test("http: unpaid buy returns a 402 with official x402 requirements", async () 
   }
 });
 
-test("http: bad inputs are rejected before any 402", async () => {
+test("http: paywall-first — bare probe 402s, but bad inputs are rejected once paying", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "x402svc-"));
   const cfg = buildTestCfg(dir);
   const { app } = createApp({ cfg, buyCfg: BUY_CFG, treasury: TREASURY, ledger: new Ledger(path.join(dir, "l.db")) });
   const srv = await listen(app);
   const port = srv.address().port;
+  const pay = { headers: { "X-PAYMENT": "probe" } };
   try {
-    const bad1 = await fetch(`http://127.0.0.1:${port}/x402/buy?to=notanaddr&usdc=10`);
+    // No X-PAYMENT → the paywall runs BEFORE input validation so crawlers
+    // (x402scan) can discover the price without supplying params.
+    const probe = await fetch(`http://127.0.0.1:${port}/x402/buy?to=notanaddr&usdc=10`);
+    assert.equal(probe.status, 402);
+    // With an X-PAYMENT header present, bad inputs are validated and rejected.
+    const bad1 = await fetch(`http://127.0.0.1:${port}/x402/buy?to=notanaddr&usdc=10`, pay);
     assert.equal(bad1.status, 400);
-    const bad2 = await fetch(`http://127.0.0.1:${port}/x402/buy?to=block1abc&usdc=-1`);
+    const bad2 = await fetch(`http://127.0.0.1:${port}/x402/buy?to=block1abc&usdc=-1`, pay);
     assert.equal(bad2.status, 400);
   } finally {
     srv.close();
