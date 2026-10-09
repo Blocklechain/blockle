@@ -10,6 +10,7 @@ hardcoded here.
 from __future__ import annotations
 
 from .chain_adapter import AssetRef, as_seed, default_json_rpc
+from .custom_networks import (explorer_tx_prefix, normalize_custom_networks)
 from .discovery import merge_balances
 from .evm import create_evm_adapter
 from .solana import create_solana_adapter
@@ -115,14 +116,58 @@ class ChainRegistry:
         self._alchemy = config.get("alchemy") or {}
 
         a = {}
+        #: chainId -> adapter slug, so custom networks can DEDUPE against the
+        #: built-ins (a custom net sharing a built-in's chainId overrides its RPC
+        #: instead of adding a duplicate chain).
+        chainid_to_slug = {}
         for cid, net in EVM_NETWORKS.items():
             ep = endpoints.get(cid) or {}
+            cid_num = ep.get("chainId", net["chainId"])
             a[cid] = create_evm_adapter(
-                id=cid, chainId=ep.get("chainId", net["chainId"]),
+                id=cid, chainId=cid_num,
                 symbol=net["symbol"], rpcUrl=ep.get("rpcUrl") or net["rpcUrl"],
                 rpc=ep.get("rpc"), explorer=net["explorer"],
                 alchemy_rpc=_resolve_alchemy_rpc(self._alchemy.get(cid)),
             )
+            chainid_to_slug[cid_num] = cid
+
+        # --- user-added custom EVM networks ---------------------------------
+        # Instantiated with the SAME generic EVM adapter + the SAME secp256k1
+        # account (one address across every EVM chain). Invalid records are
+        # dropped (never break the registry). ``_custom`` holds only genuinely
+        # new chains; a record whose chainId matches a built-in just overrides
+        # that built-in's RPC/indexer.
+        self._custom = []
+        for net in normalize_custom_networks(config.get("customNetworks")):
+            indexer = default_json_rpc(net["tokenIndexerUrl"]) if net.get("tokenIndexerUrl") else None
+            existing = chainid_to_slug.get(net["chainId"])
+            if existing:
+                base = EVM_NETWORKS.get(existing, {})
+                cur = a.get(existing)
+                a[existing] = create_evm_adapter(
+                    id=existing, chainId=net["chainId"],
+                    symbol=base.get("symbol", net["nativeSymbol"]),
+                    decimals=getattr(cur, "decimals", 18) if existing in EVM_NETWORKS else net["decimals"],
+                    rpcUrl=net["rpcUrl"],
+                    explorer=base.get("explorer") or explorer_tx_prefix(net.get("explorerUrl")),
+                    alchemy_rpc=indexer or _resolve_alchemy_rpc(self._alchemy.get(existing)),
+                )
+                continue
+            slug = net["id"]
+            if slug in a:  # slug clash with a different chain — keep both distinct
+                slug = f"{slug}-{net['chainId']}"
+            a[slug] = create_evm_adapter(
+                id=slug, chainId=net["chainId"], symbol=net["nativeSymbol"],
+                decimals=net["decimals"], rpcUrl=net["rpcUrl"],
+                explorer=explorer_tx_prefix(net.get("explorerUrl")),
+                alchemy_rpc=indexer,
+            )
+            chainid_to_slug[net["chainId"]] = slug
+            enabled.add(slug)
+            net = {**net, "id": slug}
+            self._custom.append(net)
+            self._tokens.setdefault(slug, [])
+
         a["solana"] = create_solana_adapter(rpcUrl=endpoints["solana"].get("rpcUrl"),
                                             rpc=endpoints["solana"].get("rpc"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
@@ -195,6 +240,12 @@ class ChainRegistry:
         for a in self._adapters.values():
             if hasattr(a, "lock"):
                 a.lock()
+
+    def custom_networks(self):
+        """The user-added networks that became their own chain (not the ones that
+        merely overrode a built-in's RPC). Each is the normalized config dict with
+        its final (collision-resolved) ``id``."""
+        return list(self._custom)
 
     @property
     def adapters(self):

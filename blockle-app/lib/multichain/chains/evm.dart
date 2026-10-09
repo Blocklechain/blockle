@@ -149,6 +149,7 @@ class EvmAdapter implements ChainAdapter {
     this.chainId = 1,
     this.path = "m/44'/60'/0'/0",
     this.symbol = 'ETH',
+    this.decimals = 18,
     this.explorer = 'https://etherscan.io/tx/',
     this.rpcUrl,
     this.alchemyUrl,
@@ -156,7 +157,8 @@ class EvmAdapter implements ChainAdapter {
     JsonRpcFn? alchemyRpc,
   })  : _rpcOverride = rpc,
         _alchemyOverride = alchemyRpc {
-    native = AssetRef(chain: id, kind: 'native', symbol: symbol, decimals: 18);
+    native =
+        AssetRef(chain: id, kind: 'native', symbol: symbol, decimals: decimals);
   }
 
   @override
@@ -164,6 +166,10 @@ class EvmAdapter implements ChainAdapter {
   final int chainId;
   final String path;
   final String symbol;
+
+  /// Native coin decimals. EVM chains are 18; kept configurable so a user-added
+  /// custom network can declare otherwise.
+  final int decimals;
   final String explorer;
   final String? rpcUrl;
 
@@ -308,7 +314,8 @@ class EvmAdapter implements ChainAdapter {
     try {
       final wei = await _rpc('eth_getBalance', [address, 'latest']);
       final v = _big(wei).toString();
-      out.add(Balance(asset: native, confirmed: v, display: formatUnits(v, 18)));
+      out.add(Balance(
+          asset: native, confirmed: v, display: formatUnits(v, decimals)));
     } catch (e) {
       out.add(Balance(
           asset: native, confirmed: '0', display: '—', error: e.toString()));

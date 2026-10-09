@@ -112,12 +112,15 @@ def sign_legacy155(tx: dict, priv) -> dict:
 class EvmAdapter:
     def __init__(self, id="ethereum", chainId=1, path="m/44'/60'/0'/0",
                  explorer="https://etherscan.io/tx/", symbol="ETH",
-                 rpcUrl=None, rpc=None, alchemy_rpc=None, **_):
+                 rpcUrl=None, rpc=None, alchemy_rpc=None, decimals=18, **_):
         self.id = id
         self.chainId = chainId
         self.path = path
         self.explorer = explorer
-        self.native = AssetRef(chain=id, kind="native", symbol=symbol, decimals=18)
+        # Native-coin decimals — 18 for ETH and nearly every EVM chain, but a
+        # user-added custom network may differ, so it is configurable.
+        self.decimals = decimals
+        self.native = AssetRef(chain=id, kind="native", symbol=symbol, decimals=decimals)
         self._root = None
         self._rpc = rpc or default_json_rpc(rpcUrl)
         # Read-only indexer RPC (Alchemy). None => token auto-detect OFF, the
@@ -156,7 +159,7 @@ class EvmAdapter:
         try:
             wei = self._rpc("eth_getBalance", [address, "latest"])
             v = str(int(wei, 16) if isinstance(wei, str) else int(wei))
-            out.append(Balance(asset=self.native, confirmed=v, display=format_units(v, 18)))
+            out.append(Balance(asset=self.native, confirmed=v, display=format_units(v, self.decimals)))
         except Exception as e:
             out.append(Balance(asset=self.native, confirmed="0", display="—", error=str(e)))
         for t in (tokens or []):

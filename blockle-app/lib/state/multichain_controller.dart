@@ -114,6 +114,7 @@ class MultichainController extends ChangeNotifier {
 
   static const _kEndpoints = 'bk_mc_endpoints';
   static const _kTokens = 'bk_mc_tokens';
+  static const _kCustomNets = 'bk_mc_custom_nets';
   final _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
@@ -132,6 +133,7 @@ class MultichainController extends ChangeNotifier {
 
   Map<String, EndpointCfg> _endpoints = {};
   Map<String, List<AssetRef>> _customTokens = {};
+  List<CustomNetwork> _customNets = [];
 
   bool get vaultUnlocked => vault.isUnlocked && accounts.isUnlocked();
 
@@ -143,6 +145,7 @@ class MultichainController extends ChangeNotifier {
     exchange = ExchangeClient();
     await _loadEndpoints();
     await _loadTokens();
+    await _loadCustomNets();
     _buildRegistryAndAccounts();
     venues = VenueRegistry.create(); // treasury unset -> agent fee fail-closed
     agent = AgentService(
@@ -175,7 +178,10 @@ class MultichainController extends ChangeNotifier {
       merged[chain] = [...(merged[chain] ?? const []), ...list];
     });
     registry = buildWiredRegistry(
-        endpoints: _endpoints, tokens: merged, block: _bridge);
+        endpoints: _endpoints,
+        tokens: merged,
+        customNetworks: _customNets,
+        block: _bridge);
     accounts = Accounts(vault: vault, registry: registry, block: _bridge);
   }
 
@@ -222,6 +228,75 @@ class MultichainController extends ChangeNotifier {
       }
     });
     await _storage.write(key: _kTokens, value: jsonEncode(list));
+  }
+
+  // ---- custom networks (user-added EVM chains; CONFIG, never the vault) -----
+
+  /// The user-added custom networks, in display order (unmodifiable copy).
+  List<CustomNetwork> get customNetworks => List.unmodifiable(_customNets);
+
+  Future<void> _loadCustomNets() async {
+    try {
+      _customNets = decodeCustomNetworks(await _storage.read(key: _kCustomNets));
+    } catch (_) {
+      _customNets = [];
+    }
+  }
+
+  Future<void> _persistCustomNets() async {
+    await _storage.write(
+        key: _kCustomNets, value: encodeCustomNetworks(_customNets));
+  }
+
+  /// Probe an RPC endpoint's `eth_chainId`. Returns the chain id it reports, or
+  /// null if the endpoint is unreachable / not EVM. Best-effort, non-blocking —
+  /// callers use it only to WARN on a chainId mismatch, never to block an add.
+  Future<int?> probeChainId(String rpcUrl) async {
+    final url = rpcUrl.trim();
+    final uri = Uri.tryParse(url);
+    if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
+      return null;
+    }
+    try {
+      final fn = jsonRpc(url);
+      final res = await fn('eth_chainId', const []);
+      final s = res.toString();
+      if (s.startsWith('0x')) return int.parse(s.substring(2), radix: 16);
+      return int.tryParse(s);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Add (or, when [replacingId] names an existing row, replace) a custom
+  /// network. Validates first; throws on an invalid definition or a duplicate
+  /// chainId/id. Rebuilds the registry preserving the unlocked session.
+  Future<void> addCustomNetwork(CustomNetwork net, {String? replacingId}) async {
+    final others =
+        _customNets.where((n) => n.id != (replacingId ?? net.id)).toList();
+    final err = validateCustomNetwork(net, existing: others);
+    if (err != null) throw Exception(err);
+    if (replacingId != null) {
+      final i = _customNets.indexWhere((n) => n.id == replacingId);
+      if (i >= 0) {
+        _customNets[i] = net;
+      } else {
+        _customNets.add(net);
+      }
+    } else {
+      _customNets.add(net);
+    }
+    await _persistCustomNets();
+    _rebuildPreservingSession();
+  }
+
+  Future<void> removeCustomNetwork(String id) async {
+    _customNets.removeWhere((n) => n.id == id);
+    // Drop any custom tokens keyed to that network too.
+    _customTokens.remove(id);
+    await _persistCustomNets();
+    await _persistTokens();
+    _rebuildPreservingSession();
   }
 
   Future<void> _loadEndpoints() async {
@@ -465,6 +540,27 @@ class MultichainController extends ChangeNotifier {
   }
 
   // ---- read helpers for the UI ---------------------------------------------
+
+  /// The chains to render, in display order: the built-ins followed by any
+  /// genuinely-new user-added networks (custom nets that merely overrode a
+  /// built-in's chainId are not repeated — they ARE the built-in row).
+  List<String> displayChains() => [
+        ...kDisplayChains,
+        ...registry.customNetworkIds(),
+      ];
+
+  /// Human label for [chain] — built-in label, else the custom network's name.
+  String chainLabel(String chain) =>
+      kChainLabels[chain] ?? registry.customNetwork(chain)?.name ?? chain;
+
+  /// Native ticker for [chain] — built-in ticker, else the custom net's symbol.
+  String chainTicker(String chain) =>
+      kChainTickers[chain] ?? registry.customNetwork(chain)?.nativeSymbol ?? '';
+
+  /// Whether [chain] is an EVM network (built-in or custom) — i.e. supports
+  /// ERC-20 tokens / the "Add token" affordance.
+  bool isEvmChain(String chain) =>
+      kEvmChains.contains(chain) || registry.customNetwork(chain) != null;
 
   Future<DerivedAccount?> addressFor(String chain) async {
     try {

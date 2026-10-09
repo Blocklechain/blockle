@@ -49,12 +49,13 @@
 
   async function settings() {
     if (_settings) return _settings;
-    const s = await Store.get(['chainEndpoints', 'chainTokens', 'enabledChains', 'agentSettings']);
+    const s = await Store.get(['chainEndpoints', 'chainTokens', 'enabledChains', 'agentSettings', 'customNetworks']);
     _settings = {
       endpoints: s.chainEndpoints || {},     // { ethereum:{rpcUrl}, bitcoin:{esplora}, ... }
       tokens: s.chainTokens || {},           // { ethereum:[{...erc20}], ... } user-added
       enabled: s.enabledChains || null,
       agent: s.agentSettings || {},          // { treasury?, venues?, priceUsd?, telemetry?, collectorUrl? }
+      custom: s.customNetworks || [],        // user-added EVM networks (config, not secrets)
     };
     return _settings;
   }
@@ -94,6 +95,8 @@
       // override). Auto-detect stays OFF until a key is present.
       alchemy: (s.endpoints && s.endpoints.alchemy) || {},
       enabled: s.enabled || undefined,
+      // User custom EVM networks — same generic adapter, merged+deduped by chainId.
+      custom: s.custom || [],
       block: { wallet: Wallet, chain: global.Chain, explorer: 'https://blockle.org/tx/' },
     });
     return _registry;

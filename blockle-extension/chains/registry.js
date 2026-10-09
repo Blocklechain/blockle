@@ -13,6 +13,7 @@
   const Evm = inNode ? require('./evm.js') : global.EvmAdapter;
   const Utxo = inNode ? require('./utxo.js') : global.UtxoAdapter;
   const Discovery = inNode ? require('./discovery.js') : global.TokenDiscovery;
+  const Custom = inNode ? require('./custom-networks.js') : global.CustomNetworks;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -114,16 +115,57 @@
     enabledSet.add('block'); // BLOCK is always enabled
 
     const adapters = {};
-    // EVM chains — ALL via the same adapter + the same m/44'/60' secp256k1 key.
+    // EVM adapter specs (id -> createEvmAdapter opts) + a chainId -> id index, so
+    // user custom networks can DEDUPE by chainId (override an existing net's RPC
+    // rather than duplicate it) and new ones instantiate the SAME generic adapter.
+    const evmSpecs = {};
+    const byChainId = {};
+    // Built-in EVM chains — ALL via the same adapter + the same m/44'/60' key.
     for (const id of Object.keys(EVM_CHAINS)) {
       const meta = EVM_CHAINS[id];
       const ep = endpoints[id] || {};
-      adapters[id] = Evm.createEvmAdapter({
-        id, chainId: ep.chainId || meta.chainId, symbol: meta.symbol,
+      const cid = ep.chainId || meta.chainId;
+      evmSpecs[id] = {
+        id, chainId: cid, symbol: meta.symbol,
         rpcUrl: ep.rpcUrl, endpoint: ep.endpoint, explorer: meta.explorer,
         alchemy: resolveAlchemy(alchemyCfg, id), // null unless a key is configured
-      });
+        decimals: 18,
+      };
+      byChainId[cid] = id;
     }
+
+    // User custom networks: { id, name, chainId, rpcUrl, nativeSymbol, decimals,
+    // explorerUrl, tokenIndexerUrl? }. Validated/normalized here (defensively).
+    // DEDUPE by chainId: a custom net whose chainId matches a built-in (or an
+    // earlier custom) OVERRIDES that adapter's RPC + token indexer instead of
+    // creating a duplicate; otherwise it instantiates a fresh EVM adapter.
+    const customList = Custom && Custom.normalizeList
+      ? Custom.normalizeList(config.custom || config.customNetworks || [])
+      : [];
+    const customMetaById = {};
+    for (const net of customList) {
+      const existingId = byChainId[net.chainId];
+      if (existingId) {
+        const spec = evmSpecs[existingId];
+        if (net.rpcUrl) { spec.rpcUrl = net.rpcUrl; spec.endpoint = undefined; }
+        if (net.tokenIndexerUrl) spec.alchemy = net.tokenIndexerUrl;
+        continue;
+      }
+      // Avoid colliding with an existing adapter id (built-in EVM slug, or a
+      // UTXO/BLOCK id) when the chainId is genuinely new.
+      let id = net.id;
+      if (evmSpecs[id] || id === 'bitcoin' || id === 'litecoin' || id === 'dogecoin' || id === 'block') id = id + '-' + net.chainId;
+      evmSpecs[id] = {
+        id, chainId: net.chainId, symbol: net.nativeSymbol,
+        rpcUrl: net.rpcUrl, explorer: net.explorerUrl || '',
+        alchemy: net.tokenIndexerUrl || null, decimals: net.decimals,
+      };
+      byChainId[net.chainId] = id;
+      customMetaById[id] = { id, name: net.name, symbol: net.nativeSymbol, decimals: net.decimals, chainId: net.chainId, custom: true };
+      enabledSet.add(id);
+    }
+
+    for (const id of Object.keys(evmSpecs)) adapters[id] = Evm.createEvmAdapter(evmSpecs[id]);
     // UTXO chains
     adapters.bitcoin  = Utxo.createUtxoAdapter('bitcoin',  { esplora: endpoints.bitcoin.esplora, endpoint: endpoints.bitcoin.endpoint });
     adapters.litecoin = Utxo.createUtxoAdapter('litecoin', { esplora: endpoints.litecoin.esplora, endpoint: endpoints.litecoin.endpoint });
@@ -141,6 +183,14 @@
       enabled() { return [...enabledSet].filter((id) => adapters[id]); },
       endpoints(id) { return endpoints[id]; },
       tokensFor(id) { return tokens[id] || []; },
+
+      // The user custom networks that produced their OWN adapter (not the ones
+      // that merely overrode a built-in's RPC), each as { id, name, symbol,
+      // decimals, chainId, custom:true }. Lets the UI label them properly.
+      customNetworks() { return Object.keys(customMetaById).map((id) => customMetaById[id]); },
+      // Display meta for any adapter id: custom entry, else undefined (the UI's
+      // static table covers the built-ins).
+      metaFor(id) { return customMetaById[id]; },
 
       // Auto-detect the tokens `address` actually holds on chain `id` (the
       // adapter's native discovery), MERGED with the default list + deduped by

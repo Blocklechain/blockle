@@ -117,6 +117,7 @@ ChainRegistry buildWiredRegistry({
   Map<String, EndpointCfg>? endpoints,
   Map<String, List<AssetRef>>? tokens,
   List<String>? enabled,
+  List<CustomNetwork>? customNetworks,
   BlockSignerBridge? block,
   HttpSend send = httpSend,
 }) {
@@ -125,6 +126,7 @@ ChainRegistry buildWiredRegistry({
     endpoints: ep,
     tokens: tokens,
     enabled: enabled,
+    customNetworks: customNetworks,
     block: block,
     rpcBuilder: (url) => jsonRpc(url, send: send),
     alchemyBuilder: (url) => jsonRpc(url, send: send),
