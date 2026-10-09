@@ -4,6 +4,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -102,7 +103,7 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
 /// - `submitauxblock [hash, auxpow]` → `true` once the parent proof is
 ///   attached and the block connects.
 pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
-    let pending: Arc<Mutex<HashMap<String, (Block, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+    let pending: Arc<Mutex<HashMap<String, (Block, String, u64)>>> = Arc::new(Mutex::new(HashMap::new()));
     thread::spawn(move || {
         let listener = match TcpListener::bind(&listen) {
             Ok(l) => {
@@ -122,7 +123,7 @@ pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
     });
 }
 
-fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String)>>>, mut stream: TcpStream) {
+fn handle(node: Arc<Node>, pending: Arc<Mutex<HashMap<String, (Block, String, u64)>>>, mut stream: TcpStream) {
     let Some((method_line, body)) = read_http_request(&mut stream) else { return };
     let mut parts = method_line.split_whitespace();
     let http_method = parts.next().unwrap_or("");
@@ -358,9 +359,13 @@ fn poolinfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
     }
 }
 
+/// Monotonic insertion counter for pending aux work, so eviction is FIFO
+/// (oldest-first) rather than arbitrary HashMap order.
+static AUX_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn createauxblock(
     node: &Arc<Node>,
-    pending: &Arc<Mutex<HashMap<String, (Block, String)>>>,
+    pending: &Arc<Mutex<HashMap<String, (Block, String, u64)>>>,
     params: &Value,
 ) -> Result<Value, String> {
     // Namecoin-style callers send []; ours send [address] or
@@ -398,15 +403,29 @@ fn createauxblock(
             hex::encode(be)
         })
         .unwrap_or_default();
-    pending.lock().unwrap().insert(hash.clone(), (block.clone(), algo.clone()));
-    // Keep the pending set bounded.
+    // Insert with a monotonic sequence so eviction is FIFO (drop OLDEST), not
+    // arbitrary HashMap order. Under a lane churning at min difficulty (a block
+    // per share), arbitrary eviction could drop the very work a miner is about
+    // to submit -> "unknown aux work (expired?)". Reported by shears.co.uk.
+    let seq = AUX_SEQ.fetch_add(1, Ordering::Relaxed);
+    let cur_prev = block.header.prev_hash;
     let mut p = pending.lock().unwrap();
+    p.insert(hash.clone(), (block.clone(), algo.clone(), seq));
+    // Drop work for an old tip (stale once a new BLOCK is mined) — this clears
+    // pending naturally on every new tip across all lanes.
+    p.retain(|_, (b, _, _)| b.header.prev_hash == cur_prev);
+    // Backstop cap: if a single tip still accumulates >256 live jobs, evict the
+    // OLDEST by insertion sequence (never the most-recently-handed-out work).
     if p.len() > 256 {
-        let drop_keys: Vec<String> = p.keys().take(p.len() - 256).cloned().collect();
-        for k in drop_keys {
+        let mut by_seq: Vec<(String, u64)> =
+            p.iter().map(|(k, (_, _, s))| (k.clone(), *s)).collect();
+        by_seq.sort_by_key(|(_, s)| *s);
+        let overflow = p.len() - 256;
+        for (k, _) in by_seq.into_iter().take(overflow) {
             p.remove(&k);
         }
     }
+    drop(p);
     Ok(json!({
         "hash": hash,
         "chainid": node.params().aux_chain_id,
@@ -420,14 +439,14 @@ fn createauxblock(
 
 fn submitauxblock(
     node: &Arc<Node>,
-    pending: &Arc<Mutex<HashMap<String, (Block, String)>>>,
+    pending: &Arc<Mutex<HashMap<String, (Block, String, u64)>>>,
     params: &Value,
 ) -> Result<Value, String> {
     let hash = params
         .get(0)
         .and_then(|v| v.as_str())
         .ok_or("params: [hash, auxpow]")?;
-    let (mut block, algo) = pending
+    let (mut block, algo, _seq) = pending
         .lock()
         .unwrap()
         .get(hash)
