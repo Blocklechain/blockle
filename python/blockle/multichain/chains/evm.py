@@ -112,7 +112,7 @@ def sign_legacy155(tx: dict, priv) -> dict:
 class EvmAdapter:
     def __init__(self, id="ethereum", chainId=1, path="m/44'/60'/0'/0",
                  explorer="https://etherscan.io/tx/", symbol="ETH",
-                 rpcUrl=None, rpc=None, **_):
+                 rpcUrl=None, rpc=None, alchemy_rpc=None, **_):
         self.id = id
         self.chainId = chainId
         self.path = path
@@ -120,6 +120,11 @@ class EvmAdapter:
         self.native = AssetRef(chain=id, kind="native", symbol=symbol, decimals=18)
         self._root = None
         self._rpc = rpc or default_json_rpc(rpcUrl)
+        # Read-only indexer RPC (Alchemy). None => token auto-detect OFF, the
+        # wallet falls back to the native coin + the known default list. This is
+        # an indexer key, never a wallet secret; the registry resolves it from
+        # config and it is never logged here.
+        self._alchemy_rpc = alchemy_rpc
 
     # --- session ---
     def unlock(self, root):
@@ -163,6 +168,31 @@ class EvmAdapter:
                 out.append(Balance(asset=t, confirmed=v, display=format_units(v, t.decimals)))
             except Exception as e:
                 out.append(Balance(asset=t, confirmed="0", display="—", error=str(e)))
+        return out
+
+    def discover_tokens(self, address: str, limit=None):
+        """Enumerate the ERC-20s this address actually holds via Alchemy
+        (``alchemy_getTokenBalances`` -> ``alchemy_getTokenMetadata``). Returns
+        ``[]`` when no Alchemy endpoint is configured for this network (BNB /
+        Avalanche aren't on Alchemy getTokenBalances — they use the known list)."""
+        from .discovery import parse_alchemy_balances, parse_alchemy_metadata
+        if self._alchemy_rpc is None or not address:
+            return []
+        rows = parse_alchemy_balances(self._alchemy_rpc("alchemy_getTokenBalances", [address, "erc20"]))
+        if limit:
+            rows = rows[:limit]
+        out = []
+        for r in rows:
+            contract = r["contract"]
+            try:
+                meta = parse_alchemy_metadata(self._alchemy_rpc("alchemy_getTokenMetadata", [contract]))
+            except Exception:
+                meta = {"symbol": "?", "decimals": 18, "name": None, "logo": None}
+            asset = AssetRef(chain=self.id, kind="erc20", symbol=meta["symbol"],
+                             decimals=meta["decimals"], address=contract,
+                             name=meta["name"], logo=meta["logo"])
+            v = str(r["amount"])
+            out.append(Balance(asset=asset, confirmed=v, display=format_units(v, meta["decimals"])))
         return out
 
     def allowance(self, token_address: str, owner: str, spender: str) -> str:

@@ -22,6 +22,9 @@
   const LAMPORTS = 1_000_000_000; // 1 SOL
   const DEFAULT_PATH = "m/44'/501'/0'/0'";
   const HARDENED = 0x80000000;
+  // The SPL Token program (classic). Token-2022 has its own id; the classic
+  // program covers the overwhelming majority of mints a wallet holds.
+  const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
   // ---- SLIP-0010 (ed25519) HD derivation -----------------------------------
   // ed25519 keys are hardened-only: every path segment MUST be hardened.
@@ -211,6 +214,41 @@
         return out;
       },
 
+      // Auto-detect every SPL token the owner holds, natively (no extra
+      // provider): getTokenAccountsByOwner with the SPL Token program id +
+      // jsonParsed encoding enumerates the mints + amounts. Multiple token
+      // accounts for one mint are summed. The RPC does not carry symbol/name, so
+      // those are left for the UI (mint-derived short label); decimals come from
+      // the parsed tokenAmount. Best-effort: returns [] on failure.
+      async discoverTokens(address) {
+        try {
+          const res = await rpc('getTokenAccountsByOwner',
+            [address, { programId: TOKEN_PROGRAM }, { encoding: 'jsonParsed' }]);
+          const byMint = new Map(); // mint -> { amount:BigInt, decimals }
+          for (const acc of ((res && res.value) || [])) {
+            const info = acc && acc.account && acc.account.data && acc.account.data.parsed
+              && acc.account.data.parsed.info;
+            if (!info || !info.mint || !info.tokenAmount) continue;
+            const mint = info.mint;
+            let amt; try { amt = BigInt(info.tokenAmount.amount); } catch { continue; }
+            const prev = byMint.get(mint);
+            if (prev) prev.amount += amt;
+            else byMint.set(mint, { amount: amt, decimals: Number(info.tokenAmount.decimals || 0) });
+          }
+          const out = [];
+          for (const [mint, v] of byMint) {
+            if (v.amount <= 0n) continue;
+            const value = v.amount.toString();
+            out.push({
+              chain: id, kind: 'spl', mint,
+              symbol: mint.slice(0, 4) + '…' + mint.slice(-4),
+              decimals: v.decimals, balance: value, display: formatUnits(value, v.decimals),
+            });
+          }
+          return out;
+        } catch { return []; }
+      },
+
       // Sign a serialized (Jupiter) transaction. `tx` is {raw|swapTransaction}
       // as base64 (or a Uint8Array). Returns { chain, raw(base64), txid }.
       async signTx(account, tx) {
@@ -247,7 +285,7 @@
     deriveSlip10, masterKey, deriveChild,
     decodeShortVec, locateSigner, signSerializedTx,
     fromBase64, toBase64, formatUnits,
-    DEFAULT_PATH, LAMPORTS,
+    DEFAULT_PATH, LAMPORTS, TOKEN_PROGRAM,
   };
   global.SolanaAdapter = API;
   if (inNode) module.exports = API;

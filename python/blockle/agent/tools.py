@@ -120,7 +120,7 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
         return _need(member(ctx, "getBalance"), "getBalance")(a["chain"], a.get("tokens"))
     tools.append({
         "name": "get_balance",
-        "description": "Balances for a chain's account (native coin plus any imported tokens). Base units.",
+        "description": "Balances for a chain's account: native coin, the known token list, plus any auto-detected held tokens (merged, deduped, non-zero first). Base units.",
         "valueMoving": False,
         "parameters": {"type": "object",
                        "properties": {"chain": {"type": "string"},

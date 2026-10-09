@@ -26,6 +26,8 @@ class AssetRef {
     required this.symbol,
     required this.decimals,
     this.address, // ERC-20 contract / BLOCK-20 id / SPL mint; null for native
+    this.name, // human-readable token name (discovery metadata)
+    this.logo, // token logo URL (discovery metadata)
   });
 
   final ChainId chain;
@@ -33,6 +35,8 @@ class AssetRef {
   final String symbol;
   final int decimals;
   final String? address;
+  final String? name;
+  final String? logo;
 
   Map<String, dynamic> toJson() => {
         'chain': chain,
@@ -40,6 +44,8 @@ class AssetRef {
         'symbol': symbol,
         'decimals': decimals,
         if (address != null) 'address': address,
+        if (name != null) 'name': name,
+        if (logo != null) 'logo': logo,
       };
 }
 
@@ -152,6 +158,13 @@ abstract class ChainAdapter {
   /// and a flagged error — never throws into the UI.
   Future<List<Balance>> getBalance(String address, {List<AssetRef>? tokens});
 
+  /// Auto-detect the tokens an address ACTUALLY holds, with live balances and
+  /// (when the indexer provides them) symbol/decimals/name/logo. Best-effort and
+  /// MUST NOT throw into the UI — returns `[]` when the chain has no token model
+  /// (BTC/LTC/DOGE) or the indexer is not configured (EVM auto-detect OFF until
+  /// an Alchemy key is set). The native coin is NOT included here.
+  Future<List<Balance>> discoverTokens(String address);
+
   /// Build + SIGN a transaction. Does NOT broadcast.
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req);
 
@@ -175,4 +188,93 @@ String formatUnits(String baseStr, int decimals) {
   final i = s.substring(0, s.length - decimals);
   var f = s.substring(s.length - decimals).replaceFirst(RegExp(r'0+$'), '');
   return f.isNotEmpty ? '$i.$f' : i;
+}
+
+// ---- token merge / dedupe / spam heuristics (pure, testable) ---------------
+
+/// True when a confirmed base-unit string is zero / unparseable.
+bool isZeroBalance(String confirmed) {
+  final v = BigInt.tryParse(confirmed);
+  return v == null || v == BigInt.zero;
+}
+
+final RegExp _spamRe = RegExp(
+    r'(https?:|www\.|\.com|\.io\b|\.org\b|\.net\b|\.xyz|\.app\b|t\.me|airdrop|claim|reward|voucher|visit |giveaway|free |\$ )',
+    caseSensitive: false);
+
+/// Heuristic: an obviously-spam auto-detected token (URL/claim bait in the
+/// symbol or name, or an absurdly long symbol). Deliberately simple — only used
+/// to hide ZERO-balance discovered junk; curated/default tokens are never hidden.
+bool isLikelySpam(AssetRef a) {
+  if (a.symbol.length > 24) return true;
+  final s = '${a.symbol} ${a.name ?? ''}';
+  return _spamRe.hasMatch(s);
+}
+
+String _dedupeKey(AssetRef a) => a.kind == 'native'
+    ? '${a.chain}:native'
+    : '${a.chain}:${(a.address ?? a.symbol).toLowerCase()}';
+
+/// Merge curated/known balances with auto-detected ones, deduped by
+/// (chain, contract). Known entries are always kept; a discovered entry for the
+/// same key backfills name/logo and, if the known read errored or was zero,
+/// adopts the discovered balance. Spam-looking discovered tokens with a zero
+/// balance are dropped (unless [spamFilter] is false). Result ordering:
+/// native first, then non-zero balances, then zero balances — stable by key.
+List<Balance> mergeBalances(List<Balance> known, List<Balance> discovered,
+    {bool spamFilter = true}) {
+  final byKey = <String, Balance>{};
+  final order = <String>[];
+  void put(String k, Balance b) {
+    if (!byKey.containsKey(k)) order.add(k);
+    byKey[k] = b;
+  }
+
+  for (final b in known) {
+    put(_dedupeKey(b.asset), b);
+  }
+  for (final d in discovered) {
+    final k = _dedupeKey(d.asset);
+    final existing = byKey[k];
+    if (existing != null) {
+      final useDisc = existing.error != null ||
+          (isZeroBalance(existing.confirmed) && !isZeroBalance(d.confirmed));
+      final src = useDisc ? d : existing;
+      final asset = AssetRef(
+        chain: existing.asset.chain,
+        kind: existing.asset.kind,
+        symbol: existing.asset.symbol.isNotEmpty
+            ? existing.asset.symbol
+            : d.asset.symbol,
+        decimals: existing.asset.decimals,
+        address: existing.asset.address ?? d.asset.address,
+        name: existing.asset.name ?? d.asset.name,
+        logo: existing.asset.logo ?? d.asset.logo,
+      );
+      byKey[k] = Balance(
+        asset: asset,
+        confirmed: src.confirmed,
+        display: src.display,
+        spendable: src.spendable,
+        error: useDisc ? null : existing.error,
+      );
+    } else {
+      if (spamFilter && isLikelySpam(d.asset) && isZeroBalance(d.confirmed)) {
+        continue;
+      }
+      put(k, d);
+    }
+  }
+
+  final list = [for (final k in order) byKey[k]!];
+  int rank(Balance x) =>
+      x.asset.kind == 'native' ? 0 : (isZeroBalance(x.confirmed) ? 2 : 1);
+  final indexed = [
+    for (var i = 0; i < list.length; i++) MapEntry(i, list[i])
+  ];
+  indexed.sort((a, b) {
+    final r = rank(a.value).compareTo(rank(b.value));
+    return r != 0 ? r : a.key.compareTo(b.key);
+  });
+  return [for (final e in indexed) e.value];
 }

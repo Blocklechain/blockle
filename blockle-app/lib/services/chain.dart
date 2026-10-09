@@ -76,6 +76,21 @@ class Chain {
     }
   }
 
+  /// BLOCK-20 token holdings for an address via the node's holder interface.
+  /// Best-effort: returns `[]` when the endpoint is absent/unreachable. Each
+  /// entry carries at least `{id|contract, symbol, decimals, balance}`.
+  Future<List<Map<String, dynamic>>> addressTokens(String address) async {
+    if (address.isEmpty) return const [];
+    final a = await _get('/address/$address/tokens');
+    if (a == null) return const [];
+    final list = a['tokens'] ?? a['holdings'] ?? a['balances'];
+    if (list is! List) return const [];
+    return list
+        .whereType<Map>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
+  }
+
   /// Look up a transaction by id. Returns its JSON (with `confirmations`/
   /// `height` once mined) or null if not found / still unconfirmed.
   Future<Map<String, dynamic>?> tx(String txid) async {

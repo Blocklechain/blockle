@@ -151,8 +151,11 @@ class EvmAdapter implements ChainAdapter {
     this.symbol = 'ETH',
     this.explorer = 'https://etherscan.io/tx/',
     this.rpcUrl,
+    this.alchemyUrl,
     JsonRpcFn? rpc,
-  }) : _rpcOverride = rpc {
+    JsonRpcFn? alchemyRpc,
+  })  : _rpcOverride = rpc,
+        _alchemyOverride = alchemyRpc {
     native = AssetRef(chain: id, kind: 'native', symbol: symbol, decimals: 18);
   }
 
@@ -163,7 +166,12 @@ class EvmAdapter implements ChainAdapter {
   final String symbol;
   final String explorer;
   final String? rpcUrl;
+
+  /// Alchemy indexer base URL *including* the read-only API key (CONFIG, never
+  /// hardcoded/logged). When null, ERC-20 auto-detect is OFF for this chain.
+  final String? alchemyUrl;
   final JsonRpcFn? _rpcOverride;
+  final JsonRpcFn? _alchemyOverride;
 
   @override
   late final AssetRef native;
@@ -192,6 +200,85 @@ class EvmAdapter implements ChainAdapter {
       throw StateError((j['error'] as Map)['message']?.toString() ?? 'rpc error');
     }
     return j['result'];
+  }
+
+  bool get _alchemyEnabled => _alchemyOverride != null || alchemyUrl != null;
+
+  Future<dynamic> _alchemy(String method, List<dynamic> params) async {
+    if (_alchemyOverride != null) return _alchemyOverride(method, params);
+    final url = alchemyUrl;
+    if (url == null) throw StateError('$id: alchemy auto-detect not configured');
+    final r = await http.post(Uri.parse(url),
+        headers: {'content-type': 'application/json'},
+        body: jsonEncode({
+          'jsonrpc': '2.0',
+          'id': DateTime.now().millisecondsSinceEpoch,
+          'method': method,
+          'params': params,
+        }));
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    if (j['error'] != null) {
+      throw StateError((j['error'] as Map)['message']?.toString() ?? 'rpc error');
+    }
+    return j['result'];
+  }
+
+  /// Auto-detect ERC-20 holdings via Alchemy's enhanced API:
+  /// alchemy_getTokenBalances (non-zero ERC-20s) then alchemy_getTokenMetadata
+  /// (symbol/decimals/name/logo). OFF (returns `[]`) until an Alchemy URL/key is
+  /// configured for this chain — BNB/Avalanche aren't on this API and simply
+  /// fall through to the curated default list.
+  @override
+  Future<List<Balance>> discoverTokens(String address) async {
+    if (!_alchemyEnabled) return const [];
+    try {
+      final res = await _alchemy('alchemy_getTokenBalances', [address, 'erc20']);
+      final raw = (res is Map ? res['tokenBalances'] : null) ?? const [];
+      final out = <Balance>[];
+      for (final tb in raw as List) {
+        final contract = (tb['contractAddress'] ?? '').toString();
+        final hexBal = (tb['tokenBalance'] ?? '0x0').toString();
+        if (contract.isEmpty) continue;
+        final bal = _big(hexBal.isEmpty ? '0x0' : hexBal);
+        if (bal == BigInt.zero) continue; // discovery = non-zero holdings only
+        var decimals = 18;
+        String symbol =
+            contract.length >= 6 ? contract.substring(0, 6) : contract;
+        String? name;
+        String? logo;
+        try {
+          final meta =
+              await _alchemy('alchemy_getTokenMetadata', [contract]) as Map?;
+          if (meta != null) {
+            decimals = (meta['decimals'] as num?)?.toInt() ?? decimals;
+            final s = (meta['symbol'] as String?)?.trim();
+            if (s != null && s.isNotEmpty) symbol = s;
+            final n = (meta['name'] as String?)?.trim();
+            if (n != null && n.isNotEmpty) name = n;
+            final l = (meta['logo'] as String?)?.trim();
+            if (l != null && l.isNotEmpty) logo = l;
+          }
+        } catch (_) {
+          // metadata is best-effort; keep the raw balance with a stub symbol.
+        }
+        final asset = AssetRef(
+          chain: id,
+          kind: 'erc20',
+          symbol: symbol,
+          decimals: decimals,
+          address: contract,
+          name: name,
+          logo: logo,
+        );
+        out.add(Balance(
+            asset: asset,
+            confirmed: bal.toString(),
+            display: formatUnits(bal.toString(), decimals)));
+      }
+      return out;
+    } catch (_) {
+      return const []; // best-effort: never throw into the UI
+    }
   }
 
   hd.HdNode _deriveNode(int index) {

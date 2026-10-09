@@ -33,6 +33,12 @@ abstract class BlockSignerBridge {
   Future<Map<String, dynamic>> buildTransfer(
       List<dynamic> utxos, String to, BigInt amount, BigInt fee);
 
+  /// BLOCK-20 token holdings for [address] via the node's holder interface
+  /// (listpools/tokeninfo + balanceOf). Each entry is a map with at least
+  /// `{id|contract, symbol, decimals, balance}`. Best-effort — returns `[]`
+  /// when the node exposes no token interface.
+  Future<List<dynamic>> tokenHoldings(String address) async => const [];
+
   /// Broadcast a signed bincode-hex transaction; returns the accepted txid.
   Future<dynamic> submit(String raw);
 }
@@ -86,6 +92,41 @@ class BlockAdapter implements ChainAdapter {
         Balance(
             asset: native, confirmed: '0', display: '—', error: e.toString()),
       ];
+    }
+  }
+
+  /// Auto-detect BLOCK-20 tokens the address holds, via the node's holder
+  /// interface (exposed through the bridge). Best-effort — returns `[]` when the
+  /// node has no token interface wired.
+  @override
+  Future<List<Balance>> discoverTokens(String address) async {
+    try {
+      final addr = address.isEmpty ? _bridge.address : address;
+      final holdings = await _bridge.tokenHoldings(addr);
+      final out = <Balance>[];
+      for (final h in holdings) {
+        if (h is! Map) continue;
+        final id = (h['id'] ?? h['contract'] ?? h['address'] ?? '').toString();
+        if (id.isEmpty) continue;
+        final bal = BigInt.tryParse((h['balance'] ?? '0').toString()) ?? BigInt.zero;
+        if (bal == BigInt.zero) continue;
+        final dec = (h['decimals'] as num?)?.toInt() ?? 8;
+        final asset = AssetRef(
+          chain: 'block',
+          kind: 'block20',
+          symbol: (h['symbol'] ?? id).toString(),
+          decimals: dec,
+          address: id,
+          name: h['name']?.toString(),
+        );
+        out.add(Balance(
+            asset: asset,
+            confirmed: bal.toString(),
+            display: formatUnits(bal.toString(), dec)));
+      }
+      return out;
+    } catch (_) {
+      return const [];
     }
   }
 

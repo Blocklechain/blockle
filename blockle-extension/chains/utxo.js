@@ -227,6 +227,9 @@
       unlock(root) { rootSeed = root && (root.seed || root); },
       lock() { rootSeed = null; },
 
+      // BTC/LTC/DOGE are coin-only — there are no on-chain tokens to detect.
+      async discoverTokens() { return []; },
+
       async deriveAccount(root, index) {
         const seed = (root && (root.seed || root)) || rootSeed;
         if (!seed) throw new Error('no root seed');

@@ -24,6 +24,9 @@ const int lamports = 1000000000; // 1 SOL
 const String solDefaultPath = "m/44'/501'/0'/0'";
 const int _hardened = 0x80000000;
 
+/// The SPL Token program — owner-program filter for enumerating token accounts.
+const String splTokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+
 // ---- SLIP-0010 (ed25519) HD derivation -------------------------------------
 Uint8List _ser32(int i) {
   final b = Uint8List(4);
@@ -263,6 +266,53 @@ class SolanaAdapter implements ChainAdapter {
       }
     }
     return out;
+  }
+
+  /// Auto-detect SPL holdings natively (no extra provider): enumerate every
+  /// token account owned by [address] under the SPL Token program and read the
+  /// mint + jsonParsed `tokenAmount` (amount + decimals). Non-zero balances are
+  /// aggregated per mint. Best-effort — returns `[]` on any failure.
+  @override
+  Future<List<Balance>> discoverTokens(String address) async {
+    try {
+      final res = await _rpc('getTokenAccountsByOwner', [
+        address,
+        {'programId': splTokenProgram},
+        {'encoding': 'jsonParsed'}
+      ]);
+      final accounts = ((res is Map ? res['value'] : null) ?? const []) as List;
+      final byMint = <String, BigInt>{};
+      final decimalsByMint = <String, int>{};
+      for (final acc in accounts) {
+        final info = acc['account']?['data']?['parsed']?['info'];
+        if (info == null) continue;
+        final mint = (info['mint'] ?? '').toString();
+        final ta = info['tokenAmount'];
+        if (mint.isEmpty || ta == null) continue;
+        final amount = BigInt.parse((ta['amount'] ?? '0').toString());
+        byMint[mint] = (byMint[mint] ?? BigInt.zero) + amount;
+        decimalsByMint[mint] = (ta['decimals'] as num?)?.toInt() ?? 0;
+      }
+      final out = <Balance>[];
+      byMint.forEach((mint, amount) {
+        if (amount == BigInt.zero) return;
+        final dec = decimalsByMint[mint] ?? 0;
+        final asset = AssetRef(
+          chain: 'solana',
+          kind: 'spl',
+          symbol: mint.length >= 4 ? mint.substring(0, 4) : mint,
+          decimals: dec,
+          address: mint,
+        );
+        out.add(Balance(
+            asset: asset,
+            confirmed: amount.toString(),
+            display: formatUnits(amount.toString(), dec)));
+      });
+      return out;
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// Sign a serialized (e.g. Jupiter) transaction. `txRaw` is base64 (or bytes).

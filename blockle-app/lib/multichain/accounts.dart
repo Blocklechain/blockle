@@ -89,13 +89,25 @@ class Accounts {
     return acct;
   }
 
-  /// Best-effort balances for [chain] via its adapter (includes configured
-  /// tokens). Never throws into the UI — the adapter flags read errors.
-  Future<List<Balance>> balances(String chain, {int index = 0}) async {
+  /// Best-effort balances for [chain] via its adapter. Returns the native coin +
+  /// the curated/default token list, MERGED with auto-detected holdings
+  /// (Solana SPL, BLOCK-20, EVM ERC-20 via Alchemy when configured), deduped by
+  /// (chain, contract), non-zero balances first. Set [discover] false to skip
+  /// auto-detect. Never throws into the UI — adapters flag read errors.
+  Future<List<Balance>> balances(String chain,
+      {int index = 0, bool discover = true}) async {
     final acct = await accountFor(chain, index: index);
-    return registry
-        .get(chain)
-        .getBalance(acct.address, tokens: registry.tokensFor(chain));
+    final adapter = registry.get(chain);
+    final known =
+        await adapter.getBalance(acct.address, tokens: registry.tokensFor(chain));
+    if (!discover) return known;
+    List<Balance> found = const [];
+    try {
+      found = await adapter.discoverTokens(acct.address);
+    } catch (_) {
+      found = const [];
+    }
+    return mergeBalances(known, found);
   }
 
   /// The active BLOCK address (compat shim for the existing BLOCK-centric UI /
