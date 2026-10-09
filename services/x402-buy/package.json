@@ -1,0 +1,21 @@
+{
+  "name": "@blockle/x402-buy",
+  "version": "0.1.0",
+  "description": "x402 payment-rail service for the Blockle super-exchange — buy BLOCK on the sqrt curve, pay self-serve listing fees, and settle arbitrary priced actions in USDC, all over the official x402 protocol. Non-custodial: keys never live here.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test test/",
+    "manifest": "node scripts/write-manifest.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "express": "^4.19.0",
+    "x402": "^1.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
