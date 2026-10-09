@@ -2067,10 +2067,11 @@ const STUDIO_HTML: &str = r##"<style>
 <script src="/studio.js"></script>"##;
 
 fn page_wallet() -> String {
-    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.2.14";
+    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.3.0";
     let body = format!(
-        r##"<h1>Blockle Wallet</h1>
-<p class="sub">A desktop wallet for BLOCK, built on Qt 6. Decentralized by construction: it embeds a full node that syncs from the network peer-to-peer; keys never leave your machine (post-quantum ML-DSA). Transparent + shielded funds, hidden-amount private sends, and regtest tooling for developers.</p>
+        r##"<h1>Blockle Wallet <span class="badge">multi-chain</span></h1>
+<p class="sub">One non-custodial wallet for <b>BLOCK, every major EVM network</b> (Ethereum, Base, Arbitrum, Optimism, Polygon, BNB, Avalanche — plus any custom network you add), <b>BTC, LTC, DOGE and Solana</b>. Auto-detects your tokens, an embedded cross-chain exchange, and an optional <b>in-wallet AI trading agent</b> (bring your own Claude/OpenAI key; spend caps + confirm + kill-switch, keys stay on your device). Desktop (Qt 6, embeds a full BLOCK node), mobile (Flutter) and browser extension. Keys never leave your machine.</p>
+<p class="sub" style="font-size:13px"><b>Security note:</b> BLOCK uses post-quantum ML-DSA-44 signatures; BTC/LTC/DOGE/EVM/Solana use their standard ECDSA/ed25519 signatures, held in an encrypted (scrypt + AES-256-GCM) vault. Beta — test with small amounts.</p>
 <h2>Direct downloads</h2>
 <table><tr><th>platform</th><th>download</th></tr>
 <tr><td>Linux (x86_64)</td><td class="mono"><a href="{rel}/BlockleWallet-linux-x86_64.zip">BlockleWallet-linux-x86_64.zip</a></td></tr>
@@ -2081,7 +2082,7 @@ fn page_wallet() -> String {
 <p class="sub">Every build is produced by the public <a href="https://github.com/blocklechain/blockle/actions">CI pipeline</a> — verify provenance there, or build from source.</p>
 
 <h2>Browser extension <span class="badge">beta</span></h2>
-<p class="sub">A post-quantum BLOCK wallet in your browser, with <b>dApp connections</b>. Real ML-DSA-44 keys (compiled from the chain code to WebAssembly), a password-locked vault, send/receive, wallet-file import/export, and a <span class="mono">window.blockle</span> provider apps can connect to.</p>
+<p class="sub">The full multi-chain wallet in your browser — BLOCK (ML-DSA-44 keys compiled to WebAssembly) plus EVM/BTC/LTC/DOGE/Solana, token auto-detect, the embedded exchange and the AI trading agent, in a password-locked vault. Also exposes a <span class="mono">window.blockle</span> provider for dApps.</p>
 <table><tr><th>browser</th><th>download</th></tr>
 <tr><td>Chrome · Edge · Brave</td><td class="mono"><a href="{rel}/BlockleWallet-extension.zip">BlockleWallet-extension.zip</a></td></tr>
 </table>
