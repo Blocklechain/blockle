@@ -69,7 +69,7 @@ jobs:
       - name: Install Python package + Qt
         # [multichain] pulls coincurve/pynacl/pycryptodome/cryptography/base58
         # so the new multi-chain modules (imported by qtmultichain) load in CI.
-        run: pip install "./python[multichain]" "PySide6>=6.6" pyinstaller
+        run: pip install "./python[multichain]" "PySide6>=6.6" pyinstaller pytest
 
       - name: Python integration tests (headless Qt)
         # Windows is informational for now: the suite drives real sockets and
@@ -84,7 +84,10 @@ jobs:
           export BLOCKLE_BIN="$PWD/target/release/blockle$EXE"
           export BLOCKLE_BIZ_BIN="$PWD/target/release/blockle-biz$EXE"
           export BLOCKLE_CHAIN_BIN="$PWD/chain/target/release/blockle-chain$EXE"
-          cd python && python -m unittest discover -s tests -v
+          # pytest runs both the unittest.TestCase integration tests and the
+          # new pytest-style multichain/agent suites (unittest discover can't
+          # import the latter -> ModuleNotFoundError: pytest).
+          cd python && python -m pytest tests -v
 
       - name: Package Qt wallet GUI (PyInstaller)
         shell: bash
