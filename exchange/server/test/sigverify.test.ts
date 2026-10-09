@@ -71,9 +71,13 @@ test("Solana ed25519 detached signature verifies", () => {
   const nonce = "blockle-exchange login: cafef00d";
   const sigBytes = ed25519.sign(new TextEncoder().encode(nonce), priv);
 
-  // client may send base58 or hex
+  // client may send base58, hex, or base64 (Phantom web signMessage → base64)
   assert.ok(verifySolana(nonce, bs58.encode(sigBytes), address));
   assert.ok(verifySolana(nonce, hex(sigBytes), address));
+  assert.ok(
+    verifySolana(nonce, Buffer.from(sigBytes).toString("base64"), address),
+    "base64 (Phantom web) signature accepted",
+  );
   // tampered message fails
   assert.ok(!verifySolana("nope", bs58.encode(sigBytes), address));
   // wrong address fails

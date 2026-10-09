@@ -101,10 +101,29 @@ export function verifyEvm(message: string, signatureHex: string, address: string
 // ---- Solana (ed25519) ------------------------------------------------------
 
 function decodeSolSig(signature: string): Uint8Array {
-  // Phantom signMessage returns raw bytes; clients may send base58 or hex.
-  const looksHex = /^(0x)?[0-9a-fA-F]+$/.test(signature) && stripHex(signature).length === 128;
-  if (looksHex) return hexToBytes(signature);
-  return bs58.decode(signature);
+  // A 64-byte ed25519 signature can arrive as hex (128 chars), base64 (Phantom
+  // web's signMessage result, ~88 chars with +//=), or base58 (bs58-encoded).
+  // Try each and accept whichever yields exactly 64 bytes.
+  const s = signature.trim();
+  if (/^(0x)?[0-9a-fA-F]+$/.test(s) && stripHex(s).length === 128) return hexToBytes(s);
+  if (/[+/=]/.test(s) || s.length === 88) {
+    try {
+      const b = new Uint8Array(Buffer.from(s, "base64"));
+      if (b.length === 64) return b;
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    const b = bs58.decode(s);
+    if (b.length === 64) return b;
+  } catch {
+    /* fall through */
+  }
+  // last resort: treat as base64 even without the tell-tale chars
+  const b = new Uint8Array(Buffer.from(s, "base64"));
+  if (b.length === 64) return b;
+  throw new Error("unrecognized solana signature encoding");
 }
 
 export function verifySolana(message: string, signature: string, address: string): boolean {
