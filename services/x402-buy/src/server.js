@@ -32,7 +32,7 @@ const { quoteBuy, blockToBaseUnits, usdToMicroUsdc, microUsdcToUsd } = require("
 const { readReserveUsd } = require("./reserve");
 const { releaseBlock } = require("./release");
 const { signReceipt } = require("./receipts");
-const { buildRequirements, challengeBody, verifyAndSettle } = require("./x402");
+const { buildRequirements, buildChallengeV2, verifyAndSettle } = require("./x402");
 const { buildManifest, buildDiscoveryList } = require("./discovery");
 const { buildOpenApi } = require("./openapi");
 
@@ -54,9 +54,18 @@ function createApp(overrides = {}) {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
 
+  // Set the x402 v2 402 response headers (PAYMENT-REQUIRED carries the base64
+  // challenge; Link points crawlers at the OpenAPI; CORS exposes the header).
+  function set402Headers(res, header) {
+    res.set("PAYMENT-REQUIRED", header);
+    res.set("Access-Control-Expose-Headers", "PAYMENT-REQUIRED");
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Link", '</openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json"');
+  }
+
   // paywall-first: advertise a 402 challenge BEFORE input validation so x402
   // crawlers (x402scan.com) can discover the price without supplying params.
-  function send402(res, { payTo, usdcMicro, resource, description }) {
+  function send402(res, { payTo, usdcMicro, resource, description, method }) {
     // compliance gate still wins over the paywall: a gated mainnet path must
     // return 503 (not advertise a 402 challenge) until legal review is recorded.
     try {
@@ -64,18 +73,16 @@ function createApp(overrides = {}) {
     } catch (e) {
       return res.status(503).json({ error: String(e.message) });
     }
-    const requirements = [
-      buildRequirements({
-        network: cfg.network,
-        payTo: payTo || "0x0000000000000000000000000000000000000000",
-        maxAmountRequired: String(usdcMicro),
-        resource,
-        description,
-        maxTimeoutSeconds: cfg.maxTimeoutSeconds,
-      }),
-    ];
-    const ch = challengeBody(requirements, "payment required");
-    res.set("PAYMENT-REQUIRED", ch.header);
+    const ch = buildChallengeV2({
+      network: cfg.network,
+      payTo: payTo || "0x0000000000000000000000000000000000000000",
+      amountAtomic: usdcMicro,
+      resource,
+      method,
+      description,
+      maxTimeoutSeconds: cfg.maxTimeoutSeconds,
+    });
+    set402Headers(res, ch.header);
     return res.status(402).json(ch.body);
   }
 
@@ -110,8 +117,12 @@ function createApp(overrides = {}) {
 
     const xPayment = req.header("X-PAYMENT");
     if (!xPayment) {
-      const ch = challengeBody(requirements, "payment required");
-      res.set("PAYMENT-REQUIRED", ch.header);
+      const ch = buildChallengeV2({
+        network: cfg.network, payTo: spec.payTo, amountAtomic: spec.usdcMicro,
+        resource: spec.resource, method: req.method, description: spec.description,
+        maxTimeoutSeconds: cfg.maxTimeoutSeconds,
+      });
+      set402Headers(res, ch.header);
       return res.status(402).json(ch.body);
     }
 
@@ -173,8 +184,12 @@ function createApp(overrides = {}) {
         if (vs.denied) return res.status(403).json({ error: vs.reason });
         // payment invalid/unsettled → re-challenge so the client can pay again
         {
-          const ch = challengeBody(requirements, vs.reason);
-          res.set("PAYMENT-REQUIRED", ch.header);
+          const ch = buildChallengeV2({
+            network: cfg.network, payTo: spec.payTo, amountAtomic: spec.usdcMicro,
+            resource: spec.resource, method: req.method, description: spec.description,
+            maxTimeoutSeconds: cfg.maxTimeoutSeconds,
+          });
+          set402Headers(res, ch.header);
           return res.status(402).json(ch.body);
         }
       }
@@ -213,6 +228,7 @@ function createApp(overrides = {}) {
         usdcMicro: Number(usdc) > 0 ? usdToMicroUsdc(Number(usdc)) : 1_000_000,
         resource: `${cfg.publicBaseUrl.replace(/\/+$/, "")}/x402/buy`,
         description: "Buy BLOCK on the sqrt primary-sale curve (USDC over x402).",
+        method: req.method,
       });
     }
     if (!BLOCK_ADDR.test(to)) {
@@ -272,6 +288,29 @@ function createApp(overrides = {}) {
   }
   app.get("/x402/buy", buyHandler);
   app.post("/x402/buy", buyHandler);
+
+  // GET probes for the POST-only resources: x402scan discovers by probing with
+  // GET, so a GET must return the 402 challenge (not 404). The real action is
+  // still POST (below). base URL for the resource field:
+  const BASE = cfg.publicBaseUrl.replace(/\/+$/, "");
+  app.get("/x402/list", (req, res) =>
+    send402(res, {
+      payTo: treasuryAddr(),
+      usdcMicro: usdToMicroUsdc(cfg.listingFeeUsd),
+      resource: `${BASE}/x402/list`,
+      description: `Self-serve listing fee ($${cfg.listingFeeUsd} + $${cfg.perPairFeeUsd}/extra pair).`,
+      method: "GET",
+    }),
+  );
+  app.get("/x402/pay", (req, res) =>
+    send402(res, {
+      payTo: treasuryAddr(),
+      usdcMicro: 1_000_000,
+      resource: `${BASE}/x402/pay`,
+      description: "Generic priced action over x402.",
+      method: "GET",
+    }),
+  );
 
   // ---- (b) /x402/list — listing fee → signed 'listing-paid' receipt --------
   app.post("/x402/list", async (req, res) => {

@@ -95,13 +95,13 @@ test("http: unpaid buy returns a 402 with official x402 requirements", async () 
     const body = await res.json();
     assert.equal(body.x402Version, 2); // x402 v2
     assert.ok(Array.isArray(body.accepts) && body.accepts.length === 1);
+    assert.ok(body.resource && body.resource.url.endsWith("/x402/buy"), "top-level resource object (v2)");
     const r = body.accepts[0];
     assert.equal(r.scheme, "exact");
     assert.equal(r.network, "eip155:84532"); // CAIP-2 for base-sepolia
-    assert.equal(r.maxAmountRequired, "10000000"); // $10 → 10 USDC (6dp)
+    assert.equal(r.amount, "10000000"); // v2: atomic USDC amount ($10 → 10e6)
     assert.equal(r.payTo, "0xReserveTest");
     assert.ok(r.asset && r.extra && r.extra.name, "USDC asset + eip712 domain present");
-    assert.ok(r.outputSchema && r.outputSchema.input, "input schema declared for discovery");
   } finally {
     srv.close();
   }
@@ -144,7 +144,7 @@ test("http: listing fee 402 prices $5 + $1/extra and quotes the mandatory BLOCK 
     assert.equal(res.status, 402);
     const body = await res.json();
     // $5 + $1*2 = $7 → 7000000 micro-USDC
-    assert.equal(body.accepts[0].maxAmountRequired, "7000000");
+    assert.equal(body.accepts[0].amount, "7000000");
     assert.equal(body.accepts[0].payTo, TREASURY.testnet.base);
   } finally {
     srv.close();

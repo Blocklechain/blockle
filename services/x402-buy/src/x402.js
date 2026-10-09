@@ -68,16 +68,36 @@ function buildRequirements(opts) {
 }
 
 /**
- * The HTTP 402 challenge body in x402 v2 shape: x402Version:2 and accepts[]
- * with CAIP-2 network ids. Returns { body, header } — set `header` as the
- * `PAYMENT-REQUIRED` response header (base64 JSON) alongside the JSON body.
+ * Build the x402 v2 challenge in the EXACT shape x402scan/Bazaar emit and read:
+ * top-level { x402Version:2, resource:{url,method,description,mimeType,
+ * serviceName,tags}, accepts:[{scheme,network(CAIP-2),amount(atomic),asset,
+ * payTo,maxTimeoutSeconds,extra}] }. Returns { body, header } — set `header`
+ * as the base64 `PAYMENT-REQUIRED` response header (the authoritative carrier;
+ * the body mirrors it for convenience).
  */
-function challengeBody(accepts, errorMsg) {
-  const v2accepts = accepts.map((a) => ({ ...a, network: toCaip2(a.network) }));
+function buildChallengeV2({ network, payTo, amountAtomic, resource, method, description, serviceName, maxTimeoutSeconds }) {
+  const asset = getDefaultAsset(network);
   const body = toJsonSafe({
     x402Version: 2,
-    error: errorMsg || "payment required",
-    accepts: v2accepts,
+    resource: {
+      url: resource,
+      method: (method || "POST").toUpperCase(),
+      description: description || "",
+      mimeType: "application/json",
+      serviceName: serviceName || "Blockle Super Exchange",
+      tags: ["x402"],
+    },
+    accepts: [
+      {
+        scheme: "exact",
+        network: toCaip2(network),
+        amount: String(amountAtomic),
+        asset: asset.address,
+        payTo: payTo || "0x0000000000000000000000000000000000000000",
+        maxTimeoutSeconds: Number(maxTimeoutSeconds || 300),
+        extra: { name: asset.eip712.name, version: asset.eip712.version },
+      },
+    ],
   });
   return { body, header: paymentRequiredHeader(body) };
 }
@@ -143,7 +163,7 @@ async function verifyAndSettle({ facilitatorUrl, xPaymentHeader, requirements, .
 module.exports = {
   X402_VERSION,
   buildRequirements,
-  challengeBody,
+  buildChallengeV2,
   verifyAndSettle,
   makeFacilitator,
   toCaip2,
