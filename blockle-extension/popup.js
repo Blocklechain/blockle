@@ -367,6 +367,11 @@
       toast('Endpoint saved');
       refreshNet();
     });
+    $('#exchange-base').addEventListener('change', async (e) => {
+      await Store.set({ exchangeBase: e.target.value.trim() || Exchange.DEFAULT_BASE });
+      await Exchange.signOut(); // a different relay means a new session
+      toast('Exchange endpoint saved');
+    });
   }
 
   async function confirmReset() {
@@ -508,6 +513,277 @@
     });
   }
 
+  // ---- embedded exchange --------------------------------------------------
+  // Talks to the Blockle Exchange relay via exchange-client.js (the SHARED API
+  // CONTRACT). Signing is local ML-DSA (Wallet); the relay never sees a key.
+  let exMarkets = [], exMarket = null, exSide = 'buy', exType = 'limit', exStream = null, exWired = false;
+  const exCur = () => exMarkets.find((m) => m.market === exMarket);
+  const exBaseDec = () => { const m = exCur(); return (m && m.baseAsset && m.baseAsset.decimals) || 0; };
+  const exQuoteDec = () => { const m = exCur(); return (m && m.quoteAsset && m.quoteAsset.decimals) || 0; };
+  const exBaseSym = () => { const m = exCur(); return (m && m.base) || 'BASE'; };
+  const exQuoteSym = () => { const m = exCur(); return (m && m.quote) || 'QUOTE'; };
+
+  function showExSignin() {
+    $('#ex-main').hidden = true;
+    $('#ex-signin').hidden = false;
+    const locked = !Wallet.isUnlocked();
+    const watch = false;
+    $('#ex-unlock').hidden = !locked;
+    Wallet.selected().then((rec) => {
+      if (rec && rec.watchOnly) {
+        $('#ex-signin-note').textContent = 'This is a watch-only wallet — it cannot sign in to trade. Import a signing wallet to use the exchange.';
+        $('#ex-signin-go').disabled = true;
+        $('#ex-unlock').hidden = true;
+      } else {
+        $('#ex-signin-go').disabled = false;
+      }
+    });
+  }
+  function showExMain() {
+    $('#ex-signin').hidden = true;
+    $('#ex-main').hidden = false;
+  }
+
+  async function exLoadMarkets() {
+    const sel = $('#ex-market');
+    try {
+      exMarkets = (await Exchange.getMarkets()) || [];
+    } catch (e) {
+      exMarkets = [];
+    }
+    if (!exMarkets.length) {
+      sel.innerHTML = '<option value="">No markets listed yet</option>';
+      $('#ex-book').innerHTML = '<div class="empty">No markets listed yet.</div>';
+      $('#ex-place').disabled = true;
+      return;
+    }
+    $('#ex-place').disabled = false;
+    sel.innerHTML = exMarkets.map((m) => `<option value="${m.market}">${m.market}</option>`).join('');
+    if (!exMarket || !exCur()) exMarket = exMarkets[0].market;
+    sel.value = exMarket;
+    exSelectMarket(exMarket);
+  }
+
+  function exSelectMarket(m) {
+    exMarket = m;
+    const cm = exCur();
+    $('#ex-meta').textContent = cm
+      ? `${exBaseSym()} (${cm.baseAsset.chain}) / ${exQuoteSym()} (${cm.quoteAsset.chain})`
+      : '';
+    exUpdateLabels();
+    exLoadBook();
+    exSubscribe();
+  }
+
+  function exUpdateLabels() {
+    $('#ex-price-label').textContent = `Price (${exQuoteSym()} per ${exBaseSym()})`;
+    $('#ex-amt-label').textContent = `Amount (${exBaseSym()})`;
+    $('#ex-price-field').style.display = exType === 'market' ? 'none' : '';
+  }
+
+  async function exLoadBook() {
+    let book = { bids: [], asks: [] };
+    try {
+      book = (await Exchange.getBook(exMarket)) || book;
+    } catch {}
+    exRenderBook(book);
+  }
+  function exRenderBook(book) {
+    const bids = book.bids || [], asks = book.asks || [];
+    const box = $('#ex-book');
+    if (!bids.length && !asks.length) {
+      box.innerHTML = '<div class="empty">No resting orders. Place one — it posts to the book.</div>';
+      return;
+    }
+    let maxAmt = 0;
+    bids.concat(asks).forEach((l) => (maxAmt = Math.max(maxAmt, Number(l.amount) || 0)));
+    const dec = exBaseDec();
+    const row = (l, cls) => {
+      const w = maxAmt ? ((Number(l.amount) || 0) / maxAmt) * 100 : 0;
+      const amt = Number(Exchange.toHuman(l.amount, dec)).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      return `<div class="ex-lvl ${cls}" data-px="${l.price}" data-amt="${l.amount}"><span class="ex-depth" style="width:${w}%"></span><span class="ex-px">${l.price}</span><span class="ex-qty">${amt}</span></div>`;
+    };
+    box.innerHTML =
+      `<div class="ex-side asks">${asks.slice(0, 8).reverse().map((l) => row(l, 'ask')).join('') || '<div class="muted" style="padding:4px 8px">—</div>'}</div>` +
+      `<div class="ex-side bids">${bids.slice(0, 8).map((l) => row(l, 'bid')).join('') || '<div class="muted" style="padding:4px 8px">—</div>'}</div>`;
+    $$('.ex-lvl', box).forEach((r) =>
+      r.addEventListener('click', () => {
+        $('#ex-price').value = r.getAttribute('data-px');
+        $('#ex-amt').value = Exchange.toHuman(r.getAttribute('data-amt'), dec);
+      })
+    );
+  }
+
+  function exSubscribe() {
+    if (exStream) { try { exStream.close(); } catch {} exStream = null; }
+    Exchange.stream(exMarket, (msg) => {
+      if (!msg) return;
+      if ((msg.type === 'book' || msg.book) && (msg.market === exMarket || !msg.market)) {
+        exRenderBook(msg.book || msg);
+      } else if (msg.type === 'trade' || msg.trade) {
+        exLoadBook();
+      }
+    }).then((s) => (exStream = s));
+  }
+
+  async function exRenderMine() {
+    const box = $('#ex-myorders');
+    let orders = [];
+    try {
+      orders = (await Exchange.getMyOrders()) || [];
+    } catch {
+      box.innerHTML = '<div class="empty">Sign in to see your orders.</div>';
+      return;
+    }
+    const open = orders.filter((o) => !o.status || /open|resting|partial|new/i.test(o.status));
+    if (!open.length) {
+      box.innerHTML = '<div class="empty">No open orders.</div>';
+      return;
+    }
+    box.innerHTML = open
+      .map((o) => {
+        const m = exMarkets.find((mm) => mm.market === o.market);
+        const dec = (m && m.baseAsset && m.baseAsset.decimals) || 0;
+        const amt = Number(Exchange.toHuman(o.amount, dec)).toLocaleString(undefined, { maximumFractionDigits: 6 });
+        return `<div class="row"><div class="l"><b>${(o.side || '').toUpperCase()} ${o.market}</b><small class="mono">${amt} @ ${o.price != null ? o.price : 'mkt'}</small></div><button class="mini-btn" data-cancel="${o.orderId || o.id}">Cancel</button></div>`;
+      })
+      .join('');
+    $$('[data-cancel]', box).forEach((b) =>
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        try {
+          await Exchange.cancelOrder(b.dataset.cancel);
+          toast('Order cancelled');
+          exRenderMine();
+        } catch (e) {
+          b.disabled = false;
+          toast('Cancel failed');
+        }
+      })
+    );
+  }
+
+  function exSetSide(s) {
+    exSide = s;
+    $('#ex-buy').classList.toggle('ghost', s !== 'buy');
+    $('#ex-sell').classList.toggle('ghost', s !== 'sell');
+  }
+  function exSetType(t) {
+    exType = t;
+    $('#ex-limit').classList.toggle('active', t === 'limit');
+    $('#ex-market-type').classList.toggle('active', t === 'market');
+    exUpdateLabels();
+  }
+
+  async function exPlace() {
+    const err = $('#ex-order-err');
+    err.textContent = '';
+    const amtHuman = $('#ex-amt').value.trim();
+    const pxHuman = $('#ex-price').value.trim();
+    if (!(parseFloat(amtHuman) > 0)) return (err.textContent = 'Enter an amount.');
+    if (exType === 'limit' && !(parseFloat(pxHuman) > 0)) return (err.textContent = 'Enter a limit price.');
+    const btn = $('#ex-place');
+    btn.disabled = true;
+    btn.textContent = 'Signing & placing…';
+    try {
+      await Exchange.placeOrder({
+        market: exMarket,
+        side: exSide,
+        type: exType,
+        price: exType === 'market' ? null : pxHuman,
+        amount: Exchange.toBase(amtHuman, exBaseDec()),
+      });
+      toast('Order placed');
+      $('#ex-amt').value = '';
+      exLoadBook();
+      exRenderMine();
+    } catch (e) {
+      err.textContent = /locked|no wallet|password/i.test(e.message) ? 'Unlock your wallet first.' : 'Order failed: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Place order';
+    }
+  }
+
+  async function exBuyBlock() {
+    const err = $('#ex-x402-err');
+    err.textContent = '';
+    const usdc = parseFloat($('#ex-usdc').value);
+    if (!(usdc > 0)) return (err.textContent = 'Enter a USDC amount.');
+    const btn = $('#ex-buyblock');
+    btn.disabled = true;
+    btn.textContent = 'Requesting…';
+    try {
+      const usdcBase = Exchange.toBase(String(usdc), 6); // USDC = 6 dp on Base
+      const res = await Exchange.buyBlock(usdcBase, Wallet.address);
+      if (res.paymentRequired) {
+        err.textContent =
+          'The relay requires a USDC payment (x402). This wallet has no EVM/USDC signer yet (multi-chain pass). Use the hosted buy page to complete, or add an EVM account when available.';
+      } else {
+        const r = res.receipt || {};
+        const out = r.blockOut ? Exchange.toHuman(r.blockOut, 8) + ' BLOCK' : 'order accepted';
+        toast('Buy: ' + out);
+        $('#ex-usdc').value = '';
+      }
+    } catch (e) {
+      err.textContent = 'Buy failed: ' + (e.message || e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Buy BLOCK';
+    }
+  }
+
+  function wireExchange() {
+    if (exWired) return;
+    exWired = true;
+    $('#ex-refresh').addEventListener('click', () => enterExchange());
+    $('#ex-signin-go').addEventListener('click', async () => {
+      $('#ex-signin-err').textContent = '';
+      const btn = $('#ex-signin-go');
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      try {
+        if (!Wallet.isUnlocked()) await Wallet.unlock($('#ex-pw').value);
+        await Exchange.signIn();
+        $('#ex-pw').value = '';
+        await enterExchange();
+      } catch (e) {
+        $('#ex-signin-err').textContent = /locked|no wallet|password|wrong/i.test(e.message)
+          ? 'Wrong password.'
+          : 'Sign-in failed: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign in to exchange';
+      }
+    });
+    $('#ex-signout').addEventListener('click', async () => {
+      await Exchange.signOut();
+      enterExchange();
+    });
+    $('#ex-market').addEventListener('change', (e) => exSelectMarket(e.target.value));
+    $('#ex-buy').addEventListener('click', () => exSetSide('buy'));
+    $('#ex-sell').addEventListener('click', () => exSetSide('sell'));
+    $('#ex-limit').addEventListener('click', () => exSetType('limit'));
+    $('#ex-market-type').addEventListener('click', () => exSetType('market'));
+    $('#ex-place').addEventListener('click', exPlace);
+    $('#ex-buyblock').addEventListener('click', exBuyBlock);
+  }
+
+  async function enterExchange() {
+    wireExchange();
+    exSetSide('buy');
+    exSetType('limit');
+    await Exchange.resume();
+    if (Exchange.isSignedIn()) {
+      showExMain();
+      $('#ex-conn').textContent = 'signed in · ' + shortAddr(Exchange.sessionAddress());
+      await exLoadMarkets();
+      await exRenderMine();
+    } else {
+      showExSignin();
+    }
+  }
+
   async function route(name) {
     if (name === 'queue') {
       show('queue');
@@ -539,6 +815,11 @@
       initSwap();
       return;
     }
+    if (name === 'exchange') {
+      show('exchange');
+      enterExchange();
+      return;
+    }
     if (name === 'connections') {
       show('connections');
       refreshConnections();
@@ -547,6 +828,7 @@
     if (name === 'settings') {
       show('settings');
       $('#api-base').value = (await Store.get('apiBase')).apiBase || Chain.DEFAULT_API;
+      $('#exchange-base').value = (await Store.get('exchangeBase')).exchangeBase || Exchange.DEFAULT_BASE;
       return;
     }
     show(name);

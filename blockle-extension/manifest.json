@@ -16,7 +16,7 @@
     "service_worker": "background.js"
   },
   "permissions": ["storage", "alarms", "tabs"],
-  "host_permissions": ["https://blockle.org/*"],
+  "host_permissions": ["https://blockle.org/*", "https://exchange.blockle.org/*"],
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],

@@ -101,6 +101,7 @@
           <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
           <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
+          <button class="tile" data-go="exchange"><span class="t-ic">↹</span>Exchange</button>
           <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
@@ -189,6 +190,64 @@
         </div>
       </section>
 
+      <!-- EXCHANGE -->
+      <section class="screen" data-screen="exchange" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Exchange</span>
+          <button class="back" id="ex-refresh" style="margin-left:auto" title="Refresh">⟳</button></header>
+        <div class="pad">
+          <div class="ex-signin" id="ex-signin">
+            <div class="notice" id="ex-signin-note">Sign in with your BLOCK wallet to trade. A one-time nonce is signed with your post-quantum key (ML-DSA-44) — no key ever leaves this device.</div>
+            <div id="ex-unlock" hidden><label class="field"><span>Unlock to sign in</span><input type="password" id="ex-pw" placeholder="Password" /></label></div>
+            <button class="btn primary" id="ex-signin-go">Sign in to exchange</button>
+            <div class="err" id="ex-signin-err"></div>
+          </div>
+
+          <div class="ex-main" id="ex-main" hidden>
+            <div class="ex-acct" id="ex-acct">
+              <span class="pill" id="ex-conn">signed in</span>
+              <button class="mini-btn" id="ex-signout">Sign out</button>
+            </div>
+
+            <label class="field"><span>Market</span>
+              <select id="ex-market" class="mono" style="width:100%;background:#181b21;border:1px solid #2e323c;border-radius:10px;color:#dfe6f5;padding:10px"></select>
+            </label>
+            <div class="ex-meta mono" id="ex-meta"></div>
+
+            <div class="section-h">Order book</div>
+            <div class="ex-book" id="ex-book"><div class="empty">—</div></div>
+
+            <div class="section-h">Place order</div>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <button class="btn" id="ex-buy" style="flex:1">Buy</button>
+              <button class="btn ghost" id="ex-sell" style="flex:1">Sell</button>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <button class="chip-btn active" id="ex-limit">Limit</button>
+              <button class="chip-btn" id="ex-market-type">Market</button>
+            </div>
+            <label class="field" id="ex-price-field"><span id="ex-price-label">Price</span><input type="text" id="ex-price" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <label class="field"><span id="ex-amt-label">Amount</span><input type="text" id="ex-amt" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <div class="notice" id="ex-order-note">Orders are signed intents. The relay only verifies your signature and matches the book — it never holds your funds or keys.</div>
+            <button class="btn primary" id="ex-place">Place order</button>
+            <div class="err" id="ex-order-err"></div>
+
+            <div class="section-h">My open orders</div>
+            <div class="list" id="ex-myorders"><div class="empty">No open orders.</div></div>
+
+            <div class="section-h">Buy BLOCK with USDC (x402)</div>
+            <label class="field"><span>USDC to spend</span><input type="text" id="ex-usdc" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <div class="notice" id="ex-x402-note">Buys BLOCK on the sqrt primary-sale curve, settling USDC over the x402 rail. USDC settlement signs with your EVM/USDC account (arriving in the multi-chain pass); until then this surfaces the relay's payment challenge honestly.</div>
+            <button class="btn primary" id="ex-buyblock">Buy BLOCK</button>
+            <div class="err" id="ex-x402-err"></div>
+          </div>
+        </div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="exchange">Exchange</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
       <!-- CONNECTIONS -->
       <section class="screen" data-screen="connections" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Connected apps</span></header>
@@ -205,11 +264,23 @@
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Settings</span></header>
         <div class="pad">
           <label class="field"><span>Chain API endpoint</span><input type="text" id="api-base" class="mono" /></label>
+          <label class="field"><span>Exchange endpoint</span><input type="text" id="exchange-base" class="mono" placeholder="https://exchange.blockle.org" /></label>
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
           </div>
           <button class="btn danger" id="reset-wallet">Reset wallet</button>
+          <div class="seclabel">
+            <h3>Security</h3>
+            <p>
+              <span class="pq">BLOCK is signed with post-quantum ML-DSA-44.</span>
+              <span class="ec">BTC, LTC, DOGE and all EVM assets use ECDSA (secp256k1) and are
+              not post-quantum.</span>
+              Every private key — post-quantum and ECDSA alike — is stored in a
+              vault encrypted with a memory-hard KDF (scrypt) and authenticated
+              encryption (AES-256-GCM), and never leaves this device.
+            </p>
+          </div>
           <div class="about mono">Blockle Wallet · v0.1.0</div>
         </div>
         <nav class="tabbar">
@@ -308,6 +379,24 @@
     <script src="signer.js"></script>
     <script src="wallet.js"></script>
     <script src="chain.js"></script>
+    <!-- multi-chain account layer (EVM + BTC/LTC/DOGE), additive to BLOCK -->
+    <script src="crypto-core.js"></script>
+    <script src="secp256k1.js"></script>
+    <script src="bip39-wordlist.js"></script>
+    <script src="hd.js"></script>
+    <script src="address.js"></script>
+    <script src="chains/block.js"></script>
+    <script src="chains/evm.js"></script>
+    <script src="chains/utxo.js"></script>
+    <script src="chains/registry.js"></script>
+    <script src="accounts.js"></script>
+    <script src="exchange-client.js"></script>
+    <script src="agent/policy.js"></script>
+    <script src="agent/audit.js"></script>
+    <script src="agent/providers.js"></script>
+    <script src="agent/tools.js"></script>
+    <script src="agent/runner.js"></script>
+    <script src="agent/index.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>

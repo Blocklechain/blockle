@@ -9,9 +9,18 @@
 // Exposed as global `Wallet`.
 (function (global) {
   const AUTO_LOCK_MS = 30 * 60 * 1000;
-  let session = { id: null, address: null, pub: null, secret: null, at: 0 };
+  let session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
 
   const rid = () => 'w' + Math.random().toString(36).slice(2, 10);
+
+  // 256-bit HD root for every secp256k1 chain (EVM / BTC / LTC / DOGE). It is
+  // generated once per wallet, stored INSIDE the password-sealed vault next to
+  // the BLOCK ML-DSA keypair, and never leaves the device. BLOCK is NOT derived
+  // from this seed — it is its own ML-DSA-44 keypair.
+  function newSeedHex() {
+    const b = crypto.getRandomValues(new Uint8Array(32));
+    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  }
 
   async function allWallets() {
     return (await Store.get('wallets')).wallets || [];
@@ -30,6 +39,7 @@
       address: session.address,
       pub: session.pub,
       secret: session.secret,
+      seed: session.seed,
       at: session.at,
     });
   }
@@ -40,6 +50,10 @@
     },
     get publicKeyHex() {
       return session.pub;
+    },
+    // secp256k1 HD root (hex) for EVM/BTC/LTC/DOGE derivation; null when locked.
+    get seedHex() {
+      return session.seed;
     },
     get activeId() {
       return session.id;
@@ -80,7 +94,7 @@
     async loadPublic() {
       const rec = await selectedRec();
       if (!rec) {
-        session = { id: null, address: null, pub: null, secret: null, at: 0 };
+        session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
         return null;
       }
       session.id = rec.id;
@@ -92,7 +106,11 @@
     // Create a new wallet, seal under `password`, append, select, unlock.
     async create(password, label) {
       const kp = await Signer.keygen();
-      const crypto_ = await Vault.seal({ secret: kp.secretKey, public: kp.publicKey }, password);
+      const seed = newSeedHex();
+      const crypto_ = await Vault.seal(
+        { secret: kp.secretKey, public: kp.publicKey, seed },
+        password
+      );
       const list = await allWallets();
       const rec = {
         id: rid(),
@@ -107,7 +125,7 @@
       list.push(rec);
       await saveWallets(list);
       await Store.set({ selectedId: rec.id });
-      session = { id: rec.id, address: kp.address, pub: kp.publicKey, secret: kp.secretKey, at: Date.now() };
+      session = { id: rec.id, address: kp.address, pub: kp.publicKey, secret: kp.secretKey, seed, at: Date.now() };
       await saveSession();
       return { address: kp.address, id: rec.id };
     },
@@ -116,8 +134,28 @@
     async unlock(password) {
       const rec = await selectedRec();
       if (!rec || !rec.crypto) throw new Error('no wallet');
-      const { secret, public: pub } = await Vault.open(rec.crypto, password);
-      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, at: Date.now() };
+      const pt = await Vault.open(rec.crypto, password);
+      const { secret, public: pub } = pt;
+      // Wallets created before the multi-chain seed existed get one minted now,
+      // so the re-seal below persists it. BLOCK identity is untouched.
+      const seed = pt.seed || newSeedHex();
+      // Transparent vault upgrade: re-seal legacy (v1 PBKDF2) blobs — or any
+      // blob missing the HD seed — as the current v2 (scrypt) format. The user
+      // never loses access and never has to re-enter anything.
+      if (Vault.needsUpgrade(rec.crypto) || !pt.seed) {
+        try {
+          rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed }, password);
+          const list = await allWallets();
+          const i = list.findIndex((w) => w.id === rec.id);
+          if (i >= 0) {
+            list[i] = rec;
+            await saveWallets(list);
+          }
+        } catch (_) {
+          /* re-seal is best-effort; a failure must not block unlock */
+        }
+      }
+      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, at: Date.now() };
       await saveSession();
       return { address: rec.address };
     },
@@ -130,12 +168,14 @@
         await Session.clear('session');
         return false;
       }
-      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, at: s.at };
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.seed || null, at: s.at };
       return true;
     },
 
     async lock() {
-      session = { id: session.id, address: session.address, pub: session.pub, secret: null, at: 0 };
+      // Wipe ALL decrypted secret material from memory: the BLOCK ML-DSA secret
+      // and the secp256k1 HD seed. (Public address/pubkey may remain for display.)
+      session = { id: session.id, address: session.address, pub: session.pub, secret: null, seed: null, at: 0 };
       await Session.clear('session');
     },
 
@@ -197,7 +237,8 @@
     async importFile(obj, filePassword, newPassword, label) {
       const list = await allWallets();
       const addRec = async (secret, pub, address, watchOnly) => {
-        const crypto_ = watchOnly ? null : await Vault.seal({ secret, public: pub }, newPassword);
+        const seed = watchOnly ? null : newSeedHex();
+        const crypto_ = watchOnly ? null : await Vault.seal({ secret, public: pub, seed }, newPassword);
         const rec = {
           id: rid(),
           label: label || (watchOnly ? 'Imported (watch)' : 'Imported ' + (list.length + 1)),
@@ -213,10 +254,10 @@
         await saveWallets(list);
         await Store.set({ selectedId: rec.id });
         if (!watchOnly) {
-          session = { id: rec.id, address, pub, secret, at: Date.now() };
+          session = { id: rec.id, address, pub, secret, seed, at: Date.now() };
           await saveSession();
         } else {
-          session = { id: rec.id, address, pub: pub || '', secret: null, at: 0 };
+          session = { id: rec.id, address, pub: pub || '', secret: null, seed: null, at: 0 };
         }
         return { address, id: rec.id, mode: watchOnly ? 'watch-only' : 'full' };
       };

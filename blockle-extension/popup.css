@@ -197,6 +197,14 @@ canvas.logo {
 .row-btns { display: flex; gap: 10px; margin: 6px 0 14px; }
 .row-btns .btn { flex: 1; }
 .about { text-align: center; color: var(--muted); font-size: 11px; margin-top: 18px; }
+.seclabel {
+  margin-top: 16px; padding: 12px 14px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.seclabel h3 { font-size: 12px; margin: 0 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.seclabel p { font-size: 11.5px; line-height: 1.5; color: var(--muted); margin: 0; }
+.seclabel .pq { color: #7ee787; } /* post-quantum = green */
+.seclabel .ec { color: #e3b341; } /* ECDSA / not PQ = amber, honestly flagged */
 .toast {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
   background: var(--surface2); border: 1px solid var(--line2); color: var(--text);
@@ -205,3 +213,20 @@ canvas.logo {
 }
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 8px; }
+
+/* ---- embedded exchange ---- */
+.ex-acct { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.ex-meta { color: var(--muted); font-size: 11px; margin: -4px 0 12px; }
+.mini-btn { background: var(--surface2); border: 1px solid var(--line2); color: var(--text); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.chip-btn { background: var(--surface2); border: 1px solid var(--line2); color: var(--muted); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; flex: 1; }
+.chip-btn.active { color: var(--text); border-color: rgba(124,92,255,.6); background: rgba(124,92,255,.14); }
+.ex-book { display: grid; grid-template-rows: auto auto; gap: 2px; margin-bottom: 12px; }
+.ex-side { display: flex; flex-direction: column; gap: 2px; }
+.ex-lvl { position: relative; display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; border-radius: 6px; font-size: 12px; cursor: pointer; overflow: hidden; font-family: ui-monospace, monospace; }
+.ex-lvl .ex-depth { position: absolute; top: 0; bottom: 0; right: 0; opacity: .16; }
+.ex-lvl.bid .ex-depth { background: #34d399; }
+.ex-lvl.ask .ex-depth { background: #f2607a; }
+.ex-lvl.bid .ex-px { color: #34d399; }
+.ex-lvl.ask .ex-px { color: #f2607a; }
+.ex-lvl .ex-px, .ex-lvl .ex-qty { position: relative; z-index: 1; }
+.ex-lvl .ex-qty { color: var(--text); }
