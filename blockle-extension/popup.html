@@ -282,6 +282,29 @@
           <div class="section-h" style="padding-left:0">Token auto-detect (Alchemy)</div>
           <label class="field"><span>Alchemy API key</span><input type="password" id="ep-alchemy" class="mono" placeholder="(optional — enables ERC-20 auto-detect)" autocomplete="off" /></label>
           <p class="muted" style="margin:2px 0 0;font-size:11px">Read-only indexer key. Enables auto-detection of all ERC-20s you hold on Ethereum, Base, Arbitrum, Optimism and Polygon. Stored locally; never sent anywhere but Alchemy.</p>
+
+          <div class="section-h" style="padding-left:0;display:flex;align-items:center;justify-content:space-between">Custom networks
+            <button class="mini-btn" id="cn-add">+ Add</button></div>
+          <p class="muted" style="margin:2px 0 6px;font-size:11px">Add any EVM-compatible network (MetaMask-style). Uses the same address as your other EVM chains. Network definitions are stored locally; they are not secrets.</p>
+          <div id="cn-list"><div class="empty">No custom networks yet.</div></div>
+
+          <!-- Add / edit form (hidden until +Add / Edit) -->
+          <div id="cn-form" class="perm-box" hidden style="margin-top:8px">
+            <div class="section-h" style="padding-left:0" id="cn-form-title">Add network</div>
+            <label class="field"><span>Name</span><input type="text" id="cn-name" placeholder="My Network" /></label>
+            <label class="field"><span>Chain ID</span><input type="text" id="cn-chainid" inputmode="numeric" placeholder="e.g. 10200 (decimal or 0x hex)" /></label>
+            <label class="field"><span>RPC URL</span><input type="text" id="cn-rpc" class="mono" placeholder="https://rpc.example.org" /></label>
+            <label class="field"><span>Native symbol</span><input type="text" id="cn-symbol" placeholder="e.g. ETH" /></label>
+            <label class="field"><span>Decimals</span><input type="text" id="cn-decimals" inputmode="numeric" placeholder="18" /></label>
+            <label class="field"><span>Explorer tx URL <small class="muted">(optional)</small></span><input type="text" id="cn-explorer" class="mono" placeholder="https://scan.example.org/tx/" /></label>
+            <label class="field"><span>Token indexer URL <small class="muted">(optional, Alchemy-style)</small></span><input type="text" id="cn-indexer" class="mono" placeholder="https://…/v2/KEY — enables ERC-20 auto-detect" /></label>
+            <div class="notice" id="cn-form-msg" hidden></div>
+            <div class="row-btns">
+              <button class="btn ghost" id="cn-cancel">Cancel</button>
+              <button class="btn" id="cn-save">Save network</button>
+            </div>
+          </div>
+
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
@@ -467,6 +490,7 @@
     <script src="chains/evm.js"></script>
     <script src="chains/utxo.js"></script>
     <script src="chains/discovery.js"></script>
+    <script src="chains/custom-networks.js"></script>
     <script src="chains/registry.js"></script>
     <script src="accounts.js"></script>
     <script src="exchange-client.js"></script>

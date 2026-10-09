@@ -27,9 +27,32 @@
 
   let UI = null;              // BlockleUI
   let sendState = null;       // { chain, asset, built }
+  // Custom-network display meta, refreshed from the registry: id -> { name, sym,
+  // decimals }. Custom nets are ALWAYS EVM, so they join the EVM behaviors.
+  let customMeta = {};
 
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // Any built-in EVM chain OR a user custom network (all custom nets are EVM).
+  function isEvm(chain) { return EVM_CHAINS.has(chain) || !!customMeta[chain]; }
+  // Display meta for a chain id (built-in table, else custom, else a fallback).
+  function metaFor(chain) {
+    return CHAIN_META[chain] || customMeta[chain] || { name: chain, sym: String(chain).toUpperCase() };
+  }
+  // Native decimals for a chain: custom net's configured decimals, else EVM 18, else 8.
+  function nativeDecimals(chain) {
+    if (customMeta[chain] && customMeta[chain].decimals != null) return Number(customMeta[chain].decimals);
+    return EVM_CHAINS.has(chain) ? 18 : 8;
+  }
+  // Pull custom-network meta from the registry into `customMeta`.
+  function refreshCustomMeta(reg) {
+    customMeta = {};
+    try {
+      const list = (reg && reg.customNetworks) ? reg.customNetworks() : [];
+      for (const n of list) customMeta[n.id] = { name: n.name, sym: n.symbol, decimals: n.decimals };
+    } catch {}
+  }
 
   function init(ui) { UI = ui; wire(); }
 
@@ -51,9 +74,10 @@
     box.innerHTML = '<div class="empty">Loading accounts…</div>';
     let reg;
     try { reg = await Wiring.registry(); } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+    refreshCustomMeta(reg);
     const ids = reg.enabled();
     box.innerHTML = ids.map((id) => {
-      const m = CHAIN_META[id] || { name: id, sym: id.toUpperCase() };
+      const m = metaFor(id);
       return `<div class="mc-acct" data-chain="${id}">
         <div class="mc-head">
           <div class="mc-name">${esc(m.name)} ${m.pq ? '<span class="pill" style="color:#7ee787;border-color:#7ee78755">PQ</span>' : ''}</div>
@@ -111,7 +135,7 @@
 
   // ---- per-chain Send -------------------------------------------------------
   async function openSend(chain) {
-    const m = CHAIN_META[chain] || { name: chain, sym: chain.toUpperCase() };
+    const m = metaFor(chain);
     sendState = { chain, asset: null, built: null };
     UI.show('mc-send');
     $('#mc-send-title').textContent = 'Send · ' + m.name;
@@ -160,9 +184,9 @@
 
     const asset = selectedAsset();
     const chain = sendState.chain;
-    // decimals: token decimals, else native (BLOCK/BTC/LTC/DOGE=8, EVM native=18)
-    const dec = asset ? Number(asset.decimals || 0)
-      : EVM_CHAINS.has(chain) ? 18 : 8;
+    // decimals: token decimals, else native (BLOCK/BTC/LTC/DOGE=8, EVM native=18,
+    // custom net = its configured decimals)
+    const dec = asset ? Number(asset.decimals || 0) : nativeDecimals(chain);
     const amountBase = toBase(amtHuman, dec);
 
     const btn = $('#mc-review'); btn.disabled = true; btn.textContent = 'Building…';
@@ -170,7 +194,7 @@
       const req = { to, amount: amountBase, asset };
       const built = await Wiring.buildSend(chain, req);
       sendState.built = built; sendState.asset = asset;
-      const sym = asset ? (asset.symbol || 'token') : (CHAIN_META[chain] ? CHAIN_META[chain].sym : chain);
+      const sym = asset ? (asset.symbol || 'token') : metaFor(chain).sym;
       const feeTxt = built.fee != null ? fmtFee(chain, built.fee) : '—';
       const box = $('#mc-review-box');
       box.hidden = false;
@@ -204,7 +228,7 @@
 
   // ---- add token (EVM) ------------------------------------------------------
   async function addToken(chain) {
-    if (!EVM_CHAINS.has(chain)) { UI.toast('Token import is EVM-only here'); return; }
+    if (!isEvm(chain)) { UI.toast('Token import is EVM-only here'); return; }
     const address = (prompt('ERC-20 contract address (0x…):') || '').trim();
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) { if (address) alert('Not a valid 0x address.'); return; }
     const symbol = (prompt('Token symbol (e.g. DAI):') || '').trim();
@@ -242,8 +266,9 @@
     } catch { return String(baseStr); }
   }
   function fmtFee(chain, feeBase) {
-    const m = CHAIN_META[chain];
-    if (EVM_CHAINS.has(chain)) return fmt(feeBase, 18) + ' ' + (m ? m.sym : 'ETH');
+    const m = metaFor(chain);
+    // EVM gas is always quoted in wei (18) regardless of the native decimals.
+    if (isEvm(chain)) return fmt(feeBase, 18) + ' ' + (m ? m.sym : 'ETH');
     return fmt(feeBase, 8) + ' ' + (m ? m.sym : '');
   }
 

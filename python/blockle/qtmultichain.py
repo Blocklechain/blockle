@@ -128,7 +128,8 @@ class MultiVault:
             raise ValueError("invalid recovery phrase")
         self._plain = {
             "version": 2, "mnemonic": mnemonic,
-            "endpoints": {}, "tokens": {}, "channels": [], "agentCreds": {},
+            "endpoints": {}, "tokens": {}, "customNetworks": [],
+            "channels": [], "agentCreds": {},
         }
         self._password = password
         self._seal()
@@ -188,6 +189,35 @@ class MultiVault:
     def add_token(self, chain: str, token: Dict[str, Any]) -> None:
         toks = self._require().setdefault("tokens", {}).setdefault(chain, [])
         toks.append(token)
+        self._seal()
+
+    # ---- user-added custom networks --------------------------------------
+    # Network definitions are NOT secrets (just RPC/explorer/indexer URLs); they
+    # live here alongside the other per-chain config because the sealed vault is
+    # this wallet's only persisted settings store. Validated via
+    # ``normalize_custom_network`` before they are stored.
+    def custom_networks(self) -> List[Dict[str, Any]]:
+        return list(self._require().get("customNetworks") or [])
+
+    def set_custom_networks(self, nets: List[Dict[str, Any]]) -> None:
+        from .multichain.chains import normalize_custom_networks
+        self._require()["customNetworks"] = normalize_custom_networks(nets)
+        self._seal()
+
+    def add_custom_network(self, net: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate + upsert one custom network (dedupe by id/chainId). Returns
+        the normalized record. Raises ``ValueError`` on an invalid definition."""
+        from .multichain.chains import (dedupe_custom_networks,
+                                        normalize_custom_network)
+        norm = normalize_custom_network(net)
+        cur = self.custom_networks()
+        self._require()["customNetworks"] = dedupe_custom_networks(cur + [norm])
+        self._seal()
+        return norm
+
+    def remove_custom_network(self, net_id: str) -> None:
+        cur = self.custom_networks()
+        self._require()["customNetworks"] = [n for n in cur if n.get("id") != net_id]
         self._seal()
 
     # ---- agent channel persistence + credentials ----
@@ -356,6 +386,7 @@ class MultiChainController:
             "endpoints": self.vault.endpoints(),
             "tokens": self.vault.tokens(),
             "alchemy": self.vault.alchemy(),
+            "customNetworks": self.vault.custom_networks(),
             "block": {"wallet": self.block_wallet},
         }
         self.registry = create_registry(cfg)
@@ -384,6 +415,25 @@ class MultiChainController:
             self.loop = AgentLoop()
             self.loop.start()
         self._store = _DictStore(self.vault)
+
+    # ---- chain ordering + labels (built-ins first, then custom networks) ----
+    def ordered_chains(self) -> List[str]:
+        reg = self.registry
+        if not reg:
+            return []
+        base = [c for c in CHAIN_ORDER if reg.has(c)]
+        customs = [n["id"] for n in reg.custom_networks()
+                   if n["id"] not in base and reg.has(n["id"])]
+        return base + customs
+
+    def chain_label(self, cid: str) -> str:
+        if cid in CHAIN_LABELS:
+            return CHAIN_LABELS[cid]
+        if self.registry:
+            for n in self.registry.custom_networks():
+                if n["id"] == cid:
+                    return n["name"]
+        return cid
 
     # ---- agent ctx wiring the tools call into ----
     def _ctx(self, meta=None) -> Dict[str, Any]:
@@ -525,7 +575,11 @@ class AccountsTab(QWidget):
         self.endpoints_btn = QPushButton("Endpoints…")
         self.endpoints_btn.clicked.connect(self._edit_endpoints)
         self.endpoints_btn.setEnabled(False)
-        for b in (self.unlock_btn, self.refresh_btn, self.phrase_btn, self.endpoints_btn):
+        self.networks_btn = QPushButton("Custom networks…")
+        self.networks_btn.clicked.connect(self._edit_custom_networks)
+        self.networks_btn.setEnabled(False)
+        for b in (self.unlock_btn, self.refresh_btn, self.phrase_btn,
+                  self.endpoints_btn, self.networks_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
@@ -602,7 +656,7 @@ class AccountsTab(QWidget):
     def _on_unlocked(self):
         self.lock_lbl.setText("Vault unlocked for this session.")
         for b in (self.refresh_btn, self.phrase_btn, self.endpoints_btn,
-                  self.send_btn, self.add_token_btn):
+                  self.networks_btn, self.send_btn, self.add_token_btn):
             b.setEnabled(True)
         self.unlock_btn.setText("Re-lock on exit")
         self._fill_accounts()
@@ -610,14 +664,16 @@ class AccountsTab(QWidget):
 
     def _fill_accounts(self):
         reg = self.ctrl.registry
-        chains = [c for c in CHAIN_ORDER if reg and reg.has(c)]
+        chains = self.ctrl.ordered_chains()
         self.table.setRowCount(len(chains))
         self._rows = chains
         for r, cid in enumerate(chains):
             acct = self.ctrl.accounts.get(cid)
             addr = acct.address if acct else "—"
-            self.table.setItem(r, 0, QTableWidgetItem(CHAIN_LABELS.get(cid, cid)))
-            self.table.setItem(r, 1, QTableWidgetItem(CHAIN_SCHEME.get(cid, "?")))
+            # Custom networks are EVM — same secp256k1 scheme, never PQ.
+            scheme = CHAIN_SCHEME.get(cid, "secp256k1")
+            self.table.setItem(r, 0, QTableWidgetItem(self.ctrl.chain_label(cid)))
+            self.table.setItem(r, 1, QTableWidgetItem(scheme))
             self.table.setItem(r, 2, QTableWidgetItem(addr or "—"))
             self.table.setItem(r, 3, QTableWidgetItem("…"))
             self.table.setItem(r, 4, QTableWidgetItem("PQ" if CHAIN_PQ.get(cid) else ""))
@@ -707,6 +763,14 @@ class AccountsTab(QWidget):
             self._fill_accounts()
             self._refresh_balances()
 
+    def _edit_custom_networks(self):
+        dlg = CustomNetworksDialog(self.ctrl, self)
+        dlg.exec()
+        if dlg.changed:
+            self.ctrl._build()
+            self._fill_accounts()
+            self._refresh_balances()
+
 
 class SendDialog(QDialog):
     """Per-chain Send: build_send (fee + txid preview) -> confirm -> broadcast."""
@@ -720,7 +784,7 @@ class SendDialog(QDialog):
         lay = QVBoxLayout(self)
         form = QFormLayout()
         self.chain = QComboBox()
-        self.chain.addItems([CHAIN_LABELS.get(c, c) for c in chains])
+        self.chain.addItems([ctrl.chain_label(c) for c in chains])
         self._chains = chains
         self.chain.currentIndexChanged.connect(self._reload_assets)
         self.asset = QComboBox()
@@ -760,7 +824,7 @@ class SendDialog(QDialog):
     def _reload_assets(self):
         self.asset.clear()
         cid = self._cur_chain()
-        self.asset.addItem(CHAIN_LABELS.get(cid, cid) + " (native)", None)
+        self.asset.addItem(self.ctrl.chain_label(cid) + " (native)", None)
         for t in self.ctrl.registry.tokens_for(cid):
             self.asset.addItem(t.symbol, t)
 
@@ -797,7 +861,7 @@ class SendDialog(QDialog):
         cid = self._cur_chain()
         if QMessageBox.question(
             self, "Confirm broadcast",
-            f"Broadcast this {CHAIN_LABELS.get(cid, cid)} transaction?\n"
+            f"Broadcast this {self.ctrl.chain_label(cid)} transaction?\n"
             f"fee {self.built.fee}  txid {self.built.txid[:20]}…",
         ) != QMessageBox.Yes:
             return
@@ -845,6 +909,162 @@ class EndpointsDialog(QDialog):
             key = "esplora" if cid in ("bitcoin", "litecoin", "dogecoin") else "rpcUrl"
             self.ctrl.vault.set_endpoint(cid, {key: val})
         self.accept()
+
+
+class CustomNetworkForm(QDialog):
+    """Add / edit ONE custom EVM network. Validates via
+    ``normalize_custom_network`` and, on save, OPTIONALLY probes ``eth_chainId``
+    to confirm the RPC matches the entered chainId — a non-blocking warning, not
+    a gate."""
+
+    FIELDS = [
+        ("name", "Name", "My Rollup"),
+        ("chainId", "Chain ID", "7777 (positive integer)"),
+        ("rpcUrl", "RPC URL", "https://rpc.example.com"),
+        ("nativeSymbol", "Native symbol", "ETH"),
+        ("decimals", "Native decimals", "18 (default)"),
+        ("explorerUrl", "Explorer URL (optional)", "https://scan.example.com"),
+        ("tokenIndexerUrl", "Token indexer URL (optional)",
+         "Alchemy-style URL for ERC-20 auto-detect"),
+    ]
+
+    def __init__(self, existing=None, parent=None):
+        super().__init__(parent)
+        self.result_net = None
+        self.setWindowTitle("Custom network")
+        self.resize(560, 360)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Add an EVM network. It uses the same account/address "
+                             "as the other EVM chains. URLs only — no secrets."))
+        form = QFormLayout()
+        self.fields: Dict[str, QLineEdit] = {}
+        existing = existing or {}
+        for key, label, ph in self.FIELDS:
+            f = QLineEdit()
+            f.setPlaceholderText(ph)
+            val = existing.get(key)
+            if val is not None:
+                f.setText(str(val))
+            self.fields[key] = f
+            form.addRow(label, f)
+        lay.addLayout(form)
+        self.msg = QLabel("")
+        self.msg.setObjectName("sub")
+        self.msg.setWordWrap(True)
+        lay.addWidget(self.msg)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._save)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _raw(self):
+        return {k: f.text().strip() for k, f in self.fields.items()}
+
+    def _save(self):
+        from .multichain.chains import normalize_custom_network, probe_chain_id
+        try:
+            net = normalize_custom_network(self._raw())
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid network", str(e))
+            return
+        # Non-blocking eth_chainId confirmation.
+        try:
+            seen = probe_chain_id(net["rpcUrl"])
+            if seen != net["chainId"]:
+                if QMessageBox.question(
+                    self, "Chain ID mismatch",
+                    f"The RPC reports chain ID {seen}, but you entered "
+                    f"{net['chainId']}.\nSave anyway?",
+                ) != QMessageBox.Yes:
+                    return
+        except Exception:
+            pass  # probe is best-effort; offline/unreachable RPC must not block
+        self.result_net = net
+        self.accept()
+
+
+class CustomNetworksDialog(QDialog):
+    """List + Add / Edit / Remove user-added custom networks (persisted in the
+    vault). ``changed`` tells the caller whether to rebuild the registry."""
+
+    def __init__(self, ctrl: MultiChainController, parent=None):
+        super().__init__(parent)
+        self.ctrl = ctrl
+        self.changed = False
+        self.setWindowTitle("Custom networks")
+        self.resize(560, 380)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Your custom EVM networks. They merge with the built-ins; "
+                             "a custom net sharing a built-in's chain ID overrides its RPC."))
+        self.list = QListWidget()
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        add_btn = QPushButton("Add…")
+        add_btn.clicked.connect(self._add)
+        edit_btn = QPushButton("Edit…")
+        edit_btn.clicked.connect(self._edit)
+        rm_btn = QPushButton("Remove")
+        rm_btn.clicked.connect(self._remove)
+        for b in (add_btn, edit_btn, rm_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        self._reload()
+
+    def _reload(self):
+        self.list.clear()
+        for net in self.ctrl.vault.custom_networks():
+            label = f"{net.get('name')}  ·  chainId {net.get('chainId')}  ·  {net.get('rpcUrl')}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, net)
+            self.list.addItem(item)
+
+    def _selected(self):
+        item = self.list.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def _add(self):
+        dlg = CustomNetworkForm(parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.result_net:
+            try:
+                self.ctrl.vault.add_custom_network(dlg.result_net)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid network", str(e))
+                return
+            self.changed = True
+            self._reload()
+
+    def _edit(self):
+        net = self._selected()
+        if not net:
+            return
+        dlg = CustomNetworkForm(existing=net, parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.result_net:
+            # id may change if the name changed — drop the old record, add the new.
+            self.ctrl.vault.remove_custom_network(net["id"])
+            try:
+                self.ctrl.vault.add_custom_network(dlg.result_net)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid network", str(e))
+                self._reload()
+                return
+            self.changed = True
+            self._reload()
+
+    def _remove(self):
+        net = self._selected()
+        if not net:
+            return
+        if QMessageBox.question(
+            self, "Remove network", f"Remove '{net.get('name')}'?",
+        ) != QMessageBox.Yes:
+            return
+        self.ctrl.vault.remove_custom_network(net["id"])
+        self.changed = True
+        self._reload()
 
 
 # --------------------------------------------------------------------------

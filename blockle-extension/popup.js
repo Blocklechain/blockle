@@ -4,6 +4,7 @@
 (function () {
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const logos = {};
 
   function show(name) {
@@ -405,6 +406,128 @@
     // shared across all Alchemy-backed EVM networks; enables ERC-20 auto-detect.
     const alk = $('#ep-alchemy');
     if (alk) alk.addEventListener('change', (e) => saveEndpoint('alchemy', 'apiKey', e.target.value));
+
+    // ---- custom networks (user-added EVM networks; config, not secrets) ----
+    const cnAdd = $('#cn-add');
+    if (cnAdd) cnAdd.addEventListener('click', () => openCustomNetForm(null));
+    const cnCancel = $('#cn-cancel');
+    if (cnCancel) cnCancel.addEventListener('click', closeCustomNetForm);
+    const cnSave = $('#cn-save');
+    if (cnSave) cnSave.addEventListener('click', saveCustomNet);
+    const cnList = $('#cn-list');
+    if (cnList) cnList.addEventListener('click', (e) => {
+      const ed = e.target.closest('[data-cn-edit]');
+      if (ed) return void openCustomNetForm(ed.getAttribute('data-cn-edit'));
+      const rm = e.target.closest('[data-cn-remove]');
+      if (rm) return void removeCustomNet(rm.getAttribute('data-cn-remove'));
+    });
+  }
+
+  // ---- custom networks: persistence + form (CustomNetworks is the pure logic) --
+  let cnEditingId = null; // slug being edited, or null when adding
+
+  async function getCustomNetworks() {
+    return (await Store.get('customNetworks')).customNetworks || [];
+  }
+  async function setCustomNetworks(list) {
+    await Store.set({ customNetworks: list });
+    if (window.Wiring) Wiring.reset();
+  }
+
+  async function renderCustomNetworks() {
+    const box = $('#cn-list');
+    if (!box) return;
+    const list = await getCustomNetworks();
+    if (!list.length) { box.innerHTML = '<div class="empty">No custom networks yet.</div>'; return; }
+    box.innerHTML = list.map((n) => `<div class="mc-acct" data-cn="${esc(n.id)}">
+        <div class="mc-head">
+          <div class="mc-name">${esc(n.name)} <span class="pill">#${esc(n.chainId)}</span></div>
+          <div>
+            <button class="mini-btn" data-cn-edit="${esc(n.id)}">Edit</button>
+            <button class="mini-btn" data-cn-remove="${esc(n.id)}">Remove</button>
+          </div>
+        </div>
+        <div class="mc-bal"><small class="muted mono">${esc(n.nativeSymbol)} · ${esc(n.rpcUrl)}</small></div>
+      </div>`).join('');
+  }
+
+  function cnFormMsg(text, kind) {
+    const el = $('#cn-form-msg');
+    if (!el) return;
+    if (!text) { el.hidden = true; el.textContent = ''; return; }
+    el.hidden = false; el.textContent = text;
+    el.style.color = kind === 'error' ? 'var(--danger, #f85149)' : (kind === 'warn' ? '#e3b341' : '');
+  }
+
+  async function openCustomNetForm(id) {
+    cnEditingId = id || null;
+    const list = await getCustomNetworks();
+    const n = id ? list.find((x) => x.id === id) : null;
+    $('#cn-form-title').textContent = n ? 'Edit network' : 'Add network';
+    $('#cn-name').value = n ? n.name : '';
+    $('#cn-chainid').value = n ? String(n.chainId) : '';
+    $('#cn-rpc').value = n ? n.rpcUrl : '';
+    $('#cn-symbol').value = n ? n.nativeSymbol : '';
+    $('#cn-decimals').value = n ? String(n.decimals) : '18';
+    $('#cn-explorer').value = n ? (n.explorerUrl || '') : '';
+    $('#cn-indexer').value = n ? (n.tokenIndexerUrl || '') : '';
+    cnFormMsg('');
+    $('#cn-form').hidden = false;
+  }
+  function closeCustomNetForm() {
+    cnEditingId = null;
+    $('#cn-form').hidden = true;
+    cnFormMsg('');
+  }
+
+  async function saveCustomNet() {
+    const CN = window.CustomNetworks;
+    const raw = {
+      name: $('#cn-name').value,
+      chainId: $('#cn-chainid').value,
+      rpcUrl: $('#cn-rpc').value,
+      nativeSymbol: $('#cn-symbol').value,
+      decimals: $('#cn-decimals').value,
+      explorerUrl: $('#cn-explorer').value,
+      tokenIndexerUrl: $('#cn-indexer').value,
+    };
+    const res = CN.validate(raw);
+    if (!res.ok) {
+      const first = Object.keys(res.errors)[0];
+      cnFormMsg(res.errors[first], 'error');
+      return;
+    }
+    const btn = $('#cn-save'); btn.disabled = true; btn.textContent = 'Checking RPC…';
+    // Non-blocking eth_chainId probe: warn (don't block) on a mismatch.
+    let warn = '';
+    try {
+      const reported = await CN.probeChainId(res.value.rpcUrl);
+      if (reported != null && reported !== res.value.chainId) {
+        warn = `RPC reports chain ID ${reported}, not ${res.value.chainId}. Saved anyway — double-check the values.`;
+      }
+    } catch { /* probe is best-effort */ }
+    try {
+      const list = await getCustomNetworks();
+      const next = CN.upsert(list, raw, cnEditingId);
+      await setCustomNetworks(next);
+      if (warn) { cnFormMsg(warn, 'warn'); toast('Network saved (with a warning)'); }
+      else { toast('Network saved'); closeCustomNetForm(); }
+      await renderCustomNetworks();
+    } catch (e) {
+      cnFormMsg('Could not save: ' + (e.message || e), 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save network';
+    }
+  }
+
+  async function removeCustomNet(id) {
+    if (!confirm('Remove this custom network?')) return;
+    const CN = window.CustomNetworks;
+    const list = await getCustomNetworks();
+    await setCustomNetworks(CN.remove(list, id));
+    if (cnEditingId === id) closeCustomNetForm();
+    await renderCustomNetworks();
+    toast('Network removed');
   }
 
   // Pass-2 lifecycle: keep the multi-chain Wiring caches + the in-wallet agent
@@ -903,6 +1026,8 @@
       if ($('#ep-ltc')) $('#ep-ltc').value = (ep.litecoin && ep.litecoin.esplora) || '';
       if ($('#ep-doge')) $('#ep-doge').value = (ep.dogecoin && ep.dogecoin.esplora) || '';
       if ($('#ep-alchemy')) $('#ep-alchemy').value = (ep.alchemy && ep.alchemy.apiKey) || '';
+      closeCustomNetForm();
+      await renderCustomNetworks();
       return;
     }
     show(name);

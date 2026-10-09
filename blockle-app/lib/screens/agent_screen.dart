@@ -370,8 +370,8 @@ class _AgentScreenState extends State<AgentScreen> {
                 dropdownColor: Bk.surface2,
                 decoration: const InputDecoration(labelText: 'Bound account'),
                 items: [
-                  for (final ch in kDisplayChains)
-                    DropdownMenuItem(value: ch, child: Text(kChainLabels[ch] ?? ch)),
+                  for (final ch in c.displayChains())
+                    DropdownMenuItem(value: ch, child: Text(c.chainLabel(ch))),
                 ],
                 onChanged: (v) => setLocal(() => chain = v ?? 'block'),
               ),

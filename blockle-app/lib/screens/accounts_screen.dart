@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart';
+import '../multichain/chains/registry.dart' show CustomNetwork, slugifyNetworkName;
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 
@@ -33,7 +34,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   Future<void> _loadAll() async {
     final c = context.read<MultichainController>();
-    for (final chain in kDisplayChains) {
+    for (final chain in c.displayChains()) {
       // BLOCK always resolvable; HD chains need the vault unlocked.
       if (chain != 'block' && !c.vaultUnlocked) continue;
       _loadChain(c, chain);
@@ -80,7 +81,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
             const SizedBox(height: 6),
             if (!c.vaultUnlocked) _vaultBanner(c),
             const SizedBox(height: 8),
-            for (final chain in kDisplayChains)
+            for (final chain in c.displayChains())
               if (chain == 'block' || c.vaultUnlocked) _chainCard(c, chain),
           ],
         ),
@@ -121,8 +122,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   Widget _chainCard(MultichainController c, String chain) {
-    final label = kChainLabels[chain] ?? chain;
-    final ticker = kChainTickers[chain] ?? '';
+    final label = c.chainLabel(chain);
+    final ticker = c.chainTicker(chain);
     final acct = _accts[chain];
     final bals = _bals[chain] ?? const [];
     final isPq = chain == 'block';
@@ -213,7 +214,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                     label: const Text('Send'),
                   ),
                 ),
-                if (kEvmChains.contains(chain)) ...[
+                if (c.isEvmChain(chain)) ...[
                   const SizedBox(width: 10),
                   OutlinedButton.icon(
                     onPressed: () => _addTokenDialog(c, chain),
@@ -384,7 +385,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: Bk.surface,
-        title: Text('Add ${kChainLabels[chain]} token'),
+        title: Text('Add ${c.chainLabel(chain)} token'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -545,8 +546,8 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     final c = context.watch<MultichainController>();
     final assets = _assets(c);
     _asset ??= assets.first;
-    final label = kChainLabels[widget.chain] ?? widget.chain;
-    final feeHint = _feeHint(widget.chain);
+    final label = c.chainLabel(widget.chain);
+    final feeHint = _feeHint(widget.chain, c.isEvmChain(widget.chain));
 
     return Scaffold(
       appBar: AppBar(title: Text('Send on $label')),
@@ -692,19 +693,18 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
         ),
       );
 
-  String _feeHint(String chain) {
+  String _feeHint(String chain, bool isEvm) {
     switch (chain) {
       case 'bitcoin':
       case 'litecoin':
       case 'dogecoin':
         return 'Fee rate (sat/vB, optional)';
-      case 'ethereum':
-      case 'base':
-        return 'Max fee per gas (wei, optional)';
       case 'block':
         return 'Network fee (base units, optional)';
       default:
-        return 'Fee (optional)';
+        return isEvm
+            ? 'Max fee per gas (wei, optional)'
+            : 'Fee (optional)';
     }
   }
 }
@@ -733,6 +733,37 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
           for (final chain in kDisplayChains)
             if (chain != 'block') _endpointTile(c, chain),
           const SizedBox(height: 20),
+          Row(
+            children: [
+              const Expanded(
+                child: Text('Custom networks',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+              TextButton.icon(
+                onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const CustomNetworkEditScreen())),
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add network'),
+              ),
+            ],
+          ),
+          const Text(
+              'Add any EVM network by chain ID + RPC URL. It uses the same '
+              'account/address as your other EVM chains. Network definitions are '
+              'configuration, not secrets.',
+              style: TextStyle(color: Bk.muted, fontSize: 12)),
+          const SizedBox(height: 8),
+          if (c.customNetworks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 6),
+              child: Text('No custom networks yet.',
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
+            )
+          else
+            for (final n in c.customNetworks) _customNetTile(c, n),
+          const SizedBox(height: 20),
           const Text('Token auto-detect (Alchemy)',
               style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
@@ -745,6 +776,57 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
           const SizedBox(height: 8),
           for (final chain in kAlchemyChains) _alchemyTile(c, chain),
         ],
+      ),
+    );
+  }
+
+  Widget _customNetTile(MultichainController c, CustomNetwork n) {
+    return Card(
+      child: ListTile(
+        title: Text(n.name),
+        subtitle: Text(
+            'chain ${n.chainId} · ${n.nativeSymbol}\n${n.rpcUrl}',
+            style: kMono.copyWith(fontSize: 11),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis),
+        isThreeLine: true,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.edit, size: 18, color: Bk.muted),
+              onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) =>
+                          CustomNetworkEditScreen(existing: n))),
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline, size: 18, color: Bk.bad),
+              onPressed: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    backgroundColor: Bk.surface,
+                    title: Text('Remove ${n.name}?'),
+                    content: const Text(
+                        'This removes the network definition from this wallet. '
+                        'Your funds are unaffected.'),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel')),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('Remove')),
+                    ],
+                  ),
+                );
+                if (ok == true) await c.removeCustomNetwork(n.id);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -861,5 +943,216 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
     } else {
       await c.setEndpoint(chain, rpcUrl: ctrl.text.trim());
     }
+  }
+}
+
+/// Add / edit a user-added EVM network (MetaMask-style). Validates inputs and,
+/// on save, optionally probes `eth_chainId` to WARN (non-blocking) on a chainId
+/// mismatch before persisting.
+class CustomNetworkEditScreen extends StatefulWidget {
+  const CustomNetworkEditScreen({super.key, this.existing});
+  final CustomNetwork? existing;
+  @override
+  State<CustomNetworkEditScreen> createState() =>
+      _CustomNetworkEditScreenState();
+}
+
+class _CustomNetworkEditScreenState extends State<CustomNetworkEditScreen> {
+  late final TextEditingController _name;
+  late final TextEditingController _chainId;
+  late final TextEditingController _rpc;
+  late final TextEditingController _symbol;
+  late final TextEditingController _decimals;
+  late final TextEditingController _explorer;
+  late final TextEditingController _indexer;
+
+  bool _busy = false;
+  String? _error;
+  String? _warn;
+
+  bool get _isEdit => widget.existing != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _name = TextEditingController(text: e?.name ?? '');
+    _chainId = TextEditingController(text: e?.chainId.toString() ?? '');
+    _rpc = TextEditingController(text: e?.rpcUrl ?? '');
+    _symbol = TextEditingController(text: e?.nativeSymbol ?? 'ETH');
+    _decimals = TextEditingController(text: (e?.decimals ?? 18).toString());
+    _explorer = TextEditingController(text: e?.explorerUrl ?? '');
+    _indexer = TextEditingController(text: e?.tokenIndexerUrl ?? '');
+  }
+
+  @override
+  void dispose() {
+    for (final c in [
+      _name,
+      _chainId,
+      _rpc,
+      _symbol,
+      _decimals,
+      _explorer,
+      _indexer
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  CustomNetwork _draft() {
+    final indexer = _indexer.text.trim();
+    return CustomNetwork(
+      id: _isEdit ? widget.existing!.id : slugifyNetworkName(_name.text),
+      name: _name.text.trim(),
+      chainId: int.tryParse(_chainId.text.trim()) ?? -1,
+      rpcUrl: _rpc.text.trim(),
+      nativeSymbol:
+          _symbol.text.trim().isEmpty ? 'ETH' : _symbol.text.trim(),
+      decimals: int.tryParse(_decimals.text.trim()) ?? 18,
+      explorerUrl: _explorer.text.trim(),
+      tokenIndexerUrl: indexer.isEmpty ? null : indexer,
+    );
+  }
+
+  Future<void> _save() async {
+    final c = context.read<MultichainController>();
+    setState(() {
+      _busy = true;
+      _error = null;
+      _warn = null;
+    });
+    final net = _draft();
+    // Non-blocking chainId probe: WARN only, never prevents the add.
+    final probed = await c.probeChainId(net.rpcUrl);
+    if (probed != null && probed != net.chainId) {
+      setState(() => _warn =
+          'The RPC reports chain ID $probed, but you entered ${net.chainId}. '
+          'Saving anyway — double-check the chain ID.');
+    }
+    try {
+      await c.addCustomNetwork(net,
+          replacingId: _isEdit ? widget.existing!.id : null);
+      if (!mounted) return;
+      if (_warn == null) {
+        Navigator.pop(context);
+      } else {
+        // Keep the screen up so the user sees the mismatch warning; it is
+        // already persisted. Offer an explicit done.
+        setState(() => _busy = false);
+      }
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+          title: Text(_isEdit ? 'Edit network' : 'Add custom network')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          TextField(
+            controller: _name,
+            decoration: const InputDecoration(
+                labelText: 'Network name', hintText: 'My EVM Network'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _chainId,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+                labelText: 'Chain ID', hintText: '1'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _rpc,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+                labelText: 'RPC URL', hintText: 'https://…'),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _symbol,
+                  decoration: const InputDecoration(
+                      labelText: 'Native symbol', hintText: 'ETH'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: TextField(
+                  controller: _decimals,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Decimals'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _explorer,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+                labelText: 'Explorer tx base (optional)',
+                hintText: 'https://etherscan.io/tx/'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _indexer,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+                labelText: 'Token indexer URL (optional)',
+                hintText: 'https://<net>.g.alchemy.com/v2/<key>'),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+              'An Alchemy-style indexer URL enables ERC-20 auto-detect. It may '
+              'embed a read-only key — it is stored in settings and never logged.',
+              style: TextStyle(color: Bk.muted, fontSize: 11)),
+          if (_error != null) ...[
+            const SizedBox(height: 14),
+            Text(_error!, style: const TextStyle(color: Bk.bad)),
+          ],
+          if (_warn != null) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Bk.accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Bk.accent.withValues(alpha: 0.4)),
+              ),
+              child: Text(_warn!,
+                  style: const TextStyle(fontSize: 12)),
+            ),
+          ],
+          const SizedBox(height: 22),
+          if (_warn == null)
+            FilledButton(
+              onPressed: _busy ? null : _save,
+              child: _busy
+                  ? const SizedBox(
+                      height: 22,
+                      width: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : Text(_isEdit ? 'Save network' : 'Add network'),
+            )
+          else
+            FilledButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
+        ],
+      ),
+    );
   }
 }

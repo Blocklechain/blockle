@@ -104,7 +104,10 @@
     const chainId = opts.chainId || 1;
     const path = opts.path || "m/44'/60'/0'/0";
     const explorer = opts.explorer || 'https://etherscan.io/tx/';
-    const native = { chain: id, kind: 'native', symbol: opts.symbol || 'ETH', decimals: 18 };
+    // Native decimals default to 18 (every mainstream EVM chain); a custom
+    // network may override via opts.decimals.
+    const nativeDecimals = (opts.decimals != null && Number.isInteger(Number(opts.decimals))) ? Number(opts.decimals) : 18;
+    const native = { chain: id, kind: 'native', symbol: opts.symbol || 'ETH', decimals: nativeDecimals };
     let rootSeed = null;        // unlocked HD seed (Uint8Array), in-memory only
     let getEndpoint = opts.endpoint || (async () => opts.rpcUrl);
     // Alchemy indexer endpoint for ERC-20 auto-detection. CONFIG — a read-only
@@ -205,7 +208,7 @@
         try {
           const wei = await rpc('eth_getBalance', [address, 'latest']);
           const v = BigInt(wei).toString();
-          out.push({ asset: native, confirmed: v, display: formatUnits(v, 18) });
+          out.push({ asset: native, confirmed: v, display: formatUnits(v, nativeDecimals) });
         } catch (e) {
           out.push({ asset: native, confirmed: '0', display: '—', error: String(e.message || e) });
         }

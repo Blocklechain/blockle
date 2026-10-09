@@ -7,9 +7,12 @@
 // defaults. No secret is ever hardcoded here.
 import 'block.dart';
 import 'chain_adapter.dart';
+import 'custom_network.dart';
 import 'evm.dart';
 import 'solana.dart';
 import 'utxo.dart';
+
+export 'custom_network.dart';
 
 /// Per-chain endpoint configuration.
 class EndpointCfg {
@@ -166,12 +169,18 @@ final Map<String, List<AssetRef>> defaultTokens = {
 };
 
 class ChainRegistry {
-  ChainRegistry._(this._adapters, this._endpoints, this._tokens, this._enabled);
+  ChainRegistry._(this._adapters, this._endpoints, this._tokens, this._enabled,
+      this._customNets);
 
   final Map<String, ChainAdapter> _adapters;
   final Map<String, EndpointCfg> _endpoints;
   final Map<String, List<AssetRef>> _tokens;
   final Set<String> _enabled;
+
+  /// Genuinely-new user-added networks keyed by slug id (a custom net whose
+  /// chainId matched a built-in is NOT here — it merely overrode that built-in's
+  /// RPC, see [ChainRegistry.create]).
+  final Map<String, CustomNetwork> _customNets;
 
   /// Build a registry. `block` is the app's BLOCK signer bridge (optional — in
   /// pure-Dart tests it is omitted; the extension/app always supplies it).
@@ -185,6 +194,7 @@ class ChainRegistry {
     Map<String, EndpointCfg>? endpoints,
     Map<String, List<AssetRef>>? tokens,
     List<String>? enabled,
+    List<CustomNetwork>? customNetworks,
     BlockSignerBridge? block,
     JsonRpcFn Function(String url)? rpcBuilder,
     JsonRpcFn Function(String url)? alchemyBuilder,
@@ -216,11 +226,17 @@ class ChainRegistry {
         (postBuilder != null && base != null) ? postBuilder(base) : null;
 
     final adapters = <String, ChainAdapter>{};
+    // effective chainId -> adapter id, so user-added custom networks can be
+    // DEDUPED by chainId (a custom net with a built-in's chainId overrides that
+    // built-in's RPC rather than adding a duplicate).
+    final chainIdToId = <int, String>{};
     for (final n in evmNets) {
       final cfg = ep[n.id];
+      final cid = cfg?.chainId ?? n.chainId;
+      chainIdToId[cid] = n.id;
       adapters[n.id] = EvmAdapter(
         id: n.id,
-        chainId: cfg?.chainId ?? n.chainId,
+        chainId: cid,
         symbol: n.symbol,
         rpcUrl: cfg?.rpcUrl,
         rpc: rpcFor(cfg?.rpcUrl),
@@ -229,6 +245,54 @@ class ChainRegistry {
         explorer: n.explorer,
       );
     }
+
+    // User-added custom EVM networks: SAME generic EvmAdapter + SAME secp256k1
+    // account (m/44'/60'). Merge + dedupe by chainId.
+    final customNets = <String, CustomNetwork>{};
+    for (final cn in customNetworks ?? const <CustomNetwork>[]) {
+      final collideId = chainIdToId[cn.chainId];
+      if (collideId != null) {
+        // A built-in (or an earlier custom) already owns this chainId. Override
+        // its RPC / indexer in place — never duplicate the chain.
+        final prior = adapters[collideId];
+        final symbol = prior is EvmAdapter ? prior.symbol : cn.nativeSymbol;
+        final dec = prior is EvmAdapter ? prior.decimals : cn.decimals;
+        final explorer = (prior is EvmAdapter && prior.explorer.isNotEmpty)
+            ? prior.explorer
+            : cn.explorerUrl;
+        // Override the RPC; keep the built-in's existing auto-detect unless the
+        // custom net supplies its own indexer URL (additive — never silently
+        // disables a configured Alchemy key).
+        final indexer = cn.tokenIndexerUrl ??
+            (prior is EvmAdapter ? prior.alchemyUrl : null);
+        adapters[collideId] = EvmAdapter(
+          id: collideId,
+          chainId: cn.chainId,
+          symbol: symbol,
+          decimals: dec,
+          rpcUrl: cn.rpcUrl,
+          rpc: rpcFor(cn.rpcUrl),
+          alchemyUrl: indexer,
+          alchemyRpc: alchemyFor(indexer),
+          explorer: explorer,
+        );
+        continue;
+      }
+      chainIdToId[cn.chainId] = cn.id;
+      customNets[cn.id] = cn;
+      adapters[cn.id] = EvmAdapter(
+        id: cn.id,
+        chainId: cn.chainId,
+        symbol: cn.nativeSymbol,
+        decimals: cn.decimals,
+        rpcUrl: cn.rpcUrl,
+        rpc: rpcFor(cn.rpcUrl),
+        alchemyUrl: cn.tokenIndexerUrl,
+        alchemyRpc: alchemyFor(cn.tokenIndexerUrl),
+        explorer: cn.explorerUrl,
+      );
+    }
+    enabledSet.addAll(customNets.keys);
     adapters['bitcoin'] = UtxoAdapter('bitcoin',
         esplora: ep['bitcoin']?.esplora,
         httpGet: getFor(ep['bitcoin']?.esplora),
@@ -247,7 +311,7 @@ class ChainRegistry {
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 
-    return ChainRegistry._(adapters, ep, tk, enabledSet);
+    return ChainRegistry._(adapters, ep, tk, enabledSet, customNets);
   }
 
   ChainAdapter get(String id) {
@@ -264,6 +328,14 @@ class ChainRegistry {
   EndpointCfg? endpoints(String id) => _endpoints[id];
 
   List<AssetRef> tokensFor(String id) => _tokens[id] ?? const [];
+
+  /// Slug ids of the genuinely-new user-added networks (those that did NOT
+  /// collide with a built-in chainId), in insertion order.
+  List<String> customNetworkIds() => _customNets.keys.toList();
+
+  /// The definition for a user-added network, or null if [id] is a built-in /
+  /// unknown chain.
+  CustomNetwork? customNetwork(String id) => _customNets[id];
 
   /// Unlock every secp256k1 / ed25519 adapter with the HD root; BLOCK uses its
   /// own engine session.
