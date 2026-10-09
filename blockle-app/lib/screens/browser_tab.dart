@@ -1,11 +1,13 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../services/open_url.dart';
 import '../theme.dart';
 
 const _home = 'https://blockle.org';
@@ -69,6 +71,10 @@ class _BrowserTabState extends State<BrowserTab> {
 
   @override
   Widget build(BuildContext context) {
+    // The in-app dApp browser (InAppWebView) isn't supported on Flutter web;
+    // offer a new-tab link instead.
+    if (kIsWeb) return const _WebBrowserPlaceholder();
+
     final app = context.watch<AppState>();
     _wireAppState(app);
     // deep-link request from elsewhere (e.g. Buy/Sell button)
@@ -171,6 +177,40 @@ class _BrowserTabState extends State<BrowserTab> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _WebBrowserPlaceholder extends StatelessWidget {
+  const _WebBrowserPlaceholder();
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.public_off, size: 48, color: Bk.muted),
+            const SizedBox(height: 16),
+            const Text('The in-app dApp browser runs on the mobile/desktop app.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            const Text(
+                'On the web preview, open blockle.org in a new tab. The wallet, '
+                'swap and queue tabs work here.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Bk.muted)),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: () => openExternal('https://blockle.org'),
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('Open blockle.org'),
+            ),
+          ],
+        ),
       ),
     );
   }
