@@ -1,0 +1,36 @@
+{
+  "name": "@blockle/mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for the Blockle L1 — wraps @blockle/agent-sdk so any MCP-capable agent can run a wallet, launch BLOCK-20 tokens, seed/trade the native AMM, buy/sell BLOCK over x402, and place + complete cross-chain swaps and permissionless listings on the non-custodial exchange. stdio + streamable-HTTP.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "bin": {
+    "blockle-mcp": "dist/src/index.js"
+  },
+  "files": [
+    "dist",
+    "blockle.config.example.json",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "start:http": "node dist/src/index.js --http",
+    "prepare": "npm run build",
+    "test": "npm run build && node dist/test/smoke.js"
+  },
+  "dependencies": {
+    "@blockle/agent-sdk": "file:../sdk",
+    "@modelcontextprotocol/sdk": "^1.19.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

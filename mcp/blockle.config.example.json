@@ -1,0 +1,13 @@
+{
+  "nodeUrl": "http://127.0.0.1:8445",
+  "siteUrl": "http://127.0.0.1:8787",
+  "exchangeUrl": "http://127.0.0.1:8900",
+  "x402Url": "http://127.0.0.1:8402",
+  "networkId": "devnet",
+  "timeoutMs": 30000,
+
+  "_wallet_note": "Prefer the env vars BLOCKLE_SECRET_HEX + BLOCKLE_PUBLIC_HEX for the agent's own key. The 'wallet' block below is DEV ONLY; never commit a real secret. Reserve/hot-wallet keys never belong here.",
+  "_wallet_example": { "secretHex": "<ml-dsa-44 secret hex>", "publicHex": "<ml-dsa-44 public hex>" },
+
+  "_compliance": "Money paths (buy_block, sell_block, listing-fee payment) are TESTNET-FIRST and disabled by default behind each service's server-side mainnet_enabled flag. Operators MUST obtain legal/compliance sign-off before enabling mainnet. Dev uses testnets (Base Sepolia, Solana devnet, ETH Sepolia)."
+}
