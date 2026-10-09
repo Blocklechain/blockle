@@ -10,7 +10,6 @@ function buildOpenApi(cfg) {
   const base = cfg.publicBaseUrl.replace(/\/+$/, "");
   const network = cfg.network;
   const paid = { security: [{ x402: [] }] };
-  const free = { security: [] };
 
   const resp402 = {
     402: {
@@ -33,6 +32,7 @@ function buildOpenApi(cfg) {
         "sqrt curve, pay self-serve listing fees ($5 + $1/extra pair), or settle a generic " +
         "priced action. Non-custodial; testnet-first with mainnet gated behind a recorded " +
         "legal/compliance review.",
+      contact: { name: "Blockle", email: "ai@3vdc.com", url: "https://blockle.org" },
     },
     servers: [{ url: base }],
     components: {
@@ -160,19 +160,9 @@ function buildOpenApi(cfg) {
           responses: { ...resp402, ...resp200("Signed 'action-paid' receipt.") },
         },
       },
-      // ---- free (not payment-probed) ----
-      "/x402-resources.json": {
-        get: { ...free, operationId: "manifest", summary: "x402 resource manifest (free).", responses: resp200("Resource manifest.") },
-      },
-      "/discovery/resources": {
-        get: { ...free, operationId: "bazaar", summary: "x402 Bazaar discovery list (free).", responses: resp200("Bazaar items.") },
-      },
-      "/healthz": {
-        get: { ...free, operationId: "health", summary: "Health (free).", responses: resp200("Health status.") },
-      },
-      "/openapi.json": {
-        get: { ...free, operationId: "openapi", summary: "This OpenAPI document (free).", responses: resp200("OpenAPI spec.") },
-      },
+      // NOTE: only the x402-paid resources are advertised here. Free endpoints
+      // (/openapi.json, /x402-resources.json, /discovery/resources, /healthz)
+      // are intentionally NOT listed so the crawler never probes them for a 402.
     },
   };
 }
