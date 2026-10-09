@@ -57,6 +57,16 @@ class VaultPlaintext {
       );
 }
 
+/// The minimal unlocked-vault surface the Accounts facade depends on.
+/// [MultichainVaultStore] implements it; unit tests fake it so account
+/// derivation can run without flutter_secure_storage / platform channels.
+abstract class VaultSession {
+  bool get isUnlocked;
+  Future<VaultPlaintext> unlock(String password);
+  void lock();
+  VaultPlaintext? get plaintext;
+}
+
 class _Session {
   VaultPlaintext? plaintext;
   int at = 0;
@@ -69,7 +79,7 @@ class _Session {
 
 /// Persists one sealed multi-chain vault and manages its unlocked session. For
 /// multi-wallet, construct one per wallet record (keyed by [storageKey]).
-class MultichainVaultStore {
+class MultichainVaultStore implements VaultSession {
   MultichainVaultStore({
     FlutterSecureStorage? storage,
     this.storageKey = 'bk_mc_vault',
@@ -84,6 +94,7 @@ class MultichainVaultStore {
   final Duration autoLock;
   final _Session _session = _Session();
 
+  @override
   bool get isUnlocked {
     if (_session.plaintext == null) return false;
     if (DateTime.now().millisecondsSinceEpoch - _session.at >
@@ -115,6 +126,7 @@ class MultichainVaultStore {
 
   /// Unlock the stored vault. Throws [WrongPasswordException] on a wrong
   /// password. Transparently re-seals a legacy v1 blob as v2 on success.
+  @override
   Future<VaultPlaintext> unlock(String password) async {
     final sealed = await _readSealed();
     if (sealed == null) throw StateError('no vault');
@@ -143,6 +155,7 @@ class MultichainVaultStore {
   void _touch() => _session.at = DateTime.now().millisecondsSinceEpoch;
 
   /// The unlocked plaintext (refreshes the auto-lock timer). Null if locked.
+  @override
   VaultPlaintext? get plaintext {
     if (!isUnlocked) return null;
     _touch();
@@ -155,6 +168,7 @@ class MultichainVaultStore {
 
   /// Lock / kill: wipe all decrypted key material + the LLM credential from
   /// memory. Nothing spendable survives a lock.
+  @override
   void lock() => _session.clear();
 
   /// Wipe the persisted sealed blob and the session.

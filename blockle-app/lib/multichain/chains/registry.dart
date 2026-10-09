@@ -65,11 +65,20 @@ class ChainRegistry {
 
   /// Build a registry. `block` is the app's BLOCK signer bridge (optional — in
   /// pure-Dart tests it is omitted; the extension/app always supplies it).
+  ///
+  /// Transport builders are OPTIONAL and additive: when supplied, the EVM /
+  /// Solana / UTXO adapters are wired with those explicit, injectable closures
+  /// (see lib/services/transports.dart) instead of their built-in package:http
+  /// default. A test build swaps in offline senders this way; left null, the
+  /// adapters behave exactly as before.
   factory ChainRegistry.create({
     Map<String, EndpointCfg>? endpoints,
     Map<String, List<AssetRef>>? tokens,
     List<String>? enabled,
     BlockSignerBridge? block,
+    JsonRpcFn Function(String url)? rpcBuilder,
+    HttpGetFn Function(String base)? getBuilder,
+    HttpPostFn Function(String base)? postBuilder,
   }) {
     final ep = {...defaultEndpoints, ...?endpoints};
     final tk = {...defaultTokens, ...?tokens};
@@ -79,12 +88,20 @@ class ChainRegistry {
       'block', // BLOCK is always enabled
     };
 
+    JsonRpcFn? rpcFor(String? url) =>
+        (rpcBuilder != null && url != null) ? rpcBuilder(url) : null;
+    HttpGetFn? getFor(String? base) =>
+        (getBuilder != null && base != null) ? getBuilder(base) : null;
+    HttpPostFn? postFor(String? base) =>
+        (postBuilder != null && base != null) ? postBuilder(base) : null;
+
     final adapters = <String, ChainAdapter>{};
     adapters['ethereum'] = EvmAdapter(
       id: 'ethereum',
       chainId: ep['ethereum']?.chainId ?? 1,
       symbol: 'ETH',
       rpcUrl: ep['ethereum']?.rpcUrl,
+      rpc: rpcFor(ep['ethereum']?.rpcUrl),
       explorer: 'https://etherscan.io/tx/',
     );
     adapters['base'] = EvmAdapter(
@@ -92,14 +109,25 @@ class ChainRegistry {
       chainId: ep['base']?.chainId ?? 8453,
       symbol: 'ETH',
       rpcUrl: ep['base']?.rpcUrl,
+      rpc: rpcFor(ep['base']?.rpcUrl),
       explorer: 'https://basescan.org/tx/',
     );
-    adapters['bitcoin'] = UtxoAdapter('bitcoin', esplora: ep['bitcoin']?.esplora);
-    adapters['litecoin'] =
-        UtxoAdapter('litecoin', esplora: ep['litecoin']?.esplora);
-    adapters['dogecoin'] =
-        UtxoAdapter('dogecoin', esplora: ep['dogecoin']?.esplora);
-    adapters['solana'] = SolanaAdapter(rpcUrl: ep['solana']?.rpcUrl);
+    adapters['bitcoin'] = UtxoAdapter('bitcoin',
+        esplora: ep['bitcoin']?.esplora,
+        httpGet: getFor(ep['bitcoin']?.esplora),
+        httpPost: postFor(ep['bitcoin']?.esplora));
+    adapters['litecoin'] = UtxoAdapter('litecoin',
+        esplora: ep['litecoin']?.esplora,
+        httpGet: getFor(ep['litecoin']?.esplora),
+        httpPost: postFor(ep['litecoin']?.esplora));
+    adapters['dogecoin'] = UtxoAdapter('dogecoin',
+        esplora: ep['dogecoin']?.esplora,
+        httpGet: getFor(ep['dogecoin']?.esplora),
+        httpPost: postFor(ep['dogecoin']?.esplora));
+    adapters['solana'] = SolanaAdapter(
+      rpcUrl: ep['solana']?.rpcUrl,
+      rpc: rpcFor(ep['solana']?.rpcUrl),
+    );
     if (block != null) adapters['block'] = BlockAdapter(block);
 
     return ChainRegistry._(adapters, ep, tk, enabledSet);
