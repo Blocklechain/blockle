@@ -1,0 +1,14 @@
+[package]
+name = "blockle-htlc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "BLOCK leg of the non-custodial atomic-swap exchange: a BLAKE2B hash-timelocked contract (HTLC) for the Blockle VM, with a bytecode builder and regtest tests."
+
+[dependencies]
+blockle-vm = { path = "../../../chain/crates/vm" }
+blake2b_simd = "1"
+
+[dev-dependencies]
+blockle-chain = { path = "../../../chain/crates/chain" }
+blockle-core = { path = "../../../chain/crates/core" }

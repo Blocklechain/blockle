@@ -1,0 +1,19 @@
+{
+  "name": "blockle-htlc-evm",
+  "version": "0.1.0",
+  "description": "EVM leg of the Blockle non-custodial atomic-swap exchange: a hash-timelocked contract for ETH and arbitrary ERC-20 (USDC/USDT first-class).",
+  "license": "MIT",
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "deploy:baseSepolia": "hardhat run scripts/deploy.js --network baseSepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "chai": "^4.5.0",
+    "ethers": "^6.13.4",
+    "hardhat": "^2.22.17"
+  }
+}

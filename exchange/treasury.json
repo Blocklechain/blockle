@@ -1,0 +1,14 @@
+{
+  "_note": "Non-custodial exchange + self-serve-listing fee treasury. These are PUBLIC receiving addresses — the 0.1% swap protocol fee and the $5/asset + $1/extra-pair listing fees are paid here on-chain by the lister/trader. No private keys live here or anywhere in the repo. MAINNET addresses: only used when mainnet_enabled=true; provide separate testnet addresses for dev.",
+  "mainnet": {
+    "solana": "EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j",
+    "ethereum": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
+    "base": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
+    "erc20": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
+    "sui": "0xf9dc48a73424ce1165352717f1a64569029a1b90e67fa7839bc53bff26fd14f9",
+    "btc": "bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm"
+  },
+  "testnet": {
+    "_todo": "fill with faucet/testnet treasury addresses; dev fees settle on testnets (Base Sepolia, Solana devnet, etc.)"
+  }
+}

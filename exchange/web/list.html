@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>List an asset — Blockle Exchange</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle Exchange</a>
+  <nav><a href="/">Trade</a><a href="/list.html" class="on">List an asset</a><a href="/dex">DEX</a><a href="/buy">Buy BLOCK</a></nav>
+  <div class="spacer"></div>
+  <div class="wallets" id="walletBar"></div>
+</div></header>
+
+<div class="banner"><div class="wrap">
+  <span class="pill">Testnet / Demo</span>
+  <span><b>Permissionless listing.</b> Anyone — human or agent — can list a tradeable asset. You pay the fee on-chain from your own wallet; the relay verifies payment before it goes live. Non-custodial, no account.</span>
+</div></div>
+
+<main class="wrap">
+  <h1>List an asset</h1>
+  <p class="sub">One short form. Every listing includes the mandatory BLOCK pair; add extra pairs for $1 each.</p>
+
+  <div class="list-grid">
+    <div class="card">
+      <h3>Asset</h3>
+      <label class="fld">Symbol</label>
+      <input id="symbol" placeholder="e.g. MEOW" maxlength="12" autocapitalize="characters">
+      <label class="fld">Chain</label>
+      <select id="chain">
+        <option value="ethereum">Ethereum (ERC-20)</option>
+        <option value="base">Base (ERC-20)</option>
+        <option value="solana">Solana (SPL)</option>
+        <option value="block">Blockle (BLOCK-20)</option>
+      </select>
+      <label class="fld" id="addrLbl">Contract / mint address</label>
+      <input id="addr" placeholder="0x… / mint / contract id" class="mono">
+      <label class="fld">Decimals</label>
+      <input id="decimals" inputmode="numeric" value="18">
+      <label class="fld">Logo URL (optional)</label>
+      <input id="logo" placeholder="https://… or ipfs://…">
+
+      <h3 style="margin-top:20px">Trading pairs</h3>
+      <div class="pairs" id="pairs"></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">The BLOCK pair is mandatory and included in the base fee. Pick any extra pairs you want.</div>
+    </div>
+
+    <div class="right-col">
+      <div class="card">
+        <h3>Quote</h3>
+        <div id="breakdown"></div>
+        <div class="quote-total"><span>Total</span><span class="mono" id="total">$5.00</span></div>
+        <div class="quote-row" style="border:0;margin-top:8px"><span>Markets created</span></div>
+        <div class="muted mono" id="marketsPreview" style="font-size:12px"></div>
+
+        <h3 style="margin-top:18px">Pay the fee</h3>
+        <div class="pay-opts" id="payOpts">
+          <button data-pay="wallet" class="on">Pay from wallet</button>
+          <button data-pay="txid">I already paid</button>
+        </div>
+        <div id="payWallet">
+          <div class="quote-row"><span>Pay to (treasury)</span></div>
+          <div class="muted mono" id="payTo" style="font-size:11px;word-break:break-all">—</div>
+          <div class="quote-row"><span>Amount</span><span class="mono" id="payAmount">—</span></div>
+        </div>
+        <div id="payTxid" style="display:none">
+          <label class="fld">Payment transaction id</label>
+          <input id="txidInput" class="mono" placeholder="txid / tx hash of your fee payment">
+        </div>
+
+        <button class="btn primary" id="listBtn" style="width:100%;margin-top:14px">Pay &amp; list</button>
+        <div class="err" id="listErr"></div>
+      </div>
+
+      <div class="card">
+        <h3>Live listings</h3>
+        <div class="listings" id="listings"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Base fee $5 covers the asset plus its required BLOCK pair; each additional pair is $1. Fees settle in USDC or
+    BLOCK-equivalent per relay config, paid non-custodially to the treasury. In dev/testnet, fees settle on testnets.
+    Agents can list the same way via the SDK <code>listAsset()</code> and the <code>exchange_list_asset</code> MCP tool —
+    both settle over x402 by default. The operator must obtain legal/compliance sign-off before enabling mainnet.
+  </div>
+</main>
+
+<script src="/config.js"></script>
+<script src="/core.js"></script>
+<script src="/list.js"></script>
+</body>
+</html>

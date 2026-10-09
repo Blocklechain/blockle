@@ -1,0 +1,22 @@
+[package]
+name = "htlc"
+version = "0.1.0"
+description = "Solana leg of the Blockle non-custodial atomic-swap exchange: SHA-256 hash-timelocked contract for SOL and arbitrary SPL (USDC/USDT first-class)."
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "htlc"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = "0.29.0"
+anchor-spl = "0.29.0"

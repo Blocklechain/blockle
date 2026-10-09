@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockle Exchange — non-custodial atomic-swap trading</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle Exchange</a>
+  <nav><a href="/" class="on">Trade</a><a href="/list.html">List an asset</a><a href="/dex">DEX</a><a href="/buy">Buy BLOCK</a></nav>
+  <div class="spacer"></div>
+  <div class="wallets" id="walletBar"></div>
+</div></header>
+
+<div class="banner"><div class="wrap">
+  <span class="pill">Testnet / Demo</span>
+  <span><b>Non-custodial.</b> You sign every move with your own wallet. The site never holds your funds or keys — trades settle as atomic HTLC swaps you execute yourself.</span>
+  <span class="feepill" style="margin-left:auto">0.1% protocol fee</span>
+</div></div>
+
+<main class="wrap">
+  <div class="market-bar" style="margin-top:18px">
+    <select id="marketSel" aria-label="Market"></select>
+    <div class="last-price mono" id="lastPrice">—</div>
+    <div class="muted" id="marketMeta" style="font-size:12px"></div>
+  </div>
+
+  <div class="exchange-grid">
+    <div class="left-col">
+      <div class="card">
+        <h3>Order book <span class="muted" id="bookMarket" style="font-weight:400"></span></h3>
+        <div class="book" id="book"><div class="empty">Select a market</div></div>
+      </div>
+      <div class="card">
+        <h3>My orders</h3>
+        <div id="myOrders"><div class="empty">Sign in to see your orders</div></div>
+      </div>
+      <div class="card">
+        <h3>My swaps <span class="muted" style="font-weight:400;font-size:12px">— you lock → counterparty locks → you claim</span></h3>
+        <div id="mySwaps"><div class="empty">No swaps yet</div></div>
+      </div>
+    </div>
+
+    <div class="right-col">
+      <div class="card">
+        <h3>Place order</h3>
+        <div class="sideseg" id="sideSeg">
+          <button data-side="buy" class="on buy">Buy</button>
+          <button data-side="sell" class="sell">Sell</button>
+        </div>
+        <div class="typeseg" id="typeSeg">
+          <button data-type="limit" class="on">Limit</button>
+          <button data-type="market">Market</button>
+        </div>
+        <label class="fld" id="priceLbl">Price (quote per base)</label>
+        <input id="price" inputmode="decimal" placeholder="0.00">
+        <label class="fld" id="amountLbl">Amount (base)</label>
+        <input id="amount" inputmode="decimal" placeholder="0.00">
+        <label class="fld">Expires in</label>
+        <select id="expiry">
+          <option value="3600">1 hour</option>
+          <option value="86400" selected>1 day</option>
+          <option value="604800">1 week</option>
+        </select>
+        <div class="quote-row" style="margin-top:12px"><span>Total</span><span class="mono" id="orderTotal">—</span></div>
+        <div class="quote-row"><span>Protocol fee (0.1%)</span><span class="mono" id="orderFee">—</span></div>
+        <button class="btn buy" id="placeBtn" style="width:100%;margin-top:12px">Sign &amp; place buy order</button>
+        <div class="err" id="orderErr"></div>
+        <div class="muted" style="font-size:12px;margin-top:4px">Signs the order intent with your connected wallet. No funds move until you execute the resulting swap.</div>
+      </div>
+      <div class="card">
+        <h3>Recent trades</h3>
+        <div class="trades" id="trades"><div class="empty">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Blockle Exchange is a non-custodial, permissionless super-exchange. Every trade is an atomic cross-chain swap:
+    you lock your leg, the counterparty locks theirs, you reveal the preimage to claim — or it refunds after the timelock.
+    The relay only coordinates the hashlock and order book; it never holds funds or keys. Testnet/demo by default; the
+    operator must obtain legal/compliance sign-off before enabling mainnet money paths.
+  </div>
+</main>
+
+<script src="/config.js"></script>
+<script src="/core.js"></script>
+<script src="/trade.js"></script>
+</body>
+</html>

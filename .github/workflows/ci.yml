@@ -124,3 +124,72 @@ jobs:
         with:
           name: ${{ matrix.bin-artifact }}
           path: cli-bin/
+
+  # ── Agent stack: @blockle/agent-sdk (sdk/) + @blockle/mcp (mcp/) ──────────────
+  # Both link the ML-DSA wasm signer (blockle-wasm/pkg-node), so build it first.
+  agent-stack:
+    name: sdk + mcp (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: blockle-wasm
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build wasm signer (nodejs target)
+        run: cd blockle-wasm && wasm-pack build --target nodejs --out-dir pkg-node
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build + test SDK
+        run: cd sdk && npm install && npm run build && npm test
+
+      - name: Build + test MCP server
+        run: cd mcp && npm install && npm run build && npm test
+
+  # ── Payment-rail + exchange services: build / lint check ─────────────────────
+  services:
+    name: services build/lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: blockle-wasm
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build wasm signer (nodejs target)
+        run: cd blockle-wasm && wasm-pack build --target nodejs --out-dir pkg-node
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: settlement — compile (tsc) + unit tests
+        run: cd services/settlement && npm install && npm run build && npm test
+
+      - name: x402-buy — install + syntax lint
+        run: |
+          cd services/x402-buy && npm install
+          node --check index.js
+          find src -name '*.js' -print0 | xargs -0 -I{} node --check {}
+
+      - name: exchange relay — compile (tsc) + unit tests
+        run: cd exchange/server && npm install && npm run build && npm test

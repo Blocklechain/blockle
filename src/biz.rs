@@ -699,10 +699,21 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
         "/studio" => ("200 OK", "text/html; charset=utf-8", page_studio().into_bytes()),
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
+        // Agent-facing docs: SDK + MCP install, the buy→launch→pool→trade→sell
+        // loop, base-unit + fee conventions, and the mainnet legal-review notice.
+        "/agents" => serve_web_file("agents.html", "text/html; charset=utf-8"),
         "/blockle_wasm.js" => serve_web_file("blockle_wasm.js", "application/javascript; charset=utf-8"),
         "/blockle.wasm" => serve_web_file("blockle_wasm_bg.wasm", "application/wasm"),
-        "/buy" => serve_web_file("buy.html", "text/html; charset=utf-8"),
-        "/buy.js" => serve_web_file("buy.js", "application/javascript; charset=utf-8"),
+        // Old Transak-backed Buy/Sell page retired (the fiat widget never came
+        // online). Being replaced by a non-custodial exchange at
+        // exchange.blockle.org — BLOCK/ETH/SOL/USDC/USDT, wallet-to-wallet.
+        "/buy" => ("200 OK", "text/html; charset=utf-8", page_shell("Buy / Sell",
+            "<section style=\"max-width:640px;margin:60px auto;text-align:center\">\
+             <h1>Buy / Sell is moving</h1>\
+             <p class=\"muted\">The old fiat buy/sell page has been retired. A new <strong>non-custodial exchange</strong> is on the way — trade BLOCK against ETH, SOL, USDC and USDT wallet-to-wallet, with no custody and nothing to deposit.</p>\
+             <p style=\"margin-top:24px\"><a href=\"/dex\" style=\"background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:10px 20px;border-radius:8px;font-weight:700;text-decoration:none\">Trade on the DEX →</a></p>\
+             <p class=\"muted\" style=\"margin-top:16px;font-size:13px\">Coming soon: exchange.blockle.org</p>\
+             </section>".into()).into_bytes()),
         "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
         "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
         "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
@@ -1141,7 +1152,7 @@ fn page_shell(title: &str, body: String) -> String {
 <meta property="og:image" content="https://{domain}/logo.png">
 <title>{title} · {domain}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="/buy" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Buy / Sell</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
@@ -1853,6 +1864,16 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
 /// /buy configuration — operator-set at /var/lib/blockle-biz/buy-config.json.
 /// Falls back to an honest "not configured" default (empty reserve addresses →
 /// the page shows "price discovery not started"). Never fabricates values.
+///
+/// Compliance/payment-rail fields (consumed by services/x402-buy and
+/// services/settlement) ship with safe, honest defaults:
+///   facilitatorUrl               — "" (no x402 facilitator wired)
+///   networkId                    — "base-sepolia" (TESTNET-FIRST)
+///   confirmationDepth            — reorg-safety confirmations before payout
+///   dailyUsdcCap                 — 0 (no USDC moves until an operator sets it)
+///   perSellAvailabilityFraction  — 0 (no sell liquidity exposed until set)
+///   mainnet_enabled              — false; flip to true ONLY after a recorded
+///                                  legal/compliance review (see AGENTS.md).
 fn buy_config() -> String {
     const DEFAULT: &str = r#"{
   "ticker": "BLOCK",
@@ -1866,7 +1887,13 @@ fn buy_config() -> String {
     "decimals": 6,
     "reserveAddr": ""
   },
-  "offramp": { "provider": "transak", "apiKey": "", "environment": "STAGING", "network": "base", "defaultCryptoCurrency": "USDC" }
+  "offramp": { "provider": "transak", "apiKey": "", "environment": "STAGING", "network": "base", "defaultCryptoCurrency": "USDC" },
+  "facilitatorUrl": "",
+  "networkId": "base-sepolia",
+  "confirmationDepth": 12,
+  "dailyUsdcCap": 0,
+  "perSellAvailabilityFraction": 0,
+  "mainnet_enabled": false
 }"#;
     fs::read_to_string("/var/lib/blockle-biz/buy-config.json").unwrap_or_else(|_| DEFAULT.to_string())
 }
