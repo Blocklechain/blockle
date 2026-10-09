@@ -226,6 +226,7 @@
       if (pw.length < 8) return (err.textContent = 'Password must be at least 8 characters.');
       if (pw !== pw2) return (err.textContent = 'Passwords do not match.');
       await Wallet.create(pw);
+      await afterUnlock(pw);
       toast('Wallet created');
       route('dashboard');
     });
@@ -275,6 +276,7 @@
       }
       try {
         const res = await Wallet.importFile(importedObj, filePw, newPw);
+        if (res.mode !== 'watch-only') await afterUnlock(newPw);
         toast(res.mode === 'watch-only' ? 'Imported (watch-only)' : 'Wallet imported');
         route('dashboard');
       } catch (err) {
@@ -286,7 +288,9 @@
     const doUnlock = async () => {
       $('#unlock-err').textContent = '';
       try {
-        await Wallet.unlock($('#unlock-pw').value);
+        const pw = $('#unlock-pw').value;
+        await Wallet.unlock(pw);
+        await afterUnlock(pw);
         route('dashboard');
       } catch {
         $('#unlock-err').textContent = 'Wrong password.';
@@ -298,8 +302,7 @@
 
     // dashboard
     $('#lock-btn').addEventListener('click', async () => {
-      await Wallet.lock();
-      route('unlock');
+      await doLock();
     });
     const impBtn = $('#import-token');
     if (impBtn) impBtn.addEventListener('click', importToken);
@@ -358,8 +361,7 @@
       }
     });
     $('#lock-now').addEventListener('click', async () => {
-      await Wallet.lock();
-      route('unlock');
+      await doLock();
     });
     $('#reset-wallet').addEventListener('click', confirmReset);
     $('#api-base').addEventListener('change', async (e) => {
@@ -372,10 +374,51 @@
       await Exchange.signOut(); // a different relay means a new session
       toast('Exchange endpoint saved');
     });
+
+    // multi-chain endpoints (all config, sane public defaults in the registry)
+    const saveEndpoint = async (chain, key, value) => {
+      const cur = (await Store.get('chainEndpoints')).chainEndpoints || {};
+      cur[chain] = cur[chain] || {};
+      const v = value.trim();
+      if (v) cur[chain][key] = v; else delete cur[chain][key];
+      await Store.set({ chainEndpoints: cur });
+      if (window.Wiring) Wiring.reset();
+      toast('Endpoint saved');
+    };
+    const epMap = [
+      ['#ep-eth', 'ethereum', 'rpcUrl'],
+      ['#ep-base', 'base', 'rpcUrl'],
+      ['#ep-btc', 'bitcoin', 'esplora'],
+      ['#ep-ltc', 'litecoin', 'esplora'],
+      ['#ep-doge', 'dogecoin', 'esplora'],
+    ];
+    for (const [sel, chain, key] of epMap) {
+      const el = $(sel);
+      if (el) el.addEventListener('change', (e) => saveEndpoint(chain, key, e.target.value));
+    }
+  }
+
+  // Pass-2 lifecycle: keep the multi-chain Wiring caches + the in-wallet agent
+  // credential store in step with the wallet session.
+  async function afterUnlock(pw) {
+    try { if (window.Wiring) Wiring.reset(); } catch {}
+    try { if (window.AgentUI) await AgentUI.onUnlock(pw); } catch {}
+  }
+  async function afterResume() {
+    try { if (window.Wiring) Wiring.reset(); } catch {}
+    try { if (window.AgentUI) await AgentUI.onResume(); } catch {}
+  }
+  async function doLock() {
+    await Wallet.lock();
+    try { if (window.Wiring) Wiring.reset(); } catch {}
+    try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
+    route('unlock');
   }
 
   async function confirmReset() {
     if (!confirm('Reset this wallet? Make sure you exported your wallet file — this cannot be undone.')) return;
+    try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
+    try { if (window.Wiring) Wiring.reset(); } catch {}
     await Wallet.reset();
     try {
       await chrome.runtime.sendMessage({ type: 'wallet-state-changed', accounts: [] });
@@ -820,6 +863,16 @@
       enterExchange();
       return;
     }
+    if (name === 'accounts') {
+      if (window.AccountsUI) return void AccountsUI.enter();
+      show('accounts');
+      return;
+    }
+    if (name === 'agent') {
+      if (window.AgentUI) return void AgentUI.enter();
+      show('agent');
+      return;
+    }
     if (name === 'connections') {
       show('connections');
       refreshConnections();
@@ -829,6 +882,12 @@
       show('settings');
       $('#api-base').value = (await Store.get('apiBase')).apiBase || Chain.DEFAULT_API;
       $('#exchange-base').value = (await Store.get('exchangeBase')).exchangeBase || Exchange.DEFAULT_BASE;
+      const ep = (await Store.get('chainEndpoints')).chainEndpoints || {};
+      if ($('#ep-eth')) $('#ep-eth').value = (ep.ethereum && ep.ethereum.rpcUrl) || '';
+      if ($('#ep-base')) $('#ep-base').value = (ep.base && ep.base.rpcUrl) || '';
+      if ($('#ep-btc')) $('#ep-btc').value = (ep.bitcoin && ep.bitcoin.esplora) || '';
+      if ($('#ep-ltc')) $('#ep-ltc').value = (ep.litecoin && ep.litecoin.esplora) || '';
+      if ($('#ep-doge')) $('#ep-doge').value = (ep.dogecoin && ep.dogecoin.esplora) || '';
       return;
     }
     show(name);
@@ -837,15 +896,23 @@
   // Open the selected wallet: resume its session → dashboard; a watch-only
   // wallet → dashboard; otherwise ask for its password.
   async function enterSelected() {
+    try { if (window.Wiring) Wiring.reset(); } catch {}
     await Wallet.loadPublic();
-    if (await Wallet.resumeSession()) return route('dashboard');
+    if (await Wallet.resumeSession()) { await afterResume(); return route('dashboard'); }
     const rec = await Wallet.selected();
     if (rec && rec.watchOnly) return route('dashboard');
     return route('unlock');
   }
 
+  // Shared nav/util surface the Pass-2 UI controllers (AccountsUI, AgentUI) call
+  // into, so they don't duplicate the popup's screen/toast/copy plumbing.
+  const BlockleUI = { show, toast, route, shortAddr, copy, recordPending, $, $$ };
+  window.BlockleUI = BlockleUI;
+
   async function initNormal() {
     wireNormal();
+    if (window.AccountsUI) AccountsUI.init(BlockleUI);
+    if (window.AgentUI) AgentUI.init(BlockleUI);
     refreshNet();
     if (!(await Wallet.exists())) return route('welcome');
     enterSelected();

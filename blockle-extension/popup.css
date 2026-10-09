@@ -230,3 +230,31 @@ canvas.logo {
 .ex-lvl.ask .ex-px { color: #f2607a; }
 .ex-lvl .ex-px, .ex-lvl .ex-qty { position: relative; z-index: 1; }
 .ex-lvl .ex-qty { color: var(--text); }
+
+/* ---- multi-chain accounts ---- */
+.mc-acct { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
+.mc-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.mc-name { font-weight: 700; display: flex; align-items: center; gap: 6px; }
+.mc-addr { margin-bottom: 8px; max-width: 100%; }
+.mc-bal { display: flex; flex-direction: column; gap: 4px; }
+.mc-bal-row { display: flex; justify-content: space-between; font-size: 13px; }
+.mc-bal-row span { color: var(--muted); }
+
+/* ---- agent cockpit ---- */
+.agent-card { background: var(--surface); border: 1px solid var(--line2); border-radius: 12px; padding: 12px; margin: 6px 0 12px; }
+.agent-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin: 4px 0; cursor: pointer; }
+.agent-toggle input { accent-color: var(--c1); }
+.agent-ch { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
+.agent-ch-head { display: flex; align-items: center; justify-content: space-between; padding: 12px; cursor: pointer; }
+.agent-ch-head:hover { background: var(--surface2); }
+.agent-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.agent-ch-body { padding: 0 12px 12px; border-top: 1px solid var(--line); }
+.agent-eq { margin: 10px 0 6px; }
+.pnl-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 6px; }
+.pnl-grid > div { background: var(--surface2); border-radius: 10px; padding: 8px; text-align: center; }
+.pnl-grid small { display: block; font-size: 10px; }
+.pnl-grid b { font-size: 14px; }
+.pp-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.pp-chips .chip-btn { flex: none; }
+.agent-log { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 8px; font-size: 11px; max-height: 150px; overflow-y: auto; color: var(--muted); line-height: 1.5; }
+.agent-log > div { word-break: break-word; }

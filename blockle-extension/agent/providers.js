@@ -32,7 +32,7 @@
     constructor(opts) {
       this.name = 'claude';
       this.apiKey = opts.apiKey;
-      this.model = opts.model || 'claude-opus-5';
+      this.model = opts.model || 'claude-sonnet-4-5';
       this.baseUrl = (opts.baseUrl || 'https://api.anthropic.com').replace(/\/$/, '');
       this.maxTokens = opts.maxTokens || DEFAULT_MAX_TOKENS;
       this.version = opts.anthropicVersion || '2023-06-01';
@@ -107,7 +107,7 @@
     constructor(opts) {
       this.name = opts.name || 'openai';
       this.apiKey = opts.apiKey;
-      this.model = opts.model || 'gpt-4o';
+      this.model = opts.model || 'gpt-4.1';
       this.baseUrl = (opts.baseUrl || 'https://api.openai.com').replace(/\/$/, '');
       this.maxTokens = opts.maxTokens || DEFAULT_MAX_TOKENS;
       this.extraHeaders = opts.extraHeaders || {};
@@ -190,7 +190,7 @@
       super(Object.assign({}, opts, {
         name: 'copilot',
         baseUrl: opts.baseUrl || 'https://api.githubcopilot.com',
-        model: opts.model || 'gpt-4o',
+        model: opts.model || 'gpt-4.1',
         extraHeaders: Object.assign(
           { 'editor-version': 'blockle-wallet/0.1', 'copilot-integration-id': 'blockle-wallet' },
           opts.extraHeaders || {}

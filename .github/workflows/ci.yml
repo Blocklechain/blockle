@@ -157,6 +157,20 @@ jobs:
       - name: Build + test MCP server
         run: cd mcp && npm install && npm run build && npm test
 
+  # ── Browser extension (MV3, no bundler): node --check + unit tests ───────────
+  extension:
+    name: extension (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax-check every source file + run unit tests
+        run: cd blockle-extension && npm run build
+
   # ── Payment-rail + exchange services: build / lint check ─────────────────────
   services:
     name: services build/lint

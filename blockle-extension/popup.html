@@ -20,7 +20,7 @@
         <div class="hero">
           <canvas class="logo" id="logo-welcome"></canvas>
           <h1 class="wordmark">blockle</h1>
-          <p class="tagline">A post-quantum wallet for BLOCK.<br />Hover and tap the logo.</p>
+          <p class="tagline">Post-quantum BLOCK + multi-chain wallet.<br />Hover and tap the logo.</p>
         </div>
         <div class="stack">
           <button class="btn primary" data-go="create">Create a new wallet</button>
@@ -102,6 +102,8 @@
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
           <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
           <button class="tile" data-go="exchange"><span class="t-ic">↹</span>Exchange</button>
+          <button class="tile" data-go="accounts"><span class="t-ic">▦</span>Accounts</button>
+          <button class="tile" data-go="agent"><span class="t-ic">✦</span>AI Agent</button>
           <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
@@ -115,6 +117,7 @@
         <nav class="tabbar">
           <button class="tab active" data-go="dashboard">Home</button>
           <button class="tab" data-go="queue">Queue</button>
+          <button class="tab" data-go="agent">Agent</button>
           <button class="tab" data-go="connections">Apps</button>
           <button class="tab" data-go="settings">Settings</button>
         </nav>
@@ -263,8 +266,14 @@
       <section class="screen" data-screen="settings" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Settings</span></header>
         <div class="pad">
-          <label class="field"><span>Chain API endpoint</span><input type="text" id="api-base" class="mono" /></label>
+          <label class="field"><span>Chain API endpoint (BLOCK)</span><input type="text" id="api-base" class="mono" /></label>
           <label class="field"><span>Exchange endpoint</span><input type="text" id="exchange-base" class="mono" placeholder="https://exchange.blockle.org" /></label>
+          <div class="section-h" style="padding-left:0">Multi-chain endpoints</div>
+          <label class="field"><span>Ethereum RPC</span><input type="text" id="ep-eth" class="mono" placeholder="https://ethereum-rpc.publicnode.com" /></label>
+          <label class="field"><span>Base RPC</span><input type="text" id="ep-base" class="mono" placeholder="https://base-rpc.publicnode.com" /></label>
+          <label class="field"><span>Bitcoin Esplora</span><input type="text" id="ep-btc" class="mono" placeholder="https://blockstream.info/api" /></label>
+          <label class="field"><span>Litecoin Esplora</span><input type="text" id="ep-ltc" class="mono" placeholder="https://litecoinspace.org/api" /></label>
+          <label class="field"><span>Dogecoin Esplora</span><input type="text" id="ep-doge" class="mono" placeholder="(no public default — supply one)" /></label>
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
@@ -288,6 +297,67 @@
           <button class="tab" data-go="connections">Connections</button>
           <button class="tab active" data-go="settings">Settings</button>
         </nav>
+      </section>
+
+      <!-- MULTI-CHAIN ACCOUNTS -->
+      <section class="screen" data-screen="accounts" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Accounts</span>
+          <button class="back" data-go="settings" style="margin-left:auto" title="Endpoints">⚙</button></header>
+        <div class="pad">
+          <div class="notice">One wallet, every chain. <b>Only BLOCK is post-quantum (ML-DSA-44)</b>; ETH/Base/BTC/LTC/DOGE sign with ECDSA. All endpoints are configurable in Settings.</div>
+          <div id="mc-list"><div class="empty">Loading accounts…</div></div>
+        </div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="accounts">Accounts</button>
+          <button class="tab" data-go="agent">Agent</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- MULTI-CHAIN SEND -->
+      <section class="screen" data-screen="mc-send" hidden>
+        <header class="bar"><button class="back" id="mc-send-back">‹</button><span id="mc-send-title">Send</span></header>
+        <div class="pad">
+          <label class="field" id="mc-asset-field"><span>Asset</span>
+            <select id="mc-asset" class="mono" style="width:100%;background:var(--surface);border:1px solid var(--line2);border-radius:12px;color:var(--text);padding:12px 14px"></select></label>
+          <label class="field"><span>To address</span><input type="text" id="mc-to" class="mono" placeholder="recipient address" /></label>
+          <label class="field"><span>Amount</span><input type="text" id="mc-amt" inputmode="decimal" placeholder="0.00" /></label>
+          <div class="notice" id="mc-send-note"></div>
+          <div class="perm-box" id="mc-review-box" hidden></div>
+          <div class="err" id="mc-send-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn ghost" id="mc-review">Review</button>
+          <button class="btn primary" id="mc-broadcast" hidden>Broadcast</button>
+        </div>
+      </section>
+
+      <!-- AGENT COCKPIT -->
+      <section class="screen" data-screen="agent" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>AI Trading Agent</span>
+          <button class="btn danger" id="agent-kill" style="margin-left:auto;padding:7px 12px;font-size:12px">KILL ALL</button></header>
+        <div class="pad" id="agent-body"><div class="empty">Loading…</div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab" data-go="accounts">Accounts</button>
+          <button class="tab active" data-go="agent">Agent</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- AGENT: CONFIRM (the REQUIRED value-moving confirmation modal) -->
+      <section class="screen approve" data-screen="agent-confirm" hidden>
+        <div class="pad center-col">
+          <div class="origin-chip">AI agent · confirm</div>
+          <h2 class="approve-h">Approve this action?</h2>
+          <p class="muted">The agent built and signed this action. It will only execute if you approve — the host enforces this gate, not the model.</p>
+          <div class="msg-box mono" id="agent-confirm-detail"></div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="agent-confirm-reject">Reject</button>
+          <button class="btn primary" id="agent-confirm-approve">Approve</button>
+        </div>
       </section>
 
       <!-- APPROVE: CONNECT -->
@@ -397,6 +467,15 @@
     <script src="agent/tools.js"></script>
     <script src="agent/runner.js"></script>
     <script src="agent/index.js"></script>
+    <!-- Pass-2: venues (0.05% fee) + telemetry + multi-channel manager -->
+    <script src="venues.js"></script>
+    <script src="telemetry.js"></script>
+    <script src="agent/channels.js"></script>
+    <!-- Pass-2 wiring + UI controllers -->
+    <script src="wiring.js"></script>
+    <script src="agent-store.js"></script>
+    <script src="accounts-ui.js"></script>
+    <script src="agent-ui.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>
