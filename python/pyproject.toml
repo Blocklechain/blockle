@@ -20,6 +20,15 @@ classifiers = [
 
 [project.optional-dependencies]
 qt = ["PySide6>=6.6"]
+# Multi-chain wallet layer (EVM/BTC/LTC/DOGE/Solana + encrypted vault). Pure,
+# well-maintained crypto libs — no custom curve/cipher code on the hot path.
+multichain = [
+    "coincurve>=19",        # secp256k1 (libsecp256k1): RFC6979 ECDSA + recovery
+    "pynacl>=1.5",          # ed25519 (libsodium) for Solana
+    "pycryptodome>=3.19",   # keccak-256 (Ethereum)
+    "cryptography>=42",     # AES-256-GCM for the vault
+    "base58>=2.1",          # base58 / base58check
+]
 
 [project.scripts]
 blockle = "blockle.cli:main"

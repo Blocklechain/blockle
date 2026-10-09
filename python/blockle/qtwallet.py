@@ -440,6 +440,19 @@ class WalletWindow(QMainWindow):
         tabs.addTab(self._wallet_tab(), "Wallet")
         tabs.addTab(self._node_tab(), "Node")
         tabs.addTab(self._console_tab(), "Console")
+
+        # Multi-chain / Exchange / AI-agent panels (ADDITIVE): reuse the BLOCK
+        # engine as the signer + BLOCK rail. Guarded so a missing multichain dep
+        # never breaks the core BLOCK wallet or the console.
+        self._mc_tabs = []
+        try:
+            from .qtmultichain import build_tabs as _mc_build_tabs
+            self._mc_tabs = _mc_build_tabs(wallet, wallet.datadir)
+            for widget, title in self._mc_tabs:
+                tabs.addTab(widget, title)
+        except Exception as e:  # pragma: no cover - optional feature
+            print(f"blockle-qt: multi-chain panels unavailable ({e})", file=sys.stderr)
+
         self.setCentralWidget(tabs)
 
         self.status_lbl = QLabel("starting…")
@@ -1139,6 +1152,18 @@ class WalletWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         self.node.stop()
+        # tear down the multi-chain controller: lock the vault (wipe the seed +
+        # credentials from memory) and stop the agent loop.
+        for widget, _title in getattr(self, "_mc_tabs", []):
+            ctrl = getattr(widget, "ctrl", None)
+            if ctrl is not None:
+                try:
+                    ctrl.vault.lock()
+                except Exception:
+                    pass
+                if getattr(ctrl, "loop", None) is not None:
+                    ctrl.loop.stop()
+                break
         event.accept()
 
 
