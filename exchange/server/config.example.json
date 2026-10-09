@@ -1,0 +1,27 @@
+{
+  "_README": "Copy to config.json to override defaults. mainnetEnabled ONLY takes effect when legalReview.completed=true (see README). Keep it false until an operator records a completed legal/compliance review.",
+  "port": 8900,
+  "network": "testnet",
+  "mainnetEnabled": false,
+  "legalReview": {
+    "completed": false,
+    "reviewer": "",
+    "date": "",
+    "note": "Operator must obtain legal/compliance sign-off before enabling mainnet."
+  },
+  "confirmationDepth": 6,
+  "dailyCapUsd": 100000,
+  "fees": {
+    "protocolFeeBps": 10,
+    "listingFeeUsd": 5,
+    "perPairFeeUsd": 1
+  },
+  "blockPriceUsd": 1,
+  "usdStableDecimals": 6,
+  "publicBaseUrl": "https://exchange.blockle.org",
+  "x402": {
+    "facilitator": "https://x402.org/facilitator"
+  },
+  "sessionTtlSec": 86400,
+  "nonceTtlSec": 300
+}

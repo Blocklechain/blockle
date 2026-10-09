@@ -1,0 +1,85 @@
+{
+  "x402Version": 1,
+  "name": "Blockle Super Exchange — x402 payment rail",
+  "baseUrl": "https://exchange.blockle.org",
+  "network": "base-sepolia",
+  "facilitator": "https://x402.org/facilitator",
+  "resources": [
+    {
+      "resource": "https://exchange.blockle.org/x402/buy",
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "network": "base-sepolia",
+      "price": "dynamic:usdc-amount",
+      "kind": "buy-block",
+      "description": "Buy BLOCK on the sqrt primary-sale curve. Pay USDC over x402; BLOCK is released from the reserve to `to`. Price = the exact buy_config curve; the USDC you pay is `usdc`.",
+      "input": {
+        "type": "http",
+        "method": "POST",
+        "queryParams": {
+          "to": "BLOCK recipient address (block1…)",
+          "usdc": "USDC amount to spend (dollars, e.g. 10.00)"
+        },
+        "bodyFields": {
+          "to": "BLOCK recipient address (block1…)",
+          "recipient": "alias for `to`",
+          "usdc": "USDC amount to spend (dollars)"
+        }
+      },
+      "output": {
+        "blockOut": "BLOCK delivered (base units, 1e8)",
+        "blockTxid": "on-chain BLOCK delivery txid",
+        "usdcIn": "USDC spent (micro, 6dp)",
+        "receipt": "x402 settlement reference"
+      }
+    },
+    {
+      "resource": "https://exchange.blockle.org/x402/list",
+      "methods": [
+        "POST"
+      ],
+      "network": "base-sepolia",
+      "price": "$5 base + $1/extra pair",
+      "kind": "listing-fee",
+      "description": "Pay a self-serve listing fee over x402 and receive a signed 'listing-paid' receipt the exchange relay accepts to activate the asset + its mandatory BLOCK pair (plus any extra pairs).",
+      "input": {
+        "type": "http",
+        "method": "POST",
+        "bodyFields": {
+          "asset": "{ symbol, chain, kind(native|erc20|spl|block20), addr?, decimals, logo? }",
+          "extraPairs": "string[] of extra quote symbols beyond the mandatory BLOCK pair"
+        }
+      },
+      "output": {
+        "kind": "'listing-paid'",
+        "receipt": "signed receipt object",
+        "signature": "HMAC-SHA256 over the canonical receipt"
+      }
+    },
+    {
+      "resource": "https://exchange.blockle.org/x402/pay",
+      "methods": [
+        "POST"
+      ],
+      "network": "base-sepolia",
+      "price": "dynamic:usd-amount",
+      "kind": "generic-action",
+      "description": "Generic priced action. Pay the quoted USD over x402 for an arbitrary action identified by `actionId`; returns a signed 'action-paid' receipt.",
+      "input": {
+        "type": "http",
+        "method": "POST",
+        "bodyFields": {
+          "actionId": "opaque id of the action being paid for",
+          "usd": "price in USD (dollars)"
+        }
+      },
+      "output": {
+        "kind": "'action-paid'",
+        "receipt": "signed receipt object",
+        "signature": "HMAC-SHA256 over the canonical receipt"
+      }
+    }
+  ]
+}

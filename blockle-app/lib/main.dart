@@ -2,16 +2,27 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_state.dart';
+import 'state/multichain_controller.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
 import 'widgets/particle_logo.dart';
 
+/// App-wide navigator key — lets the AgentService render its REQUIRED confirm
+/// modal from outside the widget tree (it runs in a background service).
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  final app = AppState()..bootstrap();
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => AppState()..bootstrap(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<AppState>.value(value: app),
+        ChangeNotifierProvider<MultichainController>(
+          create: (_) => MultichainController(app, appNavigatorKey)..init(),
+        ),
+      ],
       child: const BlockleApp(),
     ),
   );
@@ -25,6 +36,7 @@ class BlockleApp extends StatelessWidget {
     return MaterialApp(
       title: 'Blockle Wallet',
       debugShowCheckedModeBanner: false,
+      navigatorKey: appNavigatorKey,
       theme: Bk.theme(),
       home: const _Gate(),
     );

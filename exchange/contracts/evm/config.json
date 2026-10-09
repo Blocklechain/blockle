@@ -1,0 +1,14 @@
+{
+  "_note": "EVM HTLC deploy config. feeAddress is a PUBLIC receiving address for the 0.1% protocol fee. Token legs (USDC/USDT) are chosen per-swap at lock() time via the `token` argument — addresses are NOT hardcoded in the contract. The entries below are reference testnet token addresses for convenience only.",
+  "feeBps": 10,
+  "feeAddress": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
+  "mainnet_enabled": false,
+  "tokens": {
+    "baseSepolia": {
+      "USDC": "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    },
+    "sepolia": {
+      "USDC": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"
+    }
+  }
+}

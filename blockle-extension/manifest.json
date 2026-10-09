@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Blockle Wallet",
   "version": "0.1.0",
-  "description": "A post-quantum wallet for BLOCK — the universal auxiliary chain. Password-locked, with dApp connections.",
+  "description": "Post-quantum BLOCK + multi-chain wallet (ETH/Base/BTC/LTC/DOGE) with a configurable in-wallet AI trading agent. Only BLOCK is post-quantum; other chains use ECDSA.",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Blockle Wallet"
@@ -16,7 +16,21 @@
     "service_worker": "background.js"
   },
   "permissions": ["storage", "alarms", "tabs"],
-  "host_permissions": ["https://blockle.org/*"],
+  "host_permissions": [
+    "https://blockle.org/*",
+    "https://exchange.blockle.org/*",
+    "https://ethereum-rpc.publicnode.com/*",
+    "https://base-rpc.publicnode.com/*",
+    "https://blockstream.info/*",
+    "https://litecoinspace.org/*",
+    "https://blockchair.com/*",
+    "https://dogechain.info/*",
+    "https://api.mainnet-beta.solana.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://api.githubcopilot.com/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],

@@ -1,0 +1,11 @@
+{
+  "name": "@blockle/extension",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Blockle browser extension (MV3, no bundler). 'build' = node --check every source file + run the unit tests; 'test' = run the unit tests.",
+  "scripts": {
+    "check": "node scripts/check.js",
+    "test": "node scripts/test.js",
+    "build": "node scripts/check.js && node scripts/test.js"
+  }
+}

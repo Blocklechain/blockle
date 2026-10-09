@@ -1,0 +1,5 @@
+node_modules/
+data/
+config/service.config.json
+config/buy-config.json
+*.log

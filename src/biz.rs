@@ -591,6 +591,9 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
+        "/robots.txt" => serve_web_file("robots.txt", "text/plain; charset=utf-8"),
+        "/sitemap.xml" => serve_web_file("sitemap.xml", "application/xml; charset=utf-8"),
+        "/site.webmanifest" => serve_web_file("site.webmanifest", "application/manifest+json"),
         p if p.starts_with("/token/") => serve_web_file("token.html", "text/html; charset=utf-8"),
         "/api/chain" => match chain_snapshot() {
             Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
@@ -699,10 +702,21 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
         "/studio" => ("200 OK", "text/html; charset=utf-8", page_studio().into_bytes()),
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
+        // Agent-facing docs: SDK + MCP install, the buy→launch→pool→trade→sell
+        // loop, base-unit + fee conventions, and the mainnet legal-review notice.
+        "/agents" => serve_web_file("agents.html", "text/html; charset=utf-8"),
         "/blockle_wasm.js" => serve_web_file("blockle_wasm.js", "application/javascript; charset=utf-8"),
         "/blockle.wasm" => serve_web_file("blockle_wasm_bg.wasm", "application/wasm"),
-        "/buy" => serve_web_file("buy.html", "text/html; charset=utf-8"),
-        "/buy.js" => serve_web_file("buy.js", "application/javascript; charset=utf-8"),
+        // Old Transak-backed Buy/Sell page retired (the fiat widget never came
+        // online). Being replaced by a non-custodial exchange at
+        // exchange.blockle.org — BLOCK/ETH/SOL/USDC/USDT, wallet-to-wallet.
+        "/buy" => ("200 OK", "text/html; charset=utf-8", page_shell("Buy / Sell",
+            "<section style=\"max-width:640px;margin:60px auto;text-align:center\">\
+             <h1>Buy / Sell is moving</h1>\
+             <p class=\"muted\">The old fiat buy/sell page has been retired. A new <strong>non-custodial exchange</strong> is on the way — trade BLOCK against ETH, SOL, USDC and USDT wallet-to-wallet, with no custody and nothing to deposit.</p>\
+             <p style=\"margin-top:24px\"><a href=\"/dex\" style=\"background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:10px 20px;border-radius:8px;font-weight:700;text-decoration:none\">Trade on the DEX →</a></p>\
+             <p class=\"muted\" style=\"margin-top:16px;font-size:13px\">Coming soon: exchange.blockle.org</p>\
+             </section>".into()).into_bytes()),
         "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
         "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
         "/guide" => ("200 OK", "text/html; charset=utf-8", page_guide().into_bytes()),
@@ -1129,19 +1143,69 @@ footer{color:var(--muted);border-top:1px solid var(--border);margin-top:4rem;
 }
 "#;
 
-fn page_shell(title: &str, body: String) -> String {
+/// Public host for all canonical / og:url / JSON-LD / sitemap URLs. Pinned to
+/// the production domain so SEO metadata never leaks the blockle.biz runtime
+/// default of `site_domain()`.
+const PUBLIC_HOST: &str = "blockle.org";
+
+/// Honest, on-brand default description for routes that don't set their own.
+const DEFAULT_DESC: &str = "Blockle is a post-quantum (ML-DSA) layer-1: merge-mined by every major ASIC algorithm, with a native AMM DEX, BLOCK-20 tokens and a meme-token launchpad.";
+
+/// FAQPage structured data for /guide.
+const GUIDE_FAQ_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Blockle?","acceptedAnswer":{"@type":"Answer","text":"Blockle is a post-quantum layer-1 blockchain using ML-DSA-44 (FIPS-204) signatures and bech32m block1… addresses. Its native coin is BLOCK: 1 BLOCK = 100,000,000 base units, with 600-second blocks."}},{"@type":"Question","name":"How do I mine BLOCK?","acceptedAnswer":{"@type":"Answer","text":"BLOCK is merge-mined as a universal auxiliary chain. Point SHA-256, Scrypt, X11, Equihash, kHeavyHash, Eaglesong or other supported hardware at a Blockle pool and you earn BLOCK alongside the parent chain with no extra power."}},{"@type":"Question","name":"What is a BLOCK-20 token?","acceptedAnswer":{"@type":"Answer","text":"BLOCK-20 is Blockle's token standard. Tokens can be created on the launchpad and trade on the native in-consensus AMM DEX, a constant-product market with a 0.30% swap fee and a one-week LP lock."}},{"@type":"Question","name":"How does the Blockle DEX work?","acceptedAnswer":{"@type":"Answer","text":"The DEX is a native constant-product AMM built into consensus. Swaps pay a 0.30% fee to liquidity providers; new pools have a one-week LP lock. It is fully non-custodial."}},{"@type":"Question","name":"Which wallets can I use?","acceptedAnswer":{"@type":"Answer","text":"Blockle ships a Qt desktop wallet, a Flutter mobile wallet and a browser extension. All hold BLOCK and BLOCK-20 tokens with post-quantum ML-DSA keys."}}]}</script>"##;
+
+/// SoftwareApplication structured data for /wallet.
+const WALLET_SOFTWARE_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Blockle Wallet","applicationCategory":"FinanceApplication","operatingSystem":"Windows, macOS, Linux, Android, iOS, Chrome","description":"Non-custodial wallet for the post-quantum Blockle layer-1 — hold BLOCK and BLOCK-20 tokens with ML-DSA keys. Available for Qt desktop, Flutter mobile and as a browser extension.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"isAccessibleForFree":true,"publisher":{"@type":"Organization","name":"Blockle"}}</script>"##;
+
+/// SoftwareApplication structured data for /studio.
+const STUDIO_SOFTWARE_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Blockle Studio","applicationCategory":"DeveloperApplication","operatingSystem":"Web","description":"Browser-based IDE to write, compile and deploy Blockle VM smart contracts on the post-quantum Blockle layer-1.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"isAccessibleForFree":true,"publisher":{"@type":"Organization","name":"Blockle"}}</script>"##;
+
+/// Full SEO `<head>` + site chrome.
+///
+/// * `title`          — short page title; the shell appends " · {host}".
+/// * `desc`           — meta description (<=160 chars).
+/// * `canonical_path` — path WITH QUERY STRIPPED, e.g. "/mine"; "" => omit
+///                      canonical + og:url (use for dynamic/non-indexable pages).
+/// * `head_extra`     — raw extra `<head>` HTML (per-page JSON-LD blocks); "" if none.
+fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &str, body: String) -> String {
+    let domain = PUBLIC_HOST;
+    let full_title = format!("{title} · {domain}");
+    let (canonical_tag, ogurl_tag) = if canonical_path.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let c = format!("https://{domain}{canonical_path}");
+        (
+            format!("<link rel=\"canonical\" href=\"{c}\">\n"),
+            format!("<meta property=\"og:url\" content=\"{c}\">\n"),
+        )
+    };
+    // Site-wide structured data: Organization + WebSite(+SearchAction).
+    let site_jsonld = format!(
+        r##"<script type="application/ld+json">{{"@context":"https://schema.org","@graph":[{{"@type":"Organization","@id":"https://{domain}/#org","name":"Blockle","url":"https://{domain}/","logo":"https://{domain}/logo.png","sameAs":["https://github.com/blocklechain/blockle","https://discord.gg/tx4MfyD9Vu","https://crates.io/crates/blockle"]}},{{"@type":"WebSite","@id":"https://{domain}/#website","name":"Blockle","url":"https://{domain}/","publisher":{{"@id":"https://{domain}/#org"}},"potentialAction":{{"@type":"SearchAction","target":{{"@type":"EntryPoint","urlTemplate":"https://{domain}/explorer/search?q={{search_term_string}}"}},"query-input":"required name=search_term_string"}}}}]}}</script>"##
+    );
     format!(
         r##"<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="description" content="Blockle — deploy PoW mining pools and monitor them from one place.">
-<link rel="icon" type="image/png" href="/favicon.png">
+<meta name="description" content="{desc}">
+{canonical_tag}<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="apple-touch-icon" href="/logo-mark.png">
-<meta property="og:title" content="{title} · {domain}">
-<meta property="og:description" content="Blockle — deploy PoW mining pools and monitor them from one place.">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#0B0B14">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Blockle">
+<meta property="og:locale" content="en_US">
+{ogurl_tag}<meta property="og:title" content="{full_title}">
+<meta property="og:description" content="{desc}">
 <meta property="og:image" content="https://{domain}/logo.png">
-<title>{title} · {domain}</title><style>{CSS}</style></head><body>
-<nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="/buy" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Buy / Sell</a>
+<meta property="og:image:alt" content="Blockle logo">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{full_title}">
+<meta name="twitter:description" content="{desc}">
+<meta name="twitter:image" content="https://{domain}/logo.png">
+{site_jsonld}{head_extra}
+<title>{full_title}</title><style>{CSS}</style></head><body>
+<nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
@@ -1180,8 +1244,13 @@ fn page_shell(title: &str, body: String) -> String {
 }})();
 </script>
 </body></html>"##,
-        domain = site_domain(),
     )
+}
+
+/// Backward-compatible wrapper for dynamic/minor pages that only have a title.
+/// Emits the generic brand description and NO page-specific canonical.
+fn page_shell(title: &str, body: String) -> String {
+    page_shell_seo(title, DEFAULT_DESC, "", "", body)
 }
 
 fn fmt_hashrate(h: f64) -> String {
@@ -1259,7 +1328,8 @@ fn page_home(reg: &Registry) -> String {
     };
     let dirpools = network_stats(reg)["total_pools"].to_string();
     let body = format!(
-        r##"<div class="hero">
+        r##"<a href="https://exchange.blockle.org" style="display:block;margin:0 0 20px;padding:13px 18px;border-radius:12px;background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;text-decoration:none;font-weight:600;text-align:center;line-height:1.4">🚀 New — the <b>Blockle Exchange</b>: non-custodial cross-chain swaps for BLOCK · ETH · SOL · USDC · USDT, self-serve listings and agent-first x402. <span style="text-decoration:underline">Trade now →</span></a>
+<div class="hero">
 <img class="herologo" src="/logo.png" alt="Blockle logo">
 <h1>The universal <span class="grad">auxiliary chain.</span></h1>
 <p class="lede">BLOCK is merge-mined by every major ASIC algorithm: point your SHA-256, Scrypt, Equihash, X11, kHeavyHash, Blake or Eaglesong hardware at a Blockle pool and every share you mine works for the parent chain <i>and</i> for BLOCK — a post-quantum L1 with shielded transactions and the Blockle VM.</p>
@@ -1302,7 +1372,10 @@ fn page_home(reg: &Registry) -> String {
         c3 = card("PoW Lanes", lanes_live),
         c4 = card("Directory Pools", dirpools),
     );
-    page_shell("Blockle — merge-mine BLOCK", body)
+    page_shell_seo(
+        "Blockle: post-quantum L1, merge-mined, native DEX",
+        "Post-quantum (ML-DSA) layer-1 merge-mined by every major ASIC algorithm, with a native AMM DEX, BLOCK-20 tokens and a meme launchpad.",
+        "/", "", body)
 }
 
 fn query_get<'a>(query: &'a str, key: &str) -> Option<&'a str> {
@@ -1383,7 +1456,10 @@ fn page_pools(reg: &Registry, query: &str) -> String {
 {empty}
 <p class="note">* operator-reported. Status and stratum reachability are verified by monitoring probes.</p>"#,
     );
-    page_shell("Pools", body)
+    page_shell_seo(
+        "Mining Pool Directory — merge-mine BLOCK",
+        "Browse Blockle and third-party mining pools by chain, algorithm and status. Every pool merge-mines BLOCK, the universal auxiliary chain.",
+        "/pools", "", body)
 }
 
 fn sparkline(history: &VecDeque<Snapshot>, pick: impl Fn(&Snapshot) -> f64) -> String {
@@ -1586,7 +1662,10 @@ fn page_status(reg: &Registry) -> String {
         up = now_unix() - reg.started,
         pools = reg.pools.len(),
     );
-    page_shell("Status", body)
+    page_shell_seo(
+        "Network Status — Blockle pools & BLOCK chain",
+        "Live status of Blockle mining pools and the BLOCK chain: height, supply, active PoW lanes, pool hashrate and worker counts.",
+        "/status", "", body)
 }
 
 /// Normalize the two live-stats shapes (chain-node stratum files and
@@ -1839,7 +1918,10 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
                 .collect::<String>()
         },
     );
-    page_shell("Mine with us", body)
+    page_shell_seo(
+        "Mine BLOCK — merged mining for every ASIC algo",
+        "Point SHA-256, Scrypt, Equihash, X11, kHeavyHash or Eaglesong hardware at a Blockle pool and merge-mine BLOCK with no extra power. Solo or PPLNS, 1% fee.",
+        "/mine", "", body)
 }
 
 /// Serve a static studio asset from the web dir on disk.
@@ -1853,6 +1935,16 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
 /// /buy configuration — operator-set at /var/lib/blockle-biz/buy-config.json.
 /// Falls back to an honest "not configured" default (empty reserve addresses →
 /// the page shows "price discovery not started"). Never fabricates values.
+///
+/// Compliance/payment-rail fields (consumed by services/x402-buy and
+/// services/settlement) ship with safe, honest defaults:
+///   facilitatorUrl               — "" (no x402 facilitator wired)
+///   networkId                    — "base-sepolia" (TESTNET-FIRST)
+///   confirmationDepth            — reorg-safety confirmations before payout
+///   dailyUsdcCap                 — 0 (no USDC moves until an operator sets it)
+///   perSellAvailabilityFraction  — 0 (no sell liquidity exposed until set)
+///   mainnet_enabled              — false; flip to true ONLY after a recorded
+///                                  legal/compliance review (see AGENTS.md).
 fn buy_config() -> String {
     const DEFAULT: &str = r#"{
   "ticker": "BLOCK",
@@ -1866,7 +1958,13 @@ fn buy_config() -> String {
     "decimals": 6,
     "reserveAddr": ""
   },
-  "offramp": { "provider": "transak", "apiKey": "", "environment": "STAGING", "network": "base", "defaultCryptoCurrency": "USDC" }
+  "offramp": { "provider": "transak", "apiKey": "", "environment": "STAGING", "network": "base", "defaultCryptoCurrency": "USDC" },
+  "facilitatorUrl": "",
+  "networkId": "base-sepolia",
+  "confirmationDepth": 12,
+  "dailyUsdcCap": 0,
+  "perSellAvailabilityFraction": 0,
+  "mainnet_enabled": false
 }"#;
     fs::read_to_string("/var/lib/blockle-biz/buy-config.json").unwrap_or_else(|_| DEFAULT.to_string())
 }
@@ -1878,7 +1976,10 @@ fn buy_history() -> String {
 }
 
 fn page_studio() -> String {
-    page_shell("Studio", STUDIO_HTML.to_string())
+    page_shell_seo(
+        "Studio — Blockle smart-contract IDE",
+        "Write, compile and deploy Blockle VM smart contracts in the browser — a contract IDE for the post-quantum Blockle layer-1.",
+        "/studio", STUDIO_SOFTWARE_JSONLD, STUDIO_HTML.to_string())
 }
 
 const STUDIO_HTML: &str = r##"<style>
@@ -2012,7 +2113,10 @@ git clone https://github.com/blocklechain/blockle &amp;&amp; cd blockle/chain &a
         rel = rel,
         domain = site_domain(),
     );
-    page_shell("Wallet", body)
+    page_shell_seo(
+        "Blockle Wallet — desktop, mobile & extension",
+        "Download the Blockle wallet for Qt desktop, Flutter mobile and browser extension. Hold BLOCK and BLOCK-20 tokens with post-quantum ML-DSA keys.",
+        "/wallet", WALLET_SOFTWARE_JSONLD, body)
 }
 
 fn kv(rows: &[(&str, String)]) -> String {
@@ -2155,7 +2259,13 @@ fn page_block(b: &Value) -> String {
         txs = txs,
         prev_link = height.saturating_sub(1),
     );
-    page_shell(&format!("Block {height}"), body)
+    let crumb = format!(
+        r##"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{{"@type":"ListItem","position":1,"name":"Explorer","item":"https://{d}/explorer"}},{{"@type":"ListItem","position":2,"name":"Block {height}","item":"https://{d}/explorer/block/{height}"}}]}}</script>"##,
+        d = PUBLIC_HOST);
+    page_shell_seo(
+        &format!("Block {height} — BLOCK Explorer"),
+        &format!("Block {height} on the Blockle (BLOCK) chain: timestamp, transactions, size, PoW lane and merge-mining AuxPoW details."),
+        &format!("/explorer/block/{height}"), &crumb, body)
 }
 
 fn page_tx(t: &Value) -> String {
@@ -2218,7 +2328,13 @@ fn page_tx(t: &Value) -> String {
         inputs = inputs,
         outputs = outputs,
     );
-    page_shell("Transaction", body)
+    let crumb = format!(
+        r##"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{{"@type":"ListItem","position":1,"name":"Explorer","item":"https://{d}/explorer"}},{{"@type":"ListItem","position":2,"name":"Transaction","item":"https://{d}/explorer/tx/{txid}"}}]}}</script>"##,
+        d = PUBLIC_HOST, txid = txid);
+    page_shell_seo(
+        "Transaction — BLOCK Explorer",
+        "A Blockle (BLOCK) transaction: inputs, outputs, fee and confirmations on the post-quantum layer-1.",
+        &format!("/explorer/tx/{txid}"), &crumb, body)
 }
 
 fn page_address(a: &Value) -> String {
@@ -2253,7 +2369,14 @@ fn page_address(a: &Value) -> String {
         n = a["history"].as_array().map(|h| h.len()).unwrap_or(0),
         history = history,
     );
-    page_shell("Address", body)
+    let addr = a["address"].as_str().unwrap_or("");
+    let crumb = format!(
+        r##"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{{"@type":"ListItem","position":1,"name":"Explorer","item":"https://{d}/explorer"}},{{"@type":"ListItem","position":2,"name":"Address","item":"https://{d}/explorer/address/{addr}"}}]}}</script>"##,
+        d = PUBLIC_HOST, addr = addr);
+    page_shell_seo(
+        "Address — BLOCK Explorer",
+        "Blockle (BLOCK) address: balance, BLOCK-20 token holdings and transaction history. Post-quantum bech32m block1… address.",
+        &format!("/explorer/address/{addr}"), &crumb, body)
 }
 
 fn page_notfound(what: &str, id: &str) -> String {
@@ -2320,12 +2443,18 @@ fn page_explorer(_reg: &Registry) -> String {
         None => r##"<h1>BLOCK Explorer</h1>
 <p class="note">The chain snapshot is not configured on this instance (start a <span class="mono">blockle-chain</span> node and pass <span class="mono">--chain-file</span>). No numbers are shown rather than fabricated ones.</p>"##.into(),
     };
-    page_shell("BLOCK Explorer", body)
+    page_shell_seo(
+        "BLOCK Explorer — blocks, txs & addresses",
+        "Explore the Blockle chain: blocks, transactions, addresses, rich list and peers across the 9-lane multi-algo merge-mined BLOCK network.",
+        "/explorer", "", body)
 }
 
 fn page_guide() -> String {
     let body = GUIDE_HTML.replace("{domain}", &site_domain());
-    page_shell("Guide", body)
+    page_shell_seo(
+        "Blockle Guide — mine, wallet, tokens & DEX",
+        "How to set up a Blockle wallet, start merge-mining BLOCK, create BLOCK-20 tokens, add liquidity and trade on the native AMM DEX.",
+        "/guide", GUIDE_FAQ_JSONLD, body)
 }
 
 /// The how-to guide. Plain raw string (not a format! template) so the JSON /
@@ -2512,7 +2641,10 @@ POST /api/heartbeat      {pool_id, token, timestamp, pool_hashrate, miners, work
                           network_difficulty, shares_submitted, blocks:[{chain,height,hash}]}</code></pre>
 <h2>Data honesty</h2>
 <p class="sub">Responses separate <code>verified</code> (heartbeat recency, stratum reachability probes) from <code>operator_reported</code> (hashrates, miner counts). Heartbeats are token-authenticated, schema- and range-validated, freshness-checked, and rate limited.</p>"#;
-    page_shell("API", body.to_string())
+    page_shell_seo(
+        "Public API — Blockle pool & chain data",
+        "Free JSON API for Blockle: pool directory, per-pool and per-chain stats, and live BLOCK chain data. No key required.",
+        "/api", "", body.to_string())
 }
 
 fn page_developers(reg: &Registry) -> String {
@@ -2548,7 +2680,10 @@ blockle serve pool.toml     # now heartbeats automatically</code></pre>
         github = reg.github,
         domain = site_domain(),
     );
-    page_shell("Developers", body)
+    page_shell_seo(
+        "Developers — build on Blockle",
+        "Build on Blockle: Rust crate, JSON API, WASM, the Blockle VM and BLOCK-20 token standard for the post-quantum layer-1.",
+        "/developers", "", body)
 }
 
 fn page_open_source(reg: &Registry) -> String {
@@ -2564,5 +2699,8 @@ fn page_open_source(reg: &Registry) -> String {
 <p class="note">The repository link is a configurable placeholder until the official repo is published (--github flag).</p>"#,
         github = reg.github
     );
-    page_shell("Open Source", body)
+    page_shell_seo(
+        "Open Source — the Blockle codebase",
+        "Blockle is open source (crates.io + GitHub): the node, wallet, pools, explorer and site. Read, audit and build on the code.",
+        "/open-source", "", body)
 }

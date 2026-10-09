@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../state/multichain_controller.dart';
 import '../theme.dart';
 import '../widgets/particle_logo.dart';
 
@@ -248,8 +249,12 @@ class _UnlockScreenState extends State<UnlockScreen> {
   Future<void> _unlock() async {
     setState(() { _busy = true; _error = null; });
     final app = context.read<AppState>();
+    final mc = context.read<MultichainController>();
     try {
       await app.store.unlock(_pw.text);
+      // Best-effort: bring the multi-chain vault + AI agent back with the same
+      // password (auto-reconnects enabled channels). BLOCK works regardless.
+      await mc.onAppUnlock(_pw.text);
       app.refresh();
     } catch (e) {
       setState(() { _error = 'Wrong password.'; _busy = false; });

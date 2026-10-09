@@ -13,3 +13,14 @@ pool.toml
 *.pyc
 .blockle/
 adapters-out/
+
+# Agent-first stack + exchange (Node/TS build artifacts, local dbs, built wasm)
+node_modules/
+**/dist/
+/blockle-wasm/pkg-node/
+**/data/*.db
+exchange/contracts/evm/artifacts/
+exchange/contracts/evm/cache/
+exchange/contracts/**/target/
+*.tsbuildinfo
+/scratchpad/

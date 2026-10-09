@@ -1,0 +1,12 @@
+# blockle.org — crawl policy
+User-agent: *
+Allow: /
+
+# JSON API endpoints: not useful as indexed pages
+Disallow: /api/
+# Search is a redirect endpoint, not a landing page
+Disallow: /explorer/search
+# Retired page
+Disallow: /buy
+
+Sitemap: https://blockle.org/sitemap.xml

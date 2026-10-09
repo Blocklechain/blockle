@@ -1,0 +1,18 @@
+{
+  "_note": "DEV FALLBACK only. In production the operator's /var/lib/blockle-biz/buy-config.json (same file the site /api/buy/config serves) is the source of truth. Addresses here are TESTNET placeholders — replace reserveAddr with your Base Sepolia USDC reserve and blockReserveAddr with your reserve wallet's BLOCK address. Curve params mirror web/buy.js defaults exactly; do not invent numbers.",
+  "ticker": "BLOCK",
+  "feeBps": 500,
+  "blockReserveAddr": "block1reserveplaceholderreplaceme",
+  "usdc": {
+    "network": "base-sepolia",
+    "rpc": "https://sepolia.base.org",
+    "contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "decimals": 6,
+    "reserveAddr": "0x0000000000000000000000000000000000000000"
+  },
+  "curve": {
+    "startPrice": 0.1,
+    "targetUsdc": 2000000,
+    "allocation": 210000
+  }
+}

@@ -20,7 +20,7 @@
         <div class="hero">
           <canvas class="logo" id="logo-welcome"></canvas>
           <h1 class="wordmark">blockle</h1>
-          <p class="tagline">A post-quantum wallet for BLOCK.<br />Hover and tap the logo.</p>
+          <p class="tagline">Post-quantum BLOCK + multi-chain wallet.<br />Hover and tap the logo.</p>
         </div>
         <div class="stack">
           <button class="btn primary" data-go="create">Create a new wallet</button>
@@ -101,6 +101,9 @@
           <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
           <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
+          <button class="tile" data-go="exchange"><span class="t-ic">↹</span>Exchange</button>
+          <button class="tile" data-go="accounts"><span class="t-ic">▦</span>Accounts</button>
+          <button class="tile" data-go="agent"><span class="t-ic">✦</span>AI Agent</button>
           <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
@@ -114,6 +117,7 @@
         <nav class="tabbar">
           <button class="tab active" data-go="dashboard">Home</button>
           <button class="tab" data-go="queue">Queue</button>
+          <button class="tab" data-go="agent">Agent</button>
           <button class="tab" data-go="connections">Apps</button>
           <button class="tab" data-go="settings">Settings</button>
         </nav>
@@ -189,6 +193,64 @@
         </div>
       </section>
 
+      <!-- EXCHANGE -->
+      <section class="screen" data-screen="exchange" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Exchange</span>
+          <button class="back" id="ex-refresh" style="margin-left:auto" title="Refresh">⟳</button></header>
+        <div class="pad">
+          <div class="ex-signin" id="ex-signin">
+            <div class="notice" id="ex-signin-note">Sign in with your BLOCK wallet to trade. A one-time nonce is signed with your post-quantum key (ML-DSA-44) — no key ever leaves this device.</div>
+            <div id="ex-unlock" hidden><label class="field"><span>Unlock to sign in</span><input type="password" id="ex-pw" placeholder="Password" /></label></div>
+            <button class="btn primary" id="ex-signin-go">Sign in to exchange</button>
+            <div class="err" id="ex-signin-err"></div>
+          </div>
+
+          <div class="ex-main" id="ex-main" hidden>
+            <div class="ex-acct" id="ex-acct">
+              <span class="pill" id="ex-conn">signed in</span>
+              <button class="mini-btn" id="ex-signout">Sign out</button>
+            </div>
+
+            <label class="field"><span>Market</span>
+              <select id="ex-market" class="mono" style="width:100%;background:#181b21;border:1px solid #2e323c;border-radius:10px;color:#dfe6f5;padding:10px"></select>
+            </label>
+            <div class="ex-meta mono" id="ex-meta"></div>
+
+            <div class="section-h">Order book</div>
+            <div class="ex-book" id="ex-book"><div class="empty">—</div></div>
+
+            <div class="section-h">Place order</div>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <button class="btn" id="ex-buy" style="flex:1">Buy</button>
+              <button class="btn ghost" id="ex-sell" style="flex:1">Sell</button>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <button class="chip-btn active" id="ex-limit">Limit</button>
+              <button class="chip-btn" id="ex-market-type">Market</button>
+            </div>
+            <label class="field" id="ex-price-field"><span id="ex-price-label">Price</span><input type="text" id="ex-price" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <label class="field"><span id="ex-amt-label">Amount</span><input type="text" id="ex-amt" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <div class="notice" id="ex-order-note">Orders are signed intents. The relay only verifies your signature and matches the book — it never holds your funds or keys.</div>
+            <button class="btn primary" id="ex-place">Place order</button>
+            <div class="err" id="ex-order-err"></div>
+
+            <div class="section-h">My open orders</div>
+            <div class="list" id="ex-myorders"><div class="empty">No open orders.</div></div>
+
+            <div class="section-h">Buy BLOCK with USDC (x402)</div>
+            <label class="field"><span>USDC to spend</span><input type="text" id="ex-usdc" placeholder="0.00" inputmode="decimal" class="mono" /></label>
+            <div class="notice" id="ex-x402-note">Buys BLOCK on the sqrt primary-sale curve, settling USDC over the x402 rail. USDC settlement signs with your EVM/USDC account (arriving in the multi-chain pass); until then this surfaces the relay's payment challenge honestly.</div>
+            <button class="btn primary" id="ex-buyblock">Buy BLOCK</button>
+            <div class="err" id="ex-x402-err"></div>
+          </div>
+        </div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="exchange">Exchange</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
       <!-- CONNECTIONS -->
       <section class="screen" data-screen="connections" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Connected apps</span></header>
@@ -204,12 +266,30 @@
       <section class="screen" data-screen="settings" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Settings</span></header>
         <div class="pad">
-          <label class="field"><span>Chain API endpoint</span><input type="text" id="api-base" class="mono" /></label>
+          <label class="field"><span>Chain API endpoint (BLOCK)</span><input type="text" id="api-base" class="mono" /></label>
+          <label class="field"><span>Exchange endpoint</span><input type="text" id="exchange-base" class="mono" placeholder="https://exchange.blockle.org" /></label>
+          <div class="section-h" style="padding-left:0">Multi-chain endpoints</div>
+          <label class="field"><span>Ethereum RPC</span><input type="text" id="ep-eth" class="mono" placeholder="https://ethereum-rpc.publicnode.com" /></label>
+          <label class="field"><span>Base RPC</span><input type="text" id="ep-base" class="mono" placeholder="https://base-rpc.publicnode.com" /></label>
+          <label class="field"><span>Bitcoin Esplora</span><input type="text" id="ep-btc" class="mono" placeholder="https://blockstream.info/api" /></label>
+          <label class="field"><span>Litecoin Esplora</span><input type="text" id="ep-ltc" class="mono" placeholder="https://litecoinspace.org/api" /></label>
+          <label class="field"><span>Dogecoin Esplora</span><input type="text" id="ep-doge" class="mono" placeholder="(no public default — supply one)" /></label>
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
           </div>
           <button class="btn danger" id="reset-wallet">Reset wallet</button>
+          <div class="seclabel">
+            <h3>Security</h3>
+            <p>
+              <span class="pq">BLOCK is signed with post-quantum ML-DSA-44.</span>
+              <span class="ec">BTC, LTC, DOGE and all EVM assets use ECDSA (secp256k1) and are
+              not post-quantum.</span>
+              Every private key — post-quantum and ECDSA alike — is stored in a
+              vault encrypted with a memory-hard KDF (scrypt) and authenticated
+              encryption (AES-256-GCM), and never leaves this device.
+            </p>
+          </div>
           <div class="about mono">Blockle Wallet · v0.1.0</div>
         </div>
         <nav class="tabbar">
@@ -217,6 +297,67 @@
           <button class="tab" data-go="connections">Connections</button>
           <button class="tab active" data-go="settings">Settings</button>
         </nav>
+      </section>
+
+      <!-- MULTI-CHAIN ACCOUNTS -->
+      <section class="screen" data-screen="accounts" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Accounts</span>
+          <button class="back" data-go="settings" style="margin-left:auto" title="Endpoints">⚙</button></header>
+        <div class="pad">
+          <div class="notice">One wallet, every chain. <b>Only BLOCK is post-quantum (ML-DSA-44)</b>; ETH/Base/BTC/LTC/DOGE sign with ECDSA. All endpoints are configurable in Settings.</div>
+          <div id="mc-list"><div class="empty">Loading accounts…</div></div>
+        </div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="accounts">Accounts</button>
+          <button class="tab" data-go="agent">Agent</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- MULTI-CHAIN SEND -->
+      <section class="screen" data-screen="mc-send" hidden>
+        <header class="bar"><button class="back" id="mc-send-back">‹</button><span id="mc-send-title">Send</span></header>
+        <div class="pad">
+          <label class="field" id="mc-asset-field"><span>Asset</span>
+            <select id="mc-asset" class="mono" style="width:100%;background:var(--surface);border:1px solid var(--line2);border-radius:12px;color:var(--text);padding:12px 14px"></select></label>
+          <label class="field"><span>To address</span><input type="text" id="mc-to" class="mono" placeholder="recipient address" /></label>
+          <label class="field"><span>Amount</span><input type="text" id="mc-amt" inputmode="decimal" placeholder="0.00" /></label>
+          <div class="notice" id="mc-send-note"></div>
+          <div class="perm-box" id="mc-review-box" hidden></div>
+          <div class="err" id="mc-send-err"></div>
+        </div>
+        <div class="stack bottom">
+          <button class="btn ghost" id="mc-review">Review</button>
+          <button class="btn primary" id="mc-broadcast" hidden>Broadcast</button>
+        </div>
+      </section>
+
+      <!-- AGENT COCKPIT -->
+      <section class="screen" data-screen="agent" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>AI Trading Agent</span>
+          <button class="btn danger" id="agent-kill" style="margin-left:auto;padding:7px 12px;font-size:12px">KILL ALL</button></header>
+        <div class="pad" id="agent-body"><div class="empty">Loading…</div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab" data-go="accounts">Accounts</button>
+          <button class="tab active" data-go="agent">Agent</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <!-- AGENT: CONFIRM (the REQUIRED value-moving confirmation modal) -->
+      <section class="screen approve" data-screen="agent-confirm" hidden>
+        <div class="pad center-col">
+          <div class="origin-chip">AI agent · confirm</div>
+          <h2 class="approve-h">Approve this action?</h2>
+          <p class="muted">The agent built and signed this action. It will only execute if you approve — the host enforces this gate, not the model.</p>
+          <div class="msg-box mono" id="agent-confirm-detail"></div>
+        </div>
+        <div class="stack bottom two">
+          <button class="btn ghost" id="agent-confirm-reject">Reject</button>
+          <button class="btn primary" id="agent-confirm-approve">Approve</button>
+        </div>
       </section>
 
       <!-- APPROVE: CONNECT -->
@@ -308,6 +449,33 @@
     <script src="signer.js"></script>
     <script src="wallet.js"></script>
     <script src="chain.js"></script>
+    <!-- multi-chain account layer (EVM + BTC/LTC/DOGE), additive to BLOCK -->
+    <script src="crypto-core.js"></script>
+    <script src="secp256k1.js"></script>
+    <script src="bip39-wordlist.js"></script>
+    <script src="hd.js"></script>
+    <script src="address.js"></script>
+    <script src="chains/block.js"></script>
+    <script src="chains/evm.js"></script>
+    <script src="chains/utxo.js"></script>
+    <script src="chains/registry.js"></script>
+    <script src="accounts.js"></script>
+    <script src="exchange-client.js"></script>
+    <script src="agent/policy.js"></script>
+    <script src="agent/audit.js"></script>
+    <script src="agent/providers.js"></script>
+    <script src="agent/tools.js"></script>
+    <script src="agent/runner.js"></script>
+    <script src="agent/index.js"></script>
+    <!-- Pass-2: venues (0.05% fee) + telemetry + multi-channel manager -->
+    <script src="venues.js"></script>
+    <script src="telemetry.js"></script>
+    <script src="agent/channels.js"></script>
+    <!-- Pass-2 wiring + UI controllers -->
+    <script src="wiring.js"></script>
+    <script src="agent-store.js"></script>
+    <script src="accounts-ui.js"></script>
+    <script src="agent-ui.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>

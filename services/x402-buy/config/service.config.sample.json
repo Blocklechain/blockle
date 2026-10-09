@@ -1,0 +1,27 @@
+{
+  "_note": "Copy to service.config.json and edit. Env vars (X402_*) override any value here. MONEY PATHS ARE DISABLED until mainnetEnabled AND legalReviewCompleted are BOTH true — set them true ONLY after an operator records a completed legal/compliance review.",
+  "port": 8402,
+  "mainnetEnabled": false,
+  "legalReviewCompleted": false,
+  "publicBaseUrl": "https://exchange.blockle.org",
+  "network": "base-sepolia",
+  "facilitatorUrl": "https://x402.org/facilitator",
+  "productionFacilitatorUrl": "",
+  "listingFeeUsd": 5,
+  "perPairFeeUsd": 1,
+  "confirmations": 12,
+  "dailyCapUsd": 50000,
+  "buyConfigPath": "/var/lib/blockle-biz/buy-config.json",
+  "treasuryPath": "../../exchange/treasury.json",
+  "ledgerPath": "./data/ledger.db",
+  "kycModule": "",
+  "receiptTtlSeconds": 3600,
+  "maxTimeoutSeconds": 120,
+  "receiptSecret": "",
+  "release": {
+    "command": "blockle-chain",
+    "reserveDatadir": "/var/lib/blockle/reserve",
+    "nodeAddr": "127.0.0.1:18444",
+    "dryRun": true
+  }
+}

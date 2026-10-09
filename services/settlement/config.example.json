@@ -1,0 +1,47 @@
+{
+  "_comment": "Copy to /etc/blockle-settlement/config.json (or point SETTLEMENT_CONFIG at it). All USD/BLOCK amounts here are WHOLE units; the engine converts to base units. NEVER commit a real privateKey — prefer the SETTLEMENT_RESERVE_KEY env var. Mainnet payouts require BOTH mainnetEnabled:true AND legalReview.completed:true.",
+
+  "host": "127.0.0.1",
+  "port": 8790,
+
+  "mainnetEnabled": false,
+  "legalReview": {
+    "completed": false,
+    "reviewer": "",
+    "date": "",
+    "notes": "Operator MUST obtain legal/compliance sign-off before enabling mainnet."
+  },
+
+  "nodeUrl": "http://127.0.0.1:8445",
+  "blockReserveAddr": "block1theReserveAddressSellersSendBLOCKto",
+  "confirmationDepth": 100,
+
+  "usdc": {
+    "network": "base-sepolia",
+    "rpc": "https://sepolia.base.org",
+    "contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "decimals": 6,
+    "reserveAddr": "0xYourReserveHotWalletOnBase",
+    "explorerBase": "https://sepolia.basescan.org",
+    "mode": "mock",
+    "mockBalanceUsdc": 100000,
+    "privateKey": ""
+  },
+
+  "curve": {
+    "startPrice": 0.1,
+    "targetUsdc": 2000000,
+    "allocation": 210000,
+    "feeBps": 500
+  },
+
+  "maxReserveFractionPerRedemption": 0.1,
+  "dailyCapUsdc": 25000,
+
+  "ledgerPath": "/var/lib/blockle-settlement/ledger.json",
+
+  "compliance": {
+    "module": "",
+    "options": {}
+  }
+}

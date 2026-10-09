@@ -17,6 +17,8 @@ dependencies:
   qr_flutter: ^4.1.0
   file_picker: ^8.1.2
   share_plus: ^10.1.2
+  # Multi-chain crypto (secp256k1/keccak/ripemd160/sha/hmac/scrypt). Pure Dart.
+  pointycastle: ^3.9.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0

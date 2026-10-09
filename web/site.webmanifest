@@ -1,0 +1,14 @@
+{
+  "name": "Blockle",
+  "short_name": "Blockle",
+  "description": "Post-quantum layer-1: merge-mined BLOCK, a native AMM DEX, BLOCK-20 tokens and a meme-token launchpad.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0B0B14",
+  "theme_color": "#0B0B14",
+  "icons": [
+    { "src": "/logo-mark.png", "sizes": "any", "type": "image/png", "purpose": "any" },
+    { "src": "/logo.png", "sizes": "any", "type": "image/png", "purpose": "maskable" }
+  ]
+}
