@@ -67,7 +67,9 @@ jobs:
             libfontconfig1 libdbus-1-3 libglib2.0-0
 
       - name: Install Python package + Qt
-        run: pip install ./python "PySide6>=6.6" pyinstaller
+        # [multichain] pulls coincurve/pynacl/pycryptodome/cryptography/base58
+        # so the new multi-chain modules (imported by qtmultichain) load in CI.
+        run: pip install "./python[multichain]" "PySide6>=6.6" pyinstaller
 
       - name: Python integration tests (headless Qt)
         # Windows is informational for now: the suite drives real sockets and
