@@ -134,9 +134,13 @@ class MultiChainControllerTest(unittest.TestCase):
         block_cell = tab.table.cellWidget(rows["block"], 5)
         self.assertIsInstance(block_cell, QLabel)
         self.assertNotIsInstance(block_cell, QPushButton)
-        # a supported chain with a derived address -> a 'Buy with card' button
+        # a supported chain with a derived address -> a cell holding both a
+        # Buy and a Sell button
         eth_cell = tab.table.cellWidget(rows["ethereum"], 5)
-        self.assertIsInstance(eth_cell, QPushButton)
+        self.assertNotIsInstance(eth_cell, QLabel)
+        eth_btns = eth_cell.findChildren(QPushButton)
+        self.assertEqual(len(eth_btns), 2)
+        self.assertEqual({b.text() for b in eth_btns}, {"Buy…", "Sell…"})
         # supported-asset resolution matches the helper map
         self.assertEqual(tab._supported_assets_for("bitcoin"), [("BTC", "btc")])
         self.assertEqual(tab._supported_assets_for("block"), [])

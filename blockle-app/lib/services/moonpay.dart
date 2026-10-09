@@ -37,6 +37,11 @@ class MoonPayConfig {
   ///   pk_live_… -> https://buy.moonpay.com
   ///   anything else (pk_test_…) -> https://buy-sandbox.moonpay.com
   String get base => moonpayBaseForKey(apiKey);
+
+  /// The hosted SELL-widget (off-ramp) base, derived from the same key prefix:
+  ///   pk_live_… -> https://sell.moonpay.com
+  ///   anything else (pk_test_…) -> https://sell-sandbox.moonpay.com
+  String get sellBase => moonpaySellBaseForKey(apiKey);
 }
 
 /// Derive the buy-widget base URL from the publishable key prefix. A pk_live_
@@ -45,6 +50,14 @@ String moonpayBaseForKey(String apiKey) =>
     apiKey.startsWith('pk_live_')
         ? 'https://buy.moonpay.com'
         : 'https://buy-sandbox.moonpay.com';
+
+/// Derive the SELL-widget base URL from the publishable key prefix. A pk_live_
+/// key targets production; every other prefix (pk_test_…) targets sandbox.
+/// Mirrors [moonpayBaseForKey] but for the off-ramp (cash-out) widget.
+String moonpaySellBaseForKey(String apiKey) =>
+    apiKey.startsWith('pk_live_')
+        ? 'https://sell.moonpay.com'
+        : 'https://sell-sandbox.moonpay.com';
 
 /// Best-effort native-asset → MoonPay currencyCode map, keyed by this wallet's
 /// internal chain id. Overridable. A chain absent here (e.g. `block`) has no
@@ -230,6 +243,109 @@ Future<String?> moonpayBuyUrl({
     walletAddress: walletAddress,
     currencyCode: code,
     baseCurrencyCode: baseCurrencyCode,
+    baseCurrencyAmount: baseCurrencyAmount,
+    redirectUrl: redirectUrl,
+    colorCode: colorCode,
+    theme: theme,
+  );
+  final signer = config.signerUrl;
+  if (signer != null && signer.isNotEmpty) {
+    return signWidgetUrl(signer, url, send: send);
+  }
+  return url;
+}
+
+/// Build the (UNSIGNED) MoonPay SELL-widget (off-ramp) URL.
+///
+/// On the sell flow the crypto being cashed out is the BASE currency and fiat
+/// is the QUOTE, so the param names differ from [buildMoonPayUrl]:
+///   - [baseCurrencyCode] is the CRYPTO code (reuse [moonpayCurrencyCode], same
+///     codes as buy),
+///   - [quoteCurrencyCode] is the fiat (e.g. 'usd'),
+///   - [walletAddress] is the address the user sends funds from / refund,
+///   - [baseCurrencyAmount] is the optional crypto amount to pre-fill.
+/// Optional [redirectUrl], [colorCode] ('#rrggbb'), [theme] ('dark'|'light').
+/// The base is derived from the key via [moonpaySellBaseForKey].
+///
+/// For production, pass the returned URL through [signWidgetUrl] to append the
+/// server-computed &signature (the host-agnostic signer works for sell URLs
+/// unchanged); sandbox (pk_test_) URLs work unsigned.
+String buildMoonPaySellUrl({
+  required String apiKey,
+  required String baseCurrencyCode,
+  String? walletAddress,
+  String? quoteCurrencyCode,
+  String? baseCurrencyAmount,
+  String? redirectUrl,
+  String? colorCode,
+  String? theme,
+}) {
+  final params = <String, String>{
+    'apiKey': apiKey,
+    'baseCurrencyCode': baseCurrencyCode,
+  };
+  if (quoteCurrencyCode != null && quoteCurrencyCode.isNotEmpty) {
+    params['quoteCurrencyCode'] = quoteCurrencyCode;
+  }
+  if (walletAddress != null && walletAddress.isNotEmpty) {
+    params['walletAddress'] = walletAddress;
+  }
+  if (baseCurrencyAmount != null && baseCurrencyAmount.isNotEmpty) {
+    params['baseCurrencyAmount'] = baseCurrencyAmount;
+  }
+  if (redirectUrl != null && redirectUrl.isNotEmpty) {
+    params['redirectURL'] = redirectUrl;
+  }
+  if (colorCode != null && colorCode.isNotEmpty) {
+    params['colorCode'] = colorCode;
+  }
+  if (theme != null && theme.isNotEmpty) {
+    params['theme'] = theme;
+  }
+  // Uri handles RFC 3986 percent-encoding of each value.
+  final uri = Uri.parse(moonpaySellBaseForKey(apiKey)).replace(
+    path: '/',
+    queryParameters: params,
+  );
+  return uri.toString();
+}
+
+/// One-call SELL helper: resolve the asset code, build the sell URL, and (if a
+/// signer is configured) sign it. Returns null when the asset has no MoonPay
+/// code (BLOCK/unsupported) — callers HIDE the Sell button in that case.
+///
+/// Mirrors [moonpayBuyUrl]: reuses the same currency-code map and the same
+/// server-side signer wiring. [quoteCurrencyCode] is the fiat payout (default
+/// 'usd'); [walletAddress] is the source/refund address.
+Future<String?> moonpaySellUrl({
+  required MoonPayConfig config,
+  required String chain,
+  String? walletAddress,
+  String? kind,
+  String? symbol,
+  String? quoteCurrencyCode,
+  String? baseCurrencyAmount,
+  String? redirectUrl,
+  String? colorCode,
+  String? theme,
+  Map<String, String> nativeCodes = kMoonPayNativeCodes,
+  Map<String, String> tokenCodes = kMoonPayTokenCodes,
+  HttpSend send = httpSend,
+}) async {
+  if (moonpayIsBlock(chain)) return null;
+  final code = moonpayCurrencyCode(
+    chain,
+    kind: kind,
+    symbol: symbol,
+    nativeCodes: nativeCodes,
+    tokenCodes: tokenCodes,
+  );
+  if (code == null) return null;
+  final url = buildMoonPaySellUrl(
+    apiKey: config.apiKey,
+    baseCurrencyCode: code,
+    walletAddress: walletAddress,
+    quoteCurrencyCode: quoteCurrencyCode,
     baseCurrencyAmount: baseCurrencyAmount,
     redirectUrl: redirectUrl,
     colorCode: colorCode,

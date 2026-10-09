@@ -588,7 +588,7 @@ class AccountsTab(QWidget):
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Chain", "Scheme", "Address", "Balance", "", "Buy with card"])
+            ["Chain", "Scheme", "Address", "Balance", "", "Buy / Sell (card · cash)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -713,12 +713,22 @@ class AccountsTab(QWidget):
         assets = self._supported_assets_for(cid)
         if not assets or not addr or addr == "—":
             return QWidget()  # unsupported / no address -> blank cell
-        btn = QPushButton("Buy with card…")
         syms = ", ".join(s for s, _ in assets)
-        btn.setToolTip(f"Buy {syms} with a card or bank via MoonPay — "
-                       "delivered to your address on this chain.")
-        btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._buy(cid, addr))
-        return btn
+        cell = QWidget()
+        h = QHBoxLayout(cell)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        buy_btn = QPushButton("Buy…")
+        buy_btn.setToolTip(f"Buy {syms} with a card or bank via MoonPay — "
+                           "delivered to your address on this chain.")
+        buy_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._buy(cid, addr))
+        sell_btn = QPushButton("Sell…")
+        sell_btn.setToolTip(f"Sell {syms} for cash to your bank via MoonPay — "
+                            "sent from your address on this chain.")
+        sell_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._sell_fiat(cid, addr))
+        h.addWidget(buy_btn)
+        h.addWidget(sell_btn)
+        return cell
 
     def _buy(self, cid, addr):
         assets = self._supported_assets_for(cid)
@@ -758,6 +768,51 @@ class AccountsTab(QWidget):
             f"MoonPay ({base}) runs its own identity + payment flow and sends "
             f"{symbol} to your address:\n{addr}\n\n"
             "Blockle never sees your card or personal details.",
+        ) != QMessageBox.Yes:
+            return
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _sell_fiat(self, cid, addr):
+        assets = self._supported_assets_for(cid)
+        if not assets:
+            return
+        if len(assets) == 1:
+            symbol, code = assets[0]
+        else:
+            labels = [f"{s}" for s, _ in assets]
+            choice, ok = QInputDialog.getItem(
+                self, "Sell for cash",
+                f"Which asset to sell on {self.ctrl.chain_label(cid)}?",
+                labels, 0, False)
+            if not ok:
+                return
+            symbol, code = assets[labels.index(choice)]
+
+        try:
+            url = moonpay.build_sell_widget_url(
+                wallet_address=addr, base_currency_code=code,
+                quote_currency_code="usd")
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not build MoonPay URL:\n{e}")
+            return
+        # Optional: if a server signing endpoint is configured, get a signed URL
+        # (the secret stays on that server). Falls back to the unsigned URL.
+        # The signer is host-agnostic, so it signs sell URLs just like buy.
+        try:
+            signed = moonpay.fetch_signed_url(url)
+            if signed:
+                url = signed
+        except Exception:
+            pass
+
+        base = moonpay.sell_base_url()
+        if QMessageBox.question(
+            self, "Sell for cash",
+            f"Open MoonPay to sell {symbol} for cash?\n\n"
+            f"MoonPay ({base}) runs its own identity + payout flow. You send "
+            f"{symbol} from your address:\n{addr}\n"
+            "and MoonPay pays the cash to your bank.\n\n"
+            "Blockle never sees your bank or personal details.",
         ) != QMessageBox.Yes:
             return
         QDesktopServices.openUrl(QUrl(url))

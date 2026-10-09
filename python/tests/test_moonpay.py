@@ -171,6 +171,109 @@ def test_build_widget_url_uses_default_key_when_unset(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# sell (off-ramp) base host + widget URL builder
+# --------------------------------------------------------------------------
+
+def test_sell_base_url_from_live_prefix():
+    assert M.sell_base_url("pk_live_abc123") == M.SELL_LIVE_BASE
+
+
+def test_sell_base_url_from_test_prefix():
+    assert M.sell_base_url("pk_test_abc123") == M.SELL_SANDBOX_BASE
+
+
+def test_sell_base_url_unknown_prefix_falls_back_to_sandbox():
+    assert M.sell_base_url("garbage") == M.SELL_SANDBOX_BASE
+    assert M.sell_base_url("") == M.SELL_SANDBOX_BASE
+
+
+def test_sell_bases_differ_from_buy_bases():
+    # sell hosts are distinct from the buy hosts but follow the same rule
+    assert M.SELL_SANDBOX_BASE != M.SANDBOX_BASE
+    assert M.SELL_LIVE_BASE != M.LIVE_BASE
+    assert M.SELL_SANDBOX_BASE == "https://sell-sandbox.moonpay.com"
+    assert M.SELL_LIVE_BASE == "https://sell.moonpay.com"
+
+
+def test_build_sell_widget_url_minimal_defaults_usd():
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k")
+    split = urlsplit(url)
+    assert f"{split.scheme}://{split.netloc}" == M.SELL_SANDBOX_BASE
+    q = parse_qs(split.query)
+    assert q["apiKey"] == ["pk_test_k"]
+    assert q["baseCurrencyCode"] == ["eth"]
+    assert q["quoteCurrencyCode"] == ["usd"]  # default fiat
+    assert "walletAddress" not in q           # optional, omitted here
+
+
+def test_build_sell_widget_url_live_host_and_params():
+    url = M.build_sell_widget_url(
+        base_currency_code="usdc", api_key="pk_live_k",
+        wallet_address="0xabc", quote_currency_code="eur",
+        base_currency_amount=50, redirect_url="https://blockle.org/done",
+        color_code="#123456", theme="dark", extra={"lockAmount": "true"})
+    assert url.startswith(M.SELL_LIVE_BASE + "?")
+    q = parse_qs(urlsplit(url).query)
+    assert q["baseCurrencyCode"] == ["usdc"]
+    assert q["quoteCurrencyCode"] == ["eur"]
+    assert q["walletAddress"] == ["0xabc"]
+    assert q["baseCurrencyAmount"] == ["50"]
+    assert q["redirectURL"] == ["https://blockle.org/done"]
+    assert q["colorCode"] == ["#123456"]
+    assert q["theme"] == ["dark"]
+    assert q["lockAmount"] == ["true"]
+
+
+def test_build_sell_widget_url_reuses_buy_currency_codes():
+    # the crypto being sold uses the exact same codes as the buy map
+    code = M.currency_code("solana", "USDC", native_symbol="SOL")
+    url = M.build_sell_widget_url(base_currency_code=code, api_key="pk_test_k")
+    q = parse_qs(urlsplit(url).query)
+    assert q["baseCurrencyCode"] == ["usdc_sol"]
+
+
+def test_build_sell_widget_url_requires_base_currency():
+    with pytest.raises(ValueError):
+        M.build_sell_widget_url(base_currency_code="", api_key="pk_test_k")
+
+
+def test_build_sell_widget_url_appends_signature_urlencoded():
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",
+                                  signature="a+b/c=")
+    assert url.endswith("&signature=a%2Bb%2Fc%3D")
+
+
+def test_build_sell_widget_url_uses_default_key_when_unset(monkeypatch):
+    monkeypatch.delenv(M.API_KEY_ENV, raising=False)
+    url = M.build_sell_widget_url(base_currency_code="eth")
+    q = parse_qs(urlsplit(url).query)
+    assert q["apiKey"] == [M.DEFAULT_API_KEY]
+
+
+def test_build_sell_widget_url_omits_empty_quote_currency():
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",
+                                  quote_currency_code="")
+    q = parse_qs(urlsplit(url).query)
+    assert "quoteCurrencyCode" not in q
+
+
+def test_sign_url_works_for_sell_url():
+    # the signer is host-agnostic: it signs a sell URL exactly like a buy URL
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",
+                                  wallet_address="0xabc")
+    secret = "sk_test_SECRET"
+    signed = M.sign_url(url, secret)
+    assert "&signature=" in signed
+    orig_query = urlsplit(url).query
+    want = base64.b64encode(
+        hmac.new(secret.encode(), ("?" + orig_query).encode(),
+                 hashlib.sha256).digest()
+    ).decode()
+    from urllib.parse import quote
+    assert signed.endswith("&signature=" + quote(want, safe=""))
+
+
+# --------------------------------------------------------------------------
 # signing (server-side)
 # --------------------------------------------------------------------------
 

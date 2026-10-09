@@ -33,6 +33,28 @@ void main() {
     });
   });
 
+  group('sell base from key prefix', () {
+    test('pk_test_ → sell sandbox', () {
+      expect(moonpaySellBaseForKey('pk_test_abc'),
+          'https://sell-sandbox.moonpay.com');
+      expect(moonpaySellBaseForKey(kMoonPayDefaultApiKey),
+          'https://sell-sandbox.moonpay.com');
+    });
+    test('pk_live_ → sell production', () {
+      expect(moonpaySellBaseForKey('pk_live_xyz'), 'https://sell.moonpay.com');
+    });
+    test('unknown prefix defaults to sell sandbox', () {
+      expect(moonpaySellBaseForKey('garbage'),
+          'https://sell-sandbox.moonpay.com');
+    });
+    test('MoonPayConfig derives sellBase from the same key', () {
+      const sandbox = MoonPayConfig();
+      expect(sandbox.sellBase, 'https://sell-sandbox.moonpay.com');
+      const live = MoonPayConfig(apiKey: 'pk_live_xyz');
+      expect(live.sellBase, 'https://sell.moonpay.com');
+    });
+  });
+
   group('currency code map', () {
     test('native chains map to their MoonPay code', () {
       expect(moonpayCurrencyCode('ethereum'), 'eth');
@@ -254,6 +276,139 @@ void main() {
       expect(out, isNotNull);
       expect(out!.contains('&signature=ZZ'), isTrue);
       expect(Uri.parse(out).queryParameters['currencyCode'], 'btc');
+    });
+  });
+
+  group('buildMoonPaySellUrl', () {
+    test('crypto is baseCurrencyCode, on the sell base, url-encoded', () {
+      final url = buildMoonPaySellUrl(
+        apiKey: 'pk_test_abc',
+        baseCurrencyCode: 'eth',
+      );
+      final u = Uri.parse(url);
+      expect(u.scheme, 'https');
+      expect(u.host, 'sell-sandbox.moonpay.com');
+      expect(u.queryParameters['apiKey'], 'pk_test_abc');
+      expect(u.queryParameters['baseCurrencyCode'], 'eth');
+      // Sell URLs have no currencyCode param (that is the buy shape).
+      expect(u.queryParameters.containsKey('currencyCode'), isFalse);
+    });
+    test('live key targets sell production host', () {
+      final url = buildMoonPaySellUrl(
+        apiKey: 'pk_live_abc',
+        baseCurrencyCode: 'btc',
+      );
+      expect(Uri.parse(url).host, 'sell.moonpay.com');
+    });
+    test('optional params included only when set', () {
+      final url = buildMoonPaySellUrl(
+        apiKey: 'pk_test_abc',
+        baseCurrencyCode: 'eth',
+        quoteCurrencyCode: 'usd',
+        walletAddress: '0xabc',
+        baseCurrencyAmount: '0.5',
+        redirectUrl: 'https://blockle.org/done?x=1',
+        colorCode: '#7C5CFF',
+        theme: 'dark',
+      );
+      final q = Uri.parse(url).queryParameters;
+      expect(q['quoteCurrencyCode'], 'usd');
+      expect(q['walletAddress'], '0xabc');
+      expect(q['baseCurrencyAmount'], '0.5');
+      expect(q['redirectURL'], 'https://blockle.org/done?x=1');
+      expect(q['colorCode'], '#7C5CFF');
+      expect(q['theme'], 'dark');
+      expect(url.contains('redirectURL=https%3A%2F%2Fblockle.org'), isTrue);
+    });
+    test('empty/absent optionals are omitted', () {
+      final url = buildMoonPaySellUrl(
+        apiKey: 'pk_test_abc',
+        baseCurrencyCode: 'eth',
+        quoteCurrencyCode: '',
+        walletAddress: '',
+      );
+      final q = Uri.parse(url).queryParameters;
+      expect(q.containsKey('quoteCurrencyCode'), isFalse);
+      expect(q.containsKey('walletAddress'), isFalse);
+    });
+  });
+
+  group('moonpaySellUrl end-to-end', () {
+    test('BLOCK never produces a sell url', () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'block',
+        walletAddress: 'blk1xyz',
+      );
+      expect(out, isNull);
+    });
+    test('unsupported asset → null', () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '0xabc',
+        kind: 'erc20',
+        symbol: 'SHIB',
+      );
+      expect(out, isNull);
+    });
+    test('supported native asset, no signer → unsigned sell sandbox url',
+        () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '0xabc',
+        quoteCurrencyCode: 'usd',
+      );
+      expect(out, isNotNull);
+      final u = Uri.parse(out!);
+      expect(u.host, 'sell-sandbox.moonpay.com');
+      expect(u.queryParameters['baseCurrencyCode'], 'eth');
+      expect(u.queryParameters['quoteCurrencyCode'], 'usd');
+      expect(u.queryParameters['walletAddress'], '0xabc');
+      expect(u.queryParameters.containsKey('signature'), isFalse);
+    });
+    test('token sell resolves to the shared currency code', () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'polygon',
+        walletAddress: '0xabc',
+        kind: 'erc20',
+        symbol: 'USDC',
+      );
+      expect(out, isNotNull);
+      expect(Uri.parse(out!).queryParameters['baseCurrencyCode'],
+          'usdc_polygon');
+    });
+    test('signer configured → signed sell url (host-agnostic signer)',
+        () async {
+      HttpReq? seen;
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(signerUrl: 'https://sign.example/mp'),
+        chain: 'bitcoin',
+        walletAddress: 'bc1qxyz',
+        send: (req) async {
+          seen = req;
+          return const HttpReply(200, '{"signature":"ZZ"}');
+        },
+      );
+      expect(out, isNotNull);
+      expect(out!.contains('&signature=ZZ'), isTrue);
+      expect(Uri.parse(out).queryParameters['baseCurrencyCode'], 'btc');
+      // The same signer endpoint is reused, unchanged, for sell URLs.
+      expect(seen!.url, 'https://sign.example/mp');
+      expect(jsonDecode(seen!.body!)['url'].contains('sell-sandbox'), isTrue);
+    });
+    test('sell allows an empty address (MoonPay can collect it)', () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '',
+      );
+      expect(out, isNotNull);
+      final u = Uri.parse(out!);
+      expect(u.queryParameters['baseCurrencyCode'], 'eth');
+      expect(u.queryParameters.containsKey('walletAddress'), isFalse);
     });
   });
 }

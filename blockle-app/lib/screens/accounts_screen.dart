@@ -242,10 +242,13 @@ class _AccountsScreenState extends State<AccountsScreen> {
     final isToken = b.asset.kind != 'native';
     // "Buy with card" is offered per asset that MoonPay supports — never for
     // BLOCK, and only when we have a receive address to deliver to.
-    final canBuy = addr.isNotEmpty &&
-        !moonpayIsBlock(chain) &&
+    final moonpaySupported = !moonpayIsBlock(chain) &&
         moonpayCurrencyCode(chain, kind: b.asset.kind, symbol: b.asset.symbol) !=
             null;
+    final canBuy = addr.isNotEmpty && moonpaySupported;
+    // "Sell for cash" (off-ramp) is offered for the same supported asset set;
+    // the address is the source/refund address MoonPay shows the user.
+    final canSell = addr.isNotEmpty && moonpaySupported;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -283,6 +286,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
             const SizedBox(width: 8),
             _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
           ],
+          if (canSell) ...[
+            const SizedBox(width: 6),
+            _sellChip(() => _sellForCash(c, chain, addr, b.asset)),
+          ],
         ],
       ),
     );
@@ -306,6 +313,32 @@ class _AccountsScreenState extends State<AccountsScreen> {
             Text('Buy',
                 style: TextStyle(
                     color: Bk.accent,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sellChip(VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Bk.muted.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.account_balance_outlined, size: 12, color: Bk.muted),
+            SizedBox(width: 4),
+            Text('Sell',
+                style: TextStyle(
+                    color: Bk.muted,
                     fontSize: 11,
                     fontWeight: FontWeight.w700)),
           ],
@@ -361,6 +394,39 @@ class _AccountsScreenState extends State<AccountsScreen> {
       MaterialPageRoute(
           builder: (_) =>
               MoonPayBuyScreen(url: url, assetLabel: asset.symbol)),
+    );
+  }
+
+  /// Build the MoonPay SELL (off-ramp) widget URL for [asset] on [chain] and
+  /// open it — the in-app webview on mobile/desktop, a new browser tab on web.
+  /// MoonPay hosts the KYC + payout flow and shows the user a deposit address;
+  /// this wallet never handles PII or banking details.
+  Future<void> _sellForCash(
+      MultichainController c, String chain, String addr, AssetRef asset) async {
+    final url = await moonpaySellUrl(
+      config: c.moonpayConfig,
+      chain: chain,
+      walletAddress: addr,
+      kind: asset.kind,
+      symbol: asset.symbol,
+      quoteCurrencyCode: 'usd',
+      theme: 'dark',
+      colorCode: '#7C5CFF',
+    );
+    if (url == null) {
+      _snack('Selling ${asset.symbol} for cash isn’t available yet.');
+      return;
+    }
+    if (!mounted) return;
+    if (kIsWeb) {
+      openExternal(url);
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) =>
+              MoonPaySellScreen(url: url, assetLabel: asset.symbol)),
     );
   }
 
@@ -868,14 +934,15 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
           const SizedBox(height: 8),
           for (final chain in kAlchemyChains) _alchemyTile(c, chain),
           const SizedBox(height: 20),
-          const Text('Buy with card (MoonPay)',
+          const Text('Buy & sell with card (MoonPay)',
               style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           const Text(
-              'Buy crypto with a card or bank via MoonPay. The publishable key '
-              'below is client-side and safe. MoonPay handles KYC and payment — '
-              'this wallet never sees card data. BLOCK is not on MoonPay; buy a '
-              'supported asset then swap to BLOCK.',
+              'Buy crypto with a card or bank, or sell it back to cash, via '
+              'MoonPay. The publishable key below is client-side and safe. '
+              'MoonPay handles KYC, payment and payout — this wallet never sees '
+              'card or banking data. BLOCK is not on MoonPay; buy/sell a '
+              'supported asset and swap to or from BLOCK.',
               style: TextStyle(color: Bk.muted, fontSize: 12)),
           const SizedBox(height: 8),
           _moonpayTile(c),
@@ -1399,6 +1466,31 @@ class MoonPayBuyScreen extends StatelessWidget {
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
           // MoonPay's card flow may hand off to the bank's 3-D Secure page.
+          useOnLoadResource: false,
+        ),
+      ),
+    );
+  }
+}
+
+/// Hosts the MoonPay hosted SELL (off-ramp) widget in an in-app webview
+/// (mobile/desktop). MoonPay runs the entire KYC + payout flow inside this
+/// webview: it shows the user a deposit address to send the crypto to and pays
+/// fiat out to their bank — this wallet never handles PII or banking details.
+class MoonPaySellScreen extends StatelessWidget {
+  const MoonPaySellScreen(
+      {super.key, required this.url, required this.assetLabel});
+  final String url;
+  final String assetLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Sell $assetLabel for cash')),
+      body: InAppWebView(
+        initialUrlRequest: URLRequest(url: WebUri(url)),
+        initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
           useOnLoadResource: false,
         ),
       ),
