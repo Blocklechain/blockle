@@ -363,6 +363,30 @@ fn poolinfo(node: &Arc<Node>, params: &Value) -> Result<Value, String> {
 /// (oldest-first) rather than arbitrary HashMap order.
 static AUX_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Bound a pending-aux-work map safely. First drop every entry the `keep`
+/// predicate rejects (work whose tip is no longer current). Then, if still
+/// over `cap`, evict the OLDEST entries by `seq_of` (lowest insertion
+/// sequence) — NEVER the most-recently-handed-out work. This replaces the old
+/// `keys().take()` which evicted arbitrary HashMap entries and could drop the
+/// exact job a miner was about to submit under min-difficulty churn.
+fn prune_pending<V>(
+    p: &mut HashMap<String, V>,
+    cap: usize,
+    keep: impl Fn(&V) -> bool,
+    seq_of: impl Fn(&V) -> u64,
+) {
+    p.retain(|_, v| keep(v));
+    if p.len() > cap {
+        let mut by_seq: Vec<(String, u64)> =
+            p.iter().map(|(k, v)| (k.clone(), seq_of(v))).collect();
+        by_seq.sort_by_key(|(_, s)| *s);
+        let overflow = p.len() - cap;
+        for (k, _) in by_seq.into_iter().take(overflow) {
+            p.remove(&k);
+        }
+    }
+}
+
 fn createauxblock(
     node: &Arc<Node>,
     pending: &Arc<Mutex<HashMap<String, (Block, String, u64)>>>,
@@ -411,20 +435,14 @@ fn createauxblock(
     let cur_prev = block.header.prev_hash;
     let mut p = pending.lock().unwrap();
     p.insert(hash.clone(), (block.clone(), algo.clone(), seq));
-    // Drop work for an old tip (stale once a new BLOCK is mined) — this clears
-    // pending naturally on every new tip across all lanes.
-    p.retain(|_, (b, _, _)| b.header.prev_hash == cur_prev);
-    // Backstop cap: if a single tip still accumulates >256 live jobs, evict the
-    // OLDEST by insertion sequence (never the most-recently-handed-out work).
-    if p.len() > 256 {
-        let mut by_seq: Vec<(String, u64)> =
-            p.iter().map(|(k, (_, _, s))| (k.clone(), *s)).collect();
-        by_seq.sort_by_key(|(_, s)| *s);
-        let overflow = p.len() - 256;
-        for (k, _) in by_seq.into_iter().take(overflow) {
-            p.remove(&k);
-        }
-    }
+    // Drop work for an old tip (stale once a new BLOCK is mined), then FIFO-cap:
+    // evict the OLDEST by insertion sequence, never the work just handed out.
+    prune_pending(
+        &mut p,
+        256,
+        |(b, _, _)| b.header.prev_hash == cur_prev,
+        |(_, _, s)| *s,
+    );
     drop(p);
     Ok(json!({
         "hash": hash,
@@ -1002,5 +1020,63 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
             err404("unrecognized query (height, hash, txid, or block1… address)")
         }
         _ => err404("unknown endpoint"),
+    }
+}
+
+#[cfg(test)]
+mod aux_prune_tests {
+    use super::prune_pending;
+    use std::collections::HashMap;
+
+    // Regression tests for the createauxblock pending-work eviction bug:
+    // under a lane churning at minimum difficulty (a block per share), the old
+    // arbitrary HashMap eviction could drop the work a miner was about to
+    // submit -> "unknown aux work (expired?)" (shears.co.uk, 1467 in a row).
+    // The map value here is a stand-in (tip_tag, seq) so we exercise the exact
+    // eviction algorithm without constructing full Blocks.
+
+    #[test]
+    fn fifo_evicts_oldest_keeps_newest() {
+        let mut p: HashMap<String, (u64, u64)> = HashMap::new();
+        // 257 jobs on the SAME tip (tag 1), seq = insertion order 0..=256.
+        for i in 0..=256u64 {
+            p.insert(format!("h{i}"), (1, i));
+        }
+        prune_pending(&mut p, 256, |v| v.0 == 1, |v| v.1);
+        assert_eq!(p.len(), 256, "capped to 256");
+        // Only one over cap -> the single OLDEST (seq 0) is evicted...
+        assert!(!p.contains_key("h0"), "oldest work must be evicted");
+        // ...and the most-recently-handed-out work is retained (the old bug).
+        assert!(p.contains_key("h256"), "newest work must be retained");
+        assert!(p.contains_key("h1"), "second-oldest retained");
+    }
+
+    #[test]
+    fn heavy_churn_evicts_only_the_oldest_block() {
+        let mut p: HashMap<String, (u64, u64)> = HashMap::new();
+        for i in 0..400u64 {
+            p.insert(format!("h{i}"), (7, i));
+        }
+        prune_pending(&mut p, 256, |v| v.0 == 7, |v| v.1);
+        assert_eq!(p.len(), 256);
+        // The 144 oldest (seq 0..143) are gone; the 256 newest (144..399) stay.
+        assert!(!p.contains_key("h143"), "old work evicted");
+        assert!(p.contains_key("h144"), "boundary newest-256 retained");
+        assert!(p.contains_key("h399"), "freshest work retained");
+    }
+
+    #[test]
+    fn new_tip_clears_stale_lane_work() {
+        let mut p: HashMap<String, (u64, u64)> = HashMap::new();
+        for i in 0..10u64 {
+            p.insert(format!("old{i}"), (1, i)); // old tip
+        }
+        for i in 0..3u64 {
+            p.insert(format!("new{i}"), (2, 100 + i)); // current tip
+        }
+        // Prune against the current tip (tag 2): all old-tip work is dropped.
+        prune_pending(&mut p, 256, |v| v.0 == 2, |v| v.1);
+        assert_eq!(p.len(), 3, "all stale old-tip work cleared on new tip");
+        assert!(p.keys().all(|k| k.starts_with("new")));
     }
 }
