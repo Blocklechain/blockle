@@ -245,6 +245,9 @@ canvas.logo {
 /* MoonPay "Buy with card" buttons — green accent to read as buy/on-ramp */
 .mc-buy-btn, .mc-buy-tok { background: rgba(126,231,135,.12); color: #7ee787; border: 1px solid rgba(126,231,135,.35); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .mc-buy-tok { padding: 2px 8px; }
+/* MoonPay "Sell for cash" buttons — amber accent to read as sell/off-ramp */
+.mc-sell-btn, .mc-sell-tok { background: rgba(240,180,100,.12); color: #f0b464; border: 1px solid rgba(240,180,100,.35); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.mc-sell-tok { padding: 2px 8px; }
 .mc-buy-note { margin-top: 6px; font-size: 11px; line-height: 1.4; }
 .mc-buy-note a { color: var(--c1, #7ee787); }
 

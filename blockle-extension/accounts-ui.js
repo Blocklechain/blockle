@@ -88,14 +88,18 @@
       const buyNative = mpSupported(id, { native: true })
         ? `<button class="mini-btn mc-buy-btn" data-buy="${id}" title="Buy ${esc(m.sym)} with a card or bank via MoonPay">Buy</button>`
         : '';
-      // BLOCK isn't on MoonPay: steer the user to buy a supported asset + swap.
+      // Sell (off-ramp) mirrors Buy: same supported-asset set, hidden otherwise.
+      const sellNative = mpSupported(id, { native: true })
+        ? `<button class="mini-btn mc-sell-btn" data-sell-mp="${id}" title="Sell ${esc(m.sym)} for cash to your bank via MoonPay">Sell</button>`
+        : '';
+      // BLOCK isn't on MoonPay: steer the user to a supported asset first.
       const note = id === 'block'
-        ? `<div class="mc-buy-note"><small class="muted">Not on MoonPay — buy ETH/BTC/USDC with a card, then <a href="#" data-goto-exchange>swap to BLOCK</a>.</small></div>`
+        ? `<div class="mc-buy-note"><small class="muted">Not on MoonPay — buy or sell ETH/BTC/USDC with a card, then <a href="#" data-goto-exchange>swap to/from BLOCK</a>.</small></div>`
         : '';
       return `<div class="mc-acct" data-chain="${id}">
         <div class="mc-head">
           <div class="mc-name">${esc(m.name)} ${m.pq ? '<span class="pill" style="color:#7ee787;border-color:#7ee78755">PQ</span>' : ''}</div>
-          <div class="mc-head-btns">${buyNative}<button class="mini-btn mc-send-btn" data-send="${id}">Send</button></div>
+          <div class="mc-head-btns">${buyNative}${sellNative}<button class="mini-btn mc-send-btn" data-send="${id}">Send</button></div>
         </div>
         <button class="addr-chip mc-addr" data-copy-chain="${id}"><span>…</span><span class="copy">⧉</span></button>
         <div class="mc-bal" data-bal="${id}"><small class="muted">—</small></div>
@@ -117,6 +121,8 @@
       }));
     box.querySelectorAll('[data-buy]').forEach((b) =>
       b.addEventListener('click', () => doBuy(b.getAttribute('data-buy'), { native: true })));
+    box.querySelectorAll('[data-sell-mp]').forEach((b) =>
+      b.addEventListener('click', () => doSell(b.getAttribute('data-sell-mp'), { native: true })));
     box.querySelectorAll('[data-goto-exchange]').forEach((b) =>
       b.addEventListener('click', (e) => { e.preventDefault(); UI.route('exchange'); }));
   }
@@ -134,6 +140,22 @@
       const acct = await Wiring.accountFor(chain);
       const res = await MoonPay.buyUrl(Object.assign({ chain, walletAddress: acct.address }, assetOpts || {}));
       if (!res || !res.ok) { UI.toast('Buy with card is not available for this asset'); return; }
+      openExternal(res.url);
+    } catch (e) {
+      if (/locked|seed|unlock/i.test(String(e && e.message))) UI.toast('Unlock your wallet first');
+      else UI.toast('Could not open MoonPay');
+    }
+  }
+
+  // Sell (off-ramp) mirror of doBuy: resolve the user's address (the funds'
+  // source / refund address), build (and server-sign, if configured) a MoonPay
+  // SELL widget URL for the asset, and open it in a NEW TAB. MoonPay hosts the
+  // KYC + payout flow and pays fiat to the user's bank; we never see PII/banking.
+  async function doSell(chain, assetOpts) {
+    try {
+      const acct = await Wiring.accountFor(chain);
+      const res = await MoonPay.sellUrl(Object.assign({ chain, walletAddress: acct.address }, assetOpts || {}));
+      if (!res || !res.ok) { UI.toast('Sell for cash is not available for this asset'); return; }
       openExternal(res.url);
     } catch (e) {
       if (/locked|seed|unlock/i.test(String(e && e.message))) UI.toast('Unlock your wallet first');
@@ -177,10 +199,15 @@
         const buyTok = (isTokenRow && mpSupported(id, { symbol: sym }))
           ? `<button class="mini-btn mc-buy-tok" data-buy-tok="${id}" data-buy-sym="${esc(sym)}" title="Buy ${esc(sym)} with a card via MoonPay">Buy</button>`
           : '';
-        return `<div class="mc-bal-row"${title}><span>${logo}${esc(sym)}</span><span class="mc-bal-right"><b class="mono">${esc(disp)}</b>${buyTok}</span></div>`;
+        const sellTok = (isTokenRow && mpSupported(id, { symbol: sym }))
+          ? `<button class="mini-btn mc-sell-tok" data-sell-tok="${id}" data-sell-sym="${esc(sym)}" title="Sell ${esc(sym)} for cash via MoonPay">Sell</button>`
+          : '';
+        return `<div class="mc-bal-row"${title}><span>${logo}${esc(sym)}</span><span class="mc-bal-right"><b class="mono">${esc(disp)}</b>${buyTok}${sellTok}</span></div>`;
       }).join('');
       balEl.querySelectorAll('[data-buy-tok]').forEach((b) =>
         b.addEventListener('click', () => doBuy(b.getAttribute('data-buy-tok'), { symbol: b.getAttribute('data-buy-sym') })));
+      balEl.querySelectorAll('[data-sell-tok]').forEach((b) =>
+        b.addEventListener('click', () => doSell(b.getAttribute('data-sell-tok'), { symbol: b.getAttribute('data-sell-sym') })));
     } catch (e) {
       balEl.innerHTML = '<small class="muted">balance unavailable</small>';
     }

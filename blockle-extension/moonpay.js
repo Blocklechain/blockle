@@ -26,11 +26,20 @@
   const SANDBOX_BASE = 'https://buy-sandbox.moonpay.com';
   const LIVE_BASE = 'https://buy.moonpay.com';
 
+  // SELL (off-ramp) hosts. Same pk_live_* -> production rule as the buy hosts.
+  const SELL_SANDBOX_BASE = 'https://sell-sandbox.moonpay.com';
+  const SELL_LIVE_BASE = 'https://sell.moonpay.com';
+
   // Derive the widget host from the key PREFIX: only an explicit pk_live_* key
   // hits production; anything else (pk_test_*, blank, malformed) stays on the
   // safe sandbox host.
   function baseFromKey(apiKey) {
     return String(apiKey || '').startsWith('pk_live_') ? LIVE_BASE : SANDBOX_BASE;
+  }
+
+  // Same rule for the SELL widget host.
+  function sellBaseFromKey(apiKey) {
+    return String(apiKey || '').startsWith('pk_live_') ? SELL_LIVE_BASE : SELL_SANDBOX_BASE;
   }
 
   // Asset -> MoonPay currencyCode, keyed by our chain id. Best-effort; keep it
@@ -101,6 +110,30 @@
     if (opts.currencyCode) params.set('currencyCode', opts.currencyCode);
     if (opts.walletAddress) params.set('walletAddress', opts.walletAddress);
     if (opts.baseCurrencyCode) params.set('baseCurrencyCode', opts.baseCurrencyCode);
+    if (opts.baseCurrencyAmount != null && opts.baseCurrencyAmount !== '')
+      params.set('baseCurrencyAmount', String(opts.baseCurrencyAmount));
+    if (opts.redirectURL) params.set('redirectURL', opts.redirectURL);
+    if (opts.colorCode) params.set('colorCode', opts.colorCode);
+    if (opts.theme) params.set('theme', opts.theme);
+    return base + '?' + params.toString();
+  }
+
+  // Build the (unsigned) MoonPay SELL (off-ramp) widget URL. Note the param
+  // roles DIFFER from buy: here `baseCurrencyCode` is the CRYPTO being sold
+  // (same code map as buy) and `quoteCurrencyCode` is the fiat payout currency.
+  // Opening the URL launches MoonPay's hosted KYC + payout flow; MoonPay shows a
+  // deposit address the user sends crypto to and pays fiat to their bank. We do
+  // NOT handle PII/banking. apiKey defaults to DEFAULT_API_KEY; the host is
+  // derived from the key prefix (pk_live_* -> sell.moonpay.com, else sandbox).
+  function buildSellUrl(opts) {
+    opts = opts || {};
+    const apiKey = opts.apiKey || DEFAULT_API_KEY;
+    const base = sellBaseFromKey(apiKey);
+    const params = new URLSearchParams();
+    params.set('apiKey', apiKey);
+    if (opts.baseCurrencyCode) params.set('baseCurrencyCode', opts.baseCurrencyCode);
+    if (opts.quoteCurrencyCode) params.set('quoteCurrencyCode', opts.quoteCurrencyCode);
+    if (opts.walletAddress) params.set('walletAddress', opts.walletAddress);
     if (opts.baseCurrencyAmount != null && opts.baseCurrencyAmount !== '')
       params.set('baseCurrencyAmount', String(opts.baseCurrencyAmount));
     if (opts.redirectURL) params.set('redirectURL', opts.redirectURL);
@@ -196,22 +229,52 @@
     return { ok: true, url, code };
   }
 
+  // High-level: resolve + build (+ sign) a SELL (off-ramp) URL for an asset.
+  // Returns { ok: true, url, code } or { ok: false, reason: 'unsupported' }.
+  // Same supported-asset set as buyUrl (BLOCK + unmapped assets -> unsupported).
+  // `opts`: { chain, symbol?, native?, walletAddress, baseCurrencyAmount?,
+  //           redirectURL?, fetchFn? }. The fiat payout currency comes from
+  // config.baseCurrencyCode (default 'usd') and maps to quoteCurrencyCode.
+  async function sellUrl(opts) {
+    opts = opts || {};
+    const cfg = await loadConfig();
+    const map = effectiveMap(cfg);
+    const code = codeFor(map, opts.chain, { native: opts.native, symbol: opts.symbol });
+    if (!code) return { ok: false, reason: 'unsupported' };
+    const unsigned = buildSellUrl({
+      apiKey: cfg.apiKey,
+      baseCurrencyCode: code,
+      quoteCurrencyCode: cfg.baseCurrencyCode || 'usd',
+      walletAddress: opts.walletAddress,
+      baseCurrencyAmount: opts.baseCurrencyAmount,
+      redirectURL: opts.redirectURL,
+      theme: cfg.theme,
+    });
+    const url = await fetchSignedUrl(cfg.signingEndpoint, unsigned, opts.fetchFn);
+    return { ok: true, url, code };
+  }
+
   const MoonPay = {
     DEFAULT_API_KEY,
     SANDBOX_BASE,
     LIVE_BASE,
+    SELL_SANDBOX_BASE,
+    SELL_LIVE_BASE,
     DEFAULT_MAP,
     CONFIG_DEFAULTS,
     baseFromKey,
+    sellBaseFromKey,
     mergeMap,
     effectiveMap,
     codeFor,
     isSupported,
     buildWidgetUrl,
+    buildSellUrl,
     fetchSignedUrl,
     loadConfig,
     saveConfig,
     buyUrl,
+    sellUrl,
   };
 
   global.MoonPay = MoonPay;

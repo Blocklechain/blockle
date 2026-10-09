@@ -44,6 +44,10 @@ API_KEY_ENV = "BLOCKLE_MOONPAY_API_KEY"
 SANDBOX_BASE = "https://buy-sandbox.moonpay.com"
 LIVE_BASE = "https://buy.moonpay.com"
 
+#: Sell (off-ramp) hosts — same key-prefix rule as the buy hosts above.
+SELL_SANDBOX_BASE = "https://sell-sandbox.moonpay.com"
+SELL_LIVE_BASE = "https://sell.moonpay.com"
+
 
 def api_key(override: Optional[str] = None) -> str:
     """Resolve the publishable key: explicit override > env > built-in default."""
@@ -57,6 +61,13 @@ def base_url(key: Optional[str] = None) -> str:
     everything else (``pk_test_``, empty, unknown) -> sandbox."""
     k = key or api_key()
     return LIVE_BASE if k.startswith("pk_live_") else SANDBOX_BASE
+
+
+def sell_base_url(key: Optional[str] = None) -> str:
+    """Derive the MoonPay SELL (off-ramp) host from the key prefix. Same rule
+    as :func:`base_url`: ``pk_live_`` -> production, everything else -> sandbox."""
+    k = key or api_key()
+    return SELL_LIVE_BASE if k.startswith("pk_live_") else SELL_SANDBOX_BASE
 
 
 def is_live(key: Optional[str] = None) -> bool:
@@ -220,6 +231,61 @@ def build_widget_url(
                 params[k] = str(v)
 
     url = base_url(key) + "?" + urlencode(params)
+    if signature:
+        url += "&signature=" + quote(signature, safe="")
+    return url
+
+
+def build_sell_widget_url(
+    *,
+    base_currency_code: str,  # the CRYPTO being sold (reuses the buy code map)
+    wallet_address: Optional[str] = None,
+    api_key: Optional[str] = None,  # noqa: A002
+    quote_currency_code: Optional[str] = "usd",  # fiat paid out
+    base_currency_amount: Optional[str] = None,
+    redirect_url: Optional[str] = None,
+    color_code: Optional[str] = None,
+    theme: Optional[str] = None,
+    extra: Optional[Dict[str, str]] = None,
+    signature: Optional[str] = None,
+) -> str:
+    """Build the MoonPay SELL-widget (off-ramp) URL.
+
+    Opening it launches MoonPay's hosted KYC + payout flow: the user sends
+    ``base_currency_code`` crypto (same codes as the buy map) from
+    ``wallet_address`` and MoonPay pays fiat (``quote_currency_code``) to their
+    bank. We never touch banking details or PII.
+
+    Only ``apiKey`` and ``baseCurrencyCode`` are required; the rest are optional
+    MoonPay params. ``signature`` (base64, from the same :func:`sign_url` /
+    signer endpoint as buy) is appended url-encoded for production signed URLs.
+    """
+    if not base_currency_code:
+        raise ValueError("base_currency_code is required")
+
+    key = globals()["api_key"](api_key)
+    params: Dict[str, str] = {
+        "apiKey": key,
+        "baseCurrencyCode": base_currency_code,
+    }
+    if quote_currency_code:
+        params["quoteCurrencyCode"] = quote_currency_code
+    if wallet_address:
+        params["walletAddress"] = wallet_address
+    if base_currency_amount is not None:
+        params["baseCurrencyAmount"] = str(base_currency_amount)
+    if redirect_url:
+        params["redirectURL"] = redirect_url
+    if color_code:
+        params["colorCode"] = color_code
+    if theme:
+        params["theme"] = theme
+    if extra:
+        for k, v in extra.items():
+            if v is not None:
+                params[k] = str(v)
+
+    url = sell_base_url(key) + "?" + urlencode(params)
     if signature:
         url += "&signature=" + quote(signature, safe="")
     return url
