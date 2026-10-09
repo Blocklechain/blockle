@@ -52,9 +52,13 @@ from .multichain.chains import create_registry
 # constants
 # --------------------------------------------------------------------------
 
-CHAIN_ORDER = ["block", "ethereum", "base", "bitcoin", "litecoin", "dogecoin", "solana"]
+#: EVM networks — one secp256k1 address across all of them (m/44'/60').
+EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "solana"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
+    "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
+    "bnb": "BNB Chain", "avalanche": "Avalanche C-Chain",
     "bitcoin": "Bitcoin", "litecoin": "Litecoin", "dogecoin": "Dogecoin",
     "solana": "Solana",
 }
@@ -62,7 +66,8 @@ CHAIN_LABELS = {
 #: — the vault hardens the stored key against theft, it is NOT a PQ signature.
 CHAIN_PQ = {"block": True}
 CHAIN_SCHEME = {
-    "block": "ML-DSA-44 (post-quantum)", "ethereum": "secp256k1", "base": "secp256k1",
+    "block": "ML-DSA-44 (post-quantum)",
+    **{c: "secp256k1" for c in EVM_CHAINS},
     "bitcoin": "secp256k1", "litecoin": "secp256k1", "dogecoin": "secp256k1",
     "solana": "ed25519",
 }
@@ -164,6 +169,17 @@ class MultiVault:
 
     def tokens(self) -> Dict[str, Any]:
         return self._require().get("tokens") or {}
+
+    def alchemy(self) -> Dict[str, Any]:
+        """Per-network Alchemy indexer config for ERC-20 auto-detect (OFF until
+        set). Shape: ``{"ethereum": "<alchemy-rpc-url-with-key>", ...}``. This is
+        a READ-ONLY indexer key, not a wallet secret — stored in the sealed vault
+        like other settings, and NEVER logged."""
+        return self._require().get("alchemy") or {}
+
+    def set_alchemy(self, network: str, url: str) -> None:
+        self._require().setdefault("alchemy", {})[network] = url
+        self._seal()
 
     def set_endpoint(self, chain: str, cfg: Dict[str, Any]) -> None:
         self._require().setdefault("endpoints", {})[chain] = cfg
@@ -339,6 +355,7 @@ class MultiChainController:
         cfg = {
             "endpoints": self.vault.endpoints(),
             "tokens": self.vault.tokens(),
+            "alchemy": self.vault.alchemy(),
             "block": {"wallet": self.block_wallet},
         }
         self.registry = create_registry(cfg)
@@ -379,8 +396,14 @@ class MultiChainController:
 
         def get_balance(chain, tokens=None):
             a = accts.get(chain)
-            toks = tokens if tokens is not None else reg.tokens_for(chain)
-            bals = reg.get(chain).get_balance(a.address if a else None, toks)
+            addr = a.address if a else None
+            if tokens is not None:
+                # Caller pinned an explicit token set — honour it verbatim.
+                bals = reg.get(chain).get_balance(addr, tokens)
+            else:
+                # Default view: native + known list + auto-detected held tokens,
+                # merged and deduped by (chain, contract), non-zero first.
+                bals = reg.all_balances(chain, addr)
             return [
                 {"asset": b.asset.to_json(), "confirmed": b.confirmed,
                  "display": b.display, "error": b.error}
@@ -608,8 +631,8 @@ class AccountsTab(QWidget):
             addr = acct.address if acct else None
 
             def fetch(cid=cid, addr=addr):
-                toks = reg.tokens_for(cid)
-                return reg.get(cid).get_balance(addr, toks)
+                # native + known list + auto-detected held tokens (merged)
+                return reg.all_balances(cid, addr)
 
             w = Worker(fetch)
             w.done.connect(lambda bals, r=r: self._show_balance(r, bals))
@@ -640,7 +663,7 @@ class AccountsTab(QWidget):
 
     def _add_token(self):
         chain, ok = QInputDialog.getItem(self, "Add ERC-20 token", "Chain:",
-                                         ["ethereum", "base"], 0, False)
+                                         EVM_CHAINS, 0, False)
         if not ok:
             return
         addr, ok = QInputDialog.getText(self, "Add ERC-20 token", "Contract address (0x…):")

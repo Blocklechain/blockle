@@ -107,6 +107,10 @@
     const native = { chain: id, kind: 'native', symbol: opts.symbol || 'ETH', decimals: 18 };
     let rootSeed = null;        // unlocked HD seed (Uint8Array), in-memory only
     let getEndpoint = opts.endpoint || (async () => opts.rpcUrl);
+    // Alchemy indexer endpoint for ERC-20 auto-detection. CONFIG — a read-only
+    // indexer URL (key already embedded). null => auto-detect OFF (the registry
+    // falls back to the known default-token list). Never logged.
+    let getAlchemy = opts.alchemy || null; // string | async()=>string | null
 
     async function rpc(method, params) {
       const url = typeof getEndpoint === 'function' ? await getEndpoint() : getEndpoint;
@@ -121,6 +125,24 @@
       return j.result;
     }
 
+    async function alchemyUrl() {
+      if (!getAlchemy) return null;
+      const u = typeof getAlchemy === 'function' ? await getAlchemy() : getAlchemy;
+      return u || null;
+    }
+    async function alchemyRpc(method, params) {
+      const url = await alchemyUrl();
+      if (!url) return null;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+      });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message || 'alchemy error');
+      return j.result;
+    }
+
     function deriveNode(index) {
       if (!rootSeed) throw new Error('locked');
       return HD.derivePath(rootSeed, path + '/' + (index || 0));
@@ -130,6 +152,40 @@
       id, native, chainId,
       unlock(root) { rootSeed = root && (root.seed || root); },
       lock() { rootSeed = null; },
+
+      // Auto-detect every ERC-20 the address actually holds, via Alchemy's
+      // enhanced API: alchemy_getTokenBalances enumerates non-zero balances,
+      // alchemy_getTokenMetadata fills in symbol/decimals/name/logo. Returns []
+      // when no Alchemy endpoint is configured (auto-detect OFF) OR this chain
+      // isn't Alchemy-backed (BNB/Avalanche) — the registry's known default list
+      // is then the source of truth. Never throws (best-effort): a failure
+      // yields [] so the known list still renders.
+      async discoverTokens(address) {
+        try {
+          if (!(await alchemyUrl())) return [];
+          const res = await alchemyRpc('alchemy_getTokenBalances', [address, 'erc20']);
+          const balances = (res && res.tokenBalances) || [];
+          const out = [];
+          for (const tb of balances) {
+            const raw = tb && tb.tokenBalance;
+            if (!raw || /^0x0*$/i.test(raw) || tb.error) continue; // zero / errored
+            let bal;
+            try { bal = BigInt(raw); } catch { continue; }
+            if (bal <= 0n) continue;
+            let meta = {};
+            try { meta = (await alchemyRpc('alchemy_getTokenMetadata', [tb.contractAddress])) || {}; } catch { meta = {}; }
+            const decimals = meta.decimals != null ? Number(meta.decimals) : 18;
+            const v = bal.toString();
+            out.push({
+              chain: id, kind: 'erc20', address: tb.contractAddress,
+              symbol: meta.symbol || '?', decimals,
+              name: meta.name || undefined, logo: meta.logo || undefined,
+              balance: v, display: formatUnits(v, decimals),
+            });
+          }
+          return out;
+        } catch { return []; }
+      },
 
       async deriveAccount(root, index) {
         const seed = (root && (root.seed || root)) || rootSeed;

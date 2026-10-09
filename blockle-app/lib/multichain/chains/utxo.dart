@@ -540,6 +540,10 @@ class UtxoAdapter implements ChainAdapter {
     }
   }
 
+  /// Bitcoin/Litecoin/Dogecoin have no native token model — nothing to detect.
+  @override
+  Future<List<Balance>> discoverTokens(String address) async => const [];
+
   Future<List<Map<String, dynamic>>> utxos(String address) async {
     final j = jsonDecode(await _apiGet('/address/$address/utxo')) as List;
     return j

@@ -43,16 +43,48 @@ const List<String> kDisplayChains = [
   'block',
   'ethereum',
   'base',
+  'arbitrum',
+  'optimism',
+  'polygon',
+  'bnb',
+  'avalanche',
   'bitcoin',
   'litecoin',
   'dogecoin',
   'solana',
 ];
 
+/// The EVM networks — all share one secp256k1 address (m/44'/60') + the same
+/// EvmAdapter; auto-detect via Alchemy on the first five.
+const Set<String> kEvmChains = {
+  'ethereum',
+  'base',
+  'arbitrum',
+  'optimism',
+  'polygon',
+  'bnb',
+  'avalanche',
+};
+
+/// EVM chains Alchemy's getTokenBalances enhanced API covers — the ones where
+/// ERC-20 auto-detect can be switched on with a read-only indexer key.
+const Set<String> kAlchemyChains = {
+  'ethereum',
+  'base',
+  'arbitrum',
+  'optimism',
+  'polygon',
+};
+
 const Map<String, String> kChainLabels = {
   'block': 'Blockle',
   'ethereum': 'Ethereum',
   'base': 'Base',
+  'arbitrum': 'Arbitrum One',
+  'optimism': 'Optimism',
+  'polygon': 'Polygon',
+  'bnb': 'BNB Chain',
+  'avalanche': 'Avalanche C-Chain',
   'bitcoin': 'Bitcoin',
   'litecoin': 'Litecoin',
   'dogecoin': 'Dogecoin',
@@ -63,6 +95,11 @@ const Map<String, String> kChainTickers = {
   'block': 'BLOCK',
   'ethereum': 'ETH',
   'base': 'ETH',
+  'arbitrum': 'ETH',
+  'optimism': 'ETH',
+  'polygon': 'POL',
+  'bnb': 'BNB',
+  'avalanche': 'AVAX',
   'bitcoin': 'BTC',
   'litecoin': 'LTC',
   'dogecoin': 'DOGE',
@@ -199,6 +236,7 @@ class MultichainController extends ChangeNotifier {
             rpcUrl: v['rpcUrl'] as String?,
             esplora: v['esplora'] as String?,
             chainId: (v['chainId'] as num?)?.toInt(),
+            alchemyUrl: v['alchemyUrl'] as String?,
           );
         }
       });
@@ -216,15 +254,34 @@ class MultichainController extends ChangeNotifier {
 
   Future<void> setEndpoint(String chain,
       {String? rpcUrl, String? esplora, int? chainId}) async {
-    final def = defaultEndpoints[chain] ?? const EndpointCfg();
+    final cur = effectiveEndpoint(chain);
     _endpoints[chain] = EndpointCfg(
-      rpcUrl: (rpcUrl != null && rpcUrl.isNotEmpty) ? rpcUrl : def.rpcUrl,
-      esplora: (esplora != null && esplora.isNotEmpty) ? esplora : def.esplora,
-      chainId: chainId ?? def.chainId,
+      rpcUrl: (rpcUrl != null && rpcUrl.isNotEmpty) ? rpcUrl : cur.rpcUrl,
+      esplora: (esplora != null && esplora.isNotEmpty) ? esplora : cur.esplora,
+      chainId: chainId ?? cur.chainId,
+      alchemyUrl: cur.alchemyUrl,
     );
     await _persistEndpoints();
     _rebuildPreservingSession();
   }
+
+  /// Configure (or clear) the per-chain Alchemy indexer URL used for ERC-20
+  /// auto-detect. The URL embeds a READ-ONLY indexer key — stored in settings,
+  /// never logged. Pass null/empty to turn auto-detect back OFF for the chain.
+  Future<void> setAlchemy(String chain, String? url) async {
+    final cur = effectiveEndpoint(chain);
+    _endpoints[chain] = EndpointCfg(
+      rpcUrl: cur.rpcUrl,
+      esplora: cur.esplora,
+      chainId: cur.chainId,
+      alchemyUrl: (url != null && url.trim().isNotEmpty) ? url.trim() : null,
+    );
+    await _persistEndpoints();
+    _rebuildPreservingSession();
+  }
+
+  bool alchemyEnabled(String chain) =>
+      (effectiveEndpoint(chain).alchemyUrl ?? '').isNotEmpty;
 
   Future<void> resetEndpoint(String chain) async {
     _endpoints.remove(chain);
@@ -239,6 +296,7 @@ class MultichainController extends ChangeNotifier {
         if (cfg.rpcUrl != null) 'rpcUrl': cfg.rpcUrl,
         if (cfg.esplora != null) 'esplora': cfg.esplora,
         if (cfg.chainId != null) 'chainId': cfg.chainId,
+        if (cfg.alchemyUrl != null) 'alchemyUrl': cfg.alchemyUrl,
       };
     });
     await _storage.write(key: _kEndpoints, value: jsonEncode(m));

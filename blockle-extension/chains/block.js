@@ -15,6 +15,16 @@
   'use strict';
   const COIN = 100000000;
 
+  function fmtUnits(baseStr, decimals) {
+    try {
+      const d = Number(decimals) || 0;
+      const s = BigInt(baseStr).toString().padStart(d + 1, '0');
+      const i = s.slice(0, s.length - d);
+      const f = s.slice(s.length - d).replace(/0+$/, '');
+      return f ? `${i}.${f}` : i;
+    } catch { return String(baseStr); }
+  }
+
   function createBlockAdapter(opts) {
     opts = opts || {};
     const id = 'block';
@@ -38,6 +48,50 @@
           publicKey: W.publicKeyHex,
           scheme: 'ml-dsa-44',
         };
+      },
+
+      // Auto-detect the BLOCK-20 tokens this address holds, via the node's
+      // token/holder interface. Preferred path: a direct address-token-holdings
+      // read (Chain.addressTokens) when the node exposes one. Fallback: list the
+      // known BLOCK-20 contracts from the DEX pools (Chain.pools) and read the
+      // holder's balance per token (Chain.token(contractId, holder)) — the
+      // balanceOf-equivalent read. Only non-zero holdings are returned.
+      // Best-effort: returns [] on any failure.
+      async discoverTokens(address) {
+        const holder = address || (W && W.address);
+        if (!holder) return [];
+        const out = [];
+        // 1) direct holdings read, if available
+        try {
+          if (typeof Chain.addressTokens === 'function') {
+            const list = await Chain.addressTokens(holder);
+            for (const t of (list || [])) {
+              const cid = t.contract || t.contractId || t.id || t.token;
+              let bal; try { bal = BigInt(t.balance != null ? t.balance : (t.holderBalance || 0)); } catch { bal = 0n; }
+              if (!cid || bal <= 0n) continue;
+              const dec = Number(t.decimals || 0);
+              out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: t.symbol || 'TOKEN', decimals: dec, name: t.name || undefined, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
+            }
+            if (out.length) return out;
+          }
+        } catch { /* fall through to pool enumeration */ }
+        // 2) enumerate BLOCK-20 contracts from the AMM pools + read holder balance
+        try {
+          const pools = (typeof Chain.pools === 'function') ? (await Chain.pools()) : [];
+          const seen = new Set();
+          for (const p of (pools || [])) {
+            const cid = p && (p.token || p.contract || p.contractId || p.poolId);
+            if (!cid || seen.has(cid)) continue;
+            seen.add(cid);
+            let info; try { info = await Chain.token(cid, holder); } catch { info = null; }
+            if (!info) continue;
+            let bal; try { bal = BigInt(info.holderBalance != null ? info.holderBalance : (info.balance != null ? info.balance : 0)); } catch { bal = 0n; }
+            if (bal <= 0n) continue;
+            const dec = Number(info.decimals || 0);
+            out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: info.symbol || 'TOKEN', decimals: dec, name: info.name || undefined, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
+          }
+        } catch { /* best-effort */ }
+        return out;
       },
 
       async getBalance(address) {

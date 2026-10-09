@@ -388,6 +388,11 @@
     const epMap = [
       ['#ep-eth', 'ethereum', 'rpcUrl'],
       ['#ep-base', 'base', 'rpcUrl'],
+      ['#ep-arb', 'arbitrum', 'rpcUrl'],
+      ['#ep-op', 'optimism', 'rpcUrl'],
+      ['#ep-poly', 'polygon', 'rpcUrl'],
+      ['#ep-bnb', 'bnb', 'rpcUrl'],
+      ['#ep-avax', 'avalanche', 'rpcUrl'],
       ['#ep-btc', 'bitcoin', 'esplora'],
       ['#ep-ltc', 'litecoin', 'esplora'],
       ['#ep-doge', 'dogecoin', 'esplora'],
@@ -396,6 +401,10 @@
       const el = $(sel);
       if (el) el.addEventListener('change', (e) => saveEndpoint(chain, key, e.target.value));
     }
+    // Alchemy indexer key (read-only) under chainEndpoints.alchemy.apiKey —
+    // shared across all Alchemy-backed EVM networks; enables ERC-20 auto-detect.
+    const alk = $('#ep-alchemy');
+    if (alk) alk.addEventListener('change', (e) => saveEndpoint('alchemy', 'apiKey', e.target.value));
   }
 
   // Pass-2 lifecycle: keep the multi-chain Wiring caches + the in-wallet agent
@@ -885,9 +894,15 @@
       const ep = (await Store.get('chainEndpoints')).chainEndpoints || {};
       if ($('#ep-eth')) $('#ep-eth').value = (ep.ethereum && ep.ethereum.rpcUrl) || '';
       if ($('#ep-base')) $('#ep-base').value = (ep.base && ep.base.rpcUrl) || '';
+      if ($('#ep-arb')) $('#ep-arb').value = (ep.arbitrum && ep.arbitrum.rpcUrl) || '';
+      if ($('#ep-op')) $('#ep-op').value = (ep.optimism && ep.optimism.rpcUrl) || '';
+      if ($('#ep-poly')) $('#ep-poly').value = (ep.polygon && ep.polygon.rpcUrl) || '';
+      if ($('#ep-bnb')) $('#ep-bnb').value = (ep.bnb && ep.bnb.rpcUrl) || '';
+      if ($('#ep-avax')) $('#ep-avax').value = (ep.avalanche && ep.avalanche.rpcUrl) || '';
       if ($('#ep-btc')) $('#ep-btc').value = (ep.bitcoin && ep.bitcoin.esplora) || '';
       if ($('#ep-ltc')) $('#ep-ltc').value = (ep.litecoin && ep.litecoin.esplora) || '';
       if ($('#ep-doge')) $('#ep-doge').value = (ep.dogecoin && ep.dogecoin.esplora) || '';
+      if ($('#ep-alchemy')) $('#ep-alchemy').value = (ep.alchemy && ep.alchemy.apiKey) || '';
       return;
     }
     show(name);

@@ -70,7 +70,7 @@
 
     add({
       name: 'get_address',
-      description: 'Return this wallet\'s address for a chain (block, ethereum, base, bitcoin, litecoin, dogecoin).',
+      description: 'Return this wallet\'s address for a chain (block, ethereum, base, arbitrum, optimism, polygon, bnb, avalanche, bitcoin, litecoin, dogecoin). All EVM chains share one address.',
       valueMoving: false,
       parameters: { type: 'object', properties: { chain: { type: 'string' } }, required: ['chain'] },
       run: (a) => need(ctx.getAddress, 'getAddress')(a.chain),
@@ -78,7 +78,7 @@
 
     add({
       name: 'get_balance',
-      description: 'Balances for a chain\'s account (native coin plus any imported tokens). Base units.',
+      description: 'Balances for a chain\'s account: native coin plus EVERY token the address holds (auto-detected and merged with the known list, non-zero first). Base units.',
       valueMoving: false,
       parameters: {
         type: 'object',

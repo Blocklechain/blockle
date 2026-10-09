@@ -56,5 +56,9 @@ class AppBlockSignerBridge implements BlockSignerBridge {
   }
 
   @override
+  Future<List<dynamic>> tokenHoldings(String address) =>
+      _chain.addressTokens(address);
+
+  @override
   Future<dynamic> submit(String raw) => _chain.submit(raw);
 }

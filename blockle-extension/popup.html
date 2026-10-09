@@ -271,9 +271,17 @@
           <div class="section-h" style="padding-left:0">Multi-chain endpoints</div>
           <label class="field"><span>Ethereum RPC</span><input type="text" id="ep-eth" class="mono" placeholder="https://ethereum-rpc.publicnode.com" /></label>
           <label class="field"><span>Base RPC</span><input type="text" id="ep-base" class="mono" placeholder="https://base-rpc.publicnode.com" /></label>
+          <label class="field"><span>Arbitrum RPC</span><input type="text" id="ep-arb" class="mono" placeholder="https://arbitrum-one-rpc.publicnode.com" /></label>
+          <label class="field"><span>Optimism RPC</span><input type="text" id="ep-op" class="mono" placeholder="https://optimism-rpc.publicnode.com" /></label>
+          <label class="field"><span>Polygon RPC</span><input type="text" id="ep-poly" class="mono" placeholder="https://polygon-bor-rpc.publicnode.com" /></label>
+          <label class="field"><span>BNB Chain RPC</span><input type="text" id="ep-bnb" class="mono" placeholder="https://bsc-rpc.publicnode.com" /></label>
+          <label class="field"><span>Avalanche RPC</span><input type="text" id="ep-avax" class="mono" placeholder="https://avalanche-c-chain-rpc.publicnode.com" /></label>
           <label class="field"><span>Bitcoin Esplora</span><input type="text" id="ep-btc" class="mono" placeholder="https://blockstream.info/api" /></label>
           <label class="field"><span>Litecoin Esplora</span><input type="text" id="ep-ltc" class="mono" placeholder="https://litecoinspace.org/api" /></label>
           <label class="field"><span>Dogecoin Esplora</span><input type="text" id="ep-doge" class="mono" placeholder="(no public default — supply one)" /></label>
+          <div class="section-h" style="padding-left:0">Token auto-detect (Alchemy)</div>
+          <label class="field"><span>Alchemy API key</span><input type="password" id="ep-alchemy" class="mono" placeholder="(optional — enables ERC-20 auto-detect)" autocomplete="off" /></label>
+          <p class="muted" style="margin:2px 0 0;font-size:11px">Read-only indexer key. Enables auto-detection of all ERC-20s you hold on Ethereum, Base, Arbitrum, Optimism and Polygon. Stored locally; never sent anywhere but Alchemy.</p>
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
@@ -458,6 +466,7 @@
     <script src="chains/block.js"></script>
     <script src="chains/evm.js"></script>
     <script src="chains/utxo.js"></script>
+    <script src="chains/discovery.js"></script>
     <script src="chains/registry.js"></script>
     <script src="accounts.js"></script>
     <script src="exchange-client.js"></script>

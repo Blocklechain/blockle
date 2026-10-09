@@ -127,6 +127,7 @@ ChainRegistry buildWiredRegistry({
     enabled: enabled,
     block: block,
     rpcBuilder: (url) => jsonRpc(url, send: send),
+    alchemyBuilder: (url) => jsonRpc(url, send: send),
     getBuilder: (base) => esploraGet(base, send: send),
     postBuilder: (base) => esploraPost(base, send: send),
   );

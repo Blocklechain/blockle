@@ -213,7 +213,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                     label: const Text('Send'),
                   ),
                 ),
-                if (chain == 'ethereum' || chain == 'base') ...[
+                if (kEvmChains.contains(chain)) ...[
                   const SizedBox(width: 10),
                   OutlinedButton.icon(
                     onPressed: () => _addTokenDialog(c, chain),
@@ -231,13 +231,32 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   Widget _balanceRow(Balance b) {
     final err = b.error != null;
+    final logo = b.asset.logo;
+    final isToken = b.asset.kind != 'native';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Text(b.asset.symbol,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-          if (b.asset.kind != 'native') ...[
+          if (isToken) ...[
+            CircleAvatar(
+              radius: 9,
+              backgroundColor: Bk.surface2,
+              foregroundImage: (logo != null && logo.isNotEmpty)
+                  ? NetworkImage(logo)
+                  : null,
+              child: Text(
+                  b.asset.symbol.isNotEmpty ? b.asset.symbol[0] : '?',
+                  style: const TextStyle(fontSize: 9, color: Bk.muted)),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Flexible(
+            child: Text(b.asset.symbol,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          ),
+          if (isToken) ...[
             const SizedBox(width: 6),
             const Text('token', style: TextStyle(color: Bk.muted, fontSize: 10)),
           ],
@@ -713,9 +732,76 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
           const SizedBox(height: 14),
           for (final chain in kDisplayChains)
             if (chain != 'block') _endpointTile(c, chain),
+          const SizedBox(height: 20),
+          const Text('Token auto-detect (Alchemy)',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          const Text(
+              'Paste a read-only Alchemy indexer URL (with key) per network to '
+              'auto-list every ERC-20 you hold. Off until set — no key is ever '
+              'logged. BNB Chain and Avalanche are not covered and use the known '
+              'token list.',
+              style: TextStyle(color: Bk.muted, fontSize: 12)),
+          const SizedBox(height: 8),
+          for (final chain in kAlchemyChains) _alchemyTile(c, chain),
         ],
       ),
     );
+  }
+
+  Widget _alchemyTile(MultichainController c, String chain) {
+    final on = c.alchemyEnabled(chain);
+    return Card(
+      child: ListTile(
+        title: Text(kChainLabels[chain] ?? chain),
+        subtitle: Text(on ? 'auto-detect ON' : 'auto-detect off (known list)',
+            style: TextStyle(
+                color: on ? Bk.good : Bk.muted, fontSize: 11)),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (on)
+              IconButton(
+                icon: const Icon(Icons.clear, size: 18, color: Bk.muted),
+                onPressed: () => c.setAlchemy(chain, null),
+              ),
+            IconButton(
+              icon: const Icon(Icons.key, size: 18, color: Bk.muted),
+              onPressed: () => _editAlchemyDialog(c, chain),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editAlchemyDialog(
+      MultichainController c, String chain) async {
+    final ctrl = TextEditingController(
+        text: c.effectiveEndpoint(chain).alchemyUrl ?? '');
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: Text('${kChainLabels[chain]} Alchemy URL'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+              labelText: 'Alchemy URL (with read-only key)',
+              hintText: 'https://<net>.g.alchemy.com/v2/<key>'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (res != true) return;
+    await c.setAlchemy(chain, ctrl.text.trim());
   }
 
   Widget _endpointTile(MultichainController c, String chain) {

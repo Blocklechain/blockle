@@ -49,11 +49,17 @@ class AssetRef:
     symbol: str
     decimals: int
     address: Optional[str] = None
+    name: Optional[str] = None
+    logo: Optional[str] = None
 
     def to_json(self) -> dict:
         d = {"chain": self.chain, "kind": self.kind, "symbol": self.symbol, "decimals": self.decimals}
         if self.address is not None:
             d["address"] = self.address
+        if self.name is not None:
+            d["name"] = self.name
+        if self.logo is not None:
+            d["logo"] = self.logo
         return d
 
 

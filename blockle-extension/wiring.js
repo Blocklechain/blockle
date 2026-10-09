@@ -89,6 +89,10 @@
     _registry = ChainRegistry.createRegistry({
       endpoints: mergedEndpoints(s.endpoints),
       tokens: mergedTokens(s.tokens),
+      // Alchemy indexer config (read-only key) for ERC-20 auto-detection. Lives
+      // under settings.chainEndpoints.alchemy ({ apiKey } shared, or per-network
+      // override). Auto-detect stays OFF until a key is present.
+      alchemy: (s.endpoints && s.endpoints.alchemy) || {},
       enabled: s.enabled || undefined,
       block: { wallet: Wallet, chain: global.Chain, explorer: 'https://blockle.org/tx/' },
     });
@@ -143,6 +147,46 @@
     return reg.get(chain).getBalance(acct.address, list);
   }
 
+  // getHoldings — the auto-detect balance view: native coin + EVERY token the
+  // address actually holds (adapter discovery), merged+deduped with the default
+  // list, non-zero balances first. Returns the same row shape as getBalance:
+  // [{ asset, confirmed, display, error? }]. Tokens discovered WITH a live
+  // balance skip the extra RPC read; default-list entries never discovered (e.g.
+  // zero balance, or a non-Alchemy chain) are queried via the adapter. When the
+  // caller passes an explicit `tokens` list we honor it verbatim (no discovery).
+  async function getHoldings(chain, tokensOverride) {
+    const acc = await accounts();
+    const reg = await registry();
+    const acct = await acc.accountFor(chain);
+    const adapter = reg.get(chain);
+    if (tokensOverride) return adapter.getBalance(acct.address, tokensOverride);
+
+    // Merge default list + discovered holdings (spam-filtered, non-zero first).
+    let merged = [];
+    try { merged = await reg.discoverTokens(chain, acct.address, { spamFilter: true }); }
+    catch { merged = reg.tokensFor(chain) || []; }
+
+    const known = merged.filter((t) => t.balance != null);  // already have balance
+    const toQuery = merged.filter((t) => t.balance == null); // owe an RPC read
+    // adapter.getBalance always returns [native, ...tokenRows]; query the rest.
+    const rows = await adapter.getBalance(acct.address, toQuery);
+    const nativeRow = rows[0];
+    const queriedRows = rows.slice(1);
+    const knownRows = known.map((t) => ({
+      asset: t,
+      confirmed: String(t.balance),
+      display: t.display != null ? t.display : t.balance,
+    }));
+    const tokenRows = queriedRows.concat(knownRows);
+    // non-zero balances first (native stays pinned at the top).
+    tokenRows.sort((a, b) => {
+      const av = nonZero(a) ? 1 : 0, bv = nonZero(b) ? 1 : 0;
+      return bv - av;
+    });
+    return nativeRow ? [nativeRow, ...tokenRows] : tokenRows;
+  }
+  function nonZero(row) { try { return BigInt(row.confirmed || '0') > 0n; } catch { return false; } }
+
   async function buildSend(chain, req) {
     const acc = await accounts();
     const reg = await registry();
@@ -162,7 +206,8 @@
     for (const id of reg.enabled()) {
       try {
         const acct = await acc.accountFor(id);
-        const bals = await reg.get(id).getBalance(acct.address, reg.tokensFor(id));
+        // auto-detect view: native + every held token, merged with the known list
+        const bals = await getHoldings(id);
         out.push({ chain: id, address: acct.address, balances: bals });
       } catch (e) {
         out.push({ chain: id, error: String(e.message || e) });
@@ -417,7 +462,9 @@
   function agentCtx() {
     return {
       getAddress: async (chain) => (await accountFor(chain)).address,
-      getBalance,
+      // Agent balance view = the auto-detect holdings (native + every held
+      // token). An explicit `tokens` arg is still honored verbatim.
+      getBalance: (chain, tokens) => getHoldings(chain, tokens),
       buildSend,
       broadcast,
       listAssets,
@@ -450,7 +497,7 @@
   global.Wiring = {
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
-    accountFor, getBalance, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
+    accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
     amm, launchToken,
     agentCtx, ensureAgentDeps, reset,
   };

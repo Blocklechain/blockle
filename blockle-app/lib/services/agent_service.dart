@@ -176,10 +176,9 @@ class AgentService {
     return AgentContext(
       getAddress: (chain) async => (await accounts.accountFor(chain)).address,
       getBalance: (chain, [tokens]) async {
-        final acct = await accounts.accountFor(chain);
-        final bals = await registry
-            .get(chain)
-            .getBalance(acct.address, tokens: registry.tokensFor(chain));
+        // Native + curated list MERGED with auto-detected holdings (SPL /
+        // BLOCK-20 / ERC-20), deduped, non-zero first.
+        final bals = await accounts.balances(chain);
         return [
           for (final b in bals)
             {

@@ -11,13 +11,19 @@
   'use strict';
 
   const CHAIN_META = {
-    block:    { name: 'BLOCK',    sym: 'BLOCK', pq: true,  addrPrefix: 'block1' },
-    ethereum: { name: 'Ethereum', sym: 'ETH',   pq: false },
-    base:     { name: 'Base',     sym: 'ETH',   pq: false },
-    bitcoin:  { name: 'Bitcoin',  sym: 'BTC',   pq: false },
-    litecoin: { name: 'Litecoin', sym: 'LTC',   pq: false },
-    dogecoin: { name: 'Dogecoin', sym: 'DOGE',  pq: false },
+    block:     { name: 'BLOCK',       sym: 'BLOCK', pq: true,  addrPrefix: 'block1' },
+    ethereum:  { name: 'Ethereum',    sym: 'ETH',   pq: false },
+    base:      { name: 'Base',        sym: 'ETH',   pq: false },
+    arbitrum:  { name: 'Arbitrum One', sym: 'ETH',  pq: false },
+    optimism:  { name: 'Optimism',    sym: 'ETH',   pq: false },
+    polygon:   { name: 'Polygon',     sym: 'POL',   pq: false },
+    bnb:       { name: 'BNB Chain',   sym: 'BNB',   pq: false },
+    avalanche: { name: 'Avalanche',   sym: 'AVAX',  pq: false },
+    bitcoin:   { name: 'Bitcoin',     sym: 'BTC',   pq: false },
+    litecoin:  { name: 'Litecoin',    sym: 'LTC',   pq: false },
+    dogecoin:  { name: 'Dogecoin',    sym: 'DOGE',  pq: false },
   };
+  const EVM_CHAINS = new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bnb', 'avalanche']);
 
   let UI = null;              // BlockleUI
   let sendState = null;       // { chain, asset, built }
@@ -85,11 +91,18 @@
     if (!balEl) return;
     balEl.innerHTML = '<small class="muted">loading balance…</small>';
     try {
-      const bals = await Wiring.getBalance(id);
+      // auto-detect view: native + every token this address actually holds,
+      // merged with the known list, non-zero first (getHoldings does discovery).
+      const bals = (Wiring.getHoldings ? await Wiring.getHoldings(id) : await Wiring.getBalance(id));
       balEl.innerHTML = bals.map((b) => {
-        const sym = (b.asset && b.asset.symbol) || '?';
+        const a = b.asset || {};
+        const sym = a.symbol || '?';
         const disp = b.display != null ? b.display : '—';
-        return `<div class="mc-bal-row"><span>${esc(sym)}</span><b class="mono">${esc(disp)}</b></div>`;
+        const logo = a.logo
+          ? `<img class="mc-logo" src="${esc(a.logo)}" alt="" width="14" height="14" style="border-radius:50%;vertical-align:-2px;margin-right:4px" onerror="this.remove()"/>`
+          : '';
+        const title = a.name ? ` title="${esc(a.name)}"` : '';
+        return `<div class="mc-bal-row"${title}><span>${logo}${esc(sym)}</span><b class="mono">${esc(disp)}</b></div>`;
       }).join('');
     } catch (e) {
       balEl.innerHTML = '<small class="muted">balance unavailable</small>';
@@ -149,7 +162,7 @@
     const chain = sendState.chain;
     // decimals: token decimals, else native (BLOCK/BTC/LTC/DOGE=8, EVM native=18)
     const dec = asset ? Number(asset.decimals || 0)
-      : (chain === 'ethereum' || chain === 'base') ? 18 : 8;
+      : EVM_CHAINS.has(chain) ? 18 : 8;
     const amountBase = toBase(amtHuman, dec);
 
     const btn = $('#mc-review'); btn.disabled = true; btn.textContent = 'Building…';
@@ -191,7 +204,7 @@
 
   // ---- add token (EVM) ------------------------------------------------------
   async function addToken(chain) {
-    if (chain !== 'ethereum' && chain !== 'base') { UI.toast('Token import is EVM-only here'); return; }
+    if (!EVM_CHAINS.has(chain)) { UI.toast('Token import is EVM-only here'); return; }
     const address = (prompt('ERC-20 contract address (0x…):') || '').trim();
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) { if (address) alert('Not a valid 0x address.'); return; }
     const symbol = (prompt('Token symbol (e.g. DAI):') || '').trim();
@@ -229,8 +242,9 @@
     } catch { return String(baseStr); }
   }
   function fmtFee(chain, feeBase) {
-    if (chain === 'ethereum' || chain === 'base') return fmt(feeBase, 18) + ' ETH';
-    const m = CHAIN_META[chain]; return fmt(feeBase, 8) + ' ' + (m ? m.sym : '');
+    const m = CHAIN_META[chain];
+    if (EVM_CHAINS.has(chain)) return fmt(feeBase, 18) + ' ' + (m ? m.sym : 'ETH');
+    return fmt(feeBase, 8) + ' ' + (m ? m.sym : '');
   }
 
   global.AccountsUI = { init, enter, openSend, addToken };

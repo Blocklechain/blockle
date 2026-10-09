@@ -13,16 +13,56 @@ import 'utxo.dart';
 
 /// Per-chain endpoint configuration.
 class EndpointCfg {
-  const EndpointCfg({this.rpcUrl, this.esplora, this.chainId});
+  const EndpointCfg({this.rpcUrl, this.esplora, this.chainId, this.alchemyUrl});
   final String? rpcUrl;
   final String? esplora;
   final int? chainId;
+
+  /// Alchemy indexer base URL *including* the read-only API key, used for EVM
+  /// ERC-20 auto-detect. CONFIG only; null => auto-detect OFF (known-list
+  /// fallback). Never hardcoded, never logged.
+  final String? alchemyUrl;
 }
+
+/// The EVM networks this wallet supports — all driven by the SAME EvmAdapter and
+/// the SAME secp256k1 account (one address across every EVM chain, m/44'/60').
+/// `alchemy` = whether Alchemy's getTokenBalances enhanced API covers the chain
+/// (ethereum/base/arbitrum/optimism/polygon). BNB + Avalanche are not, so they
+/// fall back to native + the curated default token list.
+class EvmNet {
+  const EvmNet(this.id, this.chainId, this.symbol, this.explorer,
+      {this.alchemy = false});
+  final String id;
+  final int chainId;
+  final String symbol;
+  final String explorer;
+  final bool alchemy;
+}
+
+const List<EvmNet> evmNets = [
+  EvmNet('ethereum', 1, 'ETH', 'https://etherscan.io/tx/', alchemy: true),
+  EvmNet('base', 8453, 'ETH', 'https://basescan.org/tx/', alchemy: true),
+  EvmNet('arbitrum', 42161, 'ETH', 'https://arbiscan.io/tx/', alchemy: true),
+  EvmNet('optimism', 10, 'ETH', 'https://optimistic.etherscan.io/tx/',
+      alchemy: true),
+  EvmNet('polygon', 137, 'POL', 'https://polygonscan.com/tx/', alchemy: true),
+  EvmNet('bnb', 56, 'BNB', 'https://bscscan.com/tx/'),
+  EvmNet('avalanche', 43114, 'AVAX', 'https://snowtrace.io/tx/'),
+];
 
 const Map<String, EndpointCfg> defaultEndpoints = {
   'ethereum':
       EndpointCfg(rpcUrl: 'https://ethereum-rpc.publicnode.com', chainId: 1),
   'base': EndpointCfg(rpcUrl: 'https://base-rpc.publicnode.com', chainId: 8453),
+  'arbitrum': EndpointCfg(
+      rpcUrl: 'https://arbitrum-one-rpc.publicnode.com', chainId: 42161),
+  'optimism':
+      EndpointCfg(rpcUrl: 'https://optimism-rpc.publicnode.com', chainId: 10),
+  'polygon': EndpointCfg(
+      rpcUrl: 'https://polygon-bor-rpc.publicnode.com', chainId: 137),
+  'bnb': EndpointCfg(rpcUrl: 'https://bsc-rpc.publicnode.com', chainId: 56),
+  'avalanche': EndpointCfg(
+      rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114),
   'bitcoin': EndpointCfg(esplora: 'https://blockstream.info/api'),
   'litecoin': EndpointCfg(esplora: 'https://litecoinspace.org/api'),
   'dogecoin': EndpointCfg(), // user must supply (no public Esplora default)
@@ -53,6 +93,76 @@ final Map<String, List<AssetRef>> defaultTokens = {
         decimals: 6,
         address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
   ],
+  'arbitrum': const [
+    AssetRef(
+        chain: 'arbitrum',
+        kind: 'erc20',
+        symbol: 'USDC',
+        decimals: 6,
+        address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'),
+    AssetRef(
+        chain: 'arbitrum',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9'),
+  ],
+  'optimism': const [
+    AssetRef(
+        chain: 'optimism',
+        kind: 'erc20',
+        symbol: 'USDC',
+        decimals: 6,
+        address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85'),
+    AssetRef(
+        chain: 'optimism',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58'),
+  ],
+  'polygon': const [
+    AssetRef(
+        chain: 'polygon',
+        kind: 'erc20',
+        symbol: 'USDC',
+        decimals: 6,
+        address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'),
+    AssetRef(
+        chain: 'polygon',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F'),
+  ],
+  'bnb': const [
+    AssetRef(
+        chain: 'bnb',
+        kind: 'erc20',
+        symbol: 'USDC',
+        decimals: 18,
+        address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'),
+    AssetRef(
+        chain: 'bnb',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 18,
+        address: '0x55d398326f99059fF775485246999027B3197955'),
+  ],
+  'avalanche': const [
+    AssetRef(
+        chain: 'avalanche',
+        kind: 'erc20',
+        symbol: 'USDC',
+        decimals: 6,
+        address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'),
+    AssetRef(
+        chain: 'avalanche',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7'),
+  ],
 };
 
 class ChainRegistry {
@@ -77,6 +187,7 @@ class ChainRegistry {
     List<String>? enabled,
     BlockSignerBridge? block,
     JsonRpcFn Function(String url)? rpcBuilder,
+    JsonRpcFn Function(String url)? alchemyBuilder,
     HttpGetFn Function(String base)? getBuilder,
     HttpPostFn Function(String base)? postBuilder,
   }) {
@@ -84,34 +195,40 @@ class ChainRegistry {
     final tk = {...defaultTokens, ...?tokens};
     final enabledSet = {
       ...(enabled ??
-          ['block', 'ethereum', 'base', 'bitcoin', 'litecoin', 'dogecoin', 'solana']),
+          [
+            'block',
+            for (final n in evmNets) n.id,
+            'bitcoin',
+            'litecoin',
+            'dogecoin',
+            'solana'
+          ]),
       'block', // BLOCK is always enabled
     };
 
     JsonRpcFn? rpcFor(String? url) =>
         (rpcBuilder != null && url != null) ? rpcBuilder(url) : null;
+    JsonRpcFn? alchemyFor(String? url) =>
+        (alchemyBuilder != null && url != null) ? alchemyBuilder(url) : null;
     HttpGetFn? getFor(String? base) =>
         (getBuilder != null && base != null) ? getBuilder(base) : null;
     HttpPostFn? postFor(String? base) =>
         (postBuilder != null && base != null) ? postBuilder(base) : null;
 
     final adapters = <String, ChainAdapter>{};
-    adapters['ethereum'] = EvmAdapter(
-      id: 'ethereum',
-      chainId: ep['ethereum']?.chainId ?? 1,
-      symbol: 'ETH',
-      rpcUrl: ep['ethereum']?.rpcUrl,
-      rpc: rpcFor(ep['ethereum']?.rpcUrl),
-      explorer: 'https://etherscan.io/tx/',
-    );
-    adapters['base'] = EvmAdapter(
-      id: 'base',
-      chainId: ep['base']?.chainId ?? 8453,
-      symbol: 'ETH',
-      rpcUrl: ep['base']?.rpcUrl,
-      rpc: rpcFor(ep['base']?.rpcUrl),
-      explorer: 'https://basescan.org/tx/',
-    );
+    for (final n in evmNets) {
+      final cfg = ep[n.id];
+      adapters[n.id] = EvmAdapter(
+        id: n.id,
+        chainId: cfg?.chainId ?? n.chainId,
+        symbol: n.symbol,
+        rpcUrl: cfg?.rpcUrl,
+        rpc: rpcFor(cfg?.rpcUrl),
+        alchemyUrl: n.alchemy ? cfg?.alchemyUrl : null,
+        alchemyRpc: n.alchemy ? alchemyFor(cfg?.alchemyUrl) : null,
+        explorer: n.explorer,
+      );
+    }
     adapters['bitcoin'] = UtxoAdapter('bitcoin',
         esplora: ep['bitcoin']?.esplora,
         httpGet: getFor(ep['bitcoin']?.esplora),

@@ -146,6 +146,26 @@ class SolanaAdapter:
                 out.append(Balance(asset=t, confirmed="0", display="—", error=str(e)))
         return out
 
+    def discover_tokens(self, address: str, known=None, limit=None):
+        """Enumerate every SPL mint this owner holds via
+        ``getTokenAccountsByOwner`` (classic + Token-2022 programs), natively —
+        no extra provider. Zero balances are dropped."""
+        from .discovery import (TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+                                parse_spl_accounts, spl_rows_to_balances)
+        if not address:
+            return []
+        rows = []
+        for program in (TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID):
+            try:
+                res = self._rpc("getTokenAccountsByOwner",
+                                [address, {"programId": program}, {"encoding": "jsonParsed"}])
+            except Exception:
+                continue
+            rows.extend(parse_spl_accounts(res))
+        if limit:
+            rows = rows[:limit]
+        return spl_rows_to_balances("solana", rows, known=known)
+
     def sign_tx(self, account: DerivedAccount, tx) -> BuiltTx:
         if self._root is None:
             raise RuntimeError("locked")

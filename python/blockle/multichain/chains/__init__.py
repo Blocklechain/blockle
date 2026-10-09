@@ -8,10 +8,12 @@ chain-specific sign paths). Mirrors ``blockle-extension/chains/*.js`` and
 
 from __future__ import annotations
 
-from . import block, evm, registry, solana, utxo
+from . import block, discovery, evm, registry, solana, utxo
 from .chain_adapter import (AssetRef, Balance, BroadcastResult, BuiltTx,
                             ChainAdapter, DerivedAccount, RootSecret, as_seed,
                             format_units)
+from .discovery import (is_spam, merge_balances, parse_alchemy_balances,
+                        parse_alchemy_metadata, parse_spl_accounts)
 from .evm import EvmAdapter, create_evm_adapter
 from .registry import ChainRegistry, create_registry
 from .solana import SolanaAdapter, create_solana_adapter
@@ -26,5 +28,7 @@ __all__ = [
     "SolanaAdapter", "create_solana_adapter",
     "BlockAdapter", "create_block_adapter",
     "ChainRegistry", "create_registry",
-    "block", "evm", "solana", "utxo", "registry",
+    "merge_balances", "is_spam", "parse_spl_accounts",
+    "parse_alchemy_balances", "parse_alchemy_metadata",
+    "block", "evm", "solana", "utxo", "registry", "discovery",
 ]

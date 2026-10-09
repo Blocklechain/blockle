@@ -48,6 +48,8 @@ class FakeBlockBridge implements BlockSignerBridge {
           List<dynamic> utxos, String to, BigInt amount, BigInt fee) async =>
       {'raw': '', 'txid': ''};
   @override
+  Future<List<dynamic>> tokenHoldings(String address) async => const [];
+  @override
   Future<dynamic> submit(String raw) async => {};
 }
 
