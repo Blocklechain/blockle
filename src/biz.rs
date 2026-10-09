@@ -1205,7 +1205,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {site_jsonld}{head_extra}
 <title>{full_title}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
@@ -1328,7 +1328,8 @@ fn page_home(reg: &Registry) -> String {
     };
     let dirpools = network_stats(reg)["total_pools"].to_string();
     let body = format!(
-        r##"<div class="hero">
+        r##"<a href="https://exchange.blockle.org" style="display:block;margin:0 0 20px;padding:13px 18px;border-radius:12px;background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;text-decoration:none;font-weight:600;text-align:center;line-height:1.4">🚀 New — the <b>Blockle Exchange</b>: non-custodial cross-chain swaps for BLOCK · ETH · SOL · USDC · USDT, self-serve listings and agent-first x402. <span style="text-decoration:underline">Trade now →</span></a>
+<div class="hero">
 <img class="herologo" src="/logo.png" alt="Blockle logo">
 <h1>The universal <span class="grad">auxiliary chain.</span></h1>
 <p class="lede">BLOCK is merge-mined by every major ASIC algorithm: point your SHA-256, Scrypt, Equihash, X11, kHeavyHash, Blake or Eaglesong hardware at a Blockle pool and every share you mine works for the parent chain <i>and</i> for BLOCK — a post-quantum L1 with shielded transactions and the Blockle VM.</p>
