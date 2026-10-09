@@ -74,7 +74,9 @@ function createApp(overrides = {}) {
         maxTimeoutSeconds: cfg.maxTimeoutSeconds,
       }),
     ];
-    return res.status(402).json(challengeBody(requirements, "payment required"));
+    const ch = challengeBody(requirements, "payment required");
+    res.set("PAYMENT-REQUIRED", ch.header);
+    return res.status(402).json(ch.body);
   }
 
   // ---- core priced-request handler (402 → verify → screen → settle → act) --
@@ -108,7 +110,9 @@ function createApp(overrides = {}) {
 
     const xPayment = req.header("X-PAYMENT");
     if (!xPayment) {
-      return res.status(402).json(challengeBody(requirements, "payment required"));
+      const ch = challengeBody(requirements, "payment required");
+      res.set("PAYMENT-REQUIRED", ch.header);
+      return res.status(402).json(ch.body);
     }
 
     const id = paymentIdFromHeader(xPayment);
@@ -168,7 +172,11 @@ function createApp(overrides = {}) {
         ledger.markFailed(id, vs.reason);
         if (vs.denied) return res.status(403).json({ error: vs.reason });
         // payment invalid/unsettled → re-challenge so the client can pay again
-        return res.status(402).json(challengeBody(requirements, vs.reason));
+        {
+          const ch = challengeBody(requirements, vs.reason);
+          res.set("PAYMENT-REQUIRED", ch.header);
+          return res.status(402).json(ch.body);
+        }
       }
 
       ledger.markSettled(id, { payer: vs.payer, settleTxhash: vs.txHash });

@@ -91,12 +91,13 @@ test("http: unpaid buy returns a 402 with official x402 requirements", async () 
   try {
     const res = await fetch(`http://127.0.0.1:${port}/x402/buy?to=block1abc&usdc=10`);
     assert.equal(res.status, 402);
+    assert.ok(res.headers.get("payment-required"), "x402 v2 PAYMENT-REQUIRED header present");
     const body = await res.json();
-    assert.equal(body.x402Version, 1);
+    assert.equal(body.x402Version, 2); // x402 v2
     assert.ok(Array.isArray(body.accepts) && body.accepts.length === 1);
     const r = body.accepts[0];
     assert.equal(r.scheme, "exact");
-    assert.equal(r.network, "base-sepolia");
+    assert.equal(r.network, "eip155:84532"); // CAIP-2 for base-sepolia
     assert.equal(r.maxAmountRequired, "10000000"); // $10 → 10 USDC (6dp)
     assert.equal(r.payTo, "0xReserveTest");
     assert.ok(r.asset && r.extra && r.extra.name, "USDC asset + eip712 domain present");

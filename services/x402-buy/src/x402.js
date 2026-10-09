@@ -24,6 +24,16 @@ const { useFacilitator } = require("x402/verify");
 
 const X402_VERSION = x402Versions[x402Versions.length - 1] || 1;
 
+// x402scan / x402 v2 require CAIP-2 network ids (colon form). The x402 npm SDK
+// still speaks the short names (base-sepolia/base) to getDefaultAsset + the
+// facilitator, so we present CAIP-2 externally and normalize back internally.
+const NAME_TO_CAIP = { "base-sepolia": "eip155:84532", base: "eip155:8453" };
+const CAIP_TO_NAME = Object.fromEntries(Object.entries(NAME_TO_CAIP).map(([k, v]) => [v, k]));
+const toCaip2 = (net) => NAME_TO_CAIP[net] || net;
+const fromCaip2 = (net) => CAIP_TO_NAME[net] || net;
+/** base64(JSON) value for the x402 v2 `PAYMENT-REQUIRED` response header. */
+const paymentRequiredHeader = (body) => Buffer.from(JSON.stringify(body)).toString("base64");
+
 function makeFacilitator(facilitatorUrl) {
   return useFacilitator({ url: facilitatorUrl });
 }
@@ -57,13 +67,19 @@ function buildRequirements(opts) {
   };
 }
 
-/** The HTTP 402 challenge body (official shape via the SDK). */
+/**
+ * The HTTP 402 challenge body in x402 v2 shape: x402Version:2 and accepts[]
+ * with CAIP-2 network ids. Returns { body, header } — set `header` as the
+ * `PAYMENT-REQUIRED` response header (base64 JSON) alongside the JSON body.
+ */
 function challengeBody(accepts, errorMsg) {
-  return toJsonSafe({
-    x402Version: X402_VERSION,
+  const v2accepts = accepts.map((a) => ({ ...a, network: toCaip2(a.network) }));
+  const body = toJsonSafe({
+    x402Version: 2,
     error: errorMsg || "payment required",
-    accepts,
+    accepts: v2accepts,
   });
+  return { body, header: paymentRequiredHeader(body) };
 }
 
 /**
@@ -83,6 +99,10 @@ async function verifyAndSettle({ facilitatorUrl, xPaymentHeader, requirements, .
   } catch (e) {
     return { ok: false, reason: `malformed X-PAYMENT header: ${e.message}` };
   }
+
+  // client paid against the CAIP-2 network we advertised; normalize back to the
+  // short name the SDK facilitator + requirements use.
+  if (payment && payment.network) payment.network = fromCaip2(payment.network);
 
   // match the requirement the client paid against (scheme+network+asset)
   const matched =
@@ -126,4 +146,7 @@ module.exports = {
   challengeBody,
   verifyAndSettle,
   makeFacilitator,
+  toCaip2,
+  fromCaip2,
+  paymentRequiredHeader,
 };
