@@ -37,6 +37,32 @@
     }
     const explorer = (chain, txid) => (typeof ctx.explorerTx === 'function' ? ctx.explorerTx(chain, txid) : undefined);
 
+    // ---- venue routing helpers (used by `swap`) ------------------------------
+    // Which venue prices + builds the swap. The MODEL may hint `venue`/`chain`,
+    // but it NEVER hands us a raw tx: the chosen venue builds the tx/intent and a
+    // ChainAdapter (via ctx.executeSwap) signs + broadcasts it.
+    function pickVenue(venues, a) {
+      if (a.venue) {
+        const v = venues.get(a.venue);
+        if (!v) throw new Error('unknown venue: ' + a.venue);
+        return v;
+      }
+      if (a.chain && typeof venues.forChain === 'function') {
+        const list = venues.forChain(a.chain);
+        if (list && list.length) return list[0];
+      }
+      return venues.get('blockle') || venues.list()[0];
+    }
+    // EVM/Solana venues build a tx bound to the taker address; resolve it here.
+    async function accountForVenue(venue, a) {
+      if (!venue || venue.id === 'blockle' || venue.kind === 'native') return undefined;
+      let chain = a.chain;
+      if (!chain && Array.isArray(venue.chains) && venue.chains.length) chain = venue.chains[0];
+      if (!chain) return undefined;
+      const address = await need(ctx.getAddress, 'getAddress')(chain);
+      return { address, chain };
+    }
+
     const tools = [];
     const add = (t) => { tools.push(t); };
 
@@ -150,26 +176,65 @@
 
     add({
       name: 'swap',
-      description: 'Cross-chain atomic swap via the non-custodial exchange: sign in, take/post the best order, drive the HTLC legs. amount is base units of `from`.',
+      description: 'Swap one asset for another, routed through the best VENUE — the native Blockle AMM/exchange, an EVM DEX aggregator (0x/1inch-style), or Jupiter on Solana. A non-bypassable 0.05% agent fee is sent on-chain to the treasury for the trade\'s chain as part of the SAME confirmed action. amount is base units of `from`.',
       valueMoving: true,
       parameters: {
         type: 'object',
         properties: {
           from: { type: 'string' }, to: { type: 'string' },
           amount: { type: 'string' }, slippage: { type: 'number' },
+          chain: { type: 'string', description: 'optional chain hint for the venue (e.g. base, ethereum, solana)' },
+          venue: { type: 'string', enum: ['blockle', 'evmdex', 'jupiter'], description: 'optional venue id; omit to auto-route' },
         },
         required: ['from', 'to', 'amount'],
       },
       async prepare(a) {
-        const ex = ctx.exchange || {};
-        let q = null;
-        if (typeof ex.quote === 'function') { try { q = await ex.quote(a.from, a.to, String(a.amount), { slippage: a.slippage }); } catch (_) {} }
+        const venues = ctx.venues;
+
+        // Fallback: no venue registry wired -> drive the non-custodial exchange
+        // directly (keeps older builds working; no external-DEX fee skim there).
+        if (!venues || typeof venues.list !== 'function') {
+          const ex = ctx.exchange || {};
+          let q = null;
+          if (typeof ex.quote === 'function') { try { q = await ex.quote(a.from, a.to, String(a.amount), { slippage: a.slippage }); } catch (_) {} }
+          const usd = await usdOf(a.from, a.amount);
+          return {
+            summary: { action: 'swap', from: a.from, to: a.to, amount: String(a.amount), slippage: a.slippage, quote: q },
+            value: { asset: a.from, amount: String(a.amount), usd },
+            commit: () => need(ex.swap, 'exchange.swap').call(ex, a.from, a.to, String(a.amount), { slippage: a.slippage }),
+          };
+        }
+
+        // Route through a venue: quote + build (NOT the model's raw tx). buildSwap
+        // also resolves the mandatory 0.05% fee + its on-chain transfer; if the
+        // trade's chain has no treasury address it THROWS here -> fail closed.
+        const venue = pickVenue(venues, a);
+        const account = await accountForVenue(venue, a);
+        const built = await venue.buildSwap({
+          from: a.from, to: a.to, amount: String(a.amount), slippage: a.slippage, chain: a.chain, account,
+        });
+        const fee = built.fee;
+        const feeXfer = built.feeTransfer;
+        if (!fee || !feeXfer || !feeXfer.to || feeXfer.amount == null) {
+          throw new Error('swap refused: venue did not produce a routable 0.05% agent fee (fail closed)');
+        }
         const usd = await usdOf(a.from, a.amount);
-        const summary = { action: 'swap', from: a.from, to: a.to, amount: String(a.amount), slippage: a.slippage, quote: q };
+        const feeUsd = await usdOf(fee.asset || a.from, fee.amount);
+        const summary = {
+          action: 'swap', venue: venue.id, chain: built.chain,
+          from: built.from, to: built.to,
+          amount: String(built.amountIn != null ? built.amountIn : a.amount),
+          amountOut: built.amountOut, minOut: built.minOut, slippage: a.slippage,
+          fee: String(fee.amount), feeAsset: fee.asset, feeBps: fee.bps, feeTo: feeXfer.to,
+        };
         return {
           summary,
           value: { asset: a.from, amount: String(a.amount), usd },
-          commit: () => need(ex.swap, 'exchange.swap').call(ex, a.from, a.to, String(a.amount), { slippage: a.slippage }),
+          commit: () => need(ctx.executeSwap, 'executeSwap')(built),
+          // the mandatory agent fee, part of this same gated action (see runner):
+          fee: { bps: fee.bps, chain: fee.chain, asset: fee.asset, amount: String(fee.amount), treasury: feeXfer.to },
+          feeValue: { asset: fee.asset || a.from, amount: String(fee.amount), usd: feeUsd },
+          commitFee: () => need(ctx.sendFee, 'sendFee')(feeXfer),
         };
       },
     });
@@ -215,7 +280,7 @@
 
     add({
       name: 'buy_block',
-      description: 'Buy BLOCK with USDC over the x402 rail. usdc is base units (6 dp). Delivered to this wallet.',
+      description: 'Buy BLOCK with USDC over the x402 rail. usdc is base units (6 dp). Delivered to this wallet. When the seller returns an x402 payment challenge, the wallet settles it by signing a USDC transfer on Base/Ethereum.',
       valueMoving: true,
       parameters: { type: 'object', properties: { usdc: { type: 'string' } }, required: ['usdc'] },
       async prepare(a) {
@@ -223,7 +288,27 @@
         return {
           summary: { action: 'buy_block', usdc: String(a.usdc), usdEquivalent: usd },
           value: { asset: 'USDC', amount: String(a.usdc), usd },
-          commit: () => need(ctx.exchange && ctx.exchange.buyBlock, 'exchange.buyBlock').call(ctx.exchange, String(a.usdc)),
+          commit: async () => {
+            const ex = ctx.exchange || {};
+            const buy = need(ex.buyBlock, 'exchange.buyBlock');
+            const first = await buy.call(ex, String(a.usdc));
+            if (!first || !first.paymentRequired) return first;
+            // x402 settlement is now possible: the wallet can sign EVM/USDC. Pay the
+            // challenge on Base/Ethereum, then retry with the proof. HONEST: if we
+            // cannot resolve EVM pay details, surface the challenge unchanged — we
+            // never fabricate a receipt.
+            if (typeof ctx.payX402Usdc !== 'function') return first;
+            let pay = null;
+            try { pay = await ctx.payX402Usdc(first.challenge); } catch (_) { pay = null; }
+            if (!pay || !pay.paymentTxid) return first;
+            let settled = null;
+            try { settled = await buy.call(ex, String(a.usdc), undefined, { paymentTxid: pay.paymentTxid, payment: pay }); } catch (_) {}
+            return {
+              paid: true, paymentTxid: pay.paymentTxid, chain: pay.chain,
+              explorer: explorer(pay.chain, pay.paymentTxid),
+              settlement: settled, challenge: settled ? undefined : first.challenge,
+            };
+          },
         };
       },
     });

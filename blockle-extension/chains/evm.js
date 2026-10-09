@@ -19,6 +19,9 @@
 
   const ERC20_TRANSFER = 'a9059cbb';   // transfer(address,uint256)
   const ERC20_BALANCEOF = '70a08231';  // balanceOf(address)
+  const ERC20_APPROVE = '095ea7b3';    // approve(address,uint256)
+  const ERC20_ALLOWANCE = 'dd62ed3e';  // allowance(address,address)
+  const MAX_UINT256 = (1n << 256n) - 1n;
 
   function pad32(hexNo0x) { return hexNo0x.replace(/^0x/, '').toLowerCase().padStart(64, '0'); }
   function bigToMinHex(v) { let h = BigInt(v).toString(16); return h === '0' ? '' : (h.length % 2 ? '0' + h : h); }
@@ -30,6 +33,15 @@
   }
   function erc20BalanceOfData(addr) {
     return '0x' + ERC20_BALANCEOF + pad32(addr);
+  }
+  // approve(spender, amount) — grant a DEX router allowance over an ERC-20.
+  // amount omitted => max (unlimited) approval.
+  function erc20ApproveData(spender, amount) {
+    const amt = (amount == null) ? MAX_UINT256 : BigInt(amount);
+    return '0x' + ERC20_APPROVE + pad32(spender) + pad32(amt.toString(16));
+  }
+  function erc20AllowanceData(owner, spender) {
+    return '0x' + ERC20_ALLOWANCE + pad32(owner) + pad32(spender);
   }
 
   // RLP item from a BigInt-ish numeric field (minimal big-endian, 0 -> empty)
@@ -184,6 +196,67 @@
         return { chain: id, raw, txid, fee, summary: req };
       },
 
+      // Sign an ARBITRARY EVM transaction {to, data, value?, gas?} — this is
+      // what a DEX router call (0x/1inch/Uniswap) requires. Same EIP-1559
+      // signer + RFC6979 ECDSA as buildSend; buildSend stays intact above.
+      // req: {to, data, value?(base, dec/hex), gas?/gasLimit?, feeRate?(maxFeePerGas),
+      //       maxPriorityFeePerGas?, nonce?}. Returns {chain, raw, txid, fee, summary}.
+      async signArbitraryTx(account, req) {
+        if (!rootSeed) throw new Error('locked');
+        if (!req || !req.to) throw new Error('signArbitraryTx: missing to');
+        const node = deriveNode(account.index);
+        const nonce = (req.nonce != null)
+          ? req.nonce
+          : await rpc('eth_getTransactionCount', [account.address, 'pending']);
+        let maxFee = req.feeRate, maxPrio = req.maxPriorityFeePerGas;
+        if (!maxFee) {
+          const gp = await rpc('eth_gasPrice', []);
+          maxFee = numToHex(BigInt(gp) * 2n);
+          maxPrio = maxPrio || numToHex(BigInt(gp));
+        }
+        let gasLimit = req.gas || req.gasLimit;
+        if (!gasLimit) {
+          // estimate for router calls; fall back to a safe default on failure
+          try {
+            gasLimit = await rpc('eth_estimateGas', [{
+              from: account.address, to: req.to,
+              data: req.data || '0x',
+              value: req.value ? numToHex(BigInt(req.value)) : '0x0',
+            }]);
+          } catch { gasLimit = '0x493e0'; /* 300000 */ }
+        }
+        const tx = {
+          chainId, nonce: BigInt(nonce),
+          maxPriorityFeePerGas: BigInt(maxPrio || maxFee),
+          maxFeePerGas: BigInt(maxFee),
+          gasLimit: BigInt(gasLimit),
+          to: req.to,
+          value: BigInt(req.value || 0),
+          data: req.data || '0x',
+        };
+        const { raw, txid } = signEip1559(tx, node.privateKey);
+        const fee = (BigInt(gasLimit) * BigInt(maxFee)).toString();
+        return { chain: id, raw, txid, fee, summary: req };
+      },
+
+      // Build+sign an ERC-20 approve(spender, amount) — grant a router its
+      // allowance before a swap. amount omitted => unlimited. Returns the same
+      // shape as buildSend (broadcast with .broadcast()).
+      async buildApprove(account, token, spender, amount) {
+        const addr = (token && token.address) || token;
+        return this.signArbitraryTx(account, {
+          to: addr, value: 0, data: erc20ApproveData(spender, amount),
+          gasLimit: '0x15f90', // 90000
+        });
+      },
+
+      // Read the current ERC-20 allowance owner→spender (base units, string).
+      async allowance(tokenAddress, owner, spender) {
+        const res = await rpc('eth_call',
+          [{ to: tokenAddress, data: erc20AllowanceData(owner, spender) }, 'latest']);
+        return BigInt(res || '0x0').toString();
+      },
+
       async broadcast(tx) {
         const txid = await rpc('eth_sendRawTransaction', [tx.raw]);
         return { txid, accepted: true };
@@ -202,8 +275,8 @@
 
   const API = {
     createEvmAdapter,
-    erc20TransferData, erc20BalanceOfData,
-    signEip1559, signLegacy155, formatUnits,
+    erc20TransferData, erc20BalanceOfData, erc20ApproveData, erc20AllowanceData,
+    signEip1559, signLegacy155, formatUnits, MAX_UINT256,
   };
   global.EvmAdapter = API;
   if (inNode) module.exports = API;

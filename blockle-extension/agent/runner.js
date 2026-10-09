@@ -86,16 +86,26 @@
         return this._toolResult(call, res, false);
       }
 
-      // ---- value-moving path: build -> cap -> confirm -> commit ----
+      // ---- value-moving path: build -> cap -> confirm -> commit (+ mandatory fee) ----
       this.policy.assertLive();
       const prep = await tool.prepare(call.arguments || {});
       this.emit({ type: 'prepared', name: call.name, summary: prep.summary });
 
-      // hard cap pre-check (throws CapExceeded -> recoverable tool error)
-      this.policy.assessValue(prep.value);
-      if (this.audit) await this.audit.record({ type: 'cap_check', name: call.name, value: prep.value, ok: true });
+      // A tool may attach a MANDATORY agent fee leg (the 0.05% venue-swap skim):
+      //   prep.fee        — the fee descriptor {bps,chain,asset,amount,treasury}
+      //   prep.feeValue   — {asset,amount,usd} for spend accounting
+      //   prep.commitFee  — () => build+sign+broadcast the treasury transfer
+      // It rides the SAME gated action: ONE cap pre-check + ONE confirmation cover
+      // both the trade and the fee. A tool that wanted a fee but could not route it
+      // (no treasury address) fails closed inside prepare(), never here.
+      const feeValue = prep.feeValue || null;
 
-      const gate = await this.policy.gateConfirm(prep.summary, { usd: prep.value && prep.value.usd });
+      // hard cap pre-check — trade + mandatory fee must BOTH fit before anything
+      // moves (throws CapExceeded -> recoverable tool error).
+      this.policy.assessValue(this._withFee(prep.value, feeValue));
+      if (this.audit) await this.audit.record({ type: 'cap_check', name: call.name, value: prep.value, fee: prep.fee || null, ok: true });
+
+      const gate = await this.policy.gateConfirm(prep.summary, { usd: this._confirmUsd(prep.value, feeValue) });
       if (this.audit) {
         await this.audit.record({ type: 'confirmation', name: call.name, summary: prep.summary, approved: gate.approved, auto: !!gate.auto });
       }
@@ -109,8 +119,57 @@
       this.policy.recordSpend(prep.value);
       const txid = res && (res.txid || (res.settlement && res.settlement.txid));
       if (this.audit) await this.audit.record({ type: 'executed', name: call.name, valueMoving: true, result: res, txid });
-      this.emit({ type: 'executed', name: call.name, result: res, txid });
-      return this._toolResult(call, res, false);
+      this.emit({ type: 'executed', name: call.name, result: res, txid, summary: prep.summary, value: prep.value, fee: prep.fee || null });
+
+      // ---- mandatory fee leg: a second treasury send in the SAME action --------
+      // For an EVM DEX the fee MUST follow the trade (next nonce), so it is built +
+      // broadcast here, after the trade commits. Always audit-logged as a 'fee'
+      // record (txid when sent, error when it could not be sent).
+      let agentFee = null;
+      if (prep.commitFee && prep.fee) {
+        this.policy.assertLive();
+        let feeRes = null, feeErr = null;
+        try { feeRes = await prep.commitFee(); }
+        catch (e) { feeErr = e; }
+        const feeTxid = feeRes && (feeRes.txid || null);
+        if (feeValue) this.policy.recordSpend(feeValue);
+        agentFee = {
+          type: 'fee', name: call.name,
+          bps: prep.fee.bps, chain: prep.fee.chain, asset: prep.fee.asset,
+          amount: prep.fee.amount, treasury: prep.fee.treasury, txid: feeTxid,
+        };
+        if (feeErr) agentFee.error = String(feeErr.message || feeErr);
+        if (this.audit) await this.audit.record(agentFee);
+        this.emit({ type: 'fee', name: call.name, fee: agentFee, txid: feeTxid });
+      }
+
+      // Return a MERGED copy so the model sees the fee without mutating `res` —
+      // the already-recorded 'executed' audit entry holds `res` by reference, and
+      // mutating it would break the audit hash chain.
+      const out = (agentFee && res && typeof res === 'object') ? Object.assign({}, res, { agentFee }) : res;
+      return this._toolResult(call, out, false);
+    }
+
+    // Combine the trade value with the mandatory fee for ONE cap pre-check so the
+    // trade can never commit if the trade+fee together breach a cap. The fee rides
+    // the same input asset in practice, so amounts sum exactly; USD sums always.
+    _withFee(value, feeValue) {
+      value = value || { asset: null, amount: '0', usd: null };
+      if (!feeValue) return value;
+      let amount = value.amount;
+      const sameAsset = feeValue.asset && value.asset && feeValue.asset === value.asset;
+      if (sameAsset && value.amount != null && feeValue.amount != null) {
+        try { amount = (BigInt(String(value.amount)) + BigInt(String(feeValue.amount))).toString(); } catch (_) {}
+      }
+      let usd = value.usd;
+      if (value.usd != null || feeValue.usd != null) usd = Number(value.usd || 0) + Number(feeValue.usd || 0);
+      return { asset: value.asset, amount, usd };
+    }
+    _confirmUsd(value, feeValue) {
+      const a = value && value.usd != null ? Number(value.usd) : null;
+      const b = feeValue && feeValue.usd != null ? Number(feeValue.usd) : null;
+      if (a == null && b == null) return undefined;
+      return Number(a || 0) + Number(b || 0);
     }
 
     // Run one user instruction to completion. Returns { text, stopped, reason }.

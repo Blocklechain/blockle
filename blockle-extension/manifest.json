@@ -23,6 +23,9 @@
     "https://base-rpc.publicnode.com/*",
     "https://blockstream.info/*",
     "https://litecoinspace.org/*",
+    "https://blockchair.com/*",
+    "https://dogechain.info/*",
+    "https://api.mainnet-beta.solana.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
     "https://api.githubcopilot.com/*"

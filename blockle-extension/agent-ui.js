@@ -29,7 +29,11 @@
 
   let UI = null;
   let manager = null;
-  let confirmResolve = null;
+  // Confirmation QUEUE: concurrent channels can each await their own prompt. We
+  // show one modal at a time and never drop or overwrite a pending request — each
+  // enqueued {summary, resolve} is answered in turn (FIFO).
+  const confirmQueue = [];  // [{ summary, resolve }]
+  let confirmActive = false;
   let expanded = null;      // expanded channel id
   const logs = {};          // channelId -> [lines]
 
@@ -94,17 +98,38 @@
   }
 
   // ---- the REQUIRED confirmation modal (returns Promise<boolean>) -----------
+  // Enqueue + show one at a time so N concurrent channels each get their own
+  // prompt in turn. A kill (globalKill/killAll) drains the queue as rejections.
   function doConfirm(summary) {
     return new Promise((resolve) => {
-      confirmResolve = resolve;
-      $('#agent-confirm-detail').textContent = summarize(summary);
-      UI.show('agent-confirm');
+      confirmQueue.push({ summary, resolve });
+      if (!confirmActive) showNextConfirm();
     });
   }
+  function showNextConfirm() {
+    const head = confirmQueue[0];
+    if (!head) { confirmActive = false; return; }
+    confirmActive = true;
+    const detail = $('#agent-confirm-detail');
+    if (detail) {
+      const more = confirmQueue.length - 1;
+      detail.textContent = summarize(head.summary) + (more > 0 ? '\n\n(' + more + ' more awaiting confirmation)' : '');
+    }
+    UI.show('agent-confirm');
+  }
   function resolveConfirm(ok) {
-    const r = confirmResolve; confirmResolve = null;
-    UI.show('agent');
-    if (r) r(ok);
+    const head = confirmQueue.shift();
+    if (head && head.resolve) { try { head.resolve(ok); } catch (_) {} }
+    if (confirmQueue.length) showNextConfirm();
+    else { confirmActive = false; UI.show('agent'); }
+  }
+  // Reject + clear every queued confirmation (used on kill, so no promise dangles).
+  function drainConfirms() {
+    while (confirmQueue.length) {
+      const h = confirmQueue.shift();
+      if (h && h.resolve) { try { h.resolve(false); } catch (_) {} }
+    }
+    confirmActive = false;
   }
   function summarize(s) {
     if (!s) return 'Confirm this action?';
@@ -127,11 +152,13 @@
   // ---- kill switch ----------------------------------------------------------
   async function killAll() {
     if (!global.confirm('Kill ALL agent channels and lock the wallet now?')) return;
+    drainConfirms(); // reject anything waiting so no commit can slip through
     try { if (manager) await manager.killAll('user kill'); else await globalKill(); } catch {}
     UI.toast('Agent stopped · wallet locked');
     UI.route('unlock');
   }
   async function globalKill() {
+    drainConfirms();
     try { await global.Exchange.signOut(); } catch {}
     try { await Wallet.lock(); } catch {}
     await AgentStore.lock();
@@ -147,6 +174,7 @@
     else if (ev.type === 'prepared') pushLog(id, 'prepared: ' + summarize(ev.summary));
     else if (ev.type === 'declined') pushLog(id, '✗ declined: ' + ev.name);
     else if (ev.type === 'executed') { pushLog(id, '✓ executed ' + ev.name + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : '')); emitTelemetry(id, ev); }
+    else if (ev.type === 'fee') { const f = ev.fee || {}; pushLog(id, '  ⬩ agent fee ' + (f.amount || '') + ' ' + (f.asset || '') + ' → treasury' + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : (f.error ? ' · FAILED: ' + f.error : ''))); }
     else if (ev.type === 'tool_error') pushLog(id, '! error ' + ev.name + ': ' + ev.error);
     else if (ev.type === 'killed') pushLog(id, 'killed: ' + (ev.reason || ''));
     if (expanded === id) renderLog(id);
@@ -163,8 +191,20 @@
       if (!tel.isEnabled()) return;
       const ch = manager && manager.get(id);
       const cfg = (ch && ch.meta && ch.meta.config) || {};
-      const chain = (ev.result && ev.result.chain) || (ev.summary && ev.summary.chain) || 'unknown';
-      await tel.emit({ strategy: cfg.strategy || 'manual', venue: 'blockle', chain, intent: ev.name, outcome: 'executed' });
+      const s = ev.summary || {};
+      const fee = ev.fee || (ev.result && ev.result.agentFee) || null;
+      const chain = (ev.result && ev.result.chain) || s.chain || 'unknown';
+      const venue = s.venue || (cfg.venues && cfg.venues[0]) || 'blockle';
+      await tel.emit({
+        strategy: cfg.strategy || 'manual',
+        venue, chain,
+        pair: (s.from && s.to) ? (s.from + '/' + s.to) : (s.market || null),
+        side: s.side || null,
+        slippagePct: cfg.slippagePct != null ? Number(cfg.slippagePct) : undefined,
+        intent: ev.name, outcome: 'executed',
+        // the mandatory 0.05% agent fee, as a percent (5 bps -> 0.05)
+        feePct: fee && fee.bps != null ? Number(fee.bps) / 100 : undefined,
+      });
     } catch (_) {}
   }
 
