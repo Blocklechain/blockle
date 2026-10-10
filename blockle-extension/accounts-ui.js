@@ -22,6 +22,7 @@
     bitcoin:   { name: 'Bitcoin',     sym: 'BTC',   pq: false },
     litecoin:  { name: 'Litecoin',    sym: 'LTC',   pq: false },
     dogecoin:  { name: 'Dogecoin',    sym: 'DOGE',  pq: false },
+    solana:    { name: 'Solana',      sym: 'SOL',   pq: false },
   };
   const EVM_CHAINS = new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bnb', 'avalanche']);
 
@@ -46,6 +47,7 @@
   // Native decimals for a chain: custom net's configured decimals, else EVM 18, else 8.
   function nativeDecimals(chain) {
     if (customMeta[chain] && customMeta[chain].decimals != null) return Number(customMeta[chain].decimals);
+    if (chain === 'solana') return 9; // SOL = 9 (lamports); BLOCK/BTC/LTC/DOGE = 8
     return EVM_CHAINS.has(chain) ? 18 : 8;
   }
   // Pull custom-network meta from the registry into `customMeta`.
