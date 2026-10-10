@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..multichain._util import maybe_await
+from ..multichain._util import maybe_await, member
 from . import strategies as _strategies
 from .policy import AgentHalted, CapExceeded
 from .runner import dispatch_prepared
@@ -43,11 +43,40 @@ class StrategyRunner:
         self.tools = deps["tools"]
         self.policy = deps["policy"]
         self.audit = deps.get("audit")
+        self.pnl = deps.get("pnl")
         self.ctx = deps.get("ctx") or {}
         self.mainnet_enabled = bool(deps.get("mainnetEnabled"))
         self.registry = deps.get("registry") or _strategies.default_registry()
         on_event = deps.get("onEvent")
         self.on_event = on_event if callable(on_event) else None
+        # Optional READ-ONLY candidate feed (§7). Discovery NEVER trades, signs, or
+        # auto-allowlists; it only surfaces ranked, approved=False suggestions. The
+        # dispatch gate below is UNCHANGED, so an unapproved (or approved-but-not-
+        # allowlisted) token still produces a `blocked` audit note — never a trade.
+        self.discovery = deps.get("discovery")
+        self.use_discovery = deps.get("useDiscovery") is True
+        self.auto_consider_unapproved = deps.get("autoConsiderUnapproved") is True  # default off
+        self.channel = deps.get("channel")
+
+    async def candidates(self, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """READ-ONLY candidate universe passthrough (§7 Wiring). Returns the ranked
+        Candidates from ``discovery.scan()`` filtered to ``approved is True`` by
+        DEFAULT. Only when ``autoConsiderUnapproved`` is explicitly enabled (or the
+        caller passes ``includeUnapproved=True``) are unapproved candidates included
+        — and EVEN THEN any resulting trade STILL passes the dispatch gate in
+        :meth:`tick` (an unapproved / non-allowlisted token yields a ``blocked``
+        note, never a trade). This method never trades, signs, or mutates the
+        allowlist. Returns ``[]`` when no discovery feed is wired."""
+        opts = opts or {}
+        scan = member(self.discovery, "scan") if self.discovery is not None else None
+        if not callable(scan):
+            return []
+        all_c = await maybe_await(scan()) or []
+        inc = opts.get("includeUnapproved")
+        include_unapproved = bool(inc) if inc is not None else self.auto_consider_unapproved
+        if include_unapproved:
+            return list(all_c)
+        return [c for c in all_c if c.get("approved") is True]
 
     def emit(self, ev: Dict[str, Any]) -> None:
         if self.on_event:
@@ -154,7 +183,8 @@ class StrategyRunner:
             try:
                 prep = await maybe_await(tool["prepare"](intent.get("args") or {}))
                 self.emit({"type": "prepared", "tool": tool_name, "summary": prep.get("summary")})
-                disp = await dispatch_prepared(self.policy, self.audit, self.emit, tool_name, prep)
+                disp = await dispatch_prepared(self.policy, self.audit, self.emit, tool_name, prep,
+                                               pnl=self.pnl)
             except AgentHalted:
                 if self.audit:
                     await self.audit.record({"type": "aborted", "strategy": strategy_name,

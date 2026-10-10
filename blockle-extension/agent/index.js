@@ -44,8 +44,23 @@
       const AgentPolicy = dep('AgentPolicy');
       const AgentAudit = dep('AgentAudit');
       const AgentRunner = dep('AgentRunner');
+      const AgentPnl = dep('AgentPnl');
+      const AgentNotify = dep('AgentNotify');
 
       const audit = AgentAudit.create({ store: opts.store, sink: opts.onAudit });
+
+      // Realized-profit engine (spec §8): the ledger persists ALONGSIDE the audit
+      // (no key material), and pops a native notification on a positive gain into
+      // a stablecoin. The notifier's emitter is injectable (chrome.notifications
+      // with an in-page toast fallback by default); the whole thing hangs off the
+      // ONE post-commit hook in runner.js, never a second commit path.
+      const notifier = AgentNotify.create({ emit: opts.notifyEmit, sink: opts.onNotify });
+      const pnl = AgentPnl.create({
+        audit, notifier, store: opts.store,
+        onEvent: opts.onEvent,
+        config: opts.pnlConfig || {},
+        wallet: opts.wallet, channel: opts.channel,
+      });
 
       const policy = AgentPolicy.create({
         caps: opts.caps || {},
@@ -76,6 +91,8 @@
         allowlist: opts.allowlist,        // optionally narrow the catalog
         readOnly: opts.readOnly,          // enforce read-only by capability
         onEvent: opts.onEvent,
+        pnl,                              // post-commit realized-profit hook
+        channel: opts.channel,
       });
 
       return {
@@ -83,6 +100,8 @@
         policy,
         audit,
         tools,
+        pnl,
+        notifier,
         run: (prompt, o) => runner.run(prompt, o),
         kill: (reason) => runner.kill(reason),
         setCaps: (caps) => policy.setCaps(caps),

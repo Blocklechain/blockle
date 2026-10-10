@@ -229,9 +229,16 @@ honeypot (sell disabled) when a venue read can tell, extreme holder concentratio
 a `flag`; `config.rejectFlags` (default includes `honeypot`) hard-drops. Never claim a token
 is safe — absence of flags ≠ safe; surface what was and wasn't checked.
 
-**Scoring**: a transparent weighted sum of normalized liquidity, 24h volume, age sweet-spot,
-and source trust, minus flag penalties. Weights are in config so it's tunable. Deterministic
-given a snapshot (so it's testable against `strategy-vectors.json`).
+**Scoring**: a transparent weighted sum of normalized features, minus flag penalties, clamped
+to [0,1]. Pinned defaults (in config, tunable) so the three languages agree exactly:
+`score = clamp01( 0.40·Ln + 0.30·Vn + 0.20·An + 0.10·Tn − 0.25·flagPenalty )` where
+`Ln = min(1, liquidityUsd / 100000)`, `Vn = min(1, volume24hUsd / 50000)`,
+`An = clamp01(1 − |ln(ageSec/86400)| / 3)` (age sweet-spot ≈ 1 day), `Tn` = source trust in
+[0,1] (watchlist 1.0, exchangeListings 0.8, blockLaunches 0.7, venuePairs 0.5, tokenLists 0.4),
+and `flagPenalty` = count of soft flags. A missing feature contributes 0 (never fabricated).
+**Canonical vector** (assert exactly in all three): `liquidityUsd=100000, volume24hUsd=50000,
+ageSec=86400, source=exchangeListings(0.8), 0 flags → 0.40+0.30+0.20+0.08 = 0.98`. Deterministic
+given a snapshot; monotonic in liquidity + volume.
 
 **Wiring**: `StrategyRunner` may take `discovery`; when a strategy's `pair`/`asset` param is
 omitted and `config.useDiscovery` is on, it draws candidates from `discovery.scan()` filtered
@@ -268,6 +275,18 @@ telling the user how much they earned and on what.
   (default true = skip rather than show a misleading profit).
 - Reuses the single commit path — no second execution path, no bypass of the gate.
 
-Tests: realized PnL math (avg-cost, partial sells, BigInt-exact); fires only on positive
-realized gain into a configured stablecoin; unknown-basis path respects `requireBasis`;
-event shape stable; no notification on a non-stable output.
+**Avg-cost ledger (pinned semantics, assert exactly in all three):** quantities are base-unit
+BigInt; basis is carried as integer USD micro-dollars (`uc = round(usd·1e6)`, i.e. 1e6 per $1, so $200 → 200000000) to stay exact and
+language-identical. A BUY adds `qty` and `costUc` to the lot; average cost per base unit =
+`costUc / qty`. A SELL of `sellQty` realizes `proceedsUc − round(avgCostPerUnit·sellQty)` and
+removes that pro-rata share of basis (`costUc −= round(avgCostPerUnit·sellQty)`), leaving avg
+cost unchanged. **Canonical vector:** buy 2·1e8 base @ $100 (costUc 200·1e6=200000000), buy
+1·1e8 @ $160 (costUc +160000000 → 360000000; qty 3·1e8; avg = 360000000/3e8 = $1.20/base-unit…
+i.e. $120/coin); sell 1.5·1e8 @ $150 → proceedsUc 225000000, basis removed round(1.2·1.5e8)=180000000,
+realized = 225000000−180000000 = **+$45.00**; remaining qty 1.5e8, costUc 180000000 (avg $120/coin
+unchanged). Fires one `+$45.00` pop-up (output = USDC, positive).
+
+Tests: realized PnL math (avg-cost, partial sells, the canonical vector above, BigInt/integer-exact);
+fires only on positive realized gain into a configured stablecoin; unknown-basis path respects
+`requireBasis`; event shape stable; no notification on a non-stable output; losses update the
+ledger silently.

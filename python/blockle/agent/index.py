@@ -27,21 +27,39 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ..multichain._util import member as _member
 from . import audit as _audit
+from . import discovery as _discovery
+from . import pnl as _pnl
 from . import policy as _policy
 from . import providers as _providers
 from . import runner as _runner
+from . import strategy_runner as _strategy_runner
 from . import tools as _tools
+
+
+def _ctx_get(ctx, name):
+    """Return a callable ctx accessor by name, or ``None`` (never fabricate)."""
+    fn = _member(ctx, name)
+    return fn if callable(fn) else None
 
 
 class AgentHandle:
     """What :func:`start` returns — the object the UI holds."""
 
-    def __init__(self, runner, policy, audit, tools):
+    def __init__(self, runner, policy, audit, tools, pnl=None,
+                 discovery=None, strategy=None):
         self.runner = runner
         self.policy = policy
         self.audit = audit
         self.tools = tools
+        self.pnl = pnl
+        # §7: the READ-ONLY candidate feed and the strategy driver wired to it.
+        # Both are inert unless a ``discovery`` config was supplied; discovery
+        # never trades/signs/allowlists and the strategy driver reuses the ONE
+        # gated commit path — so exposing them changes no trading behaviour.
+        self.discovery = discovery
+        self.strategy = strategy
 
     async def run(self, prompt, opts=None):
         return await self.runner.run(prompt, opts)
@@ -88,20 +106,59 @@ def start(opts: Optional[Dict[str, Any]] = None) -> AgentHandle:
         "request": opts.get("request"),
     })
 
-    tools = _tools.build(opts.get("ctx") or {})
+    ctx = opts.get("ctx") or {}
+    tools = _tools.build(ctx)
+
+    # The single post-commit cost-basis + realized-profit hook. Prices legs from
+    # the host's own ``estimateUsd`` (never a fabricated price) and pops the
+    # injectable notifier on a positive stablecoin exit.
+    pnl = _pnl.create({
+        "ledger": opts.get("ledger"),
+        "notifier": opts.get("notifier"),
+        "wallet": opts.get("wallet"),
+        "channel": opts.get("channel"),
+        "priceUsd": _ctx_get(ctx, "estimateUsd"),
+        "decimalsOf": _ctx_get(ctx, "decimals"),
+        "config": opts.get("pnl") or {},
+    })
 
     runner = _runner.create({
         "provider": provider,
         "tools": tools,
         "policy": policy,
         "audit": audit,
+        "pnl": pnl,
         "system": opts.get("system"),
         "maxTurns": opts.get("maxTurns"),
         "allowlist": opts.get("allowlist"),
         "onEvent": opts.get("onEvent"),
     })
 
-    return AgentHandle(runner, policy, audit, tools)
+    # §7 discovery -> StrategyRunner wiring. Discovery is built ONLY when the
+    # caller supplies a ``discovery`` config (otherwise ``None`` — the feed is
+    # off and nothing changes). The StrategyRunner takes that discovery plus the
+    # ``useDiscovery`` / ``autoConsiderUnapproved`` flags; it reuses the SAME
+    # gated commit path as the NL runner, so a discovered-but-unapproved (or
+    # non-allowlisted) token still produces a ``blocked`` note — never a trade.
+    disc_cfg = opts.get("discovery")
+    discovery = (_discovery.create({"ctx": ctx, "config": disc_cfg})
+                 if disc_cfg is not None else None)
+    strategy = _strategy_runner.create({
+        "tools": tools,
+        "policy": policy,
+        "audit": audit,
+        "pnl": pnl,
+        "ctx": ctx,
+        "mainnetEnabled": opts.get("mainnetEnabled"),
+        "onEvent": opts.get("onEvent"),
+        "channel": opts.get("channel"),
+        "discovery": discovery,
+        "useDiscovery": opts.get("useDiscovery"),
+        "autoConsiderUnapproved": opts.get("autoConsiderUnapproved"),
+    })
+
+    return AgentHandle(runner, policy, audit, tools, pnl,
+                       discovery=discovery, strategy=strategy)
 
 
 class Agent:

@@ -72,7 +72,7 @@ def _confirm_usd(value, fee_value):
     return float(a or 0) + float(b or 0)
 
 
-async def dispatch_prepared(policy, audit, emit, name, prep) -> Dict[str, Any]:
+async def dispatch_prepared(policy, audit, emit, name, prep, pnl=None) -> Dict[str, Any]:
     """The ONE value-moving commit path: cap -> confirm -> commit -> fee -> record.
 
     Shared by the NL :class:`Runner` and the ``StrategyRunner`` so there is
@@ -81,6 +81,12 @@ async def dispatch_prepared(policy, audit, emit, name, prep) -> Dict[str, Any]:
     ``{approved: False, summary}`` on decline). Raises ``CapExceeded`` /
     ``AgentHalted`` the same way the inline path used to, for the caller to
     surface as a recoverable tool error or a hard halt.
+
+    ``pnl`` (optional :class:`pnl.RealizedPnl`) is the SINGLE post-commit hook:
+    after a trade broadcasts (and its mandatory fee leg runs) it updates the
+    cost-basis ledger and pops a realized-profit notification on a positive
+    stablecoin exit. It runs only on an approved+committed trade, never on a
+    decline/cap/kill, and can never unwind the broadcast — bookkeeping only.
     """
     emit = emit if callable(emit) else (lambda ev: None)
     fee_value = prep.get("feeValue")
@@ -157,6 +163,15 @@ async def dispatch_prepared(policy, audit, emit, name, prep) -> Dict[str, Any]:
         if not committed:
             emit({"type": "fee_failed", "name": name, "fee": agent_fee})
 
+    # ---- post-commit hook: cost-basis ledger + realized-profit pop-up ----
+    # The ONE place the ledger is updated — there is no second path. Runs after
+    # the trade (and fee) have broadcast; never raises outward.
+    if pnl is not None:
+        try:
+            await maybe_await(pnl.on_commit(name, prep, res, audit, emit))
+        except Exception:  # noqa: BLE001 — bookkeeping must not unwind a broadcast
+            pass
+
     return {"approved": True, "result": res, "agentFee": agent_fee}
 
 
@@ -173,6 +188,7 @@ class Runner:
         self.tools = deps["tools"]
         self.policy = deps["policy"]
         self.audit = deps.get("audit")
+        self.pnl = deps.get("pnl")
         self.system = deps.get("system") or DEFAULT_SYSTEM
         self.max_turns = deps.get("maxTurns") or 12
         on_event = deps.get("onEvent")
@@ -233,7 +249,8 @@ class Runner:
         prep = await maybe_await(tool["prepare"](call.get("arguments") or {}))
         self.emit({"type": "prepared", "name": call.get("name"), "summary": prep.get("summary")})
 
-        disp = await dispatch_prepared(self.policy, self.audit, self.emit, call.get("name"), prep)
+        disp = await dispatch_prepared(self.policy, self.audit, self.emit, call.get("name"), prep,
+                                       pnl=self.pnl)
         if not disp["approved"]:
             return self._tool_result(call, {"rejected": True, "reason": "user declined confirmation",
                                             "summary": disp.get("summary")}, False)
