@@ -17,6 +17,8 @@ import { secp256k1 } from "@noble/curves/secp256k1";
 import { ed25519 } from "@noble/curves/ed25519";
 import { keccak_256 } from "@noble/hashes/sha3";
 import bs58 from "bs58";
+import { verifyBtc } from "./btc";
+import { verifySui } from "./sui";
 // blockle-wasm is CommonJS (wasm-pack --target nodejs)
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const wasm: {
@@ -24,7 +26,14 @@ const wasm: {
   address_from_pubkey(public_hex: string): string;
 } = require("blockle-wasm");
 
-export type ChainKind = "block" | "ethereum" | "base" | "solana" | string;
+export type ChainKind =
+  | "block"
+  | "ethereum"
+  | "base"
+  | "solana"
+  | "bitcoin"
+  | "sui"
+  | string;
 
 function stripHex(s: string): string {
   return s.startsWith("0x") || s.startsWith("0X") ? s.slice(2) : s;
@@ -179,9 +188,16 @@ export function verifySignature(c: SigCheck): boolean {
       return verifySolana(c.message, c.signature, c.address);
     case "block":
       return verifyBlock(c.message, c.signature, c.address, c.publicKey);
+    case "bitcoin":
+    case "btc":
+      return verifyBtc(c.message, c.signature, c.address);
+    case "sui":
+      return verifySui(c.message, c.signature, c.address, c.publicKey);
     default:
       return false;
   }
 }
 
 export { wasm as _blockWasm };
+export { verifyBtc } from "./btc";
+export { verifySui } from "./sui";

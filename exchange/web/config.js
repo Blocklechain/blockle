@@ -12,6 +12,13 @@ window.EXCHANGE_CONFIG = {
   // WebSocket base. '' = derived from apiBase/origin (http->ws, https->wss).
   wsBase: ''
 
+  // Bitcoin + Sui leg networks. TESTNET-FIRST: both default to testnet. Set to
+  // 'mainnet' only once the relay/operator has flipped the mainnet flag and
+  // completed legal/compliance review (see the footer note). Public config
+  // only — no keys. These drive the BTC/Sui wallet connectors in connectors.js.
+  // , btc: { network: 'testnet' }   // 'testnet' | 'signet' | 'mainnet'
+  // , sui: { network: 'testnet' }   // 'testnet' | 'devnet' | 'mainnet'
+
   // MoonPay fiat on/off-ramp (optional; omit to use the built-in sandbox key).
   // PUBLISHABLE key only — never the secret. Signing, when enabled, happens on
   // the server-side endpoint below; the sandbox key needs no signing.

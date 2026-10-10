@@ -43,6 +43,10 @@ const BASE_ASSETS: BaseAssetDef[] = [
   { symbol: "BLOCK", chain: "block", kind: "native", decimals: 8 },
   { symbol: "ETH", chain: "ethereum", kind: "native", decimals: 18 },
   { symbol: "SOL", chain: "solana", kind: "native", decimals: 9 },
+  // BTC — native Bitcoin Script HTLC leg (testnet/signet by default). 8 dp (sats).
+  { symbol: "BTC", chain: "bitcoin", kind: "native", decimals: 8 },
+  // SUI — Move HTLC shared-object leg (Sui testnet by default). 9 dp (MIST).
+  { symbol: "SUI", chain: "sui", kind: "native", decimals: 9 },
   {
     symbol: "USDC",
     chain: "base",
@@ -72,6 +76,12 @@ const BASE_MARKETS: Array<[string, string]> = [
   ["BLOCK", "USDT"],
   ["ETH", "USDC"],
   ["SOL", "USDC"],
+  // BTC + SUI full trading legs
+  ["BLOCK", "BTC"],
+  ["BLOCK", "SUI"],
+  ["BTC", "USDC"],
+  ["SUI", "USDC"],
+  ["BTC", "SUI"],
 ];
 
 export class Registry {

@@ -1,0 +1,16 @@
+[package]
+name = "blockle_htlc"
+version = "0.1.0"
+edition = "2024.beta"
+# Sui leg of the Blockle cross-chain atomic-swap exchange.
+# See ../PROTOCOL.md for the shared swap state machine and hash choice (SHA-256).
+
+[dependencies]
+# Sui framework. Pinned to a testnet release tag. The system packages
+# (Sui, Std) publish at the well-known 0x2 / 0x1 addresses on every network,
+# so nothing here is network-specific at the source level.
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
+
+[addresses]
+# 0x0 at publish time; the on-chain package id is assigned by the publish tx.
+blockle_htlc = "0x0"

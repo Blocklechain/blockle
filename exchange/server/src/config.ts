@@ -95,6 +95,9 @@ const DEV_TREASURY: Record<string, string> = {
   base: "0x000000000000000000000000000000000000dEaD",
   ethereum: "0x000000000000000000000000000000000000dEaD",
   solana: "11111111111111111111111111111111",
+  // testnet-only dev placeholders (bech32 testnet / zero Sui address)
+  bitcoin: "tb1qdevtreasury00000000000000000000000000",
+  sui: "0x0000000000000000000000000000000000000000000000000000000000000000",
 };
 
 function withDevTreasury(t: any): Record<string, Record<string, string>> {

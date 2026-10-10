@@ -1,0 +1,40 @@
+{
+  "_note": "BTC HTLC leg config. feeAddress is a PUBLIC receiving address for the 0.1% protocol settlement fee (taken ONLY on redeem, never on refund — see ../PROTOCOL.md §5). No private keys live here or anywhere in the repo. The HTLC is non-custodial: only the receiver (with the preimage) or the depositor (after the CLTV timelock) can move a locked output; the relay never can.",
+  "feeBps": 10,
+  "maxFeeBps": 100,
+  "mainnet_enabled": false,
+  "hash": "sha256",
+  "_hashNote": "Hashlock H = sha256(preimage), byte-identical to the EVM and Solana legs. Script uses OP_SHA256 (NOT OP_HASH160) so the on-chain hashlock equals the shared protocol H.",
+  "networks": {
+    "testnet": {
+      "label": "Bitcoin testnet3",
+      "bech32Prefix": "tb",
+      "treasuryFeeAddress": "_TODO_fill_testnet_fee_address",
+      "esplora": "https://blockstream.info/testnet/api"
+    },
+    "signet": {
+      "label": "Bitcoin signet",
+      "bech32Prefix": "tb",
+      "treasuryFeeAddress": "_TODO_fill_signet_fee_address",
+      "esplora": "https://blockstream.info/signet/api"
+    },
+    "regtest": {
+      "label": "Bitcoin regtest",
+      "bech32Prefix": "bcrt",
+      "treasuryFeeAddress": "_TODO_fill_regtest_fee_address",
+      "esplora": "http://127.0.0.1:3002"
+    },
+    "mainnet": {
+      "label": "Bitcoin mainnet (GATED — requires mainnet_enabled=true + legal review)",
+      "bech32Prefix": "bc",
+      "treasuryFeeAddress": "bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm",
+      "esplora": "https://blockstream.info/api"
+    }
+  },
+  "timelockDefaults": {
+    "_note": "BTC uses nLockTime. Unix-time CLTV (>=500000000) pairs naturally with EVM/Solana timestamp legs. As the shared/long (maker, T1) side use ~24h; as the short (taker, T2) side use ~12h. Enforce T2 < T1 per PROTOCOL.md §3.",
+    "makerSeconds": 86400,
+    "takerSeconds": 43200,
+    "confirmationDepth": 2
+  }
+}
