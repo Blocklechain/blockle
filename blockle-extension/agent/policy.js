@@ -74,6 +74,8 @@
       if (this.allowlist && !this.allowlist.has(name)) throw new ToolNotAllowed(name);
       return true;
     }
+    // non-throwing variant for planners (StrategyRunner drops, never errors).
+    isAllowed(name) { return !this.allowlist || this.allowlist.has(name); }
 
     // ---- kill switch --------------------------------------------------------
     isKilled() { return this.killed; }
@@ -109,14 +111,22 @@
 
       // session USD cap
       if (this.caps.sessionUsd != null) {
-        if (usd == null) {
+        // A zero-transfer action (amount '0') or one the tool explicitly marks
+        // `usdExempt` (an unpriceable but non-spending action: a token launch, a
+        // listing fee in gas, an LP withdrawal) is exempt from the USD-axis cap —
+        // it is still gated by any per-asset cap above and by the confirm gate.
+        // Everything else with no USD estimate is rejected (cannot verify).
+        const zeroTransfer = amount === 0n;
+        if (usd == null && !value.usdExempt && !zeroTransfer) {
           throw new CapExceeded(
             `session cap is set ($${this.caps.sessionUsd}) but this action has no USD estimate — cannot verify, rejecting`);
         }
-        const next = this.spentUsd + usd;
-        if (next > this.caps.sessionUsd) {
-          throw new CapExceeded(
-            `session USD cap exceeded: would spend $${next.toFixed(2)}, cap is $${this.caps.sessionUsd}`);
+        if (usd != null) {
+          const next = this.spentUsd + usd;
+          if (next > this.caps.sessionUsd) {
+            throw new CapExceeded(
+              `session USD cap exceeded: would spend $${next.toFixed(2)}, cap is $${this.caps.sessionUsd}`);
+          }
         }
       }
       return true;

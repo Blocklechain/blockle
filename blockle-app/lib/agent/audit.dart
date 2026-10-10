@@ -42,6 +42,11 @@ String canonical(Map<String, dynamic> entry) => jsonEncode(_sortedForHash(entry)
 class Audit {
   final List<Map<String, dynamic>> entries = [];
   String head = 'genesis';
+  // The hash the retained window chains FROM: 'genesis' until the log is first
+  // trimmed, then the head hash of the last entry dropped off the front. verify()
+  // starts here so a trimmed log still verifies instead of reporting a false
+  // 'tampered' at the (now-missing) genesis prefix.
+  String anchor = 'genesis';
   int seq = 0;
   final AuditStore? store;
   final String storeKey;
@@ -62,7 +67,11 @@ class Audit {
     entry['hash'] = head;
     entries.add(entry);
     if (entries.length > max) {
-      entries.removeRange(0, entries.length - max);
+      final drop = entries.length - max;
+      // The new chain anchor is the hash of the LAST entry we are dropping — the
+      // head of the removed prefix — so verify() can resume from a real hash.
+      anchor = entries[drop - 1]['hash'] as String;
+      entries.removeRange(0, drop);
     }
     if (sink != null) {
       try {
@@ -72,7 +81,7 @@ class Audit {
     if (store != null) {
       try {
         await store!.set({
-          storeKey: {'head': head, 'entries': entries}
+          storeKey: {'head': head, 'anchor': anchor, 'entries': entries}
         });
       } catch (_) {}
     }
@@ -81,7 +90,7 @@ class Audit {
 
   /// Recompute the chain and confirm it matches the stored head hashes.
   Future<Map<String, dynamic>> verify() async {
-    var h = 'genesis';
+    var h = anchor;
     for (final e in entries) {
       final rest = Map<String, dynamic>.from(e)..remove('hash');
       h = _sha256hex(h + canonical(rest));
@@ -98,6 +107,7 @@ class Audit {
   void clear() {
     entries.clear();
     head = 'genesis';
+    anchor = 'genesis';
     seq = 0;
   }
 }

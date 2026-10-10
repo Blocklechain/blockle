@@ -11,6 +11,8 @@
     "btc": "bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm"
   },
   "testnet": {
-    "_todo": "fill with faucet/testnet treasury addresses; dev fees settle on testnets (Base Sepolia, Solana devnet, etc.)"
+    "_todo": "fill with faucet/testnet treasury addresses; dev fees settle on testnets (Base Sepolia, Solana devnet, etc.)",
+    "_blockNote": "block = testnet/dev BLOCK fee sink (genesis dev wallet, NOT a mainnet receiving address). Required so a native BLOCK agent swap can route its 0.05% fee on the block chain when mainnet_enabled=false (the default).",
+    "block": "block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0"
   }
 }

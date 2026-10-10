@@ -365,30 +365,14 @@ ToolRegistry buildTools(AgentContext ctx) {
     prepare: (a) async {
       final venues = ctx.venues;
 
-      // Fallback: no venue registry wired -> drive the non-custodial exchange.
+      // No venue registry wired => no treasury to route the mandatory 0.05%
+      // agent fee through. Refuse (fail closed) rather than execute a swap that
+      // silently skips the fee — the swap tool's non-bypassable-fee contract must
+      // hold on EVERY path (see AGENT-STRATEGIES.md section 5).
       if (venues == null) {
-        final ex = ctx.exchange ?? const ExchangeLike();
-        Map<String, dynamic>? q;
-        if (ex.quote != null) {
-          try {
-            q = await ex.quote!(a['from'] as String, a['to'] as String,
-                '${a['amount']}', {'slippage': a['slippage']});
-          } catch (_) {}
-        }
-        final usd = await usdOf(a['from'], a['amount']);
-        return PreparedAction(
-          summary: {
-            'action': 'swap',
-            'from': a['from'],
-            'to': a['to'],
-            'amount': '${a['amount']}',
-            'slippage': a['slippage'],
-            'quote': q,
-          },
-          value: SpendValue(asset: a['from'] as String?, amount: '${a['amount']}', usd: usd),
-          commit: () => _need(ex.swap, 'exchange.swap')(a['from'] as String,
-              a['to'] as String, '${a['amount']}', {'slippage': a['slippage']}),
-        );
+        throw StateError(
+            'swap refused: no venue registry/treasury wired — the mandatory 0.05% '
+            'agent fee cannot be routed (fail closed)');
       }
 
       final venue = pickVenue(venues, a);

@@ -74,6 +74,7 @@
         system: opts.system,
         maxTurns: opts.maxTurns,
         allowlist: opts.allowlist,        // optionally narrow the catalog
+        readOnly: opts.readOnly,          // enforce read-only by capability
         onEvent: opts.onEvent,
       });
 

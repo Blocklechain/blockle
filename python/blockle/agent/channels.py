@@ -29,7 +29,7 @@ import string
 import time
 from typing import Any, Dict, List, Optional
 
-from ..multichain._util import maybe_await
+from ..multichain._util import maybe_await, member
 from . import index as _index
 
 STORE_KEY = "agentChannels"
@@ -269,7 +269,10 @@ class ChannelManager:
             "enabled": False,
             "readOnly": read_only,
             "config": spec.get("config") or {},
-            "caps": spec.get("caps") or ({} if read_only else dict(DEFAULT_CAPS)),
+            # NB: an explicitly-passed {} stays empty (matches JS object truthiness)
+            # so a value-moving channel created with no caps refuses to start.
+            "caps": spec["caps"] if spec.get("caps") is not None
+            else ({} if read_only else dict(DEFAULT_CAPS)),
             "pnl": {"realizedUsd": 0, "tradeCount": 0},
             "createdAt": int(time.time() * 1000),
         }
@@ -290,6 +293,7 @@ class ChannelManager:
             return ch.describe()
 
         meta = ch.meta
+        ctx = self.ctx_for(meta) if self.ctx_for else (self.defaults.get("ctx") or {})
 
         # refuse to arm a value-moving channel without caps + a confirm handler.
         if not meta.get("readOnly"):
@@ -299,6 +303,15 @@ class ChannelManager:
             if not self.confirm:
                 raise ValueError('refusing to start "' + meta["label"]
                                  + '": a confirmation handler is required for value-moving channels')
+            # A session-USD cap rejects any action it cannot price, so a channel
+            # under a USD cap is only usable if the ctx can estimate USD. Refuse
+            # to arm one that would be dead-on-arrival (every trade rejected as
+            # unpriced). Per-asset-only caps don't need pricing.
+            if (meta.get("caps") or {}).get("sessionUsd") is not None \
+                    and not callable(member(ctx, "estimateUsd")):
+                raise ValueError('refusing to start "' + meta["label"]
+                                 + '": a USD-capped channel needs ctx.estimateUsd to price '
+                                   "actions (wire pricing or use per-asset caps)")
 
         cred = None
         if self.resolve_credential:
@@ -344,7 +357,7 @@ class ChannelManager:
             "caps": meta.get("caps") or {},
             "confirm": self.confirm,
             "onKill": on_kill,
-            "ctx": self.ctx_for(meta) if self.ctx_for else (self.defaults.get("ctx") or {}),
+            "ctx": ctx,
             "store": _namespaced_store(self.store, cid),
             "onEvent": on_event,
             "model": credential["model"],

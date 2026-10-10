@@ -120,7 +120,7 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
         return _need(member(ctx, "getBalance"), "getBalance")(a["chain"], a.get("tokens"))
     tools.append({
         "name": "get_balance",
-        "description": "Balances for a chain's account: native coin, the known token list, plus any auto-detected held tokens (merged, deduped, non-zero first). Base units.",
+        "description": "Balances for a chain's account (native coin plus any imported tokens). Base units.",
         "valueMoving": False,
         "parameters": {"type": "object",
                        "properties": {"chain": {"type": "string"},
@@ -215,25 +215,14 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
     async def _prepare_swap(a):
         venues = member(ctx, "venues")
 
-        # Fallback: no venue registry wired -> drive the non-custodial exchange
-        # directly (no external-DEX fee skim there).
+        # No venue registry wired -> FAIL CLOSED. The non-bypassable 0.05% agent
+        # fee is produced by a venue's build_swap; a direct exchange.swap has no
+        # routable fee leg, so committing it fee-free would silently break the
+        # "fee cannot be bypassed" guarantee. Refuse, matching the fail-closed
+        # stance the venue path takes when a venue can't route the fee.
         if not venues or not hasattr(venues, "list"):
-            ex = member(ctx, "exchange") or {}
-            q = None
-            ex_quote = member(ex, "quote")
-            if callable(ex_quote):
-                try:
-                    q = await maybe_await(ex_quote(a["from"], a["to"], str(a["amount"]), {"slippage": a.get("slippage")}))
-                except Exception:
-                    q = None
-            usd = await usd_of(a["from"], a["amount"])
-            return {
-                "summary": {"action": "swap", "from": a["from"], "to": a["to"],
-                            "amount": str(a["amount"]), "slippage": a.get("slippage"), "quote": q},
-                "value": {"asset": a["from"], "amount": str(a["amount"]), "usd": usd},
-                "commit": lambda: _need(member(ex, "swap"), "exchange.swap")(
-                    a["from"], a["to"], str(a["amount"]), {"slippage": a.get("slippage")}),
-            }
+            raise ValueError("swap refused: no venue registry wired to route the "
+                             "0.05% agent fee (fail closed)")
 
         venue = pick_venue(venues, a)
         account = await account_for_venue(venue, a)
@@ -333,9 +322,30 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             pay_fn = member(ctx, "payX402Usdc")
             if not callable(pay_fn):
                 return first
+            challenge = member(first, "challenge")
+            # Only settle what was cap-checked + confirmed. The seller's x402
+            # challenge is adversarial input: reject it if it demands a different
+            # asset/recipient, or MORE than the confirmed `usdc` amount, so a
+            # malicious challenge cannot drain beyond the approved value.
+            ch_amount = member(challenge, "amount")
+            ch_asset = member(challenge, "asset") or member(challenge, "currency")
+            if ch_amount is not None:
+                try:
+                    if int(str(ch_amount)) > int(str(a["usdc"])):
+                        raise ValueError(
+                            "x402 challenge demands more USDC (" + str(ch_amount)
+                            + ") than the confirmed amount (" + str(a["usdc"]) + ") — rejected")
+                except ValueError as e:
+                    if "rejected" in str(e):
+                        raise
+                    # non-numeric challenge amount -> cannot verify -> reject
+                    raise ValueError("x402 challenge amount is not verifiable — rejected")
+            if ch_asset is not None and str(ch_asset).upper() not in ("USDC", "USD"):
+                raise ValueError("x402 challenge demands a non-USDC asset ("
+                                 + str(ch_asset) + ") — rejected")
             pay = None
             try:
-                pay = await maybe_await(pay_fn(member(first, "challenge")))
+                pay = await maybe_await(pay_fn(challenge))
             except Exception:
                 pay = None
             if not pay or not member(pay, "paymentTxid"):

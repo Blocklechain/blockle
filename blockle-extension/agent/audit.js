@@ -25,6 +25,11 @@
   }
 
   const subtle = (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.subtle) || null;
+  // Tamper-evidence is cryptographic ONLY when WebCrypto SHA-256 is available.
+  // When it is not, the chain degrades to a NON-cryptographic marker — callers
+  // must treat the log as non-tamper-evident (surfaced via verify()/export so a
+  // value-moving host can refuse rather than silently trust it; audit-finding #7).
+  const CRYPTOGRAPHIC = !!subtle;
   async function sha256hex(str) {
     if (!subtle) {
       // extremely unlikely in extension/Node20; degrade to a non-crypto marker
@@ -66,11 +71,15 @@
         head = await sha256hex(head + canonical(rest));
         if (head !== hash) return { ok: false, at: e.seq };
       }
-      return { ok: head === this.head, head };
+      return { ok: head === this.head, head, cryptographic: CRYPTOGRAPHIC };
     }
 
+    // True only when the chain is cryptographically tamper-evident (WebCrypto
+    // present). A value-moving host should refuse to proceed when this is false.
+    isCryptographic() { return CRYPTOGRAPHIC; }
+
     list() { return this.entries.slice(); }
-    export() { return JSON.stringify({ head: this.head, entries: this.entries }, bigintReplacer, 2); }
+    export() { return JSON.stringify({ head: this.head, cryptographic: CRYPTOGRAPHIC, entries: this.entries }, bigintReplacer, 2); }
     clear() { this.entries = []; this.head = 'genesis'; this.seq = 0; }
   }
 

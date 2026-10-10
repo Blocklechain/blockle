@@ -1,0 +1,946 @@
+<title>Blockle Bots — design reference</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* ============================ TOKENS ============================ */
+  :root {
+    --ground: #0b0f15;
+    --surface: #141b24;
+    --elevated: #1d2630;
+    --line: #27333f;
+    --line-soft: #1f2932;
+    --ink: #e8edf3;
+    --ink-muted: #8795a4;
+    --ink-faint: #5d6b79;
+    --accent: #4c8dff;        /* azure — structural accent */
+    --accent-dim: #2b4a86;
+    --accent-ghost: #4c8dff1f;
+    --gain: #2fd39b;          /* semantic, separate from accent */
+    --gain-ghost: #2fd39b1f;
+    --loss: #f0536a;
+    --loss-ghost: #f0536a1f;
+    --warn: #f0a732;
+    /* deal-ladder categoricals: Okabe–Ito safe triad, lifted for dark */
+    --k-base: #4c8dff;
+    --k-safety: #f0a732;
+    --k-tp: #2fd39b;
+    --radius: 14px;
+    --radius-sm: 9px;
+    --shadow: 0 1px 2px #0006, 0 8px 28px -12px #0009;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", monospace;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --maxw: 1180px;
+  }
+  :root[data-theme="light"] {
+    --ground: #f3f5f8;
+    --surface: #ffffff;
+    --elevated: #ffffff;
+    --line: #dde3ea;
+    --line-soft: #e8edf2;
+    --ink: #11212f;
+    --ink-muted: #5a6b7b;
+    --ink-faint: #93a1af;
+    --accent: #2f6ff0;
+    --accent-dim: #a9c6ff;
+    --accent-ghost: #2f6ff014;
+    --gain: #0c9e6f;
+    --gain-ghost: #0c9e6f14;
+    --loss: #d83a52;
+    --loss-ghost: #d83a5214;
+    --warn: #c6830f;
+    --k-base: #2f6ff0;
+    --k-safety: #c6830f;
+    --k-tp: #0c9e6f;
+    --shadow: 0 1px 2px #1b2b3a12, 0 10px 30px -16px #1b2b3a2e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --ground: #f3f5f8; --surface: #ffffff; --elevated: #ffffff;
+      --line: #dde3ea; --line-soft: #e8edf2; --ink: #11212f; --ink-muted: #5a6b7b;
+      --ink-faint: #93a1af; --accent: #2f6ff0; --accent-dim: #a9c6ff; --accent-ghost: #2f6ff014;
+      --gain: #0c9e6f; --gain-ghost: #0c9e6f14; --loss: #d83a52; --loss-ghost: #d83a5214;
+      --warn: #c6830f; --k-base: #2f6ff0; --k-safety: #c6830f; --k-tp: #0c9e6f;
+      --shadow: 0 1px 2px #1b2b3a12, 0 10px 30px -16px #1b2b3a2e;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); line-height: 1.5;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    /* ambient: a faint azure wash top-left, quiet */
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(900px 500px at 12% -8%, var(--accent-ghost), transparent 60%),
+      radial-gradient(700px 420px at 100% 0%, #2fd39b10, transparent 55%);
+  }
+  .wrap { position: relative; z-index: 1; max-width: var(--maxw); margin: 0 auto; padding: 0 22px 90px; }
+
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .eyebrow { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+  h1,h2,h3 { text-wrap: balance; margin: 0; letter-spacing: -0.02em; }
+  a { color: inherit; }
+
+  /* ============================ TOP BAR ============================ */
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    backdrop-filter: blur(14px); background: color-mix(in srgb, var(--ground) 82%, transparent);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar-inner { max-width: var(--maxw); margin: 0 auto; padding: 12px 22px;
+    display: flex; align-items: center; gap: 18px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; letter-spacing: -.02em; font-size: 16px; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+    background: linear-gradient(145deg, var(--accent), #6aa6ff); color: #fff;
+    box-shadow: 0 4px 14px -4px var(--accent); flex: 0 0 auto;
+  }
+  .brand .mark svg { width: 17px; height: 17px; display: block; }
+  .brand small { color: var(--ink-faint); font-weight: 600; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin-left: 2px; }
+  .spacer { flex: 1; }
+
+  .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .seg button { font: inherit; font-size: 13px; font-weight: 600; border: 0; background: transparent; color: var(--ink-muted);
+    padding: 6px 13px; border-radius: 7px; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+  .seg button[aria-pressed="true"] { background: var(--elevated); color: var(--ink); box-shadow: var(--shadow); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+  .seg button[aria-pressed="true"] .dot.live { background: var(--gain); box-shadow: 0 0 0 3px var(--gain-ghost); }
+  .seg button[aria-pressed="true"] .dot.paper { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-ghost); }
+
+  .iconbtn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface);
+    color: var(--ink-muted); cursor: pointer; display: grid; place-items: center; }
+  .iconbtn:hover { color: var(--ink); border-color: var(--accent-dim); }
+  .iconbtn svg { width: 18px; height: 18px; }
+
+  .kill {
+    font: inherit; font-weight: 700; font-size: 13px; cursor: pointer;
+    color: var(--loss); background: var(--loss-ghost); border: 1px solid color-mix(in srgb, var(--loss) 40%, transparent);
+    padding: 8px 14px; border-radius: 10px; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .kill:hover { background: var(--loss); color: #fff; }
+  .kill svg { width: 15px; height: 15px; }
+
+  /* ============================ TABS ============================ */
+  .tabs { display: flex; gap: 4px; margin: 26px 0 22px; border-bottom: 1px solid var(--line-soft); }
+  .tabs button { font: inherit; font-size: 14px; font-weight: 600; color: var(--ink-muted); background: none; border: 0;
+    padding: 11px 15px; cursor: pointer; position: relative; }
+  .tabs button[aria-selected="true"] { color: var(--ink); }
+  .tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px;
+    height: 2px; background: var(--accent); border-radius: 2px; }
+  .panel { display: none; }
+  .panel.on { display: block; animation: fade .32s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  /* ============================ CARDS ============================ */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+
+  /* hero */
+  .hero { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
+  .hero-pnl { padding: 22px 24px; display: flex; flex-direction: column; }
+  .hero-pnl .big { font-size: clamp(34px, 6vw, 52px); font-weight: 700; letter-spacing: -.03em; line-height: 1; margin: 10px 0 4px; }
+  .hero-pnl .sub { color: var(--ink-muted); font-size: 13px; }
+  .pos { color: var(--gain); } .neg { color: var(--loss); }
+  .chip-pnl { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 13px; font-weight: 600;
+    padding: 3px 8px; border-radius: 7px; }
+  .chip-pnl.pos { background: var(--gain-ghost); } .chip-pnl.neg { background: var(--loss-ghost); }
+  .spark { flex: 1; min-height: 72px; margin-top: 16px; }
+  .spark canvas { width: 100%; height: 100%; display: block; }
+
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft);
+    border-radius: var(--radius); overflow: hidden; }
+  .tile { background: var(--surface); padding: 17px 18px; }
+  .tile .eyebrow { margin-bottom: 7px; }
+  .tile .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 23px; font-weight: 600; letter-spacing: -.01em; }
+  .tile .t { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
+
+  /* section head */
+  .sec-head { display: flex; align-items: center; gap: 12px; margin: 30px 0 14px; }
+  .sec-head h2 { font-size: 17px; }
+  .count { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); background: var(--elevated);
+    border: 1px solid var(--line); border-radius: 20px; padding: 2px 9px; }
+
+  /* bot grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .bot { padding: 17px 18px 16px; cursor: pointer; transition: border-color .18s, transform .18s; display: flex; flex-direction: column; gap: 13px; }
+  .bot:hover { border-color: var(--accent-dim); transform: translateY(-2px); }
+  .bot-top { display: flex; align-items: flex-start; gap: 10px; }
+  .bot-name { font-weight: 650; font-size: 15px; letter-spacing: -.01em; }
+  .bot-pair { font-family: var(--mono); font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
+  .chip { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 7px; letter-spacing: .02em;
+    border: 1px solid var(--line); color: var(--ink-muted); background: var(--elevated); white-space: nowrap; }
+  .chip.type { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-ghost); }
+  .badge { margin-left: auto; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; }
+  .badge.live { color: #fff; background: var(--gain); }
+  .badge.paper { color: var(--accent); background: transparent; border: 1px solid var(--accent-dim); }
+  .badge .d { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.live .d { background: #fff; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .alloc { display: flex; flex-direction: column; gap: 6px; }
+  .alloc-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-muted); }
+  .alloc-row .num { color: var(--ink); }
+  .bar { height: 6px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .bar > span { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), #6aa6ff); }
+  .bot-foot { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+  .bot-foot .label { font-size: 12px; color: var(--ink-muted); }
+  .minispark { width: 72px; height: 26px; }
+
+  /* ============================ CREATE ============================ */
+  .create { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .create, .hero { grid-template-columns: 1fr; } }
+  .pane { padding: 20px 22px; }
+  .pane h3 { font-size: 15px; margin-bottom: 3px; }
+  .pane .hint { font-size: 12.5px; color: var(--ink-muted); margin-bottom: 16px; }
+
+  .tpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tpl { text-align: left; font: inherit; cursor: pointer; padding: 13px; border-radius: var(--radius-sm);
+    border: 1px solid var(--line); background: var(--elevated); display: flex; flex-direction: column; gap: 5px; transition: .16s; }
+  .tpl:hover { border-color: var(--accent-dim); }
+  .tpl[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-ghost); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .tpl .nm { font-weight: 650; font-size: 13.5px; display: flex; align-items: center; gap: 7px; }
+  .tpl .ds { font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; }
+  .tpl .ic { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: var(--accent-ghost); color: var(--accent); flex: 0 0 auto; }
+  .tpl .ic svg { width: 13px; height: 13px; }
+
+  .field { margin-top: 15px; }
+  .field > label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 7px; }
+  .field .fhint { font-size: 11.5px; color: var(--ink-faint); font-weight: 400; margin-left: 6px; }
+  .control { display: flex; align-items: center; gap: 9px; background: var(--elevated); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 0 13px; height: 46px; }
+  .control:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ghost); }
+  .control .cur { font-family: var(--mono); color: var(--ink-faint); font-size: 15px; }
+  .control input { flex: 1; min-width: 0; border: 0; background: none; color: var(--ink); font: inherit;
+    font-family: var(--mono); font-size: 16px; outline: none; }
+  .control input::placeholder { color: var(--ink-faint); }
+  .control .suffix { font-size: 12px; color: var(--ink-muted); }
+  .pairline { display: flex; align-items: center; gap: 8px; }
+  .token { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 800; color: #fff; }
+
+  .preview { margin-top: 16px; padding: 14px 15px; border-radius: var(--radius-sm); background: var(--accent-ghost);
+    border: 1px solid var(--accent-dim); font-size: 13.5px; line-height: 1.55; }
+  .preview b { color: var(--ink); font-weight: 650; }
+  .preview .num { color: var(--accent); font-weight: 650; }
+
+  .adv-toggle { margin-top: 18px; width: 100%; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+    background: none; border: 0; border-top: 1px dashed var(--line); padding: 14px 2px 2px; color: var(--ink-muted);
+    display: flex; align-items: center; justify-content: space-between; }
+  .adv-toggle:hover { color: var(--ink); }
+  .adv-toggle .chev { transition: transform .25s; }
+  .adv[hidden] { display: none; }
+  .adv { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 13px; animation: fade .25s ease; }
+  .mini { }
+  .mini label { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-muted); margin-bottom: 6px; }
+  .mini label .num { color: var(--ink); font-weight: 600; }
+  input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 5px; border-radius: 4px;
+    background: var(--line); outline: none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; border: 3px solid var(--surface); box-shadow: 0 1px 4px #0007; }
+  input[type="range"]:focus-visible { box-shadow: 0 0 0 3px var(--accent-ghost); }
+
+  .actions { display: flex; gap: 10px; margin-top: 20px; }
+  .btn { font: inherit; font-weight: 650; font-size: 14px; cursor: pointer; border-radius: 11px; padding: 12px 18px;
+    border: 1px solid var(--line); background: var(--elevated); color: var(--ink); display: inline-flex; align-items: center; gap: 8px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 6px 18px -6px var(--accent); flex: 1; justify-content: center; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.ghost:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .btn svg { width: 16px; height: 16px; }
+
+  /* ladder viz */
+  .ladder-wrap { position: sticky; top: 84px; }
+  .ladder-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+  .ladder canvas { width: 100%; height: 330px; display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+  .legend .it { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-muted); }
+  .legend .sw { width: 18px; height: 3px; border-radius: 2px; }
+  .legend .mk { font-family: var(--mono); }
+  .ladder-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--line-soft);
+    border-radius: var(--radius-sm); overflow: hidden; margin-top: 14px; }
+  .ladder-stats div { background: var(--surface); padding: 11px 13px; }
+  .ladder-stats .eyebrow { margin-bottom: 4px; }
+  .ladder-stats .v { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 600; }
+
+  /* ============================ DETAIL ============================ */
+  .detail { display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .detail { grid-template-columns: 1fr; } }
+  .dt-head { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
+  .dt-head h2 { font-size: 20px; }
+  .steps { list-style: none; margin: 8px 0 0; padding: 0; }
+  .step { display: grid; grid-template-columns: 26px 1fr auto; gap: 13px; padding: 13px 0; position: relative; }
+  .step:not(:last-child)::before { content: ""; position: absolute; left: 12px; top: 30px; bottom: -13px; width: 2px; background: var(--line); }
+  .step .ring { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; z-index: 1;
+    border: 2px solid var(--line); background: var(--surface); font-size: 11px; font-weight: 700; color: var(--ink-faint); }
+  .step.done .ring { background: var(--gain); border-color: var(--gain); color: #06241a; }
+  .step.done:not(:last-child)::before { background: var(--gain); }
+  .step.active .ring { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-ghost); }
+  .step .lead { font-weight: 600; font-size: 14px; }
+  .step .meta { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }
+  .step .amt { font-family: var(--mono); font-size: 13px; text-align: right; }
+  .step .amt .q { color: var(--ink-faint); font-size: 11px; }
+
+  .pnl-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .pnl-tile { padding: 15px 16px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--elevated); }
+  .pnl-tile .v { font-family: var(--mono); font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+  .ctrls { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+
+  .note { margin-top: 26px; font-size: 12.5px; color: var(--ink-faint); display: flex; gap: 9px; align-items: flex-start;
+    border: 1px dashed var(--line); border-radius: var(--radius-sm); padding: 13px 15px; }
+  .note svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; color: var(--accent); }
+  .note b { color: var(--ink-muted); }
+
+  footer { max-width: var(--maxw); margin: 40px auto 0; padding: 20px 22px; border-top: 1px solid var(--line-soft);
+    color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+
+  /* ============================ ARENA ============================ */
+  .arena-top { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .playbal { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--accent-ghost), transparent); border: 1px solid var(--accent-dim); }
+  .playbal .coin { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; font-size: 20px;
+    background: radial-gradient(circle at 35% 30%, #ffd983, #e8a33d); box-shadow: 0 4px 12px -3px #e8a33d88; }
+  .playbal .v { font-family: var(--mono); font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
+  .playbal .t { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--warn); font-weight: 700; }
+  .lvl { flex: 1; min-width: 200px; }
+  .lvl-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+  .lvl-row b { color: var(--accent); } .lvl-row .num { color: var(--ink-muted); }
+  .arena-main { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 920px) { .arena-main { grid-template-columns: 1fr; } }
+  .scen { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 14px; }
+  .scen button { font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 7px 13px; border-radius: 20px;
+    border: 1px solid var(--line); background: var(--elevated); color: var(--ink-muted); }
+  .scen button[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: var(--accent-ghost); }
+  .simwrap canvas { width: 100%; height: 300px; display: block; }
+  .sim-foot { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); flex-wrap: wrap; }
+  .score { display: flex; gap: 20px; }
+  .score .it .eyebrow { margin-bottom: 3px; }
+  .score .it .v { font-family: var(--mono); font-size: 20px; font-weight: 650; }
+  .mission { padding: 16px 18px; }
+  .mission h3 { font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .mission .goal { font-size: 13px; color: var(--ink-muted); margin: 7px 0 13px; line-height: 1.5; }
+  .badges { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 4px; }
+  .badge2 { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 20px;
+    background: var(--elevated); border: 1px solid var(--line); }
+  .badge2.locked { opacity: .32; filter: grayscale(1); }
+  .lb { list-style: none; margin: 10px 0 0; padding: 0; }
+  .lb li { display: flex; align-items: center; gap: 11px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
+  .lb li:last-child { border-bottom: 0; }
+  .lb .rk { width: 22px; font-family: var(--mono); color: var(--ink-faint); font-weight: 700; }
+  .lb .me { color: var(--accent); font-weight: 700; }
+  .lb .sc { margin-left: auto; font-family: var(--mono); font-weight: 650; }
+  .lb .you-row { background: var(--accent-ghost); margin: 0 -22px; padding: 9px 22px; border-radius: 8px; }
+  .disclaim { font-size: 11.5px; color: var(--ink-faint); margin-top: 16px; display: flex; gap: 8px; align-items: center; }
+  .disclaim svg { width: 14px; height: 14px; flex: 0 0 auto; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8l7-4 7 4-7 4-7-4z" fill="#fff" opacity=".95"/><path d="M5 12l7 4 7-4M5 16l7 4 7-4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity=".8"/></svg></span>
+      Blockle Bots <small>DEX</small>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" role="group" aria-label="Trading mode filter">
+      <button aria-pressed="true" data-mode="paper"><span class="dot paper"></span>Paper</button>
+      <button aria-pressed="false" data-mode="live"><span class="dot live"></span>Live</button>
+    </div>
+    <button class="iconbtn" id="theme" aria-label="Toggle light / dark theme" title="Toggle theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="kill" id="killall">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10M18.4 6.6a9 9 0 11-12.8 0" stroke-linecap="round"/></svg>
+      Kill all
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="cockpit">Cockpit</button>
+    <button role="tab" aria-selected="false" data-tab="create">Create a bot</button>
+    <button role="tab" aria-selected="false" data-tab="detail">Bot detail</button>
+    <button role="tab" aria-selected="false" data-tab="arena">Arena <span style="font-size:10px;background:var(--warn);color:#2a1a00;padding:1px 6px;border-radius:20px;margin-left:5px;font-weight:800;letter-spacing:.04em">PLAY</span></button>
+  </div>
+
+  <!-- ===================== COCKPIT ===================== -->
+  <section class="panel on" id="cockpit" role="tabpanel">
+    <div class="hero">
+      <div class="card hero-pnl">
+        <span class="eyebrow">Portfolio P&amp;L · all bots</span>
+        <div class="big num pos">+$1,284.60</div>
+        <div class="sub">
+          <span class="chip-pnl pos">▲ +4.21%</span>
+          &nbsp;last 30 days · realized +$902.10 · unrealized +$382.50
+        </div>
+        <div class="spark"><canvas id="heroSpark" aria-label="30-day cumulative P&L sparkline, trending up"></canvas></div>
+      </div>
+      <div class="tiles">
+        <div class="tile"><div class="eyebrow">Active bots</div><div class="v">6</div><div class="t">4 paper · 2 live</div></div>
+        <div class="tile"><div class="eyebrow">Allocation in use</div><div class="v">$3,120</div><div class="t">of $8,000 capped</div></div>
+        <div class="tile"><div class="eyebrow">Today</div><div class="v pos">+$47.80</div><div class="t">across 9 deals</div></div>
+        <div class="tile"><div class="eyebrow">Win rate</div><div class="v">71%</div><div class="t">142 of 200 deals</div></div>
+      </div>
+    </div>
+
+    <div class="sec-head"><h2>Your bots</h2><span class="count">6</span></div>
+    <div class="grid" id="botGrid"></div>
+
+    <div class="note">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01" stroke-linecap="round"/></svg>
+      <span><b>Non-custodial &amp; gated.</b> Keys never leave your device. Live bots trade <b>fully auto within their allocation cap</b> — no per-order tap inside the cap — but every order still passes session caps, the allowlist, the hash-chained audit, the 0.05% fee, and the kill switch. Mainnet stays off until you enable it.</span>
+    </div>
+  </section>
+
+  <!-- ===================== CREATE ===================== -->
+  <section class="panel" id="create" role="tabpanel">
+    <div class="create">
+      <div class="card pane">
+        <h3>Create a bot</h3>
+        <p class="hint">Pick a starting point, choose a pair, set one amount. That's it — tune the rest under Advanced if you want.</p>
+
+        <span class="eyebrow">1 · Template</span>
+        <div class="tpl-grid" id="tplGrid" style="margin-top:9px"></div>
+
+        <div class="field">
+          <label for="pair">2 · Pair <span class="fhint">what to trade</span></label>
+          <div class="control">
+            <span class="pairline"><span class="token" style="background:#9945ff">S</span></span>
+            <input id="pair" value="SOL / USDC" aria-label="Trading pair">
+            <span class="suffix">Jupiter · Blockle</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="alloc">3 · Amount to allocate <span class="fhint">the bot's hard cap</span></label>
+          <div class="control">
+            <span class="cur">$</span>
+            <input id="alloc" class="num" value="500" inputmode="decimal" aria-label="Allocation in US dollars">
+            <span class="suffix">USDC</span>
+          </div>
+        </div>
+
+        <div class="preview" id="preview"></div>
+
+        <button class="adv-toggle" id="advToggle" aria-expanded="false" aria-controls="adv">
+          <span>Advanced — safety orders, take-profit, trailing</span>
+          <svg class="chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="adv" id="adv" hidden>
+          <div class="mini"><label>Base order <span class="num" id="v_base">$100</span></label><input type="range" id="r_base" min="25" max="300" step="25" value="100"></div>
+          <div class="mini"><label>Take-profit <span class="num" id="v_tp">2.0%</span></label><input type="range" id="r_tp" min="0.5" max="8" step="0.5" value="2"></div>
+          <div class="mini"><label>Safety orders <span class="num" id="v_so">3</span></label><input type="range" id="r_so" min="0" max="6" step="1" value="3"></div>
+          <div class="mini"><label>Price step <span class="num" id="v_step">2.0%</span></label><input type="range" id="r_step" min="0.5" max="6" step="0.5" value="2"></div>
+          <div class="mini"><label>Volume scale <span class="num" id="v_vol">1.4×</span></label><input type="range" id="r_vol" min="1" max="2.5" step="0.1" value="1.4"></div>
+          <div class="mini"><label>Trailing <span class="num" id="v_tr">0.6%</span></label><input type="range" id="r_tr" min="0" max="3" step="0.2" value="0.6"></div>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z" stroke-linejoin="round"/></svg>Start in paper</button>
+          <button class="btn ghost" id="golive"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h7l-1 8 10-12h-7z" stroke-linejoin="round"/></svg>Go live…</button>
+        </div>
+      </div>
+
+      <div class="card pane ladder-wrap">
+        <div class="ladder-head">
+          <div><span class="eyebrow">Deal preview</span><h3 id="ladderTitle" style="margin-top:4px">SOL / USDC</h3></div>
+          <span class="chip type" id="ladderType">DCA</span>
+        </div>
+        <div class="ladder"><canvas id="ladder" aria-label="Price ladder showing base order, safety orders and take-profit levels"></canvas></div>
+        <div class="legend">
+          <span class="it"><span class="sw" style="background:var(--k-base)"></span><span class="mk">◆</span> Base order</span>
+          <span class="it"><span class="sw" style="background:var(--k-safety)"></span><span class="mk">●</span> Safety orders</span>
+          <span class="it"><span class="sw" style="background:var(--k-tp)"></span><span class="mk">▲</span> Take-profit</span>
+        </div>
+        <div class="ladder-stats">
+          <div><div class="eyebrow">Max deal size</div><div class="v" id="s_max">$500</div></div>
+          <div><div class="eyebrow">Avg entry if all fill</div><div class="v" id="s_avg">—</div></div>
+          <div><div class="eyebrow">Covers a dip of</div><div class="v" id="s_dip">—</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== DETAIL ===================== -->
+  <section class="panel" id="detail" role="tabpanel">
+    <div class="detail">
+      <div class="card pane">
+        <div class="dt-head">
+          <span class="chip type">DCA</span>
+          <h2>SOL Accumulator</h2>
+          <span class="badge live" style="margin-left:auto"><span class="d"></span>Live</span>
+        </div>
+        <p class="hint">Deal #37 · opened 2h ago · <span class="num">SOL / USDC</span> on Jupiter</p>
+        <ol class="steps">
+          <li class="step done"><span class="ring">✓</span><div><div class="lead">Base order filled</div><div class="meta">2h ago · entry $142.80</div></div><div class="amt">0.700 SOL<div class="q">$100.00</div></div></li>
+          <li class="step done"><span class="ring">✓</span><div><div class="lead">Safety order 1 filled</div><div class="meta">46m ago · −2.0% · $139.94</div></div><div class="amt">1.001 SOL<div class="q">$140.00</div></div></li>
+          <li class="step active"><span class="ring">2</span><div><div class="lead">Safety order 2 armed</div><div class="meta">triggers at $135.14 (−5.0%)</div></div><div class="amt">$196.00<div class="q">waiting</div></div></li>
+          <li class="step"><span class="ring">▲</span><div><div class="lead">Take-profit</div><div class="meta">+2.0% from avg entry $140.98</div></div><div class="amt">$143.80<div class="q">target</div></div></li>
+        </ol>
+        <div class="ctrls">
+          <button class="btn ghost">Pause</button>
+          <button class="btn ghost">Edit</button>
+          <button class="btn ghost">Clone</button>
+          <button class="btn ghost">Close deal</button>
+          <button class="kill" style="margin-left:auto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10M18.4 6.6a9 9 0 11-12.8 0" stroke-linecap="round"/></svg>Kill bot</button>
+        </div>
+      </div>
+
+      <div class="card pane">
+        <span class="eyebrow">Performance</span>
+        <div class="pnl-tiles" style="margin-top:12px">
+          <div class="pnl-tile"><div class="eyebrow">Unrealized</div><div class="v neg">−$3.42</div><div class="t" style="font-size:12px;color:var(--ink-muted)">mark $140.10</div></div>
+          <div class="pnl-tile"><div class="eyebrow">Realized (36 deals)</div><div class="v pos">+$214.90</div><div class="t" style="font-size:12px;color:var(--ink-muted)">avg +$5.97 / deal</div></div>
+          <div class="pnl-tile"><div class="eyebrow">Allocation used</div><div class="v">$240<span style="color:var(--ink-faint);font-size:14px"> / $500</span></div><div class="bar" style="margin-top:9px"><span style="width:48%"></span></div></div>
+          <div class="pnl-tile"><div class="eyebrow">Win rate</div><div class="v">83%</div><div class="t" style="font-size:12px;color:var(--ink-muted)">30 of 36 · max DD 6.1%</div></div>
+        </div>
+        <div class="note" style="margin-top:18px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l9 5v5c0 5-3.5 8-9 10-5.5-2-9-5-9-10V7l9-5z" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span><b>Profit pop-ups are on.</b> When a deal closes into USDC in profit you'll get a notification like <b style="color:var(--gain)">“+$5.97 — sold 1.7 SOL → USDC”.</b></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== ARENA ===================== -->
+  <section class="panel" id="arena" role="tabpanel">
+    <div class="arena-top">
+      <div class="playbal">
+        <span class="coin" aria-hidden="true">🪙</span>
+        <div><div class="t">Play balance</div><div class="v num" id="playBal">10,000</div></div>
+      </div>
+      <div class="lvl">
+        <div class="lvl-row"><span><b id="lvlName">Lv 4 · Tactician</b></span><span class="num" id="xpTxt">640 / 900 XP</span></div>
+        <div class="bar"><span id="xpBar" style="width:71%"></span></div>
+        <div class="lvl-row" style="margin-top:7px"><span class="num" style="color:var(--ink-faint)">Next unlock</span><span style="color:var(--ink-muted)">Trailing take-profit</span></div>
+      </div>
+    </div>
+
+    <div class="arena-main">
+      <div class="card pane simwrap">
+        <div class="ladder-head">
+          <div><span class="eyebrow">Simulated market · seeded &amp; replayable</span><h3 style="margin-top:4px">Conservative DCA · SOL</h3></div>
+          <span class="chip type" id="simState">Ready</span>
+        </div>
+        <div class="scen" role="group" aria-label="Market scenario">
+          <button aria-pressed="true" data-scen="bull">📈 Bull</button>
+          <button aria-pressed="false" data-scen="crab">🦀 Crab</button>
+          <button aria-pressed="false" data-scen="bear">📉 Bear</button>
+          <button aria-pressed="false" data-scen="crash">💥 Flash-crash</button>
+          <button aria-pressed="false" data-scen="pump">🚀 Pump &amp; fade</button>
+        </div>
+        <canvas id="sim" aria-label="Simulated price path with the bot's fills"></canvas>
+        <div class="sim-foot">
+          <button class="btn primary" id="runBtn" style="flex:0 0 auto"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 5v14l11-7z" stroke-linejoin="round"/></svg>Run simulation</button>
+          <div class="score">
+            <div class="it"><div class="eyebrow">Play P&amp;L</div><div class="v num" id="simPnl">+$0.00</div></div>
+            <div class="it"><div class="eyebrow">Score</div><div class="v num" id="simScore">—</div></div>
+            <div class="it"><div class="eyebrow">Max drawdown</div><div class="v num" id="simDd">—</div></div>
+          </div>
+        </div>
+        <div class="disclaim">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01" stroke-linecap="round"/></svg>
+          Simulation with play funds — not financial advice. Simulated performance does not predict real results.
+        </div>
+      </div>
+
+      <div class="card mission">
+        <h3>🎯 Mission <span class="chip" style="margin-left:auto">+120 XP</span></h3>
+        <div class="goal" id="missionGoal">Finish the <b>Flash-crash</b> scenario in the green using a DCA bot with at least 3 safety orders.</div>
+        <button class="btn ghost" id="toCreate" style="width:100%;justify-content:center">Design your strategy →</button>
+
+        <div style="margin-top:20px"><span class="eyebrow">Badges</span>
+          <div class="badges">
+            <div class="badge2" title="First simulation">🎓</div>
+            <div class="badge2" title="Survived a crash">🛡️</div>
+            <div class="badge2" title="+20% in a bull run">🔥</div>
+            <div class="badge2 locked" title="Locked — win a Crab market">🦀</div>
+            <div class="badge2 locked" title="Locked — reach level 10">💎</div>
+          </div>
+        </div>
+
+        <div style="margin-top:20px"><span class="eyebrow">Leaderboard · local</span>
+          <ol class="lb">
+            <li><span class="rk">1</span>degen_dax<span class="sc pos">+38.2</span></li>
+            <li><span class="rk">2</span>gridgoblin<span class="sc pos">+31.7</span></li>
+            <li class="you-row"><span class="rk">3</span><span class="me">you</span><span class="sc pos num" id="lbYou">+29.4</span></li>
+            <li><span class="rk">4</span>hodlbot99<span class="sc pos">+22.0</span></li>
+          </ol>
+          <div class="disclaim" style="margin-top:10px">Global leaderboard &amp; shareable runs — coming later.</div>
+        </div>
+
+        <button class="btn primary" style="width:100%;justify-content:center;margin-top:18px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>Use this strategy for real (starts in paper)</button>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Blockle Bots — shared design reference · <span class="num">docs/design/bots</span></span>
+    <span>Non-custodial · testnet-first · paper by default</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+
+  /* theme toggle — overrides the media query in both directions */
+  document.getElementById("theme").addEventListener("click", function () {
+    var cur = root.getAttribute("data-theme");
+    if (!cur) cur = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    root.setAttribute("data-theme", cur === "dark" ? "light" : "dark");
+    redrawAll();
+  });
+  function cssv(n) { return getComputedStyle(root).getPropertyValue(n).trim(); }
+
+  /* mode filter */
+  document.querySelectorAll(".seg button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll(".seg button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", "true");
+    });
+  });
+
+  /* tabs */
+  document.querySelectorAll(".tabs [role=tab]").forEach(function (t) {
+    t.addEventListener("click", function () {
+      document.querySelectorAll(".tabs [role=tab]").forEach(function (x) { x.setAttribute("aria-selected", "false"); });
+      t.setAttribute("aria-selected", "true");
+      document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("on"); });
+      document.getElementById(t.dataset.tab).classList.add("on");
+      redrawAll();
+    });
+  });
+
+  /* ---- bot cards ---- */
+  var BOTS = [
+    { nm: "SOL Accumulator", ty: "DCA", pair: "SOL / USDC", mode: "live", used: 240, cap: 500, pnl: 211.5, spark: [0,3,2,6,5,9,8,12,15,14,18,22], up: true },
+    { nm: "BLOCK Ladder", ty: "DCA", pair: "BLOCK / USDC", mode: "live", used: 1300, cap: 2000, pnl: 642.1, spark: [0,2,5,4,8,11,10,14,13,17,20,24], up: true },
+    { nm: "ETH Wide Grid", ty: "Grid", pair: "ETH / USDC", mode: "paper", used: 680, cap: 1500, pnl: 88.2, spark: [0,4,2,5,3,6,4,7,6,9,7,10], up: true },
+    { nm: "Majors Rebalance", ty: "Rebalance", pair: "4 assets", mode: "paper", used: 500, cap: 1500, pnl: -12.4, spark: [0,-1,1,-2,0,-3,-1,-2,-4,-3,-5,-4], up: false },
+    { nm: "ARB Scalp Grid", ty: "Grid", pair: "ARB / USDC", mode: "paper", used: 300, cap: 500, pnl: 24.9, spark: [0,1,3,2,4,3,5,4,6,5,7,9], up: true },
+    { nm: "JUP Momentum", ty: "Momentum", pair: "JUP / USDC", mode: "paper", used: 100, cap: 500, pnl: 5.1, spark: [0,2,1,3,2,1,3,2,4,3,5,4], up: true }
+  ];
+  var sparks = [];
+  function money(n) { return (n < 0 ? "−$" : "+$") + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function botCard(b) {
+    var cls = b.up ? "pos" : "neg";
+    var pct = Math.round(b.used / b.cap * 100);
+    return '<article class="card bot" tabindex="0">' +
+      '<div class="bot-top"><div><div class="bot-name">' + b.nm + '</div><div class="bot-pair">' + b.pair + '</div></div>' +
+      '<span class="badge ' + b.mode + '"><span class="d"></span>' + (b.mode === "live" ? "Live" : "Paper") + '</span></div>' +
+      '<div style="display:flex;gap:7px"><span class="chip type">' + b.ty + '</span>' +
+      '<span class="chip">' + (b.mode === "live" ? "auto · within cap" : "simulated") + '</span></div>' +
+      '<div class="alloc"><div class="alloc-row"><span>Allocation</span><span><span class="num">$' + b.used + '</span> / $' + b.cap + '</span></div>' +
+      '<div class="bar"><span style="width:' + pct + '%"></span></div></div>' +
+      '<div class="bot-foot"><div><div class="label">Total P&amp;L</div><div class="num ' + cls + '" style="font-weight:650;font-size:15px">' + money(b.pnl) + '</div></div>' +
+      '<canvas class="minispark" data-up="' + b.up + '"></canvas></div></article>';
+  }
+  var grid = document.getElementById("botGrid");
+  grid.innerHTML = BOTS.map(botCard).join("");
+  grid.querySelectorAll(".bot").forEach(function (c, i) {
+    var go = function () {
+      document.querySelector('.tabs [data-tab="detail"]').click();
+    };
+    c.addEventListener("click", go);
+    c.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+    sparks.push({ cv: c.querySelector(".minispark"), data: BOTS[i].spark, up: BOTS[i].up, mini: true });
+  });
+
+  /* ---- canvas helpers ---- */
+  function fit(cv) {
+    var r = cv.getBoundingClientRect(), d = Math.max(1, window.devicePixelRatio || 1);
+    if (r.width === 0) return null;
+    cv.width = r.width * d; cv.height = r.height * d;
+    var ctx = cv.getContext("2d"); ctx.setTransform(d, 0, 0, d, 0, 0);
+    return { ctx: ctx, w: r.width, h: r.height };
+  }
+  function drawSpark(cv, data, up, mini) {
+    var f = fit(cv); if (!f) return; var ctx = f.ctx, w = f.w, h = f.h;
+    var pad = mini ? 2 : 6, min = Math.min.apply(null, data), max = Math.max.apply(null, data), rng = (max - min) || 1;
+    var col = up ? cssv("--gain") : cssv("--loss");
+    var X = function (i) { return pad + i / (data.length - 1) * (w - pad * 2); };
+    var Y = function (v) { return h - pad - (v - min) / rng * (h - pad * 2); };
+    var grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, col + "44"); grad.addColorStop(1, col + "00");
+    ctx.beginPath(); ctx.moveTo(X(0), Y(data[0]));
+    for (var i = 1; i < data.length; i++) ctx.lineTo(X(i), Y(data[i]));
+    ctx.lineTo(X(data.length - 1), h - pad); ctx.lineTo(X(0), h - pad); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(X(0), Y(data[0]));
+    for (var j = 1; j < data.length; j++) ctx.lineTo(X(j), Y(data[j]));
+    ctx.strokeStyle = col; ctx.lineWidth = mini ? 1.5 : 2; ctx.lineJoin = "round"; ctx.stroke();
+    if (!mini) {
+      var lx = X(data.length - 1), ly = Y(data[data.length - 1]);
+      ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, 7); ctx.fillStyle = col; ctx.fill();
+      ctx.beginPath(); ctx.arc(lx, ly, 6.5, 0, 7); ctx.strokeStyle = col + "55"; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+  var heroData = [0,120,90,210,180,330,300,470,560,520,690,710,640,780,860,900,1010,980,1120,1180,1130,1240,1284];
+
+  /* ---- templates ---- */
+  var TPL = [
+    { id: "cons", nm: "Conservative DCA", ds: "Small base, 3 safety orders, +2% take-profit.", base: 100, tp: 2, so: 3, step: 2, vol: 1.4, tr: 0.6, ty: "DCA", icon: "shield" },
+    { id: "aggr", nm: "Aggressive DCA", ds: "Bigger base, martingale safety ladder, +1.2% TP.", base: 200, tp: 1.2, so: 5, step: 1.5, vol: 1.8, tr: 0.4, ty: "DCA", icon: "bolt" },
+    { id: "grid", nm: "Wide Grid", ds: "Ladder of limit orders across a broad range.", base: 120, tp: 1.5, so: 4, step: 3, vol: 1.0, tr: 0, ty: "Grid", icon: "grid" },
+    { id: "blk", nm: "BLOCK Accumulator", ds: "Stack BLOCK on every dip, trailing take-profit.", base: 80, tp: 2.5, so: 4, step: 2.5, vol: 1.3, tr: 0.8, ty: "DCA", icon: "layers" }
+  ];
+  var ICONS = {
+    shield: '<path d="M12 2l8 4v6c0 4.5-3 7-8 9-5-2-8-4.5-8-9V6l8-4z" stroke-linejoin="round"/>',
+    bolt: '<path d="M13 2L3 14h7l-1 8 10-12h-7z" stroke-linejoin="round"/>',
+    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    layers: '<path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5" stroke-linejoin="round"/>'
+  };
+  var state = { base: 100, tp: 2, so: 3, step: 2, vol: 1.4, tr: 0.6, ty: "DCA", alloc: 500, price: 142.8, pairBase: "SOL" };
+  var tg = document.getElementById("tplGrid");
+  tg.innerHTML = TPL.map(function (t, i) {
+    return '<button class="tpl" data-i="' + i + '" aria-pressed="' + (i === 0) + '">' +
+      '<span class="nm"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">' + ICONS[t.icon] + '</svg></span>' + t.nm + '</span>' +
+      '<span class="ds">' + t.ds + '</span></button>';
+  }).join("");
+  tg.querySelectorAll(".tpl").forEach(function (b) {
+    b.addEventListener("click", function () {
+      tg.querySelectorAll(".tpl").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", "true");
+      var t = TPL[+b.dataset.i];
+      state.base = t.base; state.tp = t.tp; state.so = t.so; state.step = t.step; state.vol = t.vol; state.tr = t.tr; state.ty = t.ty;
+      syncSliders(); render();
+    });
+  });
+
+  /* sliders */
+  var R = { base: "r_base", tp: "r_tp", so: "r_so", step: "r_step", vol: "r_vol", tr: "r_tr" };
+  Object.keys(R).forEach(function (k) {
+    document.getElementById(R[k]).addEventListener("input", function (e) { state[k] = +e.target.value; render(); });
+  });
+  function syncSliders() { Object.keys(R).forEach(function (k) { document.getElementById(R[k]).value = state[k]; }); }
+  document.getElementById("alloc").addEventListener("input", function (e) {
+    var n = parseFloat(e.target.value); state.alloc = isFinite(n) ? n : 0; render();
+  });
+  document.getElementById("advToggle").addEventListener("click", function () {
+    var a = document.getElementById("adv"), open = a.hidden;
+    a.hidden = !open; this.setAttribute("aria-expanded", open);
+    this.querySelector(".chev").style.transform = open ? "rotate(180deg)" : "";
+  });
+
+  /* deal math */
+  function deal() {
+    var legs = [], price = state.price, size = state.base, step = state.step, totalQty = 0, totalUsd = 0;
+    legs.push({ k: "base", price: price, usd: size });
+    totalQty += size / price; totalUsd += size;
+    var p = price;
+    for (var i = 0; i < state.so; i++) {
+      p = p * (1 - step / 100);
+      size = size * state.vol;
+      legs.push({ k: "safety", price: p, usd: size });
+      totalQty += size / p; totalUsd += size;
+    }
+    var avg = totalUsd / totalQty;
+    var tp = avg * (1 + state.tp / 100);
+    var dip = (price - p) / price * 100;
+    return { legs: legs, avg: avg, tp: tp, totalUsd: totalUsd, dip: dip, lo: p, hi: tp };
+  }
+  function render() {
+    document.getElementById("v_base").textContent = "$" + state.base;
+    document.getElementById("v_tp").textContent = state.tp.toFixed(1) + "%";
+    document.getElementById("v_so").textContent = state.so;
+    document.getElementById("v_step").textContent = state.step.toFixed(1) + "%";
+    document.getElementById("v_vol").textContent = state.vol.toFixed(1) + "×";
+    document.getElementById("v_tr").textContent = state.tr.toFixed(1) + "%";
+    document.getElementById("ladderType").textContent = state.ty;
+    var d = deal();
+    document.getElementById("s_max").textContent = "$" + Math.round(d.totalUsd);
+    document.getElementById("s_avg").textContent = "$" + d.avg.toFixed(2);
+    document.getElementById("s_dip").textContent = "−" + d.dip.toFixed(1) + "%";
+    var trail = state.tr > 0 ? (" with a <span class='num'>" + state.tr.toFixed(1) + "%</span> trailing stop") : "";
+    document.getElementById("preview").innerHTML =
+      "Buys <b>$" + state.base + "</b> of <b>" + state.pairBase + "</b> now, then adds up to <span class='num'>" + state.so +
+      "</span> more time" + (state.so === 1 ? "" : "s") + " if price dips (every <span class='num'>" + state.step.toFixed(1) +
+      "%</span>). Takes profit at <span class='num'>+" + state.tp.toFixed(1) + "%</span> from the average entry" + trail +
+      ". Capped at <b>$" + (state.alloc || 0).toLocaleString() + "</b>.";
+    drawLadder();
+  }
+  function drawLadder() {
+    var cv = document.getElementById("ladder"); var f = fit(cv); if (!f) return;
+    var ctx = f.ctx, w = f.w, h = f.h, padL = 54, padR = 16, padT = 14, padB = 20;
+    var d = deal();
+    var lo = Math.min(d.lo, d.avg) * 0.995, hi = d.hi * 1.004, rng = hi - lo;
+    var Y = function (v) { return padT + (hi - v) / rng * (h - padT - padB); };
+    var plotW = w - padL - padR;
+    // gridlines + price labels
+    ctx.font = "11px " + cssv("--mono").split(",")[0];
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    var ticks = 5;
+    for (var g = 0; g <= ticks; g++) {
+      var val = lo + rng * g / ticks, y = Y(val);
+      ctx.strokeStyle = cssv("--line-soft"); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = cssv("--ink-faint"); ctx.fillText("$" + val.toFixed(1), padL - 9, y);
+    }
+    // current price line
+    var cy = Y(state.price);
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = cssv("--ink-muted"); ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(padL, cy); ctx.lineTo(w - padR, cy); ctx.stroke(); ctx.setLineDash([]);
+    ctx.textAlign = "left"; ctx.fillStyle = cssv("--ink-muted");
+    ctx.fillText("now $" + state.price.toFixed(1), padL + 6, cy - 9);
+    // avg entry band
+    var ay = Y(d.avg);
+    ctx.fillStyle = cssv("--accent-ghost");
+    ctx.fillRect(padL, Math.min(ay, cy), plotW, Math.abs(cy - ay));
+    // helper to draw a marker row
+    function marker(y, color, shape, label, usd) {
+      ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW * 0.62, y); ctx.stroke();
+      ctx.fillStyle = color;
+      var mx = padL + plotW * 0.62 + 10;
+      if (shape === "diamond") { ctx.save(); ctx.translate(mx, y); ctx.rotate(Math.PI / 4); ctx.fillRect(-4, -4, 8, 8); ctx.restore(); }
+      else if (shape === "tri") { ctx.beginPath(); ctx.moveTo(mx, y - 5); ctx.lineTo(mx + 5, y + 4); ctx.lineTo(mx - 5, y + 4); ctx.closePath(); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(mx, y, 4.2, 0, 7); ctx.fill(); }
+      ctx.textAlign = "left"; ctx.font = "11px " + cssv("--mono").split(",")[0];
+      ctx.fillStyle = cssv("--ink-muted");
+      ctx.fillText(label, mx + 11, y);
+      if (usd != null) { ctx.fillStyle = cssv("--ink-faint"); ctx.textAlign = "right"; ctx.fillText("$" + Math.round(usd), w - padR, y); }
+    }
+    // take-profit
+    marker(Y(d.tp), cssv("--k-tp"), "tri", "TP +" + state.tp.toFixed(1) + "%", null);
+    // avg entry
+    ctx.strokeStyle = cssv("--accent"); ctx.setLineDash([2, 3]); ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(padL, ay); ctx.lineTo(w - padR, ay); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = cssv("--accent"); ctx.textAlign = "left"; ctx.fillText("avg $" + d.avg.toFixed(1), padL + 6, ay + 10);
+    // orders
+    d.legs.forEach(function (lg, i) {
+      if (lg.k === "base") marker(Y(lg.price), cssv("--k-base"), "diamond", "Base", lg.usd);
+      else marker(Y(lg.price), cssv("--k-safety"), "circle", "SO" + i, lg.usd);
+    });
+  }
+
+  /* ============================ ARENA SIM ============================ */
+  function mulberry32(a) { return function () { a |= 0; a = a + 0x6d2b79f5 | 0; var t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  function genPath(scen) {
+    var N = 130, p = 100, out = [100], seed = { bull: 7, crab: 23, bear: 41, crash: 99, pump: 64 }[scen] || 1;
+    var rnd = mulberry32(seed);
+    for (var i = 1; i < N; i++) {
+      var n = (rnd() - 0.5), drift = 0, t = i / N;
+      if (scen === "bull") drift = 0.0042;
+      else if (scen === "bear") drift = -0.004;
+      else if (scen === "crab") drift = (100 - p) * 0.004;
+      else if (scen === "crash") { drift = 0.001; if (i > 70 && i < 82) drift = -0.055; else if (i >= 82) drift = 0.004; }
+      else if (scen === "pump") { drift = i < 55 ? 0.011 : -0.006; }
+      p = p * (1 + drift + n * 0.011); if (p < 8) p = 8;
+      out.push(p);
+    }
+    return out;
+  }
+  var sim = { scen: "bull", path: genPath("bull"), fills: [], eq: [], i: 0, playing: false, pnl: 0, dd: 0, score: null, raf: 0 };
+  function runDealSim(path) {
+    var baseUsd = 200, stepPct = 2, tpPct = 2, maxSO = 3, volScale = 1.4;
+    var qty = 0, cost = 0, avg = 0, soUsed = 0, nextTrig = 0, soSize = baseUsd, open = false;
+    var realized = 0, maxCost = 0, fills = [], eq = [], peak = -1e9, maxDD = 0;
+    for (var i = 0; i < path.length; i++) {
+      var pr = path[i];
+      if (!open) { qty = baseUsd / pr; cost = baseUsd; avg = pr; soUsed = 0; soSize = baseUsd; nextTrig = pr * (1 - stepPct / 100); open = true; fills.push({ i: i, pr: pr, k: "buy" }); }
+      else {
+        if (pr <= nextTrig && soUsed < maxSO) { soSize *= volScale; qty += soSize / pr; cost += soSize; avg = cost / qty; nextTrig = pr * (1 - stepPct / 100); soUsed++; fills.push({ i: i, pr: pr, k: "buy" }); }
+        else if (pr >= avg * (1 + tpPct / 100)) { realized += qty * (pr - avg); fills.push({ i: i, pr: pr, k: "sell" }); open = false; }
+      }
+      if (cost > maxCost) maxCost = cost;
+      var unreal = open ? qty * (pr - avg) : 0, equity = realized + unreal;
+      eq.push(equity); if (equity > peak) peak = equity; if (peak - equity > maxDD) maxDD = peak - equity;
+    }
+    var last = path[path.length - 1], finalPnl = realized + (open ? qty * (last - avg) : 0);
+    var base = maxCost || baseUsd, ret = finalPnl / base * 100, ddPct = maxDD / base * 100;
+    return { fills: fills, eq: eq, pnl: finalPnl, ret: ret, ddPct: ddPct, score: ret - 0.5 * ddPct };
+  }
+  function money2(n) { return (n < 0 ? "−$" : "+$") + Math.abs(n).toFixed(2); }
+  function drawSim(upto) {
+    var cv = document.getElementById("sim"); var f = fit(cv); if (!f) return;
+    var ctx = f.ctx, w = f.w, h = f.h, padL = 46, padR = 14, padT = 12, padB = 16;
+    var path = sim.path, N = path.length, lo = Math.min.apply(null, path), hi = Math.max.apply(null, path), rng = (hi - lo) || 1;
+    lo -= rng * 0.08; hi += rng * 0.08; rng = hi - lo;
+    var X = function (i) { return padL + i / (N - 1) * (w - padL - padR); };
+    var Y = function (v) { return padT + (hi - v) / rng * (h - padT - padB); };
+    ctx.font = "10px " + cssv("--mono").split(",")[0]; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var g = 0; g <= 4; g++) { var val = lo + rng * g / 4, y = Y(val);
+      ctx.strokeStyle = cssv("--line-soft"); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillStyle = cssv("--ink-faint"); ctx.fillText("$" + val.toFixed(0), padL - 7, y); }
+    var up = upto || N - 1;
+    // area + line up to current
+    var col = cssv("--accent");
+    var grad = ctx.createLinearGradient(0, 0, 0, h); grad.addColorStop(0, col + "33"); grad.addColorStop(1, col + "00");
+    ctx.beginPath(); ctx.moveTo(X(0), Y(path[0]));
+    for (var i = 1; i <= up; i++) ctx.lineTo(X(i), Y(path[i]));
+    ctx.lineTo(X(up), h - padB); ctx.lineTo(X(0), h - padB); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(X(0), Y(path[0]));
+    for (var j = 1; j <= up; j++) ctx.lineTo(X(j), Y(path[j]));
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.stroke();
+    // fills so far
+    sim.fills.forEach(function (fl) {
+      if (fl.i > up) return;
+      var x = X(fl.i), y = Y(fl.pr), c = fl.k === "buy" ? cssv("--k-base") : cssv("--k-tp");
+      ctx.fillStyle = c;
+      if (fl.k === "buy") { ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4); ctx.fillRect(-3.5, -3.5, 7, 7); ctx.restore(); }
+      else { ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y + 4); ctx.lineTo(x - 5, y + 4); ctx.closePath(); ctx.fill(); }
+      ctx.strokeStyle = cssv("--surface"); ctx.lineWidth = 1.5;
+      if (fl.k === "sell") ctx.stroke();
+    });
+    // head dot
+    var hx = X(up), hy = Y(path[up]);
+    ctx.beginPath(); ctx.arc(hx, hy, 3.5, 0, 7); ctx.fillStyle = col; ctx.fill();
+  }
+  function setScore(r) {
+    document.getElementById("simPnl").textContent = money2(r.pnl);
+    document.getElementById("simPnl").className = "v num " + (r.pnl >= 0 ? "pos" : "neg");
+    document.getElementById("simScore").textContent = (r.score >= 0 ? "+" : "") + r.score.toFixed(1);
+    document.getElementById("simScore").className = "v num " + (r.score >= 0 ? "pos" : "neg");
+    document.getElementById("simDd").textContent = "−" + r.ddPct.toFixed(1) + "%";
+  }
+  function loadScen(s) {
+    sim.scen = s; sim.path = genPath(s); var r = runDealSim(sim.path);
+    sim.fills = r.fills; sim.full = r; sim.i = sim.path.length - 1; sim.playing = false;
+    document.getElementById("simState").textContent = "Ready";
+    drawSim(); setScore({ pnl: 0, score: 0, ddPct: 0 });
+    document.getElementById("simScore").textContent = "—"; document.getElementById("simDd").textContent = "—";
+    document.getElementById("simPnl").textContent = "+$0.00";
+  }
+  document.querySelectorAll(".scen button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      document.querySelectorAll(".scen button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
+      b.setAttribute("aria-pressed", "true"); loadScen(b.dataset.scen);
+    });
+  });
+  var reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.getElementById("runBtn").addEventListener("click", function () {
+    if (sim.playing) return;
+    var r = sim.full, N = sim.path.length;
+    document.getElementById("simState").textContent = "Running…";
+    if (reduce) { sim.i = N - 1; drawSim(); setScore(r); document.getElementById("simState").textContent = "Done"; return; }
+    sim.playing = true; sim.i = 0;
+    var step = function () {
+      sim.i += 2; if (sim.i >= N - 1) sim.i = N - 1;
+      drawSim(sim.i);
+      var upto = sim.i, partial = { pnl: r.eq[upto], score: r.score, ddPct: r.ddPct };
+      document.getElementById("simPnl").textContent = money2(r.eq[upto]);
+      document.getElementById("simPnl").className = "v num " + (r.eq[upto] >= 0 ? "pos" : "neg");
+      if (sim.i < N - 1) { sim.raf = requestAnimationFrame(step); }
+      else { sim.playing = false; setScore(r); document.getElementById("simState").textContent = "Done · " + (r.score >= 0 ? "+" : "") + r.score.toFixed(1); document.getElementById("lbYou").textContent = (r.score >= 0 ? "+" : "") + r.score.toFixed(1); }
+    };
+    sim.raf = requestAnimationFrame(step);
+  });
+  document.getElementById("toCreate").addEventListener("click", function () { document.querySelector('.tabs [data-tab="create"]').click(); });
+
+  function redrawAll() {
+    drawSpark(document.getElementById("heroSpark"), heroData, true, false);
+    sparks.forEach(function (s) { drawSpark(s.cv, s.data, s.up, true); });
+    if (document.getElementById("create").classList.contains("on")) drawLadder();
+    if (document.getElementById("arena").classList.contains("on")) drawSim(sim.playing ? sim.i : undefined);
+  }
+  loadScen("bull");
+  syncSliders(); render();
+  requestAnimationFrame(redrawAll);
+  window.addEventListener("resize", redrawAll);
+})();
+</script>
