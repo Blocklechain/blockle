@@ -1,0 +1,9 @@
+# Move build output
+build/
+
+# Node (client stub consumers)
+node_modules/
+
+# Local Sui client config / keys must NEVER be committed
+*.key
+.sui/

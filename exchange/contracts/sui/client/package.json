@@ -1,0 +1,14 @@
+{
+  "name": "@blockle/htlc-sui-client",
+  "version": "0.1.0",
+  "description": "Non-custodial PTB builder for the Blockle Sui HTLC leg (lock/redeem/refund).",
+  "type": "module",
+  "main": "htlc-client.js",
+  "exports": {
+    ".": "./htlc-client.js"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@mysten/sui": "^1.0.0"
+  }
+}

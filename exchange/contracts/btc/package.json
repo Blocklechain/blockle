@@ -1,0 +1,16 @@
+{
+  "name": "blockle-htlc-btc",
+  "version": "0.1.0",
+  "description": "BTC leg of the Blockle non-custodial atomic-swap exchange: a native Bitcoin Script HTLC (OP_SHA256 hashlock + OP_CHECKLOCKTIMEVERIFY refund) and a PSBT builder for lock / redeem-with-preimage / refund-after-timelock. Hashlock is sha256(preimage), matching the shared PROTOCOL.md.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/htlc.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bitcoinjs-lib": "^6.1.6",
+    "ecpair": "^2.1.0",
+    "tiny-secp256k1": "^2.2.3"
+  }
+}

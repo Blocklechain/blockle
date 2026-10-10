@@ -8,8 +8,9 @@ API/WebSocket calls on the same origin.
 ## Non-custodial, by design
 
 - **You sign every move with your own wallet.** The site never holds funds or keys.
-- Connect **MetaMask** (`window.ethereum`, EVM/ETH/Base), **Phantom** (`window.solana`, Solana), or the **Blockle extension** (`window.blockle`, BLOCK).
-- Sign-in = signing the relay's nonce (EVM `personal_sign`, Solana ed25519, BLOCK ML-DSA via the extension). No passwords, no custody.
+- Connect **MetaMask** (`window.ethereum`, EVM/ETH/Base), **Phantom** (`window.solana`, Solana), the **Blockle extension** (`window.blockle`, BLOCK), a **Bitcoin** wallet (UniSat `window.unisat`, or Xverse/sats-connect), or a **Sui** wallet (Sui Wallet Standard / `window.suiWallet` / Suiet).
+- Sign-in = signing the relay's nonce (EVM `personal_sign`, Solana ed25519, BLOCK ML-DSA via the extension, Bitcoin BIP-322/ECDSA message sign, Sui ed25519 `signPersonalMessage`). No passwords, no custody.
+- The **Bitcoin** and **Sui** buttons are *feature-detected* — they appear only when a matching wallet is installed. The BTC leg signs + broadcasts a relay-built **PSBT**; the Sui leg signs + executes a relay-built **Move call** (shared-object HTLC: create / redeem-with-preimage / refund). Both default to **testnet** (BTC testnet/signet, Sui testnet) via `config.js`.
 - Trades settle as **atomic HTLC swaps** you execute yourself: you lock → counterparty locks → you reveal/claim → done, with refund after the timelock. The relay only coordinates the hashlock and order book.
 - **0.1% protocol fee** is shown on the order ticket.
 - **Testnet/demo by default.** A prominent banner says so. Real money paths are gated server-side by the relay's `mainnet_enabled` flag. **The operator must obtain legal/compliance sign-off before enabling mainnet.**
@@ -30,9 +31,12 @@ Listing an asset: open `/list.html`, type a symbol + contract address, see the l
 |------|---------|
 | `index.html` + `trade.js` | Trading view: market selector, live book + trades (WS), signed limit/market orders, cancel, my orders, my-swaps HTLC stepper. |
 | `list.html` + `list.js` | Self-serve listing: one form, live quote, mandatory locked BLOCK pair, non-custodial fee payment. |
-| `core.js` | Shared runtime: config, wallet providers + signing, HTTP client for the contract, WebSocket stream, base-unit math, canonical JSON signing (matches the SDK), toast + wallet bar. `window.EX`. |
+| `core.js` | Shared runtime: config, wallet providers + signing (EVM/Solana/BLOCK/BTC/Sui), HTTP client for the contract, WebSocket stream, base-unit math, canonical JSON signing (matches the SDK), toast + wallet bar. `window.EX`. |
+| `connectors.js` | Pure, dependency-free BTC + Sui connector logic (provider discovery, address normalization/validation, sign-in message/signature handling, PSBT + Move-call payload extraction). Node-testable. `window.EXConnectors`. |
+| `connectors.test.js` | Node unit tests for `connectors.js` — `node connectors.test.js` (no browser/network; a fake `window` is injected). |
 | `styles.css` | On-brand dark violet/teal theme (mirrors `web/dex.html`). |
-| `config.js` | Public runtime config only — `apiBase` / `wsBase`. **No secrets.** Default: same origin. |
+| `config.js` | Public runtime config only — `apiBase` / `wsBase`, optional `btc`/`sui` network selection. **No secrets.** Default: same origin, testnet. |
+| `moonpay.js` + `moonpay.test.js` | MoonPay fiat on/off-ramp URL building + its node tests. |
 
 ## Contract endpoints used (all relative to `apiBase`)
 

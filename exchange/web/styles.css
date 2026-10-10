@@ -39,6 +39,8 @@ header.top nav a.on{color:var(--text)}
 .wbtn .ic.meta{background:linear-gradient(135deg,#f6851b,#e2761b)}
 .wbtn .ic.phantom{background:linear-gradient(135deg,#ab9ff2,#5440c4)}
 .wbtn .ic.blockle{background:linear-gradient(135deg,var(--accent),var(--teal))}
+.wbtn .ic.btc{background:linear-gradient(135deg,#f7931a,#b56608)}
+.wbtn .ic.sui{background:linear-gradient(135deg,#6fbcf0,#4da2ff)}
 .waddr{font:11px var(--mono);color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ---- banner ---- */

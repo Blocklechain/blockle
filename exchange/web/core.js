@@ -213,12 +213,128 @@
         }
         throw new Error('Solana step payload has no transaction to send');
       }
+    },
+    // --- Bitcoin ---------------------------------------------------------
+    // UniSat first; Xverse/sats-connect and generic window.btc as fallbacks.
+    // Sign-in signs the relay nonce (BIP-322 for bech32, ECDSA for legacy); the
+    // HTLC leg signs + broadcasts a relay-built PSBT. Pure message/address/PSBT
+    // logic lives in connectors.js (EXConnectors.BTC) so it's node-testable.
+    btc: {
+      kind: 'btc', chain: 'bitcoin', label: 'Bitcoin',
+      _c: function () { return (window.EXConnectors && window.EXConnectors.BTC) || null; },
+      present: function () { var c = this._c(); return !!(c && c.present()); },
+      connect: async function () {
+        var c = this._c();
+        if (!c) throw new Error('Bitcoin connector unavailable');
+        var d = c.detect();
+        if (!d) throw new Error('Install a Bitcoin wallet (UniSat or Xverse)');
+        this._det = d;
+        var p = d.provider, accts;
+        if (d.api === 'unisat') {
+          accts = await p.requestAccounts();
+        } else if (d.api === 'sats-connect') {
+          // Xverse/sats-connect request() surface. getAddresses returns objects.
+          var r = await p.request('getAccounts', { purposes: ['payment'] })
+            .catch(function () { return p.request('getAddresses', { purposes: ['payment'] }); });
+          var list = (r && (r.result || r)) || {};
+          var addrs = list.addresses || list;
+          accts = (addrs || []).map(function (a) { return a.address || a; });
+        } else { // generic window.btc
+          var res = await p.request('getAccounts', {}).catch(function () { return null; });
+          accts = (res && (res.result || res)) || [];
+        }
+        return accts && accts[0];
+      },
+      // Returns a base64 message signature the relay verifies against address.
+      sign: async function (msg, address) {
+        var c = this._c(), d = this._det || c.detect();
+        var p = d.provider;
+        if (d.api === 'unisat') {
+          var sig = await p.signMessage(c.buildSignInMessage(msg), c.signMessageType(address));
+          return c.normalizeSignature(sig);
+        }
+        var r = await p.request('signMessage', { address: address, message: c.buildSignInMessage(msg) });
+        return c.normalizeSignature((r && (r.result || r)) || r);
+      },
+      // HTLC leg: sign the relay-built PSBT, optionally broadcast, report txid.
+      sendStep: async function (payload) {
+        var c = this._c(), d = this._det || c.detect();
+        var p = d.provider;
+        var ex = c.extractPsbt(payload);
+        if (!ex) throw new Error('Bitcoin step payload has no PSBT to sign');
+        if (d.api === 'unisat') {
+          var signed = await p.signPsbt(ex.psbt, {
+            autoFinalized: ex.autoFinalized,
+            toSignInputs: ex.signInputs
+          });
+          if (ex.broadcast && p.pushPsbt) {
+            var txid = await p.pushPsbt(signed);
+            return { txHash: txid, psbt: signed };
+          }
+          return { psbt: signed };
+        }
+        var rr = await p.request('signPsbt', { psbt: ex.psbt, broadcast: ex.broadcast, signInputs: ex.signInputs });
+        var out = (rr && (rr.result || rr)) || {};
+        return { txHash: out.txid || out.txId || out.txHash, psbt: out.psbt };
+      }
+    },
+    // --- Sui -------------------------------------------------------------
+    // Sui Wallet Standard / window.suiWallet / Suiet. Sign-in is ed25519 over
+    // the nonce (wallet returns a serialized signature embedding the pubkey the
+    // relay checks against the address); the HTLC leg signs + executes a
+    // relay-built Move call (shared object create / redeem / refund).
+    sui: {
+      kind: 'sui', chain: 'sui', label: 'Sui',
+      _c: function () { return (window.EXConnectors && window.EXConnectors.SUI) || null; },
+      present: function () { var c = this._c(); return !!(c && c.present()); },
+      connect: async function () {
+        var c = this._c();
+        if (!c) throw new Error('Sui connector unavailable');
+        var d = c.detect();
+        if (!d) throw new Error('Install a Sui wallet (Sui Wallet or Suiet)');
+        this._det = d;
+        var p = d.provider, addr;
+        if (p.requestPermissions) { try { await p.requestPermissions(); } catch (e) {} }
+        if (p.getAccounts) {
+          var accts = await p.getAccounts();
+          addr = accts && (accts[0] && (accts[0].address || accts[0]) );
+        } else if (p.features && p.features['standard:connect']) {
+          var r = await p.features['standard:connect'].connect();
+          var a = r && r.accounts && r.accounts[0];
+          addr = a && a.address;
+        }
+        return c.normalizeAddress(addr);
+      },
+      // ed25519 over the nonce; returns the base64 serialized signature.
+      sign: async function (msg) {
+        var c = this._c(), d = this._det || c.detect();
+        var p = d.provider;
+        var bytes = c.encodeMessage(msg);
+        var fn = p.signPersonalMessage || p.signMessage;
+        if (!fn) throw new Error('Sui wallet cannot sign messages');
+        var r = await fn.call(p, { message: bytes });
+        return c.normalizeSignature(r);
+      },
+      // HTLC leg: sign + execute the relay-built transaction block / Move call.
+      sendStep: async function (payload) {
+        var c = this._c(), d = this._det || c.detect();
+        var p = d.provider;
+        var mc = c.extractMoveCall(payload);
+        if (!mc) throw new Error('Sui step payload has no Move call to execute');
+        var tx = mc.transactionBlock || mc.moveCall;
+        var exec = p.signAndExecuteTransactionBlock || p.signAndExecuteTransaction;
+        if (!exec) throw new Error('Sui wallet cannot execute transactions');
+        var r = await exec.call(p, { transactionBlock: tx });
+        return { txHash: (r && (r.digest || r.effectsDigest || r.txHash)) || r };
+      }
     }
   };
   // chain label -> wallet provider (for driving swap legs)
   function walletForChain(chain) {
     if (chain === 'block') return wallets.block;
     if (chain === 'solana') return wallets.solana;
+    if (chain === 'bitcoin' || chain === 'btc') return wallets.btc;
+    if (chain === 'sui') return wallets.sui;
     return wallets.evm; // ethereum, base, erc20
   }
 
@@ -291,12 +407,21 @@
     var defs = [
       { kind: 'evm', label: 'MetaMask', ic: 'meta' },
       { kind: 'solana', label: 'Phantom', ic: 'phantom' },
+      { kind: 'btc', label: 'Bitcoin', ic: 'btc' },
+      { kind: 'sui', label: 'Sui', ic: 'sui' },
       { kind: 'block', label: 'Blockle', ic: 'blockle' }
     ];
     function paint() {
       var s = state();
       container.innerHTML = '';
       defs.forEach(function (d) {
+        // BTC/Sui are feature-detected: only surface their button if a matching
+        // wallet is installed (or already connected). The original three
+        // (evm/solana/block) stay always-visible — clicking prompts an install.
+        if (d.kind === 'btc' || d.kind === 'sui') {
+          var w = wallets[d.kind];
+          if (!connected[d.kind] && w && w.present && !w.present()) return;
+        }
         var c = connected[d.kind];
         var btn = el('button', 'wbtn' + (c ? ' connected' : '') + (active === d.kind ? ' active' : ''));
         btn.innerHTML = '<span class="ic ' + d.ic + '"></span>' +

@@ -17,6 +17,7 @@
 import * as crypto from "crypto";
 import type { DB } from "./db";
 import { audit } from "./db";
+import { hash160 } from "./btc";
 
 export type SwapState =
   | "proposed"
@@ -298,15 +299,20 @@ export class SwapEngine {
     switch (swap.state) {
       case "proposed":
         if (role === "maker") {
+          const hints = legHints(makerLeg.chain, swap.hashlock, this.preimage(swap.swapId));
           return {
             action: "lock",
             chain: makerLeg.chain,
             payload: {
-              hashlock: swap.hashlock,
+              hashlock: hints.hashlock || swap.hashlock,
+              hashAlgo: hints.hashAlgo,
               timelock: makerLeg.timelock,
+              timelockKind: hints.timelockKind,
+              timelockUnit: hints.timelockUnit,
               recipient: makerLeg.recipient,
               asset: makerLeg.asset,
               amount: makerLeg.amount,
+              note: hints.note,
             },
             swap,
           };
@@ -315,15 +321,20 @@ export class SwapEngine {
 
       case "makerLocked":
         if (role === "taker") {
+          const hints = legHints(takerLeg.chain, swap.hashlock, this.preimage(swap.swapId));
           return {
             action: "lock",
             chain: takerLeg.chain,
             payload: {
-              hashlock: swap.hashlock,
+              hashlock: hints.hashlock || swap.hashlock,
+              hashAlgo: hints.hashAlgo,
               timelock: takerLeg.timelock,
+              timelockKind: hints.timelockKind,
+              timelockUnit: hints.timelockUnit,
               recipient: takerLeg.recipient,
               asset: takerLeg.asset,
               amount: takerLeg.amount,
+              note: hints.note,
             },
             swap,
           };
@@ -363,6 +374,65 @@ export class SwapEngine {
 
     return { action: "wait", swap };
   }
+}
+
+// ---- per-chain HTLC leg semantics -----------------------------------------
+//
+// The shared protocol uses sha256(preimage) as the canonical hashlock. Bitcoin
+// Script's HTLC redeem path uses OP_HASH160 == ripemd160(sha256(preimage)), so
+// a BTC leg locks against hash160(preimage) — the SAME preimage, hashed the way
+// Bitcoin Script checks it. Both legs are satisfied by the one revealed secret.
+
+export interface LegHints {
+  /** how the client must hash the preimage when building this leg's HTLC. */
+  hashAlgo: "sha256" | "hash160";
+  /** the hashlock value for this leg, hex (no 0x). */
+  hashlock: string;
+  /** what the leg's timelock encodes. */
+  timelockKind: "unixTime" | "blockHeight";
+  /** unit of the `timelock` integer handed to the client. */
+  timelockUnit: "seconds";
+  /** extra per-chain guidance for the HTLC builder. */
+  note?: string;
+}
+
+/** Derive the hashlock + timelock semantics a given chain's HTLC leg needs,
+ *  from the swap's canonical sha256 hashlock and (for BTC) the preimage. */
+export function legHints(chain: string, sha256Hashlock: string, preimageHex?: string): LegHints {
+  if (chain === "bitcoin" || chain === "btc") {
+    // OP_HASH160 over the preimage. Needs the preimage to compute; falls back
+    // to just announcing the algo when the preimage is not being revealed.
+    let h = "";
+    if (preimageHex) {
+      const d = hash160(Buffer.from(preimageHex, "hex"));
+      h = Buffer.from(d).toString("hex");
+    }
+    return {
+      hashAlgo: "hash160",
+      hashlock: h,
+      timelockKind: "unixTime",
+      timelockUnit: "seconds",
+      note: "Bitcoin Script HTLC: OP_HASH160 <h> redeem, OP_CHECKLOCKTIMEVERIFY refund (nLockTime = unix seconds).",
+    };
+  }
+  if (chain === "sui") {
+    return {
+      hashAlgo: "sha256",
+      hashlock: sha256Hashlock,
+      timelockKind: "unixTime",
+      timelockUnit: "seconds",
+      note: "Sui Move HTLC shared object: sha256 hashlock; refund after Clock timestamp (seconds*1000 = ms).",
+    };
+  }
+  // EVM / Solana / BLOCK: canonical sha256 hashlock. BLOCK uses a height
+  // timelock in the contract, but the engine issues a unix-seconds timelock the
+  // client translates; label it accordingly.
+  return {
+    hashAlgo: "sha256",
+    hashlock: sha256Hashlock,
+    timelockKind: chain === "block" ? "blockHeight" : "unixTime",
+    timelockUnit: "seconds",
+  };
 }
 
 function rowToSwap(r: any): Swap {

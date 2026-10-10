@@ -13,6 +13,7 @@ every refund path, and exactly where the 0.1% settlement fee is taken.
 | EVM | [`evm/`](./evm) | ETH, any ERC-20 (USDC, USDT) | SHA-256 | ✅ Hardhat | ✅ 10 passing (ETH + USDC-style + USDT-style) |
 | Solana | [`solana/`](./solana) | SOL, any SPL (USDC, USDT) | SHA-256 | ✅ `anchor build` → `htlc.so` | ✅ 5 passing on local validator (SOL + SPL) |
 | BLOCK | [`block/`](./block) | native BLOCK | BLAKE2B | ✅ `cargo build` | ✅ regtest claim + refund |
+| BTC | [`btc/`](./btc) | native BTC | SHA-256 | ✅ pure-JS (bitcoinjs-lib) | ✅ 12 passing (P2WSH HTLC: lock + redeem + refund, sighash-verified) |
 
 All money paths are **testnet-first and mainnet-gated**. Operators must obtain
 legal/compliance sign-off before enabling any mainnet money path (see each

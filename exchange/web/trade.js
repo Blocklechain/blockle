@@ -66,6 +66,8 @@
   function kindForChain(chain) {
     if (chain === 'solana') return 'solana';
     if (chain === 'block') return 'block';
+    if (chain === 'bitcoin' || chain === 'btc') return 'btc';
+    if (chain === 'sui') return 'sui';
     return 'evm';
   }
   function addressForChain(chain) {
