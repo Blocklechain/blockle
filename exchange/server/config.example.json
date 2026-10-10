@@ -22,6 +22,30 @@
     "enabled": true,
     "signerUrl": ""
   },
+  "htlc": {
+    "_README": "DEPLOYED HTLC addresses the relay settles each swap leg against. The relay holds NO keys; these are PUBLIC contract/program/package ids each party's wallet calls. The swap engine REFUSES (fail-closed) any leg whose address is unset for the active network. Mainnet keys (evm.base, evm.ethereum, solana.mainnet, sui.mainnet) are only consulted when mainnetEnabled=true, so leaving them blank keeps a testnet deployment testnet-only. Fill these from each leg's deploy script output: evm → scripts/deploy.js 'HTLC deployed at'; solana → anchor program id; sui → published packageId; block → 'blockle-chain contract deploy' contract id. Env overrides: BLOCKLE_EXCHANGE_HTLC_BTC_ESPLORA, BLOCKLE_EXCHANGE_HTLC_BTC_HOTWALLET, BLOCKLE_EXCHANGE_HTLC_BLOCK_CONTRACT.",
+    "evm": {
+      "sepolia": "",
+      "baseSepolia": "",
+      "base": "",
+      "ethereum": ""
+    },
+    "solana": {
+      "devnet": "",
+      "mainnet": ""
+    },
+    "sui": {
+      "testnet": "",
+      "mainnet": ""
+    },
+    "btc": {
+      "hotWallet": "",
+      "esploraUrl": "https://blockstream.info/testnet/api"
+    },
+    "block": {
+      "contractId": ""
+    }
+  },
   "blockPriceUsd": 1,
   "usdStableDecimals": 6,
   "publicBaseUrl": "https://exchange.blockle.org",

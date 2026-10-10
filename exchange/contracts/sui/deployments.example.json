@@ -1,0 +1,13 @@
+{
+  "_README": "Shape of deployments.json, written by scripts/deploy.sh and read by the relay for the Sui HTLC package id (per env). deployments.json itself is git-ignored; this example is committed so the shape is tracked. packageId/publisher/txDigest below are PLACEHOLDERS — no real published package exists yet.",
+  "testnet": {
+    "network": "testnet",
+    "packageId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "module": "htlc",
+    "clockObjectId": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "rpcUrl": "https://fullnode.testnet.sui.io:443",
+    "publisher": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "txDigest": null,
+    "publishedAt": "1970-01-01T00:00:00+00:00"
+  }
+}

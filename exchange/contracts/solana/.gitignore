@@ -4,3 +4,5 @@ target/
 test-ledger/
 .env
 programs/*/htlc-keypair.json
+# Throwaway local-validator deploy capture; real devnet/mainnet records are committed.
+deployments/localnet.json

@@ -50,7 +50,9 @@ export function buildServer(cfg: Config): BuiltServer {
 
   // hub is attached lazily at listen(); emitters are late-bound.
   let hub: StreamHub | null = null;
-  const swaps = new SwapEngine(db, (s) => hub?.emitSwap(s));
+  // cfg is passed so each swap leg is settled against the DEPLOYED HTLC address
+  // for the active network (fail-closed when a leg's address is unset).
+  const swaps = new SwapEngine(db, cfg, (s) => hub?.emitSwap(s));
   const book = new OrderBook(
     db,
     cfg,

@@ -1,0 +1,18 @@
+{
+  "_README": "Config for scripts/deploy.sh. No secrets here — the deployer keypair is read from ANCHOR_WALLET (never this repo). `defaultCluster` is the target when SOLANA_CLUSTER is unset (testnet-first). `clusters` maps a cluster name to its RPC URL (override per cluster with SOLANA_RPC_URL). `relayKey` maps the Solana cluster to the key the relay expects under config.json -> htlc.solana. `fee` seeds the one-time initialize(fee_bps, fee_wallet) AFTER deploy; feeWallet must be set by the operator (a PUBLIC address).",
+  "defaultCluster": "devnet",
+  "clusters": {
+    "localnet": "http://127.0.0.1:8899",
+    "devnet": "https://api.devnet.solana.com",
+    "mainnet-beta": "https://api.mainnet-beta.solana.com"
+  },
+  "relayKey": {
+    "localnet": "devnet",
+    "devnet": "devnet",
+    "mainnet-beta": "mainnet"
+  },
+  "fee": {
+    "feeBps": 10,
+    "feeWallet": ""
+  }
+}
