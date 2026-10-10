@@ -148,6 +148,20 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry btc addr', btc.address, 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu');
     ok('registry enables block+evm+utxo', reg.enabled().includes('ethereum') && reg.enabled().includes('bitcoin'));
     ok('registry usdc token present', reg.tokensFor('ethereum').some((t) => t.symbol === 'USDC'));
+    // Solana adapter is REGISTERED (ed25519/SLIP-0010 m/44'/501'/0'/0'), enabled
+    // by default, and derives a base58 SOL address from the same HD seed. Its RPC
+    // defaults to the public mainnet endpoint (config-overridable, no key).
+    ok('registry has solana adapter', reg.has('solana'));
+    ok('registry enables solana', reg.enabled().includes('solana'));
+    eq('registry solana default rpc', reg.endpoints('solana').rpcUrl, 'https://api.mainnet-beta.solana.com');
+    const sol = await reg.get('solana').deriveAccount({ seed });
+    eq('registry solana scheme', sol.scheme, 'ed25519');
+    eq('registry solana path', sol.path, "m/44'/501'/0'/0'");
+    eq('registry solana addr', sol.address, 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
+    ok('registry solana addr is base58 (no 0/O/I/l)', /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(sol.address));
+    // A config override replaces the default RPC without touching the key path.
+    const reg2 = REG.createRegistry({ endpoints: { solana: { rpcUrl: 'https://solana.example/rpc' } } });
+    eq('registry solana rpc override', reg2.endpoints('solana').rpcUrl, 'https://solana.example/rpc');
   };
   run().then(() => done()).catch((e) => { fail++; console.log('FAIL registry: ' + e.message); done(); });
 }

@@ -41,6 +41,27 @@ const OFFLINE_AFTER_SECS: u64 = 180;
 const HISTORY_CAP: usize = 2880; // 48h at 60s
 const MAX_FIELD: usize = 128;
 
+// --- Agent telemetry collector -----------------------------------------------
+/// Append-only store for anonymized, bucketed in-wallet agent telemetry.
+const TELEMETRY_STORE: &str = "/var/lib/blockle-biz/agent-telemetry.jsonl";
+/// Max accepted request body for a single telemetry event.
+const TELEMETRY_MAX_BODY: usize = 4096;
+/// Per-IP rate limit: at most this many accepted events per window.
+const TELEMETRY_RATE_MAX: u64 = 120;
+const TELEMETRY_RATE_WINDOW_SECS: u64 = 60;
+/// The only fields retained from a submitted event — everything else is
+/// dropped before storage. Anonymized + bucketed by construction.
+const TELEMETRY_FIELDS: &[&str] = &[
+    "strategy", "venue", "chain", "pair", "side", "sizeBucket", "pnlPct",
+    "feePct", "outcome", "id",
+];
+/// Key-name fragments (case-insensitive) that mark a payload as carrying a
+/// secret — any match rejects the whole event with 400.
+const TELEMETRY_SECRET_KEYS: &[&str] = &[
+    "private", "privkey", "seed", "mnemonic", "secret", "apikey", "api_key",
+    "passphrase", "password", "keystore",
+];
+
 /// Format base units (1 BLOCK = 10^8) for humans.
 pub fn fmt_block(base_units: u64) -> String {
     let whole = base_units / 100_000_000;
@@ -423,8 +444,9 @@ pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
                 let registry = registry.clone();
                 thread::spawn(move || {
                     let mut stream = stream;
+                    let peer_ip = stream.peer_addr().ok().map(|a| a.ip());
                     let Ok(req) = http::read_request(&mut stream) else { return };
-                    let (status, ctype, body) = route(&registry, &req);
+                    let (status, ctype, body) = route(&registry, &req, peer_ip);
                     http::respond(&mut stream, status, ctype, &body);
                 });
             }
@@ -437,7 +459,11 @@ pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
 // routing
 // ================================================================================================
 
-fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str, &'static str, Vec<u8>) {
+fn route(
+    registry: &Arc<Mutex<Registry>>,
+    req: &http::Request,
+    peer_ip: Option<std::net::IpAddr>,
+) -> (&'static str, &'static str, Vec<u8>) {
     let (path, query) = match req.path.split_once('?') {
         Some((p, q)) => (p, q),
         None => (req.path.as_str(), ""),
@@ -454,6 +480,12 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
         return match path {
             "/api/register" => api_register(registry, &body),
             "/api/heartbeat" => api_heartbeat(registry, &body),
+            // Anonymized, bucketed in-wallet agent telemetry. Defensively
+            // rejects any payload carrying obvious secrets/PII, keeps only the
+            // whitelisted bucketed fields, rate-limits per source IP, and
+            // appends to an append-only JSONL store. Never stores raw
+            // addresses, keys, or IPs. See [`api_agent_telemetry`].
+            "/api/agent-telemetry" => api_agent_telemetry(&req.body, &body, peer_ip),
             "/api/submit" => {
                 // Light wallets POST { raw: "<bincode-hex tx>" }; relay it to
                 // the node, which fully validates before mempool + gossip.
@@ -527,6 +559,9 @@ fn route(registry: &Arc<Mutex<Registry>>, req: &http::Request) -> (&'static str,
             .into_bytes(),
         ),
         "/api/stats" => ("200 OK", "application/json", network_stats(&reg).to_string().into_bytes()),
+        // Operator-only aggregate over the telemetry store, gated by a config
+        // token (?token= must match BLOCKLE_TELEMETRY_TOKEN / the token file).
+        "/api/agent-telemetry/summary" => agent_telemetry_summary(query),
         "/api/pools" => {
             let pools: Vec<Value> = reg.pools.values().map(pool_json).collect();
             ("200 OK", "application/json", json!({"pools": pools}).to_string().into_bytes())
@@ -2034,6 +2069,274 @@ fn moonpay_sign(widget_url: &str) -> (&'static str, &'static str, Vec<u8>) {
         "application/json",
         json!({"url": signed, "signed": true}).to_string().into_bytes(),
     )
+}
+
+// ================================================================================================
+// agent telemetry collector
+// ================================================================================================
+
+/// Per-IP-hash sliding-window counters (window-start unix, count-in-window).
+/// Keyed by the same non-reversible hash we persist, so no raw IP is ever held
+/// in memory either.
+static TELEMETRY_RATE: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
+
+/// Per-process random salt for the source-IP hash. Re-rolled every restart so
+/// the stored hashes are not correlatable across deployments.
+static TELEMETRY_SALT: OnceLock<[u8; 32]> = OnceLock::new();
+
+fn telemetry_salt() -> &'static [u8; 32] {
+    TELEMETRY_SALT.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        h.update(now.to_le_bytes());
+        h.update(std::process::id().to_le_bytes());
+        // Address of a stack local adds a little non-determinism (ASLR).
+        let anchor = &now as *const _ as usize;
+        h.update(anchor.to_le_bytes());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize());
+        out
+    })
+}
+
+/// Non-reversible short hash of the source IP (salted SHA-256, 16 hex chars).
+/// Returns "unknown" when the peer address was unavailable.
+fn source_ip_hash(ip: Option<std::net::IpAddr>) -> String {
+    let Some(ip) = ip else { return "unknown".to_string() };
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(telemetry_salt());
+    h.update(ip.to_string().as_bytes());
+    hex::encode(&h.finalize()[..8])
+}
+
+/// Sliding-window per-IP-hash rate limit. True when the event is within budget.
+fn telemetry_rate_ok(ip_hash: &str) -> bool {
+    let now = now_unix();
+    let map = TELEMETRY_RATE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap();
+    // Opportunistic cleanup so the map cannot grow without bound.
+    if guard.len() > 10_000 {
+        guard.retain(|_, (start, _)| now.saturating_sub(*start) < TELEMETRY_RATE_WINDOW_SECS);
+    }
+    let entry = guard.entry(ip_hash.to_string()).or_insert((now, 0));
+    if now.saturating_sub(entry.0) >= TELEMETRY_RATE_WINDOW_SECS {
+        *entry = (now, 0);
+    }
+    if entry.1 >= TELEMETRY_RATE_MAX {
+        return false;
+    }
+    entry.1 += 1;
+    true
+}
+
+/// Does this string value look like a raw crypto address or key? Conservative
+/// shape checks — the agent only ever emits short bucketed enums, so any of
+/// these shapes means something leaked and we reject the whole event.
+fn looks_like_address_or_key(s: &str) -> bool {
+    let t = s.trim();
+    // 0x-prefixed hex, 40+ nibbles (EVM address = 40, private key = 64).
+    if let Some(hexpart) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        if hexpart.len() >= 40 && hexpart.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return true;
+        }
+    }
+    // Bech32 (BTC/LTC segwit, Cosmos, etc.): hrp + '1' + >= 25 data chars from
+    // the bech32 alphabet.
+    const BECH32: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    if let Some(sep) = t.rfind('1') {
+        let hrp = &t[..sep];
+        let data = &t[sep + 1..];
+        if (1..=4).contains(&hrp.len())
+            && hrp.bytes().all(|b| b.is_ascii_lowercase())
+            && data.len() >= 25
+            && data.bytes().all(|b| BECH32.contains(&b.to_ascii_lowercase()))
+        {
+            return true;
+        }
+    }
+    // Base58 (BTC legacy / Solana pubkeys): 26..=44 chars, base58 alphabet.
+    const B58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    if (26..=44).contains(&t.len()) && t.bytes().all(|b| B58.contains(&b)) {
+        return true;
+    }
+    false
+}
+
+/// Recursively scan a JSON value for secret-named keys or address/key-shaped
+/// string values. Returns the offending reason, or None when clean.
+fn telemetry_find_pii(value: &Value) -> Option<&'static str> {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                let kl = k.to_ascii_lowercase();
+                if TELEMETRY_SECRET_KEYS.iter().any(|frag| kl.contains(frag)) {
+                    return Some("secret-named field");
+                }
+                if let Some(r) = telemetry_find_pii(v) {
+                    return Some(r);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(telemetry_find_pii),
+        Value::String(s) => {
+            if looks_like_address_or_key(s) {
+                Some("address/key-shaped value")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// POST /api/agent-telemetry — see the route table. `raw` is the undecoded
+/// request body (for a size cap), `body` its parsed JSON.
+fn api_agent_telemetry(
+    raw: &[u8],
+    body: &Value,
+    peer_ip: Option<std::net::IpAddr>,
+) -> (&'static str, &'static str, Vec<u8>) {
+    let jerr = |code: &'static str, msg: &str| {
+        (code, "application/json", json!({"error": msg}).to_string().into_bytes())
+    };
+    if raw.len() > TELEMETRY_MAX_BODY {
+        return jerr("400 Bad Request", "payload too large");
+    }
+    if !body.is_object() {
+        return jerr("400 Bad Request", "event must be a JSON object");
+    }
+    // Defensive: refuse anything carrying obvious secrets/PII before we touch
+    // the store.
+    if telemetry_find_pii(body).is_some() {
+        return jerr("400 Bad Request", "payload rejected: possible secret or PII");
+    }
+
+    // Rate-limit per source IP (by its hash — no raw IP held or stored).
+    let ip_hash = source_ip_hash(peer_ip);
+    if !telemetry_rate_ok(&ip_hash) {
+        return jerr("429 Too Many Requests", "rate limit exceeded");
+    }
+
+    // Sanitize: keep only the whitelisted bucketed fields; truncate strings.
+    let mut event = serde_json::Map::new();
+    if let Some(obj) = body.as_object() {
+        for &field in TELEMETRY_FIELDS {
+            if let Some(v) = obj.get(field) {
+                let clean = match v {
+                    Value::String(s) => {
+                        let mut s = s.clone();
+                        if s.len() > MAX_FIELD {
+                            s.truncate(MAX_FIELD);
+                        }
+                        Value::String(s)
+                    }
+                    Value::Number(_) | Value::Bool(_) => v.clone(),
+                    // Drop nested/compound values — the schema is flat scalars.
+                    _ => continue,
+                };
+                event.insert(field.to_string(), clean);
+            }
+        }
+    }
+    event.insert("recvTime".to_string(), json!(now_unix()));
+    event.insert("srcHash".to_string(), json!(ip_hash));
+
+    // Append one line to the JSONL store (best-effort; creates the dir).
+    if let Some(dir) = std::path::Path::new(TELEMETRY_STORE).parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let line = format!("{}\n", Value::Object(event));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(TELEMETRY_STORE)
+    {
+        use std::io::Write;
+        let _ = f.write_all(line.as_bytes());
+    }
+
+    ("204 No Content", "application/json", Vec::new())
+}
+
+/// Operator-only aggregate read token: env `BLOCKLE_TELEMETRY_TOKEN`, else a
+/// one-line token file next to the store. None disables the summary endpoint.
+fn telemetry_summary_token() -> Option<String> {
+    if let Ok(t) = std::env::var("BLOCKLE_TELEMETRY_TOKEN") {
+        let t = t.trim().to_string();
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    fs::read_to_string("/var/lib/blockle-biz/agent-telemetry-token")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Constant-time-ish string compare to avoid leaking the token by timing.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+/// GET /api/agent-telemetry/summary — token-gated counts over the store.
+fn agent_telemetry_summary(query: &str) -> (&'static str, &'static str, Vec<u8>) {
+    let jerr = |code: &'static str, msg: &str| {
+        (code, "application/json", json!({"error": msg}).to_string().into_bytes())
+    };
+    let Some(expected) = telemetry_summary_token() else {
+        return jerr("404 Not Found", "summary not enabled");
+    };
+    let supplied = query_get(query, "token").map(url_decode).unwrap_or_default();
+    if !ct_eq(&supplied, &expected) {
+        return jerr("403 Forbidden", "invalid token");
+    }
+
+    let mut total = 0u64;
+    let mut by_strategy: HashMap<String, u64> = HashMap::new();
+    let mut by_venue: HashMap<String, u64> = HashMap::new();
+    let mut by_chain: HashMap<String, u64> = HashMap::new();
+    let mut by_outcome: HashMap<String, u64> = HashMap::new();
+    if let Ok(contents) = fs::read_to_string(TELEMETRY_STORE) {
+        for line in contents.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(ev) = serde_json::from_str::<Value>(line) else { continue };
+            total += 1;
+            let mut bump = |m: &mut HashMap<String, u64>, field: &str| {
+                if let Some(s) = ev.get(field).and_then(|v| v.as_str()) {
+                    *m.entry(s.to_string()).or_insert(0) += 1;
+                }
+            };
+            bump(&mut by_strategy, "strategy");
+            bump(&mut by_venue, "venue");
+            bump(&mut by_chain, "chain");
+            bump(&mut by_outcome, "outcome");
+        }
+    }
+    let out = json!({
+        "total": total,
+        "byStrategy": by_strategy,
+        "byVenue": by_venue,
+        "byChain": by_chain,
+        "byOutcome": by_outcome,
+    });
+    ("200 OK", "application/json", out.to_string().into_bytes())
 }
 
 /// HMAC-SHA256 (RFC 2104) over `sha2::Sha256`. Avoids pulling in an `hmac`

@@ -14,6 +14,8 @@
   const Utxo = inNode ? require('./utxo.js') : global.UtxoAdapter;
   const Discovery = inNode ? require('./discovery.js') : global.TokenDiscovery;
   const Custom = inNode ? require('./custom-networks.js') : global.CustomNetworks;
+  // Solana (ed25519, SLIP-0010); pure JS, available in both node + browser.
+  const Solana = inNode ? require('./solana.js') : global.SolanaAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -55,6 +57,8 @@
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: null }, // user must supply (no public Esplora default)
+    // Solana mainnet JSON-RPC — public default, config-overridable. No key.
+    solana:    { rpcUrl: 'https://api.mainnet-beta.solana.com' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -110,7 +114,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'solana'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -170,6 +174,11 @@
     adapters.bitcoin  = Utxo.createUtxoAdapter('bitcoin',  { esplora: endpoints.bitcoin.esplora, endpoint: endpoints.bitcoin.endpoint });
     adapters.litecoin = Utxo.createUtxoAdapter('litecoin', { esplora: endpoints.litecoin.esplora, endpoint: endpoints.litecoin.endpoint });
     adapters.dogecoin = Utxo.createUtxoAdapter('dogecoin', { esplora: endpoints.dogecoin.esplora, endpoint: endpoints.dogecoin.endpoint });
+    // Solana (SOL + SPL auto-detect) — ed25519/SLIP-0010, mainnet RPC is config.
+    if (Solana && Solana.createSolanaAdapter) {
+      const sep = endpoints.solana || {};
+      adapters.solana = Solana.createSolanaAdapter({ rpcUrl: sep.rpcUrl, endpoint: sep.endpoint });
+    }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});
 

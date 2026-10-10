@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'package:blockle_app/multichain/chains/chain_adapter.dart';
 import 'package:blockle_app/multichain/chains/evm.dart' as e;
 import 'package:blockle_app/multichain/chains/registry.dart';
+import 'package:blockle_app/multichain/chains/solana.dart' show splTokenProgram;
 import 'package:blockle_app/multichain/chains/utxo.dart' as u;
 import 'package:blockle_app/multichain/crypto/address.dart' as a;
 import 'package:blockle_app/multichain/crypto/crypto_core.dart' as c;
@@ -266,6 +267,102 @@ void main() {
       expect(reg.enabled().contains('ethereum'), isTrue);
       expect(reg.enabled().contains('bitcoin'), isTrue);
       expect(reg.tokensFor('ethereum').any((t) => t.symbol == 'USDC'), isTrue);
+    });
+  });
+
+  group('registry solana (SOL + SPL, mocked RPC)', () {
+    test('registry builds solana, derives address, parses SPL accounts',
+        () async {
+      // Inject a stub JSON-RPC so no network is touched. The builder receives
+      // the configured endpoint URL and returns the per-call transport.
+      String? seenUrl;
+      String? seenProgram;
+      final reg = ChainRegistry.create(
+        rpcBuilder: (url) => (method, params) async {
+          seenUrl = url;
+          if (method == 'getTokenAccountsByOwner') {
+            seenProgram = (params[1] as Map)['programId'] as String?;
+            // Two accounts of the same mint (must aggregate) + a zero-balance
+            // junk mint (must be dropped) — mirrors a real jsonParsed reply.
+            return {
+              'value': [
+                {
+                  'account': {
+                    'data': {
+                      'parsed': {
+                        'info': {
+                          'mint': 'MintUSDCxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                          'tokenAmount': {'amount': '2500000', 'decimals': 6}
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  'account': {
+                    'data': {
+                      'parsed': {
+                        'info': {
+                          'mint': 'MintUSDCxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+                          'tokenAmount': {'amount': '1500000', 'decimals': 6}
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  'account': {
+                    'data': {
+                      'parsed': {
+                        'info': {
+                          'mint': 'MintBONKyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy',
+                          'tokenAmount': {'amount': '0', 'decimals': 5}
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            };
+          }
+          return null;
+        },
+      );
+
+      // Registered + enabled by default, with the public mainnet RPC default
+      // (config-overridable; no secret).
+      expect(reg.has('solana'), isTrue);
+      expect(reg.enabled().contains('solana'), isTrue);
+      expect(reg.endpoints('solana')?.rpcUrl,
+          'https://api.mainnet-beta.solana.com');
+
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final root = RootSecret(seed: seed);
+      reg.unlock(root);
+
+      // Derives an ed25519 (SLIP-0010 m/44'/501'/0'/0') base58 pubkey address.
+      final acct = await reg.get('solana').deriveAccount(root);
+      expect(acct.chain, 'solana');
+      expect(acct.scheme, 'ed25519');
+      expect(acct.path, "m/44'/501'/0'/0'");
+      expect(acct.address.length, inInclusiveRange(32, 44));
+      expect(RegExp(r'^[1-9A-HJ-NP-Za-km-z]+$').hasMatch(acct.address), isTrue,
+          reason: 'address must be base58');
+      // Deterministic for the same seed.
+      final acct2 = await reg.get('solana').deriveAccount(root);
+      expect(acct2.address, acct.address);
+
+      // SPL auto-detect flows through the registry adapter + the default RPC.
+      final held = await reg.get('solana').discoverTokens(acct.address);
+      expect(seenProgram, splTokenProgram);
+      expect(seenUrl, 'https://api.mainnet-beta.solana.com');
+      expect(held.length, 1); // zero-balance junk dropped
+      final usdc = held.single;
+      expect(usdc.asset.chain, 'solana');
+      expect(usdc.asset.kind, 'spl');
+      expect(usdc.asset.decimals, 6);
+      expect(usdc.confirmed, '4000000'); // two accounts aggregated
+      expect(usdc.display, '4');
     });
   });
 }

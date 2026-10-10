@@ -272,3 +272,60 @@ def test_registry_all_balances_merges_discovered():
     assert bals[0].asset.kind == "native" and bals[0].asset.symbol == "SOL"
     live = next(b for b in bals if b.asset.address == "MintLive")
     assert live.confirmed == "9000000" and live.display == "9"
+
+
+def test_registry_registers_solana_with_default_rpc():
+    """End-to-end registration contract for Solana: the registry builds the
+    adapter with the default mainnet RPC config (no secret, config-overridable),
+    exposes it as enabled, derives the ed25519 address deterministically, and
+    its discover_tokens parses a mocked getTokenAccountsByOwner response — the
+    path that makes SOL + SPL holdings surface in the Accounts view and agent
+    balance. Fully offline: native/SPL reads go through an injected rpc."""
+    # 1) default build — no config at all -> default mainnet RPC is wired.
+    default_reg = create_registry({})
+    assert default_reg.has("solana")
+    assert "solana" in default_reg.enabled()
+    assert default_reg.endpoints("solana")["rpcUrl"] == "https://api.mainnet-beta.solana.com"
+
+    # 2) config-overridable: an injected rpc replaces the network leg.
+    calls = []
+
+    def sol_rpc(method, params):
+        calls.append((method, params))
+        if method == "getBalance":
+            return {"value": 2_500_000_000}  # 2.5 SOL
+        if method == "getTokenAccountsByOwner" and params[1].get("programId") == D.TOKEN_PROGRAM_ID:
+            return {"value": [
+                {"account": {"data": {"parsed": {"info": {
+                    "mint": "UsdcMint",
+                    "tokenAmount": {"amount": "4200000", "decimals": 6}}}}}},
+            ]}
+        return {"value": []}
+
+    reg = create_registry({
+        "endpoints": {"solana": {"rpc": sol_rpc}},
+        "tokens": {"solana": [AssetRef(chain="solana", kind="spl", symbol="USDC",
+                                       decimals=6, address="UsdcMint")]},
+    })
+
+    # derives the address (ed25519, base58) deterministically.
+    seed = K.mnemonic_to_seed(ABANDON, "")
+    reg.unlock({"seed": seed})
+    acct = reg.get("solana").derive_account({"seed": seed})
+    assert acct.scheme == "ed25519"
+    assert acct.address == "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+
+    # discover parses the mocked getTokenAccountsByOwner response.
+    discovered = reg.discover_tokens("solana", acct.address)
+    assert [b.asset.address for b in discovered] == ["UsdcMint"]
+    usdc = discovered[0]
+    assert usdc.asset.kind == "spl" and usdc.asset.symbol == "USDC"  # borrowed from known list
+    assert usdc.confirmed == "4200000" and usdc.display == "4.2"
+
+    # and the unified balances view puts native SOL first, SPL merged on top.
+    bals = reg.all_balances("solana", acct.address)
+    assert bals[0].asset.kind == "native" and bals[0].asset.symbol == "SOL"
+    assert bals[0].display == "2.5"
+    assert any(b.asset.address == "UsdcMint" and b.confirmed == "4200000" for b in bals)
+    assert ("getTokenAccountsByOwner", [acct.address, {"programId": D.TOKEN_PROGRAM_ID},
+                                        {"encoding": "jsonParsed"}]) in calls
