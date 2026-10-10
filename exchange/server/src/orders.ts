@@ -11,8 +11,13 @@ import type { Config } from "./config";
 import type { Registry } from "./registry";
 import { SwapEngine } from "./swaps";
 import type { Session } from "./auth";
+import type { SeedResult } from "./seed";
 import { canonical, verifySignature } from "./sigverify";
 import { priceNum, quoteBaseUnits, minBig } from "./pricing";
+
+/** A resting protocol-seed order never expires in practice; it rests until a
+ *  taker consumes it or an operator cancels it. */
+const SEED_ORDER_TTL_SEC = 10 * 365 * 24 * 3600;
 
 export interface OrderIntent {
   market: string;
@@ -37,12 +42,33 @@ export interface OrderRow {
   makerChain: string;
   expiry: number;
   status: string;
+  /** 'user' (default) or 'protocol-seed' for a premine-funded seed order (#37). */
+  origin?: string;
+  /** dispense txid backing a protocol-seed order (#37). */
+  seedTxid?: string;
 }
 
 export interface PlaceResult {
   orderId: string;
   status: string;
   trades: Array<{ tradeId: string; price: string; amount: string; swapId: string }>;
+}
+
+/** Result of consuming a SeedResult into the order book (#37). Either a live
+ *  resting order was posted (`placed`), or — on a dry-run / non-dispense — the
+ *  intent to place was recorded with no live order (`recordedIntent`). */
+export interface SeedPlacement {
+  placed: boolean;
+  recordedIntent: boolean;
+  orderId?: string;
+  market: string;
+  side: "sell";
+  price?: string;
+  amount: string;
+  origin: "protocol-seed";
+  seedTxid?: string;
+  intentId: string;
+  detail: string;
 }
 
 export class OrderBookError extends Error {}
@@ -141,6 +167,187 @@ export class OrderBook {
     return { orderId, status: row.status, trades };
   }
 
+  // ---- #37 protocol-seed liquidity placement ------------------------------
+  //
+  // Consume a SeedResult into the BLOCK/<symbol> order book as REAL, visible,
+  // tradeable liquidity: a RESTING protocol SELL-BLOCK order (provide BLOCK)
+  // priced at the listing/curve price, flagged origin='protocol-seed' and
+  // referencing the dispense txid.
+  //
+  // NON-CUSTODIAL: the relay holds NO key for this order. It is backed by the
+  // reserve's seedDestination wallet; when a taker matches it, the existing
+  // atomic-swap flow settles the BLOCK leg via the reserve signer. The stored
+  // "signature" is a non-secret sentinel — never a key.
+  //
+  // GATED: a live resting order is posted ONLY when the dispense actually
+  // happened (seed.dispensed === true, which is itself mainnet-gated). On a
+  // dry-run (testnet default) the INTENT to place is recorded and NO live order
+  // is posted, so the flow is exercised end-to-end without moving value.
+  placeSeedLiquidity(seed: SeedResult, listing: { symbol: string; assetKind: string }): SeedPlacement {
+    const market = seed.market; // BLOCK/<symbol>
+    const amount = String(seed.blockAmountBase);
+    const origin = "protocol-seed" as const;
+    const dest = this.cfg.seed.seedDestination ?? "";
+
+    // disabled / zero-value seed => nothing to place (still audited).
+    if (!/^\d+$/.test(amount) || BigInt(amount) <= 0n) {
+      audit(this.db, "order.seed.skip", "protocol", {
+        intentId: seed.intentId,
+        market,
+        reason: "zero seed amount — no liquidity to place",
+      });
+      return {
+        placed: false,
+        recordedIntent: false,
+        market,
+        side: "sell",
+        amount,
+        origin,
+        intentId: seed.intentId,
+        detail: "no seed liquidity to place (zero amount)",
+      };
+    }
+
+    const price = this.seedLiquidityPrice();
+
+    // GATED: only a REAL premine dispense posts a LIVE resting order.
+    if (!seed.dispensed) {
+      audit(this.db, "order.seed.intent", "protocol", {
+        intentId: seed.intentId,
+        market,
+        side: "sell",
+        price,
+        amount,
+        origin,
+        dryRun: seed.dryRun,
+        seedDestination: dest,
+      });
+      return {
+        placed: false,
+        recordedIntent: true,
+        market,
+        side: "sell",
+        price,
+        amount,
+        origin,
+        intentId: seed.intentId,
+        detail:
+          "dry-run — protocol seed-liquidity placement INTENT recorded; NO live resting order (enable mainnet + a reserve signer to place)",
+      };
+    }
+
+    if (!dest) {
+      throw new OrderBookError("cannot place protocol-seed liquidity without a seedDestination wallet");
+    }
+
+    // idempotency: the seed intentId doubles as the order nonce, so re-running
+    // activation never double-posts the seed order.
+    const nonce = seed.intentId;
+    const existing = this.db
+      .prepare("SELECT order_id FROM orders WHERE maker=? AND nonce=?")
+      .get(dest, nonce) as any;
+    if (existing) {
+      const row = this.getOrder(existing.order_id)!;
+      return {
+        placed: true,
+        recordedIntent: false,
+        orderId: row.orderId,
+        market,
+        side: "sell",
+        price,
+        amount,
+        origin,
+        seedTxid: seed.txid,
+        intentId: seed.intentId,
+        detail: "protocol seed-liquidity order already placed (idempotent)",
+      };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const expiry = now + SEED_ORDER_TTL_SEC;
+    const orderId = "ord_" + crypto.randomBytes(10).toString("hex");
+    // Canonical, UNSIGNED protocol intent. There is NO maker signature and NO
+    // key in the relay; the sentinel marks provenance, never authorizes value.
+    const canonicalIntent = canonical({
+      market,
+      side: "sell",
+      type: "limit",
+      price,
+      amount,
+      maker: dest,
+      nonce,
+      origin,
+      seedTxid: seed.txid,
+    });
+    const signature = `protocol-seed:${seed.intentId}`; // sentinel, NOT a signature/key
+
+    this.seq += 1;
+    this.db
+      .prepare(
+        `INSERT INTO orders (order_id, market, side, type, price, amount, filled, maker, maker_chain, expiry, nonce, intent, signature, status, created, seq, origin, seed_txid)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        orderId,
+        market,
+        "sell",
+        "limit",
+        price,
+        amount,
+        "0",
+        dest,
+        "block",
+        expiry,
+        nonce,
+        canonicalIntent,
+        signature,
+        "open",
+        now,
+        this.seq,
+        origin,
+        seed.txid ?? null,
+      );
+    audit(this.db, "order.seed.place", "protocol", {
+      orderId,
+      market,
+      side: "sell",
+      price,
+      amount,
+      origin,
+      seedTxid: seed.txid,
+      intentId: seed.intentId,
+      seedDestination: dest,
+    });
+    this.onBook?.(market);
+
+    return {
+      placed: true,
+      recordedIntent: false,
+      orderId,
+      market,
+      side: "sell",
+      price,
+      amount,
+      origin,
+      seedTxid: seed.txid,
+      intentId: seed.intentId,
+      detail: `protocol-seed resting order posted in ${market} (backed by ${dest}; dispense ${seed.txid})`,
+    };
+  }
+
+  /** Price (quote-asset whole-units per 1 BLOCK) for the resting seed order,
+   *  from the listing/curve: blockPriceUsd / seedAssetPriceUsd. */
+  private seedLiquidityPrice(): string {
+    const blockUsd = this.cfg.blockPriceUsd;
+    const assetUsd = this.cfg.seed.seedAssetPriceUsd;
+    if (!(blockUsd > 0) || !(assetUsd > 0)) {
+      throw new OrderBookError(
+        "cannot price seed liquidity without positive blockPriceUsd and seedAssetPriceUsd",
+      );
+    }
+    return formatPrice(blockUsd / assetUsd);
+  }
+
   // ---- signed cancel ------------------------------------------------------
 
   cancel(session: Session, orderId: string, signature: string | undefined): void {
@@ -187,6 +394,9 @@ export class OrderBook {
       orderId: r.order_id,
       price: r.price,
       amount: (BigInt(r.amount) - BigInt(r.filled)).toString(),
+      // #37: surface the origin so the UI can label protocol-seeded liquidity.
+      origin: r.origin ?? "user",
+      ...(r.seed_txid ? { seedTxid: r.seed_txid } : {}),
     });
     const bids = open
       .filter((r) => r.side === "buy")
@@ -330,6 +540,18 @@ interface OrderRowFull extends OrderRow {
   seq: number;
 }
 
+/** Format a positive price as a bounded decimal string (8 dp) that
+ *  parseDecimalRatio accepts, trimming trailing zeros. Avoids float artefacts
+ *  like 1/0.1 = 10.000000000000002 leaking into the stored price. */
+function formatPrice(n: number): string {
+  if (!Number.isFinite(n) || !(n > 0)) {
+    throw new OrderBookError(`invalid seed price ${n}`);
+  }
+  let s = n.toFixed(8);
+  if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, "");
+  return s;
+}
+
 function rowToOrder(r: any): OrderRow {
   return {
     orderId: r.order_id,
@@ -343,6 +565,8 @@ function rowToOrder(r: any): OrderRow {
     makerChain: r.maker_chain,
     expiry: r.expiry,
     status: r.status,
+    origin: r.origin ?? "user",
+    seedTxid: r.seed_txid ?? undefined,
   };
 }
 

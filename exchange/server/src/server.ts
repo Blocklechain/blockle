@@ -63,7 +63,9 @@ export function buildServer(cfg: Config): BuiltServer {
   // relay holds no key). Testnet default is dryRun; mainnet requires a signer
   // and fails closed without one.
   const seeder = new Seeder(db, cfg, makeReserveSigner(cfg));
-  const listings = new Listings(db, cfg, registry, feeVerifier, compliance, undefined, seeder);
+  // #37: pass the order book so the seed becomes a resting protocol order on
+  // activation (non-custodial, mainnet-gated; dry-run records intent only).
+  const listings = new Listings(db, cfg, registry, feeVerifier, compliance, undefined, seeder, book);
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));

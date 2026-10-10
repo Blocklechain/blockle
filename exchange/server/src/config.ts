@@ -44,6 +44,16 @@ export interface SeedConfig {
    *  dispense is requested from this signer. Absent => no real signer, so a
    *  gated mainnet seed fails CLOSED. */
   signerUrl?: string;
+  /** BLOCK address the premine seed is dispensed TO — the protocol seed wallet
+   *  that backs the resting seed-liquidity order (#37). The relay holds NO key
+   *  for it; when a taker matches the seed order the BLOCK leg settles via the
+   *  reserve signer. */
+  seedDestination?: string;
+  /** Indicative USD price of a freshly-listed asset, used to PRICE the resting
+   *  seed-liquidity order (quote-per-BLOCK = blockPriceUsd / seedAssetPriceUsd).
+   *  CONFIG — the launchpad/curve opening price; replace with the real curve
+   *  price before mainnet. */
+  seedAssetPriceUsd: number;
 }
 
 export interface Config {
@@ -167,6 +177,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       seedBlockUsd: envNum("BLOCKLE_EXCHANGE_SEED_BLOCK_USD", fileCfg.seed?.seedBlockUsd ?? 5),
       enabled: envBool("BLOCKLE_EXCHANGE_SEED_ENABLED", fileCfg.seed?.enabled ?? true),
       signerUrl: process.env.BLOCKLE_EXCHANGE_RESERVE_SIGNER_URL ?? fileCfg.seed?.signerUrl,
+      seedDestination:
+        process.env.BLOCKLE_EXCHANGE_SEED_DESTINATION ??
+        fileCfg.seed?.seedDestination ??
+        // dev/testnet placeholder protocol seed wallet (NOT a real funded key;
+        // overridden in a real deployment). The relay never holds its key.
+        "block1seedliquidityreserve000000000000000000",
+      seedAssetPriceUsd: envNum(
+        "BLOCKLE_EXCHANGE_SEED_ASSET_USD",
+        fileCfg.seed?.seedAssetPriceUsd ?? 0.1,
+      ),
     },
     blockPriceUsd: envNum("BLOCKLE_EXCHANGE_BLOCK_USD", fileCfg.blockPriceUsd ?? 1),
     usdStableDecimals: fileCfg.usdStableDecimals ?? 6,

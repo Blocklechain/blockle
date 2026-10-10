@@ -83,7 +83,9 @@ function migrate(db: DB): void {
       signature  TEXT NOT NULL,
       status     TEXT NOT NULL DEFAULT 'open', -- open|filled|cancelled|expired
       created    INTEGER NOT NULL,
-      seq        INTEGER                -- time priority tiebreak (rowid-like)
+      seq        INTEGER,               -- time priority tiebreak (rowid-like)
+      origin     TEXT NOT NULL DEFAULT 'user', -- 'user' | 'protocol-seed' (#37)
+      seed_txid  TEXT                   -- dispense txid backing a protocol-seed order
     );
     CREATE INDEX IF NOT EXISTS idx_orders_book ON orders(market, status);
 
@@ -132,6 +134,20 @@ function migrate(db: DB): void {
       ts      INTEGER NOT NULL
     );
   `);
+
+  // Additive upgrades for databases created before a column existed. SQLite
+  // ALTER ... ADD COLUMN is a no-op-safe way to bring old files up to date.
+  addColumnIfMissing(db, "orders", "origin", "TEXT NOT NULL DEFAULT 'user'");
+  addColumnIfMissing(db, "orders", "seed_txid", "TEXT");
+}
+
+/** Add a column to an existing table only when it is not already present, so
+ *  migrations are idempotent across restarts and older databases. */
+function addColumnIfMissing(db: DB, table: string, column: string, decl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 /** Append-only audit row. Everything of consequence is logged. */
