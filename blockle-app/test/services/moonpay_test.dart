@@ -410,5 +410,49 @@ void main() {
       expect(u.queryParameters['baseCurrencyCode'], 'eth');
       expect(u.queryParameters.containsKey('walletAddress'), isFalse);
     });
+    test('held balance > 0 → baseCurrencyAmount pre-filled in sell url',
+        () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '0xabc',
+        baseCurrencyAmount: moonpaySellAmount('2.5'),
+      );
+      expect(out, isNotNull);
+      expect(Uri.parse(out!).queryParameters['baseCurrencyAmount'], '2.5');
+    });
+    test('zero/unknown held balance → baseCurrencyAmount omitted', () async {
+      final out = await moonpaySellUrl(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '0xabc',
+        baseCurrencyAmount: moonpaySellAmount('0'),
+      );
+      expect(out, isNotNull);
+      expect(Uri.parse(out!).queryParameters.containsKey('baseCurrencyAmount'),
+          isFalse);
+    });
+  });
+
+  group('moonpaySellAmount (held-balance pre-fill trimming)', () {
+    test('positive whole and decimal balances pass through', () {
+      expect(moonpaySellAmount('5'), '5');
+      expect(moonpaySellAmount('1.5'), '1.5');
+    });
+    test('strips trailing zeros and thousands commas', () {
+      expect(moonpaySellAmount('2.5000'), '2.5');
+      expect(moonpaySellAmount('1,234.50'), '1234.5');
+    });
+    test('caps at 8 fractional digits', () {
+      expect(moonpaySellAmount('1.123456789123'), '1.12345678');
+    });
+    test('zero/blank/unknown/junk → null (omit the amount)', () {
+      expect(moonpaySellAmount('0'), isNull);
+      expect(moonpaySellAmount('0.00'), isNull);
+      expect(moonpaySellAmount(''), isNull);
+      expect(moonpaySellAmount('—'), isNull);
+      expect(moonpaySellAmount(null), isNull);
+      expect(moonpaySellAmount('abc'), isNull);
+    });
   });
 }

@@ -18,7 +18,9 @@
   // ---- bootstrap ---------------------------------------------------------
   async function init() {
     EX.mountWalletBar($('walletBar'));
-    EX.onChange(function () { refreshMine(); });
+    // Re-render on wallet connect/disconnect: my-orders AND the MoonPay bar
+    // (so a freshly connected address flows into the widget links).
+    EX.onChange(function () { refreshMine(); renderMoonPay(); });
     try {
       markets = await EX.api.markets() || [];
     } catch (e) { EX.toast('Could not load markets: ' + e.message, 'err'); markets = []; }
@@ -47,8 +49,80 @@
     }
     updateFormLabels();
     loadBook(); loadTrades(); refreshMine();
+    renderMoonPay();
     subscribe();
     quoteOrder();
+  }
+
+  // ---- MoonPay fiat on/off-ramp -----------------------------------------
+  // "Buy with card" + "Sell" for the current market's MoonPay-supported assets
+  // (BLOCK is never supported). Links open MoonPay's hosted widget in a new
+  // tab; the connected wallet address (for the asset's chain) is passed through
+  // as walletAddress when available. Publishable key only — see moonpay.js.
+  var MP = window.MoonPay;
+
+  // exchange chain label -> connected wallet kind (core.js keys connected[] by
+  // kind). solana/block are their own kinds; everything else is the EVM wallet.
+  function kindForChain(chain) {
+    if (chain === 'solana') return 'solana';
+    if (chain === 'block') return 'block';
+    return 'evm';
+  }
+  function addressForChain(chain) {
+    var st = EX.state();
+    var c = st.connected && st.connected[kindForChain(chain)];
+    return (c && c.address) || '';
+  }
+
+  function renderMoonPay() {
+    var bar = $('moonpayBar');
+    if (!bar || !MP) return;
+    bar.innerHTML = '';
+    var cm = curMarket();
+    if (!cm) return;
+    // Candidate assets: the market's base and quote. Dedup by resolved MoonPay
+    // code so a market like USDC/USDT doesn't double a button, and skip any
+    // asset MoonPay doesn't list (BLOCK, unknown chains/tokens).
+    var map = MP.effectiveMap(MP.loadConfig());
+    var assets = [
+      { chain: cm.baseAsset && cm.baseAsset.chain, symbol: baseSym() },
+      { chain: cm.quoteAsset && cm.quoteAsset.chain, symbol: quoteSym() }
+    ];
+    var seen = {};
+    assets.forEach(function (a) {
+      if (!a.chain || !a.symbol) return;
+      var code = MP.codeForAsset(map, a.chain, a.symbol);
+      if (!code || seen[code]) return;
+      seen[code] = true;
+      bar.appendChild(moonpayGroup(a));
+    });
+  }
+
+  function moonpayGroup(asset) {
+    var wrap = EX.el('span', 'mp-group');
+    wrap.style.cssText = 'display:inline-flex;gap:6px;align-items:center';
+    var buy = EX.el('button', 'btn ghost sm', 'Buy ' + esc(asset.symbol) + ' with card');
+    var sell = EX.el('button', 'btn ghost sm', 'Sell ' + esc(asset.symbol));
+    buy.onclick = function () { openMoonPay('buy', asset); };
+    sell.onclick = function () { openMoonPay('sell', asset); };
+    wrap.appendChild(buy);
+    wrap.appendChild(sell);
+    return wrap;
+  }
+
+  async function openMoonPay(mode, asset) {
+    try {
+      var wallet = addressForChain(asset.chain) || undefined;
+      var fn = mode === 'sell' ? MP.sellUrl : MP.buyUrl;
+      var res = await fn({ chain: asset.chain, symbol: asset.symbol, walletAddress: wallet });
+      if (!res || !res.ok || !res.url) {
+        EX.toast(asset.symbol + ' is not available on MoonPay', 'err');
+        return;
+      }
+      window.open(res.url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      EX.toast((e && e.message) || 'MoonPay unavailable', 'err');
+    }
   }
 
   // ---- order book --------------------------------------------------------

@@ -558,6 +558,7 @@ class AccountsTab(QWidget):
         super().__init__()
         self.ctrl = ctrl
         self._workers: List[Worker] = []
+        self._bal_by_chain: Dict[str, list] = {}  # cid -> last balances (sell pre-fill)
         lay = QVBoxLayout(self)
 
         self.lock_lbl = QLabel("The multi-chain vault is locked.")
@@ -788,10 +789,13 @@ class AccountsTab(QWidget):
                 return
             symbol, code = assets[labels.index(choice)]
 
+        # Pre-fill the sell amount with the current HELD BALANCE for this asset
+        # (human units, trimmed). Zero/unknown -> None, so the widget opens blank.
+        prefill = moonpay.sell_amount(self._held_display(cid, symbol))
         try:
             url = moonpay.build_sell_widget_url(
                 wallet_address=addr, base_currency_code=code,
-                quote_currency_code="usd")
+                quote_currency_code="usd", base_currency_amount=prefill)
         except Exception as e:
             QMessageBox.critical(self, "Blockle", f"Could not build MoonPay URL:\n{e}")
             return
@@ -836,6 +840,11 @@ class AccountsTab(QWidget):
             w.start()
 
     def _show_balance(self, r, bals):
+        # Cache the held balances per chain so the Sell flow can pre-fill the
+        # off-ramp amount with the asset's current balance (human units).
+        rows = getattr(self, "_rows", [])
+        if 0 <= r < len(rows):
+            self._bal_by_chain[rows[r]] = bals
         parts = []
         for b in bals:
             if getattr(b, "error", None):
@@ -843,6 +852,16 @@ class AccountsTab(QWidget):
             else:
                 parts.append(f"{b.display} {b.asset.symbol}")
         self.table.setItem(r, 3, QTableWidgetItem("  ".join(parts) or "—"))
+
+    def _held_display(self, cid, symbol):
+        """The current held balance (human-units ``display`` string) for
+        ``symbol`` on ``cid`` from the cached balances, or None if unknown."""
+        for b in self._bal_by_chain.get(cid, []) or []:
+            if getattr(b, "error", None):
+                continue
+            if str(getattr(b.asset, "symbol", "")).upper() == str(symbol).upper():
+                return getattr(b, "display", None)
+        return None
 
     def _send(self):
         reg = self.ctrl.registry

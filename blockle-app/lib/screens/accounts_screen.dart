@@ -288,7 +288,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
           ],
           if (canSell) ...[
             const SizedBox(width: 6),
-            _sellChip(() => _sellForCash(c, chain, addr, b.asset)),
+            _sellChip(() => _sellForCash(c, chain, addr, b.asset, b.display)),
           ],
         ],
       ),
@@ -401,8 +401,11 @@ class _AccountsScreenState extends State<AccountsScreen> {
   /// open it — the in-app webview on mobile/desktop, a new browser tab on web.
   /// MoonPay hosts the KYC + payout flow and shows the user a deposit address;
   /// this wallet never handles PII or banking details.
-  Future<void> _sellForCash(
-      MultichainController c, String chain, String addr, AssetRef asset) async {
+  Future<void> _sellForCash(MultichainController c, String chain, String addr,
+      AssetRef asset, String display) async {
+    // Pre-fill the sell amount with the user's current HELD BALANCE for this
+    // asset (human units, trimmed). A zero/unknown balance yields null and the
+    // widget opens blank — we never pass 0 or junk to MoonPay.
     final url = await moonpaySellUrl(
       config: c.moonpayConfig,
       chain: chain,
@@ -410,6 +413,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
       kind: asset.kind,
       symbol: asset.symbol,
       quoteCurrencyCode: 'usd',
+      baseCurrencyAmount: moonpaySellAmount(display),
       theme: 'dark',
       colorCode: '#7C5CFF',
     );
