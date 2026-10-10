@@ -11,4 +11,15 @@ window.EXCHANGE_CONFIG = {
   apiBase: '',
   // WebSocket base. '' = derived from apiBase/origin (http->ws, https->wss).
   wsBase: ''
+
+  // MoonPay fiat on/off-ramp (optional; omit to use the built-in sandbox key).
+  // PUBLISHABLE key only — never the secret. Signing, when enabled, happens on
+  // the server-side endpoint below; the sandbox key needs no signing.
+  // moonpay: {
+  //   apiKey: 'pk_live_...',                         // default: pk_test_ sandbox key
+  //   signingEndpoint: 'https://blockle.org/api/moonpay/sign', // '' = unsigned (sandbox)
+  //   theme: 'dark',
+  //   baseCurrencyCode: 'usd',
+  //   currencyCodes: null                            // per-chain override map (see moonpay.js DEFAULT_MAP)
+  // }
 };

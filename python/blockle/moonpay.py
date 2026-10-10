@@ -26,6 +26,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode, urlsplit
 
@@ -165,6 +166,25 @@ def supported_assets(
         if code:
             out.append((sym, code))
     return out
+
+
+def sell_amount(display: Optional[str]) -> Optional[str]:
+    """Trim a human-units balance (a row's ``display`` string) to a MoonPay-safe
+    SELL pre-fill amount: a plain positive decimal, at most 8 fractional digits,
+    trailing zeros stripped. Returns ``None`` for zero/blank/unparseable values
+    so the widget opens WITHOUT a pre-filled amount (never pass 0 or junk)."""
+    if display is None:
+        return None
+    s = str(display).strip().replace(",", "")
+    if not re.fullmatch(r"\d*\.?\d+", s):  # plain non-negative decimal only
+        return None
+    if "." in s:
+        whole, frac = s.split(".", 1)
+        s = (whole + "." + frac[:8]).rstrip("0").rstrip(".")
+    try:
+        return s if s and float(s) > 0 else None
+    except ValueError:
+        return None
 
 
 def is_block(chain: str) -> bool:

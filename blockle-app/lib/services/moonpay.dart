@@ -310,6 +310,25 @@ String buildMoonPaySellUrl({
   return uri.toString();
 }
 
+/// Trim a human-units balance (a [Balance.display] string) to a MoonPay-safe
+/// SELL pre-fill amount: a plain positive decimal, at most 8 fractional digits,
+/// trailing zeros stripped. Returns null for zero/blank/unparseable values so
+/// the widget opens WITHOUT a pre-filled amount (never pass 0 or junk).
+String? moonpaySellAmount(String? display) {
+  if (display == null) return null;
+  var s = display.trim().replaceAll(',', '');
+  if (!RegExp(r'^\d*\.?\d+$').hasMatch(s)) return null; // plain non-negative decimal
+  if (s.contains('.')) {
+    final parts = s.split('.');
+    s = '${parts[0]}.${parts[1].length > 8 ? parts[1].substring(0, 8) : parts[1]}'
+        .replaceAll(RegExp(r'0+$'), '')
+        .replaceAll(RegExp(r'\.$'), '');
+  }
+  if (s.isEmpty) return null;
+  final n = double.tryParse(s);
+  return (n != null && n > 0) ? s : null;
+}
+
 /// One-call SELL helper: resolve the asset code, build the sell URL, and (if a
 /// signer is configured) sign it. Returns null when the asset has no MoonPay
 /// code (BLOCK/unsupported) — callers HIDE the Sell button in that case.

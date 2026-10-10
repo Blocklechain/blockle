@@ -257,6 +257,41 @@ def test_build_sell_widget_url_omits_empty_quote_currency():
     assert "quoteCurrencyCode" not in q
 
 
+def test_sell_amount_trims_held_balance_for_prefill():
+    assert M.sell_amount("5") == "5"
+    assert M.sell_amount("1.5") == "1.5"
+    assert M.sell_amount("2.5000") == "2.5"      # trailing zeros stripped
+    assert M.sell_amount("1,234.50") == "1234.5"  # thousands commas stripped
+    assert M.sell_amount("1.123456789123") == "1.12345678"  # capped at 8 dp
+
+
+def test_sell_amount_zero_or_unknown_is_none():
+    assert M.sell_amount("0") is None
+    assert M.sell_amount("0.00") is None
+    assert M.sell_amount("") is None
+    assert M.sell_amount("—") is None
+    assert M.sell_amount(None) is None
+    assert M.sell_amount("abc") is None
+
+
+def test_sell_url_includes_base_currency_amount_when_balance_positive():
+    # balance > 0 -> trimmed amount is pre-filled in the sell URL
+    amount = M.sell_amount("2.5")
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",
+                                  base_currency_amount=amount)
+    q = parse_qs(urlsplit(url).query)
+    assert q["baseCurrencyAmount"] == ["2.5"]
+
+
+def test_sell_url_omits_base_currency_amount_when_balance_zero():
+    # balance == 0/unknown -> sell_amount is None -> param omitted entirely
+    amount = M.sell_amount("0")
+    url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",
+                                  base_currency_amount=amount)
+    q = parse_qs(urlsplit(url).query)
+    assert "baseCurrencyAmount" not in q
+
+
 def test_sign_url_works_for_sell_url():
     # the signer is host-agnostic: it signs a sell URL exactly like a buy URL
     url = M.build_sell_widget_url(base_currency_code="eth", api_key="pk_test_k",

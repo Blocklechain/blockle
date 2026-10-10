@@ -154,7 +154,16 @@
   async function doSell(chain, assetOpts) {
     try {
       const acct = await Wiring.accountFor(chain);
-      const res = await MoonPay.sellUrl(Object.assign({ chain, walletAddress: acct.address }, assetOpts || {}));
+      const opts = Object.assign({ chain, walletAddress: acct.address }, assetOpts || {});
+      // Pre-fill the sell amount with the user's CURRENT HELD BALANCE for this
+      // asset (human units, trimmed), so the off-ramp widget opens ready to sell.
+      // Best-effort: a bad/slow balance read never blocks the sell, and a
+      // zero/unknown balance simply omits the amount (widget opens blank).
+      try {
+        const amt = await heldSellAmount(chain, assetOpts || {});
+        if (amt) opts.baseCurrencyAmount = amt;
+      } catch {}
+      const res = await MoonPay.sellUrl(opts);
       if (!res || !res.ok) { UI.toast('Sell for cash is not available for this asset'); return; }
       openExternal(res.url);
     } catch (e) {
@@ -324,6 +333,39 @@
     }
   }
 
+  // ---- MoonPay sell pre-fill ------------------------------------------------
+  // Resolve the user's current held balance (human units) for the asset a Sell
+  // button targets, returning a MoonPay-safe amount string or null. For a native
+  // asset that's the pinned native row (row 0); for a token it's the row whose
+  // symbol matches. Reads the live holdings view (same data the list shows).
+  async function heldSellAmount(chain, assetOpts) {
+    const rows = Wiring.getHoldings ? await Wiring.getHoldings(chain) : await Wiring.getBalance(chain);
+    if (!Array.isArray(rows) || !rows.length) return null;
+    let row = null;
+    if (assetOpts && assetOpts.native) {
+      row = rows[0]; // native coin is pinned at the top of the holdings view
+    } else {
+      const want = String((assetOpts && assetOpts.symbol) || '').toUpperCase();
+      if (want) row = rows.find((r) => String((r.asset && r.asset.symbol) || '').toUpperCase() === want) || null;
+    }
+    return row ? sellAmountFrom(row.display) : null;
+  }
+
+  // Trim a human-units balance (the row's `display` string) to a MoonPay-safe
+  // sell amount: a plain positive decimal, at most 8 fractional digits, trailing
+  // zeros stripped. Returns null for zero/blank/unparseable so the widget opens
+  // WITHOUT a pre-filled amount (never pass 0 or junk to MoonPay).
+  function sellAmountFrom(display) {
+    if (display == null) return null;
+    let s = String(display).trim().replace(/,/g, '');
+    if (!/^\d*\.?\d+$/.test(s)) return null;        // plain non-negative decimal only
+    if (s.indexOf('.') >= 0) {
+      const parts = s.split('.');
+      s = (parts[0] + '.' + parts[1].slice(0, 8)).replace(/0+$/, '').replace(/\.$/, '');
+    }
+    return (s && Number(s) > 0) ? s : null;
+  }
+
   // ---- helpers --------------------------------------------------------------
   function toBase(human, decimals) {
     const d = Number(decimals) || 0;
@@ -352,6 +394,6 @@
     return fmt(feeBase, 8) + ' ' + (m ? m.sym : '');
   }
 
-  global.AccountsUI = { init, enter, openSend, addToken };
+  global.AccountsUI = { init, enter, openSend, addToken, sellAmountFrom, heldSellAmount };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.AccountsUI;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));
