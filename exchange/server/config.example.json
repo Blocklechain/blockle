@@ -16,6 +16,12 @@
     "listingFeeUsd": 5,
     "perPairFeeUsd": 1
   },
+  "seed": {
+    "_README": "#37 listing liquidity seed. On activation the protocol seeds the new asset's BLOCK market with seedBlockUsd of BLOCK FROM THE PREMINE/RESERVE — IN ADDITION to the listing fee. Testnet default: dryRun (intent recorded, nothing sent). A real mainnet dispense requires mainnetEnabled AND a reachable non-relay signerUrl; otherwise it FAILS CLOSED (the listing is not activated). The relay holds NO reserve key.",
+    "seedBlockUsd": 5,
+    "enabled": true,
+    "signerUrl": ""
+  },
   "blockPriceUsd": 1,
   "usdStableDecimals": 6,
   "publicBaseUrl": "https://exchange.blockle.org",

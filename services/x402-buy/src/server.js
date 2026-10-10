@@ -28,7 +28,7 @@ const {
 } = require("./config");
 const { Ledger, paymentIdFromHeader } = require("./ledger");
 const { loadKyc } = require("./kyc");
-const { quoteBuy, blockToBaseUnits, usdToMicroUsdc, microUsdcToUsd } = require("./curve");
+const { quoteBuy, blockToBaseUnits, usdToMicroUsdc, microUsdcToUsd, isKnownCurve, reserveSourceFor } = require("./curve");
 const { readReserveUsd } = require("./reserve");
 const { releaseBlock } = require("./release");
 const { signReceipt } = require("./receipts");
@@ -238,6 +238,15 @@ function createApp(overrides = {}) {
     if (!(usdNum > 0)) {
       return res.status(400).json({ error: "invalid or missing `usdc` (expected a positive dollar amount)" });
     }
+    // Optional curve selector. Empty → the main 210k/$2M curve; a named curve
+    // (e.g. "avg1-20k", the $1-average 20k-BLOCK premine curve) prices the buy
+    // along that dedicated curve instead. BLOCK is still dispensed from the
+    // premine via releaseBlock (gated: dryRun on testnet, mainnet money path
+    // asserted elsewhere) — selecting a curve changes pricing, not gating.
+    const curveName = String(src.curve || "").trim() || undefined;
+    if (!isKnownCurve(buyCfg, curveName)) {
+      return res.status(400).json({ error: `unknown curve: ${curveName}` });
+    }
     let usdcMicro;
     try {
       usdcMicro = usdToMicroUsdc(usdNum);
@@ -256,11 +265,13 @@ function createApp(overrides = {}) {
       usdcMicro,
       amountUsd: usdNum,
       recipient: to,
-      request: { to, usdc: usdNum },
+      request: { to, usdc: usdNum, curve: curveName || "main" },
       perform: async ({ id, settleTxHash, payer }) => {
-        // price against the LIVE curve at settlement time (reserve read now)
-        const R = await readReserveUsd(buyCfg);
-        const q = quoteBuy(buyCfg, usdNum, R);
+        // price against the LIVE curve at settlement time (reserve read now).
+        // A dedicated curve prices against its own reserve source (R=0 → floor
+        // when it has no configured reserve); the main curve reads Base.
+        const R = await readReserveUsd(reserveSourceFor(buyCfg, curveName));
+        const q = quoteBuy(buyCfg, usdNum, R, curveName);
         const blockBase = blockToBaseUnits(q.blockOut);
         const rel = await releaseBlock(cfg, to, blockBase, { idempotencyKey: id });
         return {
@@ -275,6 +286,7 @@ function createApp(overrides = {}) {
             blockTxid: rel.txid,
             avgPrice: q.avgPrice,
             spotPrice: q.spotPrice,
+            curve: q.curve,
             reserveUsd: R,
             network: cfg.network,
             payer,

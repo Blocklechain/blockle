@@ -18,6 +18,7 @@ import { treasuryAddress } from "./config";
 import type { Registry, AssetSpec } from "./registry";
 import type { FeeVerifier } from "./feeverify";
 import type { ComplianceProvider } from "./compliance";
+import { Seeder, type SeedResult } from "./seed";
 
 export interface ListingQuoteItem {
   item: string;
@@ -35,11 +36,14 @@ export interface ListingQuote {
 export interface ListingResult {
   listingId: string;
   markets: string[];
+  /** premine-funded BLOCK liquidity seed applied at activation (#37). */
+  seed: SeedResult;
 }
 
 export class ListingError extends Error {}
 
 export class Listings {
+  private seeder: Seeder;
   constructor(
     private db: DB,
     private cfg: Config,
@@ -47,7 +51,10 @@ export class Listings {
     private feeVerifier: FeeVerifier,
     private compliance: ComplianceProvider,
     private onChange?: () => void,
-  ) {}
+    seeder?: Seeder,
+  ) {
+    this.seeder = seeder ?? new Seeder(db, cfg);
+  }
 
   private validateAsset(asset: AssetSpec & { symbol?: string }): string {
     const symbol = (asset.symbol ?? "").trim().toUpperCase();
@@ -158,6 +165,20 @@ export class Listings {
     }
 
     const listingId = "lst_" + crypto.randomBytes(10).toString("hex");
+
+    // #37: premine-funded liquidity seed for the mandatory BLOCK/<symbol>
+    // market — IN ADDITION to the fee (fee -> treasury; this BLOCK comes from
+    // the reserve). Gated + testnet-first (dryRun default) + fail-closed: a
+    // gated mainnet dispense that cannot be performed throws here and the
+    // listing is NOT activated. Done BEFORE the activation write so we never
+    // persist a listing we could not seed.
+    const seed = await this.seeder.seedListing({
+      listingId,
+      symbol,
+      assetKind: body.asset.kind,
+      lister,
+    });
+
     const now = Date.now();
     const tx = this.db.transaction(() => {
       this.db
@@ -196,9 +217,15 @@ export class Listings {
         );
     });
     tx();
-    audit(this.db, "listing.activate", lister, { listingId, symbol, markets: quote.markets, payKind: verify.kind });
+    audit(this.db, "listing.activate", lister, {
+      listingId,
+      symbol,
+      markets: quote.markets,
+      payKind: verify.kind,
+      seed: { intentId: seed.intentId, seedUsd: seed.seedUsd, dispensed: seed.dispensed, dryRun: seed.dryRun },
+    });
     this.onChange?.();
-    return { listingId, markets: quote.markets };
+    return { listingId, markets: quote.markets, seed };
   }
 
   list(): Array<{ listingId: string; asset: AssetSpec; markets: string[]; active: boolean }> {
