@@ -3,3 +3,6 @@ artifacts/
 cache/
 typechain-types/
 .env
+# Deploy output. Ignored by default so testnet runs don't churn the tree;
+# commit a real address deliberately with: git add -f deployments.json
+deployments.json

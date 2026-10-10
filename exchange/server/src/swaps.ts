@@ -18,6 +18,7 @@ import * as crypto from "crypto";
 import type { DB } from "./db";
 import { audit } from "./db";
 import { hash160 } from "./btc";
+import { htlcTarget, type Config, type HtlcTarget } from "./config";
 
 export type SwapState =
   | "proposed"
@@ -36,6 +37,12 @@ export interface SwapLeg {
   timelock: number;
   lockRef?: string;
   status: "pending" | "locked" | "withdrawn" | "refunded";
+  /** DEPLOYED HTLC address this leg settles against, resolved for the active
+   *  network at create() (fail-closed if unset). Absent on legacy swaps
+   *  created without a config. */
+  htlcAddress?: string;
+  /** concrete network/cluster the htlcAddress belongs to. */
+  htlcNetwork?: string;
 }
 
 export interface Swap {
@@ -84,10 +91,38 @@ export interface CreateSwapParams {
 export type SwapEvent = (swap: Swap) => void;
 
 export class SwapEngine {
-  constructor(
-    private db: DB,
-    private onEvent?: SwapEvent,
-  ) {}
+  private cfg?: Config;
+  private onEvent?: SwapEvent;
+
+  /**
+   * `cfg` is optional for backward compatibility: when provided (as the server
+   * does) the engine resolves + ENFORCES the deployed HTLC address for each leg
+   * (fail-closed). When omitted (legacy/unit callers) no HTLC wiring happens.
+   * Accepts `(db)`, `(db, onEvent)`, or `(db, cfg, onEvent)`.
+   */
+  constructor(private db: DB, cfgOrEvent?: Config | SwapEvent, onEvent?: SwapEvent) {
+    if (typeof cfgOrEvent === "function") {
+      this.onEvent = cfgOrEvent;
+    } else if (cfgOrEvent) {
+      this.cfg = cfgOrEvent;
+      this.onEvent = onEvent;
+    }
+  }
+
+  /** Resolve the deployed HTLC target for a leg, refusing (fail-closed) when
+   *  no address is configured for the active network. Only called when a cfg
+   *  is present. */
+  private requireHtlc(chain: string): HtlcTarget {
+    const t = htlcTarget(this.cfg!, chain);
+    if (!t.address) {
+      throw new SwapError(
+        `no HTLC address configured for chain '${t.chain}' on ${this.cfg!.network} ` +
+          `(family=${t.family}, network=${t.network}); set cfg.htlc.* for this network ` +
+          `or the leg is refused (fail-closed)`,
+      );
+    }
+    return t;
+  }
 
   create(p: CreateSwapParams): Swap {
     const swapId = "swap_" + crypto.randomBytes(12).toString("hex");
@@ -99,6 +134,12 @@ export class SwapEngine {
     const makerTimelock = now + ttl;
     const takerTimelock = now + Math.floor(ttl / 2);
 
+    // Fail-closed: resolve the DEPLOYED HTLC address for BOTH legs BEFORE any
+    // DB write. If a leg's address is unset for the active network, refuse the
+    // whole swap (no partial state). Skipped when the engine has no config.
+    const makerHtlc = this.cfg ? this.requireHtlc(p.makerLeg.chain) : undefined;
+    const takerHtlc = this.cfg ? this.requireHtlc(p.takerLeg.chain) : undefined;
+
     const legs: SwapLeg[] = [
       {
         chain: p.makerLeg.chain,
@@ -108,6 +149,8 @@ export class SwapEngine {
         role: "maker",
         timelock: makerTimelock,
         status: "pending",
+        htlcAddress: makerHtlc?.address,
+        htlcNetwork: makerHtlc?.network,
       },
       {
         chain: p.takerLeg.chain,
@@ -117,6 +160,8 @@ export class SwapEngine {
         role: "taker",
         timelock: takerTimelock,
         status: "pending",
+        htlcAddress: takerHtlc?.address,
+        htlcNetwork: takerHtlc?.network,
       },
     ];
 
@@ -274,6 +319,21 @@ export class SwapEngine {
     this.save(swap);
   }
 
+  /** The HTLC settlement context handed to a client inside a `lock` step:
+   *  the deployed contract/program/package address for this leg's chain plus
+   *  any per-family extras (BTC Esplora endpoint + hot wallet). Empty when the
+   *  engine has no config (legacy callers). */
+  private htlcPayload(chain: string): Record<string, any> {
+    if (!this.cfg) return {};
+    const t = this.requireHtlc(chain); // re-asserts fail-closed at instruct time
+    return {
+      htlcAddress: t.address,
+      htlcNetwork: t.network,
+      htlcFamily: t.family,
+      ...(t.extra ? { htlc: t.extra } : {}),
+    };
+  }
+
   /** Decide what the caller should do next given current state. */
   private instruct(swap: Swap, role: "maker" | "taker"): SwapStep {
     const now = Math.floor(Date.now() / 1000);
@@ -313,6 +373,7 @@ export class SwapEngine {
               asset: makerLeg.asset,
               amount: makerLeg.amount,
               note: hints.note,
+              ...this.htlcPayload(makerLeg.chain),
             },
             swap,
           };
@@ -335,6 +396,7 @@ export class SwapEngine {
               asset: takerLeg.asset,
               amount: takerLeg.amount,
               note: hints.note,
+              ...this.htlcPayload(takerLeg.chain),
             },
             swap,
           };

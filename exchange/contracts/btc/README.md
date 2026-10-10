@@ -112,12 +112,78 @@ well-shaped.
 | **Broadcasting** a real testnet/signet tx | ⚠️ **needs an external node/wallet** — out of scope here |
 | **UTXO discovery / fee estimation** from live chain | ⚠️ needs an Esplora/Core RPC endpoint (`config.json` has the URLs) |
 
-Broadcast + UTXO selection are deliberately not implemented in this package:
-they require a funded testnet wallet and a node/Esplora connection, which this
-environment does not have. The builders emit standard base64 PSBTs and
-fully-finalized raw transactions, so wiring them to
-`sendrawtransaction` / Esplora `POST /tx` is a thin, node-dependent shell step —
-documented, not faked.
+Broadcast + UTXO selection require a funded testnet wallet and a node/Esplora
+connection. That thin, node-dependent shell step between a finalized PSBT and a
+live spend is now wired in **`src/esplora.js`** (dependency-free, Node 18+
+global `fetch`) — documented below, not faked.
+
+## Live spend wiring: funded hot wallet + Esplora (`src/esplora.js`)
+
+The pure builder (`src/htlc.js`) has no network I/O. `src/esplora.js` supplies
+the two chain interactions a real swap needs, against the per-network endpoint
+in `config.json → networks.<net>.esplora`:
+
+```js
+const htlc = require('./src/htlc');
+const esplora = require('./src/esplora');
+
+const NET  = 'signet';                       // testnet3 | signet | regtest | mainnet(gated)
+const base = esplora.esploraFor(NET);        // -> config.json networks.signet.esplora
+
+// ---- 1. LOCK: fund the P2WSH HTLC from the funded hot wallet ----------------
+// UTXO discovery for the depositor's own address (the funded hot wallet). The
+// hot-wallet KEY lives in the operator's signer, NEVER in this repo.
+const hot = 'tb1q...hotwallet';
+const inputs = await esplora.fetchUtxos(base, hot);      // ready buildLockPsbt inputs[]
+const feeRate = await esplora.fetchFeeRate(base, 3);     // sat/vB
+const h = htlc.buildHtlc({ hash, receiverPubkey, refundPubkey, locktime }, NET);
+const lockPsbt = htlc.buildLockPsbt({ htlc: h, amount, inputs, changeAddress: hot, fee });
+// ...operator's signer signs + finalizes lockPsbt (standard P2WPKH inputs)...
+const lockTxid = await esplora.broadcast(base, lockPsbt.extractTransaction().toHex());
+await esplora.waitForConfirmations(base, lockTxid, 2);
+
+// ---- 2. REDEEM: receiver spends with the preimage ---------------------------
+const utxo = await esplora.fetchHtlcUtxo(base, h.address);   // { txid, index, value }
+const redeem = htlc.buildRedeemPsbt({ htlc: h, utxo, receiverAddress, minerFee,
+                                      feeBps: 10, feeAddress });
+// ...receiver signs input 0...
+htlc.finalizeRedeem(redeem, 0, preimage);
+const redeemTxid = await esplora.broadcast(base, redeem.extractTransaction().toHex());
+
+// ---- 3. REFUND: depositor reclaims after the CLTV timelock ------------------
+const refund = htlc.buildRefundPsbt({ htlc: h, utxo, refundAddress: hot, minerFee });
+// ...depositor signs input 0...
+htlc.finalizeRefund(refund, 0);
+await esplora.broadcast(base, refund.extractTransaction().toHex());   // no fee on refund
+```
+
+### What `src/esplora.js` provides
+
+| Function | Esplora endpoint | Purpose |
+|----------|------------------|---------|
+| `esploraFor(net)` | — | base URL from `config.json`; refuses `mainnet` unless `mainnet_enabled=true` |
+| `fetchUtxos(base, addr)` | `GET /address/:a/utxo` + `GET /tx/:id` | spendable UTXOs mapped to `buildLockPsbt` inputs (with `witnessUtxo`) |
+| `fetchHtlcUtxo(base, htlcAddr)` | `GET /address/:a/utxo` | the funded HTLC output as the `utxo` arg for redeem/refund |
+| `fetchFeeRate(base, tgt)` | `GET /fee-estimates` | sat/vB estimate |
+| `broadcast(base, rawTxHex)` | `POST /tx` | relay a finalized raw tx; returns the txid |
+| `confirmations` / `waitForConfirmations` | `GET /tx/:id/status`, `/blocks/tip/height` | confirmation depth / polling |
+
+### The funded BTC hot wallet (what a human must do)
+
+- **Fund it.** Create a bech32 P2WPKH wallet on the target network and fund it
+  from a faucet (signet: <https://signet.bc-2.jp/> or
+  `bitcoin-cli -signet getnewaddress` + mining; testnet3:
+  <https://bitcoinfaucet.uo1.net/> / <https://coinfaucet.eu/en/btc-testnet/>).
+- **Record its address** as `htlc.btc.hotWallet` in the relay's `config.json`
+  (or env `BLOCKLE_EXCHANGE_HTLC_BTC_HOTWALLET`). The relay only ever reads the
+  ADDRESS — the private key stays in the operator's own signer.
+- **Point `htlc.btc.esploraUrl`** (relay config, or `BLOCKLE_EXCHANGE_HTLC_BTC_ESPLORA`)
+  at the same Esplora this package uses. Default testnet:
+  `https://blockstream.info/testnet/api`. For a self-hosted node run
+  `electrs`/`esplora` and use its URL (regtest default `http://127.0.0.1:3002`).
+- BTC is the one leg with **no deployed contract**: the relay's fail-closed
+  check for a BTC leg requires `esploraUrl` to be set (without a broadcast
+  endpoint the leg cannot settle); see `exchange/server/src/config.ts`.
 
 ## Testnet-first and mainnet gating
 

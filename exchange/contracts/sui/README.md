@@ -48,14 +48,45 @@ sui move build
 sui move test
 ```
 
-## Deploy (testnet, gated)
+## Deploy (one command, testnet-first, gated)
 ```bash
 ./scripts/deploy.sh                 # -> Sui testnet (default)
 SUI_ENV=devnet ./scripts/deploy.sh  # -> devnet
+# mainnet (gated — see below):
+SUI_ENV=mainnet HTLC_MAINNET_ENABLED=true HTLC_LEGAL_REVIEW_REF=LR-123 ./scripts/deploy.sh
 ```
-Record the published `packageId` from the `--json` output and put it in the
-relay config as the Sui HTLC package id. The `Clock` object id is the
-well-known `0x6` on every network.
+`deploy.sh` builds + tests, switches the Sui client to `SUI_ENV` (creating the
+env alias against `https://fullnode.<env>.sui.io:443` if missing), publishes
+using the **active keystore address** (`sui client active-address` — no key
+touches this repo), then **captures the published `packageId`** and writes it to
+`deployments.json` keyed by env (shape in `deployments.example.json`). That file
+is what the relay reads for the Sui HTLC package id. The `Clock` object id is
+the well-known `0x6` on every network and is recorded alongside the id.
+
+`deployments.json` is git-ignored; commit a real id deliberately with
+`git add -f deployments.json`. Parsing uses `jq` if present, else `python3`.
+
+### What the deployer must have (human steps — not automated)
+- **The Sui CLI** (`sui`) installed, with a keypair in the local keystore. The
+  active address is the publisher: `sui client active-address`. This repo never
+  sees the key. Create/import a key with `sui client new-address ed25519` or an
+  existing keystore.
+- **A funded active address** on the target network:
+  - *testnet*: faucet SUI — `sui client faucet` (CLI faucet against the active
+    env), or the web/Discord faucet at <https://faucet.sui.io>. One request
+    (~1 SUI) covers many publishes; the package gas budget defaults to 0.1 SUI
+    (`SUI_GAS_BUDGET`, in MIST).
+  - *devnet*: same, `sui client faucet` against the devnet env.
+  - *mainnet*: real SUI for gas sent to the active address (a package publish is
+    a few cents of SUI; keep a small buffer).
+- **RPC/env**: defaults to the public fullnode `https://fullnode.<env>.sui.io:443`.
+  Override with `SUI_RPC_URL=...` (e.g. a private/paid fullnode) before running.
+  The CLI env is selected/created automatically by the script.
+- **Mainnet only**: a recorded legal/compliance sign-off; set
+  `HTLC_MAINNET_ENABLED=true` and `HTLC_LEGAL_REVIEW_REF=<ref>` (PROTOCOL.md §7).
+
+After a successful publish, record/commit the `packageId` and wire it into the
+relay (`deployments.json`). Nothing else from the package is network-specific.
 
 > **Testnet-first / mainnet gating.** A Sui package is published per network, so
 > the mainnet switch lives at the deploy + relay-config boundary, not in the

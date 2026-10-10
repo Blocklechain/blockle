@@ -56,6 +56,32 @@ export interface SeedConfig {
   seedAssetPriceUsd: number;
 }
 
+/** Per-network DEPLOYED HTLC addresses the relay coordinates settlement
+ *  against. The relay holds NO keys; these are the public contract/program/
+ *  package ids each party's wallet calls, plus the BTC broadcast endpoint.
+ *
+ *  Fail-closed: the swap engine REFUSES a leg whose address is unset for the
+ *  active network (see `htlcTarget` + SwapEngine). Mainnet entries are only
+ *  consulted when `mainnetEnabled` is true, so leaving them blank keeps a
+ *  testnet deployment testnet-only by construction. */
+export interface HtlcConfig {
+  /** Deployed EVM HTLC address keyed by network name
+   *  (testnet: `sepolia`, `baseSepolia`; mainnet: `base`, `ethereum`). */
+  evm: Record<string, string>;
+  /** Deployed Solana HTLC program id keyed by cluster (`devnet`, `mainnet`). */
+  solana: Record<string, string>;
+  /** Published Sui HTLC package id keyed by network (`testnet`, `mainnet`). */
+  sui: Record<string, string>;
+  /** BTC has NO deployed contract (per-swap P2WSH). What a live spend needs is
+   *  a funded hot wallet to fund/refund from and an Esplora base URL to fetch
+   *  UTXOs + broadcast (`POST /tx`). `esploraUrl` is the enabling resource the
+   *  fail-closed check requires. */
+  btc: { hotWallet: string; esploraUrl: string };
+  /** Deployed BLOCK-VM HTLC contract id (hex), from our reserve/node deploy
+   *  (`blockle-chain contract deploy …`). The one leg WE can deploy. */
+  block: { contractId: string };
+}
+
 export interface Config {
   port: number;
   /** sqlite file path, or ":memory:" for tests. */
@@ -71,6 +97,9 @@ export interface Config {
   fees: FeeConfig;
   /** premine-funded listing liquidity seed (#37). */
   seed: SeedConfig;
+  /** per-network DEPLOYED HTLC addresses the swap engine settles each leg
+   *  against (fail-closed when a leg's address is unset). */
+  htlc: HtlcConfig;
   /** indicative BLOCK price in USD, used only to quote the BLOCK-settled
    *  listing fee. CONFIG — replace with a real oracle before mainnet. */
   blockPriceUsd: number;
@@ -135,6 +164,52 @@ function withDevTreasury(t: any): Record<string, Record<string, string>> {
   return out;
 }
 
+// Dev/testnet placeholder HTLC addresses so the swap flow is exercisable
+// offline, mirroring DEV_TREASURY. These are NOT real deployments; a real
+// testnet/mainnet deployment sets config.json → htlc (or the env overrides).
+// Only TESTNET-family keys are seeded here — mainnet keys stay blank so a
+// mainnet leg fails CLOSED until a real deployed address is configured.
+const DEV_HTLC: HtlcConfig = {
+  evm: {
+    sepolia: "0x000000000000000000000000000000000000dEaD",
+    baseSepolia: "0x000000000000000000000000000000000000dEaD",
+  },
+  solana: { devnet: "11111111111111111111111111111111" },
+  sui: { testnet: "0x" + "0".repeat(64) },
+  btc: {
+    hotWallet: "tb1qdevhotwallet00000000000000000000000000",
+    esploraUrl: "https://blockstream.info/testnet/api",
+  },
+  block: { contractId: "00".repeat(32) },
+};
+
+function mergeHtlc(file: any): HtlcConfig {
+  const f = file ?? {};
+  return {
+    // DEV defaults fill only blanks; file config wins. DEV has no mainnet keys,
+    // so a mainnet leg has no placeholder and fails closed until deployed.
+    evm: { ...DEV_HTLC.evm, ...(f.evm ?? {}) },
+    solana: { ...DEV_HTLC.solana, ...(f.solana ?? {}) },
+    sui: { ...DEV_HTLC.sui, ...(f.sui ?? {}) },
+    btc: {
+      hotWallet:
+        process.env.BLOCKLE_EXCHANGE_HTLC_BTC_HOTWALLET ??
+        f.btc?.hotWallet ??
+        DEV_HTLC.btc.hotWallet,
+      esploraUrl:
+        process.env.BLOCKLE_EXCHANGE_HTLC_BTC_ESPLORA ??
+        f.btc?.esploraUrl ??
+        DEV_HTLC.btc.esploraUrl,
+    },
+    block: {
+      contractId:
+        process.env.BLOCKLE_EXCHANGE_HTLC_BLOCK_CONTRACT ??
+        f.block?.contractId ??
+        DEV_HTLC.block.contractId,
+    },
+  };
+}
+
 /** Resolve a path relative to the exchange/ directory (one up from server/). */
 function exchangeDir(): string {
   // dist/src/config.js -> ../../.. = exchange/server; one more up = exchange/
@@ -188,6 +263,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         fileCfg.seed?.seedAssetPriceUsd ?? 0.1,
       ),
     },
+    htlc: mergeHtlc(fileCfg.htlc),
     blockPriceUsd: envNum("BLOCKLE_EXCHANGE_BLOCK_USD", fileCfg.blockPriceUsd ?? 1),
     usdStableDecimals: fileCfg.usdStableDecimals ?? 6,
     treasury: withDevTreasury(treasuryFile),
@@ -213,4 +289,81 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
 export function treasuryAddress(cfg: Config, chain: string): string | undefined {
   const net = cfg.mainnetEnabled ? "mainnet" : "testnet";
   return cfg.treasury?.[net]?.[chain];
+}
+
+export interface HtlcTarget {
+  /** the (lowercased) leg chain that was resolved. */
+  chain: string;
+  family: "evm" | "solana" | "sui" | "btc" | "block" | "unknown";
+  /** the concrete network/cluster the address belongs to, respecting the
+   *  mainnet gate (e.g. ethereum→sepolia on testnet). */
+  network: string;
+  /** deployed contract/program/package id (or, for BTC, the Esplora endpoint);
+   *  "" when nothing is configured for the active network => fail closed. */
+  address: string;
+  /** extra per-family settlement context handed to the client's wallet. */
+  extra?: Record<string, string>;
+}
+
+const EVM_CHAINS = new Set(["ethereum", "eth", "base", "arbitrum", "optimism", "polygon"]);
+
+/** Map a logical EVM chain to the concrete network key under htlc.evm, honoring
+ *  the mainnet gate (testnet uses the *Sepolia networks). */
+function evmNetworkKey(chain: string, mainnet: boolean): string {
+  switch (chain) {
+    case "ethereum":
+    case "eth":
+      return mainnet ? "ethereum" : "sepolia";
+    case "base":
+      return mainnet ? "base" : "baseSepolia";
+    default:
+      return chain; // any other EVM network is named directly in config
+  }
+}
+
+/**
+ * Resolve the DEPLOYED HTLC target a given swap leg must settle against, for
+ * the currently-active network. A blank `address` means the leg is NOT
+ * configured and the swap engine must refuse it (fail-closed). This never
+ * throws — the caller decides what an empty address means.
+ */
+export function htlcTarget(cfg: Config, chainRaw: string): HtlcTarget {
+  const chain = (chainRaw || "").toLowerCase();
+  const mainnet = cfg.mainnetEnabled;
+  const h = cfg.htlc;
+
+  if (chain === "block") {
+    return {
+      chain,
+      family: "block",
+      network: mainnet ? "mainnet" : "testnet",
+      address: h?.block?.contractId ?? "",
+    };
+  }
+  if (chain === "bitcoin" || chain === "btc") {
+    // No deployed contract (per-swap P2WSH). The enabling resource for a live
+    // spend is the Esplora endpoint (UTXO fetch + POST /tx broadcast); the
+    // funded hot wallet rides along as settlement context.
+    return {
+      chain,
+      family: "btc",
+      network: mainnet ? "mainnet" : "testnet",
+      address: h?.btc?.esploraUrl ?? "",
+      extra: { hotWallet: h?.btc?.hotWallet ?? "", esploraUrl: h?.btc?.esploraUrl ?? "" },
+    };
+  }
+  if (chain === "sui") {
+    const network = mainnet ? "mainnet" : "testnet";
+    return { chain, family: "sui", network, address: h?.sui?.[network] ?? "" };
+  }
+  if (chain === "solana" || chain === "sol") {
+    const network = mainnet ? "mainnet" : "devnet";
+    return { chain, family: "solana", network, address: h?.solana?.[network] ?? "" };
+  }
+  if (EVM_CHAINS.has(chain)) {
+    const network = evmNetworkKey(chain, mainnet);
+    return { chain, family: "evm", network, address: h?.evm?.[network] ?? "" };
+  }
+  // unknown chain family: no mapping => unconfigured => fail-closed upstream.
+  return { chain, family: "unknown", network: mainnet ? "mainnet" : "testnet", address: "" };
 }

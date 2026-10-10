@@ -7,3 +7,7 @@ node_modules/
 # Local Sui client config / keys must NEVER be committed
 *.key
 .sui/
+
+# Publish output. Ignored by default so testnet runs don't churn the tree;
+# commit a real packageId deliberately with: git add -f deployments.json
+deployments.json

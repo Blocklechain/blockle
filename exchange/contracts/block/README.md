@@ -46,5 +46,59 @@ opcode**. Therefore:
 **maker/long (`T1`)** side, or add a `HEIGHT < timelock` guard to `withdraw` if
 BLOCK must be the short side. See `PROTOCOL.md §3`.
 
+## Deploy (the one leg WE can deploy)
+
+BLOCK is the only HTLC leg the Blockle side controls end-to-end: we hold the
+node + reserve wallet, so we deploy it ourselves with the `blockle-chain` CLI.
+There is no third-party operator key to wait on.
+
+### One command
+
+```bash
+cd exchange/contracts/block
+FEE_ADDR=<32-byte-hex reserve/treasury address> ./scripts/deploy.sh         # -> regtest
+# mainnet (gated):
+FEE_ADDR=<hex32> NETWORK=mainnet HTLC_MAINNET_ENABLED=true \
+  HTLC_LEGAL_REVIEW_REF=LR-123 DATADIR=/var/lib/blockle NODE=1.2.3.4:8444 \
+  ./scripts/deploy.sh
+```
+
+`scripts/deploy.sh` (a) emits the HTLC assembly with `FEE_ADDR` baked in via the
+`htlc-asm` bin, (b) builds + runs `blockle-chain`, and (c) prints the contract
+id. The wallet in `--datadir` funds + signs the deploy tx; its passphrase comes
+from `BLOCKLE_WALLET_PASSPHRASE` (or an interactive prompt). **No key is ever
+read or written by this repo.**
+
+### The exact underlying command
+
+The script wraps exactly this (so you can run it by hand):
+
+```bash
+# 1. emit the .asm with the reserve fee address baked in
+FEE_ADDR=<hex32> FEE_BPS=10 cargo run --quiet --bin htlc-asm > htlc.asm
+
+# 2. deploy it as a BLOCK-VM contract from the reserve wallet/node
+blockle-chain --network regtest --datadir .blockle \
+  contract deploy htlc.asm --gas 300000 [--node <p2p-addr>]
+# prints:  contract id: <64-hex>
+```
+
+Deploying the `.asm` is byte-identical to deploying `htlc_bytecode()`:
+`blockle-chain contract deploy *.asm` assembles with the same
+`blockle_vm::asm::assemble` the crate uses.
+
+### Where the contract id goes
+
+Put the printed `contract id: <hex>` in the relay config:
+
+```jsonc
+// exchange/server/config.json
+"htlc": { "block": { "contractId": "<64-hex>" } }
+```
+
+or set env `BLOCKLE_EXCHANGE_HTLC_BLOCK_CONTRACT=<hex>`. The swap engine refuses
+a BLOCK leg (fail-closed) until this is set for the active network
+(`exchange/server/src/config.ts` → `htlcTarget`).
+
 > **Testnet-first.** Use regtest/testnet; the BLOCK mainnet money-path switch
 > lives in the exchange service and requires legal/compliance sign-off.

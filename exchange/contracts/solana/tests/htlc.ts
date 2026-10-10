@@ -28,6 +28,39 @@ function randomId(): Buffer {
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// The timelock is checked against the program's `Clock::unix_timestamp` (the
+// validator's Clock sysvar). On a local validator that clock is derived from
+// slot count, so it drifts behind wall-clock time and lags further the longer
+// the suite runs. Base the timelock on the sysvar itself (read it directly)
+// rather than wall time, so the window is a fixed number of on-chain seconds.
+async function chainUnixTime(provider: anchor.AnchorProvider): Promise<number> {
+  const info = await provider.connection.getAccountInfo(anchor.web3.SYSVAR_CLOCK_PUBKEY);
+  if (!info) return Math.floor(Date.now() / 1000);
+  // Clock layout: slot(u64) epoch_start_timestamp(i64) epoch(u64)
+  // leader_schedule_epoch(u64) unix_timestamp(i64) -> unix_timestamp at offset 32.
+  return Number(info.data.readBigInt64LE(32));
+}
+
+// Rather than guess when the on-chain clock has passed the deadline, poll by
+// *attempting* the action: it fails with TimelockNotExpired until the clock
+// crosses the timelock, then succeeds. Deterministic regardless of drift.
+async function retryUntilUnlocked<T>(
+  fn: () => Promise<T>,
+  timeoutMs = 90000
+): Promise<T> {
+  const start = Date.now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      if (!String(e).includes("TimelockNotExpired")) throw e;
+      if (Date.now() - start > timeoutMs) throw new Error("timelock never expired within timeout");
+      await sleep(500);
+    }
+  }
+}
+
 describe("htlc", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
@@ -128,7 +161,12 @@ describe("htlc", () => {
     const preimage = randomId();
     const hashlock = sha256(preimage);
     const amount = new BN(0.25 * LAMPORTS_PER_SOL);
-    const timelock = new BN(Math.floor(Date.now() / 1000) + 2);
+    // Timelock measured in on-chain seconds from the program's own clock. The
+    // margin must exceed how far the sysvar can advance between this read and
+    // when the lock tx lands (the validator catching up can jump it several
+    // seconds), or lock_sol's `timelock > now` guard trips. The eventual refund
+    // polls, so a wider window only costs a little wait, not correctness.
+    const timelock = new BN((await chainUnixTime(provider)) + 15);
     const swap = swapPda(id);
 
     await program.methods
@@ -147,12 +185,13 @@ describe("htlc", () => {
       assert.include(e.toString(), "TimelockNotExpired");
     }
 
-    await sleep(3000);
     const before = await provider.connection.getBalance(payer.publicKey);
-    await program.methods
-      .refundSol()
-      .accounts({ swap, sender: payer.publicKey, caller: payer.publicKey })
-      .rpc();
+    await retryUntilUnlocked(() =>
+      program.methods
+        .refundSol()
+        .accounts({ swap, sender: payer.publicKey, caller: payer.publicKey })
+        .rpc()
+    );
     // Sender gets the amount back (plus reclaimed rent); strictly increases.
     assert.isAbove(await provider.connection.getBalance(payer.publicKey), before);
   });
