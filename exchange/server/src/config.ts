@@ -32,6 +32,20 @@ export interface FeeConfig {
   perPairFeeUsd: number;
 }
 
+export interface SeedConfig {
+  /** USD worth of BLOCK — from the PREMINE/RESERVE, IN ADDITION to the listing
+   *  fee — to seed each new asset's mandatory BLOCK market on activation. */
+  seedBlockUsd: number;
+  /** master switch for the premine liquidity subsidy. Default true. When false
+   *  the seed is a no-op (still audit-logged). */
+  enabled: boolean;
+  /** Base URL of the NON-RELAY reserve signer (the node signer the x402 /
+   *  settlement services use). The relay holds NO reserve key; a real mainnet
+   *  dispense is requested from this signer. Absent => no real signer, so a
+   *  gated mainnet seed fails CLOSED. */
+  signerUrl?: string;
+}
+
 export interface Config {
   port: number;
   /** sqlite file path, or ":memory:" for tests. */
@@ -45,6 +59,8 @@ export interface Config {
   /** configurable daily cap, USD, across listing-fee verification. */
   dailyCapUsd: number;
   fees: FeeConfig;
+  /** premine-funded listing liquidity seed (#37). */
+  seed: SeedConfig;
   /** indicative BLOCK price in USD, used only to quote the BLOCK-settled
    *  listing fee. CONFIG — replace with a real oracle before mainnet. */
   blockPriceUsd: number;
@@ -146,6 +162,11 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       protocolFeeBps: fileCfg.fees?.protocolFeeBps ?? 10, // 0.1%
       listingFeeUsd: fileCfg.fees?.listingFeeUsd ?? 5,
       perPairFeeUsd: fileCfg.fees?.perPairFeeUsd ?? 1,
+    },
+    seed: {
+      seedBlockUsd: envNum("BLOCKLE_EXCHANGE_SEED_BLOCK_USD", fileCfg.seed?.seedBlockUsd ?? 5),
+      enabled: envBool("BLOCKLE_EXCHANGE_SEED_ENABLED", fileCfg.seed?.enabled ?? true),
+      signerUrl: process.env.BLOCKLE_EXCHANGE_RESERVE_SIGNER_URL ?? fileCfg.seed?.signerUrl,
     },
     blockPriceUsd: envNum("BLOCKLE_EXCHANGE_BLOCK_USD", fileCfg.blockPriceUsd ?? 1),
     usdStableDecimals: fileCfg.usdStableDecimals ?? 6,

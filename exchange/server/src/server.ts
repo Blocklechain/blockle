@@ -12,6 +12,7 @@ import { OrderBook, OrderBookError } from "./orders";
 import { Listings, ListingError } from "./listings";
 import { makeFeeVerifier } from "./feeverify";
 import { makeCompliance } from "./compliance";
+import { Seeder, makeReserveSigner } from "./seed";
 import { StreamHub } from "./ws";
 import { x402Manifest } from "./manifest";
 
@@ -58,7 +59,11 @@ export function buildServer(cfg: Config): BuiltServer {
     (m) => hub?.emitTrade(m),
     (m) => hub?.emitBook(m),
   );
-  const listings = new Listings(db, cfg, registry, feeVerifier, compliance);
+  // #37: the premine liquidity seeder uses the NON-RELAY reserve signer (the
+  // relay holds no key). Testnet default is dryRun; mainnet requires a signer
+  // and fails closed without one.
+  const seeder = new Seeder(db, cfg, makeReserveSigner(cfg));
+  const listings = new Listings(db, cfg, registry, feeVerifier, compliance, undefined, seeder);
 
   const app = express();
   app.use(express.json({ limit: "256kb" }));

@@ -10,7 +10,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { quoteBuy, blockToBaseUnits, baseUnitsToBlock, usdToMicroUsdc } = require("../src/curve");
+const {
+  quoteBuy,
+  blockToBaseUnits,
+  baseUnitsToBlock,
+  usdToMicroUsdc,
+  makeCurve,
+  curveAveragePrice,
+  isKnownCurve,
+  AVG1_20K_ID,
+} = require("../src/curve");
 const { Ledger, paymentIdFromHeader } = require("../src/ledger");
 const { createApp } = require("../src/server");
 
@@ -51,6 +60,67 @@ test("curve: mirrors buy.js net/sold math exactly for a mid-reserve buy", () => 
   const expected = soldAt(R + net) - soldAt(R);
   const q = quoteBuy(BUY_CFG, raw, R);
   assert.ok(Math.abs(q.blockOut - expected) < 1e-6, `blockOut ${q.blockOut} vs ${expected}`);
+});
+
+// ---- #36: dedicated $1-average 20,000-BLOCK premine curve -------------------
+
+test("avg1-20k: average price over the FULL allocation is EXACTLY $1.00", () => {
+  // target/allocation == $20,000 / 20,000 == $1.00 by construction.
+  assert.equal(curveAveragePrice(BUY_CFG, AVG1_20K_ID), 1);
+  // Cross-check via the integral: the reserve to sell the whole allocation is
+  // targetUsdc, and soldAt(targetUsdc) == allocation, so gross/BLOCK == $1.00.
+  const c = makeCurve(BUY_CFG, AVG1_20K_ID);
+  assert.ok(Math.abs(c.reserveForN(c.ALLOC) - c.TARGET) < 1e-6, "reserveForN(alloc)==target");
+  assert.ok(Math.abs(c.soldAt(c.TARGET) - c.ALLOC) < 1e-6, "soldAt(target)==alloc");
+  const grossForWholeAlloc = c.reserveForN(c.ALLOC);
+  assert.ok(Math.abs(grossForWholeAlloc / c.ALLOC - 1) < 1e-9, "avg == $1.00/BLOCK");
+});
+
+test("avg1-20k: starts at the $0.10 floor and climbs monotonically", () => {
+  const c = makeCurve(BUY_CFG, AVG1_20K_ID);
+  assert.equal(c.P0, 0.1);
+  assert.ok(Math.abs(c.priceAt(0) - 0.1) < 1e-12, "spot at R=0 == floor");
+  let prev = -1;
+  for (let r = 0; r <= c.TARGET; r += 500) {
+    const p = c.priceAt(r);
+    assert.ok(p >= prev, `price must be non-decreasing (r=${r})`);
+    prev = p;
+  }
+  // and the spot price at the very end of the allocation is above the average
+  assert.ok(c.priceAt(c.TARGET) > 1, "end spot > $1 average (curve rises past avg)");
+});
+
+test("avg1-20k: is a DISTINCT curve from the main 210k/$2M curve", () => {
+  const main = makeCurve(BUY_CFG); // no name → main
+  const ded = makeCurve(BUY_CFG, AVG1_20K_ID);
+  assert.equal(main.id, "main");
+  assert.equal(ded.id, AVG1_20K_ID);
+  assert.notEqual(ded.ALLOC, main.ALLOC);
+  assert.notEqual(ded.TARGET, main.TARGET);
+  assert.notEqual(ded.K, main.K);
+  // same math, different params → main allocation averages ~$9.52, not $1
+  assert.ok(Math.abs(curveAveragePrice(BUY_CFG, undefined) - 2000000 / 210000) < 1e-9);
+  assert.notEqual(curveAveragePrice(BUY_CFG, AVG1_20K_ID), curveAveragePrice(BUY_CFG, undefined));
+});
+
+test("avg1-20k: a buy prices along the dedicated curve, from the floor at R=0", () => {
+  // At R=0 the first dollars buy near the $0.10 floor, NOT the $1 average.
+  const q = quoteBuy(BUY_CFG, 100, 0, AVG1_20K_ID);
+  assert.equal(q.curve, AVG1_20K_ID);
+  assert.ok(q.avgPrice >= 0.1 && q.avgPrice < 0.2, `early avg near floor, got ${q.avgPrice}`);
+  // independent recompute on the 20k params
+  const P0 = 0.1, TARGET = 20000, ALLOC = 20000, FEE = 0.05;
+  const K = (2 * (TARGET - P0 * ALLOC)) / (ALLOC * ALLOC);
+  const soldAt = (r) => (Math.max(P0, Math.sqrt(P0 * P0 + 2 * K * r)) - P0) / K;
+  const expected = soldAt(100 * (1 - FEE)) - soldAt(0);
+  assert.ok(Math.abs(q.blockOut - expected) < 1e-6, `blockOut ${q.blockOut} vs ${expected}`);
+});
+
+test("avg1-20k: selectable by name; unknown curve names are rejected", () => {
+  assert.equal(isKnownCurve(BUY_CFG, undefined), true, "main curve");
+  assert.equal(isKnownCurve(BUY_CFG, ""), true, "empty == main");
+  assert.equal(isKnownCurve(BUY_CFG, AVG1_20K_ID), true);
+  assert.equal(isKnownCurve(BUY_CFG, "nope"), false);
 });
 
 test("curve: base-unit conversions round-trip", () => {

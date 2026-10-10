@@ -14,5 +14,14 @@
     "startPrice": 0.1,
     "targetUsdc": 2000000,
     "allocation": 210000
+  },
+  "_curves_note": "Dedicated curves selectable by name via ?curve=<name>, SEPARATE from the main curve above. 'avg1-20k' (20,000 BLOCK / $20,000 target => average EXACTLY $1.00/BLOCK) is built in and always selectable; list it here only to override its params or set its own USDC reserve. BLOCK on these curves is dispensed from the premine and stays gated (no real dispense until mainnetEnabled + release.dryRun=false).",
+  "curves": {
+    "avg1-20k": {
+      "startPrice": 0.1,
+      "targetUsdc": 20000,
+      "allocation": 20000,
+      "usdc": null
+    }
   }
 }

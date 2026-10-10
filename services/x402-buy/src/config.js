@@ -119,6 +119,10 @@ function loadBuyConfig(cfg) {
       targetUsdc: curve.targetUsdc != null ? curve.targetUsdc : 2000000,
       allocation: curve.allocation != null ? curve.allocation : 210000,
     },
+    // Optional operator-defined dedicated curves, keyed by name. The built-in
+    // "avg1-20k" ($1-average 20k-BLOCK premine curve, see curve.js) is always
+    // selectable; an entry here with the same key overrides its params/reserve.
+    curves: bc.curves && typeof bc.curves === "object" ? bc.curves : {},
     raw: bc,
   };
 }
