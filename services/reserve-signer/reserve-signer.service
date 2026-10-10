@@ -1,0 +1,13 @@
+[Unit]
+Description=Blockle reserve signer (loopback premine dispense for gated money paths)
+After=network.target blockle-node.service
+
+[Service]
+WorkingDirectory=/opt/blockle/services/reserve-signer
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+# The reserve key is in the node wallet datadir; this unit only shells the CLI.
+
+[Install]
+WantedBy=multi-user.target
