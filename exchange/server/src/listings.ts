@@ -19,6 +19,7 @@ import type { Registry, AssetSpec } from "./registry";
 import type { FeeVerifier } from "./feeverify";
 import type { ComplianceProvider } from "./compliance";
 import { Seeder, type SeedResult } from "./seed";
+import type { OrderBook, SeedPlacement } from "./orders";
 
 export interface ListingQuoteItem {
   item: string;
@@ -38,6 +39,10 @@ export interface ListingResult {
   markets: string[];
   /** premine-funded BLOCK liquidity seed applied at activation (#37). */
   seed: SeedResult;
+  /** placement of the seed into the BLOCK/<symbol> order book (#37): a live
+   *  resting protocol order on a real dispense, or a recorded intent on a
+   *  dry-run. Absent when no order book was wired in. */
+  seedPlacement?: SeedPlacement;
 }
 
 export class ListingError extends Error {}
@@ -52,6 +57,7 @@ export class Listings {
     private compliance: ComplianceProvider,
     private onChange?: () => void,
     seeder?: Seeder,
+    private book?: OrderBook,
   ) {
     this.seeder = seeder ?? new Seeder(db, cfg);
   }
@@ -217,15 +223,32 @@ export class Listings {
         );
     });
     tx();
+
+    // #37 PLACEMENT: consume the SeedResult into the now-live BLOCK/<symbol>
+    // order book. On a real dispense this posts a resting protocol SELL-BLOCK
+    // order (non-custodial, backed by seedDestination, referencing the dispense
+    // txid); on a dry-run it records the placement intent only. Done AFTER the
+    // activation write so the market is live and the order is immediately
+    // visible/matchable. Fail-closed on the dispense itself already happened
+    // above (seedListing throws before this write when a gated dispense cannot
+    // be performed), so reaching here means the seed is accounted for.
+    let seedPlacement: SeedPlacement | undefined;
+    if (this.book) {
+      seedPlacement = this.book.placeSeedLiquidity(seed, { symbol, assetKind: body.asset.kind });
+    }
+
     audit(this.db, "listing.activate", lister, {
       listingId,
       symbol,
       markets: quote.markets,
       payKind: verify.kind,
       seed: { intentId: seed.intentId, seedUsd: seed.seedUsd, dispensed: seed.dispensed, dryRun: seed.dryRun },
+      seedPlacement: seedPlacement
+        ? { placed: seedPlacement.placed, recordedIntent: seedPlacement.recordedIntent, orderId: seedPlacement.orderId, seedTxid: seedPlacement.seedTxid }
+        : undefined,
     });
     this.onChange?.();
-    return { listingId, markets: quote.markets, seed };
+    return { listingId, markets: quote.markets, seed, seedPlacement };
   }
 
   list(): Array<{ listingId: string; asset: AssetSpec; markets: string[]; active: boolean }> {

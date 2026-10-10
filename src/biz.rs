@@ -1308,15 +1308,29 @@ fn page_shell(title: &str, body: String) -> String {
     page_shell_seo(title, DEFAULT_DESC, "", "", body)
 }
 
-fn fmt_hashrate(h: f64) -> String {
-    const UNITS: &[&str] = &["H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s"];
-    let mut v = h;
-    let mut u = 0;
-    while v >= 1000.0 && u < UNITS.len() - 1 {
-        v /= 1000.0;
-        u += 1;
+/// Standardized SI-scaled rate formatter used for ALL hashrate displays on the
+/// site: scales by 1000 and applies k/M/G/T/P/E prefixes to the given base unit.
+/// e.g. fmt_rate(2_500_000.0, "H/s") -> "2.50 MH/s".
+fn fmt_rate(v: f64, unit: &str) -> String {
+    const PFX: &[&str] = &["", "k", "M", "G", "T", "P", "E"];
+    let mut x = if v.is_finite() && v > 0.0 { v } else { 0.0 };
+    let mut i = 0;
+    while x >= 1000.0 && i < PFX.len() - 1 {
+        x /= 1000.0;
+        i += 1;
     }
-    format!("{v:.2} {}", UNITS[u])
+    format!("{x:.2} {}{unit}", PFX[i])
+}
+
+/// H/s-based pools (sha256d/scrypt/x11/… — the directory + parent chains).
+fn fmt_hashrate(h: f64) -> String {
+    fmt_rate(h, "H/s")
+}
+
+/// Equihash lanes report solutions/second, not raw hashes — scale as Sol/s
+/// (kSol/s, MSol/s, GSol/s …) so our native pools read consistently.
+fn fmt_sols(s: f64) -> String {
+    fmt_rate(s, "Sol/s")
 }
 
 fn status_dot(p: &PoolRecord) -> String {
@@ -1344,13 +1358,13 @@ fn ago(ts: u64) -> String {
 fn own_pool_row(name: &str, title: &str) -> String {
     match pool_stats(name) {
         Some(st) => {
-            let hr = st["hashrate_sols_est"].as_f64().unwrap_or(0.0);
+            let hr = fmt_pool_rate(&st);
             let endpoint = st["endpoint"].as_str().unwrap_or("").to_string();
             let fee = st["fee_percent"].as_f64().unwrap_or(0.0);
             let workers = st["workers"].as_u64().unwrap_or(0);
             let blocks = st["blocks_found"].as_u64().unwrap_or(0);
             format!(
-                r#"<tr><td><b>{title}</b></td><td><span class="pill ok"><i></i>live</span></td><td class="mono">{endpoint}</td><td class="mono">{fee}%</td><td class="mono">{hr:.1} Sol/s</td><td class="mono">{workers}</td><td class="mono">{blocks}</td></tr>"#
+                r#"<tr><td><b>{title}</b></td><td><span class="pill ok"><i></i>live</span></td><td class="mono">{endpoint}</td><td class="mono">{fee}%</td><td class="mono">{hr}</td><td class="mono">{workers}</td><td class="mono">{blocks}</td></tr>"#
             )
         }
         None => format!(
@@ -1733,6 +1747,18 @@ fn stat_hashrate(st: &Value) -> f64 {
     norm_stat(st, &["hashrate_sols_est", "hashrate_est"]).and_then(|v| v.as_f64()).unwrap_or(0.0)
 }
 
+/// Format a pool's rate with the CORRECT unit for its algorithm: Equihash
+/// lanes are solutions/second (Sol/s); every other (ASIC) lane is hashes/second
+/// (H/s). Keeps the display honest — a 43 TH/s sha256d pool must not read "TSol/s".
+fn fmt_pool_rate(st: &Value) -> String {
+    let v = stat_hashrate(st);
+    if stat_algo(st) == "equihash" {
+        fmt_sols(v)
+    } else {
+        fmt_hashrate(v)
+    }
+}
+
 fn stat_miners(st: &Value) -> u64 {
     norm_stat(st, &["workers", "miners_connected", "miners"]).and_then(|v| v.as_u64()).unwrap_or(0)
 }
@@ -1872,7 +1898,7 @@ username: {user_line}     password: {pass_line}
         shown = shown,
         name = name,
         algo = algo,
-        c1 = card("Pool hashrate", format!("{:.2}", stat_hashrate(st))),
+        c1 = card("Pool hashrate", fmt_pool_rate(st)),
         c2 = card("Miners", stat_miners(st).to_string()),
         c3 = card("Blocks found", stat_blocks_found(st).to_string()),
         c4 = card("Fee", format!("{}%", norm_stat(st, &["fee_percent"]).and_then(|v| v.as_f64()).unwrap_or(1.0))),
@@ -1955,12 +1981,12 @@ curl -s http://{domain}:8445/ -d '{{"method":"submitauxblock","params":["…hash
                 .iter()
                 .map(|(algo, pools)| {
                     let rows: String = pools.iter().map(|(name, st)| format!(
-                        r#"<tr><td><a href="/mine/{name}"><b>{coin} · {name}</b></a></td><td class="mono">{endpoint}</td><td class="mono">{mode}</td><td class="mono">{hr:.2}</td><td class="mono">{miners}</td><td class="mono">{blocks}</td></tr>"#,
+                        r#"<tr><td><a href="/mine/{name}"><b>{coin} · {name}</b></a></td><td class="mono">{endpoint}</td><td class="mono">{mode}</td><td class="mono">{hr}</td><td class="mono">{miners}</td><td class="mono">{blocks}</td></tr>"#,
                         name = name,
                         coin = display_coin(st),
                         endpoint = stat_endpoint(st),
                         mode = stat_mode(st),
-                        hr = stat_hashrate(st),
+                        hr = fmt_pool_rate(st),
                         miners = stat_miners(st),
                         blocks = stat_blocks_found(st),
                     )).collect();
