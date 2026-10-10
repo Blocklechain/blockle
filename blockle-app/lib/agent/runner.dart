@@ -19,6 +19,7 @@
 
 import 'dart:convert';
 
+import 'pnl.dart' show PnlHook, TradeFill;
 import 'policy.dart';
 import 'providers.dart' show LlmProvider;
 import 'tools.dart' show ToolRegistry, PreparedAction;
@@ -55,6 +56,12 @@ class Runner {
   final int maxTurns;
   final void Function(Map<String, dynamic> ev)? onEvent;
 
+  /// The ONE realized-profit post-commit hook (AGENT-STRATEGIES.md section 8).
+  /// Optional — null leaves behaviour unchanged.
+  final PnlHook? pnl;
+  final String pnlWallet;
+  final String pnlChannel;
+
   final List<Map<String, dynamic>> messages = [];
   bool _aborted = false;
 
@@ -67,7 +74,12 @@ class Runner {
     int? maxTurns,
     List<String>? allowlist,
     this.onEvent,
+    this.pnl,
+    String? pnlWallet,
+    String? pnlChannel,
   })  : system = system ?? defaultSystem,
+        pnlWallet = pnlWallet ?? 'default',
+        pnlChannel = pnlChannel ?? 'default',
         maxTurns = maxTurns ?? 12 {
     // Enforce the allowlist from the catalog unless the host narrowed it.
     policy.setAllowlist(allowlist ?? tools.names());
@@ -130,6 +142,9 @@ class Runner {
       args: args,
       audit: audit,
       emit: emit,
+      pnl: pnl,
+      pnlWallet: pnlWallet,
+      pnlChannel: pnlChannel,
     );
     if (o.declined) {
       return _toolResult(
@@ -249,6 +264,9 @@ Future<DispatchOutcome> dispatchValueMoving({
   required Map<String, dynamic> args,
   dynamic audit,
   void Function(Map<String, dynamic> ev)? emit,
+  PnlHook? pnl,
+  String pnlWallet = 'default',
+  String pnlChannel = 'default',
 }) async {
   Future<void> rec(Map<String, dynamic> d) async {
     if (audit != null) await audit.record(d);
@@ -319,6 +337,29 @@ Future<DispatchOutcome> dispatchValueMoving({
     'value': _valueMap(prep.value),
     'fee': prep.fee,
   });
+
+  // ---- realized-profit ledger + pop-up: the ONE post-commit hook (§8) ----
+  // Updates the avg-cost ledger on EVERY committed buy/sell and pops a pop-up on
+  // a positive stablecoin exit. Fail-soft: PnL accounting must never break or
+  // unwind a trade that already broadcast.
+  if (pnl != null) {
+    try {
+      final fill = TradeFill.fromCommit(
+        name: name,
+        summary: prep.summary,
+        result: res,
+        config: pnl.config,
+        wallet: pnlWallet,
+        channel: pnlChannel,
+        inUsd: prep.value.usd,
+        txid: txid is String ? txid : (txid == null ? null : '$txid'),
+      );
+      if (fill != null) {
+        final event = await pnl.onCommit(fill);
+        if (event != null) ev({'type': 'realized_profit', ...event});
+      }
+    } catch (_) {}
+  }
 
   // ---- mandatory fee leg: a second treasury send in the SAME action ----
   Map<String, dynamic>? agentFee;

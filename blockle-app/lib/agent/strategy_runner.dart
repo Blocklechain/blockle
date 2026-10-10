@@ -21,6 +21,7 @@
 //        mode==propose    -> audited 'strategy_proposal' (emit only, no dispatch)
 //        mode==auto       -> dispatchValueMoving(...)  [cap->confirm->commit->fee]
 
+import 'pnl.dart' show PnlHook;
 import 'policy.dart';
 import 'runner.dart' show dispatchValueMoving, DispatchOutcome;
 import 'strategies.dart';
@@ -45,6 +46,27 @@ class StrategyRunner {
   final Map<String, Strategy> registry;
   final void Function(Map<String, dynamic> ev)? onEvent;
 
+  /// The shared realized-profit post-commit hook (§8). Optional.
+  final PnlHook? pnl;
+  final String pnlWallet;
+  final String pnlChannel;
+
+  /// Optional READ-ONLY candidate feed (§7). Duck-typed to a `{ scan() }` object
+  /// (a [Discovery], or a test fake). Discovery NEVER trades, signs, or
+  /// auto-allowlists; it only returns ranked, `approved=false` suggestions. The
+  /// dispatch gate below is unchanged, so an unapproved token still produces a
+  /// `blocked` audit note (never a trade).
+  final dynamic discovery;
+
+  /// When a strategy's `pair`/`asset` param is omitted, draw the candidate
+  /// universe from [discovery] (filtered to `approved===true` by default).
+  final bool useDiscovery;
+
+  /// Draw UNapproved candidates too (default OFF). Even when on, an unapproved
+  /// token is STILL subject to the allowlist at dispatch, so it can only ever
+  /// produce a `blocked` audit note — never a trade.
+  final bool autoConsiderUnapproved;
+
   StrategyRunner({
     required this.tools,
     required this.policy,
@@ -53,9 +75,32 @@ class StrategyRunner {
     this.mainnetEnabled = false,
     Map<String, Strategy>? strategies,
     this.onEvent,
-  }) : registry = strategies ?? defaultStrategies();
+    this.pnl,
+    String? pnlWallet,
+    String? pnlChannel,
+    this.discovery,
+    this.useDiscovery = false,
+    this.autoConsiderUnapproved = false,
+  })  : registry = strategies ?? defaultStrategies(),
+        pnlWallet = pnlWallet ?? 'default',
+        pnlChannel = pnlChannel ?? 'default';
 
   List<String> strategyNames() => registry.keys.toList();
+
+  /// READ-ONLY candidate feed passthrough (§7). Returns ranked candidates from
+  /// `discovery.scan()`, filtered to `approved===true` by DEFAULT. Only when
+  /// [autoConsiderUnapproved] is explicitly enabled (or [includeUnapproved] is
+  /// passed) are unapproved candidates included — and even then any resulting
+  /// trade STILL passes the dispatch gate (an unapproved, non-allowlisted token
+  /// produces a `blocked` note, never a trade). This method never trades, signs,
+  /// or mutates the allowlist.
+  Future<List<dynamic>> candidates({bool? includeUnapproved}) async {
+    final d = discovery;
+    if (d == null) return const [];
+    final List<dynamic> all = List<dynamic>.from(await d.scan());
+    final inc = includeUnapproved ?? autoConsiderUnapproved;
+    return inc ? all : all.where((c) => c.approved == true).toList();
+  }
 
   Future<void> _rec(Map<String, dynamic> d) async {
     if (audit != null) await audit.record(d);
@@ -185,6 +230,9 @@ class StrategyRunner {
           args: it.args,
           audit: audit,
           emit: onEvent,
+          pnl: pnl,
+          pnlWallet: pnlWallet,
+          pnlChannel: pnlChannel,
         );
         if (o.declined) {
           records.add({'declined': it.toJson()});

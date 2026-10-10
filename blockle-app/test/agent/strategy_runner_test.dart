@@ -7,12 +7,30 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/agent/audit.dart';
+import 'package:blockle_app/agent/discovery.dart';
 import 'package:blockle_app/agent/policy.dart';
 import 'package:blockle_app/agent/runner.dart' show dispatchValueMoving;
 import 'package:blockle_app/agent/strategies.dart';
 import 'package:blockle_app/agent/strategy_runner.dart';
 import 'package:blockle_app/agent/tools.dart';
 import 'package:blockle_app/multichain/venues.dart';
+
+/// A duck-typed READ-ONLY discovery feed (matches the `{ scan() }` contract the
+/// StrategyRunner expects). It never trades, signs, or approves.
+class _FakeDiscovery {
+  final List<Candidate> _c;
+  _FakeDiscovery(this._c);
+  Future<List<Candidate>> scan() async => _c;
+}
+
+StrategyIntent _swap(String token, {String tag = 'disc'}) => StrategyIntent(
+      tool: 'swap',
+      args: {'from': token, 'to': 'USDC', 'amount': '1'},
+      rationale: 'discovered-token trade',
+      estUsd: 1,
+      strategy: 'fixed',
+      tag: '$tag:$token',
+    );
 
 /// A strategy that returns a fixed list of Intents (full control for gate tests).
 class _FixedStrategy extends Strategy {
@@ -262,6 +280,62 @@ void main() {
       final res = await sr.tick('fixed', {}); // default mode == propose
       expect(broadcast, 0);
       expect(res.records.first['proposed'], isNotNull);
+    });
+  });
+
+  group('discovery wiring (§7) — read-only suggestions, never auto-traded', () {
+    test('candidates() draws approved-only by DEFAULT', () async {
+      final fake = _FakeDiscovery([
+        const Candidate(symbol: 'APPROVED', source: 'watchlist', score: 0.9, approved: true),
+        const Candidate(symbol: 'RAW', source: 'venuePairs', score: 0.8),
+      ]);
+      final sr = StrategyRunner(
+        tools: buildTools(const AgentContext()),
+        policy: Policy.create(),
+        ctx: _noCtx(),
+        discovery: fake,
+      );
+      final def = await sr.candidates();
+      expect(def.map((c) => c.symbol).toList(), ['APPROVED'],
+          reason: 'default is approved-only');
+      final all = await sr.candidates(includeUnapproved: true);
+      expect(all.map((c) => c.symbol).toSet(), {'APPROVED', 'RAW'});
+    });
+
+    test('autoConsiderUnapproved=true STILL yields a blocked audit note (never a trade) '
+        'for an unapproved candidate', () async {
+      final audit = Audit();
+      final tools = buildTools(const AgentContext());
+      // allowlist is explicitly EMPTY — nothing is dispatchable. A discovered,
+      // unapproved token can only ever produce a `blocked` note, never a trade.
+      final policy = Policy.create(confirm: (_) async => true)..setAllowlist([]);
+      final fake = _FakeDiscovery([
+        const Candidate(symbol: 'RAW', source: 'venuePairs', score: 0.8),
+      ]);
+      final sr = StrategyRunner(
+        tools: tools,
+        policy: policy,
+        ctx: _noCtx(),
+        audit: audit,
+        discovery: fake,
+        useDiscovery: true,
+        autoConsiderUnapproved: true,
+        strategies: {'fixed': _FixedStrategy([_swap('RAW')])},
+      );
+
+      // with autoConsiderUnapproved the candidate universe DOES include the
+      // unapproved token...
+      final cands = await sr.candidates();
+      expect(cands.map((c) => c.symbol).toSet(), {'RAW'});
+
+      // ...but dispatching a trade on it in AUTO mode is blocked by the allowlist
+      // gate: it never reaches commit and lands a `blocked` audit note.
+      final res = await sr.tick('fixed', {}, mode: 'auto');
+      expect(res.records.length, 1);
+      expect(res.records.first.containsKey('blocked'), isTrue);
+      expect(res.records.any((r) => r.containsKey('executed')), isFalse);
+      expect(audit.entries.any((e) => e['type'] == 'blocked'), isTrue,
+          reason: 'recorded a blocked audit note');
     });
   });
 

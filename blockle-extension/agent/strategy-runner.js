@@ -47,6 +47,15 @@
       this.mainnetEnabled = deps.mainnetEnabled === true; // default false
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.registry = deps.registry || dep('AgentStrategies', './strategies.js').createRegistry();
+      this.pnl = deps.pnl || null;              // realized-profit tracker (post-commit)
+      this.channel = deps.channel || null;      // ledger key component
+      // Optional READ-ONLY candidate feed (§7). Discovery NEVER trades, signs, or
+      // auto-allowlists; it only returns ranked, approved:false suggestions. The
+      // dispatch gate below is unchanged, so an unapproved token still produces a
+      // `blocked` audit note (never a trade).
+      this.discovery = deps.discovery || null;
+      this.useDiscovery = deps.useDiscovery === true;
+      this.autoConsiderUnapproved = deps.autoConsiderUnapproved === true; // default off
       // the ONE shared value-moving routine (no second broadcast path)
       this.dispatchValueMoving = (deps.AgentRunner || dep('AgentRunner', './runner.js')).dispatchValueMoving;
     }
@@ -56,6 +65,20 @@
 
     list() { return this.registry.names(); }
     describe(name) { const s = this.registry.get(name); return s ? s.describe() : null; }
+
+    // READ-ONLY candidate feed passthrough (§7). Returns ranked Candidates from
+    // discovery.scan(), filtered to approved===true by DEFAULT. Only when
+    // autoConsiderUnapproved is explicitly enabled are unapproved candidates
+    // included — and even then any resulting trade STILL passes the dispatch gate
+    // (an unapproved, non-allowlisted token produces a `blocked` note, never a
+    // trade). This method never trades, signs, or mutates the allowlist.
+    async candidates(opts) {
+      opts = opts || {};
+      if (!this.discovery || typeof this.discovery.scan !== 'function') return [];
+      const all = await this.discovery.scan();
+      const includeUnapproved = opts.includeUnapproved != null ? !!opts.includeUnapproved : this.autoConsiderUnapproved;
+      return includeUnapproved ? all : all.filter((c) => c.approved === true);
+    }
 
     // Run ONE tick of a strategy. Returns an array of per-Intent outcomes.
     async tick(strategyName, params, opts) {
@@ -153,6 +176,7 @@
           const r = await this.dispatchValueMoving({
             tool, args: it.args, policy: this.policy, audit: this.audit,
             name: it.tool, emit: (ev) => this.emit(ev),
+            pnl: this.pnl, channel: this.channel,
           });
           if (r.rejected) results.push({ rejected: it, reason: r.reason });
           else results.push({ executed: it, result: r.result });

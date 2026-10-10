@@ -137,6 +137,16 @@
       if (emit) emit({ type: 'fee', name, fee: agentFee, txid: feeTxid });
     }
 
+    // ---- THE one post-commit hook (spec §8): realized-profit ledger + pop-up.
+    // Hung off the single commit path — NOT a second broadcast/execution path. It
+    // only reads trade quantities + the trade's own executed USD value, updates
+    // the avg-cost ledger, and (on a positive gain into a stablecoin) notifies.
+    // Guarded so a ledger/notify error can never disturb a settled trade.
+    if (opts.pnl && typeof opts.pnl.onCommit === 'function') {
+      try { await opts.pnl.onCommit({ prep, res, name, txid, wallet: opts.wallet, channel: opts.channel }); }
+      catch (_) {}
+    }
+
     const out = (agentFee && res && typeof res === 'object') ? Object.assign({}, res, { agentFee }) : res;
     return { result: out };
   }
@@ -154,6 +164,8 @@
       this.system = deps.system || DEFAULT_SYSTEM;
       this.maxTurns = deps.maxTurns || 12;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
+      this.pnl = deps.pnl || null;          // realized-profit tracker (post-commit)
+      this.channel = deps.channel || null;  // ledger key component
 
       this.messages = [];
       this._aborted = false;
@@ -203,6 +215,7 @@
       const r = await dispatchValueMoving({
         tool, args: call.arguments || {}, policy: this.policy, audit: this.audit,
         name: call.name, emit: (ev) => this.emit(ev),
+        pnl: this.pnl, channel: this.channel,
       });
       if (r.rejected) {
         return this._toolResult(call, { rejected: true, reason: r.reason, summary: r.summary }, false);
