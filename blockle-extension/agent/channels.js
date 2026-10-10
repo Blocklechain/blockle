@@ -79,11 +79,12 @@
     throw new Error('channels dependency not loaded: ' + name);
   }
 
+  // A value-moving channel MUST have a session USD cap (a catch-all that covers
+  // EVERY asset). A per-asset cap alone would leave every OTHER asset uncapped
+  // (audit-finding #2), so it is no longer sufficient on its own to arm a channel.
   function hasCaps(caps) {
     if (!caps) return false;
-    if (caps.sessionUsd != null) return true;
-    if (caps.perAsset && Object.keys(caps.perAsset).length > 0) return true;
-    return false;
+    return caps.sessionUsd != null;
   }
 
   function rid() {
@@ -298,7 +299,7 @@
       // handler the host enforces. Read-only channels are exempt.
       if (!meta.readOnly) {
         if (!hasCaps(meta.caps)) {
-          throw new Error('refusing to start "' + meta.label + '": set spend/risk caps first (value-moving channels require caps)');
+          throw new Error('refusing to start "' + meta.label + '": set spend/risk caps first — a value-moving channel requires a catch-all caps.sessionUsd that covers every asset');
         }
         if (!this.confirm) {
           throw new Error('refusing to start "' + meta.label + '": a confirmation handler is required for value-moving channels');
@@ -345,6 +346,7 @@
         onEvent,
         model: credential.model,
         allowlist: (meta.config && meta.config.allowlist) || this.defaults.allowlist,
+        readOnly: !!meta.readOnly,        // enforce read-only by capability (strips value tools)
         system: (meta.config && meta.config.system) || this.defaults.system,
         maxTurns: (meta.config && meta.config.maxTurns) || this.defaults.maxTurns,
         requireConfirm: meta.readOnly ? undefined : true,

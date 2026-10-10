@@ -14,6 +14,15 @@ Values are tracked two ways, both independently enforced:
 A value-moving action reports ``{asset, amount, usd?}``. If a session USD cap is
 set, an action with no ``usd`` estimate is REJECTED (cannot be verified) — safety
 over convenience. Per-asset caps are checked whenever a cap exists for the asset.
+
+HARD REQUIREMENT — pricing for USD-capped channels: because a session USD cap
+rejects any action it cannot price, a value-moving channel that carries a
+``sessionUsd`` cap is only usable if the host wires ``ctx.estimateUsd`` (so the
+tools can attach a ``usd`` to every prepared value). ``channels.ChannelManager``
+refuses to arm such a channel when the ctx cannot price. Actions that inherently
+lack a USD figure (``launch_token``, ``remove_liquidity``) should instead be
+gated with a PER-ASSET cap — under a bare session-USD cap they are, by design,
+blocked rather than waved through unpriced.
 """
 
 from __future__ import annotations
@@ -97,6 +106,11 @@ class Policy:
         if self.allowlist is not None and name not in self.allowlist:
             raise ToolNotAllowed(name)
         return True
+
+    def is_allowed(self, name: str) -> bool:
+        """Non-raising allowlist test (used by the StrategyRunner to drop, rather
+        than error on, an Intent whose tool is not on the channel allowlist)."""
+        return self.allowlist is None or name in self.allowlist
 
     # ---- kill switch --------------------------------------------------------
     def is_killed(self) -> bool:

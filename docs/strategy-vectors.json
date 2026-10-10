@@ -1,0 +1,138 @@
+{
+  "_comment": "Shared market snapshots + expected strategy decisions. IDENTICAL across blockle-extension/agent (JS), blockle-app/lib/agent (Dart), python/blockle/agent (Python). First wallet to implement creates this; the others consume it. Amounts are base-unit decimal strings; prices are quote-per-base decimal strings; bps are integers.",
+  "version": 1,
+  "arbitrage": {
+    "detect_and_emit_pair": {
+      "params": {
+        "pair": "ETH/USDC",
+        "minEdgeBps": 30,
+        "maxNotionalUsd": 1000,
+        "gasBufferUsd": 1,
+        "slippageBps": 5,
+        "agentFeeBps": 5
+      },
+      "prices": { "USDC": 1 },
+      "venues": [
+        { "id": "dexA", "chain": "ethereum", "mainnet": false, "ask": "2000", "bid": "1999", "feeBps": 10, "depthBase": "1000000000000000000000" },
+        { "id": "dexB", "chain": "ethereum", "mainnet": false, "ask": "2010", "bid": "2030", "feeBps": 10, "depthBase": "1000000000000000000000" }
+      ],
+      "expect": {
+        "grossEdgeBps": 150,
+        "costsBps": 45,
+        "netEdgeBps": 105,
+        "buyVenue": "dexA",
+        "sellVenue": "dexB",
+        "notionalUsd": 1000,
+        "intents": [
+          { "tool": "swap", "from": "USDC", "to": "ETH", "amount": "1000000000", "venue": "dexA" },
+          { "tool": "swap", "from": "ETH", "to": "USDC", "amount": "500000000000000000", "venue": "dexB" }
+        ]
+      }
+    },
+    "refuse_below_net_threshold": {
+      "params": {
+        "pair": "ETH/USDC",
+        "minEdgeBps": 30,
+        "maxNotionalUsd": 1000,
+        "gasBufferUsd": 1,
+        "slippageBps": 5,
+        "agentFeeBps": 5
+      },
+      "prices": { "USDC": 1 },
+      "venues": [
+        { "id": "dexA", "chain": "ethereum", "mainnet": false, "ask": "2000", "bid": "1999", "feeBps": 40, "depthBase": "1000000000000000000000" },
+        { "id": "dexB", "chain": "ethereum", "mainnet": false, "ask": "2005", "bid": "2006", "feeBps": 40, "depthBase": "1000000000000000000000" }
+      ],
+      "expect": {
+        "grossEdgeBps": 30,
+        "costsBps": 105,
+        "netEdgeBps": -75,
+        "intents": []
+      }
+    }
+  },
+  "dca": {
+    "fires_on_interval": {
+      "params": { "asset": "BLOCK", "quote": "USDC", "usdPerBuy": 10, "intervalSec": 86400, "lastRunAt": 0 },
+      "now": 86400000,
+      "prices": { "USDC": 1 },
+      "expect": { "intents": [ { "tool": "swap", "from": "USDC", "to": "BLOCK", "amount": "10000000" } ] }
+    },
+    "quiet_before_interval": {
+      "params": { "asset": "BLOCK", "quote": "USDC", "usdPerBuy": 10, "intervalSec": 86400, "lastRunAt": 0 },
+      "now": 86399999,
+      "prices": { "USDC": 1 },
+      "expect": { "intents": [] }
+    }
+  },
+  "grid": {
+    "symmetric_ladder": {
+      "params": { "market": "BLOCK/USDC", "levels": 4, "stepBps": 100, "sizeUsdPerLevel": 10 },
+      "prices": { "USDC": 1 },
+      "book": { "bids": [ { "price": "0.99", "size": "100" } ], "asks": [ { "price": "1.01", "size": "100" } ] },
+      "openOrders": [],
+      "expect": {
+        "mid": "1",
+        "intents": [
+          { "tool": "place_order", "side": "buy", "price": "0.99", "amount": "1010101010" },
+          { "tool": "place_order", "side": "buy", "price": "0.98", "amount": "1020408163" },
+          { "tool": "place_order", "side": "sell", "price": "1.01", "amount": "990099009" },
+          { "tool": "place_order", "side": "sell", "price": "1.02", "amount": "980392156" }
+        ]
+      }
+    },
+    "skips_occupied_level": {
+      "params": { "market": "BLOCK/USDC", "levels": 4, "stepBps": 100, "sizeUsdPerLevel": 10 },
+      "prices": { "USDC": 1 },
+      "book": { "bids": [ { "price": "0.99", "size": "100" } ], "asks": [ { "price": "1.01", "size": "100" } ] },
+      "openOrders": [ { "side": "buy", "price": "0.99", "size": "5" } ],
+      "expect": {
+        "intents": [
+          { "tool": "place_order", "side": "buy", "price": "0.98", "amount": "1020408163" },
+          { "tool": "place_order", "side": "sell", "price": "1.01", "amount": "990099009" },
+          { "tool": "place_order", "side": "sell", "price": "1.02", "amount": "980392156" }
+        ]
+      }
+    }
+  },
+  "rebalance": {
+    "sell_overweight_half_gap": {
+      "params": { "targets": { "BLOCK": 0.5, "USDC": 0.5 }, "bandBps": 500, "baseQuote": "USDC", "maxTradeUsd": 1000 },
+      "prices": { "BLOCK": 1, "USDC": 1 },
+      "balances": [
+        { "asset": { "symbol": "BLOCK", "decimals": 8, "chain": "block" }, "confirmed": "7000000000" },
+        { "asset": { "symbol": "USDC", "decimals": 6, "chain": "base" }, "confirmed": "30000000" }
+      ],
+      "expect": {
+        "intents": [ { "tool": "swap", "from": "BLOCK", "to": "USDC", "amount": "1000000000", "estUsd": 10 } ]
+      }
+    },
+    "in_band_no_trade": {
+      "params": { "targets": { "BLOCK": 0.5, "USDC": 0.5 }, "bandBps": 500, "baseQuote": "USDC", "maxTradeUsd": 1000 },
+      "prices": { "BLOCK": 1, "USDC": 1 },
+      "balances": [
+        { "asset": { "symbol": "BLOCK", "decimals": 8, "chain": "block" }, "confirmed": "5100000000" },
+        { "asset": { "symbol": "USDC", "decimals": 6, "chain": "base" }, "confirmed": "49000000" }
+      ],
+      "expect": { "intents": [] }
+    }
+  },
+  "momentum": {
+    "golden_cross_buys": {
+      "params": { "market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20, "history": [1, 1, 1, 1, 2] },
+      "prices": { "USDC": 1, "BLOCK": 1 },
+      "expect": { "intents": [ { "tool": "swap", "from": "USDC", "to": "BLOCK", "amount": "20000000" } ] }
+    },
+    "death_cross_sells_held": {
+      "params": { "market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20, "history": [2, 2, 2, 2, 1] },
+      "prices": { "USDC": 1, "BLOCK": 1 },
+      "balances": [ { "asset": { "symbol": "BLOCK", "decimals": 8, "chain": "block" }, "confirmed": "10000000000" } ],
+      "expect": { "intents": [ { "tool": "swap", "from": "BLOCK", "to": "USDC", "amount": "2000000000" } ] }
+    },
+    "no_cross_quiet": {
+      "params": { "market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20, "history": [1, 1, 1, 1, 1] },
+      "prices": { "USDC": 1, "BLOCK": 1 },
+      "expect": { "intents": [] }
+    }
+  }
+}

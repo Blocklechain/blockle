@@ -119,14 +119,14 @@
     );
     if (!isFinite(feeBps) || feeBps < 0) throw new Error('invalid agent feeBps');
 
-    // address source precedence: explicit addresses > selected network > mainnet
+    // address base = the SELECTED network's map (audit-finding #10): a non-mainnet
+    // network must NOT fold mainnet addresses in, or dev fees would leak to the
+    // mainnet treasury. Explicit `addresses` always wins last.
     const network = cfg.network || 'mainnet';
-    const addrs = Object.assign(
-      {},
-      cfg.mainnet || null,
-      (cfg[network] && typeof cfg[network] === 'object') ? cfg[network] : null,
-      cfg.addresses || null
-    );
+    const base = network === 'mainnet'
+      ? (cfg.mainnet || null)
+      : ((cfg[network] && typeof cfg[network] === 'object') ? cfg[network] : null);
+    const addrs = Object.assign({}, base, cfg.addresses || null);
 
     function addressFor(chain) {
       const a = addrs[treasuryKey(chain)];

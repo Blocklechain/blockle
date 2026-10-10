@@ -70,7 +70,7 @@
 
     add({
       name: 'get_address',
-      description: 'Return this wallet\'s address for a chain (block, ethereum, base, arbitrum, optimism, polygon, bnb, avalanche, bitcoin, litecoin, dogecoin). All EVM chains share one address.',
+      description: 'Return this wallet\'s address for a chain (block, ethereum, base, bitcoin, litecoin, dogecoin).',
       valueMoving: false,
       parameters: { type: 'object', properties: { chain: { type: 'string' } }, required: ['chain'] },
       run: (a) => need(ctx.getAddress, 'getAddress')(a.chain),
@@ -78,7 +78,7 @@
 
     add({
       name: 'get_balance',
-      description: 'Balances for a chain\'s account: native coin plus EVERY token the address holds (auto-detected and merged with the known list, non-zero first). Base units.',
+      description: 'Balances for a chain\'s account (native coin plus any imported tokens). Base units.',
       valueMoving: false,
       parameters: {
         type: 'object',
@@ -253,11 +253,26 @@
         required: ['market', 'side', 'amount'],
       },
       async prepare(a) {
-        const usd = await usdOf(a.market.split('/')[0], a.amount);
-        const summary = { action: 'place_order', market: a.market, side: a.side, type: a.type || 'limit', amount: String(a.amount), price: a.price };
+        const [base, quote] = String(a.market).split('/');
+        // Cap + record the asset that is actually DEBITED (audit-finding #5):
+        //   SELL base -> you spend `amount` of the BASE asset.
+        //   BUY  base -> you spend price*amount of the QUOTE asset.
+        const isBuy = a.side === 'buy';
+        let debitAsset = base, debitAmount = String(a.amount);
+        if (isBuy) {
+          debitAsset = quote;
+          // price*amount in quote base units, exact when both are base-unit ints.
+          if (a.price != null && /^\d+$/.test(String(a.price)) && /^\d+$/.test(String(a.amount))) {
+            debitAmount = (BigInt(String(a.price)) * BigInt(String(a.amount))).toString();
+          } else {
+            debitAmount = String(a.amount); // best-effort when price is not an integer base-unit
+          }
+        }
+        const usd = await usdOf(debitAsset, debitAmount);
+        const summary = { action: 'place_order', market: a.market, side: a.side, type: a.type || 'limit', amount: String(a.amount), price: a.price, debit: { asset: debitAsset, amount: debitAmount } };
         return {
           summary,
-          value: { asset: a.market.split('/')[0], amount: String(a.amount), usd },
+          value: { asset: debitAsset, amount: debitAmount, usd },
           commit: () => need(ctx.exchange && ctx.exchange.placeOrder, 'exchange.placeOrder')
             .call(ctx.exchange, { market: a.market, side: a.side, amount: String(a.amount), type: a.type, price: a.price, expiry: a.expiry }),
         };
@@ -349,8 +364,9 @@
         return {
           summary: { action: 'launch_token', name: a.name, symbol: a.symbol, decimals: a.decimals, supply: String(a.supply) },
           // launch cost is paid in BLOCK gas; no single-asset transfer value, so
-          // usd is null — gated by the per-asset BLOCK cap if one is set.
-          value: { asset: 'BLOCK', amount: '0', usd: null },
+          // usd is null — explicitly usd-exempt (zero transfer), gated by the
+          // per-asset BLOCK cap + confirm (audit-finding #3).
+          value: { asset: 'BLOCK', amount: '0', usd: null, usdExempt: true },
           commit: () => need(ctx.launchToken, 'launchToken')({ name: a.name, symbol: a.symbol, decimals: a.decimals, supply: String(a.supply) }),
         };
       },
@@ -406,7 +422,10 @@
       async prepare(a) {
         return {
           summary: { action: 'remove_liquidity', token: a.token, shares: String(a.shares) },
-          value: { asset: 'LP', amount: String(a.shares), usd: null },
+          // removing liquidity RETURNS value to the wallet (a withdrawal, not a
+          // spend) and LP shares are not USD-priced — usd-exempt, gated by the
+          // per-asset LP cap + confirm (audit-finding #3).
+          value: { asset: 'LP', amount: String(a.shares), usd: null, usdExempt: true },
           commit: () => need(ctx.amm && ctx.amm.removeLiquidity, 'amm.removeLiquidity').call(ctx.amm, a.token, String(a.shares)),
         };
       },
@@ -430,7 +449,10 @@
         if (typeof ex.listingQuote === 'function') { try { quote = await ex.listingQuote(a.asset, a.extraPairs || []); } catch (_) {} }
         return {
           summary: { action: 'list_asset', asset: a.asset, extraPairs: a.extraPairs || [], payWith: a.payWith || 'block', quote },
-          value: { asset: a.payWith || 'BLOCK', amount: '0', usd: quote && quote.totalUsd != null ? Number(quote.totalUsd) : null },
+          // listing fee; when the quote prices it we pass usd, otherwise the fee
+          // is paid in gas with no fixed transfer value — usd-exempt zero transfer
+          // gated by the per-asset cap + confirm (audit-finding #3).
+          value: { asset: a.payWith || 'BLOCK', amount: '0', usd: quote && quote.totalUsd != null ? Number(quote.totalUsd) : null, usdExempt: true },
           commit: () => need(ex.listAsset, 'exchange.listAsset').call(ex, { asset: a.asset, extraPairs: a.extraPairs, payWith: a.payWith }),
         };
       },

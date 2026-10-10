@@ -28,8 +28,18 @@
       erc20: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
       sui: '0xf9dc48a73424ce1165352717f1a64569029a1b90e67fa7839bc53bff26fd14f9',
       btc: 'bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm',
-      // NOTE: no `block` address here on purpose — a BLOCK-input agent swap
-      // fails closed on the fee until a block treasury address is configured.
+      // mainnet BLOCK treasury: operator-configured via
+      // settings.agentSettings.treasury.mainnet.block (or treasury.json). Absent
+      // by default so a MAINNET BLOCK swap still fails closed until an operator
+      // sets their real receiving address — never fabricated here.
+    },
+    // Testnet/dev treasury (audit-finding #4 + #10): the default operating network
+    // is testnet (mainnetEnabled=false), and a native BLOCK swap settles its 0.05%
+    // fee on the `block` chain — so a testnet BLOCK address is REQUIRED for the
+    // headline capability to work out of the box. This is the testnet genesis
+    // address (dev funds only; never a mainnet receiving address).
+    testnet: {
+      block: 'block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0',
     },
   };
 
@@ -114,8 +124,12 @@
     if (_venues) return _venues;
     const s = await settings();
     const a = s.agent || {};
+    // Select the treasury network from the mainnet gate (default OFF -> testnet),
+    // so dev fees never route to the mainnet treasury (audit-finding #4 + #10).
+    const treasuryCfg = Object.assign({}, a.treasury || DEFAULT_TREASURY);
+    if (treasuryCfg.network == null) treasuryCfg.network = a.mainnetEnabled ? 'mainnet' : 'testnet';
     _venues = Venues.create({
-      treasury: a.treasury || DEFAULT_TREASURY,
+      treasury: treasuryCfg,
       blockle: { exchange: global.Exchange },
       // DEX aggregators are opt-in: only enabled once the user gives a baseUrl.
       evmdex: a.evmdex && a.evmdex.baseUrl ? a.evmdex : { enabled: false },
@@ -245,14 +259,24 @@
 
   // Resolve an AssetRef for (chain, symbol): a first-class/imported token on that
   // chain, else undefined (buildSend then treats it as the chain's native coin).
-  async function resolveAssetRef(chain, symbol) {
-    if (!symbol) return undefined;
+  // Resolve by SYMBOL *or* by contract address / mint (audit-finding #6): a venue
+  // that priced a swap by token address hands us that address as the fee asset,
+  // so matching on symbol alone would miss it and the fee leg would wrongly send
+  // the chain's native coin. Match address/mint first (exact, case-insensitive),
+  // then fall back to symbol.
+  async function resolveAssetRef(chain, ref) {
+    if (!ref) return undefined;
+    // already a resolved AssetRef object — pass through.
+    if (typeof ref === 'object') return ref;
     try {
       const reg = await registry();
-      const up = String(symbol).toUpperCase();
       const toks = (reg.tokensFor && reg.tokensFor(chain)) || [];
-      const t = toks.find((x) => String(x.symbol || '').toUpperCase() === up);
-      if (t) return t;
+      const key = String(ref).toLowerCase();
+      const byAddr = toks.find((x) => String(x.address || x.mint || '').toLowerCase() === key);
+      if (byAddr) return byAddr;
+      const up = String(ref).toUpperCase();
+      const bySym = toks.find((x) => String(x.symbol || '').toUpperCase() === up);
+      if (bySym) return bySym;
     } catch (_) {}
     return undefined;
   }

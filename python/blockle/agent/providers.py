@@ -47,6 +47,10 @@ class ClaudeProvider:
         self.version = opts.get("anthropicVersion") or "2023-06-01"
         self._request = default_request(opts.get("request") or opts.get("fetchImpl"))
 
+    def wipe(self) -> None:
+        """Drop the in-memory LLM credential (called on lock/kill)."""
+        self.api_key = None
+
     def _messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out = []
         for m in messages:
@@ -122,6 +126,10 @@ class OpenAIProvider:
         self.max_tokens = opts.get("maxTokens") or DEFAULT_MAX_TOKENS
         self.extra_headers = opts.get("extraHeaders") or {}
         self._request = default_request(opts.get("request") or opts.get("fetchImpl"))
+
+    def wipe(self) -> None:
+        """Drop the in-memory LLM credential (called on lock/kill)."""
+        self.api_key = None
 
     def _messages(self, system, messages) -> List[Dict[str, Any]]:
         out = []

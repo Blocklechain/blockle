@@ -118,123 +118,27 @@ class Runner {
       return _toolResult(call, res, false);
     }
 
-    // ---- value-moving path: build -> cap -> confirm -> commit (+ fee) ----
+    // ---- value-moving path: the ONE shared commit routine ----
+    // prepare -> cap -> confirm -> commit (+ fee) -> recordSpend. The SAME
+    // routine the StrategyRunner dispatches through, so there is exactly one
+    // broadcast path and strategies cannot bypass caps/confirm/kill/fee.
     policy.assertLive();
-    final PreparedAction prep = await tool.prepare!(args);
-    emit({'type': 'prepared', 'name': name, 'summary': prep.summary});
-
-    final feeValue = prep.feeValue;
-
-    // hard cap pre-check — trade + mandatory fee must BOTH fit before anything moves.
-    policy.assessValue(_withFee(prep.value, feeValue));
-    await _rec({
-      'type': 'cap_check',
-      'name': name,
-      'value': _valueMap(prep.value),
-      'fee': prep.fee,
-      'ok': true,
-    });
-
-    final gate = await policy.gateConfirm(prep.summary, {'usd': _confirmUsd(prep.value, feeValue)});
-    await _rec({
-      'type': 'confirmation',
-      'name': name,
-      'summary': prep.summary,
-      'approved': gate.approved,
-      'auto': gate.auto,
-    });
-    if (!gate.approved) {
-      emit({'type': 'declined', 'name': name, 'summary': prep.summary});
+    final DispatchOutcome o = await dispatchValueMoving(
+      tools: tools,
+      policy: policy,
+      name: name,
+      args: args,
+      audit: audit,
+      emit: emit,
+    );
+    if (o.declined) {
       return _toolResult(
           call,
-          {'rejected': true, 'reason': 'user declined confirmation', 'summary': prep.summary},
+          {'rejected': true, 'reason': 'user declined confirmation', 'summary': o.summary},
           false);
     }
-
-    policy.assertLive(); // a kill during confirm must still block commit
-    final res = await prep.commit();
-    policy.recordSpend(prep.value);
-    final txid = res is Map
-        ? (res['txid'] ?? (res['settlement'] is Map ? res['settlement']['txid'] : null))
-        : null;
-    await _rec({
-      'type': 'executed',
-      'name': name,
-      'valueMoving': true,
-      'result': res,
-      'txid': txid,
-    });
-    emit({
-      'type': 'executed',
-      'name': name,
-      'result': res,
-      'txid': txid,
-      'summary': prep.summary,
-      'value': _valueMap(prep.value),
-      'fee': prep.fee,
-    });
-
-    // ---- mandatory fee leg: a second treasury send in the SAME action ----
-    Map<String, dynamic>? agentFee;
-    if (prep.commitFee != null && prep.fee != null) {
-      policy.assertLive();
-      dynamic feeRes;
-      Object? feeErr;
-      try {
-        feeRes = await prep.commitFee!();
-      } catch (e) {
-        feeErr = e;
-      }
-      final feeTxid = feeRes is Map ? feeRes['txid'] : null;
-      if (feeValue != null) policy.recordSpend(feeValue);
-      agentFee = {
-        'type': 'fee',
-        'name': name,
-        'bps': prep.fee!['bps'],
-        'chain': prep.fee!['chain'],
-        'asset': prep.fee!['asset'],
-        'amount': prep.fee!['amount'],
-        'treasury': prep.fee!['treasury'],
-        'txid': feeTxid,
-      };
-      if (feeErr != null) agentFee['error'] = '$feeErr';
-      await _rec(agentFee);
-      emit({'type': 'fee', 'name': name, 'fee': agentFee, 'txid': feeTxid});
-    }
-
-    // Return a MERGED copy so the model sees the fee without mutating `res`.
-    final out = (agentFee != null && res is Map)
-        ? {...res, 'agentFee': agentFee}
-        : res;
-    return _toolResult(call, out, false);
+    return _toolResult(call, o.result, false);
   }
-
-  SpendValue _withFee(SpendValue value, SpendValue? feeValue) {
-    if (feeValue == null) return value;
-    dynamic amount = value.amount;
-    final sameAsset =
-        feeValue.asset != null && value.asset != null && feeValue.asset == value.asset;
-    if (sameAsset && value.amount != null && feeValue.amount != null) {
-      try {
-        amount = (BigInt.parse('${value.amount}') + BigInt.parse('${feeValue.amount}')).toString();
-      } catch (_) {}
-    }
-    num? usd = value.usd;
-    if (value.usd != null || feeValue.usd != null) {
-      usd = (value.usd ?? 0) + (feeValue.usd ?? 0);
-    }
-    return SpendValue(asset: value.asset, amount: amount, usd: usd);
-  }
-
-  num? _confirmUsd(SpendValue value, SpendValue? feeValue) {
-    final a = value.usd;
-    final b = feeValue?.usd;
-    if (a == null && b == null) return null;
-    return (a ?? 0) + (b ?? 0);
-  }
-
-  Map<String, dynamic> _valueMap(SpendValue v) =>
-      {'asset': v.asset, 'amount': v.amount == null ? null : '${v.amount}', 'usd': v.usd};
 
   /// Run one user instruction to completion.
   Future<RunResult> run(String prompt, {bool Function()? aborted}) async {
@@ -294,3 +198,193 @@ class Runner {
 
   void reset() => messages.clear();
 }
+
+/// The outcome of a single run through the shared value-moving dispatch routine.
+class DispatchOutcome {
+  /// The confirmation gate denied the action (nothing moved).
+  final bool declined;
+
+  /// The committed result, MERGED with the agent-fee record for the model.
+  final dynamic result;
+
+  /// The raw commit() result, unmerged.
+  final dynamic rawResult;
+
+  /// The broadcast txid (may be null / non-string depending on the tool).
+  final dynamic txid;
+
+  /// The recorded agent-fee leg, or null when the tool carried no fee.
+  final Map<String, dynamic>? agentFee;
+
+  /// The accounting descriptor that was cap-checked + recorded.
+  final SpendValue value;
+
+  /// The human-readable summary shown in the confirm + audit.
+  final Map<String, dynamic> summary;
+
+  const DispatchOutcome({
+    this.declined = false,
+    this.result,
+    this.rawResult,
+    this.txid,
+    this.agentFee,
+    required this.value,
+    required this.summary,
+  });
+}
+
+/// The ONE value-moving commit path, shared by the NL [Runner] and the
+/// [StrategyRunner]. Enforces, in order:
+///   prepare() -> policy.assessValue (hard caps, trade+fee together)
+///             -> policy.gateConfirm (default-on human confirm)
+///             -> commit()           (broadcast)
+///             -> recordSpend        (only after a successful broadcast)
+///             -> mandatory 0.05% fee leg (recorded only if IT broadcast)
+/// Throws [CapExceeded] over a cap and [AgentHalted] on kill; both must escape
+/// so the caller can surface/stop. Returns `declined` when the gate denies.
+Future<DispatchOutcome> dispatchValueMoving({
+  required ToolRegistry tools,
+  required Policy policy,
+  required String name,
+  required Map<String, dynamic> args,
+  dynamic audit,
+  void Function(Map<String, dynamic> ev)? emit,
+}) async {
+  Future<void> rec(Map<String, dynamic> d) async {
+    if (audit != null) await audit.record(d);
+  }
+
+  void ev(Map<String, dynamic> e) {
+    if (emit != null) {
+      try {
+        emit(e);
+      } catch (_) {}
+    }
+  }
+
+  final tool = tools.get(name);
+  if (tool == null) throw StateError('unknown tool: $name');
+  if (!tool.valueMoving || tool.prepare == null) {
+    throw StateError('not a value-moving tool: $name');
+  }
+
+  policy.assertLive();
+  final PreparedAction prep = await tool.prepare!(args);
+  ev({'type': 'prepared', 'name': name, 'summary': prep.summary});
+
+  final feeValue = prep.feeValue;
+
+  // hard cap pre-check — trade + mandatory fee must BOTH fit before anything moves.
+  policy.assessValue(_withFee(prep.value, feeValue));
+  await rec({
+    'type': 'cap_check',
+    'name': name,
+    'value': _valueMap(prep.value),
+    'fee': prep.fee,
+    'ok': true,
+  });
+
+  final gate = await policy.gateConfirm(prep.summary, {'usd': _confirmUsd(prep.value, feeValue)});
+  await rec({
+    'type': 'confirmation',
+    'name': name,
+    'summary': prep.summary,
+    'approved': gate.approved,
+    'auto': gate.auto,
+  });
+  if (!gate.approved) {
+    ev({'type': 'declined', 'name': name, 'summary': prep.summary});
+    return DispatchOutcome(declined: true, value: prep.value, summary: prep.summary);
+  }
+
+  policy.assertLive(); // a kill during confirm must still block commit
+  final res = await prep.commit();
+  policy.recordSpend(prep.value);
+  final txid = res is Map
+      ? (res['txid'] ?? (res['settlement'] is Map ? res['settlement']['txid'] : null))
+      : null;
+  await rec({
+    'type': 'executed',
+    'name': name,
+    'valueMoving': true,
+    'result': res,
+    'txid': txid,
+  });
+  ev({
+    'type': 'executed',
+    'name': name,
+    'result': res,
+    'txid': txid,
+    'summary': prep.summary,
+    'value': _valueMap(prep.value),
+    'fee': prep.fee,
+  });
+
+  // ---- mandatory fee leg: a second treasury send in the SAME action ----
+  Map<String, dynamic>? agentFee;
+  if (prep.commitFee != null && prep.fee != null) {
+    policy.assertLive();
+    dynamic feeRes;
+    Object? feeErr;
+    try {
+      feeRes = await prep.commitFee!();
+    } catch (e) {
+      feeErr = e;
+    }
+    final feeTxid = feeRes is Map ? feeRes['txid'] : null;
+    // Only accrue the fee against caps when it ACTUALLY broadcast, mirroring how
+    // the main leg records spend only after a successful commit.
+    if (feeErr == null && feeValue != null) policy.recordSpend(feeValue);
+    agentFee = {
+      'type': 'fee',
+      'name': name,
+      'bps': prep.fee!['bps'],
+      'chain': prep.fee!['chain'],
+      'asset': prep.fee!['asset'],
+      'amount': prep.fee!['amount'],
+      'treasury': prep.fee!['treasury'],
+      'txid': feeTxid,
+    };
+    if (feeErr != null) agentFee['error'] = '$feeErr';
+    await rec(agentFee);
+    ev({'type': 'fee', 'name': name, 'fee': agentFee, 'txid': feeTxid});
+  }
+
+  // Return a MERGED copy so the model sees the fee without mutating `res`.
+  final out = (agentFee != null && res is Map) ? {...res, 'agentFee': agentFee} : res;
+  return DispatchOutcome(
+    result: out,
+    rawResult: res,
+    txid: txid,
+    agentFee: agentFee,
+    value: prep.value,
+    summary: prep.summary,
+  );
+}
+
+SpendValue _withFee(SpendValue value, SpendValue? feeValue) {
+  if (feeValue == null) return value;
+  dynamic amount = value.amount;
+  final sameAsset =
+      feeValue.asset != null && value.asset != null && feeValue.asset == value.asset;
+  if (sameAsset && value.amount != null && feeValue.amount != null) {
+    try {
+      amount = (BigInt.parse('${value.amount}') + BigInt.parse('${feeValue.amount}')).toString();
+    } catch (_) {}
+  }
+  num? usd = value.usd;
+  if (value.usd != null || feeValue.usd != null) {
+    usd = (value.usd ?? 0) + (feeValue.usd ?? 0);
+  }
+  return SpendValue(asset: value.asset, amount: amount, usd: usd);
+}
+
+num? _confirmUsd(SpendValue value, SpendValue? feeValue) {
+  final a = value.usd;
+  final b = feeValue?.usd;
+  if (a == null && b == null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
+Map<String, dynamic> _valueMap(SpendValue v) =>
+    {'asset': v.asset, 'amount': v.amount == null ? null : '${v.amount}', 'usd': v.usd};

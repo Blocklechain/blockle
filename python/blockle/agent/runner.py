@@ -47,6 +47,119 @@ def _jstr(v: Any) -> str:
     return json.dumps(v, default=str)
 
 
+def _with_fee(value, fee_value):
+    value = value or {"asset": None, "amount": "0", "usd": None}
+    if not fee_value:
+        return value
+    amount = value.get("amount")
+    same_asset = fee_value.get("asset") and value.get("asset") and fee_value["asset"] == value["asset"]
+    if same_asset and value.get("amount") is not None and fee_value.get("amount") is not None:
+        try:
+            amount = str(int(str(value["amount"])) + int(str(fee_value["amount"])))
+        except Exception:
+            pass
+    usd = value.get("usd")
+    if value.get("usd") is not None or fee_value.get("usd") is not None:
+        usd = float(value.get("usd") or 0) + float(fee_value.get("usd") or 0)
+    return {"asset": value.get("asset"), "amount": amount, "usd": usd}
+
+
+def _confirm_usd(value, fee_value):
+    a = float(value["usd"]) if value and value.get("usd") is not None else None
+    b = float(fee_value["usd"]) if fee_value and fee_value.get("usd") is not None else None
+    if a is None and b is None:
+        return None
+    return float(a or 0) + float(b or 0)
+
+
+async def dispatch_prepared(policy, audit, emit, name, prep) -> Dict[str, Any]:
+    """The ONE value-moving commit path: cap -> confirm -> commit -> fee -> record.
+
+    Shared by the NL :class:`Runner` and the ``StrategyRunner`` so there is
+    exactly one broadcast routine. Takes an already-``prepare()``d tool output
+    and the policy/audit; returns ``{approved, result, agentFee}`` (or
+    ``{approved: False, summary}`` on decline). Raises ``CapExceeded`` /
+    ``AgentHalted`` the same way the inline path used to, for the caller to
+    surface as a recoverable tool error or a hard halt.
+    """
+    emit = emit if callable(emit) else (lambda ev: None)
+    fee_value = prep.get("feeValue")
+
+    # hard cap pre-check — trade + mandatory fee must BOTH fit before anything
+    # moves (raises CapExceeded -> recoverable tool error).
+    policy.assess_value(_with_fee(prep.get("value"), fee_value))
+    # A fee paid in a DIFFERENT asset than the trade input is NOT covered by the
+    # merged check above (that only sums same-asset base units). Verify the fee
+    # leg against its OWN per-asset cap too.
+    val = prep.get("value") or {}
+    if fee_value and fee_value.get("asset") and fee_value.get("asset") != val.get("asset"):
+        policy.assess_value({"asset": fee_value.get("asset"),
+                             "amount": fee_value.get("amount"),
+                             "usd": fee_value.get("usd")})
+    if audit:
+        await audit.record({"type": "cap_check", "name": name,
+                            "value": prep.get("value"), "fee": prep.get("fee"), "ok": True})
+
+    gate = await policy.gate_confirm(prep.get("summary"),
+                                     {"usd": _confirm_usd(prep.get("value"), fee_value)})
+    if audit:
+        await audit.record({"type": "confirmation", "name": name, "summary": prep.get("summary"),
+                            "approved": gate["approved"], "auto": bool(gate.get("auto"))})
+    if not gate["approved"]:
+        emit({"type": "declined", "name": name, "summary": prep.get("summary")})
+        return {"approved": False, "summary": prep.get("summary")}
+
+    policy.assert_live()  # a kill during confirm must still block commit
+    res = await maybe_await(prep["commit"]())
+    policy.record_spend(prep.get("value"))
+    txid = None
+    if isinstance(res, dict):
+        txid = res.get("txid")
+        if not txid and isinstance(res.get("settlement"), dict):
+            txid = res["settlement"].get("txid")
+    if audit:
+        await audit.record({"type": "executed", "name": name, "valueMoving": True,
+                            "result": res, "txid": txid})
+    emit({"type": "executed", "name": name, "result": res, "txid": txid,
+          "summary": prep.get("summary"), "value": prep.get("value"), "fee": prep.get("fee")})
+
+    # ---- mandatory fee leg: a second treasury send in the SAME action ----
+    agent_fee = None
+    if prep.get("commitFee") and prep.get("fee"):
+        policy.assert_live()
+        fee_res, fee_err = None, None
+        try:
+            fee_res = await maybe_await(prep["commitFee"]())
+        except Exception as e:  # noqa: BLE001 — fee failure must not crash the trade path
+            fee_err = e
+        fee_txid = fee_res.get("txid") if isinstance(fee_res, dict) else None
+        committed = fee_txid is not None and fee_err is None
+        # Only accrue the fee against caps when it actually broadcast — a failed
+        # fee transfer moved no money and must not be counted as spend.
+        if fee_value and committed:
+            policy.record_spend(fee_value)
+        fee = prep["fee"]
+        agent_fee = {
+            "type": "fee", "name": name,
+            "bps": fee.get("bps"), "chain": fee.get("chain"), "asset": fee.get("asset"),
+            "amount": fee.get("amount"), "treasury": fee.get("treasury"), "txid": fee_txid,
+        }
+        if fee_err:
+            agent_fee["error"] = str(fee_err)
+        if audit:
+            await audit.record(agent_fee)
+            if not committed:
+                # A trade executed WITHOUT its mandatory fee — surface it loudly.
+                await audit.record({"type": "fee_failed", "name": name, "fee": agent_fee,
+                                    "error": str(fee_err) if fee_err
+                                    else "fee transfer returned no txid"})
+        emit({"type": "fee", "name": name, "fee": agent_fee, "txid": fee_txid})
+        if not committed:
+            emit({"type": "fee_failed", "name": name, "fee": agent_fee})
+
+    return {"approved": True, "result": res, "agentFee": agent_fee}
+
+
 class Runner:
     def __init__(self, deps: Optional[Dict[str, Any]] = None):
         deps = deps or {}
@@ -80,6 +193,15 @@ class Runner:
     async def kill(self, reason: Any = None) -> None:
         self._aborted = True
         await self.policy.kill(reason or "kill switch")
+        # Actively wipe the LLM credential held by the provider so the key does
+        # not linger in memory after a kill, even when the agent is used without
+        # the channels layer (which also drops its instance reference).
+        wipe = getattr(self.provider, "wipe", None)
+        if callable(wipe):
+            try:
+                wipe()
+            except Exception:
+                pass
         self.emit({"type": "killed", "reason": reason or "kill switch"})
 
     def _tool_result(self, call, obj, is_error=False) -> Dict[str, Any]:
@@ -104,68 +226,19 @@ class Runner:
             return self._tool_result(call, res, False)
 
         # ---- value-moving path: build -> cap -> confirm -> commit (+ fee) ----
+        # This is the SINGLE commit path (``dispatch_prepared``), shared verbatim
+        # with the StrategyRunner so strategy Intents and NL tool calls route
+        # through exactly one broadcast routine — no bypass can exist.
         self.policy.assert_live()
         prep = await maybe_await(tool["prepare"](call.get("arguments") or {}))
         self.emit({"type": "prepared", "name": call.get("name"), "summary": prep.get("summary")})
 
-        fee_value = prep.get("feeValue")
-
-        # hard cap pre-check — trade + mandatory fee must BOTH fit before anything
-        # moves (raises CapExceeded -> recoverable tool error).
-        self.policy.assess_value(self._with_fee(prep.get("value"), fee_value))
-        if self.audit:
-            await self.audit.record({"type": "cap_check", "name": call.get("name"),
-                                     "value": prep.get("value"), "fee": prep.get("fee"), "ok": True})
-
-        gate = await self.policy.gate_confirm(
-            prep.get("summary"), {"usd": self._confirm_usd(prep.get("value"), fee_value)})
-        if self.audit:
-            await self.audit.record({"type": "confirmation", "name": call.get("name"),
-                                     "summary": prep.get("summary"), "approved": gate["approved"],
-                                     "auto": bool(gate.get("auto"))})
-        if not gate["approved"]:
-            self.emit({"type": "declined", "name": call.get("name"), "summary": prep.get("summary")})
+        disp = await dispatch_prepared(self.policy, self.audit, self.emit, call.get("name"), prep)
+        if not disp["approved"]:
             return self._tool_result(call, {"rejected": True, "reason": "user declined confirmation",
-                                            "summary": prep.get("summary")}, False)
+                                            "summary": disp.get("summary")}, False)
 
-        self.policy.assert_live()  # a kill during confirm must still block commit
-        res = await maybe_await(prep["commit"]())
-        self.policy.record_spend(prep.get("value"))
-        txid = None
-        if isinstance(res, dict):
-            txid = res.get("txid")
-            if not txid and isinstance(res.get("settlement"), dict):
-                txid = res["settlement"].get("txid")
-        if self.audit:
-            await self.audit.record({"type": "executed", "name": call.get("name"), "valueMoving": True,
-                                     "result": res, "txid": txid})
-        self.emit({"type": "executed", "name": call.get("name"), "result": res, "txid": txid,
-                   "summary": prep.get("summary"), "value": prep.get("value"), "fee": prep.get("fee")})
-
-        # ---- mandatory fee leg: a second treasury send in the SAME action ----
-        agent_fee = None
-        if prep.get("commitFee") and prep.get("fee"):
-            self.policy.assert_live()
-            fee_res, fee_err = None, None
-            try:
-                fee_res = await maybe_await(prep["commitFee"]())
-            except Exception as e:
-                fee_err = e
-            fee_txid = fee_res.get("txid") if isinstance(fee_res, dict) else None
-            if fee_value:
-                self.policy.record_spend(fee_value)
-            fee = prep["fee"]
-            agent_fee = {
-                "type": "fee", "name": call.get("name"),
-                "bps": fee.get("bps"), "chain": fee.get("chain"), "asset": fee.get("asset"),
-                "amount": fee.get("amount"), "treasury": fee.get("treasury"), "txid": fee_txid,
-            }
-            if fee_err:
-                agent_fee["error"] = str(fee_err)
-            if self.audit:
-                await self.audit.record(agent_fee)
-            self.emit({"type": "fee", "name": call.get("name"), "fee": agent_fee, "txid": fee_txid})
-
+        res, agent_fee = disp["result"], disp.get("agentFee")
         # Return a MERGED copy so the model sees the fee without mutating `res`
         # (the recorded 'executed' audit entry holds `res`; mutating it would
         # break the audit hash chain).
@@ -175,29 +248,6 @@ class Runner:
         else:
             out = res
         return self._tool_result(call, out, False)
-
-    def _with_fee(self, value, fee_value):
-        value = value or {"asset": None, "amount": "0", "usd": None}
-        if not fee_value:
-            return value
-        amount = value.get("amount")
-        same_asset = fee_value.get("asset") and value.get("asset") and fee_value["asset"] == value["asset"]
-        if same_asset and value.get("amount") is not None and fee_value.get("amount") is not None:
-            try:
-                amount = str(int(str(value["amount"])) + int(str(fee_value["amount"])))
-            except Exception:
-                pass
-        usd = value.get("usd")
-        if value.get("usd") is not None or fee_value.get("usd") is not None:
-            usd = float(value.get("usd") or 0) + float(fee_value.get("usd") or 0)
-        return {"asset": value.get("asset"), "amount": amount, "usd": usd}
-
-    def _confirm_usd(self, value, fee_value):
-        a = float(value["usd"]) if value and value.get("usd") is not None else None
-        b = float(fee_value["usd"]) if fee_value and fee_value.get("usd") is not None else None
-        if a is None and b is None:
-            return None
-        return float(a or 0) + float(b or 0)
 
     async def run(self, prompt: str, opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         opts = opts or {}
