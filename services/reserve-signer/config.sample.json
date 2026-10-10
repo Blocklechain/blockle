@@ -1,0 +1,18 @@
+{
+  "_note": "Copy to config.json. LOOPBACK ONLY — never expose this port publicly (no nginx proxy). A REAL dispense requires mainnetEnabled && legalReviewCompleted && dryRun:false. The reserve key lives in the node wallet datadir, never in this service.",
+  "port": 8795,
+  "chainBin": "/opt/blockle/chain/target/release/blockle-chain",
+  "reserveDatadir": "/var/lib/blockle-mainnet",
+  "nodeAddr": "127.0.0.1:18444",
+  "network": "mainnet",
+  "mainnetEnabled": false,
+  "legalReviewCompleted": false,
+  "dryRun": true,
+  "seedDestination": "",
+  "dailyCapBlock": 1000,
+  "maxAmountBlock": 200,
+  "feeBlock": "0.0001",
+  "authToken": "",
+  "auditLog": "/var/lib/blockle-reserve-signer/audit.jsonl",
+  "ledger": "/var/lib/blockle-reserve-signer/dispensed.jsonl"
+}

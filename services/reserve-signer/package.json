@@ -1,0 +1,9 @@
+{
+  "name": "@blockle/reserve-signer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Loopback-only signer that dispenses premine BLOCK for gated money paths (exchange listing seed, curve). The reserve key stays in the node wallet; this process only shells the CLI.",
+  "type": "commonjs",
+  "scripts": { "start": "node index.js", "test": "node --test" },
+  "engines": { "node": ">=20" }
+}
