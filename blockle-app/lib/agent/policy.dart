@@ -78,7 +78,12 @@ class Policy {
   final Future<void> Function(String? reason)? onKill;
   final dynamic audit; // Audit (duck-typed to avoid a hard import cycle)
   bool requireConfirm;
-  final num? autoApproveUnderUsd;
+
+  /// Mutable: the BotRunner (§5) temporarily sets this to a live bot's REMAINING
+  /// allocation around each dispatch so "auto within allocation" reuses the ONE
+  /// gate (gateConfirm auto-approves an order ≤ this), then restores it. Set at
+  /// construction for the NL/strategy paths; not otherwise mutated there.
+  num? autoApproveUnderUsd;
 
   num spentUsd = 0;
   final Map<String, BigInt> spentByAsset = {};
