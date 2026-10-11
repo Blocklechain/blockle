@@ -147,6 +147,27 @@ void main() {
     expect((d['totalDeals'] as int) >= 1, isTrue);
   });
 
+  test('dashboard: an OPEN position with no mark reports unrealizedUsd=null (awaiting data), not a misleading 0', () async {
+    final su = setup(ctx: mkCtx([100]));
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 100, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+    });
+    bot.mode = 'paper';
+    bot.enabled = true;
+
+    await su.runner.tickBot(bot.id); // base order fills -> open position held
+
+    // No mark available for BLOCK -> unrealized is unknown, surfaced as null so
+    // the UI shows "awaiting market data" rather than $0.00.
+    final noMark = su.runner.dashboard(bot.id)!;
+    expect(noMark['unrealizedUsd'], isNull);
+
+    // A real mark -> a concrete (numeric) unrealized figure.
+    final marked = su.runner.dashboard(bot.id, {'BLOCK': 100})!;
+    expect(marked['unrealizedUsd'], isA<num>());
+  });
+
   test('live within allocation: auto-approves via policy.autoApproveUnderUsd (no confirm asked) and commits', () async {
     var asked = 0;
     final su = setup(ctx: mkCtx([100]), sessionUsd: 1000, confirm: (_) async {

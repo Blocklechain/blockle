@@ -73,7 +73,7 @@ class AppState extends ChangeNotifier {
   }
 
   /// Index of the in-app Browser tab in HomeScreen's NavigationBar.
-  static const browserTabIndex = 4;
+  static const browserTabIndex = 5;
 
   /// Switch to the in-app browser and load [url].
   void openBrowser(String url) {
