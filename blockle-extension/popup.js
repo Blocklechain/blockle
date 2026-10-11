@@ -548,21 +548,25 @@
   async function afterUnlock(pw) {
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onUnlock(pw); } catch {}
+    try { if (window.BotsUI) await BotsUI.onUnlock(pw); } catch {}
   }
   async function afterResume() {
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onResume(); } catch {}
+    try { if (window.BotsUI) await BotsUI.onResume(); } catch {}
   }
   async function doLock() {
     await Wallet.lock();
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
+    try { if (window.BotsUI) await BotsUI.onLock(); } catch {}
     route('unlock');
   }
 
   async function confirmReset() {
     if (!confirm('Reset this wallet? Make sure you exported your wallet file — this cannot be undone.')) return;
     try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
+    try { if (window.BotsUI) await BotsUI.onLock(); } catch {}
     try { if (window.Wiring) Wiring.reset(); } catch {}
     await Wallet.reset();
     try {
@@ -1018,6 +1022,11 @@
       show('agent');
       return;
     }
+    if (name === 'bots') {
+      if (window.BotsUI) return void BotsUI.enter();
+      show('bots');
+      return;
+    }
     if (name === 'connections') {
       show('connections');
       refreshConnections();
@@ -1071,6 +1080,7 @@
     wireNormal();
     if (window.AccountsUI) AccountsUI.init(BlockleUI);
     if (window.AgentUI) AgentUI.init(BlockleUI);
+    if (window.BotsUI) BotsUI.init(BlockleUI);
     refreshNet();
     if (!(await Wallet.exists())) return route('welcome');
     enterSelected();

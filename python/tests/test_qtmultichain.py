@@ -98,18 +98,22 @@ class MultiChainControllerTest(unittest.TestCase):
         if plugins.exists():
             os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(plugins))
         from PySide6.QtWidgets import QApplication
+        from blockle.qtbots import BotsPanel
         from blockle.qtmultichain import (AccountsTab, AgentTab, ExchangeTab,
                                           build_tabs)
         QApplication.instance() or QApplication([])
         tabs = build_tabs(self.wallet, self.datadir)
         titles = [t for _w, t in tabs]
-        self.assertEqual(titles, ["Accounts", "Exchange", "Agent"])
+        # the native Bots cockpit is appended after Accounts/Exchange/Agent.
+        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots"])
         widgets = [w for w, _t in tabs]
         self.assertIsInstance(widgets[0], AccountsTab)
         self.assertIsInstance(widgets[1], ExchangeTab)
         self.assertIsInstance(widgets[2], AgentTab)
-        # all three share ONE controller
+        self.assertIsInstance(widgets[3], BotsPanel)
+        # all four share ONE controller
         self.assertIs(widgets[0].ctrl, widgets[2].ctrl)
+        self.assertIs(widgets[0].ctrl, widgets[3].ctrl)
         widgets[0].ctrl.loop and widgets[0].ctrl.loop.stop() if widgets[0].ctrl.loop else None
 
     def test_accounts_tab_moonpay_buy_cells(self):

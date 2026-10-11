@@ -43,3 +43,4 @@ flutter:
     - assets/wasm/
     - assets/provider/
     - assets/icons/
+    - assets/bots/

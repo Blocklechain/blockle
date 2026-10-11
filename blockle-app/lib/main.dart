@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_state.dart';
+import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
@@ -21,6 +22,12 @@ void main() {
         ChangeNotifierProvider<AppState>.value(value: app),
         ChangeNotifierProvider<MultichainController>(
           create: (_) => MultichainController(app, appNavigatorKey)..init(),
+        ),
+        // The Blockle Bots view-model: a thin adapter over the real engine
+        // (bots / bot_runner / arena / pnl / notify). It binds live orders to a
+        // running agent channel's gate via the MultichainController.
+        ChangeNotifierProvider<BotsController>(
+          create: (ctx) => BotsController(ctx.read<MultichainController>()),
         ),
       ],
       child: const BlockleApp(),

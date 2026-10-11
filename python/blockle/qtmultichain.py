@@ -184,6 +184,13 @@ class MultiVault:
         self._require().setdefault("alchemy", {})[network] = url
         self._seal()
 
+    def price_usd_map(self) -> Dict[str, Any]:
+        """Optional operator-configured USD price map (``{SYMBOL: usd, ...}``),
+        the python equivalent of the extension's ``settings.agent.priceUsd``. Used
+        as a supplemental mark source for symbols the live Exchange book cannot
+        price. Stored like other settings; NEVER a wallet secret, NEVER logged."""
+        return (self._require().get("agent") or {}).get("priceUsd") or {}
+
     def set_endpoint(self, chain: str, cfg: Dict[str, Any]) -> None:
         self._require().setdefault("endpoints", {})[chain] = cfg
         self._seal()
@@ -1763,4 +1770,13 @@ def build_tabs(block_wallet, datadir) -> List:
         (ExchangeTab(ctrl), "Exchange"),
         (AgentTab(ctrl), "Agent"),
     ]
+    # Native Blockle Bots cockpit (ADDITIVE): the persistent trading-bot platform,
+    # sharing THIS controller (one vault, one async loop, one audited gate). Guarded
+    # so a problem here never drops the Accounts / Exchange / Agent panels.
+    try:
+        from .qtbots import build_bots_tab
+        tabs.append(build_bots_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Bots panel unavailable ({e})", file=sys.stderr)
     return tabs

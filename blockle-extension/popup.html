@@ -104,6 +104,7 @@
           <button class="tile" data-go="exchange"><span class="t-ic">↹</span>Exchange</button>
           <button class="tile" data-go="accounts"><span class="t-ic">▦</span>Accounts</button>
           <button class="tile" data-go="agent"><span class="t-ic">✦</span>AI Agent</button>
+          <button class="tile" data-go="bots"><span class="t-ic">🤖</span>Bots</button>
           <button class="tile" data-go="connections"><span class="t-ic">⛓</span>Apps</button>
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
@@ -118,7 +119,7 @@
           <button class="tab active" data-go="dashboard">Home</button>
           <button class="tab" data-go="queue">Queue</button>
           <button class="tab" data-go="agent">Agent</button>
-          <button class="tab" data-go="connections">Apps</button>
+          <button class="tab" data-go="bots">Bots</button>
           <button class="tab" data-go="settings">Settings</button>
         </nav>
       </section>
@@ -382,6 +383,19 @@
         </nav>
       </section>
 
+      <!-- BLOCKLE BOTS (3Commas-for-DEXes): cockpit / create / detail / arena -->
+      <section class="screen" data-screen="bots" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Blockle Bots</span>
+          <button class="btn danger" id="bots-kill" style="margin-left:auto;padding:7px 12px;font-size:12px">KILL ALL</button></header>
+        <div class="pad" id="bots-body"><div class="empty">Loading…</div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab" data-go="agent">Agent</button>
+          <button class="tab active" data-go="bots">Bots</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
       <!-- AGENT: CONFIRM (the REQUIRED value-moving confirmation modal) -->
       <section class="screen approve" data-screen="agent-confirm" hidden>
         <div class="pad center-col">
@@ -506,7 +520,17 @@
     <script src="agent/providers.js"></script>
     <script src="agent/tools.js"></script>
     <script src="agent/runner.js"></script>
+    <script src="agent/notify.js"></script>
+    <script src="agent/pnl.js"></script>
     <script src="agent/index.js"></script>
+    <!-- Bots platform engine (docs/BLOCKLE-BOTS.md): deal engine + gated runner + arena -->
+    <script src="agent/discovery.js"></script>
+    <script src="agent/strategies.js"></script>
+    <script src="agent/strategy-runner.js"></script>
+    <script src="agent/bots.js"></script>
+    <script src="agent/bot-templates.js"></script>
+    <script src="agent/bot-runner.js"></script>
+    <script src="agent/arena.js"></script>
     <!-- Pass-2: venues (0.05% fee) + telemetry + multi-channel manager -->
     <script src="venues.js"></script>
     <script src="telemetry.js"></script>
@@ -517,6 +541,7 @@
     <script src="moonpay.js"></script>
     <script src="accounts-ui.js"></script>
     <script src="agent-ui.js"></script>
+    <script src="agent/bots-ui.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>

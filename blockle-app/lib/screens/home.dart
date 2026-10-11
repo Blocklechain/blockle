@@ -6,6 +6,7 @@ import 'wallet_tab.dart';
 import 'accounts_screen.dart';
 import 'exchange_screen.dart';
 import 'agent_screen.dart';
+import 'bots_screen.dart';
 import 'browser_tab.dart';
 import 'settings.dart';
 
@@ -17,6 +18,7 @@ class HomeScreen extends StatelessWidget {
     AccountsScreen(),
     ExchangeScreen(),
     AgentScreen(),
+    BotsScreen(),
     BrowserTab(),
     SettingsScreen(),
   ];
@@ -54,6 +56,10 @@ class HomeScreen extends StatelessWidget {
                 icon: Icon(Icons.smart_toy_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.smart_toy, color: Bk.accent),
                 label: 'Agent'),
+            NavigationDestination(
+                icon: Icon(Icons.auto_graph_outlined, color: Bk.muted),
+                selectedIcon: Icon(Icons.auto_graph, color: Bk.accent),
+                label: 'Bots'),
             NavigationDestination(
                 icon: Icon(Icons.public_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.public, color: Bk.accent),

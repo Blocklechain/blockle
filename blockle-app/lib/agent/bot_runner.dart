@@ -751,6 +751,10 @@ class BotRunner {
     final openDeals = <Map<String, dynamic>>[];
     var unrealizedUc = BigInt.zero;
     var safetyUsed = 0;
+    // True once an OPEN position cannot be marked (no price/oracle for its base).
+    // The aggregate unrealized is then reported as null — "awaiting market data" —
+    // never a misleading $0.00 (docs/BLOCKLE-BOTS.md §4/§5: no synthetic marks).
+    var unmarked = false;
     final byPair = (bot.state['byPair'] as Map?) ?? const {};
     for (final pair in byPair.keys) {
       final ps = byPair[pair] as Map?;
@@ -763,9 +767,13 @@ class BotRunner {
         var uc = BigInt.zero;
         for (final lv in (deal['levels'] as List)) {
           final held = (lv as Map)['heldQty'] as BigInt;
-          if (held > BigInt.zero && markUc != null) {
-            uc += b.valueOf(held, markUc, b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?)) -
-                ((lv['_costUc'] as BigInt?) ?? BigInt.zero);
+          if (held > BigInt.zero) {
+            if (markUc == null) {
+              unmarked = true;
+            } else {
+              uc += b.valueOf(held, markUc, b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?)) -
+                  ((lv['_costUc'] as BigInt?) ?? BigInt.zero);
+            }
           }
         }
         unrealizedUc += uc;
@@ -779,9 +787,13 @@ class BotRunner {
         final cost = (deal['costUc'] ?? deal['entryCostUc']) as BigInt?;
         safetyUsed += (deal['safetyOrdersUsed'] as int?) ?? 0;
         var uc = BigInt.zero;
-        if (markUc != null && qty > BigInt.zero) {
-          uc = b.valueOf(qty, markUc, b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?)) -
-              (cost ?? BigInt.zero);
+        if (qty > BigInt.zero) {
+          if (markUc == null) {
+            unmarked = true;
+          } else {
+            uc = b.valueOf(qty, markUc, b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?)) -
+                (cost ?? BigInt.zero);
+          }
         }
         unrealizedUc += uc;
         openDeals.add({
@@ -806,7 +818,8 @@ class BotRunner {
       'activeDeals': openDeals,
       'safetyOrdersUsed': safetyUsed,
       'realizedUsd': b.ucToUsd((bot.state['realizedUc'] as BigInt?) ?? BigInt.zero),
-      'unrealizedUsd': b.ucToUsd(unrealizedUc),
+      // null => an open position has no live mark yet ("awaiting market data").
+      'unrealizedUsd': unmarked ? null : b.ucToUsd(unrealizedUc),
       'totalDeals': dealCount,
       'winCount': wins, 'lossCount': bot.state['lossCount'] as int? ?? 0,
       'winRate': dealCount > 0 ? wins / dealCount : null,
