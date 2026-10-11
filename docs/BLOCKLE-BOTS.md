@@ -210,12 +210,24 @@ sits on top.
   run is reproducible, testable, and comparable across players. Replay compresses time (e.g. 90
   simulated days in ~60s) with play/pause/scrub. Optional historical replay of a real pair's
   past data may be added later; synthetic scenarios are the v1 core.
+  **Cross-language parity:** the canonical scenario price paths live in a shared fixture
+  `docs/arena-vectors.json` (one price array per scenario) — they are **loaded, not
+  regenerated per language**, so a cross-language RNG is never a parity risk. A wallet MAY also
+  ship a live generator for extra variety, but the canonical/tested scenarios (and the
+  leaderboard-comparable ones) come from the fixture. Running a given bot config over a given
+  scenario path yields an **identical fill sequence + score** in JS/Dart/Python (the deal engine
+  is already vector-parity-tested).
 - **Design strategies.** The full two-tier create UI (§5a) + the live deal-ladder, so players
   tune base order / safety ladder / take-profit / trailing and immediately watch the bot act on
   the scenario — orders fill on the chart, play P&L updates live.
 - **Game layer.**
-  - **Score** = risk-adjusted performance (return penalized by max drawdown), not raw PnL, so
-    reckless martingale doesn't top the board. Formula is documented + deterministic.
+  - **Score** = risk-adjusted performance, not raw PnL, so reckless martingale doesn't top the
+    board. Pinned deterministic formula (assert exactly): over the run, `retPct = finalPnl /
+    maxCostBasis · 100` and `ddPct = maxDrawdown / maxCostBasis · 100` where maxCostBasis is the
+    peak cost deployed and maxDrawdown is the largest peak-to-trough drop of the equity curve;
+    `score = round1(retPct − 0.5 · ddPct)`. All in base-unit/micro-dollar integer math off the
+    deal engine's own fills (no floats deciding money). A given (scenario path, bot config) →
+    one score, identical across all three wallets.
   - **XP + levels.** Running sims, completing missions, and beating scenarios grant XP; levels
     gently **unlock** advanced parameters and bot types — the same progressive disclosure as the
     real product, as a learning curve.

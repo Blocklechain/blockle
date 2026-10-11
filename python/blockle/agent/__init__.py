@@ -22,12 +22,12 @@ Assemble one via :func:`blockle.agent.index.start` (``Agent.start``).
 
 from __future__ import annotations
 
-from . import (audit, bot_runner, bot_templates, bots, channels, discovery,
-               index, notify, pnl, policy, providers, runner, tools)
+from . import (arena, audit, bot_runner, bot_templates, bots, channels,
+               discovery, index, notify, pnl, policy, providers, runner, tools)
 from .index import Agent, start
 
 __all__ = [
     "policy", "audit", "providers", "tools", "runner", "channels", "index",
-    "discovery", "pnl", "notify", "bots", "bot_runner", "bot_templates",
+    "discovery", "pnl", "notify", "bots", "bot_runner", "bot_templates", "arena",
     "Agent", "start",
 ]
