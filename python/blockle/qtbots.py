@@ -586,6 +586,12 @@ class BotsController(QObject):
     only ever calls its methods. Arena needs no vault — it is play-only sim."""
 
     event = Signal(dict)  # runner events, marshalled onto the UI thread
+    # run_async done/error callbacks, marshalled onto the UI thread. The async
+    # loop lives on a WORKER thread (AgentLoop), so a future done-callback fires
+    # OFF the GUI thread; these queued signals hop the callback back onto the GUI
+    # thread before it ever touches a QWidget (QMessageBox / emit / refresh).
+    _async_done = Signal(object, object)   # (callback, result)
+    _async_error = Signal(object, object)  # (callback, exc)
 
     def __init__(self, ctrl: Any):
         super().__init__()
@@ -594,6 +600,15 @@ class BotsController(QObject):
         self._arena: Optional[arena_mod.ArenaProfile] = None
         self.vectors = load_arena_vectors()
         self.session_cap_usd = 1000.0
+        # BotsController has GUI-thread affinity; because the emit happens on the
+        # worker thread these AutoConnection slots run queued on the GUI thread.
+        self._async_done.connect(self._invoke_cb)
+        self._async_error.connect(self._invoke_cb)
+
+    @staticmethod
+    def _invoke_cb(callback, arg):
+        if callback is not None:
+            callback(arg)
 
     # ---- lifecycle ----------------------------------------------------------
     def is_unlocked(self) -> bool:
@@ -735,14 +750,16 @@ class BotsController(QObject):
         fut = self.loop.submit(coro)
 
         def _cb(f):
+            # Runs on the AgentLoop WORKER thread. NEVER touch a QWidget here —
+            # hop the callback onto the GUI thread via the queued signals above.
             try:
                 res = f.result()
             except Exception as e:  # pragma: no cover - surfaced in UI
                 if on_error:
-                    on_error(e)
+                    self._async_error.emit(on_error, e)
                 return
             if on_done:
-                on_done(res)
+                self._async_done.emit(on_done, res)
 
         fut.add_done_callback(_cb)
         return fut
@@ -2047,7 +2064,9 @@ class ArenaPanel(QWidget):
     def _run(self):
         if self._anim and self._anim.isActive():
             return
-        # record the run into the REAL profile (XP / missions / badges / board)
+        # record the run into the REAL profile (XP / missions / badges / board).
+        # profile.run() is deterministic from the shared fixture and accrues XP +
+        # moves the play balance SYNCHRONOUSLY here — no RNG, no gate.
         profile = self.bc.arena()
         rec = profile.run({"vectors": self.bc.vectors, "scenario": self.scenario,
                            "bot": self._arena_bot()})
@@ -2056,7 +2075,12 @@ class ArenaPanel(QWidget):
         self._equity = [bots_mod.uc_to_usd(x) or 0.0 for x in res["equityCurveUc"]]
         self._fills = self._decorate_fills(res["fills"])
         self.sim.set_run(self._path, self._fills, upto=0)
-        self.sim_state.setText("Running…")
+        # COMMIT the authoritative result up-front: score, PnL, drawdown and the
+        # play-balance display are set NOW, decoupled from the animation. This is
+        # robust to headless/offscreen QTimer behaviour (where the reveal below may
+        # never advance). The _anim timer is PURELY VISUAL — it animates the chart
+        # and the PnL number toward this already-decided result.
+        self._commit_result(res, rec)
         # animate the reveal (respects a static fallback if the curve is short)
         self._anim_i = 0
         self._anim = QTimer(self)
@@ -2080,7 +2104,10 @@ class ArenaPanel(QWidget):
             self._anim.stop()
             self._finish(res, rec)
 
-    def _finish(self, res, rec):
+    def _commit_result(self, res, rec):
+        """Set the authoritative run result on the panel synchronously (score,
+        PnL, drawdown, state) and refresh the profile display (XP, play balance).
+        Idempotent — the animation's _finish re-settles to the same values."""
         pnl = bots_mod.uc_to_usd(res["finalPnlUc"]) or 0.0
         self.sim_pnl.setText(money(pnl))
         self.sim_pnl.setStyleSheet(f"font-size:18px; font-weight:800; font-family:{MONO};"
@@ -2091,6 +2118,10 @@ class ArenaPanel(QWidget):
         self.sim_dd.setText(f"−{dd_pct:.1f}%")
         self.sim_state.setText(f"Done · {('+' if sc >= 0 else '')}{sc:.1f}")
         self.refresh()
+
+    def _finish(self, res, rec):
+        # end-of-animation settle — re-commit the (already-decided) result.
+        self._commit_result(res, rec)
 
     def refresh(self):
         profile = self.bc.arena()
