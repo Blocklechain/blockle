@@ -235,16 +235,24 @@ class Policy {
 
   // ---- confirmation gate --------------------------------------------------
   /// Fail-safe: no handler => denied.
+  ///
+  /// `meta.forceConfirm` (set by the WALLET SECURITY SUITE on a DANGER-severity
+  /// inspection) COMPOSES WITH, and never weakens, this gate: it only removes
+  /// the two shortcuts (auto-approve-under-USD and requireConfirm=false) so a
+  /// dangerous action always reaches an explicit human confirm — even within a
+  /// bot's allocation envelope or under autoApproveUnderUsd. It can never grant
+  /// approval on its own; approval still comes only from confirmFn returning true.
   Future<GateResult> gateConfirm(
       Map<String, dynamic> summary, Map<String, dynamic>? meta) async {
     assertLive();
     meta = meta ?? {};
     final usd = meta['usd'] != null ? (meta['usd'] as num) : null;
+    final force = meta['forceConfirm'] == true;
 
-    if (autoApproveUnderUsd != null && usd != null && usd <= autoApproveUnderUsd!) {
+    if (!force && autoApproveUnderUsd != null && usd != null && usd <= autoApproveUnderUsd!) {
       return const GateResult(true, true);
     }
-    if (!requireConfirm) return const GateResult(true, false);
+    if (!force && !requireConfirm) return const GateResult(true, false);
     if (confirmFn == null) return const GateResult(false, false); // fail closed
     final ok = await confirmFn!(summary);
     assertLive(); // a kill during the await must still block the action

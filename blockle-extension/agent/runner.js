@@ -101,8 +101,17 @@
     policy.assessValue(withFee(prep.value, feeValue));
     if (audit) await audit.record({ type: 'cap_check', name, value: prep.value, fee: prep.fee || null, ok: true });
 
-    const gate = await policy.gateConfirm(prep.summary, { usd: confirmUsd(prep.value, feeValue) });
-    if (audit) await audit.record({ type: 'confirmation', name, summary: prep.summary, approved: gate.approved, auto: !!gate.auto });
+    // Security suite composition: a DANGER-severity inspection (attached by the
+    // tool's prepare() as prep.security / prep.forceConfirm) forces an explicit
+    // human confirm even within allocation / under autoApproveUnderUsd. The
+    // warnings ride along in the confirm summary so the human sees exactly why.
+    const sec = prep.security || null;
+    const forceConfirm = !!prep.forceConfirm || (sec && sec.severity === 'danger');
+    const confirmSummary = sec ? Object.assign({}, prep.summary, { security: { severity: sec.severity, warnings: sec.warnings } }) : prep.summary;
+    if (sec && audit) await audit.record({ type: 'security_inspection', name, severity: sec.severity, warnings: (sec.warnings || []).map((w) => w.code || w) });
+
+    const gate = await policy.gateConfirm(confirmSummary, { usd: confirmUsd(prep.value, feeValue), forceConfirm });
+    if (audit) await audit.record({ type: 'confirmation', name, summary: prep.summary, approved: gate.approved, auto: !!gate.auto, forceConfirm });
     if (!gate.approved) {
       if (emit) emit({ type: 'declined', name, summary: prep.summary });
       return { rejected: true, reason: 'user declined confirmation', summary: prep.summary };

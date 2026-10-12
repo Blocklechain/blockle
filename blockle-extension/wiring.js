@@ -17,6 +17,11 @@
 (function (global) {
   'use strict';
 
+  const inNode = (typeof module !== 'undefined' && module.exports);
+  // Wallet security suite (read-only tx inspection + warnings + approval mgr).
+  const Security = inNode ? require('./security.js') : global.WalletSecurity;
+  const Evm = inNode ? require('./chains/evm.js') : global.EvmAdapter;
+
   // Default agent-fee treasury (mirrors exchange/treasury.json). Overridable via
   // settings.agentTreasury. No private key ever lives here — recipient only.
   const DEFAULT_TREASURY = {
@@ -484,6 +489,104 @@
     return { contractId, deployTxid: deployRes.txid, initTxid: initRes.txid };
   }
 
+  // ---- WALLET SECURITY SUITE wiring -----------------------------------------
+  // The pre-sign inspection the agent tools call in prepare() (and the signing
+  // UI can call before signing). It BUILDS the suite's injected ctx from settings
+  // + the live adapters and returns an Inspection; a `danger` severity makes the
+  // runner force a human confirm (composes with, never weakens, the policy gate).
+  // Everything is best-effort + read-only: it never signs and never throws into
+  // the trade path (a failure degrades to "fewer checks ran", never a fake OK).
+  let _seenRecipients = null;
+  async function loadSeenRecipients() {
+    if (_seenRecipients) return _seenRecipients;
+    let arr = [];
+    try { const s = await Store.get(['seenRecipients']); arr = (s && s.seenRecipients) || []; } catch (_) { arr = []; }
+    _seenRecipients = new Set(arr);
+    return _seenRecipients;
+  }
+  // Record a recipient locally AFTER a send (so `new-address` fires only once).
+  async function rememberRecipient(addr) {
+    if (!addr) return;
+    const set = await loadSeenRecipients();
+    if (set.has(addr)) return;
+    set.add(addr);
+    try { await Store.set({ seenRecipients: Array.from(set) }); } catch (_) {}
+  }
+
+  async function securityCtx(chain) {
+    const s = await settings();
+    const sec = (s.agent && s.agent.security) || {};
+    const reg = await registry();
+    let adapter = null; try { adapter = reg.get(chain); } catch (_) {}
+    const ctx = {
+      config: {
+        denylist: sec.denylist || [],
+        knownSpenders: sec.knownSpenders || [],
+        largeSharePct: sec.largeSharePct != null ? sec.largeSharePct : 50,
+        unlimitedThreshold: sec.unlimitedThreshold,
+        warnings: sec.warnings || {},
+      },
+      estimateUsd: (asset, amount) => estimateUsd(asset, amount),
+      seenRecipients: await loadSeenRecipients(),
+    };
+    // code check (approval-to-eoa) only when the adapter exposes eth_getCode.
+    if (adapter && typeof adapter.getCode === 'function') {
+      ctx.getCode = (addr) => adapter.getCode(addr);
+    }
+    // best-effort balance for large-share (native + imported tokens of this chain).
+    ctx.getBalance = async (asset) => {
+      try {
+        const rows = await getBalance(chain, asset && asset.kind && asset.kind !== 'native' ? [asset] : undefined);
+        const want = asset && (asset.address || asset.mint || asset.symbol);
+        const row = (rows || []).find((r) => {
+          const a = r.asset || {};
+          return want ? ((a.address || a.mint || a.symbol) === want) : a.kind === 'native';
+        }) || (rows || [])[0];
+        return row ? String(row.confirmed || '0') : '0';
+      } catch (_) { return '0'; }
+    };
+    return ctx;
+  }
+
+  // Build the tx shape the suite decodes, from the agent's high-level intent.
+  async function buildInspectTx(chain, intent) {
+    intent = intent || {};
+    const asset = intent.asset || null;
+    if (ChainRegistry.isEvm ? ChainRegistry.isEvm(chain) : /^(ethereum|base|arbitrum|optimism|polygon|bnb|avalanche)$/.test(chain)) {
+      if (intent.data) return { chain, to: intent.to, data: intent.data, value: intent.value, asset };
+      if (asset && asset.kind === 'erc20' && asset.address) {
+        return { chain, to: asset.address, data: Evm.erc20TransferData(intent.to, intent.amount || 0), asset };
+      }
+      return { chain, to: intent.to, value: intent.amount || 0, asset };
+    }
+    if (chain === 'block') return { chain, to: intent.to, amount: intent.amount, asset };
+    if (chain === 'solana') {
+      return { chain, instructions: [{ program: 'system', type: 'transfer', info: { destination: intent.to, lamports: String(intent.amount || 0) } }] };
+    }
+    // utxo (btc/ltc/doge): synthesize a single recipient output for warning rules
+    return { chain, outputs: [{ address: intent.to, value: String(intent.amount || 0) }], asset };
+  }
+
+  async function inspect(chain, intent) {
+    if (!Security || typeof Security.inspectTransaction !== 'function') return null;
+    try {
+      const tx = await buildInspectTx(chain, intent);
+      const ctx = await securityCtx(chain);
+      return await Security.inspectTransaction(tx, ctx);
+    } catch (_) { return null; }
+  }
+
+  // Read-only approval manager + revoke-builder (revoke routes through the normal
+  // sign path; the suite never signs). listApprovals needs an injected indexer;
+  // without one it returns an empty list + an audited "unavailable" note.
+  async function listApprovals(chain, owner) {
+    const s = await settings();
+    const sec = (s.agent && s.agent.security) || {};
+    const o = owner || (await accountFor(chain)).address;
+    return Security.listApprovals(chain, o, { indexer: sec.indexer, config: sec });
+  }
+  function buildRevoke(chain, token, spender) { return Security.buildRevoke(chain, token, spender); }
+
   // The agent tool CTX: exactly the capabilities tools.js wires to. Value-moving
   // tools still go through the runner's cap -> confirm -> commit rails.
   function agentCtx() {
@@ -504,6 +607,7 @@
       executeSwap,                 // sign + broadcast a venue's BuiltSwap (EVM/native/[solana])
       sendFee,                     // build + sign + broadcast the mandatory 0.05% agent fee
       payX402Usdc,                 // settle an x402 buy challenge via a signed EVM/USDC transfer
+      inspect,                     // WALLET SECURITY: pre-sign tx inspection (danger -> forced confirm)
     };
   }
 
@@ -526,6 +630,8 @@
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
     amm, launchToken,
+    // wallet security suite:
+    inspect, listApprovals, buildRevoke, rememberRecipient, Security,
     agentCtx, ensureAgentDeps, reset,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.Wiring;

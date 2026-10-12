@@ -16,6 +16,7 @@
 
 import 'policy.dart' show SpendValue;
 import '../multichain/venues.dart' show VenueRegistry, Venue, FeeDescriptor;
+import '../multichain/security.dart' show Inspection;
 
 /// Exchange client surface (nullable closures — a wallet build wires what it
 /// supports; an unwired capability surfaces a clean tool error).
@@ -79,6 +80,13 @@ class AgentContext {
   final Future<dynamic> Function(Map<String, dynamic> spec)? launchToken;
   final Future<Map<String, dynamic>?> Function(dynamic challenge)? payX402Usdc;
 
+  /// WALLET SECURITY SUITE hook (optional, injected by the host). Runs the
+  /// read-only inspectTransaction over a prepared value-moving action so the
+  /// runner can surface warnings in the confirm and FORCE a human confirm on a
+  /// danger severity (composes with the policy gate). Absent => behaviour
+  /// unchanged (backward compatible).
+  final Future<Inspection?> Function(String chain, Map<String, dynamic> intent)? inspect;
+
   const AgentContext({
     this.getAddress,
     this.getBalance,
@@ -94,6 +102,7 @@ class AgentContext {
     this.amm,
     this.launchToken,
     this.payX402Usdc,
+    this.inspect,
   });
 }
 
@@ -106,6 +115,15 @@ class PreparedAction {
   final Map<String, dynamic>? fee; // {bps,chain,asset,amount,treasury}
   final SpendValue? feeValue;
   final Future<dynamic> Function()? commitFee;
+
+  /// WALLET SECURITY SUITE: the read-only Inspection the host's `inspect` hook
+  /// produced for this prepared action (null when no inspector is wired).
+  final Inspection? security;
+
+  /// True iff [security] is DANGER-severity — the runner forces an explicit
+  /// human confirm regardless of allocation / autoApproveUnderUsd.
+  final bool forceConfirm;
+
   const PreparedAction({
     required this.summary,
     required this.value,
@@ -113,7 +131,24 @@ class PreparedAction {
     this.fee,
     this.feeValue,
     this.commitFee,
+    this.security,
+    this.forceConfirm = false,
   });
+
+  /// Attach a security inspection, setting [forceConfirm] on a danger severity.
+  PreparedAction withSecurity(Inspection? inspection) {
+    if (inspection == null) return this;
+    return PreparedAction(
+      summary: summary,
+      value: value,
+      commit: commit,
+      fee: fee,
+      feeValue: feeValue,
+      commitFee: commitFee,
+      security: inspection,
+      forceConfirm: inspection.severity == 'danger',
+    );
+  }
 }
 
 class Tool {
@@ -176,6 +211,17 @@ ToolRegistry buildTools(AgentContext ctx) {
 
   String? explorer(String chain, String? txid) =>
       ctx.explorerTx != null ? ctx.explorerTx!(chain, txid) : null;
+
+  // WALLET SECURITY SUITE: inspect a prepared value-moving action read-only.
+  // Absent host inspector => null => behaviour unchanged (backward compatible).
+  Future<Inspection?> inspect(String chain, Map<String, dynamic> intent) async {
+    if (ctx.inspect == null) return null;
+    try {
+      return await ctx.inspect!(chain, intent);
+    } catch (_) {
+      return null;
+    }
+  }
 
   // ---- venue routing helpers (used by `swap`) ------------------------------
   Venue pickVenue(VenueRegistry venues, Map<String, dynamic> a) {
@@ -323,6 +369,12 @@ ToolRegistry buildTools(AgentContext ctx) {
         'memo': a['memo'],
       });
       final usd = await usdOf(_sym(asset), a['amount']);
+      final security = await inspect(chain, {
+        'to': a['to'],
+        'amount': '${a['amount']}',
+        'asset': asset,
+        'raw': built,
+      });
       final summary = {
         'action': 'send',
         'chain': chain,
@@ -337,7 +389,7 @@ ToolRegistry buildTools(AgentContext ctx) {
         summary: summary,
         value: SpendValue(asset: _sym(asset), amount: '${a['amount']}', usd: usd),
         commit: () => _need(ctx.broadcast, 'broadcast')(chain, built),
-      );
+      ).withSecurity(security);
     },
   ));
 
@@ -396,6 +448,18 @@ ToolRegistry buildTools(AgentContext ctx) {
       }
       final usd = await usdOf(a['from'], a['amount']);
       final feeUsd = await usdOf(fee.asset ?? a['from'], fee.amount);
+      // Inspect the venue-built router call (EVM calldata / approve / native)
+      // BEFORE it can be signed — a drainer router or hostile approve the venue
+      // produced forces a human confirm regardless of the auto-approve envelope.
+      final tx = built['tx'] is Map ? (built['tx'] as Map) : const {};
+      final security = await inspect('${built['chain']}', {
+        'to': tx['to'] ?? feeXfer['to'],
+        'data': tx['data'],
+        'value': tx['value'],
+        'amount': '${a['amount']}',
+        'from': built['from'],
+        'raw': built,
+      });
       final summary = {
         'action': 'swap',
         'venue': venue.id,
@@ -427,7 +491,7 @@ ToolRegistry buildTools(AgentContext ctx) {
             amount: fee.amount,
             usd: feeUsd),
         commitFee: () => _need(ctx.sendFee, 'sendFee')(feeXfer),
-      );
+      ).withSecurity(security);
     },
   ));
 

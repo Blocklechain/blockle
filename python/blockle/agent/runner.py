@@ -106,11 +106,29 @@ async def dispatch_prepared(policy, audit, emit, name, prep, pnl=None) -> Dict[s
         await audit.record({"type": "cap_check", "name": name,
                             "value": prep.get("value"), "fee": prep.get("fee"), "ok": True})
 
-    gate = await policy.gate_confirm(prep.get("summary"),
-                                     {"usd": _confirm_usd(prep.get("value"), fee_value)})
+    # Security suite composition: a DANGER-severity inspection (attached by the
+    # tool's prepare() as prep["security"] / prep["forceConfirm"]) forces an
+    # explicit human confirm even within allocation / under autoApproveUnderUsd.
+    # The warnings ride along in the confirm summary so the human sees exactly why.
+    sec = prep.get("security")
+    force_confirm = bool(prep.get("forceConfirm")) or (bool(sec) and sec.get("severity") == "danger")
+    confirm_summary = prep.get("summary")
+    if sec:
+        confirm_summary = dict(confirm_summary or {})
+        confirm_summary["security"] = {"severity": sec.get("severity"), "warnings": sec.get("warnings")}
+        if audit:
+            await audit.record({"type": "security_inspection", "name": name,
+                                "severity": sec.get("severity"),
+                                "warnings": [w.get("code") if isinstance(w, dict) else w
+                                             for w in (sec.get("warnings") or [])]})
+
+    gate = await policy.gate_confirm(confirm_summary,
+                                     {"usd": _confirm_usd(prep.get("value"), fee_value),
+                                      "forceConfirm": force_confirm})
     if audit:
         await audit.record({"type": "confirmation", "name": name, "summary": prep.get("summary"),
-                            "approved": gate["approved"], "auto": bool(gate.get("auto"))})
+                            "approved": gate["approved"], "auto": bool(gate.get("auto")),
+                            "forceConfirm": force_confirm})
     if not gate["approved"]:
         emit({"type": "declined", "name": name, "summary": prep.get("summary")})
         return {"approved": False, "summary": prep.get("summary")}

@@ -163,15 +163,23 @@
 
     // ---- confirmation gate --------------------------------------------------
     // Returns { approved: bool, auto: bool }. Fail-safe: no handler => denied.
+    //
+    // meta.forceConfirm (set by the security suite on a DANGER-severity
+    // inspection) COMPOSES WITH, and never weakens, this gate: it only removes
+    // the two shortcuts (auto-approve-under-USD and requireConfirm=false) so a
+    // dangerous action always reaches an explicit human confirm — even within a
+    // bot's allocation envelope or under autoApproveUnderUsd. It can never grant
+    // approval on its own; approval still comes only from confirmFn returning true.
     async gateConfirm(summary, meta) {
       this.assertLive();
       meta = meta || {};
       const usd = meta.usd != null ? Number(meta.usd) : null;
+      const force = !!meta.forceConfirm;
 
-      if (this.autoApproveUnderUsd != null && usd != null && usd <= this.autoApproveUnderUsd) {
+      if (!force && this.autoApproveUnderUsd != null && usd != null && usd <= this.autoApproveUnderUsd) {
         return { approved: true, auto: true };
       }
-      if (!this.requireConfirm) return { approved: true, auto: false };
+      if (!force && !this.requireConfirm) return { approved: true, auto: false };
       if (!this.confirmFn) return { approved: false, auto: false }; // fail closed
       const ok = await this.confirmFn(summary);
       this.assertLive(); // a kill during the await must still block the action

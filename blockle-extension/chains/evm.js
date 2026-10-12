@@ -309,6 +309,14 @@
         });
       },
 
+      // Read a contract's deployed code (eth_getCode). Used by the wallet
+      // security suite's approval-to-eoa check: an approval spender with NO code
+      // is an EOA — it cannot be a real router (classic drainer). Returns the
+      // code hex ('0x' when the address is an EOA / has no code).
+      async getCode(address) {
+        return rpc('eth_getCode', [address, 'latest']);
+      },
+
       // Read the current ERC-20 allowance owner→spender (base units, string).
       async allowance(tokenAddress, owner, spender) {
         const res = await rpc('eth_call',

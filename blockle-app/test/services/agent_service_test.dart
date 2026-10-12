@@ -126,6 +126,40 @@ void main() {
     expect(() => svc.manager.start(ch['id'] as String), throwsStateError);
   });
 
+  // Fix #1 — the PRODUCTION AgentContext carries the WALLET SECURITY `inspect`
+  // hook (previously null, so prep.security stayed null and a danger order
+  // auto-approved within allocation). Now a danger intent inspects to severity
+  // 'danger', which the runner turns into a forced human confirm.
+  test('production AgentContext carries inspect; a danger order inspects danger',
+      () async {
+    const bad = '0x000000000000000000000000000000000000dEaD';
+    final vault = FakeVault(VaultPlaintext(
+      mnemonic: null,
+      agent: {'provider': 'claude', 'apiKey': 'sk-ant-secret'},
+    ));
+    final accounts = _accounts(vault, FakeBlockBridge());
+    await accounts.unlock('pw');
+
+    final svc = AgentService(
+      accounts: accounts,
+      venues: VenueRegistry.create(),
+      store: MemChannelStore(),
+      fetch: _noFetch,
+      securityConfig: {
+        'denylist': [bad]
+      },
+    );
+
+    final ctx = svc.buildAgentContext();
+    expect(ctx.inspect, isNotNull,
+        reason: 'the production agent/bots ctx must carry the inspect hook');
+
+    final insp = await ctx.inspect!('ethereum', {'to': bad, 'amount': '1'});
+    expect(insp, isNotNull);
+    expect(insp!.severity, 'danger');
+    expect(insp.warningCodes, contains('send-to-flagged'));
+  });
+
   test('global kill fan-out locks the Accounts facade', () async {
     final vault = FakeVault(VaultPlaintext(
       mnemonic: null,
