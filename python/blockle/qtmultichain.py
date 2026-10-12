@@ -302,15 +302,32 @@ class AgentLoop(threading.Thread):
     def run(self):
         asyncio.set_event_loop(self.loop)
         self._ready.set()
-        self.loop.run_forever()
+        try:
+            self.loop.run_forever()
+        finally:
+            # Close the loop on ITS OWN thread so the asyncio self-pipe FDs are
+            # released on the thread that created them — otherwise a leftover open
+            # loop on a daemon thread races with Qt/C++ teardown at interpreter
+            # exit and intermittently segfaults (headless Qt CI). See stop().
+            try:
+                self.loop.close()
+            except Exception:
+                pass
 
     def submit(self, coro):
         self._ready.wait()
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def stop(self):
+        # Idempotent: request run_forever() to return, then JOIN the thread so the
+        # loop is fully closed (run()'s finally) before the process tears down.
         try:
             self.loop.call_soon_threadsafe(self.loop.stop)
+        except Exception:
+            pass
+        try:
+            if self.is_alive() and threading.current_thread() is not self:
+                self.join(timeout=2)
         except Exception:
             pass
 
