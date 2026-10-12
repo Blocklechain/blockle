@@ -19,7 +19,8 @@
 //!
 //! `Version` carries the peer's listening address; `GetAddr`/`Addr` gossip
 //! known addresses, and an auto-connect loop dials new peers until the
-//! outbound target is reached.
+//! outbound target is reached. A dial that fails is remembered and retried
+//! later, with a longer wait after each failure.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
@@ -50,6 +51,11 @@ const MAX_HEADERS_PER_MSG: usize = 2000;
 const MAX_BLOCKS_PER_REQUEST: usize = 2000;
 const OUTBOUND_TARGET: usize = 8;
 const HEARTBEAT: Duration = Duration::from_secs(10);
+/// First wait after a failed dial. Doubles each further failure, up to
+/// `DIAL_BACKOFF_CAP`. Gossiped listen addresses are often not reachable
+/// (NAT, firewall); without this the heartbeat redials them forever.
+const DIAL_BACKOFF_BASE: Duration = Duration::from_secs(60);
+const DIAL_BACKOFF_CAP: Duration = Duration::from_secs(15 * 60);
 /// How often the local miner abandons and rebuilds its block template so the
 /// quiet-lane difficulty decay (which is a function of wall-clock time) takes
 /// effect even when nothing else is moving the tip.
@@ -153,6 +159,19 @@ struct SyncState {
     hashes: Vec<Hash32>,
 }
 
+/// A dial that failed. `attempts` counts consecutive failures.
+struct DialFailure {
+    attempts: u32,
+    not_before: Instant,
+}
+
+/// Wait before trying `addr` again. `attempts` is 1 on the first failure.
+fn dial_backoff(attempts: u32) -> Duration {
+    let shift = u32::min(attempts.saturating_sub(1), 4);
+    let secs = DIAL_BACKOFF_BASE.as_secs().saturating_mul(1u64 << shift);
+    Duration::from_secs(secs.min(DIAL_BACKOFF_CAP.as_secs()))
+}
+
 pub struct Node {
     pub(crate) config: NodeConfig,
     state: Mutex<SharedState>,
@@ -162,6 +181,8 @@ pub struct Node {
     /// Resolved socket addresses of live/in-flight outbound dials — the
     /// dedupe that string comparison (hostname vs IP) cannot provide.
     outbound_targets: Mutex<HashSet<std::net::SocketAddr>>,
+    /// Addresses that recently refused or timed out, and when they may be dialed again.
+    dial_failures: Mutex<HashMap<String, DialFailure>>,
     next_peer_id: AtomicU64,
     /// Bumped on every tip change; miners poll it to abandon stale work.
     pub(crate) tip_version: AtomicU64,
@@ -177,6 +198,7 @@ impl Node {
             syncs: Mutex::new(HashMap::new()),
             known_addrs: Mutex::new(known),
             outbound_targets: Mutex::new(HashSet::new()),
+            dial_failures: Mutex::new(HashMap::new()),
             next_peer_id: AtomicU64::new(1),
             tip_version: AtomicU64::new(0),
         })
@@ -298,10 +320,47 @@ impl Node {
             || addr.starts_with("localhost")
     }
 
+    fn dial_cooled_down(&self, addr: &str) -> bool {
+        self.dial_failures
+            .lock()
+            .unwrap()
+            .get(addr)
+            .map(|f| Instant::now() >= f.not_before)
+            .unwrap_or(true)
+    }
+
+    fn note_dial_success(&self, addr: &str) {
+        self.dial_failures.lock().unwrap().remove(addr);
+    }
+
+    fn note_dial_failure(&self, addr: &str, err: &str) {
+        let mut map = self.dial_failures.lock().unwrap();
+        let attempts = map
+            .get(addr)
+            .map(|f| f.attempts.saturating_add(1))
+            .unwrap_or(1);
+        let wait = dial_backoff(attempts);
+        map.insert(
+            addr.to_string(),
+            DialFailure {
+                attempts,
+                not_before: Instant::now() + wait,
+            },
+        );
+        if attempts == 1 {
+            println!("[p2p] could not connect to {addr}: {err} (retry in {}s)", wait.as_secs());
+        } else {
+            println!("[p2p] {addr} still unreachable (retry in {}s)", wait.as_secs());
+        }
+    }
+
     fn dial(self: &Arc<Self>, addr: String) {
         use std::net::ToSocketAddrs;
+        if !self.dial_cooled_down(&addr) {
+            return;
+        }
         let Some(resolved) = addr.to_socket_addrs().ok().and_then(|mut i| i.next()) else {
-            println!("[p2p] cannot resolve {addr}");
+            self.note_dial_failure(&addr, "cannot resolve");
             return;
         };
         // One outbound connection per resolved endpoint, however it's
@@ -327,8 +386,11 @@ impl Node {
         let node = self.clone();
         thread::spawn(move || {
             match TcpStream::connect(resolved) {
-                Ok(stream) => node.clone().handle_peer(stream),
-                Err(e) => println!("[p2p] could not connect to {addr}: {e}"),
+                Ok(stream) => {
+                    node.note_dial_success(&addr);
+                    node.clone().handle_peer(stream);
+                }
+                Err(e) => node.note_dial_failure(&addr, &e.to_string()),
             }
             node.outbound_targets.lock().unwrap().remove(&resolved);
         });
@@ -352,6 +414,7 @@ impl Node {
                     !connected.contains(*a)
                         && **a != self.config.listen
                         && !Self::is_unroutable(a)
+                        && self.dial_cooled_down(a)
                 })
                 .take(OUTBOUND_TARGET - peer_count)
                 .cloned()
@@ -908,6 +971,17 @@ mod tests {
             }
             other => panic!("wrong message {other:?}"),
         }
+    }
+
+    #[test]
+    fn dial_backoff_grows_then_caps() {
+        assert_eq!(dial_backoff(1), DIAL_BACKOFF_BASE);
+        assert_eq!(dial_backoff(2), Duration::from_secs(120));
+        assert_eq!(dial_backoff(3), Duration::from_secs(240));
+        assert_eq!(dial_backoff(4), Duration::from_secs(480));
+        assert_eq!(dial_backoff(5), DIAL_BACKOFF_CAP);
+        assert_eq!(dial_backoff(40), DIAL_BACKOFF_CAP);
+        assert!(dial_backoff(1) > HEARTBEAT);
     }
 
     #[test]
