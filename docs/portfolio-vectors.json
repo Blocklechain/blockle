@@ -1,0 +1,109 @@
+{
+  "_comment": "AUTHORITATIVE shared fixtures for Wallet Portfolio & Activity (docs/WALLET-PORTFOLIO.md). IDENTICAL across blockle-extension (JS, reference — authored these), blockle-app/lib (Dart), python/blockle (Python). All money is BigInt-exact: amountBase is a base-unit decimal string; USD is carried as micro-dollars (uc = round(usd*1e6), half-away-from-zero — the §8 convention shared with agent/pnl.js). priceUsd in the price map is a decimal number (the shared live mark value). byChain pct is pinned as integer basis-points (pctBps = round(chainMicro*10000/totalMicro)). Everything is read-only and ctx-injected; a holding with no price goes to `unpriced` (shown, NOT counted, NOT guessed).",
+  "version": 1,
+
+  "netWorth": {
+    "_comment": "Mixed chains: ETH + USDC on ethereum (priced), BLOCK on block (priced), an unpriced SPL token on solana (held, excluded from the total). priceUsd map = the shared mark source. Exact micro-dollar total + per-chain basis points.",
+    "asOf": 1700000000000,
+    "priceUsd": { "ETH": 2000, "USDC": 1, "BLOCK": 0.5 },
+    "accounts": [
+      { "chain": "ethereum", "address": "0xE000000000000000000000000000000000000000" },
+      { "chain": "block", "address": "block1qqowneraddressexampleqqqqqqqqqqqqqqqqqqqqq" },
+      { "chain": "solana", "address": "So1anaOwnerAddr1111111111111111111111111111" }
+    ],
+    "holdingsByChain": {
+      "ethereum": [
+        { "asset": { "chain": "ethereum", "kind": "native", "symbol": "ETH", "decimals": 18 }, "confirmed": "1000000000000000000" },
+        { "asset": { "chain": "ethereum", "kind": "erc20", "symbol": "USDC", "decimals": 6, "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }, "confirmed": "500000000" }
+      ],
+      "block": [
+        { "asset": { "chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8 }, "confirmed": "1000000000" }
+      ],
+      "solana": [
+        { "asset": { "chain": "solana", "kind": "spl", "symbol": "XYZ", "decimals": 6, "mint": "XyZmint1111111111111111111111111111111111111" }, "confirmed": "123456789" }
+      ]
+    },
+    "expect": {
+      "totalUsdMicro": "2505000000",
+      "totalUsd": 2505,
+      "byChain": [
+        { "chain": "ethereum", "usdMicro": "2500000000", "pctBps": 9980 },
+        { "chain": "block", "usdMicro": "5000000", "pctBps": 20 }
+      ],
+      "holdings": [
+        { "chain": "ethereum", "symbol": "ETH", "usdMicro": "2000000000", "pricedOk": true },
+        { "chain": "ethereum", "symbol": "USDC", "usdMicro": "500000000", "pricedOk": true },
+        { "chain": "block", "symbol": "BLOCK", "usdMicro": "5000000", "pricedOk": true }
+      ],
+      "unpriced": [
+        { "chain": "solana", "symbol": "XYZ", "amountBase": "123456789" }
+      ]
+    }
+  },
+
+  "snapshotStore": {
+    "_comment": "Append-only daily net-worth store, dedup by UTC day (latest total for a day wins). ts is injected (ms). DAY_MS=86400000.",
+    "start": [],
+    "appends": [
+      { "ts": 1700000000000, "totalUsdMicro": "2505000000" },
+      { "ts": 1700005000000, "totalUsdMicro": "2510000000" },
+      { "ts": 1700100000000, "totalUsdMicro": "2490000000" }
+    ],
+    "expect": {
+      "_comment": "day(1700000000000)=19675 and day(1700005000000)=19675 collapse (second wins); day(1700100000000)=19677 is a new point.",
+      "points": [
+        { "day": 19675, "totalUsdMicro": "2510000000" },
+        { "day": 19677, "totalUsdMicro": "2490000000" }
+      ]
+    }
+  },
+
+  "activity": {
+    "_comment": "Interleaved cross-chain history merged newest-first (ts DESC, then chain ASC, then txid ASC). kind decoded by REUSING the security decoder. The block send recipient is on the denylist, so that item is flagged with send-to-flagged. Paging: limit 2 yields page1 + a stable cursor; page2 with that cursor yields the remaining 2 and no further cursor.",
+    "securityConfig": { "denylist": ["block1drainerrecipientexampleqqqqqqqqqqqqqqqqqqq"] },
+    "accounts": [
+      { "chain": "ethereum", "address": "0xE000000000000000000000000000000000000000" },
+      { "chain": "block", "address": "block1qqowneraddressexampleqqqqqqqqqqqqqqqqqqqqq" },
+      { "chain": "solana", "address": "So1anaOwnerAddr1111111111111111111111111111" }
+    ],
+    "history": {
+      "ethereum": [
+        { "txid": "0xeth1", "ts": 1000, "from": "0xC111111111111111111111111111111111111111", "to": "0xE000000000000000000000000000000000000000", "value": "1000000000000000000", "asset": { "chain": "ethereum", "kind": "native", "symbol": "ETH", "decimals": 18 } },
+        { "txid": "0xeth2", "ts": 3000, "from": "0xE000000000000000000000000000000000000000", "to": "0xD222222222222222222222222222222222222222", "value": "250000000", "asset": { "chain": "ethereum", "kind": "erc20", "symbol": "USDC", "decimals": 6, "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" } }
+      ],
+      "block": [
+        { "txid": "blocktx1", "ts": 2000, "from": "block1qqowneraddressexampleqqqqqqqqqqqqqqqqqqqqq", "to": "block1drainerrecipientexampleqqqqqqqqqqqqqqqqqqq", "value": "500000000", "asset": { "chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8 } }
+      ],
+      "solana": [
+        { "txid": "soltx1", "ts": 4000, "from": "WwwSenderAddr11111111111111111111111111111111", "to": "So1anaOwnerAddr1111111111111111111111111111", "value": "1000000000", "asset": { "chain": "solana", "kind": "native", "symbol": "SOL", "decimals": 9 } }
+      ]
+    },
+    "expect": {
+      "merged": [
+        { "chain": "solana", "txid": "soltx1", "ts": 4000, "kind": "transfer", "direction": "in", "flagged": false },
+        { "chain": "ethereum", "txid": "0xeth2", "ts": 3000, "kind": "token-transfer", "direction": "out", "flagged": false },
+        { "chain": "block", "txid": "blocktx1", "ts": 2000, "kind": "transfer", "direction": "out", "flagged": true },
+        { "chain": "ethereum", "txid": "0xeth1", "ts": 1000, "kind": "transfer", "direction": "in", "flagged": false }
+      ],
+      "page1": { "limit": 2, "ids": ["soltx1", "0xeth2"], "nextCursor": "3000:ethereum:0xeth2" },
+      "page2": { "limit": 2, "cursor": "3000:ethereum:0xeth2", "ids": ["blocktx1", "0xeth1"], "nextCursor": null }
+    }
+  },
+
+  "resolveName": {
+    "_comment": "ENS (.eth) + SNS (.sol) via injected resolvers (plain name->address maps in the fixture), local book by label, verbatim raw address, and a null for an unresolvable name. Never a guessed address.",
+    "book": [
+      { "label": "Mom", "address": "0xM0M0000000000000000000000000000000000000", "chain": "ethereum" }
+    ],
+    "ensMap": { "alice.eth": "0xA11CE00000000000000000000000000000000000" },
+    "snsMap": { "bob.sol": "Bob5oLaddr111111111111111111111111111111111" },
+    "cases": [
+      { "name": "ens", "input": "alice.eth", "chain": "ethereum", "expect": { "address": "0xA11CE00000000000000000000000000000000000", "source": "ens" } },
+      { "name": "sns", "input": "bob.sol", "chain": "solana", "expect": { "address": "Bob5oLaddr111111111111111111111111111111111", "source": "sns" } },
+      { "name": "book", "input": "Mom", "chain": "ethereum", "expect": { "address": "0xM0M0000000000000000000000000000000000000", "source": "book" } },
+      { "name": "raw", "input": "0x1234567890abcdef1234567890ABCDEF12345678", "chain": "ethereum", "expect": { "address": "0x1234567890abcdef1234567890ABCDEF12345678", "source": "raw" } },
+      { "name": "null-unresolvable-ens", "input": "ghost.eth", "chain": "ethereum", "expect": null },
+      { "name": "null-garbage", "input": "not-an-address", "chain": "ethereum", "expect": null }
+    ]
+  }
+}
