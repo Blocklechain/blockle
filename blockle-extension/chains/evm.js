@@ -21,6 +21,8 @@
   const ERC20_BALANCEOF = '70a08231';  // balanceOf(address)
   const ERC20_APPROVE = '095ea7b3';    // approve(address,uint256)
   const ERC20_ALLOWANCE = 'dd62ed3e';  // allowance(address,address)
+  const ERC721_SAFE_TRANSFER = '42842e0e';  // safeTransferFrom(address,address,uint256)
+  const ERC1155_SAFE_TRANSFER = 'f242432a'; // safeTransferFrom(address,address,uint256,uint256,bytes)
   const MAX_UINT256 = (1n << 256n) - 1n;
 
   function pad32(hexNo0x) { return hexNo0x.replace(/^0x/, '').toLowerCase().padStart(64, '0'); }
@@ -42,6 +44,29 @@
   }
   function erc20AllowanceData(owner, spender) {
     return '0x' + ERC20_ALLOWANCE + pad32(owner) + pad32(spender);
+  }
+
+  // ERC-721 safeTransferFrom(from, to, tokenId) — selector 42842e0e. No dynamic
+  // args: three fixed 32-byte words. tokenId is BigInt-exact (base unit id).
+  function erc721SafeTransferFromData(from, to, tokenId) {
+    return '0x' + ERC721_SAFE_TRANSFER
+      + pad32(from) + pad32(to) + pad32(BigInt(tokenId).toString(16));
+  }
+  // ERC-1155 safeTransferFrom(from, to, id, amount, data) — selector f242432a.
+  // `data` is a dynamic bytes arg: its head is the fixed offset 0xa0 (5 words in),
+  // then a length word, then the right-padded bytes. amount is BigInt-exact and
+  // the caller MUST have already clamped it to the owned balance (nft.js guards).
+  function erc1155SafeTransferFromData(from, to, id, amount, data) {
+    const d = (data == null ? '' : String(data)).replace(/^0x/, '').toLowerCase();
+    const byteLen = d.length / 2;
+    const padded = d.length % 64 === 0 ? d : d.padEnd(d.length + (64 - (d.length % 64)), '0');
+    return '0x' + ERC1155_SAFE_TRANSFER
+      + pad32(from) + pad32(to)
+      + pad32(BigInt(id).toString(16))
+      + pad32(BigInt(amount).toString(16))
+      + pad32('a0')                                 // offset to the bytes arg
+      + pad32(BigInt(byteLen).toString(16))         // bytes length
+      + padded;                                     // bytes body (empty for 0x)
   }
 
   // RLP item from a BigInt-ish numeric field (minimal big-endian, 0 -> empty)
@@ -343,6 +368,7 @@
   const API = {
     createEvmAdapter,
     erc20TransferData, erc20BalanceOfData, erc20ApproveData, erc20AllowanceData,
+    erc721SafeTransferFromData, erc1155SafeTransferFromData,
     signEip1559, signLegacy155, formatUnits, MAX_UINT256,
   };
   global.EvmAdapter = API;

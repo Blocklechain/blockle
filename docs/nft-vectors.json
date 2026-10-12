@@ -1,0 +1,330 @@
+{
+  "_comment": "AUTHORITATIVE shared fixtures for WALLET NFT SUPPORT (docs/WALLET-NFT.md §5). IDENTICAL across blockle-extension/nft.js (JS, reference — authored these), blockle-app/lib (Dart), python/blockle (Python). READ-ONLY inventory + the explicit approved send (calldata only — routes through security.inspectTransaction + the existing signer; the NFT module NEVER signs). Counts/ids/amounts are BigInt-exact base-unit strings. Metadata is NEVER fabricated: an unresolved item keeps what's known with metadataOk:false + metadataNote 'metadata-unavailable'. ipfs:// URIs normalize to config.ipfsGateway; the core fetches NOTHING (the UI loads media). Spam is a conservative FLAG only, never a safety/value claim. The inventory indexer is injected: `raw` maps '<chain>:<ownerAddress>' -> the raw item list getNFTsForOwner returns; an absent/failing indexer adds to `unavailable` (never a fake empty inventory).",
+  "version": 1,
+  "config": {
+    "ipfsGateway": "https://ipfs.io/ipfs/",
+    "nftDenylist": ["0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"]
+  },
+  "wallet": {
+    "ethereum": "0x1111111111111111111111111111111111111111",
+    "solana": "7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2"
+  },
+  "addresses": {
+    "to": "0x2222222222222222222222222222222222222222",
+    "bayc": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+    "osEditions": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+    "unresolved": "0xcAfE000000000000000000000000000000000001",
+    "scam": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  },
+
+  "inventory": {
+    "accounts": [
+      { "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" },
+      { "chain": "solana", "address": "7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2" }
+    ],
+    "raw": {
+      "ethereum:0x1111111111111111111111111111111111111111": [
+        {
+          "standard": "erc721",
+          "contract": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+          "tokenId": "1234",
+          "balance": "1",
+          "name": "Bored Ape #1234",
+          "collection": "BAYC",
+          "image": "ipfs://bafyApeCid/1234.png",
+          "metadataUri": "ipfs://bafyApeCid/1234.json",
+          "metadataOk": true
+        },
+        {
+          "standard": "erc721",
+          "contract": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+          "tokenId": "5678",
+          "balance": "1",
+          "name": "Bored Ape #5678",
+          "collection": "BAYC",
+          "image": "https://cdn.example.com/5678.png",
+          "metadataOk": true
+        },
+        {
+          "standard": "erc1155",
+          "contract": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+          "tokenId": "100",
+          "balance": "7",
+          "name": "Founder Edition",
+          "collection": "OpenSea Editions",
+          "image": "ipfs://bafyEditionCid/100.png",
+          "metadataOk": true
+        },
+        {
+          "standard": "erc721",
+          "contract": "0xcAfE000000000000000000000000000000000001",
+          "tokenId": "9",
+          "balance": "1",
+          "metadataUri": "ipfs://bafyMetaCid/9.json",
+          "metadataOk": false
+        }
+      ],
+      "solana:7Np41oeYqPefeNQEHSv1UDhYrehxin3NStELsSKCT4K2": [
+        {
+          "standard": "metaplex",
+          "contract": "DUSTawucrTsGU8hcqRdHDCbuYhCPADMLM2VcCb8VnFnQ",
+          "balance": "1",
+          "name": "DeGod #42",
+          "collection": "DeGods",
+          "image": "ipfs://bafyDegodCid/42.png",
+          "metadataOk": true
+        }
+      ]
+    },
+    "expect": {
+      "unavailable": [],
+      "itemsByContract": {
+        "0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d": {
+          "count": 2,
+          "standard": "erc721",
+          "collection": "BAYC",
+          "tokenIds": ["1234", "5678"],
+          "balances": ["1", "1"]
+        },
+        "0x495f947276749ce646f68ac8c248420045cb7b5e": {
+          "count": 1,
+          "standard": "erc1155",
+          "collection": "OpenSea Editions",
+          "tokenIds": ["100"],
+          "balances": ["7"]
+        },
+        "0xcafe000000000000000000000000000000000001": {
+          "count": 1,
+          "standard": "erc721",
+          "tokenIds": ["9"],
+          "balances": ["1"],
+          "metadataOk": false,
+          "metadataNote": "metadata-unavailable",
+          "hasName": false
+        },
+        "dustawucrtsgu8hcqrdhdcbuyhcpadmlm2vccb8vnfnq": {
+          "count": 1,
+          "standard": "metaplex",
+          "collection": "DeGods",
+          "balances": ["1"]
+        }
+      },
+      "collectionKeys": [
+        "ethereum:0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d",
+        "ethereum:0x495f947276749ce646f68ac8c248420045cb7b5e",
+        "ethereum:0xcafe000000000000000000000000000000000001",
+        "solana:dustawucrtsgu8hcqrdhdcbuyhcpadmlm2vccb8vnfnq"
+      ],
+      "normalizedImages": {
+        "ethereum:0xbc4ca0eda7647a8ab7c2061c2e118a18a936f13d:1234": "https://ipfs.io/ipfs/bafyApeCid/1234.png",
+        "ethereum:0x495f947276749ce646f68ac8c248420045cb7b5e:100": "https://ipfs.io/ipfs/bafyEditionCid/100.png"
+      }
+    }
+  },
+
+  "unavailable": {
+    "_comment": "No indexer configured => the account is listed as unavailable, NEVER a fabricated empty inventory.",
+    "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }],
+    "noIndexer": true,
+    "expect": { "items": 0, "unavailableCount": 1 }
+  },
+
+  "ipfs": [
+    { "in": "ipfs://bafyCid/1.png", "out": "https://ipfs.io/ipfs/bafyCid/1.png" },
+    { "in": "ipfs://ipfs/bafyCid/meta.json", "out": "https://ipfs.io/ipfs/bafyCid/meta.json" },
+    { "in": "ipfs://bafybeigdyrztCidOnly", "out": "https://ipfs.io/ipfs/bafybeigdyrztCidOnly" },
+    { "in": "https://cdn.example.com/a.png", "out": "https://cdn.example.com/a.png" },
+    { "in": "ar://someArweaveTx", "out": "ar://someArweaveTx" }
+  ],
+
+  "transfers": [
+    {
+      "name": "erc721 safeTransferFrom calldata (exact)",
+      "ctx": { "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }] },
+      "req": {
+        "chain": "ethereum",
+        "standard": "erc721",
+        "contract": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "tokenId": "1234",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222"
+      },
+      "expect": {
+        "kind": "nft-transfer",
+        "standard": "erc721",
+        "to": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "value": "0",
+        "data": "0x42842e0e0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000004d2"
+      }
+    },
+    {
+      "name": "erc1155 safeTransferFrom calldata with amount (exact)",
+      "ctx": { "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }] },
+      "req": {
+        "chain": "ethereum",
+        "standard": "erc1155",
+        "contract": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+        "tokenId": "42",
+        "amount": "3",
+        "ownedBalance": "7",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222"
+      },
+      "expect": {
+        "kind": "nft-transfer",
+        "standard": "erc1155",
+        "to": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+        "value": "0",
+        "data": "0xf242432a00000000000000000000000011111111111111111111111111111111111111110000000000000000000000002222222222222222222222222222222222222222000000000000000000000000000000000000000000000000000000000000002a000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ],
+
+  "guards": [
+    {
+      "name": "erc1155 overdraw refused (amount > owned balance, fail-closed)",
+      "ctx": { "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }] },
+      "req": {
+        "chain": "ethereum",
+        "standard": "erc1155",
+        "contract": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+        "tokenId": "42",
+        "amount": "9",
+        "ownedBalance": "7",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222"
+      },
+      "expectError": "exceeds owned balance"
+    },
+    {
+      "name": "wrong-from refused (from != this wallet's address, fail-closed)",
+      "ctx": { "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }] },
+      "req": {
+        "chain": "ethereum",
+        "standard": "erc721",
+        "contract": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "tokenId": "1234",
+        "from": "0x9999999999999999999999999999999999999999",
+        "to": "0x2222222222222222222222222222222222222222"
+      },
+      "expectError": "not this wallet"
+    },
+    {
+      "name": "erc1155 missing ownedBalance refused (cannot guard overdraw, fail-closed)",
+      "ctx": { "accounts": [{ "chain": "ethereum", "address": "0x1111111111111111111111111111111111111111" }] },
+      "req": {
+        "chain": "ethereum",
+        "standard": "erc1155",
+        "contract": "0x495f947276749Ce646f68AC8c248420045cb7b5e",
+        "tokenId": "42",
+        "amount": "1",
+        "from": "0x1111111111111111111111111111111111111111",
+        "to": "0x2222222222222222222222222222222222222222"
+      },
+      "expectError": "requires ownedBalance"
+    }
+  ],
+
+  "spam": [
+    {
+      "name": "zero-floor airdrop with a claim-rewards phishing link (FLAG only)",
+      "raw": {
+        "chain": "ethereum",
+        "standard": "erc721",
+        "contract": "0xabc0000000000000000000000000000000000abc",
+        "tokenId": "1",
+        "balance": "1",
+        "name": "Claim 5000 USDC Reward",
+        "collection": "Rewards Pass",
+        "image": "https://free-claim-rewards.xyz/pass.png",
+        "metadataUri": "https://free-claim-rewards.xyz/1.json",
+        "airdrop": true,
+        "floorBase": "0",
+        "metadataOk": true
+      },
+      "expect": { "spam": true, "reasons": ["zero-floor-airdrop", "phishing-pattern"] }
+    },
+    {
+      "name": "denylisted contract (FLAG only)",
+      "raw": {
+        "chain": "ethereum",
+        "standard": "erc721",
+        "contract": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "tokenId": "1",
+        "balance": "1",
+        "name": "Totally Legit Ape",
+        "collection": "Legit",
+        "metadataOk": true
+      },
+      "expect": { "spam": true, "reasons": ["denylist"] }
+    },
+    {
+      "name": "genuine owned NFT is NOT flagged",
+      "raw": {
+        "chain": "ethereum",
+        "standard": "erc721",
+        "contract": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "tokenId": "1234",
+        "balance": "1",
+        "name": "Bored Ape #1234",
+        "collection": "BAYC",
+        "image": "ipfs://bafyApeCid/1234.png",
+        "floorBase": "30000000000000000000",
+        "metadataOk": true
+      },
+      "expect": { "spam": false, "reasons": [] }
+    }
+  ],
+
+  "approvals": {
+    "_comment": "surfaceApprovals reuses Security.listApprovals (read-only). An operator row (setApprovalForAll) is surfaced as danger/revocable; a sized ERC-20 allowance is not an operator approval. No new approval path — revocation goes through the normal send flow + security gate.",
+    "chain": "ethereum",
+    "owner": "0x1111111111111111111111111111111111111111",
+    "rawApprovals": [
+      {
+        "token": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "tokenSymbol": "BAYC",
+        "spender": "0x00000000006c3852cbEf3e08E8dF289169EdE581",
+        "spenderLabel": "OpenSea Seaport",
+        "operator": true
+      },
+      {
+        "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "tokenSymbol": "USDC",
+        "spender": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+        "allowanceBase": "1000000"
+      }
+    ],
+    "expect": {
+      "operatorApprovals": [
+        {
+          "collection": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+          "operator": "0x00000000006c3852cbEf3e08E8dF289169EdE581",
+          "severity": "danger",
+          "revocable": true
+        }
+      ]
+    }
+  },
+
+  "inspect": {
+    "_comment": "A built ERC-721 send, inspected by security.inspectTransaction, decodes to kind nft-transfer with the recipient; a recipient on the denylist raises send-to-flagged (danger). Proves the send routes through the SAME security gate as a normal send.",
+    "safeRecipient": {
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "data": "0x42842e0e0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000004d2"
+      },
+      "expect": { "kind": "nft-transfer", "severity": "none", "to": "0x2222222222222222222222222222222222222222", "tokenId": "1234" }
+    },
+    "flaggedRecipient": {
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xBc4CA0EdA7647A8aB7C2061c2E118A18a936f13D",
+        "data": "0x42842e0e0000000000000000000000001111111111111111111111111111111111111111000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeef00000000000000000000000000000000000000000000000000000000000004d2"
+      },
+      "config": { "denylist": ["0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"] },
+      "expect": { "kind": "nft-transfer", "severity": "danger", "warnings": ["send-to-flagged"] }
+    }
+  }
+}

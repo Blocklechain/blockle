@@ -26,6 +26,8 @@ const String _erc20Transfer = 'a9059cbb'; // transfer(address,uint256)
 const String _erc20BalanceOf = '70a08231'; // balanceOf(address)
 const String _erc20Approve = '095ea7b3'; // approve(address,uint256)
 const String _erc20Allowance = 'dd62ed3e'; // allowance(address,address)
+const String _erc721SafeTransfer = '42842e0e'; // safeTransferFrom(address,address,uint256)
+const String _erc1155SafeTransfer = 'f242432a'; // safeTransferFrom(address,address,uint256,uint256,bytes)
 final BigInt maxUint256 = (BigInt.one << 256) - BigInt.one;
 
 String _pad32(String hexNo0x) =>
@@ -54,6 +56,34 @@ String erc20ApproveData(String spender, [BigInt? amount]) {
 
 String erc20AllowanceData(String owner, String spender) =>
     '0x$_erc20Allowance${_pad32(owner)}${_pad32(spender)}';
+
+// ---- ERC-721 / ERC-1155 NFT transfer calldata (pure, testable) -------------
+// ERC-721 safeTransferFrom(from, to, tokenId) — selector 42842e0e. Three fixed
+// 32-byte words, no dynamic args. tokenId is BigInt-exact (base-unit id).
+String erc721SafeTransferFromData(String from, String to, dynamic tokenId) =>
+    '0x$_erc721SafeTransfer'
+    '${_pad32(from)}${_pad32(to)}${_pad32(_big(tokenId).toRadixString(16))}';
+
+/// ERC-1155 safeTransferFrom(from, to, id, amount, data) — selector f242432a.
+/// `data` is a dynamic bytes arg: head is the fixed offset 0xa0 (5 words in),
+/// then a length word, then the right-padded bytes. amount is BigInt-exact and
+/// the caller MUST have already clamped it to the owned balance (nft.dart guards).
+String erc1155SafeTransferFromData(
+    String from, String to, dynamic id, dynamic amount,
+    [String? data]) {
+  final d =
+      (data == null ? '' : data.toString()).replaceFirst(RegExp(r'^0x'), '').toLowerCase();
+  final byteLen = d.length ~/ 2;
+  final padded =
+      d.length % 64 == 0 ? d : d.padRight(d.length + (64 - (d.length % 64)), '0');
+  return '0x$_erc1155SafeTransfer'
+      '${_pad32(from)}${_pad32(to)}'
+      '${_pad32(_big(id).toRadixString(16))}'
+      '${_pad32(_big(amount).toRadixString(16))}'
+      '${_pad32('a0')}' // offset to the bytes arg
+      '${_pad32(BigInt.from(byteLen).toRadixString(16))}' // bytes length
+      '$padded'; // bytes body (empty for 0x)
+}
 
 // RLP leaf helpers (Uint8List leaves; see crypto_core.rlpEncode convention).
 Uint8List _rlpNum(dynamic v) => c.hexToBytes(_bigToMinHex(_big(v)));

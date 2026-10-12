@@ -35,6 +35,8 @@ SEL_TRANSFER = "a9059cbb"            # transfer(address,uint256)
 SEL_APPROVE = "095ea7b3"             # approve(address,uint256)
 SEL_TRANSFER_FROM = "23b872dd"       # transferFrom(address,address,uint256)
 SEL_SET_APPROVAL_FOR_ALL = "a22cb465"  # setApprovalForAll(address,bool)
+SEL_SAFE_TRANSFER_721 = "42842e0e"     # safeTransferFrom(address,address,uint256)
+SEL_SAFE_TRANSFER_1155 = "f242432a"    # safeTransferFrom(address,address,uint256,uint256,bytes)
 MAX_UINT256 = (1 << 256) - 1
 
 # Default "unlimited" threshold: at/above this an allowance is treated as
@@ -240,6 +242,37 @@ def decode_evm(tx, config) -> Dict[str, Any]:
             "sem": {"recipient": recipient, "from": frm, "outAmount": amount, "asset": token_asset, "token": to},
         }
 
+    if selector == SEL_SAFE_TRANSFER_721:
+        frm, recipient, token_id = norm(addr_at(0)), norm(addr_at(1)), big_at(2)
+        nft_asset = {"chain": tx.get("chain"), "kind": "nft", "standard": "erc721",
+                     "contract": to, "tokenId": str(token_id)}
+        return {
+            "kind": "nft-transfer", "nftStandard": "erc721",
+            "summary": (f"Transfer NFT #{token_id} (collection {shorten(to)}) "
+                        f"from {shorten(frm)} to {shorten(recipient)}"),
+            "details": [{"label": "Collection", "value": to}, {"label": "From", "value": frm},
+                        {"label": "To", "value": recipient}, {"label": "Token ID", "value": str(token_id)}],
+            "effects": [{"asset": nft_asset, "direction": "out", "amountBase": "1"}],
+            "sem": {"recipient": recipient, "from": frm, "token": to,
+                    "tokenId": str(token_id), "asset": nft_asset},
+        }
+
+    if selector == SEL_SAFE_TRANSFER_1155:
+        frm, recipient, token_id, amount = norm(addr_at(0)), norm(addr_at(1)), big_at(2), big_at(3)
+        nft_asset = {"chain": tx.get("chain"), "kind": "nft", "standard": "erc1155",
+                     "contract": to, "tokenId": str(token_id)}
+        return {
+            "kind": "nft-transfer", "nftStandard": "erc1155",
+            "summary": (f"Transfer {amount}× NFT #{token_id} (collection {shorten(to)}) "
+                        f"from {shorten(frm)} to {shorten(recipient)}"),
+            "details": [{"label": "Collection", "value": to}, {"label": "From", "value": frm},
+                        {"label": "To", "value": recipient}, {"label": "Token ID", "value": str(token_id)},
+                        {"label": "Amount", "value": str(amount)}],
+            "effects": [{"asset": nft_asset, "direction": "out", "amountBase": str(amount)}],
+            "sem": {"recipient": recipient, "from": frm, "token": to,
+                    "tokenId": str(token_id), "outAmount": amount, "asset": nft_asset},
+        }
+
     if selector == SEL_SET_APPROVAL_FOR_ALL:
         operator, approved = norm(addr_at(0)), big_at(1) != 0
         return {
@@ -421,7 +454,7 @@ async def run_warnings(decoded, tx, ctx, config) -> Dict[str, Any]:
     kind = decoded["kind"]
 
     is_approval = kind == "token-approval"
-    is_transfer = kind in ("native-transfer", "token-transfer", "block-send", "utxo-send")
+    is_transfer = kind in ("native-transfer", "token-transfer", "block-send", "utxo-send", "nft-transfer")
     is_contract_call = kind == "contract-call"
 
     get_code = member(ctx, "getCode")
@@ -601,19 +634,28 @@ async def list_approvals(chain: str, owner: str,
 
     approvals = []
     for a in (raw or []):
+        # An operator approval (ERC-721/1155 setApprovalForAll) is a collection-
+        # wide grant, not a sized ERC-20 allowance — surface it so the NFT view
+        # can flag it as danger. Passthrough is additive (optional fields).
+        is_operator = (member(a, "operator") is True or member(a, "approvedForAll") is True
+                       or member(a, "type") == "operator" or member(a, "standard") == "operator"
+                       or member(a, "kind") == "operator")
         raw_allow = (member(a, "allowanceBase") if member(a, "allowanceBase") is not None
                      else (member(a, "allowance") if member(a, "allowance") is not None
                            else (member(a, "amount") or 0)))
         allowance = to_big(raw_allow)
-        approvals.append({
+        row = {
             "token": member(a, "token") or member(a, "contract") or member(a, "address"),
             "tokenSymbol": member(a, "tokenSymbol") or member(a, "symbol"),
-            "spender": member(a, "spender"),
-            "spenderLabel": member(a, "spenderLabel"),
+            "spender": member(a, "spender") or member(a, "operator"),
+            "spenderLabel": member(a, "spenderLabel") or member(a, "operatorLabel"),
             "allowanceBase": str(allowance),
-            "unlimited": allowance >= config["unlimitedThreshold"],
+            "unlimited": True if is_operator else allowance >= config["unlimitedThreshold"],
             "lastUpdated": member(a, "lastUpdated"),
-        })
+        }
+        if is_operator:
+            row["operator"] = True
+        approvals.append(row)
     return {"chain": chain, "owner": owner, "approvals": approvals, "available": True}
 
 

@@ -23,6 +23,8 @@ ERC20_TRANSFER = "a9059cbb"   # transfer(address,uint256)
 ERC20_BALANCEOF = "70a08231"  # balanceOf(address)
 ERC20_APPROVE = "095ea7b3"    # approve(address,uint256)
 ERC20_ALLOWANCE = "dd62ed3e"  # allowance(address,address)
+ERC721_SAFE_TRANSFER = "42842e0e"   # safeTransferFrom(address,address,uint256)
+ERC1155_SAFE_TRANSFER = "f242432a"  # safeTransferFrom(address,address,uint256,uint256,bytes)
 MAX_UINT256 = (1 << 256) - 1
 
 
@@ -49,6 +51,30 @@ def erc20_approve_data(spender: str, amount=None) -> str:
 
 def erc20_allowance_data(owner: str, spender: str) -> str:
     return "0x" + ERC20_ALLOWANCE + _pad32(owner) + _pad32(spender)
+
+
+def erc721_safe_transfer_from_data(frm: str, to: str, token_id) -> str:
+    """ERC-721 safeTransferFrom(from, to, tokenId) — selector 42842e0e. Three
+    fixed 32-byte words; tokenId is BigInt-exact (base-unit id)."""
+    return ("0x" + ERC721_SAFE_TRANSFER
+            + _pad32(frm) + _pad32(to) + _pad32(format(int(token_id), "x")))
+
+
+def erc1155_safe_transfer_from_data(frm: str, to: str, token_id, amount, data="0x") -> str:
+    """ERC-1155 safeTransferFrom(from, to, id, amount, data) — selector f242432a.
+    ``data`` is a dynamic bytes arg: head is the fixed offset 0xa0 (5 words in),
+    then a length word, then the right-padded bytes body. amount is BigInt-exact;
+    the caller MUST have already clamped it to the owned balance (nft.py guards)."""
+    d = ("" if data is None else str(data)).replace("0x", "", 1).lower()
+    byte_len = len(d) // 2
+    padded = d if len(d) % 64 == 0 else d.ljust(len(d) + (64 - (len(d) % 64)), "0")
+    return ("0x" + ERC1155_SAFE_TRANSFER
+            + _pad32(frm) + _pad32(to)
+            + _pad32(format(int(token_id), "x"))
+            + _pad32(format(int(amount), "x"))
+            + _pad32("a0")                       # offset to the bytes arg
+            + _pad32(format(byte_len, "x"))      # bytes length
+            + padded)                            # bytes body (empty for 0x)
 
 
 # RLP field helpers (minimal big-endian; 0 -> empty string)

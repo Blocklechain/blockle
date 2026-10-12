@@ -27,6 +27,8 @@
   const SEL_APPROVE = '095ea7b3';           // approve(address,uint256)
   const SEL_TRANSFER_FROM = '23b872dd';     // transferFrom(address,address,uint256)
   const SEL_SET_APPROVAL_FOR_ALL = 'a22cb465'; // setApprovalForAll(address,bool)
+  const SEL_SAFE_TRANSFER_721 = '42842e0e';    // safeTransferFrom(address,address,uint256)
+  const SEL_SAFE_TRANSFER_1155 = 'f242432a';   // safeTransferFrom(address,address,uint256,uint256,bytes)
   const MAX_UINT256 = (1n << 256n) - 1n;
 
   // Default "unlimited" threshold: at/above this an allowance is treated as
@@ -177,6 +179,30 @@
       };
     }
 
+    if (selector === SEL_SAFE_TRANSFER_721) {
+      const from = norm(addrAt(0)), recipient = norm(addrAt(1)), tokenId = bigAt(2);
+      const nftAsset = { chain: tx.chain, kind: 'nft', standard: 'erc721', contract: to, tokenId: tokenId.toString() };
+      return {
+        kind: 'nft-transfer', nftStandard: 'erc721',
+        summary: `Transfer NFT #${tokenId.toString()} (collection ${shorten(to)}) from ${shorten(from)} to ${shorten(recipient)}`,
+        details: [{ label: 'Collection', value: to }, { label: 'From', value: from }, { label: 'To', value: recipient }, { label: 'Token ID', value: tokenId.toString() }],
+        effects: [{ asset: nftAsset, direction: 'out', amountBase: '1' }],
+        sem: { recipient, from, token: to, tokenId: tokenId.toString(), asset: nftAsset },
+      };
+    }
+
+    if (selector === SEL_SAFE_TRANSFER_1155) {
+      const from = norm(addrAt(0)), recipient = norm(addrAt(1)), tokenId = bigAt(2), amount = bigAt(3);
+      const nftAsset = { chain: tx.chain, kind: 'nft', standard: 'erc1155', contract: to, tokenId: tokenId.toString() };
+      return {
+        kind: 'nft-transfer', nftStandard: 'erc1155',
+        summary: `Transfer ${amount.toString()}× NFT #${tokenId.toString()} (collection ${shorten(to)}) from ${shorten(from)} to ${shorten(recipient)}`,
+        details: [{ label: 'Collection', value: to }, { label: 'From', value: from }, { label: 'To', value: recipient }, { label: 'Token ID', value: tokenId.toString() }, { label: 'Amount', value: amount.toString() }],
+        effects: [{ asset: nftAsset, direction: 'out', amountBase: amount.toString() }],
+        sem: { recipient, from, token: to, tokenId: tokenId.toString(), outAmount: amount, asset: nftAsset },
+      };
+    }
+
     if (selector === SEL_SET_APPROVAL_FOR_ALL) {
       const operator = norm(addrAt(0)), approved = bigAt(1) !== 0n;
       return {
@@ -317,7 +343,7 @@
     const kind = decoded.kind;
 
     const isApproval = kind === 'token-approval';
-    const isTransfer = kind === 'native-transfer' || kind === 'token-transfer' || kind === 'block-send' || kind === 'utxo-send';
+    const isTransfer = kind === 'native-transfer' || kind === 'token-transfer' || kind === 'block-send' || kind === 'utxo-send' || kind === 'nft-transfer';
     const isContractCall = kind === 'contract-call';
 
     // run a single check: skip (with reason) when its dependency is unavailable,
@@ -451,16 +477,23 @@
         note: 'approvals unavailable: indexer error (' + (e && e.message || e) + ') — NOT a safety claim.' };
     }
     const approvals = (raw || []).map((a) => {
+      // An operator approval (ERC-721/1155 setApprovalForAll) is a collection-wide
+      // grant, not a sized ERC-20 allowance — surface it so the NFT view can flag
+      // it as danger. Passthrough is additive (optional fields).
+      const isOperator = a.operator === true || a.approvedForAll === true
+        || a.type === 'operator' || a.standard === 'operator' || a.kind === 'operator';
       const allowance = toBig(a.allowanceBase != null ? a.allowanceBase : (a.allowance != null ? a.allowance : a.amount || 0));
-      return {
+      const out = {
         token: a.token || a.contract || a.address,
         tokenSymbol: a.tokenSymbol || a.symbol,
-        spender: a.spender,
-        spenderLabel: a.spenderLabel,
+        spender: a.spender || a.operator,
+        spenderLabel: a.spenderLabel || a.operatorLabel,
         allowanceBase: allowance.toString(),
-        unlimited: allowance >= config.unlimitedThreshold,
+        unlimited: isOperator ? true : allowance >= config.unlimitedThreshold,
         lastUpdated: a.lastUpdated,
       };
+      if (isOperator) out.operator = true;
+      return out;
     });
     return { chain, owner, approvals, available: true };
   }
