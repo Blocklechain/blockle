@@ -294,35 +294,49 @@ class AgentLoop(threading.Thread):
     """A persistent asyncio loop on its own thread. The agent/channel layer is
     async; coroutines are submitted here and their futures bridged back to Qt."""
 
+    # Registry of every live AgentLoop so a test session (or app shutdown) can stop
+    # them ALL before interpreter teardown. A *running* asyncio loop on a daemon
+    # thread that survives into CPython/Qt teardown is what intermittently segfaults
+    # the headless-Qt CI; stopping+joining them first removes that hazard.
+    _instances = set()
+    _reg_lock = threading.Lock()
+
     def __init__(self):
         super().__init__(daemon=True)
         self.loop = asyncio.new_event_loop()
         self._ready = threading.Event()
+        with AgentLoop._reg_lock:
+            AgentLoop._instances.add(self)
 
     def run(self):
         asyncio.set_event_loop(self.loop)
         self._ready.set()
-        try:
-            self.loop.run_forever()
-        finally:
-            # Close the loop on ITS OWN thread so the asyncio self-pipe FDs are
-            # released on the thread that created them — otherwise a leftover open
-            # loop on a daemon thread races with Qt/C++ teardown at interpreter
-            # exit and intermittently segfaults (headless Qt CI). See stop().
-            try:
-                self.loop.close()
-            except Exception:
-                pass
+        self.loop.run_forever()
 
     def submit(self, coro):
         self._ready.wait()
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def stop(self):
-        # Idempotent: request run_forever() to return, then JOIN the thread so the
-        # loop is fully closed (run()'s finally) before the process tears down.
+        # Mid-session stop: UNCHANGED behaviour/timing — just ask run_forever() to
+        # return. (Joining/closing here perturbs thread timing and would both break
+        # loop reuse and shift async races in tests.) The thorough join+close that
+        # prevents the headless-Qt teardown segfault happens once, at session/app
+        # shutdown, via _shutdown()/stop_all().
         try:
-            self.loop.call_soon_threadsafe(self.loop.stop)
+            if not self.loop.is_closed():
+                self.loop.call_soon_threadsafe(self.loop.stop)
+        except Exception:
+            pass
+
+    def _shutdown(self):
+        # Full, race-free teardown used only at session/app shutdown (nothing reuses
+        # the loop after this): stop -> join the thread -> close the loop from THIS
+        # thread so the asyncio self-pipe FDs are released before interpreter/Qt
+        # teardown (a *running* loop on a daemon thread is what segfaults CI).
+        try:
+            if not self.loop.is_closed():
+                self.loop.call_soon_threadsafe(self.loop.stop)
         except Exception:
             pass
         try:
@@ -330,6 +344,22 @@ class AgentLoop(threading.Thread):
                 self.join(timeout=2)
         except Exception:
             pass
+        try:
+            if not self.loop.is_closed() and not self.loop.is_running():
+                self.loop.close()
+        except Exception:
+            pass
+
+    @classmethod
+    def stop_all(cls):
+        with cls._reg_lock:
+            loops = list(cls._instances)
+            cls._instances.clear()
+        for lp in loops:
+            try:
+                lp._shutdown()
+            except Exception:
+                pass
 
 
 class ConfirmBridge(QObject):
