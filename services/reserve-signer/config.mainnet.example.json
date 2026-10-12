@@ -1,0 +1,25 @@
+{
+  "_note": "PRODUCTION mainnet template for the #37 listing-liquidity seed dispense. Copy to config.json ON THE BOX and fill seedDestination. Legal/compliance sign-off is recorded (operator confirmed 2026-10-11) so legalReviewCompleted is true. The two money switches (mainnetEnabled, dryRun) are LEFT SAFE here — the operator flips them in the go-live step (see GO-LIVE-RUNBOOK.md). LOOPBACK ONLY: never expose this port; no nginx proxy. The reserve key stays in the node wallet datadir, never in this service.",
+  "port": 8795,
+  "chainBin": "/opt/blockle/chain/target/release/blockle-chain",
+  "reserveDatadir": "/var/lib/blockle-mainnet",
+  "nodeAddr": "127.0.0.1:18444",
+  "network": "mainnet",
+
+  "legalReviewCompleted": true,
+
+  "mainnetEnabled": false,
+  "dryRun": true,
+
+  "_seedDestination": "REQUIRED before going live: a REAL, spendable, operator-controlled mainnet block1… address that holds the seed and acts as the resting-order maker. Do NOT use the exchange's placeholder sentinel (block1seedliquidityreserve000…) — the signer now refuses it. Generate/confirm one from the node wallet you control.",
+  "seedDestination": "",
+
+  "_caps_note": "The $5 seed is ~5 BLOCK at avg $1. Caps are kept tight to bound blast radius; raise only with intent.",
+  "dailyCapBlock": 100,
+  "maxAmountBlock": 25,
+  "feeBlock": "0.0001",
+
+  "authToken": "",
+  "auditLog": "/var/lib/blockle-reserve-signer/audit.jsonl",
+  "ledger": "/var/lib/blockle-reserve-signer/dispensed.jsonl"
+}
