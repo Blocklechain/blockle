@@ -22,8 +22,8 @@ config; the layer is additive and importable without touching qtwallet.
 
 from __future__ import annotations
 
-from . import (activity, addressbook, crypto, exchange, portfolio, telemetry,
-               vault, venues)
+from . import (activity, addressbook, crypto, exchange, nft, portfolio,
+               security, telemetry, vault, venues)
 from .chains import (AssetRef, Balance, BroadcastResult, BuiltTx, ChainAdapter,
                      ChainRegistry, DerivedAccount, RootSecret, create_registry)
 from .vault import Vault, WrongPassword
@@ -33,5 +33,5 @@ __all__ = [
     "AssetRef", "Balance", "BroadcastResult", "BuiltTx", "ChainAdapter",
     "DerivedAccount", "RootSecret", "ChainRegistry", "create_registry",
     "venues", "telemetry", "exchange",
-    "portfolio", "activity", "addressbook",
+    "portfolio", "activity", "addressbook", "nft", "security",
 ]

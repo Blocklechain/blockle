@@ -26,6 +26,8 @@ const String _selTransfer = 'a9059cbb'; // transfer(address,uint256)
 const String _selApprove = '095ea7b3'; // approve(address,uint256)
 const String _selTransferFrom = '23b872dd'; // transferFrom(address,address,uint256)
 const String _selSetApprovalForAll = 'a22cb465'; // setApprovalForAll(address,bool)
+const String _selSafeTransfer721 = '42842e0e'; // safeTransferFrom(address,address,uint256)
+const String _selSafeTransfer1155 = 'f242432a'; // safeTransferFrom(address,address,uint256,uint256,bytes)
 
 final BigInt kMaxUint256 = (BigInt.one << 256) - BigInt.one;
 
@@ -483,6 +485,77 @@ _Decoded _decodeEvm(Map tx, SecConfig config) {
     );
   }
 
+  if (selector == _selSafeTransfer721) {
+    final from = norm(addrAt(0));
+    final recipient = norm(addrAt(1));
+    final tokenId = bigAt(2);
+    final nftAsset = <String, dynamic>{
+      'chain': tx['chain'],
+      'kind': 'nft',
+      'standard': 'erc721',
+      'contract': to,
+      'tokenId': tokenId.toString()
+    };
+    return _Decoded(
+      kind: 'nft-transfer',
+      summary:
+          'Transfer NFT #${tokenId.toString()} (collection ${_shorten(to)}) from ${_shorten(from)} to ${_shorten(recipient)}',
+      details: [
+        {'label': 'Collection', 'value': to},
+        {'label': 'From', 'value': from},
+        {'label': 'To', 'value': recipient},
+        {'label': 'Token ID', 'value': tokenId.toString()}
+      ],
+      effects: [
+        {'asset': nftAsset, 'direction': 'out', 'amountBase': '1'}
+      ],
+      sem: {
+        'recipient': recipient,
+        'from': from,
+        'token': to,
+        'tokenId': tokenId.toString(),
+        'asset': nftAsset
+      },
+    );
+  }
+
+  if (selector == _selSafeTransfer1155) {
+    final from = norm(addrAt(0));
+    final recipient = norm(addrAt(1));
+    final tokenId = bigAt(2);
+    final amount = bigAt(3);
+    final nftAsset = <String, dynamic>{
+      'chain': tx['chain'],
+      'kind': 'nft',
+      'standard': 'erc1155',
+      'contract': to,
+      'tokenId': tokenId.toString()
+    };
+    return _Decoded(
+      kind: 'nft-transfer',
+      summary:
+          'Transfer ${amount.toString()}× NFT #${tokenId.toString()} (collection ${_shorten(to)}) from ${_shorten(from)} to ${_shorten(recipient)}',
+      details: [
+        {'label': 'Collection', 'value': to},
+        {'label': 'From', 'value': from},
+        {'label': 'To', 'value': recipient},
+        {'label': 'Token ID', 'value': tokenId.toString()},
+        {'label': 'Amount', 'value': amount.toString()}
+      ],
+      effects: [
+        {'asset': nftAsset, 'direction': 'out', 'amountBase': amount.toString()}
+      ],
+      sem: {
+        'recipient': recipient,
+        'from': from,
+        'token': to,
+        'tokenId': tokenId.toString(),
+        'outAmount': amount,
+        'asset': nftAsset
+      },
+    );
+  }
+
   if (selector == _selSetApprovalForAll) {
     final operator = norm(addrAt(0));
     final approved = bigAt(1) != BigInt.zero;
@@ -747,7 +820,8 @@ Future<Map<String, dynamic>> _runWarnings(
   final isTransfer = kind == 'native-transfer' ||
       kind == 'token-transfer' ||
       kind == 'block-send' ||
-      kind == 'utxo-send';
+      kind == 'utxo-send' ||
+      kind == 'nft-transfer';
   final isContractCall = kind == 'contract-call';
 
   // run a single check: skip (with reason) when its dependency is unavailable,
@@ -934,6 +1008,11 @@ class Approval {
   final String allowanceBase;
   final bool unlimited;
   final dynamic lastUpdated;
+
+  /// True for an ERC-721/1155 `setApprovalForAll` OPERATOR approval — a
+  /// collection-wide grant, not a sized ERC-20 allowance. The NFT view surfaces
+  /// these as danger/revocable (see nft.dart surfaceApprovals).
+  final bool operator;
   Approval({
     this.token,
     this.tokenSymbol,
@@ -942,6 +1021,7 @@ class Approval {
     required this.allowanceBase,
     required this.unlimited,
     this.lastUpdated,
+    this.operator = false,
   });
   Map<String, dynamic> toMap() => {
         'token': token,
@@ -951,6 +1031,7 @@ class Approval {
         'allowanceBase': allowanceBase,
         'unlimited': unlimited,
         'lastUpdated': lastUpdated,
+        if (operator) 'operator': true,
       };
 }
 
@@ -1003,15 +1084,24 @@ Future<ApprovalList> listApprovals(String chain, String owner, SecCtx? ctx) asyn
     );
   }
   final approvals = raw.map((a) {
+    // An operator approval (ERC-721/1155 setApprovalForAll) is a collection-wide
+    // grant, not a sized ERC-20 allowance — surface it so the NFT view can flag
+    // it as danger. Passthrough is additive (optional fields).
+    final isOperator = a['operator'] == true ||
+        a['approvedForAll'] == true ||
+        a['type'] == 'operator' ||
+        a['standard'] == 'operator' ||
+        a['kind'] == 'operator';
     final allowance = toBig(a['allowanceBase'] ?? a['allowance'] ?? a['amount'] ?? 0);
     return Approval(
       token: a['token'] ?? a['contract'] ?? a['address'],
       tokenSymbol: a['tokenSymbol'] ?? a['symbol'],
-      spender: a['spender'],
-      spenderLabel: a['spenderLabel'],
+      spender: a['spender'] ?? a['operator'],
+      spenderLabel: a['spenderLabel'] ?? a['operatorLabel'],
       allowanceBase: allowance.toString(),
-      unlimited: allowance >= config.unlimitedThreshold,
+      unlimited: isOperator ? true : allowance >= config.unlimitedThreshold,
       lastUpdated: a['lastUpdated'],
+      operator: isOperator,
     );
   }).toList();
   return ApprovalList(chain: chain, owner: owner, approvals: approvals, available: true);
