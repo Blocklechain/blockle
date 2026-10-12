@@ -9,6 +9,7 @@ import 'agent_screen.dart';
 import 'bots_screen.dart';
 import 'browser_tab.dart';
 import 'settings.dart';
+import 'wallet/wallet_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -21,6 +22,7 @@ class HomeScreen extends StatelessWidget {
     BotsScreen(),
     BrowserTab(),
     SettingsScreen(),
+    WalletScreen(),
   ];
 
   @override
@@ -68,6 +70,10 @@ class HomeScreen extends StatelessWidget {
                 icon: Icon(Icons.settings_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.settings, color: Bk.accent),
                 label: 'Settings'),
+            NavigationDestination(
+                icon: Icon(Icons.diamond_outlined, color: Bk.muted),
+                selectedIcon: Icon(Icons.diamond, color: Bk.accent),
+                label: 'Portfolio'),
           ],
         ),
       ),

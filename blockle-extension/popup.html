@@ -98,6 +98,7 @@
           <button class="addr-chip" id="addr-chip" title="Copy address"><span id="addr-short">—</span><span class="copy">⧉</span></button>
         </div>
         <div class="grid3">
+          <button class="tile" data-go="wallet"><span class="t-ic">◎</span>Portfolio</button>
           <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
           <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
@@ -396,6 +397,18 @@
         </nav>
       </section>
 
+      <!-- WALLET (portfolio / activity / NFTs / connect / address book) -->
+      <section class="screen" data-screen="wallet" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Wallet</span></header>
+        <div class="pad" id="wallet-body"><div class="empty">Loading…</div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="wallet">Wallet</button>
+          <button class="tab" data-go="bots">Bots</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
       <!-- AGENT: CONFIRM (the REQUIRED value-moving confirmation modal) -->
       <section class="screen approve" data-screen="agent-confirm" hidden>
         <div class="pad center-col">
@@ -535,6 +548,10 @@
     <script src="venues.js"></script>
     <script src="telemetry.js"></script>
     <script src="agent/channels.js"></script>
+    <!-- Wallet security suite — loaded BEFORE wiring/UI so Wiring.inspect + the
+         shared SecurityGate see WalletSecurity at module load (order matters). -->
+    <script src="security.js"></script>
+    <script src="security-gate.js"></script>
     <!-- Pass-2 wiring + UI controllers -->
     <script src="wiring.js"></script>
     <script src="agent-store.js"></script>
@@ -542,6 +559,13 @@
     <script src="accounts-ui.js"></script>
     <script src="agent-ui.js"></script>
     <script src="agent/bots-ui.js"></script>
+    <!-- Wallet engine modules (read-only; the UI calls these + the existing signer) -->
+    <script src="portfolio.js"></script>
+    <script src="activity.js"></script>
+    <script src="addressbook.js"></script>
+    <script src="nft.js"></script>
+    <script src="walletconnect.js"></script>
+    <script src="wallet-ui.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>

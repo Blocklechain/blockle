@@ -128,7 +128,8 @@ class PanelFlowTest(unittest.TestCase):
         from blockle.qtmultichain import build_tabs
         tabs = build_tabs(self.wallet, self.datadir)
         titles = [t for _w, t in tabs]
-        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots"])
+        self.assertIn("Bots", titles)
+        self.assertEqual(titles[:4], ["Accounts", "Exchange", "Agent", "Bots"])
         bots = [w for w, t in tabs if t == "Bots"][0]
         self.assertIsInstance(bots, BotsPanel)
         # the Bots panel shares the SAME controller as the other tabs

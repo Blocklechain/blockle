@@ -145,6 +145,15 @@ Uint8List publicKey(List<int> seed) {
   return _pointCompress(_pointMul(e.a, _g));
 }
 
+/// Whether a 32-byte value is a valid point on the ed25519 curve. Solana's
+/// off-curve PDA derivation (findProgramAddress) requires this check: a program
+/// address is valid IFF it is NOT on the curve.
+bool isOnCurve(List<int> bytes) {
+  final b = c.toBytes(bytes);
+  if (b.length != 32) return false;
+  return _pointDecompress(b) != null;
+}
+
 /// 64-byte signature over [message] with a 32-byte secret seed.
 Uint8List sign(List<int> message, List<int> seed) {
   final msg = c.toBytes(message);

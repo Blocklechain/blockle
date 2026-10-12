@@ -307,6 +307,308 @@ test('backward compatible: no ctx.inspect wired => prepare behaves exactly as be
   assert.equal(broadcast, 1);
 });
 
+// ===========================================================================
+// buy_block — the x402 settlement pays a RELAY/SELLER-SUPPLIED recipient (payTo).
+// That recipient is EXTERNALLY INFLUENCED, so prepare() MUST run inspect() over
+// it: a denylisted/flagged payTo forces a DANGER confirm even inside the
+// auto-approve envelope (requirement B). Backward compatible when unwired.
+// ===========================================================================
+function buyBlockCtx(opts) {
+  opts = opts || {};
+  const challenge = { accepts: [{ network: 'base', payTo: opts.payTo, maxAmountRequired: '1000000', asset: '0xUSDC' }] };
+  let paid = 0, settles = 0, preflights = 0;
+  const ctx = {
+    estimateUsd: async () => 1, // $1 — well under any auto-approve envelope
+    exchange: {
+      buyBlock: async (usdc, addr, proof) => {
+        if (proof) { settles++; return { receipt: { blockOut: '5' } }; }
+        preflights++;
+        return { paymentRequired: true, challenge };
+      },
+    },
+    // READ-ONLY parse of the relay/seller payTo, mirrors wiring.firstEvmAccept.
+    resolveX402Accept: (ch) => {
+      const o = ch && ch.accepts && ch.accepts[0];
+      return o ? { chain: 'base', to: o.payTo, amount: o.maxAmountRequired, asset: o.asset } : null;
+    },
+    payX402Usdc: async () => { paid++; return { paymentTxid: '0xpay', chain: 'base' }; },
+    // inspect the RECIPIENT: a denylisted payTo => danger (send-to-flagged).
+    inspect: async (chain, intent) => {
+      const deny = (opts.denylist || []).map((x) => x.toLowerCase());
+      const hit = intent && intent.to && deny.indexOf(String(intent.to).toLowerCase()) >= 0;
+      return hit
+        ? { chain, kind: 'token-transfer', severity: 'danger', warnings: [{ code: 'send-to-flagged', severity: 'danger' }], checks: { ran: ['send-to-flagged'], skipped: [] } }
+        : { chain, kind: 'token-transfer', severity: 'none', warnings: [], checks: { ran: ['send-to-flagged'], skipped: [] } };
+    },
+  };
+  if (opts.noResolver) delete ctx.resolveX402Accept;
+  return { ctx, counts: () => ({ paid, settles, preflights }) };
+}
+
+test('buy_block: a denylisted x402 payTo forces a human confirm (inspect on the relay-supplied recipient)', async () => {
+  let asked = 0;
+  const BAD = '0x000000000000000000000000000000000000dEaD';
+  const { ctx, counts } = buyBlockCtx({ payTo: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'buy_block', arguments: { usdc: '1000000' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('buy block');
+  assert.equal(asked, 1, 'a denylisted payTo forced a human confirm despite usd(1) <= autoApprove(100)');
+  const c = counts();
+  assert.equal(c.paid, 1, 'settled only after the explicit confirm');
+  assert.equal(c.settles, 1, 'retried with the payment proof');
+  assert.equal(c.preflights, 1, 'preflight reused — buyBlock challenged exactly once');
+});
+
+test('buy_block: a declined danger confirm never pays the x402 challenge', async () => {
+  const BAD = '0x000000000000000000000000000000000000dEaD';
+  const { ctx, counts } = buyBlockCtx({ payTo: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => false });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'buy_block', arguments: { usdc: '1000000' } }] },
+      { text: 'cancelled' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('buy block from a flagged seller');
+  assert.equal(counts().paid, 0, 'a declined danger never settles/pays');
+});
+
+test('buy_block: a clean (non-denylisted) payTo may auto-approve under the envelope', async () => {
+  let asked = 0;
+  const GOOD = '0x1111111111111111111111111111111111111111';
+  const { ctx, counts } = buyBlockCtx({ payTo: GOOD, denylist: ['0x000000000000000000000000000000000000dEaD'] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'buy_block', arguments: { usdc: '1000000' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('buy block');
+  assert.equal(asked, 0, 'a clean payTo auto-approves (inspection composed, did not over-tighten)');
+  assert.equal(counts().paid, 1, 'settled under the envelope');
+});
+
+test('buy_block: backward compatible — no resolveX402Accept wired => no inspection, settles as before', async () => {
+  let asked = 0;
+  const BAD = '0x000000000000000000000000000000000000dEaD';
+  const { ctx, counts } = buyBlockCtx({ payTo: BAD, denylist: [BAD], noResolver: true });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'buy_block', arguments: { usdc: '1000000' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('buy block');
+  assert.equal(asked, 0, 'no resolver => no payTo inspection => unchanged (auto-approved under envelope)');
+  assert.equal(counts().paid, 1);
+});
+
+// ===========================================================================
+// sell_block — the BLOCK send pays a RELAY-SUPPLIED reserve recipient (resolved
+// from the relay /api/buy/config). That recipient is EXTERNALLY INFLUENCED, so
+// prepare() MUST run inspect() over it: a denylisted/flagged reserve forces a
+// DANGER confirm even inside the auto-approve envelope (requirement B).
+// Backward compatible when ex.sellReserveAddr is unwired.
+// ===========================================================================
+function flagIfDenylisted(denylist) {
+  const deny = (denylist || []).map((x) => String(x).toLowerCase());
+  return async (chain, intent) => {
+    const hit = intent && intent.to && deny.indexOf(String(intent.to).toLowerCase()) >= 0;
+    return hit
+      ? { chain, kind: 'native-transfer', severity: 'danger', warnings: [{ code: 'send-to-flagged', severity: 'danger' }], checks: { ran: ['send-to-flagged'], skipped: [] } }
+      : { chain, kind: 'native-transfer', severity: 'none', warnings: [], checks: { ran: ['send-to-flagged'], skipped: [] } };
+  };
+}
+function sellBlockCtx(opts) {
+  opts = opts || {};
+  let sold = 0, resolved = 0;
+  const ctx = {
+    estimateUsd: async () => 1, // well under any auto-approve envelope
+    exchange: {
+      sellBlock: async () => { sold++; return { blockTxid: '0xsell', settlement: { ok: true } }; },
+    },
+    inspect: flagIfDenylisted(opts.denylist),
+  };
+  if (!opts.noResolver) ctx.exchange.sellReserveAddr = async () => { resolved++; return opts.reserve; };
+  return { ctx, counts: () => ({ sold, resolved }) };
+}
+
+test('sell_block: a denylisted reserve recipient forces a human confirm (inspect on the relay-supplied recipient)', async () => {
+  let asked = 0;
+  const BAD = 'block1badreserve00000000000000000000000000000000000000000000000';
+  const { ctx, counts } = sellBlockCtx({ reserve: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'sell_block', arguments: { blockAmount: '100000000', userUsdcAddr: '0xabc' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('sell block');
+  assert.equal(asked, 1, 'a denylisted reserve forced a human confirm despite usd(1) <= autoApprove(100)');
+  const c = counts();
+  assert.equal(c.resolved, 1, 'reserve resolved read-only in prepare');
+  assert.equal(c.sold, 1, 'sold only after the explicit confirm');
+});
+
+test('sell_block: a declined danger confirm never sends BLOCK to the reserve', async () => {
+  const BAD = 'block1badreserve00000000000000000000000000000000000000000000000';
+  const { ctx, counts } = sellBlockCtx({ reserve: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => false });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'sell_block', arguments: { blockAmount: '100000000' } }] },
+      { text: 'cancelled' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('sell block to a flagged reserve');
+  assert.equal(counts().sold, 0, 'a declined danger never sends');
+});
+
+test('sell_block: a clean reserve may auto-approve under the envelope', async () => {
+  let asked = 0;
+  const GOOD = 'block1goodreserve0000000000000000000000000000000000000000000000';
+  const { ctx, counts } = sellBlockCtx({ reserve: GOOD, denylist: ['block1badreserve00000000000000000000000000000000000000000000000'] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'sell_block', arguments: { blockAmount: '100000000' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('sell block');
+  assert.equal(asked, 0, 'a clean reserve auto-approves (inspection composed, did not over-tighten)');
+  assert.equal(counts().sold, 1, 'sold under the envelope');
+});
+
+test('sell_block: backward compatible — no sellReserveAddr wired => no inspection, sells as before', async () => {
+  let asked = 0;
+  const { ctx, counts } = sellBlockCtx({ reserve: 'block1whatever', denylist: ['block1whatever'], noResolver: true });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'sell_block', arguments: { blockAmount: '100000000' } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('sell block');
+  assert.equal(asked, 0, 'no resolver => no reserve inspection => unchanged (auto-approved under envelope)');
+  assert.equal(counts().sold, 1);
+});
+
+// ===========================================================================
+// list_asset — the listing fee pays a RELAY-SUPPLIED BLOCK payTo (named in the
+// relay listing quote). EXTERNALLY INFLUENCED, so prepare() MUST run inspect()
+// over it: a denylisted/flagged treasury forces a DANGER confirm (requirement B).
+// ===========================================================================
+function listAssetCtx(opts) {
+  opts = opts || {};
+  let listed = 0, quoted = 0;
+  const ctx = {
+    estimateUsd: async () => 1,
+    exchange: {
+      // noPayTo: a priced quote that names NO payTo (so usd is still present and
+      // the envelope applies) — isolates "no relay recipient => no inspection".
+      listingQuote: async () => { quoted++; return opts.noPayTo ? { totalUsd: 5 } : { payTo: opts.payTo, totalUsd: 5 }; },
+      listAsset: async () => { listed++; return { listingId: 'L1' }; },
+    },
+    inspect: flagIfDenylisted(opts.denylist),
+  };
+  return { ctx, counts: () => ({ listed, quoted }) };
+}
+
+test('list_asset: a denylisted payTo treasury forces a human confirm (inspect on the relay-supplied recipient)', async () => {
+  let asked = 0;
+  const BAD = 'block1badtreasury0000000000000000000000000000000000000000000000';
+  const { ctx, counts } = listAssetCtx({ payTo: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'list_asset', arguments: { asset: { symbol: 'FOO' } } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('list asset');
+  assert.equal(asked, 1, 'a denylisted payTo forced a human confirm despite usd(5) <= autoApprove(100)');
+  assert.equal(counts().listed, 1, 'listed only after the explicit confirm');
+});
+
+test('list_asset: a declined danger confirm never pays the listing fee', async () => {
+  const BAD = 'block1badtreasury0000000000000000000000000000000000000000000000';
+  const { ctx, counts } = listAssetCtx({ payTo: BAD, denylist: [BAD] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => false });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'list_asset', arguments: { asset: { symbol: 'FOO' } } }] },
+      { text: 'cancelled' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('list asset to a flagged treasury');
+  assert.equal(counts().listed, 0, 'a declined danger never lists/pays');
+});
+
+test('list_asset: a clean payTo may auto-approve under the envelope', async () => {
+  let asked = 0;
+  const GOOD = 'block1goodtreasury000000000000000000000000000000000000000000000';
+  const { ctx, counts } = listAssetCtx({ payTo: GOOD, denylist: ['block1badtreasury0000000000000000000000000000000000000000000000'] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'list_asset', arguments: { asset: { symbol: 'FOO' } } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('list asset');
+  assert.equal(asked, 0, 'a clean payTo auto-approves (inspection composed, did not over-tighten)');
+  assert.equal(counts().listed, 1, 'listed under the envelope');
+});
+
+test('list_asset: backward compatible — quote names no payTo => no inspection, lists as before', async () => {
+  let asked = 0;
+  const { ctx, counts } = listAssetCtx({ noPayTo: true, denylist: [] });
+  const tools = AgentTools.build(ctx);
+  const policy = AgentPolicy.create({ autoApproveUnderUsd: 100, confirm: async () => { asked++; return true; } });
+  const runner = AgentRunner.create({
+    provider: scripted([
+      { toolCalls: [{ id: 't', name: 'list_asset', arguments: { asset: { symbol: 'FOO' } } }] },
+      { text: 'done' },
+    ]),
+    tools, policy,
+  });
+  await runner.run('list asset');
+  assert.equal(asked, 0, 'no payTo => no inspection => unchanged (auto-approved under envelope)');
+  assert.equal(counts().listed, 1);
+});
+
 // gate-composition vector sanity (the shared numbers the ports assert too)
 test('vector: gateComposition scenario matches', async () => {
   const gc = vectors.gateComposition;

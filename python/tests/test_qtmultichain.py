@@ -104,8 +104,9 @@ class MultiChainControllerTest(unittest.TestCase):
         QApplication.instance() or QApplication([])
         tabs = build_tabs(self.wallet, self.datadir)
         titles = [t for _w, t in tabs]
-        # the native Bots cockpit is appended after Accounts/Exchange/Agent.
-        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots"])
+        # the native Bots cockpit + Wallet surfaces are appended after
+        # Accounts/Exchange/Agent (each additive, guarded).
+        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots", "Wallet"])
         widgets = [w for w, _t in tabs]
         self.assertIsInstance(widgets[0], AccountsTab)
         self.assertIsInstance(widgets[1], ExchangeTab)
@@ -204,6 +205,74 @@ class MultiChainControllerTest(unittest.TestCase):
 
         result = asyncio.run(scenario())
         self.assertIn("confirmation handler", result)
+        ctrl.loop.stop()
+
+
+class SendDialogSecurityGateTest(unittest.TestCase):
+    """The Accounts-tab per-chain Send dialog (``SendDialog``) must route the
+    built tx through ``security.inspect_transaction`` + the shared confirm sheet
+    BEFORE the existing adapter broadcasts: a DANGER forces the explicit confirm,
+    a reject aborts WITHOUT signing. (Formerly: only a plain QMessageBox.)"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.datadir = Path(self._tmp.name)
+        self.wallet = _StubBlockWallet(self.datadir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _dialog(self):
+        from PySide6.QtWidgets import QApplication
+        from blockle.qtmultichain import MultiChainController, SendDialog
+        QApplication.instance() or QApplication([])
+        ctrl = MultiChainController(self.wallet, self.datadir)
+        ctrl.create("pw")
+        dlg = SendDialog(ctrl, ["ethereum"])
+        return ctrl, dlg
+
+    def test_inspection_tx_runs_inspect_and_flags_danger(self):
+        """The dialog builds a WELL-FORMED tx (real recipient + amount) and the
+        inspection flags a denylisted recipient as DANGER."""
+        from blockle.multichain import security as sec
+        drain = "0x000000000000000000000000000000000000dEaD"
+        ctrl, dlg = self._dialog()
+        dlg.to.setText(drain)
+        dlg.amount.setText("1000000000000000000")   # 1 ETH, base units
+        tx = dlg._inspection_tx("ethereum")
+        self.assertEqual(sec.norm(tx["to"]), sec.norm(drain))
+        self.assertEqual(tx["value"], "1000000000000000000")
+        insp = asyncio.run(sec.inspect_transaction(tx, {"config": {"denylist": [drain]}}))
+        self.assertEqual(insp["severity"], "danger")
+        ctrl.loop.stop()
+
+    def test_gate_blocks_on_reject_and_allows_on_accept(self):
+        """A rejected confirm sheet never reaches the adapter broadcast; an
+        accepted one does — exercised on a real DANGER inspection."""
+        from PySide6.QtWidgets import QDialog
+        from blockle import qtwalletui as w
+        from blockle.multichain import security as sec
+        drain = "0x000000000000000000000000000000000000dEaD"
+        ctrl, dlg = self._dialog()
+        dlg.to.setText(drain)
+        dlg.amount.setText("1000000000000000000")
+        tx = dlg._inspection_tx("ethereum")
+        insp = asyncio.run(sec.inspect_transaction(tx, {"config": {"denylist": [drain]}}))
+        self.assertEqual(insp["severity"], "danger")
+
+        reached = []
+        dlg._really_broadcast = lambda: reached.append(True)
+        orig_exec = w.SecurityConfirmSheet.exec
+        try:
+            w.SecurityConfirmSheet.exec = lambda self: QDialog.Rejected
+            dlg._on_inspected(insp)
+            self.assertEqual(reached, [], "reject must NOT reach the signer")
+
+            w.SecurityConfirmSheet.exec = lambda self: QDialog.Accepted
+            dlg._on_inspected(insp)
+            self.assertEqual(reached, [True], "accept must reach the signer")
+        finally:
+            w.SecurityConfirmSheet.exec = orig_exec
         ctrl.loop.stop()
 
 

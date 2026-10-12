@@ -223,6 +223,46 @@ ToolRegistry buildTools(AgentContext ctx) {
     }
   }
 
+  // x402 settlement network -> inspectable chain id (mirrors agent_service's
+  // _x402Net). Used to decode the SELLER-SUPPLIED payTo before settlement.
+  const x402Net = {
+    'base': 'base',
+    'base-mainnet': 'base',
+    '8453': 'base',
+    'ethereum': 'ethereum',
+    'mainnet': 'ethereum',
+    '1': 'ethereum',
+  };
+
+  // Extract the first resolvable EVM/USDC accept {chain,to,amount,asset} from an
+  // x402 challenge — enough to run a READ-ONLY inspect preview over the
+  // relay/seller-supplied recipient. Returns null when nothing resolvable (the
+  // host settles, or surfaces the challenge, unchanged). Mirrors the shape the
+  // host's payX402Usdc settles.
+  Map<String, dynamic>? x402Accept(dynamic challenge) {
+    if (challenge is! Map) return null;
+    final accepts = challenge['accepts'] is List
+        ? challenge['accepts'] as List
+        : challenge['paymentOptions'] is List
+            ? challenge['paymentOptions'] as List
+            : [challenge];
+    for (final o in accepts) {
+      if (o is! Map) continue;
+      final net = x402Net['${o['network']}'.toLowerCase()];
+      final to = o['payTo'] ?? o['recipient'] ?? o['address'] ?? o['to'];
+      final amount = o['maxAmountRequired'] ?? o['amount'] ?? o['value'];
+      if (net != null && to != null && amount != null) {
+        return {
+          'chain': net,
+          'to': to,
+          'amount': amount,
+          'asset': o['asset'] ?? o['token'] ?? o['tokenAddress'],
+        };
+      }
+    }
+    return null;
+  }
+
   // ---- venue routing helpers (used by `swap`) ------------------------------
   Venue pickVenue(VenueRegistry venues, Map<String, dynamic> a) {
     if (a['venue'] != null) {
@@ -577,13 +617,48 @@ ToolRegistry buildTools(AgentContext ctx) {
           final first = await buy('${a['usdc']}');
           if (first['paymentRequired'] != true) return first;
           if (ctx.payX402Usdc == null) return first;
+          // WALLET SECURITY SUITE: the x402 payTo is RELAY/SELLER-SUPPLIED and is
+          // revealed only here, in the challenge, AFTER the buy_block policy gate
+          // ran on the USDC spend. Run a READ-ONLY inspect over that
+          // externally-influenced recipient so a flagged/drainer payTo is decoded
+          // and surfaced (never silently settled). The host's payX402Usdc ALSO
+          // re-inspects and FORCES an explicit human confirm on a DANGER severity
+          // before it signs/broadcasts the USDC transfer (defense-in-depth); a
+          // decline/fail-closed there throws, caught below => challenge UNPAID.
+          Inspection? payInspect;
+          final acc = x402Accept(first['challenge']);
+          if (acc != null) {
+            final assetAddr = acc['asset'];
+            payInspect = await inspect(acc['chain'] as String, {
+              'to': acc['to'],
+              'amount': '${acc['amount']}',
+              'asset': assetAddr != null
+                  ? {
+                      'chain': acc['chain'],
+                      'kind': 'erc20',
+                      'symbol': 'USDC',
+                      'decimals': 6,
+                      'address': assetAddr,
+                    }
+                  : null,
+            });
+          }
           Map<String, dynamic>? pay;
           try {
             pay = await ctx.payX402Usdc!(first['challenge']);
           } catch (_) {
             pay = null;
           }
-          if (pay == null || pay['paymentTxid'] == null) return first;
+          if (pay == null || pay['paymentTxid'] == null) {
+            return {
+              ...first,
+              if (payInspect != null)
+                'security': {
+                  'severity': payInspect.severity,
+                  'warnings': payInspect.warnings.map((w) => w.code).toList(),
+                },
+            };
+          }
           Map<String, dynamic>? settled;
           try {
             settled = await buy('${a['usdc']}', null,
@@ -595,6 +670,11 @@ ToolRegistry buildTools(AgentContext ctx) {
             'chain': pay['chain'],
             'explorer': explorer(pay['chain'] as String? ?? '', pay['paymentTxid'] as String?),
             'settlement': settled,
+            if (payInspect != null)
+              'security': {
+                'severity': payInspect.severity,
+                'warnings': payInspect.warnings.map((w) => w.code).toList(),
+              },
             if (settled == null) 'challenge': first['challenge'],
           };
         },

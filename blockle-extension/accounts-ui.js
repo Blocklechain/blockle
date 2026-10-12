@@ -285,6 +285,9 @@
       const req = { to, amount: amountBase, asset };
       const built = await Wiring.buildSend(chain, req);
       sendState.built = built; sendState.asset = asset;
+      // keep the resolved intent so the pre-broadcast security gate can inspect
+      // the SAME recipient/amount/asset (not just the built blob).
+      sendState.intent = { to, amount: amountBase, asset };
       const sym = asset ? (asset.symbol || 'token') : metaFor(chain).sym;
       const feeTxt = built.fee != null ? fmtFee(chain, built.fee) : '—';
       const box = $('#mc-review-box');
@@ -306,6 +309,19 @@
     if (!sendState || !sendState.built) return;
     const btn = $('#mc-broadcast'); btn.disabled = true; btn.textContent = 'Broadcasting…';
     try {
+      // SECURITY GATE: inspect the resolved recipient/amount (read-only) and run
+      // the shared confirm sheet BEFORE broadcasting. A DANGER forces the explicit
+      // confirm; a reject (or unavailable suite) aborts without broadcasting. The
+      // existing signer already built the tx; nothing signs again here.
+      let inspection = null;
+      try { inspection = await Wiring.inspect(sendState.chain, sendState.intent || {}); } catch (_) { inspection = null; }
+      const cleared = UI.confirmInspection ? await UI.confirmInspection(inspection) : false;
+      if (!cleared) {
+        err.textContent = inspection ? 'Send cancelled by the security review.'
+          : 'Could not run the security inspection — not broadcasting.';
+        btn.disabled = false; btn.textContent = 'Broadcast';
+        return;
+      }
       const res = await Wiring.broadcast(sendState.chain, sendState.built);
       const txid = (res && res.txid) || sendState.built.txid;
       UI.toast('Sent · ' + String(txid).slice(0, 14) + '…');

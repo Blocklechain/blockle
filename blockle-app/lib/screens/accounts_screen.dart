@@ -18,7 +18,9 @@ import '../multichain/security.dart' as sec;
 import '../services/moonpay.dart';
 import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
+import '../state/wallet_controller.dart';
 import '../theme.dart';
+import 'wallet/security_sheet.dart';
 
 class AccountsScreen extends StatefulWidget {
   const AccountsScreen({super.key});
@@ -617,8 +619,11 @@ String humanToBase(String human, int decimals) {
 
 /// Per-chain Send flow: buildSend -> review (fee + txid) -> confirm -> broadcast.
 class MultiSendScreen extends StatefulWidget {
-  const MultiSendScreen({super.key, required this.chain});
+  const MultiSendScreen({super.key, required this.chain, this.prefillTo});
   final String chain;
+
+  /// Optional recipient pre-fill (e.g. opened from the address book / a holding).
+  final String? prefillTo;
   @override
   State<MultiSendScreen> createState() => _MultiSendScreenState();
 }
@@ -633,6 +638,18 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
   String? _okTxid;
   BuiltTx? _built;
 
+  // Name-resolution state: the address a typed name/label/raw input resolved to,
+  // shown for confirmation (anti-spoofing) before anything is signed.
+  String? _resolvedAddress;
+  String? _resolvedName; // the typed name when it wasn't already a raw address
+  String? _resolvedSource; // 'ens' | 'sns' | 'book' | 'raw'
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.prefillTo != null) _to.text = widget.prefillTo!;
+  }
+
   List<AssetRef> _assets(MultichainController c) {
     final native = c.registry.get(widget.chain).native;
     return [native, ...c.registry.tokensFor(widget.chain)];
@@ -640,9 +657,10 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
 
   Future<void> _review() async {
     final c = context.read<MultichainController>();
-    final to = _to.text.trim();
-    if (to.isEmpty) {
-      setState(() => _error = 'Enter a recipient address.');
+    final wallet = context.read<WalletController>();
+    final typed = _to.text.trim();
+    if (typed.isEmpty) {
+      setState(() => _error = 'Enter a recipient address or name.');
       return;
     }
     final asset = _asset ?? c.registry.get(widget.chain).native;
@@ -656,27 +674,51 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
       _error = null;
       _okTxid = null;
       _built = null;
+      _resolvedAddress = null;
+      _resolvedName = null;
+      _resolvedSource = null;
     });
     try {
-      // WALLET SECURITY SUITE pre-sign gate: inspect the outgoing tx (read-only)
-      // BEFORE it is signed/broadcast. A danger severity (e.g. a denylisted
-      // recipient / hostile approval) forces an explicit human acknowledgement;
-      // a decline aborts WITHOUT signing. This is the signer-level reuse of the
-      // same inspector the agent/bots gate uses (mirrors the extension's presign
-      // on the signing path). The suite never signs — it only clears the path.
-      try {
-        await sec.presignOutgoing(
-          chain: widget.chain,
-          intent: {'to': to, 'amount': amount, 'asset': asset.toJson()},
-          ctx: sec.SecCtx(config: sec.defaultSecurityConfig()),
-          confirm: (insp) => _confirmDanger(insp),
-        );
-      } on sec.PresignBlocked catch (e) {
+      // NAME RESOLUTION (docs/WALLET-PORTFOLIO.md §3): resolve a typed name
+      // (alice.eth / toly.sol / a saved book label) OR a raw address to the
+      // actual on-chain address. resolveName NEVER guesses — an unresolvable
+      // name returns null. We SHOW the resolved address for confirmation
+      // (anti-spoofing) and run the security pre-sign on the RESOLVED address.
+      final resolved = await wallet.resolveName(typed, widget.chain);
+      if (resolved == null) {
         setState(() {
           _busy = false;
-          _error = e.declined
-              ? 'Send cancelled: danger warnings were not acknowledged.'
-              : e.message;
+          _error = "Could not resolve '$typed' to a ${c.chainLabel(widget.chain)} address.";
+        });
+        return;
+      }
+      final to = '${resolved['address']}';
+      final source = '${resolved['source']}';
+      setState(() {
+        _resolvedAddress = to;
+        _resolvedSource = source;
+        _resolvedName = source == 'raw' ? null : typed;
+      });
+
+      // WALLET SECURITY SUITE pre-sign gate on the RESOLVED address: decode the
+      // outgoing tx (read-only) and present the SHARED security confirm sheet.
+      // A danger severity swaps Approve for the explicit "I understand the risk"
+      // button; a reject aborts WITHOUT signing. The suite never signs.
+      final inspectTx = sec.buildInspectTx(widget.chain, {
+        'to': to,
+        'amount': amount,
+        'asset': asset.toJson(),
+      });
+      final insp = await sec.inspectTransaction(
+        inspectTx,
+        sec.SecCtx(chain: widget.chain, config: sec.defaultSecurityConfig()),
+      );
+      if (!mounted) return;
+      final ok = await _presentReview(insp, to, source, typed);
+      if (!ok) {
+        setState(() {
+          _busy = false;
+          _error = 'Send cancelled — nothing was signed.';
         });
         return;
       }
@@ -703,42 +745,29 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     }
   }
 
-  /// Danger-severity pre-sign confirm: list the specific warnings and require an
-  /// explicit acknowledgement. Returns true only if the user confirms.
-  Future<bool> _confirmDanger(sec.Inspection insp) async {
-    if (!mounted) return false;
-    final res = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: Bk.surface2,
-        title: const Text('⚠️ Danger: review before signing'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(insp.summary),
-            const SizedBox(height: 12),
-            for (final w in insp.warnings)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text('• ${w.message}',
-                    style: const TextStyle(color: Colors.redAccent)),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('I understand — sign anyway')),
-        ],
+  /// Present the SHARED security confirm sheet for the resolved send: the decoded
+  /// preview + warnings by severity + the "N checks ran" transparency line + the
+  /// resolved-address confirmation. A DANGER severity requires the explicit
+  /// "I understand the risk" button. Returns true iff the user approves.
+  Future<bool> _presentReview(
+      sec.Inspection insp, String address, String source, String typed) {
+    final label = context.read<MultichainController>().chainLabel(widget.chain);
+    // The shared sheet is themed with the ported BotTokens — wrap in a BotTheme
+    // so it renders identically wherever it's invoked from.
+    return showSecuritySheet(
+      context,
+      SecuritySheetConfig.fromInspection(
+        insp,
+        title: 'Review send',
+        resolvedName: source == 'raw' ? null : typed,
+        resolvedAddress: _shortAddr(address),
+        previewHeader: 'Send on $label',
       ),
     );
-    return res == true;
   }
+
+  static String _shortAddr(String a) =>
+      a.length > 16 ? '${a.substring(0, 8)}…${a.substring(a.length - 4)}' : a;
 
   Future<void> _broadcast() async {
     final c = context.read<MultichainController>();
@@ -796,8 +825,34 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
           const SizedBox(height: 12),
           TextField(
             controller: _to,
-            decoration: const InputDecoration(labelText: 'Recipient address'),
+            decoration: const InputDecoration(
+              labelText: 'Recipient address or name',
+              hintText: 'alice.eth · toly.sol · a saved label · 0x…',
+            ),
           ),
+          if (_resolvedAddress != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Bk.accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Bk.accent.withValues(alpha: 0.5)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.check_circle_outline, size: 15, color: Bk.accent),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    _resolvedName != null
+                        ? '$_resolvedName (${_resolvedSource?.toUpperCase()}) → ${_shortAddr(_resolvedAddress!)}'
+                        : 'Sending to ${_shortAddr(_resolvedAddress!)}',
+                    style: kMono.copyWith(fontSize: 11, color: Bk.accent),
+                  ),
+                ),
+              ]),
+            ),
+          ],
           const SizedBox(height: 12),
           TextField(
             controller: _amt,

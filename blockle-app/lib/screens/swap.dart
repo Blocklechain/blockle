@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import 'queue.dart';
+import 'wallet/send_gate.dart';
 
 /// In-wallet DEX swap against native AMM pools (BLOCK ↔ BLOCK-20 token).
 class SwapScreen extends StatefulWidget {
@@ -74,6 +75,41 @@ class _SwapScreenState extends State<SwapScreen> {
       setState(() => _error = 'Wallet is locked — unlock it first.');
       return;
     }
+
+    final token = _pool!['token'] as String;
+    final out = _estOut;
+    final BigInt amountIn = _buy
+        ? BigInt.from((_amountIn * _coin).round())
+        : BigInt.from((_amountIn * pow(10, _dec)).round());
+    final BigInt minOut = _buy
+        ? BigInt.from((out * (1 - _slip) * pow(10, _dec)).floor())
+        : BigInt.from((out * (1 - _slip) * _coin).floor());
+
+    // SECURITY GATE (docs/WALLET-SECURITY.md §4): an AMM swap is a value-moving
+    // on-chain action, so it clears security.inspectTransaction + the SHARED
+    // confirm sheet BEFORE anything is built or broadcast. The pool token is the
+    // inspected recipient, so a denylisted/flagged pool is caught (DANGER forces
+    // the explicit confirm); a clean, trusted pool simply shows no warnings. A
+    // reject aborts WITHOUT signing. The signer below still broadcasts, only
+    // after this returns true.
+    final approved = await reviewSend(
+      context,
+      chain: 'block',
+      to: token,
+      amount: amountIn.toString(),
+      asset: _buy
+          ? const {'chain': 'block', 'kind': 'native', 'symbol': 'BLOCK', 'decimals': 8}
+          : {'chain': 'block', 'kind': 'block20', 'symbol': _sym, 'address': token, 'decimals': _dec},
+      title: 'Review swap',
+      previewHeader: _buy ? 'Buy $_sym with BLOCK' : 'Sell $_sym for BLOCK',
+      resolvedAddress: shortSendAddr(token),
+    );
+    if (!mounted) return;
+    if (!approved) {
+      setState(() => _error = 'Swap cancelled — nothing was signed.');
+      return;
+    }
+
     setState(() {
       _busy = true;
       _error = null;
@@ -83,17 +119,11 @@ class _SwapScreenState extends State<SwapScreen> {
       final u = await app.chain.utxos(addr);
       final utxos = (u?['utxos'] as List?) ?? [];
       if (utxos.isEmpty) throw Exception('no spendable UTXOs for gas');
-      final token = _pool!['token'] as String;
-      final out = _estOut;
       Map<String, dynamic> built;
       if (_buy) {
-        final amountIn = BigInt.from((_amountIn * _coin).round());
-        final minOut = BigInt.from((out * (1 - _slip) * pow(10, _dec)).floor());
         built = await app.store.buildPoolSwapBuy(
             jsonEncode(utxos), token, amountIn.toString(), minOut.toString(), 200000, 10);
       } else {
-        final amountIn = BigInt.from((_amountIn * pow(10, _dec)).round());
-        final minOut = BigInt.from((out * (1 - _slip) * _coin).floor());
         built = await app.store.buildPoolSwapSell(
             jsonEncode(utxos), token, amountIn.toString(), minOut.toString(), 200000, 10);
       }

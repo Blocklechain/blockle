@@ -340,31 +340,55 @@
       parameters: { type: 'object', properties: { usdc: { type: 'string' } }, required: ['usdc'] },
       async prepare(a) {
         const usd = Number(a.usdc) / 1e6;
-        return {
-          summary: { action: 'buy_block', usdc: String(a.usdc), usdEquivalent: usd },
+        const ex = ctx.exchange || {};
+        const buy = need(ex.buyBlock, 'exchange.buyBlock');
+        // Preflight the x402 challenge so the relay/seller-supplied payTo can be
+        // INSPECTED before the human confirm. The challenge step is READ-ONLY —
+        // it moves no funds (payment happens only at commit via payX402Usdc), and
+        // the result is reused in commit so buyBlock is not called an extra time.
+        let first = null;
+        try { first = await buy.call(ex, String(a.usdc)); } catch (_) { first = null; }
+
+        // The x402 settlement pays a RELAY/SELLER-SUPPLIED recipient (externally
+        // influenced) — inspect THAT payTo so a denylisted/flagged recipient forces
+        // a danger confirm (requirement B). inspect() N/A only for first-party
+        // reserve/orderbook; an x402 payTo is neither.
+        let security = null, payTo, payChain;
+        if (first && first.paymentRequired && first.challenge && typeof ctx.resolveX402Accept === 'function') {
+          let accept = null;
+          try { accept = ctx.resolveX402Accept(first.challenge); } catch (_) { accept = null; }
+          if (accept && accept.to) {
+            payTo = accept.to; payChain = accept.chain;
+            const asset = { chain: accept.chain, kind: 'erc20', symbol: 'USDC', decimals: 6 };
+            if (accept.asset) asset.address = accept.asset;
+            security = await inspect(accept.chain, { to: accept.to, amount: String(accept.amount), asset });
+          }
+        }
+        const summary = { action: 'buy_block', usdc: String(a.usdc), usdEquivalent: usd };
+        if (payTo) { summary.payTo = payTo; summary.payChain = payChain; }
+        return withSecurity({
+          summary,
           value: { asset: 'USDC', amount: String(a.usdc), usd },
           commit: async () => {
-            const ex = ctx.exchange || {};
-            const buy = need(ex.buyBlock, 'exchange.buyBlock');
-            const first = await buy.call(ex, String(a.usdc));
-            if (!first || !first.paymentRequired) return first;
+            const f = first || await buy.call(ex, String(a.usdc));
+            if (!f || !f.paymentRequired) return f;
             // x402 settlement is now possible: the wallet can sign EVM/USDC. Pay the
             // challenge on Base/Ethereum, then retry with the proof. HONEST: if we
             // cannot resolve EVM pay details, surface the challenge unchanged — we
             // never fabricate a receipt.
-            if (typeof ctx.payX402Usdc !== 'function') return first;
+            if (typeof ctx.payX402Usdc !== 'function') return f;
             let pay = null;
-            try { pay = await ctx.payX402Usdc(first.challenge); } catch (_) { pay = null; }
-            if (!pay || !pay.paymentTxid) return first;
+            try { pay = await ctx.payX402Usdc(f.challenge); } catch (_) { pay = null; }
+            if (!pay || !pay.paymentTxid) return f;
             let settled = null;
             try { settled = await buy.call(ex, String(a.usdc), undefined, { paymentTxid: pay.paymentTxid, payment: pay }); } catch (_) {}
             return {
               paid: true, paymentTxid: pay.paymentTxid, chain: pay.chain,
               explorer: explorer(pay.chain, pay.paymentTxid),
-              settlement: settled, challenge: settled ? undefined : first.challenge,
+              settlement: settled, challenge: settled ? undefined : f.challenge,
             };
           },
-        };
+        }, security);
       },
     });
 
@@ -379,12 +403,32 @@
       },
       async prepare(a) {
         const usd = await usdOf('BLOCK', a.blockAmount);
-        return {
-          summary: { action: 'sell_block', blockAmount: String(a.blockAmount), userUsdcAddr: a.userUsdcAddr },
+        const ex = ctx.exchange || {};
+        // sellBlock SENDS BLOCK to a RELAY-SUPPLIED reserve recipient (resolved
+        // from the relay /api/buy/config at settle time) — an EXTERNALLY-INFLUENCED
+        // recipient, so resolve + INSPECT that BLOCK recipient BEFORE it can be
+        // signed: a denylisted/flagged reserve forces a DANGER confirm even inside
+        // the auto-approve envelope (requirement B). The resolve is READ-ONLY
+        // (config fetch; moves no funds); absent resolver => no inspection =>
+        // behavior unchanged (backward compatible), mirroring send/buy_block.
+        let security = null, reserve;
+        if (typeof ex.sellReserveAddr === 'function') {
+          try { reserve = await ex.sellReserveAddr(); } catch (_) { reserve = null; }
+          if (reserve) {
+            security = await inspect('block', {
+              to: reserve, amount: String(a.blockAmount),
+              asset: { chain: 'block', kind: 'native', symbol: 'BLOCK', decimals: 8 },
+            });
+          }
+        }
+        const summary = { action: 'sell_block', blockAmount: String(a.blockAmount), userUsdcAddr: a.userUsdcAddr };
+        if (reserve) summary.reserve = reserve;
+        return withSecurity({
+          summary,
           value: { asset: 'BLOCK', amount: String(a.blockAmount), usd },
           commit: () => need(ctx.exchange && ctx.exchange.sellBlock, 'exchange.sellBlock')
             .call(ctx.exchange, String(a.blockAmount), { userUsdcAddr: a.userUsdcAddr }),
-        };
+        }, security);
       },
     });
 
@@ -487,14 +531,28 @@
         const ex = ctx.exchange || {};
         let quote = null;
         if (typeof ex.listingQuote === 'function') { try { quote = await ex.listingQuote(a.asset, a.extraPairs || []); } catch (_) {} }
-        return {
+        // listAsset PAYS the listing fee to a RELAY-SUPPLIED BLOCK payTo (named in
+        // the relay listing quote) — an EXTERNALLY-INFLUENCED recipient, so INSPECT
+        // that BLOCK recipient BEFORE it can be signed: a denylisted/flagged
+        // treasury forces a DANGER confirm even inside the auto-approve envelope
+        // (requirement B). No payTo in the quote => no inspection (commit then
+        // fails closed in exchange-client when it cannot name a payTo).
+        let security = null;
+        const payTo = quote && quote.payTo;
+        if (payTo) {
+          security = await inspect('block', {
+            to: payTo, amount: '0',
+            asset: { chain: 'block', kind: 'native', symbol: 'BLOCK', decimals: 8 },
+          });
+        }
+        return withSecurity({
           summary: { action: 'list_asset', asset: a.asset, extraPairs: a.extraPairs || [], payWith: a.payWith || 'block', quote },
           // listing fee; when the quote prices it we pass usd, otherwise the fee
           // is paid in gas with no fixed transfer value — usd-exempt zero transfer
           // gated by the per-asset cap + confirm (audit-finding #3).
           value: { asset: a.payWith || 'BLOCK', amount: '0', usd: quote && quote.totalUsd != null ? Number(quote.totalUsd) : null, usdExempt: true },
           commit: () => need(ex.listAsset, 'exchange.listAsset').call(ex, { asset: a.asset, extraPairs: a.extraPairs, payWith: a.payWith }),
-        };
+        }, security);
       },
     });
 

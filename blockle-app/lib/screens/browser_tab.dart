@@ -6,9 +6,12 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
+import '../multichain/security.dart' as sec;
+import '../multichain/walletconnect.dart' show decodePersonalSign;
 import '../state/app_state.dart';
 import '../services/open_url.dart';
 import '../theme.dart';
+import 'wallet/security_sheet.dart';
 
 const _home = 'https://blockle.org';
 
@@ -250,8 +253,60 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
       }
       dynamic payload;
       if (req.type == 'sign') {
+        // SECURITY GATE (docs/WALLET-SECURITY.md §4): a dApp signMessage must be
+        // decoded (decodePersonalSign — detects EIP-712 / raw-tx blobs smuggled
+        // as "text") and cleared through the SHARED security confirm sheet BEFORE
+        // the existing signer signs. A reject aborts WITHOUT signing. The
+        // security module stays read-only; app.store.signMessage still signs,
+        // only after this returns true.
+        final decoded = decodePersonalSign(req.message ?? '');
+        if (!mounted) return;
+        final ok = await showSecuritySheet(
+          context,
+          SecuritySheetConfig.fromDecoded(
+            decoded,
+            title: 'Signature request',
+            dappName: req.origin,
+            dappUrl: req.origin,
+            dappIcon: '🌐',
+          ),
+        );
+        if (!ok) {
+          if (mounted) Navigator.pop(context, ApprovalResult(false));
+          return;
+        }
         payload = await app.store.signMessage(req.message ?? '');
       } else if (req.type == 'deploy') {
+        // SECURITY GATE: a contract deploy is a value-moving on-chain action, so
+        // it runs security.inspectTransaction + the SHARED confirm sheet BEFORE
+        // anything is built or broadcast (a DANGER — e.g. a denylisted entity —
+        // forces the explicit confirm; a reject aborts without broadcasting). A
+        // clean deploy simply shows the uniform preview with no warnings.
+        final bytes = (req.code ?? '').length ~/ 2;
+        final insp = await sec.inspectTransaction(
+          sec.buildInspectTx('block', const {
+            'to': null,
+            'amount': '0',
+            'asset': {'chain': 'block', 'kind': 'native', 'symbol': 'BLOCK', 'decimals': 8},
+          }),
+          sec.SecCtx(chain: 'block', config: sec.defaultSecurityConfig()),
+        );
+        if (!mounted) return;
+        final ok = await showSecuritySheet(
+          context,
+          SecuritySheetConfig.fromInspection(
+            insp,
+            title: 'Deploy contract',
+            dappName: req.origin,
+            dappUrl: req.origin,
+            dappIcon: '🌐',
+            previewHeader: 'Deploy contract · $bytes bytes · gas ${req.gas ?? '200000'}',
+          ),
+        );
+        if (!ok) {
+          if (mounted) Navigator.pop(context, ApprovalResult(false));
+          return;
+        }
         final addr = app.store.address!;
         final u = await app.chain.utxos(addr);
         final utxos = (u?['utxos'] as List?) ?? [];

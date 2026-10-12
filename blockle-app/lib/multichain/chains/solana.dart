@@ -27,6 +27,12 @@ const int _hardened = 0x80000000;
 /// The SPL Token program — owner-program filter for enumerating token accounts.
 const String splTokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
+// ---- SNS (.sol) name service constants (Bonfida / SPL Name Service) ---------
+const String _snsHashPrefix = 'SPL Name Service';
+const String _snsProgramId = 'namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX';
+const String _snsSolTld = '58PwtjSDuFHuUkYjH9BYnnQKHfwo9reZhC2zMJv9JPkx';
+const String _pdaMarker = 'ProgramDerivedAddress';
+
 // ---- SLIP-0010 (ed25519) HD derivation -------------------------------------
 Uint8List _ser32(int i) {
   final b = Uint8List(4);
@@ -212,6 +218,64 @@ class SolanaAdapter implements ChainAdapter {
   Uint8List _keyFor(int index) {
     if (_rootSeed == null) throw StateError('locked');
     return deriveSlip10(_rootSeed!, _pathWithIndex(index)).key;
+  }
+
+  /// SNS (.sol) forward resolution via live JSON-RPC: derive the domain's name-
+  /// registry account (off-curve PDA of the SPL Name Service program) and read
+  /// its owner. Returns the base58 owner address, or null when the domain is
+  /// unregistered / malformed / owned by nobody, or on ANY RPC error. It NEVER
+  /// guesses — the injected resolver is the sole authority
+  /// (docs/WALLET-SECURITY.md, addressbook.dart). Only top-level `name.sol`
+  /// domains are resolved (subdomains return null).
+  Future<String?> resolveSns(String name) async {
+    final n = name.trim().toLowerCase();
+    if (!n.endsWith('.sol')) return null;
+    final label = n.substring(0, n.length - 4);
+    if (label.isEmpty || label.contains('.')) return null;
+    try {
+      final hashed = c.sha256(c.utf8Bytes('$_snsHashPrefix$label'));
+      final programId = c.base58decode(_snsProgramId);
+      final seeds = <int>[
+        ...hashed, // hashed name
+        ...List<int>.filled(32, 0), // name class (none)
+        ...c.base58decode(_snsSolTld), // parent (the .sol TLD)
+      ];
+      final pda = _findProgramAddress(seeds, programId);
+      if (pda == null) return null;
+      final res = await _rpc('getAccountInfo', [
+        c.base58encode(pda),
+        {'encoding': 'base64'}
+      ]);
+      final value = res is Map ? res['value'] : null;
+      if (value is! Map) return null;
+      final data = value['data'];
+      if (data is! List || data.isEmpty) return null;
+      final bytes = base64.decode('${data[0]}');
+      // NameRegistryState: parentName(32) | owner(32) | class(32) | data…
+      if (bytes.length < 64) return null;
+      final owner = bytes.sublist(32, 64);
+      if (owner.every((b) => b == 0)) return null;
+      return c.base58encode(owner);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Solana's findProgramAddress: the first bump (255→0) whose sha256 digest of
+  /// `seeds ++ bump ++ programId ++ "ProgramDerivedAddress"` is OFF the ed25519
+  /// curve is the program-derived address. Returns null if none is found.
+  Uint8List? _findProgramAddress(List<int> seeds, List<int> programId) {
+    for (var bump = 255; bump >= 0; bump--) {
+      final buf = <int>[
+        ...seeds,
+        bump,
+        ...programId,
+        ...c.utf8Bytes(_pdaMarker),
+      ];
+      final h = c.sha256(buf);
+      if (!ed.isOnCurve(h)) return h;
+    }
+    return null;
   }
 
   @override

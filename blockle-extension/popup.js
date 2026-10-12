@@ -20,6 +20,85 @@
   }
   const shortAddr = (a) => (a ? a.slice(0, 10) + '…' + a.slice(-6) : '—');
 
+  // ---- SHARED SECURITY GATE ------------------------------------------------
+  // Every value-moving / sign call site in this popup (the in-wallet BLOCK send
+  // + AMM swap, and the dApp approvals that actually SIGN here: signMessage /
+  // deployContract / tokenInit / swap / createPool) runs SecurityGate.gate()
+  // BEFORE the existing signer. It inspects (read-only) and routes through the
+  // shared confirm sheet below; a DANGER forces the explicit "understand the
+  // risk" confirm, a reject (or an unavailable suite) aborts WITHOUT signing.
+  // The suite never signs — the existing signer runs only on cleared:true.
+
+  // The security ctx: the SAME denylist/thresholds the agent + WalletConnect gate
+  // use (agentSettings.security). A best-effort BLOCK balance feeds large-share.
+  async function securityCtx() {
+    let sec = {};
+    try { sec = ((await Store.get('agentSettings')).agentSettings || {}).security || {}; } catch (_) {}
+    const extra = {};
+    if (window.Wallet && Wallet.address && window.Chain) {
+      extra.getBalance = async () => {
+        try { const a = await Chain.account(Wallet.address); return a && a.balance != null ? String(a.balance) : '0'; }
+        catch (_) { return '0'; }
+      };
+    }
+    return SecurityGate.ctxFromSecuritySettings(sec, extra);
+  }
+
+  // Run the gate for `action`; resolves true only when the user cleared the
+  // shared confirm sheet. Fails closed (returns false) if the suite is missing.
+  async function securityGate(action) {
+    if (!window.SecurityGate) return false; // fail closed — never sign un-inspected
+    const ctx = await securityCtx();
+    const res = await SecurityGate.gate({ action, ctx, confirm: securitySheet });
+    return !!(res && res.cleared);
+  }
+
+  // The shared confirm sheet (reuses the .wallet-root sheet styling). Returns a
+  // Promise<bool>: approve=true / reject=false. DANGER forces the explicit
+  // "I understand the risk" button; a clean inspection shows "no warnings".
+  function securitySheet(inspection) {
+    inspection = inspection || {};
+    return new Promise((resolve) => {
+      const danger = inspection.severity === 'danger';
+      const wrap = document.createElement('div');
+      wrap.className = 'wallet-root';
+      wrap.style.position = 'fixed';
+      wrap.style.inset = '0';
+      wrap.style.zIndex = '2000';
+      const rows = (inspection.details || []).map((d) =>
+        `<div class="wpvrow"><span class="k">${esc(d.label)}</span><span class="v num">${esc(d.value)}</span></div>`).join('');
+      const warns = (inspection.warnings || []).map((w) => {
+        const sev = w.severity === 'danger' ? 'danger' : w.severity === 'warn' ? 'warn' : 'info';
+        return `<div class="wwarn ${sev}"><div class="t">${esc(w.code)}</div><div class="d">${esc(w.message)}</div></div>`;
+      }).join('');
+      const ran = (inspection.checks && inspection.checks.ran) || [];
+      const clean = !(inspection.warnings || []).length;
+      const checks = clean
+        ? `No warnings from ${ran.length} check${ran.length === 1 ? '' : 's'}. Absence of a warning is not a safety guarantee.`
+        : '';
+      wrap.innerHTML =
+        '<div class="wscrim"></div>' +
+        '<div class="wsheet card" role="dialog" aria-modal="true" aria-label="Review before signing">' +
+          '<h3>Review before signing</h3>' +
+          (inspection.summary ? `<div class="wsummary">${esc(inspection.summary)}</div>` : '') +
+          '<div class="wpreview"><div class="wpvh">Transaction preview</div>' + rows + '</div>' +
+          warns +
+          (checks ? `<div class="wchecks">${esc(checks)}</div>` : '') +
+          '<div class="wsheet-actions">' +
+            '<button class="wbtn" data-act="reject">Reject</button>' +
+            (danger
+              ? '<button class="wbtn danger" data-act="ok">I understand the risk — approve</button>'
+              : '<button class="wbtn primary" data-act="ok">Approve</button>') +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(wrap);
+      const done = (v) => { wrap.remove(); resolve(v); };
+      wrap.querySelector('.wscrim').addEventListener('click', () => done(false));
+      wrap.querySelector('[data-act="reject"]').addEventListener('click', () => done(false));
+      wrap.querySelector('[data-act="ok"]').addEventListener('click', () => done(true));
+    });
+  }
+
   function mountLogos() {
     $$('canvas.logo').forEach((c) => {
       if (c.offsetParent === null) return; // not visible
@@ -324,6 +403,9 @@
       const COIN = 100000000;
       const amountBase = Math.round(amt * COIN);
       const feeBase = 10000; // 0.0001 BLOCK
+      // SECURITY GATE: inspect (read-only) + shared confirm sheet BEFORE signing.
+      const cleared = await securityGate({ kind: 'send', to, amount: amountBase, fee: feeBase });
+      if (!cleared) { err.textContent = 'Send cancelled by the security review.'; return; }
       const btn = $('#send-go');
       btn.disabled = true;
       btn.textContent = 'Signing & sending…';
@@ -549,17 +631,20 @@
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onUnlock(pw); } catch {}
     try { if (window.BotsUI) await BotsUI.onUnlock(pw); } catch {}
+    try { if (window.WalletUI) await WalletUI.onUnlock(pw); } catch {}
   }
   async function afterResume() {
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onResume(); } catch {}
     try { if (window.BotsUI) await BotsUI.onResume(); } catch {}
+    try { if (window.WalletUI) await WalletUI.onResume(); } catch {}
   }
   async function doLock() {
     await Wallet.lock();
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
     try { if (window.BotsUI) await BotsUI.onLock(); } catch {}
+    try { if (window.WalletUI) await WalletUI.onLock(); } catch {}
     route('unlock');
   }
 
@@ -567,6 +652,7 @@
     if (!confirm('Reset this wallet? Make sure you exported your wallet file — this cannot be undone.')) return;
     try { if (window.AgentUI) await AgentUI.onLock(); } catch {}
     try { if (window.BotsUI) await BotsUI.onLock(); } catch {}
+    try { if (window.WalletUI) await WalletUI.onLock(); } catch {}
     try { if (window.Wiring) Wiring.reset(); } catch {}
     await Wallet.reset();
     try {
@@ -648,6 +734,11 @@
     const btn = $('#swap-go'); btn.disabled = true; btn.textContent = 'Swapping…';
     try {
       if (!Wallet.isUnlocked()) await Wallet.unlock($('#swap-pw').value);
+      // SECURITY GATE: inspect the pool/token target + confirm sheet BEFORE signing.
+      const dec0 = Number(p.decimals || 0);
+      const swapIn = swapSide === 'buy' ? Math.round(raw * COIN) : Math.round(raw * Math.pow(10, dec0));
+      const cleared = await securityGate({ kind: 'swap', side: swapSide, token: p.token, amountIn: String(swapIn) });
+      if (!cleared) { btn.disabled = false; btn.textContent = 'Swap'; err.textContent = 'Swap cancelled by the security review.'; return; }
       const u = await Chain.utxos(Wallet.address);
       if (!u || !u.utxos.length) throw new Error('no spendable funds for gas');
       const dec = Number(p.decimals || 0);
@@ -842,6 +933,14 @@
       .join('');
     $$('[data-cancel]', box).forEach((b) =>
       b.addEventListener('click', async () => {
+        // CONFIRM-GATE the (signed, authenticated) cancel through the SHARED
+        // sheet. First-party orderbook action => inspect() N/A, confirm-only.
+        const row = open.find((o) => String(o.orderId || o.id) === String(b.dataset.cancel));
+        const cleared = await securityGate({
+          kind: 'cancel', orderId: b.dataset.cancel,
+          market: row && row.market, side: row && row.side,
+        });
+        if (!cleared) { toast('Cancel not confirmed'); return; }
         b.disabled = true;
         try {
           await Exchange.cancelOrder(b.dataset.cancel);
@@ -874,6 +973,16 @@
     const pxHuman = $('#ex-price').value.trim();
     if (!(parseFloat(amtHuman) > 0)) return (err.textContent = 'Enter an amount.');
     if (exType === 'limit' && !(parseFloat(pxHuman) > 0)) return (err.textContent = 'Enter a limit price.');
+    // CONFIRM-GATE every value-moving exchange action through the SHARED sheet.
+    // A place_order is a FIRST-PARTY orderbook action — no external recipient /
+    // calldata, so inspect() is N/A; the sheet is reused for a consistent preview
+    // and nothing is signed/placed until the operator clears it.
+    const cleared = await securityGate({
+      kind: 'order', market: exMarket, side: exSide, type: exType,
+      base: exBaseSym(), quote: exQuoteSym(),
+      amount: amtHuman, price: exType === 'market' ? null : pxHuman,
+    });
+    if (!cleared) { err.textContent = 'Order cancelled at review (or security suite unavailable).'; return; }
     const btn = $('#ex-place');
     btn.disabled = true;
     btn.textContent = 'Signing & placing…';
@@ -907,6 +1016,12 @@
     btn.textContent = 'Requesting…';
     try {
       const usdcBase = Exchange.toBase(String(usdc), 6); // USDC = 6 dp on Base
+      // NO SECURITY GATE HERE — and that is correct TODAY: this build has no
+      // EVM/USDC signer, so buyBlock NEVER signs/broadcasts. A 402 only surfaces
+      // the relay challenge to the user (handled below); no value moves from this
+      // path. MUST GAIN THE SHARED CONFIRM GATE (SecurityGate.gate / inspect on the
+      // relay/seller-supplied payTo, like the agent buy_block tool) the moment a
+      // real USDC signer is wired so an x402 settlement cannot sign un-inspected.
       const res = await Exchange.buyBlock(usdcBase, Wallet.address);
       if (res.paymentRequired) {
         err.textContent =
@@ -1027,6 +1142,11 @@
       show('bots');
       return;
     }
+    if (name === 'wallet') {
+      if (window.WalletUI) return void WalletUI.enter();
+      show('wallet');
+      return;
+    }
     if (name === 'connections') {
       show('connections');
       refreshConnections();
@@ -1073,7 +1193,15 @@
 
   // Shared nav/util surface the Pass-2 UI controllers (AccountsUI, AgentUI) call
   // into, so they don't duplicate the popup's screen/toast/copy plumbing.
-  const BlockleUI = { show, toast, route, shortAddr, copy, recordPending, $, $$ };
+  // confirmInspection: show the shared confirm sheet for a pre-computed
+  // Inspection (e.g. from Wiring.inspect for a multi-chain send). Fails closed
+  // (false) on a null inspection — the caller then MUST NOT sign/broadcast.
+  async function confirmInspection(inspection) {
+    if (!inspection) return false;
+    return securitySheet(inspection);
+  }
+  const BlockleUI = { show, toast, route, shortAddr, copy, recordPending, $, $$,
+    securityGate, securitySheet, confirmInspection };
   window.BlockleUI = BlockleUI;
 
   async function initNormal() {
@@ -1081,6 +1209,7 @@
     if (window.AccountsUI) AccountsUI.init(BlockleUI);
     if (window.AgentUI) AgentUI.init(BlockleUI);
     if (window.BotsUI) BotsUI.init(BlockleUI);
+    if (window.WalletUI) WalletUI.init(BlockleUI);
     refreshNet();
     if (!(await Wallet.exists())) return route('welcome');
     enterSelected();
@@ -1117,6 +1246,9 @@
           if (!Wallet.isUnlocked()) {
             await Wallet.unlock($('#sign-pw').value);
           }
+          // SECURITY GATE: decode the message + shared confirm sheet BEFORE signing.
+          const cleared = await securityGate({ kind: 'signMessage', message: detail.message || '' });
+          if (!cleared) { $('#sign-err').textContent = 'Signature cancelled by the security review.'; return; }
           const sig = await Wallet.signMessage(detail.message || '');
           respond(true, sig);
         } catch (e) {
@@ -1143,6 +1275,9 @@
         btn.textContent = 'Deploying…';
         try {
           if (!Wallet.isUnlocked()) await Wallet.unlock($('#deploy-pw').value);
+          // SECURITY GATE: inspect + shared confirm sheet BEFORE signing/broadcast.
+          const cleared = await securityGate({ kind: 'deploy', value: 0, fee: gas * GAS_PRICE });
+          if (!cleared) { btn.disabled = false; btn.textContent = 'Deploy'; $('#deploy-err').textContent = 'Deployment cancelled by the security review.'; return; }
           const u = await Chain.utxos(Wallet.address);
           if (!u || !u.utxos.length) throw new Error('no spendable funds for gas');
           const built = await Wallet.buildDeploy(u.utxos, detail.code, gas, GAS_PRICE);
@@ -1182,6 +1317,15 @@
         btn.textContent = 'Submitting…';
         try {
           if (!Wallet.isUnlocked()) await Wallet.unlock($('#action-pw').value);
+          // SECURITY GATE: inspect the pool/token/contract target + confirm sheet
+          // BEFORE signing/broadcast.
+          const gateAction = detail.kind === 'pool'
+            ? { kind: 'pool', token: detail.token, blockAmt: detail.blockAmt, fee: gas * GAS_PRICE }
+            : detail.kind === 'swap'
+            ? { kind: 'swap', side: detail.side, token: detail.token, amountIn: detail.amountIn, fee: gas * GAS_PRICE }
+            : { kind: 'init', contractId: detail.contractId, fee: gas * GAS_PRICE };
+          const cleared = await securityGate(gateAction);
+          if (!cleared) { btn.disabled = false; btn.textContent = 'Approve'; $('#action-err').textContent = 'Cancelled by the security review.'; return; }
           const u = await Chain.utxos(Wallet.address);
           if (!u || !u.utxos.length) throw new Error('no spendable funds');
           let built;
