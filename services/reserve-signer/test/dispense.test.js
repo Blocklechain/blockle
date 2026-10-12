@@ -4,7 +4,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { dispense, baseToBlock, BLOCK_ADDR, parseTxid } = require("../index.js");
+const { dispense, baseToBlock, BLOCK_ADDR, SEED_SENTINELS, parseTxid } = require("../index.js");
 
 const RECV = "block1yyvhau7c2kwy4s60kqrysz6prf2k693kvyx94h9ve4qa8fulwy8q99vvdh";
 
@@ -74,6 +74,25 @@ test("rejects a non-positive amount", async () => {
 
 test("enforces the per-dispense cap", async () => {
   await assert.rejects(dispense(cfg({ maxAmountBlock: 10 }), { to: RECV, amountBase: "5000000000", purpose: "x" }));
+});
+
+test("refuses the placeholder seed sentinel even when fully live (no black-hole)", async () => {
+  const sentinel = [...SEED_SENTINELS][0];
+  assert.ok(BLOCK_ADDR.test(sentinel), "sentinel passes the address regex (that is why the guard is needed)");
+  // fully live config: mainnet + legal + real send — the sentinel must still be refused
+  await assert.rejects(
+    dispense(cfg({ mainnetEnabled: true, legalReviewCompleted: true, dryRun: false }), {
+      to: sentinel,
+      amountBase: "500000000",
+      purpose: "listing-liquidity-seed",
+    }),
+    /placeholder seed sentinel/,
+  );
+  // and refused in dry-run too, so the misconfig surfaces during the pre-flip test
+  await assert.rejects(
+    dispense(cfg(), { to: sentinel, amountBase: "500000000", purpose: "listing-liquidity-seed" }),
+    /placeholder seed sentinel/,
+  );
 });
 
 test("enforces the daily cap from the ledger", async () => {

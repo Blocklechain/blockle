@@ -72,6 +72,15 @@ function loadConfig() {
 
 const BLOCK_ADDR = /^block1[0-9a-z]{20,}$/i;
 
+// Placeholder/sentinel destinations that PASS the address regex but are NOT
+// spendable, operator-controlled addresses. Dispensing real BLOCK to one would
+// black-hole the funds. The exchange config ships this sentinel as its default
+// seedDestination, so a live flip MUST replace it with a real address first —
+// we refuse the sentinel here (in dry-run too) so the misconfig surfaces loudly.
+const SEED_SENTINELS = new Set([
+  "block1seedliquidityreserve000000000000000000",
+]);
+
 function baseToBlock(amountBase) {
   // 1 BLOCK = 1e8 base units; produce a plain decimal string (<=8 dp).
   const n = BigInt(amountBase);
@@ -138,6 +147,12 @@ function parseTxid(stdout) {
 /** The single money-moving primitive. Returns { txid, dryRun, detail } or throws. */
 async function dispense(cfg, { to, amountBase, purpose, meta }) {
   if (!BLOCK_ADDR.test(String(to || ""))) throw new Error("invalid or missing recipient (block1…)");
+  if (SEED_SENTINELS.has(String(to).toLowerCase())) {
+    throw new Error(
+      "refusing to dispense to the placeholder seed sentinel — set a real, operator-controlled " +
+        "seedDestination (a spendable block1… address) before enabling live dispense",
+    );
+  }
   let amt;
   try {
     amt = BigInt(amountBase);
@@ -248,7 +263,7 @@ function createServer(cfg) {
   });
 }
 
-module.exports = { loadConfig, createServer, dispense, baseToBlock, BLOCK_ADDR, parseTxid };
+module.exports = { loadConfig, createServer, dispense, baseToBlock, BLOCK_ADDR, SEED_SENTINELS, parseTxid };
 
 if (require.main === module) {
   const cfg = loadConfig();
