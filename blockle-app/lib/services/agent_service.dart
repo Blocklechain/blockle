@@ -25,6 +25,7 @@ import '../agent/tools.dart' show AgentContext, AmmLike, ExchangeLike;
 import '../multichain/accounts.dart';
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart';
+import '../multichain/security.dart' as sec;
 import '../multichain/telemetry.dart' show Telemetry;
 import '../multichain/venues.dart' show VenueRegistry;
 
@@ -111,12 +112,14 @@ class AgentService {
     Future<dynamic> Function(Map<String, dynamic> spec)? launchToken,
     Future<Map<String, dynamic>?> Function(dynamic challenge)? payX402Usdc,
     Map<String, dynamic>? defaults,
+    Map<String, dynamic>? securityConfig,
   })  : store = store ?? SecureChannelStore(),
         _estimateUsd = estimateUsd,
         _exchange = exchange,
         _amm = amm,
         _launchToken = launchToken,
-        _payX402Override = payX402Usdc {
+        _payX402Override = payX402Usdc,
+        _securityConfig = securityConfig {
     manager = ChannelManager(
       fetch: fetch ?? httpProviderFetch,
       store: this.store,
@@ -142,6 +145,11 @@ class AgentService {
   final AmmLike? _amm;
   final Future<dynamic> Function(Map<String, dynamic> spec)? _launchToken;
   final Future<Map<String, dynamic>?> Function(dynamic challenge)? _payX402Override;
+
+  /// Operator overrides for the WALLET SECURITY SUITE (denylist / knownSpenders /
+  /// largeSharePct / thresholds / per-rule toggles). The shipped default router
+  /// allowlist is always seeded on top via [sec.defaultSecurityConfig].
+  final Map<String, dynamic>? _securityConfig;
 
   late final ChannelManager manager;
 
@@ -188,7 +196,13 @@ class AgentService {
 
   // --- per-channel AgentContext bound to Accounts + registry + venues -------
 
-  AgentContext _ctxFor(Map<String, dynamic> meta) {
+  AgentContext _ctxFor(Map<String, dynamic> meta) => buildAgentContext(meta);
+
+  /// Build the per-channel [AgentContext] bound to Accounts + registry + venues.
+  /// Public so the host (and tests) can assert the PRODUCTION ctx wiring — most
+  /// importantly that it carries the WALLET SECURITY `inspect` hook (below), so
+  /// a danger-severity order forces a human confirm in the gate.
+  AgentContext buildAgentContext([Map<String, dynamic> meta = const {}]) {
     return AgentContext(
       getAddress: (chain) async => (await accounts.accountFor(chain)).address,
       getBalance: (chain, [tokens]) async {
@@ -222,7 +236,76 @@ class AgentService {
       // through _broadcast (which expects an already-signed raw-hex BuiltTx).
       executeSwap: (built) => _executeSwap(built),
       payX402Usdc: _payX402Override ?? _payX402Usdc,
+      // WALLET SECURITY SUITE: the read-only pre-sign inspector tools.dart calls
+      // in prepare(). A danger inspection sets prep.forceConfirm, which
+      // dispatchValueMoving surfaces into the gate and which policy.gateConfirm
+      // turns into a MANDATORY human confirm — even within a bot's allocation or
+      // under autoApproveUnderUsd. Without this hook inspect() returns null,
+      // prep.security stays null, and a danger auto-approves (the bug this fixes).
+      // Mirrors blockle-extension/wiring.js:agentCtx.inspect.
+      inspect: (chain, intent) => _inspect(chain, intent),
     );
+  }
+
+  // --- WALLET SECURITY SUITE: read-only pre-sign inspection -----------------
+  // Build the suite's injected ctx from the operator config + live adapters and
+  // run inspectTransaction over the agent's prepared intent. Best-effort +
+  // read-only: it never signs and never throws into the trade path (a failure
+  // degrades to "fewer checks ran", never a fabricated OK). Mirrors
+  // blockle-extension/wiring.js:{securityCtx,buildInspectTx,inspect}.
+
+  sec.SecCtx _securityCtx(String chain) {
+    // Seed the shipped default router allowlist (so approval-to-unknown-spender
+    // runs by default) unioned with any operator overrides.
+    final config = sec.defaultSecurityConfig(_securityConfig);
+
+    // Best-effort native/token balance for the large-share check. Any failure
+    // (no adapter for this chain, RPC error, locked) degrades to '0' => the
+    // check runs but cannot fire, never a fabricated all-clear.
+    Future<dynamic> getBalance(dynamic asset) async {
+      try {
+        final adapter = registry.get(chain);
+        final acct = await accounts.accountFor(chain);
+        final isToken = asset is Map && asset['kind'] != null && asset['kind'] != 'native';
+        final bals = await adapter.getBalance(acct.address,
+            tokens: isToken ? registry.tokensFor(chain) : null);
+        final want = asset is Map
+            ? (asset['address'] ?? asset['mint'] ?? asset['symbol'])
+            : null;
+        for (final b in bals) {
+          final a = b.asset;
+          final match = want != null
+              ? (a.address == want || a.symbol == want)
+              : a.kind == 'native';
+          if (match) return b.confirmed;
+        }
+        return bals.isNotEmpty ? bals.first.confirmed : '0';
+      } catch (_) {
+        return '0';
+      }
+    }
+
+    return sec.SecCtx(
+      chain: chain,
+      config: config,
+      // EVM adapters expose no eth_getCode in this build, so approval-to-eoa is
+      // recorded as skipped (never fabricated) — exactly as the suite intends.
+      getBalance: getBalance,
+      estimateUsd: _estimateUsd == null
+          ? null
+          : (asset, amount) => _estimateUsd(
+              asset is Map ? '${asset['symbol'] ?? ''}' : '$asset', amount),
+    );
+  }
+
+  Future<sec.Inspection?> _inspect(
+      String chain, Map<String, dynamic> intent) async {
+    try {
+      final tx = sec.buildInspectTx(chain, intent);
+      return await sec.inspectTransaction(tx, _securityCtx(chain));
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Execute a venue's BuiltSwap. Three shapes, three rails; nothing here holds a

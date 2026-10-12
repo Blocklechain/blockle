@@ -302,13 +302,40 @@ Future<DispatchOutcome> dispatchValueMoving({
     'ok': true,
   });
 
-  final gate = await policy.gateConfirm(prep.summary, {'usd': _confirmUsd(prep.value, feeValue)});
+  // WALLET SECURITY SUITE composition: a DANGER-severity inspection (attached
+  // by the tool's prepare() as prep.security / prep.forceConfirm) forces an
+  // explicit human confirm even within allocation / under autoApproveUnderUsd.
+  // It composes with, and never weakens, the policy gate (forceConfirm only ever
+  // removes the auto-approve/skip shortcuts; it can never grant approval).
+  final sec = prep.security;
+  final forceConfirm = prep.forceConfirm || (sec != null && sec.severity == 'danger');
+  final confirmSummary = sec != null
+      ? {
+          ...prep.summary,
+          'security': {
+            'severity': sec.severity,
+            'warnings': sec.warnings.map((w) => w.code).toList(),
+          }
+        }
+      : prep.summary;
+  if (sec != null) {
+    await rec({
+      'type': 'security_inspection',
+      'name': name,
+      'severity': sec.severity,
+      'warnings': sec.warnings.map((w) => w.code).toList(),
+    });
+  }
+
+  final gate = await policy.gateConfirm(
+      confirmSummary, {'usd': _confirmUsd(prep.value, feeValue), 'forceConfirm': forceConfirm});
   await rec({
     'type': 'confirmation',
     'name': name,
     'summary': prep.summary,
     'approved': gate.approved,
     'auto': gate.auto,
+    'forceConfirm': forceConfirm,
   });
   if (!gate.approved) {
     ev({'type': 'declined', 'name': name, 'summary': prep.summary});

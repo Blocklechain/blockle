@@ -77,6 +77,38 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
         fn = member(ctx, "explorerTx")
         return fn(chain, txid) if callable(fn) else None
 
+    # Wallet security suite hook (optional, injected by the host). Runs the
+    # read-only inspect_transaction over a prepared value-moving action so the
+    # runner can surface warnings in the confirm and FORCE a human confirm on a
+    # danger severity (composes with the policy gate; see dispatch_prepared).
+    # Absent host inspector => None => behavior unchanged (backward compatible).
+    async def inspect(chain, intent):
+        fn = member(ctx, "inspect")
+        if not callable(fn):
+            return None  # no inspector wired => unchanged
+        try:
+            return await maybe_await(fn(chain, intent))
+        except Exception as e:
+            # FAIL CLOSED: a wired inspector that raised must not silently drop the
+            # danger signal (which would let the action auto-approve within allocation
+            # / under autoApproveUnderUsd). Surface a danger so a human confirm is forced.
+            return {
+                "chain": chain,
+                "kind": "unknown",
+                "summary": "security inspection failed — review this action manually",
+                "details": [],
+                "effects": [],
+                "warnings": [{"code": "inspector-error", "severity": "danger", "message": str(e)}],
+                "severity": "danger",
+            }
+
+    def with_security(prep, security):
+        if not security:
+            return prep
+        prep["security"] = security
+        prep["forceConfirm"] = security.get("severity") == "danger"
+        return prep
+
     # ---- venue routing helpers (used by `swap`) ------------------------------
     def pick_venue(venues, a):
         if a.get("venue"):
@@ -187,6 +219,14 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             "feeRate": a.get("feeRate"), "memo": a.get("memo"),
         }))
         usd = await usd_of(_sym(asset), a["amount"])
+        # Pass the built calldata (EVM token sends carry transfer(...) data) so the
+        # inspector decodes the real kind/recipient instead of mislabeling it native.
+        _tx = member(built, "tx") if isinstance(built, dict) else None
+        tx_data = member(built, "data") or (member(_tx, "data") if isinstance(_tx, dict) else None)
+        tx_to = (member(_tx, "to") if isinstance(_tx, dict) else None) or a["to"]
+        security = await inspect(a["chain"], {"to": tx_to, "recipient": a["to"],
+                                              "amount": str(a["amount"]), "asset": asset,
+                                              "data": tx_data, "raw": built})
         txid = member(built, "txid")
         summary = {
             "action": "send", "chain": a["chain"], "asset": _sym(asset), "to": a["to"],
@@ -194,11 +234,11 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             "fee": str(member(built, "fee")) if member(built, "fee") is not None else None,
             "txid": txid, "explorer": explorer(a["chain"], txid),
         }
-        return {
+        return with_security({
             "summary": summary,
             "value": {"asset": _sym(asset), "amount": str(a["amount"]), "usd": usd},
             "commit": lambda: _need(member(ctx, "broadcast"), "broadcast")(a["chain"], built),
-        }
+        }, security)
     tools.append({
         "name": "send",
         "description": "Send a native coin or token to an address. amount is base units.",
@@ -236,6 +276,15 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             raise ValueError("swap refused: venue did not produce a routable 0.05% agent fee (fail closed)")
         usd = await usd_of(a["from"], a["amount"])
         fee_usd = await usd_of(fee.get("asset") or a["from"], fee["amount"])
+        # Inspect the venue-built router call (EVM calldata / approve / native)
+        # BEFORE it can be signed — a drainer router or hostile approve the venue
+        # produced forces a human confirm regardless of the auto-approve envelope.
+        built_tx = built.get("tx") or {}
+        security = await inspect(built.get("chain"), {
+            "to": built_tx.get("to") or fee_xfer["to"],
+            "data": built_tx.get("data"), "value": built_tx.get("value"),
+            "amount": str(a["amount"]), "from": built.get("from"), "raw": built,
+        })
         amount_in = built.get("amountIn") if built.get("amountIn") is not None else a["amount"]
         summary = {
             "action": "swap", "venue": venue.id, "chain": built.get("chain"),
@@ -245,7 +294,7 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             "fee": str(fee["amount"]), "feeAsset": fee.get("asset"), "feeBps": fee.get("bps"),
             "feeTo": fee_xfer["to"],
         }
-        return {
+        return with_security({
             "summary": summary,
             "value": {"asset": a["from"], "amount": str(a["amount"]), "usd": usd},
             "commit": lambda: _need(member(ctx, "executeSwap"), "executeSwap")(built),
@@ -253,7 +302,7 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
                     "amount": str(fee["amount"]), "treasury": fee_xfer["to"]},
             "feeValue": {"asset": fee.get("asset") or a["from"], "amount": str(fee["amount"]), "usd": fee_usd},
             "commitFee": lambda: _need(member(ctx, "sendFee"), "sendFee")(fee_xfer),
-        }
+        }, security)
     tools.append({
         "name": "swap",
         "description": ("Swap one asset for another, routed through the best VENUE — the native Blockle "

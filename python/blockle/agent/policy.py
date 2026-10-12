@@ -193,10 +193,17 @@ class Policy:
         self.assert_live()
         meta = meta or {}
         usd = float(meta["usd"]) if meta.get("usd") is not None else None
+        # meta.forceConfirm (set by the security suite on a DANGER-severity
+        # inspection) COMPOSES WITH, and never weakens, this gate: it only removes
+        # the two shortcuts (auto-approve-under-USD and requireConfirm=false) so a
+        # dangerous action always reaches an explicit human confirm — even within a
+        # bot's allocation envelope or under autoApproveUnderUsd. It can never grant
+        # approval on its own; approval still comes only from confirm_fn returning true.
+        force = bool(meta.get("forceConfirm"))
 
-        if self.auto_approve_under_usd is not None and usd is not None and usd <= self.auto_approve_under_usd:
+        if not force and self.auto_approve_under_usd is not None and usd is not None and usd <= self.auto_approve_under_usd:
             return {"approved": True, "auto": True}
-        if not self.require_confirm:
+        if not force and not self.require_confirm:
             return {"approved": True, "auto": False}
         if not self.confirm_fn:
             return {"approved": False, "auto": False}  # fail closed

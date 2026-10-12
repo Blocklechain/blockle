@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart' show CustomNetwork, slugifyNetworkName;
+import '../multichain/security.dart' as sec;
 import '../services/moonpay.dart';
 import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
@@ -657,6 +658,28 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
       _built = null;
     });
     try {
+      // WALLET SECURITY SUITE pre-sign gate: inspect the outgoing tx (read-only)
+      // BEFORE it is signed/broadcast. A danger severity (e.g. a denylisted
+      // recipient / hostile approval) forces an explicit human acknowledgement;
+      // a decline aborts WITHOUT signing. This is the signer-level reuse of the
+      // same inspector the agent/bots gate uses (mirrors the extension's presign
+      // on the signing path). The suite never signs — it only clears the path.
+      try {
+        await sec.presignOutgoing(
+          chain: widget.chain,
+          intent: {'to': to, 'amount': amount, 'asset': asset.toJson()},
+          ctx: sec.SecCtx(config: sec.defaultSecurityConfig()),
+          confirm: (insp) => _confirmDanger(insp),
+        );
+      } on sec.PresignBlocked catch (e) {
+        setState(() {
+          _busy = false;
+          _error = e.declined
+              ? 'Send cancelled: danger warnings were not acknowledged.'
+              : e.message;
+        });
+        return;
+      }
       final acct = await c.accounts.accountFor(widget.chain);
       final adapter = c.registry.get(widget.chain);
       final built = await adapter.buildSend(
@@ -678,6 +701,43 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
         _error = e.toString().replaceFirst('Exception: ', '');
       });
     }
+  }
+
+  /// Danger-severity pre-sign confirm: list the specific warnings and require an
+  /// explicit acknowledgement. Returns true only if the user confirms.
+  Future<bool> _confirmDanger(sec.Inspection insp) async {
+    if (!mounted) return false;
+    final res = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Bk.surface2,
+        title: const Text('⚠️ Danger: review before signing'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(insp.summary),
+            const SizedBox(height: 12),
+            for (final w in insp.warnings)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text('• ${w.message}',
+                    style: const TextStyle(color: Colors.redAccent)),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('I understand — sign anyway')),
+        ],
+      ),
+    );
+    return res == true;
   }
 
   Future<void> _broadcast() async {

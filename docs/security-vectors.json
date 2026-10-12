@@ -1,0 +1,342 @@
+{
+  "_comment": "AUTHORITATIVE shared fixtures for the Wallet Security Suite (docs/WALLET-SECURITY.md §5). IDENTICAL across blockle-extension/security.js (JS, reference — authored these), blockle-app/lib (Dart), python/blockle (Python). Every money value is a base-unit decimal string (BigInt-exact). ctxSpec carries PLAIN data only (no functions) so every language builds the same injected ctx from it: codeByAddress maps a spender address to its on-chain code ('0x' or '' => EOA, no code); balances maps asset symbol -> base units; usd maps asset symbol -> USD price (a symbol absent from the map resolves to null => mismatch-currency); seenRecipients / priorApprovals are local-history sets. EVM addresses compare case-insensitively (decode lowercases them). 'warnings' in each expect is the SORTED set of warning codes that must fire; severity is the max over them.",
+  "version": 1,
+  "unlimitedThreshold": "57896044618658097711785492504343953926634992332820282019728792003956564819968",
+  "addresses": {
+    "spender": "0x1111111111111111111111111111111111111111",
+    "recipient": "0x2222222222222222222222222222222222222222",
+    "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "drainer": "0x000000000000000000000000000000000000dEaD",
+    "router": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+  },
+  "cases": [
+    {
+      "name": "evm-native-transfer decode",
+      "tx": { "chain": "ethereum", "to": "0x2222222222222222222222222222222222222222", "value": "1000000000000000000" },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "To": "0x2222222222222222222222222222222222222222", "Amount": "1000000000000000000" },
+        "checksRan": ["send-to-flagged"],
+        "checksSkipped": ["new-address", "large-share", "mismatch-currency"]
+      }
+    },
+    {
+      "name": "evm-token-transfer decode (to/amount)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0xa9059cbb000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000f4240",
+        "asset": { "chain": "ethereum", "kind": "erc20", "symbol": "USDC", "decimals": 6, "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-transfer",
+        "severity": "none",
+        "warnings": [],
+        "fields": {
+          "Token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "To": "0x2222222222222222222222222222222222222222",
+          "Amount": "1000000"
+        }
+      }
+    },
+    {
+      "name": "evm-approve decode (spender/allowance), sized not unlimited",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b300000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000005f5e100",
+        "asset": { "symbol": "USDC", "decimals": 6 }
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-approval",
+        "severity": "none",
+        "warnings": [],
+        "fields": {
+          "Token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+          "Spender": "0x1111111111111111111111111111111111111111",
+          "Allowance": "100000000"
+        },
+        "checksRan": ["unlimited-approval", "known-drainer"],
+        "checksSkipped": ["approval-to-unknown-spender", "approval-to-eoa"]
+      }
+    },
+    {
+      "name": "evm-approve UNLIMITED flag (2^256-1)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b30000000000000000000000001111111111111111111111111111111111111111ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-approval",
+        "severity": "warn",
+        "warnings": ["unlimited-approval"],
+        "fields": { "Allowance": "UNLIMITED" }
+      }
+    },
+    {
+      "name": "warning: approval-to-eoa (danger, mocked no-code spender) + unlimited",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b30000000000000000000000001111111111111111111111111111111111111111ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "ctxSpec": { "codeByAddress": { "0x1111111111111111111111111111111111111111": "0x" } },
+      "expect": {
+        "kind": "token-approval",
+        "severity": "danger",
+        "warnings": ["approval-to-eoa", "unlimited-approval"],
+        "checksRan": ["approval-to-eoa"]
+      }
+    },
+    {
+      "name": "warning: known-drainer on approval spender (denylist, danger)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b3000000000000000000000000000000000000000000000000000000000000deadffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "ctxSpec": { "config": { "denylist": ["0x000000000000000000000000000000000000dEaD"] } },
+      "expect": {
+        "kind": "token-approval",
+        "severity": "danger",
+        "warnings": ["known-drainer", "unlimited-approval"]
+      }
+    },
+    {
+      "name": "warning: approval-to-unknown-spender (warn, spender not in router allowlist)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b300000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000005f5e100"
+      },
+      "ctxSpec": { "config": { "knownSpenders": ["0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"] } },
+      "expect": {
+        "kind": "token-approval",
+        "severity": "warn",
+        "warnings": ["approval-to-unknown-spender"]
+      }
+    },
+    {
+      "name": "clean approve: known router + has code => warnings:[] with N checks ran",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x095ea7b300000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000005f5e100"
+      },
+      "ctxSpec": {
+        "config": { "knownSpenders": ["0x1111111111111111111111111111111111111111"] },
+        "codeByAddress": { "0x1111111111111111111111111111111111111111": "0x60016000" }
+      },
+      "expect": {
+        "kind": "token-approval",
+        "severity": "none",
+        "warnings": [],
+        "checksRan": ["unlimited-approval", "approval-to-unknown-spender", "approval-to-eoa", "known-drainer"]
+      }
+    },
+    {
+      "name": "evm-transferFrom decode",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0x23b872dd0000000000000000000000002222222222222222222222222222222222222222000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000001f4"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-transfer",
+        "severity": "none",
+        "warnings": [],
+        "fields": {
+          "From": "0x2222222222222222222222222222222222222222",
+          "To": "0x2222222222222222222222222222222222222222",
+          "Amount": "500"
+        }
+      }
+    },
+    {
+      "name": "warning: setApprovalForAll(true) => danger",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0xa22cb46500000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-approval",
+        "severity": "danger",
+        "warnings": ["setApprovalForAll-true"],
+        "fields": { "Operator": "0x1111111111111111111111111111111111111111", "Approved": true }
+      }
+    },
+    {
+      "name": "setApprovalForAll(false) => no operator-grant warning",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0xa22cb46500000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-approval",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "Approved": false }
+      }
+    },
+    {
+      "name": "unknown selector => contract-call (no fabrication)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0xdeadbeef0000000000000000000000002222222222222222222222222222222222222222"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "contract-call",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "Contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "Selector": "0xdeadbeef" }
+      }
+    },
+    {
+      "name": "warning: send-to-flagged recipient on denylist (danger)",
+      "tx": { "chain": "ethereum", "to": "0x000000000000000000000000000000000000dEaD", "value": "1000000000000000000" },
+      "ctxSpec": { "config": { "denylist": ["0x000000000000000000000000000000000000dEaD"] } },
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "danger",
+        "warnings": ["send-to-flagged"]
+      }
+    },
+    {
+      "name": "warning: new-address (info) from local history",
+      "tx": { "chain": "ethereum", "to": "0x2222222222222222222222222222222222222222", "value": "1000000000000000000" },
+      "ctxSpec": { "seenRecipients": ["0x9999999999999999999999999999999999999999"] },
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "info",
+        "warnings": ["new-address"],
+        "checksRan": ["new-address", "send-to-flagged"]
+      }
+    },
+    {
+      "name": "warning: large-share (> 50% of balance, warn)",
+      "tx": { "chain": "ethereum", "to": "0x2222222222222222222222222222222222222222", "value": "600000000000000000" },
+      "ctxSpec": { "balances": { "ETH": "1000000000000000000" } },
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "warn",
+        "warnings": ["large-share"]
+      }
+    },
+    {
+      "name": "large-share: at exactly 50% does NOT fire",
+      "tx": { "chain": "ethereum", "to": "0x2222222222222222222222222222222222222222", "value": "500000000000000000" },
+      "ctxSpec": { "balances": { "ETH": "1000000000000000000" } },
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "none",
+        "warnings": []
+      }
+    },
+    {
+      "name": "warning: mismatch-currency (USD unresolvable, info)",
+      "tx": {
+        "chain": "ethereum",
+        "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "data": "0xa9059cbb000000000000000000000000222222222222222222222222222222222222222200000000000000000000000000000000000000000000000000000000000f4240",
+        "asset": { "symbol": "SCAM", "decimals": 18, "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" }
+      },
+      "ctxSpec": { "usd": { "ETH": 3000 } },
+      "expect": {
+        "kind": "token-transfer",
+        "severity": "info",
+        "warnings": ["mismatch-currency"]
+      }
+    },
+    {
+      "name": "block-send decode",
+      "tx": { "chain": "block", "to": "block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0", "amount": "100000000", "fee": "100000" },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "block-send",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "To": "block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0", "Amount": "100000000", "Fee": "100000" }
+      }
+    },
+    {
+      "name": "utxo-send decode (inputs/outputs/net/change)",
+      "tx": {
+        "chain": "bitcoin",
+        "inputs": [{ "value": "100000" }],
+        "outputs": [
+          { "address": "bc1qrecipientrecipientrecipientrecip0000", "value": "60000" },
+          { "address": "bc1qchangechangechangechangechange000000", "value": "39000" }
+        ],
+        "changeAddress": "bc1qchangechangechangechangechange000000"
+      },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "utxo-send",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "To": "bc1qrecipientrecipientrecipientrecip0000", "Net send": "60000", "Fee": "1000" }
+      }
+    },
+    {
+      "name": "solana-system transfer decode",
+      "tx": { "chain": "solana", "instructions": [{ "program": "system", "type": "transfer", "info": { "destination": "Dest1111111111111111111111111111111111111", "lamports": "5000" } }] },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "native-transfer",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "To": "Dest1111111111111111111111111111111111111", "Amount": "5000" }
+      }
+    },
+    {
+      "name": "solana-SPL transfer decode",
+      "tx": { "chain": "solana", "instructions": [{ "program": "spl-token", "type": "transfer", "info": { "destination": "Dest1111111111111111111111111111111111111", "amount": "250", "mint": "Mint1111111111111111111111111111111111111" } }] },
+      "ctxSpec": {},
+      "expect": {
+        "kind": "token-transfer",
+        "severity": "none",
+        "warnings": [],
+        "fields": { "Mint": "Mint1111111111111111111111111111111111111", "Amount": "250" }
+      }
+    }
+  ],
+  "revoke": {
+    "_comment": "buildRevoke emits approve(spender, 0) calldata EXACTLY, via the existing chains/evm.js erc20ApproveData; the suite never signs — this tx goes through the normal sign path + agent gate.",
+    "chain": "ethereum",
+    "token": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "spender": "0x1111111111111111111111111111111111111111",
+    "expect": {
+      "kind": "token-approval-revoke",
+      "to": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "value": "0",
+      "data": "0x095ea7b300000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "listApprovalsUnavailable": {
+    "_comment": "No indexer => empty list + an audited 'unavailable' note; NEVER a fabricated all-clear.",
+    "expect": { "approvals": [], "available": false, "noteMatches": "NOT a safety claim" }
+  },
+  "gateComposition": {
+    "_comment": "A danger inspection forces a human confirm even when the action is within allocation / under autoApproveUnderUsd. This composes with (never weakens) the existing policy gate: forceConfirm only ever removes the auto-approve/skip shortcuts, it can never grant approval on its own.",
+    "scenario": { "autoApproveUnderUsd": 100, "actionUsd": 1, "inspectionSeverity": "danger" },
+    "expect": {
+      "withoutSecurity": { "approved": true, "auto": true },
+      "withDangerForceConfirm": { "auto": false, "humanConfirmCalled": true },
+      "withDangerForceConfirm_declined": { "approved": false }
+    }
+  }
+}

@@ -37,6 +37,37 @@
     }
     const explorer = (chain, txid) => (typeof ctx.explorerTx === 'function' ? ctx.explorerTx(chain, txid) : undefined);
 
+    // Wallet security suite hook (optional, injected by the host). Runs the
+    // read-only inspectTransaction over a prepared value-moving action so the
+    // runner can surface warnings in the confirm and FORCE a human confirm on a
+    // danger severity (composes with the policy gate; see runner.dispatchValueMoving).
+    // Absent host inspector => null => behavior unchanged (backward compatible).
+    async function inspect(chain, intent) {
+      if (typeof ctx.inspect !== 'function') return null; // no inspector wired => unchanged
+      try {
+        return await ctx.inspect(chain, intent);
+      } catch (e) {
+        // FAIL CLOSED: a wired inspector that THREW must not silently drop the
+        // danger signal (which would let the action auto-approve within allocation
+        // / under autoApproveUnderUsd). Surface a danger so a human confirm is forced.
+        return {
+          chain,
+          kind: 'unknown',
+          summary: 'security inspection failed — review this action manually',
+          details: [],
+          effects: [],
+          warnings: [{ code: 'inspector-error', severity: 'danger', message: String((e && e.message) || e) }],
+          severity: 'danger',
+        };
+      }
+    }
+    function withSecurity(prep, security) {
+      if (!security) return prep;
+      prep.security = security;
+      prep.forceConfirm = security.severity === 'danger';
+      return prep;
+    }
+
     // ---- venue routing helpers (used by `swap`) ------------------------------
     // Which venue prices + builds the swap. The MODEL may hint `venue`/`chain`,
     // but it NEVER hands us a raw tx: the chosen venue builds the tx/intent and a
@@ -161,16 +192,17 @@
           asset, to: a.to, amount: String(a.amount), feeRate: a.feeRate, memo: a.memo,
         });
         const usd = await usdOf(sym(asset), a.amount);
+        const security = await inspect(a.chain, { to: a.to, amount: String(a.amount), asset, raw: built });
         const summary = {
           action: 'send', chain: a.chain, asset: sym(asset), to: a.to,
           amount: String(a.amount), fee: built.fee != null ? String(built.fee) : undefined,
           txid: built.txid, explorer: explorer(a.chain, built.txid),
         };
-        return {
+        return withSecurity({
           summary,
           value: { asset: sym(asset), amount: String(a.amount), usd },
           commit: () => need(ctx.broadcast, 'broadcast')(a.chain, built),
-        };
+        }, security);
       },
     });
 
@@ -220,6 +252,14 @@
         }
         const usd = await usdOf(a.from, a.amount);
         const feeUsd = await usdOf(fee.asset || a.from, fee.amount);
+        // Inspect the venue-built router call (EVM calldata / approve / native)
+        // BEFORE it can be signed — a drainer router or hostile approve the venue
+        // produced forces a human confirm regardless of the auto-approve envelope.
+        const security = await inspect(built.chain, {
+          to: (built.tx && built.tx.to) || feeXfer.to,
+          data: built.tx && built.tx.data, value: built.tx && built.tx.value,
+          amount: String(a.amount), from: built.from, raw: built,
+        });
         const summary = {
           action: 'swap', venue: venue.id, chain: built.chain,
           from: built.from, to: built.to,
@@ -227,7 +267,7 @@
           amountOut: built.amountOut, minOut: built.minOut, slippage: a.slippage,
           fee: String(fee.amount), feeAsset: fee.asset, feeBps: fee.bps, feeTo: feeXfer.to,
         };
-        return {
+        return withSecurity({
           summary,
           value: { asset: a.from, amount: String(a.amount), usd },
           commit: () => need(ctx.executeSwap, 'executeSwap')(built),
@@ -235,7 +275,7 @@
           fee: { bps: fee.bps, chain: fee.chain, asset: fee.asset, amount: String(fee.amount), treasury: feeXfer.to },
           feeValue: { asset: fee.asset || a.from, amount: String(fee.amount), usd: feeUsd },
           commitFee: () => need(ctx.sendFee, 'sendFee')(feeXfer),
-        };
+        }, security);
       },
     });
 
