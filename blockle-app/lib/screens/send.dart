@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
 import '../theme.dart';
+import 'wallet/send_gate.dart';
 
 class SendScreen extends StatefulWidget {
   const SendScreen({super.key});
@@ -37,6 +38,36 @@ class _SendScreenState extends State<SendScreen> {
       setState(() => _error = 'Wallet is locked — unlock it first.');
       return;
     }
+
+    final amountBase = (amt * _coin).round();
+
+    // SECURITY GATE (docs/WALLET-SECURITY.md §4): EVERY send — legacy BLOCK
+    // included — must clear security.inspectTransaction + the shared confirm
+    // sheet BEFORE anything is built or broadcast. A DANGER forces the explicit
+    // confirm; a reject aborts WITHOUT signing. Nothing below runs until it
+    // returns true.
+    final approved = await reviewSend(
+      context,
+      chain: 'block',
+      to: to,
+      amount: amountBase.toString(),
+      fee: _feeBase.toString(),
+      asset: const {
+        'chain': 'block',
+        'kind': 'native',
+        'symbol': 'BLOCK',
+        'decimals': 8,
+      },
+      title: 'Review send',
+      previewHeader: 'Send BLOCK',
+      resolvedAddress: shortSendAddr(to),
+    );
+    if (!mounted) return;
+    if (!approved) {
+      setState(() => _error = 'Send cancelled — nothing was signed.');
+      return;
+    }
+
     setState(() {
       _busy = true;
       _error = null;
@@ -49,7 +80,6 @@ class _SendScreenState extends State<SendScreen> {
       if (utxos.isEmpty) {
         throw Exception('no spendable UTXOs — balance may be unconfirmed');
       }
-      final amountBase = (amt * _coin).round();
       final built = await app.store.buildTransfer(
           jsonEncode(utxos), to, amountBase.toString(), _feeBase.toString());
       final raw = built['raw'] as String?;

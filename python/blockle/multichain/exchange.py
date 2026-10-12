@@ -46,6 +46,40 @@ _INT_RE = re.compile(r"^-?\d+$")
 # ===========================================================================
 
 
+def _m(obj, key):
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def x402_pay_to(challenge):
+    """Extract the SELLER-SUPPLIED payTo address from an x402 payment challenge.
+
+    The challenge is adversarial relay input: the payTo may sit at the top level
+    or inside an ``accepts[]`` requirement, under any of several spellings. Return
+    the first address-like value found, or ``None`` when the challenge names no
+    recipient (caller treats that as "nothing external to inspect")."""
+    if not challenge:
+        return None
+    sources = [challenge] + list(_m(challenge, "accepts") or [])
+    for src in sources:
+        for key in ("payTo", "payToAddress", "recipient", "to", "address"):
+            v = _m(src, key)
+            if v:
+                return v
+    return None
+
+
+def x402_network(challenge):
+    """Best-effort chain hint for the x402 payTo (defaults to base — USDC rail)."""
+    if challenge:
+        for src in [challenge] + list(_m(challenge, "accepts") or []):
+            net = _m(src, "network") or _m(src, "chain")
+            if net:
+                return str(net).lower()
+    return "base"
+
+
 def sort_keys(v: Any) -> Any:
     if isinstance(v, list):
         return [sort_keys(x) for x in v]
@@ -543,12 +577,26 @@ class ExchangeClient:
             time.sleep(2.5)
         raise RuntimeError("timed out waiting for BLOCK tx " + str(txid))
 
+    # ---- buy/sell curve config (public read; used to preview the reserve) ----
+    def buy_config(self):
+        """Fetch the site's buy/sell curve config (READ-ONLY). The UI uses this
+        to resolve the BLOCK reserve address so the sell can show a decoded
+        preview of the exact native transfer before it is confirmed/signed."""
+        return self._site_get("/api/buy/config")
+
+    @staticmethod
+    def _reserve_of(cfg):
+        return cfg and (cfg.get("blockReserveAddr") or cfg.get("reserve")
+                        or cfg.get("blockReserveAddress"))
+
+    def reserve_address(self):
+        return self._reserve_of(self.buy_config())
+
     # ---- sell BLOCK back for USDC (non-custodial, two steps) -------------
     def sell_block(self, block_amount, opts=None):
         opts = opts or {}
         cfg = self._site_get("/api/buy/config")
-        reserve = cfg and (cfg.get("blockReserveAddr") or cfg.get("reserve")
-                           or cfg.get("blockReserveAddress"))
+        reserve = self._reserve_of(cfg)
         if not reserve:
             raise RuntimeError("sell not enabled on this deployment "
                                "(no blockReserveAddr in /api/buy/config)")
@@ -623,6 +671,8 @@ class ExchangeClient:
     sellBlock = sell_block
     listAsset = list_asset
     buyBlock = buy_block
+    buyConfig = buy_config
+    reserveAddress = reserve_address
     isSignedIn = is_signed_in
     sessionAddress = session_address
     signIn = sign_in

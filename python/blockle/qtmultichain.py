@@ -47,6 +47,7 @@ from . import agent as agentpkg
 from . import moonpay
 from .multichain import crypto as K
 from .multichain import exchange as exmod
+from .multichain import security as security_mod
 from .multichain import venues as venuesmod
 from .multichain.chains import create_registry
 
@@ -443,6 +444,42 @@ class MultiChainController:
                 if n["id"] == cid:
                     return n["name"]
         return cid
+
+    # ---- security pre-sign gate ctx (shared with the UI Send dialog) --------
+    def _security_config(self) -> Dict[str, Any]:
+        """The read-only security suite config (denylist / thresholds) from the
+        vault when it exposes one; an empty dict otherwise (never a fabricated
+        all-clear — ``merge_config`` fills the conservative defaults)."""
+        try:
+            v = self.vault
+            if hasattr(v, "security_config") and callable(v.security_config):
+                return dict(v.security_config() or {})
+        except Exception:
+            pass
+        return {}
+
+    def security_ctx(self) -> Dict[str, Any]:
+        """ctx for ``security.inspect_transaction`` — the shared config plus a
+        real ``getCode`` via the EVM adapter's JSON-RPC (enables the
+        approval-to-eoa danger rule; absent => the rule is skipped, audited).
+        Read-only: it never signs."""
+        ctx: Dict[str, Any] = {"config": self._security_config()}
+        reg = self.registry
+        if reg is not None:
+            def get_code(chain, address):
+                try:
+                    adapter = reg.get(chain)
+                except Exception:
+                    return None
+                rpc = getattr(adapter, "_rpc", None)
+                if not callable(rpc):
+                    return None
+                try:
+                    return rpc("eth_getCode", [address, "latest"])
+                except Exception:
+                    return None
+            ctx["getCode"] = get_code
+        return ctx
 
     # ---- agent ctx wiring the tools call into ----
     def _ctx(self, meta=None) -> Dict[str, Any]:
@@ -1020,16 +1057,75 @@ class SendDialog(QDialog):
         }, indent=2))
         self.send_btn.setEnabled(True)
 
+    def _inspection_tx(self, cid: str) -> Dict[str, Any]:
+        """Build a WELL-FORMED tx for ``security.inspect_transaction`` so the
+        preview shows the REAL recipient + amount (never a misleading 0). A
+        native send puts the base-unit amount in ``value``/``amount``; an ERC-20
+        token send builds the ``transfer(to,amount)`` CALLDATA with the EXISTING
+        evm builder so the decoder reads the true recipient + amount from it.
+        The Send dialog's Amount field is already base-unit integers."""
+        asset_obj = self.asset.currentData()
+        to = self.to.text().strip()
+        amount_base = self.amount.text().strip() or "0"
+        if asset_obj is not None and getattr(asset_obj, "kind", None) == "erc20":
+            from .multichain.chains import evm as evm_mod
+            return {
+                "chain": cid, "to": getattr(asset_obj, "address", None), "value": "0",
+                "data": evm_mod.erc20_transfer_data(to, int(amount_base)),
+                "asset": asset_obj.to_json(), "_recipient": to,
+            }
+        asset_json = (asset_obj.to_json() if asset_obj is not None
+                      else self.ctrl.registry.get(cid).native.to_json())
+        return {
+            "chain": cid, "to": to, "value": str(amount_base),
+            "amount": str(amount_base), "asset": asset_json, "_recipient": to,
+        }
+
     def _broadcast(self):
+        # SECURITY GATE: BEFORE the existing signer broadcasts, inspect the built
+        # transaction (security.inspect_transaction — read-only) and route it
+        # through the shared confirm sheet. A DANGER forces the explicit "I
+        # understand the risk" confirm; a reject aborts WITHOUT signing. The
+        # inspection runs off the GUI thread (Worker); the decoded preview is
+        # shown back on the GUI thread. A clean inspection simply shows no
+        # warnings — still run it, so a denylisted/flagged recipient is caught.
         if not self.built:
             return
         cid = self._cur_chain()
-        if QMessageBox.question(
-            self, "Confirm broadcast",
-            f"Broadcast this {self.ctrl.chain_label(cid)} transaction?\n"
-            f"fee {self.built.fee}  txid {self.built.txid[:20]}…",
-        ) != QMessageBox.Yes:
+        try:
+            tx = self._inspection_tx(cid)
+        except Exception as e:  # pragma: no cover - surfaced in UI
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
             return
+        ctx = self.ctrl.security_ctx()
+
+        def do():
+            return asyncio.run(security_mod.inspect_transaction(tx, ctx))
+
+        self._wi = Worker(do)
+        self._wi.done.connect(self._on_inspected)
+        self._wi.failed.connect(
+            lambda e: (QMessageBox.critical(self, "Blockle", f"Review failed:\n{e}"),
+                       self.send_btn.setEnabled(True)))
+        self.send_btn.setEnabled(False)
+        self._wi.start()
+
+    def _on_inspected(self, inspection):
+        """GUI thread: show the shared confirm sheet on the real Inspection. Only
+        AFTER it is accepted (a danger required the explicit confirm) do we hand
+        the already-built tx to the EXISTING adapter broadcast."""
+        self.send_btn.setEnabled(True)
+        from .qtwalletui import SecurityConfirmSheet, TOKENS_DARK
+        sheet = SecurityConfirmSheet(
+            TOKENS_DARK, inspection,
+            title=f"Review {self.ctrl.chain_label(self._cur_chain())} transaction",
+            parent=self)
+        if sheet.exec() != QDialog.Accepted:
+            return   # rejected / danger un-acknowledged -> abort WITHOUT signing
+        self._really_broadcast()
+
+    def _really_broadcast(self):
+        cid = self._cur_chain()
 
         def do():
             return self.ctrl.registry.get(cid).broadcast(self.built)
@@ -1351,6 +1447,43 @@ class ExchangeTab(QWidget):
             self.book.setItem(r, 1, QTableWidgetItem(str(lv.get("price"))))
             self.book.setItem(r, 2, QTableWidgetItem(str(lv.get("amount"))))
 
+    # ---- shared security confirm (the SAME sheet the Send flows use) -------
+    def _confirm_inspection(self, inspection, title) -> bool:
+        """§A: route a value-moving exchange action through the SHARED
+        SecurityConfirmSheet (never a plain QMessageBox). Returns True iff the
+        operator approved; a DANGER forces the explicit extra confirm inside the
+        sheet. A reject returns False so NO sign/broadcast reaches the wire."""
+        from .qtwalletui import SecurityConfirmSheet, TOKENS_DARK
+        sheet = SecurityConfirmSheet(TOKENS_DARK, inspection, title=title, parent=self)
+        return sheet.exec() == QDialog.Accepted
+
+    @staticmethod
+    def _first_party_preview(action, summary, details):
+        """Inspection-shaped preview for a FIRST-PARTY orderbook/AMM action (§C):
+        no external recipient/calldata to flag, so security.inspect_transaction is
+        N/A. The shared sheet still gives a consistent decoded preview + the
+        mandatory explicit confirm (§A). ``checks.skipped`` records WHY inspect
+        did not run — never a fabricated all-clear."""
+        return {
+            "chain": "block", "kind": action, "summary": summary, "details": details,
+            "effects": [], "warnings": [], "severity": "none",
+            "checks": {"ran": [], "skipped": [
+                {"code": "inspect",
+                 "reason": "first-party action — no external recipient to flag"}]},
+        }
+
+    def _place_preview(self, p):
+        base = p["market"].split("/")[0] if "/" in str(p["market"]) else p["market"]
+        return self._first_party_preview(
+            "place-order",
+            f"Place {p['side']} {p['type']} order: {p['amount']} {base} @ "
+            f"{p['price'] or 'market'} on {p['market']}",
+            [{"label": "Market", "value": p["market"]},
+             {"label": "Side", "value": p["side"]},
+             {"label": "Type", "value": p["type"]},
+             {"label": "Amount", "value": p["amount"]},
+             {"label": "Price", "value": p["price"] or "market"}])
+
     def _place(self):
         market = self.markets.currentItem().text() if self.markets.currentItem() else None
         if not market:
@@ -1362,9 +1495,9 @@ class ExchangeTab(QWidget):
         if not p["amount"]:
             QMessageBox.warning(self, "Exchange", "Amount is required.")
             return
-        if QMessageBox.question(self, "Confirm order",
-                                json.dumps(p, indent=2)) != QMessageBox.Yes:
-            return
+        # §A + §C: first-party place_order — confirm-gate through the shared sheet.
+        if not self._confirm_inspection(self._place_preview(p), "Confirm order"):
+            return   # rejected -> NOTHING is signed / sent
         self._run(lambda: self._ex().place_order(p),
                   lambda r: QMessageBox.information(self, "Exchange", f"Order: {r}"), "placing…")
 
@@ -1379,18 +1512,62 @@ class ExchangeTab(QWidget):
         usdc, ok = QInputDialog.getText(self, "Buy BLOCK", "USDC to spend (base units, 6 dp):")
         if not ok or not usdc.strip():
             return
+        # The first buy_block call carries NO payment (no paymentTxid) — it only
+        # learns whether the seller settles for free or returns an x402 challenge.
+        # It moves no value, so it is safe to probe before the gate; the gate runs
+        # on the challenge's externally-supplied payTo in _buy_result.
         self._run(lambda: self._ex().buy_block(usdc.strip()), self._buy_result, "buying…")
 
     def _buy_result(self, res):
-        if res.get("paymentRequired"):
-            dlg = QMessageBox(self)
-            dlg.setWindowTitle("x402 payment required")
-            dlg.setText("The seller returned an x402 challenge. Settle it from the Agent cockpit "
-                        "or an EVM USDC transfer; no payment was fabricated.")
-            dlg.setDetailedText(json.dumps(res.get("challenge"), indent=2, default=str))
-            dlg.exec()
-        else:
+        if not res.get("paymentRequired"):
             QMessageBox.information(self, "Exchange", f"Receipt: {res.get('receipt')}")
+            return
+        # §B: the x402 challenge is RELAY/SELLER-SUPPLIED. Inspect its payTo
+        # (denylist/drainer/flagged-recipient) off the GUI thread BEFORE the
+        # operator is sent to settle it. A flagged payTo is a DANGER and forces
+        # the explicit confirm in the shared sheet.
+        challenge = res.get("challenge")
+        pay_to = exmod.x402_pay_to(challenge)
+        if not pay_to:
+            # No recipient named -> nothing external to inspect; surface the raw
+            # challenge for manual settlement (NOT a safety claim).
+            self._on_buy_inspected(self._first_party_preview(
+                "x402-challenge",
+                "Seller returned an x402 challenge with no payTo — settle manually",
+                [{"label": "Challenge", "value": json.dumps(challenge, default=str)[:400]}]),
+                challenge)
+            return
+        net = exmod.x402_network(challenge)
+        tx = self._buy_inspection_tx(pay_to, challenge)
+        ctx = self.ctrl.security_ctx()
+
+        def do():
+            return asyncio.run(security_mod.inspect_transaction(tx, ctx))
+
+        self._run(do, lambda insp: self._on_buy_inspected(insp, challenge), "reviewing payTo…")
+
+    def _buy_inspection_tx(self, pay_to, challenge):
+        """Well-formed tx so inspect decodes + denylist-checks the x402 payTo (the
+        seller-supplied USDC recipient). A bare native-style tx is enough for the
+        recipient/denylist/drainer checks to resolve against ``pay_to``."""
+        net = exmod.x402_network(challenge)
+        amt = exmod._m(challenge, "amount") or exmod._m(challenge, "maxAmountRequired") or "0"
+        return {"chain": net, "to": pay_to, "value": str(amt), "_recipient": pay_to,
+                "raw": challenge}
+
+    def _on_buy_inspected(self, inspection, challenge):
+        """GUI thread: show the shared confirm sheet on the payTo inspection. Only
+        after approval do we direct the operator to settle (the GUI itself never
+        fabricates a payment — settlement is an EVM USDC transfer / the Agent
+        cockpit). A reject stops here, so a flagged payTo is never paid."""
+        if not self._confirm_inspection(inspection, "Review x402 payTo"):
+            return
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("x402 payment required")
+        dlg.setText("payTo reviewed. Settle this x402 challenge from the Agent cockpit "
+                    "or an EVM USDC transfer; no payment was fabricated here.")
+        dlg.setDetailedText(json.dumps(challenge, indent=2, default=str))
+        dlg.exec()
 
     def _sell(self):
         amt, ok = QInputDialog.getText(self, "Sell BLOCK", "BLOCK amount (base units):")
@@ -1399,12 +1576,36 @@ class ExchangeTab(QWidget):
         addr, ok = QInputDialog.getText(self, "Sell BLOCK", "Base USDC payout address (0x…):")
         if not ok or not addr.strip():
             return
-        if QMessageBox.question(
-            self, "Confirm sell",
-            f"Send {amt} base-unit BLOCK to the reserve and settle USDC to {addr}?",
-        ) != QMessageBox.Yes:
-            return
-        self._run(lambda: self._ex().sell_block(amt.strip(), {"userUsdcAddr": addr.strip()}),
+        amt, addr = amt.strip(), addr.strip()
+        # §A: sell_block sends REAL BLOCK to the known reserve. Resolve the reserve
+        # + run inspect off the GUI thread for a decoded preview (the reserve is
+        # trusted, so inspect shows no warning — §C — but we still show the preview
+        # and require the explicit confirm), THEN sell on accept.
+        ctx = self.ctrl.security_ctx()
+
+        def do():
+            reserve = self._ex().reserve_address()
+            if not reserve:
+                raise RuntimeError("sell not enabled on this deployment "
+                                   "(no blockReserveAddr in /api/buy/config)")
+            tx = self._sell_inspection_tx(reserve, amt)
+            insp = asyncio.run(security_mod.inspect_transaction(tx, ctx))
+            return {"reserve": reserve, "inspection": insp}
+
+        self._run(do, lambda r: self._on_sell_inspected(r["inspection"], amt, addr, r["reserve"]),
+                  "reviewing sell…")
+
+    def _sell_inspection_tx(self, reserve, amt):
+        """BLOCK native transfer to the reserve (8-dp), well-formed for decode_block
+        so the preview shows the exact amount + recipient."""
+        return {"chain": "block", "to": reserve, "amount": str(amt),
+                "asset": {"chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8},
+                "_recipient": reserve}
+
+    def _on_sell_inspected(self, inspection, amt, addr, reserve):
+        if not self._confirm_inspection(inspection, "Confirm sell BLOCK"):
+            return   # rejected -> no BLOCK is signed / broadcast
+        self._run(lambda: self._ex().sell_block(amt, {"userUsdcAddr": addr}),
                   lambda r: QMessageBox.information(self, "Exchange", f"Sold: {r}"), "selling…")
 
 
@@ -1779,4 +1980,15 @@ def build_tabs(block_wallet, datadir) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Bots panel unavailable ({e})", file=sys.stderr)
+    # Native Blockle Wallet / Portfolio surfaces (ADDITIVE): the portfolio,
+    # activity, NFT, WalletConnect + address-book panels, all wired to the REAL
+    # multichain engines through THIS controller (one vault, one async loop, the
+    # existing signer + the security pre-sign gate). Guarded so a problem here
+    # never drops the Accounts / Exchange / Agent / Bots panels.
+    try:
+        from .qtwalletui import build_wallet_tab
+        tabs.append(build_wallet_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Wallet panel unavailable ({e})", file=sys.stderr)
     return tabs

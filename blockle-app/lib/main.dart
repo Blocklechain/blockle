@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'state/app_state.dart';
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
+import 'state/wallet_controller.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
@@ -28,6 +29,14 @@ void main() {
         // running agent channel's gate via the MultichainController.
         ChangeNotifierProvider<BotsController>(
           create: (ctx) => BotsController(ctx.read<MultichainController>()),
+        ),
+        // The multi-chain WALLET view-model: a thin adapter over the real engines
+        // (portfolio / activity / nft / walletconnect / addressbook / security).
+        // It routes every dApp signing request through the shared security sheet
+        // via the app navigator — no mock data, no new money path.
+        ChangeNotifierProvider<WalletController>(
+          create: (ctx) =>
+              WalletController(ctx.read<MultichainController>(), appNavigatorKey)..init(),
         ),
       ],
       child: const BlockleApp(),

@@ -461,6 +461,16 @@
     // signed and broadcast locally on the BLOCK rail), (2) tell the settlement
     // service the BLOCK txid + the user's Base USDC payout address; the service
     // verifies the inbound BLOCK on-chain and pays USDC. We never custody.
+    // Resolve the RELAY-SUPPLIED BLOCK reserve recipient the sell flow will pay,
+    // from the site's /api/buy/config. READ-ONLY (a config fetch; moves no funds)
+    // so the agent can INSPECT this externally-influenced recipient BEFORE signing
+    // the BLOCK send. Returns null when sell is not enabled on this deployment.
+    async sellReserveAddr() {
+      const sb = await siteBase();
+      const cfg = await fetchJson(sb + '/api/buy/config');
+      return (cfg && (cfg.blockReserveAddr || cfg.reserve || cfg.blockReserveAddress)) || null;
+    },
+
     async sellBlock(blockAmount, opts) {
       opts = opts || {};
       const sb = await siteBase();

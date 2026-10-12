@@ -28,6 +28,13 @@ async function isConnected(origin) {
   return !!(await getSites())[origin];
 }
 
+// Every value-moving / sign dApp method below (blockle_signMessage,
+// blockle_deployContract, blockle_tokenInit, blockle_swap, blockle_createPool)
+// routes here: this worker NEVER signs — it opens the approval WINDOW
+// (popup.js initApprove), which runs the shared SecurityGate (read-only
+// WalletSecurity.inspectTransaction / message-decode + the confirm sheet, with a
+// DANGER forcing an explicit confirm) BEFORE the existing signer broadcasts. The
+// gate therefore cannot be bypassed by a dApp: no approval window => no signature.
 async function openApproval(type, origin, detail) {
   const id = 'req_' + ++reqSeq + '_' + Date.now();
   await Store.set({ ['pending:' + id]: { type, origin, ...(detail || {}) } });

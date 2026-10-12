@@ -100,6 +100,34 @@ BigInt _big(dynamic v) {
   return BigInt.parse(str);
 }
 
+// ---- ENS resolution helpers (pure, testable) -------------------------------
+/// The canonical ENS registry (same address on Ethereum mainnet).
+const String _ensRegistry = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
+
+/// EIP-137 namehash of an ENS name → the 32-byte node.
+Uint8List _ensNamehash(String name) {
+  var node = Uint8List(32);
+  if (name.isNotEmpty) {
+    final labels = name.split('.');
+    for (var i = labels.length - 1; i >= 0; i--) {
+      final labelHash = c.keccak256(c.utf8Bytes(labels[i]));
+      node = c.keccak256(c.concatBytes([node, labelHash]));
+    }
+  }
+  return node;
+}
+
+/// Decode a 32-byte ABI word (hex) into a checksummed EVM address, or null when
+/// the word is the zero address / too short (never a guess).
+String? _addrFromWord(dynamic res) {
+  final s = (res ?? '').toString().replaceFirst(RegExp(r'^0x'), '');
+  if (s.length < 64) return null;
+  final word = s.substring(s.length - 64);
+  final hex40 = word.substring(24); // low 20 bytes
+  if (RegExp(r'^0+$').hasMatch(hex40)) return null;
+  return addr.toChecksumAddress('0x$hex40');
+}
+
 class SignedEvmTx {
   SignedEvmTx(this.raw, this.txid, this.sigHash);
   final String raw;
@@ -482,6 +510,35 @@ class EvmAdapter implements ChainAdapter {
       'latest'
     ]);
     return _big(res ?? '0x0').toString();
+  }
+
+  /// ENS (.eth) forward resolution via live JSON-RPC (ENS lives on Ethereum
+  /// mainnet): registry.resolver(namehash) → resolver.addr(namehash). Returns the
+  /// EIP-55 checksummed address, or null when the name has no resolver / no addr
+  /// record / resolves to the zero address, or on ANY RPC error. It NEVER guesses
+  /// — the injected resolver is the sole authority (docs/WALLET-SECURITY.md,
+  /// addressbook.dart). Only the Ethereum-mainnet adapter should be wired here.
+  Future<String?> resolveEns(String name) async {
+    final n = name.trim().toLowerCase();
+    if (!n.endsWith('.eth')) return null;
+    try {
+      final nodeHex = c.bytesToHex(_ensNamehash(n));
+      // 1. registry.resolver(node) — selector 0x0178b8bf.
+      final resolverRes = await _rpc('eth_call', [
+        {'to': _ensRegistry, 'data': '0x0178b8bf$nodeHex'},
+        'latest'
+      ]);
+      final resolver = _addrFromWord(resolverRes);
+      if (resolver == null) return null;
+      // 2. resolver.addr(node) — selector 0x3b3b57de.
+      final addrRes = await _rpc('eth_call', [
+        {'to': resolver, 'data': '0x3b3b57de$nodeHex'},
+        'latest'
+      ]);
+      return _addrFromWord(addrRes);
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

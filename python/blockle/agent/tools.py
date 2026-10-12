@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from ..multichain._util import maybe_await, member
+from ..multichain.exchange import x402_network, x402_pay_to
 
 
 def _need(fn, label):
@@ -392,6 +393,21 @@ def build(ctx: Optional[Dict[str, Any]] = None) -> ToolRegistry:
             if ch_asset is not None and str(ch_asset).upper() not in ("USDC", "USD"):
                 raise ValueError("x402 challenge demands a non-USDC asset ("
                                  + str(ch_asset) + ") — rejected")
+            # EXTERNALLY-INFLUENCED RECIPIENT: the seller's x402 payTo is adversarial
+            # input, so inspect it (decode + denylist/drainer/flagged-recipient) BEFORE
+            # settling. A danger severity (flagged payTo) FAILS CLOSED — refuse to pay a
+            # denylisted/drainer recipient even though the amount/asset were approved.
+            pay_to = x402_pay_to(challenge)
+            if pay_to:
+                net = x402_network(challenge)
+                insp = await inspect(net, {"to": pay_to, "recipient": pay_to,
+                                           "value": str(ch_amount if ch_amount is not None
+                                                        else a["usdc"]),
+                                           "raw": challenge})
+                if insp and member(insp, "severity") == "danger":
+                    raise ValueError(
+                        "x402 challenge payTo " + str(pay_to)
+                        + " is flagged by the security suite (danger) — refusing to settle")
             pay = None
             try:
                 pay = await maybe_await(pay_fn(challenge))

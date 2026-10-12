@@ -24,6 +24,7 @@ import '../agent/providers.dart' show ProviderFetch, ProviderResponse;
 import '../agent/tools.dart' show AgentContext, AmmLike, ExchangeLike;
 import '../multichain/accounts.dart';
 import '../multichain/chains/chain_adapter.dart';
+import '../multichain/chains/evm.dart' show erc20ApproveData;
 import '../multichain/chains/registry.dart';
 import '../multichain/security.dart' as sec;
 import '../multichain/telemetry.dart' show Telemetry;
@@ -119,6 +120,7 @@ class AgentService {
         _amm = amm,
         _launchToken = launchToken,
         _payX402Override = payX402Usdc,
+        _confirm = confirm,
         _securityConfig = securityConfig {
     manager = ChannelManager(
       fetch: fetch ?? httpProviderFetch,
@@ -145,6 +147,15 @@ class AgentService {
   final AmmLike? _amm;
   final Future<dynamic> Function(Map<String, dynamic> spec)? _launchToken;
   final Future<Map<String, dynamic>?> Function(dynamic challenge)? _payX402Override;
+
+  /// The shared value-moving confirm handler (same one the ChannelManager gate
+  /// uses — it presents the SHARED security confirm sheet). Held here so the
+  /// commit-time signer guards below (the x402 payTo and the DEX approve SPENDER,
+  /// neither of which is known at prepare()/gate time) can force an EXPLICIT
+  /// human confirm on a DANGER inspection via [sec.presignOutgoing]. Fail-closed:
+  /// no handler => a danger inspection cannot be cleared and the broadcast is
+  /// refused (never auto-paid).
+  final Future<bool> Function(Map<String, dynamic> summary)? _confirm;
 
   /// Operator overrides for the WALLET SECURITY SUITE (denylist / knownSpenders /
   /// largeSharePct / thresholds / per-rule toggles). The shipped default router
@@ -308,6 +319,25 @@ class AgentService {
     }
   }
 
+  /// Adapt the stored value-moving [_confirm] handler into the
+  /// `Future<bool> Function(Inspection)` shape [sec.presign] expects, merging the
+  /// decoded inspection (severity + summary + warning codes) into [base] so the
+  /// SHARED confirm sheet renders the security preview. Fail-closed: with no
+  /// confirm handler wired a danger inspection can never be cleared.
+  Future<bool> _confirmInspection(
+      sec.Inspection insp, Map<String, dynamic> base) async {
+    final c = _confirm;
+    if (c == null) return false; // fail closed: no explicit confirm possible
+    return c({
+      ...base,
+      'security': {
+        'severity': insp.severity,
+        'summary': insp.summary,
+        'warnings': insp.warnings.map((w) => w.code).toList(),
+      },
+    });
+  }
+
   /// Execute a venue's BuiltSwap. Three shapes, three rails; nothing here holds a
   /// key (adapters sign from their in-memory root seed, wiped on lock). Ported
   /// from blockle-extension/wiring.js:executeSwap.
@@ -352,15 +382,44 @@ class AgentService {
       if (allowanceTarget != null &&
           fromId is String &&
           RegExp(r'^0x[0-9a-fA-F]{40}$').hasMatch(fromId)) {
+        // The allowance READ is best-effort (an RPC failure degrades to "assume
+        // no approve needed" — the router reverts if it truly is). The approve
+        // SIGN/BROADCAST below is NOT best-effort: its security guard must be
+        // able to abort (fail closed), so it lives OUTSIDE this catch.
+        var needApprove = false;
         try {
           final cur = await dyn.allowance(fromId, acct.address, allowanceTarget);
           final need = BigInt.parse('${built['amountIn'] ?? '0'}');
-          if (BigInt.parse('${cur ?? '0'}') < need) {
-            final ap = await dyn.buildApprove(acct, fromId, allowanceTarget);
-            await adapter.broadcast(ap as BuiltTx);
-          }
+          needApprove = BigInt.parse('${cur ?? '0'}') < need;
         } catch (_) {
-          // best-effort; the router reverts if the allowance is truly missing.
+          needApprove = false;
+        }
+        if (needApprove) {
+          // WALLET SECURITY SUITE: the approve SPENDER (allowanceTarget) is
+          // venue-supplied — externally-influenced calldata that the swap's
+          // prepare() inspect (which looked at the router call tx.to) did NOT
+          // cover, because this approve is a SEPARATE tx broadcast here at commit
+          // time. Inspect it before signing: a DANGER spender (denylisted /
+          // known-drainer / unknown) forces an EXPLICIT human confirm through the
+          // shared sheet, and fail-closed (no confirm => PresignBlocked) rather
+          // than blind-approving a hostile spender over this ERC-20.
+          await sec.presignOutgoing(
+            chain: chain,
+            intent: {
+              'to': fromId, // the ERC-20 token contract
+              'data': erc20ApproveData(allowanceTarget as String),
+              'asset': {'chain': chain, 'kind': 'erc20', 'address': fromId},
+            },
+            ctx: _securityCtx(chain),
+            confirm: (insp) => _confirmInspection(insp, {
+              'action': 'approve',
+              'chain': chain,
+              'token': fromId,
+              'spender': allowanceTarget,
+            }),
+          );
+          final ap = await dyn.buildApprove(acct, fromId, allowanceTarget);
+          await adapter.broadcast(ap as BuiltTx);
         }
       }
       final signed = await dyn.signArbitraryTx(acct, tx.cast<String, dynamic>());
@@ -422,6 +481,26 @@ class AgentService {
             'address': assetAddr,
           }
         : null;
+    // WALLET SECURITY SUITE: the x402 payTo is RELAY/SELLER-SUPPLIED — an
+    // externally-influenced recipient revealed only in the challenge at
+    // settlement time, AFTER the buy_block policy gate already ran on the USDC
+    // spend. Inspect it BEFORE building/signing/broadcasting: a DANGER payTo (on
+    // the drainer / scam denylist, or otherwise flagged) forces an EXPLICIT human
+    // confirm through the shared sheet, and fail-closed (no confirm handler =>
+    // PresignBlocked, which buy_block's commit catches and surfaces the challenge
+    // UNPAID) rather than signing a USDC transfer to a hostile recipient.
+    final pre = await sec.presignOutgoing(
+      chain: chain,
+      intent: {'to': acc['to'], 'amount': '${acc['amount']}', 'asset': asset},
+      ctx: _securityCtx(chain),
+      confirm: (insp) => _confirmInspection(insp, {
+        'action': 'x402_pay',
+        'chain': chain,
+        'to': acc['to'],
+        'amount': '${acc['amount']}',
+        'asset': assetAddr,
+      }),
+    );
     final built = await _buildSend(chain, {
       'to': acc['to'],
       'amount': '${acc['amount']}',
@@ -434,6 +513,10 @@ class AgentService {
       'to': acc['to'],
       'amount': '${acc['amount']}',
       'asset': assetAddr,
+      'security': {
+        'severity': pre.inspection.severity,
+        'warnings': pre.inspection.warnings.map((w) => w.code).toList(),
+      },
     };
   }
 

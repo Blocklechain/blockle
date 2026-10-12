@@ -302,6 +302,25 @@
     return { txid, chain: ft.chain, asset: ft.asset || null, amount: String(ft.amount), treasury: ft.to };
   }
 
+  // Inspect an ERC-20 approve() sub-tx BEFORE it is signed. The spender
+  // (allowanceTarget) is DEX-venue-supplied — an EXTERNALLY-INFLUENCED recipient,
+  // so it must be inspected on its OWN merits (the swap tool's prepare() only
+  // inspected the ROUTER call, not this separate approve leg). A DANGER spender
+  // (denylisted / an EOA / a known drainer) HARD-BLOCKS the approve (fail closed).
+  // READ-ONLY: it decodes + warns, never signs. `inspector` is injectable for
+  // tests; it defaults to the module's live, best-effort `inspect`.
+  async function assertApproveSafe(chain, token, spender, amountIn, inspector) {
+    if (!token || !spender) return null;
+    const insp = typeof inspector === 'function' ? inspector : inspect;
+    const data = Evm.erc20ApproveData(spender, amountIn || 0);
+    const ins = await insp(chain, { to: token, data, asset: { chain, kind: 'erc20', address: token } });
+    if (ins && ins.severity === 'danger') {
+      const codes = (ins.warnings || []).map((w) => w.code).join(', ');
+      throw new Error('swap approve blocked by security inspection (danger spender): ' + (codes || 'flagged'));
+    }
+    return ins || null;
+  }
+
   // Execute a venue's BuiltSwap. Three shapes, three rails. Nothing here holds a
   // key; the adapters sign from their in-memory root seed and wipe on lock.
   async function executeSwap(built) {
@@ -333,6 +352,11 @@
       // grant the router its allowance when the INPUT is an ERC-20 we must approve.
       if (built.allowanceTarget && typeof fromId === 'string' && /^0x[0-9a-fA-F]{40}$/.test(fromId)
           && typeof adapter.allowance === 'function' && typeof adapter.buildApprove === 'function') {
+        // Inspect the approve() sub-tx spender BEFORE granting any allowance — a
+        // denylisted / EOA / drainer spender HARD-BLOCKS here (outside the swallowing
+        // try below, so a danger can never be silently ignored). The suite is
+        // read-only; it never signs.
+        await assertApproveSafe(chain, fromId, built.allowanceTarget, built.amountIn);
         try {
           const cur = await adapter.allowance(fromId, acct.address, built.allowanceTarget);
           if (BigInt(cur || '0') < BigInt(String(built.amountIn || '0'))) {
@@ -607,6 +631,7 @@
       executeSwap,                 // sign + broadcast a venue's BuiltSwap (EVM/native/[solana])
       sendFee,                     // build + sign + broadcast the mandatory 0.05% agent fee
       payX402Usdc,                 // settle an x402 buy challenge via a signed EVM/USDC transfer
+      resolveX402Accept: firstEvmAccept, // READ-ONLY parse of the relay/seller payTo (for buy_block inspect)
       inspect,                     // WALLET SECURITY: pre-sign tx inspection (danger -> forced confirm)
     };
   }
@@ -629,9 +654,10 @@
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
-    amm, launchToken,
+    amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:
-    inspect, listApprovals, buildRevoke, rememberRecipient, Security,
+    inspect, assertApproveSafe, listApprovals, buildRevoke, rememberRecipient, Security,
+    firstEvmAccept,
     agentCtx, ensureAgentDeps, reset,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.Wiring;
