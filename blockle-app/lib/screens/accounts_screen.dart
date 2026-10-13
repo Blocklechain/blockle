@@ -20,6 +20,7 @@ import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
 import '../state/wallet_controller.dart';
 import '../theme.dart';
+import '../widgets/chain_icon.dart';
 import 'wallet/security_sheet.dart';
 
 class AccountsScreen extends StatefulWidget {
@@ -146,13 +147,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
           children: [
             Row(
               children: [
-                CircleAvatar(
-                  radius: 16,
-                  backgroundColor: Bk.accent.withValues(alpha: 0.18),
-                  child: Text(ticker.isNotEmpty ? ticker[0] : '?',
-                      style: const TextStyle(
-                          color: Bk.accent, fontWeight: FontWeight.w700)),
-                ),
+                ChainIcon(chain, symbol: ticker, radius: 16),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -257,15 +252,12 @@ class _AccountsScreenState extends State<AccountsScreen> {
       child: Row(
         children: [
           if (isToken) ...[
-            CircleAvatar(
+            AssetIcon(
+              chainId: chain,
+              symbol: b.asset.symbol,
+              isToken: true,
+              logoUri: logo,
               radius: 9,
-              backgroundColor: Bk.surface2,
-              foregroundImage: (logo != null && logo.isNotEmpty)
-                  ? NetworkImage(logo)
-                  : null,
-              child: Text(
-                  b.asset.symbol.isNotEmpty ? b.asset.symbol[0] : '?',
-                  style: const TextStyle(fontSize: 9, color: Bk.muted)),
             ),
             const SizedBox(width: 6),
           ],

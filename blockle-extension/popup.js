@@ -99,6 +99,65 @@
     });
   }
 
+  // The explicit DANGER confirm for the key/seed export (the gate's `confirm`).
+  // Surfaces the plain-language warning verbatim and forces an explicit choice:
+  // resolves true only when the user presses "I understand — show my keys".
+  function dangerConfirmSheet(warning) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'wallet-root';
+      wrap.style.position = 'fixed';
+      wrap.style.inset = '0';
+      wrap.style.zIndex = '2000';
+      wrap.innerHTML =
+        '<div class="wscrim"></div>' +
+        '<div class="wsheet card" role="dialog" aria-modal="true" aria-label="Export keys and seed">' +
+          '<h3>Export keys &amp; recovery phrase</h3>' +
+          '<div class="wwarn danger"><div class="t">DANGER</div><div class="d">' + esc(warning) + '</div></div>' +
+          '<div class="wsheet-actions">' +
+            '<button class="wbtn" data-act="reject">Cancel</button>' +
+            '<button class="wbtn danger" data-act="ok">I understand — show my keys</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(wrap);
+      const done = (v) => { wrap.remove(); resolve(v); };
+      wrap.querySelector('.wscrim').addEventListener('click', () => done(false));
+      wrap.querySelector('[data-act="reject"]').addEventListener('click', () => done(false));
+      wrap.querySelector('[data-act="ok"]').addEventListener('click', () => done(true));
+    });
+  }
+
+  // Present the exported secrets panel (export-ui.js built the markup). Returns the
+  // container element so export-ui can wire the Core-dump download buttons.
+  function presentSecretsSheet(html) {
+    const wrap = document.createElement('div');
+    wrap.className = 'wallet-root';
+    wrap.style.position = 'fixed';
+    wrap.style.inset = '0';
+    wrap.style.zIndex = '2000';
+    wrap.innerHTML =
+      '<div class="wscrim"></div>' +
+      '<div class="wsheet card" role="dialog" aria-modal="true" aria-label="Your exported keys">' +
+        '<h3>Your keys &amp; recovery phrase</h3>' + html +
+        '<div class="wsheet-actions"><button class="wbtn primary" data-act="close">Done</button></div>' +
+      '</div>';
+    document.body.appendChild(wrap);
+    const close = () => wrap.remove();
+    wrap.querySelector('.wscrim').addEventListener('click', close);
+    wrap.querySelector('[data-act="close"]').addEventListener('click', close);
+    return wrap;
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function mountLogos() {
     $$('canvas.logo').forEach((c) => {
       if (c.offsetParent === null) return; // not visible
@@ -442,6 +501,24 @@
       } catch {
         toast('Nothing to export');
       }
+    });
+    // NEW gated key/seed/dump export — runs WalletExport.exportSecrets behind the
+    // security gate (vault unlocked + an explicit danger confirm), then presents
+    // the mnemonic/seed + per-chain WIF/hex/base58 keys and offers the BTC/LTC/DOGE
+    // Bitcoin-Core importwallet dumps for download. (The encrypted-file export
+    // above stays available.)
+    const exportKeysBtn = $('#export-keys');
+    if (exportKeysBtn) exportKeysBtn.addEventListener('click', async () => {
+      if (!window.WalletExportUI) return toast('Export unavailable');
+      if (!Wallet.isUnlocked()) return toast('Unlock your wallet to export keys');
+      const res = await WalletExportUI.open({
+        wallet: Wallet,
+        confirm: dangerConfirmSheet,
+        present: presentSecretsSheet,
+        download: downloadText,
+        onBlocked: (r) => toast(r && r.reason === 'locked' ? 'Unlock your wallet to export keys' : 'Export cancelled'),
+      });
+      if (res && res.ok) toast('Keys exported — keep them private and offline');
     });
     $('#lock-now').addEventListener('click', async () => {
       await doLock();

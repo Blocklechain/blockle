@@ -56,7 +56,7 @@
     avalanche: { rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114 },
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
-    dogecoin:  { esplora: null }, // user must supply (no public Esplora default)
+    dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
     solana:    { rpcUrl: 'https://api.mainnet-beta.solana.com' },
   };

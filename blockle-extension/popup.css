@@ -536,6 +536,9 @@ canvas.logo {
 .wallet-root .whrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--w-line-soft); cursor: default; }
 .wallet-root .whrow[data-send-to] { cursor: pointer; } .wallet-root .whrow:last-child { border-bottom: 0; }
 .wallet-root .wtoken { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; flex: 0 0 auto; }
+.wallet-root .wtoken.wtoken-ic { position: relative; background: transparent; overflow: visible; }
+.wallet-root .wtoken-img { width: 30px; height: 30px; border-radius: 50%; display: block; object-fit: cover; }
+.wallet-root .wtoken-chain { position: absolute; right: -2px; bottom: -2px; width: 14px; height: 14px; border-radius: 50%; box-shadow: 0 0 0 2px var(--w-bg, #0b0f14); }
 .wallet-root .whrow .nm { font-weight: 600; font-size: 14px; } .wallet-root .whrow .ch { font-size: 12px; color: var(--w-ink-muted); }
 .wallet-root .whrow .amt { margin-left: auto; text-align: right; } .wallet-root .whrow .amt .q { font-size: 12px; color: var(--w-ink-faint); }
 .wallet-root .wtag { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 6px; letter-spacing: .03em; }
@@ -603,6 +606,13 @@ canvas.logo {
 .wallet-root .wwarn.danger .t { color: var(--w-loss); } .wallet-root .wwarn.warn .t { color: var(--w-warn); } .wallet-root .wwarn.info .t { color: var(--w-accent); }
 .wallet-root .wwarn .d { font-size: 12.5px; color: var(--w-ink-muted); line-height: 1.5; }
 .wallet-root .wchecks { font-size: 11.5px; color: var(--w-ink-faint); margin: 8px 0 2px; }
+.wallet-root .wexp-secrets { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.wallet-root .wexp-row { background: var(--w-surface-2, #11161d); border: 1px solid var(--w-line-soft); border-radius: var(--w-radius-sm); padding: 8px 10px; }
+.wallet-root .wexp-k { font-size: 11.5px; color: var(--w-ink-muted); margin-bottom: 3px; display: flex; justify-content: space-between; gap: 8px; }
+.wallet-root .wexp-a { color: var(--w-ink-faint); font-size: 10.5px; }
+.wallet-root .wexp-v { font-size: 11.5px; word-break: break-all; line-height: 1.45; }
+.wallet-root .wexp-dumps { margin-top: 10px; }
+.wallet-root .wexp-dh { font-size: 12px; color: var(--w-ink-muted); margin-bottom: 6px; }
 .wallet-root .wresolved { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--w-ink-muted); background: var(--w-accent-ghost); border: 1px solid var(--w-accent-dim); border-radius: var(--w-radius-sm); padding: 9px 12px; margin: 8px 0; flex-wrap: wrap; }
 .wallet-root .wsend-err { color: var(--w-loss); font-size: 12.5px; min-height: 1em; margin-top: 6px; }
 .wallet-root .wsheet-actions { display: flex; gap: 9px; margin-top: 14px; }

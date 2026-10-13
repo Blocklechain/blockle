@@ -312,5 +312,114 @@ class SendDialogSecurityGateTest(unittest.TestCase):
         ctrl.loop.stop()
 
 
+class ExportSecretsGateTest(unittest.TestCase):
+    """The Accounts-tab Export action must run ``multichain.export.export_secrets``
+    BEHIND its own security gate: locked => nothing; unlocked but declined =>
+    nothing; unlocked + an explicit confirm (surfacing the plain-language danger
+    warning) => mnemonic + seed + per-chain keys + the BTC/LTC/DOGE Core dumps.
+    The UI only CALLS the module — the gate + assembly stay in the module."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.datadir = Path(self._tmp.name)
+        self.wallet = _StubBlockWallet(self.datadir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ctrl(self):
+        from blockle.qtmultichain import MultiChainController
+        return MultiChainController(self.wallet, self.datadir)
+
+    def test_controller_export_runs_module_through_gate(self):
+        """Delegates to the real module: a confirm handler is called with the
+        module's DANGER_WARNING; a Yes yields every key type + the Core dumps;
+        a No yields a declined block (never a secret); locked is refused."""
+        from blockle.multichain import export as export_mod
+        ctrl = self._ctrl()
+        ctrl.create("pw")
+
+        # locked (fresh controller, never unlocked) — refused, no secret
+        locked_ctrl = self._ctrl()
+        res_locked = locked_ctrl.export_secrets(confirm=lambda w: True)
+        self.assertFalse(res_locked["ok"])
+        self.assertEqual(res_locked["reason"], "locked")
+        self.assertNotIn("mnemonic", res_locked)
+        self.assertNotIn("keys", res_locked)
+
+        # unlocked + decline — the gate blocks, still no secret
+        seen = []
+        res_declined = ctrl.export_secrets(
+            confirm=lambda warning: seen.append(warning) or False)
+        self.assertFalse(res_declined["ok"])
+        self.assertEqual(res_declined["reason"], "declined")
+        self.assertNotIn("keys", res_declined)
+        # the gate surfaced the module's plain-language danger warning
+        self.assertEqual(seen, [export_mod.DANGER_WARNING])
+
+        # unlocked + confirm — full export, matching the sealed seed
+        res = ctrl.export_secrets(confirm=lambda warning: True)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["mnemonic"]["mnemonic"], ctrl.vault.mnemonic())
+        self.assertEqual(res["keys"]["bitcoin"]["address"],
+                         ctrl.accounts["bitcoin"].address)
+        self.assertTrue(res["keys"]["evm"]["privateKey"].startswith("0x"))
+        self.assertIn("secretKey", res["keys"]["solana"])
+        # the BTC/LTC/DOGE importwallet dumps are present + Core-shaped
+        self.assertEqual(set(res["dumps"]), {"bitcoin", "litecoin", "dogecoin"})
+        self.assertTrue(res["dumps"]["bitcoin"]["text"]
+                        .startswith("# Wallet dump created by Blockle"))
+        self.assertEqual(res["dumps"]["dogecoin"]["filename"],
+                         "dogecoin-blockle-import.txt")
+        ctrl.loop.stop()
+        locked_ctrl.loop and locked_ctrl.loop.stop()
+
+    def test_export_button_reachable_and_calls_module_through_gate(self):
+        """The Accounts tab exposes an Export action, gated: disabled while
+        locked, enabled after unlock, and clicking it drives the real module
+        export through the modal confirm (Yes => the exported bundle reaches the
+        display; Cancel => nothing is shown, nothing leaks)."""
+        try:
+            import PySide6  # noqa: F401
+        except ImportError:
+            self.skipTest("PySide6 not installed")
+        from unittest.mock import patch
+        plugins = Path(PySide6.__file__).parent / "Qt" / "plugins" / "platforms"
+        if plugins.exists():
+            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(plugins))
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        from blockle.qtmultichain import AccountsTab
+        QApplication.instance() or QApplication([])
+
+        ctrl = self._ctrl()
+        ctrl.create("pw")
+        tab = AccountsTab(ctrl)
+        # the action exists and is gated on unlock (disabled before, enabled after)
+        self.assertFalse(tab.export_btn.isEnabled())
+        tab._on_unlocked()
+        self.assertTrue(tab.export_btn.isEnabled())
+
+        shown = []
+        tab._show_export = lambda res: shown.append(res)  # don't block on a modal
+
+        # Cancel at the gate -> export runs, declines, nothing displayed
+        with patch.object(QMessageBox, "exec", return_value=QMessageBox.Cancel):
+            tab._export_secrets()
+        self.assertEqual(shown, [])
+
+        # Yes at the gate -> the real module export reaches the display bundle
+        with patch.object(QMessageBox, "exec", return_value=QMessageBox.Yes):
+            tab._export_secrets()
+        self.assertEqual(len(shown), 1)
+        self.assertTrue(shown[0]["ok"])
+        self.assertIn("mnemonic", shown[0])
+        self.assertEqual(set(shown[0]["dumps"]), {"bitcoin", "litecoin", "dogecoin"})
+        # and the rendered text carries the phrase + a per-chain key line
+        text = tab._render_export_text(shown[0])
+        self.assertIn(ctrl.vault.mnemonic(), text)
+        self.assertIn("[bitcoin]", text)
+        ctrl.loop.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

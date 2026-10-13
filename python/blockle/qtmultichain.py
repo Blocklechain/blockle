@@ -37,8 +37,9 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+    QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -47,6 +48,7 @@ from . import agent as agentpkg
 from . import moonpay
 from .multichain import crypto as K
 from .multichain import exchange as exmod
+from .multichain import export as export_mod
 from .multichain import security as security_mod
 from .multichain import venues as venuesmod
 from .multichain.chains import create_registry
@@ -630,6 +632,37 @@ class MultiChainController:
             ctx["getCode"] = get_code
         return ctx
 
+    # ---- gated full-wallet export (all key types + Core dumps) -------------
+    def _block_export_session(self) -> Optional[Dict[str, Any]]:
+        """The BLOCK ML-DSA key material for export, straight from the (unlocked)
+        engine snapshot. ``export.block_key`` introspects this for
+        ``secretKeyHex``/``publicKeyHex``/``address`` and returns ``None`` when
+        the engine does not surface a secret — never fabricated here."""
+        try:
+            return self.block_wallet.snapshot().get("wallet") or None
+        except Exception:
+            return None
+
+    def export_secrets(self, confirm, index: int = 0) -> Dict[str, Any]:
+        """Gated full-wallet export. Delegates ENTIRELY to
+        :func:`multichain.export.export_secrets` — the module logic AND its
+        security gate are unchanged: the vault must be unlocked AND the user must
+        pass ``confirm`` (which the gate calls with the plain-language
+        :data:`~multichain.export.DANGER_WARNING`). Returns the module's result
+        dict — ``{"ok": False, ...}`` when locked or declined, NEVER a secret.
+        Reads no key material itself; all assembly happens inside the module."""
+        opts: Dict[str, Any] = {
+            "unlocked": self.is_unlocked(),
+            "confirm": confirm,
+            "index": index or 0,
+            "coreDumps": True,
+        }
+        if self.is_unlocked():
+            opts["mnemonic"] = self.vault.mnemonic()
+            opts["seed"] = self.vault.seed()
+            opts["blockSession"] = self._block_export_session()
+        return export_mod.export_secrets(opts)
+
     # ---- agent ctx wiring the tools call into ----
     def _ctx(self, meta=None) -> Dict[str, Any]:
         reg = self.registry
@@ -768,6 +801,9 @@ class AccountsTab(QWidget):
         self.phrase_btn = QPushButton("Show recovery phrase…")
         self.phrase_btn.clicked.connect(self._show_phrase)
         self.phrase_btn.setEnabled(False)
+        self.export_btn = QPushButton("Export secrets…")
+        self.export_btn.clicked.connect(self._export_secrets)
+        self.export_btn.setEnabled(False)
         self.endpoints_btn = QPushButton("Endpoints…")
         self.endpoints_btn.clicked.connect(self._edit_endpoints)
         self.endpoints_btn.setEnabled(False)
@@ -775,7 +811,7 @@ class AccountsTab(QWidget):
         self.networks_btn.clicked.connect(self._edit_custom_networks)
         self.networks_btn.setEnabled(False)
         for b in (self.unlock_btn, self.refresh_btn, self.phrase_btn,
-                  self.endpoints_btn, self.networks_btn):
+                  self.export_btn, self.endpoints_btn, self.networks_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
@@ -852,8 +888,9 @@ class AccountsTab(QWidget):
 
     def _on_unlocked(self):
         self.lock_lbl.setText("Vault unlocked for this session.")
-        for b in (self.refresh_btn, self.phrase_btn, self.endpoints_btn,
-                  self.networks_btn, self.send_btn, self.add_token_btn):
+        for b in (self.refresh_btn, self.phrase_btn, self.export_btn,
+                  self.endpoints_btn, self.networks_btn, self.send_btn,
+                  self.add_token_btn):
             b.setEnabled(True)
         self.unlock_btn.setText("Re-lock on exit")
         self._fill_accounts()
@@ -1122,6 +1159,109 @@ class AccountsTab(QWidget):
         dlg.setText("Store offline.")
         dlg.setDetailedText(self.ctrl.vault.mnemonic())
         dlg.exec()
+
+    # ---- gated full-wallet export (mnemonic + seed + per-chain keys + dumps) ----
+    def _export_secrets(self):
+        """Run :meth:`MultiChainController.export_secrets` BEHIND the module's
+        security gate. The confirm handler surfaces the module's plain-language
+        danger warning as a modal; only a Yes return lets the gate proceed. The
+        UI never reads or assembles key material — it renders what the gated
+        module returns and saves the Core dump files the user chooses to keep."""
+        def confirm(warning: str) -> bool:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Export secrets — DANGER")
+            box.setText(warning)
+            box.setInformativeText(
+                "Export your recovery phrase, raw seed, every per-chain private "
+                "key and the Bitcoin/Litecoin/Dogecoin Core import dump?")
+            box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+            box.setDefaultButton(QMessageBox.Cancel)
+            return box.exec() == QMessageBox.Yes
+
+        result = self.ctrl.export_secrets(confirm)
+        if not result.get("ok"):
+            reason = result.get("reason")
+            if reason == "declined":
+                return  # user backed out at the gate — say nothing
+            msg = ("The vault is locked — unlock it first."
+                   if reason == "locked"
+                   else f"Export was blocked ({reason}).")
+            QMessageBox.information(self, "Export secrets", msg)
+            return
+        self._show_export(result)
+
+    def _render_export_text(self, result: Dict[str, Any]) -> str:
+        lines: List[str] = []
+        mn = result.get("mnemonic") or {}
+        if mn:
+            lines.append("# Recovery phrase (BIP-39)")
+            lines.append(mn.get("mnemonic", ""))
+            if mn.get("passphrase"):
+                lines.append("passphrase: " + mn["passphrase"])
+            lines.append("")
+            lines.append("# Raw seed (hex)")
+            lines.append(mn.get("seedHex", ""))
+            lines.append("")
+        keys = result.get("keys") or {}
+        if keys:
+            lines.append("# Per-chain private keys (account index 0)")
+            for chain, k in keys.items():
+                lines.append(f"[{chain}] {k.get('address', '')}  ({k.get('path', '')})")
+                secret = k.get("wif") or k.get("privateKey") or k.get("secretKey")
+                lines.append("  " + str(secret))
+            lines.append("")
+        block = result.get("block")
+        if block:
+            lines.append("# BLOCK (ML-DSA-44)")
+            lines.append(f"[block] {block.get('address', '')}")
+            lines.append("  " + str(block.get("secretKey", "")))
+            lines.append("")
+        dumps = result.get("dumps") or {}
+        if dumps:
+            lines.append("# Bitcoin-Core importwallet dumps saved as separate "
+                         "files (use the Save buttons).")
+        return "\n".join(lines)
+
+    def _show_export(self, result: Dict[str, Any]):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Exported secrets — keep offline")
+        dlg.resize(620, 480)
+        lay = QVBoxLayout(dlg)
+        warn = QLabel(export_mod.DANGER_WARNING)
+        warn.setWordWrap(True)
+        warn.setObjectName("sub")
+        lay.addWidget(warn)
+        text = QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(self._render_export_text(result))
+        lay.addWidget(text, 1)
+        btns = QHBoxLayout()
+        for chain, dump in (result.get("dumps") or {}).items():
+            b = QPushButton(f"Save {chain} dump…")
+            b.clicked.connect(
+                lambda _=False, d=dump: self._save_dump(d))
+            btns.addWidget(b)
+        btns.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+        dlg.exec()
+
+    def _save_dump(self, dump: Dict[str, Any]):
+        filename = dump.get("filename") or "blockle-import.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Core import dump", filename, "Text files (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(dump.get("text") or "", encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not save dump:\n{e}")
+            return
+        QMessageBox.information(self, "Export secrets",
+                                f"Saved importwallet dump to:\n{path}")
 
     def _edit_endpoints(self):
         dlg = EndpointsDialog(self.ctrl, self)
