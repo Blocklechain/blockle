@@ -35,6 +35,8 @@ from ..multichain._util import maybe_await
 from ..multichain.venues import default_request
 
 DEFAULT_MAX_TOKENS = 4096
+# Operator-overridable default for the keyless hosted-agent gateway.
+DEFAULT_GATEWAY_URL = "https://agent.blockle.org"
 
 
 class ClaudeProvider:
@@ -193,6 +195,127 @@ class OpenAIProvider:
         return self._parse(j or {})
 
 
+class HostedProvider:
+    """Blockle HOSTED gateway (keyless). Faithful port of the JS ``HostedProvider``.
+
+    The BRAIN lives on Blockle's server; this provider is a thin transport. It
+    POSTs the agent conversation to ``${gatewayUrl}/agent/turn`` with a SESSION
+    TOKEN (NOT an ``apiKey`` — the wallet never holds the upstream LLM key) and
+    returns the ALREADY-normalized ``{text?, toolCalls?}`` the gateway produces.
+    The runner and the client policy gate are UNCHANGED: a hosted proposal is
+    gated client-side exactly like a BYO-key proposal — the gateway/LLM can
+    never move funds.
+
+    Short-lived sessions are transparently refreshed: on a 401 we call the
+    injected ``refresh()`` once (which re-signs the gateway challenge) and retry.
+    """
+
+    def __init__(self, opts: Dict[str, Any]):
+        self.name = "hosted"
+        self.gateway_url = (opts.get("gatewayUrl") or "").rstrip("/")
+        if not self.gateway_url:
+            raise ValueError("hosted provider requires a gatewayUrl")
+        self.session_token = opts.get("sessionToken") or None
+        if not self.session_token:
+            raise ValueError("hosted provider requires a sessionToken (no apiKey)")
+        self.model = opts.get("model") or None
+        self._request = default_request(opts.get("request") or opts.get("fetchImpl"))
+        # refresh() -> newSessionToken|None; re-signs the challenge on expiry.
+        r = opts.get("refresh")
+        self.refresh = r if callable(r) else None
+
+    def wipe(self) -> None:
+        """Drop the in-memory session token (called on lock/kill)."""
+        self.session_token = None
+
+    async def _post(self, payload: Dict[str, Any], attempt: int) -> Dict[str, Any]:
+        # NOTE: we send ONLY sessionToken + the conversation. Never an apiKey,
+        # never any wallet key/seed. The gateway injects the upstream key
+        # server-side.
+        body: Dict[str, Any] = {
+            "sessionToken": self.session_token,
+            "system": payload.get("system"),
+            "messages": payload.get("messages"),
+            "tools": payload.get("tools"),
+        }
+        if self.model:
+            body["model"] = self.model
+        try:
+            j = await self._request({"method": "POST", "url": self.gateway_url + "/agent/turn",
+                                     "headers": {"content-type": "application/json"}, "body": body})
+        except Exception as e:  # noqa: BLE001 — a 401 is a recoverable refresh signal
+            if getattr(e, "status", None) == 401 and self.refresh and attempt < 1:
+                tok = await maybe_await(self.refresh())
+                if tok:
+                    self.session_token = tok
+                    return await self._post(payload, attempt + 1)
+            raise
+        j = j or {}
+        # The gateway already returns the common shape; re-normalize defensively
+        # so the runner always sees {text?, toolCalls?} with the exact field names.
+        tool_calls = []
+        if isinstance(j.get("toolCalls"), list):
+            tool_calls = [{"id": tc.get("id"), "name": tc.get("name"),
+                           "arguments": tc.get("arguments") or {}} for tc in j["toolCalls"]]
+        return {"text": j.get("text") or None, "toolCalls": tool_calls or None}
+
+    async def turn(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._post({"system": req.get("system"), "messages": req.get("messages"),
+                                 "tools": req.get("tools")}, 0)
+
+
+async def hosted_session(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Wallet-signature session handshake against the gateway. Faithful port of
+    the JS ``hostedSession``.
+
+    ``sign(message)`` is the wallet's own signer — it returns
+    ``{signature, publicKey}`` (or a raw signature string) and proves control of
+    an address (NOT a spend). Returns the stored hosted connection record.
+    """
+    opts = opts or {}
+    f = default_request(opts.get("request") or opts.get("fetchImpl"))
+    base = (opts.get("gatewayUrl") or "").rstrip("/")
+    if not base:
+        raise ValueError("hostedSession requires a gatewayUrl")
+    chain = opts.get("chain") or "block"
+
+    async def post_json(body_obj: Dict[str, Any]) -> Dict[str, Any]:
+        j = await f({"method": "POST", "url": base + "/agent/session",
+                     "headers": {"content-type": "application/json"}, "body": body_obj})
+        return j or {}
+
+    # Anonymous fallback: no address/signer -> rate-limited free-tier token.
+    if opts.get("anon") or not opts.get("sign"):
+        a = await post_json({"step": "anon"})
+        return {"gatewayUrl": base, "sessionToken": a.get("sessionToken"),
+                "expiresAt": a.get("expiresAt"), "quota": a.get("quota"), "chain": "anon",
+                "label": opts.get("label") or "Blockle hosted (anon)"}
+
+    ch = await post_json({"step": "challenge", "address": opts.get("address"), "chain": chain})
+    signed = await maybe_await(opts["sign"](ch.get("challenge")))
+    if isinstance(signed, str):
+        signature = signed
+    elif isinstance(signed, dict):
+        signature = signed.get("signature") or signed.get("sig") or ""
+    else:
+        signature = ""
+    public_key = (signed.get("publicKey") if isinstance(signed, dict) else None) \
+        or opts.get("publicKey") or ""
+    v = await post_json({"step": "verify", "address": opts.get("address"), "chain": chain,
+                         "challenge": ch.get("challenge"), "signature": signature,
+                         "publicKey": public_key})
+    return {
+        "gatewayUrl": base,
+        "sessionToken": v.get("sessionToken"),
+        "expiresAt": v.get("expiresAt"),
+        "quota": v.get("quota"),
+        "address": opts.get("address"),
+        "chain": chain,
+        "publicKey": public_key,
+        "label": opts.get("label") or "Blockle hosted agent",
+    }
+
+
 class CopilotProvider(OpenAIProvider):
     def __init__(self, opts: Dict[str, Any]):
         merged = dict(opts)
@@ -207,9 +330,14 @@ class CopilotProvider(OpenAIProvider):
 
 def create(opts: Optional[Dict[str, Any]] = None):
     opts = opts or {}
+    provider = opts.get("provider")
+    # The HOSTED provider is keyless: it needs a gatewayUrl + sessionToken, NOT
+    # an apiKey. Every other (BYO-key) provider still requires an apiKey from the
+    # vault. This is the ONLY place a provider is instantiated.
+    if provider == "hosted":
+        return HostedProvider(opts)
     if not opts.get("apiKey"):
         raise ValueError("provider requires an apiKey (from the vault)")
-    provider = opts.get("provider")
     if provider == "claude":
         return ClaudeProvider(opts)
     if provider == "openai":

@@ -520,8 +520,26 @@ class MultichainController extends ChangeNotifier {
 
   bool get agentConnected {
     final a = vault.isUnlocked ? vault.plaintext?.agent : null;
-    return a != null && (a['apiKey'] as String?)?.isNotEmpty == true;
+    if (a == null) return false;
+    // HOSTED (keyless): connected when a gateway session is present (no apiKey).
+    if (a['provider'] == 'hosted') {
+      return (a['gatewayUrl'] as String?)?.isNotEmpty == true &&
+          (a['sessionToken'] as String?)?.isNotEmpty == true;
+    }
+    return (a['apiKey'] as String?)?.isNotEmpty == true;
   }
+
+  /// One-line HOSTED-mode privacy disclosure shown in the connect UI. In hosted
+  /// mode the agent conversation (including any balances the agent is shown)
+  /// transits Blockle's server + the model provider; no private keys or seeds
+  /// are ever sent, and every trade is still gated on THIS device. Mirrors
+  /// blockle-extension/agent-ui.js.
+  static const String hostedPrivacyDisclosure =
+      'You sign a one-time challenge with your wallet (proves your address, not a '
+      'spend). Blockle runs the model for you. In hosted mode your agent '
+      'conversation — which can include balances the agent is shown — transits '
+      "Blockle's server and the model provider. No private keys or seeds are ever "
+      'sent. Every trade is still gated on THIS device.';
 
   String? get agentProvider =>
       vault.isUnlocked ? (vault.plaintext?.agent?['provider'] as String?) : null;
@@ -546,6 +564,53 @@ class MultichainController extends ChangeNotifier {
       if (model != null && model.isNotEmpty) 'model': model,
       if (baseUrl != null && baseUrl.isNotEmpty) 'baseUrl': baseUrl,
       'label': provider,
+    };
+    await vault.reseal(password);
+    await _resumeAgent();
+    notifyListeners();
+  }
+
+  /// Connect the KEYLESS Blockle-hosted agent: run the gateway signature
+  /// handshake (challenge -> sign -> verify -> sessionToken) and seal a hosted
+  /// connection record into the vault — gatewayUrl + short-lived sessionToken,
+  /// NO apiKey. Persists until the user disconnects; the token is transparently
+  /// re-signed on expiry. Hosted is opt-in ALONGSIDE the BYO-key providers.
+  ///
+  /// [gatewayUrl] defaults to the operator-overridable Blockle gateway. With no
+  /// signer wired the gateway's anonymous (rate-limited) fallback is used; no
+  /// private key/seed ever leaves the device either way. Mirrors
+  /// blockle-extension/agent-ui.js:connectHosted.
+  Future<void> connectHostedAgent({
+    String? gatewayUrl,
+    required String password,
+    Future<dynamic> Function(String challenge)? sign,
+    bool anon = false,
+  }) async {
+    if (!vault.isUnlocked) {
+      throw Exception('unlock the multi-chain vault first');
+    }
+    // The wallet's non-custodial identity for the handshake (proves address
+    // control, not a spend). BLOCK is the default chain.
+    final address = accounts.address;
+    final pub = accounts.block?.publicKeyHex;
+    final sess = await agent.connectHosted(
+      gatewayUrl: gatewayUrl,
+      address: address.isEmpty ? null : address,
+      chain: 'block',
+      publicKey: pub,
+      sign: sign,
+      anon: anon || sign == null,
+    );
+    final pt = vault.plaintext!;
+    pt.agent = {
+      'provider': 'hosted',
+      'gatewayUrl': sess['gatewayUrl'],
+      'sessionToken': sess['sessionToken'],
+      if (sess['expiresAt'] != null) 'expiresAt': sess['expiresAt'],
+      if (sess['address'] != null) 'address': sess['address'],
+      if (sess['chain'] != null) 'chain': sess['chain'],
+      if (sess['publicKey'] != null) 'publicKey': sess['publicKey'],
+      'label': (sess['label'] as String?) ?? 'Blockle hosted agent',
     };
     await vault.reseal(password);
     await _resumeAgent();

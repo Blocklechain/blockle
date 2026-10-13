@@ -87,6 +87,26 @@
       store: Store,
       agentFactory: global.Agent,
       resolveCredential: (credRef) => AgentStore.resolve(credRef),
+      // Transparent hosted-session refresh: re-sign the gateway challenge with the
+      // wallet key and persist the fresh short-lived token. No apiKey involved.
+      hostedRefresh: async (credRef, cred) => {
+        try {
+          if (!Wallet.isUnlocked() || !cred || !cred.gatewayUrl) return null;
+          const sign = async (message) => {
+            const r = await Wallet.signMessage(message);
+            const signature = typeof r === 'string' ? r : (r && (r.signature || r.sig)) || '';
+            const publicKey = (r && r.publicKey) || Wallet.publicKeyHex || '';
+            return { signature, publicKey };
+          };
+          const sess = await global.AgentProviders.hostedSession({
+            gatewayUrl: cred.gatewayUrl, address: cred.address, chain: cred.chain || 'block',
+            publicKey: cred.publicKey, sign,
+            fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined,
+          });
+          await AgentStore.refreshHosted(credRef, sess.sessionToken, sess.expiresAt);
+          return sess.sessionToken;
+        } catch (_) { return null; }
+      },
       confirm: (summary) => doConfirm(summary),          // REQUIRED modal (RED-3)
       onKill: async () => { await globalKill(); },        // KILL ALL host hook
       onChannelKill: (id) => { pushLog(id, 'channel killed'); },
@@ -234,8 +254,16 @@
 
   function renderConnectForm() {
     const opts = Object.keys(GUIDES).map((k) => `<option value="${k}">${esc(GUIDES[k].label)}</option>`).join('');
+    const defaultGw = (global.AgentProviders && global.AgentProviders.DEFAULT_GATEWAY_URL) || 'https://agent.blockle.org';
     return `<div id="agent-connect" hidden class="agent-card">
       <div class="section-h" style="padding-top:0">Connect provider</div>
+      <div class="agent-card" style="margin:0 0 10px;border:1px solid var(--accent,#6366f1)">
+        <b>Use Blockle's hosted agent — no API key needed</b>
+        <div class="notice" style="margin:6px 0">You sign a one-time challenge with your wallet (proves your address, not a spend). Blockle runs the model for you. In hosted mode your agent conversation (which can include balances the agent is shown) transits Blockle's server and the model provider. No private keys or seeds are ever sent. Every trade is still gated on THIS device. <a id="ach-adv" href="#" class="btn link" style="padding:0">Gateway…</a></div>
+        <label class="field" id="ach-gw-field" hidden><span>Gateway URL</span><input type="text" id="ach-gw" class="mono" value="${esc(defaultGw)}" /></label>
+        <div class="err" id="ach-err"></div>
+        <button class="btn primary" id="ac-hosted" style="width:100%">Use Blockle hosted agent</button>
+      </div>
       <label class="field"><span>Provider</span>
         <select id="ac-provider" class="mono">${opts}</select></label>
       <div class="notice" id="ac-guide"></div>
@@ -361,6 +389,8 @@
     const prov = $('#ac-provider');
     if (prov) prov.addEventListener('change', fillGuide);
     const save = $('#ac-save'); if (save) save.addEventListener('click', connectProvider);
+    const hostedBtn = $('#ac-hosted'); if (hostedBtn) hostedBtn.addEventListener('click', connectHosted);
+    const achAdv = $('#ach-adv'); if (achAdv) achAdv.addEventListener('click', (e) => { e.preventDefault(); const f = $('#ach-gw-field'); if (f) f.hidden = !f.hidden; });
     const cancel = $('#ac-cancel'); if (cancel) cancel.addEventListener('click', () => { $('#agent-connect').hidden = true; });
     $$('[data-disc]').forEach((b) => b.addEventListener('click', async () => {
       await AgentStore.remove(b.getAttribute('data-disc')); UI.toast('Disconnected'); enter();
@@ -405,6 +435,28 @@
       UI.toast('Provider connected');
       enter();
     } catch (e) { err.textContent = e.message || String(e); }
+  }
+
+  // Keyless connect: sign the gateway challenge with the wallet address key (NOT
+  // a spend) and seal a hosted connection — no API key is ever entered or stored.
+  async function connectHosted() {
+    const err = $('#ach-err'); if (err) err.textContent = '';
+    try {
+      if (!Wallet.isUnlocked()) throw new Error('Unlock your wallet first.');
+      const gatewayUrl = ($('#ach-gw') && $('#ach-gw').value.trim()) ||
+        (global.AgentProviders && global.AgentProviders.DEFAULT_GATEWAY_URL);
+      const address = Wallet.address || (Wallet.getAddress && (await Wallet.getAddress()));
+      const sign = async (message) => {
+        const r = await Wallet.signMessage(message);
+        const signature = typeof r === 'string' ? r : (r && (r.signature || r.sig)) || '';
+        const publicKey = (r && r.publicKey) || Wallet.publicKeyHex || '';
+        return { signature, publicKey };
+      };
+      await AgentStore.connectHosted({ gatewayUrl, address, chain: 'block', sign,
+        fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined });
+      UI.toast('Blockle hosted agent connected');
+      enter();
+    } catch (e) { if (err) err.textContent = e.message || String(e); }
   }
 
   async function createChannel() {

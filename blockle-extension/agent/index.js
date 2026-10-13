@@ -35,7 +35,17 @@
     start(opts) {
       opts = opts || {};
       const cred = opts.credential || {};
-      if (!cred.apiKey || !cred.provider) {
+      if (!cred.provider) {
+        throw new Error('AI agent is not configured — enable it and add an LLM credential first');
+      }
+      // HOSTED mode is keyless: it needs a gatewayUrl + sessionToken instead of an
+      // apiKey (the wallet never holds the upstream LLM key). Every other provider
+      // still requires an apiKey from the unlocked vault.
+      if (cred.provider === 'hosted') {
+        if (!cred.gatewayUrl || !cred.sessionToken) {
+          throw new Error('hosted agent is not configured — connect "Use Blockle hosted agent" first');
+        }
+      } else if (!cred.apiKey) {
         throw new Error('AI agent is not configured — enable it and add an LLM credential first');
       }
 
@@ -76,6 +86,10 @@
         apiKey: cred.apiKey,
         model: cred.model || opts.model,
         baseUrl: cred.baseUrl,
+        // hosted-only: keyless transport fields + transparent token refresh.
+        gatewayUrl: cred.gatewayUrl,
+        sessionToken: cred.sessionToken,
+        refresh: cred.refresh || opts.refresh,
         fetchImpl: opts.fetchImpl,
       });
 

@@ -184,6 +184,13 @@ class ChannelManager {
   final ProviderFetch fetch;
   final Future<AgentCredential?> Function(String? credRef, Map<String, dynamic> meta)?
       resolveCredential;
+
+  /// hostedRefresh(credRef, cred, meta) -> fresh sessionToken (or null): re-signs
+  /// the gateway challenge and persists the fresh token (transparent token
+  /// refresh on a 401/expiry). Mirrors `channels.js` opts.hostedRefresh.
+  final Future<String?> Function(
+          String? credRef, AgentCredential cred, Map<String, dynamic> meta)?
+      hostedRefresh;
   final Future<bool> Function(Map<String, dynamic> summary)? confirm;
   final Future<void> Function(String? reason)? onKill;
   final Future<void> Function(String id, String? reason)? onChannelKill;
@@ -196,6 +203,7 @@ class ChannelManager {
     required this.fetch,
     this.store,
     this.resolveCredential,
+    this.hostedRefresh,
     this.confirm,
     this.onKill,
     this.onChannelKill,
@@ -293,16 +301,36 @@ class ChannelManager {
 
     AgentCredential? cred;
     if (resolveCredential != null) cred = await resolveCredential!(meta['credRef'] as String?, meta);
-    if (cred == null || cred.apiKey.isEmpty) {
+    // HOSTED mode is keyless — it needs a gatewayUrl + sessionToken instead of an
+    // apiKey. Every other provider still requires an apiKey. Mirrors channels.js.
+    final isHosted = ((meta['provider'] as String?) ?? cred?.provider) == 'hosted';
+    if (cred == null || (!isHosted && (cred.apiKey ?? '').isEmpty)) {
       throw StateError(
           'cannot start "${meta['label']}": no LLM credential available (unlock the wallet and connect this channel)');
     }
-    final credential = AgentCredential(
-      provider: (meta['provider'] as String?) ?? cred.provider,
-      apiKey: cred.apiKey,
-      model: (meta['model'] as String?) ?? cred.model,
-      baseUrl: (meta['baseUrl'] as String?) ?? cred.baseUrl,
-    );
+    if (isHosted && ((cred.gatewayUrl ?? '').isEmpty || (cred.sessionToken ?? '').isEmpty)) {
+      throw StateError(
+          'cannot start "${meta['label']}": hosted connection is missing its gateway session (reconnect)');
+    }
+    final resolvedCred = cred;
+    final credential = isHosted
+        ? AgentCredential(
+            provider: 'hosted',
+            gatewayUrl: resolvedCred.gatewayUrl,
+            sessionToken: resolvedCred.sessionToken,
+            expiresAt: resolvedCred.expiresAt,
+            model: (meta['model'] as String?) ?? resolvedCred.model,
+            // transparent re-sign on 401/expiry, wired by the host if available
+            refresh: hostedRefresh != null
+                ? () => hostedRefresh!(meta['credRef'] as String?, resolvedCred, meta)
+                : null,
+          )
+        : AgentCredential(
+            provider: (meta['provider'] as String?) ?? resolvedCred.provider,
+            apiKey: resolvedCred.apiKey,
+            model: (meta['model'] as String?) ?? resolvedCred.model,
+            baseUrl: (meta['baseUrl'] as String?) ?? resolvedCred.baseUrl,
+          );
 
     Future<void> onKillLocal(String? reason) async {
       if (onChannelKill != null) {

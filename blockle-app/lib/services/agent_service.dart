@@ -20,7 +20,8 @@ import 'package:http/http.dart' as http;
 
 import '../agent/channels.dart';
 import '../agent/index.dart' show AgentCredential;
-import '../agent/providers.dart' show ProviderFetch, ProviderResponse;
+import '../agent/providers.dart'
+    show ProviderFetch, ProviderResponse, hostedSession, defaultGatewayUrl;
 import '../agent/tools.dart' show AgentContext, AmmLike, ExchangeLike;
 import '../multichain/accounts.dart';
 import '../multichain/chains/chain_adapter.dart';
@@ -112,6 +113,7 @@ class AgentService {
     AmmLike? amm,
     Future<dynamic> Function(Map<String, dynamic> spec)? launchToken,
     Future<Map<String, dynamic>?> Function(dynamic challenge)? payX402Usdc,
+    Future<dynamic> Function(String challenge)? hostedSign,
     Map<String, dynamic>? defaults,
     Map<String, dynamic>? securityConfig,
   })  : store = store ?? SecureChannelStore(),
@@ -121,11 +123,17 @@ class AgentService {
         _launchToken = launchToken,
         _payX402Override = payX402Usdc,
         _confirm = confirm,
+        _hostedSign = hostedSign,
+        _fetch = fetch ?? httpProviderFetch,
         _securityConfig = securityConfig {
     manager = ChannelManager(
-      fetch: fetch ?? httpProviderFetch,
+      fetch: _fetch,
       store: this.store,
       resolveCredential: _resolveCredential,
+      // Transparent hosted-session refresh: re-sign the gateway challenge and
+      // update the stored token in place (mirrors agent-ui.js:hostedRefresh +
+      // agent-store.refreshHosted). A BYO-key channel passes null here.
+      hostedRefresh: _hostedRefresh,
       confirm: confirm,
       onKill: _killAll,
       ctxFor: _ctxFor,
@@ -157,6 +165,16 @@ class AgentService {
   /// refused (never auto-paid).
   final Future<bool> Function(Map<String, dynamic> summary)? _confirm;
 
+  /// The injected HTTP transport (also handed to the ChannelManager). Reused by
+  /// the hosted connect handshake + the transparent refresh re-sign.
+  final ProviderFetch _fetch;
+
+  /// The wallet's own signer for the KEYLESS hosted handshake: `sign(challenge)`
+  /// returns `{ signature, publicKey }` and proves control of an address (NOT a
+  /// spend). Null => the handshake uses the gateway's anonymous (rate-limited,
+  /// free-tier) fallback. No private key / seed is ever placed in the request.
+  final Future<dynamic> Function(String challenge)? _hostedSign;
+
   /// Operator overrides for the WALLET SECURITY SUITE (denylist / knownSpenders /
   /// largeSharePct / thresholds / per-rule toggles). The shipped default router
   /// allowlist is always seeded on top via [sec.defaultSecurityConfig].
@@ -179,14 +197,91 @@ class AgentService {
     if (!accounts.vault.isUnlocked) return null;
     final agent = accounts.vault.plaintext?.agent;
     if (agent == null) return null;
+    // HOSTED (keyless) record: resolve the gatewayUrl + short-lived sessionToken
+    // (NO apiKey). This is what makes the `hosted` provider actually used — the
+    // channel starts against Blockle's gateway with only a session token.
+    final provider =
+        (meta['provider'] as String?) ?? (agent['provider'] as String?);
+    if (provider == 'hosted') {
+      final gatewayUrl = (agent['gatewayUrl'] as String?) ?? '';
+      final sessionToken = (agent['sessionToken'] as String?) ?? '';
+      if (gatewayUrl.isEmpty || sessionToken.isEmpty) return null;
+      return AgentCredential(
+        provider: 'hosted',
+        gatewayUrl: gatewayUrl,
+        sessionToken: sessionToken,
+        expiresAt: (agent['expiresAt'] as num?)?.toInt(),
+        model: (meta['model'] as String?) ?? agent['model'] as String?,
+      );
+    }
     final apiKey = (agent['apiKey'] as String?) ?? '';
     if (apiKey.isEmpty) return null;
     return AgentCredential(
-      provider: (meta['provider'] as String?) ?? (agent['provider'] as String?) ?? 'claude',
+      provider: provider ?? 'claude',
       apiKey: apiKey,
       model: (meta['model'] as String?) ?? agent['model'] as String?,
       baseUrl: (meta['baseUrl'] as String?) ?? agent['baseUrl'] as String?,
     );
+  }
+
+  // --- keyless hosted connect + transparent refresh -------------------------
+
+  /// KEYLESS connect: run the wallet-signature session handshake against the
+  /// gateway (challenge -> sign with the wallet address key -> verify ->
+  /// sessionToken) and return the stored hosted-connection fields (gatewayUrl,
+  /// sessionToken, expiresAt, address, chain, publicKey, label). The caller seals
+  /// this into the vault — it holds NO apiKey, and no private key/seed is ever
+  /// sent (only a signature over a server nonce + the public key). Mirrors
+  /// blockle-extension/agent-store.js:connectHosted. With no signer wired the
+  /// gateway's anonymous (rate-limited) fallback is used.
+  Future<Map<String, dynamic>> connectHosted({
+    String? gatewayUrl,
+    String? address,
+    String? chain,
+    String? publicKey,
+    String? label,
+    Future<dynamic> Function(String challenge)? sign,
+    bool anon = false,
+  }) {
+    return hostedSession(
+      fetch: _fetch,
+      gatewayUrl: gatewayUrl ?? defaultGatewayUrl,
+      address: address,
+      chain: chain,
+      publicKey: publicKey,
+      label: label,
+      sign: sign ?? _hostedSign,
+      anon: anon,
+    );
+  }
+
+  /// Re-sign the gateway challenge on a 401/expiry and update the stored session
+  /// token in place, returning the fresh token (or null to give up). The new
+  /// token lives in the in-memory vault session immediately and is written to
+  /// disk on the next reseal. Mirrors agent-ui.js:hostedRefresh.
+  Future<String?> _hostedRefresh(
+      String? credRef, AgentCredential cred, Map<String, dynamic> meta) async {
+    if (!accounts.vault.isUnlocked) return null;
+    final agent = accounts.vault.plaintext?.agent;
+    if (agent == null || agent['provider'] != 'hosted') return null;
+    try {
+      final sess = await hostedSession(
+        fetch: _fetch,
+        gatewayUrl:
+            cred.gatewayUrl ?? (agent['gatewayUrl'] as String?) ?? defaultGatewayUrl,
+        address: agent['address'] as String?,
+        chain: agent['chain'] as String?,
+        publicKey: agent['publicKey'] as String?,
+        sign: _hostedSign,
+      );
+      final tok = sess['sessionToken'] as String?;
+      if (tok == null || tok.isEmpty) return null;
+      agent['sessionToken'] = tok;
+      agent['expiresAt'] = sess['expiresAt'];
+      return tok;
+    } catch (_) {
+      return null;
+    }
   }
 
   // --- host-wide kill fan-out -----------------------------------------------

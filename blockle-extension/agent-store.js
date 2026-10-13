@@ -67,24 +67,84 @@
     },
 
     // Add / update a connection. Requires the store to be unlocked (we need the
-    // password to re-seal). cred: { provider, apiKey, model?, baseUrl?, label? }.
+    // password to re-seal). Two shapes:
+    //   BYO-key: { provider, apiKey, model?, baseUrl?, label? }
+    //   hosted : { provider:'hosted', gatewayUrl, sessionToken, expiresAt,
+    //              label?, model?, address?, chain?, publicKey? }  (NO apiKey)
+    // The hosted record holds NO upstream LLM key — only a short-lived session
+    // token, transparently refreshed via refreshHosted() on expiry.
     async add(cred) {
       if (_conns == null || !_pw) throw new Error('unlock the wallet before connecting a provider');
-      if (!cred || !cred.provider || !cred.apiKey) throw new Error('a provider and API key are required');
+      if (!cred || !cred.provider) throw new Error('a provider is required');
       const credRef = cred.credRef || rid();
-      const rec = {
-        credRef,
-        provider: cred.provider,
-        apiKey: cred.apiKey,
-        model: cred.model || null,
-        baseUrl: cred.baseUrl || null,
-        label: cred.label || cred.provider,
-        createdAt: Date.now(),
-      };
+      let rec;
+      if (cred.provider === 'hosted') {
+        if (!cred.gatewayUrl || !cred.sessionToken) throw new Error('a gatewayUrl and sessionToken are required for a hosted connection');
+        rec = {
+          credRef,
+          provider: 'hosted',
+          gatewayUrl: cred.gatewayUrl,
+          sessionToken: cred.sessionToken,
+          expiresAt: cred.expiresAt || null,
+          address: cred.address || null,
+          chain: cred.chain || null,
+          publicKey: cred.publicKey || null,
+          model: cred.model || null,
+          label: cred.label || 'Blockle hosted agent',
+          createdAt: Date.now(),
+        };
+      } else {
+        if (!cred.apiKey) throw new Error('a provider and API key are required');
+        rec = {
+          credRef,
+          provider: cred.provider,
+          apiKey: cred.apiKey,
+          model: cred.model || null,
+          baseUrl: cred.baseUrl || null,
+          label: cred.label || cred.provider,
+          createdAt: Date.now(),
+        };
+      }
       const i = _conns.findIndex((c) => c.credRef === credRef);
       if (i >= 0) _conns[i] = rec; else _conns.push(rec);
       await persist();
-      return { credRef, provider: rec.provider, model: rec.model, baseUrl: rec.baseUrl, label: rec.label };
+      return { credRef, provider: rec.provider, model: rec.model, baseUrl: rec.baseUrl || null, gatewayUrl: rec.gatewayUrl || null, expiresAt: rec.expiresAt || null, label: rec.label };
+    },
+
+    // Keyless connect: perform the gateway signature handshake (via
+    // AgentProviders.hostedSession) and seal the resulting hosted connection.
+    // `sign(message) -> { signature, publicKey }` is the wallet's own signer; no
+    // apiKey, no private key, ever leaves the device. Returns the secret-free view.
+    async connectHosted(opts) {
+      if (_conns == null || !_pw) throw new Error('unlock the wallet before connecting a provider');
+      const Providers = (typeof global !== 'undefined' && global.AgentProviders) ||
+        (typeof require === 'function' ? require('./agent/providers.js') : null);
+      if (!Providers || typeof Providers.hostedSession !== 'function') throw new Error('AgentProviders.hostedSession unavailable');
+      const sess = await Providers.hostedSession(opts || {});
+      return this.add({
+        credRef: (opts && opts.credRef) || undefined,
+        provider: 'hosted',
+        gatewayUrl: sess.gatewayUrl,
+        sessionToken: sess.sessionToken,
+        expiresAt: sess.expiresAt,
+        address: sess.address,
+        chain: sess.chain,
+        publicKey: sess.publicKey,
+        model: (opts && opts.model) || null,
+        label: sess.label,
+      });
+    },
+
+    // Transparent refresh: update a hosted connection's session token (after a
+    // re-sign on expiry) and re-seal. Returns true if the record was found.
+    async refreshHosted(credRef, sessionToken, expiresAt) {
+      if (_conns == null || !_pw) return false;
+      const c = _conns.find((x) => x.credRef === credRef && x.provider === 'hosted');
+      if (!c) return false;
+      c.sessionToken = sessionToken;
+      if (expiresAt != null) c.expiresAt = expiresAt;
+      await persist();
+      return true;
     },
 
     async remove(credRef) {
@@ -95,19 +155,26 @@
       return _conns.length !== n;
     },
 
-    // Secret-free list for the UI.
+    // Secret-free list for the UI. For hosted connections the sessionToken (a
+    // short-lived bearer) is NEVER included — only non-secret transport metadata.
     list() {
       if (!_conns) return [];
-      return _conns.map((c) => ({ credRef: c.credRef, provider: c.provider, model: c.model, baseUrl: c.baseUrl, label: c.label, createdAt: c.createdAt }));
+      return _conns.map((c) => (c.provider === 'hosted'
+        ? { credRef: c.credRef, provider: 'hosted', gatewayUrl: c.gatewayUrl, expiresAt: c.expiresAt, model: c.model, label: c.label, createdAt: c.createdAt }
+        : { credRef: c.credRef, provider: c.provider, model: c.model, baseUrl: c.baseUrl, label: c.label, createdAt: c.createdAt }));
     },
 
-    // Resolve a credRef to the full credential (incl. apiKey). Used by
-    // channels.js resolveCredential — the key leaves memory only to call the
-    // provider's own API.
+    // Resolve a credRef to the full credential. Used by channels.js
+    // resolveCredential. For BYO-key the apiKey leaves memory only to call the
+    // provider's own API; for HOSTED there is NO apiKey — only the gatewayUrl +
+    // short-lived sessionToken (never an upstream key).
     resolve(credRef) {
       if (!_conns) return null;
       const c = _conns.find((x) => x.credRef === credRef);
       if (!c) return null;
+      if (c.provider === 'hosted') {
+        return { provider: 'hosted', gatewayUrl: c.gatewayUrl, sessionToken: c.sessionToken, expiresAt: c.expiresAt, model: c.model, address: c.address, chain: c.chain, publicKey: c.publicKey };
+      }
       return { provider: c.provider, apiKey: c.apiKey, model: c.model, baseUrl: c.baseUrl };
     },
 
