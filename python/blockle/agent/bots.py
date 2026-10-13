@@ -145,7 +145,7 @@ def decimals_for(sym: Any, overrides: Optional[Dict[str, Any]] = None) -> int:
 # config validation + defaults per bot type                                   #
 # =========================================================================== #
 
-TYPES = ["dca", "grid", "smarttrade", "signal", "rebalance", "momentum"]
+TYPES = ["dca", "grid", "smarttrade", "signal", "rebalance", "momentum", "scanner"]
 
 
 def _num(v: Any, dflt: float) -> float:
@@ -238,6 +238,21 @@ def validate_scheduled_config(c: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return dict(c or {})
 
 
+def validate_scanner_config(c: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md): the full config is
+    validated by the shared AgentScanner evaluator at tick time (so all three
+    wallets pin identical values). Here we just normalize the few top-level knobs
+    and carry the rest through verbatim."""
+    c = c or {}
+    out = dict(c)
+    out["minProfitBps"] = max(0, int(clamp_num(c.get("minProfitBps", 30), 0, 1e9, 30)))
+    out["maxConcurrentPairs"] = clamp_int(c.get("maxConcurrentPairs", 3), 1, 50, 3)
+    out["perTradeUsd"] = max(0.0, _num(c.get("perTradeUsd", 20), 20))
+    if c.get("strategies") is not None and not isinstance(c.get("strategies"), (list, tuple)):
+        raise ValueError("scanner strategies must be an array")
+    return out
+
+
 def validate_config(type_: str, c: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if type_ == "dca":
         return validate_dca_config(c)
@@ -247,6 +262,8 @@ def validate_config(type_: str, c: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return validate_smart_trade_config(c)
     if type_ == "signal":
         return validate_signal_config(c)
+    if type_ == "scanner":
+        return validate_scanner_config(c)
     if type_ in ("rebalance", "momentum"):
         return validate_scheduled_config(c)
     raise ValueError("unknown bot type: " + str(type_))
@@ -708,6 +725,11 @@ class Bot:
             return "Buys $" + _plain(c["amountUsd"]) + ", takes profit in " + _plain(len(c["takeProfits"])) + " step(s)."
         if self.type == "signal":
             return "Launches a " + c["onSignal"]["type"] + " bot per matching " + c["source"] + " signal."
+        if self.type == "scanner":
+            return ("Scans every discoverable pair, scores each for cost-positive profit, and auto-trades "
+                    "the worthy ones (score >= " + _plain(c.get("minProfitBps", 30)) + "bps, up to " +
+                    _plain(c.get("maxConcurrentPairs", 3)) + " at $" + _plain(c.get("perTradeUsd", 20)) +
+                    " each) through the one gate.")
         return self.type + " bot."
 
     def to_json(self) -> Dict[str, Any]:

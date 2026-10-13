@@ -31,6 +31,7 @@ import 'bots.dart' as b;
 import 'pnl.dart' show PnlHook;
 import 'policy.dart';
 import 'runner.dart' show dispatchValueMoving, DispatchOutcome;
+import 'scanner.dart' show AgentScanner, ScanIntent, ScanResult;
 import 'strategies.dart' show StrategyContext, Strategy, defaultStrategies;
 import 'tools.dart' show ToolRegistry;
 
@@ -54,7 +55,18 @@ class BotContext {
   /// The strategy READ-ONLY context for scheduled bots (rebalance/momentum).
   final StrategyContext? strategyCtx;
 
-  const BotContext({this.now, this.network, this.prices, this.discovery, this.strategyCtx});
+  /// Candidate universe feed for the scanner (scan-&-trade autopilot) — the
+  /// discovery feed ∪ exchange markets ∪ connected venue pairs, enriched with
+  /// venue prices/history/book. READ-ONLY; `config` is the bot's config.
+  final Future<List<dynamic>> Function([Map<String, dynamic>? config])? scanUniverse;
+
+  const BotContext(
+      {this.now,
+      this.network,
+      this.prices,
+      this.discovery,
+      this.strategyCtx,
+      this.scanUniverse});
 }
 
 class BotRunner {
@@ -340,6 +352,8 @@ class BotRunner {
     try {
       if (bot.type == 'rebalance' || bot.type == 'momentum') {
         report = await _tickScheduled(bot, now);
+      } else if (bot.type == 'scanner') {
+        report = await _tickScanner(bot, now);
       } else if (bot.type == 'signal') {
         report = await _tickSignal(bot, now);
       } else {
@@ -766,21 +780,35 @@ class BotRunner {
     if (sctx == null) return {'bot': bot.id, 'error': 'no strategy ctx for ${bot.type}'};
     final params = strat.validateParams({...bot.config});
     final intents = await strat.plan(sctx, params);
+    final events = await _dispatchIntents(bot, intents);
+    return {'bot': bot.id, 'type': bot.type, 'events': events};
+  }
+
+  // The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:
+  // every Intent passes the SAME non-bypassable gate — FINITE+positive estimate,
+  // the hard per-bot allocation ledger (trade + 0.05% fee), the mainnet gate, the
+  // tool allowlist, and the ONE value-moving dispatch (caps/confirm/kill/audit/
+  // security pre-sign). PAPER records a paper_intent and NEVER broadcasts. Kill is
+  // honored between Intents. [intents] is a list of StrategyIntent | ScanIntent —
+  // both expose tool/args/estUsd/tag/mainnet. Returns a per-Intent event list.
+  Future<List<Map<String, dynamic>>> _dispatchIntents(
+      b.Bot bot, List<dynamic> intents) async {
     final ctxMainnet = _ctxMainnet();
     final events = <Map<String, dynamic>>[];
-    for (final it in intents) {
+    for (final dynamic it in intents) {
       if (policy.isKilled()) break;
+      final num? est = it.estUsd as num?;
       if (bot.mode == 'live') {
-        // FIX-EST: a LIVE scheduled order must carry a FINITE, POSITIVE USD estimate
-        // or it FAILS CLOSED. null/NaN/Infinity would coerce to $0 and slip past the
-        // cap; a NEGATIVE estimate would even accrue negative and EXPAND the
-        // allocation ledger — both bypass the hard cap, so reject all.
-        if (it.estUsd == null || !it.estUsd!.isFinite || it.estUsd! <= 0) {
+        // FIX-EST: a LIVE order must carry a FINITE, POSITIVE USD estimate or it
+        // FAILS CLOSED. null/NaN/Infinity would coerce to $0 and slip past the
+        // cap; a NEGATIVE estimate would accrue negative and EXPAND the ledger —
+        // both bypass the hard cap, so reject all.
+        if (est == null || !est.isFinite || est <= 0) {
           await _audit({'type': 'bot_skip', 'bot': bot.id, 'reason': 'allocation-unknown', 'tag': it.tag});
           events.add({'tag': it.tag, 'skipped': 'allocation-unknown'});
           continue;
         }
-        final estUsdUc = b.microUsd(it.estUsd);
+        final estUsdUc = b.microUsd(est);
         final feeUc = b.agentFeeUc(estUsdUc); // allocation bounds the trade + 0.05% fee
         final remainingUc = b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
         if (estUsdUc + feeUc > remainingUc) {
@@ -788,17 +816,18 @@ class BotRunner {
           events.add({'tag': it.tag, 'skipped': 'allocation'});
           continue;
         }
-        if ((it.mainnet || ctxMainnet) && !mainnetEnabled) {
+        if (((it.mainnet as bool) || ctxMainnet) && !mainnetEnabled) {
           await _audit({'type': 'bot_skip', 'bot': bot.id, 'reason': 'mainnet', 'tag': it.tag});
           events.add({'tag': it.tag, 'skipped': 'mainnet'});
           continue;
         }
-        if (!_allowed(it.tool)) {
+        if (!_allowed(it.tool as String)) {
           await _audit({'type': 'bot_blocked', 'bot': bot.id, 'tool': it.tool});
           events.add({'tag': it.tag, 'blocked': true});
           continue;
         }
-        final r = await _dispatch(bot, it.tool, it.args, remainingUc);
+        final r = await _dispatch(
+            bot, it.tool as String, (it.args as Map).cast<String, dynamic>(), remainingUc);
         if (r['rejected'] != true && r['result'] != null) {
           bot.state['committedUc'] = ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) + estUsdUc + feeUc;
           events.add({'tag': it.tag, 'executed': true});
@@ -806,15 +835,80 @@ class BotRunner {
           events.add({'tag': it.tag, 'rejected': r['reason']});
         }
       } else {
-        if ((it.mainnet || ctxMainnet) && !mainnetEnabled) {
+        if (((it.mainnet as bool) || ctxMainnet) && !mainnetEnabled) {
           events.add({'tag': it.tag, 'skipped': 'mainnet'});
           continue;
         }
-        await _audit({'type': 'bot_paper_intent', 'bot': bot.id, 'tag': it.tag, 'estUsd': it.estUsd});
+        await _audit({'type': 'bot_paper_intent', 'bot': bot.id, 'tag': it.tag, 'estUsd': est});
         events.add({'tag': it.tag, 'paper': true});
       }
     }
-    return {'bot': bot.id, 'type': bot.type, 'events': events};
+    return events;
+  }
+
+  // ---- scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md §3-4) -------------
+  // Build the candidate universe (discovery feed ∪ exchange markets ∪ venue pairs,
+  // enriched with market data), score every pair with the shared AgentScanner
+  // evaluator, pick the worthy ones that fit the REMAINING allocation, and dispatch
+  // each chosen Intent through the SAME _dispatchIntents gate as every other bot.
+  // READ-ONLY until dispatch; never fabricates a price/edge; a sub-threshold or
+  // net-negative pair is NEVER emitted. Returns the scored candidate list (UI) +
+  // the dispatch events.
+  Future<Map<String, dynamic>> _tickScanner(b.Bot bot, int now) async {
+    final universe = await _scanUniverse(bot);
+    final committedUsd =
+        b.ucToUsd((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) ?? 0;
+    final ScanResult result = AgentScanner.scanAndScore(
+      universe,
+      {...bot.config},
+      allocationUsd: bot.allocationUsd,
+      committedUsd: committedUsd,
+      mainnet: _ctxMainnet(),
+    );
+    await _audit({
+      'type': 'scanner_scan',
+      'bot': bot.id,
+      'candidates': result.candidates.length,
+      'worthy': result.worthy.length,
+      'traded': result.worthy.map((w) => w['pair']).toList(),
+      'skipped': result.skipped.map((s) => '${s['pair']}:${s['reason']}').toList(),
+    });
+    // dispatch the chosen Intents through the ONE gate (same as scheduled bots).
+    final events = await _dispatchIntents(bot, result.intents);
+    // last-scan snapshot for the UI cockpit card.
+    final lastScan = <String, dynamic>{
+      'at': now,
+      'candidates': result.candidates,
+      'worthy': result.worthy.map((w) => w['pair']).toList(),
+      'skipped': result.skipped,
+      'minProfitBps': result.minProfitBps,
+      'allocationUsd': result.allocationUsd,
+      'committedUsd': committedUsd,
+      'remainingUsd': result.remainingUsd,
+    };
+    bot.state['lastScan'] = lastScan;
+    return {'bot': bot.id, 'type': 'scanner', 'scan': lastScan, 'events': events};
+  }
+
+  // Assemble the scanner's candidate universe. Prefer an injected enriched feed
+  // (ctx.scanUniverse — discovery ∪ exchange markets ∪ venue pairs WITH venue
+  // prices/history/book), else fall back to the discovery feed. READ-ONLY.
+  Future<List<dynamic>> _scanUniverse(b.Bot bot) async {
+    if (ctx.scanUniverse != null) {
+      try {
+        return (await ctx.scanUniverse!(bot.config)) ?? const [];
+      } catch (_) {
+        return const [];
+      }
+    }
+    if (discovery != null) {
+      try {
+        return List<dynamic>.from(await discovery.scan());
+      } catch (_) {
+        return const [];
+      }
+    }
+    return const [];
   }
 
   // ===========================================================================

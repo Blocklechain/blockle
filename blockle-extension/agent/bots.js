@@ -115,7 +115,7 @@
   // config validation + defaults per bot type
   // ===========================================================================
 
-  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum'];
+  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner'];
 
   function clampNum(v, lo, hi, dflt) {
     let n = Number(v); if (!isFinite(n)) n = dflt;
@@ -184,12 +184,26 @@
     c = c || {};
     return Object.assign({}, c);
   }
+  // scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md): config is validated by
+  // the AgentScanner evaluator itself (shared across the three wallets), so here we
+  // just normalize the few top-level knobs + carry the rest through verbatim. The
+  // AgentScanner.validateConfig call at tick time pins the final values.
+  function validateScannerConfig(c) {
+    c = c || {};
+    const out = Object.assign({}, c);
+    out.minProfitBps = Math.max(0, Math.trunc(Number(c.minProfitBps != null ? c.minProfitBps : 30)));
+    out.maxConcurrentPairs = clampInt(c.maxConcurrentPairs != null ? c.maxConcurrentPairs : 3, 1, 50, 3);
+    out.perTradeUsd = Math.max(0, Number(c.perTradeUsd != null ? c.perTradeUsd : 20));
+    if (c.strategies != null && !Array.isArray(c.strategies)) throw new Error('scanner strategies must be an array');
+    return out;
+  }
   function validateConfig(type, c) {
     switch (type) {
       case 'dca': return validateDcaConfig(c);
       case 'grid': return validateGridConfig(c);
       case 'smarttrade': return validateSmartTradeConfig(c);
       case 'signal': return validateSignalConfig(c);
+      case 'scanner': return validateScannerConfig(c);
       case 'rebalance':
       case 'momentum': return validateScheduledConfig(c);
       default: throw new Error('unknown bot type: ' + type);
@@ -569,6 +583,10 @@
           return 'Buys $' + c.amountUsd + ', takes profit in ' + c.takeProfits.length + ' step(s).';
         case 'signal':
           return 'Launches a ' + c.onSignal.type + ' bot per matching ' + c.source + ' signal.';
+        case 'scanner':
+          return 'Scans every discoverable pair, scores each for cost-positive profit, and auto-trades the worthy ones (score ≥ ' +
+            (c.minProfitBps != null ? c.minProfitBps : 30) + 'bps, up to ' + (c.maxConcurrentPairs != null ? c.maxConcurrentPairs : 3) +
+            ' at $' + (c.perTradeUsd != null ? c.perTradeUsd : 20) + ' each) through the one gate.';
         default:
           return this.type + ' bot.';
       }

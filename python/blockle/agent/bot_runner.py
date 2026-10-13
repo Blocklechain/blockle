@@ -63,6 +63,7 @@ class BotRunner:
             {"store": deps.get("persist"), "wallet": self.wallet, "channel": self.channel})
         self.discovery = deps.get("discovery") or member(self.ctx, "discovery")
         self.Strategies = deps.get("Strategies")  # optional injection (tests); else module default
+        self.Scanner = deps.get("Scanner")        # optional injection (tests); else module default
         self._killed = False
         # ---- background scheduler ------------------------------------------
         # A single asyncio task that ticks every ENABLED bot when its pollSec is
@@ -347,6 +348,8 @@ class BotRunner:
         try:
             if bot.type in ("rebalance", "momentum"):
                 report = await self._tick_scheduled(bot, now, opts)
+            elif bot.type == "scanner":
+                report = await self._tick_scanner(bot, now, opts)
             elif bot.type == "signal":
                 report = await self._tick_signal(bot, now, opts)
             else:
@@ -702,23 +705,33 @@ class BotRunner:
 
     # ---- scheduled bots (rebalance / momentum) reuse the strategy planners ----
     async def _tick_scheduled(self, bot, now, opts):
-        B = self.Bots
         strat_mod = self.Strategies or _strategies
         strat = strat_mod.default_registry().get(bot.type)
         if not strat:
             return {"bot": bot.id, "error": "no strategy " + str(bot.type)}
         params = strat.validate_params(dict(bot.config))
         intents = await maybe_await(strat.plan(self.ctx, params))
+        events = await self._dispatch_intents(bot, intents or [])
+        return {"bot": bot.id, "type": bot.type, "events": events}
+
+    # The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:
+    # every Intent passes the SAME non-bypassable gate — FINITE+positive estimate,
+    # the hard per-bot allocation ledger (trade + 0.05% fee), the mainnet gate, the
+    # tool allowlist, and the ONE value-moving dispatch (caps/confirm/kill/audit/
+    # security pre-sign). PAPER records a paper_intent and NEVER broadcasts. Kill is
+    # honored between Intents.
+    async def _dispatch_intents(self, bot, intents):
+        B = self.Bots
         ctx_mainnet = self._ctx_mainnet()
         events: List[Dict[str, Any]] = []
         for it in (intents or []):
             if self.policy.is_killed():
                 break
             if bot.mode == "live":
-                # FIX-EST: a LIVE scheduled order must carry a FINITE, POSITIVE USD
-                # estimate or it FAILS CLOSED. None/NaN/inf would coerce to $0 and slip
-                # past the cap; a NEGATIVE estimate would even accrue negative and EXPAND
-                # the allocation ledger — both bypass the hard cap, so reject all.
+                # FIX-EST: a LIVE order must carry a FINITE, POSITIVE USD estimate or it
+                # FAILS CLOSED. None/NaN/inf would coerce to $0 and slip past the cap; a
+                # NEGATIVE estimate would accrue negative and EXPAND the ledger — both
+                # bypass the hard cap, so reject all.
                 _est = it.get("estUsd")
                 if _est is None or not math.isfinite(_est) or _est <= 0:
                     await self._audit({"type": "bot_skip", "bot": bot.id,
@@ -753,7 +766,59 @@ class BotRunner:
                 await self._audit({"type": "bot_paper_intent", "bot": bot.id, "tag": it.get("tag"),
                                    "estUsd": it.get("estUsd")})
                 events.append({"tag": it.get("tag"), "paper": True})
-        return {"bot": bot.id, "type": bot.type, "events": events}
+        return events
+
+    # ---- scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md) -----------------
+    # Build the candidate universe (discovery feed ∪ exchange markets ∪ venue pairs,
+    # enriched with market data), score every pair with the shared scanner evaluator,
+    # pick the worthy ones that fit the REMAINING allocation, and dispatch each chosen
+    # Intent through the SAME gate (_dispatch_intents) as every other bot. READ-ONLY
+    # until dispatch; never fabricates a price/edge; a sub-threshold or net-negative
+    # pair is NEVER emitted. Returns the scored candidate list (for the UI) + events.
+    async def _tick_scanner(self, bot, now, opts):
+        B = self.Bots
+        Scanner = self.Scanner
+        if Scanner is None:
+            from . import scanner as Scanner  # lazy import; module default
+        Strategies = self.Strategies or _strategies
+        universe = await self._scan_universe(bot)
+        committed_usd = B.uc_to_usd(bot.state.get("committedUc") or 0)
+        result = await Scanner.scan_and_score(universe, bot.config, {
+            "Strategies": Strategies, "allocationUsd": bot.allocation_usd,
+            "committedUsd": committed_usd, "mainnet": self._ctx_mainnet(),
+        })
+        await self._audit({
+            "type": "scanner_scan", "bot": bot.id, "candidates": len(result["candidates"]),
+            "worthy": len(result["worthy"]), "traded": [w["pair"] for w in result["worthy"]],
+            "skipped": [s["pair"] + ":" + s["reason"] for s in result["skipped"]],
+        })
+        events = await self._dispatch_intents(bot, result["intents"])
+        bot.state["lastScan"] = {
+            "at": now, "candidates": result["candidates"],
+            "worthy": [w["pair"] for w in result["worthy"]], "skipped": result["skipped"],
+            "minProfitBps": result["minProfitBps"], "allocationUsd": result["allocationUsd"],
+            "committedUsd": committed_usd, "remainingUsd": result["remainingUsd"],
+        }
+        return {"bot": bot.id, "type": "scanner", "scan": bot.state["lastScan"], "events": events}
+
+    # Assemble the scanner's candidate universe. Prefer an injected enriched feed
+    # (ctx.scanUniverse — discovery ∪ exchange markets ∪ venue pairs WITH venue
+    # prices/history/book), else fall back to the discovery feed. READ-ONLY.
+    async def _scan_universe(self, bot):
+        fn = member(self.ctx, "scanUniverse")
+        if callable(fn):
+            try:
+                return (await maybe_await(fn(bot.config if bot else None))) or []
+            except Exception:
+                return []
+        if self.discovery is not None:
+            scan = member(self.discovery, "scan")
+            if callable(scan):
+                try:
+                    return (await maybe_await(scan())) or []
+                except Exception:
+                    return []
+        return []
 
     # =========================================================================
     # per-bot dashboard DATA (§4) — accessors only, no UI.
@@ -800,7 +865,7 @@ class BotRunner:
                 })
         deal_count = bot.state.get("dealCount") or 0
         wins = bot.state.get("winCount") or 0
-        return {
+        out = {
             "bot": bot.id, "name": bot.name, "type": bot.type, "mode": bot.mode,
             "enabled": bot.enabled, "network": bot.network,
             "status": "killed" if self._killed else ("running" if bot.enabled else "stopped"),
@@ -816,6 +881,11 @@ class BotRunner:
             "winRate": (wins / deal_count) if deal_count > 0 else None,
             "maxDrawdownUsd": B.uc_to_usd(bot.state.get("maxDrawdownUc") or 0),
         }
+        # Scanner cockpit card (docs/AGENT-SCAN.md §3): surface the last scan's
+        # candidates + scores + traded/skipped reasons for the "Scan & trade" view.
+        if bot.type == "scanner":
+            out["scan"] = bot.state.get("lastScan")
+        return out
 
     def aggregate(self) -> Dict[str, Any]:
         B = self.Bots

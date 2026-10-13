@@ -163,9 +163,24 @@
   // lifecycle (called by popup.js, mirrors AgentUI / BotsUI)
   // ===========================================================================
   function init(ui) { UI = ui; }
-  async function onUnlock() { engine = null; await ensureEngine(); }
-  async function onResume() { engine = null; await ensureEngine(); }
+  async function onUnlock() { engine = null; await ensureEngine(); autoImportThenRefresh(); }
+  async function onResume() { engine = null; await ensureEngine(); autoImportThenRefresh(); }
   async function onLock() { engine = null; actCursor = null; actItems = []; }
+
+  // Auto-detect + auto-import held tokens on every chain (Feature A). Best-effort,
+  // fire-and-forget on unlock / account-switch / resume: it persists newly-found
+  // tokens into the SAME list a manual import writes, then — if anything changed —
+  // drops the engine cache + re-renders so the new tokens + balances appear with no
+  // manual add. Never throws; never blocks the unlock.
+  function autoImportThenRefresh() {
+    try {
+      var Wiring = dep('Wiring', './wiring.js');
+      if (!Wiring || typeof Wiring.autoImportTokens !== 'function') return;
+      Promise.resolve(Wiring.autoImportTokens()).then(function (summary) {
+        if (summary && summary.changed) { engine = null; try { enter(); } catch (_) {} }
+      }).catch(function () {});
+    } catch (_) {}
+  }
 
   function Wallet() { return global.Wallet; }
   function unlocked() { try { return !!(Wallet() && Wallet().isUnlocked && Wallet().isUnlocked()); } catch (_) { return false; } }

@@ -21,6 +21,8 @@
   // Wallet security suite (read-only tx inspection + warnings + approval mgr).
   const Security = inNode ? require('./security.js') : global.WalletSecurity;
   const Evm = inNode ? require('./chains/evm.js') : global.EvmAdapter;
+  // Auto-detect + auto-import held tokens on every chain.
+  const AutoImport = inNode ? require('./chains/autoimport.js') : global.TokenAutoImport;
 
   // Default agent-fee treasury (mirrors exchange/treasury.json). Overridable via
   // settings.agentTreasury. No private key ever lives here — recipient only.
@@ -636,6 +638,35 @@
     };
   }
 
+  // AUTO-DETECT + AUTO-IMPORT held tokens on EVERY enabled chain + custom network.
+  // Runs per-chain discovery and persists any NEWLY-found token with a real positive
+  // balance into `chainTokens` (BLOCK-20 ids into `tokens`) — the SAME lists a manual
+  // "import token" writes — so it shows up with its balance + in the portfolio
+  // automatically. Honors the security denylist / spam / scam flags (flagged tokens
+  // are MARKED into `flaggedTokens`, never auto-imported). Incremental + idempotent.
+  // Call on unlock / account-switch / manual refresh. Best-effort (never throws).
+  async function autoImportTokens() {
+    try {
+      if (!AutoImport || typeof AutoImport.autoImport !== 'function') return null;
+      const reg = await registry();
+      const acc = await accounts();
+      const s = await settings();
+      const sec = (s.agent && s.agent.security) || {};
+      const summary = await AutoImport.autoImport({
+        registry: reg,
+        store: Store,
+        chains: reg.enabled(),
+        denylist: sec.denylist || [],
+        spamFilter: true,
+        addressFor: async (chain) => { try { return (await acc.accountFor(chain)).address; } catch (_) { return null; } },
+      });
+      // a change to the persisted token lists means the next registry must pick them
+      // up — drop the cache so getHoldings/portfolio reflect the new tokens.
+      if (summary && summary.changed) reset();
+      return summary;
+    } catch (_) { return null; }
+  }
+
   // Make sure venues + telemetry exist before building an agent ctx.
   async function ensureAgentDeps() {
     await venues();
@@ -654,6 +685,7 @@
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
+    autoImportTokens,
     amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:
     inspect, assertApproveSafe, listApprovals, buildRevoke, rememberRecipient, Security,
