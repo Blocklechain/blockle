@@ -7,6 +7,7 @@
 // broadcasts; a mainnet bot is refused when mainnetEnabled=false; import lands
 // paper + disabled.
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -84,12 +85,39 @@ class _FakeDiscovery {
   Future<List<Candidate>> scan() async => cands;
 }
 
+// A no-op Timer so the scheduler never spins a REAL periodic timer in tests
+// (that would leave a pending timer and fail the test). The probe captures the
+// scheduler's onTick so a test can fire a tick deterministically.
+class _FakeTimer implements Timer {
+  bool _active = true;
+  @override
+  void cancel() => _active = false;
+  @override
+  bool get isActive => _active;
+  @override
+  int get tick => 0;
+}
+
+class _SchedulerProbe {
+  Duration? interval;
+  void Function()? onTick;
+  int built = 0;
+  _FakeTimer? timer;
+  Timer make(Duration d, void Function() cb) {
+    interval = d;
+    onTick = cb;
+    built++;
+    return timer = _FakeTimer();
+  }
+}
+
 class _Setup {
   final BotRunner runner;
   final Policy policy;
   final _ToolState tools;
   final Audit audit;
-  _Setup(this.runner, this.policy, this.tools, this.audit);
+  final _SchedulerProbe probe;
+  _Setup(this.runner, this.policy, this.tools, this.audit, this.probe);
 }
 
 const _noCap = Object();
@@ -101,7 +129,9 @@ _Setup setup({
   Future<void> Function(String?)? onKill,
   bool mainnetEnabled = false,
   dynamic discovery,
+  _SchedulerProbe? probe,
 }) {
+  final sched = probe ?? _SchedulerProbe();
   final audit = Audit();
   final num? cap = sessionUsd == _noCap ? 1000 : (sessionUsd as num?);
   final policy = Policy.create(
@@ -119,8 +149,9 @@ _Setup setup({
     ctx: ctx ?? mkCtx([100]),
     mainnetEnabled: mainnetEnabled,
     discovery: discovery,
+    timerFactory: sched.make,
   );
-  return _Setup(runner, policy, ft.state, audit);
+  return _Setup(runner, policy, ft.state, audit, sched);
 }
 
 int skips(Audit audit, String reason) =>
@@ -486,6 +517,114 @@ void main() {
     final d = runner.dashboard(bot.id, {'BLOCK': 100})!;
     expect(((d['committedUsd'] as double) - 10.005).abs() < 1e-6, isTrue,
         reason: 'only the finite order accrued (trade \$10 + fee \$0.005), got ${d['committedUsd']}');
+  });
+
+  // ===========================================================================
+  // FIX-KILL: scheduler ticks enabled bots; per-bot STOP + REMOVE; kill-all.
+  // ===========================================================================
+  group('scheduler + stop/remove/kill (FIX-KILL)', () {
+    test('enabling a bot starts the background scheduler on its pollSec', () async {
+      final su = setup();
+      expect(su.runner.schedulerRunning, isFalse, reason: 'idle: no scheduler');
+      final bot = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'baseOrderUsd': 10, 'maxSafetyOrders': 0, 'takeProfitPct': 5},
+        'pollSec': 5,
+      });
+      await su.runner.enablePaper(bot.id);
+      expect(su.runner.schedulerRunning, isTrue, reason: 'enabling a bot arms the scheduler');
+      expect(su.probe.interval, const Duration(seconds: 5), reason: 'ticks on the bot pollSec');
+    });
+
+    test('the scheduler actually TICKS enabled bots (a paper fill is recorded)', () async {
+      final su = setup(ctx: mkCtx([100]));
+      final bot = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'baseOrderUsd': 10, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+      });
+      await su.runner.enablePaper(bot.id);
+      expect(su.audit.list().any((e) => e['type'] == 'bot_paper_fill'), isFalse);
+      // Fire the captured scheduler callback once — the SAME path the real timer
+      // drives — and let the async tick settle.
+      su.probe.onTick!();
+      await pumpEventQueue();
+      expect(su.audit.list().any((e) => e['type'] == 'bot_paper_fill'), isTrue,
+          reason: 'the scheduled tick advanced the enabled bot');
+    });
+
+    test('per-bot STOP halts it: enabled=false, scheduler skips it, status stopped', () async {
+      final su = setup(ctx: mkCtx([100]));
+      final bot = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'baseOrderUsd': 10, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+      });
+      await su.runner.enablePaper(bot.id);
+      expect(su.runner.schedulerRunning, isTrue);
+
+      await su.runner.pause(bot.id);
+      expect(bot.enabled, isFalse, reason: 'stop disables the bot');
+      expect(su.runner.schedulerRunning, isFalse, reason: 'no enabled bots -> scheduler stops');
+      expect(su.runner.dashboard(bot.id)!['status'], 'paused');
+
+      // A fired tick (or a direct tickAll) must NOT advance a stopped bot.
+      final before = su.audit.list().length;
+      await su.runner.tickAll();
+      expect(su.audit.list().where((e) => e['type'] == 'bot_paper_fill').isEmpty, isTrue);
+      expect(su.audit.list().length, before, reason: 'a stopped bot is skipped entirely');
+    });
+
+    test('per-bot REMOVE deletes it from the store (and stops an idle scheduler)', () async {
+      final su = setup();
+      final a = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10},
+      });
+      final c = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10},
+      });
+      await su.runner.enablePaper(a.id);
+      expect(su.runner.list().length, 2);
+
+      final removed = await su.runner.remove(c.id);
+      expect(removed, isTrue);
+      expect(su.runner.get(c.id), isNull, reason: 'deleted from the store');
+      expect(su.runner.list().length, 1);
+      expect(su.runner.schedulerRunning, isTrue, reason: 'bot a is still enabled');
+
+      await su.runner.remove(a.id);
+      expect(su.runner.get(a.id), isNull);
+      expect(su.runner.schedulerRunning, isFalse, reason: 'last enabled bot gone -> scheduler stops');
+      expect(await su.runner.remove('nope'), isFalse);
+    });
+
+    test('kill-all stops the scheduler, disables every bot, and blocks further ticks', () async {
+      var vaultLocked = false;
+      final su = setup(ctx: mkCtx([100]), sessionUsd: 1000, confirm: (_) async => true, onKill: (_) async {
+        vaultLocked = true;
+      });
+      final a = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 20, 'maxSafetyOrders': 0},
+      });
+      final c = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 5, 'maxSafetyOrders': 0},
+      });
+      await su.runner.armLive(a.id, allocationUsd: 50);
+      await su.runner.enablePaper(c.id);
+      expect(su.runner.schedulerRunning, isTrue);
+
+      await su.runner.killAll('panic');
+
+      expect(su.runner.schedulerRunning, isFalse, reason: 'kill stops the scheduler');
+      expect(vaultLocked, isTrue);
+      expect(a.enabled, isFalse);
+      expect(c.enabled, isFalse);
+      for (final r in su.runner.list()) {
+        expect(su.runner.dashboard(r.id)!['status'], 'killed');
+      }
+      // Firing a leftover tick after kill must advance nothing.
+      final before = su.tools.commits;
+      await su.runner.tickAll();
+      expect(su.tools.commits, before);
+    });
   });
 }
 

@@ -176,6 +176,7 @@ class MultichainController extends ChangeNotifier {
       telemetry: Telemetry(),
       confirm: _confirm,
       estimateUsd: _estimateUsd,
+      hostedSign: _hostedSign,
       defaults: const {
         'system':
             'You are the Blockle in-wallet trading agent. You operate ONE channel bound '
@@ -451,6 +452,7 @@ class MultichainController extends ChangeNotifier {
       telemetry: Telemetry(),
       confirm: _confirm,
       estimateUsd: _estimateUsd,
+      hostedSign: _hostedSign,
     );
     agent.load();
     if (pt != null) accounts.applyPlaintext(pt);
@@ -589,17 +591,33 @@ class MultichainController extends ChangeNotifier {
     if (!vault.isUnlocked) {
       throw Exception('unlock the multi-chain vault first');
     }
-    // The wallet's non-custodial identity for the handshake (proves address
-    // control, not a spend). BLOCK is the default chain.
-    final address = accounts.address;
-    final pub = accounts.block?.publicKeyHex;
+    // PREFER a real per-address session signed with the wallet's EVM key via
+    // EIP-191 personal_sign (chain "evm" + the 0x address + signature) — the
+    // scheme the gateway VERIFIES, so the connect NEVER 401s. BLOCK's
+    // post-quantum signature is NOT yet verifiable gateway-side, so we never
+    // sign the challenge with chain "block" (that path always 401'd). If no EVM
+    // signer is available (or the caller forced anon), FALL BACK to the
+    // anonymous (rate-limited) session — no signature, no 401 either way.
+    String? chain;
+    String? address;
+    String? publicKey;
+    var signer = sign;
+    if (!anon && signer == null) {
+      final evmSigner = accounts.evmHostedSigner();
+      if (evmSigner != null) {
+        chain = 'evm';
+        address = evmSigner.address;
+        signer = evmSigner.sign;
+      }
+    }
+    final useAnon = anon || signer == null;
     final sess = await agent.connectHosted(
       gatewayUrl: gatewayUrl,
-      address: address.isEmpty ? null : address,
-      chain: 'block',
-      publicKey: pub,
-      sign: sign,
-      anon: anon || sign == null,
+      address: useAnon ? null : address,
+      chain: useAnon ? null : chain,
+      publicKey: useAnon ? null : publicKey,
+      sign: useAnon ? null : signer,
+      anon: useAnon,
     );
     final pt = vault.plaintext!;
     pt.agent = {
@@ -615,6 +633,18 @@ class MultichainController extends ChangeNotifier {
     await vault.reseal(password);
     await _resumeAgent();
     notifyListeners();
+  }
+
+  /// The wallet's own signer for the KEYLESS hosted handshake + the transparent
+  /// refresh re-sign: EIP-191 personal_sign with the EVM key (chain "evm"),
+  /// returning `{ signature, publicKey }`. Null when no EVM key is available
+  /// (locked / BLOCK-only) so the refresh falls back to the anon path instead of
+  /// re-signing with an unverifiable chain. No private key/seed ever leaves here.
+  Future<dynamic> _hostedSign(String challenge) async {
+    final evmSigner = accounts.evmHostedSigner();
+    if (evmSigner == null) return null;
+    final sig = await evmSigner.sign(challenge);
+    return {'signature': sig, 'address': evmSigner.address};
   }
 
   Future<void> disconnectProvider(String password) async {

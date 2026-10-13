@@ -55,8 +55,69 @@
       this.wallet = deps.wallet || 'default';
       this.channel = deps.channel || 'default';
       this._killed = false;
+      // ---- background scheduler (FIX-KILL (a)) --------------------------------
+      // A single interval that TICKS every enabled bot on its pollSec cadence. It
+      // is started when a bot is enabled/armed and stopped on kill / when the last
+      // enabled bot is removed or paused. Timers are injectable so tests drive it
+      // deterministically; the default interval is unref'd so it never keeps a host
+      // process (or `node --test`) alive on its own.
+      this._scheduler = null;
+      this._ticking = false; // reentrancy guard for an in-flight scheduled tickAll
+      const T = deps.timers || {};
+      this._setInterval = typeof T.set === 'function' ? T.set
+        : (typeof setInterval === 'function' ? (fn, ms) => setInterval(fn, ms) : null);
+      this._clearInterval = typeof T.clear === 'function' ? T.clear
+        : (typeof clearInterval === 'function' ? (h) => clearInterval(h) : null);
+      this._pollMs = deps.pollMs != null ? Number(deps.pollMs) : null; // cadence override (tests)
       // the ONE shared value-moving routine (no second broadcast path)
       this.dispatchValueMoving = (deps.AgentRunner || dep('AgentRunner', './runner.js')).dispatchValueMoving;
+    }
+
+    // ---- background scheduler ------------------------------------------------
+    schedulerRunning() { return this._scheduler != null; }
+
+    _schedulerCadenceMs() {
+      if (this._pollMs != null && this._pollMs > 0) return this._pollMs;
+      let min = Infinity;
+      for (const b of this.store.enabled()) { const p = Number(b.pollSec) || 60; if (p < min) min = p; }
+      if (!isFinite(min)) min = 60;
+      return Math.max(1, Math.trunc(min)) * 1000;
+    }
+
+    // Start (idempotent). No-op after a kill or when no bot is enabled.
+    _startScheduler() {
+      if (this._killed || this._scheduler != null || !this._setInterval) return;
+      if (!this.store.enabled().length) return;
+      const h = this._setInterval(() => this._schedulerTick(), this._schedulerCadenceMs());
+      if (h && typeof h.unref === 'function') { try { h.unref(); } catch (_) {} }
+      this._scheduler = h;
+    }
+
+    _stopScheduler() {
+      if (this._scheduler != null && this._clearInterval) { try { this._clearInterval(this._scheduler); } catch (_) {} }
+      this._scheduler = null;
+    }
+
+    // Pick up a new cadence (e.g. a just-armed bot with a shorter pollSec).
+    _restartScheduler() { this._stopScheduler(); this._startScheduler(); }
+
+    // One scheduled sweep: tick every enabled bot that is DUE (now - lastTick >=
+    // pollSec). A killed runner stops itself; an empty roster stops itself.
+    async _schedulerTick() {
+      if (this._killed || this._ticking) return;
+      const due = this.store.enabled();
+      if (!due.length) { this._stopScheduler(); return; }
+      this._ticking = true;
+      try {
+        const now = Number(this.ctx.now ? this.ctx.now() : Date.now());
+        for (const bot of due) {
+          const last = (bot.state && bot.state.lastTickAt) || 0;
+          if (now - last >= (Number(bot.pollSec) || 60) * 1000) {
+            await this.tickBot(bot.id);
+          }
+        }
+      } catch (_) { /* a scheduled sweep never throws out of the interval */ }
+      finally { this._ticking = false; }
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
@@ -96,6 +157,7 @@
       await this._audit({ type: 'bot_armed', bot: id, mode: 'live', allocationUsd: alloc, network: bot.network });
       this.emit({ type: 'bot_armed', bot: id, mode: 'live', allocationUsd: alloc });
       await this.store.persist();
+      this._restartScheduler(); // arming a bot starts/refreshes the background ticker
       return bot;
     }
 
@@ -105,17 +167,44 @@
       bot.mode = 'paper'; bot.enabled = true;
       await this._audit({ type: 'bot_armed', bot: id, mode: 'paper' });
       await this.store.persist();
+      this._restartScheduler(); // enabling a bot starts/refreshes the background ticker
       return bot;
     }
+
+    // Per-bot STOP (FIX-KILL (b)): halt it (enabled=false, persisted); the
+    // scheduler skips it; status shows paused. Stops the ticker if none remain.
     async pause(id) {
       const bot = this.store.get(id);
-      if (bot) { bot.enabled = false; await this._audit({ type: 'bot_paused', bot: id }); await this.store.persist(); }
+      if (bot) {
+        bot.enabled = false;
+        await this._audit({ type: 'bot_paused', bot: id });
+        this.emit({ type: 'bot_paused', bot: id });
+        await this.store.persist();
+        if (!this.store.enabled().length) this._stopScheduler();
+      }
       return bot;
+    }
+
+    // Per-bot REMOVE/delete (FIX-KILL (b)): disable it, best-effort cancel its open
+    // LIVE orders, then DELETE it from the store so the UI drops it. Stops the
+    // ticker if it was the last enabled bot. Returns true when a bot was removed.
+    async remove(id) {
+      const bot = this.store.get(id);
+      if (!bot) return false;
+      bot.enabled = false;
+      if (bot.mode === 'live') { try { await this._cancelOpenOrders(bot); } catch (_) {} }
+      const ok = this.store.remove(id);
+      await this._audit({ type: 'bot_removed', bot: id });
+      this.emit({ type: 'bot_removed', bot: id });
+      await this.store.persist();
+      if (!this.store.enabled().length) this._stopScheduler();
+      return ok;
     }
 
     // ---- KILL (§5): stop ALL bots, best-effort cancel open orders, lock vault --
     async killAll(reason) {
       this._killed = true;
+      this._stopScheduler(); // the ticker stops immediately — no further sweeps
       // best-effort cancel any live open grid orders we hold ids for
       for (const bot of this.store.list()) {
         bot.enabled = false;

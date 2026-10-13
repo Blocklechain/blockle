@@ -107,6 +107,7 @@ class BotsController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _runner?.stopScheduler();
     _mc.removeListener(_rebuildRunner);
     super.dispose();
   }
@@ -141,6 +142,9 @@ class BotsController extends ChangeNotifier {
   }
 
   void _rebuildRunner() {
+    // Cancel the outgoing runner's scheduler so a rebuild (e.g. a channel
+    // connecting) never leaves an orphaned timer ticking the old instance.
+    _runner?.stopScheduler();
     final inst = _backingInstance();
     final Policy policy = inst?.policy ?? _fallbackPolicy;
     final ToolRegistry tools = inst?.tools ?? _fallbackTools;
@@ -163,6 +167,10 @@ class BotsController extends ChangeNotifier {
       pnl: pnl,
       store: _store,
     );
+    // Resume ticking across a rebuild if any bot is already enabled/armed.
+    if (_runner!.list().any((bot) => bot.enabled)) {
+      _runner!.startScheduler();
+    }
     notifyListeners();
   }
 
@@ -349,10 +357,10 @@ class BotsController extends ChangeNotifier {
   /// next tick when re-enabled.
   Future<void> stop(String id) => pause(id);
 
-  /// Permanently remove a bot from the store.
+  /// Permanently remove a bot from the store AND the UI. Delegates to the runner
+  /// so the scheduler stops when the last enabled bot is gone.
   Future<void> remove(String id) async {
-    _runner!.store.remove(id);
-    await _persist();
+    await _runner!.remove(id);
     notifyListeners();
   }
 

@@ -722,7 +722,8 @@
           (bot.enabled ? '<button class="bbtn ghost" id="b-d-pause">Pause</button>' : '<button class="bbtn ghost" id="b-d-resume">Resume (paper)</button>') +
           '<button class="bbtn ghost" id="b-d-clone">Clone</button>' +
           '<button class="bbtn ghost" id="b-d-edit">Edit</button>' +
-          '<button class="bkill" id="b-d-kill" style="margin-left:auto">⏻ Kill bot</button>' +
+          '<button class="bbtn ghost" id="b-d-remove">Delete</button>' +
+          '<button class="bkill" id="b-d-kill" style="margin-left:auto">⏻ Stop bot</button>' +
         '</div>' +
       '</div>' +
       '<div class="bpane card">' +
@@ -742,6 +743,12 @@
       try { var T = dep('AgentBotTemplates', './bot-templates.js'); var b = runner.add(T.importTemplate(T.exportBot(bot))); UI.toast('Cloned as paper'); selectedBotId = b.id; enter(); } catch (e) { UI.toast(e.message || String(e)); }
     });
     var edit = $('#b-d-edit'); if (edit) edit.addEventListener('click', function () { activeTab = 'create'; enter(); });
+    var remove = $('#b-d-remove'); if (remove) remove.addEventListener('click', async function () {
+      if (!global.confirm('Delete this bot? Its open orders are cancelled and it is removed permanently.')) return;
+      await runner.remove(bot.id);
+      if (selectedBotId === bot.id) selectedBotId = null;
+      UI.toast('Bot deleted'); enter();
+    });
     var kill = $('#b-d-kill'); if (kill) kill.addEventListener('click', async function () {
       if (!global.confirm('Stop this bot? (Use Kill all to also lock the wallet.)')) return;
       await runner.pause(bot.id); UI.toast('Bot stopped'); enter();

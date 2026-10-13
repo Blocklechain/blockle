@@ -410,3 +410,116 @@ def test_scheduled_live_nonfinite_or_negative_est_fails_closed():
     d = runner.dashboard(bot.id, {"BLOCK": 100})
     assert abs(d["committedUsd"] - 10.005) < 1e-6
     assert d["remainingUsd"] <= 100
+
+
+# =========================================================================== #
+# FIX-KILL: per-bot STOP / REMOVE, the background scheduler, and kill-all must  #
+# genuinely halt a running bot (docs/BLOCKLE-BOTS.md §5).                       #
+# =========================================================================== #
+def _dca_spec(poll_sec=1):
+    return {"type": "dca", "universe": {"pairs": ["BLOCK/USDC"]},
+            "config": {"baseOrderUsd": 50}, "pollSec": poll_sec}
+
+
+def test_per_bot_stop_halts_disables_and_scheduler_skips():
+    S = setup({"ctx": mk_ctx([100])})
+    runner = S["runner"]
+    bot = runner.add(_dca_spec())
+    bot.mode = "paper"
+    bot.enabled = True
+    out = run(runner.stop(bot.id))
+    assert out.enabled is False, "stop sets enabled=False"
+    # it persists + the scheduler skips a disabled bot (tick is a clean no-op)
+    rep = run(runner.tick_bot(bot.id))
+    assert rep == {"bot": bot.id, "skipped": "disabled"}
+    # the dashboard status reads 'stopped'
+    assert runner.dashboard(bot.id)["status"] == "stopped"
+    # a stop on an unknown bot fails closed
+    with pytest.raises(ValueError):
+        run(runner.stop("nope"))
+
+
+def test_per_bot_remove_deletes_from_store():
+    S = setup({"ctx": mk_ctx([100])})
+    runner = S["runner"]
+    bot = runner.add(_dca_spec())
+    bot.enabled = True
+    assert runner.get(bot.id) is not None
+    assert run(runner.remove(bot.id)) is True
+    assert runner.get(bot.id) is None
+    assert runner.list() == []
+    # removing an already-gone bot is a clean False (idempotent)
+    assert run(runner.remove(bot.id)) is False
+
+
+def test_scheduler_ticks_enabled_bot_then_stops_when_idle():
+    async def main():
+        audit = audit_mod.create({})
+        policy = policy_mod.create({"caps": {"sessionUsd": 1000}, "audit": audit})
+        state, tools = fake_tools()
+        policy.set_allowlist(tools.names())
+
+        async def prices(symbols=None):
+            return {"BLOCK": 100, "USDC": 1}
+
+        # real wall-clock `now` (no ctx override) so pollSec due-logic fires.
+        runner = br_mod.create({"policy": policy, "tools": tools, "audit": audit,
+                                "ctx": {"network": lambda: "testnet", "prices": prices},
+                                "Bots": bots_mod, "schedulerBaseSec": 0.01})
+        bot = runner.add(_dca_spec(poll_sec=1))
+        assert runner._scheduler_task is None
+        await runner.enable_paper(bot.id)             # arming starts the scheduler
+        assert runner._scheduler_task is not None
+
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if (bot.state.get("lastTickAt") or 0) > 0:
+                break
+        assert (bot.state.get("lastTickAt") or 0) > 0, "the scheduler actually ticked the bot"
+
+        # STOP it -> no enabled bots remain -> the scheduler stops.
+        await runner.stop(bot.id)
+        assert bot.enabled is False
+        assert runner._scheduler_task is None
+        last = bot.state.get("lastTickAt")
+        await asyncio.sleep(0.05)
+        assert bot.state.get("lastTickAt") == last, "a stopped bot is never ticked again"
+
+    run(main())
+
+
+def test_kill_all_stops_scheduler_and_disables_every_bot():
+    killed = {"n": 0}
+
+    async def on_kill(_r=None):
+        killed["n"] += 1
+
+    async def main():
+        audit = audit_mod.create({})
+        policy = policy_mod.create({"caps": {"sessionUsd": 1000}, "audit": audit, "onKill": on_kill})
+        state, tools = fake_tools()
+        policy.set_allowlist(tools.names())
+
+        async def prices(symbols=None):
+            return {"BLOCK": 100, "USDC": 1}
+
+        runner = br_mod.create({"policy": policy, "tools": tools, "audit": audit,
+                                "ctx": {"network": lambda: "testnet", "prices": prices},
+                                "Bots": bots_mod, "schedulerBaseSec": 0.01})
+        a = runner.add(_dca_spec()); b = runner.add(_dca_spec())
+        await runner.enable_paper(a.id)
+        await runner.enable_paper(b.id)
+        assert runner._scheduler_task is not None
+        await asyncio.sleep(0.03)
+        await runner.kill_all("panic")
+        assert runner._killed is True
+        assert runner._scheduler_task is None, "kill-all stops the scheduler"
+        assert all(x.enabled is False for x in runner.list())
+        assert killed["n"] == 1, "kill-all locked the vault via policy.kill"
+        # a tick after kill is a clean no-op, never a throw
+        assert run_is_noop(await runner.tick_bot(a.id))
+
+    def run_is_noop(rep):
+        return rep.get("skipped") == "disabled" or rep.get("killed") is True
+
+    run(main())

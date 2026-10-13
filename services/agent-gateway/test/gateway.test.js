@@ -24,6 +24,46 @@ const {
   fromOpenAI,
 } = require("../index.js");
 
+// Repo signing primitives — used ONLY to MINT real test vectors (an EVM EIP-191
+// signature, a Solana ed25519 key). The gateway itself vendors its own verifier
+// and never requires these at runtime.
+const Secp = require("../../../blockle-extension/secp256k1.js");
+const CC = require("../../../blockle-extension/crypto-core.js");
+
+// A real EVM wallet that signs the EIP-191 personal_sign digest of a message.
+function makeEvmWallet() {
+  let priv;
+  do {
+    priv = crypto.randomBytes(32);
+  } while (!Secp.isValidPrivate(Secp.bytesToBig(priv)));
+  const pub = Secp.publicKey(priv, false); // 65-byte uncompressed
+  const address = "0x" + Buffer.from(CC.keccak256(pub.subarray(1)).subarray(-20)).toString("hex");
+  return {
+    address,
+    sign: (msg) => {
+      const m = Buffer.from(msg, "utf8");
+      const prefix = Buffer.from("\x19Ethereum Signed Message:\n" + m.length, "latin1");
+      const digest = CC.keccak256(Buffer.concat([prefix, m]));
+      const sig = Secp.sign(digest, priv);
+      const v = 27 + sig.recovery;
+      return "0x" + Buffer.from(sig.compact).toString("hex") + v.toString(16).padStart(2, "0");
+    },
+  };
+}
+
+// A real Solana wallet: address = base58 of the 32-byte ed25519 public key.
+function makeSolWallet() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const der = publicKey.export({ format: "der", type: "spki" });
+  const raw = der.subarray(der.length - 32);
+  const address = CC.base58encode(raw);
+  return {
+    address,
+    publicKeyB58: CC.base58encode(raw),
+    sign: (msg) => crypto.sign(null, Buffer.from(msg, "utf8"), privateKey).toString("hex"),
+  };
+}
+
 const UPSTREAM_KEY = "sk-ant-SECRET-KEY-do-not-leak-0123456789";
 
 function cfg(over) {
@@ -128,6 +168,74 @@ test("defaultVerify: good ed25519 signature passes, tampered fails", () => {
   assert.ok(!defaultVerify({ chain: "ed25519", message: "other", signature: sig, address: w.address, publicKey: w.publicKeyHex }));
   // address not derived from the presented key (impersonation attempt)
   assert.ok(!defaultVerify({ chain: "ed25519", message: msg, signature: sig, address: "deadbeef", publicKey: w.publicKeyHex }));
+});
+
+test("defaultVerify: a valid EVM EIP-191 personal_sign recovers the claimed 0x address", () => {
+  const w = makeEvmWallet();
+  const msg = "blockle-agent login: deadbeefcafe";
+  const sig = w.sign(msg);
+  assert.ok(defaultVerify({ chain: "evm", message: msg, signature: sig, address: w.address }));
+  // case-insensitive on the address
+  assert.ok(defaultVerify({ chain: "ethereum", message: msg, signature: sig, address: w.address.toUpperCase().replace("0X", "0x") }));
+  // tampered signature (flip a byte in r) -> recovers a different/no address -> false
+  const bad = Buffer.from(sig.slice(2), "hex");
+  bad[0] ^= 0xff;
+  assert.ok(!defaultVerify({ chain: "evm", message: msg, signature: "0x" + bad.toString("hex"), address: w.address }));
+  // wrong message -> false
+  assert.ok(!defaultVerify({ chain: "evm", message: "other message", signature: sig, address: w.address }));
+  // impersonation: claim a different address than the key recovers -> false
+  assert.ok(!defaultVerify({ chain: "evm", message: msg, signature: sig, address: "0x" + "11".repeat(20) }));
+});
+
+test("session: a valid EVM EIP-191 signature issues a token (fixes the chain:'evm' 401)", () => {
+  const gw = new Gateway(cfg(), {});
+  const w = makeEvmWallet();
+  const ch = gw.issueChallenge({ address: w.address, chain: "evm" });
+  const sig = w.sign(ch.challenge);
+  const s = gw.verifyChallenge({ address: w.address, chain: "evm", challenge: ch.challenge, signature: sig });
+  assert.ok(s.sessionToken && s.expiresAt > Date.now());
+  assert.ok(gw.session(s.sessionToken));
+});
+
+test("session: a tampered EVM signature is rejected (401)", () => {
+  const gw = new Gateway(cfg(), {});
+  const w = makeEvmWallet();
+  const ch = gw.issueChallenge({ address: w.address, chain: "evm" });
+  const sig = Buffer.from(w.sign(ch.challenge).slice(2), "hex");
+  sig[10] ^= 0xff; // tamper
+  assert.throws(
+    () => gw.verifyChallenge({ address: w.address, chain: "evm", challenge: ch.challenge, signature: "0x" + sig.toString("hex") }),
+    (e) => e.status === 401,
+  );
+});
+
+test("defaultVerify + session: a valid Solana ed25519 signature verifies and issues a token", () => {
+  const w = makeSolWallet();
+  const msg = "blockle-agent login: 0123456789ab";
+  const sig = w.sign(msg);
+  // pubkey supplied as base58
+  assert.ok(defaultVerify({ chain: "solana", message: msg, signature: sig, address: w.address, publicKey: w.publicKeyB58 }));
+  // pubkey omitted — the address IS the ed25519 key
+  assert.ok(defaultVerify({ chain: "solana", message: msg, signature: sig, address: w.address }));
+  // tampered signature -> false
+  const bad = Buffer.from(sig, "hex");
+  bad[5] ^= 0xff;
+  assert.ok(!defaultVerify({ chain: "solana", message: msg, signature: bad.toString("hex"), address: w.address }));
+  // impersonation: a mismatched address (not this pubkey) -> false
+  const other = makeSolWallet();
+  assert.ok(!defaultVerify({ chain: "solana", message: msg, signature: sig, address: other.address, publicKey: w.publicKeyB58 }));
+
+  const gw = new Gateway(cfg(), {});
+  const ch = gw.issueChallenge({ address: w.address, chain: "solana" });
+  const s = gw.verifyChallenge({ address: w.address, chain: "solana", challenge: ch.challenge, signature: w.sign(ch.challenge), publicKey: w.publicKeyB58 });
+  assert.ok(s.sessionToken && gw.session(s.sessionToken));
+});
+
+test("session: anon still works alongside the new wallet verifiers", () => {
+  const gw = new Gateway(cfg(), {});
+  const s = gw.issueAnon();
+  assert.ok(s.sessionToken && gw.session(s.sessionToken));
+  assert.equal(s.quota.dailyTokenCap, 20000);
 });
 
 test("session: a bad signature is rejected (401)", () => {

@@ -277,7 +277,10 @@ async def hosted_session(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any
     base = (opts.get("gatewayUrl") or "").rstrip("/")
     if not base:
         raise ValueError("hostedSession requires a gatewayUrl")
-    chain = opts.get("chain") or "block"
+    # Default to "evm" (EIP-191 personal_sign) — the scheme the gateway actually
+    # verifies. "block" (ML-DSA) is NOT yet verifiable server-side and always
+    # 401s, so it is never the implicit default; callers must opt into it.
+    chain = opts.get("chain") or "evm"
 
     async def post_json(body_obj: Dict[str, Any]) -> Dict[str, Any]:
         j = await f({"method": "POST", "url": base + "/agent/session",
@@ -314,6 +317,57 @@ async def hosted_session(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "publicKey": public_key,
         "label": opts.get("label") or "Blockle hosted agent",
     }
+
+
+def _looks_like_evm_address(addr: Any) -> bool:
+    return isinstance(addr, str) and addr.startswith("0x") and len(addr) == 42
+
+
+async def hosted_connect(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The "Use Blockle hosted agent" keyless connect — guaranteed to NEVER 401.
+
+    Faithful intent of the extension's ``connectHosted`` but with the scheme the
+    gateway actually verifies:
+
+      * PREFER a real per-address session by signing the gateway challenge with
+        the wallet's EVM key via EIP-191 ``personal_sign`` (chain ``"evm"`` + the
+        0x address + signature). The gateway recovers the signer and checks it
+        equals the claimed address, so this verifies and yields a per-address
+        token.
+      * FALL BACK to the anonymous (rate-limited, keyless) session — ``step:
+        "anon"``, no signature — when no EVM key/signer is available, OR if the
+        EVM handshake is rejected for any reason. Either way the connect returns
+        a usable ``sessionToken`` and never surfaces a 401.
+
+    ``opts`` accepts ``evmSign``/``evmAddress`` (preferred) or the generic
+    ``sign``/``address`` pair; a signer is used for EVM only when the address is
+    a 0x EVM address. Turns still send ONLY the sessionToken + conversation.
+    """
+    opts = opts or {}
+    base = (opts.get("gatewayUrl") or DEFAULT_GATEWAY_URL or "").rstrip("/")
+    request = opts.get("request") or opts.get("fetchImpl")
+    label = opts.get("label")
+    evm_sign = opts.get("evmSign") or opts.get("sign")
+    evm_addr = opts.get("evmAddress") or opts.get("address")
+
+    # Preferred path: a real EVM EIP-191 per-address session.
+    if callable(evm_sign) and _looks_like_evm_address(evm_addr):
+        try:
+            sess = await hosted_session({
+                "gatewayUrl": base, "chain": "evm", "address": evm_addr,
+                "sign": evm_sign, "request": request, "fetchImpl": opts.get("fetchImpl"),
+                "label": label or "Blockle hosted agent",
+            })
+            if sess.get("sessionToken"):
+                return sess
+        except Exception:  # noqa: BLE001 — never hard-fail the connect; fall back to anon
+            pass
+
+    # Fallback: the anonymous keyless session — no signature, cannot 401 on a bad sig.
+    return await hosted_session({
+        "gatewayUrl": base, "anon": True, "request": request,
+        "fetchImpl": opts.get("fetchImpl"), "label": label,
+    })
 
 
 class CopilotProvider(OpenAIProvider):

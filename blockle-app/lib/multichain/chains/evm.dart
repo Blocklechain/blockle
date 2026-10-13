@@ -85,6 +85,20 @@ String erc1155SafeTransferFromData(
       '$padded'; // bytes body (empty for 0x)
 }
 
+/// EIP-191 personal_sign over [message] (UTF-8): sign
+/// keccak256("\x19Ethereum Signed Message:\n"+len+message) with secp256k1 and
+/// return 0x + r(32) || s(32) || v(1), v = recovery + 27. This PROVES control of
+/// the signer's 0x address (an IDENTITY proof, never a spend) — the exact scheme
+/// the Blockle hosted-agent gateway verifies server-side (chain "evm").
+String personalSign(String message, List<int> privBytes) {
+  final msg = c.utf8Bytes(message);
+  final prefix = c.utf8Bytes('Ethereum Signed Message:\n${msg.length}');
+  final digest = c.keccak256(c.concatBytes([prefix, msg]));
+  final sig = s.sign(digest, privBytes);
+  final v = (sig.recovery + 27).toRadixString(16).padLeft(2, '0');
+  return '0x${_pad32(sig.r.toRadixString(16))}${_pad32(sig.s.toRadixString(16))}$v';
+}
+
 // RLP leaf helpers (Uint8List leaves; see crypto_core.rlpEncode convention).
 Uint8List _rlpNum(dynamic v) => c.hexToBytes(_bigToMinHex(_big(v)));
 Uint8List _rlpAddr(String? a) =>

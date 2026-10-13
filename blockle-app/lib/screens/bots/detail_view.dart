@@ -170,12 +170,13 @@ class DetailView extends StatelessWidget {
                 const SnackBar(content: Text('Cloned as a new paper bot.')));
             onClonedTo(c.id);
           }),
-      BotButton(label: 'Stop', icon: Icons.stop, onPressed: () => controller.stop(bot.id)),
+      if (running)
+        BotButton(label: 'Stop', icon: Icons.stop, onPressed: () => controller.stop(bot.id)),
       BotButton(
-          label: 'Kill bot',
-          icon: Icons.power_settings_new,
+          label: 'Delete',
+          icon: Icons.delete_outline,
           danger: true,
-          onPressed: () => _killBot(context, bot)),
+          onPressed: () => _deleteBot(context, bot)),
     ]);
   }
 
@@ -258,27 +259,34 @@ class DetailView extends StatelessWidget {
     }
   }
 
-  Future<void> _killBot(BuildContext context, b.Bot bot) async {
+  Future<void> _deleteBot(BuildContext context, b.Bot bot) async {
     final t = BotTheme.of(context);
     final ok = await showDialog<bool>(
       context: context,
       builder: (dctx) => AlertDialog(
         backgroundColor: t.surface,
-        title: const Text('Kill this bot'),
+        title: const Text('Delete this bot'),
         content: Text(
-            'Immediately stop "${bot.name}" and disable it. Any open deal is preserved. '
-            'Use Kill-all in the top bar to stop every bot and lock the vault.',
+            'Permanently stop and remove "${bot.name}" — it is disabled and deleted '
+            'from the store. This cannot be undone. Use Kill-all in the top bar to '
+            'stop every bot and lock the vault.',
             style: TextStyle(color: t.inkMuted, fontSize: 13)),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Cancel')),
           FilledButton(
               style: FilledButton.styleFrom(backgroundColor: t.loss),
               onPressed: () => Navigator.pop(dctx, true),
-              child: const Text('Kill bot')),
+              child: const Text('Delete bot')),
         ],
       ),
     );
-    if (ok == true) await controller.pause(bot.id);
+    if (ok == true) {
+      // Halt it first (scheduler skips it immediately), then delete + leave the
+      // now-empty detail view back to the cockpit so the UI reflects the removal.
+      await controller.stop(bot.id);
+      await controller.remove(bot.id);
+      onBack();
+    }
   }
 
   Widget _perfCard(BuildContext context, b.Bot bot, Map<String, dynamic> d) {

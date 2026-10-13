@@ -20,9 +20,19 @@ import 'dart:typed_data';
 
 import 'chains/block.dart' show BlockSignerBridge;
 import 'chains/chain_adapter.dart';
+import 'chains/evm.dart' as evm;
 import 'chains/registry.dart';
+import 'crypto/address.dart' as addr;
 import 'crypto/hd.dart' as hd;
 import 'vault_store.dart';
+
+/// A keyless-handshake signer: the 0x [address] it controls plus a [sign]
+/// closure that EIP-191 personal_signs a challenge. The private key stays
+/// captured inside the closure — it is NEVER returned or copied out.
+typedef EvmHostedSigner = ({
+  String address,
+  Future<String> Function(String challenge) sign,
+});
 
 /// Derives a BIP39 seed from a mnemonic. Injectable so tests stay deterministic
 /// and offline; defaults to the audited [hd.mnemonicToSeed].
@@ -114,6 +124,25 @@ class Accounts {
   /// dApp provider). Empty string when the BLOCK bridge is not wired/unlocked.
   String get address =>
       block?.address ?? _cache['block/0']?.address ?? '';
+
+  /// An EIP-191 personal_sign signer for the EVM account at [index] (same
+  /// secp256k1 key across every EVM chain), or null when no HD seed is available
+  /// (BLOCK-only / locked wallet). The returned closure proves control of the 0x
+  /// address — an IDENTITY proof, never a spend — which is exactly what the
+  /// keyless hosted-agent gateway verifies (chain "evm"). The private key is
+  /// derived here and kept inside the closure; it is never returned or persisted.
+  EvmHostedSigner? evmHostedSigner({int index = 0}) {
+    final seed = _root?.seed;
+    if (seed == null) return null;
+    final node = hd.derivePath(seed, "m/44'/60'/0'/0/$index");
+    final priv = node.privateKey;
+    if (priv == null) return null;
+    final address = addr.evmAddress(node.publicKey);
+    return (
+      address: address,
+      sign: (String challenge) async => evm.personalSign(challenge, priv),
+    );
+  }
 
   /// Lock / kill FAN-OUT: wipe derived accounts + the HD root, lock every
   /// adapter, and lock the vault session. Nothing spendable survives.

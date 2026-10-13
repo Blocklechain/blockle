@@ -265,14 +265,21 @@ class AgentService {
     final agent = accounts.vault.plaintext?.agent;
     if (agent == null || agent['provider'] != 'hosted') return null;
     try {
+      // An anon session (or one with no bound address) re-signs nothing — re-open
+      // the rate-limited anon session. A per-address session (chain "evm") is
+      // re-signed via EIP-191 so it verifies gateway-side, never 401s.
+      final chain = agent['chain'] as String?;
+      final address = agent['address'] as String?;
+      final isAnon = chain == 'anon' || address == null || address.isEmpty;
       final sess = await hostedSession(
         fetch: _fetch,
         gatewayUrl:
             cred.gatewayUrl ?? (agent['gatewayUrl'] as String?) ?? defaultGatewayUrl,
-        address: agent['address'] as String?,
-        chain: agent['chain'] as String?,
+        address: address,
+        chain: chain,
         publicKey: agent['publicKey'] as String?,
-        sign: _hostedSign,
+        sign: isAnon ? null : _hostedSign,
+        anon: isAnon,
       );
       final tok = sess['sessionToken'] as String?;
       if (tok == null || tok.isEmpty) return null;

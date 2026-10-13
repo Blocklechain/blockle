@@ -37,6 +37,14 @@ require('../agent-store.js'); // -> AgentStore
 const AgentProviders = require('./providers.js');
 const AgentPolicy = require('./policy.js');
 const AgentRunner = require('./runner.js');
+const Secp = require('../secp256k1.js');
+const C = require('../crypto-core.js');
+const Addr = require('../address.js');
+// The REAL hosted gateway (verifier) — same repo, deployed as services/agent-gateway.
+// We drive its session issuance/verification IN-PROCESS so the FIX-401 tests prove
+// the wallet's chosen scheme is one the gateway actually verifies (never a 401).
+let Gateway = null;
+try { Gateway = require('../../services/agent-gateway/index.js'); } catch (_) { /* optional */ }
 
 // A mock fetch: given a router (url,init) -> { status, json }.
 function mockFetch(router) {
@@ -235,4 +243,100 @@ test('INVARIANT: a DANGER-severity security pre-sign FORCES a confirm even under
   assert.ok(forced, 'the danger pre-sign forced a human confirm despite auto-approve');
   assert.ok(forced.security && forced.security.severity === 'danger');
   assert.equal(h.committed.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 4. FIX-401 — the hosted connect uses a scheme the gateway VERIFIES (no 401)
+// ---------------------------------------------------------------------------
+
+// A deterministic secp256k1 test key -> its EVM (0x) address.
+const EVM_PRIV = '59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+function evmTestAccount() {
+  const priv = C.hexToBytes(EVM_PRIV);
+  const address = Addr.evmAddress(Secp.publicKey(priv, true));
+  return { priv, address };
+}
+
+// Drive the REAL gateway in-process (same routing as its HTTP handler), so a
+// returned sessionToken PROVES the gateway verified the wallet's signature.
+function realGatewayFetch() {
+  const cfg = Gateway.loadConfig();
+  const server = Gateway.createServer(cfg);
+  const gw = server._gateway;
+  const f = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    let out;
+    try {
+      if (body.step === 'anon') out = gw.issueAnon();
+      else if (body.step === 'verify') out = gw.verifyChallenge(body);
+      else out = gw.issueChallenge({ address: body.address, chain: body.chain });
+    } catch (e) {
+      const status = (Gateway.HttpError && e instanceof Gateway.HttpError) ? e.status : 500;
+      return { ok: false, status, async json() { return { error: e.message }; }, async text() { return e.message; } };
+    }
+    return { ok: true, status: 200, async json() { return out; }, async text() { return JSON.stringify(out); } };
+  };
+  f._gw = gw;
+  return f;
+}
+
+test('FIX-401: hostedSession PREFERS the EVM key (EIP-191) and the REAL gateway verifies it — no 401', { skip: !Gateway }, async () => {
+  const { priv, address } = evmTestAccount();
+  const fetchImpl = realGatewayFetch();
+  const sess = await AgentProviders.hostedSession({
+    gatewayUrl: 'https://agent.blockle.org', evm: { address, privateKey: priv }, fetchImpl,
+  });
+  assert.equal(sess.chain, 'evm', 'the connect signs with the EVM scheme the gateway verifies');
+  assert.equal(sess.address, address, 'a REAL per-address session (not anon)');
+  assert.ok(sess.sessionToken, 'the gateway issued a token -> it VERIFIED our EIP-191 signature (never 401)');
+});
+
+test('FIX-401: our EIP-191 signature verifies under the gateway verifier (byte-for-byte interop)', { skip: !Gateway }, async () => {
+  const { priv, address } = evmTestAccount();
+  const message = 'blockle-agent login: deadbeef';
+  const signature = AgentProviders.eip191PersonalSign(priv, message);
+  assert.match(signature, /^0x[0-9a-f]{130}$/, 'a 65-byte r||s||v personal_sign signature');
+  assert.equal(Gateway.verifyEvmPersonalSign({ message, signature, address }), true);
+  // a tampered signature (corrupt the r component) must NOT recover our address.
+  const bad = '0x' + (signature[2] === 'f' ? '0' : 'f') + signature.slice(3);
+  assert.equal(Gateway.verifyEvmPersonalSign({ message, signature: bad, address }), false);
+});
+
+test('FIX-401: with NO EVM key available the connect FALLS BACK to an anonymous session (no 401)', { skip: !Gateway }, async () => {
+  const fetchImpl = realGatewayFetch();
+  // No evm, no sign, not anon=true -> fallback path.
+  const sess = await AgentProviders.hostedSession({ gatewayUrl: 'https://agent.blockle.org', fetchImpl });
+  assert.equal(sess.chain, 'anon');
+  assert.ok(sess.sessionToken, 'an anonymous session token was issued');
+});
+
+test('FIX-401: signing the challenge with the BLOCK key would 401 — the connect must NOT use it', { skip: !Gateway }, async () => {
+  const fetchImpl = realGatewayFetch();
+  // The OLD behavior: chain "block" + an ML-DSA-shaped signature the gateway cannot verify.
+  await assert.rejects(
+    () => AgentProviders.hostedSession({
+      gatewayUrl: 'https://agent.blockle.org', address: 'block1abc', chain: 'block',
+      sign: async () => ({ signature: 'deadbeef', publicKey: 'cafe' }), fetchImpl,
+    }),
+    /401/,
+    'the gateway rejects the BLOCK scheme (this is exactly the 401 FIX-401 avoids)',
+  );
+});
+
+test('FIX-401: a fresh hosted provider turns successfully using ONLY the verified session token', { skip: !Gateway }, async () => {
+  const { priv, address } = evmTestAccount();
+  const fetchImpl = realGatewayFetch();
+  const sess = await AgentProviders.hostedSession({
+    gatewayUrl: 'https://agent.blockle.org', evm: { address, privateKey: priv }, fetchImpl,
+  });
+  // the turn path sends ONLY the sessionToken (never an apiKey)
+  const turnFetch = mockFetch((url, body) => {
+    assert.ok(url.endsWith('/agent/turn'));
+    assert.equal(body.sessionToken, sess.sessionToken);
+    assert.ok(!('apiKey' in body));
+    return { status: 200, json: { text: 'ok' } };
+  });
+  const p = AgentProviders.create({ provider: 'hosted', gatewayUrl: sess.gatewayUrl, sessionToken: sess.sessionToken, fetchImpl: turnFetch });
+  const out = await p.turn({ system: 's', messages: [{ role: 'user', text: 'hi' }], tools: [] });
+  assert.equal(out.text, 'ok');
 });

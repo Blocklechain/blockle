@@ -241,15 +241,68 @@
     }
   }
 
-  // Wallet-signature session handshake against the gateway. `sign(message)` is the
-  // wallet's own signer — it returns { signature, publicKey } and proves control
-  // of an address (NOT a spend). Returns the stored hosted connection fields.
+  // ---- EIP-191 personal_sign (identity proof the gateway VERIFIES) ----------
+  // Produces a 65-byte `0x` r||s||v signature over the EIP-191 "Ethereum Signed
+  // Message" digest, using the same secp256k1 + keccak256 the wallet uses for EVM.
+  // This is the ONLY scheme the hosted gateway can verify for a per-address
+  // session (it ecrecovers the signer and requires it to equal the 0x address);
+  // signing the gateway challenge with the BLOCK (ML-DSA) key instead produced a
+  // chain the gateway cannot verify -> a hard 401 (FIX-401). It is identity-only
+  // (never a spend) and never touches a wallet key beyond the provided EVM key.
+  function _crypto(deps) {
+    deps = deps || {};
+    const C = deps.crypto || (typeof BLKCrypto !== 'undefined' ? BLKCrypto : null) ||
+      (typeof require === 'function' ? (() => { try { return require('../crypto-core.js'); } catch (_) { return null; } })() : null);
+    const S = deps.secp || (typeof Secp256k1 !== 'undefined' ? Secp256k1 : null) ||
+      (typeof require === 'function' ? (() => { try { return require('../secp256k1.js'); } catch (_) { return null; } })() : null);
+    if (!C || !S) throw new Error('eip191 personal_sign requires crypto-core + secp256k1');
+    return { C, S };
+  }
+  function eip191PersonalSign(privKey, message, deps) {
+    const { C, S } = _crypto(deps);
+    const priv = typeof privKey === 'string' ? C.hexToBytes(String(privKey).replace(/^0x/, '')) : privKey;
+    const msgBytes = typeof message === 'string' ? C.utf8(message) : message;
+    const prefix = C.utf8('\x19Ethereum Signed Message:\n' + msgBytes.length);
+    const digest = C.keccak256(C.concatBytes(prefix, msgBytes));
+    const sig = S.sign(digest, priv); // { compact: r||s (64B), recovery }
+    const out = new Uint8Array(65);
+    out.set(sig.compact, 0);
+    out[64] = sig.recovery + 27; // EIP-191 v
+    return '0x' + C.bytesToHex(out);
+  }
+
+  // Resolve an EVM signing capability from the opts, if the caller supplied one.
+  // Accepts opts.evm = { address, sign|personalSign } OR opts.evm = { address,
+  // privateKey } (we build the EIP-191 signer ourselves). Returns null when no EVM
+  // key/signer is available -> the caller falls back to an anonymous session.
+  function _resolveEvm(opts) {
+    const e = opts && opts.evm;
+    if (!e || !e.address || !/^0x[0-9a-fA-F]{40}$/.test(String(e.address))) return null;
+    if (typeof e.sign === 'function' || typeof e.personalSign === 'function') {
+      return { address: e.address, sign: e.sign || e.personalSign };
+    }
+    if (e.privateKey) {
+      return { address: e.address, sign: (msg) => eip191PersonalSign(e.privateKey, msg, opts.cryptoDeps) };
+    }
+    return null;
+  }
+
+  // Wallet-signature session handshake against the gateway. Returns the stored
+  // hosted connection fields. The scheme is chosen so the gateway ALWAYS verifies
+  // it (never a 401):
+  //   1. PREFERRED — an EVM key (opts.evm): sign the challenge with EIP-191
+  //      personal_sign and open a real per-address session (chain "evm", 0x
+  //      address + signature; the gateway ecrecovers the signer).
+  //   2. an EXPLICIT { chain, sign, address } the gateway verifies (e.g. the
+  //      reference ed25519/solana path) — `sign(message)` returns
+  //      { signature, publicKey } and proves control of an address (NOT a spend).
+  //   3. FALLBACK — no EVM key and no explicit signer (or opts.anon): the
+  //      anonymous, rate-limited free-tier session (step "anon", no signature).
   async function hostedSession(opts) {
     opts = opts || {};
     const f = pickFetch(opts.fetchImpl);
     const base = (opts.gatewayUrl || '').replace(/\/$/, '');
     if (!base) throw new Error('hostedSession requires a gatewayUrl');
-    const chain = opts.chain || 'block';
     const postJson = async (bodyObj) => {
       const r = await f(base + '/agent/session', {
         method: 'POST',
@@ -260,26 +313,43 @@
       if (!r.ok) throw new Error('hosted session ' + r.status + ': ' + (j && j.error ? j.error : ''));
       return j;
     };
-    // Anonymous fallback: no address/signer -> rate-limited free-tier token.
-    if (opts.anon || !opts.sign) {
+    const anonSession = async () => {
       const a = await postJson({ step: 'anon' });
       return { gatewayUrl: base, sessionToken: a.sessionToken, expiresAt: a.expiresAt, quota: a.quota, chain: 'anon', label: opts.label || 'Blockle hosted (anon)' };
-    }
-    const ch = await postJson({ step: 'challenge', address: opts.address, chain });
-    const signed = await opts.sign(ch.challenge);
-    const signature = typeof signed === 'string' ? signed : (signed && (signed.signature || signed.sig)) || '';
-    const publicKey = (signed && signed.publicKey) || opts.publicKey || '';
-    const v = await postJson({ step: 'verify', address: opts.address, chain, challenge: ch.challenge, signature, publicKey });
-    return {
-      gatewayUrl: base,
-      sessionToken: v.sessionToken,
-      expiresAt: v.expiresAt,
-      quota: v.quota,
-      address: opts.address,
-      chain,
-      publicKey,
-      label: opts.label || 'Blockle hosted agent',
     };
+
+    // 3. explicit anon request.
+    if (opts.anon === true) return anonSession();
+
+    // 1. PREFERRED — EVM key via EIP-191 personal_sign (the gateway verifies it).
+    const evm = _resolveEvm(opts);
+    if (evm) {
+      const ch = await postJson({ step: 'challenge', address: evm.address, chain: 'evm' });
+      const signed = await evm.sign(ch.challenge);
+      const signature = typeof signed === 'string' ? signed : (signed && (signed.signature || signed.sig)) || '';
+      const v = await postJson({ step: 'verify', address: evm.address, chain: 'evm', challenge: ch.challenge, signature });
+      return {
+        gatewayUrl: base, sessionToken: v.sessionToken, expiresAt: v.expiresAt, quota: v.quota,
+        address: evm.address, chain: 'evm', label: opts.label || 'Blockle hosted agent',
+      };
+    }
+
+    // 2. an EXPLICIT gateway-verifiable signer (chain + sign + address).
+    if (opts.sign && opts.address && opts.chain) {
+      const chain = opts.chain;
+      const ch = await postJson({ step: 'challenge', address: opts.address, chain });
+      const signed = await opts.sign(ch.challenge);
+      const signature = typeof signed === 'string' ? signed : (signed && (signed.signature || signed.sig)) || '';
+      const publicKey = (signed && signed.publicKey) || opts.publicKey || '';
+      const v = await postJson({ step: 'verify', address: opts.address, chain, challenge: ch.challenge, signature, publicKey });
+      return {
+        gatewayUrl: base, sessionToken: v.sessionToken, expiresAt: v.expiresAt, quota: v.quota,
+        address: opts.address, chain, publicKey, label: opts.label || 'Blockle hosted agent',
+      };
+    }
+
+    // 4. FALLBACK — no EVM key / signer available -> anonymous session.
+    return anonSession();
   }
 
   // ---- GitHub Copilot (OpenAI-compatible tool calls) — stub -----------------
@@ -316,6 +386,7 @@
       }
     },
     hostedSession,
+    eip191PersonalSign,
     DEFAULT_GATEWAY_URL,
     ClaudeProvider,
     OpenAIProvider,
