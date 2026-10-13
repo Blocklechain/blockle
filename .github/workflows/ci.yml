@@ -100,6 +100,7 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --name BlockleWallet $ICON \
             --add-binary "chain/target/release/blockle-chain$EXE$SEP"blockle/bin \
             --add-data "python/blockle/assets/logo.png${SEP}blockle/assets" \
+            --add-data "docs/arena-vectors.json${SEP}docs" \
             --collect-all coincurve \
             --collect-all nacl \
             --collect-all cffi \
