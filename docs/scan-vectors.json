@@ -1,0 +1,125 @@
+{
+  "_comment": "Shared cross-wallet contract for the Scan-&-Trade (Autopilot) scanner (docs/AGENT-SCAN.md) AND the auto-detect/auto-import held-token feature. IDENTICAL across blockle-extension/agent (JS, the REFERENCE), blockle-app/lib/agent (Dart), python/blockle/agent (Python). The first wallet to implement authors this; the others consume it. Amounts are base-unit decimal strings; venue bid/ask are quote-per-base decimals; bps are numbers; scores are bps rounded to 1e-6. The scanner NEVER fabricates a price/edge and NEVER emits a sub-threshold or net-negative Intent; a flagged token is never scored/traded nor auto-imported.",
+  "version": 1,
+
+  "scanner": {
+    "_comment": "A scan snapshot (candidate universe with liquidity/venue prices/history) -> the exact ranked worthy set, per-pair score, and the Intents emitted (plus the skipped sub-threshold / net-negative / flagged ones). The PINNED scoring formula is documented at the top of agent/scanner.js.",
+    "config": {
+      "minProfitBps": 30,
+      "maxConcurrentPairs": 3,
+      "perTradeUsd": 1000,
+      "allocationUsd": 5000,
+      "strategies": ["arbitrage", "momentum", "grid"],
+      "gasBufferUsd": 1,
+      "slippageBps": 5,
+      "agentFeeBps": 5,
+      "momentumShortN": 3,
+      "momentumLongN": 5,
+      "liquidityNorm": 100000,
+      "volPenaltyK": 2.0,
+      "flagPenalty": 0.25
+    },
+    "opts": { "allocationUsd": 5000, "committedUsd": 0, "mainnet": false },
+    "universe": [
+      {
+        "chain": "ethereum", "symbol": "ETH", "pair": "ETH/USDC", "liquidityUsd": 500000, "prices": { "USDC": 1 },
+        "venues": [
+          { "id": "dexA", "chain": "ethereum", "ask": "2000", "bid": "1999", "feeBps": 10, "depthBase": "1000000000000000000000" },
+          { "id": "dexB", "chain": "ethereum", "ask": "2010", "bid": "2030", "feeBps": 10, "depthBase": "1000000000000000000000" }
+        ]
+      },
+      {
+        "chain": "solana", "symbol": "SOL", "pair": "SOL/USDC", "liquidityUsd": 400000, "prices": { "USDC": 1 },
+        "venues": [
+          { "id": "dexA", "chain": "solana", "ask": "100", "bid": "99.9", "feeBps": 10, "depthBase": "1000000000000000" },
+          { "id": "dexB", "chain": "solana", "ask": "100.1", "bid": "100.65", "feeBps": 10, "depthBase": "1000000000000000" }
+        ]
+      },
+      {
+        "chain": "block", "symbol": "BLOCK", "pair": "BLOCK/USDC", "liquidityUsd": 300000, "prices": { "USDC": 1 },
+        "venues": [
+          { "id": "dexA", "chain": "block", "ask": "1.0", "bid": "0.999", "feeBps": 10, "depthBase": "100000000000000" },
+          { "id": "dexB", "chain": "block", "ask": "1.002", "bid": "1.003", "feeBps": 10, "depthBase": "100000000000000" }
+        ]
+      },
+      {
+        "chain": "ethereum", "symbol": "SCAM", "pair": "SCAM/USDC", "liquidityUsd": 900000, "prices": { "USDC": 1 },
+        "flags": ["honeypot"],
+        "venues": [
+          { "id": "dexA", "chain": "ethereum", "ask": "1.0", "bid": "0.99", "feeBps": 10, "depthBase": "1000000000000000000000" },
+          { "id": "dexB", "chain": "ethereum", "ask": "1.01", "bid": "1.5", "feeBps": 10, "depthBase": "1000000000000000000000" }
+        ]
+      },
+      {
+        "chain": "base", "symbol": "MOM", "pair": "MOM/USDC", "liquidityUsd": 200000, "prices": { "USDC": 1 },
+        "history": [10, 10, 10, 10, 10, 13]
+      }
+    ],
+    "expect": {
+      "_comment": "Ranked by score desc, stable tiebreak by pair asc. MOM (momentum, score 302.861461) ranks above ETH (arbitrage, score 105). Both are worthy and fit the $5000 allocation, so both trade; the three others are skipped with a pinned reason.",
+      "ranked": [
+        { "pair": "MOM/USDC", "strategy": "momentum", "edgeBps": 367.358491, "score": 302.861461, "reason": "worthy", "traded": true, "factors": { "Lf": 1, "Vf": 0.82443, "Ff": 1 } },
+        { "pair": "ETH/USDC", "strategy": "arbitrage", "edgeBps": 105, "score": 105, "reason": "worthy", "traded": true, "factors": { "Lf": 1, "Vf": 1, "Ff": 1 } },
+        { "pair": "SOL/USDC", "strategy": "arbitrage", "edgeBps": 20, "score": 20, "reason": "below-threshold", "traded": false },
+        { "pair": "BLOCK/USDC", "strategy": "arbitrage", "edgeBps": -15, "score": 0, "reason": "net-negative", "traded": false },
+        { "pair": "SCAM/USDC", "strategy": null, "edgeBps": 0, "score": 0, "reason": "flagged", "traded": false }
+      ],
+      "worthy": ["MOM/USDC", "ETH/USDC"],
+      "skipped": [
+        { "pair": "SOL/USDC", "reason": "below-threshold", "score": 20, "edgeBps": 20 },
+        { "pair": "BLOCK/USDC", "reason": "net-negative", "score": 0, "edgeBps": -15 },
+        { "pair": "SCAM/USDC", "reason": "flagged", "score": 0, "edgeBps": 0 }
+      ],
+      "intents": [
+        { "tool": "swap", "args": { "from": "USDC", "to": "MOM", "amount": "1000000000", "venue": "blockle" }, "estUsd": 1000, "strategy": "momentum", "tag": "momentum:MOM/USDC:buy", "scannerPair": "MOM/USDC", "scannerScore": 302.861461 },
+        { "tool": "swap", "args": { "from": "USDC", "to": "ETH", "amount": "1000000000", "venue": "dexA" }, "estUsd": 1000, "strategy": "arbitrage", "tag": "arb:ETH/USDC:dexA->dexB:buy", "group": "arb:ETH/USDC:dexA->dexB", "scannerPair": "ETH/USDC", "scannerScore": 105 },
+        { "tool": "swap", "args": { "from": "ETH", "to": "USDC", "amount": "500000000000000000", "venue": "dexB" }, "estUsd": 1000, "strategy": "arbitrage", "tag": "arb:ETH/USDC:dexA->dexB:sell", "group": "arb:ETH/USDC:dexA->dexB", "scannerPair": "ETH/USDC", "scannerScore": 105 }
+      ],
+      "allocationUsd": 5000,
+      "committedUsd": 0,
+      "remainingUsd": 1998.5,
+      "minProfitBps": 30,
+      "maxConcurrentPairs": 3
+    },
+    "edge_math": {
+      "_comment": "Reference arithmetic the three wallets must reproduce exactly.",
+      "ETH/USDC": { "grossBps": 150, "gasBps": 10, "costsBps": 45, "netEdgeBps": 105, "execUsd": 1000, "buyVenue": "dexA", "sellVenue": "dexB" },
+      "SOL/USDC": { "grossBps": 65, "gasBps": 10, "costsBps": 45, "netEdgeBps": 20 },
+      "BLOCK/USDC": { "grossBps": 30, "gasBps": 10, "costsBps": 45, "netEdgeBps": -15 },
+      "MOM/USDC": { "smaShort": 11, "smaLong": 10.6, "strengthBps": 377.358491, "costsBps": 10, "netEdgeBps": 367.358491, "coeffVar": 0.106479, "Vf": 0.82443 }
+    }
+  },
+
+  "tokenImport": {
+    "_comment": "A set of adapter-detected balances -> the EXACT auto-imported token list after (a) dropping defaults + zero-balance rows (never fabricate), (b) dedupe by (chain, contract|mint), (c) honoring the security suite: denylist / scam flags / spam are MARKED (flagged), never imported. Re-running with the imports already persisted adds nothing (idempotent). Persisted entries mirror what a manual 'import token' writes (chain, kind, symbol, decimals, address|mint, name?).",
+    "denylist": ["0xdead000000000000000000000000000000000000"],
+    "spamFilter": true,
+    "detected": {
+      "ethereum": [
+        { "chain": "ethereum", "kind": "erc20", "symbol": "USDC", "decimals": 6, "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "isDefault": true, "balance": "1000000", "display": "1" },
+        { "chain": "ethereum", "kind": "erc20", "symbol": "DAI", "decimals": 18, "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "name": "Dai Stablecoin", "balance": "5000000000000000000", "display": "5" },
+        { "chain": "ethereum", "kind": "erc20", "symbol": "CLAIM", "decimals": 18, "address": "0x1111111111111111111111111111111111111111", "name": "claim-reward.io visit now", "balance": "1", "display": "0.000000000000000001" },
+        { "chain": "ethereum", "kind": "erc20", "symbol": "EVIL", "decimals": 18, "address": "0xdEAD000000000000000000000000000000000000", "name": "Drainer", "balance": "1000", "display": "0.000000000000001" },
+        { "chain": "ethereum", "kind": "erc20", "symbol": "ZERO", "decimals": 18, "address": "0x2222222222222222222222222222222222222222", "name": "Zero Balance", "balance": "0", "display": "0" }
+      ],
+      "solana": [
+        { "chain": "solana", "kind": "spl", "mint": "So11111111111111111111111111111111111111112", "symbol": "So11…1112", "decimals": 9, "balance": "2000000", "display": "0.002" }
+      ]
+    },
+    "expect": {
+      "imported": [
+        { "chain": "ethereum", "kind": "erc20", "symbol": "DAI", "decimals": 18, "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "name": "Dai Stablecoin" },
+        { "chain": "solana", "kind": "spl", "symbol": "So11…1112", "decimals": 9, "mint": "So11111111111111111111111111111111111111112" }
+      ],
+      "flagged": [
+        { "chain": "ethereum", "symbol": "CLAIM", "address": "0x1111111111111111111111111111111111111111", "reason": "spam" },
+        { "chain": "ethereum", "symbol": "EVIL", "address": "0xdEAD000000000000000000000000000000000000", "reason": "denylist" }
+      ],
+      "skipped": [
+        { "chain": "ethereum", "symbol": "USDC", "reason": "default" },
+        { "chain": "ethereum", "symbol": "ZERO", "reason": "zero-balance" }
+      ],
+      "idempotent_rerun_imports": []
+    }
+  }
+}

@@ -122,7 +122,7 @@ int decimalsFor(String sym, [Map<String, dynamic>? overrides]) {
 // ===========================================================================
 
 const List<String> kBotTypes = [
-  'dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum',
+  'dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner',
 ];
 
 num _num(dynamic v, num dflt) {
@@ -243,9 +243,28 @@ Map<String, dynamic> validateConfig(String type, Map<String, dynamic>? c) {
     case 'rebalance':
     case 'momentum':
       return _validateScheduledConfig(c);
+    case 'scanner':
+      return _validateScannerConfig(c);
     default:
       throw ArgumentError('unknown bot type: $type');
   }
+}
+
+/// scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md): config is validated by
+/// the AgentScanner evaluator itself (shared across the three wallets), so here we
+/// just normalize the few top-level knobs + carry the rest through verbatim. The
+/// AgentScanner.validateConfig call at tick time pins the final values.
+Map<String, dynamic> _validateScannerConfig(Map<String, dynamic>? c) {
+  final src = c ?? const {};
+  final out = <String, dynamic>{...src};
+  out['minProfitBps'] = math.max(0, _num(src['minProfitBps'] ?? 30, 30).truncate());
+  out['maxConcurrentPairs'] =
+      _clampNum(src['maxConcurrentPairs'] ?? 3, 1, 50, 3).truncate();
+  out['perTradeUsd'] = math.max(0, _num(src['perTradeUsd'] ?? 20, 20));
+  if (src['strategies'] != null && src['strategies'] is! List) {
+    throw ArgumentError('scanner strategies must be an array');
+  }
+  return out;
 }
 
 /// bps-converted copy of a dca config (internal engine use).

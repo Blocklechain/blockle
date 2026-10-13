@@ -462,6 +462,44 @@
       '</article>';
   }
 
+  // Exported-pure: the "Scan & trade (Autopilot)" card — the last scan's candidates
+  // with scores + traded/skipped reasons, the allocation-used bar, and the kill. Reads
+  // bot.state.lastScan (set by the BotRunner scanner tick). No DOM, no I/O.
+  function scannerCardHtml(bot) {
+    var scan = bot && bot.state && bot.state.lastScan;
+    var cap = Number(bot.allocationUsd) || 0;
+    var used = scan ? Number(scan.committedUsd) || 0 : 0;
+    var pctUsed = cap > 0 ? Math.min(100, Math.round(used / cap * 100)) : 0;
+    var rows = '';
+    var cands = (scan && scan.candidates) || [];
+    if (!cands.length) {
+      rows = '<li class="bstep"><span class="bring">•</span><div><div class="blead">No scan yet</div>' +
+        '<div class="bmeta">the autopilot scans the discovery feed + venue pairs each tick (paper + disabled by default)</div></div></li>';
+    } else {
+      for (var i = 0; i < cands.length; i++) {
+        var c = cands[i];
+        var worthy = c.reason === 'worthy';
+        var tag = worthy ? 'traded' : esc(String(c.reason));
+        var ring = worthy ? '✓' : '○';
+        rows += '<li class="bstep' + (worthy ? ' done' : '') + '"><span class="bring">' + ring + '</span>' +
+          '<div><div class="blead num">' + esc(String(c.pair || '—')) + ' <span class="bchip">' + esc(String(c.strategy || '—')) + '</span></div>' +
+          '<div class="bmeta num">score ' + esc(fmtBps(c.score)) + 'bps · edge ' + esc(fmtBps(c.edgeBps)) + 'bps · <b>' + tag + '</b></div></div></li>';
+      }
+    }
+    var minBps = (scan && scan.minProfitBps != null) ? scan.minProfitBps : (bot.config && bot.config.minProfitBps);
+    return '' +
+      '<div class="bpane card">' +
+        '<div class="bdt-head"><span class="beyebrow">Scan &amp; trade (Autopilot)</span>' +
+          '<button class="bkill" id="b-d-kill2" style="margin-left:auto">⏻ Kill</button></div>' +
+        '<p class="bhint">Scores every discoverable pair; trades the worthy (score ≥ ' + esc(String(minBps)) + 'bps) up to ' +
+          esc(String((bot.config && bot.config.maxConcurrentPairs) || 3)) + ' at $' + esc(String((bot.config && bot.config.perTradeUsd) || 20)) + ' each, within allocation.</p>' +
+        '<div class="bpnl-tile"><div class="beyebrow">Allocation used</div><div class="bv num">' + plain(used) + '<span style="color:var(--b-ink-faint);font-size:13px"> / ' + plain(cap) + '</span></div>' +
+          '<div class="bbar" style="margin-top:8px"><span style="width:' + pctUsed + '%"></span></div></div>' +
+        '<ol class="bsteps" style="margin-top:12px">' + rows + '</ol>' +
+      '</div>';
+  }
+  function fmtBps(x) { var n = Number(x); return isFinite(n) ? (Math.round(n * 10) / 10).toString() : '0'; }
+
   function safetyNote() {
     return '<div class="bnote"><b>Non-custodial &amp; gated.</b> Keys never leave your device. Live bots trade <b>fully auto within their allocation cap</b> — no per-order tap inside the cap — but every order still passes session caps, the allowlist, the hash-chained audit, the 0.05% fee, and the kill switch. Mainnet stays off until you enable it.</div>';
   }
@@ -475,6 +513,7 @@
     wide_grid: { icon: '▦', ty: 'Grid' },
     scalp_grid: { icon: '⚡', ty: 'Grid' },
     block_accumulator: { icon: '◆', ty: 'DCA' },
+    scan_and_trade: { icon: '🛰', ty: 'Scanner' },
   };
 
   async function renderCreate(panel) {
@@ -726,6 +765,7 @@
           '<button class="bkill" id="b-d-kill" style="margin-left:auto">⏻ Stop bot</button>' +
         '</div>' +
       '</div>' +
+      (bot.type === 'scanner' ? scannerCardHtml(bot) : '') +
       '<div class="bpane card">' +
         '<span class="beyebrow">Performance</span>' +
         '<div class="bpnl-tiles">' +
@@ -753,6 +793,8 @@
       if (!global.confirm('Stop this bot? (Use Kill all to also lock the wallet.)')) return;
       await runner.pause(bot.id); UI.toast('Bot stopped'); enter();
     });
+    // the scanner card's dedicated kill: KILL-ALL (stop every bot + lock the wallet).
+    var kill2 = $('#b-d-kill2'); if (kill2) kill2.addEventListener('click', killAll);
   }
 
   // vertical deal stepper from the open deal's fills + armed next step
@@ -1030,6 +1072,7 @@
     dealLadder: dealLadder,
     reviewSheetText: reviewSheetText,
     botCardHtml: botCardHtml,
+    scannerCardHtml: scannerCardHtml,
     money: money,
     _setRunner: function (r) { runner = r; },
     _state: function () { return { activeTab: activeTab, modeFilter: modeFilter, create: create }; },

@@ -71,6 +71,42 @@ class MultiChainControllerTest(unittest.TestCase):
         with self.assertRaises(WrongPassword):
             ctrl2.unlock("wrong-pass")
 
+    def test_vault_auto_import_held_tokens_persists_and_is_idempotent(self):
+        """Feature A wallet integration: the auto-import persists newly-held tokens
+        into the SAME ``tokens[chain]`` list a manual import writes, MARKS flagged
+        ones, dedupes by (chain, contract|mint), and re-running changes nothing."""
+        ctrl = self._ctrl()
+        ctrl.create("pw")
+        discovered = {
+            "ethereum": [
+                {"chain": "ethereum", "kind": "erc20", "symbol": "USDC", "decimals": 6,
+                 "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "isDefault": True, "balance": "1000000"},
+                {"chain": "ethereum", "kind": "erc20", "symbol": "DAI", "decimals": 18,
+                 "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F", "name": "Dai Stablecoin",
+                 "balance": "5000000000000000000"},
+                {"chain": "ethereum", "kind": "erc20", "symbol": "EVIL", "decimals": 18,
+                 "address": "0xdEAD000000000000000000000000000000000000", "name": "Drainer", "balance": "1000"},
+                {"chain": "ethereum", "kind": "erc20", "symbol": "ZERO", "decimals": 18,
+                 "address": "0x2222222222222222222222222222222222222222", "balance": "0"},
+            ],
+        }
+        denylist = ["0xdead000000000000000000000000000000000000"]
+        summary = ctrl.vault.auto_import_tokens(discovered, denylist=denylist)
+        self.assertTrue(summary["changed"])
+        eth = ctrl.vault.tokens().get("ethereum") or []
+        syms = [t["symbol"] for t in eth]
+        self.assertIn("DAI", syms)          # real positive balance imported
+        self.assertNotIn("USDC", syms)      # default never re-imported
+        self.assertNotIn("ZERO", syms)      # zero balance never fabricated
+        self.assertNotIn("EVIL", syms)      # denylisted never imported
+        flagged = ctrl.vault.flagged_tokens().get("ethereum") or []
+        self.assertEqual([f["reason"] for f in flagged], ["denylist"])
+        # idempotent: a second run with the import persisted changes nothing.
+        summary2 = ctrl.vault.auto_import_tokens(discovered, denylist=denylist)
+        self.assertFalse(summary2["changed"])
+        self.assertEqual(len(ctrl.vault.tokens().get("ethereum") or []), len(eth))
+        ctrl.loop.stop()
+
     def test_controller_derives_addresses_and_ctx_wiring(self):
         ctrl = self._ctrl()
         ctrl.create("pw")

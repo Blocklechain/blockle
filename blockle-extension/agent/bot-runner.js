@@ -52,6 +52,7 @@
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
       this.discovery = deps.discovery || this.ctx.discovery || null;
       this.Strategies = deps.Strategies || null; // optional injection (tests); else lazy-required
+      this.Scanner = deps.Scanner || null;        // optional injection (tests); else lazy-required
       this.wallet = deps.wallet || 'default';
       this.channel = deps.channel || 'default';
       this._killed = false;
@@ -277,6 +278,7 @@
       let report;
       try {
         if (bot.type === 'rebalance' || bot.type === 'momentum') report = await this._tickScheduled(bot, now, opts);
+        else if (bot.type === 'scanner') report = await this._tickScanner(bot, now, opts);
         else if (bot.type === 'signal') report = await this._tickSignal(bot, now, opts);
         else report = await this._tickDealBot(bot, bot.type, bot.config, bot.pairs(), now, opts);
       } catch (e) {
@@ -561,21 +563,32 @@
 
     // ---- scheduled bots (rebalance / momentum) reuse the strategy planners ----
     async _tickScheduled(bot, now, opts) {
-      const B = this.Bots;
       const Strategies = this.Strategies || dep('AgentStrategies', './strategies.js');
       const strat = Strategies.createRegistry().get(bot.type);
       if (!strat) return { bot: bot.id, error: 'no strategy ' + bot.type };
       const params = strat.validateParams(Object.assign({}, bot.config));
       const intents = await strat.plan(this.ctx, params);
+      const events = await this._dispatchIntents(bot, intents || []);
+      return { bot: bot.id, type: bot.type, events };
+    }
+
+    // The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:
+    // every Intent passes the SAME non-bypassable gate — FINITE+positive estimate,
+    // the hard per-bot allocation ledger (trade + 0.05% fee), the mainnet gate, the
+    // tool allowlist, and the ONE value-moving dispatch (caps/confirm/kill/audit/
+    // security pre-sign). PAPER records a paper_intent and NEVER broadcasts. Kill is
+    // honored between Intents. Returns a per-Intent event list.
+    async _dispatchIntents(bot, intents) {
+      const B = this.Bots;
       const ctxMainnet = this._ctxMainnet();
       const events = [];
       for (const it of (intents || [])) {
         if (this.policy.isKilled()) break;
         if (bot.mode === 'live') {
-          // FIX-EST: a LIVE scheduled order must carry a FINITE, POSITIVE USD
-          // estimate or it FAILS CLOSED. null/NaN/Infinity would coerce to $0 and
-          // slip past the cap; a NEGATIVE estimate would even accrue negative and
-          // EXPAND the allocation ledger — both bypass the hard cap, so reject all.
+          // FIX-EST: a LIVE order must carry a FINITE, POSITIVE USD estimate or it
+          // FAILS CLOSED. null/NaN/Infinity would coerce to $0 and slip past the
+          // cap; a NEGATIVE estimate would accrue negative and EXPAND the ledger —
+          // both bypass the hard cap, so reject all.
           if (!Number.isFinite(it.estUsd) || it.estUsd <= 0) {
             await this._audit({ type: 'bot_skip', bot: bot.id, reason: 'allocation-unknown', tag: it.tag });
             events.push({ tag: it.tag, skipped: 'allocation-unknown' });
@@ -596,7 +609,53 @@
           events.push({ tag: it.tag, paper: true });
         }
       }
-      return { bot: bot.id, type: bot.type, events };
+      return events;
+    }
+
+    // ---- scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md) -----------------
+    // Build the candidate universe (discovery feed ∪ exchange markets ∪ venue pairs,
+    // enriched with market data), score every pair with the shared AgentScanner
+    // evaluator, pick the worthy ones that fit the REMAINING allocation, and
+    // dispatch each chosen Intent through the SAME _dispatchIntents gate as every
+    // other bot. READ-ONLY until dispatch; never fabricates a price/edge; a
+    // sub-threshold or net-negative pair is NEVER emitted. Returns the scored
+    // candidate list (for the UI) + the dispatch events.
+    async _tickScanner(bot, now, opts) {
+      const B = this.Bots;
+      const Scanner = this.Scanner || dep('AgentScanner', './scanner.js');
+      const Strategies = this.Strategies || dep('AgentStrategies', './strategies.js');
+      const universe = await this._scanUniverse(bot);
+      const committedUsd = B.ucToUsd(bot.state.committedUc || 0n);
+      const result = await Scanner.scanAndScore(universe, bot.config, {
+        Strategies, allocationUsd: bot.allocationUsd, committedUsd, mainnet: this._ctxMainnet(),
+      });
+      await this._audit({
+        type: 'scanner_scan', bot: bot.id, candidates: result.candidates.length,
+        worthy: result.worthy.length, traded: result.worthy.map((w) => w.pair),
+        skipped: result.skipped.map((s) => s.pair + ':' + s.reason),
+      });
+      // dispatch the chosen Intents through the ONE gate (same as scheduled bots).
+      const events = await this._dispatchIntents(bot, result.intents);
+      // last-scan snapshot for the UI cockpit card.
+      bot.state.lastScan = {
+        at: now, candidates: result.candidates, worthy: result.worthy.map((w) => w.pair),
+        skipped: result.skipped, minProfitBps: result.minProfitBps,
+        allocationUsd: result.allocationUsd, committedUsd, remainingUsd: result.remainingUsd,
+      };
+      return { bot: bot.id, type: 'scanner', scan: bot.state.lastScan, events };
+    }
+
+    // Assemble the scanner's candidate universe. Prefer an injected enriched feed
+    // (ctx.scanUniverse — discovery ∪ exchange markets ∪ venue pairs WITH venue
+    // prices/history/book), else fall back to the discovery feed. READ-ONLY.
+    async _scanUniverse(bot) {
+      if (this.ctx && typeof this.ctx.scanUniverse === 'function') {
+        try { return (await this.ctx.scanUniverse(bot && bot.config)) || []; } catch (_) { return []; }
+      }
+      if (this.discovery && typeof this.discovery.scan === 'function') {
+        try { return (await this.discovery.scan()) || []; } catch (_) { return []; }
+      }
+      return [];
     }
 
     // ===========================================================================

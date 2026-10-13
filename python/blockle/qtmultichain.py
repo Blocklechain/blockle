@@ -201,6 +201,64 @@ class MultiVault:
         toks.append(token)
         self._seal()
 
+    def flagged_tokens(self) -> Dict[str, Any]:
+        """Tokens the auto-import security gate MARKED (denylist / scam flag /
+        spam) instead of importing — surfaced in the UI, never silently held."""
+        return self._require().get("flaggedTokens") or {}
+
+    def auto_import_tokens(self, discovered_by_chain: Dict[str, List[Dict[str, Any]]],
+                           denylist: Optional[List[str]] = None,
+                           spam_filter: bool = True) -> Dict[str, Any]:
+        """AUTO-DETECT + AUTO-IMPORT held tokens across EVERY chain (Feature A,
+        docs/AGENT-SCAN.md -> tokenImport). Given the adapter-discovered balances
+        per chain (dict rows with a real ``balance``), persist every newly-found
+        non-flagged positive-balance token into the SAME ``tokens[chain]`` list a
+        manual import writes, MARK flagged ones into ``flaggedTokens[chain]``, and
+        seal once if anything changed. Dedupe by (chain, contract|mint); re-running
+        adds nothing (idempotent); NEVER fabricates (balance>0 only). Pure of
+        network — the caller fetches discovery; this persists. Returns a summary."""
+        from .multichain.chains.autoimport import (filter_for_import, normalize_import,
+                                                    token_key)
+        plain = self._require()
+        tokens = plain.setdefault("tokens", {})
+        flagged_map = plain.setdefault("flaggedTokens", {})
+        summary: Dict[str, Any] = {"imported": [], "flagged": [], "perChain": {}}
+        changed = False
+        for chain, discovered in (discovered_by_chain or {}).items():
+            existing = tokens.get(chain) or []
+            res = filter_for_import(discovered, existing,
+                                    {"denylist": denylist or [], "spamFilter": spam_filter})
+            if res["toImport"]:
+                lst = tokens.setdefault(chain, [])
+                keys = {token_key(t) for t in lst}
+                for item in res["toImport"]:
+                    k = token_key(item["token"])
+                    if k not in keys:
+                        lst.append(item["token"])
+                        keys.add(k)
+                        changed = True
+                        summary["imported"].append(item["token"])
+            if res["flagged"]:
+                flist = flagged_map.setdefault(chain, [])
+                fkeys = {token_key(t) for t in flist}
+                for item in res["flagged"]:
+                    k = token_key(item["token"])
+                    if k not in fkeys:
+                        marked = normalize_import(item["token"])
+                        marked["reason"] = item["reason"]
+                        flist.append(marked)
+                        fkeys.add(k)
+                        changed = True
+                    summary["flagged"].append({"token": normalize_import(item["token"]),
+                                               "reason": item["reason"]})
+            summary["perChain"][chain] = {"imported": len(res["toImport"]),
+                                          "flagged": len(res["flagged"]),
+                                          "skipped": len(res["skipped"])}
+        if changed:
+            self._seal()
+        summary["changed"] = changed
+        return summary
+
     # ---- user-added custom networks --------------------------------------
     # Network definitions are NOT secrets (just RPC/explorer/indexer URLs); they
     # live here alongside the other per-chain config because the sealed vault is
@@ -492,6 +550,50 @@ class MultiChainController:
                     return n["name"]
         return cid
 
+    def auto_import_held_tokens(self) -> Dict[str, Any]:
+        """Feature A: on unlock / account-switch / manual refresh, run token
+        discovery for EVERY enabled chain + custom network and AUTO-IMPORT (persist)
+        any newly-found token with a real positive balance into the displayed token
+        list, honoring the security denylist / spam / scam gate. Dedupe by
+        (chain, contract|mint); incremental + idempotent; NEVER fabricates. Fully
+        best-effort — a discovery error never blocks unlock. Returns the summary."""
+        reg = self.registry
+        if not reg or not self.vault.is_unlocked():
+            return {"imported": [], "flagged": [], "changed": False}
+        discovered_by_chain: Dict[str, List[Dict[str, Any]]] = {}
+        for cid in reg.enabled():
+            acct = self.accounts.get(cid)
+            addr = getattr(acct, "address", None) if acct else None
+            if not addr:
+                continue
+            try:
+                rows = reg.discover_tokens(cid, addr) or []
+            except Exception:
+                rows = []
+            out = []
+            for b in rows:
+                asset = getattr(b, "asset", None)
+                if asset is None:
+                    continue
+                out.append({
+                    "chain": getattr(asset, "chain", cid),
+                    "kind": getattr(asset, "kind", "erc20"),
+                    "symbol": getattr(asset, "symbol", None),
+                    "decimals": getattr(asset, "decimals", 18),
+                    "address": getattr(asset, "address", None),
+                    "mint": getattr(asset, "mint", None),
+                    "name": getattr(asset, "name", None),
+                    "flags": list(getattr(asset, "flags", None) or []),
+                    "balance": getattr(b, "confirmed", None),
+                })
+            if out:
+                discovered_by_chain[cid] = out
+        denylist = list((self._security_config() or {}).get("denylist") or [])
+        try:
+            return self.vault.auto_import_tokens(discovered_by_chain, denylist=denylist)
+        except Exception:
+            return {"imported": [], "flagged": [], "changed": False}
+
     # ---- security pre-sign gate ctx (shared with the UI Send dialog) --------
     def _security_config(self) -> Dict[str, Any]:
         """The read-only security suite config (denylist / thresholds) from the
@@ -661,7 +763,7 @@ class AccountsTab(QWidget):
         self.unlock_btn.setObjectName("primary")
         self.unlock_btn.clicked.connect(self._unlock)
         self.refresh_btn = QPushButton("Refresh balances")
-        self.refresh_btn.clicked.connect(self._refresh_balances)
+        self.refresh_btn.clicked.connect(self._manual_refresh)
         self.refresh_btn.setEnabled(False)
         self.phrase_btn = QPushButton("Show recovery phrase…")
         self.phrase_btn.clicked.connect(self._show_phrase)
@@ -755,6 +857,12 @@ class AccountsTab(QWidget):
             b.setEnabled(True)
         self.unlock_btn.setText("Re-lock on exit")
         self._fill_accounts()
+        # Feature A: auto-detect + auto-import held tokens on every chain (best-effort,
+        # never blocks unlock) before the balance refresh renders the token list.
+        try:
+            self.ctrl.auto_import_held_tokens()
+        except Exception:
+            pass
         self._refresh_balances()
 
     def _fill_accounts(self):
@@ -911,6 +1019,16 @@ class AccountsTab(QWidget):
         ) != QMessageBox.Yes:
             return
         QDesktopServices.openUrl(QUrl(url))
+
+    def _manual_refresh(self):
+        # Manual refresh re-runs auto-detect + auto-import (Feature A) before the
+        # balance reload, so a newly-held token shows up without a manual add.
+        if self.ctrl.is_unlocked():
+            try:
+                self.ctrl.auto_import_held_tokens()
+            except Exception:
+                pass
+        self._refresh_balances()
 
     def _refresh_balances(self):
         if not self.ctrl.is_unlocked():

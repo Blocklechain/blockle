@@ -904,6 +904,31 @@ class BotCard(QFrame):
         pct = int(min(100, (used / cap * 100))) if cap > 0 else 0
         lay.addWidget(AllocBar(tokens, pct))
 
+        # Scan & trade (Autopilot) card: the scanned candidates + scores + the
+        # traded/skipped reasons from the last scan tick (docs/AGENT-SCAN.md §3).
+        scan = dash.get("scan") if dash.get("type") == "scanner" else None
+        if scan:
+            worthy = scan.get("worthy") or []
+            cands = scan.get("candidates") or []
+            head = QLabel(f"Scanned {len(cands)} · traded {len(worthy)} · "
+                          f"min {plain_money(scan.get('minProfitBps') or 0)}bps")
+            head.setStyleSheet(f"color:{tokens['ink_muted']}; font-size:11px;")
+            lay.addWidget(head)
+            shown = 0
+            for c in cands:
+                if shown >= 4:
+                    break
+                shown += 1
+                mark = "✓" if c.get("traded") else "·"
+                line = QLabel(f"{mark} {c.get('pair')}  {c.get('strategy') or '—'}  "
+                              f"{round(float(c.get('score') or 0), 2)}bps  "
+                              f"{'traded' if c.get('traded') else c.get('reason')}")
+                line.setObjectName("mono")
+                line.setStyleSheet(
+                    f"font-size:10px; font-family:{MONO};"
+                    f"color:{tokens['gain'] if c.get('traded') else tokens['ink_faint']};")
+                lay.addWidget(line)
+
         foot = QHBoxLayout()
         fl = QVBoxLayout()
         fl.setSpacing(1)
