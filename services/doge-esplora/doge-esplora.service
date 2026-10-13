@@ -1,0 +1,17 @@
+[Unit]
+Description=Blockle Dogecoin Esplora shim (wallet UTXO source over the full indexed node)
+After=network.target dogecoin-full.service
+Wants=dogecoin-full.service
+
+[Service]
+WorkingDirectory=/opt/blockle/services/doge-esplora
+# RPC creds for the FULL indexed node (/var/lib/dogecoin-full). Set via a root-only
+# drop-in: systemctl edit doge-esplora  ->  [Service] Environment=DOGE_RPC_USER=... DOGE_RPC_PASS=...
+Environment=DOGE_RPC_URL=http://127.0.0.1:22600/
+Environment=DOGE_ESPLORA_PORT=8797
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

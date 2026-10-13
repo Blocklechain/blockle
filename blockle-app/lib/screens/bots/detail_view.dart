@@ -13,6 +13,19 @@ import '../../state/bots_controller.dart';
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
 
+/// Coerce a persisted micro-unit value to BigInt. Deal state round-trips through
+/// JSON/secure-storage, where a BigInt comes back as a String (or int) — a plain
+/// `x as BigInt?` would THROW on those and crash the detail screen. This tolerates
+/// BigInt / int / String / num / null.
+BigInt? _big(dynamic v) {
+  if (v == null) return null;
+  if (v is BigInt) return v;
+  if (v is int) return BigInt.from(v);
+  if (v is String) return BigInt.tryParse(v.trim());
+  if (v is double) return BigInt.from(v);
+  return null;
+}
+
 class DetailView extends StatelessWidget {
   const DetailView({
     super.key,
@@ -90,7 +103,9 @@ class DetailView extends StatelessWidget {
   Widget _dealCard(BuildContext context, b.Bot bot, Map<String, dynamic>? deal,
       String pair, Map<String, dynamic> d) {
     final t = BotTheme.of(context);
-    final typeLabel = bot.type[0].toUpperCase() + bot.type.substring(1);
+    final typeLabel = bot.type.isEmpty
+        ? 'Bot'
+        : bot.type[0].toUpperCase() + bot.type.substring(1);
     return BotCard(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -300,6 +315,10 @@ class DetailView extends StatelessWidget {
     final cap = bot.allocationUsd;
     final dd = (d['maxDrawdownUsd'] as num?) ?? 0;
 
+    // A tile sizes to its own content (no fixed aspect ratio) and NEVER clips:
+    // the value is scaled down to the tile width and the sub caption is bounded
+    // to two lines. A too-short/too-narrow tile previously overflowed and threw a
+    // RenderFlex layout exception, crashing the whole detail screen.
     Widget tile(String eyebrow, Widget value, String? sub) => Container(
           padding: const EdgeInsets.all(15),
           decoration: BoxDecoration(
@@ -309,17 +328,76 @@ class DetailView extends StatelessWidget {
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Eyebrow(eyebrow),
               const SizedBox(height: 8),
-              value,
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FittedBox(
+                    fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: value),
+              ),
               if (sub != null) ...[
                 const SizedBox(height: 4),
-                Text(sub, style: TextStyle(fontSize: 12, color: t.inkMuted)),
+                Text(sub,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: t.inkMuted)),
               ],
             ],
           ),
         );
+
+    final tiles = <Widget>[
+      tile(
+        'Unrealized',
+        Text(unreal == null ? '—' : moneyUsd(unreal),
+            style: mono(t, size: 22, color: unreal == null ? t.inkMuted : t.pnlColor(unreal), w: FontWeight.w600)),
+        unreal == null ? 'awaiting market data' : 'mark-to-market',
+      ),
+      tile(
+        'Realized ($totalDeals deals)',
+        Text(moneyUsd(realized),
+            style: mono(t, size: 22, color: t.pnlColor(realized), w: FontWeight.w600)),
+        totalDeals > 0 ? 'avg ${moneyUsd(realized / totalDeals)} / deal' : 'no closed deals',
+      ),
+      tile(
+        'Allocation used',
+        Row(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic, children: [
+          Text(moneyUsd(committed, sign: false),
+              style: mono(t, size: 20, color: t.ink, w: FontWeight.w600)),
+          Text(' / ${moneyUsd(cap, sign: false)}',
+              style: mono(t, size: 13, color: t.inkFaint)),
+        ]),
+        null,
+      ),
+      tile(
+        'Win rate',
+        Text(winRate != null ? '$winRate%' : '—',
+            style: mono(t, size: 22, color: t.ink, w: FontWeight.w600)),
+        '$wins of $totalDeals · max DD ${moneyUsd(dd, sign: false)}',
+      ),
+    ];
+
+    // Lay the tiles out two-up in content-sized rows. IntrinsicHeight makes the
+    // pair share the taller tile's height; no fixed aspect ratio means a tile can
+    // grow to fit its content at ANY width, so nothing ever overflows.
+    final tileRows = <Widget>[];
+    for (var i = 0; i < tiles.length; i += 2) {
+      final hasSecond = i + 1 < tiles.length;
+      tileRows.add(IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: tiles[i]),
+            const SizedBox(width: 12),
+            Expanded(child: hasSecond ? tiles[i + 1] : const SizedBox()),
+          ],
+        ),
+      ));
+      if (i + 2 < tiles.length) tileRows.add(const SizedBox(height: 12));
+    }
 
     return BotCard(
       padding: const EdgeInsets.all(20),
@@ -328,45 +406,7 @@ class DetailView extends StatelessWidget {
         children: [
           const Eyebrow('Performance'),
           const SizedBox(height: 12),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 1.9,
-            children: [
-              tile(
-                'Unrealized',
-                Text(unreal == null ? '—' : moneyUsd(unreal),
-                    style: mono(t, size: 22, color: unreal == null ? t.inkMuted : t.pnlColor(unreal), w: FontWeight.w600)),
-                unreal == null ? 'awaiting market data' : 'mark-to-market',
-              ),
-              tile(
-                'Realized ($totalDeals deals)',
-                Text(moneyUsd(realized),
-                    style: mono(t, size: 22, color: t.pnlColor(realized), w: FontWeight.w600)),
-                totalDeals > 0 ? 'avg ${moneyUsd(realized / totalDeals)} / deal' : 'no closed deals',
-              ),
-              tile(
-                'Allocation used',
-                Row(crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic, children: [
-                  Text(moneyUsd(committed, sign: false),
-                      style: mono(t, size: 20, color: t.ink, w: FontWeight.w600)),
-                  Text(' / ${moneyUsd(cap, sign: false)}',
-                      style: mono(t, size: 13, color: t.inkFaint)),
-                ]),
-                null,
-              ),
-              tile(
-                'Win rate',
-                Text(winRate != null ? '$winRate%' : '—',
-                    style: mono(t, size: 22, color: t.ink, w: FontWeight.w600)),
-                '$wins of $totalDeals · max DD ${moneyUsd(dd, sign: false)}',
-              ),
-            ],
-          ),
+          ...tileRows,
           const SizedBox(height: 18),
           SafetyNote(
             icon: Icons.shield_outlined,
@@ -398,7 +438,14 @@ class _Stepper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = BotTheme.of(context);
-    final base = b.splitPair(bot.pairs().isNotEmpty ? bot.pairs().first : 'X/USDC')[0];
+    // splitPair THROWS on a malformed pair (no BASE/QUOTE slash); a bad universe
+    // entry must never crash the detail screen, so fall back to a neutral base.
+    String base;
+    try {
+      base = b.splitPair(bot.pairs().isNotEmpty ? bot.pairs().first : 'X/USDC')[0];
+    } catch (_) {
+      base = 'X';
+    }
     final bd = b.decimalsFor(base);
     final fills = (deal['fills'] as List? ?? const []).cast<Map<String, dynamic>>();
 
@@ -406,9 +453,9 @@ class _Stepper extends StatelessWidget {
     var soIdx = 0;
     for (final f in fills) {
       final kind = '${f['kind']}';
-      final priceUsd = b.ucToUsd(f['priceUc'] as BigInt?) ?? 0;
-      final qty = f['qty'] as BigInt? ?? BigInt.zero;
-      final usd = b.ucToUsd((f['costUc'] ?? f['proceedsUc']) as BigInt?) ?? 0;
+      final priceUsd = b.ucToUsd(_big(f['priceUc'])) ?? 0;
+      final qty = _big(f['qty']) ?? BigInt.zero;
+      final usd = b.ucToUsd(_big(f['costUc'] ?? f['proceedsUc'])) ?? 0;
       String label;
       if (f['side'] == 'sell') {
         label = kind == 'tp' ? 'Take-profit sold' : kind == 'sl' ? 'Stop-loss sold' : 'Sold';
@@ -433,8 +480,8 @@ class _Stepper extends StatelessWidget {
       final used = (deal['safetyOrdersUsed'] as int?) ?? 0;
       final maxSo = (cfg['maxSafetyOrders'] as num?)?.toInt() ?? 0;
       final tpArmed = deal['tpArmed'] == true;
-      final nextTrig = b.ucToUsd(deal['nextTriggerUc'] as BigInt?) ?? 0;
-      if (!tpArmed && used < maxSo && (deal['filledQty'] as BigInt? ?? BigInt.zero) > BigInt.zero) {
+      final nextTrig = b.ucToUsd(_big(deal['nextTriggerUc'])) ?? 0;
+      if (!tpArmed && used < maxSo && (_big(deal['filledQty']) ?? BigInt.zero) > BigInt.zero) {
         steps.add(_StepData(
           state: 'active',
           label: 'Safety order ${used + 1} armed',
@@ -443,7 +490,7 @@ class _Stepper extends StatelessWidget {
           sub: '',
         ));
       }
-      final avg = b.ucToUsd(deal['avgEntryUc'] as BigInt?) ?? 0;
+      final avg = b.ucToUsd(_big(deal['avgEntryUc'])) ?? 0;
       final tpPct = (cfg['takeProfitPct'] as num?)?.toDouble() ?? 0;
       final tpTarget = avg * (1 + tpPct / 100);
       steps.add(_StepData(
