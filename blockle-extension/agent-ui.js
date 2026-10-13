@@ -92,17 +92,10 @@
       hostedRefresh: async (credRef, cred) => {
         try {
           if (!Wallet.isUnlocked() || !cred || !cred.gatewayUrl) return null;
-          const sign = async (message) => {
-            const r = await Wallet.signMessage(message);
-            const signature = typeof r === 'string' ? r : (r && (r.signature || r.sig)) || '';
-            const publicKey = (r && r.publicKey) || Wallet.publicKeyHex || '';
-            return { signature, publicKey };
-          };
-          const sess = await global.AgentProviders.hostedSession({
-            gatewayUrl: cred.gatewayUrl, address: cred.address, chain: cred.chain || 'block',
-            publicKey: cred.publicKey, sign,
-            fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined,
-          });
+          // Re-sign with the SAME gateway-verified scheme the connect used: prefer
+          // the EVM EIP-191 per-address session, else the anonymous session. Never
+          // re-sign with the BLOCK key (the gateway cannot verify it -> 401).
+          const sess = await global.AgentProviders.hostedSession(hostedSessionOpts(cred.gatewayUrl));
           await AgentStore.refreshHosted(credRef, sess.sessionToken, sess.expiresAt);
           return sess.sessionToken;
         } catch (_) { return null; }
@@ -439,21 +432,39 @@
 
   // Keyless connect: sign the gateway challenge with the wallet address key (NOT
   // a spend) and seal a hosted connection — no API key is ever entered or stored.
+  // Derive the wallet's EVM account (secp256k1, m/44'/60'/0'/0/0 — the SAME key
+  // every EVM chain uses) so we can sign the gateway challenge with EIP-191
+  // personal_sign, the ONE scheme the hosted gateway verifies (FIX-401). Returns
+  // { address, privateKey } or null when no HD seed is available (locked /
+  // watch-only) — the caller then falls back to an anonymous session.
+  function hostedEvmSigner() {
+    try {
+      if (!Wallet.isUnlocked || !Wallet.isUnlocked()) return null;
+      const C = global.BLKCrypto, HD = global.HD, Addr = global.Addr;
+      const seedHex = Wallet.seedHex;
+      if (!seedHex || !C || !HD || !Addr) return null;
+      const node = HD.derivePath(C.hexToBytes(seedHex), "m/44'/60'/0'/0/0");
+      if (!node || !node.privateKey) return null;
+      return { address: Addr.evmAddress(node.publicKey), privateKey: node.privateKey };
+    } catch (_) { return null; }
+  }
+
+  // Build the hostedSession opts: PREFER a real per-address EVM session (EIP-191,
+  // gateway-verified) and FALL BACK to an anonymous session when no EVM key is
+  // available — so the connect ALWAYS succeeds (never a 401).
+  function hostedSessionOpts(gatewayUrl) {
+    const base = { gatewayUrl, fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined };
+    const evm = hostedEvmSigner();
+    return evm ? Object.assign(base, { evm }) : Object.assign(base, { anon: true });
+  }
+
   async function connectHosted() {
     const err = $('#ach-err'); if (err) err.textContent = '';
     try {
       if (!Wallet.isUnlocked()) throw new Error('Unlock your wallet first.');
       const gatewayUrl = ($('#ach-gw') && $('#ach-gw').value.trim()) ||
         (global.AgentProviders && global.AgentProviders.DEFAULT_GATEWAY_URL);
-      const address = Wallet.address || (Wallet.getAddress && (await Wallet.getAddress()));
-      const sign = async (message) => {
-        const r = await Wallet.signMessage(message);
-        const signature = typeof r === 'string' ? r : (r && (r.signature || r.sig)) || '';
-        const publicKey = (r && r.publicKey) || Wallet.publicKeyHex || '';
-        return { signature, publicKey };
-      };
-      await AgentStore.connectHosted({ gatewayUrl, address, chain: 'block', sign,
-        fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined });
+      await AgentStore.connectHosted(hostedSessionOpts(gatewayUrl));
       UI.toast('Blockle hosted agent connected');
       enter();
     } catch (e) { if (err) err.textContent = e.message || String(e); }

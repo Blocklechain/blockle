@@ -214,6 +214,126 @@ def test_hosted_session_requires_gateway_url():
         run(providers_mod.hosted_session({}))
 
 
+# ---------------------------------------------------------------------------
+# FIX-401: the "Use Blockle hosted agent" connect must NEVER 401.
+#   * PREFER a real EVM EIP-191 per-address session (chain "evm" + 0x address)
+#     — the scheme the gateway actually verifies.
+#   * FALL BACK to the anon session when no EVM key/signer is available, OR if
+#     the EVM handshake is rejected. Either way a usable token is returned.
+# ---------------------------------------------------------------------------
+
+
+def test_hosted_connect_prefers_evm_eip191_per_address_session():
+    seen = {"challenge_chain": None, "verify_chain": None, "verify_addr": None}
+
+    def router(url, body, n):
+        assert url.endswith("/agent/session")
+        step = body.get("step")
+        if step == "challenge":
+            seen["challenge_chain"] = body.get("chain")
+            return {"status": 200, "json": {"challenge": "nonce-evm", "expiresAt": 1760000000}}
+        if step == "verify":
+            seen["verify_chain"] = body.get("chain")
+            seen["verify_addr"] = body.get("address")
+            assert body["challenge"] == "nonce-evm"
+            assert body["signature"] == "0xsig-of-nonce-evm"
+            return {"status": 200, "json": {"sessionToken": "evm-tok", "expiresAt": 1760000900,
+                                            "quota": {"reqPerMin": 60}}}
+        if step == "anon":
+            raise AssertionError("anon must NOT be reached when an EVM signer is available")
+        raise AssertionError("unexpected step " + str(step))
+
+    async def evm_sign(msg):
+        # EIP-191 personal_sign returns a 0x signature; no publicKey needed (the
+        # gateway recovers the signer).
+        return {"signature": "0xsig-of-" + msg}
+
+    sess = run(providers_mod.hosted_connect({
+        "gatewayUrl": "https://gw.test",
+        "evmAddress": "0x1234567890abcdef1234567890abcdef12345678",
+        "evmSign": evm_sign, "request": req_from_router(router),
+    }))
+    assert sess["sessionToken"] == "evm-tok"
+    assert sess["chain"] == "evm"             # the verifiable scheme, not "block"
+    assert seen["challenge_chain"] == "evm"
+    assert seen["verify_chain"] == "evm"
+    assert seen["verify_addr"] == "0x1234567890abcdef1234567890abcdef12345678"
+
+
+def test_hosted_connect_falls_back_to_anon_when_no_evm_signer():
+    def router(url, body, n):
+        assert body.get("step") == "anon", "no EVM signer -> anon (no challenge/verify)"
+        return {"status": 200, "json": {"sessionToken": "anon-tok", "expiresAt": 1760000900,
+                                        "quota": {"dailyTokenCap": 20000}}}
+
+    sess = run(providers_mod.hosted_connect({"gatewayUrl": "https://gw.test",
+                                             "request": req_from_router(router)}))
+    assert sess["sessionToken"] == "anon-tok"
+    assert sess["chain"] == "anon"
+
+
+def test_hosted_connect_non_evm_address_uses_anon_not_block():
+    # A BLOCK (bech32) address is NOT EVM-verifiable -> must NOT sign chain "block"
+    # (that is exactly the 401 bug); fall back to anon instead.
+    async def sign(msg):
+        return {"signature": "sig"}
+
+    def router(url, body, n):
+        assert body.get("step") == "anon"
+        return {"status": 200, "json": {"sessionToken": "anon-tok"}}
+
+    sess = run(providers_mod.hosted_connect({"gatewayUrl": "https://gw.test",
+                                             "address": "block1abc", "sign": sign,
+                                             "request": req_from_router(router)}))
+    assert sess["sessionToken"] == "anon-tok"
+    assert sess["chain"] == "anon"
+
+
+def test_hosted_connect_never_401s_falls_back_to_anon_on_evm_rejection():
+    # Even if the EVM handshake is rejected (e.g. a 401), the connect must still
+    # succeed by falling back to the anon session — never surface a 401.
+    def router(url, body, n):
+        step = body.get("step")
+        if step == "challenge":
+            return {"status": 200, "json": {"challenge": "nonce"}}
+        if step == "verify":
+            return {"status": 401, "json": {"error": "signature verification failed"}}
+        if step == "anon":
+            return {"status": 200, "json": {"sessionToken": "anon-rescue"}}
+        raise AssertionError("unexpected step " + str(step))
+
+    async def evm_sign(msg):
+        return {"signature": "0xbad"}
+
+    sess = run(providers_mod.hosted_connect({
+        "gatewayUrl": "https://gw.test",
+        "evmAddress": "0x" + "ab" * 20, "evmSign": evm_sign,
+        "request": req_from_router(router),
+    }))
+    assert sess["sessionToken"] == "anon-rescue"
+    assert sess["chain"] == "anon"
+
+
+def test_hosted_session_defaults_to_evm_not_block():
+    # The low-level handshake defaults to the VERIFIABLE "evm" chain, never the
+    # un-verifiable "block" chain that always 401s.
+    seen = {"chain": None}
+
+    def router(url, body, n):
+        if body.get("step") == "challenge":
+            seen["chain"] = body.get("chain")
+            return {"status": 200, "json": {"challenge": "n"}}
+        return {"status": 200, "json": {"sessionToken": "t"}}
+
+    async def sign(msg):
+        return {"signature": "s"}
+
+    run(providers_mod.hosted_session({"gatewayUrl": "https://gw.test",
+                                      "address": "0x" + "cd" * 20, "sign": sign,
+                                      "request": req_from_router(router)}))
+    assert seen["chain"] == "evm"
+
+
 # A hosted credential record wires straight into the (UNCHANGED) runner via
 # index.start — keyless, no apiKey.
 def test_index_start_accepts_hosted_credential_and_rejects_incomplete():

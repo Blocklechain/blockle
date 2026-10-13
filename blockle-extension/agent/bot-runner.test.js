@@ -66,8 +66,22 @@ function setup(opts) {
   const runner = AgentBotRunner.create({
     policy, tools, audit, ctx: opts.ctx || mkCtx([100]), AgentRunner, Bots: AgentBots,
     mainnetEnabled: opts.mainnetEnabled === true, discovery: opts.discovery || null,
+    timers: opts.timers, pollMs: opts.pollMs,
   });
   return { runner, policy, tools, audit };
+}
+
+// A fake interval: captures the callback so a test can FIRE it deterministically
+// and observe start/stop, without any real wall-clock timer.
+function fakeTimers() {
+  const t = { cb: null, started: 0, cleared: 0 };
+  return {
+    set: (fn) => { t.cb = fn; t.started++; return { _fake: true }; },
+    clear: () => { t.cb = null; t.cleared++; },
+    async fire() { if (t.cb) await t.cb(); },
+    get running() { return t.cb != null; },
+    stats: t,
+  };
 }
 
 const skips = (audit, reason) => audit.list().filter((e) => e.type === 'bot_skip' && e.reason === reason);
@@ -381,4 +395,112 @@ test('scheduled (live): a null USD estimate fails closed (skipped:allocation-unk
   assert.equal(tools.state.commits, 1, 'only the finite-estimate order broadcast');
   const d = runner.dashboard(bot.id, { BLOCK: 100 });
   assert.ok(Math.abs(d.committedUsd - 10.005) < 1e-6, 'only the finite order accrued (trade $10 + fee $0.005), got ' + d.committedUsd);
+});
+
+// ===========================================================================
+// FIX-KILL (a): a BACKGROUND SCHEDULER ticks enabled bots; (b) per-bot STOP +
+// REMOVE; (c) kill-all stops every bot AND the scheduler. See docs §5.
+// ===========================================================================
+
+test('scheduler: enabling/arming a bot STARTS a background ticker that ticks enabled bots', async () => {
+  const timers = fakeTimers();
+  const ctx = mkCtx([100, 90, 97]);
+  const { runner, audit } = setup({ ctx, timers, pollMs: 1000 });
+  const bot = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] }, config: { baseOrderUsd: 100, maxSafetyOrders: 0, takeProfitPct: 2 } });
+
+  assert.equal(runner.schedulerRunning(), false, 'no ticker before any bot is enabled');
+  await runner.enablePaper(bot.id);
+  assert.equal(runner.schedulerRunning(), true, 'enabling a bot starts the background ticker');
+  assert.equal(timers.running, true);
+  assert.ok(timers.stats.started >= 1);
+
+  // make the bot DUE, then let the ticker fire: it must actually tick the bot.
+  runner.ctx._t = 10_000_000;
+  await timers.fire();
+  assert.equal(bot.state.lastTickAt, 10_000_000, 'the scheduled sweep ticked the enabled bot');
+  assert.ok(audit.list().some((e) => e.type === 'bot_paper_fill'), 'the tick ran the deal engine (paper fill)');
+});
+
+test('scheduler: a scheduled sweep SKIPS a paused bot and is a no-op after kill', async () => {
+  const timers = fakeTimers();
+  const { runner } = setup({ ctx: mkCtx([100]), timers, pollMs: 1000, confirm: async () => true, onKill: async () => {} });
+  const a = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] }, config: { baseOrderUsd: 20, maxSafetyOrders: 0 } });
+  await runner.enablePaper(a.id);
+  await runner.pause(a.id);
+  assert.equal(a.enabled, false, 'pause halts the bot');
+  assert.equal(runner.schedulerRunning(), false, 'the ticker stops when no bot is enabled');
+
+  // even if a stale timer somehow fired, a disabled bot is not ticked.
+  runner.ctx._t = 10_000_000;
+  const before = a.state.lastTickAt || 0;
+  await timers.fire();
+  assert.equal((a.state.lastTickAt || 0), before, 'a paused bot is never ticked by the scheduler');
+});
+
+test('per-bot STOP: pause sets enabled=false, persists, and the dashboard shows "paused"', async () => {
+  const timers = fakeTimers();
+  const { runner } = setup({ ctx: mkCtx([100]), timers, pollMs: 1000 });
+  const bot = runner.add({ type: 'grid', universe: { pairs: ['BLOCK/USDC'] }, config: { lowerPrice: 0.9, upperPrice: 1.1, gridCount: 4, totalUsd: 40 } });
+  await runner.enablePaper(bot.id);
+  assert.equal(runner.dashboard(bot.id).status, 'running');
+  await runner.pause(bot.id);
+  assert.equal(bot.enabled, false);
+  assert.equal(runner.dashboard(bot.id).status, 'paused');
+});
+
+test('per-bot REMOVE: deletes the bot from the store (UI drops it) and stops the ticker', async () => {
+  const timers = fakeTimers();
+  const { runner, audit } = setup({ ctx: mkCtx([100]), timers, pollMs: 1000 });
+  const bot = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] }, config: { baseOrderUsd: 20, maxSafetyOrders: 0 } });
+  await runner.enablePaper(bot.id);
+  assert.equal(runner.list().length, 1);
+
+  const ok = await runner.remove(bot.id);
+  assert.equal(ok, true, 'remove reports success');
+  assert.equal(runner.get(bot.id), null, 'the bot is gone from the store');
+  assert.equal(runner.list().length, 0, 'the UI list no longer contains it');
+  assert.equal(runner.schedulerRunning(), false, 'removing the last enabled bot stops the ticker');
+  assert.ok(audit.list().some((e) => e.type === 'bot_removed' && e.bot === bot.id), 'the removal is audited');
+  assert.equal(await runner.remove(bot.id), false, 'removing an unknown bot is a no-op');
+});
+
+test('per-bot REMOVE (live): cancels the open order through the ONE gate before deleting', async () => {
+  const ctx = mkCtx([1.0, 0.95, 0.9]); // drift down so a grid buy level fills
+  const { runner, tools } = setup({ ctx, sessionUsd: 1000, confirm: async () => true });
+  const bot = runner.add({ type: 'grid', universe: { pairs: ['BLOCK/USDC'] }, config: { lowerPrice: 0.9, upperPrice: 1.1, gridCount: 4, totalUsd: 40 } });
+  await runner.armLive(bot.id, { allocationUsd: 50 });
+  await runner.tickBot(bot.id);
+  await runner.tickBot(bot.id); // fill a grid level -> an open orderId exists
+
+  const cancelsBefore = tools.state.committed.filter((c) => c.name === 'cancel_order').length;
+  await runner.remove(bot.id);
+  const cancelsAfter = tools.state.committed.filter((c) => c.name === 'cancel_order').length;
+  assert.ok(cancelsAfter > cancelsBefore, 'removing a live bot cancelled its open order via the shared dispatch');
+  assert.equal(runner.get(bot.id), null, 'and the bot was deleted');
+});
+
+test('kill-all: stops every bot AND the background scheduler (UI reflects it immediately)', async () => {
+  let locked = false;
+  const timers = fakeTimers();
+  const { runner, policy } = setup({ ctx: mkCtx([100]), timers, pollMs: 1000, confirm: async () => true, onKill: async () => { locked = true; } });
+  const a = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] }, config: { baseOrderUsd: 20, maxSafetyOrders: 0 } });
+  const b = runner.add({ type: 'grid', universe: { pairs: ['BLOCK/USDC'] }, config: { lowerPrice: 0.9, upperPrice: 1.1, gridCount: 4, totalUsd: 40 } });
+  await runner.armLive(a.id, { allocationUsd: 50 });
+  await runner.enablePaper(b.id);
+  assert.equal(runner.schedulerRunning(), true);
+
+  await runner.killAll('panic');
+
+  assert.equal(policy.isKilled(), true);
+  assert.equal(locked, true, 'the vault was locked');
+  assert.equal(a.enabled, false);
+  assert.equal(b.enabled, false);
+  assert.equal(runner.schedulerRunning(), false, 'the scheduler stopped on kill');
+  assert.equal(timers.running, false);
+  // the dashboard reflects the kill immediately
+  assert.equal(runner.dashboard(a.id).status, 'killed');
+  // a scheduled sweep after kill is a pure no-op
+  runner.ctx._t = 10_000_000;
+  await timers.fire();
+  assert.equal(a.state.lastTickAt || 0, 0, 'no tick happens after kill');
 });

@@ -25,6 +25,8 @@
 //     + pnl tagged `paper`.
 //   • No synthetic prices: a missing mark skips the tick (audited `skipped: price`).
 
+import 'dart:async';
+
 import 'bots.dart' as b;
 import 'pnl.dart' show PnlHook;
 import 'policy.dart';
@@ -70,6 +72,14 @@ class BotRunner {
   final Map<String, Strategy> strategies;
   bool _killed = false;
 
+  // ---- background scheduler ------------------------------------------------
+  // A real bot RUNS: once a bot is enabled/armed the scheduler ticks every
+  // ENABLED bot on its pollSec. Without this nothing would ever advance a deal.
+  // Injectable timer factory so tests drive it deterministically (no real clock).
+  final Timer Function(Duration interval, void Function() onTick)? _timerFactory;
+  Timer? _schedulerTimer;
+  bool _ticking = false;
+
   BotRunner({
     required this.policy,
     required this.tools,
@@ -84,7 +94,9 @@ class BotRunner {
     String? wallet,
     String? channel,
     Map<String, Strategy>? strategies,
+    Timer Function(Duration interval, void Function() onTick)? timerFactory,
   })  : ctx = ctx ?? const BotContext(),
+        _timerFactory = timerFactory,
         wallet = wallet ?? 'default',
         channel = channel ?? 'default',
         strategies = strategies ?? defaultStrategies(),
@@ -116,10 +128,67 @@ class BotRunner {
     }
   }
 
+  // ---- background scheduler -----------------------------------------------
+  bool get schedulerRunning => _schedulerTimer != null;
+
+  /// The scheduler interval: the tightest ENABLED-bot pollSec (min 1s), else 60s.
+  Duration _pollInterval() {
+    final en = store.enabled();
+    if (en.isEmpty) return const Duration(seconds: 60);
+    var sec = en.map((x) => x.pollSec).reduce((a, c) => a < c ? a : c);
+    if (sec < 1) sec = 1;
+    return Duration(seconds: sec);
+  }
+
+  /// Start (or restart) the background scheduler. Idempotent; a no-op once killed
+  /// or when no bot is enabled. Called whenever a bot is enabled/armed so a
+  /// running bot is actually ticked.
+  void startScheduler() {
+    if (_killed) return;
+    if (store.enabled().isEmpty) return;
+    _schedulerTimer?.cancel();
+    final interval = _pollInterval();
+    void onFire() {
+      if (_killed || store.enabled().isEmpty) {
+        stopScheduler();
+        return;
+      }
+      if (_ticking) return; // never overlap ticks
+      _ticking = true;
+      tickAll().whenComplete(() {
+        _ticking = false;
+        emit({'type': 'bot_tick'});
+      });
+    }
+
+    final factory = _timerFactory;
+    _schedulerTimer = factory != null
+        ? factory(interval, onFire)
+        : Timer.periodic(interval, (_) => onFire());
+  }
+
+  /// Stop the background scheduler (no more automatic ticks).
+  void stopScheduler() {
+    _schedulerTimer?.cancel();
+    _schedulerTimer = null;
+  }
+
   // ---- bot lifecycle ------------------------------------------------------
   b.Bot add(dynamic spec) => store.add(spec);
   b.Bot? get(String id) => store.get(id);
   List<b.Bot> list() => store.list();
+
+  /// Permanently delete a bot from the store. Stops the scheduler when the last
+  /// enabled bot is gone. Returns true when a bot was actually removed.
+  Future<bool> remove(String id) async {
+    final existed = store.remove(id);
+    if (existed) {
+      await store.persist();
+      if (store.enabled().isEmpty) stopScheduler();
+      emit({'type': 'bot_removed', 'bot': id});
+    }
+    return existed;
+  }
 
   /// Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
   Future<b.Bot> armLive(String id, {num? allocationUsd}) async {
@@ -150,6 +219,7 @@ class BotRunner {
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc, 'network': bot.network});
     emit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc});
     await store.persist();
+    startScheduler(); // a running bot is actually ticked
     return bot;
   }
 
@@ -160,15 +230,19 @@ class BotRunner {
     bot.enabled = true;
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'paper'});
     await store.persist();
+    startScheduler(); // a running bot is actually ticked
     return bot;
   }
 
+  /// Per-bot STOP: truly halt a single bot. Disables it (the scheduler skips it),
+  /// persists, and stops the scheduler when it was the last enabled bot.
   Future<b.Bot?> pause(String id) async {
     final bot = store.get(id);
     if (bot != null) {
       bot.enabled = false;
       await _audit({'type': 'bot_paused', 'bot': id});
       await store.persist();
+      if (store.enabled().isEmpty) stopScheduler();
     }
     return bot;
   }
@@ -176,6 +250,7 @@ class BotRunner {
   // ---- KILL (§5): stop ALL bots, best-effort cancel open orders, lock vault --
   Future<void> killAll([String? reason]) async {
     _killed = true;
+    stopScheduler(); // no more automatic ticks — every bot is halting now
     for (final bot in store.list()) {
       bot.enabled = false;
       if (bot.mode == 'live') {

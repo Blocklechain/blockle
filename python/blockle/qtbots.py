@@ -880,9 +880,9 @@ class BotCard(QFrame):
         ty = QLabel(dash.get("type", "").upper())
         ty.setObjectName("chipType")
         chips.addWidget(ty)
-        status = dash.get("status", "paused")
+        status = dash.get("status", "stopped")
         st = QLabel({"running": "auto · within cap" if mode == "live" else "simulated",
-                     "paused": "paused", "killed": "killed"}.get(status, status))
+                     "stopped": "stopped", "paused": "paused", "killed": "killed"}.get(status, status))
         st.setObjectName("chip")
         chips.addWidget(st)
         chips.addStretch(1)
@@ -1662,11 +1662,13 @@ class DetailPanel(QWidget):
         clone_btn = QPushButton("Clone")
         clone_btn.clicked.connect(lambda: self._clone(bot_id))
         stop_btn = QPushButton("Stop")
-        stop_btn.clicked.connect(lambda: self._toggle_pause(bot_id, True, mode))
+        stop_btn.clicked.connect(lambda: self._stop_bot(bot_id))
+        remove_btn = QPushButton("Delete")
+        remove_btn.clicked.connect(lambda: self._remove_bot(bot_id))
         kill_btn = QPushButton("⏻ Kill bot")
         kill_btn.setObjectName("kill")
         kill_btn.clicked.connect(lambda: self._kill_bot(bot_id))
-        for b in (pause_btn, clone_btn, stop_btn):
+        for b in (pause_btn, clone_btn, stop_btn, remove_btn):
             ctrls.addWidget(b)
         ctrls.addStretch(1)
         ctrls.addWidget(kill_btn)
@@ -1822,17 +1824,46 @@ class DetailPanel(QWidget):
         clone = self.bc.runner.add(spec)
         self.bc.run_async(self.bc.runner.enable_paper(clone.id), on_done=lambda _: self._after())
 
+    def _stop_bot(self, bot_id):
+        """Per-bot STOP: truly halt this one bot (enabled=false, scheduler skips
+        it, open live orders best-effort cancelled). It stays in the list."""
+        runner = self.bc.runner
+        if runner is None:
+            return
+        self.bc.run_async(runner.stop(bot_id), on_done=lambda _: self._after(),
+                          on_error=lambda e: QMessageBox.warning(self, "Bots", str(e)))
+
+    def _remove_bot(self, bot_id):
+        """Per-bot REMOVE/delete: halt + delete this bot from the store and the UI."""
+        runner = self.bc.runner
+        if runner is None:
+            return
+        if QMessageBox.question(self, "Delete bot",
+                                "Stop and permanently delete this bot? Its deal history is "
+                                "removed. (Open live orders are best-effort cancelled first.)",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.bc.run_async(runner.remove(bot_id), on_done=lambda _: self._after_remove(),
+                          on_error=lambda e: QMessageBox.warning(self, "Bots", str(e)))
+
     def _kill_bot(self, bot_id):
         if QMessageBox.question(self, "Kill bot",
-                                "Pause this bot immediately? (The global Kill-all also locks the "
-                                "vault; this just stops the one bot.)") != QMessageBox.Yes:
+                                "Stop this bot immediately? (The global Kill-all also locks the "
+                                "vault; this just halts the one bot.)") != QMessageBox.Yes:
             return
-        self.bc.run_async(self.bc.runner.pause(bot_id), on_done=lambda _: self._after())
+        self.bc.run_async(self.bc.runner.stop(bot_id), on_done=lambda _: self._after())
 
     def _after(self):
         self.changed.emit()
         if self.bot_id:
             self.show_bot(self.bot_id)
+
+    def _after_remove(self):
+        # the bot is gone — leave the detail view and refresh the cockpit list.
+        self.bot_id = None
+        self.body.setVisible(False)
+        self.placeholder.setVisible(True)
+        self.changed.emit()
 
 
 # =========================================================================== #

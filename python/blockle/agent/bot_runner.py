@@ -28,6 +28,7 @@ THE FULLY-AUTO-WITHIN-ALLOCATION GATE (§5), made non-bypassable:
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any, Dict, List, Optional
 
@@ -63,6 +64,19 @@ class BotRunner:
         self.discovery = deps.get("discovery") or member(self.ctx, "discovery")
         self.Strategies = deps.get("Strategies")  # optional injection (tests); else module default
         self._killed = False
+        # ---- background scheduler ------------------------------------------
+        # A single asyncio task that ticks every ENABLED bot when its pollSec is
+        # due. Started on arm/enable; stopped on kill_all or when no enabled bot
+        # remains. ``schedulerBaseSec`` is the loop granularity (overridable for
+        # tests); each bot still only ticks when ``now - lastTickAt >= pollSec``.
+        self._scheduler_task: Optional["asyncio.Task"] = None
+        self._scheduler_running = False
+        try:
+            self._scheduler_base_sec = float(deps.get("schedulerBaseSec") or 1.0)
+        except (TypeError, ValueError):
+            self._scheduler_base_sec = 1.0
+        if self._scheduler_base_sec <= 0:
+            self._scheduler_base_sec = 1.0
 
     # ---- events / audit -----------------------------------------------------
     def emit(self, ev: Dict[str, Any]) -> None:
@@ -118,6 +132,7 @@ class BotRunner:
                            "allocationUsd": alloc, "network": bot.network})
         self.emit({"type": "bot_armed", "bot": id_, "mode": "live", "allocationUsd": alloc})
         await self.store.persist()
+        self.start_scheduler()
         return bot
 
     async def enable_paper(self, id_: str) -> Any:
@@ -128,6 +143,7 @@ class BotRunner:
         bot.enabled = True
         await self._audit({"type": "bot_armed", "bot": id_, "mode": "paper"})
         await self.store.persist()
+        self.start_scheduler()
         return bot
 
     async def pause(self, id_: str) -> Any:
@@ -136,11 +152,104 @@ class BotRunner:
             bot.enabled = False
             await self._audit({"type": "bot_paused", "bot": id_})
             await self.store.persist()
+            self._stop_scheduler_if_idle()
         return bot
+
+    async def stop(self, id_: str) -> Any:
+        """Per-bot STOP: truly halt ONE bot. Sets ``enabled=False`` (so the
+        scheduler skips it and its status reads "stopped"), best-effort cancels
+        its open LIVE orders, and persists. The bot stays in the store so it can
+        be resumed/edited; use :meth:`remove` to delete it entirely."""
+        bot = self.store.get(id_)
+        if not bot:
+            raise ValueError("unknown bot: " + str(id_))
+        bot.enabled = False
+        if bot.mode == "live":
+            try:
+                await self._cancel_open_orders(bot)
+            except Exception:
+                pass
+        await self._audit({"type": "bot_stopped", "bot": id_})
+        self.emit({"type": "bot_stopped", "bot": id_})
+        await self.store.persist()
+        self._stop_scheduler_if_idle()
+        return bot
+
+    async def remove(self, id_: str) -> bool:
+        """Per-bot REMOVE/delete: stop the bot, best-effort cancel its open LIVE
+        orders, then DELETE it from the store. Returns True if a bot was removed."""
+        bot = self.store.get(id_)
+        if not bot:
+            return False
+        bot.enabled = False
+        if bot.mode == "live":
+            try:
+                await self._cancel_open_orders(bot)
+            except Exception:
+                pass
+        removed = self.store.remove(id_)
+        await self._audit({"type": "bot_removed", "bot": id_})
+        self.emit({"type": "bot_removed", "bot": id_})
+        await self.store.persist()
+        self._stop_scheduler_if_idle()
+        return removed
+
+    # ---- background scheduler ----------------------------------------------
+    def start_scheduler(self) -> Optional["asyncio.Task"]:
+        """Start the background tick loop if an asyncio loop is running and one is
+        not already active. Idempotent. No-op (returns None) when called outside a
+        running loop — callers then tick manually via :meth:`tick_all`."""
+        if self._killed:
+            return None
+        if self._scheduler_task is not None and not self._scheduler_task.done():
+            return self._scheduler_task
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        self._scheduler_running = True
+        self._scheduler_task = loop.create_task(self._scheduler_loop())
+        return self._scheduler_task
+
+    def stop_scheduler(self) -> None:
+        """Halt the background tick loop (no bot state is changed)."""
+        self._scheduler_running = False
+        t = self._scheduler_task
+        self._scheduler_task = None
+        if t is not None and not t.done():
+            t.cancel()
+
+    def _stop_scheduler_if_idle(self) -> None:
+        if not self.store.enabled():
+            self.stop_scheduler()
+
+    async def _scheduler_loop(self) -> None:
+        try:
+            while self._scheduler_running and not self._killed:
+                enabled = self.store.enabled()
+                if not enabled:
+                    break  # nothing armed -> the scheduler stops until re-armed
+                now = self._now()
+                for bot in enabled:
+                    if self._killed or not self._scheduler_running:
+                        break
+                    last = bot.state.get("lastTickAt") or 0
+                    if now - last >= bot.poll_sec * 1000:
+                        try:
+                            await self.tick_bot(bot.id)
+                        except Exception:  # noqa: BLE001 — a bad tick never kills the loop
+                            pass
+                await asyncio.sleep(self._scheduler_base_sec)
+        except asyncio.CancelledError:  # pragma: no cover - cooperative cancel
+            pass
+        finally:
+            self._scheduler_running = False
+            self._scheduler_task = None
 
     # ---- KILL (§5): stop ALL bots, best-effort cancel orders, lock vault -----
     async def kill_all(self, reason: Any = None) -> None:
         self._killed = True
+        self.stop_scheduler()                        # the scheduler stops on kill
         for bot in self.store.list():
             bot.enabled = False
             if bot.mode == "live":
@@ -694,7 +803,7 @@ class BotRunner:
         return {
             "bot": bot.id, "name": bot.name, "type": bot.type, "mode": bot.mode,
             "enabled": bot.enabled, "network": bot.network,
-            "status": "killed" if self._killed else ("running" if bot.enabled else "paused"),
+            "status": "killed" if self._killed else ("running" if bot.enabled else "stopped"),
             "allocationUsd": bot.allocation_usd,
             "committedUsd": B.uc_to_usd(bot.state.get("committedUc") or 0),
             "remainingUsd": B.uc_to_usd(B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)) if bot.mode == "live" else None,

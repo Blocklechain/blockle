@@ -145,6 +145,233 @@ function ed25519PubFromRawHex(hex) {
   ]);
   return crypto.createPublicKey({ key: der, format: "der", type: "spki" });
 }
+// ---- vendored, dependency-light multi-chain crypto -------------------------
+// This service deploys as JUST services/agent-gateway/ (no access to the repo's
+// blockle-extension/), so the real signature primitives are vendored here —
+// ported verbatim from blockle-extension/crypto-core.js (keccak256 + base58)
+// and blockle-extension/secp256k1.js (public-key recovery / ecrecover). They
+// let a wallet PROVE control of an address; they never touch any wallet key and
+// are identity-only (never a spend). Keep them byte-for-byte compatible with the
+// extension so a signature the wallet makes verifies here.
+
+// -- Keccak-256 (Ethereum) — from crypto-core.js --
+const KECCAK_RC = [
+  [0x00000000, 0x00000001], [0x00000000, 0x00008082], [0x80000000, 0x0000808a], [0x80000000, 0x80008000],
+  [0x00000000, 0x0000808b], [0x00000000, 0x80000001], [0x80000000, 0x80008081], [0x80000000, 0x00008009],
+  [0x00000000, 0x0000008a], [0x00000000, 0x00000088], [0x00000000, 0x80008009], [0x00000000, 0x8000000a],
+  [0x00000000, 0x8000808b], [0x80000000, 0x0000008b], [0x80000000, 0x00008089], [0x80000000, 0x00008003],
+  [0x80000000, 0x00008002], [0x80000000, 0x00000080], [0x00000000, 0x0000800a], [0x80000000, 0x8000000a],
+  [0x80000000, 0x80008081], [0x80000000, 0x00008080], [0x00000000, 0x80000001], [0x80000000, 0x80008008]];
+const KECCAK_ROT = [0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18, 2, 61, 56, 14];
+function keccak256(msgBytes) {
+  const rate = 136; // 1088 bits for keccak-256
+  const data = msgBytes;
+  const s = [];
+  for (let i = 0; i < 25; i++) s.push([0, 0]);
+  function rotl(lane, n) {
+    n %= 64;
+    if (n === 0) return [lane[0], lane[1]];
+    if (n < 32) return [((lane[0] << n) | (lane[1] >>> (32 - n))) >>> 0, ((lane[1] << n) | (lane[0] >>> (32 - n))) >>> 0];
+    const m2 = n - 32;
+    if (m2 === 0) return [lane[1], lane[0]];
+    return [((lane[1] << m2) | (lane[0] >>> (32 - m2))) >>> 0, ((lane[0] << m2) | (lane[1] >>> (32 - m2))) >>> 0];
+  }
+  function keccakF() {
+    for (let round = 0; round < 24; round++) {
+      const C = [];
+      for (let x = 0; x < 5; x++) {
+        let hi = s[x][0], lo = s[x][1];
+        for (let y = 1; y < 5; y++) { hi ^= s[x + 5 * y][0]; lo ^= s[x + 5 * y][1]; }
+        C[x] = [hi >>> 0, lo >>> 0];
+      }
+      const D = [];
+      for (let x = 0; x < 5; x++) {
+        const r = rotl(C[(x + 1) % 5], 1);
+        D[x] = [(C[(x + 4) % 5][0] ^ r[0]) >>> 0, (C[(x + 4) % 5][1] ^ r[1]) >>> 0];
+      }
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
+        s[x + 5 * y][0] ^= D[x][0]; s[x + 5 * y][1] ^= D[x][1];
+      }
+      const Bm = [];
+      for (let i = 0; i < 25; i++) Bm.push([0, 0]);
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
+        const idx = x + 5 * y;
+        const nx = y;
+        const ny = (2 * x + 3 * y) % 5;
+        Bm[nx + 5 * ny] = rotl(s[idx], KECCAK_ROT[idx]);
+      }
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
+        const i = x + 5 * y;
+        const b0 = Bm[i], b1 = Bm[((x + 1) % 5) + 5 * y], b2 = Bm[((x + 2) % 5) + 5 * y];
+        s[i][0] = (b0[0] ^ ((~b1[0]) & b2[0])) >>> 0;
+        s[i][1] = (b0[1] ^ ((~b1[1]) & b2[1])) >>> 0;
+      }
+      s[0][0] = (s[0][0] ^ KECCAK_RC[round][0]) >>> 0;
+      s[0][1] = (s[0][1] ^ KECCAK_RC[round][1]) >>> 0;
+    }
+  }
+  const padded = [];
+  for (let i = 0; i < data.length; i++) padded.push(data[i]);
+  const q = rate - (padded.length % rate);
+  if (q === 1) { padded.push(0x81); }
+  else { padded.push(0x01); for (let i = 0; i < q - 2; i++) padded.push(0x00); padded.push(0x80); }
+  for (let off = 0; off < padded.length; off += rate) {
+    for (let i = 0; i < rate; i += 8) {
+      const laneIdx = (i / 8) | 0;
+      const lo = (padded[off + i] | (padded[off + i + 1] << 8) | (padded[off + i + 2] << 16) | (padded[off + i + 3] << 24)) >>> 0;
+      const hi = (padded[off + i + 4] | (padded[off + i + 5] << 8) | (padded[off + i + 6] << 16) | (padded[off + i + 7] << 24)) >>> 0;
+      s[laneIdx][0] = (s[laneIdx][0] ^ hi) >>> 0;
+      s[laneIdx][1] = (s[laneIdx][1] ^ lo) >>> 0;
+    }
+    keccakF();
+  }
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i += 8) {
+    const laneIdx = (i / 8) | 0;
+    const lo = s[laneIdx][1], hi = s[laneIdx][0];
+    out[i] = lo & 0xff; out[i + 1] = (lo >>> 8) & 0xff; out[i + 2] = (lo >>> 16) & 0xff; out[i + 3] = (lo >>> 24) & 0xff;
+    out[i + 4] = hi & 0xff; out[i + 5] = (hi >>> 8) & 0xff; out[i + 6] = (hi >>> 16) & 0xff; out[i + 7] = (hi >>> 24) & 0xff;
+  }
+  return out;
+}
+
+// -- Base58 decode (Solana addresses) — from crypto-core.js --
+const B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function base58decode(str) {
+  const bytes = [0];
+  for (const ch of String(str)) {
+    const val = B58_ALPHABET.indexOf(ch);
+    if (val < 0) throw new Error("invalid base58 char");
+    let carry = val;
+    for (let j = 0; j < bytes.length; j++) {
+      carry += bytes[j] * 58;
+      bytes[j] = carry & 0xff;
+      carry >>= 8;
+    }
+    while (carry) { bytes.push(carry & 0xff); carry >>= 8; }
+  }
+  let zeros = 0;
+  for (const ch of String(str)) { if (ch === "1") zeros++; else break; }
+  const out = new Uint8Array(zeros + bytes.length);
+  for (let i = 0; i < bytes.length; i++) out[zeros + i] = bytes[bytes.length - 1 - i];
+  return out;
+}
+
+// -- secp256k1 public-key recovery (ecrecover) — from secp256k1.js --
+const SECP = (() => {
+  const P = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+  const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const B = 7n;
+  const Gx = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798n;
+  const Gy = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8n;
+  const G = [Gx, Gy];
+  const ZERO = null;
+  function mod(a, m = P) { const r = a % m; return r >= 0n ? r : r + m; }
+  function invMod(a, m = P) {
+    a = mod(a, m);
+    let old_r = a, r = m, old_s = 1n, s = 0n;
+    while (r !== 0n) { const q = old_r / r; [old_r, r] = [r, old_r - q * r]; [old_s, s] = [s, old_s - q * s]; }
+    return mod(old_s, m);
+  }
+  function pointAdd(p1, p2) {
+    if (p1 === ZERO) return p2;
+    if (p2 === ZERO) return p1;
+    const [x1, y1] = p1, [x2, y2] = p2;
+    if (x1 === x2 && mod(y1 + y2) === 0n) return ZERO;
+    let m;
+    if (x1 === x2 && y1 === y2) m = mod(3n * x1 * x1 * invMod(2n * y1));
+    else m = mod((y2 - y1) * invMod(x2 - x1));
+    const x3 = mod(m * m - x1 - x2);
+    const y3 = mod(m * (x1 - x3) - y1);
+    return [x3, y3];
+  }
+  function pointMul(k, point) {
+    k = mod(k, N);
+    let result = ZERO, addend = point;
+    while (k > 0n) { if (k & 1n) result = pointAdd(result, addend); addend = pointAdd(addend, addend); k >>= 1n; }
+    return result;
+  }
+  function powMod(base, exp, m) {
+    base = mod(base, m); let result = 1n;
+    while (exp > 0n) { if (exp & 1n) result = mod(result * base, m); base = mod(base * base, m); exp >>= 1n; }
+    return result;
+  }
+  function bytesToBig(b) { let x = 0n; for (const v of b) x = (x << 8n) | BigInt(v); return x; }
+  function bigTo32(x) { const out = new Uint8Array(32); for (let i = 31; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; } return out; }
+  function encodeUncompressed(Q) {
+    const out = new Uint8Array(65);
+    out[0] = 0x04;
+    out.set(bigTo32(Q[0]), 1);
+    out.set(bigTo32(Q[1]), 33);
+    return out;
+  }
+  // Recover the UNCOMPRESSED public key (0x04|X|Y, 65 bytes) from a 32-byte
+  // digest + compact (r,s) + recovery id. Returns null on any invalid input so
+  // a bad/tampered signature simply yields no (or a different) key — never a throw.
+  function recover(digest, rBytes, sBytes, recovery) {
+    const rBig = bytesToBig(rBytes), sBig = bytesToBig(sBytes);
+    if (rBig <= 0n || rBig >= N || sBig <= 0n || sBig >= N) return null;
+    const z = mod(bytesToBig(digest), N);
+    const x = (recovery & 2) ? rBig + N : rBig;
+    if (x >= P) return null;
+    const ySq = mod(x * x * x + B);
+    let y = powMod(ySq, (P + 1n) / 4n, P);
+    if ((y & 1n) !== BigInt(recovery & 1)) y = mod(-y);
+    if (mod(y * y) !== ySq) return null; // point not on the curve
+    const R = [x, y];
+    const rInv = invMod(rBig, N);
+    const sR = pointMul(sBig, R);
+    const zG = pointMul(z, G);
+    const Q = pointMul(rInv, pointAdd(sR, [zG[0], mod(-zG[1])]));
+    if (Q === ZERO) return null;
+    return encodeUncompressed(Q);
+  }
+  return { recover };
+})();
+
+// -- EVM EIP-191 personal_sign: recover the signer and require it to equal the
+//    claimed 0x address (case-insensitive). A tampered signature recovers a
+//    different (or no) address -> false. No impersonation: the address is
+//    DERIVED from the recovered key, never trusted from the request.
+function verifyEvmPersonalSign({ message, signature, address }) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(String(address || ""))) return false;
+  const sig = Buffer.from(stripHex(signature), "hex");
+  if (sig.length !== 65) return false;
+  let v = sig[64];
+  if (v >= 27) v -= 27;
+  if (v !== 0 && v !== 1) return false;
+  const r = sig.subarray(0, 32);
+  const s = sig.subarray(32, 64);
+  const msg = Buffer.from(String(message), "utf8");
+  const prefix = Buffer.from("\x19Ethereum Signed Message:\n" + msg.length, "latin1");
+  const digest = keccak256(Buffer.concat([prefix, msg]));
+  const pub = SECP.recover(digest, r, s, v); // 65-byte uncompressed, or null
+  if (!pub || pub.length !== 65) return false;
+  const recovered = "0x" + Buffer.from(keccak256(pub.subarray(1)).subarray(-20)).toString("hex");
+  return recovered.toLowerCase() === String(address).toLowerCase();
+}
+
+// -- Solana ed25519: verify the raw ed25519 signature over the challenge with
+//    the given pubkey, and require the base58 address to BE that pubkey (no
+//    impersonation). publicKey may be base58 or 32-byte hex; if omitted, the
+//    address itself is the pubkey (Solana address = base58 of the ed25519 key).
+function verifySolanaEd25519({ message, signature, address, publicKey }) {
+  let pub;
+  const pk = publicKey ? String(publicKey) : "";
+  if (pk) {
+    const hx = stripHex(pk);
+    pub = /^[0-9a-fA-F]{64}$/.test(hx) ? Buffer.from(hx, "hex") : Buffer.from(base58decode(pk));
+  } else {
+    pub = Buffer.from(base58decode(String(address)));
+  }
+  if (pub.length !== 32) return false;
+  // The base58 address MUST decode to exactly this pubkey (no impersonation).
+  const addrBytes = Buffer.from(base58decode(String(address)));
+  if (addrBytes.length !== 32 || !addrBytes.equals(pub)) return false;
+  const key = ed25519PubFromRawHex(pub.toString("hex"));
+  return crypto.verify(null, Buffer.from(String(message), "utf8"), key, Buffer.from(stripHex(signature), "hex"));
+}
+
 function defaultVerify({ chain, message, signature, address, publicKey }) {
   try {
     const c = String(chain || "ed25519").toLowerCase();
@@ -156,7 +383,15 @@ function defaultVerify({ chain, message, signature, address, publicKey }) {
       const key = ed25519PubFromRawHex(publicKey);
       return crypto.verify(null, Buffer.from(message, "utf8"), key, Buffer.from(stripHex(signature), "hex"));
     }
-    // Any other chain requires the project verifier to be injected.
+    if (c === "evm" || c === "ethereum" || c === "eip155" || c === "eth") {
+      return verifyEvmPersonalSign({ message, signature, address });
+    }
+    if (c === "solana" || c === "sol") {
+      return verifySolanaEd25519({ message, signature, address, publicKey });
+    }
+    // BLOCK (chain "block"): ML-DSA via blockle-wasm. TODO — the post-quantum
+    // verifier must be injected (deps.verify / cfg.verifierModule) once the wasm
+    // verify entrypoint is wired in. Until then a "block" session returns false.
     return false;
   } catch {
     return false;
@@ -620,6 +855,9 @@ module.exports = {
   Gateway,
   HttpError,
   defaultVerify,
+  verifyEvmPersonalSign,
+  verifySolanaEd25519,
+  keccak256,
   referenceAddress,
   toAnthropicBody,
   fromAnthropic,

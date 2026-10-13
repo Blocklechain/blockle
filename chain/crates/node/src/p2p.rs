@@ -49,6 +49,9 @@ const MAX_MESSAGE_SIZE: u32 = 64 * 1024 * 1024;
 const MAX_HEADERS_PER_MSG: usize = 2000;
 const MAX_BLOCKS_PER_REQUEST: usize = 2000;
 const OUTBOUND_TARGET: usize = 8;
+/// After this many consecutive failed dials an address is evicted from the
+/// known set; until then retries are spaced by an exponential backoff.
+const MAX_DIAL_FAILS: u32 = 6;
 const HEARTBEAT: Duration = Duration::from_secs(10);
 /// How often the local miner abandons and rebuilds its block template so the
 /// quiet-lane difficulty decay (which is a function of wall-clock time) takes
@@ -162,6 +165,11 @@ pub struct Node {
     /// Resolved socket addresses of live/in-flight outbound dials — the
     /// dedupe that string comparison (hostname vs IP) cannot provide.
     outbound_targets: Mutex<HashSet<std::net::SocketAddr>>,
+    /// addr -> (consecutive dial failures, earliest next retry). Without this a
+    /// dead/unreachable gossiped peer is re-dialed every autoconnect cycle,
+    /// spamming "could not connect" and churning. Backoff spaces retries and
+    /// `MAX_DIAL_FAILS` evicts the address from the known set entirely.
+    dial_backoff: Mutex<HashMap<String, (u32, Instant)>>,
     next_peer_id: AtomicU64,
     /// Bumped on every tip change; miners poll it to abandon stale work.
     pub(crate) tip_version: AtomicU64,
@@ -177,6 +185,7 @@ impl Node {
             syncs: Mutex::new(HashMap::new()),
             known_addrs: Mutex::new(known),
             outbound_targets: Mutex::new(HashSet::new()),
+            dial_backoff: Mutex::new(HashMap::new()),
             next_peer_id: AtomicU64::new(1),
             tip_version: AtomicU64::new(0),
         })
@@ -327,8 +336,22 @@ impl Node {
         let node = self.clone();
         thread::spawn(move || {
             match TcpStream::connect(resolved) {
-                Ok(stream) => node.clone().handle_peer(stream),
-                Err(e) => println!("[p2p] could not connect to {addr}: {e}"),
+                Ok(stream) => {
+                    node.dial_backoff.lock().unwrap().remove(&addr);
+                    node.clone().handle_peer(stream);
+                }
+                Err(e) => {
+                    let mut bo = node.dial_backoff.lock().unwrap();
+                    let entry = bo.entry(addr.clone()).or_insert((0, Instant::now()));
+                    entry.0 += 1;
+                    // Exponential backoff 15s, 30s, 60s, … capped at 5 min.
+                    let secs = 15u64.saturating_mul(1u64 << (entry.0.min(5) - 1)).min(300);
+                    entry.1 = Instant::now() + Duration::from_secs(secs);
+                    // Log only the first failure of a streak — no per-cycle spam.
+                    if entry.0 == 1 {
+                        println!("[p2p] could not connect to {addr}: {e}");
+                    }
+                }
             }
             node.outbound_targets.lock().unwrap().remove(&resolved);
         });
@@ -344,14 +367,29 @@ impl Node {
         if peer_count >= OUTBOUND_TARGET {
             return;
         }
+        let now = Instant::now();
         let candidates: Vec<String> = {
-            let known = self.known_addrs.lock().unwrap();
+            let mut known = self.known_addrs.lock().unwrap();
+            let mut backoff = self.dial_backoff.lock().unwrap();
+            // Evict addresses that have failed too many times — stop retrying a
+            // peer that is gone for good (drop it from both known + backoff).
+            let dead: Vec<String> = backoff
+                .iter()
+                .filter(|(_, (c, _))| *c >= MAX_DIAL_FAILS)
+                .map(|(a, _)| a.clone())
+                .collect();
+            for a in &dead {
+                known.remove(a);
+                backoff.remove(a);
+            }
             known
                 .iter()
                 .filter(|a| {
                     !connected.contains(*a)
                         && **a != self.config.listen
                         && !Self::is_unroutable(a)
+                        // Respect the backoff window of a recently-failed addr.
+                        && backoff.get(*a).map_or(true, |(_, next)| now >= *next)
                 })
                 .take(OUTBOUND_TARGET - peer_count)
                 .cloned()
