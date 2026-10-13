@@ -68,7 +68,9 @@ const Map<String, EndpointCfg> defaultEndpoints = {
       rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114),
   'bitcoin': EndpointCfg(esplora: 'https://blockstream.info/api'),
   'litecoin': EndpointCfg(esplora: 'https://litecoinspace.org/api'),
-  'dogecoin': EndpointCfg(), // user must supply (no public Esplora default)
+  // Blockle-hosted Esplora shim for Dogecoin (operator-overridable, like the
+  // other chains). The UTXO adapter is unchanged — just the endpoint config.
+  'dogecoin': EndpointCfg(esplora: 'https://doge-esplora.blockle.org'),
   'solana': EndpointCfg(rpcUrl: 'https://api.mainnet-beta.solana.com'),
 };
 

@@ -39,7 +39,7 @@ DEFAULT_ENDPOINTS = {
     "solana":   {"rpcUrl": "https://api.mainnet-beta.solana.com"},
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
-    "dogecoin": {"esplora": None},  # user must supply (no public Esplora default)
+    "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
 }
 
 

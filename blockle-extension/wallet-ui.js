@@ -420,14 +420,59 @@
   // tag (shown, not counted).
   function holdingRowHtml(h) {
     var sym = h.symbol || (h.asset && h.asset.symbol) || '?';
-    var bg = TOKEN_BG[String(sym).toUpperCase()] || '#8795a4';
     var amt = fmtAmount(h.amountBase, h.decimals);
     var right = h.pricedOk
       ? '<div class="q num">' + usd(h.usd) + '</div>'
       : '<span class="wtag unpriced">UNPRICED</span>';
-    return '<div class="whrow"><span class="wtoken" style="background:' + bg + '">' + esc(String(sym).slice(0, 2).toUpperCase()) + '</span>' +
+    return '<div class="whrow">' + holdingIconHtml(h) +
       '<div><div class="nm">' + esc(sym) + '</div><div class="ch">' + esc(h.chain) + '</div></div>' +
       '<div class="amt"><div class="num">' + esc(amt) + ' ' + esc(sym) + '</div>' + right + '</div></div>';
+  }
+
+  // The holding/portfolio avatar — the REAL per-token/per-chain logo via the
+  // Logos resolver (logos.js): native coin -> bundled brand chain icon; token ->
+  // its metadata logoURI with a colored-MONOGRAM fallback (never a broken icon),
+  // plus a small chain badge. Degrades to the old text badge only if the resolver
+  // is somehow unavailable.
+  var _logoErrAttached = false;
+  function ensureLogoErrorHandler() {
+    // MV3 CSP (script-src 'self', no 'unsafe-inline') blocks an inline onerror=
+    // attribute, so a failed remote token logo would stay broken. Attach ONE
+    // capturing 'error' listener (error events don't bubble but do capture) that
+    // swaps a broken .wtoken-img to its data-fallback monogram.
+    if (_logoErrAttached || typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    _logoErrAttached = true;
+    try {
+      document.addEventListener('error', function (e) {
+        var t = e && e.target;
+        if (t && t.tagName === 'IMG' && t.classList && t.classList.contains('wtoken-img') && t.dataset && t.dataset.fallback) {
+          var fb = t.dataset.fallback;
+          delete t.dataset.fallback; // one-shot — never loop
+          t.src = fb;
+        }
+      }, true);
+    } catch (_) { /* non-DOM env (tests) — the data-fallback attr is still emitted */ }
+  }
+
+  function holdingIconHtml(h) {
+    ensureLogoErrorHandler();
+    var sym = h.symbol || (h.asset && h.asset.symbol) || '?';
+    var L = dep('Logos', './logos.js');
+    if (!L) {
+      var bg = TOKEN_BG[String(sym).toUpperCase()] || '#8795a4';
+      return '<span class="wtoken" style="background:' + bg + '">' + esc(String(sym).slice(0, 2).toUpperCase()) + '</span>';
+    }
+    var asset = h.asset || { symbol: sym };
+    if (asset.chain == null && h.chain != null) {
+      var merged = {}; for (var k in asset) if (Object.prototype.hasOwnProperty.call(asset, k)) merged[k] = asset[k];
+      merged.chain = h.chain; asset = merged;
+    }
+    var r = L.resolve(asset);
+    var main = (r.kind === 'image')
+      ? '<img class="wtoken-img" alt="' + esc(sym) + '" src="' + esc(r.src) + '" data-fallback="' + esc(r.fallback.dataUri) + '">'
+      : '<img class="wtoken-img" alt="' + esc(sym) + '" src="' + r.dataUri + '">';
+    var badge = h.chain ? '<img class="wtoken-chain" alt="" src="' + L.svgDataUri(L.chainIcon(h.chain)) + '">' : '';
+    return '<span class="wtoken wtoken-ic">' + main + badge + '</span>';
   }
   function fmtAmount(base, decimals) {
     try {

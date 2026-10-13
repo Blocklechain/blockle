@@ -71,6 +71,19 @@ class WalletStore {
   String? get address => _session.address;
   String? get publicKeyHex => _session.pub;
   String? get activeId => _session.id;
+
+  /// The active BLOCK (ML-DSA-44) key material for a GATED wallet export — the
+  /// shape `wallet_export.blockKey` reads (`address`/`publicKeyHex`/
+  /// `secretKeyHex`). Returns null while locked or on a watch-only wallet, so
+  /// BLOCK is included in the export only "where applicable". This is the only
+  /// read of the in-memory secret outside signing; it is handed straight to the
+  /// gated export sheet and NEVER logged or persisted.
+  Map<String, String>? get blockExportSession {
+    if (!isUnlocked) return null;
+    final a = _session.address, p = _session.pub, s = _session.secret;
+    if (a == null || p == null || s == null) return null;
+    return {'address': a, 'publicKeyHex': p, 'secretKeyHex': s};
+  }
   bool get isUnlocked {
     if (_session.secret == null) return false;
     if (DateTime.now().millisecondsSinceEpoch - _session.at >

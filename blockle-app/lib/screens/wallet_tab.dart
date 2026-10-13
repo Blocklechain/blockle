@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../widgets/particle_logo.dart';
+import '../widgets/chain_icon.dart';
 import 'send.dart';
 import 'receive.dart';
 import 'swap.dart';
@@ -329,11 +330,13 @@ class _WalletTabState extends State<WalletTab> {
       ),
       child: Row(
         children: [
-          CircleAvatar(
+          AssetIcon(
+            chainId: (t['chain'] ?? 'block').toString(),
+            symbol: sym,
+            isToken: true,
+            logoUri:
+                (t['logoURI'] ?? t['logo'] ?? t['image'])?.toString(),
             radius: 16,
-            backgroundColor: Bk.accent.withValues(alpha: 0.18),
-            child: Text(sym.isNotEmpty ? sym[0] : '?',
-                style: const TextStyle(color: Bk.accent, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(width: 12),
           Expanded(

@@ -5,6 +5,7 @@ import '../models/wallet.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import 'onboarding.dart';
+import 'wallet_export_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -85,6 +86,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 app.store.lock();
                 app.refresh();
               },
+            ),
+          ),
+          const SizedBox(height: 22),
+          _section('Export'),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.vpn_key_outlined, color: Bk.bad),
+              title: const Text('Export wallet secrets & keys'),
+              subtitle: const Text(
+                  'Recovery phrase, per-chain keys & BTC/LTC/DOGE dump — behind the security gate',
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right, color: Bk.muted),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const ExportSecretsScreen()),
+              ),
             ),
           ),
           const SizedBox(height: 22),

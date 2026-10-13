@@ -21,7 +21,7 @@
   const NETWORKS = {
     bitcoin:  { id: 'bitcoin',  symbol: 'BTC', decimals: 8, hrp: 'bc',  p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: true,  path: "m/84'/0'/0'/0",  explorer: 'https://mempool.space/tx/',           esplora: 'https://blockstream.info/api' },
     litecoin: { id: 'litecoin', symbol: 'LTC', decimals: 8, hrp: 'ltc', p2pkh: 0x30, p2sh: 0x32, wif: 0xb0, segwit: true,  path: "m/84'/2'/0'/0",  explorer: 'https://blockchair.com/litecoin/transaction/', esplora: 'https://litecoinspace.org/api' },
-    dogecoin: { id: 'dogecoin', symbol: 'DOGE', decimals: 8, hrp: null, p2pkh: 0x1e, p2sh: 0x16, wif: 0x9e, segwit: false, path: "m/44'/3'/0'/0",  explorer: 'https://blockchair.com/dogecoin/transaction/',  esplora: null },
+    dogecoin: { id: 'dogecoin', symbol: 'DOGE', decimals: 8, hrp: null, p2pkh: 0x1e, p2sh: 0x16, wif: 0x9e, segwit: false, path: "m/44'/3'/0'/0",  explorer: 'https://blockchair.com/dogecoin/transaction/',  esplora: 'https://doge-esplora.blockle.org' },
   };
 
   // ---- little-endian + varint helpers -------------------------------------

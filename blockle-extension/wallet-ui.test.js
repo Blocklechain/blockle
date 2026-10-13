@@ -79,6 +79,36 @@ test('holdingRowHtml: priced holding shows a USD quote, unpriced shows the tag',
 });
 
 // ---------------------------------------------------------------------------
+// holdingRowHtml — the row CALLS the Logos resolver for real per-chain/token icons
+// ---------------------------------------------------------------------------
+test('holdingRowHtml: calls the Logos resolver (chain icon for native, logoURI for a token)', () => {
+  const Logos = require('./logos.js');
+  const calls = { resolve: [], chainIcon: [] };
+  // spy wrapper installed as the global the UI's dep() resolves first
+  global.Logos = Object.assign({}, Logos, {
+    resolve: (a) => { calls.resolve.push(a); return Logos.resolve(a); },
+    chainIcon: (id) => { calls.chainIcon.push(id); return Logos.chainIcon(id); },
+  });
+  try {
+    // native ETH -> the bundled brand chain icon (no text badge)
+    const nativeRow = WalletUI.holdingRowHtml({ symbol: 'ETH', chain: 'ethereum', amountBase: '1000000000000000000', decimals: 18, pricedOk: true, usd: 3000, asset: { symbol: 'ETH', kind: 'native' } });
+    assert.ok(calls.resolve.length >= 1, 'holdingRowHtml routed the asset through Logos.resolve');
+    assert.ok(calls.chainIcon.some((id) => id === 'ethereum'), 'the chain badge came from Logos.chainIcon');
+    assert.ok(/<img[^>]+wtoken-img/.test(nativeRow), 'renders a real icon <img>, not a text badge');
+    assert.ok(!/>ET<\/span>/.test(nativeRow), 'no longer the old 2-letter TOKEN_BG badge');
+
+    // a token WITH a metadata logoURI -> an <img> pointing at that URI
+    const tokenRow = WalletUI.holdingRowHtml({ symbol: 'USDC', chain: 'base', amountBase: '5000000', decimals: 6, pricedOk: true, usd: 5, asset: { symbol: 'USDC', kind: 'token', contract: '0xusdc', logoURI: 'https://logos.example/usdc.png' } });
+    assert.ok(/https:\/\/logos\.example\/usdc\.png/.test(tokenRow), 'token row uses the metadata logoURI');
+    // CSP-safe fallback: MV3 blocks inline onerror=, so a broken remote logo
+    // degrades to its monogram via a data-fallback data: URI + a capturing error listener.
+    assert.ok(/data-fallback="data:/.test(tokenRow), 'a broken remote logo falls back to the monogram (CSP-safe, never a broken image)');
+  } finally {
+    delete global.Logos;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // activityRowHtml — security label + flagged counterparty inline
 // ---------------------------------------------------------------------------
 test('activityRowHtml: shows the decoder summary, severity badge and flag', () => {

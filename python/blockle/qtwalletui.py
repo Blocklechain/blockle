@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
 from . import qtbots as _qb
 from .multichain import activity as activity_mod
 from .multichain import addressbook as book_mod
+from .multichain import logos as logos_mod
 from .multichain import nft as nft_mod
 from .multichain import portfolio as portfolio_mod
 from .multichain import security as security_mod
@@ -228,6 +229,51 @@ def _amt_str(amount_base: Any, decimals: Any) -> str:
 
 def _chain_hue(tok: Dict[str, str], idx: int) -> str:
     return tok[CHAIN_KEYS[idx % len(CHAIN_KEYS)]]
+
+
+def _svg_pixmap(svg: str, size: int):
+    """Render an inline-SVG string to a crisp QPixmap at ``size`` px. Returns
+    ``None`` if Qt's SVG module is unavailable (caller keeps its text fallback)."""
+    try:
+        from PySide6.QtCore import QByteArray
+        from PySide6.QtGui import QPainter, QPixmap
+        from PySide6.QtSvg import QSvgRenderer
+    except Exception:  # pragma: no cover - QtSvg always present in our deps
+        return None
+    try:
+        renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        renderer.render(p)
+        p.end()
+        return pm
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def set_asset_icon(label: QLabel, asset: Any, size: int = 32) -> bool:
+    """Paint the correct per-chain / per-token icon onto ``label`` via the
+    shared :mod:`blockle.multichain.logos` resolver — the bundled brand SVG for
+    a native chain coin, the token ``logoURI`` where present, else a colored
+    monogram. OFFLINE for chains (inline SVG, no fetch); never a broken icon.
+    Returns ``True`` when a pixmap was set (so the caller can drop its text
+    avatar), ``False`` to fall back to text."""
+    try:
+        res = logos_mod.resolve(asset)
+    except Exception:  # pragma: no cover - defensive
+        return False
+    # For a remote token logo we render the clean monogram fallback immediately
+    # (the desktop list stays offline); chains + monograms are inline SVG.
+    svg = res.get("svg") or (res.get("fallback") or {}).get("svg")
+    if not svg:
+        return False
+    pm = _svg_pixmap(svg, size)
+    if pm is None:
+        return False
+    label.setPixmap(pm)
+    label.setText("")
+    return True
 
 
 def to_base_units(display: Any, decimals: Any) -> int:
@@ -1400,6 +1446,13 @@ class PortfolioPanel(_ScrollPanel):
         av.setAlignment(Qt.AlignCenter)
         av.setStyleSheet(f"background:{hue};color:white;border-radius:16px;"
                          f"font-weight:800;font-size:11px;")
+        # Correct per-chain / per-token logo (bundled brand SVG for a native
+        # coin, token logoURI, else a colored monogram) — never a broken icon.
+        set_asset_icon(av, {
+            "chain": h.get("chain"), "symbol": sym, "kind": h.get("kind"),
+            "address": h.get("address") or h.get("contract") or h.get("mint"),
+            "logoURI": h.get("logoURI"), "logo": h.get("logo"),
+        }, size=32)
         rl.addWidget(av)
         namecol = QVBoxLayout()
         namecol.setSpacing(1)

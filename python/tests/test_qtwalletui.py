@@ -255,6 +255,33 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(result["byChain"][0]["chain"], "ethereum")
         ctrl.loop and ctrl.loop.stop()
 
+    def test_holding_rows_call_the_logos_resolver(self):
+        """Every holdings row paints its icon through the shared
+        ``multichain.logos`` resolver (native brand SVG / token logoURI / colored
+        monogram), passing the row's chain + symbol + contract — never a hard-coded
+        or broken icon."""
+        from unittest.mock import patch
+        import blockle.qtwalletui as w
+        from blockle.qtwalletui import PortfolioPanel, TOKENS_DARK, WalletController
+        ctrl = self._ctrl(unlocked=True)
+        wc = WalletController(ctrl)
+        panel = PortfolioPanel(wc, TOKENS_DARK)
+        holdings = [
+            {"chain": "ethereum", "symbol": "ETH", "amountBase": "1", "decimals": 18},
+            {"chain": "ethereum", "symbol": "USDC", "kind": "erc20", "decimals": 6,
+             "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"},
+        ]
+        with patch.object(w.logos_mod, "resolve", wraps=w.logos_mod.resolve) as rv:
+            panel._render_holdings(holdings)
+        self.assertGreaterEqual(rv.call_count, 2)
+        assets = [c.args[0] for c in rv.call_args_list]
+        self.assertEqual(assets[0]["chain"], "ethereum")
+        self.assertEqual(assets[0]["symbol"], "ETH")
+        usdc = next(a for a in assets if a["symbol"] == "USDC")
+        self.assertEqual(usdc["address"],
+                         "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+        ctrl.loop and ctrl.loop.stop()
+
     # ---- the deferred SEND-FLOW name resolution ------------------------------
     def test_send_flow_resolves_name_then_inspects_resolved_address(self):
         from blockle.multichain import addressbook as ab
