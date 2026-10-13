@@ -2576,7 +2576,9 @@ const STUDIO_HTML: &str = r##"<style>
 <script src="/studio.js"></script>"##;
 
 fn page_wallet() -> String {
-    let rel = "https://github.com/blocklechain/blockle/releases/download/v0.3.0";
+    // Always serve the newest published release's assets (asset names are stable),
+    // so the download page auto-tracks every release without a code change.
+    let rel = "https://github.com/blocklechain/blockle/releases/latest/download";
     let body = format!(
         r##"<h1>Blockle Wallet <span class="badge">multi-chain</span></h1>
 <p class="sub">One non-custodial wallet for <b>BLOCK, every major EVM network</b> (Ethereum, Base, Arbitrum, Optimism, Polygon, BNB, Avalanche — plus any custom network you add), <b>BTC, LTC, DOGE and Solana</b>. Auto-detects your tokens, an embedded cross-chain exchange, and an optional <b>in-wallet AI trading agent</b> (bring your own Claude/OpenAI key; spend caps + confirm + kill-switch, keys stay on your device). Desktop (Qt 6, embeds a full BLOCK node), mobile (Flutter) and browser extension. Keys never leave your machine.</p>
