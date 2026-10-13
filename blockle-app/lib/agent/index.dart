@@ -18,17 +18,44 @@ import 'strategy_runner.dart';
 import 'tools.dart';
 
 /// A resolved LLM credential (from the unlocked vault). NEVER persisted.
+///
+/// Two shapes, exactly mirroring the extension (agent/index.js + channels.js):
+///   • BYO-key (claude/openai/copilot/other): carries an [apiKey] sent only to
+///     the chosen provider's own API.
+///   • HOSTED (`provider == 'hosted'`): keyless — carries NO apiKey, only the
+///     [gatewayUrl] + short-lived [sessionToken] (+ [expiresAt]) for Blockle's
+///     hosted gateway, and an optional [refresh] closure that re-signs the
+///     gateway challenge on expiry. The wallet never holds the upstream LLM key.
 class AgentCredential {
   final String provider;
-  final String apiKey;
+
+  /// BYO-key only. A hosted credential has NO apiKey (null/empty).
+  final String? apiKey;
   final String? model;
   final String? baseUrl;
+
+  // ---- hosted-only (keyless) transport fields -----------------------------
+  final String? gatewayUrl;
+  final String? sessionToken;
+  final int? expiresAt;
+
+  /// Re-signs the gateway challenge on a 401/expiry and returns a fresh session
+  /// token (or null to give up). Hosted-only; null disables transparent refresh.
+  final Future<String?> Function()? refresh;
+
   const AgentCredential({
     required this.provider,
-    required this.apiKey,
+    this.apiKey,
     this.model,
     this.baseUrl,
+    this.gatewayUrl,
+    this.sessionToken,
+    this.expiresAt,
+    this.refresh,
   });
+
+  /// True for the keyless Blockle-hosted provider.
+  bool get isHosted => provider == 'hosted';
 }
 
 /// The assembled, running agent. Mirrors the object `Agent.start` returns.
@@ -84,7 +111,20 @@ AgentInstance startAgent({
   String? channelId,
 }) {
   final cred = credential;
-  if (cred == null || cred.apiKey.isEmpty) {
+  if (cred == null) {
+    throw StateError(
+        'AI agent is not configured — enable it and add an LLM credential first');
+  }
+  // HOSTED mode is keyless: it needs a gatewayUrl + sessionToken instead of an
+  // apiKey (the wallet never holds the upstream LLM key). Every other (BYO-key)
+  // provider still requires an apiKey from the unlocked vault. Mirrors
+  // blockle-extension/agent/index.js:Agent.start.
+  if (cred.isHosted) {
+    if ((cred.gatewayUrl ?? '').isEmpty || (cred.sessionToken ?? '').isEmpty) {
+      throw StateError(
+          'hosted agent is not configured — connect "Use Blockle hosted agent" first');
+    }
+  } else if ((cred.apiKey ?? '').isEmpty) {
     throw StateError(
         'AI agent is not configured — enable it and add an LLM credential first');
   }
@@ -106,6 +146,11 @@ AgentInstance startAgent({
     fetch: fetch,
     model: cred.model ?? model,
     baseUrl: cred.baseUrl,
+    // hosted-only: keyless transport fields + transparent token refresh. These
+    // are null for a BYO-key provider and ignored by createProvider.
+    gatewayUrl: cred.gatewayUrl,
+    sessionToken: cred.sessionToken,
+    refresh: cred.refresh,
   );
 
   final tools = buildTools(ctx);

@@ -1,0 +1,19 @@
+[Unit]
+Description=Blockle hosted agent gateway (loopback LLM proxy — brain not hands; holds no wallet keys)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/blockle/services/agent-gateway
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=3
+# The UPSTREAM LLM key is passed via the environment ONLY — never a response, never a log.
+# Put ANTHROPIC_API_KEY (or OPENAI_API_KEY) and AGENT_AUDIT_SALT in this drop-in, root-only (0600):
+#   systemctl edit blockle-agent-gateway   ->   [Service] Environment=ANTHROPIC_API_KEY=sk-...
+# This process holds NO wallet keys and never moves funds.
+Environment=NODE_ENV=production
+# Environment=ANTHROPIC_API_KEY=   (set via a protected drop-in, not here)
+# Environment=AGENT_AUDIT_SALT=
+
+[Install]
+WantedBy=multi-user.target

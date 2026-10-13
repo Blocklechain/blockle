@@ -1,0 +1,118 @@
+{
+  "_about": "Shared conformance vectors for the Blockle hosted-agent gateway + the wallet `hosted` provider (all 3 wallets must behave identically). THE INVARIANT: the hosted LLM is the BRAIN not the HANDS — /agent/turn returns ONLY {text?,toolCalls?} proposals; every fund-moving action stays enforced CLIENT-SIDE by the policy gate + the security pre-sign. The gateway holds NO wallet keys; the wallet sends NO apiKey/private key/seed (only sessionToken + system/messages/tools). The upstream LLM key is server-side only — never in a response, never logged.",
+  "version": 1,
+
+  "session": {
+    "_note": "Non-custodial identity: the client signs a server nonce to prove control of an address (NOT a spend). Reuses the same verify primitive as exchange/server/src/sigverify.ts. The reference built-in uses Ed25519 (publicKey = raw 32-byte hex; address = sha256(publicKey) hex). Production wires the project multi-chain verifier (EVM EIP-191, Solana ed25519, BLOCK ML-DSA).",
+    "challenge_request": { "method": "POST", "path": "/agent/session", "body": { "step": "challenge", "address": "block1examplereferenceaddress", "chain": "block" } },
+    "challenge_response": { "challenge": "blockle-agent login: <hex-nonce>", "expiresAt": 1760000000 },
+    "verify_request": { "method": "POST", "path": "/agent/session", "body": { "step": "verify", "address": "block1examplereferenceaddress", "chain": "block", "challenge": "blockle-agent login: <hex-nonce>", "signature": "<hex-sig>", "publicKey": "<hex-pubkey>" } },
+    "verify_response": { "sessionToken": "<64-hex>", "expiresAt": 1760000900, "quota": { "reqPerMin": 20, "perSessionTokenBudget": 200000, "dailyTokenCap": 500000 } },
+    "bad_signature": { "request": { "step": "verify", "address": "block1examplereferenceaddress", "chain": "block", "challenge": "blockle-agent login: <hex-nonce>", "signature": "<WRONG-sig>", "publicKey": "<hex-pubkey>" }, "expect_status": 401, "expect_body": { "error": "signature verification failed" } },
+    "challenge_single_use": { "note": "replaying a consumed/expired challenge returns 400 'no matching challenge'" },
+    "anon_fallback": { "request": { "step": "anon" }, "response": { "sessionToken": "<64-hex>", "expiresAt": 1760000900, "quota": { "dailyTokenCap": 20000 } }, "note": "rate-limited free tier; tighter daily cap; disabled when allowAnon=false (403)" }
+  },
+
+  "turn": {
+    "internal_request_shape": {
+      "_note": "The client ALWAYS sends this one internal shape (same as providers.js). The gateway converts to the chosen upstream wire format, injects the key server-side, calls upstream, and converts the reply back.",
+      "body": {
+        "sessionToken": "<64-hex>",
+        "model": "claude-sonnet-4-5",
+        "system": "You are the in-wallet assistant...",
+        "messages": [
+          { "role": "user", "text": "swap 10 BLOCK for USDC" },
+          { "role": "assistant", "text": "ok", "toolCalls": [ { "id": "t1", "name": "swap", "arguments": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ] },
+          { "role": "tool", "results": [ { "id": "t1", "name": "swap", "content": { "ok": true }, "isError": false } ] }
+        ],
+        "tools": [ { "name": "swap", "description": "swap on a venue", "parameters": { "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "amount": { "type": "string" } } } } ]
+      }
+    },
+
+    "normalized_response_shape": {
+      "_note": "The ONLY thing /agent/turn returns. No key, no raw upstream passthrough, no usage echo.",
+      "body": { "text": "I will swap it.", "toolCalls": [ { "id": "tu_1", "name": "swap", "arguments": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ] }
+    },
+
+    "anthropic_upstream": {
+      "_note": "upstream=anthropic (default, latest Claude). Key rides the x-api-key OUTBOUND header only.",
+      "outbound_headers": { "x-api-key": "<ANTHROPIC_API_KEY — env only, never returned/logged>", "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      "outbound_body": {
+        "model": "claude-sonnet-4-5",
+        "max_tokens": 4096,
+        "system": "You are the in-wallet assistant...",
+        "messages": [
+          { "role": "user", "content": [ { "type": "text", "text": "swap 10 BLOCK for USDC" } ] },
+          { "role": "assistant", "content": [ { "type": "text", "text": "ok" }, { "type": "tool_use", "id": "t1", "name": "swap", "input": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ] },
+          { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "t1", "content": "{\"ok\":true}", "is_error": false } ] }
+        ],
+        "tools": [ { "name": "swap", "description": "swap on a venue", "input_schema": { "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "amount": { "type": "string" } } } } ]
+      },
+      "upstream_reply": { "content": [ { "type": "text", "text": "I will swap it." }, { "type": "tool_use", "id": "tu_1", "name": "swap", "input": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ], "usage": { "input_tokens": 120, "output_tokens": 40 } },
+      "normalized": { "text": "I will swap it.", "toolCalls": [ { "id": "tu_1", "name": "swap", "arguments": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ] },
+      "accounted_tokens": 160
+    },
+
+    "openai_upstream": {
+      "_note": "upstream=openai. Key rides the Authorization: Bearer OUTBOUND header only.",
+      "outbound_headers": { "authorization": "Bearer <OPENAI_API_KEY — env only, never returned/logged>", "content-type": "application/json" },
+      "outbound_body": {
+        "model": "gpt-4.1",
+        "max_tokens": 4096,
+        "messages": [
+          { "role": "system", "content": "You are the in-wallet assistant..." },
+          { "role": "user", "content": "swap 10 BLOCK for USDC" },
+          { "role": "assistant", "content": "ok", "tool_calls": [ { "id": "t1", "type": "function", "function": { "name": "swap", "arguments": "{\"from\":\"BLOCK\",\"to\":\"USDC\",\"amount\":\"10\"}" } } ] },
+          { "role": "tool", "tool_call_id": "t1", "content": "{\"ok\":true}" }
+        ],
+        "tools": [ { "type": "function", "function": { "name": "swap", "description": "swap on a venue", "parameters": { "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "amount": { "type": "string" } } } } } ]
+      },
+      "upstream_reply": { "choices": [ { "message": { "content": "I will swap it.", "tool_calls": [ { "id": "call_1", "type": "function", "function": { "name": "swap", "arguments": "{\"from\":\"BLOCK\",\"to\":\"USDC\",\"amount\":\"10\"}" } } ] } } ], "usage": { "prompt_tokens": 120, "completion_tokens": 40 } },
+      "normalized": { "text": "I will swap it.", "toolCalls": [ { "id": "call_1", "name": "swap", "arguments": { "from": "BLOCK", "to": "USDC", "amount": "10" } } ] },
+      "accounted_tokens": 160
+    }
+  },
+
+  "enforcement": {
+    "model_allowlist": {
+      "allowlist": [ "claude-opus-4-1", "claude-sonnet-4-5", "claude-3-5-haiku-latest" ],
+      "default_when_omitted": "claude-opus-4-1",
+      "disallowed_request": { "model": "gpt-5-ultra-expensive" },
+      "expect_status": 400,
+      "expect_body": { "error": "model not allowed" },
+      "expect_upstream_called": false
+    },
+    "global_budget_503": {
+      "note": "When the GLOBAL daily token budget is exhausted the gateway kill-switches: it returns 503 and NEVER calls upstream past the cap.",
+      "expect_status": 503,
+      "expect_body": { "error": "hosted agent temporarily unavailable" },
+      "expect_upstream_called": false
+    },
+    "per_session_budget": { "expect_status": 429, "expect_body": { "error": "per-session token budget reached" }, "expect_upstream_called": false },
+    "per_address_daily_cap": { "expect_status": 429, "expect_body": { "error": "per-address daily token cap reached" }, "expect_upstream_called": false },
+    "rate_limit": { "expect_status": 429, "expect_body": { "error": "rate limit: too many requests per minute" } },
+    "size_caps": { "too_many_tools": 400, "history_too_long": 400, "input_too_large_bytes": 413 },
+    "invalid_session": { "expect_status": 401, "expect_body": { "error": "invalid or expired session" } },
+    "no_upstream_key": { "expect_status": 503, "note": "fail-safe when ANTHROPIC_API_KEY/OPENAI_API_KEY is unset" }
+  },
+
+  "audit": {
+    "_note": "Append-only, METADATA ONLY (logPrompts:false). NEVER prompt bodies, NEVER key material, NEVER raw wallet data. sessionId + addrHash are salted sha256.",
+    "allowed_fields": [ "t", "kind", "sessionId", "addrHash", "model", "inTokens", "outTokens", "toolCallCount", "blockedReason" ],
+    "example_ok": { "t": 1760000000, "kind": "turn.ok", "sessionId": "<salted-hex>", "addrHash": "<salted-hex>", "model": "claude-sonnet-4-5", "inTokens": 120, "outTokens": 40, "toolCallCount": 1 },
+    "example_blocked": { "t": 1760000001, "kind": "turn.blocked", "sessionId": "<salted-hex>", "addrHash": "<salted-hex>", "model": "claude-sonnet-4-5", "blockedReason": "global-budget" }
+  },
+
+  "healthz": {
+    "request": { "method": "GET", "path": "/healthz" },
+    "response": { "ok": true, "upstream": "anthropic", "keyConfigured": true, "enabled": true, "budgetRemaining": 10000000 },
+    "note": "keyConfigured is a BOOLEAN — never the key itself. No secrets in this surface."
+  },
+
+  "invariant": {
+    "_statement": "A malicious/buggy/compromised gateway or LLM CANNOT move a single unit.",
+    "attack": "The gateway returns a toolCall proposing a huge send to an attacker address.",
+    "client_outcome": "The wallet runner runs the SAME prepare -> cap -> confirm -> commit path as for a BYO provider: the per-session/per-asset cap hard-rejects it (no commit), or the default-on confirmation (and any DANGER-severity security pre-sign, which forces a confirm even under auto-approve) lets the user decline. The gateway/LLM output is ONLY a proposal; it is never trusted to act.",
+    "worst_case": "a rejected toolCall or a declined confirmation — zero funds move."
+  }
+}

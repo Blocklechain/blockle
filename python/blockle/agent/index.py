@@ -83,7 +83,15 @@ class AgentHandle:
 def start(opts: Optional[Dict[str, Any]] = None) -> AgentHandle:
     opts = opts or {}
     cred = opts.get("credential") or {}
-    if not cred.get("apiKey") or not cred.get("provider"):
+    if not cred.get("provider"):
+        raise ValueError("AI agent is not configured — enable it and add an LLM credential first")
+    # HOSTED mode is keyless: it needs a gatewayUrl + sessionToken instead of an
+    # apiKey (the wallet never holds the upstream LLM key). Every other provider
+    # still requires an apiKey from the unlocked vault.
+    if cred.get("provider") == "hosted":
+        if not cred.get("gatewayUrl") or not cred.get("sessionToken"):
+            raise ValueError('hosted agent is not configured — connect "Use Blockle hosted agent" first')
+    elif not cred.get("apiKey"):
         raise ValueError("AI agent is not configured — enable it and add an LLM credential first")
 
     audit = _audit.create({"store": opts.get("store"), "sink": opts.get("onAudit")})
@@ -99,9 +107,13 @@ def start(opts: Optional[Dict[str, Any]] = None) -> AgentHandle:
 
     provider = _providers.create({
         "provider": cred["provider"],
-        "apiKey": cred["apiKey"],
+        "apiKey": cred.get("apiKey"),
         "model": cred.get("model") or opts.get("model"),
         "baseUrl": cred.get("baseUrl"),
+        # hosted-only: keyless transport fields + transparent token refresh.
+        "gatewayUrl": cred.get("gatewayUrl"),
+        "sessionToken": cred.get("sessionToken"),
+        "refresh": cred.get("refresh") or opts.get("refresh"),
         "fetchImpl": opts.get("fetchImpl"),
         "request": opts.get("request"),
     })

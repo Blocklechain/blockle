@@ -243,6 +243,9 @@ def default_request(request_impl=None):
             if isinstance(parsed, dict):
                 msg = parsed.get("reason") or parsed.get("error") or parsed.get("message")
             err = Exception(msg or ("HTTP " + str(status)))
+            # Expose the HTTP status so callers (e.g. the hosted agent provider)
+            # can detect a 401 and transparently refresh/retry.
+            err.status = status
             raise err
         return parsed
 

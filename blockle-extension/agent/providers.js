@@ -20,6 +20,8 @@
   'use strict';
 
   const DEFAULT_MAX_TOKENS = 4096;
+  // Operator-overridable default for the keyless hosted-agent gateway.
+  const DEFAULT_GATEWAY_URL = 'https://agent.blockle.org';
 
   function pickFetch(fetchImpl) {
     if (fetchImpl) return fetchImpl;
@@ -181,6 +183,105 @@
     }
   }
 
+  // ---- Blockle HOSTED gateway (keyless) -------------------------------------
+  // The BRAIN lives on Blockle's server; this provider is a thin transport. It
+  // POSTs the agent conversation to ${gatewayUrl}/agent/turn with a SESSION TOKEN
+  // (NOT an apiKey — the wallet never holds the upstream LLM key) and returns the
+  // ALREADY-normalized { text?, toolCalls? } the gateway produces. The runner and
+  // the client policy gate are UNCHANGED: a hosted proposal is gated client-side
+  // exactly like a BYO-key proposal — the gateway/LLM can never move funds.
+  //
+  // Short-lived sessions are transparently refreshed: on a 401 we call the
+  // injected `refresh()` once (which re-signs the gateway challenge) and retry.
+  class HostedProvider {
+    constructor(opts) {
+      this.name = 'hosted';
+      this.gatewayUrl = (opts.gatewayUrl || '').replace(/\/$/, '');
+      if (!this.gatewayUrl) throw new Error('hosted provider requires a gatewayUrl');
+      this.sessionToken = opts.sessionToken || null;
+      if (!this.sessionToken) throw new Error('hosted provider requires a sessionToken (no apiKey)');
+      this.model = opts.model || null;
+      this.fetch = pickFetch(opts.fetchImpl);
+      // refresh() => Promise<newSessionToken|null>; re-signs the challenge on expiry.
+      this.refresh = typeof opts.refresh === 'function' ? opts.refresh : null;
+    }
+    async _post(payload, attempt) {
+      // NOTE: we send ONLY sessionToken + the conversation. Never an apiKey, never
+      // any wallet key/seed. The gateway injects the upstream key server-side.
+      const body = {
+        sessionToken: this.sessionToken,
+        system: payload.system,
+        messages: payload.messages,
+        tools: payload.tools,
+      };
+      if (this.model) body.model = this.model;
+      const r = await this.fetch(this.gatewayUrl + '/agent/turn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (r.status === 401 && this.refresh && attempt < 1) {
+        const tok = await this.refresh();
+        if (tok) { this.sessionToken = tok; return this._post(payload, attempt + 1); }
+      }
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error('hosted agent gateway ' + r.status + ': ' + t.slice(0, 500));
+      }
+      const j = await r.json();
+      // The gateway already returns the common shape; re-normalize defensively so
+      // the runner always sees { text?, toolCalls? } with the exact field names.
+      const toolCalls = Array.isArray(j.toolCalls)
+        ? j.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, arguments: tc.arguments || {} }))
+        : [];
+      return { text: j.text || undefined, toolCalls: toolCalls.length ? toolCalls : undefined };
+    }
+    async turn({ system, messages, tools }) {
+      return this._post({ system, messages, tools }, 0);
+    }
+  }
+
+  // Wallet-signature session handshake against the gateway. `sign(message)` is the
+  // wallet's own signer — it returns { signature, publicKey } and proves control
+  // of an address (NOT a spend). Returns the stored hosted connection fields.
+  async function hostedSession(opts) {
+    opts = opts || {};
+    const f = pickFetch(opts.fetchImpl);
+    const base = (opts.gatewayUrl || '').replace(/\/$/, '');
+    if (!base) throw new Error('hostedSession requires a gatewayUrl');
+    const chain = opts.chain || 'block';
+    const postJson = async (bodyObj) => {
+      const r = await f(base + '/agent/session', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(bodyObj),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error('hosted session ' + r.status + ': ' + (j && j.error ? j.error : ''));
+      return j;
+    };
+    // Anonymous fallback: no address/signer -> rate-limited free-tier token.
+    if (opts.anon || !opts.sign) {
+      const a = await postJson({ step: 'anon' });
+      return { gatewayUrl: base, sessionToken: a.sessionToken, expiresAt: a.expiresAt, quota: a.quota, chain: 'anon', label: opts.label || 'Blockle hosted (anon)' };
+    }
+    const ch = await postJson({ step: 'challenge', address: opts.address, chain });
+    const signed = await opts.sign(ch.challenge);
+    const signature = typeof signed === 'string' ? signed : (signed && (signed.signature || signed.sig)) || '';
+    const publicKey = (signed && signed.publicKey) || opts.publicKey || '';
+    const v = await postJson({ step: 'verify', address: opts.address, chain, challenge: ch.challenge, signature, publicKey });
+    return {
+      gatewayUrl: base,
+      sessionToken: v.sessionToken,
+      expiresAt: v.expiresAt,
+      quota: v.quota,
+      address: opts.address,
+      chain,
+      publicKey,
+      label: opts.label || 'Blockle hosted agent',
+    };
+  }
+
   // ---- GitHub Copilot (OpenAI-compatible tool calls) — stub -----------------
   // Copilot's chat endpoint speaks the OpenAI tool-call shape with its own base
   // URL + auth headers. Thin subclass; fill in the exact editor headers your
@@ -202,6 +303,10 @@
   const AgentProviders = {
     create(opts) {
       opts = opts || {};
+      // The HOSTED provider is keyless: it needs a gatewayUrl + sessionToken, NOT
+      // an apiKey. Every other (BYO-key) provider still requires an apiKey from the
+      // vault. This is the ONLY place a provider is instantiated.
+      if (opts.provider === 'hosted') return new HostedProvider(opts);
       if (!opts.apiKey) throw new Error('provider requires an apiKey (from the vault)');
       switch (opts.provider) {
         case 'claude': return new ClaudeProvider(opts);
@@ -210,9 +315,12 @@
         default: throw new Error('unknown provider: ' + opts.provider);
       }
     },
+    hostedSession,
+    DEFAULT_GATEWAY_URL,
     ClaudeProvider,
     OpenAIProvider,
     CopilotProvider,
+    HostedProvider,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = AgentProviders;

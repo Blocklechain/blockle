@@ -217,6 +217,9 @@
       this.agentFactory = opts.agentFactory || dep('Agent', './index.js');
       // resolveCredential(credRef) -> { provider, apiKey, model?, baseUrl? } | null
       this.resolveCredential = typeof opts.resolveCredential === 'function' ? opts.resolveCredential : null;
+      // hostedRefresh(credRef, cred, meta) -> Promise<newSessionToken|null>: re-signs
+      // the gateway challenge and persists the fresh token (transparent token refresh).
+      this.hostedRefresh = typeof opts.hostedRefresh === 'function' ? opts.hostedRefresh : null;
       this.confirm = typeof opts.confirm === 'function' ? opts.confirm : null;      // required for value-moving
       this.onKill = typeof opts.onKill === 'function' ? opts.onKill : null;         // global kill hook
       this.onChannelKill = typeof opts.onChannelKill === 'function' ? opts.onChannelKill : null;
@@ -309,15 +312,29 @@
       // Resolve the credential from the vault via the host. Never persisted here.
       let cred = null;
       if (this.resolveCredential) cred = await this.resolveCredential(meta.credRef, meta);
-      if (!cred || !cred.apiKey) {
+      const isHosted = (meta.provider || (cred && cred.provider)) === 'hosted';
+      if (!cred || (!cred.apiKey && !isHosted)) {
         throw new Error('cannot start "' + meta.label + '": no LLM credential available (unlock the wallet and connect this channel)');
       }
-      const credential = {
-        provider: meta.provider || cred.provider,
-        apiKey: cred.apiKey,
-        model: meta.model || cred.model,
-        baseUrl: meta.baseUrl || cred.baseUrl,
-      };
+      if (isHosted && (!cred.gatewayUrl || !cred.sessionToken)) {
+        throw new Error('cannot start "' + meta.label + '": hosted connection is missing its gateway session (reconnect)');
+      }
+      const credential = isHosted
+        ? {
+            provider: 'hosted',
+            gatewayUrl: cred.gatewayUrl,
+            sessionToken: cred.sessionToken,
+            expiresAt: cred.expiresAt,
+            model: meta.model || cred.model,
+            // transparent re-sign on 401/expiry, wired by the host if available
+            refresh: this.hostedRefresh ? () => this.hostedRefresh(meta.credRef, cred, meta) : undefined,
+          }
+        : {
+            provider: meta.provider || cred.provider,
+            apiKey: cred.apiKey,
+            model: meta.model || cred.model,
+            baseUrl: meta.baseUrl || cred.baseUrl,
+          };
 
       // Per-channel kill wiring: wipe the live cred, run the per-channel hook,
       // and (for the terminal/global case) the host-wide hook is run by killAll.

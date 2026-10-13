@@ -174,10 +174,13 @@ class _AgentScreenState extends State<AgentScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Connected · $prov',
+                  Text(prov == 'hosted' ? 'Connected · Blockle hosted' : 'Connected · $prov',
                       style: const TextStyle(fontWeight: FontWeight.w700)),
-                  const Text('Key stored encrypted in the vault · auto-reconnects on unlock',
-                      style: TextStyle(color: Bk.muted, fontSize: 11)),
+                  Text(
+                      prov == 'hosted'
+                          ? 'Keyless session sealed in the vault · no API key · auto-reconnects on unlock'
+                          : 'Key stored encrypted in the vault · auto-reconnects on unlock',
+                      style: const TextStyle(color: Bk.muted, fontSize: 11)),
                 ],
               ),
             ),
@@ -195,9 +198,45 @@ class _AgentScreenState extends State<AgentScreen> {
         const Text('Connect an AI provider',
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
         const SizedBox(height: 8),
+        _hostedTile(c),
+        const SizedBox(height: 4),
+        const Text('— or bring your own key —',
+            style: TextStyle(color: Bk.muted, fontSize: 11)),
+        const SizedBox(height: 4),
         for (final entry in providerGuides.entries)
           _providerTile(c, entry.key, entry.value),
       ],
+    );
+  }
+
+  /// The KEYLESS "Use Blockle's hosted agent — no API key needed" option, shown
+  /// alongside (not replacing) the BYO-key providers, with the one-line hosted
+  /// privacy disclosure. Mirrors blockle-extension/agent-ui.js.
+  Widget _hostedTile(MultichainController c) {
+    return Card(
+      color: Bk.accent.withValues(alpha: 0.08),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("Use Blockle's hosted agent — no API key needed",
+                style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(MultichainController.hostedPrivacyDisclosure,
+                style: const TextStyle(color: Bk.muted, fontSize: 11)),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => _connectHostedDialog(c),
+                style: FilledButton.styleFrom(minimumSize: const Size(0, 38)),
+                child: const Text('Use Blockle hosted agent'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -309,6 +348,65 @@ class _AgentScreenState extends State<AgentScreen> {
       );
       _refresh();
       _snack('Provider connected');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  /// KEYLESS connect: sign the gateway challenge with the wallet (no API key is
+  /// ever entered or stored) and seal the hosted connection. The one-line
+  /// privacy disclosure is shown before the user commits.
+  Future<void> _connectHostedDialog(MultichainController c) async {
+    final gateway = TextEditingController();
+    final pw = TextEditingController();
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('Use Blockle hosted agent'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // one-line hosted-mode PRIVACY DISCLOSURE
+              Text(MultichainController.hostedPrivacyDisclosure,
+                  style: const TextStyle(color: Bk.muted, fontSize: 12)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: gateway,
+                decoration: const InputDecoration(
+                    labelText: 'Gateway (optional)',
+                    hintText: 'https://agent.blockle.org'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: pw,
+                obscureText: true,
+                decoration: const InputDecoration(
+                    labelText: 'Vault password (to save the session)'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Connect')),
+        ],
+      ),
+    );
+    if (res != true) return;
+    try {
+      await c.connectHostedAgent(
+        gatewayUrl: gateway.text.trim().isEmpty ? null : gateway.text.trim(),
+        password: pw.text,
+      );
+      _refresh();
+      _snack('Blockle hosted agent connected');
     } catch (e) {
       _snack(e.toString().replaceFirst('Exception: ', ''));
     }
