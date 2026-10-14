@@ -38,6 +38,11 @@ base58decode = _core.base58decode
 base58check_encode = _core.base58check_encode
 base58check_decode = _core.base58check_decode
 rlp_encode = _core.rlp_encode
+hkdf_sha256 = _core.hkdf_sha256
+chacha20poly1305_seal = _core.chacha20poly1305_seal
+chacha20poly1305_open = _core.chacha20poly1305_open
+x25519 = _core.x25519
+x25519_base = _core.x25519_base
 
 # ---- BIP39 ----
 entropy_to_mnemonic = bip39.entropy_to_mnemonic
@@ -70,6 +75,8 @@ __all__ = [
     "hmac_sha256", "hmac_sha512", "pbkdf2_sha512",
     "base58encode", "base58decode", "base58check_encode", "base58check_decode",
     "rlp_encode",
+    "hkdf_sha256", "chacha20poly1305_seal", "chacha20poly1305_open",
+    "x25519", "x25519_base",
     "entropy_to_mnemonic", "generate_mnemonic", "mnemonic_to_entropy",
     "validate_mnemonic", "mnemonic_to_seed",
     "HDNode", "master_from_seed", "derive_child", "derive_path", "parse_path",

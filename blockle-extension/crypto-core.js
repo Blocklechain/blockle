@@ -387,6 +387,170 @@
   function hash256(msg) { return sha256(sha256(msg)); }         // double SHA-256
   function hash160(msg) { return ripemd160(sha256(msg)); }      // RIPEMD160(SHA256)
 
+  // ---- HKDF-SHA256 (RFC 5869) ----------------------------------------------
+  // WalletConnect v2 derives the session symKey as HKDF(SHA256, sharedKey) with
+  // an empty info and a zero-filled salt (32 bytes), expanding to 32 bytes.
+  function hkdfSha256(ikm, salt, info, length) {
+    const s = (salt && salt.length) ? toBytes(salt) : new Uint8Array(32);
+    const inf = info ? toBytes(info) : new Uint8Array(0);
+    const prk = hmacSha256(s, toBytes(ikm));
+    const out = new Uint8Array(length);
+    let t = new Uint8Array(0), pos = 0, ctr = 1;
+    while (pos < length) {
+      t = hmacSha256(prk, concatBytes(t, inf, Uint8Array.of(ctr & 0xff)));
+      const n = Math.min(t.length, length - pos);
+      out.set(t.subarray(0, n), pos);
+      pos += n; ctr++;
+    }
+    return out;
+  }
+
+  // ---- little-endian byte <-> BigInt (ChaCha/Poly/X25519 are LE throughout) --
+  function bytesToBigLE(b) {
+    const a = toBytes(b);
+    let x = 0n;
+    for (let i = a.length - 1; i >= 0; i--) x = (x << 8n) | BigInt(a[i]);
+    return x;
+  }
+  function bigToBytesLE(x, len) {
+    const out = new Uint8Array(len);
+    let v = x;
+    for (let i = 0; i < len; i++) { out[i] = Number(v & 0xffn); v >>= 8n; }
+    return out;
+  }
+
+  // ---- ChaCha20 (RFC 8439) --------------------------------------------------
+  function rotl32(v, n) { return ((v << n) | (v >>> (32 - n))) >>> 0; }
+  function readLE32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+  function chacha20Block(key, counter, nonce) {
+    const x = new Uint32Array(16);
+    x[0] = 0x61707865; x[1] = 0x3320646e; x[2] = 0x79622d32; x[3] = 0x6b206574;
+    for (let i = 0; i < 8; i++) x[4 + i] = readLE32(key, i * 4);
+    x[12] = counter >>> 0;
+    x[13] = readLE32(nonce, 0); x[14] = readLE32(nonce, 4); x[15] = readLE32(nonce, 8);
+    const w = x.slice();
+    function qr(a, b, c, d) {
+      w[a] = (w[a] + w[b]) >>> 0; w[d] = rotl32(w[d] ^ w[a], 16);
+      w[c] = (w[c] + w[d]) >>> 0; w[b] = rotl32(w[b] ^ w[c], 12);
+      w[a] = (w[a] + w[b]) >>> 0; w[d] = rotl32(w[d] ^ w[a], 8);
+      w[c] = (w[c] + w[d]) >>> 0; w[b] = rotl32(w[b] ^ w[c], 7);
+    }
+    for (let i = 0; i < 10; i++) {
+      qr(0, 4, 8, 12); qr(1, 5, 9, 13); qr(2, 6, 10, 14); qr(3, 7, 11, 15);
+      qr(0, 5, 10, 15); qr(1, 6, 11, 12); qr(2, 7, 8, 13); qr(3, 4, 9, 14);
+    }
+    const out = new Uint8Array(64);
+    const dv = new DataView(out.buffer);
+    for (let i = 0; i < 16; i++) dv.setUint32(i * 4, (w[i] + x[i]) >>> 0, true);
+    return out;
+  }
+  function chacha20(key, counter, nonce, data) {
+    const k = toBytes(key), n = toBytes(nonce), d = toBytes(data);
+    const out = new Uint8Array(d.length);
+    for (let i = 0; i < d.length; i += 64) {
+      const ks = chacha20Block(k, (counter + (i / 64 | 0)) >>> 0, n);
+      const lim = Math.min(64, d.length - i);
+      for (let j = 0; j < lim; j++) out[i + j] = d[i + j] ^ ks[j];
+    }
+    return out;
+  }
+
+  // ---- Poly1305 (RFC 8439) --------------------------------------------------
+  function poly1305(key, msg) {
+    const k = toBytes(key), m = toBytes(msg);
+    const P = (1n << 130n) - 5n;
+    let r = bytesToBigLE(k.subarray(0, 16)) & 0x0ffffffc0ffffffc0ffffffc0fffffffn;
+    const s = bytesToBigLE(k.subarray(16, 32));
+    let acc = 0n;
+    for (let i = 0; i < m.length; i += 16) {
+      const block = m.subarray(i, i + 16);
+      let n = bytesToBigLE(block);
+      n += (1n << BigInt(8 * block.length));
+      acc = ((acc + n) * r) % P;
+    }
+    acc = (acc + s) & ((1n << 128n) - 1n);
+    return bigToBytesLE(acc, 16);
+  }
+
+  // ---- ChaCha20-Poly1305 AEAD (RFC 8439 §2.8) -------------------------------
+  function pad16len(n) { return (n % 16) === 0 ? 0 : 16 - (n % 16); }
+  function aeadMacData(aad, ct) {
+    const parts = [aad, new Uint8Array(pad16len(aad.length)), ct, new Uint8Array(pad16len(ct.length))];
+    const lens = new Uint8Array(16);
+    const dv = new DataView(lens.buffer);
+    // 64-bit LE lengths (our payloads are well under 2^53 bytes)
+    dv.setUint32(0, aad.length >>> 0, true); dv.setUint32(4, Math.floor(aad.length / 0x100000000) >>> 0, true);
+    dv.setUint32(8, ct.length >>> 0, true); dv.setUint32(12, Math.floor(ct.length / 0x100000000) >>> 0, true);
+    parts.push(lens);
+    return concatBytes.apply(null, parts);
+  }
+  function ctEqual(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+    return diff === 0;
+  }
+  // seal -> ciphertext || tag(16). aad optional (WC v2 uses an empty aad).
+  function chacha20poly1305Seal(key, nonce, plaintext, aad) {
+    const k = toBytes(key), n = toBytes(nonce), pt = toBytes(plaintext);
+    const ad = aad ? toBytes(aad) : new Uint8Array(0);
+    const polyKey = chacha20Block(k, 0, n).subarray(0, 32);
+    const ct = chacha20(k, 1, n, pt);
+    const tag = poly1305(polyKey, aeadMacData(ad, ct));
+    return concatBytes(ct, tag);
+  }
+  // open -> plaintext, or null on a bad tag (NEVER returns forged plaintext).
+  function chacha20poly1305Open(key, nonce, sealed, aad) {
+    const k = toBytes(key), n = toBytes(nonce), sb = toBytes(sealed);
+    if (sb.length < 16) return null;
+    const ct = sb.subarray(0, sb.length - 16), tag = sb.subarray(sb.length - 16);
+    const ad = aad ? toBytes(aad) : new Uint8Array(0);
+    const polyKey = chacha20Block(k, 0, n).subarray(0, 32);
+    const mac = poly1305(polyKey, aeadMacData(ad, ct));
+    if (!ctEqual(mac, tag)) return null;
+    return chacha20(k, 1, n, ct);
+  }
+
+  // ---- X25519 (RFC 7748) — the WC v2 session key agreement -------------------
+  const X25519_P = (1n << 255n) - 19n;
+  function powModP(base, exp) {
+    let b = ((base % X25519_P) + X25519_P) % X25519_P, r = 1n, e = exp;
+    while (e > 0n) { if (e & 1n) r = (r * b) % X25519_P; b = (b * b) % X25519_P; e >>= 1n; }
+    return r;
+  }
+  function x25519(scalar, uIn) {
+    const s = toBytes(scalar).slice(0, 32);
+    s[0] &= 248; s[31] &= 127; s[31] |= 64;
+    const k = bytesToBigLE(s);
+    const u = toBytes(uIn).slice(0, 32); u[31] &= 127;
+    const x1 = bytesToBigLE(u) % X25519_P;
+    let x2 = 1n, z2 = 0n, x3 = x1, z3 = 1n, swap = 0n;
+    const A24 = 121665n;
+    for (let t = 254; t >= 0; t--) {
+      const kt = (k >> BigInt(t)) & 1n;
+      swap ^= kt;
+      if (swap === 1n) { let tmp = x2; x2 = x3; x3 = tmp; tmp = z2; z2 = z3; z3 = tmp; }
+      swap = kt;
+      const A = (x2 + z2) % X25519_P, AA = (A * A) % X25519_P;
+      const B = ((x2 - z2) % X25519_P + X25519_P) % X25519_P, BB = (B * B) % X25519_P;
+      const E = ((AA - BB) % X25519_P + X25519_P) % X25519_P;
+      const C = (x3 + z3) % X25519_P, D = ((x3 - z3) % X25519_P + X25519_P) % X25519_P;
+      const DA = (D * A) % X25519_P, CB = (C * B) % X25519_P;
+      const s1 = (DA + CB) % X25519_P, s2 = ((DA - CB) % X25519_P + X25519_P) % X25519_P;
+      x3 = (s1 * s1) % X25519_P;
+      z3 = (x1 * ((s2 * s2) % X25519_P)) % X25519_P;
+      x2 = (AA * BB) % X25519_P;
+      z2 = (E * ((AA + (A24 * E) % X25519_P) % X25519_P)) % X25519_P;
+    }
+    if (swap === 1n) { let tmp = x2; x2 = x3; x3 = tmp; tmp = z2; z2 = z3; z3 = tmp; }
+    const res = (x2 * powModP(z2, X25519_P - 2n)) % X25519_P;
+    return bigToBytesLE(res, 32);
+  }
+  function x25519Base(scalar) {
+    const nine = new Uint8Array(32); nine[0] = 9;
+    return x25519(scalar, nine);
+  }
+
   // ---- Base58 / Base58Check ------------------------------------------------
   const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   function base58encode(bytes) {
@@ -466,6 +630,11 @@
     ripemd160, keccak256, hash256, hash160,
     base58encode, base58decode, base58checkEncode, base58checkDecode,
     rlpEncode,
+    // HKDF + AEAD + X25519 (WalletConnect v2 transport crypto)
+    hkdfSha256, bytesToBigLE, bigToBytesLE,
+    chacha20, chacha20Block, poly1305,
+    chacha20poly1305Seal, chacha20poly1305Open,
+    x25519, x25519Base,
   };
   global.BLKCrypto = API;
   if (typeof module !== 'undefined' && module.exports) module.exports = API;

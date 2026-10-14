@@ -25,6 +25,11 @@ import hmac as _hmac
 
 import base58 as _base58
 from Crypto.Hash import keccak as _keccak
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey as _X25519Priv,
+    X25519PublicKey as _X25519Pub,
+)
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305 as _ChaChaPoly
 
 Bytesish = "bytes | bytearray | str | list | memoryview"
 
@@ -191,6 +196,57 @@ def base58check_encode(payload) -> str:
 
 def base58check_decode(s: str) -> bytes:
     return _base58.b58decode_check(s)
+
+
+# ---- HKDF-SHA256 (RFC 5869) ----------------------------------------------
+# WalletConnect v2 derives the session symKey as HKDF(SHA256, sharedKey) with an
+# empty info and a zero-filled salt (32 bytes), expanding to 32 bytes. Mirrors
+# ``blockle-extension/crypto-core.js`` ``hkdfSha256`` byte-for-byte.
+def hkdf_sha256(ikm, salt=None, info=None, length: int = 32) -> bytes:
+    s = to_bytes(salt) if (salt is not None and len(to_bytes(salt))) else bytes(32)
+    inf = to_bytes(info) if info else b""
+    prk = hmac_sha256(s, to_bytes(ikm))
+    out = b""
+    t = b""
+    ctr = 1
+    while len(out) < length:
+        t = hmac_sha256(prk, t + inf + bytes([ctr & 0xFF]))
+        out += t
+        ctr += 1
+    return out[:length]
+
+
+# ---- ChaCha20-Poly1305 AEAD (RFC 8439 §2.8) ------------------------------
+# WalletConnect v2 TYPE-0 envelopes seal with an EMPTY aad. ``seal`` returns
+# ciphertext||tag(16); ``open`` returns the plaintext or ``None`` on a bad tag
+# (NEVER forged plaintext). Backed by ``cryptography`` (OpenSSL), validated
+# against the RFC 8439 §2.8.2 known-answer vector in the tests.
+def chacha20poly1305_seal(key, nonce, plaintext, aad=None) -> bytes:
+    ad = to_bytes(aad) if aad else b""
+    return _ChaChaPoly(to_bytes(key)).encrypt(to_bytes(nonce), to_bytes(plaintext), ad)
+
+
+def chacha20poly1305_open(key, nonce, sealed, aad=None):
+    ad = to_bytes(aad) if aad else b""
+    sb = to_bytes(sealed)
+    if len(sb) < 16:
+        return None
+    try:
+        return _ChaChaPoly(to_bytes(key)).decrypt(to_bytes(nonce), sb, ad)
+    except Exception:  # InvalidTag (or malformed) -> never forge plaintext
+        return None
+
+
+# ---- X25519 (RFC 7748) — the ECDH WalletConnect v2 session key agreement --
+def x25519(scalar, u) -> bytes:
+    priv = _X25519Priv.from_private_bytes(to_bytes(scalar))
+    pub = _X25519Pub.from_public_bytes(to_bytes(u))
+    return priv.exchange(pub)
+
+
+def x25519_base(scalar) -> bytes:
+    priv = _X25519Priv.from_private_bytes(to_bytes(scalar))
+    return priv.public_key().public_bytes_raw()
 
 
 # ---- RLP (Ethereum) ------------------------------------------------------
