@@ -6,6 +6,8 @@
 // Everything is PURE sim driven by ArenaProfile.run — no keys, no vault, no gate,
 // no broadcast. Play funds are labelled PLAY and can never become real.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../agent/arena.dart' as a;
@@ -46,7 +48,15 @@ class ArenaView extends StatefulWidget {
   State<ArenaView> createState() => _ArenaViewState();
 }
 
+// The pair the Arena strategy trades (its base is what the live feed is sampled on).
+const String _arenaPair = 'SOL/USDC';
+const String _arenaBase = 'SOL';
+
 class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMixin {
+  // Arena market mode: 'live' (play money on REAL marks) is the DEFAULT; 'demo' is
+  // the fixed-fixture scenario replay (the cross-wallet parity contract).
+  String _mode = 'live';
+
   String _scen = 'bull';
   List<double> _path = const [];
   List<Map<String, dynamic>> _fills = const [];
@@ -54,6 +64,12 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
   late final AnimationController _anim;
   int _upto = 0;
   String _state = 'Ready';
+
+  // LIVE MARKET state — accumulated REAL marks (null = no data that tick, skipped),
+  // the running PLAY result, and the 5s poll timer. Never broadcasts, never real.
+  final List<num?> _liveMarks = [];
+  a.ArenaResult? _liveResult;
+  Timer? _livePoll;
 
   @override
   void initState() {
@@ -66,7 +82,13 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
       ..addStatusListener((s) {
         if (s == AnimationStatus.completed) setState(() => _state = 'Done');
       });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_mode == 'demo') {
+        _load();
+      } else {
+        _startLivePoll();
+      }
+    });
   }
 
   void _load() {
@@ -79,8 +101,74 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
     });
   }
 
+  void _setMode(String m) {
+    if (m == _mode) return;
+    _anim.stop();
+    _stopLivePoll();
+    setState(() => _mode = m);
+    if (m == 'demo') {
+      _load();
+    } else {
+      _startLivePoll();
+    }
+  }
+
+  // --- LIVE MARKET (play money on REAL marks) -------------------------------
+  void _startLivePoll() {
+    _stopLivePoll();
+    _liveTick();
+    _livePoll = Timer.periodic(const Duration(seconds: 5), (_) => _liveTick());
+  }
+
+  void _stopLivePoll() {
+    _livePoll?.cancel();
+    _livePoll = null;
+  }
+
+  void _resetLive() {
+    setState(() {
+      _liveMarks.clear();
+      _liveResult = null;
+    });
+  }
+
+  // Sample the CURRENT real mark for the arena pair base from the SAME live feed
+  // the real bots + scanner use, append it (or null when NO data — never a
+  // fabricated price), re-run the PURE play-money engine, and redraw.
+  Future<void> _liveTick() async {
+    if (!mounted || _mode == 'demo') return;
+    num? mark;
+    try {
+      mark = await widget.controller.liveMark(_arenaBase);
+    } catch (_) {
+      mark = null;
+    }
+    if (!mounted || _mode == 'demo') return;
+    _liveMarks.add(mark); // null => awaiting data this tick (never fabricated)
+    if (_liveMarks.length > 600) _liveMarks.removeAt(0);
+    a.ArenaResult? res;
+    try {
+      res = widget.controller.runArenaLive(
+        type: 'dca',
+        config: Map<String, dynamic>.from(_arenaConfig),
+        pair: _arenaPair,
+        marks: _liveMarks,
+        name: 'Arena DCA',
+      );
+    } catch (_) {
+      res = null;
+    }
+    setState(() => _liveResult = res);
+  }
+
+  List<double> get _liveSeries => [
+        for (final m in _liveMarks)
+          if (m != null && m.isFinite && m > 0) m.toDouble()
+      ];
+
   @override
   void dispose() {
+    _stopLivePoll();
     _anim.dispose();
     super.dispose();
   }
@@ -207,7 +295,155 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
     );
   }
 
+  Widget _modeToggle(BotTokens t) {
+    Widget seg(String mode, Widget label) {
+      final on = _mode == mode;
+      return Expanded(
+        child: Semantics(
+          button: true,
+          selected: on,
+          child: InkWell(
+            onTap: () => _setMode(mode),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 9),
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: on ? t.accentGhost : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: on ? t.accent : Colors.transparent),
+              ),
+              child: DefaultTextStyle(
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: on ? t.ink : t.inkMuted),
+                child: label,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: t.elevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.line),
+      ),
+      child: Row(children: [
+        seg(
+          'live',
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Live market'),
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+              decoration: BoxDecoration(
+                color: t.warn.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text('PLAY',
+                  style: TextStyle(
+                      fontSize: 9, letterSpacing: 0.8, fontWeight: FontWeight.w800, color: t.warn)),
+            ),
+          ]),
+        ),
+        seg('demo', const Text('Demo scenario')),
+      ]),
+    );
+  }
+
   Widget _simCard(BotTokens t) {
+    return _mode == 'demo' ? _demoCard(t) : _liveCard(t);
+  }
+
+  Widget _liveCard(BotTokens t) {
+    final r = _liveResult;
+    final series = _liveSeries;
+    final hasData = r != null && !r.awaitingData && series.isNotEmpty;
+    final pnl = (hasData && r.equityCurveUc.isNotEmpty)
+        ? (b.ucToUsd(r.equityCurveUc.last) ?? 0)
+        : 0.0;
+    final stateChip = hasData
+        ? 'Live · ${_signed(r.score)}'
+        : 'Awaiting data…';
+    return BotCard(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Eyebrow('Live market · play money on REAL marks'),
+              const SizedBox(height: 4),
+              Text('Conservative DCA · SOL',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: t.ink)),
+            ]),
+            const Spacer(),
+            BotChip(stateChip, accent: hasData),
+          ]),
+          const SizedBox(height: 12),
+          _modeToggle(t),
+          const SizedBox(height: 10),
+          Text(
+              'Ticks your strategy on the SAME live marks the real bots use — play '
+              'balances only. It never broadcasts and never touches real funds. A '
+              'market with no data is skipped (awaiting data); prices are never invented.',
+              style: TextStyle(fontSize: 11.5, color: t.inkMuted, height: 1.45)),
+          const SizedBox(height: 12),
+          if (series.length >= 2)
+            SimChart(path: series, fills: const [], upto: series.length - 1)
+          else
+            SizedBox(
+              height: 280,
+              child: Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: t.accent)),
+                  const SizedBox(height: 12),
+                  Text('Awaiting live market data…',
+                      style: TextStyle(color: t.inkFaint, fontSize: 12.5)),
+                ]),
+              ),
+            ),
+          const SizedBox(height: 12),
+          Divider(height: 1, color: t.lineSoft),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 16,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              BotButton(label: 'Reset play run', icon: Icons.refresh, onPressed: _resetLive),
+              _score(t, 'Play P&L', hasData ? moneyUsd(pnl) : '—',
+                  hasData ? t.pnlColor(pnl) : t.inkMuted),
+              _score(t, 'Score', hasData ? _signed(r.score) : '—',
+                  hasData ? t.pnlColor(r.score) : t.inkMuted),
+              _score(t, 'Max drawdown',
+                  hasData ? '−${(r.ddTenthPct.toDouble() / 10).toStringAsFixed(1)}%' : '—',
+                  t.inkMuted),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(Icons.info_outline, size: 14, color: t.inkFaint),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(widget.controller.arenaDisclaimer,
+                  style: TextStyle(fontSize: 11.5, color: t.inkFaint, height: 1.4)),
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  Widget _demoCard(BotTokens t) {
     final pnl = _pnlAt(_upto);
     final r = _result;
     return BotCard(
@@ -217,7 +453,7 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
         children: [
           Row(children: [
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Eyebrow('Simulated market · seeded & replayable'),
+              const Eyebrow('Demo scenario · fixed fixture, seeded & replayable'),
               const SizedBox(height: 4),
               Text('Conservative DCA · SOL',
                   style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: t.ink)),
@@ -226,6 +462,8 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
             BotChip(_state, accent: _state == 'Running…'),
           ]),
           const SizedBox(height: 12),
+          _modeToggle(t),
+          const SizedBox(height: 10),
           Wrap(spacing: 7, runSpacing: 7, children: [
             for (final s in widget.controller.arenaScenarios) _scenButton(t, s),
           ]),

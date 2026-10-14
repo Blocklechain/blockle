@@ -43,12 +43,22 @@
   // create-flow state (mirrors the design reference)
   var create = {
     tplKey: 'conservative_dca',
+    // PAIR SELECTION MODE — defaults to 'ai' ("Let the AI choose pairs": the
+    // scanner/autopilot scans + picks worthy pairs). 'manual' ("I'll pick a pair")
+    // is opt-in and brings back the manual pair picker.
+    pairMode: 'ai',
     pair: 'BLOCK/USDC',
+    // PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO
+    // (AI mode: user-chosen; manual mode: derived from the pair quote).
+    profitCurrency: 'USDC',
     alloc: 500,
     base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0,
     type: 'dca',
     markUsd: null,               // live mark for the pair base (display only)
   };
+
+  // Profit-currency choices (settlement/quote assets). USDC is the default.
+  var PROFIT_CURRENCIES = ['USDC', 'USDT', 'DAI', 'USD'];
 
   // The policy session USD cap for live bots. allocationUsd must be > 0 AND <= this
   // (BotRunner.armLive fail-closes otherwise). The allocation cap is the real bound.
@@ -328,8 +338,17 @@
   }
 
   // Build a Bot SPEC from the create-flow state via the engine's template.
+  // AI mode ("Let the AI choose pairs") -> the scan-&-trade autopilot, realizing
+  // profit INTO the chosen profit currency. Manual mode -> the selected template
+  // on the chosen pair.
   function specFromCreate() {
     var T = dep('AgentBotTemplates', './bot-templates.js');
+    if (create.pairMode !== 'manual') {
+      var sc = T.fromTemplate('scan_and_trade', {});
+      sc.config = Object.assign({}, sc.config, { profitCurrency: (create.profitCurrency || 'USDC') });
+      sc.name = (T.TEMPLATES.scan_and_trade && T.TEMPLATES.scan_and_trade.name) || sc.name;
+      return sc;
+    }
     var spec = T.fromTemplate(create.tplKey, { pair: create.pair });
     // overlay the (simple + advanced) create controls onto the template config
     if (spec.type === 'dca') {
@@ -487,12 +506,14 @@
       }
     }
     var minBps = (scan && scan.minProfitBps != null) ? scan.minProfitBps : (bot.config && bot.config.minProfitBps);
+    var profitCur = (scan && scan.profitCurrency) || (bot.config && bot.config.profitCurrency) || 'USDC';
     return '' +
       '<div class="bpane card">' +
         '<div class="bdt-head"><span class="beyebrow">Scan &amp; trade (Autopilot)</span>' +
+          '<span class="bchip" id="b-profit-cur-chip" title="profit is realized &amp; take-profit exits settle into this">↳ settles ' + esc(String(profitCur).toUpperCase()) + '</span>' +
           '<button class="bkill" id="b-d-kill2" style="margin-left:auto">⏻ Kill</button></div>' +
         '<p class="bhint">Scores every discoverable pair; trades the worthy (score ≥ ' + esc(String(minBps)) + 'bps) up to ' +
-          esc(String((bot.config && bot.config.maxConcurrentPairs) || 3)) + ' at $' + esc(String((bot.config && bot.config.perTradeUsd) || 20)) + ' each, within allocation.</p>' +
+          esc(String((bot.config && bot.config.maxConcurrentPairs) || 3)) + ' at $' + esc(String((bot.config && bot.config.perTradeUsd) || 20)) + ' each, within allocation. Take-profit exits settle into <b>' + esc(String(profitCur).toUpperCase()) + '</b>.</p>' +
         '<div class="bpnl-tile"><div class="beyebrow">Allocation used</div><div class="bv num">' + plain(used) + '<span style="color:var(--b-ink-faint);font-size:13px"> / ' + plain(cap) + '</span></div>' +
           '<div class="bbar" style="margin-top:8px"><span style="width:' + pctUsed + '%"></span></div></div>' +
         '<ol class="bsteps" style="margin-top:12px">' + rows + '</ol>' +
@@ -516,6 +537,44 @@
     scan_and_trade: { icon: '🛰', ty: 'Scanner' },
   };
 
+  // The profit-currency <option> list, with the current selection marked.
+  function profitCurOptions(sel) {
+    sel = (sel || 'USDC').toUpperCase();
+    return PROFIT_CURRENCIES.map(function (c) {
+      return '<option value="' + c + '"' + (c === sel ? ' selected' : '') + '>' + c + '</option>';
+    }).join('');
+  }
+
+  // Exported-pure: STEP 2 of the create flow — the pair-selection mode toggle plus
+  // EITHER the profit-currency selector (AI chooses pairs; the manual pair picker is
+  // HIDDEN) OR the manual pair picker ("I'll pick a pair"). Defaults to AI.
+  function pairSelectHtml() {
+    var ai = create.pairMode !== 'manual';
+    var modeToggle =
+      '<div class="bpairmode bseg" role="group" aria-label="Pair selection mode">' +
+        '<button type="button" data-pairmode="ai" aria-pressed="' + ai + '">🤖 Let the AI choose pairs</button>' +
+        '<button type="button" data-pairmode="manual" aria-pressed="' + (!ai) + '">✎ I\'ll pick a pair</button>' +
+      '</div>';
+    if (ai) {
+      // AI chooses pairs: NO manual pair picker — a profit-currency selector instead.
+      return '<div class="bfield" id="b-pair-field"><label>2 · Pairs <span class="fhint">the autopilot scans &amp; picks worthy pairs</span></label>' +
+        modeToggle +
+        '<div class="bhint" id="b-ai-note" style="margin:8px 0">The AI scanner scores every discoverable pair and auto-trades the worthy ones within your cap — no pair to pick. Paper + disabled by default.</div>' +
+        '<label>Profit currency <span class="fhint">what profit is realized &amp; settled into</span></label>' +
+        '<div class="bcontrol"><select id="b-profit-cur" class="num" aria-label="Profit currency">' + profitCurOptions(create.profitCurrency) + '</select>' +
+          '<span class="bsuffix">settles P&amp;L</span></div></div>';
+    }
+    // Manual: the pair picker returns; profit currency derives from the pair quote.
+    return '<div class="bfield" id="b-pair-field"><label>2 · Pair <span class="fhint">what to trade</span></label>' +
+      modeToggle +
+      '<div class="bcontrol"><input id="b-pair" value="' + esc(create.pair) + '" aria-label="Trading pair"><span class="bsuffix">BASE/QUOTE</span></div></div>';
+  }
+
+  // profit currency derived from a BASE/QUOTE pair's quote (manual mode).
+  function quoteOf(pair) {
+    try { return dep('AgentBots', './bots.js').splitPair(String(pair))[1].toUpperCase(); } catch (_) { return create.profitCurrency || 'USDC'; }
+  }
+
   async function renderCreate(panel) {
     var T = dep('AgentBotTemplates', './bot-templates.js');
     var tpls = T.list();
@@ -530,8 +589,7 @@
       '<div class="bpane card">' +
         '<h3>Create a bot</h3><p class="bhint">Pick a starting point, choose a pair, set one amount. Tune the rest under Advanced.</p>' +
         '<span class="beyebrow">1 · Template</span><div class="btpl-grid">' + cards + '</div>' +
-        '<div class="bfield"><label>2 · Pair <span class="fhint">what to trade</span></label>' +
-          '<div class="bcontrol"><input id="b-pair" value="' + esc(create.pair) + '" aria-label="Trading pair"><span class="bsuffix">BASE/QUOTE</span></div></div>' +
+        pairSelectHtml() +
         '<div class="bfield"><label>3 · Amount to allocate <span class="fhint">the bot\'s hard cap</span></label>' +
           '<div class="bcontrol"><span class="bcur">$</span><input id="b-alloc" class="num" value="' + esc(create.alloc) + '" inputmode="decimal" aria-label="Allocation in US dollars"><span class="bsuffix">USD</span></div></div>' +
         '<div class="bpreview" id="b-preview"></div>' +
@@ -580,8 +638,22 @@
         enter();
       });
     });
+    // pair-selection mode: AI chooses (default) vs manual pair picker.
+    $$('[data-pairmode]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        create.pairMode = b.getAttribute('data-pairmode');
+        if (create.pairMode === 'manual') create.profitCurrency = quoteOf(create.pair); // derive from quote
+        enter();
+      });
+    });
+    var pcur = $('#b-profit-cur');
+    if (pcur) pcur.addEventListener('change', function () { create.profitCurrency = (pcur.value || 'USDC').toUpperCase(); });
     var pair = $('#b-pair');
-    if (pair) pair.addEventListener('input', function () { create.pair = pair.value.toUpperCase(); refreshCreateMark().then(renderCreatePreview); });
+    if (pair) pair.addEventListener('input', function () {
+      create.pair = pair.value.toUpperCase();
+      create.profitCurrency = quoteOf(create.pair);  // manual: profit currency = the pair quote
+      refreshCreateMark().then(renderCreatePreview);
+    });
     var alloc = $('#b-alloc');
     if (alloc) alloc.addEventListener('input', function () { var n = parseFloat(alloc.value); create.alloc = isFinite(n) ? n : 0; renderCreatePreview(); });
     var adv = $('#b-adv-toggle');
@@ -842,7 +914,13 @@
       }
     } catch (_) {}
     if (!vectors && typeof require === 'function') { try { vectors = require('./arena-vectors.json'); } catch (_) {} }
-    arena = { profile: new A.ArenaProfile(), vectors: vectors, scen: 'bull', last: null };
+    arena = {
+      profile: new A.ArenaProfile(), vectors: vectors, scen: 'bull', last: null,
+      // ARENA MODE — 'live' (play money on REAL marks, DEFAULT) vs 'demo' (fixed
+      // fixture replay, the cross-wallet parity contract). liveMarks accumulates the
+      // real marks sampled from ctx.prices; liveResult is the latest runLive output.
+      mode: 'live', liveMarks: [], liveResult: null, liveTimer: 0,
+    };
     return arena;
   }
 
@@ -862,18 +940,7 @@
         '<div class="blvl"><div class="blvl-row"><b>Lv ' + lvl.level + '</b><span class="num">' + lvl.xp + ' XP' + (lvl.nextLevel ? ' · ' + xpToNext + ' to Lv ' + lvl.nextLevel : '') + '</span></div>' +
           '<div class="bbar"><span style="width:' + xpPct + '%"></span></div></div>' +
       '</div>' +
-      '<div class="bpane card">' +
-        '<div class="bladder-head"><div><span class="beyebrow">Simulated market · seeded &amp; replayable</span><h3>Your strategy · ' + esc(create.pair) + '</h3></div><span class="bchip type" id="b-sim-state">Ready</span></div>' +
-        '<div class="bscen" role="group" aria-label="Market scenario">' +
-          scenBtn('bull', '📈 Bull') + scenBtn('crab', '🦀 Crab') + scenBtn('bear', '📉 Bear') + scenBtn('crash', '💥 Flash-crash') + scenBtn('pump', '🚀 Pump') +
-        '</div>' +
-        '<div class="bsimwrap"><canvas id="b-sim"></canvas></div>' +
-        '<div class="bsim-foot"><button class="bbtn primary" id="b-run">▶ Run simulation</button>' +
-          '<div class="bscore"><div><div class="beyebrow">Play P&amp;L</div><div class="bv num" id="b-sim-pnl">+$0.00</div></div>' +
-          '<div><div class="beyebrow">Score</div><div class="bv num" id="b-sim-score">—</div></div>' +
-          '<div><div class="beyebrow">Max DD</div><div class="bv num" id="b-sim-dd">—</div></div></div></div>' +
-        '<div class="bdisclaim">⚠ ' + esc(A.DISCLAIMER) + '</div>' +
-      '</div>' +
+      arenaMarketPaneHtml(A) +
       '<div class="bpane card">' +
         missionHtml(A) +
         '<div style="margin-top:16px"><span class="beyebrow">Badges</span><div class="bbadges">' + badgesHtml(A) + '</div></div>' +
@@ -882,21 +949,117 @@
         '<button class="bbtn primary" id="b-use-real" style="width:100%;justify-content:center;margin-top:14px">✓ Use this strategy for real (starts in paper)</button>' +
       '</div>';
 
-    $$('.bscen button').forEach(function (b) {
-      b.addEventListener('click', function () { arena.scen = b.getAttribute('data-scen'); enter(); });
+    // mode toggle (Live market vs Demo scenario) — stop any live poll on switch.
+    $$('[data-arenamode]').forEach(function (b) {
+      b.addEventListener('click', function () { stopLivePoll(); arena.mode = b.getAttribute('data-arenamode'); enter(); });
     });
-    var run = $('#b-run'); if (run) run.addEventListener('click', runArena);
     var useReal = $('#b-use-real'); if (useReal) useReal.addEventListener('click', useForReal);
     var mc = $('#b-mission-create'); if (mc) mc.addEventListener('click', function () { activeTab = 'create'; enter(); });
-    // Preserve the most recent run's chart + score across re-renders (so the
-    // post-run enter() refresh of xp/badges/leaderboard never wipes the result).
-    if (arena.last && arena.last.scenario === arena.scen) {
-      drawSim(simPath(), arena.last, simPath().length - 1);
-      setSimScore(arena.last);
-      var st = $('#b-sim-state'); if (st) st.textContent = 'Done · ' + (arena.last.score >= 0 ? '+' : '') + arena.last.score.toFixed(1);
+
+    if (arena.mode === 'demo') {
+      // DEMO SCENARIO — the fixed-fixture replay (cross-wallet parity contract).
+      $$('.bscen button').forEach(function (b) {
+        b.addEventListener('click', function () { arena.scen = b.getAttribute('data-scen'); enter(); });
+      });
+      var run = $('#b-run'); if (run) run.addEventListener('click', runArena);
+      // Preserve the most recent run's chart + score across re-renders.
+      if (arena.last && arena.last.scenario === arena.scen) {
+        drawSim(simPath(), arena.last, simPath().length - 1);
+        setSimScore(arena.last);
+        var st = $('#b-sim-state'); if (st) st.textContent = 'Done · ' + (arena.last.score >= 0 ? '+' : '') + arena.last.score.toFixed(1);
+      } else {
+        drawSimIdle();
+      }
     } else {
-      drawSimIdle();
+      // LIVE MARKET (play money) — tick the strategy on REAL marks from ctx.prices.
+      var resetBtn = $('#b-live-reset'); if (resetBtn) resetBtn.addEventListener('click', function () { arena.liveMarks = []; arena.liveResult = null; enter(); });
+      renderLiveResult();
+      startLivePoll();
     }
+  }
+
+  // ===========================================================================
+  // ARENA · LIVE MARKET pane (play money on REAL marks) vs DEMO SCENARIO pane.
+  // ===========================================================================
+  function arenaModeToggleHtml() {
+    var live = arena.mode !== 'demo';
+    return '<div class="barena-mode bseg" role="group" aria-label="Arena market mode">' +
+      '<button type="button" data-arenamode="live" aria-pressed="' + live + '">Live market <span class="play-pill">PLAY</span></button>' +
+      '<button type="button" data-arenamode="demo" aria-pressed="' + (!live) + '">Demo scenario</button>' +
+    '</div>';
+  }
+
+  function arenaMarketPaneHtml(A) {
+    if (arena.mode === 'demo') {
+      return '<div class="bpane card">' +
+        '<div class="bladder-head"><div><span class="beyebrow">Demo scenario · fixed fixture, seeded &amp; replayable</span><h3>Your strategy · ' + esc(create.pair) + '</h3></div><span class="bchip type" id="b-sim-state">Ready</span></div>' +
+        arenaModeToggleHtml() +
+        '<div class="bscen" role="group" aria-label="Market scenario">' +
+          scenBtn('bull', '📈 Bull') + scenBtn('crab', '🦀 Crab') + scenBtn('bear', '📉 Bear') + scenBtn('crash', '💥 Flash-crash') + scenBtn('pump', '🚀 Pump') +
+        '</div>' +
+        '<div class="bsimwrap"><canvas id="b-sim"></canvas></div>' +
+        '<div class="bsim-foot"><button class="bbtn primary" id="b-run">▶ Run simulation</button>' +
+          scoreTilesHtml() + '</div>' +
+        '<div class="bdisclaim">⚠ ' + esc(A.DISCLAIMER) + '</div>' +
+      '</div>';
+    }
+    // LIVE MARKET (play money) — real marks, no scenario picker.
+    return '<div class="bpane card">' +
+      '<div class="bladder-head"><div><span class="beyebrow">Live market · play money on REAL marks</span><h3>Your strategy · ' + esc(create.pair) + '</h3></div><span class="bchip type" id="b-sim-state">Awaiting data…</span></div>' +
+      arenaModeToggleHtml() +
+      '<div class="bhint" id="b-live-note" style="margin:8px 0">Ticks your strategy on the SAME live marks the real bots use — play balances only. It never broadcasts and never touches real funds. A market with no data is skipped (awaiting data); prices are never invented.</div>' +
+      '<div class="bsimwrap"><canvas id="b-sim"></canvas></div>' +
+      '<div class="bsim-foot"><button class="bbtn ghost" id="b-live-reset">↻ Reset play run</button>' +
+        scoreTilesHtml() + '</div>' +
+      '<div class="bdisclaim">⚠ ' + esc(A.DISCLAIMER) + '</div>' +
+    '</div>';
+  }
+  function scoreTilesHtml() {
+    return '<div class="bscore"><div><div class="beyebrow">Play P&amp;L</div><div class="bv num" id="b-sim-pnl">+$0.00</div></div>' +
+      '<div><div class="beyebrow">Score</div><div class="bv num" id="b-sim-score">—</div></div>' +
+      '<div><div class="beyebrow">Max DD</div><div class="bv num" id="b-sim-dd">—</div></div></div>';
+  }
+
+  // Sample the CURRENT real mark for the create.pair base from ctx.prices (the same
+  // source the live bots + scanner use), append it (or null when NO data), re-run
+  // the PURE play-money engine on the accumulated marks, and redraw. NEVER broadcasts.
+  async function liveTick() {
+    var A = dep('AgentArena', './arena.js');
+    if (!arena || arena.mode === 'demo') return;
+    var base = null;
+    try { base = runner.Bots.splitPair(create.pair)[0].toUpperCase(); } catch (_) {}
+    var mark = null;
+    if (runner && base) {
+      try { var p = (await runner.ctx.prices([base])) || {}; var v = p[base]; if (v != null && isFinite(v) && v > 0) mark = Number(v); } catch (_) {}
+    }
+    arena.liveMarks.push(mark); // null => awaiting data this tick (never fabricated)
+    if (arena.liveMarks.length > 600) arena.liveMarks.shift();
+    try { arena.liveResult = A.runLive({ bot: arenaBotSpec(), marks: arena.liveMarks }); } catch (_) { arena.liveResult = null; }
+    renderLiveResult();
+  }
+  function renderLiveResult() {
+    var res = arena.liveResult;
+    var st = $('#b-sim-state');
+    var marks = (arena && arena.liveMarks) || [];
+    var series = marks.filter(function (m) { return m != null && isFinite(m) && m > 0; });
+    if (!res || !series.length) {
+      if (st) st.textContent = 'Awaiting data…';
+      drawSim(series.length > 1 ? series : [1, 1], null, null);
+      return;
+    }
+    if (st) st.textContent = 'Live · ' + (res.score >= 0 ? '+' : '') + res.score.toFixed(1);
+    drawSim(series.length > 1 ? series : [series[0], series[0]], null, null);
+    setSimScore(res);
+  }
+  function startLivePoll() {
+    stopLivePoll();
+    if (!arena || arena.mode === 'demo') return;
+    if (typeof setInterval !== 'function') { liveTick(); return; }
+    liveTick();
+    arena.liveTimer = setInterval(function () { if (activeTab === 'arena' && arena && arena.mode !== 'demo') liveTick(); else stopLivePoll(); }, 5000);
+  }
+  function stopLivePoll() {
+    if (arena && arena.liveTimer) { try { clearInterval(arena.liveTimer); } catch (_) {} arena.liveTimer = 0; }
   }
 
   function scenBtn(id, label) { return '<button data-scen="' + id + '" aria-pressed="' + (arena.scen === id) + '">' + label + '</button>'; }
@@ -1062,7 +1225,7 @@
     };
     raf = requestAnimationFrame(step);
   }
-  function stopAnim() { if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf); raf = 0; }
+  function stopAnim() { if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf); raf = 0; stopLivePoll(); }
 
   // ===========================================================================
   global.BotsUI = {
@@ -1073,6 +1236,8 @@
     reviewSheetText: reviewSheetText,
     botCardHtml: botCardHtml,
     scannerCardHtml: scannerCardHtml,
+    pairSelectHtml: pairSelectHtml,
+    specFromCreate: specFromCreate,
     money: money,
     _setRunner: function (r) { runner = r; },
     _state: function () { return { activeTab: activeTab, modeFilter: modeFilter, create: create }; },

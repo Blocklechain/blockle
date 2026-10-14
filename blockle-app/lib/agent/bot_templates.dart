@@ -76,6 +76,19 @@ const Map<String, Map<String, dynamic>> kTemplates = {
       'cooldownSec': 3600, 'startCondition': 'dip', 'dipPct': 3,
     },
   },
+  'scan_and_trade': {
+    'name': 'Scan & Trade (Autopilot)',
+    'type': 'scanner',
+    'blurb':
+        'Scans every discoverable pair, scores each for cost-positive profit, and auto-trades the worthy ones through the one gate. Paper + disabled + testnet by default.',
+    'universe': {'pairs': <String>[]},
+    'config': {
+      'minProfitBps': 30, 'maxConcurrentPairs': 3, 'perTradeUsd': 20,
+      'profitCurrency': 'USDC',
+      'strategies': ['arbitrage', 'momentum', 'grid'],
+      'gasBufferUsd': 2, 'slippageBps': 10, 'agentFeeBps': 5, 'pollSec': 300,
+    },
+  },
 };
 
 List<Map<String, dynamic>> templateList() => kTemplates.entries

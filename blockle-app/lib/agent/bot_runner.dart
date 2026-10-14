@@ -445,6 +445,30 @@ class BotRunner {
           'paper': fill['paper'] == true,
         });
 
+        // UNIFORM SETTLEMENT STEP (the deal-engine exit/realize path, all lanes):
+        // a realized SELL realizes proceeds in the pair-native quote. If that is
+        // NOT the bot profit currency, convert the proceeds INTO it with ONE extra
+        // swap through the SAME value-moving gate; the realized-profit record then
+        // reports the FINAL settled currency. No route / blocked -> keep the native
+        // quote AND label realized.currency with the ACTUAL output (never lie).
+        if (order['side'] == 'sell') {
+          final settle = await _settleRealizedExit(
+            bot,
+            proceedsAsset: quote,
+            proceedsUc: (fill['proceedsUc'] as BigInt?) ?? BigInt.zero,
+            mainnet: ctxMainnet || bot.network == 'mainnet',
+            paper: fill['paper'] == true,
+          );
+          deal['realizedCurrency'] = settle['currency'];
+          ps['realizedCurrency'] = settle['currency'];
+          if (settle['settled'] == true) {
+            events.add({
+              'pair': pair, 'settlement': true, 'from': quote, 'to': settle['currency'],
+              'paper': settle['paper'] == true,
+            });
+          }
+        }
+
         if (deal['status'] == 'closed') {
           _bookClose(bot, ps, now);
           break;
@@ -657,6 +681,124 @@ class BotRunner {
     return 'blockle';
   }
 
+  // The bot's configured profit currency (the asset realized P&L settles INTO), or
+  // null when none is set (then the pair-native quote IS the realized currency and
+  // no settlement fires). Normalized upper-case.
+  String? _profitCurrency(b.Bot bot) {
+    final pc = bot.config['profitCurrency'];
+    if (pc is String && pc.trim().isNotEmpty) return pc.trim().toUpperCase();
+    return null;
+  }
+
+  // The OUTPUT asset of an intent IFF it is a realizing SELL/exit leg, else null
+  // (buys never settle). Reads the exit flag a scanner intent carries; for a plain
+  // strategy intent an exit is identified by the shared `:sell` tag convention.
+  String? _exitOutputAsset(dynamic it) {
+    bool isExit = false;
+    try {
+      if (it.exit == true) isExit = true;
+    } catch (_) {}
+    final tag = '${it.tag}';
+    if (!isExit && !RegExp(r':sell(:|$)').hasMatch(tag)) return null;
+    final tool = '${it.tool}';
+    final args = (it.args is Map) ? (it.args as Map) : const {};
+    if (tool == 'swap') {
+      final to = args['to'];
+      return to == null ? null : '$to'.toUpperCase();
+    }
+    if (tool == 'sell_block') return 'USDC';
+    if (tool == 'place_order' && '${args['side']}' == 'sell') {
+      final parts = '${args['market'] ?? ''}'.split('/');
+      if (parts.length == 2) return parts[1].toUpperCase();
+    }
+    return null;
+  }
+
+  // ===========================================================================
+  // THE UNIFORM SETTLEMENT STEP (docs/BLOCKLE-BOTS.md §6) — every lane, one place.
+  // A realized SELL/exit produces [proceedsUc] worth of [proceedsAsset]. When that
+  // asset != the bot profit currency AND a route exists, emit ONE additional swap
+  // (proceedsAsset -> profitCurrency) through the SAME value-moving dispatch the
+  // rest of the engine uses (allocation envelope, allowlist, mainnet gate, security
+  // pre-sign, the mandatory 0.05% fee). Returns {currency, settled, paper?}:
+  //   • settled:true,  currency = profitCurrency  — the proceeds were converted
+  //     (or paper-recorded in paper mode; PAPER NEVER broadcasts).
+  //   • settled:false, currency = proceedsAsset    — no settlement needed (already
+  //     the profit currency) OR NO route / blocked / rejected: the label reports
+  //     the ACTUAL output asset — it NEVER claims the profit currency it did not
+  //     reach (honesty over optimism; a price is never fabricated to force a hop).
+  Future<Map<String, dynamic>> _settleRealizedExit(
+    b.Bot bot, {
+    required String proceedsAsset,
+    required BigInt proceedsUc,
+    required bool mainnet,
+    required bool paper,
+  }) async {
+    final from = proceedsAsset.toUpperCase();
+    final pc = _profitCurrency(bot);
+    // No profit currency configured, already in it, or nothing realized -> the
+    // native quote IS the realized currency; skip the redundant hop.
+    if (pc == null || pc == from || proceedsUc <= BigInt.zero) {
+      return {'currency': from, 'settled': false};
+    }
+
+    // ROUTE CHECK: need a USD unit price for BOTH legs (stablecoins are $1). No
+    // price -> NO route: leave proceeds native, label the ACTUAL output, audit it.
+    final prices = await _prices([from, pc]);
+    final fromUc = _unitUc(prices, from);
+    final pcUc = _unitUc(prices, pc);
+    if (fromUc == null || pcUc == null) {
+      await _audit({
+        'type': 'bot_settle_skip', 'bot': bot.id, 'reason': 'no-route',
+        'from': from, 'to': pc, 'proceedsUc': proceedsUc.toString(),
+      });
+      return {'currency': from, 'settled': false, 'noRoute': true};
+    }
+
+    // The proceeds expressed in from-asset base units (what the swap spends).
+    final fromDec = b.decimalsFor(from, bot.config['decimals'] as Map<String, dynamic>?);
+    final amount = b.qtyForUsd(proceedsUc, fromUc, fromDec);
+    if (amount <= BigInt.zero) return {'currency': from, 'settled': false};
+
+    // PAPER / Arena: record the settlement, NEVER broadcast, NEVER touch the gate.
+    if (paper) {
+      await _audit({
+        'type': 'bot_settle', 'bot': bot.id, 'mode': 'paper',
+        'from': from, 'to': pc, 'amount': amount.toString(), 'proceedsUc': proceedsUc.toString(),
+      });
+      return {'currency': pc, 'settled': true, 'paper': true};
+    }
+
+    // --- mainnet gate (never skipped) ------------------------------------
+    if (mainnet && !mainnetEnabled) {
+      await _audit({'type': 'bot_settle_skip', 'bot': bot.id, 'reason': 'mainnet', 'from': from, 'to': pc});
+      return {'currency': from, 'settled': false};
+    }
+    // --- allowlist -------------------------------------------------------
+    if (!_allowed('swap')) {
+      await _audit({'type': 'bot_settle_skip', 'bot': bot.id, 'reason': 'not on allowlist', 'from': from, 'to': pc});
+      return {'currency': from, 'settled': false};
+    }
+
+    // Settlement converts proceeds (it does not spend fresh allocation, like every
+    // other sell); keep the auto-approve envelope at remaining allocation so it
+    // still clears the SAME one gate.
+    final remainingUc = b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
+    final r = await _dispatch(
+      bot,
+      'swap',
+      {'from': from, 'to': pc, 'amount': amount.toString(), 'venue': _venue(bot)},
+      remainingUc > BigInt.zero ? remainingUc : b.microUsd(bot.allocationUsd),
+    );
+    if (r['rejected'] == true || r['result'] == null) {
+      await _audit({'type': 'bot_settle_skip', 'bot': bot.id, 'reason': r['reason'] ?? 'rejected', 'from': from, 'to': pc});
+      return {'currency': from, 'settled': false};
+    }
+    await _audit({'type': 'bot_settle', 'bot': bot.id, 'from': from, 'to': pc, 'amount': amount.toString(), 'txid': r['txid']});
+    emit({'type': 'bot_settle', 'bot': bot.id, 'from': from, 'to': pc});
+    return {'currency': pc, 'settled': true, 'txid': r['txid']};
+  }
+
   // The ONE gate call: temporarily set policy.autoApproveUnderUsd = remaining
   // allocation so an order WITHIN allocation auto-approves through the SAME gate
   // the NL runner uses; restore it afterward so bot state never leaks out.
@@ -831,6 +973,24 @@ class BotRunner {
         if (r['rejected'] != true && r['result'] != null) {
           bot.state['committedUc'] = ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) + estUsdUc + feeUc;
           events.add({'tag': it.tag, 'executed': true});
+          // UNIFORM SETTLEMENT STEP — a realized exit (sell/take-profit) leg whose
+          // output is NOT the profit currency gets ONE extra settlement swap into
+          // it, through the SAME gate. The arbitrage exit already outputs the
+          // profit currency (ScanIntent.tagged rewrote `to`), so the redundant hop
+          // is skipped there. No route / blocked -> honest native currency label.
+          final outAsset = _exitOutputAsset(it);
+          if (outAsset != null) {
+            final settle = await _settleRealizedExit(
+              bot,
+              proceedsAsset: outAsset,
+              proceedsUc: estUsdUc,
+              mainnet: (it.mainnet as bool) || ctxMainnet,
+              paper: false,
+            );
+            if (settle['settled'] == true) {
+              events.add({'tag': it.tag, 'settlement': true, 'from': outAsset, 'to': settle['currency']});
+            }
+          }
         } else {
           events.add({'tag': it.tag, 'rejected': r['reason']});
         }
@@ -841,6 +1001,20 @@ class BotRunner {
         }
         await _audit({'type': 'bot_paper_intent', 'bot': bot.id, 'tag': it.tag, 'estUsd': est});
         events.add({'tag': it.tag, 'paper': true});
+        // PAPER: the settlement step is paper-recorded, NEVER broadcast.
+        final outAsset = _exitOutputAsset(it);
+        if (outAsset != null && est != null && est.isFinite && est > 0) {
+          final settle = await _settleRealizedExit(
+            bot,
+            proceedsAsset: outAsset,
+            proceedsUc: b.microUsd(est),
+            mainnet: (it.mainnet as bool) || ctxMainnet,
+            paper: true,
+          );
+          if (settle['settled'] == true) {
+            events.add({'tag': it.tag, 'settlement': true, 'paper': true, 'from': outAsset, 'to': settle['currency']});
+          }
+        }
       }
     }
     return events;

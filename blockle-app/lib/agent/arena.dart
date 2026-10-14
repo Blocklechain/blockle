@@ -327,6 +327,9 @@ class ArenaResult {
   final num score;
   final int dealCount;
   final int closedDealCount;
+  final int skippedTicks; // NO-DATA ticks skipped (live mode); 0 for the demo replay
+  final bool awaitingData; // true when there were no real marks to tick on yet
+  final bool live; // true for a LIVE-MARKET (play money) run, false for the fixture
   final String playLabel;
   final bool real;
   final String disclaimer;
@@ -351,6 +354,9 @@ class ArenaResult {
     required this.score,
     required this.dealCount,
     required this.closedDealCount,
+    this.skippedTicks = 0,
+    this.awaitingData = false,
+    this.live = false,
     required this.playLabel,
     required this.real,
     required this.disclaimer,
@@ -360,30 +366,68 @@ class ArenaResult {
   });
 }
 
-// Run a bot config over a price path. PURE: returns fills + equity curve + the
-// score inputs. opts['guard'] (spies) is accepted but NEVER called — Arena has no
-// gate/broadcast path, so any such spy stays at zero (asserted by tests).
-ArenaResult runScenario(Map<String, dynamic> opts) {
-  List<num>? prices = (opts['prices'] as List?)?.map((e) => e as num).toList();
-  if (prices == null && opts['vectors'] != null && opts['scenario'] != null) {
-    prices = pricePath(
-        (opts['vectors'] as Map).cast<String, dynamic>(), opts['scenario'] as String);
-  }
-  if (prices == null || prices.isEmpty) {
-    throw ArgumentError(
-        'arena.runScenario: need a price path (prices[] or vectors+scenario)');
-  }
+// A real, positive mark? (null/NaN/<=0 means NO DATA — never fabricate a price.)
+bool _validMark(dynamic p) {
+  if (p == null) return false;
+  final n = p is num ? p : num.tryParse('$p');
+  return n != null && n.isFinite && n > 0;
+}
 
+// Drive the PURE deal engine over a price path. SHARED by both arena modes:
+//   • DEMO SCENARIO (runScenario): the deterministic fixture replay — the
+//     cross-wallet parity/test contract (docs/arena-vectors.json). Every price is
+//     valid, so NOTHING is skipped and the numbers are byte-identical to before.
+//   • LIVE MARKET (runLive): the SAME engine ticked on REAL marks (play money).
+//     A tick with NO DATA (null/NaN/<=0) is SKIPPED ("awaiting data") — never a
+//     fabricated price. Play money only: there is no gate/broadcast path here, so
+//     opts['guard'] spies (if poisoned) stay at zero (asserted by tests).
+// PURE either way: returns fills + equity curve + the score inputs.
+ArenaResult _runPath(Map<String, dynamic> opts, List<dynamic> pricesRaw, bool isLive) {
   final r = resolveBot(opts['bot'] ?? opts);
   final type = r.type, cfg = r.cfg, bcfg = r.bcfg, bd = r.bd;
 
-  final midUc = microUsd(prices[0]);
+  // anchor the sim on the FIRST real mark (never fabricated). With no real mark
+  // at all, the strategy is simply awaiting data — a zeroed, no-trade result.
+  num? firstValid;
+  for (final p in pricesRaw) {
+    if (_validMark(p)) {
+      firstValid = p is num ? p : num.parse('$p');
+      break;
+    }
+  }
+  if (firstValid == null) {
+    return ArenaResult(
+      type: type,
+      pair: r.pair,
+      decimals: bd,
+      fills: const [],
+      equityCurveUc: const [],
+      finalPnlUc: BigInt.zero,
+      maxDrawdownUc: BigInt.zero,
+      maxCostBasisUc: BigInt.zero,
+      retTenthPct: BigInt.zero,
+      ddTenthPct: BigInt.zero,
+      scoreTenths: BigInt.zero,
+      score: 0,
+      dealCount: 0,
+      closedDealCount: 0,
+      skippedTicks: pricesRaw.length,
+      awaitingData: true,
+      live: isLive,
+      playLabel: kPlayLabel,
+      real: false,
+      disclaimer: kDisclaimer,
+    );
+  }
+
+  final midUc = microUsd(firstValid);
   var dealSeq = 0;
   Map<String, dynamic>? current =
       _newDeal(type, 'arena:$type:${++dealSeq}', cfg, midUc, bd, 0);
   final closedDeals = <Map<String, dynamic>>[];
   final fills = <Map<String, dynamic>>[];
   final equityCurveUc = <BigInt>[];
+  var skippedTicks = 0;
 
   var realizedClosedUc = BigInt.zero; // sum of realized from CLOSED deals
   var maxCostBasisUc = BigInt.zero; // peak cost deployed (held-inventory basis)
@@ -398,8 +442,14 @@ ArenaResult runScenario(Map<String, dynamic> opts) {
       : double.infinity;
   final reopen = (type == 'dca' || type == 'smarttrade'); // grid is one deal
 
-  for (var ti = 0; ti < prices.length; ti++) {
-    final markUc = microUsd(prices[ti]);
+  for (var ti = 0; ti < pricesRaw.length; ti++) {
+    if (!_validMark(pricesRaw[ti])) {
+      skippedTicks++; // NO DATA — skip, never fabricate
+      continue;
+    }
+    final markUc = microUsd(pricesRaw[ti] is num
+        ? pricesRaw[ti] as num
+        : num.parse('${pricesRaw[ti]}'));
     final now = ti + 1; // synthetic monotonic sim clock (NOT wall time)
 
     if (current == null && reopen && dealSeq < maxDeals) {
@@ -482,10 +532,44 @@ ArenaResult runScenario(Map<String, dynamic> opts) {
     score: sc.score,
     dealCount: closedDeals.length + ((current != null && current['status'] != 'closed') ? 1 : 0),
     closedDealCount: closedDeals.length,
+    skippedTicks: skippedTicks,
+    awaitingData: equityCurveUc.isEmpty,
+    live: isLive,
     playLabel: kPlayLabel,
     real: false,
     disclaimer: kDisclaimer,
   );
+}
+
+// DEMO SCENARIO (fixed fixture) — the deterministic parity/test contract. A price
+// path is REQUIRED (prices[] or vectors+scenario); every point is valid. PURE:
+// returns fills + equity curve + the score inputs. opts['guard'] (spies) is
+// accepted but NEVER called — Arena has no gate/broadcast path.
+ArenaResult runScenario(Map<String, dynamic> opts) {
+  List<num>? prices = (opts['prices'] as List?)?.map((e) => e as num).toList();
+  if (prices == null && opts['vectors'] != null && opts['scenario'] != null) {
+    prices = pricePath(
+        (opts['vectors'] as Map).cast<String, dynamic>(), opts['scenario'] as String);
+  }
+  if (prices == null || prices.isEmpty) {
+    throw ArgumentError(
+        'arena.runScenario: need a price path (prices[] or vectors+scenario)');
+  }
+  return _runPath(opts, prices, false);
+}
+
+// LIVE MARKET (play money) — tick the SAME strategy on REAL marks fed by the UI
+// from ctx.prices (the exchange/venue marks the live bots + scanner use). PLAY
+// balances only: there is no gate/broadcast/real-funds path here (zero real value,
+// so no gate is needed). A mark that is absent is SKIPPED ("awaiting data") — a
+// price is NEVER fabricated. opts['marks']: an array of real marks (null/NaN/<=0
+// where a market had no data).
+ArenaResult runLive(Map<String, dynamic> opts) {
+  final marks = (opts['marks'] ?? opts['prices']);
+  if (marks is! List) {
+    throw ArgumentError('arena.runLive: need injected real marks[] (play money)');
+  }
+  return _runPath(opts, marks, true);
 }
 
 // ===========================================================================

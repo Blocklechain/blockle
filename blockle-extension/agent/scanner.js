@@ -64,11 +64,24 @@
     maxConcurrentPairs: 3,
     perTradeUsd: 20,
     allocationUsd: 0,
+    // PROFIT CURRENCY — the settlement/quote asset the autopilot realizes profit
+    // INTO, denominates P&L in, and routes take-profit exits to. Default USDC. In
+    // AI-chooses-pairs mode the user picks it; in manual mode it derives from the
+    // chosen pair's quote. Scoring is unchanged (already USD-normalized); this names
+    // the asset the realized profit settles to.
+    profitCurrency: 'USDC',
     strategies: ['arbitrage', 'momentum', 'grid'],
     // cost model (mirrors strategies.arbitrage defaults + floors)
     gasBufferUsd: 2,
     slippageBps: 10,
     agentFeeBps: 5,
+    // SETTLEMENT LEG — the EXTRA venue fee charged when the take-profit exit must
+    // convert the pair's native quote INTO the profit currency (quote != profit
+    // currency). Added to the 0.05% agent leg + slippage for the settlement hop and
+    // folded into the net edge so a pair only profitable in its native quote is
+    // correctly skipped. Zero (no extra hop) when the quote already IS the profit
+    // currency. A conservative DEX pool fee by default.
+    settlementFeeBps: 30,
     // momentum + grid sizing
     momentumShortN: 10,
     momentumLongN: 30,
@@ -112,6 +125,7 @@
     // can never price a loss-maker as a winner by configuring them below reality.
     p.slippageBps = Math.max(5, Math.trunc(num(p.slippageBps, 10)));
     p.agentFeeBps = Math.max(5, Math.trunc(num(p.agentFeeBps, 5)));
+    p.settlementFeeBps = Math.max(0, Math.trunc(num(p.settlementFeeBps, 30)));
     p.momentumShortN = Math.max(1, Math.trunc(num(p.momentumShortN, 10)));
     p.momentumLongN = Math.max(2, Math.trunc(num(p.momentumLongN, 30)));
     if (p.momentumShortN >= p.momentumLongN) p.momentumShortN = Math.max(1, p.momentumLongN - 1);
@@ -120,6 +134,8 @@
     p.liquidityNorm = Math.max(1, num(p.liquidityNorm, 100000));
     p.volPenaltyK = Math.max(0, num(p.volPenaltyK, 2.0));
     p.flagPenalty = Math.max(0, num(p.flagPenalty, 0.25));
+    p.profitCurrency = (typeof p.profitCurrency === 'string' && p.profitCurrency.trim())
+      ? p.profitCurrency.trim().toUpperCase() : 'USDC';
     p.strategies = Array.isArray(p.strategies) && p.strategies.length ? p.strategies.map(lc) : DEFAULTS.strategies.slice();
     p.rejectFlags = Array.isArray(p.rejectFlags) ? p.rejectFlags.map(lc) : DEFAULTS.rejectFlags.slice();
     p.maxCandidates = Math.max(1, Math.trunc(num(p.maxCandidates, 50)));
@@ -215,6 +231,26 @@
     if (!evals.length) {
       return { pair: c.pair, chain: c.chain || null, strategy: null, edgeBps: 0, score: 0, reason: 'no-signal', flags, eval: null };
     }
+
+    // SETTLEMENT INTO THE PROFIT CURRENCY. When the profit currency differs from
+    // the pair's native quote, the take-profit exit must convert quote -> profit
+    // currency: an extra venue hop (settlementFeeBps) + a 0.05% agent leg +
+    // slippage. That cost is folded into the net edge BELOW so a pair that is only
+    // profitable in its native quote is correctly NOT traded. NEVER fabricate a
+    // route: if the profit currency has no price/route for this candidate, skip it
+    // (audited as 'no-route') rather than inventing a conversion price.
+    const pc = cfg.profitCurrency;
+    let quote = null;
+    try { quote = S.splitPair(c.pair)[1]; } catch (_) { quote = null; }
+    let settleBps = 0;
+    if (quote && pc && pc !== quote) {
+      const routable = (STABLE_USD[pc] != null) || (c.prices && num(c.prices[pc], NaN) > 0);
+      if (!routable) {
+        return { pair: c.pair, chain: c.chain || null, strategy: null, edgeBps: 0, score: 0, reason: 'no-route', flags, eval: null };
+      }
+      settleBps = cfg.settlementFeeBps + cfg.agentFeeBps + cfg.slippageBps;
+    }
+
     // winning strategy = highest net edge (stable: first-listed wins a tie)
     let best = evals[0];
     for (const e of evals) if (e.edgeBps > best.edgeBps) best = e;
@@ -224,7 +260,9 @@
     const Vf = 1 / (1 + cfg.volPenaltyK * coeffVar(c.history));
     const nSoft = flags.length; // soft flags (hard rejects already returned above)
     const Ff = Math.max(0, 1 - cfg.flagPenalty * nSoft);
-    const rawEdge = best.edgeBps;
+    // net edge is the winning strategy's edge LESS the settlement leg cost (0 when
+    // the native quote already IS the profit currency — a direct sell, no hop).
+    const rawEdge = best.edgeBps - settleBps;
     const score = round6(Math.max(0, rawEdge) * Lf * Vf * Ff);
 
     let reason;
@@ -313,6 +351,15 @@
     const hasAllocationCap = allocationUsd > 0;
     let remainingUsd = hasAllocationCap ? Math.max(0, allocationUsd - committedUsd) : Infinity;
     const mainnet = !!opts.mainnet;
+    const profitCurrency = cfg.profitCurrency;
+    // USD value of one unit of the profit currency (for denominating realized P&L
+    // in it). Stablecoins are $1; otherwise use a candidate-provided price; fall
+    // back to $1 (NEVER fabricated into a trade — this only labels the P&L unit).
+    function profitCurUsd(c) {
+      if (STABLE_USD[profitCurrency] != null) return STABLE_USD[profitCurrency];
+      const p = c && c.prices && num(c.prices[profitCurrency], NaN);
+      return (p > 0) ? p : 1;
+    }
 
     const decisions = [];
     const allIntents = [];
@@ -333,9 +380,33 @@
       if (hasAllocationCap && costUsd > remainingUsd + 1e-9) { decisions.push(trim(row, 'allocation')); continue; }
       remainingUsd -= costUsd;
       picked += 1;
-      const tagged = intents.map((it) => Object.assign({}, it, { scannerPair: row.pair, scannerScore: row.score, scannerStrategy: row.strategy }));
+      // Realized P&L denominated in the PROFIT CURRENCY: expected net profit =
+      // executed notional * net-edge; converted to profit-currency units. Exits
+      // (sell / take-profit legs) route their proceeds INTO the profit currency.
+      const notionalUsd = (row.eval && isFinite(row.eval.execUsd)) ? row.eval.execUsd : cfg.perTradeUsd;
+      const profitUsd = round6(notionalUsd * (row.edgeBps / 10000));
+      const pcUsd = profitCurUsd(row.candidate);
+      const realized = { currency: profitCurrency, profitUsd, profit: round6(profitUsd / pcUsd) };
+      const tagged = intents.map((it) => {
+        const isExit = /:sell$/.test(String(it.tag || ''));  // the take-profit / realize leg
+        // EXIT ROUTING (REAL, not a label): the take-profit leg's OUTPUT asset is
+        // the profit currency. If the pair's native quote already IS the profit
+        // currency this is a no-op direct sell; otherwise the output asset changes
+        // and the venue layer resolves the extra hop (quote -> profit currency).
+        // The pop-up + P&L read this ACTUAL output, so they stay consistent.
+        let args = it.args;
+        if (isExit && it.tool === 'swap' && args && args.to && String(args.to).toUpperCase() !== profitCurrency) {
+          args = Object.assign({}, args, { to: profitCurrency });
+        }
+        return Object.assign({}, it, {
+          args,
+          scannerPair: row.pair, scannerScore: row.score, scannerStrategy: row.strategy,
+          settleTo: profitCurrency,
+          exit: isExit,
+        });
+      });
       for (const it of tagged) allIntents.push(it);
-      decisions.push(Object.assign(trim(row, 'worthy'), { traded: true, intents: tagged, costUsd: Math.round(costUsd * 1e6) / 1e6 }));
+      decisions.push(Object.assign(trim(row, 'worthy'), { traded: true, intents: tagged, costUsd: Math.round(costUsd * 1e6) / 1e6, realized: realized }));
     }
 
     return {
@@ -346,6 +417,7 @@
       allocationUsd: hasAllocationCap ? allocationUsd : null,
       committedUsd, remainingUsd: hasAllocationCap ? Math.max(0, Math.round(remainingUsd * 1e6) / 1e6) : null,
       minProfitBps: cfg.minProfitBps, maxConcurrentPairs: cfg.maxConcurrentPairs,
+      profitCurrency: profitCurrency,  // the settlement/quote asset P&L realizes INTO
     };
   }
 

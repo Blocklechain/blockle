@@ -339,7 +339,11 @@
           if (!fill) break; // skipped/blocked/declined — stop this pair's cascade this tick
           fill.bd = bd;
           this._engineApply(type, ps.deal, bcfg, cfg, order, fill, now);
-          events.push({ pair, action: order.kind, side: order.side, qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper });
+          const ev = { pair, action: order.kind, side: order.side, qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper };
+          // a realized exit carries its FINAL settled currency (profitCurrency when
+          // settled; the native quote when there is no route — never a false label).
+          if (fill.side === 'sell' && fill.settledCurrency) { ev.settledCurrency = fill.settledCurrency; ev.realized = { currency: fill.settledCurrency }; }
+          events.push(ev);
 
           if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now); break; }
         }
@@ -473,9 +477,16 @@
       if (mainnet && !this.mainnetEnabled) { await this._audit({ type: 'bot_skip', bot: bot.id, reason: 'mainnet' }); return null; }
       if (!this.policy.isAllowed(toolName)) { await this._audit({ type: 'bot_blocked', bot: bot.id, tool: toolName, reason: 'not on allowlist' }); return null; }
 
+      // proceeds land in the pair's native quote; the UNIFORM settlement step then
+      // converts them into the bot's profitCurrency (skipped when quote===pc / no
+      // route). quote base units = proceeds priced in the quote asset.
+      const quoteUnitUc = m.quoteUc != null ? m.quoteUc : B.microUsd(1);
+      const proceedsQuoteUnits = B.qtyForUsd(proceedsUc, quoteUnitUc, m.quoteDec);
+
       if (bot.mode === 'paper') {
         await this._audit({ type: 'bot_paper_fill', bot: bot.id, side: 'sell', kind: order.kind, pair: m.base + '/' + m.quote, qty: qty.toString(), priceUc: execPriceUc.toString(), proceedsUc: proceedsUc.toString() });
-        return { side: 'sell', qty, priceUc: execPriceUc, proceedsUc, paper: true };
+        const st = await this._settleToProfitCurrency(bot, { fromAsset: m.quote, amount: proceedsQuoteUnits, mainnet, remainingUc: null });
+        return { side: 'sell', qty, priceUc: execPriceUc, proceedsUc, paper: true, settledCurrency: st.currency };
       }
       const args = (toolName === 'place_order')
         ? { market: m.base + '/' + m.quote, side: 'sell', type: 'limit', amount: qty.toString(), price: B.ucToUsd(order._levelPriceUc || markUc) }
@@ -483,10 +494,14 @@
       // sells do not consume allocation; keep the auto-approve envelope at remaining
       // allocation so the sell still auto-approves within the same ONE gate.
       const remainingUc = B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n);
-      const r = await this._dispatch(bot, toolName, args, remainingUc > 0n ? remainingUc : B.microUsd(bot.allocationUsd));
+      const envelope = remainingUc > 0n ? remainingUc : B.microUsd(bot.allocationUsd);
+      const r = await this._dispatch(bot, toolName, args, envelope);
       if (!r || r.rejected || !r.result) { await this._audit({ type: 'bot_order_rejected', bot: bot.id, reason: r && r.reason }); return null; }
       const outQty = r.result && r.result.amountOut != null ? qty : qty;
-      return { side: 'sell', qty: outQty, priceUc: execPriceUc, proceedsUc, txid: r.txid, orderId: r.result && r.result.orderId };
+      // UNIFORM SETTLEMENT: realize proceeds into the profitCurrency (ONE extra
+      // gated swap; skipped when already the profit currency or no route exists).
+      const st = await this._settleToProfitCurrency(bot, { fromAsset: m.quote, amount: proceedsQuoteUnits, mainnet, remainingUc: envelope });
+      return { side: 'sell', qty: outQty, priceUc: execPriceUc, proceedsUc, txid: r.txid, orderId: r.result && r.result.orderId, settledCurrency: st.currency };
     }
 
     // The ONE gate call: temporarily set policy.autoApproveUnderUsd = remaining
@@ -507,6 +522,100 @@
       } finally {
         this.policy.autoApproveUnderUsd = prevAuto;
       }
+    }
+
+    // ===========================================================================
+    // UNIFORM PROFIT-CURRENCY SETTLEMENT (deal-engine exit/realize path, §8).
+    // ---------------------------------------------------------------------------
+    // Every lane realizes into the bot's profitCurrency through ONE place, not
+    // per-strategy. After ANY realized SELL/exit (arb, momentum/take-profit, grid
+    // sell) whose proceeds land in an asset != profitCurrency, emit ONE additional
+    // SETTLEMENT swap (proceeds -> profitCurrency) dispatched through the SAME one
+    // value-moving gate (allocation envelope, allowlist, security pre-sign, 0.05%
+    // fee, mainnet gate). The realized-profit record + the pop-up then report the
+    // FINAL settled currency. HONESTY OVER OPTIMISM: with no route (or the venue
+    // rejects it) proceeds STAY in the native output and the returned currency is
+    // the ACTUAL output — the label NEVER lies. The arb path already outputs the
+    // profitCurrency, so the redundant hop is skipped (fromAsset === profitCurrency).
+    // PAPER records the settlement but NEVER broadcasts. The scanner net-edge
+    // already prices this leg — this is the realize-side execution of it.
+    // ===========================================================================
+    _profitCurrency(bot) {
+      const pc = bot && bot.config && bot.config.profitCurrency;
+      return (typeof pc === 'string' && pc.trim()) ? pc.trim().toUpperCase() : null;
+    }
+
+    // Does a route from `from` -> `to` exist? Injectable (tests/venue layer); the
+    // default assumes the venue resolves the hop (the SAME assumption the scanner's
+    // net-edge leg makes). A thrown/false result => NO route (we never fabricate).
+    async _settlementRoute(from, to) {
+      if (this.ctx && typeof this.ctx.settlementRoute === 'function') {
+        try { return !!(await this.ctx.settlementRoute(from, to)); } catch (_) { return false; }
+      }
+      return true;
+    }
+
+    // Convert realized proceeds into the bot's profitCurrency with ONE gated swap.
+    // `s = { fromAsset, amount(BigInt base units), mainnet, remainingUc }`.
+    // Returns { currency, settled, paper? } — currency is the FINAL settled asset
+    // (profitCurrency on success; the ACTUAL native `fromAsset` on skip/no-route).
+    async _settleToProfitCurrency(bot, s) {
+      const B = this.Bots;
+      const fromAsset = String(s.fromAsset || '').toUpperCase();
+      const pc = this._profitCurrency(bot);
+      // no profit currency chosen, or proceeds already ARE it -> no extra hop.
+      if (!pc || !fromAsset || fromAsset === pc) return { currency: fromAsset || pc, settled: false };
+      // REAL route check — never claim a conversion that cannot execute.
+      const routable = await this._settlementRoute(fromAsset, pc);
+      if (!routable || !s.amount || s.amount <= 0n) {
+        await this._audit({ type: 'bot_settlement_skip', bot: bot.id, from: fromAsset, to: pc, reason: routable ? 'size' : 'no-route' });
+        return { currency: fromAsset, settled: false, noRoute: !routable };
+      }
+      // mainnet gate + allowlist are NEVER skipped (same as every value move).
+      if (s.mainnet && !this.mainnetEnabled) { await this._audit({ type: 'bot_settlement_skip', bot: bot.id, from: fromAsset, to: pc, reason: 'mainnet' }); return { currency: fromAsset, settled: false }; }
+      if (!this.policy.isAllowed('swap')) { await this._audit({ type: 'bot_settlement_skip', bot: bot.id, from: fromAsset, to: pc, reason: 'allowlist' }); return { currency: fromAsset, settled: false }; }
+
+      if (bot.mode === 'paper') {
+        // PAPER: recorded, NEVER broadcast, NEVER consumes allocation.
+        await this._audit({ type: 'bot_settlement', bot: bot.id, mode: 'paper', from: fromAsset, to: pc, amount: s.amount.toString() });
+        return { currency: pc, settled: true, paper: true };
+      }
+      // LIVE: the ONE value-moving dispatch. A settlement is a realize-side move,
+      // so (like every sell) it does not consume allocation; keep the auto-approve
+      // envelope at remaining allocation so it clears the SAME gate.
+      const envelope = (s.remainingUc != null && s.remainingUc > 0n) ? s.remainingUc : B.microUsd(bot.allocationUsd);
+      const args = { from: fromAsset, to: pc, amount: s.amount.toString(), venue: (bot.venuePrefs && bot.venuePrefs.venue) || 'blockle' };
+      const r = await this._dispatch(bot, 'swap', args, envelope);
+      if (!r || r.rejected || !r.result) {
+        // the venue could not settle — honesty over optimism: keep native proceeds.
+        await this._audit({ type: 'bot_settlement_skip', bot: bot.id, from: fromAsset, to: pc, reason: 'rejected' });
+        return { currency: fromAsset, settled: false, noRoute: true };
+      }
+      await this._audit({ type: 'bot_settlement', bot: bot.id, mode: 'live', from: fromAsset, to: pc, amount: s.amount.toString(), txid: r.txid });
+      return { currency: pc, settled: true, txid: r.txid };
+    }
+
+    // Settlement for an Intent-dispatched EXIT leg (momentum take-profit / scanner
+    // arb sell). Only EXIT legs settle: a buy never does. The scanner already
+    // rewrote the arb sell's OUTPUT to the profitCurrency, so fromAsset===pc there
+    // and the redundant hop is skipped. Returns the realized currency or null when
+    // the Intent is not an exit.
+    async _maybeSettleIntent(bot, it, remainingUc) {
+      const B = this.Bots;
+      const isExit = it.exit === true || /:sell$/i.test(String(it.tag || ''));
+      if (!isExit) return null;
+      const fromAsset = (it.args && it.args.to) ? String(it.args.to).toUpperCase() : null;
+      if (!fromAsset) return null;
+      const pc = this._profitCurrency(bot);
+      if (!pc || fromAsset === pc) return { currency: fromAsset, settled: false }; // no hop / redundant hop skipped
+      // size the settlement from the exit's own USD estimate, priced in the
+      // proceeds asset (no synthetic price: unknown price => treated as no route).
+      const prices = await this._prices([fromAsset, pc]);
+      const unitUc = this._unitUc(prices, fromAsset);
+      const estUc = (Number.isFinite(it.estUsd) && it.estUsd > 0) ? B.microUsd(it.estUsd) : null;
+      const amount = (unitUc && estUc) ? B.qtyForUsd(estUc, unitUc, B.decimalsFor(fromAsset)) : null;
+      const ctxMainnet = this._ctxMainnet();
+      return this._settleToProfitCurrency(bot, { fromAsset, amount, mainnet: (it.mainnet || ctxMainnet), remainingUc });
     }
 
     // ---- signal bot (§2.4) --------------------------------------------------
@@ -601,12 +710,22 @@
           if ((it.mainnet || ctxMainnet) && !this.mainnetEnabled) { await this._audit({ type: 'bot_skip', bot: bot.id, reason: 'mainnet', tag: it.tag }); events.push({ tag: it.tag, skipped: 'mainnet' }); continue; }
           if (!this.policy.isAllowed(it.tool)) { await this._audit({ type: 'bot_blocked', bot: bot.id, tool: it.tool }); events.push({ tag: it.tag, blocked: true }); continue; }
           const r = await this._dispatch(bot, it.tool, it.args, remainingUc);
-          if (r && r.result) { bot.state.committedUc = (bot.state.committedUc || 0n) + estUsdUc + feeUc; events.push({ tag: it.tag, executed: true }); }
-          else events.push({ tag: it.tag, rejected: r && r.reason });
+          if (r && r.result) {
+            bot.state.committedUc = (bot.state.committedUc || 0n) + estUsdUc + feeUc;
+            const ev = { tag: it.tag, executed: true };
+            // UNIFORM SETTLEMENT: an executed EXIT leg realizes into the profitCurrency
+            // (ONE extra gated swap; skipped for the arb sell whose output already IS it).
+            const st = await this._maybeSettleIntent(bot, it, remainingUc);
+            if (st) { ev.settledCurrency = st.currency; ev.realized = { currency: st.currency }; }
+            events.push(ev);
+          } else events.push({ tag: it.tag, rejected: r && r.reason });
         } else {
           if ((it.mainnet || ctxMainnet) && !this.mainnetEnabled) { events.push({ tag: it.tag, skipped: 'mainnet' }); continue; }
           await this._audit({ type: 'bot_paper_intent', bot: bot.id, tag: it.tag, estUsd: it.estUsd });
-          events.push({ tag: it.tag, paper: true });
+          const ev = { tag: it.tag, paper: true };
+          const st = await this._maybeSettleIntent(bot, it, null); // PAPER: records, never broadcasts
+          if (st) { ev.settledCurrency = st.currency; ev.realized = { currency: st.currency }; }
+          events.push(ev);
         }
       }
       return events;
@@ -641,6 +760,7 @@
         at: now, candidates: result.candidates, worthy: result.worthy.map((w) => w.pair),
         skipped: result.skipped, minProfitBps: result.minProfitBps,
         allocationUsd: result.allocationUsd, committedUsd, remainingUsd: result.remainingUsd,
+        profitCurrency: result.profitCurrency,
       };
       return { bot: bot.id, type: 'scanner', scan: bot.state.lastScan, events };
     }

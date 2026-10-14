@@ -523,3 +523,191 @@ def test_kill_all_stops_scheduler_and_disables_every_bot():
         return rep.get("skipped") == "disabled" or rep.get("killed") is True
 
     run(main())
+
+
+# =========================================================================== #
+# UNIFORM SETTLEMENT STEP (every lane honors profitCurrency in the exit path)  #
+#                                                                              #
+# A realized SELL/exit lands proceeds in the pair's native quote. When that    #
+# != the bot profitCurrency the deal-engine exit path emits ONE additional     #
+# gated settlement swap converting the proceeds INTO the profitCurrency (same  #
+# allocation envelope / allowlist / 0.05% fee / mainnet gate). HONESTY: no      #
+# route => leave native + report the ACTUAL output; output already == pc =>     #
+# skip the redundant hop; PAPER records but NEVER broadcasts.                   #
+# =========================================================================== #
+def _mark_ctx(mark_holder, extra_prices=None):
+    """A ctx whose marks are driven by a mutable holder (so grid fills are
+    deterministic even though the settlement step fetches prices again)."""
+    base_prices = {"USDC": 1, "DAI": 1}
+    base_prices.update(extra_prices or {})
+
+    async def prices(symbols=None):
+        return dict(base_prices, BLOCK=mark_holder["m"])
+
+    return {"now": lambda: 0, "network": lambda: "testnet", "prices": prices}
+
+
+def _run_grid_to_a_sell(profit_currency, extra_prices=None, confirm=None):
+    """Arm a live grid BLOCK/USDC bot and tick it through a buy then a sell level.
+    Returns (S, bot, report_of_sell_tick)."""
+    mark = {"m": 1.0}
+    ctx = _mark_ctx(mark, extra_prices)
+    S = setup({"ctx": ctx, "sessionUsd": 1000, "confirm": confirm or (lambda _s: _yes())})
+    runner = S["runner"]
+    spec = {"type": "grid", "universe": {"pairs": ["BLOCK/USDC"]},
+            "config": {"lowerPrice": 0.9, "upperPrice": 1.1, "gridCount": 4, "totalUsd": 40}}
+    if profit_currency is not None:
+        spec["profitCurrency"] = profit_currency
+    bot = runner.add(spec)
+    run(runner.arm_live(bot.id, {"allocationUsd": 200}))
+    run(runner.tick_bot(bot.id))     # seed the grid at mid=1.0 (no fills)
+    mark["m"] = 0.95
+    run(runner.tick_bot(bot.id))     # a buy level fills
+    mark["m"] = 1.05
+    rep = run(runner.tick_bot(bot.id))  # a sell level fills -> realize in USDC
+    return S, bot, rep
+
+
+async def _yes():
+    return True
+
+
+def _swaps(state, to=None):
+    return [c for c in state["committed"] if c["name"] == "swap" and (to is None or c["args"].get("to") == to)]
+
+
+def _sell_events(rep):
+    return [e for e in (rep.get("events") or []) if e.get("side") == "sell"]
+
+
+def test_grid_sell_settles_proceeds_into_profit_currency_live():
+    S, bot, rep = _run_grid_to_a_sell("DAI")
+    state, audit = S["state"], S["audit"]
+    assert bot.profit_currency == "DAI"
+    assert _sell_events(rep), "a grid sell level actually fired this tick"
+
+    # ONE additional settlement swap, native quote (USDC) -> profitCurrency (DAI),
+    # committed through the SAME gate (it broadcast: not paper).
+    settle = _swaps(state, to="DAI")
+    assert len(settle) >= 1, "the realized grid sell settles its USDC proceeds into DAI"
+    assert all(c["args"].get("from") == "USDC" for c in settle)
+    assert any(e.get("type") == "bot_settlement" and e.get("to") == "DAI" and not e.get("paper")
+               for e in audit.list())
+    # the realized record reports the FINAL settled currency = profitCurrency.
+    assert all(e.get("settleCurrency") == "DAI" and e.get("settled") for e in _sell_events(rep))
+
+
+def test_grid_sell_skips_redundant_hop_when_quote_is_profit_currency():
+    # profitCurrency == the native quote (USDC): the sell IS the realize leg, so
+    # NO extra settlement swap is emitted (the arb-parity "already settled" case).
+    S, bot, rep = _run_grid_to_a_sell("USDC")
+    state, audit = S["state"], S["audit"]
+    assert _sell_events(rep)
+    assert _swaps(state) == [], "no redundant settlement hop when output already == profitCurrency"
+    assert not any(e.get("type") == "bot_settlement" for e in audit.list())
+    assert all(e.get("settleCurrency") == "USDC" for e in _sell_events(rep))
+
+
+def test_grid_sell_no_route_keeps_native_currency_honest():
+    # No priceable route to the profit currency (WBTC is not a stablecoin and no
+    # quote is provided): DO NOT fabricate. Leave proceeds in USDC and report the
+    # ACTUAL output as the realized currency — the label never lies.
+    S, bot, rep = _run_grid_to_a_sell("WBTC")  # no WBTC price in ctx
+    state, audit = S["state"], S["audit"]
+    assert _sell_events(rep)
+    assert _swaps(state, to="WBTC") == [], "never a fabricated hop into an unroutable currency"
+    assert any(e.get("type") == "bot_settle_skip" and e.get("reason") == "no-route"
+               for e in audit.list())
+    assert all(e.get("settleCurrency") == "USDC" and not e.get("settled") for e in _sell_events(rep))
+
+
+def test_grid_paper_settlement_records_but_never_broadcasts():
+    mark = {"m": 1.0}
+    ctx = _mark_ctx(mark)
+    S = setup({"ctx": ctx, "sessionUsd": 1000})
+    runner, state, audit = S["runner"], S["state"], S["audit"]
+    bot = runner.add({"type": "grid", "universe": {"pairs": ["BLOCK/USDC"]}, "profitCurrency": "DAI",
+                      "config": {"lowerPrice": 0.9, "upperPrice": 1.1, "gridCount": 4, "totalUsd": 40}})
+    bot.mode = "paper"
+    bot.enabled = True
+    run(runner.tick_bot(bot.id))
+    mark["m"] = 0.95
+    run(runner.tick_bot(bot.id))
+    mark["m"] = 1.05
+    rep = run(runner.tick_bot(bot.id))
+
+    assert state["commits"] == 0, "PAPER never broadcasts — not even the settlement"
+    assert any(e.get("type") == "bot_settlement" and e.get("paper") is True for e in audit.list())
+    assert all(e.get("settleCurrency") == "DAI" for e in _sell_events(rep))
+
+
+# ---- momentum (scheduled) exit lane: proceeds settle through _dispatch_intents --
+class _FakeSellStrat:
+    """A momentum strategy whose plan emits ONE take-profit (death-cross) SELL exit
+    leg landing proceeds in the native quote (USDC)."""
+    def validate_params(self, cfg):
+        return dict(cfg)
+
+    async def plan(self, ctx, params):
+        return [{"tool": "swap", "args": {"from": "BLOCK", "to": "USDC", "amount": "5"},
+                 "tag": "mom:BLOCK/USDC:sell", "estUsd": 20, "mainnet": False}]
+
+
+class _FakeSellStrategies:
+    def default_registry(self):
+        class _Reg:
+            def get(self, _type):
+                return _FakeSellStrat()
+        return _Reg()
+
+
+def _momentum_bot(runner, profit_currency):
+    return runner.add({"type": "momentum", "universe": {"pairs": ["BLOCK/USDC"]},
+                       "profitCurrency": profit_currency, "config": {}})
+
+
+def test_momentum_exit_settles_proceeds_into_profit_currency_live():
+    S = setup({"ctx": mk_ctx([100]), "sessionUsd": 1000, "confirm": lambda _s: _yes()})
+    runner, state, audit = S["runner"], S["state"], S["audit"]
+    runner.Strategies = _FakeSellStrategies()
+    bot = _momentum_bot(runner, "DAI")
+    run(runner.arm_live(bot.id, {"allocationUsd": 100}))
+
+    rep = run(runner.tick_bot(bot.id))
+    # the exit leg executed, then ONE settlement swap USDC -> DAI committed.
+    assert any(e.get("tag") == "mom:BLOCK/USDC:sell" and e.get("executed") for e in rep["events"])
+    settle = _swaps(state, to="DAI")
+    assert len(settle) == 1 and settle[0]["args"]["from"] == "USDC"
+    assert any(e.get("type") == "bot_settlement" and e.get("to") == "DAI" and not e.get("paper")
+               for e in audit.list())
+    ev = next(e for e in rep["events"] if e.get("tag") == "mom:BLOCK/USDC:sell")
+    assert ev["settleCurrency"] == "DAI" and ev["settled"]
+
+
+def test_momentum_exit_no_route_keeps_native_currency():
+    S = setup({"ctx": mk_ctx([100]), "sessionUsd": 1000, "confirm": lambda _s: _yes()})
+    runner, state, audit = S["runner"], S["state"], S["audit"]
+    runner.Strategies = _FakeSellStrategies()
+    bot = _momentum_bot(runner, "WBTC")  # unroutable profit currency
+    run(runner.arm_live(bot.id, {"allocationUsd": 100}))
+
+    rep = run(runner.tick_bot(bot.id))
+    assert _swaps(state, to="WBTC") == []
+    assert any(e.get("type") == "bot_settle_skip" and e.get("reason") == "no-route" for e in audit.list())
+    ev = next(e for e in rep["events"] if e.get("tag") == "mom:BLOCK/USDC:sell")
+    assert ev["settleCurrency"] == "USDC" and ev["settled"] is False  # the label never lies
+
+
+def test_momentum_paper_settlement_records_but_never_broadcasts():
+    S = setup({"ctx": mk_ctx([100]), "sessionUsd": 1000})
+    runner, state, audit = S["runner"], S["state"], S["audit"]
+    runner.Strategies = _FakeSellStrategies()
+    bot = _momentum_bot(runner, "DAI")
+    bot.mode = "paper"
+    bot.enabled = True
+
+    rep = run(runner.tick_bot(bot.id))
+    assert state["commits"] == 0
+    assert any(e.get("type") == "bot_settlement" and e.get("paper") is True for e in audit.list())
+    ev = next(e for e in rep["events"] if e.get("tag") == "mom:BLOCK/USDC:sell")
+    assert ev["settleCurrency"] == "DAI"

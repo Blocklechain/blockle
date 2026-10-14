@@ -233,3 +233,62 @@ test('enter(): UNLOCKED renders the shell (Kill-all + 4 surfaces + PLAY) and the
 
   BotsUI._setRunner(null);
 });
+
+// ---------------------------------------------------------------------------
+// CREATE FLOW — pair-selection mode defaults to "Let the AI choose pairs";
+// choosing AI HIDES the pair picker + SHOWS a profit-currency selector.
+// ---------------------------------------------------------------------------
+test('create flow DEFAULTS to "Let the AI choose pairs" (manual is opt-in)', () => {
+  const st = BotsUI._state();
+  st.create.pairMode = 'ai'; // the shipped default
+  const html = BotsUI.pairSelectHtml();
+  assert.ok(/data-pairmode="ai" aria-pressed="true"/.test(html), 'AI-chooses is the default (pressed)');
+  assert.ok(/data-pairmode="manual" aria-pressed="false"/.test(html), '"I\'ll pick a pair" is opt-in');
+  assert.ok(/Let the AI choose pairs/.test(html) && /I'll pick a pair/.test(html), 'both modes are offered');
+});
+
+test('AI-chooses HIDES the manual pair picker and SHOWS the profit-currency selector', () => {
+  const st = BotsUI._state();
+  st.create.pairMode = 'ai';
+  st.create.profitCurrency = 'USDC';
+  const html = BotsUI.pairSelectHtml();
+  assert.ok(!/id="b-pair"/.test(html), 'the manual pair input is HIDDEN in AI mode');
+  assert.ok(/id="b-profit-cur"/.test(html), 'the profit-currency selector is shown instead');
+  assert.ok(/<option value="USDC" selected>/.test(html), 'USDC is the default profit currency');
+  assert.ok(/value="USDT"/.test(html) && /value="DAI"/.test(html), 'other settlement currencies are offered');
+});
+
+test('manual mode brings the pair picker back (and no profit-currency selector)', () => {
+  const st = BotsUI._state();
+  st.create.pairMode = 'manual';
+  st.create.pair = 'ETH/USDC';
+  const html = BotsUI.pairSelectHtml();
+  assert.ok(/id="b-pair"/.test(html), 'the manual pair input returns');
+  assert.ok(!/id="b-profit-cur"/.test(html), 'no profit-currency selector in manual mode (it derives from the quote)');
+});
+
+test('specFromCreate: AI mode builds the scan-&-trade autopilot settling into the profit currency', () => {
+  const st = BotsUI._state();
+  st.create.pairMode = 'ai';
+  st.create.profitCurrency = 'USDT';
+  const spec = BotsUI.specFromCreate();
+  assert.equal(spec.type, 'scanner', 'AI-chooses = the scanner/autopilot');
+  assert.equal(spec.config.profitCurrency, 'USDT', 'the chosen profit currency flows into the scanner config');
+  // import-safe defaults preserved: paper + disabled + testnet + zero allocation.
+  assert.equal(spec.mode, 'paper');
+  assert.equal(spec.enabled, false);
+  assert.equal(spec.network, 'testnet');
+  assert.equal(spec.allocationUsd, 0);
+});
+
+test('specFromCreate: manual mode builds the chosen template on the picked pair', () => {
+  const st = BotsUI._state();
+  st.create.pairMode = 'manual';
+  st.create.tplKey = 'conservative_dca';
+  st.create.pair = 'SOL/USDC';
+  const spec = BotsUI.specFromCreate();
+  assert.equal(spec.type, 'dca');
+  assert.deepEqual(spec.universe.pairs, ['SOL/USDC']);
+  // reset to the shipped default so later/other suites see AI-chooses.
+  st.create.pairMode = 'ai';
+});

@@ -433,6 +433,37 @@ class BotsController extends ChangeNotifier {
     return summary;
   }
 
+  /// Fetch the current REAL USD mark for [base] from the SAME live market feed the
+  /// live bots + scanner use (ctx.prices / the non-custodial Exchange). Returns
+  /// null when the market has no data — NEVER a synthetic value; the Arena live
+  /// tick then skips (shows "awaiting data"), it never invents a price.
+  Future<num?> liveMark(String base) async {
+    final up = base.toUpperCase();
+    try {
+      final p = await _prices([up]);
+      final v = p[up];
+      if (v != null && v.isFinite && v > 0) return v;
+    } catch (_) {}
+    return null;
+  }
+
+  /// LIVE MARKET Arena run (§9): tick the strategy on the accumulated REAL [marks]
+  /// with PLAY balances. PURE sim — no gate, no broadcast, no keys, no real funds
+  /// (zero real value, so no gate is needed). A null/<=0 mark is skipped (awaiting
+  /// data); a price is NEVER fabricated.
+  ar.ArenaResult runArenaLive({
+    required String type,
+    required Map<String, dynamic> config,
+    required String pair,
+    required List<num?> marks,
+    String? name,
+  }) {
+    return ar.runLive({
+      'bot': {'type': type, 'config': config, 'pair': pair, 'name': name},
+      'marks': marks,
+    });
+  }
+
   /// Export the Arena strategy and import it as a REAL bot — the one honest
   /// on-ramp. ALWAYS lands paper + disabled + testnet with zero allocation.
   b.Bot useForReal({

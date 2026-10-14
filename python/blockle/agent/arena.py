@@ -38,6 +38,7 @@ Pieces (all money base-unit/int-exact, micro-dollar integer basis):
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -293,27 +294,57 @@ def _resolve_bot(spec: Any) -> Dict[str, Any]:
     return {"bot": bot, "type": bot.type, "cfg": cfg, "bcfg": bcfg, "bd": bd, "pair": pair}
 
 
-def run_scenario(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Run a bot config over a price path. PURE: returns fills + equity curve + the
-    score inputs. ``opts.guard`` (spies) is accepted but NEVER called — Arena has no
-    gate/broadcast path, so any such spy stays at zero (asserted by tests)."""
-    opts = opts or {}
-    prices = opts.get("prices")
-    if not prices and opts.get("vectors") and opts.get("scenario"):
-        prices = price_path(opts["vectors"], opts["scenario"])
-    if not isinstance(prices, list) or not prices:
-        raise ValueError("arena.run_scenario: need a price path (prices[] or vectors+scenario)")
+def _valid_mark(p: Any) -> bool:
+    """A real, positive mark? (None/NaN/<=0 means NO DATA — never fabricate a price.)"""
+    if p is None:
+        return False
+    try:
+        n = float(p)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(n) and n > 0
 
+
+def _run_path(opts: Dict[str, Any], prices_raw: List[Any], is_live: bool) -> Dict[str, Any]:
+    """Drive the PURE deal engine over a price path. SHARED by both arena modes:
+
+      * DEMO SCENARIO (:func:`run_scenario`): the deterministic fixture replay — the
+        cross-wallet parity/test contract (docs/arena-vectors.json). Every price is
+        valid, so NOTHING is skipped and the numbers are byte-identical to before.
+      * LIVE MARKET (:func:`run_live`): the SAME engine ticked on REAL marks (play
+        money). A tick with NO DATA (None/NaN/<=0) is SKIPPED ("awaiting data") —
+        never a fabricated price. Play money only: there is no gate/broadcast path
+        here, so ``opts.guard`` spies (if poisoned) stay at zero (asserted by tests).
+
+    PURE either way: returns fills + equity curve + the score inputs."""
     r = _resolve_bot(opts.get("bot") if opts.get("bot") is not None else opts)
     type_, cfg, bcfg, bd = r["type"], r["cfg"], r["bcfg"], r["bd"]
 
-    mid_uc = _bots.micro_usd(prices[0])
+    # anchor the sim on the FIRST real mark (never fabricated). With no real mark
+    # at all, the strategy is simply awaiting data — a zeroed, no-trade result.
+    first_valid = None
+    for p in prices_raw:
+        if _valid_mark(p):
+            first_valid = float(p)
+            break
+    if first_valid is None:
+        return {
+            "type": type_, "pair": r["pair"], "decimals": bd,
+            "fills": [], "equityCurveUc": [], "finalPnlUc": 0, "maxDrawdownUc": 0,
+            "maxCostBasisUc": 0, "retTenthPct": 0, "ddTenthPct": 0, "scoreTenths": 0,
+            "score": 0, "dealCount": 0, "closedDealCount": 0,
+            "skippedTicks": len(prices_raw), "awaitingData": True, "live": bool(is_live),
+            "playLabel": PLAY_LABEL, "real": False, "disclaimer": DISCLAIMER,
+        }
+
+    mid_uc = _bots.micro_usd(first_valid)
     deal_seq = 0
     deal_seq += 1
     current = _new_deal(type_, "arena:" + type_ + ":" + str(deal_seq), cfg, mid_uc, bd, 0)
     closed_deals: List[Dict[str, Any]] = []
     fills: List[Dict[str, Any]] = []
     equity_curve_uc: List[int] = []
+    skipped_ticks = 0
 
     realized_closed_uc = 0  # sum of realized from CLOSED deals
     max_cost_basis_uc = 0   # peak cost deployed (held-inventory basis)
@@ -327,8 +358,11 @@ def run_scenario(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     max_deals = (max(1, int(md)) if md is not None and is_finite(md) else None)  # None = unbounded
     reopen = (type_ == "dca" or type_ == "smarttrade")  # grid is one deal
 
-    for ti in range(len(prices)):
-        mark_uc = _bots.micro_usd(prices[ti])
+    for ti in range(len(prices_raw)):
+        if not _valid_mark(prices_raw[ti]):
+            skipped_ticks += 1
+            continue  # NO DATA — skip, never fabricate
+        mark_uc = _bots.micro_usd(float(prices_raw[ti]))
         now = ti + 1  # synthetic monotonic sim clock (NOT wall time)
 
         if not current and reopen and (max_deals is None or deal_seq < max_deals):
@@ -401,13 +435,48 @@ def run_scenario(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "score": sc["score"],
         "dealCount": len(closed_deals) + (1 if (current and current["status"] != "closed") else 0),
         "closedDealCount": len(closed_deals),
+        "skippedTicks": skipped_ticks,
+        "awaitingData": len(equity_curve_uc) == 0,
+        "live": bool(is_live),
         "playLabel": PLAY_LABEL,
         "real": False,
         "disclaimer": DISCLAIMER,
     }
 
 
+def run_scenario(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """DEMO SCENARIO (fixed fixture) — the deterministic parity/test contract. A
+    price path is REQUIRED (prices[] or vectors+scenario); every point is valid.
+    PURE: returns fills + equity curve + the score inputs. ``opts.guard`` (spies) is
+    accepted but NEVER called — Arena has no gate/broadcast path, so any such spy
+    stays at zero (asserted by tests)."""
+    opts = opts or {}
+    prices = opts.get("prices")
+    if not prices and opts.get("vectors") and opts.get("scenario"):
+        prices = price_path(opts["vectors"], opts["scenario"])
+    if not isinstance(prices, list) or not prices:
+        raise ValueError("arena.run_scenario: need a price path (prices[] or vectors+scenario)")
+    return _run_path(opts, prices, False)
+
+
 runScenario = run_scenario
+
+
+def run_live(opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """LIVE MARKET (play money) — tick the SAME strategy on REAL marks fed by the UI
+    from ``ctx.prices`` (the exchange/venue marks the live bots + scanner use). PLAY
+    balances only: there is no gate/broadcast/real-funds path here (zero real value,
+    so no gate is needed). A mark that is absent is SKIPPED ("awaiting data") — a
+    price is NEVER fabricated. ``opts.marks``: a list of real marks (None/NaN/<=0
+    where a market had no data)."""
+    opts = opts or {}
+    marks = opts.get("marks") if opts.get("marks") is not None else opts.get("prices")
+    if not isinstance(marks, list):
+        raise ValueError("arena.run_live: need injected real marks[] (play money)")
+    return _run_path(opts, marks, True)
+
+
+runLive = run_live
 
 
 # =========================================================================== #

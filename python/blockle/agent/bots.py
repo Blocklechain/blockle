@@ -675,6 +675,14 @@ class Bot:
         self.chain_prefs = spec.get("chainPrefs")
         self.venue_prefs = spec.get("venuePrefs")
         self.config = validate_config(spec["type"], spec.get("config") or {})
+        # PROFIT CURRENCY (shared across all lanes): the asset a realized SELL/exit
+        # must SETTLE into. A top-level ``profitCurrency`` wins; else the one carried
+        # on the config (scanner autopilot). ``None`` => no settlement hop (the bot
+        # realizes into the pair's native quote, as before). Normalized upper-case.
+        pc = spec.get("profitCurrency")
+        if (pc is None or (isinstance(pc, str) and not pc.strip())) and isinstance(spec.get("config"), dict):
+            pc = spec["config"].get("profitCurrency")
+        self.profit_currency = pc.strip().upper() if (isinstance(pc, str) and pc.strip()) else None
         self.allocation_usd = float(spec["allocationUsd"]) if spec.get("allocationUsd") is not None else 0.0
         # SAFETY DEFAULTS (§5): paper + disabled + testnet.
         self.mode = "live" if spec.get("mode") == "live" else "paper"
@@ -736,6 +744,7 @@ class Bot:
         return {
             "id": self.id, "name": self.name, "type": self.type, "universe": self.universe,
             "chainPrefs": self.chain_prefs, "venuePrefs": self.venue_prefs, "config": self.config,
+            "profitCurrency": self.profit_currency,
             "allocationUsd": self.allocation_usd, "mode": self.mode, "enabled": self.enabled,
             "network": self.network, "pollSec": self.poll_sec, "cooldownSec": self.cooldown_sec,
             "createdAt": self.created_at, "wallet": self.wallet, "channel": self.channel,

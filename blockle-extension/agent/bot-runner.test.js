@@ -479,6 +479,121 @@ test('per-bot REMOVE (live): cancels the open order through the ONE gate before 
   assert.equal(runner.get(bot.id), null, 'and the bot was deleted');
 });
 
+// ===========================================================================
+// UNIFORM PROFIT-CURRENCY SETTLEMENT (deal-engine exit/realize path, §8).
+// Every lane realizes into the bot's profitCurrency via ONE settlement swap
+// through the SAME value-moving gate; the redundant hop is skipped when the
+// output already IS the profit currency; no route => the label stays HONEST
+// (realized currency = the ACTUAL native output); PAPER records, never broadcasts.
+// ===========================================================================
+
+// A fake momentum strategy that plans exactly the intents a test hands it — so
+// the scheduled-bot exit path (momentum take-profit) is exercised deterministically.
+function momentumStrat(intents) {
+  return {
+    createRegistry() {
+      return {
+        get(type) {
+          if (type !== 'momentum') return null;
+          return { validateParams: (p) => p, async plan() { return intents.slice(); } };
+        },
+      };
+    },
+  };
+}
+
+test('settlement (momentum take-profit, live): a sell into a non-profit quote emits ONE committed settlement swap whose OUTPUT is the profitCurrency', async () => {
+  const ctx = mkCtx([100]);
+  const { runner, tools, audit } = setup({ ctx, sessionUsd: 1000 });
+  runner.Strategies = momentumStrat([
+    // death-cross SELL: proceeds land in USDC (the pair's native quote).
+    { tool: 'swap', args: { from: 'BLOCK', to: 'USDC', amount: '1000000000' }, tag: 'momentum:BLOCK/USDC:sell', estUsd: 10, mainnet: false },
+  ]);
+  // profitCurrency WBTC != native quote USDC -> a settlement hop is required.
+  const bot = runner.add({ type: 'momentum', universe: { pairs: ['BLOCK/USDC'] }, config: { profitCurrency: 'WBTC' } });
+  await runner.armLive(bot.id, { allocationUsd: 100 });
+
+  const rep = await runner.tickBot(bot.id);
+  // the exit leg broadcast, then exactly ONE settlement swap USDC -> WBTC.
+  const settle = tools.state.committed.filter((c) => c.name === 'swap' && String(c.args.from).toUpperCase() === 'USDC' && String(c.args.to).toUpperCase() === 'WBTC');
+  assert.equal(settle.length, 1, 'exactly ONE settlement swap whose OUTPUT is the profitCurrency');
+  assert.ok(audit.list().some((e) => e.type === 'bot_settlement' && e.mode === 'live' && e.to === 'WBTC'), 'the settlement was audited');
+  const ev = rep.events.find((e) => e.tag === 'momentum:BLOCK/USDC:sell');
+  assert.equal(ev.settledCurrency, 'WBTC', 'the realized record reports the FINAL settled currency = profitCurrency');
+  assert.equal(ev.realized.currency, 'WBTC');
+});
+
+test('settlement (grid sell, live): a limit-sell into the native quote emits ONE committed settlement swap into the profitCurrency', async () => {
+  // seed @1.00; dip @0.95 fills a buy (arms a sell one grid up); rise @1.05 flips it.
+  const ctx = mkCtx([1.00, 0.95, 1.05]);
+  const { runner, tools, audit } = setup({ ctx, sessionUsd: 1000, confirm: async () => true });
+  const bot = runner.add({ type: 'grid', universe: { pairs: ['BLOCK/USDC'] }, config: { lowerPrice: 0.9, upperPrice: 1.1, gridCount: 4, totalUsd: 40, profitCurrency: 'WBTC' } });
+  await runner.armLive(bot.id, { allocationUsd: 50 });
+
+  await runner.tickBot(bot.id);        // seed ladder
+  await runner.tickBot(bot.id);        // buy level fills (place_order)
+  const rep = await runner.tickBot(bot.id); // sell level flips (place_order) -> settle
+
+  const soldViaLimit = tools.state.committed.some((c) => c.name === 'place_order' && c.args.side === 'sell');
+  assert.ok(soldViaLimit, 'the grid exit was a limit SELL (place_order), not a market swap');
+  const settle = tools.state.committed.filter((c) => c.name === 'swap' && String(c.args.from).toUpperCase() === 'USDC' && String(c.args.to).toUpperCase() === 'WBTC');
+  assert.equal(settle.length, 1, 'the grid sell proceeds were settled into the profitCurrency via ONE swap');
+  assert.ok(audit.list().some((e) => e.type === 'bot_settlement' && e.to === 'WBTC'), 'audited');
+  const sellEv = rep.events.find((e) => e.side === 'sell');
+  assert.equal(sellEv.settledCurrency, 'WBTC', 'the grid exit reports the FINAL settled currency');
+});
+
+test('settlement: the redundant hop is SKIPPED when the exit output already IS the profitCurrency (arb path)', async () => {
+  const ctx = mkCtx([100]);
+  const { runner, tools, audit } = setup({ ctx, sessionUsd: 1000 });
+  runner.Strategies = momentumStrat([
+    // arb-style exit whose OUTPUT was already rewritten to the profit currency.
+    { tool: 'swap', args: { from: 'BLOCK', to: 'WBTC', amount: '1000000000' }, tag: 'arb:BLOCK/USDC:v1->v2:sell', exit: true, estUsd: 10, mainnet: false },
+  ]);
+  const bot = runner.add({ type: 'momentum', universe: { pairs: ['BLOCK/USDC'] }, config: { profitCurrency: 'WBTC' } });
+  await runner.armLive(bot.id, { allocationUsd: 100 });
+
+  const rep = await runner.tickBot(bot.id);
+  assert.equal(tools.state.commits, 1, 'only the exit itself broadcast — no redundant settlement hop');
+  assert.ok(!audit.list().some((e) => e.type === 'bot_settlement'), 'no settlement was emitted (output already == profitCurrency)');
+  const ev = rep.events.find((e) => /:sell$/.test(e.tag));
+  assert.equal(ev.settledCurrency, 'WBTC', 'still reports the profit currency (it is the actual output)');
+});
+
+test('settlement: with NO route the label NEVER lies — proceeds stay native and realized.currency = the ACTUAL output', async () => {
+  const ctx = mkCtx([100]);
+  ctx.settlementRoute = async () => false; // the venue layer reports NO route quote -> profit currency
+  const { runner, tools, audit } = setup({ ctx, sessionUsd: 1000 });
+  runner.Strategies = momentumStrat([
+    { tool: 'swap', args: { from: 'BLOCK', to: 'USDC', amount: '1000000000' }, tag: 'momentum:BLOCK/USDC:sell', estUsd: 10, mainnet: false },
+  ]);
+  const bot = runner.add({ type: 'momentum', universe: { pairs: ['BLOCK/USDC'] }, config: { profitCurrency: 'WBTC' } });
+  await runner.armLive(bot.id, { allocationUsd: 100 });
+
+  const rep = await runner.tickBot(bot.id);
+  assert.ok(!tools.state.committed.some((c) => c.name === 'swap' && String(c.args.to).toUpperCase() === 'WBTC'), 'NO fabricated settlement swap when there is no route');
+  assert.ok(audit.list().some((e) => e.type === 'bot_settlement_skip' && e.reason === 'no-route'), 'the missing route is audited (not hidden)');
+  const ev = rep.events.find((e) => e.tag === 'momentum:BLOCK/USDC:sell');
+  assert.equal(ev.settledCurrency, 'USDC', 'realized.currency is the ACTUAL native output (USDC), NOT the claimed WBTC');
+  assert.notEqual(ev.settledCurrency, 'WBTC', 'the label must NEVER outrun execution');
+});
+
+test('settlement (paper): a settlement into the profitCurrency is RECORDED but NEVER broadcasts', async () => {
+  const ctx = mkCtx([1.00, 0.95, 1.05]);
+  const { runner, tools, audit } = setup({ ctx });
+  const bot = runner.add({ type: 'grid', universe: { pairs: ['BLOCK/USDC'] }, config: { lowerPrice: 0.9, upperPrice: 1.1, gridCount: 4, totalUsd: 40, profitCurrency: 'WBTC' } });
+  bot.mode = 'paper'; bot.enabled = true;
+
+  await runner.tickBot(bot.id);          // seed
+  await runner.tickBot(bot.id);          // paper buy
+  const rep = await runner.tickBot(bot.id); // paper sell -> paper settlement
+
+  assert.equal(tools.state.commits, 0, 'PAPER never broadcasts — not even the settlement leg');
+  assert.ok(audit.list().some((e) => e.type === 'bot_settlement' && e.mode === 'paper' && e.to === 'WBTC'), 'the settlement was PAPER-recorded');
+  const sellEv = rep.events.find((e) => e.side === 'sell');
+  assert.equal(sellEv.settledCurrency, 'WBTC', 'the paper realize still reports the settled currency');
+});
+
 test('kill-all: stops every bot AND the background scheduler (UI reflects it immediately)', async () => {
   let locked = false;
   const timers = fakeTimers();

@@ -66,6 +66,12 @@ DEFAULTS: Dict[str, Any] = {
     "maxConcurrentPairs": 3,
     "perTradeUsd": 20,
     "allocationUsd": 0,
+    # PROFIT CURRENCY — the settlement/quote asset the autopilot realizes profit
+    # INTO, denominates P&L in, and routes take-profit exits to. Default USDC. In
+    # AI-chooses-pairs mode the user picks it; in manual mode it derives from the
+    # chosen pair's quote. Scoring is unchanged (already USD-normalized); this names
+    # the asset the realized profit settles to.
+    "profitCurrency": "USDC",
     "strategies": ["arbitrage", "momentum", "grid"],
     # cost model (mirrors strategies.arbitrage defaults + floors)
     "gasBufferUsd": 2,
@@ -80,6 +86,13 @@ DEFAULTS: Dict[str, Any] = {
     "liquidityNorm": 100000,
     "volPenaltyK": 2.0,
     "flagPenalty": 0.25,
+    # SETTLEMENT LEG cost (bps) of the EXTRA venue hop that converts a pair's
+    # native quote INTO the profitCurrency when they differ. Priced on top of the
+    # 0.05% agent leg + slippage (both added separately) so a pair that only clears
+    # in its native quote but goes net-negative after settling is NOT traded. When
+    # the pair quote already equals profitCurrency there is NO extra hop and this
+    # term never applies (keeps the USD-normalized scan vectors byte-identical).
+    "settlementVenueFeeBps": 30,
     # hard-drop flags (never scored, never traded)
     "rejectFlags": ["honeypot", "scam", "rug", "denylist"],
     "maxCandidates": 50,
@@ -180,6 +193,9 @@ def validate_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     p["liquidityNorm"] = max(1.0, _num(p.get("liquidityNorm"), 100000))
     p["volPenaltyK"] = max(0.0, _num(p.get("volPenaltyK"), 2.0))
     p["flagPenalty"] = max(0.0, _num(p.get("flagPenalty"), 0.25))
+    p["settlementVenueFeeBps"] = max(0, _trunc(_num(p.get("settlementVenueFeeBps"), 30)))
+    pc = p.get("profitCurrency")
+    p["profitCurrency"] = pc.strip().upper() if (isinstance(pc, str) and pc.strip()) else "USDC"
     strats = p.get("strategies")
     p["strategies"] = [_lc(s) for s in strats] if isinstance(strats, (list, tuple)) and len(strats) \
         else list(DEFAULTS["strategies"])
@@ -293,6 +309,42 @@ def grid_edge(c: Any, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "spreadBps": spread_bps, "costsBps": costs_bps}
 
 
+def settle_info(c: Any, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve how this candidate's proceeds settle INTO the profitCurrency.
+
+    Returns ``{needed, costBps, routeOk, pcUsd}``:
+
+    * ``needed`` — True when the pair's native quote != profitCurrency, so an
+      EXTRA venue hop (quote -> profitCurrency) is required to realize profit.
+    * ``costBps`` — the settlement leg cost in bps: the extra venue fee + the
+      0.05% agent leg + slippage. 0 when no hop is needed (direct sell).
+    * ``routeOk`` — whether a route to profitCurrency can be priced WITHOUT
+      fabrication (profitCurrency is a stablecoin, or a candidate price for it is
+      present). False => the candidate is skipped (audited), never invented.
+    * ``pcUsd`` — USD value of one profit-currency unit when known (for
+      denominating realized P&L exactly), else None.
+    """
+    profit_currency = cfg["profitCurrency"]
+    try:
+        _, quote = split_pair(member(c, "pair"))
+    except Exception:
+        quote = None
+    if quote is not None and str(quote).upper() == profit_currency:
+        # pair already quoted in the profit currency: the sell IS the realize leg.
+        return {"needed": False, "costBps": 0.0, "routeOk": True, "pcUsd": None}
+    # a hop is needed — price the profit currency (never fabricate a route).
+    if profit_currency in STABLE_USD:
+        pc_usd: Optional[float] = float(STABLE_USD[profit_currency])
+    else:
+        prices = member(c, "prices") or {}
+        p = _num(member(prices, profit_currency), float("nan"))
+        pc_usd = p if p > 0 else None
+    if pc_usd is None:
+        return {"needed": True, "costBps": 0.0, "routeOk": False, "pcUsd": None}
+    cost_bps = float(cfg["settlementVenueFeeBps"] + cfg["agentFeeBps"] + cfg["slippageBps"])
+    return {"needed": True, "costBps": cost_bps, "routeOk": True, "pcUsd": pc_usd}
+
+
 def evaluate(c: Any, cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Evaluate ONE candidate: best net edge, risk-adjusted score, reason. PURE."""
     flags = [_lc(f) for f in (member(c, "flags") or [])]
@@ -319,18 +371,30 @@ def evaluate(c: Any, cfg: Dict[str, Any]) -> Dict[str, Any]:
         return {"pair": member(c, "pair"), "chain": member(c, "chain"), "strategy": None,
                 "edgeBps": 0, "score": 0, "reason": "no-signal", "flags": flags, "eval": None}
 
-    # winning strategy = highest net edge (stable: first-listed wins a tie)
+    # winning strategy = highest net edge (stable: first-listed wins a tie). The
+    # settlement cost (below) is a uniform constant across strategies, so it never
+    # changes which one wins — subtract it once from the chosen edge.
     best = evals[0]
     for e in evals:
         if e["edgeBps"] > best["edgeBps"]:
             best = e
+
+    # SETTLEMENT: proceeds must land in the profitCurrency. If no route exists we
+    # SKIP the candidate (audited) rather than invent a price.
+    settle = settle_info(c, cfg)
+    if not settle["routeOk"]:
+        return {"pair": member(c, "pair"), "chain": member(c, "chain"), "strategy": best["strategy"],
+                "edgeBps": _round6(best["edgeBps"]), "score": 0, "reason": "no-settle-route",
+                "flags": flags, "eval": None}
 
     liq = member(c, "liquidityUsd")
     lf = 1.0 if liq is None else _clamp01(float(liq) / cfg["liquidityNorm"])
     vf = 1.0 / (1.0 + cfg["volPenaltyK"] * coeff_var(member(c, "history")))
     n_soft = len(flags)  # soft flags (hard rejects already returned above)
     ff = max(0.0, 1.0 - cfg["flagPenalty"] * n_soft)
-    raw_edge = best["edgeBps"]
+    # net edge AFTER settling into the profit currency (0 settlement cost when the
+    # pair already quotes in it — keeps the pinned scan vectors byte-identical).
+    raw_edge = best["edgeBps"] - settle["costBps"]
     score = _round6(max(0.0, raw_edge) * lf * vf * ff)
 
     if raw_edge <= 0:
@@ -344,7 +408,7 @@ def evaluate(c: Any, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "pair": member(c, "pair"), "chain": member(c, "chain"), "strategy": best["strategy"],
         "edgeBps": _round6(raw_edge), "score": score, "reason": reason, "flags": flags,
         "factors": {"Lf": _round6(lf), "Vf": _round6(vf), "Ff": _round6(ff)},
-        "eval": best, "candidate": c,
+        "eval": best, "candidate": c, "settle": settle,
     }
 
 
@@ -456,6 +520,17 @@ async def scan_and_score(universe: Any, config: Optional[Dict[str, Any]] = None,
     has_cap = allocation_usd > 0
     remaining_usd = max(0.0, allocation_usd - committed_usd) if has_cap else float("inf")
     mainnet = bool(opts.get("mainnet"))
+    profit_currency = cfg["profitCurrency"]
+
+    # USD value of one unit of the profit currency (for denominating realized P&L
+    # in it). Stablecoins are $1; otherwise use a candidate-provided price; fall
+    # back to $1 (NEVER fabricated into a trade — this only labels the P&L unit).
+    def _profit_cur_usd(c: Any) -> float:
+        if profit_currency in STABLE_USD:
+            return STABLE_USD[profit_currency]
+        prices = member(c, "prices") or {}
+        p = _num(member(prices, profit_currency), float("nan"))
+        return p if p > 0 else 1.0
 
     decisions: List[Dict[str, Any]] = []
     all_intents: List[Dict[str, Any]] = []
@@ -484,18 +559,45 @@ async def scan_and_score(universe: Any, config: Optional[Dict[str, Any]] = None,
             continue
         remaining_usd -= cost_usd
         picked += 1
+        # Realized P&L denominated in the PROFIT CURRENCY: expected net profit =
+        # executed notional * net-edge; converted to profit-currency units. Exits
+        # (sell / take-profit legs) route their proceeds INTO the profit currency.
+        ev = row.get("eval")
+        notional_usd = ev["execUsd"] if (ev and _is_finite(ev.get("execUsd"))) else cfg["perTradeUsd"]
+        profit_usd = _round6(notional_usd * (row["edgeBps"] / 10000))
+        settle = row.get("settle") or {}
+        pc_usd = settle.get("pcUsd")
+        if not (isinstance(pc_usd, (int, float)) and pc_usd > 0):
+            pc_usd = _profit_cur_usd(row.get("candidate"))
+        realized = {"currency": profit_currency, "profitUsd": profit_usd,
+                    "profit": _round6(profit_usd / pc_usd)}
         tagged = []
         for it in intents:
             t = dict(it)
+            t["args"] = dict(t.get("args") or {})
             t["scannerPair"] = row["pair"]
             t["scannerScore"] = row["score"]
             t["scannerStrategy"] = row["strategy"]
+            t["settleTo"] = profit_currency
+            is_exit = str(t.get("tag") or "").endswith(":sell")  # the take-profit / realize leg
+            t["exit"] = is_exit
+            # EXIT ROUTING: the realize/sell leg's OUTPUT asset IS the profit
+            # currency. A direct sell when the pair already quotes in it; otherwise
+            # the swap's `to` becomes the profit currency and the EXISTING venue
+            # layer resolves the extra quote -> profitCurrency hop (its cost was
+            # already charged against the edge in `evaluate`). Never a forked rail.
+            if is_exit and t.get("tool") == "swap":
+                out_asset = t["args"].get("to")
+                if out_asset is not None and str(out_asset).upper() != profit_currency:
+                    t["args"]["to"] = profit_currency
+                    t["settleHop"] = True  # venue routes native-quote -> profitCurrency
             tagged.append(t)
             all_intents.append(t)
         d = _trim(row, "worthy")
         d["traded"] = True
         d["intents"] = tagged
         d["costUsd"] = _round6(cost_usd)
+        d["realized"] = realized
         decisions.append(d)
 
     return {
@@ -509,6 +611,7 @@ async def scan_and_score(universe: Any, config: Optional[Dict[str, Any]] = None,
         "remainingUsd": (max(0.0, _round6(remaining_usd)) if has_cap else None),
         "minProfitBps": cfg["minProfitBps"],
         "maxConcurrentPairs": cfg["maxConcurrentPairs"],
+        "profitCurrency": profit_currency,  # the settlement/quote asset P&L realizes INTO
     }
 
 
