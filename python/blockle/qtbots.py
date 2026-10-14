@@ -1271,6 +1271,9 @@ class CockpitPanel(QWidget):
 # so the create flow and the deal math stay in lock-step with the other wallets.
 _TPL_ORDER = ["conservative_dca", "aggressive_dca", "wide_grid", "block_accumulator"]
 
+# Profit-currency choices (settlement/quote assets). USDC is the default.
+_PROFIT_CURRENCIES = ["USDC", "USDT", "DAI", "USD"]
+
 
 class CreatePanel(QWidget):
     created = Signal()  # a bot was added -> cockpit refresh
@@ -1281,6 +1284,13 @@ class CreatePanel(QWidget):
         self.tok = tokens
         self.sel_template = _TPL_ORDER[0]
         self.price = 142.80  # reference mark for the preview ladder
+        # PAIR SELECTION MODE — defaults to "ai" ("Let the AI choose pairs": the
+        # scanner/autopilot scans + picks worthy pairs). "manual" ("I'll pick a
+        # pair") is opt-in and brings back the manual pair picker.
+        self.pair_mode = "ai"
+        # PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO
+        # (AI mode: user-chosen; manual mode: derived from the pair quote).
+        self.profit_currency = "USDC"
         # advanced slider state (seeded from the chosen template)
         self.adv = {"base": 100, "tp": 2.0, "so": 3, "step": 2.0, "vol": 1.4, "tr": 0.6}
 
@@ -1319,10 +1329,44 @@ class CreatePanel(QWidget):
         lv.addLayout(tgrid)
 
         lv.addSpacing(6)
-        lv.addWidget(self._field_label("2 · Pair", "what to trade"))
+        # 2 · Pairs — a mode toggle (AI chooses pairs [default] vs manual picker).
+        self.pair_field_label = self._field_label("2 · Pairs", "the autopilot scans & picks worthy pairs")
+        lv.addWidget(self.pair_field_label)
+        self.pair_mode_group = QButtonGroup(self)
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.ai_mode_btn = QPushButton("🤖 Let the AI choose pairs")
+        self.manual_mode_btn = QPushButton("✎ I'll pick a pair")
+        for b, mode in ((self.ai_mode_btn, "ai"), (self.manual_mode_btn, "manual")):
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, m=mode: self._set_pair_mode(m))
+            self.pair_mode_group.addButton(b)
+            mode_row.addWidget(b)
+        self.ai_mode_btn.setChecked(True)
+        lv.addLayout(mode_row)
+
+        # AI mode: NO manual pair picker — a note + a profit-currency selector.
+        self.ai_note = QLabel("The AI scanner scores every discoverable pair and auto-trades "
+                              "the worthy ones within your cap — no pair to pick. Paper + "
+                              "disabled by default.")
+        self.ai_note.setObjectName("sub")
+        self.ai_note.setWordWrap(True)
+        lv.addWidget(self.ai_note)
+        self.profit_label = self._field_label("Profit currency", "what profit is realized & settled into")
+        lv.addWidget(self.profit_label)
+        self.profit_cur = QComboBox()
+        self.profit_cur.addItems(_PROFIT_CURRENCIES)
+        self.profit_cur.setCurrentText(self.profit_currency)
+        self.profit_cur.currentTextChanged.connect(self._profit_cur_changed)
+        lv.addWidget(self.profit_cur)
+
+        # Manual mode: the pair picker (hidden by default — AI mode is the default).
         self.pair_in = QLineEdit("SOL/USDC")
         lv.addWidget(self.pair_in)
-        self.pair_in.textChanged.connect(self._render)
+        self.pair_in.textChanged.connect(self._pair_changed)
+        self.pair_in.setVisible(False)
 
         lv.addWidget(self._field_label("3 · Amount to allocate", "the bot's hard cap"))
         self.alloc_in = QLineEdit("500")
@@ -1441,14 +1485,53 @@ class CreatePanel(QWidget):
         self._pick_template(self.sel_template)
 
     # ---- helpers ----
+    def _field_label_text(self, label, hint):
+        return f"{label}   <span style='color:{self.tok['ink_faint']};font-weight:400'>{hint}</span>"
+
     def _field_label(self, label, hint):
-        lb = QLabel(f"{label}   <span style='color:{self.tok['ink_faint']};font-weight:400'>{hint}</span>")
+        lb = QLabel(self._field_label_text(label, hint))
         lb.setStyleSheet("font-size:12px; font-weight:700; margin-top:10px;")
         return lb
 
     def set_tokens(self, tokens):
         self.tok = tokens
         self.ladder.set_tokens(tokens)
+
+    # ---- pair-selection mode: AI chooses (default) vs manual pair picker ----
+    def _quote_of(self, pair):
+        """Profit currency derived from a BASE/QUOTE pair's quote (manual mode)."""
+        try:
+            return bots_mod.split_pair(str(pair))[1].upper()
+        except Exception:
+            return self.profit_currency or "USDC"
+
+    def _set_pair_mode(self, mode):
+        self.pair_mode = mode if mode == "manual" else "ai"
+        ai = self.pair_mode != "manual"
+        # AI mode: HIDE the manual pair picker; show the profit-currency selector.
+        self.pair_in.setVisible(not ai)
+        self.ai_note.setVisible(ai)
+        self.profit_label.setVisible(ai)
+        self.profit_cur.setVisible(ai)
+        self.pair_field_label.setText(self._field_label_text(
+            "2 · Pairs" if ai else "2 · Pair",
+            "the autopilot scans & picks worthy pairs" if ai else "what to trade"))
+        if not ai:
+            # manual: profit currency = the pair quote.
+            self.profit_currency = self._quote_of(self.pair_in.text())
+        else:
+            self.profit_currency = self.profit_cur.currentText().upper() or "USDC"
+        self._render()
+
+    def _profit_cur_changed(self, _text=None):
+        self.profit_currency = (self.profit_cur.currentText() or "USDC").upper()
+
+    def _pair_changed(self, _text=None):
+        # manual: profit currency tracks the pair quote. In AI mode the pair box is
+        # hidden and the user-chosen profit currency is left untouched.
+        if self.pair_mode == "manual":
+            self.profit_currency = self._quote_of(self.pair_in.text())
+        self._render()
 
     def _pick_template(self, key):
         self.sel_template = key
@@ -1512,6 +1595,19 @@ class CreatePanel(QWidget):
         return bots_mod.split_pair(pair)[0] if "/" in pair else pair
 
     def _render(self):
+        if self.pair_mode != "manual":
+            # AI chooses pairs: the autopilot scans & picks — no pair, no ladder.
+            self.ladder_title.setText("Autopilot · scans every pair")
+            self.ladder_type.setText("AUTOPILOT")
+            self.ladder.set_deal([], 0, 0, 0, 0, 0)
+            self.s_max.value_label.setText(plain_money(self._alloc()))
+            self.s_avg.value_label.setText("—")
+            self.s_dip.value_label.setText("—")
+            self.preview.setText(
+                "The AI scanner scores every discoverable pair for cost-positive profit and "
+                f"auto-trades the worthy ones within your {plain_money(self._alloc())} cap, "
+                f"realizing P&L into {self.profit_currency}. Paper + disabled by default.")
+            return
         pair = self.pair_in.text().strip() or "SOL/USDC"
         self.ladder_title.setText(pair)
         t = templates_mod.TEMPLATES[self.sel_template]
@@ -1548,12 +1644,23 @@ class CreatePanel(QWidget):
 
     # ---- actions: build a REAL bot via the runner (never a mock) ----
     def _make_spec(self, mode):
+        # AI mode ("Let the AI choose pairs") -> the scan-&-trade autopilot,
+        # realizing profit INTO the chosen profit currency (no pair to pick).
+        if self.pair_mode != "manual":
+            spec = templates_mod.from_template("scan_and_trade", {})
+            spec["config"] = dict(spec["config"],
+                                  profitCurrency=(self.profit_currency or "USDC"))
+            spec["allocationUsd"] = self._alloc()
+            return spec
         t = templates_mod.TEMPLATES[self.sel_template]
         cfg = self._config() if t["type"] == "dca" else dict(t["config"])
         return {
             "name": t["name"], "type": t["type"],
             "universe": {"pairs": [self.pair_in.text().strip() or "SOL/USDC"]},
             "config": cfg, "allocationUsd": self._alloc(),
+            # the chosen profit currency the engine SETTLES every realized exit into
+            # (for a manual pair this is its native quote, so there is no extra hop).
+            "profitCurrency": (self.profit_currency or "USDC"),
             "mode": "paper", "enabled": False, "network": "testnet",
             "template": self.sel_template,
         }
@@ -1582,8 +1689,13 @@ class CreatePanel(QWidget):
             QMessageBox.information(self, "Unlock needed", str(e))
             return
         alloc = self._alloc()
-        pair = self.pair_in.text().strip() or "SOL/USDC"
-        dlg = LiveArmReview(self, self.tok, name=templates_mod.TEMPLATES[self.sel_template]["name"],
+        if self.pair_mode != "manual":
+            pair = "Autopilot · " + (self.profit_currency or "USDC")
+            arm_name = templates_mod.TEMPLATES["scan_and_trade"]["name"]
+        else:
+            pair = self.pair_in.text().strip() or "SOL/USDC"
+            arm_name = templates_mod.TEMPLATES[self.sel_template]["name"]
+        dlg = LiveArmReview(self, self.tok, name=arm_name,
                             pair=pair, allocation=alloc, session_cap=self.bc.session_cap(),
                             network="testnet", mainnet_enabled=False)
         if dlg.exec() != QDialog.Accepted:
@@ -1931,6 +2043,14 @@ class ArenaPanel(QWidget):
         self.bc = bc
         self.tok = tokens
         self.scenario = "bull"
+        # ARENA MARKET MODE — "live" ("Live market · play money on REAL marks",
+        # DEFAULT) vs "demo" ("Demo scenario · fixed fixture", the cross-wallet
+        # parity/test contract). Live mode ticks the SAME pure engine on real marks
+        # from the live feed; it NEVER broadcasts and never touches real funds.
+        self.mode = "live"
+        self._live_marks_series: List[Optional[float]] = []
+        self._live_result: Optional[Dict[str, Any]] = None
+        self._live_timer: Optional[QTimer] = None
         self._anim: Optional[QTimer] = None
         self._run_result: Optional[Dict[str, Any]] = None
         self._path: List[float] = []
@@ -1993,18 +2113,48 @@ class ArenaPanel(QWidget):
         shead = QHBoxLayout()
         shv = QVBoxLayout()
         shv.setSpacing(2)
-        shv.addWidget(_eyebrow("Simulated market · seeded & replayable"))
+        self.sim_eyebrow = _eyebrow("Live market · play money on REAL marks")
+        shv.addWidget(self.sim_eyebrow)
         self.sim_title = QLabel("Conservative DCA · SOL")
         self.sim_title.setStyleSheet("font-size:15px; font-weight:700;")
         shv.addWidget(self.sim_title)
         shead.addLayout(shv)
         shead.addStretch(1)
-        self.sim_state = QLabel("Ready")
+        self.sim_state = QLabel("Awaiting data…")
         self.sim_state.setObjectName("chipType")
         shead.addWidget(self.sim_state, 0, Qt.AlignTop)
         sv.addLayout(shead)
 
-        scen = QHBoxLayout()
+        # market-mode toggle: Live market (play money, DEFAULT) vs Demo scenario.
+        modebar = QHBoxLayout()
+        modebar.setSpacing(8)
+        self.arena_mode_group = QButtonGroup(self)
+        self.live_mode_btn = QPushButton("Live market · PLAY")
+        self.demo_mode_btn = QPushButton("Demo scenario")
+        for b, m in ((self.live_mode_btn, "live"), (self.demo_mode_btn, "demo")):
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, mm=m: self._set_arena_mode(mm))
+            self.arena_mode_group.addButton(b)
+            modebar.addWidget(b)
+        modebar.addStretch(1)
+        self.live_mode_btn.setChecked(True)
+        sv.addLayout(modebar)
+
+        # LIVE note (play money on real marks) — shown in live mode only.
+        self.live_note = QLabel("Ticks your strategy on the SAME live marks the real bots use — "
+                                "play balances only. It never broadcasts and never touches real "
+                                "funds. A market with no data is skipped (awaiting data); prices "
+                                "are never invented.")
+        self.live_note.setObjectName("sub")
+        self.live_note.setWordWrap(True)
+        sv.addWidget(self.live_note)
+
+        # DEMO scenario picker — shown in demo mode only (hidden by default).
+        self.scen_wrap = QWidget()
+        scen = QHBoxLayout(self.scen_wrap)
+        scen.setContentsMargins(0, 0, 0, 0)
         scen.setSpacing(6)
         self.scen_group = QButtonGroup(self)
         for key, label in _SCEN_LABELS:
@@ -2016,16 +2166,17 @@ class ArenaPanel(QWidget):
             self.scen_group.addButton(b)
             scen.addWidget(b)
         scen.addStretch(1)
-        sv.addLayout(scen)
+        self.scen_wrap.setVisible(False)
+        sv.addWidget(self.scen_wrap)
 
         self.sim = ArenaSim(tokens)
         sv.addWidget(self.sim, 1)
 
         foot = QHBoxLayout()
         foot.setSpacing(14)
-        self.run_btn = QPushButton("▶  Run simulation")
+        self.run_btn = QPushButton("↻  Reset play run")
         self.run_btn.setObjectName("primary")
-        self.run_btn.clicked.connect(self._run)
+        self.run_btn.clicked.connect(self._run_btn_clicked)
         foot.addWidget(self.run_btn)
         for attr, label in [("pnl", "Play P&L"), ("score", "Score"), ("dd", "Max drawdown")]:
             box = QVBoxLayout()
@@ -2098,6 +2249,8 @@ class ArenaPanel(QWidget):
 
         self._load_scen("bull")
         self.refresh()
+        # DEFAULT to Live market (play money on REAL marks); start the live poll.
+        self._set_arena_mode("live")
 
     def set_tokens(self, tokens):
         self.tok = tokens
@@ -2140,9 +2293,115 @@ class ArenaPanel(QWidget):
             out.append({"t": f.get("t", 0), "side": f.get("side"), "_price": pr})
         return out
 
+    # ---- market mode: Live market (play money, DEFAULT) vs Demo scenario ----
+    def _run_btn_clicked(self):
+        if self.mode == "demo":
+            self._run()
+        else:
+            self._live_reset()
+
+    def _set_arena_mode(self, mode):
+        self.mode = "demo" if mode == "demo" else "live"
+        self._stop_live_poll()
+        demo = self.mode == "demo"
+        self.scen_wrap.setVisible(demo)
+        self.live_note.setVisible(not demo)
+        if demo:
+            self.sim_eyebrow.setText("Demo scenario · fixed fixture, seeded & replayable")
+            self.run_btn.setText("▶  Run simulation")
+            self.sim_state.setText("Ready")
+            self._load_scen(self.scenario)
+        else:
+            self.sim_eyebrow.setText("Live market · play money on REAL marks")
+            self.run_btn.setText("↻  Reset play run")
+            self.sim_state.setText("Awaiting data…")
+            self._start_live_poll()
+
+    def _arena_base_sym(self):
+        try:
+            return bots_mod.split_pair(self._arena_bot().get("pair") or "SOL/USDC")[0].upper()
+        except Exception:
+            return "SOL"
+
+    def _live_reset(self):
+        self._live_marks_series = []
+        self._live_result = None
+        self.sim_state.setText("Awaiting data…")
+        self.sim_pnl.setText("+$0.00")
+        self.sim_score.setText("—")
+        self.sim_dd.setText("—")
+        self.sim.set_run([1.0, 1.0], [])
+        self._live_tick()
+
+    def _start_live_poll(self):
+        self._stop_live_poll()
+        if self.mode != "live":
+            return
+        self._live_tick()
+        self._live_timer = QTimer(self)
+        self._live_timer.setInterval(5000)
+        self._live_timer.timeout.connect(self._live_tick)
+        self._live_timer.start()
+
+    def _stop_live_poll(self):
+        if self._live_timer is not None:
+            try:
+                self._live_timer.stop()
+            except Exception:
+                pass
+            self._live_timer = None
+
+    def _live_tick(self):
+        """Sample the CURRENT real mark for the arena pair base from the SAME live
+        feed the real bots + scanner use, append it (or None when NO data), re-run
+        the PURE play-money engine on the accumulated marks, and redraw. The mark is
+        NEVER fabricated; a no-data tick is skipped. NEVER broadcasts."""
+        if self.mode != "live":
+            return
+        base = self._arena_base_sym()
+        mark = None
+        try:
+            marks = self.bc._live_marks([base]) or {}
+            v = marks.get(base)
+            if v is not None and float(v) > 0:
+                mark = float(v)
+        except Exception:
+            mark = None
+        self._live_marks_series.append(mark)  # None => awaiting data (never fabricated)
+        if len(self._live_marks_series) > 600:
+            self._live_marks_series.pop(0)
+        try:
+            self._live_result = arena_mod.run_live({"bot": self._arena_bot(),
+                                                    "marks": self._live_marks_series})
+        except Exception:
+            self._live_result = None
+        self._render_live_result()
+
+    def _render_live_result(self):
+        res = self._live_result
+        series = [m for m in self._live_marks_series if m is not None and m > 0]
+        if not res or not series:
+            self.sim_state.setText("Awaiting data…")
+            self.sim.set_run(series if len(series) > 1 else [1.0, 1.0], [])
+            return
+        sc = res["score"]
+        self.sim_state.setText(f"Live · {('+' if sc >= 0 else '')}{sc:.1f}")
+        self.sim.set_run(series if len(series) > 1 else [series[0], series[0]],
+                         self._decorate_fills(res["fills"]))
+        pnl = bots_mod.uc_to_usd(res["finalPnlUc"]) or 0.0
+        self.sim_pnl.setText(money(pnl))
+        self.sim_pnl.setStyleSheet(f"font-size:18px; font-weight:800; font-family:{MONO};"
+                                   f"color:{self.tok['gain'] if pnl >= 0 else self.tok['loss']};")
+        self.sim_score.setText(("+" if sc >= 0 else "") + f"{sc:.1f}")
+        dd_pct = (res["ddTenthPct"] or 0) / 10.0
+        self.sim_dd.setText(f"−{dd_pct:.1f}%")
+
     def _run(self):
         if self._anim and self._anim.isActive():
             return
+        # a demo run is a demo action — halt any live polling so the authoritative
+        # scenario result is not overwritten by a live tick.
+        self._stop_live_poll()
         # record the run into the REAL profile (XP / missions / badges / board).
         # profile.run() is deterministic from the shared fixture and accrues XP +
         # moves the play balance SYNCHRONOUSLY here — no RNG, no gate.

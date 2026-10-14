@@ -231,23 +231,40 @@ Map<String, dynamic> _validateScheduledConfig(Map<String, dynamic>? c) =>
     {...?c};
 
 Map<String, dynamic> validateConfig(String type, Map<String, dynamic>? c) {
+  final Map<String, dynamic> out;
   switch (type) {
     case 'dca':
-      return _validateDcaConfig(c);
+      out = _validateDcaConfig(c);
+      break;
     case 'grid':
-      return _validateGridConfig(c);
+      out = _validateGridConfig(c);
+      break;
     case 'smarttrade':
-      return _validateSmartTradeConfig(c);
+      out = _validateSmartTradeConfig(c);
+      break;
     case 'signal':
-      return _validateSignalConfig(c);
+      out = _validateSignalConfig(c);
+      break;
     case 'rebalance':
     case 'momentum':
-      return _validateScheduledConfig(c);
+      out = _validateScheduledConfig(c);
+      break;
     case 'scanner':
-      return _validateScannerConfig(c);
+      out = _validateScannerConfig(c);
+      break;
     default:
       throw ArgumentError('unknown bot type: $type');
   }
+  // PROFIT CURRENCY: the settlement/quote asset realized P&L settles INTO. It is
+  // honored UNIFORMLY by the deal-engine exit path (bot_runner's settlement step),
+  // so preserve it across EVERY bot type (the per-type validators above drop
+  // unknown keys). Normalized to upper-case; omitted entirely when not configured
+  // (then the pair-native quote is the realized currency and no settlement fires).
+  final pc = c == null ? null : c['profitCurrency'];
+  if (pc is String && pc.trim().isNotEmpty) {
+    out['profitCurrency'] = pc.trim().toUpperCase();
+  }
+  return out;
 }
 
 /// scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md): config is validated by

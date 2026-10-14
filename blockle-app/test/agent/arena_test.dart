@@ -169,6 +169,78 @@ void main() {
     }
   });
 
+  // =========================================================================
+  // DEMO SCENARIO stays the deterministic fixture replay (unchanged numbers)
+  // =========================================================================
+  test('runScenario (demo) is flagged non-live, skips nothing, and never awaits data', () {
+    final res = A.runScenario({
+      'scenario': 'bull', 'prices': V['scenarios']['bull'],
+      'bot': {'type': 'dca', 'config': V['canonical'][0]['botConfig'], 'pair': 'BLOCK/USDC', 'decimals': 8},
+    });
+    expect(res.live, false);
+    expect(res.skippedTicks, 0);
+    expect(res.awaitingData, false);
+  });
+
+  // =========================================================================
+  // LIVE MARKET MODE (play money on REAL marks) — A.runLive. Ticks the SAME pure
+  // engine on INJECTED real marks, labeled PLAY, NEVER broadcasting / touching real
+  // funds, and NEVER fabricating a price (a no-data tick is skipped).
+  // =========================================================================
+  test('arena LIVE mode ticks the strategy on INJECTED REAL marks (play money) and never broadcasts', () {
+    // a REAL price path (the SAME shape ctx.prices yields): a dip then a recovery
+    // through the DCA take-profit. These are injected real marks, NOT the fixture.
+    final marks = [100, 99, 98, 97, 96.5, 97, 98.5, 100, 101.5, 103, 104];
+    final res = A.runLive({
+      'bot': {'type': 'dca', 'config': V['canonical'][0]['botConfig'], 'pair': 'BLOCK/USDC', 'decimals': 8},
+      'marks': marks,
+    });
+    expect(res.live, true, reason: 'flagged as a live-market run');
+    expect(res.real, false, reason: 'play money — never real');
+    expect(res.playLabel, 'PLAY');
+    expect(res.awaitingData, false, reason: 'it had real marks to tick on');
+    expect(res.fills.isNotEmpty, true, reason: 'the strategy traded on the real marks (play money)');
+  });
+
+  test('arena LIVE mode NEVER fabricates a price: a no-data tick is skipped (awaiting data)', () {
+    // null / NaN / <=0 are NO DATA — skipped, never invented into a fake price.
+    final marks = [null, 100, double.nan, 98, 0, 97, -5, 103, null];
+    final res = A.runLive({
+      'bot': {'type': 'dca', 'config': V['canonical'][0]['botConfig'], 'pair': 'BLOCK/USDC', 'decimals': 8},
+      'marks': marks,
+    });
+    expect(res.skippedTicks, 5, reason: 'the 5 no-data ticks (null, NaN, 0, -5, null) were skipped');
+    expect(res.equityCurveUc.length, 4, reason: 'only the 4 real marks produced equity points');
+    // fills only ever occur on real marks: every fill index is a real-mark tick.
+    final realIdx = {1, 3, 5, 7};
+    for (final f in res.fills) {
+      expect(realIdx.contains(f['t']), true, reason: 'fill ${f['t']} sits on a REAL mark, never a fabricated one');
+    }
+
+    // with ZERO real marks the run is simply awaiting data — no trade, no fabrication.
+    final empty = A.runLive({
+      'bot': {'type': 'dca', 'config': V['canonical'][0]['botConfig'], 'pair': 'BLOCK/USDC', 'decimals': 8},
+      'marks': [null, double.nan, 0],
+    });
+    expect(empty.awaitingData, true);
+    expect(empty.fills.isEmpty, true);
+    expect(empty.score, 0);
+  });
+
+  test('arena live mode uses PLAY balances only — there is no runLive path to real funds', () {
+    final marks = [100, 101, 102, 103];
+    final res = A.runLive({
+      'bot': {'type': 'dca', 'config': V['canonical'][0]['botConfig'], 'pair': 'BLOCK/USDC', 'decimals': 8},
+      'marks': marks,
+    });
+    expect(res.disclaimer.toLowerCase(), contains('simulation'));
+    expect(res.real, false);
+    final pb = A.PlayBalance();
+    pb.applyPnl(res.finalPnlUc);
+    expect(pb.real, false);
+    expect(() => pb.convertToReal(), throwsA(predicate((e) => '$e'.contains('never be converted'))));
+  });
+
   test('score formula is the pinned round1(retPct - 0.5*ddPct) integer math', () {
     // +10% return, 0 drawdown -> 10.0
     expect(A.score(B.microUsd(100), BigInt.zero, B.microUsd(1000)),

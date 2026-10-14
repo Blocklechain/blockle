@@ -258,3 +258,61 @@ test('runs are deterministic: identical (scenario, config) -> identical score + 
   assert.strictEqual(a.maxDrawdownUc.toString(), b.maxDrawdownUc.toString());
   assert.strictEqual(JSON.stringify(a.fills), JSON.stringify(b.fills));
 });
+
+// ===========================================================================
+// LIVE MARKET MODE (play money on REAL marks) — A.runLive. Ticks the SAME pure
+// engine on INJECTED real marks, labeled PLAY, NEVER broadcasting / touching real
+// funds, and NEVER fabricating a price (a no-data tick is skipped).
+// ===========================================================================
+test('arena LIVE mode ticks the strategy on INJECTED REAL marks (play money) and never broadcasts', () => {
+  // poison the environment with value-moving spies — runLive must never call them.
+  const calls = { commit: 0, broadcast: 0, gateConfirm: 0, recordSpend: 0, reserve: 0, dispatch: 0, sign: 0 };
+  const guard = {};
+  for (const k of Object.keys(calls)) guard[k] = () => { calls[k]++; throw new Error('Arena live must never call ' + k); };
+
+  // a REAL price path (the SAME shape ctx.prices yields): a dip then a recovery
+  // through the DCA take-profit. These are injected real marks, NOT the fixture.
+  const marks = [100, 99, 98, 97, 96.5, 97, 98.5, 100, 101.5, 103, 104];
+  const res = A.runLive({
+    bot: { type: 'dca', config: V.canonical[0].botConfig, pair: 'BLOCK/USDC', decimals: 8 },
+    marks, guard,
+  });
+
+  assert.equal(res.live, true, 'flagged as a live-market run');
+  assert.equal(res.real, false, 'play money — never real');
+  assert.equal(res.playLabel, 'PLAY');
+  assert.equal(res.awaitingData, false, 'it had real marks to tick on');
+  assert.ok(res.fills.length >= 1, 'the strategy traded on the real marks (play money)');
+  // the whole point: NONE of the value-moving spies were ever touched.
+  for (const k of Object.keys(calls)) assert.equal(calls[k], 0, k + ' was called');
+});
+
+test('arena LIVE mode NEVER fabricates a price: a no-data tick is skipped (awaiting data)', () => {
+  // null / NaN / <=0 are NO DATA — skipped, never invented into a fake price.
+  const marks = [null, 100, NaN, 98, 0, 97, -5, 103, null];
+  const res = A.runLive({ bot: { type: 'dca', config: V.canonical[0].botConfig, pair: 'BLOCK/USDC', decimals: 8 }, marks });
+  assert.equal(res.skippedTicks, 5, 'the 5 no-data ticks (null, NaN, 0, -5, null) were skipped');
+  assert.equal(res.equityCurveUc.length, 4, 'only the 4 real marks produced equity points');
+  // fills only ever occur on real marks: every fill index is a real-mark tick.
+  const realIdx = new Set([1, 3, 5, 7]);
+  for (const f of res.fills) assert.ok(realIdx.has(f.t), 'fill ' + f.t + ' sits on a REAL mark, never a fabricated one');
+
+  // with ZERO real marks the run is simply awaiting data — no trade, no fabrication.
+  const empty = A.runLive({ bot: { type: 'dca', config: V.canonical[0].botConfig, pair: 'BLOCK/USDC', decimals: 8 }, marks: [null, NaN, 0] });
+  assert.equal(empty.awaitingData, true);
+  assert.equal(empty.fills.length, 0);
+  assert.equal(empty.score, 0);
+});
+
+test('arena live mode uses PLAY balances only — there is no runLive path to real funds', () => {
+  const marks = [100, 101, 102, 103];
+  const res = A.runLive({ bot: { type: 'dca', config: V.canonical[0].botConfig, pair: 'BLOCK/USDC', decimals: 8 }, marks });
+  // the result carries the honesty disclaimer + PLAY label like every arena output.
+  assert.ok(res.disclaimer.toLowerCase().includes('simulation'));
+  assert.equal(res.real, false);
+  // a PlayBalance still cannot convert to anything real.
+  const pb = new A.PlayBalance();
+  pb.applyPnl(res.finalPnlUc);
+  assert.equal(pb.real, false);
+  assert.throws(() => pb.convertToReal(), /never be converted/);
+});

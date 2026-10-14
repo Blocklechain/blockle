@@ -626,6 +626,167 @@ void main() {
       expect(su.tools.commits, before);
     });
   });
+
+  // =========================================================================
+  // UNIFORM SETTLEMENT STEP (docs/BLOCKLE-BOTS.md §6): whenever a realized
+  // SELL/exit — ANY lane (arb, momentum/take-profit, grid sell) — realizes into
+  // a currency != the bot profitCurrency, the deal-engine exit path emits ONE
+  // additional settlement swap into the profit currency through the SAME value-
+  // moving gate. No route -> keep the native quote AND label realized.currency
+  // with the ACTUAL output (the label never lies). Redundant hop skipped when the
+  // output already == profitCurrency. Paper records but never broadcasts.
+  // =========================================================================
+  group('uniform settlement step (profit currency honored in every lane)', () {
+    BotContext gridCtx(List<num> blockSeq) {
+      var i = 0;
+      final seq = List<num>.from(blockSeq);
+      return BotContext(
+        now: () => 0,
+        network: () => 'testnet',
+        prices: (syms) async {
+          final out = <String, num>{'USDT': 1, 'USDC': 1};
+          if (syms.map((s) => '$s'.toUpperCase()).contains('BLOCK')) {
+            out['BLOCK'] = seq[math.min(i, seq.length - 1)];
+            i++;
+          }
+          return out;
+        },
+      );
+    }
+
+    test('MOMENTUM take-profit: a sell realizing into the native quote emits a committed settlement swap whose output IS the profit currency', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(
+        policy: policy,
+        tools: ft.registry,
+        audit: audit,
+        ctx: BotContext(
+          now: () => 0,
+          network: () => 'testnet',
+          prices: (_) async => {'BLOCK': 100, 'USDT': 1, 'USDC': 1},
+          strategyCtx: StrategyContext(now: () => 0, network: () => 'testnet'),
+        ),
+        strategies: {'momentum': _FakeMomentumSell()},
+      );
+      final bot = runner.add({
+        'type': 'momentum', 'universe': {'pairs': ['BLOCK/USDT']},
+        'config': {'profitCurrency': 'USDC'},
+      });
+      await runner.armLive(bot.id, allocationUsd: 100);
+
+      final rep = await runner.tickBot(bot.id);
+
+      final settle = ft.state.committed
+          .where((c) => c['name'] == 'swap' && (c['args'] as Map)['from'] == 'USDT' && (c['args'] as Map)['to'] == 'USDC')
+          .toList();
+      expect(settle.length, 1, reason: 'the USDT proceeds were settled INTO USDC by ONE committed swap');
+      final ev = (rep['events'] as List).cast<Map<String, dynamic>>();
+      expect(ev.any((e) => e['settlement'] == true && e['to'] == 'USDC'), isTrue,
+          reason: 'the tick reports the final settled currency = profit currency');
+      expect(audit.list().any((e) => e['type'] == 'bot_settle' && e['to'] == 'USDC'), isTrue);
+    });
+
+    test('GRID sell: a sell realizing into the native quote emits a committed settlement swap whose output IS the profit currency', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final bot = runner.add({
+        'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
+        'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},
+      });
+      await runner.armLive(bot.id, allocationUsd: 50);
+
+      await runner.tickBot(bot.id); // seed ladder (mid 1.00)
+      await runner.tickBot(bot.id); // dip to 0.95 -> a grid BUY (place_order) fills, holds inventory
+      await runner.tickBot(bot.id); // rise to 1.05 -> a grid SELL (place_order) realizes USDT, then settles
+
+      final settle = ft.state.committed
+          .where((c) => c['name'] == 'swap' && (c['args'] as Map)['from'] == 'USDT' && (c['args'] as Map)['to'] == 'USDC')
+          .toList();
+      expect(settle.length, 1, reason: 'the grid sell proceeds (USDT) were settled INTO USDC by ONE swap');
+      expect(ft.state.committed.any((c) => c['name'] == 'place_order'), isTrue,
+          reason: 'the grid buy/sell themselves went through the limit-order path');
+      final ps = (bot.state['byPair'] as Map)['BLOCK/USDT'] as Map;
+      expect(ps['realizedCurrency'], 'USDC', reason: 'realized currency reports the FINAL settled currency');
+    });
+
+    test('redundant hop skipped: when a grid sell already realizes the profit currency, NO extra settlement swap fires', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final bot = runner.add({
+        'type': 'grid', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},
+      });
+      await runner.armLive(bot.id, allocationUsd: 50);
+
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+
+      expect(ft.state.committed.any((c) => c['name'] == 'swap'), isFalse,
+          reason: 'proceeds already == profit currency (USDC) -> the redundant settlement hop is skipped');
+      final ps = (bot.state['byPair'] as Map)['BLOCK/USDC'] as Map;
+      expect(ps['realizedCurrency'], 'USDC');
+    });
+
+    test('NO route: a grid sell with no path to the profit currency keeps proceeds native and labels realized.currency honestly (never a false label)', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final bot = runner.add({
+        'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
+        // ZZZ has no price and is not a stablecoin -> no route; the proceeds must
+        // NOT be relabeled as the profit currency it never reached.
+        'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'ZZZ'},
+      });
+      await runner.armLive(bot.id, allocationUsd: 50);
+
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+
+      expect(ft.state.committed.any((c) => c['name'] == 'swap'), isFalse,
+          reason: 'no route -> no fabricated settlement swap');
+      final ps = (bot.state['byPair'] as Map)['BLOCK/USDT'] as Map;
+      expect(ps['realizedCurrency'], 'USDT',
+          reason: 'the label reports the ACTUAL output (USDT), never the unreachable profit currency');
+      expect(audit.list().any((e) => e['type'] == 'bot_settle_skip' && e['reason'] == 'no-route'), isTrue);
+    });
+
+    test('PAPER: the settlement step is recorded but NEVER broadcast', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final bot = runner.add({
+        'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
+        'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},
+      });
+      bot.mode = 'paper';
+      bot.enabled = true;
+
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+      await runner.tickBot(bot.id);
+
+      expect(ft.state.commits, 0, reason: 'PAPER never broadcasts — including the settlement step');
+      expect(audit.list().any((e) => e['type'] == 'bot_settle' && e['mode'] == 'paper'), isTrue,
+          reason: 'the settlement is paper-recorded (not broadcast)');
+      final ps = (bot.state['byPair'] as Map)['BLOCK/USDT'] as Map;
+      expect(ps['realizedCurrency'], 'USDC', reason: 'paper still reports the settled currency');
+    });
+  });
 }
 
 /// A fake momentum strategy for the FIX-EST test: one intent with a null USD
@@ -648,6 +809,28 @@ class _FakeMomentum implements Strategy {
         const StrategyIntent(
           tool: 'swap', args: {'from': 'USDC', 'to': 'BLOCK', 'amount': '2'},
           rationale: 'has estimate', strategy: 'momentum', tag: 'has-est', estUsd: 10, mainnet: false,
+        ),
+      ];
+}
+
+/// A fake momentum strategy that emits a single death-cross SELL (the realize/exit
+/// leg) of held BLOCK into the pair-native quote (USDT). The uniform settlement
+/// step must then convert the USDT proceeds into the bot profit currency (USDC).
+class _FakeMomentumSell implements Strategy {
+  @override
+  String get name => 'momentum';
+  @override
+  String describe() => 'fake momentum sell';
+  @override
+  Map<String, dynamic> get defaults => const {};
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) => params ?? const {};
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async => [
+        const StrategyIntent(
+          tool: 'swap', args: {'from': 'BLOCK', 'to': 'USDT', 'amount': '2000000000'},
+          rationale: 'death cross — sell held BLOCK', strategy: 'momentum',
+          tag: 'mom:BLOCK/USDT:sell', estUsd: 20, mainnet: false,
         ),
       ];
 }

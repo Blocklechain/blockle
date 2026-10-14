@@ -123,6 +123,18 @@
   }
   function clampInt(v, lo, hi, dflt) { return Math.trunc(clampNum(v, lo, hi, dflt)); }
 
+  // PROFIT CURRENCY (shared across lanes): the settlement/quote asset realized
+  // profit settles INTO. Carried through verbatim when the creator set one; left
+  // UNSET otherwise (so configs that never chose one keep their native-quote
+  // behavior — and the deterministic arena fixtures are untouched). The BotRunner
+  // exit path honors it with a uniform settlement swap; see bot-runner.js.
+  function withProfitCurrency(src, out) {
+    if (src && typeof src.profitCurrency === 'string' && src.profitCurrency.trim()) {
+      out.profitCurrency = src.profitCurrency.trim().toUpperCase();
+    }
+    return out;
+  }
+
   function validateDcaConfig(c) {
     c = c || {};
     const out = {
@@ -139,20 +151,21 @@
       startCondition: ['asap', 'signal', 'dip'].includes(c.startCondition) ? c.startCondition : 'asap',
       dipPct: Math.max(0, Number(c.dipPct != null ? c.dipPct : 0)),
     };
-    return out;
+    return withProfitCurrency(c, out);
   }
   function validateGridConfig(c) {
     c = c || {};
     if (c.lowerPrice == null || c.upperPrice == null) throw new Error('grid requires lowerPrice and upperPrice');
     const lower = Number(c.lowerPrice), upper = Number(c.upperPrice);
     if (!(lower > 0) || !(upper > lower)) throw new Error('grid requires 0 < lowerPrice < upperPrice');
-    return {
+    const out = {
       lowerPrice: lower, upperPrice: upper,
       gridCount: clampInt(c.gridCount != null ? c.gridCount : 6, 2, 50, 6),
       totalUsd: Math.max(0, Number(c.totalUsd != null ? c.totalUsd : 60)),
       takeProfitPct: Math.max(0, Number(c.takeProfitPct != null ? c.takeProfitPct : 0)),
       stopLossPct: Math.max(0, Number(c.stopLossPct != null ? c.stopLossPct : 0)),
     };
+    return withProfitCurrency(c, out);
   }
   function validateSmartTradeConfig(c) {
     c = c || {};
@@ -161,12 +174,13 @@
     let tps = Array.isArray(c.takeProfits) && c.takeProfits.length ? c.takeProfits : [{ pct: 5, sharePct: 100 }];
     tps = tps.map((t) => ({ pct: Math.max(0, Number(t.pct)), sharePct: clampNum(t.sharePct, 0, 100, 100) }));
     const sl = c.stopLoss && typeof c.stopLoss === 'object' ? c.stopLoss : { pct: 0, trailing: false };
-    return {
+    const out = {
       amountUsd: Math.max(0, Number(c.amountUsd != null ? c.amountUsd : 20)),
       entry: { kind, price: entry.price != null ? Number(entry.price) : null },
       takeProfits: tps,
       stopLoss: { pct: Math.max(0, Number(sl.pct || 0)), trailing: !!sl.trailing },
     };
+    return withProfitCurrency(c, out);
   }
   function validateSignalConfig(c) {
     c = c || {};
@@ -182,7 +196,7 @@
   function validateScheduledConfig(c) {
     // rebalance / momentum reuse the strategy planners; carry their params through.
     c = c || {};
-    return Object.assign({}, c);
+    return withProfitCurrency(c, Object.assign({}, c));
   }
   // scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md): config is validated by
   // the AgentScanner evaluator itself (shared across the three wallets), so here we

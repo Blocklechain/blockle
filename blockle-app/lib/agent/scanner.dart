@@ -76,6 +76,14 @@ class ScanIntent {
   final double scannerScore;
   final String rationale;
 
+  /// The settlement/quote asset this leg realizes profit INTO (the scanner's
+  /// profit currency). Null until the selection loop tags the worthy intents.
+  final String? settleTo;
+
+  /// Whether this leg is the take-profit / realize EXIT (the sell leg) that routes
+  /// its proceeds into the profit currency.
+  final bool exit;
+
   const ScanIntent({
     required this.tool,
     required this.args,
@@ -87,7 +95,30 @@ class ScanIntent {
     this.group,
     this.mainnet = false,
     this.rationale = '',
+    this.settleTo,
+    this.exit = false,
   });
+
+  /// A copy tagged with the settlement currency + exit flag (the worthy-selection
+  /// step fills these in once the profit currency is known). On the EXIT (sell /
+  /// take-profit) leg the OUTPUT asset is rewritten to the profit currency: a direct
+  /// sell when the pair quote already equals it, otherwise the venue layer resolves
+  /// the extra hop into it. The emitted swap args therefore actually change with the
+  /// chosen profit currency — the exit realizes proceeds INTO it, not just a label.
+  ScanIntent tagged({required String settleTo, required bool exit}) => ScanIntent(
+        tool: tool,
+        args: exit ? {...args, 'to': settleTo} : args,
+        estUsd: estUsd,
+        strategy: strategy,
+        tag: tag,
+        scannerPair: scannerPair,
+        scannerScore: scannerScore,
+        group: group,
+        mainnet: mainnet,
+        rationale: rationale,
+        settleTo: settleTo,
+        exit: exit,
+      );
 
   Map<String, dynamic> toJson() => {
         'tool': tool,
@@ -98,6 +129,8 @@ class ScanIntent {
         if (group != null) 'group': group,
         'scannerPair': scannerPair,
         'scannerScore': scannerScore,
+        if (settleTo != null) 'settleTo': settleTo,
+        if (settleTo != null) 'exit': exit,
       };
 }
 
@@ -114,6 +147,7 @@ class ScanResult {
   final num? remainingUsd;
   final int minProfitBps;
   final int maxConcurrentPairs;
+  final String profitCurrency; // the settlement/quote asset P&L realizes INTO
 
   const ScanResult({
     required this.candidates,
@@ -125,6 +159,7 @@ class ScanResult {
     required this.remainingUsd,
     required this.minProfitBps,
     required this.maxConcurrentPairs,
+    this.profitCurrency = 'USDC',
   });
 }
 
@@ -135,11 +170,22 @@ class AgentScanner {
     'maxConcurrentPairs': 3,
     'perTradeUsd': 20,
     'allocationUsd': 0,
+    // PROFIT CURRENCY — the settlement/quote asset the autopilot realizes profit
+    // INTO, denominates P&L in, and routes take-profit exits to. Default USDC. In
+    // AI-chooses-pairs mode the user picks it; in manual mode it derives from the
+    // chosen pair's quote. Scoring is unchanged (already USD-normalized); this names
+    // the asset the realized profit settles to.
+    'profitCurrency': 'USDC',
     'strategies': ['arbitrage', 'momentum', 'grid'],
     // cost model (mirrors strategies.arbitrage defaults + floors)
     'gasBufferUsd': 2,
     'slippageBps': 10,
     'agentFeeBps': 5,
+    // SETTLEMENT LEG — the extra venue fee (bps) of the hop that converts a pair's
+    // native quote INTO the profit currency when they differ. Charged (with another
+    // agent leg + slippage) against the net edge so a pair that is only profitable
+    // in its native quote but net-negative after settling is NOT traded.
+    'settlementFeeBps': 30,
     // momentum + grid sizing
     'momentumShortN': 10,
     'momentumLongN': 30,
@@ -178,6 +224,29 @@ class AgentScanner {
 
   static int _decimalsFor(String sym) => _kDefaultDecimals[sym.toUpperCase()] ?? 8;
 
+  // Settlement into the PROFIT CURRENCY. Returns {route, costBps}:
+  //   - quote == profitCurrency  -> a DIRECT sell: route true, zero extra cost.
+  //   - quote != profitCurrency  -> an extra hop converting the proceeds INTO the
+  //     profit currency: route true ONLY if a price for it is known for this
+  //     candidate (stablecoin $1, or the candidate's prices[]), and its cost is the
+  //     extra venue fee + one 0.05% agent leg + conversion slippage (bps).
+  //   - no price known           -> NO route: route false (the caller skips it and
+  //     audits the reason; a price is NEVER fabricated to force the trade).
+  static Map<String, dynamic> settleInto(
+      String quote, Map<String, dynamic> c, Map<String, dynamic> cfg) {
+    final pc = cfg['profitCurrency'] as String;
+    if (quote.toUpperCase() == pc) return const {'route': true, 'costBps': 0.0};
+    final prices = (c['prices'] is Map) ? c['prices'] as Map : const {};
+    final priced = _num(prices[pc], double.nan) > 0;
+    if (_kStableUsd[pc] == null && !priced) {
+      return const {'route': false, 'costBps': 0.0};
+    }
+    final costBps = (cfg['settlementFeeBps'] as num) +
+        (cfg['agentFeeBps'] as num) +
+        (cfg['slippageBps'] as num);
+    return {'route': true, 'costBps': costBps.toDouble()};
+  }
+
   // Coefficient of variation (population stdev / mean) of a price history. 0 when
   // there is too little data or a non-positive mean (never fabricated).
   static double coeffVar(dynamic history) {
@@ -214,6 +283,7 @@ class AgentScanner {
     // can never price a loss-maker as a winner by configuring them below reality.
     p['slippageBps'] = math.max(5, _trunc(p['slippageBps'], 10));
     p['agentFeeBps'] = math.max(5, _trunc(p['agentFeeBps'], 5));
+    p['settlementFeeBps'] = math.max(0, _trunc(p['settlementFeeBps'], 30));
     p['momentumShortN'] = math.max(1, _trunc(p['momentumShortN'], 10));
     p['momentumLongN'] = math.max(2, _trunc(p['momentumLongN'], 30));
     if ((p['momentumShortN'] as int) >= (p['momentumLongN'] as int)) {
@@ -224,6 +294,10 @@ class AgentScanner {
     p['liquidityNorm'] = math.max(1, _num(p['liquidityNorm'], 100000));
     p['volPenaltyK'] = math.max(0, _num(p['volPenaltyK'], 2.0));
     p['flagPenalty'] = math.max(0, _num(p['flagPenalty'], 0.25));
+    final pc = p['profitCurrency'];
+    p['profitCurrency'] = (pc is String && pc.trim().isNotEmpty)
+        ? pc.trim().toUpperCase()
+        : 'USDC';
     final strategies = p['strategies'];
     p['strategies'] = (strategies is List && strategies.isNotEmpty)
         ? strategies.map(_lc).toList()
@@ -451,11 +525,38 @@ class AgentScanner {
     final Vf = 1 / (1 + (cfg['volPenaltyK'] as num) * coeffVar(c['history']));
     final nSoft = flags.length; // soft flags (hard rejects already returned above)
     final Ff = math.max(0, 1 - (cfg['flagPenalty'] as num) * nSoft).toDouble();
+    final factors = {'Lf': round6(Lf), 'Vf': round6(Vf), 'Ff': round6(Ff)};
     final rawEdge = (best['edgeBps'] as num).toDouble();
-    final score = round6(math.max(0.0, rawEdge) * Lf * Vf * Ff);
+
+    // SETTLEMENT INTO THE PROFIT CURRENCY — the score must be net of the cost of
+    // converting the realized proceeds into the profit currency (zero when the pair
+    // quote already equals it). A pair profitable in its native quote but
+    // net-negative after settling is NOT worthy. If no route to the profit currency
+    // exists for this candidate it is skipped (audited) — never a fabricated price.
+    String quoteSym = '';
+    try {
+      quoteSym = _splitPair('${c['pair']}')[1];
+    } catch (_) {}
+    final settle = settleInto(quoteSym, c, cfg);
+    if (settle['route'] == false) {
+      return {
+        'pair': c['pair'],
+        'chain': c['chain'],
+        'strategy': best['strategy'],
+        'edgeBps': round6(rawEdge),
+        'score': 0,
+        'reason': 'no-route',
+        'flags': flags,
+        'factors': factors,
+        'eval': best,
+        'candidate': c,
+      };
+    }
+    final netEdge = rawEdge - (settle['costBps'] as double);
+    final score = round6(math.max(0.0, netEdge) * Lf * Vf * Ff);
 
     String reason;
-    if (rawEdge <= 0) {
+    if (netEdge <= 0) {
       reason = 'net-negative';
     } else if (score < (cfg['minProfitBps'] as num)) {
       reason = 'below-threshold';
@@ -467,11 +568,11 @@ class AgentScanner {
       'pair': c['pair'],
       'chain': c['chain'],
       'strategy': best['strategy'],
-      'edgeBps': round6(rawEdge),
+      'edgeBps': round6(netEdge),
       'score': score,
       'reason': reason,
       'flags': flags,
-      'factors': {'Lf': round6(Lf), 'Vf': round6(Vf), 'Ff': round6(Ff)},
+      'factors': factors,
       'eval': best,
       'candidate': c,
     };
@@ -650,6 +751,17 @@ class AgentScanner {
         ? math.max(0.0, alloc.toDouble() - committed.toDouble())
         : double.infinity;
 
+    final profitCurrency = cfg['profitCurrency'] as String;
+    // USD value of one unit of the profit currency (for denominating realized P&L
+    // in it). Stablecoins are $1; otherwise use a candidate-provided price; fall
+    // back to $1 (NEVER fabricated into a trade — this only labels the P&L unit).
+    num profitCurUsd(Map<String, dynamic>? c) {
+      if (_kStableUsd[profitCurrency] != null) return _kStableUsd[profitCurrency]!;
+      final prices = (c != null && c['prices'] is Map) ? c['prices'] as Map : null;
+      final p = prices != null ? _num(prices[profitCurrency], double.nan) : double.nan;
+      return (p > 0) ? p : 1;
+    }
+
     final decisions = <Map<String, dynamic>>[];
     final allIntents = <ScanIntent>[];
     var picked = 0;
@@ -682,11 +794,32 @@ class AgentScanner {
       }
       remaining -= costUsd;
       picked += 1;
-      allIntents.addAll(intents);
+      // Realized P&L denominated in the PROFIT CURRENCY: expected net profit =
+      // executed notional * net-edge; converted to profit-currency units. Exits
+      // (sell / take-profit legs) route their proceeds INTO the profit currency.
+      final ev = row['eval'] as Map<String, dynamic>?;
+      final evExec = ev != null ? _num(ev['execUsd'], double.nan) : double.nan;
+      final notionalUsd = evExec.isFinite ? evExec : (cfg['perTradeUsd'] as num);
+      final profitUsd = round6(notionalUsd * ((row['edgeBps'] as num) / 10000));
+      final pcUsd = profitCurUsd(row['candidate'] as Map<String, dynamic>?);
+      final realized = {
+        'currency': profitCurrency,
+        'profitUsd': profitUsd,
+        'profit': round6(profitUsd / pcUsd),
+      };
+      // tag each leg with the settlement currency + whether it is the exit leg.
+      final tagged = intents
+          .map((it) => it.tagged(
+                settleTo: profitCurrency,
+                exit: RegExp(r':sell$').hasMatch(it.tag),
+              ))
+          .toList();
+      allIntents.addAll(tagged);
       final d = _trim(row, 'worthy');
       d['traded'] = true;
-      d['intents'] = intents.map((i) => i.toJson()).toList();
+      d['intents'] = tagged.map((i) => i.toJson()).toList();
       d['costUsd'] = (costUsd * 1e6).round() / 1e6;
+      d['realized'] = realized;
       decisions.add(d);
     }
 
@@ -709,6 +842,7 @@ class AgentScanner {
           hasAllocationCap ? math.max(0, (remaining * 1e6).round() / 1e6) : null,
       minProfitBps: cfg['minProfitBps'] as int,
       maxConcurrentPairs: cfg['maxConcurrentPairs'] as int,
+      profitCurrency: profitCurrency,
     );
   }
 

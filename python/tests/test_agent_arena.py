@@ -310,3 +310,73 @@ def test_runs_are_deterministic():
     assert str(a["finalPnlUc"]) == str(b["finalPnlUc"])
     assert str(a["maxDrawdownUc"]) == str(b["maxDrawdownUc"])
     assert json.dumps(a["fills"]) == json.dumps(b["fills"])
+
+
+# ========================================================================= #
+# LIVE MARKET MODE (play money on REAL marks) — A.run_live. Ticks the SAME   #
+# pure engine on INJECTED real marks, labeled PLAY, NEVER broadcasting /     #
+# touching real funds, and NEVER fabricating a price (no-data ticks skipped).#
+# ========================================================================= #
+def _dca_spec():
+    return {"type": "dca", "config": V["canonical"][0]["botConfig"],
+            "pair": "BLOCK/USDC", "decimals": 8}
+
+
+def test_arena_live_mode_ticks_on_injected_real_marks_and_never_broadcasts():
+    calls = {"commit": 0, "broadcast": 0, "gateConfirm": 0, "recordSpend": 0,
+             "reserve": 0, "dispatch": 0, "sign": 0}
+
+    def make_spy(name):
+        def spy(*a, **k):
+            calls[name] += 1
+            raise RuntimeError("Arena live must never call " + name)
+        return spy
+
+    guard = {k: make_spy(k) for k in calls}
+    # a REAL price path (the SAME shape ctx.prices yields): a dip then recovery.
+    marks = [100, 99, 98, 97, 96.5, 97, 98.5, 100, 101.5, 103, 104]
+    res = A.run_live({"bot": _dca_spec(), "marks": marks, "guard": guard})
+
+    assert res["live"] is True
+    assert res["real"] is False
+    assert res["playLabel"] == "PLAY"
+    assert res["awaitingData"] is False
+    assert len(res["fills"]) >= 1
+    for k in calls:
+        assert calls[k] == 0, k + " was called"
+
+
+def test_arena_live_mode_never_fabricates_a_price_no_data_tick_is_skipped():
+    marks = [None, 100, float("nan"), 98, 0, 97, -5, 103, None]
+    res = A.run_live({"bot": _dca_spec(), "marks": marks})
+    assert res["skippedTicks"] == 5  # None, NaN, 0, -5, None
+    assert len(res["equityCurveUc"]) == 4  # only the 4 real marks
+    real_idx = {1, 3, 5, 7}
+    for f in res["fills"]:
+        assert f["t"] in real_idx, "fill sits on a REAL mark, never a fabricated one"
+
+    empty = A.run_live({"bot": _dca_spec(), "marks": [None, float("nan"), 0]})
+    assert empty["awaitingData"] is True
+    assert empty["fills"] == []
+    assert empty["score"] == 0
+
+
+def test_arena_live_mode_uses_play_balances_only_no_path_to_real_funds():
+    res = A.run_live({"bot": _dca_spec(), "marks": [100, 101, 102, 103]})
+    assert "simulation" in res["disclaimer"].lower()
+    assert res["real"] is False
+    pb = A.PlayBalance()
+    pb.apply_pnl(res["finalPnlUc"])
+    assert pb.real is False
+    with pytest.raises(Exception, match="never be converted"):
+        pb.convert_to_real()
+
+
+def test_demo_scenario_still_matches_fixture_after_live_refactor():
+    # the fixed-fixture path is unchanged: demo runs are flagged not-live, skip
+    # nothing, and reproduce the pinned score for a canonical (scenario, config).
+    res = A.run_scenario({"scenario": "bull", "prices": V["scenarios"]["bull"],
+                          "bot": _dca_spec()})
+    assert res["live"] is False
+    assert res["skippedTicks"] == 0
+    assert res["awaitingData"] is False

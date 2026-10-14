@@ -215,25 +215,44 @@
     return { bot: bot, type: bot.type, cfg: cfg, bcfg: bcfg, bd: bd, pair: pair };
   }
 
-  // Run a bot config over a price path. PURE: returns fills + equity curve + the
-  // score inputs. opts.guard (spies) is accepted but NEVER called — Arena has no
-  // gate/broadcast path, so any such spy stays at zero (asserted by tests).
-  function runScenario(opts) {
-    opts = opts || {};
-    var B = dep('AgentBots', './bots.js');
-    var prices = opts.prices;
-    if (!prices && opts.vectors && opts.scenario) prices = pricePath(opts.vectors, opts.scenario);
-    if (!Array.isArray(prices) || !prices.length) throw new Error('arena.runScenario: need a price path (prices[] or vectors+scenario)');
+  // A real, positive mark? (null/NaN/<=0 means NO DATA — never fabricate a price.)
+  function validMark(p) { var n = Number(p); return (p != null && isFinite(n) && n > 0); }
 
+  // Drive the PURE deal engine over a price path. SHARED by both arena modes:
+  //   • DEMO SCENARIO (runScenario): the deterministic fixture replay — the
+  //     cross-wallet parity/test contract (docs/arena-vectors.json). Every price is
+  //     valid, so NOTHING is skipped and the numbers are byte-identical to before.
+  //   • LIVE MARKET (runLive): the SAME engine ticked on REAL marks (play money).
+  //     A tick with NO DATA (null/NaN/<=0) is SKIPPED ("awaiting data") — never a
+  //     fabricated price. Play money only: there is no gate/broadcast path here, so
+  //     opts.guard spies (if poisoned) stay at zero (asserted by tests).
+  // PURE either way: returns fills + equity curve + the score inputs.
+  function runPath(opts, pricesRaw, isLive) {
+    var B = dep('AgentBots', './bots.js');
     var r = resolveBot(B, opts.bot || opts);
     var type = r.type, cfg = r.cfg, bcfg = r.bcfg, bd = r.bd;
 
-    var midUc = B.microUsd(prices[0]);
+    // anchor the sim on the FIRST real mark (never fabricated). With no real mark
+    // at all, the strategy is simply awaiting data — a zeroed, no-trade result.
+    var firstValid = null;
+    for (var fi = 0; fi < pricesRaw.length; fi++) { if (validMark(pricesRaw[fi])) { firstValid = Number(pricesRaw[fi]); break; } }
+    if (firstValid == null) {
+      return {
+        type: type, pair: r.pair, decimals: bd,
+        fills: [], equityCurveUc: [], finalPnlUc: 0n, maxDrawdownUc: 0n, maxCostBasisUc: 0n,
+        retTenthPct: 0n, ddTenthPct: 0n, scoreTenths: 0n, score: 0,
+        dealCount: 0, closedDealCount: 0, skippedTicks: pricesRaw.length,
+        awaitingData: true, live: !!isLive, playLabel: PLAY_LABEL, real: false, disclaimer: DISCLAIMER,
+      };
+    }
+
+    var midUc = B.microUsd(firstValid);
     var dealSeq = 0;
     var current = newDeal(B, type, 'arena:' + type + ':' + (++dealSeq), cfg, midUc, bd, 0);
     var closedDeals = [];
     var fills = [];
     var equityCurveUc = [];
+    var skippedTicks = 0;
 
     var realizedClosedUc = 0n;   // sum of realized from CLOSED deals
     var maxCostBasisUc = 0n;     // peak cost deployed (held-inventory basis)
@@ -247,8 +266,9 @@
     var maxDeals = (opts.maxDeals != null && isFinite(opts.maxDeals)) ? Math.max(1, Math.trunc(opts.maxDeals)) : Infinity;
     var reopen = (type === 'dca' || type === 'smarttrade'); // grid is one deal
 
-    for (var ti = 0; ti < prices.length; ti++) {
-      var markUc = B.microUsd(prices[ti]);
+    for (var ti = 0; ti < pricesRaw.length; ti++) {
+      if (!validMark(pricesRaw[ti])) { skippedTicks++; continue; } // NO DATA — skip, never fabricate
+      var markUc = B.microUsd(Number(pricesRaw[ti]));
       var now = ti + 1; // synthetic monotonic sim clock (NOT wall time)
 
       if (!current && reopen && dealSeq < maxDeals) {
@@ -312,10 +332,36 @@
       score: sc.score,
       dealCount: closedDeals.length + (current && current.status !== 'closed' ? 1 : 0),
       closedDealCount: closedDeals.length,
+      skippedTicks: skippedTicks,
+      awaitingData: equityCurveUc.length === 0,
+      live: !!isLive,
       playLabel: PLAY_LABEL,
       real: false,
       disclaimer: DISCLAIMER,
     };
+  }
+
+  // DEMO SCENARIO (fixed fixture) — the deterministic parity/test contract. A price
+  // path is REQUIRED (prices[] or vectors+scenario); every point is valid.
+  function runScenario(opts) {
+    opts = opts || {};
+    var prices = opts.prices;
+    if (!prices && opts.vectors && opts.scenario) prices = pricePath(opts.vectors, opts.scenario);
+    if (!Array.isArray(prices) || !prices.length) throw new Error('arena.runScenario: need a price path (prices[] or vectors+scenario)');
+    return runPath(opts, prices, false);
+  }
+
+  // LIVE MARKET (play money) — tick the SAME strategy on REAL marks fed by the UI
+  // from ctx.prices (the exchange/venue marks the live bots + scanner use). PLAY
+  // balances only: there is no gate/broadcast/real-funds path here (zero real
+  // value, so no gate is needed). A mark that is absent is SKIPPED ("awaiting
+  // data") — a price is NEVER fabricated. opts.marks: an array of real marks
+  // (null/NaN/<=0 where a market had no data).
+  function runLive(opts) {
+    opts = opts || {};
+    var marks = opts.marks != null ? opts.marks : opts.prices;
+    if (!Array.isArray(marks)) throw new Error('arena.runLive: need injected real marks[] (play money)');
+    return runPath(opts, marks, true);
   }
 
   // ===========================================================================
@@ -551,8 +597,8 @@
     PlayBalance: PlayBalance,
     // scenario feed
     loadScenarios: loadScenarios, pricePath: pricePath, generatePath: generatePath,
-    // run + score
-    runScenario: runScenario, score: score,
+    // run + score — demo (fixed fixture) + live (play money on real marks)
+    runScenario: runScenario, runLive: runLive, score: score,
     // xp/levels/missions/badges
     LEVELS: LEVELS, xpForRun: xpForRun, levelForXp: levelForXp,
     MISSIONS: MISSIONS, missionById: missionById, checkMission: checkMission, completedMissions: completedMissions,

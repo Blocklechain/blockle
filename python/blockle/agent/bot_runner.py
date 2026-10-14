@@ -430,9 +430,15 @@ class BotRunner:
                     break  # skipped/blocked/declined — stop this pair's cascade this tick
                 fill["bd"] = bd
                 self._engine_apply(type_, ps["deal"], bcfg, cfg, order, fill, now)
-                events.append({"pair": pair, "action": order["kind"], "side": order["side"],
-                               "qty": str(fill["qty"]), "priceUc": str(fill["priceUc"]),
-                               "paper": bool(fill.get("paper"))})
+                ev = {"pair": pair, "action": order["kind"], "side": order["side"],
+                      "qty": str(fill["qty"]), "priceUc": str(fill["priceUc"]),
+                      "paper": bool(fill.get("paper"))}
+                if fill.get("side") == "sell":
+                    # the ACTUAL currency the realized proceeds settled into (never a
+                    # false label — equals profitCurrency only when a route existed).
+                    ev["settleCurrency"] = fill.get("settleCurrency")
+                    ev["settled"] = bool(fill.get("settled"))
+                events.append(ev)
 
                 if ps["deal"]["status"] == "closed":
                     self._book_close(bot, ps, now)
@@ -596,7 +602,12 @@ class BotRunner:
             await self._audit({"type": "bot_paper_fill", "bot": bot.id, "side": "sell", "kind": order["kind"],
                                "pair": m["base"] + "/" + m["quote"], "qty": str(qty),
                                "priceUc": str(exec_price_uc), "proceedsUc": str(proceeds_uc)})
-            return {"side": "sell", "qty": qty, "priceUc": exec_price_uc, "proceedsUc": proceeds_uc, "paper": True}
+            # UNIFORM SETTLEMENT (paper): proceeds land in the quote; convert into the
+            # bot's profitCurrency (recorded, NEVER broadcast).
+            settle = await self._settle_exit(bot, m["quote"], proceeds_uc, bot.profit_currency,
+                                             mainnet, True)
+            return {"side": "sell", "qty": qty, "priceUc": exec_price_uc, "proceedsUc": proceeds_uc,
+                    "paper": True, "settleCurrency": settle["currency"], "settled": settle["settled"]}
 
         if tool_name == "place_order":
             args = {"market": m["base"] + "/" + m["quote"], "side": "sell", "type": "limit",
@@ -614,8 +625,14 @@ class BotRunner:
                                "reason": r.get("reason") if r else None})
             return None
         res = r["result"]
+        # UNIFORM SETTLEMENT (live): the sell's proceeds (quote) are converted into the
+        # bot's profitCurrency via ONE additional gated swap (skipped when the quote
+        # already IS the profitCurrency; honest native-quote fallback with no route).
+        settle = await self._settle_exit(bot, m["quote"], proceeds_uc, bot.profit_currency,
+                                         mainnet, False)
         return {"side": "sell", "qty": qty, "priceUc": exec_price_uc, "proceedsUc": proceeds_uc,
-                "txid": r.get("txid"), "orderId": res.get("orderId") if isinstance(res, dict) else None}
+                "txid": r.get("txid"), "orderId": res.get("orderId") if isinstance(res, dict) else None,
+                "settleCurrency": settle["currency"], "settled": settle["settled"]}
 
     # The ONE gate call: temporarily set policy.auto_approve_under_usd = remaining
     # allocation so an order WITHIN allocation auto-approves through the SAME gate
@@ -645,6 +662,104 @@ class BotRunner:
             return {"result": res, "txid": txid, "agentFee": disp.get("agentFee")}
         finally:
             self.policy.auto_approve_under_usd = prev_auto
+
+    # =========================================================================
+    # THE UNIFORM SETTLEMENT STEP (every lane — arb / momentum / grid) ---------
+    # =========================================================================
+    # A realized SELL/exit lands proceeds in the pair's native quote. If that is
+    # not the bot's profitCurrency, convert it with ONE additional swap through the
+    # SAME value-moving gate (allocation envelope, allowlist, security pre-sign,
+    # 0.05% fee, mainnet gate). HONESTY over optimism:
+    #   * output already == profitCurrency  -> skip the redundant hop (arb case).
+    #   * no profitCurrency set              -> no hop (realize into native quote).
+    #   * no priceable route to profitCurrency (not a stablecoin, no real quote)
+    #     -> DO NOT fabricate: leave proceeds native and report the ACTUAL output.
+    # PAPER records a settlement note and NEVER broadcasts; LIVE commits it.
+    def _settle_route_ok(self, prices: Dict[str, Any], profit_currency: Optional[str]) -> bool:
+        if not profit_currency:
+            return False
+        if str(profit_currency).upper() in STABLE_USD:
+            return True
+        unit = self._unit_uc(prices, profit_currency)
+        return unit is not None and unit > 0
+
+    async def _settle_exit(self, bot: Any, proceeds_asset: Optional[str], proceeds_uc: int,
+                           profit_currency: Optional[str], mainnet: bool, paper: bool) -> Dict[str, Any]:
+        """Convert a realized exit's proceeds INTO ``profit_currency``. Returns
+        ``{"currency", "settled", "paper", "routeOk", "txid"}`` where ``currency`` is
+        the FINAL asset the proceeds actually sit in (never a false label)."""
+        B = self.Bots
+        native = str(proceeds_asset).upper() if proceeds_asset else proceeds_asset
+        pc = str(profit_currency).upper() if profit_currency else None
+        out: Dict[str, Any] = {"currency": native, "settled": False, "paper": bool(paper),
+                               "routeOk": True, "txid": None}
+        # no target, or the proceeds already ARE the profit currency -> no extra hop.
+        if not pc or (native is not None and native == pc):
+            if pc:
+                out["currency"] = pc
+            return out
+
+        # price the route WITHOUT fabrication (stablecoin, or a real quote for both).
+        prices = await self._prices([proceeds_asset, pc])
+        if not self._settle_route_ok(prices, pc):
+            await self._audit({"type": "bot_settle_skip", "bot": bot.id, "from": native,
+                               "to": pc, "reason": "no-route"})
+            self.emit({"type": "bot_settle_skip", "bot": bot.id, "from": native, "to": pc})
+            out["routeOk"] = False
+            return out  # currency stays the ACTUAL native output — the label never lies.
+
+        unit_uc = self._unit_uc(prices, proceeds_asset)
+        proceeds_dec = B.decimals_for(proceeds_asset,
+                                      bot.config.get("decimals") if isinstance(bot.config, dict) else None)
+        amount = B.qty_for_usd(proceeds_uc, unit_uc, proceeds_dec) if (unit_uc and proceeds_uc) else 0
+        if not amount or amount <= 0:
+            # proceeds round to zero in the native asset — nothing to convert; honest.
+            await self._audit({"type": "bot_settle_skip", "bot": bot.id, "from": native,
+                               "to": pc, "reason": "dust"})
+            out["routeOk"] = False
+            return out
+
+        if paper:
+            # PAPER: record the settlement, NEVER broadcast, NEVER consume allocation.
+            await self._audit({"type": "bot_settlement", "bot": bot.id, "from": native, "to": pc,
+                               "amount": str(amount), "proceedsUc": str(proceeds_uc), "paper": True})
+            self.emit({"type": "bot_settlement", "bot": bot.id, "from": native, "to": pc, "paper": True})
+            out["currency"] = pc
+            out["settled"] = True
+            return out
+
+        # --- mainnet gate + allowlist (never skipped) ---------------------------
+        if mainnet and not self.mainnet_enabled:
+            await self._audit({"type": "bot_settle_skip", "bot": bot.id, "from": native,
+                               "to": pc, "reason": "mainnet"})
+            out["routeOk"] = False
+            return out
+        if not self.policy.is_allowed("swap"):
+            await self._audit({"type": "bot_blocked", "bot": bot.id, "tool": "swap",
+                               "reason": "not on allowlist (settlement)"})
+            out["routeOk"] = False
+            return out
+
+        venue = (bot.venue_prefs or {}).get("venue") if isinstance(bot.venue_prefs, dict) else "blockle"
+        args = {"from": proceeds_asset, "to": pc, "amount": str(amount), "venue": venue or "blockle"}
+        # Settlement converts proceeds you already hold — like a sell, it does NOT
+        # consume allocation; keep the auto-approve envelope at remaining allocation.
+        remaining_uc = B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)
+        env = remaining_uc if remaining_uc > 0 else B.micro_usd(bot.allocation_usd)
+        await self._audit({"type": "bot_settlement", "bot": bot.id, "from": native, "to": pc,
+                           "amount": str(amount), "proceedsUc": str(proceeds_uc), "paper": False})
+        self.emit({"type": "bot_settlement", "bot": bot.id, "from": native, "to": pc, "paper": False})
+        r = await self._dispatch(bot, "swap", args, env)
+        if not r or r.get("rejected") or not r.get("result"):
+            # the settlement did NOT broadcast — be honest: proceeds stay native.
+            await self._audit({"type": "bot_settle_rejected", "bot": bot.id, "from": native, "to": pc,
+                               "reason": r.get("reason") if r else None})
+            out["routeOk"] = False
+            return out
+        out["currency"] = pc
+        out["settled"] = True
+        out["txid"] = r.get("txid")
+        return out
 
     # ---- signal bot (§2.4) --------------------------------------------------
     async def _tick_signal(self, bot, now, opts):
@@ -724,6 +839,18 @@ class BotRunner:
         B = self.Bots
         ctx_mainnet = self._ctx_mainnet()
         events: List[Dict[str, Any]] = []
+
+        def _exit_of(it):
+            """A realized exit leg + where its proceeds must settle. ``(is_exit,
+            proceeds_asset, profit_currency)``. An exit is tagged ``…:sell`` or carries
+            ``exit: True``; its proceeds land in the swap's output asset; the target is
+            the intent's ``settleTo`` (scanner) else the bot's profitCurrency."""
+            is_exit = bool(it.get("exit")) or str(it.get("tag") or "").endswith(":sell")
+            args = it.get("args") or {}
+            proceeds_asset = args.get("to")
+            pc = it.get("settleTo") or bot.profit_currency
+            return is_exit, proceeds_asset, pc
+
         for it in (intents or []):
             if self.policy.is_killed():
                 break
@@ -756,7 +883,17 @@ class BotRunner:
                 r = await self._dispatch(bot, it.get("tool"), it.get("args"), remaining_uc)
                 if r and r.get("result"):
                     bot.state["committedUc"] = (bot.state.get("committedUc") or 0) + est_usd_uc + fee_uc
-                    events.append({"tag": it.get("tag"), "executed": True})
+                    ev = {"tag": it.get("tag"), "executed": True}
+                    # UNIFORM SETTLEMENT: a realized exit's proceeds settle into the
+                    # profitCurrency via ONE more gated swap (skipped when the output
+                    # already IS it — the arb case; honest native fallback with no route).
+                    is_exit, proceeds_asset, pc = _exit_of(it)
+                    if is_exit and proceeds_asset is not None:
+                        settle = await self._settle_exit(bot, proceeds_asset, est_usd_uc, pc,
+                                                         bool(it.get("mainnet") or ctx_mainnet), False)
+                        ev["settleCurrency"] = settle["currency"]
+                        ev["settled"] = settle["settled"]
+                    events.append(ev)
                 else:
                     events.append({"tag": it.get("tag"), "rejected": r.get("reason") if r else None})
             else:
@@ -765,7 +902,15 @@ class BotRunner:
                     continue
                 await self._audit({"type": "bot_paper_intent", "bot": bot.id, "tag": it.get("tag"),
                                    "estUsd": it.get("estUsd")})
-                events.append({"tag": it.get("tag"), "paper": True})
+                ev = {"tag": it.get("tag"), "paper": True}
+                # PAPER settlement note (never broadcasts) for a realized exit leg.
+                is_exit, proceeds_asset, pc = _exit_of(it)
+                if is_exit and proceeds_asset is not None:
+                    settle = await self._settle_exit(bot, proceeds_asset, B.micro_usd(it.get("estUsd") or 0), pc,
+                                                     bool(it.get("mainnet") or ctx_mainnet), True)
+                    ev["settleCurrency"] = settle["currency"]
+                    ev["settled"] = settle["settled"]
+                events.append(ev)
         return events
 
     # ---- scanner (scan-&-trade autopilot, docs/AGENT-SCAN.md) -----------------
@@ -798,6 +943,7 @@ class BotRunner:
             "worthy": [w["pair"] for w in result["worthy"]], "skipped": result["skipped"],
             "minProfitBps": result["minProfitBps"], "allocationUsd": result["allocationUsd"],
             "committedUsd": committed_usd, "remainingUsd": result["remainingUsd"],
+            "profitCurrency": result.get("profitCurrency"),
         }
         return {"bot": bot.id, "type": "scanner", "scan": bot.state["lastScan"], "events": events}
 

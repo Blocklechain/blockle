@@ -11,6 +11,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../agent/bots.dart' as b;
 import '../../state/bots_controller.dart';
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
@@ -60,6 +61,9 @@ class CreateView extends StatefulWidget {
   State<CreateView> createState() => _CreateViewState();
 }
 
+// Profit-currency choices (settlement/quote assets). USDC is the default.
+const List<String> _profitCurrencies = ['USDC', 'USDT', 'DAI', 'USD'];
+
 class _CreateViewState extends State<CreateView> {
   int _tpl = 0;
   final _pair = TextEditingController(text: 'SOL / USDC');
@@ -68,10 +72,31 @@ class _CreateViewState extends State<CreateView> {
   double _base = 20, _tp = 2, _step = 2, _vol = 1.0, _tr = 0;
   int _so = 3;
 
+  // PAIR SELECTION MODE — defaults to 'ai' ("Let the AI choose pairs": the
+  // scanner/autopilot scans + picks worthy pairs). 'manual' ("I'll pick a pair")
+  // is opt-in and brings back the manual pair picker.
+  String _pairMode = 'ai';
+
+  // PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO (AI
+  // mode: user-chosen; manual mode: derived from the pair quote).
+  String _profitCurrency = 'USDC';
+
+  bool get _aiPicksPairs => _pairMode != 'manual';
+
   @override
   void initState() {
     super.initState();
     _applyTpl(_templates[0]);
+    // A seed from the Arena on-ramp is a concrete strategy on a pair -> manual.
+    if (widget.seed != null) _pairMode = 'manual';
+    _profitCurrency = _quoteOf(_normPair());
+  }
+
+  /// Profit currency derived from a BASE/QUOTE pair's quote (manual mode).
+  String _quoteOf(String pair) {
+    final parts = pair.toUpperCase().split('/');
+    if (parts.length == 2 && parts[1].trim().isNotEmpty) return parts[1].trim();
+    return _profitCurrency;
   }
 
   void _applyTpl(_Tpl t) {
@@ -127,14 +152,28 @@ class _CreateViewState extends State<CreateView> {
 
   double get _allocUsd => double.tryParse(_alloc.text.trim()) ?? 0;
 
-  Future<void> _startPaper() async {
+  /// Build a paper + disabled bot from the create-flow state. AI mode ("Let the AI
+  /// choose pairs") -> the scan-&-trade autopilot, realizing profit INTO the chosen
+  /// profit currency (no pair). Manual mode -> the selected template on the pair.
+  b.Bot _createBot(num alloc) {
+    if (_aiPicksPairs) {
+      return widget.controller.createFromTemplate(
+        'scan_and_trade',
+        allocationUsd: alloc,
+        configOverride: {'profitCurrency': _profitCurrency},
+      );
+    }
     final tpl = _templates[_tpl];
-    final bot = widget.controller.createFromTemplate(
+    return widget.controller.createFromTemplate(
       tpl.key,
       pair: _normPair(),
-      allocationUsd: _allocUsd,
+      allocationUsd: alloc,
       configOverride: tpl.type == 'dca' ? _dcaOverride() : null,
     );
+  }
+
+  Future<void> _startPaper() async {
+    final bot = _createBot(_allocUsd);
     await widget.controller.enablePaper(bot.id);
     widget.onCreated(bot.id, false);
   }
@@ -151,13 +190,7 @@ class _CreateViewState extends State<CreateView> {
     }
     final confirmed = await _showReviewSheet(alloc);
     if (confirmed != true) return;
-    final tpl = _templates[_tpl];
-    final bot = widget.controller.createFromTemplate(
-      tpl.key,
-      pair: _normPair(),
-      allocationUsd: alloc,
-      configOverride: tpl.type == 'dca' ? _dcaOverride() : null,
-    );
+    final bot = _createBot(alloc);
     try {
       await widget.controller.armLive(bot.id, allocationUsd: alloc);
       widget.onCreated(bot.id, true);
@@ -178,7 +211,7 @@ class _CreateViewState extends State<CreateView> {
         tokens: t,
         child: _ReviewSheet(
           alloc: alloc,
-          pair: _normPair(),
+          pair: _aiPicksPairs ? 'AI-chosen pairs → $_profitCurrency' : _normPair(),
           channel: widget.controller.backingChannelLabel,
         ),
       ),
@@ -229,38 +262,35 @@ class _CreateViewState extends State<CreateView> {
           Text('Pick a starting point, choose a pair, set one amount. Tune the rest under Advanced.',
               style: TextStyle(fontSize: 12.5, color: t.inkMuted)),
           const SizedBox(height: 16),
-          const Eyebrow('1 · Template'),
-          const SizedBox(height: 9),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 2.4,
-            children: [
-              for (var i = 0; i < _templates.length; i++)
-                _TplCard(
-                  tpl: _templates[i],
-                  selected: i == _tpl,
-                  onTap: () => setState(() {
-                    _tpl = i;
-                    _applyTpl(_templates[i]);
-                  }),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _Field(
-            label: '2 · Pair',
-            hint: 'what to trade',
-            child: TextField(
-              controller: _pair,
-              onChanged: (_) => setState(() {}),
-              style: mono(t, size: 15),
-              decoration: _inputDec(t, suffix: 'Jupiter · Blockle'),
+          // STEP 1 — the strategy-template picker. In the default AI-chooses-pairs
+          // mode the autopilot FORCES scan_and_trade and IGNORES the template, so
+          // the picker has no effect and is hidden (switching to "I'll pick a pair"
+          // brings it back). Never show a control that does nothing.
+          if (!_aiPicksPairs) ...[
+            const Eyebrow('1 · Template'),
+            const SizedBox(height: 9),
+            GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 2.4,
+              children: [
+                for (var i = 0; i < _templates.length; i++)
+                  _TplCard(
+                    tpl: _templates[i],
+                    selected: i == _tpl,
+                    onTap: () => setState(() {
+                      _tpl = i;
+                      _applyTpl(_templates[i]);
+                    }),
+                  ),
+              ],
             ),
-          ),
+            const SizedBox(height: 16),
+          ],
+          _pairSelect(t),
           const SizedBox(height: 14),
           _Field(
             label: '3 · Amount to allocate',
@@ -271,27 +301,31 @@ class _CreateViewState extends State<CreateView> {
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
               style: mono(t, size: 16),
-              decoration: _inputDec(t, prefix: '\$', suffix: 'USDC'),
+              decoration: _inputDec(t, prefix: '\$', suffix: _aiPicksPairs ? _profitCurrency : 'USDC'),
             ),
           ),
           const SizedBox(height: 16),
-          _Preview(
-            isDca: _isDca,
-            base: _base,
-            so: _so,
-            step: _step,
-            tp: _tp,
-            tr: _tr,
-            baseSym: _baseSym,
-            alloc: _allocUsd,
-          ),
-          if (_isDca) ...[
-            const SizedBox(height: 8),
-            _AdvancedToggle(
-              expanded: _advanced,
-              onTap: () => setState(() => _advanced = !_advanced),
+          if (_aiPicksPairs)
+            _AutopilotNote(profitCurrency: _profitCurrency, alloc: _allocUsd)
+          else ...[
+            _Preview(
+              isDca: _isDca,
+              base: _base,
+              so: _so,
+              step: _step,
+              tp: _tp,
+              tr: _tr,
+              baseSym: _baseSym,
+              alloc: _allocUsd,
             ),
-            if (_advanced) _advancedDrawer(t),
+            if (_isDca) ...[
+              const SizedBox(height: 8),
+              _AdvancedToggle(
+                expanded: _advanced,
+                onTap: () => setState(() => _advanced = !_advanced),
+              ),
+              if (_advanced) _advancedDrawer(t),
+            ],
           ],
           const SizedBox(height: 18),
           Row(children: [
@@ -308,6 +342,118 @@ class _CreateViewState extends State<CreateView> {
             BotButton(label: 'Go live…', icon: Icons.bolt, onPressed: _goLive),
           ]),
         ],
+      ),
+    );
+  }
+
+  // STEP 2 — the pair-selection mode toggle plus EITHER the profit-currency
+  // selector (AI chooses pairs; the manual pair picker is HIDDEN) OR the manual
+  // pair picker ("I'll pick a pair"). Defaults to AI.
+  Widget _pairSelect(BotTokens t) {
+    final modeToggle = Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: t.elevated,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: t.line),
+      ),
+      child: Row(children: [
+        _modeSeg(t, 'ai', '🤖 Let the AI choose pairs'),
+        _modeSeg(t, 'manual', "✎ I'll pick a pair"),
+      ]),
+    );
+
+    if (_aiPicksPairs) {
+      // AI chooses pairs: NO manual pair picker — a profit-currency selector instead.
+      return _Field(
+        label: '2 · Pairs',
+        hint: 'the autopilot scans & picks worthy pairs',
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          modeToggle,
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+                'The AI scanner scores every discoverable pair and auto-trades the '
+                'worthy ones within your cap — no pair to pick. Paper + disabled by default.',
+                style: TextStyle(fontSize: 11.5, color: t.inkMuted, height: 1.45)),
+          ),
+          Text('Profit currency — what profit is realized & settled into',
+              style: TextStyle(fontSize: 12, color: t.inkMuted)),
+          const SizedBox(height: 7),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 13),
+            decoration: BoxDecoration(
+              color: t.elevated,
+              borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+              border: Border.all(color: t.line),
+            ),
+            child: Row(children: [
+              Expanded(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _profitCurrency,
+                    isExpanded: true,
+                    dropdownColor: t.surface,
+                    style: mono(t, size: 15, color: t.ink),
+                    items: [
+                      for (final c in _profitCurrencies)
+                        DropdownMenuItem(value: c, child: Text(c)),
+                    ],
+                    onChanged: (v) => setState(() => _profitCurrency = (v ?? 'USDC').toUpperCase()),
+                  ),
+                ),
+              ),
+              Text('settles P&L', style: TextStyle(fontSize: 12, color: t.inkMuted)),
+            ]),
+          ),
+        ]),
+      );
+    }
+
+    // Manual: the pair picker returns; profit currency derives from the pair quote.
+    return _Field(
+      label: '2 · Pair',
+      hint: 'what to trade',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        modeToggle,
+        TextField(
+          controller: _pair,
+          onChanged: (_) => setState(() => _profitCurrency = _quoteOf(_normPair())),
+          style: mono(t, size: 15),
+          decoration: _inputDec(t, suffix: 'Jupiter · Blockle'),
+        ),
+      ]),
+    );
+  }
+
+  Widget _modeSeg(BotTokens t, String mode, String label) {
+    final on = _pairMode == mode;
+    return Expanded(
+      child: Semantics(
+        button: true,
+        selected: on,
+        child: InkWell(
+          onTap: () => setState(() {
+            _pairMode = mode;
+            if (mode == 'manual') _profitCurrency = _quoteOf(_normPair());
+          }),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: on ? t.accentGhost : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: on ? t.accent : Colors.transparent),
+            ),
+            child: Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, color: on ? t.ink : t.inkMuted)),
+          ),
+        ),
       ),
     );
   }
@@ -366,6 +512,7 @@ class _CreateViewState extends State<CreateView> {
   }
 
   Widget _ladderPane(BotTokens t) {
+    if (_aiPicksPairs) return _autopilotPane(t);
     final p = _preview;
     return BotCard(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
@@ -408,6 +555,53 @@ class _CreateViewState extends State<CreateView> {
           const SizedBox(height: 10),
           Text('Preview at a reference \$${_price.toStringAsFixed(2)} — the exact engine math, not a live quote.',
               style: TextStyle(fontSize: 11, color: t.inkFaint)),
+        ],
+      ),
+    );
+  }
+
+  Widget _autopilotPane(BotTokens t) {
+    Widget point(IconData ic, String title, String body) => Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Icon(ic, size: 18, color: t.accent),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(title, style: TextStyle(fontWeight: FontWeight.w700, color: t.ink, fontSize: 13.5)),
+                const SizedBox(height: 2),
+                Text(body, style: TextStyle(color: t.inkMuted, fontSize: 12.5, height: 1.45)),
+              ]),
+            ),
+          ]),
+        );
+    return BotCard(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Eyebrow('Autopilot · AI picks the pairs'),
+                const SizedBox(height: 4),
+                Text('Scan & Trade',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: t.ink)),
+              ],
+            ),
+            const Spacer(),
+            BotChip(_profitCurrency, accent: true),
+          ]),
+          const SizedBox(height: 14),
+          point(Icons.radar, 'Scans every discoverable pair',
+              'The scanner scores each pair for cost-positive profit (arbitrage, momentum, grid), net of gas, slippage and fees.'),
+          point(Icons.trending_up, 'Trades only the worthy ones',
+              'It auto-trades the top-ranked worthy pairs within your cap. A pair with no real signal is skipped — never a fabricated trade.'),
+          point(Icons.savings_outlined, 'Realizes profit into $_profitCurrency',
+              'P&L is denominated in $_profitCurrency and take-profit exits route their proceeds into it.'),
+          point(Icons.verified_user, 'Paper + disabled + testnet by default',
+              'Nothing goes live silently — live still passes the one gate, allocation cap, allowlist and audit.'),
         ],
       ),
     );
@@ -598,6 +792,32 @@ class _Preview extends StatelessWidget {
         border: Border.all(color: t.accentDim),
       ),
       child: Text(text, style: TextStyle(fontSize: 13.5, color: t.ink, height: 1.55)),
+    );
+  }
+}
+
+/// The AI-mode summary block (replaces the DCA deal-preview text when the autopilot
+/// chooses pairs): what the autopilot does + where profit settles.
+class _AutopilotNote extends StatelessWidget {
+  const _AutopilotNote({required this.profitCurrency, required this.alloc});
+  final String profitCurrency;
+  final double alloc;
+  @override
+  Widget build(BuildContext context) {
+    final t = BotTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+      decoration: BoxDecoration(
+        color: t.accentGhost,
+        borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+        border: Border.all(color: t.accentDim),
+      ),
+      child: Text(
+        'The AI scanner picks the pairs: it scores every discoverable market and '
+        'auto-trades the worthy ones within ${moneyUsd(alloc, sign: false)}, realizing '
+        'profit into $profitCurrency. No pair to choose. Starts paper + disabled.',
+        style: TextStyle(fontSize: 13.5, color: t.ink, height: 1.55),
+      ),
     );
   }
 }
