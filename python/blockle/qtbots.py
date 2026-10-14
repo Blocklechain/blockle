@@ -33,6 +33,7 @@ Four surfaces, one widget (:class:`BotsPanel`):
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -198,6 +199,26 @@ def plain_money(n: Optional[float]) -> str:
     return f"${n:,.0f}"
 
 
+def _arena_vectors_path() -> Optional[Path]:
+    """Locate docs/arena-vectors.json across both a source checkout AND a
+    PyInstaller bundle (where it ships under <bundle>/docs via --add-data; see
+    chainwallet.py for the same frozen-aware pattern)."""
+    candidates = []
+    # PyInstaller onefile extraction dir + the frozen executable's dir.
+    if meipass := getattr(sys, "_MEIPASS", None):
+        candidates.append(Path(meipass) / "docs" / "arena-vectors.json")
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / "docs" / "arena-vectors.json")
+    # Source checkout: walk up to the repo root that holds docs/.
+    here = Path(__file__).resolve()
+    for p in [here.parent, *here.parents]:
+        candidates.append(p / "docs" / "arena-vectors.json")
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
 def _repo_root() -> Path:
     here = Path(__file__).resolve()
     for p in [here.parent, *here.parents]:
@@ -209,8 +230,10 @@ def _repo_root() -> Path:
 def load_arena_vectors() -> Dict[str, Any]:
     """Load the AUTHORITATIVE shared Arena fixture (docs/arena-vectors.json) —
     loaded, never regenerated, so a (scenario, config) scores identically across
-    JS/Dart/Python."""
-    path = _repo_root() / "docs" / "arena-vectors.json"
+    JS/Dart/Python. Works from a source checkout or a PyInstaller bundle."""
+    path = _arena_vectors_path()
+    if path is None:
+        raise FileNotFoundError("arena-vectors.json not found (checkout or bundle)")
     with open(path, "r") as fh:
         return json.load(fh)
 
