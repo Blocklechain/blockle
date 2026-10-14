@@ -9,9 +9,20 @@
 // Nothing here is post-quantum — these are the classical primitives shared by
 // EVM/BTC/LTC/DOGE/Solana. BLOCK's ML-DSA signing stays in blockle-wasm.
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:pointycastle/export.dart' as pc;
+
+/// Cryptographically-secure random bytes (Random.secure).
+Uint8List randomBytes(int n) {
+  final rng = Random.secure();
+  final out = Uint8List(n);
+  for (var i = 0; i < n; i++) {
+    out[i] = rng.nextInt(256);
+  }
+  return out;
+}
 
 // ---- byte / hex helpers ----------------------------------------------------
 Uint8List hexToBytes(String hex) {
@@ -89,6 +100,148 @@ Uint8List pbkdf2Sha512(
 
 Uint8List hash256(List<int> msg) => sha256(sha256(msg)); // double SHA-256
 Uint8List hash160(List<int> msg) => ripemd160(sha256(msg)); // RIPEMD160(SHA256)
+
+// ===========================================================================
+// WALLETCONNECT v2 TRANSPORT CRYPTO — ChaCha20-Poly1305 (RFC 8439) + HKDF-SHA256
+// + X25519 (RFC 7748). Ported to match blockle-extension/crypto-core.js so the
+// Dart WC relay (wc_relay.dart) produces byte-identical envelopes / derivations.
+// ===========================================================================
+
+/// ChaCha20-Poly1305 AEAD seal → ciphertext||tag(16). Empty [aad] per WC v2.
+/// Returned bytes are `ciphertext || 16-byte-tag` (the WC "sealbox").
+Uint8List chacha20poly1305Seal(List<int> key, List<int> nonce, List<int> pt,
+    [List<int>? aad]) {
+  // NOTE: PointyCastle's BaseAEADCipher.process() only runs processBytes (no
+  // doFinal) — it never appends the Poly1305 tag and leaves the trailing block
+  // buffered. Drive processBytes + doFinal explicitly to get ct || tag(16).
+  final c = pc.ChaCha20Poly1305(pc.ChaCha7539Engine(), pc.Poly1305())
+    ..init(
+        true,
+        pc.AEADParameters(pc.KeyParameter(toBytes(key)), 128,
+            toBytes(nonce), Uint8List.fromList(aad ?? const [])));
+  final input = Uint8List.fromList(pt);
+  final out = Uint8List(input.length + 16);
+  var len = c.processBytes(input, 0, input.length, out, 0);
+  len += c.doFinal(out, len);
+  return out.sublist(0, len);
+}
+
+/// ChaCha20-Poly1305 AEAD open of `ciphertext||tag`. Returns the plaintext, or
+/// `null` on authentication failure (NEVER forged plaintext).
+Uint8List? chacha20poly1305Open(List<int> key, List<int> nonce, List<int> sealbox,
+    [List<int>? aad]) {
+  try {
+    final c = pc.ChaCha20Poly1305(pc.ChaCha7539Engine(), pc.Poly1305())
+      ..init(
+          false,
+          pc.AEADParameters(pc.KeyParameter(toBytes(key)), 128,
+              toBytes(nonce), Uint8List.fromList(aad ?? const [])));
+    final input = Uint8List.fromList(sealbox);
+    if (input.length < 16) return null;
+    final out = Uint8List(input.length);
+    var len = c.processBytes(input, 0, input.length, out, 0);
+    len += c.doFinal(out, len); // throws on a failed MAC check
+    return out.sublist(0, len);
+  } catch (_) {
+    return null; // bad tag / truncated — authentication failed
+  }
+}
+
+/// HKDF-SHA256 extract+expand. [salt]/[info] may be null (WC v2 uses neither).
+Uint8List hkdfSha256(List<int> ikm, List<int>? salt, List<int>? info, int length) {
+  final d = pc.HKDFKeyDerivator(pc.SHA256Digest())
+    ..init(pc.HkdfParameters(
+        toBytes(ikm),
+        length,
+        salt == null ? null : toBytes(salt),
+        info == null ? Uint8List(0) : toBytes(info)));
+  return d.process(Uint8List(0));
+}
+
+// ---- X25519 (RFC 7748) — Montgomery-ladder scalar multiplication -----------
+final BigInt _x25519P = (BigInt.one << 255) - BigInt.from(19);
+final BigInt _x25519A24 = BigInt.from(121665);
+
+BigInt _modPow(BigInt base, BigInt exp, BigInt m) {
+  base = base % m;
+  var r = BigInt.one;
+  while (exp > BigInt.zero) {
+    if ((exp & BigInt.one) == BigInt.one) r = (r * base) % m;
+    base = (base * base) % m;
+    exp >>= 1;
+  }
+  return r;
+}
+
+BigInt _x25519DecodeU(List<int> u) {
+  final t = Uint8List.fromList(u.sublist(0, 32));
+  t[31] &= 0x7f; // RFC 7748 decodeUCoordinate masks the MSB
+  var x = BigInt.zero;
+  for (var i = 31; i >= 0; i--) {
+    x = (x << 8) | BigInt.from(t[i]);
+  }
+  return x % _x25519P;
+}
+
+BigInt _x25519Clamp(List<int> scalar) {
+  final k = Uint8List.fromList(scalar.sublist(0, 32));
+  k[0] &= 248;
+  k[31] &= 127;
+  k[31] |= 64;
+  var n = BigInt.zero;
+  for (var i = 31; i >= 0; i--) {
+    n = (n << 8) | BigInt.from(k[i]);
+  }
+  return n;
+}
+
+/// X25519 scalar mult: clamp [scalar], multiply the u-coordinate [uCoord].
+Uint8List x25519(List<int> scalar, List<int> uCoord) {
+  final k = _x25519Clamp(scalar);
+  final x1 = _x25519DecodeU(uCoord);
+  var x2 = BigInt.one, z2 = BigInt.zero, x3 = x1, z3 = BigInt.one;
+  var swap = BigInt.zero;
+  for (var t = 254; t >= 0; t--) {
+    final kt = (k >> t) & BigInt.one;
+    swap ^= kt;
+    if (swap == BigInt.one) {
+      var tmp = x2; x2 = x3; x3 = tmp;
+      tmp = z2; z2 = z3; z3 = tmp;
+    }
+    swap = kt;
+    final a = (x2 + z2) % _x25519P;
+    final aa = (a * a) % _x25519P;
+    final b = (x2 - z2) % _x25519P;
+    final bb = (b * b) % _x25519P;
+    final e = (aa - bb) % _x25519P;
+    final cc = (x3 + z3) % _x25519P;
+    final d = (x3 - z3) % _x25519P;
+    final da = (d * a) % _x25519P;
+    final cb = (cc * b) % _x25519P;
+    x3 = ((da + cb) * (da + cb)) % _x25519P;
+    z3 = (x1 * (((da - cb) % _x25519P) * ((da - cb) % _x25519P))) % _x25519P;
+    x2 = (aa * bb) % _x25519P;
+    z2 = (e * ((aa + (_x25519A24 * e)) % _x25519P)) % _x25519P;
+  }
+  if (swap == BigInt.one) {
+    var tmp = x2; x2 = x3; x3 = tmp;
+    tmp = z2; z2 = z3; z3 = tmp;
+  }
+  final res = (x2 * _modPow(z2, _x25519P - BigInt.two, _x25519P)) % _x25519P;
+  final out = Uint8List(32);
+  var v = res % _x25519P;
+  for (var i = 0; i < 32; i++) {
+    out[i] = (v & BigInt.from(0xff)).toInt();
+    v >>= 8;
+  }
+  return out;
+}
+
+/// X25519 public key from a private scalar: scalar · basepoint (u = 9).
+Uint8List x25519Base(List<int> scalar) {
+  final base = Uint8List(32)..[0] = 9;
+  return x25519(scalar, base);
+}
 
 // ---- Base58 / Base58Check --------------------------------------------------
 const String _b58 =

@@ -251,16 +251,99 @@
 
       var book = WB && global.Store ? WB.createBook({ store: global.Store }) : null;
 
+      // LIVE NFT indexer — EVM via the Alchemy NFT API (shared read-only key under
+      // chainEndpoints.alchemy), Solana via a DAS indexer (Helius). A missing key
+      // or an error returns no result, so the engine reports the account
+      // `unavailable` — NEVER a fabricated empty inventory.
+      var NI = dep('WalletNftIndexer', './nft-indexer.js');
+      var nftIndexer = null;
+      try {
+        if (NI && NI.createIndexer) {
+          nftIndexer = NI.createIndexer({
+            alchemy: (settings.endpoints && settings.endpoints.alchemy) || {},
+            helius: (settings.endpoints && settings.endpoints.helius) || sec.helius || {},
+            fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined,
+          });
+        }
+      } catch (_) { nftIndexer = null; }
+
       // WalletConnect core — the encrypted Store for sessions (NO key material),
-      // the shared security suite, and a signer that routes through Wiring (the
-      // EXISTING signer). No relay transport object in this build, so live
-      // proposals/requests arrive only when one is wired; the review + approval
-      // sheets are driven by the core either way.
+      // the shared security suite, the LIVE relay transport (wc-relay.js: WC v2
+      // relay WS + relay-auth JWT + ChaCha20-Poly1305 type-0 envelopes), and a
+      // signer that routes a dApp request through the SAME wallet money path
+      // (Wiring.buildSend/broadcast) — only AFTER the core's security gate +
+      // explicit approval clears. Nothing here signs on its own.
       var walletChains = [];
       Object.keys(EVM_CHAINS).forEach(function (c) { if (chains.indexOf(c) >= 0) walletChains.push('eip155:' + EVM_CHAINS[c]); });
       if (chains.indexOf('solana') >= 0) walletChains.push('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
+
+      // LIVE WC v2 relay — built from the operator's projectId/relayUrl. Absent a
+      // projectId, no relay is wired (the review/approval sheets still drive the
+      // core); present, the real relay carries proposals + requests end-to-end.
+      var WR = dep('WCRelay', './wc-relay.js');
+      var wcEp = (settings.endpoints && settings.endpoints.walletconnect) || {};
+      var relay = null;
+      try {
+        if (WR && WR.createRelay && (wcEp.projectId || sec.wcProjectId)) {
+          relay = WR.createRelay({
+            projectId: wcEp.projectId || sec.wcProjectId,
+            relayUrl: wcEp.relayUrl || sec.wcRelayUrl || undefined,
+            ed25519: global.Ed25519, crypto: global.BLKCrypto,
+          });
+        }
+      } catch (_) { relay = null; }
+
+      // The live WC signer: eth_sendTransaction flows through the EXISTING wallet
+      // send path (buildSend -> broadcast); message/typed-data signing delegates
+      // to the chain adapter when it exposes one, else fails closed (the core
+      // turns a missing signer into BLOCKED — never a fabricated signature).
+      function chainOfCaip2(caip2) {
+        var parts = String(caip2 || '').split(':');
+        if (parts[0] === 'solana') return 'solana';
+        if (parts[0] === 'eip155') { for (var k in EVM_CHAINS) if (EVM_CHAINS[k] === Number(parts[1])) return k; }
+        return null;
+      }
+      async function adapterFor(caip2) {
+        var ch = chainOfCaip2(caip2); if (!ch) return null;
+        try { return (await Wiring.registry()).get(ch); } catch (_) { return null; }
+      }
+      var wcSigner = {
+        async ethSendTransaction(a) {
+          var ch = chainOfCaip2(a.chainId); if (!ch) throw new Error('wc signer: unsupported chain ' + a.chainId);
+          var tx = a.tx || {};
+          var built = await Wiring.buildSend(ch, { to: tx.to, value: tx.value || '0', data: tx.data });
+          var res = await Wiring.broadcast(ch, built);
+          return (res && (res.hash || res.txid)) || res;
+        },
+        async personalSign(a) {
+          var ad = await adapterFor(a.chainId);
+          if (ad && typeof ad.personalSign === 'function') return ad.personalSign(a.account && a.account.address, a.message);
+          throw new Error('wc signer: personal_sign not available for ' + a.chainId);
+        },
+        async ethSignTypedData(a) {
+          var ad = await adapterFor(a.chainId);
+          if (ad && typeof ad.signTypedData === 'function') return ad.signTypedData(a.account && a.account.address, a.typedData, a.version);
+          throw new Error('wc signer: eth_signTypedData not available for ' + a.chainId);
+        },
+        async solanaSignTransaction(a) {
+          var ad = await adapterFor(a.chainId);
+          if (ad && typeof ad.signTransaction === 'function') return ad.signTransaction(a.transaction);
+          throw new Error('wc signer: solana_signTransaction not available');
+        },
+        async solanaSignAndSend(a) {
+          var ad = await adapterFor(a.chainId);
+          if (ad && typeof ad.signAndSendTransaction === 'function') return ad.signAndSendTransaction(a.transaction);
+          throw new Error('wc signer: solana_signAndSendTransaction not available');
+        },
+        async solanaSignMessage(a) {
+          var ad = await adapterFor(a.chainId);
+          if (ad && typeof ad.signMessage === 'function') return ad.signMessage(a.message);
+          throw new Error('wc signer: solana_signMessage not available');
+        },
+      };
+
       var wc = WC && global.Store ? WC.createWalletConnect({
-        store: global.Store, security: WS, relay: global.WalletConnectRelay || null,
+        store: global.Store, security: WS, relay: relay, signer: wcSigner,
         config: { walletChains: walletChains, denylist: sec.denylist || [], unlimitedThreshold: sec.unlimitedThreshold },
       }) : null;
 
@@ -271,7 +354,7 @@
         config: { ipfsGateway: sec.ipfsGateway, nftDenylist: sec.nftDenylist || [] },
         portfolioCtx: { getHoldings: function (chain) { return Wiring.getHoldings(chain); }, priceUsd: priceUsd, asOf: Date.now() },
         activityCtx: { history: history, securityConfig: sec, explorerTx: function (c, t) { return Wiring.explorerTx(c, t); } },
-        nftCtx: { indexer: sec.nftIndexer || sec.indexer || null, config: { ipfsGateway: sec.ipfsGateway, nftDenylist: sec.nftDenylist || [] } },
+        nftCtx: { indexer: nftIndexer || sec.nftIndexer || sec.indexer || null, config: { ipfsGateway: sec.ipfsGateway, nftDenylist: sec.nftDenylist || [] } },
         approvalCtx: { indexer: sec.indexer || null, config: sec },
         book: book, resolverCtx: resolverCtx(), wc: wc,
         WP: WP, WA: WA, WB: WB, WN: WN, WC: WC, WS: WS, Wiring: Wiring,
@@ -287,6 +370,15 @@
         buildRevoke: function (chain, token, spender) { return Wiring.buildRevoke(chain, token, spender); },
       };
       if (accounts[0] && accounts[0].chain) send.chain = accounts[0].chain;
+
+      // WIRE THE LIVE RELAY INTO THE REAL UI: proposals open the review sheet, and
+      // the core subscribes to live session requests through the SAME per-request
+      // security + explicit-approval gate (wcRequestCtx). Not dead code — this is
+      // the path a real dApp's proposal/request travels.
+      if (relay && wc) {
+        try { relay.subscribeProposals(function (proposal) { try { openProposalSheet(proposal); } catch (_) {} }); } catch (_) {}
+        try { wc.connectRelay(wcRequestCtx()); } catch (_) {}
+      }
     } catch (_) { engine = null; }
     return engine;
   }

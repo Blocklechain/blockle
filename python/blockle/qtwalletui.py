@@ -62,9 +62,11 @@ from .multichain import activity as activity_mod
 from .multichain import addressbook as book_mod
 from .multichain import logos as logos_mod
 from .multichain import nft as nft_mod
+from .multichain import nft_indexer as nft_indexer_mod
 from .multichain import portfolio as portfolio_mod
 from .multichain import security as security_mod
 from .multichain import walletconnect as wc_mod
+from .multichain import wc_relay as wc_relay_mod
 from .multichain.chains import evm as evm_mod
 
 # Shared helpers from the Bots panel — ONE source of truth for the painter colors,
@@ -400,11 +402,13 @@ class WalletController(QObject):
     # the awaiting coroutine's future is set via loop.call_soon_threadsafe.
     approval_requested = Signal(object, object)  # (presentation, resolver)
     danger_requested = Signal(object, object)    # (presentation, resolver)
+    proposal_requested = Signal(object, object)  # (review, resolver) — dApp session proposal
 
     def __init__(self, ctrl: Any):
         super().__init__()
         self.ctrl = ctrl
         self._wc: Optional[wc_mod.WalletConnect] = None
+        self._relay_wired = False
         self._snap_key = "portfolioSnapshots"
         self._async_done.connect(self._invoke_cb)
         self._async_error.connect(self._invoke_cb)
@@ -583,12 +587,46 @@ class WalletController(QObject):
             ctx["history"] = hist   # real indexer when an adapter provides one
         return ctx
 
+    def _endpoints(self) -> Dict[str, Any]:
+        """Operator-configured read-only endpoint/key settings (Alchemy NFT API,
+        Helius DAS, the WalletConnect relay projectId) from the sealed vault. These
+        are READ-ONLY indexer/relay keys, NOT wallet secrets. Empty when locked."""
+        try:
+            v = self.ctrl.vault
+            if hasattr(v, "endpoints") and callable(v.endpoints):
+                return dict(v.endpoints() or {})
+        except Exception:
+            pass
+        return {}
+
+    def _live_nft_indexer(self):
+        """The LIVE NFT indexer (nft_indexer.create_indexer): EVM via the Alchemy
+        NFT API, Solana via a Helius DAS indexer, both operator-configurable. A
+        missing key / endpoint returns no result so the engine reports the account
+        `unavailable` — NEVER a fabricated empty inventory. Returns ``None`` when no
+        key is configured so the adapter-provided fallback (if any) is used."""
+        ep = self._endpoints()
+        alchemy = ep.get("alchemy") or {}
+        helius = ep.get("helius") or ep.get("das") or {}
+        if not (alchemy.get("apiKey") or alchemy.get("baseUrl")
+                or helius.get("apiKey") or helius.get("url")):
+            return None
+        try:
+            return nft_indexer_mod.create_indexer({"alchemy": alchemy, "helius": helius})
+        except Exception:
+            return None
+
     def nft_ctx(self) -> Dict[str, Any]:
-        indexer = {}
-        get_for_owner = self._optional_indexer("get_nfts")
-        if callable(get_for_owner):
-            indexer["getNFTsForOwner"] = get_for_owner
-        return {"indexer": indexer or None, "config": self._security_config()}
+        # Prefer the LIVE indexer (Alchemy / Helius DAS) when the operator has
+        # configured a key; else fall back to an adapter-provided read-only hook.
+        indexer = self._live_nft_indexer()
+        if indexer is None:
+            hook = {}
+            get_for_owner = self._optional_indexer("get_nfts")
+            if callable(get_for_owner):
+                hook["getNFTsForOwner"] = get_for_owner
+            indexer = hook or None
+        return {"indexer": indexer, "config": self._security_config()}
 
     def resolve_ctx(self, book: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Name-resolution ctx: the local book plus any injected ENS/SNS resolver.
@@ -720,11 +758,31 @@ class WalletController(QObject):
             cfg["denylist"] = sec_cfg["denylist"]
         return cfg
 
+    def _live_wc_relay(self):
+        """The LIVE WalletConnect v2 relay transport (wc_relay.create_relay): opens
+        a wss connection to the operator's relay with a relay-auth JWT, speaks the
+        irn JSON-RPC, and carries ChaCha20-Poly1305 type-0 envelopes end-to-end. It
+        NEVER holds keys and NEVER signs. Returns ``None`` when no projectId is
+        configured (the review/approval sheets still drive the core)."""
+        ep = self._endpoints()
+        wc_ep = ep.get("walletconnect") or {}
+        project_id = wc_ep.get("projectId")
+        if not project_id:
+            return None
+        try:
+            opts = {"projectId": project_id}
+            if wc_ep.get("relayUrl"):
+                opts["relayUrl"] = wc_ep["relayUrl"]
+            return wc_relay_mod.create_relay(opts)
+        except Exception:
+            return None
+
     def wallet_connect(self) -> wc_mod.WalletConnect:
         if self._wc is None:
             self._wc = wc_mod.create_wallet_connect({
                 "store": self.ctrl._store,       # encrypted session store (NO keys)
                 "security": security_mod,        # reuse the wallet security suite
+                "relay": self._live_wc_relay(),  # LIVE WC v2 relay (wss irn + envelopes)
                 "signer": self._wc_signer(),     # signs ONLY after approval (existing signer)
                 "config": self._wc_config(),     # chains the wallet really controls
             })
@@ -770,6 +828,62 @@ class WalletController(QObject):
             return await self._bridge(self.danger_requested, presentation)
 
         return {"approve": approve, "confirm": confirm, "security": self.security_ctx()}
+
+    def _wc_accounts(self) -> List[str]:
+        """The CAIP-10 accounts the wallet can OFFER a dApp (chain-id:address) —
+        the real per-chain addresses the vault controls. Fed to approve_proposal so
+        a session only ever settles accounts the wallet actually holds."""
+        out: List[str] = []
+        reg = getattr(self.ctrl, "registry", None)
+        accts = getattr(self.ctrl, "accounts", None) or {}
+        if reg is None:
+            return out
+        try:
+            for cid in reg.enabled():
+                acc = accts.get(cid)
+                addr = getattr(acc, "address", None) if acc is not None else None
+                if not addr:
+                    continue
+                adapter = reg.get(cid)
+                chain_id = getattr(adapter, "chainId", None)
+                if chain_id is not None:
+                    out.append(f"eip155:{chain_id}:{addr}")
+                elif cid == "solana":
+                    out.append(f"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:{addr}")
+        except Exception:
+            pass
+        return out
+
+    def ensure_relay_wired(self) -> bool:
+        """Drive the LIVE WC v2 relay end-to-end: subscribe inbound session
+        proposals (bridged to the GUI review sheet, then approve/reject through the
+        core — which settles only controlled chains) and route inbound session
+        requests through ``handle_request`` (the SAME security gate + approval) and
+        publish the result. Idempotent; a no-op when no relay is configured."""
+        wc = self.wallet_connect()
+        if self._relay_wired or wc.relay is None:
+            return self._relay_wired
+        self._relay_wired = True
+        # requests -> handle_request (gate + approval) -> respond, on the worker loop
+        wc.connect_relay(self.wc_request_ctx())
+
+        def on_proposal(proposal):
+            async def _flow():
+                review = wc.review_proposal(proposal)
+                ok = await self._bridge(self.proposal_requested, review)
+                if ok:
+                    await wc.approve_proposal(proposal, {"accounts": self._wc_accounts()})
+                else:
+                    await wc.reject_proposal(proposal, None)
+            try:
+                self.loop.submit(_flow())
+            except Exception:
+                pass
+
+        sub = getattr(wc.relay, "subscribeProposals", None)
+        if callable(sub):
+            sub(on_proposal)
+        return True
 
     async def _bridge(self, signal, presentation) -> bool:
         """Emit a queued signal to the GUI thread, show the sheet there, and
@@ -1900,23 +2014,46 @@ class ConnectPanel(_ScrollPanel):
         uri = self.uri.text().strip()
         if not uri:
             return
-        # parse + pair (rejects v1/malformed), then review the proposal. In this
-        # transport-injected build there is no live relay, so pairing surfaces the
-        # parse result / the honest "no relay configured" note — never a fake grant.
+        # parse + pair (rejects v1/malformed). With a LIVE relay configured, pairing
+        # subscribes the pairing topic and the dApp's session proposal arrives over
+        # the relay -> the review sheet opens -> approve settles only controlled
+        # chains. Without a relay (no projectId), pairing surfaces the parse result
+        # and the honest "no relay configured" note — never a fake grant.
         try:
             parsed = wc_mod.parse_pairing_uri(uri)
         except Exception as e:
             QMessageBox.warning(self, "Connect", f"Invalid URI: {e}")
             return
+        has_relay = self.wc.ready() and self.wc.ensure_relay_wired()
+        if has_relay:
+            self.wc.run_async(
+                self.wc.wallet_connect().pair(uri),
+                on_done=lambda _p: QMessageBox.information(
+                    self, "Connect",
+                    f"Paired topic {shorten(parsed.get('topic'))} (v{parsed.get('version')}).\n"
+                    "Waiting for the dApp's session proposal — the review sheet will "
+                    "open when it arrives. Nothing is granted until you approve."),
+                on_error=lambda e: QMessageBox.warning(self, "Connect", str(e)))
+            self.uri.clear()
+            return
         QMessageBox.information(
             self, "Connect",
             f"Paired topic {shorten(parsed.get('topic'))} (v{parsed.get('version')}).\n"
-            "A session proposal will open the review sheet when the relay delivers it. "
-            "No relay transport is configured in this build — nothing is granted.")
+            "No relay transport is configured (set a WalletConnect projectId under "
+            "Endpoints) — nothing is granted.")
 
     # --- the per-request approval + danger confirm sheets (GUI-thread slots) ---
     def show_proposal(self, review: Dict[str, Any]) -> bool:
         return ProposalReviewSheet(self.tok, review, parent=self).exec() == QDialog.Accepted
+
+    def show_proposal_request(self, review: Dict[str, Any], resolver):
+        """GUI-thread slot: a dApp session proposal arrived over the LIVE relay.
+        Show the review sheet; the resolver settles the worker-loop future so the
+        core approves (settling only controlled chains) or rejects."""
+        accepted = self.show_proposal(review)
+        resolver(accepted)
+        if accepted:
+            self.refresh()
 
     def show_approval(self, presentation: Dict[str, Any], resolver):
         insp = (presentation or {}).get("inspection") or {}
@@ -2096,6 +2233,7 @@ class WalletPanel(QWidget):
         # the dApp approval + danger confirm bridges -> the Connect panel's sheets
         self.wc.approval_requested.connect(self.connect.show_approval, Qt.QueuedConnection)
         self.wc.danger_requested.connect(self.connect.show_danger, Qt.QueuedConnection)
+        self.wc.proposal_requested.connect(self.connect.show_proposal_request, Qt.QueuedConnection)
 
         self.setStyleSheet(build_qss(self.tok))
         self._refresh_acct()

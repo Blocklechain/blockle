@@ -30,11 +30,25 @@ import '../multichain/chains/chain_adapter.dart' show Balance;
 import '../multichain/chains/evm.dart' show EvmAdapter;
 import '../multichain/chains/solana.dart' show SolanaAdapter;
 import '../multichain/nft.dart' as nft;
+import '../multichain/nft_indexer.dart' as nidx;
 import '../multichain/portfolio.dart' as pf;
 import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' as wc;
+import '../multichain/wc_relay.dart' as wcr;
+import '../screens/wallet/connect_view.dart' show showWcProposalReview;
 import '../services/exchange_client.dart' show ExchangeClient, ExchangeMarket;
 import 'multichain_controller.dart';
+
+// Operator-configurable transport credentials (set at build time via
+// --dart-define). Empty by default: the WC relay still runs (projectId is
+// optional on some relays) and the NFT indexer honestly reports `unavailable`
+// rather than fabricating an empty inventory when no key is configured.
+const String _kWcProjectId = String.fromEnvironment('BLOCKLE_WC_PROJECT_ID', defaultValue: '');
+const String _kWcRelayUrl = String.fromEnvironment('BLOCKLE_WC_RELAY_URL', defaultValue: wcr.kDefaultRelayUrl);
+const String _kAlchemyNftKey = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_KEY', defaultValue: '');
+const String _kAlchemyNftBaseUrl = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_BASEURL', defaultValue: '');
+const String _kHeliusKey = String.fromEnvironment('BLOCKLE_HELIUS_KEY', defaultValue: '');
+const String _kSolanaDasUrl = String.fromEnvironment('BLOCKLE_SOLANA_DAS_URL', defaultValue: '');
 
 /// Stablecoins pin to $1 (mirrors the engine's `_stableUsd` set / bots_controller).
 const Set<String> _stableSyms = {
@@ -115,6 +129,16 @@ class WalletController extends ChangeNotifier {
   late final ab.AddressBook addressBook;
   late final wc.WalletConnect walletConnect;
 
+  /// The LIVE WalletConnect v2 relay transport injected into [walletConnect] —
+  /// the real WebSocket/irn/ChaCha20-Poly1305 client (wc_relay.dart). The engine
+  /// stays pure; this is what drives real pairings. Kept as a field so the UI can
+  /// subscribe to incoming proposals.
+  late final wcr.WcLiveRelay wcRelay;
+
+  /// The LIVE NFT indexer injected into every NFT inventory read (nft_indexer.dart)
+  /// — Alchemy (EVM) + Helius DAS (Solana). A missing key => honest `unavailable`.
+  late final nidx.LiveNftIndexer nftIndexer;
+
   bool ready = false;
 
   /// Optional per-surface theme override (null = follow the app theme).
@@ -139,22 +163,67 @@ class WalletController extends ChangeNotifier {
         resolveSns: _resolveSns,
       ),
     );
+    // LIVE NFT indexer (nft_indexer.dart): Alchemy for EVM + Helius DAS for
+    // Solana, operator-configurable via --dart-define. Injected into every NFT
+    // inventory read below.
+    nftIndexer = nidx.LiveNftIndexer(
+      alchemy: {
+        if (_kAlchemyNftKey.isNotEmpty) 'apiKey': _kAlchemyNftKey,
+        if (_kAlchemyNftBaseUrl.isNotEmpty) 'baseUrl': _kAlchemyNftBaseUrl,
+      },
+      das: {
+        if (_kHeliusKey.isNotEmpty) 'apiKey': _kHeliusKey,
+        if (_kSolanaDasUrl.isNotEmpty) 'url': _kSolanaDasUrl,
+      },
+    );
+
+    // LIVE WalletConnect v2 relay transport (wc_relay.dart): the real
+    // WebSocket/irn/ChaCha20-Poly1305 client. The engine (walletconnect.dart)
+    // stays pure — this transport is what it drives.
+    wcRelay = wcr.WcLiveRelay(relayUrl: _kWcRelayUrl, projectId: _kWcProjectId);
     walletConnect = wc.WalletConnect(
       store: _SecureBlobStore('bk_wallet_wc'),
-      // relay + signer are the final live-integration step (spec §6); the core
-      // is fully usable (parse / review / persist / gate) without them.
+      // Inject the LIVE relay + the real signer (both route every dApp request
+      // through the SAME security gate — no new money path, nothing auto-signs).
+      relay: wcRelay,
+      signer: _LiveWcSigner(_mc),
       config: {
         'walletChains': kCaip2ByChain.values.toList(),
         'denylist': const <String>[],
       },
     );
-    // Wire the dApp signing gate through the SHARED security sheet. With no relay
-    // yet (spec §6), connectRelay is a no-op; the moment a relay is injected every
-    // WC signing request routes to the same confirm sheet Send/NFT use — a DANGER
-    // forces the explicit confirm, nothing auto-signs.
+    // Wire the dApp signing gate through the SHARED security sheet: every WC
+    // signing request delivered by the live relay routes to the same confirm
+    // sheet Send/NFT use — a DANGER forces the explicit confirm, nothing
+    // auto-signs, eth_sign stays refused (all enforced by the untouched engine).
     walletConnect.connectRelay(wcRequestCtx());
+    // Incoming session proposals from the relay → the proposal-review sheet →
+    // explicit approve/reject (the only thing that settles a session).
+    wcRelay.subscribeProposals(_onWcProposal);
     await _loadNwHistory();
     ready = true;
+    notifyListeners();
+  }
+
+  /// Handle an incoming WC v2 session proposal pushed by the live relay: review
+  /// it (CLAIMED metadata + warnings, surfaced never trusted), show the approval
+  /// sheet, then approve (settling the wallet's real CAIP-10 accounts) or reject.
+  Future<void> _onWcProposal(Map<String, dynamic> proposal) async {
+    final review = walletConnect.reviewProposal(proposal);
+    final ctx = _navKey.currentContext;
+    // fail-closed: no UI to approve through → reject the proposal.
+    final approved = ctx == null ? false : await showWcProposalReview(ctx, review);
+    if (!approved) {
+      await walletConnect.rejectProposal(proposal);
+      return;
+    }
+    // CAIP-10 accounts the wallet offers (only chains it actually controls).
+    final accts = await accountsList();
+    final caip10 = <String>[
+      for (final a in accts)
+        if (kCaip2ByChain[a['chain']] != null) '${kCaip2ByChain[a['chain']]}:${a['address']}'
+    ];
+    await walletConnect.approveProposal(proposal, accounts: caip10);
     notifyListeners();
   }
 
@@ -357,7 +426,7 @@ class WalletController extends ChangeNotifier {
 
   Future<Map<String, dynamic>> loadNfts() async {
     final accounts = await accountsList();
-    return nft.nfts(accounts, const nft.NftCtx());
+    return nft.nfts(accounts, nft.NftCtx(indexer: nftIndexer, accounts: accounts));
   }
 
   /// The NFT inventory PLUS the aggregated per-collection operator approvals
@@ -366,7 +435,7 @@ class WalletController extends ChangeNotifier {
   /// `approvalsAvailable:false` when no indexer is wired (never a fake all-clear).
   Future<Map<String, dynamic>> loadNftsBundle() async {
     final accounts = await accountsList();
-    final inv = await nft.nfts(accounts, const nft.NftCtx());
+    final inv = await nft.nfts(accounts, nft.NftCtx(indexer: nftIndexer, accounts: accounts));
     final operatorApprovals = <Map<String, dynamic>>[];
     var available = false;
     for (final acc in accounts) {
@@ -460,4 +529,46 @@ class WalletController extends ChangeNotifier {
 
   String chainLabel(String chain) => _mc.chainLabel(chain);
   MultichainController get mc => _mc;
+}
+
+/// The LIVE WalletConnect signer injected into the engine. It is reached ONLY
+/// after the engine has run inspectTransaction + the human approval gate (and a
+/// DANGER's extra confirm) — this class never gates, never auto-approves, and
+/// holds no keys of its own: it signs through the SAME derived-key path the rest
+/// of the wallet uses. eth_sign is already refused upstream by the engine.
+class _LiveWcSigner implements wc.WcSigner {
+  _LiveWcSigner(this._mc);
+  final MultichainController _mc;
+
+  @override
+  Future<dynamic> personalSign(Map<String, dynamic> args) async {
+    final signer = _mc.accounts.evmHostedSigner();
+    if (signer == null) {
+      throw StateError('personal_sign: no EVM account available (locked / BLOCK-only wallet)');
+    }
+    // EIP-191 personal_sign over the human-readable message (the engine already
+    // decoded + inspected it, and the gate already approved it).
+    final text = '${args['text'] ?? ''}';
+    return signer.sign(text);
+  }
+
+  @override
+  Future<dynamic> ethSendTransaction(Map<String, dynamic> args) =>
+      throw UnsupportedError('eth_sendTransaction via WalletConnect is not enabled in this build');
+
+  @override
+  Future<dynamic> ethSignTypedData(Map<String, dynamic> args) =>
+      throw UnsupportedError('eth_signTypedData via WalletConnect is not enabled in this build');
+
+  @override
+  Future<dynamic> solanaSignTransaction(Map<String, dynamic> args) =>
+      throw UnsupportedError('solana_signTransaction via WalletConnect is not enabled in this build');
+
+  @override
+  Future<dynamic> solanaSignAndSend(Map<String, dynamic> args) =>
+      throw UnsupportedError('solana_signAndSendTransaction via WalletConnect is not enabled in this build');
+
+  @override
+  Future<dynamic> solanaSignMessage(Map<String, dynamic> args) =>
+      throw UnsupportedError('solana_signMessage via WalletConnect is not enabled in this build');
 }
