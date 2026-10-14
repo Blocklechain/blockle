@@ -460,9 +460,10 @@
         const amount = (toolName === 'place_order')
           ? qty.toString()
           : B.qtyForUsd(usdSizeUc, quoteUc, m.quoteDec).toString(); // quote base units to spend
+        const buyVenue = (toolName === 'place_order') ? null : await this._resolveVenue(bot, m.quote, m.base, B.ucToUsd(usdSizeUc), null);
         const args = (toolName === 'place_order')
           ? { market: m.base + '/' + m.quote, side: 'buy', type: 'limit', amount: qty.toString(), price: B.ucToUsd(order._levelPriceUc || markUc) }
-          : { from: m.quote, to: m.base, amount, venue: (bot.venuePrefs && bot.venuePrefs.venue) || 'blockle' };
+          : { from: m.quote, to: m.base, amount, venue: buyVenue };
         const r = await this._dispatch(bot, toolName, args, remainingUc);
         if (!r || r.rejected || !r.result) { await this._audit({ type: 'bot_order_rejected', bot: bot.id, reason: r && r.reason }); return null; }
         bot.state.committedUc = (bot.state.committedUc || 0n) + usdSizeUc + feeUc; // accrue trade + fee, ONLY on broadcast
@@ -488,9 +489,10 @@
         const st = await this._settleToProfitCurrency(bot, { fromAsset: m.quote, amount: proceedsQuoteUnits, mainnet, remainingUc: null });
         return { side: 'sell', qty, priceUc: execPriceUc, proceedsUc, paper: true, settledCurrency: st.currency };
       }
+      const sellVenue = (toolName === 'place_order') ? null : await this._resolveVenue(bot, m.base, m.quote, B.ucToUsd(proceedsUc), null);
       const args = (toolName === 'place_order')
         ? { market: m.base + '/' + m.quote, side: 'sell', type: 'limit', amount: qty.toString(), price: B.ucToUsd(order._levelPriceUc || markUc) }
-        : { from: m.base, to: m.quote, amount: qty.toString(), venue: (bot.venuePrefs && bot.venuePrefs.venue) || 'blockle' };
+        : { from: m.base, to: m.quote, amount: qty.toString(), venue: sellVenue };
       // sells do not consume allocation; keep the auto-approve envelope at remaining
       // allocation so the sell still auto-approves within the same ONE gate.
       const remainingUc = B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n);
@@ -548,6 +550,30 @@
     // Does a route from `from` -> `to` exist? Injectable (tests/venue layer); the
     // default assumes the venue resolves the hop (the SAME assumption the scanner's
     // net-edge leg makes). A thrown/false result => NO route (we never fabricate).
+    // LEVER 1+2 AT DISPATCH: resolve the cheapest fillable venue for THIS swap when
+    // a route resolver is wired (ctx.routeCandidates -> route descriptors fed to the
+    // shared Venues.chooseRoute; the internal Blockle rail is preferred when it can
+    // actually fill the pair+size, never assumed). Falls back to the bot's configured
+    // venue (default 'blockle'). Default-safe: with no resolver the venue is
+    // unchanged, so every existing dispatch path behaves exactly as before.
+    async _resolveVenue(bot, from, to, sizeUsd, chain) {
+      const def = (bot.venuePrefs && bot.venuePrefs.venue) || 'blockle';
+      try {
+        if (this.ctx && typeof this.ctx.routeCandidates === 'function') {
+          const cands = await this.ctx.routeCandidates({ from, to, sizeUsd, chain, bot: bot.id });
+          if (Array.isArray(cands) && cands.length) {
+            if (this._Venues === undefined) {
+              this._Venues = root.Venues || (typeof require === 'function' ? (() => { try { return require('../venues.js'); } catch (_) { return null; } })() : null);
+            }
+            const V = this._Venues;
+            const picked = (V && typeof V.chooseRoute === 'function') ? V.chooseRoute(cands) : null;
+            if (picked && picked.venue) return picked.venue;
+          }
+        }
+      } catch (_) {}
+      return def;
+    }
+
     async _settlementRoute(from, to) {
       if (this.ctx && typeof this.ctx.settlementRoute === 'function') {
         try { return !!(await this.ctx.settlementRoute(from, to)); } catch (_) { return false; }
@@ -584,7 +610,8 @@
       // so (like every sell) it does not consume allocation; keep the auto-approve
       // envelope at remaining allocation so it clears the SAME gate.
       const envelope = (s.remainingUc != null && s.remainingUc > 0n) ? s.remainingUc : B.microUsd(bot.allocationUsd);
-      const args = { from: fromAsset, to: pc, amount: s.amount.toString(), venue: (bot.venuePrefs && bot.venuePrefs.venue) || 'blockle' };
+      const settleVenue = await this._resolveVenue(bot, fromAsset, pc, null, null);
+      const args = { from: fromAsset, to: pc, amount: s.amount.toString(), venue: settleVenue };
       const r = await this._dispatch(bot, 'swap', args, envelope);
       if (!r || r.rejected || !r.result) {
         // the venue could not settle — honesty over optimism: keep native proceeds.

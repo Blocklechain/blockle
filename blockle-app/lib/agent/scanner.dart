@@ -186,6 +186,14 @@ class AgentScanner {
     // agent leg + slippage) against the net edge so a pair that is only profitable
     // in its native quote but net-negative after settling is NOT traded.
     'settlementFeeBps': 30,
+    // LEVER 3 (fee-aware trade gate) for the directional momentum ENTRY. Both
+    // default 0 => the gate is a NO-OP (pinned scan-vectors unchanged). When
+    // armed, momentumRoundTripCostBps is the round-trip cost of the chosen route
+    // and feeAwareMarginBps the extra edge required above it before an entry is
+    // emitted. Folded into the momentum SCORE so the score agrees with the
+    // planner's entry gate.
+    'feeAwareMarginBps': 0,
+    'momentumRoundTripCostBps': 0,
     // momentum + grid sizing
     'momentumShortN': 10,
     'momentumLongN': 30,
@@ -284,6 +292,9 @@ class AgentScanner {
     p['slippageBps'] = math.max(5, _trunc(p['slippageBps'], 10));
     p['agentFeeBps'] = math.max(5, _trunc(p['agentFeeBps'], 5));
     p['settlementFeeBps'] = math.max(0, _trunc(p['settlementFeeBps'], 30));
+    p['feeAwareMarginBps'] = math.max(0, _num(p['feeAwareMarginBps'], 0));
+    p['momentumRoundTripCostBps'] =
+        math.max(0, _num(p['momentumRoundTripCostBps'], 0));
     p['momentumShortN'] = math.max(1, _trunc(p['momentumShortN'], 10));
     p['momentumLongN'] = math.max(2, _trunc(p['momentumLongN'], 30));
     if ((p['momentumShortN'] as int) >= (p['momentumLongN'] as int)) {
@@ -425,7 +436,12 @@ class AgentScanner {
     final golden = prevShort <= prevLong && currShort > currLong;
     if (!golden || !(currLong > 0)) return null;
     final strengthBps = (currShort - currLong) / currLong * 10000;
-    final costsBps = (cfg['agentFeeBps'] as num) + (cfg['slippageBps'] as num);
+    // single buy leg; LEVER 3 adds the configured fee-aware margin to the cost so
+    // the SCORE agrees with the planner's entry gate (margin defaults to 0 =
+    // no-op, pinned scan-vectors unchanged).
+    final costsBps = (cfg['agentFeeBps'] as num) +
+        (cfg['slippageBps'] as num) +
+        ((cfg['feeAwareMarginBps'] as num?) ?? 0);
     return {
       'strategy': 'momentum',
       'edgeBps': strengthBps - costsBps,
@@ -647,6 +663,28 @@ class AgentScanner {
           ? _num(prices[quote], double.nan)
           : (_kStableUsd[quote] ?? double.nan);
       if (!(quoteUsd > 0)) return const [];
+      // LEVER 3 — FEE-AWARE ENTRY GATE (same as the momentum planner): only emit
+      // the ENTRY when the EXPECTED MOVE (short-window trailing return) clears the
+      // round-trip cost of the chosen route + the configured margin. No-op when
+      // both are 0 (default). Skips sub-threshold fee-bleeding entries only.
+      final gateBps = ((cfg['momentumRoundTripCostBps'] as num?) ?? 0) +
+          ((cfg['feeAwareMarginBps'] as num?) ?? 0);
+      if (gateBps > 0) {
+        final h = <double>[];
+        final hist = (row['candidate'] is Map) ? (row['candidate'] as Map)['history'] : null;
+        if (hist is List) {
+          for (final x in hist) {
+            final n = x is num ? x.toDouble() : double.tryParse('$x');
+            if (n != null && n.isFinite) h.add(n);
+          }
+        }
+        final shortN = cfg['momentumShortN'] as int;
+        if (h.length > shortN) {
+          final back = h[h.length - 1 - shortN];
+          final expectedMoveBps = (back > 0) ? (h[h.length - 1] - back) / back * 10000 : 0;
+          if (!(expectedMoveBps >= gateBps)) return const [];
+        }
+      }
       final qd = _decimalsFor(quote);
       final amount = usdToBase(cfg['perTradeUsd'] as num, qd, quoteUsd);
       if (amount <= BigInt.zero) return const [];

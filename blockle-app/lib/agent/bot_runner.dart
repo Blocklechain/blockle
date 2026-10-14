@@ -34,6 +34,7 @@ import 'runner.dart' show dispatchValueMoving, DispatchOutcome;
 import 'scanner.dart' show AgentScanner, ScanIntent, ScanResult;
 import 'strategies.dart' show StrategyContext, Strategy, defaultStrategies;
 import 'tools.dart' show ToolRegistry;
+import '../multichain/venues.dart' show chooseRoute;
 
 const Map<String, int> _stableUsd = {
   'USDC': 1, 'USDT': 1, 'DAI': 1, 'USD': 1, 'USDBC': 1, 'PYUSD': 1,
@@ -60,13 +61,27 @@ class BotContext {
   /// venue prices/history/book. READ-ONLY; `config` is the bot's config.
   final Future<List<dynamic>> Function([Map<String, dynamic>? config])? scanUniverse;
 
+  /// LEVER 1+2 AT DISPATCH (optional): resolve the cheapest fillable venue for a
+  /// swap. Returns route descriptors ({id, feeBps, gasUsd, notionalUsd,
+  /// priceImpactBps, internal, canFill}) fed to the shared Venues.chooseRoute —
+  /// the internal Blockle rail is preferred when it can ACTUALLY fill the
+  /// pair+size (never assumed). With no resolver wired the bot's configured venue
+  /// is used unchanged, so every existing dispatch path behaves exactly as before.
+  final Future<List<dynamic>> Function(
+      {required String from,
+      required String to,
+      num? sizeUsd,
+      String? chain,
+      String? bot})? routeCandidates;
+
   const BotContext(
       {this.now,
       this.network,
       this.prices,
       this.discovery,
       this.strategyCtx,
-      this.scanUniverse});
+      this.scanUniverse,
+      this.routeCandidates});
 }
 
 class BotRunner {
@@ -619,7 +634,8 @@ class BotRunner {
             }
           : {
               'from': m['quote'], 'to': m['base'], 'amount': amount,
-              'venue': _venue(bot),
+              'venue': await _resolveVenue(
+                  bot, '${m['quote']}', '${m['base']}', b.ucToUsd(usdSizeUc), null),
             };
       final r = await _dispatch(bot, toolName, args, remainingUc);
       if (r['rejected'] == true || r['result'] == null) {
@@ -663,7 +679,11 @@ class BotRunner {
             'market': '${m['base']}/${m['quote']}', 'side': 'sell', 'type': 'limit',
             'amount': qty.toString(), 'price': b.ucToUsd((order['_levelPriceUc'] as BigInt?) ?? markUc),
           }
-        : {'from': m['base'], 'to': m['quote'], 'amount': qty.toString(), 'venue': _venue(bot)};
+        : {
+            'from': m['base'], 'to': m['quote'], 'amount': qty.toString(),
+            'venue': await _resolveVenue(
+                bot, '${m['base']}', '${m['quote']}', b.ucToUsd(proceedsUc), null),
+          };
     // sells do not consume allocation; keep the auto-approve envelope at remaining
     // allocation so the sell still auto-approves within the same ONE gate.
     final remainingUc = b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
@@ -679,6 +699,29 @@ class BotRunner {
     final vp = bot.venuePrefs;
     if (vp is Map && vp['venue'] != null) return '${vp['venue']}';
     return 'blockle';
+  }
+
+  /// LEVER 1+2 AT DISPATCH: resolve the cheapest fillable venue for THIS swap when
+  /// a route resolver is wired (ctx.routeCandidates -> route descriptors fed to the
+  /// shared Venues.chooseRoute; the internal Blockle rail is preferred when it can
+  /// ACTUALLY fill the pair+size, never assumed). Falls back to the bot's
+  /// configured venue (default 'blockle'). Default-safe: with no resolver the venue
+  /// is unchanged, so every existing dispatch path behaves exactly as before.
+  Future<String> _resolveVenue(
+      b.Bot bot, String from, String to, num? sizeUsd, String? chain) async {
+    final def = _venue(bot);
+    try {
+      if (ctx.routeCandidates != null) {
+        final cands = await ctx.routeCandidates!(
+            from: from, to: to, sizeUsd: sizeUsd, chain: chain, bot: bot.id);
+        if (cands.isNotEmpty) {
+          final picked = chooseRoute(cands);
+          final venue = picked['venue'];
+          if (venue != null) return '$venue';
+        }
+      }
+    } catch (_) {}
+    return def;
   }
 
   // The bot's configured profit currency (the asset realized P&L settles INTO), or
@@ -787,7 +830,11 @@ class BotRunner {
     final r = await _dispatch(
       bot,
       'swap',
-      {'from': from, 'to': pc, 'amount': amount.toString(), 'venue': _venue(bot)},
+      {
+        'from': from, 'to': pc, 'amount': amount.toString(),
+        'venue': await _resolveVenue(
+            bot, from, pc, b.ucToUsd(proceedsUc), null),
+      },
       remainingUc > BigInt.zero ? remainingUc : b.microUsd(bot.allocationUsd),
     );
     if (r['rejected'] == true || r['result'] == null) {

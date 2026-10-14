@@ -443,7 +443,11 @@
   const momentum = {
     name: 'momentum',
     describe() { return 'SMA crossover: buy on a golden cross (short over long), sell held on a death cross.'; },
-    defaults: { market: null, shortN: 10, longN: 30, tradeUsd: 20, history: null, held: null, balances: null },
+    // feeAwareMarginBps + roundTripCostBps implement LEVER 3 (fee-aware trade gate)
+    // for the directional ENTRY: only BUY when the expected move clears the round-
+    // trip cost of the chosen route PLUS a margin. BOTH default to 0 => the gate is
+    // a NO-OP (today's behavior, shared fixtures unchanged); set them to arm it.
+    defaults: { market: null, shortN: 10, longN: 30, tradeUsd: 20, history: null, held: null, balances: null, feeAwareMarginBps: 0, roundTripCostBps: 0 },
     validateParams(params) {
       const p = Object.assign({}, this.defaults, params || {});
       if (!p.market) throw new Error('momentum requires a market');
@@ -452,6 +456,8 @@
       p.longN = Math.max(2, Math.trunc(num(p.longN, 30)));
       if (p.shortN >= p.longN) throw new Error('momentum needs shortN < longN');
       p.tradeUsd = Math.max(0, num(p.tradeUsd, 20));
+      p.feeAwareMarginBps = Math.max(0, num(p.feeAwareMarginBps, 0));
+      p.roundTripCostBps = Math.max(0, num(p.roundTripCostBps, 0));
       return p;
     },
     async plan(ctx, p) {
@@ -476,6 +482,23 @@
       const mainnet = mainnetOf(ctx);
 
       if (golden) {
+        // LEVER 3 — FEE-AWARE ENTRY GATE. Only ENTER when the EXPECTED MOVE clears
+        // the round-trip cost of the chosen route + the configured margin. The
+        // expected move is the realized trend that PRODUCED the cross — the short-
+        // window trailing return (price now vs `shortN` candles ago), NOT the SMA gap
+        // at the cross itself (which is ~0 by construction at any crossover and so
+        // would veto winners and whipsaws alike). This SKIPS fee-bleeding sub-
+        // threshold entries only; a genuinely strong move is never suppressed. No-op
+        // when feeAwareMarginBps and roundTripCostBps are both 0 (default). Exits
+        // (death cross) are NEVER gated — risk reduction must always be allowed.
+        const gateBps = p.roundTripCostBps + p.feeAwareMarginBps;
+        if (gateBps > 0) {
+          const back = history[n - 1 - p.shortN];
+          const expectedMoveBps = (back > 0) ? ((history[n - 1] - back) / back) * 10000 : 0;
+          if (!(expectedMoveBps >= gateBps)) {
+            return emptyPlan('momentum entry below fee-aware threshold (expected move ' + expectedMoveBps.toFixed(2) + 'bps < roundtrip+margin ' + gateBps.toFixed(2) + 'bps)');
+          }
+        }
         return [intent({
           tool: 'swap', args: { from: quote, to: base, amount: usdToBase(p.tradeUsd, qd, quoteUsd).toString(), venue: 'blockle' },
           rationale: 'momentum GOLDEN cross ' + p.market + ': SMA' + p.shortN + ' crossed above SMA' + p.longN + ' — buy $' + p.tradeUsd,

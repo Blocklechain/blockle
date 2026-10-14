@@ -251,6 +251,30 @@ test('momentum: nothing on no cross and when history is shorter than longN', asy
   assert.match(few.skipped, /longN/);
 });
 
+test('momentum: FEE-AWARE entry gate (lever 3) skips a sub-threshold golden cross', async () => {
+  // A weak golden cross: short just barely above long. With the gate ARMED the
+  // entry is skipped; the SAME cross with the gate at its default (0) still buys.
+  const history = [100, 100, 100, 100, 100.2]; // tiny upmove -> small strength
+  const base = { market: 'BLOCK/USDC', shortN: 2, longN: 3, tradeUsd: 20, history };
+  const ctx = ctxFor({ prices: { USDC: 1, BLOCK: 1 } });
+
+  const armed = await S.momentum.plan(ctx, S.momentum.validateParams(
+    Object.assign({}, base, { roundTripCostBps: 60, feeAwareMarginBps: 25 })));
+  assert.equal(armed.length, 0, 'sub-threshold entry is skipped when the gate is armed');
+  assert.match(armed.skipped || '', /fee-aware threshold/);
+
+  const dflt = await S.momentum.plan(ctx, S.momentum.validateParams(base));
+  assert.equal(dflt.length, 1, 'default (gate off) still buys on the golden cross');
+});
+
+test('momentum: FEE-AWARE gate never suppresses a genuinely strong cross', async () => {
+  const history = [1, 1, 1, 1, 2]; // strong move (~1250 bps strength)
+  const intents = await S.momentum.plan(ctxFor({ prices: { USDC: 1, BLOCK: 1 } }),
+    S.momentum.validateParams({ market: 'BLOCK/USDC', shortN: 2, longN: 3, tradeUsd: 20, history, roundTripCostBps: 60, feeAwareMarginBps: 25 }));
+  assert.equal(intents.length, 1, 'a strong cross clears the fee-aware threshold and trades');
+  assert.ok(intents[0].tag.endsWith(':buy'));
+});
+
 test('momentum: death cross with nothing held emits nothing', async () => {
   const vec = VEC.momentum.death_cross_sells_held;
   const intents = await S.momentum.plan(ctxFor({ prices: vec.prices }), S.momentum.validateParams(vec.params)); // no balances/held

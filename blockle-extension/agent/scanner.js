@@ -82,6 +82,12 @@
     // correctly skipped. Zero (no extra hop) when the quote already IS the profit
     // currency. A conservative DEX pool fee by default.
     settlementFeeBps: 30,
+    // LEVER 3 (fee-aware trade gate) for the directional momentum ENTRY. Both
+    // default 0 => the gate is a NO-OP (pinned scan-vectors unchanged). When armed,
+    // momentumRoundTripCostBps is the round-trip cost of the chosen route and
+    // feeAwareMarginBps the extra edge required above it before an entry is emitted.
+    feeAwareMarginBps: 0,
+    momentumRoundTripCostBps: 0,
     // momentum + grid sizing
     momentumShortN: 10,
     momentumLongN: 30,
@@ -126,6 +132,8 @@
     p.slippageBps = Math.max(5, Math.trunc(num(p.slippageBps, 10)));
     p.agentFeeBps = Math.max(5, Math.trunc(num(p.agentFeeBps, 5)));
     p.settlementFeeBps = Math.max(0, Math.trunc(num(p.settlementFeeBps, 30)));
+    p.feeAwareMarginBps = Math.max(0, num(p.feeAwareMarginBps, 0));
+    p.momentumRoundTripCostBps = Math.max(0, num(p.momentumRoundTripCostBps, 0));
     p.momentumShortN = Math.max(1, Math.trunc(num(p.momentumShortN, 10)));
     p.momentumLongN = Math.max(2, Math.trunc(num(p.momentumLongN, 30)));
     if (p.momentumShortN >= p.momentumLongN) p.momentumShortN = Math.max(1, p.momentumLongN - 1);
@@ -193,7 +201,9 @@
     const golden = prevShort <= prevLong && currShort > currLong; // entry signal only
     if (!golden || !(currLong > 0)) return null;
     const strengthBps = ((currShort - currLong) / currLong) * 10000;
-    const costsBps = cfg.agentFeeBps + cfg.slippageBps; // single buy leg
+    // single buy leg; LEVER 3 adds the configured fee-aware margin to the cost so
+    // the SCORE agrees with the planner's entry gate (margin defaults to 0 = no-op).
+    const costsBps = cfg.agentFeeBps + cfg.slippageBps + (cfg.feeAwareMarginBps || 0);
     return { strategy: 'momentum', edgeBps: strengthBps - costsBps, strengthBps, costsBps };
   }
 
@@ -304,6 +314,8 @@
       const params = strat.validateParams({
         market: c.pair, shortN: cfg.momentumShortN, longN: cfg.momentumLongN, tradeUsd: cfg.perTradeUsd,
         history: c.history || [],
+        // LEVER 3: the planner enforces the SAME fee-aware entry gate (no-op at 0).
+        feeAwareMarginBps: cfg.feeAwareMarginBps, roundTripCostBps: cfg.momentumRoundTripCostBps,
       });
       return (await strat.plan(ctx, params)) || [];
     }

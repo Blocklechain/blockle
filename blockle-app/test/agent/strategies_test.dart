@@ -242,6 +242,40 @@ void main() {
           strat.validateParams({'market': 'BLOCK/USDC', 'shortN': 2, 'longN': 3, 'history': [1, 2]}));
       expect(intents, isEmpty);
     });
+
+    test('FEE-AWARE entry gate (lever 3) skips a sub-threshold golden cross', () async {
+      // A weak golden cross: short just barely above long. With the gate ARMED the
+      // entry is skipped; the SAME cross at the default (0) still buys.
+      final history = [100, 100, 100, 100, 100.2]; // tiny upmove -> small strength
+      final notes = <Map<String, dynamic>>[];
+      final ctx = StrategyContext(
+        now: () => 0,
+        prices: (_) async => {'USDC': 1, 'BLOCK': 1},
+        note: notes.add,
+      );
+      final strat = MomentumStrategy();
+      final base = {'market': 'BLOCK/USDC', 'shortN': 2, 'longN': 3, 'tradeUsd': 20, 'history': history};
+
+      final armed = await strat.plan(ctx,
+          strat.validateParams({...base, 'roundTripCostBps': 60, 'feeAwareMarginBps': 25}));
+      expect(armed, isEmpty, reason: 'sub-threshold entry is skipped when armed');
+      expect(notes.any((n) => '${n['skipped']}'.contains('fee-aware threshold')), isTrue);
+
+      final dflt = await strat.plan(ctx, strat.validateParams(base));
+      expect(dflt.length, 1, reason: 'default (gate off) still buys on the golden cross');
+    });
+
+    test('FEE-AWARE gate never suppresses a genuinely strong cross', () async {
+      final history = [1, 1, 1, 1, 2]; // strong move (~10000 bps)
+      final ctx = StrategyContext(now: () => 0, prices: (_) async => {'USDC': 1, 'BLOCK': 1});
+      final strat = MomentumStrategy();
+      final intents = await strat.plan(ctx, strat.validateParams({
+        'market': 'BLOCK/USDC', 'shortN': 2, 'longN': 3, 'tradeUsd': 20,
+        'history': history, 'roundTripCostBps': 60, 'feeAwareMarginBps': 25,
+      }));
+      expect(intents.length, 1, reason: 'a strong cross clears the fee-aware threshold');
+      expect(intents.first.tag.endsWith(':buy'), isTrue);
+    });
   });
 
   group('param validation', () {

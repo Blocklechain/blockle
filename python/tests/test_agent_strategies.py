@@ -326,3 +326,45 @@ def test_validate_params_fills_defaults_and_rejects_bad_input():
 
 def test_registry_lists_all_five():
     assert set(S.default_registry().names()) == {"arbitrage", "dca", "grid", "rebalance", "momentum"}
+
+
+# --------------------------------------------------------------------------- #
+# momentum LEVER 3 — fee-aware entry gate (shared vectors from the extension)  #
+# --------------------------------------------------------------------------- #
+
+def test_momentum_fee_aware_gate_skips_sub_threshold_golden_cross():
+    strat = S.Momentum()
+    # a weak golden cross: short just barely above long -> tiny expected move
+    history = [100, 100, 100, 100, 100.2]
+    ctx = {"mainnet": False, "prices": lambda s: {"BLOCK": 1, "USDC": 1}}
+    armed = run(strat.plan(ctx, strat.validate_params(
+        {"market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20,
+         "history": history, "roundTripCostBps": 60, "feeAwareMarginBps": 25})))
+    assert armed == []  # sub-threshold entry skipped when the gate is armed
+    dflt = run(strat.plan(ctx, strat.validate_params(
+        {"market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20, "history": history})))
+    assert len(dflt) == 1  # default (gate off) still buys on the golden cross
+
+
+def test_momentum_fee_aware_gate_never_suppresses_a_strong_cross():
+    strat = S.Momentum()
+    history = [1, 1, 1, 1, 2]  # strong move
+    ctx = {"mainnet": False, "prices": lambda s: {"BLOCK": 1, "USDC": 1}}
+    intents = run(strat.plan(ctx, strat.validate_params(
+        {"market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20,
+         "history": history, "roundTripCostBps": 60, "feeAwareMarginBps": 25})))
+    assert len(intents) == 1
+    assert intents[0]["tag"].endswith(":buy")
+
+
+def test_momentum_fee_aware_gate_never_gates_the_exit_death_cross():
+    strat = S.Momentum()
+    # death cross with holdings: the exit must ALWAYS be allowed, gate or not.
+    params = strat.validate_params(
+        {"market": "BLOCK/USDC", "shortN": 2, "longN": 3, "tradeUsd": 20,
+         "history": [2, 2, 2, 2, 1], "roundTripCostBps": 10000, "feeAwareMarginBps": 10000})
+    ctx = {"mainnet": False, "prices": lambda s: {"BLOCK": 1, "USDC": 1},
+           "getBalance": lambda c, t: [_bal("BLOCK", 8, "500000000")]}
+    intents = run(strat.plan(ctx, params))
+    assert len(intents) == 1
+    assert intents[0]["args"]["from"] == "BLOCK"  # sell leg, never gated

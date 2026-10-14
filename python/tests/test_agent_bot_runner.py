@@ -711,3 +711,57 @@ def test_momentum_paper_settlement_records_but_never_broadcasts():
     assert any(e.get("type") == "bot_settlement" and e.get("paper") is True for e in audit.list())
     ev = next(e for e in rep["events"] if e.get("tag") == "mom:BLOCK/USDC:sell")
     assert ev["settleCurrency"] == "DAI"
+
+
+# =========================================================================== #
+# LEVER 1+2 — dispatch-time cheapest-fillable venue resolution                 #
+# =========================================================================== #
+
+class _FakeBot:
+    def __init__(self, venue_prefs=None):
+        self.id = "b1"
+        self.venue_prefs = venue_prefs
+
+
+def test_resolve_venue_default_safe_without_resolver():
+    # no ctx.routeCandidates -> the bot's configured venue is unchanged.
+    env = setup()
+    runner = env["runner"]
+    bot = _FakeBot({"venue": "evmdex"})
+    v = asyncio.run(runner._resolve_venue(bot, "USDC", "BLOCK", 20.0, None))
+    assert v == "evmdex"
+    # no prefs at all -> blockle default.
+    assert asyncio.run(runner._resolve_venue(_FakeBot(), "USDC", "BLOCK", 20.0, None)) == "blockle"
+
+
+def test_resolve_venue_picks_cheapest_fillable_route():
+    seen = {}
+
+    async def route_candidates(q):
+        seen.update(q)
+        return [
+            {"id": "evmdex", "feeBps": 30, "gasUsd": 2, "notionalUsd": 2000},  # 40 bps
+            {"id": "blockle", "internal": True, "feeBps": 10, "gasUsd": 0},    # 10 bps
+        ]
+
+    ctx = dict(mk_ctx([100]))
+    ctx["routeCandidates"] = route_candidates
+    env = setup({"ctx": ctx})
+    runner = env["runner"]
+    v = asyncio.run(runner._resolve_venue(_FakeBot({"venue": "evmdex"}), "USDC", "BLOCK", 20.0, "block"))
+    assert v == "blockle"               # cheapest all-in, internal rail wins
+    assert seen["from"] == "USDC" and seen["to"] == "BLOCK" and seen["bot"] == "b1"
+
+
+def test_resolve_venue_falls_back_when_internal_cannot_fill():
+    async def route_candidates(q):
+        return [
+            {"id": "blockle", "internal": True, "feeBps": 10, "canFill": False},
+            {"id": "evmdex", "feeBps": 30, "gasUsd": 2, "notionalUsd": 2000},
+        ]
+
+    ctx = dict(mk_ctx([100]))
+    ctx["routeCandidates"] = route_candidates
+    runner = setup({"ctx": ctx})["runner"]
+    v = asyncio.run(runner._resolve_venue(_FakeBot(), "USDC", "BLOCK", 20.0, "block"))
+    assert v == "evmdex"                # internal skipped (no fill) -> cheapest external

@@ -189,6 +189,90 @@
   const tokenId = (t) => (t && typeof t === 'object') ? (t.address || t.mint || t.symbol) : t;
   const tokenSym = (t) => (t && typeof t === 'object') ? (t.symbol || t.address || t.mint) : t;
 
+  function num(v, dflt) { const n = Number(v); return isFinite(n) ? n : (dflt == null ? 0 : dflt); }
+
+  // ===========================================================================
+  // FEE-AWARE ROUTING — the REFERENCE for the three fee-reduction levers.
+  // ===========================================================================
+  //
+  // These are PURE, config-driven, and unit-tested directly. They LOWER cost and
+  // never fabricate profit; the scanner/strategies net-edge gate consumes the
+  // EXPOSED effective cost so it prices the REAL route that will execute.
+  //
+  //   LEVER 1 — CHEAPEST-VENUE ROUTING: given candidate routes each carrying its
+  //     OWN pool/venue fee + gas + the AMM price impact of the quoted size, pick
+  //     the lowest ALL-IN cost (bps), NOT merely the best nominal price.
+  //   LEVER 2 — INTERNAL-VENUE PREFERENCE: the native Blockle exchange (off-chain
+  //     atomic swap, ~10 bps, NO gas) is PREFERRED over external AMMs (~30 bps +
+  //     gas) WHEN it can ACTUALLY fill the pair+size (a real canFill check) —
+  //     never assumed. Pairs it cannot fill fall back to the cheapest external
+  //     route.
+  //
+  // A "route" descriptor fills ONE leg:
+  //   { id, venue, feeBps|poolFeeBps, gasUsd, notionalUsd, priceImpactBps,
+  //     internal:bool, canFill:bool }
+
+  // Constant-product price impact (depth/slippage) of swapping `amountIn` against
+  // `reserveIn`, in bps, EXCLUDING the pool fee (the fee is priced separately in
+  // routeCostBps). For x*y=k: impact = amountIn / (reserveIn + amountIn).
+  function priceImpactBps(amountIn, reserveIn) {
+    const aIn = Number(bigOf(amountIn)), rIn = Number(bigOf(reserveIn));
+    if (!(aIn > 0) || !(rIn > 0)) return 0;
+    return (aIn / (rIn + aIn)) * 10000;
+  }
+
+  // ALL-IN one-leg cost of a route in bps = venue/pool fee + price impact + gas
+  // (gas amortized over the trade notional). Pure; fail-open to 0 where unknown.
+  function routeCostBps(route) {
+    route = route || {};
+    const feeBps = Math.max(0, num(route.feeBps != null ? route.feeBps : route.poolFeeBps, 0));
+    const impactBps = Math.max(0, num(route.priceImpactBps, 0));
+    const gasUsd = Math.max(0, num(route.gasUsd, 0));
+    const notionalUsd = num(route.notionalUsd, 0);
+    const gasBps = (gasUsd > 0 && notionalUsd > 0) ? (gasUsd / notionalUsd) * 10000 : 0;
+    return feeBps + impactBps + gasBps;
+  }
+
+  // Choose the lowest ALL-IN cost route among the FILLABLE candidates. A route is
+  // a candidate only when canFill !== false (never assume a fill). On a cost tie
+  // the INTERNAL venue wins (lever 2); otherwise ties break by id for determinism.
+  // Returns the chosen route + its EXPOSED effectiveCostBps (one leg) and
+  // roundTripCostBps (entry + exit), plus the ranked candidates. When nothing can
+  // fill, chosen is null and the costs are Infinity (the caller must skip, not
+  // trade on a route that does not exist).
+  function chooseRoute(routes, opts) {
+    opts = opts || {};
+    const cands = [];
+    for (const r of (routes || [])) {
+      if (!r) continue;
+      const canFill = (r.canFill === undefined || r.canFill === null) ? true : !!r.canFill;
+      if (!canFill) continue;
+      const effectiveCostBps = routeCostBps(r);
+      // round trip pays fee+impact on BOTH legs and gas on BOTH on-chain txs; with
+      // the symmetric model that is simply 2x the one-leg all-in cost. Internal has
+      // no gas, so its round trip is just 2x its fee — the whole point of lever 2.
+      const roundTripCostBps = 2 * effectiveCostBps;
+      cands.push({
+        route: r, id: r.id || r.venue || null, internal: !!r.internal,
+        effectiveCostBps, roundTripCostBps, canFill: true,
+      });
+    }
+    if (!cands.length) {
+      return { chosen: null, route: null, venue: null, internal: false,
+        effectiveCostBps: Infinity, roundTripCostBps: Infinity, candidates: [], reason: 'no-fillable-route' };
+    }
+    cands.sort((a, b) =>
+      (a.effectiveCostBps - b.effectiveCostBps) ||
+      (b.internal - a.internal) ||                       // internal wins a tie
+      String(a.id).localeCompare(String(b.id)));
+    const best = cands[0];
+    return {
+      chosen: best.route, route: best.route, venue: best.id, internal: best.internal,
+      effectiveCostBps: best.effectiveCostBps, roundTripCostBps: best.roundTripCostBps,
+      candidates: cands, reason: 'ok',
+    };
+  }
+
   // ===========================================================================
   // VENUE: blockle — native AMM + non-custodial exchange + x402
   // ===========================================================================
@@ -206,6 +290,10 @@
       cfg.assetChain || {}
     );
     const poolFeeBps = cfg.poolFeeBps == null ? 30 : cfg.poolFeeBps;
+    // LEVER 2: the native off-chain exchange rail is the CHEAP internal venue
+    // (~10 bps, no gas). When the exchange is wired its quotes price through it;
+    // otherwise the local AMM pool fee applies. Default 10 bps.
+    const internalFeeBps = cfg.internalFeeBps == null ? 10 : cfg.internalFeeBps;
 
     // The trade's chain = the chain the INPUT asset settles the fee on.
     function feeChainOf(from, req) {
@@ -231,21 +319,41 @@
       throw new Error('blockle venue: no pricing source (wire exchange.quote or amm.reserves)');
     }
 
+    // LEVER 2 real fill check — NEVER assume the internal rail can fill. Delegates
+    // to a wired check (exchange.canFill / cfg.canFill); when the exchange is wired
+    // but exposes no check we fail-OPEN to true (it is the pricing source), and when
+    // nothing is wired we fail-CLOSED to false (no internal liquidity to assume).
+    async function canFill(from, to, amount, opts) {
+      if (typeof cfg.canFill === 'function') { try { return !!(await cfg.canFill(tokenSym(from), tokenSym(to), String(amount), opts || {})); } catch (_) { return false; } }
+      const ex = cfg.exchange;
+      if (ex && typeof ex.canFill === 'function') { try { return !!(await ex.canFill(tokenSym(from), tokenSym(to), String(amount), opts || {})); } catch (_) { return false; } }
+      return !!(ex && typeof ex.quote === 'function');
+    }
+
     return {
       id: 'blockle',
       kind: 'native',
+      internal: true,
+      feeBps: internalFeeBps,       // the cheap internal rail fee (lever 2)
       supports(chain) { return normChain(chain) === 'block'; },
+      canFill,                      // real pair+size fill check (never assumed)
 
       async quote(from, to, amount, opts) {
         opts = opts || {};
         const { amountOut, route, raw } = await rawQuote(from, to, amount, opts);
         const chain = feeChainOf(from, opts);
+        // EXPOSE the route's effective one-leg cost so the net-edge gate prices the
+        // REAL internal rail (internalFeeBps + AMM depth impact when reserves known).
+        let impactBps = 0;
+        if (raw && raw.reserveIn != null) { try { impactBps = priceImpactBps(amount, raw.reserveIn); } catch (_) {} }
+        const effectiveCostBps = internalFeeBps + impactBps;
         return {
-          venue: 'blockle', chain,
+          venue: 'blockle', chain, internal: true,
           from: tokenSym(from), to: tokenSym(to),
           amountIn: String(amount), amountOut,
           minOut: applySlippage(amountOut, opts.slippage == null ? 0.005 : opts.slippage),
-          route, fee: treasury.feeFor(chain, amount, tokenSym(from)), raw,
+          route, effectiveCostBps, feeBps: internalFeeBps, priceImpactBps: impactBps,
+          fee: treasury.feeFor(chain, amount, tokenSym(from)), raw,
         };
       },
 
@@ -476,6 +584,10 @@
       forChain: (chain) => venues.filter((v) => { try { return v.supports(chain); } catch { return false; } }),
       feeFor: (chain, amount, asset) => treasury.feeFor(chain, amount, asset),
       feeTransfer,
+      // LEVER 1+2: pick the cheapest ALL-IN fillable route from a candidate set
+      // (internal preferred on a tie). Pass explicit route descriptors; see
+      // chooseRoute. Exposed here so the runner/scanner share ONE router.
+      chooseRoute,
     };
   }
 
@@ -489,6 +601,10 @@
     feeTransfer,
     normChain,
     treasuryKey,
+    // fee-aware routing reference (levers 1 + 2)
+    priceImpactBps,
+    routeCostBps,
+    chooseRoute,
   };
 
   global.Venues = Venues;

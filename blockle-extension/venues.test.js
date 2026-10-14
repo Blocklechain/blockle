@@ -237,3 +237,96 @@ test('registry: venues can be disabled', () => {
   const vx = V.create({ treasury: TREASURY, jupiter: { enabled: false }, evmdex: { enabled: false } });
   assert.deepEqual(vx.ids(), ['blockle']);
 });
+
+// ---------------------------------------------------------------------------
+// FEE-AWARE ROUTING (levers 1 + 2) — pure helpers
+// ---------------------------------------------------------------------------
+
+test('priceImpactBps: constant-product depth impact = amountIn/(reserveIn+amountIn)', () => {
+  // 1000 in against a 1,000,000 reserve -> 1000/1001000 ≈ 9.99 bps
+  assert.ok(Math.abs(V.priceImpactBps('1000', '1000000') - (1000 / 1001000) * 1e4) < 1e-9);
+  assert.equal(V.priceImpactBps('0', '1000000'), 0);   // no size -> no impact
+  assert.equal(V.priceImpactBps('1000', '0'), 0);      // no depth -> fail-open 0
+});
+
+test('routeCostBps: all-in = fee + impact + amortized gas', () => {
+  // 30 bps pool fee + 10 bps impact + $2 gas over $2000 notional (10 bps) = 50 bps
+  assert.equal(V.routeCostBps({ feeBps: 30, priceImpactBps: 10, gasUsd: 2, notionalUsd: 2000 }), 50);
+  // internal rail: 10 bps fee, no gas, no impact given = 10 bps
+  assert.equal(V.routeCostBps({ feeBps: 10 }), 10);
+  // gas with no notional cannot be amortized -> ignored (fee only)
+  assert.equal(V.routeCostBps({ feeBps: 30, gasUsd: 5 }), 30);
+});
+
+test('chooseRoute: picks lowest ALL-IN cost, not the best nominal price', () => {
+  const r = V.chooseRoute([
+    { id: 'extAMM', feeBps: 30, gasUsd: 2, notionalUsd: 2000 },       // 30 + 10 gas = 40
+    { id: 'stable', feeBps: 6, gasUsd: 2, notionalUsd: 2000 },        // 6 + 10 gas = 16
+    { id: 'blockle', internal: true, feeBps: 10, gasUsd: 0 },         // 10, no gas
+  ]);
+  assert.equal(r.venue, 'blockle');              // 10 bps beats 16 and 40
+  assert.equal(r.effectiveCostBps, 10);
+  assert.equal(r.roundTripCostBps, 20);          // 2x one-leg (no gas)
+  assert.equal(r.internal, true);
+});
+
+test('chooseRoute: INTERNAL preference only when it can ACTUALLY fill (lever 2)', () => {
+  const routes = [
+    { id: 'blockle', internal: true, feeBps: 10, gasUsd: 0, canFill: false }, // cannot fill this pair/size
+    { id: 'stable', feeBps: 8, gasUsd: 2, notionalUsd: 2000 },                // 8 + 10 = 18
+    { id: 'extAMM', feeBps: 30, gasUsd: 2, notionalUsd: 2000 },               // 40
+  ];
+  const r = V.chooseRoute(routes);
+  assert.equal(r.venue, 'stable');               // internal skipped (no fill) -> cheapest external
+  assert.equal(r.internal, false);
+});
+
+test('chooseRoute: internal wins a cost TIE over an equally-priced external', () => {
+  const r = V.chooseRoute([
+    { id: 'extAMM', feeBps: 10, gasUsd: 0 },
+    { id: 'blockle', internal: true, feeBps: 10, gasUsd: 0 },
+  ]);
+  assert.equal(r.venue, 'blockle');
+});
+
+test('chooseRoute: no fillable route -> null chosen + Infinity cost (caller must skip)', () => {
+  const r = V.chooseRoute([{ id: 'blockle', internal: true, feeBps: 10, canFill: false }]);
+  assert.equal(r.chosen, null);
+  assert.equal(r.effectiveCostBps, Infinity);
+  assert.equal(r.reason, 'no-fillable-route');
+});
+
+// ---------------------------------------------------------------------------
+// blockle internal-venue capability (lever 2): canFill + exposed effective cost
+// ---------------------------------------------------------------------------
+
+test('blockle venue: internal flag + 10 bps internal fee + exposed effectiveCostBps', async () => {
+  const vx = V.create({
+    treasury: TREASURY,
+    blockle: { exchange: { quote: async () => ({ amountOut: '4200' }) }, assetChain: { USDC: 'base' } },
+  });
+  const bl = vx.get('blockle');
+  assert.equal(bl.internal, true);
+  assert.equal(bl.feeBps, 10);
+  const q = await bl.quote('USDC', 'BLOCK', '1000000', {});
+  assert.equal(q.internal, true);
+  assert.equal(q.feeBps, 10);
+  assert.equal(q.effectiveCostBps, 10); // no reserves wired -> fee only, no impact
+});
+
+test('blockle venue: canFill is REAL — true only when the rail can fill, never assumed', async () => {
+  // explicit canFill wins
+  const yes = V.create({ treasury: TREASURY, blockle: { canFill: async () => true } }).get('blockle');
+  assert.equal(await yes.canFill('USDC', 'BLOCK', '1000000', {}), true);
+  const no = V.create({ treasury: TREASURY, blockle: { canFill: async () => false } }).get('blockle');
+  assert.equal(await no.canFill('USDC', 'BLOCK', '1000000', {}), false);
+  // nothing wired -> fail CLOSED (no internal liquidity to assume)
+  const bare = V.create({ treasury: TREASURY, blockle: { amm: { reserves: async () => ({ reserveIn: '1', reserveOut: '1' }) } } }).get('blockle');
+  assert.equal(await bare.canFill('USDC', 'BLOCK', '1', {}), false);
+});
+
+test('registry: exposes the shared chooseRoute router', () => {
+  const vx = V.create({ treasury: TREASURY });
+  assert.equal(typeof vx.chooseRoute, 'function');
+  assert.equal(vx.chooseRoute([{ id: 'a', feeBps: 5 }, { id: 'b', feeBps: 9 }]).venue, 'a');
+});
