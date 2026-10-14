@@ -905,6 +905,12 @@ class MomentumStrategy extends Strategy {
         'shortN': 10,
         'longN': 30,
         'tradeUsd': 20,
+        // LEVER 3 (fee-aware trade gate) for the directional ENTRY: only BUY when
+        // the expected move clears the round-trip cost of the chosen route PLUS a
+        // margin. BOTH default to 0 => the gate is a NO-OP (shared vectors
+        // unchanged); set them to arm it. Exits (death cross) are NEVER gated.
+        'feeAwareMarginBps': 0,
+        'roundTripCostBps': 0,
       };
 
   @override
@@ -920,6 +926,8 @@ class MomentumStrategy extends Strategy {
       throw ArgumentError('momentum: shortN must be < longN');
     }
     p['tradeUsd'] = _numParam(p['tradeUsd'], 20);
+    p['feeAwareMarginBps'] = math.max(0, _numParam(p['feeAwareMarginBps'], 0));
+    p['roundTripCostBps'] = math.max(0, _numParam(p['roundTripCostBps'], 0));
     p['history'] ??= const [];
     if (p['history'] is! List) {
       throw ArgumentError('momentum: `history` must be a list of prices');
@@ -963,6 +971,27 @@ class MomentumStrategy extends Strategy {
     final px = ctx.prices != null ? await ctx.prices!([quote, base]) : <String, num>{};
 
     if (golden) {
+      // LEVER 3 — FEE-AWARE ENTRY GATE. Only ENTER when the EXPECTED MOVE clears
+      // the round-trip cost of the chosen route + the configured margin. The
+      // expected move is the realized trend that PRODUCED the cross — the short-
+      // window trailing return (price now vs `shortN` candles ago), NOT the SMA
+      // gap at the cross (which is ~0 by construction at any crossover and would
+      // veto winners and whipsaws alike). This SKIPS fee-bleeding sub-threshold
+      // entries ONLY; a genuinely strong move is never suppressed. No-op when
+      // feeAwareMarginBps and roundTripCostBps are both 0 (default). Exits (death
+      // cross) are NEVER gated — risk reduction must always be allowed.
+      final gateBps = (params['roundTripCostBps'] as num) +
+          (params['feeAwareMarginBps'] as num);
+      if (gateBps > 0) {
+        final back = history[last - shortN].toDouble();
+        final expectedMoveBps =
+            (back > 0) ? ((history[last].toDouble() - back) / back) * 10000 : 0;
+        if (!(expectedMoveBps >= gateBps)) {
+          ctx.skip('mom:$market',
+              'momentum entry below fee-aware threshold (expected move ${expectedMoveBps.toStringAsFixed(2)}bps < roundtrip+margin ${gateBps.toStringAsFixed(2)}bps)');
+          return const [];
+        }
+      }
       final quoteUsd = _unitUsd(quote, px);
       final eff = quoteUsd == 0 && _isStable(quote) ? 1.0 : quoteUsd;
       if (eff <= 0) {

@@ -65,6 +65,16 @@ def _dec(x: Any) -> Decimal:
     return Decimal(str(x))
 
 
+def _num(v: Any, dflt: float = 0.0) -> float:
+    """``Number(v)`` with a fallback — non-finite/garbage -> ``dflt``."""
+    import math as _math
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return dflt
+    return n if _math.isfinite(n) else dflt
+
+
 def _decimals(ctx: Any, symbol: str) -> int:
     fn = member(ctx, "decimals")
     if callable(fn):
@@ -663,7 +673,13 @@ class Rebalance(Strategy):
 
 class Momentum(Strategy):
     name = "momentum"
-    defaults = {"market": None, "shortN": 10, "longN": 30, "tradeUsd": 20, "history": None}
+    # feeAwareMarginBps + roundTripCostBps implement LEVER 3 (fee-aware trade
+    # gate) for the directional ENTRY: only BUY when the expected move clears the
+    # round-trip cost of the chosen route PLUS a margin. BOTH default to 0 => the
+    # gate is a NO-OP (today's behavior, shared fixtures unchanged); set them to
+    # arm it.
+    defaults = {"market": None, "shortN": 10, "longN": 30, "tradeUsd": 20, "history": None,
+                "feeAwareMarginBps": 0, "roundTripCostBps": 0}
 
     def describe(self) -> str:
         return "SMA crossover: buy on a golden cross, sell held on a death cross."
@@ -683,6 +699,8 @@ class Momentum(Strategy):
         p["tradeUsd"] = self._pos_num(p["tradeUsd"], "tradeUsd")
         if p.get("history") is not None and not isinstance(p["history"], (list, tuple)):
             raise ValueError("history must be a list of prices")
+        p["feeAwareMarginBps"] = max(0.0, _num(p.get("feeAwareMarginBps"), 0))
+        p["roundTripCostBps"] = max(0.0, _num(p.get("roundTripCostBps"), 0))
         return p
 
     @staticmethod
@@ -715,6 +733,23 @@ class Momentum(Strategy):
         mainnet = _is_mainnet(ctx)
 
         if golden:
+            # LEVER 3 — FEE-AWARE ENTRY GATE. Only ENTER when the EXPECTED MOVE
+            # clears the round-trip cost of the chosen route + the configured
+            # margin. The expected move is the realized trend that PRODUCED the
+            # cross — the short-window trailing return (price now vs `shortN`
+            # candles ago), NOT the SMA gap at the cross itself (which is ~0 by
+            # construction at any crossover and so would veto winners and
+            # whipsaws alike). This SKIPS fee-bleeding sub-threshold entries
+            # only; a genuinely strong move is never suppressed. No-op when
+            # feeAwareMarginBps and roundTripCostBps are both 0 (default). Exits
+            # (death cross) are NEVER gated — risk reduction must always run.
+            gate_bps = params["roundTripCostBps"] + params["feeAwareMarginBps"]
+            if gate_bps > 0:
+                back = prices[last - params["shortN"]]
+                expected_move_bps = (float((prices[last] - back) / back) * 10000) \
+                    if back > 0 else 0.0
+                if not (expected_move_bps >= gate_bps):
+                    return []  # sub-threshold entry skipped (fee-aware gate)
             amount = _usd_to_base(params["tradeUsd"], member(usd, quote), _decimals(ctx, quote))
             if amount is None or amount <= 0:
                 return []

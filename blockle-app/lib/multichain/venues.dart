@@ -74,6 +74,129 @@ String ammQuote(dynamic amountIn, dynamic reserveIn, dynamic reserveOut,
   return ((rOut * inAfterFee) ~/ (rIn + inAfterFee)).toString();
 }
 
+// ===========================================================================
+// FEE-AWARE ROUTING — the three fee-reduction levers (port of venues.js).
+// ===========================================================================
+//
+// These are PURE, config-driven, and unit-tested directly. They LOWER cost and
+// never fabricate profit; the scanner/strategies net-edge gate consumes the
+// EXPOSED effective cost so it prices the REAL route that will execute.
+//
+//   LEVER 1 — CHEAPEST-VENUE ROUTING: given candidate routes each carrying its
+//     OWN pool/venue fee + gas + the AMM price impact of the quoted size, pick
+//     the lowest ALL-IN cost (bps), NOT merely the best nominal price.
+//   LEVER 2 — INTERNAL-VENUE PREFERENCE: the native Blockle exchange (off-chain
+//     atomic swap, ~10 bps, NO gas) is PREFERRED over external AMMs (~30 bps +
+//     gas) WHEN it can ACTUALLY fill the pair+size (a real canFill check) —
+//     never assumed. Pairs it cannot fill fall back to the cheapest external
+//     route.
+//
+// A "route" descriptor fills ONE leg:
+//   { id, venue, feeBps|poolFeeBps, gasUsd, notionalUsd, priceImpactBps,
+//     internal:bool, canFill:bool }
+
+num _numOrDefault(dynamic v, num dflt) {
+  if (v is num) return v.isFinite ? v : dflt;
+  final n = num.tryParse('$v');
+  return (n != null && n.isFinite) ? n : dflt;
+}
+
+/// Constant-product price impact (depth/slippage) of swapping [amountIn] against
+/// [reserveIn], in bps, EXCLUDING the pool fee (priced separately in
+/// [routeCostBps]). For x*y=k: impact = amountIn / (reserveIn + amountIn).
+double priceImpactBps(dynamic amountIn, dynamic reserveIn) {
+  final aIn = _bigOf(amountIn).toDouble();
+  final rIn = _bigOf(reserveIn).toDouble();
+  if (!(aIn > 0) || !(rIn > 0)) return 0;
+  return (aIn / (rIn + aIn)) * 10000;
+}
+
+/// ALL-IN one-leg cost of a route in bps = venue/pool fee + price impact + gas
+/// (gas amortized over the trade notional). Pure; fail-open to 0 where unknown.
+double routeCostBps(Map? route) {
+  route = route ?? const {};
+  final feeBps = _max0(_numOrDefault(route['feeBps'] ?? route['poolFeeBps'], 0));
+  final impactBps = _max0(_numOrDefault(route['priceImpactBps'], 0));
+  final gasUsd = _max0(_numOrDefault(route['gasUsd'], 0));
+  final notionalUsd = _numOrDefault(route['notionalUsd'], 0);
+  final gasBps =
+      (gasUsd > 0 && notionalUsd > 0) ? (gasUsd / notionalUsd) * 10000 : 0;
+  return (feeBps + impactBps + gasBps).toDouble();
+}
+
+double _max0(num x) => x < 0 ? 0 : x.toDouble();
+
+/// Choose the lowest ALL-IN cost route among the FILLABLE candidates. A route is
+/// a candidate only when canFill != false (never assume a fill). On a cost tie
+/// the INTERNAL venue wins (lever 2); otherwise ties break by id for
+/// determinism. Returns the chosen route + its EXPOSED effectiveCostBps (one
+/// leg) and roundTripCostBps (entry + exit), plus the ranked candidates. When
+/// nothing can fill, chosen is null and the costs are infinite (the caller MUST
+/// skip, not trade on a route that does not exist).
+Map<String, dynamic> chooseRoute(List? routes, [Map<String, dynamic>? opts]) {
+  final cands = <Map<String, dynamic>>[];
+  for (final r in (routes ?? const [])) {
+    if (r is! Map) continue;
+    final cf = r['canFill'];
+    // Shipped callers (backtest routeCandidatesFor, bot_runner ctx.routeCandidates)
+    // always set canFill explicitly; the internal rail's own canFill fails closed.
+    // Missing canFill defaults fillable only for external AMM candidates.
+    final canFill = (cf == null) ? true : (cf == true);
+    if (!canFill) continue;
+    final effectiveCostBps = routeCostBps(r.cast<String, dynamic>());
+    // round trip pays fee+impact on BOTH legs and gas on BOTH on-chain txs; with
+    // the symmetric model that is simply 2x the one-leg all-in cost. Internal has
+    // no gas, so its round trip is just 2x its fee — the whole point of lever 2.
+    final roundTripCostBps = 2 * effectiveCostBps;
+    cands.add({
+      'route': r,
+      'id': r['id'] ?? r['venue'],
+      'internal': r['internal'] == true,
+      'effectiveCostBps': effectiveCostBps,
+      'roundTripCostBps': roundTripCostBps,
+      'canFill': true,
+    });
+  }
+  if (cands.isEmpty) {
+    return {
+      'chosen': null,
+      'route': null,
+      'venue': null,
+      'internal': false,
+      'effectiveCostBps': double.infinity,
+      'roundTripCostBps': double.infinity,
+      'candidates': const [],
+      'reason': 'no-fillable-route',
+    };
+  }
+  cands.sort((a, b) {
+    final da = (a['effectiveCostBps'] as num) - (b['effectiveCostBps'] as num);
+    if (da != 0) return da < 0 ? -1 : 1;
+    // internal wins a tie
+    final ia = (a['internal'] == true) ? 1 : 0;
+    final ib = (b['internal'] == true) ? 1 : 0;
+    if (ib != ia) return ib - ia;
+    return '${a['id']}'.compareTo('${b['id']}');
+  });
+  final best = cands.first;
+  return {
+    'chosen': best['route'],
+    'route': best['route'],
+    'venue': best['id'],
+    'internal': best['internal'],
+    'effectiveCostBps': best['effectiveCostBps'],
+    'roundTripCostBps': best['roundTripCostBps'],
+    'candidates': cands,
+    'reason': 'ok',
+  };
+}
+
+/// Library-level alias so [VenueRegistry.chooseRoute] (which shadows the name
+/// inside the class) can delegate to the top-level [chooseRoute].
+Map<String, dynamic> _topLevelChooseRoute(
+        List? routes, [Map<String, dynamic>? opts]) =>
+    chooseRoute(routes, opts);
+
 const Map<String, String> _chainAlias = {
   'eth': 'ethereum', 'ethereum': 'ethereum', 'mainnet': 'ethereum',
   'base': 'base',
@@ -215,6 +338,11 @@ class BlockleVenue extends Venue {
   final Map<String, String> assetChain;
   final num poolFeeBps;
 
+  /// LEVER 2: the native off-chain exchange rail is the CHEAP internal venue
+  /// (~10 bps, no gas). When the exchange is wired its quotes price through it;
+  /// otherwise the local AMM pool fee applies. Default 10 bps.
+  final num internalFeeBps;
+
   /// exchange.quote(from,to,amount,opts) -> { amountOut | out | expectedOut }
   final Future<Map<String, dynamic>> Function(
       String from, String to, String amount, Map<String, dynamic> opts)? exchangeQuote;
@@ -222,13 +350,22 @@ class BlockleVenue extends Venue {
   /// amm.reserves(from,to) -> { reserveIn, reserveOut, poolFeeBps? }
   final Future<Map<String, dynamic>> Function(String from, String to)? ammReserves;
 
+  /// LEVER 2 real fill check — NEVER assume the internal rail can fill. When
+  /// wired it decides; when null the venue fails OPEN to true iff a pricing
+  /// source (exchangeQuote) is wired, else fails CLOSED to false.
+  final Future<bool> Function(
+      String from, String to, String amount, Map<String, dynamic> opts)? canFillFn;
+
   BlockleVenue(
     this.treasury, {
     Map<String, String>? assetChain,
     num? poolFeeBps,
+    num? internalFeeBps,
     this.exchangeQuote,
     this.ammReserves,
-  })  : assetChain = {
+    this.canFillFn,
+  })  : internalFeeBps = internalFeeBps ?? 10,
+        assetChain = {
           'BLOCK': 'block',
           'USDC': 'base',
           'USDT': 'ethereum',
@@ -248,6 +385,28 @@ class BlockleVenue extends Venue {
   List<String> get chains => const ['block'];
   @override
   bool supports(dynamic chain) => normChain(chain) == 'block';
+
+  /// This venue is the INTERNAL (native) rail (lever 2).
+  bool get internal => true;
+
+  /// The cheap internal rail fee in bps (lever 2).
+  num get feeBps => internalFeeBps;
+
+  /// LEVER 2 real fill check — never assumed. Delegates to a wired [canFillFn];
+  /// when none is wired we fail OPEN to true iff a pricing source is wired
+  /// (exchangeQuote), else fail CLOSED to false (no internal liquidity to assume).
+  Future<bool> canFill(
+      dynamic from, dynamic to, dynamic amount, Map<String, dynamic>? opts) async {
+    if (canFillFn != null) {
+      try {
+        return await canFillFn!(
+            _tokenSym(from)!, _tokenSym(to)!, '$amount', opts ?? {});
+      } catch (_) {
+        return false;
+      }
+    }
+    return exchangeQuote != null;
+  }
 
   String _feeChainOf(dynamic from, Map<String, dynamic>? req) {
     if (req != null && req['chain'] != null) return normChain(req['chain']);
@@ -288,15 +447,29 @@ class BlockleVenue extends Venue {
     final r = await _rawQuote(from, to, amount, opts);
     final chain = _feeChainOf(from, opts);
     final slip = opts['slippage'] as num?;
+    // EXPOSE the route's effective one-leg cost so the net-edge gate prices the
+    // REAL internal rail (internalFeeBps + AMM depth impact when reserves known).
+    double impactBps = 0;
+    final raw = r['raw'];
+    if (raw is Map && raw['reserveIn'] != null) {
+      try {
+        impactBps = priceImpactBps(amount, raw['reserveIn']);
+      } catch (_) {}
+    }
+    final effectiveCostBps = internalFeeBps + impactBps;
     return {
       'venue': 'blockle',
       'chain': chain,
+      'internal': true,
       'from': _tokenSym(from),
       'to': _tokenSym(to),
       'amountIn': '$amount',
       'amountOut': r['amountOut'],
       'minOut': applySlippage(r['amountOut'], slip ?? 0.005),
       'route': r['route'],
+      'effectiveCostBps': effectiveCostBps,
+      'feeBps': internalFeeBps,
+      'priceImpactBps': impactBps,
       'fee': treasury.feeFor(chain, amount, _tokenSym(from)),
       'raw': r['raw'],
     };
@@ -594,6 +767,12 @@ class VenueRegistry {
   FeeDescriptor feeFor(dynamic chain, dynamic amount, [String? asset]) =>
       treasury.feeFor(chain, amount, asset);
 
+  /// LEVER 1+2: pick the cheapest ALL-IN fillable route from a candidate set
+  /// (internal preferred on a tie). Exposed here so the runner/scanner share ONE
+  /// router. See [chooseRoute].
+  Map<String, dynamic> chooseRoute(List? routes, [Map<String, dynamic>? opts]) =>
+      _topLevelChooseRoute(routes, opts);
+
   /// Build a registry. The native Blockle venue is always present; evmdex and
   /// jupiter are enabled unless explicitly disabled. [request] is the injectable
   /// HTTP transport the API venues use.
@@ -612,10 +791,13 @@ class VenueRegistry {
       t,
       assetChain: (blockle['assetChain'] as Map?)?.cast<String, String>(),
       poolFeeBps: blockle['poolFeeBps'] as num?,
+      internalFeeBps: blockle['internalFeeBps'] as num?,
       exchangeQuote: blockle['exchangeQuote'] as Future<Map<String, dynamic>>
           Function(String, String, String, Map<String, dynamic>)?,
       ammReserves: blockle['ammReserves']
           as Future<Map<String, dynamic>> Function(String, String)?,
+      canFillFn: blockle['canFill'] as Future<bool> Function(
+          String, String, String, Map<String, dynamic>)?,
     ));
 
     if (evmdex == null || evmdex['enabled'] != false) {

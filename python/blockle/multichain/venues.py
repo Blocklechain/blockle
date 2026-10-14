@@ -126,6 +126,106 @@ def token_sym(t: Any):
     return t
 
 
+def _num(v: Any, dflt: float = 0.0) -> float:
+    """``Number(v)`` with a fallback — non-finite/garbage -> ``dflt``."""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return dflt
+    import math as _math
+    return n if _math.isfinite(n) else dflt
+
+
+# ===========================================================================
+# FEE-AWARE ROUTING — the three fee-reduction levers (ports venues.js).
+# ===========================================================================
+#
+# These are PURE, config-driven, and unit-tested directly. They LOWER cost and
+# never fabricate profit; the scanner/strategies net-edge gate consumes the
+# EXPOSED effective cost so it prices the REAL route that will execute.
+#
+#   LEVER 1 — CHEAPEST-VENUE ROUTING: given candidate routes each carrying its
+#     OWN pool/venue fee + gas + the AMM price impact of the quoted size, pick
+#     the lowest ALL-IN cost (bps), NOT merely the best nominal price.
+#   LEVER 2 — INTERNAL-VENUE PREFERENCE: the native Blockle exchange (off-chain
+#     atomic swap, ~10 bps, NO gas) is PREFERRED over external AMMs (~30 bps +
+#     gas) WHEN it can ACTUALLY fill the pair+size (a real canFill check) —
+#     never assumed. Pairs it cannot fill fall back to the cheapest external
+#     route.
+#
+# A "route" descriptor fills ONE leg:
+#   { id, venue, feeBps|poolFeeBps, gasUsd, notionalUsd, priceImpactBps,
+#     internal:bool, canFill:bool }
+
+
+def price_impact_bps(amount_in: Any, reserve_in: Any) -> float:
+    """Constant-product depth impact of swapping ``amount_in`` against
+    ``reserve_in``, in bps, EXCLUDING the pool fee (priced separately in
+    ``route_cost_bps``). For x*y=k: impact = amountIn / (reserveIn + amountIn).
+    Fail-open to 0 where unknown."""
+    a_in = float(big_of(amount_in))
+    r_in = float(big_of(reserve_in))
+    if not (a_in > 0) or not (r_in > 0):
+        return 0.0
+    return (a_in / (r_in + a_in)) * 10000
+
+
+def route_cost_bps(route: Optional[Dict[str, Any]]) -> float:
+    """ALL-IN one-leg cost of a route in bps = venue/pool fee + price impact +
+    gas (gas amortized over the trade notional). Pure; fail-open to 0 where
+    unknown."""
+    route = route or {}
+    fee_src = route.get("feeBps") if route.get("feeBps") is not None else route.get("poolFeeBps")
+    fee_bps = max(0.0, _num(fee_src, 0.0))
+    impact_bps = max(0.0, _num(route.get("priceImpactBps"), 0.0))
+    gas_usd = max(0.0, _num(route.get("gasUsd"), 0.0))
+    notional_usd = _num(route.get("notionalUsd"), 0.0)
+    gas_bps = (gas_usd / notional_usd) * 10000 if (gas_usd > 0 and notional_usd > 0) else 0.0
+    return fee_bps + impact_bps + gas_bps
+
+
+def choose_route(routes: Optional[List[Dict[str, Any]]],
+                 opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Choose the lowest ALL-IN cost route among the FILLABLE candidates. A
+    route is a candidate only when ``canFill`` is not False (never assume a
+    fill). On a cost tie the INTERNAL venue wins (lever 2); otherwise ties break
+    by id for determinism. Returns the chosen route + its EXPOSED
+    ``effectiveCostBps`` (one leg) and ``roundTripCostBps`` (entry + exit), plus
+    the ranked candidates. When nothing can fill, ``chosen`` is None and the
+    costs are +inf (the caller MUST skip, not trade a route that does not
+    exist)."""
+    opts = opts or {}
+    cands: List[Dict[str, Any]] = []
+    for r in (routes or []):
+        if not r:
+            continue
+        cf = r.get("canFill")
+        can_fill = True if (cf is None) else bool(cf)
+        if not can_fill:
+            continue
+        effective = route_cost_bps(r)
+        # round trip pays fee+impact on BOTH legs and gas on BOTH on-chain txs;
+        # with the symmetric model that is simply 2x the one-leg all-in cost.
+        # Internal has no gas, so its round trip is just 2x its fee — the whole
+        # point of lever 2.
+        cands.append({
+            "route": r, "id": r.get("id") or r.get("venue"), "internal": bool(r.get("internal")),
+            "effectiveCostBps": effective, "roundTripCostBps": 2 * effective, "canFill": True,
+        })
+    if not cands:
+        return {"chosen": None, "route": None, "venue": None, "internal": False,
+                "effectiveCostBps": float("inf"), "roundTripCostBps": float("inf"),
+                "candidates": [], "reason": "no-fillable-route"}
+    # sort: lowest cost, then internal wins a tie, then id for determinism.
+    cands.sort(key=lambda c: (c["effectiveCostBps"], 0 if c["internal"] else 1, str(c["id"])))
+    best = cands[0]
+    return {
+        "chosen": best["route"], "route": best["route"], "venue": best["id"],
+        "internal": best["internal"], "effectiveCostBps": best["effectiveCostBps"],
+        "roundTripCostBps": best["roundTripCostBps"], "candidates": cands, "reason": "ok",
+    }
+
+
 # ===========================================================================
 # treasury router — resolves fee_bps + the per-chain fee recipient
 # ===========================================================================
@@ -270,6 +370,9 @@ def qs(params: Dict[str, Any]) -> str:
 class BlockleVenue:
     id = "blockle"
     kind = "native"
+    # LEVER 2: the native off-chain exchange rail is the CHEAP INTERNAL venue
+    # (~10 bps, no gas) and is PREFERRED over external AMMs when it can fill.
+    internal = True
 
     def __init__(self, cfg: Optional[Dict[str, Any]], treasury: Treasury):
         cfg = cfg or {}
@@ -281,6 +384,9 @@ class BlockleVenue:
         }
         self.asset_chain.update(cfg.get("assetChain") or {})
         self.pool_fee_bps = 30 if cfg.get("poolFeeBps") is None else cfg["poolFeeBps"]
+        # The cheap internal rail fee (lever 2). When the exchange is wired its
+        # quotes price through it; otherwise the local AMM pool fee applies.
+        self.feeBps = 10 if cfg.get("internalFeeBps") is None else cfg["internalFeeBps"]
 
     def supports(self, chain: Any) -> bool:
         return norm_chain(chain) == "block"
@@ -290,6 +396,27 @@ class BlockleVenue:
             return norm_chain(req["chain"])
         sym = str(token_sym(frm) or "").upper()
         return norm_chain(self.asset_chain.get(sym, "block"))
+
+    async def can_fill(self, frm, to, amount, opts=None):
+        """LEVER 2 real fill check — NEVER assume the internal rail can fill.
+        Delegates to a wired check (cfg.canFill / exchange.canFill); when the
+        exchange is wired but exposes no check we fail-OPEN to True (it is the
+        pricing source), and when nothing is wired we fail-CLOSED to False (no
+        internal liquidity to assume)."""
+        cf = self.cfg.get("canFill")
+        if callable(cf):
+            try:
+                return bool(await maybe_await(cf(token_sym(frm), token_sym(to), str(amount), opts or {})))
+            except Exception:
+                return False
+        ex = self.cfg.get("exchange")
+        ex_can = member(ex, "canFill")
+        if callable(ex_can):
+            try:
+                return bool(await maybe_await(ex_can(token_sym(frm), token_sym(to), str(amount), opts or {})))
+            except Exception:
+                return False
+        return bool(ex is not None and callable(member(ex, "quote")))
 
     async def _raw_quote(self, frm, to, amount, opts):
         ex = self.cfg.get("exchange")
@@ -319,14 +446,27 @@ class BlockleVenue:
         rq = await self._raw_quote(frm, to, amount, opts)
         chain = self._fee_chain_of(frm, opts)
         slippage = 0.005 if opts.get("slippage") is None else opts.get("slippage")
+        # EXPOSE the route's effective one-leg cost so the net-edge gate prices
+        # the REAL internal rail (internalFeeBps + AMM depth impact when reserves
+        # are known). Fail-open to fee-only when reserves are not exposed.
+        impact_bps = 0.0
+        raw = rq["raw"]
+        if isinstance(raw, dict) and raw.get("reserveIn") is not None:
+            try:
+                impact_bps = price_impact_bps(amount, raw.get("reserveIn"))
+            except Exception:
+                impact_bps = 0.0
+        effective_cost_bps = self.feeBps + impact_bps
         return {
-            "venue": "blockle", "chain": chain,
+            "venue": "blockle", "chain": chain, "internal": True,
             "from": token_sym(frm), "to": token_sym(to),
             "amountIn": str(amount), "amountOut": rq["amountOut"],
             "minOut": apply_slippage(rq["amountOut"], slippage),
             "route": rq["route"],
+            "effectiveCostBps": effective_cost_bps, "feeBps": self.feeBps,
+            "priceImpactBps": impact_bps,
             "fee": self.treasury.fee_for(chain, amount, token_sym(frm)),
-            "raw": rq["raw"],
+            "raw": raw,
         }
 
     async def build_swap(self, req=None):
@@ -586,6 +726,13 @@ class VenueRegistry:
     @staticmethod
     def fee_transfer(fee):
         return fee_transfer(fee)
+
+    @staticmethod
+    def choose_route(routes, opts=None):
+        """LEVER 1+2: pick the cheapest ALL-IN fillable route from a candidate
+        set (internal preferred on a tie). Exposed here so the runner/scanner
+        share ONE router."""
+        return choose_route(routes, opts)
 
 
 def create(opts: Optional[Dict[str, Any]] = None) -> VenueRegistry:

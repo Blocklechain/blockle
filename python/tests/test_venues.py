@@ -198,3 +198,94 @@ def test_jupiter_requires_account_for_build():
     venue = reg.get("jupiter")
     with pytest.raises(ValueError, match="requires account"):
         run(venue.build_swap({"from": "SOL", "to": "USDC", "amount": "1000000"}))
+
+
+# ------------------------------------------------- fee-aware routing (levers 1+2)
+# Shared vectors ported from blockle-extension/venues.test.js — the Python port
+# must match the reference behavior exactly.
+
+
+def test_price_impact_bps_constant_product_depth():
+    # 1000 in against a 1,000,000 reserve -> 1000/1001000 ≈ 9.99 bps
+    assert abs(V.price_impact_bps("1000", "1000000") - (1000 / 1001000) * 1e4) < 1e-9
+    assert V.price_impact_bps("0", "1000000") == 0      # no size -> no impact
+    assert V.price_impact_bps("1000", "0") == 0         # no depth -> fail-open 0
+
+
+def test_route_cost_bps_all_in_fee_impact_gas():
+    # 30 bps pool fee + 10 bps impact + $2 gas over $2000 notional (10 bps) = 50 bps
+    assert V.route_cost_bps({"feeBps": 30, "priceImpactBps": 10,
+                             "gasUsd": 2, "notionalUsd": 2000}) == 50
+    assert V.route_cost_bps({"feeBps": 10}) == 10       # internal rail: fee only
+    assert V.route_cost_bps({"feeBps": 30, "gasUsd": 5}) == 30  # gas w/o notional ignored
+
+
+def test_choose_route_picks_lowest_all_in_cost_not_best_nominal():
+    r = V.choose_route([
+        {"id": "extAMM", "feeBps": 30, "gasUsd": 2, "notionalUsd": 2000},  # 30 + 10 = 40
+        {"id": "stable", "feeBps": 6, "gasUsd": 2, "notionalUsd": 2000},   # 6 + 10 = 16
+        {"id": "blockle", "internal": True, "feeBps": 10, "gasUsd": 0},    # 10, no gas
+    ])
+    assert r["venue"] == "blockle"               # 10 bps beats 16 and 40
+    assert r["effectiveCostBps"] == 10
+    assert r["roundTripCostBps"] == 20           # 2x one-leg (no gas)
+    assert r["internal"] is True
+
+
+def test_choose_route_internal_preference_only_when_it_can_fill():
+    r = V.choose_route([
+        {"id": "blockle", "internal": True, "feeBps": 10, "gasUsd": 0, "canFill": False},
+        {"id": "stable", "feeBps": 8, "gasUsd": 2, "notionalUsd": 2000},   # 8 + 10 = 18
+        {"id": "extAMM", "feeBps": 30, "gasUsd": 2, "notionalUsd": 2000},  # 40
+    ])
+    assert r["venue"] == "stable"                # internal skipped (no fill)
+    assert r["internal"] is False
+
+
+def test_choose_route_internal_wins_a_cost_tie():
+    r = V.choose_route([
+        {"id": "extAMM", "feeBps": 10, "gasUsd": 0},
+        {"id": "blockle", "internal": True, "feeBps": 10, "gasUsd": 0},
+    ])
+    assert r["venue"] == "blockle"
+
+
+def test_choose_route_no_fillable_route_returns_none_and_inf():
+    r = V.choose_route([{"id": "blockle", "internal": True, "feeBps": 10, "canFill": False}])
+    assert r["chosen"] is None
+    assert r["effectiveCostBps"] == float("inf")
+    assert r["reason"] == "no-fillable-route"
+
+
+def test_blockle_venue_internal_flag_fee_and_exposed_effective_cost():
+    reg = V.create({
+        "treasury": TREASURY,
+        "blockle": {"exchange": {"quote": lambda *a, **k: {"amountOut": "4200"}},
+                    "assetChain": {"USDC": "base"}},
+    })
+    bl = reg.get("blockle")
+    assert bl.internal is True
+    assert bl.feeBps == 10
+    q = run(bl.quote("USDC", "BLOCK", "1000000", {}))
+    assert q["internal"] is True
+    assert q["feeBps"] == 10
+    assert q["effectiveCostBps"] == 10   # no reserves wired -> fee only, no impact
+
+
+def test_blockle_venue_can_fill_is_real_never_assumed():
+    yes = V.create({"treasury": TREASURY,
+                    "blockle": {"canFill": lambda *a, **k: True}}).get("blockle")
+    assert run(yes.can_fill("USDC", "BLOCK", "1000000", {})) is True
+    no = V.create({"treasury": TREASURY,
+                   "blockle": {"canFill": lambda *a, **k: False}}).get("blockle")
+    assert run(no.can_fill("USDC", "BLOCK", "1000000", {})) is False
+    # nothing wired -> fail CLOSED (no internal liquidity to assume)
+    bare = V.create({"treasury": TREASURY,
+                     "blockle": {"amm": {"reserves": lambda *a, **k: {"reserveIn": "1", "reserveOut": "1"}}}}).get("blockle")
+    assert run(bare.can_fill("USDC", "BLOCK", "1", {})) is False
+
+
+def test_registry_exposes_shared_choose_route():
+    reg = V.create({"treasury": TREASURY})
+    assert callable(reg.choose_route)
+    assert reg.choose_route([{"id": "a", "feeBps": 5}, {"id": "b", "feeBps": 9}])["venue"] == "a"

@@ -284,3 +284,44 @@ def test_popup_and_pnl_read_the_real_settled_currency():
     assert exits
     for e in exits:
         assert e["args"]["to"] == result["profitCurrency"] == e["settleTo"]
+
+
+# ===========================================================================
+# LEVER 3 — fee-aware trade gate on the momentum lane (scanner side)
+# ===========================================================================
+
+def _momentum_universe():
+    # a golden-cross momentum candidate; quote == profitCurrency so no extra
+    # settlement hop clouds the edge arithmetic.
+    return [{
+        "pair": "BLOCK/USDC", "chain": "block",
+        "history": [1, 1, 1, 1, 1.1],
+        "prices": {"USDC": 1, "BLOCK": 1},
+        "liquidityUsd": 100000,
+    }]
+
+
+def _mom_config(**over):
+    cfg = {"strategies": ["momentum"], "minProfitBps": 10, "perTradeUsd": 20,
+           "momentumShortN": 2, "momentumLongN": 3, "profitCurrency": "USDC"}
+    cfg.update(over)
+    return cfg
+
+
+def test_momentum_scanner_trades_when_gate_is_off():
+    res = scan(_momentum_universe(), _mom_config(), {"allocationUsd": 1000})
+    row = next(c for c in res["candidates"] if c["pair"] == "BLOCK/USDC")
+    assert row["strategy"] == "momentum"
+    assert row["reason"] == "worthy" and row["traded"]
+    assert any(str(it.get("tag") or "").startswith("momentum:") for it in res["intents"])
+
+
+def test_momentum_scanner_fee_aware_gate_skips_sub_threshold_entry():
+    # arm the fee-aware margin high enough to turn the net edge negative AND arm
+    # the planner's round-trip gate -> the momentum entry must NOT be traded.
+    res = scan(_momentum_universe(),
+               _mom_config(feeAwareMarginBps=100000, momentumRoundTripCostBps=100000),
+               {"allocationUsd": 1000})
+    row = next(c for c in res["candidates"] if c["pair"] == "BLOCK/USDC")
+    assert not row["traded"]
+    assert not any(str(it.get("scannerPair")) == "BLOCK/USDC" for it in res["intents"])

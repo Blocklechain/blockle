@@ -38,6 +38,7 @@ const AgentBotRunner = require('../../agent/bot-runner.js');
 const AgentScanner = require('../../agent/scanner.js');
 const AgentStrategies = require('../../agent/strategies.js');
 const AgentPnl = require('../../agent/pnl.js');
+const Venues = require('../../venues.js'); // the REAL fee-aware router (levers 1 + 2)
 
 // ===========================================================================
 // THE ENGINE'S OWN COST MODEL (every number sourced from the shipped code)
@@ -49,6 +50,71 @@ const COST = {
 };
 const PER_LEG_BPS = COST.venueFeeBps + COST.agentFeeBps + COST.slippageBps; // 40 bps/leg
 const PER_LEG_FRAC = PER_LEG_BPS / 1e4;
+
+// ===========================================================================
+// MULTI-VENUE ROUTING MODEL (realistic) — the input to the REAL Venues.chooseRoute
+// router (venues.js). Each pair can be filled by up to three routes:
+//   • EXTERNAL AMM            — 30 bps + gas            (always available)
+//   • low-fee STABLE/aggregator — ~6 bps + gas          (SUITABLE deep stable pairs)
+//   • INTERNAL Blockle rail    — 10 bps, NO gas          (a realistic SUBSET of pairs)
+// The internal rail is PREFERRED only when it can ACTUALLY fill the pair (lever 2);
+// otherwise we fall back to the cheapest external route (lever 1). Gas is EXCLUDED
+// from the directional (momentum/grid) per-leg cost in BOTH before/after — it is
+// uneconomic at $20 notional and the current harness never modeled it, so the delta
+// stays a clean measure of the FEE levers (venue fee 30 -> 6/10) + the entry gate.
+const EXTERNAL_FEE_BPS = 30;
+const STABLE_FEE_BPS = 6;
+const INTERNAL_FEE_BPS = 10;
+const GAS_USD = 2;
+const FEE_AWARE_MARGIN_BPS = 25; // lever 3 margin above the route's round-trip cost
+
+// deep stable-quoted pairs the low-fee aggregator route covers (real + synthetic names)
+const STABLE_OK = new Set(['BTC', 'ETH', 'SOL', 'UPSYN', 'DOWNSYN']);
+// pairs the INTERNAL Blockle exchange actually has counterparties/liquidity to FILL
+// (a realistic SUBSET — NOT every pair; the rest must fall back to external routes)
+const INTERNAL_OK = new Set(['BTC', 'ETH', 'DOGE', 'UPSYN', 'CHOPSYN']);
+
+// Assemble the candidate routes for a base symbol and hand them to the SHARED
+// Venues.chooseRoute. `gas:false` zeros gas for the directional lanes (see above).
+function routeCandidatesFor(base, notionalUsd, opts) {
+  const gas = !opts || opts.gas !== false;
+  const g = gas ? GAS_USD : 0;
+  const routes = [{ id: 'extAMM', feeBps: EXTERNAL_FEE_BPS, gasUsd: g, notionalUsd, internal: false, canFill: true }];
+  if (STABLE_OK.has(base)) routes.push({ id: 'stableAgg', feeBps: STABLE_FEE_BPS, gasUsd: g, notionalUsd, internal: false, canFill: true });
+  routes.push({ id: 'blockle', feeBps: INTERNAL_FEE_BPS, gasUsd: 0, notionalUsd, internal: true, canFill: INTERNAL_OK.has(base) });
+  return routes;
+}
+
+// A "cost mode" drives the directional lanes. BEFORE = the old single 30-bps AMM
+// route with NO fee-aware gate; AFTER = Venues.chooseRoute (cheapest fillable,
+// internal preferred) + the fee-aware entry gate.
+function beforeMode() {
+  return {
+    label: 'BEFORE',
+    // forced single external AMM leg: 30 + agent 5 + slippage 5 = 40 bps
+    perLegFrac: () => PER_LEG_FRAC,
+    gate: null,
+    routeName: () => 'extAMM@30bps',
+  };
+}
+function afterMode() {
+  function route(base) { return Venues.chooseRoute(routeCandidatesFor(base, 20, { gas: false })); }
+  function legBps(base) {
+    const r = route(base);
+    const venueFeeBps = isFinite(r.effectiveCostBps) ? r.effectiveCostBps : EXTERNAL_FEE_BPS;
+    return venueFeeBps + COST.agentFeeBps + COST.slippageBps;
+  }
+  return {
+    label: 'AFTER',
+    perLegFrac: (base) => legBps(base) / 1e4,
+    // lever-3 gate: strength must clear the chosen route's round-trip cost + margin
+    gate: {
+      marginBps: FEE_AWARE_MARGIN_BPS,
+      roundTripBps: (base) => 2 * legBps(base),
+    },
+    routeName: (base) => { const r = route(base); return (r.venue || 'extAMM') + '@' + (isFinite(r.effectiveCostBps) ? r.effectiveCostBps : EXTERNAL_FEE_BPS) + 'bps'; },
+  };
+}
 
 // ===========================================================================
 // DATA: real cached candles (fetch-candles.js) or a labeled synthetic fallback.
@@ -161,7 +227,8 @@ function pct(x) { return x == null ? 'n/a' : (x * 100).toFixed(1) + '%'; }
 // LANE 1 — MOMENTUM (SMA golden/death cross), REAL strategies.momentum planner +
 // REAL pnl.js Ledger, per-regime. Gross vs net (every leg pays PER_LEG_BPS).
 // ===========================================================================
-async function runMomentum(data, byRegime, agg, reconcile) {
+async function runMomentum(data, byRegime, agg, reconcile, mode) {
+  mode = mode || beforeMode();
   const QUOTE = data.real ? 'USDC' : 'USDC';
   const mom = AgentStrategies.momentum;
   const WIN = 180; // ~7.5 day windows
@@ -171,7 +238,11 @@ async function runMomentum(data, byRegime, agg, reconcile) {
     const base = data.real ? w.sym : 'BTC'; // decimals: use a real 8-dp base for synth labels
     const market = base + '/' + QUOTE;
     const bd = AgentStrategies.decimalsFor(base);
-    const params = mom.validateParams({ market, shortN: 10, longN: 30, tradeUsd: 20 });
+    const PF = mode.perLegFrac(base); // per-leg cost fraction for THIS pair's chosen route
+    const gateParams = mode.gate
+      ? { feeAwareMarginBps: mode.gate.marginBps, roundTripCostBps: mode.gate.roundTripBps(base) }
+      : {};
+    const params = mom.validateParams(Object.assign({ market, shortN: 10, longN: 30, tradeUsd: 20 }, gateParams));
     // fresh ledger per window — the REAL realized-profit engine
     const ledger = new AgentPnl.Ledger();
     const W = { wallet: 'bt', channel: 'momentum', asset: base };
@@ -192,7 +263,7 @@ async function runMomentum(data, byRegime, agg, reconcile) {
       const price = closes[t];
       if (it.tag.endsWith(':buy') && pos === 0n) {
         // BUY leg: pay tradeUsd cash; receive fewer base units after costs.
-        const qtyNet = AgentStrategies.usdToBase(params.tradeUsd * (1 - PER_LEG_FRAC), bd, price);
+        const qtyNet = AgentStrategies.usdToBase(params.tradeUsd * (1 - PF), bd, price);
         const qtyGross = AgentStrategies.usdToBase(params.tradeUsd, bd, price);
         if (qtyNet <= 0n) continue;
         ledger.applyBuy(Object.assign({}, W, { qty: qtyNet.toString(), usd: params.tradeUsd }));
@@ -202,7 +273,7 @@ async function runMomentum(data, byRegime, agg, reconcile) {
       } else if (it.tag.endsWith(':sell') && pos > 0n) {
         // SELL leg: proceeds net of costs vs the gross path.
         const whole = Number(pos) / Math.pow(10, bd);
-        const proceedsNet = whole * price * (1 - PER_LEG_FRAC);
+        const proceedsNet = whole * price * (1 - PF);
         const sold = ledger.applySell(Object.assign({}, W, { qty: pos.toString(), proceedsUsd: proceedsNet }));
         const realizedNet = sold.realizedUc == null ? 0 : Number(sold.realizedUc) / 1e6;
         const wholeG = Number(posGrossQty) / Math.pow(10, bd);
@@ -219,7 +290,7 @@ async function runMomentum(data, byRegime, agg, reconcile) {
     if (pos > 0n) {
       const price = closes[closes.length - 1];
       const whole = Number(pos) / Math.pow(10, bd);
-      const proceedsNet = whole * price * (1 - PER_LEG_FRAC);
+      const proceedsNet = whole * price * (1 - PF);
       const sold = ledger.applySell(Object.assign({}, W, { qty: pos.toString(), proceedsUsd: proceedsNet }));
       const realizedNet = sold.realizedUc == null ? 0 : Number(sold.realizedUc) / 1e6;
       const wholeG = Number(posGrossQty) / Math.pow(10, bd);
@@ -261,13 +332,15 @@ function gateSpyTools() {
   return { state, get: (n) => map[n] || null, names: () => Object.keys(map), valueMovingNames: () => Object.keys(map) };
 }
 
-async function runGrid(data, byRegime, agg, reconcile, gateState) {
+async function runGrid(data, byRegime, agg, reconcile, gateState, mode) {
+  mode = mode || beforeMode();
   const QUOTE = 'USDC';
   const WIN = 180;
   const wins = windows(data.series, WIN);
   let cumNet = 0;
   for (const w of wins) {
     const base = data.real ? w.sym : 'BTC';
+    const PF = mode.perLegFrac(base); // per-leg cost fraction for THIS pair's chosen route
     const market = base + '/' + QUOTE;
     const closes = w.win;
     const lo = Math.min(...closes), hi = Math.max(...closes);
@@ -307,7 +380,7 @@ async function runGrid(data, byRegime, agg, reconcile, gateState) {
       const proceeds = Number(f.proceedsUc) / 1e6;
       const flipGross = Number(f.realizedUc) / 1e6;     // engine's realized for this flip
       const buyCost = proceeds - flipGross;              // the matched buy leg's cost
-      const flipFee = (proceeds + buyCost) * PER_LEG_FRAC;
+      const flipFee = (proceeds + buyCost) * PF;
       feeUsd += flipFee;
       if (flipGross - flipFee > 0) wins++; else losses++;
       fillGrossUc += BigInt(f.realizedUc);
@@ -348,11 +421,33 @@ function arbBook(pair, askA, bidA, feeA, askB, bidB, feeB) {
   };
 }
 
-async function runArbitrage() {
+// opts.routeMode: undefined/'legacy' = authored venue fees (the correctness
+// demonstration the guarantee suite asserts); 'before' = force every leg onto the
+// single 30-bps external AMM; 'after' = Venues.chooseRoute per pair (internal 10bps
+// no-gas / stable 6bps when fillable, else external 30bps) — lever 1 applied to the
+// arb net-edge gate. The net<=0 skip guarantee holds in ALL modes.
+async function runArbitrage(opts) {
+  opts = opts || {};
+  const routeMode = opts.routeMode || 'legacy';
   const S = AgentStrategies;
   // Realistic per-trade size so the fixed $2 gas buffer is a sane ~10bps (not 400bps
   // on a $50 toy trade). Costs at $2000: 2*agent(5)+slip(10)+gas(10)+both venue fees.
   const cfg = AgentScanner.validateConfig({ perTradeUsd: 2000, agentFeeBps: 5, slippageBps: 10, gasBufferUsd: 2 });
+  // Rewrite a book's leg fees + per-pair gas for the chosen route mode. The GROSS
+  // spread (prices) is untouched — only the COST of the route that executes changes.
+  function applyRoute(b) {
+    if (routeMode === 'legacy') return { gasBufferUsd: cfg.gasBufferUsd, routeName: 'authored' };
+    const base = S.splitPair(b.pair)[0];
+    if (routeMode === 'before') {
+      for (const v of b.venues) v.feeBps = EXTERNAL_FEE_BPS;
+      return { gasBufferUsd: cfg.gasBufferUsd, routeName: 'extAMM@30bps' };
+    }
+    // after: cheapest fillable route (gas included — $2000 notional makes it real)
+    const r = Venues.chooseRoute(routeCandidatesFor(base, cfg.perTradeUsd, { gas: true }));
+    const chosen = r.chosen || { feeBps: EXTERNAL_FEE_BPS, gasUsd: cfg.gasBufferUsd, id: 'extAMM' };
+    for (const v of b.venues) v.feeBps = chosen.feeBps;         // both legs route the same rail
+    return { gasBufferUsd: chosen.gasUsd, routeName: (r.venue || 'extAMM') + '@' + chosen.feeBps + 'bps' };
+  }
   const books = [
     // wide 3.0% spread, cheap venues -> NET POSITIVE, clears the 30bps min (TRADES)
     { b: arbBook('BTC/USDC', 100.0, 99.0, 10, 104.0, 103.0, 10), note: '3.0% gross spread, 10bps venues' },
@@ -367,6 +462,8 @@ async function runArbitrage() {
   ];
   const results = [];
   for (const { b, note } of books) {
+    const route = applyRoute(b);
+    const pairCfg = Object.assign({}, cfg, { gasBufferUsd: route.gasBufferUsd });
     const ctx = {
       network: () => 'testnet',
       prices: async () => b.prices,
@@ -375,16 +472,16 @@ async function runArbitrage() {
     };
     const params = S.arbitrage.validateParams({
       pair: b.pair, venues: b.venues, minEdgeBps: cfg.minProfitBps,
-      maxNotionalUsd: cfg.perTradeUsd, gasBufferUsd: cfg.gasBufferUsd, slippageBps: cfg.slippageBps, agentFeeBps: cfg.agentFeeBps,
+      maxNotionalUsd: cfg.perTradeUsd, gasBufferUsd: route.gasBufferUsd, slippageBps: cfg.slippageBps, agentFeeBps: cfg.agentFeeBps,
     });
     const plan = await S.arbitrage.plan(ctx, params);
     // cross-check against the scanner's independent net-edge computation
-    const edge = AgentScanner.arbEdge(b, cfg, S);
+    const edge = AgentScanner.arbEdge(b, pairCfg, S);
     const emitted = plan.length === 2;
     const netBps = edge ? edge.edgeBps : null;
     // realized profit if traded = execUsd * netEdge/1e4 (same formula the scanner uses)
     const realized = emitted && edge ? AgentScanner.round6(edge.execUsd * (edge.edgeBps / 1e4)) : 0;
-    results.push({ pair: b.pair, note, grossBps: edge ? AgentScanner.round6(edge.grossBps) : null, netBps: netBps == null ? null : AgentScanner.round6(netBps), emitted, realized });
+    results.push({ pair: b.pair, note, routeName: route.routeName, grossBps: edge ? AgentScanner.round6(edge.grossBps) : null, netBps: netBps == null ? null : AgentScanner.round6(netBps), emitted, realized });
   }
   return { results, minEdgeBps: cfg.minProfitBps };
 }
@@ -472,53 +569,98 @@ async function main() {
   console.log(`WINDOW CENSUS (${Object.values(census).reduce((a, b) => a + b, 0)} windows of 180h): uptrend=${census.uptrend}, downtrend=${census.downtrend}, range=${census.range}`);
   console.log('');
 
-  const reconcile = { momNetTally: 0, gridGrossTally: 0, gridFillGross: 0, gridCommits: 0 };
-  const gateStates = [];
+  console.log(`ROUTING MODEL (multi-venue): external AMM ${EXTERNAL_FEE_BPS}bps + gas | low-fee aggregator ${STABLE_FEE_BPS}bps (suitable stable pairs) |`);
+  console.log(`               internal Blockle rail ${INTERNAL_FEE_BPS}bps, NO gas (fillable subset only). AFTER uses Venues.chooseRoute (cheapest fillable,`);
+  console.log(`               internal preferred) + the fee-aware entry gate (margin ${FEE_AWARE_MARGIN_BPS}bps over the chosen route's round-trip cost).`);
+  console.log('');
 
-  // ---- MOMENTUM ------------------------------------------------------------
-  const momByRegime = { uptrend: newAgg(), downtrend: newAgg(), range: newAgg() };
-  const momAgg = newAgg();
-  await runMomentum(data, momByRegime, momAgg, reconcile);
+  const regimeAggs = () => ({ uptrend: newAgg(), downtrend: newAgg(), range: newAgg() });
+  const B = beforeMode(), A = afterMode();
 
-  // ---- GRID ----------------------------------------------------------------
-  const gridByRegime = { uptrend: newAgg(), downtrend: newAgg(), range: newAgg() };
-  const gridAgg = newAgg();
-  await runGrid(data, gridByRegime, gridAgg, reconcile, gateStates);
+  // ---- MOMENTUM (both ways on the SAME candles) ----------------------------
+  const mom = {
+    before: { byRegime: regimeAggs(), agg: newAgg(), rec: { momNetTally: 0 } },
+    after: { byRegime: regimeAggs(), agg: newAgg(), rec: { momNetTally: 0 } },
+  };
+  await runMomentum(data, mom.before.byRegime, mom.before.agg, mom.before.rec, B);
+  await runMomentum(data, mom.after.byRegime, mom.after.agg, mom.after.rec, A);
 
-  // ---- ARBITRAGE -----------------------------------------------------------
-  const arb = await runArbitrage();
+  // ---- GRID (both ways) ----------------------------------------------------
+  const grid = {
+    before: { byRegime: regimeAggs(), agg: newAgg(), rec: { gridGrossTally: 0, gridFillGross: 0, gridCommits: 0 }, gate: [] },
+    after: { byRegime: regimeAggs(), agg: newAgg(), rec: { gridGrossTally: 0, gridFillGross: 0, gridCommits: 0 }, gate: [] },
+  };
+  await runGrid(data, grid.before.byRegime, grid.before.agg, grid.before.rec, grid.before.gate, B);
+  await runGrid(data, grid.after.byRegime, grid.after.agg, grid.after.rec, grid.after.gate, A);
 
-  // ---- SCANNER -------------------------------------------------------------
+  // ---- ARBITRAGE (both ways) + SCANNER -------------------------------------
+  const arbBefore = await runArbitrage({ routeMode: 'before' });
+  const arbAfter = await runArbitrage({ routeMode: 'after' });
+  const arb = arbAfter; // the SHIPPED routing is the AFTER behavior
   const scanner = await runScanner(data);
 
+  // guarantee/bottom-line aliases point at the AFTER (shipped) run
+  const momAgg = mom.after.agg, gridAgg = grid.after.agg;
+  const momByRegime = mom.after.byRegime, gridByRegime = grid.after.byRegime;
+  const reconcile = {
+    momNetTally: mom.after.rec.momNetTally,
+    gridGrossTally: grid.after.rec.gridGrossTally, gridFillGross: grid.after.rec.gridFillGross,
+    gridCommits: grid.before.rec.gridCommits + grid.after.rec.gridCommits,
+  };
+
   // ========================= PRINT ==========================================
-  console.log('-'.repeat(100));
-  console.log('LANE: MOMENTUM (SMA 10/30 golden-death cross) — strategies.momentum + pnl.js Ledger, BY REGIME');
-  console.log('-'.repeat(100));
-  for (const r of regimes) console.log(row(r, momByRegime[r]));
-  console.log(row('ALL', momAgg));
-  console.log('');
-
-  console.log('-'.repeat(100));
-  console.log('LANE: GRID (ladder) — REAL grid deal engine via BotRunner (PAPER), BY REGIME');
-  console.log('-'.repeat(100));
-  for (const r of regimes) console.log(row(r, gridByRegime[r]));
-  console.log(row('ALL', gridAgg));
-  console.log('');
-
-  console.log('-'.repeat(100));
-  console.log(`LANE: ARBITRAGE (cross-venue) — strategies.arbitrage, minEdge=${arb.minEdgeBps}bps. Net edge is AFTER both venue fees + 2 agent legs + slippage + gas.`);
-  console.log('-'.repeat(100));
-  let arbRealized = 0, arbTrades = 0, negSkipped = 0, negTotal = 0;
-  for (const r of arb.results) {
-    const verdict = r.emitted ? 'TRADE' : 'SKIP ';
-    console.log(`  ${verdict} ${r.pair.padEnd(11)} grossBps=${String(r.grossBps).padStart(8)}  netBps=${String(r.netBps).padStart(8)}  realized=${usd(r.realized).padStart(9)}   (${r.note})`);
-    if (r.emitted) { arbRealized += r.realized; arbTrades++; }
-    const netNeg = r.netBps == null || r.netBps <= 0;
-    if (netNeg) { negTotal++; if (!r.emitted) negSkipped++; }
+  function laneTable(title, byRegime, agg) {
+    console.log('-'.repeat(100));
+    console.log(title);
+    console.log('-'.repeat(100));
+    for (const r of regimes) console.log(row(r, byRegime[r]));
+    console.log(row('ALL', agg));
   }
-  console.log(`  => arb realized P&L total = ${usd(arbRealized)} over ${arbTrades} trades; net<=0 pairs skipped: ${negSkipped}/${negTotal}`);
+  function deltaLine(label, before, after) {
+    const d = after.netUsd - before.netUsd;
+    const dt = after.trades - before.trades;
+    return `  => ${label} DELTA (AFTER - BEFORE): net ${usd(d)}  (${usd(before.netUsd)} -> ${usd(after.netUsd)}),  trades ${dt >= 0 ? '+' : ''}${dt} (${before.trades} -> ${after.trades}),  fees ${usd(after.feesUsd - before.feesUsd)}`;
+  }
+
+  console.log('######## MOMENTUM (SMA 10/30 cross) — strategies.momentum + pnl.js Ledger — BEFORE vs AFTER ########');
+  laneTable('BEFORE  (forced single 30bps AMM, NO fee-aware gate = old behavior)', mom.before.byRegime, mom.before.agg);
   console.log('');
+  laneTable('AFTER   (cheapest fillable route + internal preference + fee-aware entry gate)', mom.after.byRegime, mom.after.agg);
+  console.log(deltaLine('MOMENTUM', mom.before.agg, mom.after.agg));
+  for (const r of regimes) console.log(`       ${r.padEnd(10)} net ${usd(mom.before.byRegime[r].netUsd)} -> ${usd(mom.after.byRegime[r].netUsd)}  (${usd(mom.after.byRegime[r].netUsd - mom.before.byRegime[r].netUsd)})`);
+  console.log('');
+
+  console.log('######## GRID (ladder) — REAL grid deal engine via BotRunner (PAPER) — BEFORE vs AFTER ########');
+  laneTable('BEFORE  (forced single 30bps AMM)', grid.before.byRegime, grid.before.agg);
+  console.log('');
+  laneTable('AFTER   (cheapest fillable route + internal preference)', grid.after.byRegime, grid.after.agg);
+  console.log(deltaLine('GRID', grid.before.agg, grid.after.agg));
+  console.log('');
+
+  console.log('######## ARBITRAGE (cross-venue) — strategies.arbitrage net-edge gate — BEFORE vs AFTER ########');
+  function arbBlock(label, res) {
+    console.log('-'.repeat(100));
+    console.log(label + `  (minEdge=${res.minEdgeBps}bps; net is AFTER both venue fees + 2 agent legs + slippage + gas)`);
+    console.log('-'.repeat(100));
+    let realized = 0, trades = 0, negSkipped = 0, negTotal = 0;
+    for (const r of res.results) {
+      const verdict = r.emitted ? 'TRADE' : 'SKIP ';
+      console.log(`  ${verdict} ${r.pair.padEnd(11)} route=${String(r.routeName).padEnd(14)} grossBps=${String(r.grossBps).padStart(7)}  netBps=${String(r.netBps).padStart(8)}  realized=${usd(r.realized).padStart(9)}`);
+      if (r.emitted) { realized += r.realized; trades++; }
+      const netNeg = r.netBps == null || r.netBps <= 0;
+      if (netNeg) { negTotal++; if (!r.emitted) negSkipped++; }
+    }
+    console.log(`  => realized ${usd(realized)} over ${trades} trades; net<=0 skipped: ${negSkipped}/${negTotal}`);
+    return { realized, trades, negSkipped, negTotal };
+  }
+  const arbB = arbBlock('BEFORE  (every leg forced onto the 30bps external AMM)', arbBefore);
+  console.log('');
+  const arbA = arbBlock('AFTER   (Venues.chooseRoute: internal 10bps/no-gas or stable 6bps when fillable)', arbAfter);
+  console.log(`  => ARBITRAGE DELTA (AFTER - BEFORE): realized ${usd(arbA.realized - arbB.realized)}  (${usd(arbB.realized)} -> ${usd(arbA.realized)}) over the same 5 books`);
+  console.log('');
+
+  // AFTER totals drive the guarantees below
+  let arbRealized = arbA.realized, arbTrades = arbA.trades, negSkipped = arbA.negSkipped, negTotal = arbA.negTotal;
 
   console.log('-'.repeat(100));
   console.log('LANE: SCANNER autopilot (profitCurrency=USDC) — scanner.js + BotRunner (PAPER)');
@@ -576,12 +718,15 @@ async function main() {
   console.log('='.repeat(100));
   console.log(`BOTTOM LINE (${data.real ? 'REAL DATA' : 'SYNTHETIC DATA'})`);
   console.log('='.repeat(100));
-  console.log(`  ARBITRAGE : ${usd(arbRealized)} net, ${arbTrades} trades — profit-by-construction (never trades a net<=0 gap).`);
+  console.log(`  FEE LEVERS: all gains below come ONLY from (1) cheaper fillable routes, (2) real internal fills, (3) fewer sub-threshold entries.`);
+  console.log(`  ARBITRAGE : BEFORE ${usd(arbB.realized)} -> AFTER ${usd(arbA.realized)} net (cheapest-route cost lowers costs; net<=0 still never traded).`);
   console.log(`  SCANNER   : ${usd(scanner.realizedUsd)} net (USDC) — only trades cost-positive pairs; everything else skipped with a reason.`);
-  console.log(`  MOMENTUM  : ${usd(momAgg.netUsd)} net over ${momAgg.trades} round-trips (gross ${usd(momAgg.grossUsd)}, fees $${momAgg.feesUsd.toFixed(2)}).`);
-  console.log(`              by regime -> uptrend ${usd(momByRegime.uptrend.netUsd)}, downtrend ${usd(momByRegime.downtrend.netUsd)}, range ${usd(momByRegime.range.netUsd)}`);
-  console.log(`  GRID      : ${usd(gridAgg.netUsd)} net over ${gridAgg.trades} flips (gross ${usd(gridAgg.grossUsd)}, fees $${gridAgg.feesUsd.toFixed(2)}).`);
-  console.log(`              by regime -> uptrend ${usd(gridByRegime.uptrend.netUsd)}, downtrend ${usd(gridByRegime.downtrend.netUsd)}, range ${usd(gridByRegime.range.netUsd)}`);
+  console.log(`  MOMENTUM  : BEFORE ${usd(mom.before.agg.netUsd)} (${mom.before.agg.trades} rt) -> AFTER ${usd(mom.after.agg.netUsd)} (${mom.after.agg.trades} rt).  delta ${usd(mom.after.agg.netUsd - mom.before.agg.netUsd)}.`);
+  console.log(`              AFTER by regime -> uptrend ${usd(momByRegime.uptrend.netUsd)}, downtrend ${usd(momByRegime.downtrend.netUsd)}, range ${usd(momByRegime.range.netUsd)}`);
+  const chop = momByRegime.range.netUsd + momByRegime.downtrend.netUsd;
+  console.log(`              HONEST: momentum ${chop < 0 ? 'STILL LOSES in chop/down (just less than before)' : 'is net-positive in chop/down'} — the gate trims whipsaws, it does not reverse the regime.`);
+  console.log(`  GRID      : BEFORE ${usd(grid.before.agg.netUsd)} (${grid.before.agg.trades} flips) -> AFTER ${usd(grid.after.agg.netUsd)} (${grid.after.agg.trades} flips).  delta ${usd(grid.after.agg.netUsd - grid.before.agg.netUsd)}.`);
+  console.log(`              AFTER by regime -> uptrend ${usd(gridByRegime.uptrend.netUsd)}, downtrend ${usd(gridByRegime.downtrend.netUsd)}, range ${usd(gridByRegime.range.netUsd)}`);
   console.log('');
   console.log(`  GUARANTEES: ${checks.filter((c) => c.ok).length}/${checks.length} passed.`);
   console.log('='.repeat(100));

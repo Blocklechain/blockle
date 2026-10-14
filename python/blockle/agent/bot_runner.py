@@ -569,10 +569,10 @@ class BotRunner:
                         "amount": str(qty), "price": B.uc_to_usd(order.get("_levelPriceUc") or mark_uc)}
             else:
                 amount = str(B.qty_for_usd(usd_size_uc, quote_uc, m["quoteDec"]))  # quote base units to spend
+                buy_venue = await self._resolve_venue(bot, m["quote"], m["base"],
+                                                      B.uc_to_usd(usd_size_uc), None)
                 args = {"from": m["quote"], "to": m["base"], "amount": amount,
-                        "venue": (bot.venue_prefs or {}).get("venue") if isinstance(bot.venue_prefs, dict) else "blockle"}
-                if not args["venue"]:
-                    args["venue"] = "blockle"
+                        "venue": buy_venue or "blockle"}
             r = await self._dispatch(bot, tool_name, args, remaining_uc)
             if not r or r.get("rejected") or not r.get("result"):
                 await self._audit({"type": "bot_order_rejected", "bot": bot.id,
@@ -613,8 +613,9 @@ class BotRunner:
             args = {"market": m["base"] + "/" + m["quote"], "side": "sell", "type": "limit",
                     "amount": str(qty), "price": B.uc_to_usd(order.get("_levelPriceUc") or mark_uc)}
         else:
-            venue = (bot.venue_prefs or {}).get("venue") if isinstance(bot.venue_prefs, dict) else "blockle"
-            args = {"from": m["base"], "to": m["quote"], "amount": str(qty), "venue": venue or "blockle"}
+            sell_venue = await self._resolve_venue(bot, m["base"], m["quote"],
+                                                   B.uc_to_usd(proceeds_uc), None)
+            args = {"from": m["base"], "to": m["quote"], "amount": str(qty), "venue": sell_venue or "blockle"}
         # sells do not consume allocation; keep the auto-approve envelope at remaining
         # allocation so the sell still auto-approves within the same ONE gate.
         remaining_uc = B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)
@@ -633,6 +634,32 @@ class BotRunner:
         return {"side": "sell", "qty": qty, "priceUc": exec_price_uc, "proceedsUc": proceeds_uc,
                 "txid": r.get("txid"), "orderId": res.get("orderId") if isinstance(res, dict) else None,
                 "settleCurrency": settle["currency"], "settled": settle["settled"]}
+
+    # LEVER 1+2 AT DISPATCH: resolve the cheapest fillable venue for THIS swap
+    # when a route resolver is wired (``ctx.routeCandidates`` -> route descriptors
+    # fed to the shared ``venues.choose_route``; the internal Blockle rail is
+    # preferred when it can ACTUALLY fill the pair+size, never assumed). Falls
+    # back to the bot's configured venue (default 'blockle'). Default-safe: with
+    # no resolver the venue is unchanged, so every existing dispatch path behaves
+    # exactly as before.
+    async def _resolve_venue(self, bot, frm, to, size_usd, chain):
+        default = (bot.venue_prefs or {}).get("venue") if isinstance(bot.venue_prefs, dict) else None
+        default = default or "blockle"
+        try:
+            rc = member(self.ctx, "routeCandidates")
+            if callable(rc):
+                cands = await maybe_await(rc({"from": frm, "to": to, "sizeUsd": size_usd,
+                                              "chain": chain, "bot": bot.id}))
+                if isinstance(cands, (list, tuple)) and len(cands):
+                    if getattr(self, "_Venues", None) is None:
+                        from ..multichain import venues as _venues_mod
+                        self._Venues = _venues_mod
+                    picked = self._Venues.choose_route(list(cands))
+                    if picked and picked.get("venue"):
+                        return picked["venue"]
+        except Exception:
+            pass
+        return default
 
     # The ONE gate call: temporarily set policy.auto_approve_under_usd = remaining
     # allocation so an order WITHIN allocation auto-approves through the SAME gate
@@ -740,8 +767,8 @@ class BotRunner:
             out["routeOk"] = False
             return out
 
-        venue = (bot.venue_prefs or {}).get("venue") if isinstance(bot.venue_prefs, dict) else "blockle"
-        args = {"from": proceeds_asset, "to": pc, "amount": str(amount), "venue": venue or "blockle"}
+        settle_venue = await self._resolve_venue(bot, proceeds_asset, pc, None, None)
+        args = {"from": proceeds_asset, "to": pc, "amount": str(amount), "venue": settle_venue or "blockle"}
         # Settlement converts proceeds you already hold — like a sell, it does NOT
         # consume allocation; keep the auto-approve envelope at remaining allocation.
         remaining_uc = B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)

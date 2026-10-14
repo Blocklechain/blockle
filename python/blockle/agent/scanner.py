@@ -77,6 +77,13 @@ DEFAULTS: Dict[str, Any] = {
     "gasBufferUsd": 2,
     "slippageBps": 10,
     "agentFeeBps": 5,
+    # LEVER 3 (fee-aware trade gate) for the directional momentum ENTRY. Both
+    # default 0 => the gate is a NO-OP (pinned scan-vectors unchanged). When
+    # armed, momentumRoundTripCostBps is the round-trip cost of the chosen route
+    # and feeAwareMarginBps the extra edge required above it before an entry is
+    # emitted.
+    "feeAwareMarginBps": 0,
+    "momentumRoundTripCostBps": 0,
     # momentum + grid sizing
     "momentumShortN": 10,
     "momentumLongN": 30,
@@ -184,6 +191,8 @@ def validate_config(params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # can never price a loss-maker as a winner by configuring them below reality.
     p["slippageBps"] = max(5, _trunc(_num(p.get("slippageBps"), 10)))
     p["agentFeeBps"] = max(5, _trunc(_num(p.get("agentFeeBps"), 5)))
+    p["feeAwareMarginBps"] = max(0.0, _num(p.get("feeAwareMarginBps"), 0))
+    p["momentumRoundTripCostBps"] = max(0.0, _num(p.get("momentumRoundTripCostBps"), 0))
     p["momentumShortN"] = max(1, _trunc(_num(p.get("momentumShortN"), 10)))
     p["momentumLongN"] = max(2, _trunc(_num(p.get("momentumLongN"), 30)))
     if p["momentumShortN"] >= p["momentumLongN"]:
@@ -280,7 +289,9 @@ def momentum_edge(c: Any, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not golden or not (curr_long > 0):
         return None
     strength_bps = ((curr_short - curr_long) / curr_long) * 10000
-    costs_bps = cfg["agentFeeBps"] + cfg["slippageBps"]  # single buy leg
+    # single buy leg; LEVER 3 adds the configured fee-aware margin to the cost so
+    # the SCORE agrees with the planner's entry gate (margin defaults to 0 = no-op).
+    costs_bps = cfg["agentFeeBps"] + cfg["slippageBps"] + cfg.get("feeAwareMarginBps", 0)
     return {"strategy": "momentum", "edgeBps": strength_bps - costs_bps,
             "strengthBps": strength_bps, "costsBps": costs_bps}
 
@@ -450,6 +461,9 @@ async def emit_intents(row: Dict[str, Any], cfg: Dict[str, Any], S: Any, mainnet
             "market": member(c, "pair"), "shortN": cfg["momentumShortN"],
             "longN": cfg["momentumLongN"], "tradeUsd": cfg["perTradeUsd"],
             "history": member(c, "history") or [],
+            # LEVER 3: the planner enforces the SAME fee-aware entry gate (no-op at 0).
+            "feeAwareMarginBps": cfg["feeAwareMarginBps"],
+            "roundTripCostBps": cfg["momentumRoundTripCostBps"],
         })
         intents = (await maybe_await(strat.plan(ctx, params))) or []
         # Normalize to the shared scan contract: the scanner's momentum leg routes
