@@ -37,9 +37,9 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
-    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog,
+    QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -2000,6 +2000,20 @@ class AgentTab(QWidget):
         crow.addWidget(send)
         right.addLayout(crow)
 
+        # NATURAL-LANGUAGE COMMAND BAR (agent/command.py). Routes the SAME text
+        # through the CommandRouter: it classifies ACTION vs QUERY, shows the
+        # interpreted plan, resolves recipient names, and confirms EACH value move
+        # through the SAME shared security sheet (policy.gate_confirm). It adds no
+        # new power and no second money path — a QUERY runs read-only. Off by
+        # default so the existing NL runner stays the default.
+        self.cmd_bar = QCheckBox("Command bar — plan + confirm each step (NL → gated tool-calls)")
+        self.cmd_bar.setToolTip(
+            "Route this message through the command router: it interprets ACTIONs "
+            "(send/swap/rebalance) into a plan and gates every fund move through the "
+            "shared confirm sheet, and answers QUERIEs (net worth, which bot made "
+            "money this week) read-only from the real engines. No new power is added.")
+        right.addWidget(self.cmd_bar)
+
         self.transcript = QPlainTextEdit()
         self.transcript.setReadOnly(True)
         right.addWidget(self.transcript, 1)
@@ -2193,6 +2207,11 @@ class AgentTab(QWidget):
         self.cmd.clear()
         self._append(f"» {text}")
         ch_obj = self.mgr.get(ch["id"])
+
+        if self.cmd_bar.isChecked():
+            self._run_command_bar(ch_obj, text)
+            return
+
         fut = self.ctrl.loop.submit(ch_obj.run(text))
 
         def done(f):
@@ -2203,6 +2222,115 @@ class AgentTab(QWidget):
                 self._log.emit("error: " + str(e))
             self._refresh_list()
         fut.add_done_callback(done)
+
+    # ---- natural-language command bar (agent/command.py) --------------------
+    def _run_command_bar(self, ch_obj, text):
+        """Route `text` through the CommandRouter built over THIS running
+        channel's agent pieces. Value moves go through the channel's own policy
+        gate (the shared confirm sheet); a QUERY runs read-only. Router events
+        are rendered inline via :mod:`agent.command_ui`."""
+        inst = getattr(ch_obj, "instance", None)
+        if inst is None:
+            self._warn.emit("Start the channel before using the command bar.")
+            return
+        try:
+            router = self._build_command_router(inst)
+        except Exception as e:  # pragma: no cover - defensive
+            self._log.emit("command bar unavailable: " + str(e))
+            return
+
+        fut = self.ctrl.loop.submit(router.run(text))
+
+        def done(f):
+            try:
+                res = f.result()
+                # the closing answer/note if the router did not already emit a
+                # trailing 'text' event.
+                txt = (res or {}).get("text")
+                if txt:
+                    self._log.emit(agentpkg.command_ui.answer_text(txt))
+            except Exception as e:
+                self._log.emit("error: " + str(e))
+            self._refresh_list()
+        fut.add_done_callback(done)
+
+    def _build_command_router(self, inst):
+        """Assemble a CommandRouter from a running AgentHandle: the SAME provider,
+        tool registry, policy gate, audit and P&L hook the channel already uses —
+        plus the wallet's name resolver and the read-only query engines. No new
+        gate and no second money path are introduced."""
+        ctx = self._router_ctx()
+
+        async def resolve_name(input_, chain, _name_ctx=None):
+            from .multichain import addressbook as _ab
+            return await _ab.resolve_name(input_, chain, ctx)
+
+        return agentpkg.command.create({
+            "provider": inst.runner.provider,
+            "tools": inst.tools,
+            "policy": inst.policy,
+            "audit": inst.audit,
+            "pnl": getattr(inst, "pnl", None),
+            "resolveName": resolve_name,
+            "engines": self._command_engines(),
+            "onEvent": self._on_command_event,
+        })
+
+    def _router_ctx(self):
+        """A name-resolution ctx (local address book + any ENS/SNS resolvers the
+        wallet wires). Falls back to raw-address-only resolution, which is the
+        SAFE default — an unresolved name is refused, never sent to blindly."""
+        get_book = getattr(self.ctrl, "address_book_entries", None)
+        return {"book": get_book() if callable(get_book) else []}
+
+    def _on_command_event(self, ev):
+        # called on the AgentLoop thread -> marshal to the UI via the queued log
+        # signal, rendering the router event as a transcript line.
+        line = agentpkg.command_ui.event_text(ev)
+        if line:
+            self._log.emit(line)
+
+    def _command_engines(self):
+        """Read-only query engines for the command bar. ``botsPnl`` reads the
+        per-channel P&L ledgers (realizedUsd + timestamped trades) the channel
+        manager already keeps, windowed to `sinceMs`. ``netWorth`` is wired only
+        when the controller exposes a portfolio snapshot; otherwise the engine
+        tool honestly reports 'unavailable' (never a fabricated number)."""
+        mgr = self.mgr
+
+        async def bots_pnl(opts=None):
+            opts = opts or {}
+            since_ms = opts.get("sinceMs")
+            if mgr is None:
+                return None
+            bots = []
+            total = 0.0
+            for ch in mgr.channels.values():
+                trades = (ch.pnl or {}).get("trades") or []
+                realized = 0.0
+                for t in trades:
+                    ts = t.get("ts")
+                    if since_ms is not None and ts is not None and ts < since_ms:
+                        continue
+                    if t.get("realizedUsd") is not None:
+                        realized += float(t["realizedUsd"])
+                total += realized
+                bots.append({
+                    "id": ch.id,
+                    "name": ch.meta.get("label"),
+                    "realizedUsd": realized,
+                    "unrealizedUsd": None,
+                })
+            return {"realizedUsd": total, "bots": bots}
+
+        engines = {"botsPnl": bots_pnl}
+        net_worth = getattr(self.ctrl, "net_worth_snapshot", None)
+        if callable(net_worth):
+            async def _net_worth():
+                from .multichain._util import maybe_await as _ma
+                return await _ma(net_worth())
+            engines["netWorth"] = _net_worth
+        return engines
 
 
 class ProviderDialog(QDialog):
