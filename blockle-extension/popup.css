@@ -618,3 +618,41 @@ canvas.logo {
 .wallet-root .wsheet-actions { display: flex; gap: 9px; margin-top: 14px; }
 .wallet-root .wsheet-actions .wbtn { flex: 1; justify-content: center; padding: 12px; }
 @media (prefers-reduced-motion: reduce) { .wallet-root * { animation: none !important; transition: none !important; } }
+
+/* ===== Natural-language command bar (command-ui.js) ======================= */
+.cmd-bar { display: flex; flex-direction: column; gap: 8px; }
+.cmd-input-row { display: flex; gap: 8px; }
+.cmd-input {
+  flex: 1; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line2, var(--line)); border-radius: 12px;
+  padding: 10px 12px; font-size: 14px;
+}
+.cmd-input:focus { outline: none; border-color: var(--c2, #6366f1); }
+.cmd-hint { color: var(--muted); font-size: 12px; }
+.cmd-transcript { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; }
+.cmd-you {
+  align-self: flex-end; background: var(--surface2, var(--surface));
+  border: 1px solid var(--line); border-radius: 12px 12px 2px 12px;
+  padding: 8px 10px; font-size: 13px; max-width: 85%;
+}
+.cmd-badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  padding: 2px 8px; border-radius: 999px; }
+.cmd-action { background: rgba(99,102,241,.15); color: #a5b4fc; }
+.cmd-query { background: rgba(52,211,153,.12); color: var(--good); }
+.cmd-plan { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: var(--surface); }
+.cmd-plan-h { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.cmd-plan-list { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.cmd-plan-step { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cmd-step-n { width: 18px; height: 18px; border-radius: 50%; background: var(--surface2, var(--line));
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); }
+.cmd-step-desc { flex: 1; }
+.cmd-step-status { font-size: 11px; color: var(--muted); }
+.cmd-resolved { font-size: 12px; color: var(--muted); }
+.cmd-resolved .mono { color: var(--text); }
+.cmd-src { color: var(--muted); }
+.cmd-outcome { font-size: 13px; }
+.cmd-outcome[data-status="committed"] b { color: var(--good); }
+.cmd-outcome[data-status="declined"] b,
+.cmd-outcome[data-status="error"] b { color: var(--bad); }
+.cmd-answer { font-size: 14px; line-height: 1.4; }
+.cmd-err { font-size: 13px; color: var(--bad); }

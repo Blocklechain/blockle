@@ -17,10 +17,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../agent/channels.dart' show providerGuides;
+import '../agent/command.dart' show CommandEngines, CommandRouter;
 import '../agent/runner.dart' show RunResult;
 import '../state/app_state.dart';
+import '../state/bots_controller.dart';
 import '../state/multichain_controller.dart';
+import '../state/wallet_controller.dart';
 import '../theme.dart';
+import 'agent/command_bar.dart';
 
 const List<String> _predefinedPrompts = [
   'DCA \$50/week into BLOCK',
@@ -74,6 +78,8 @@ class _AgentScreenState extends State<AgentScreen> {
           else ...[
             _providerCard(c, connected),
             const SizedBox(height: 18),
+            _commandBarCard(c),
+            const SizedBox(height: 18),
             Row(
               children: [
                 const Text('Channels',
@@ -97,6 +103,98 @@ class _AgentScreenState extends State<AgentScreen> {
           ],
         ],
       ),
+    );
+  }
+
+  // ---- natural-language command bar ----------------------------------------
+  // Surfaced ALONGSIDE the channels cockpit. It adds NO new power: it drives the
+  // CommandRouter over a RUNNING channel's EXISTING provider / tools / policy.
+  // Every value move still passes through the ONE gate (the shared confirm sheet
+  // via policy.gateConfirm); queries are answered from the REAL engines below.
+
+  Widget _commandBarCard(MultichainController c) {
+    final anyRunning = _channels.any((ch) => ch['running'] == true);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Command bar',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+            const SizedBox(height: 4),
+            const Text(
+                'Type an instruction or a question. Actions are proposed, the '
+                'recipient is resolved and shown, and EVERY fund move is gated by '
+                'your confirmation. Questions are answered from your real balances '
+                '& bot P&L — never made up.',
+                style: TextStyle(color: Bk.muted, fontSize: 12)),
+            const SizedBox(height: 10),
+            CommandBar(
+              enabled: anyRunning,
+              buildRouter: ({onEvent}) =>
+                  _buildCommandRouter(c, onEvent: onEvent),
+            ),
+            if (!anyRunning)
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text('Connect a channel below to enable the command bar.',
+                    style: TextStyle(color: Bk.muted, fontSize: 11)),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  CommandRouter? _buildCommandRouter(MultichainController c,
+      {void Function(Map<String, dynamic> ev)? onEvent}) {
+    final wallet = context.read<WalletController>();
+    final bots = context.read<BotsController>();
+
+    // The REAL read-only engines a QUERY draws its numbers from. A failure
+    // returns null so the engine tool reports "unavailable" — never a fabricated
+    // balance or P&L.
+    final engines = CommandEngines(
+      netWorth: () async {
+        try {
+          final p = await wallet.loadPortfolio();
+          return {
+            'totalUsd': p.totalUsd,
+            'byChain': p.byChain,
+            'asOf': p.asOf,
+          };
+        } catch (_) {
+          return null;
+        }
+      },
+      botsPnl: ({required int sinceMs, required int days}) async {
+        try {
+          final agg = bots.aggregate();
+          return {
+            'realizedUsd': agg['realizedUsd'],
+            'bots': agg['bots'],
+          };
+        } catch (_) {
+          return null;
+        }
+      },
+    );
+
+    // Name resolution via the SAME WalletAddressBook the Send screen uses (ENS /
+    // SNS / local book / verbatim address — never a guessed address).
+    Future<Map<String, dynamic>?> resolveName(dynamic input, dynamic chain) async {
+      try {
+        return await wallet.addressBook.resolveName(input, chain, null);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return c.agent.buildCommandRouter(
+      onEvent: onEvent,
+      engines: engines,
+      resolveName: resolveName,
     );
   }
 

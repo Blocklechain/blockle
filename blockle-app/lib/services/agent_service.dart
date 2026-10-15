@@ -19,6 +19,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import '../agent/channels.dart';
+import '../agent/command.dart' show CommandRouter, CommandEngines, ResolveNameFn;
 import '../agent/index.dart' show AgentCredential;
 import '../agent/providers.dart'
     show ProviderFetch, ProviderResponse, hostedSession, defaultGatewayUrl;
@@ -189,6 +190,52 @@ class AgentService {
 
   /// Auto-resume every enabled channel (call right after a successful unlock).
   Future<Map<String, dynamic>> resume() => manager.resume();
+
+  /// Build a NATURAL-LANGUAGE COMMAND BAR router over a RUNNING channel. It adds
+  /// NO new power: it reuses that channel's live provider, its EXISTING tool
+  /// registry, and — crucially — its ONE policy/gate (the SAME policy whose
+  /// `confirm` is the shared security sheet). Value moves still flow only through
+  /// `dispatchValueMoving`; a query runs in a read-only registry. Returns null
+  /// when no suitable channel is running (nothing to drive yet).
+  ///
+  /// [channelId] selects a specific channel; otherwise the first running one is
+  /// used. [resolveName] is the WalletAddressBook name resolver bound to the
+  /// active chain ctx; [engines] supplies the read-only net-worth / bots-P&L
+  /// sources a QUERY answers from (never fabricated).
+  CommandRouter? buildCommandRouter({
+    String? channelId,
+    void Function(Map<String, dynamic> ev)? onEvent,
+    ResolveNameFn? resolveName,
+    CommandEngines? engines,
+    int? maxTurns,
+    String? defaultChain,
+  }) {
+    Channel? ch = channelId != null ? manager.get(channelId) : null;
+    ch ??= _firstRunning();
+    final inst = ch?.instance;
+    if (inst == null) return null;
+    return CommandRouter(
+      provider: inst.runner.provider,
+      tools: inst.tools,
+      policy: inst.policy,
+      audit: inst.audit,
+      pnl: inst.pnlHook,
+      pnlWallet: ch!.meta['walletId'] as String?,
+      pnlChannel: ch.id,
+      onEvent: onEvent,
+      resolveNameFn: resolveName,
+      engines: engines,
+      maxTurns: maxTurns,
+      defaultChain: defaultChain ?? (ch.meta['accountId'] as String?),
+    );
+  }
+
+  Channel? _firstRunning() {
+    for (final c in manager.channels.values) {
+      if (c.running) return c;
+    }
+    return null;
+  }
 
   // --- credential resolution (vault-only; never persisted) ------------------
 
