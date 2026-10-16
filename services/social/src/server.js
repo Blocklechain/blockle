@@ -32,12 +32,28 @@ export function createApp(overrides = {}) {
   // --- profile bootstrap -------------------------------------------------------------------
   function ensureProfile(sess) {
     let p = store.get('profiles', sess.uid);
-    if (p) return p;
-    // derive a unique handle from the email local-part
-    let base = (sess.email.split('@')[0] || 'user').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18) || 'user';
-    if (base.length < 3) base = base + 'xyz'.slice(0, 3 - base.length);
-    let handle = base, n = 1;
-    while (store.get('handles', handle)) handle = `${base}${n++}`;
+    if (p) {
+      // keep the social @handle in sync with the account username the user chose/changed
+      const want = sess.username && String(sess.username).toLowerCase();
+      if (want && p.handle !== want) {
+        const owner = store.get('handles', want);
+        if (!owner || owner === sess.uid) {
+          store.del('handles', p.handle);
+          store.put('handles', want, sess.uid);
+          p.handle = want;
+          store.put('profiles', sess.uid, p);
+        }
+      }
+      return p;
+    }
+    // new profile: prefer the account username; else derive a unique handle from the email
+    let handle = sess.username && String(sess.username).toLowerCase();
+    if (!handle || store.get('handles', handle)) {
+      let base = (sess.email.split('@')[0] || 'user').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 18) || 'user';
+      if (base.length < 3) base = base + 'xyz'.slice(0, 3 - base.length);
+      handle = base; let n = 1;
+      while (store.get('handles', handle)) handle = `${base}${n++}`;
+    }
     p = { uid: sess.uid, handle, displayName: handle, bio: '', karma: 0, blockUnits: 0, createdAt: now() };
     store.put('profiles', sess.uid, p);
     store.put('handles', handle, sess.uid);

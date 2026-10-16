@@ -112,7 +112,7 @@
       const fmtk = (n) => (n == null ? '—' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n)));
       const dt = (ms) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
-      $('#email').textContent = u.email;
+      $('#email').textContent = (u.username ? '@' + u.username + ' · ' : '') + u.email;
       if (u.role === 'admin') { const b = $('#role'); b.textContent = 'admin'; b.className = 'badge admin'; b.style.display = ''; }
 
       // headline stats
@@ -185,13 +185,14 @@
       const shortUA = (ua) => ua ? esc(ua.replace(/^Mozilla\/[\d.]+ \(/, '').split(')')[0]) : 'Unknown device';
       async function loadDevices() {
         const r = await api('GET', '/account/api/sessions');
-        const list = r.data.sessions || [];
-        $('#devices').innerHTML = list.map((s) =>
-          `<div class="device"><div class="d"><div class="ua">${shortUA(s.ua)}</div><div class="meta">${s.ip ? esc(s.ip) + ' · ' : ''}seen ${dt(s.lastSeen)}${s.current ? ' · <span class="here">this device</span>' : ''}</div></div>${s.current ? '' : `<button class="ghost sm revoke" data-sid="${esc(s.sid)}" style="max-width:90px">Revoke</button>`}</div>`).join('') || '<p class="muted">No active sessions.</p>';
+        const devices = (r.data && r.data.devices) || [];
+        $('#devices').innerHTML = devices.map((d, i) =>
+          `<div class="device"><div class="d"><div class="ua">${shortUA(d.ua)}</div><div class="meta">${d.ip ? esc(d.ip) + ' · ' : ''}seen ${dt(d.lastSeen)}${d.count > 1 ? ' · ' + d.count + ' sessions' : ''}${d.current ? ' · <span class="here">this device</span>' : ''}</div></div>${d.current ? '' : `<button class="ghost sm revoke" data-i="${i}" style="max-width:90px">Revoke</button>`}</div>`).join('') || '<p class="muted">No active sessions.</p>';
+        $('#sessLine').textContent = 'Active devices: ' + devices.length;
         $('#devices').querySelectorAll('.revoke').forEach((b) => b.addEventListener('click', async () => {
-          const r2 = await api('POST', '/account/api/sessions/revoke', { sid: b.dataset.sid });
-          if (r2.status === 200) { loadDevices(); $('#sessLine').textContent = 'Active sessions: ' + Math.max(1, (list.length - 1)); }
-          else show(r2.data.error || 'Could not revoke.');
+          const d = devices[+b.dataset.i]; if (!d) return;
+          const r2 = await api('POST', '/account/api/sessions/revoke', { sids: d.sids });
+          if (r2.status === 200) loadDevices(); else show(r2.data.error || 'Could not revoke.');
         }));
       }
       loadDevices();
@@ -203,6 +204,15 @@
         const r = await api('POST', '/account/api/change-password', { current: cur, next: nxt });
         if (r.status === 200) { CSRF = r.data.csrf; $('#pw-current').value = ''; $('#pw-next').value = ''; show('Password updated — other devices were signed out.', 'ok'); loadDevices(); }
         else show(r.data.error || 'Could not change password.');
+      });
+
+      // username (unique @handle)
+      $('#unameLine').textContent = u.username ? '@' + u.username : 'No username set';
+      $('#uname-new').value = u.username || '';
+      $('#uname-save').addEventListener('click', async () => {
+        const r = await api('POST', '/account/api/username', { username: $('#uname-new').value });
+        if (r.status === 200) { u.username = r.data.username; $('#unameLine').textContent = '@' + r.data.username; $('#email').textContent = '@' + r.data.username + ' · ' + u.email; show('Username saved.', 'ok'); }
+        else show(r.data.error || 'Could not save username.');
       });
 
       // change email (re-verification)
@@ -219,6 +229,91 @@
           else show(r.data.error || 'Could not change email.');
         });
       });
+
+      // ---- Coinbase×3Commas tabs ----
+      let pfLoaded = false, mkLoaded = false, botsLoaded = false;
+      async function renderPortfolio() {
+        if (pfLoaded) return; pfLoaded = true;
+        const [addrR, balR] = await Promise.all([api('GET', '/account/api/vault/address'), api('GET', '/account/api/vault/balance')]);
+        const bal = balR.data || {};
+        const addr = (addrR.data && addrR.data.address) || bal.address;
+        $('#pf-address').innerHTML = addr ? `<span>${esc(addr)}</span>` : '<span class="muted">Back up your wallet to link a receive address.</span>';
+        $('#pf-total').textContent = bal.balance == null ? '—' : (Number(bal.balance).toLocaleString() + ' BLOCK');
+        const tokens = bal.tokens || [];
+        $('#pf-holdings').innerHTML = ((bal.balance != null ? `<div class="hold"><span>BLOCK</span><span>${Number(bal.balance).toLocaleString()}</span></div>` : '') +
+          tokens.map((t) => `<div class="hold"><span>${esc(t.symbol || t.ticker || 'token')}</span><span>${esc(String(t.amount ?? t.balance ?? ''))}</span></div>`).join('')) || '<p class="muted">No holdings yet — deposit to your address below.</p>';
+        const cp = $('#pf-copy');
+        if (cp && addr) cp.addEventListener('click', async (e) => { e.target.textContent = (await copyText(addr)) ? 'Copied ✓' : 'Copy failed'; });
+        else if (cp) cp.style.display = 'none';
+      }
+      async function renderMarkets() {
+        if (mkLoaded) return; mkLoaded = true;
+        const r = await api('GET', '/account/api/markets');
+        const list = (r.data && r.data.markets) || [];
+        const rows = list.map((m) => {
+          const up = (m.change || 0) >= 0;
+          const price = m.price != null ? esc(String(m.price)) + (m.native ? '' : ' BLK') : (m.native ? 'on-chain' : '—');
+          const chg = m.change != null ? `<span class="chg ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(m.change))}%</span>` : '<span class="muted">—</span>';
+          return `<div class="mkrow"><span class="sym">${esc(m.symbol || '')}${m.native ? ' <span class="pill">native</span>' : ''}</span><span class="px">${price}</span>${chg}</div>`;
+        }).join('');
+        const hint = list.length <= 1
+          ? '<p class="muted" style="margin-top:12px">No BLOCK-20 tokens listed yet — <a href="/launch">launch one on the launchpad</a> and it shows up here with a live AMM price.</p>'
+          : '';
+        $('#mk-list').innerHTML = rows + hint;
+      }
+      async function renderBots() {
+        botsLoaded = true;
+        const r = await api('GET', '/account/api/bots');
+        const bots = (r.data && r.data.bots) || [];
+        const TN = { dca: 'DCA', grid: 'Grid', smarttrade: 'Smart Trade', signal: 'Signal' };
+        $('#bots-list').innerHTML = bots.map((b) => { const up = (b.pnl || 0) >= 0; return `<div class="botrow"><div><b>${esc(TN[b.type] || b.type)}</b> <span class="meta">${esc(b.pair)} · ${esc(b.status)} · ${b.trades} trades</span></div><div style="display:flex;gap:10px;align-items:center"><span class="pnl ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(b.pnl))} (${up ? '+' : ''}${esc(String(b.pnlPct))}%)</span><button class="ghost sm bot-del" data-id="${esc(b.id)}" style="max-width:70px">Delete</button></div></div>`; }).join('') || '<p class="muted">No bots yet. Create a paper bot to test a strategy risk-free.</p>';
+        $('#bots-list').querySelectorAll('.bot-del').forEach((btn) => btn.addEventListener('click', async () => { await api('POST', '/account/api/bots/' + btn.dataset.id + '/delete', {}); renderBots(); }));
+      }
+      const BOT_FIELDS = {
+        dca: [['buyAmount', 'Buy amount each time', 50], ['everyTicks', 'Buy every N ticks', 3]],
+        grid: [['lower', 'Lower price', 0], ['upper', 'Upper price', 0], ['grids', 'Grid levels', 6]],
+        smarttrade: [['takeProfitPct', 'Take-profit %', 10], ['stopLossPct', 'Stop-loss %', 5]],
+        signal: [['thresholdPct', 'Signal threshold %', 1]],
+      };
+      const BOT_DESC = {
+        dca: 'Buys a fixed amount on a schedule — smooths your entry.',
+        grid: 'Buys low and sells high across a price band.',
+        smarttrade: 'Enters once, then exits at your take-profit or stop-loss.',
+        signal: 'Buys on upward momentum, sells on downward — follows the trend.',
+      };
+      function botFields(type) {
+        return BOT_FIELDS[type].map(([k, label, def]) =>
+          `<label>${label}</label><input id="nb-${k}" type="number" value="${def}">`).join('');
+      }
+      $('#bot-new').addEventListener('click', () => {
+        const types = [['dca', 'DCA'], ['grid', 'Grid'], ['smarttrade', 'Smart Trade'], ['signal', 'Signal']];
+        $('#bot-create').innerHTML = `<div class="sec" style="margin-top:10px">
+          <label>Strategy</label>
+          <select id="nb-type">${types.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
+          <p class="note" id="nb-desc">${BOT_DESC.dca}</p>
+          <label>Pair</label><input id="nb-pair" value="BLOCK/USD">
+          <label>Budget (paper)</label><input id="nb-budget" type="number" value="1000">
+          <div id="nb-fields">${botFields('dca')}</div>
+          <button class="sm" id="nb-go" style="margin-top:12px;max-width:140px">Create bot</button></div>`;
+        const syncType = () => { const t = $('#nb-type').value; $('#nb-desc').textContent = BOT_DESC[t]; $('#nb-fields').innerHTML = botFields(t); };
+        $('#nb-type').addEventListener('change', syncType);
+        $('#nb-go').addEventListener('click', async () => {
+          const type = $('#nb-type').value; const budget = Number($('#nb-budget').value) || 1000;
+          const params = { budget };
+          for (const [k] of BOT_FIELDS[type]) params[k] = Number(($('#nb-' + k) || {}).value);
+          const r = await api('POST', '/account/api/bots', { type, pair: $('#nb-pair').value, params });
+          if (r.status === 200) { $('#bot-create').innerHTML = ''; renderBots(); } else show(r.data.error || 'Could not create bot.');
+        });
+      });
+      $('#tabnav').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+        const tab = b.dataset.tab;
+        $('#tabnav').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        ['portfolio', 'markets', 'bots', 'account'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+        if (tab === 'portfolio') renderPortfolio();
+        if (tab === 'markets') renderMarkets();
+        if (tab === 'bots' && !botsLoaded) renderBots();
+      }));
+      renderPortfolio();
 
       // danger zone: delete account
       $('#del-open').addEventListener('click', () => {

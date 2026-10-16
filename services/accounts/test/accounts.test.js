@@ -316,29 +316,31 @@ test('dashboard overview reports backup/session state; logout-all revokes everyt
   });
 });
 
-test('device list + per-session revoke + change password', async () => {
+test('devices group by browser (not per session); revoke signs out the device; change password', async () => {
   await withServer(async ({ app, call }) => {
     await call('POST', '/account/api/register', { email: 'd@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
     await call('GET', '/account/api/verify?token=' + token);
     await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' }); // session #1
-    const login2 = await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' }); // #2 (jar now holds #2)
+    const login2 = await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' }); // #2 (same UA+IP)
     const csrf = login2.data.csrf;
 
-    let list = (await call('GET', '/account/api/sessions')).data.sessions;
-    assert.equal(list.length, 2);
-    const other = list.find((s) => !s.current);
-    assert.ok(other, 'the non-current session is identifiable');
-    const rev = await call('POST', '/account/api/sessions/revoke', { sid: other.sid }, { 'X-CSRF-Token': csrf });
-    assert.equal(rev.status, 200);
-    list = (await call('GET', '/account/api/sessions')).data.sessions;
-    assert.equal(list.length, 1);
-    assert.equal(list[0].current, true);
+    // two logins from the SAME browser collapse into ONE device (count 2), not two rows
+    const devices = (await call('GET', '/account/api/sessions')).data.devices;
+    assert.equal(devices.length, 1, 'same browser = one device, not duplicated per session');
+    assert.equal(devices[0].count, 2);
+    assert.equal(devices[0].current, true);
 
-    // change password: wrong current rejected; correct one works and keeps THIS device signed in
-    const bad = await call('POST', '/account/api/change-password', { current: 'nope', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf });
+    // revoking the device signs out all its sessions (including the current one)
+    const rev = await call('POST', '/account/api/sessions/revoke', { sids: devices[0].sids }, { 'X-CSRF-Token': csrf });
+    assert.equal(rev.status, 200);
+    assert.equal((await call('GET', '/account/api/me')).status, 401);
+
+    // re-login, then change password keeps THIS device signed in
+    const csrf2 = (await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' })).data.csrf;
+    const bad = await call('POST', '/account/api/change-password', { current: 'nope', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf2 });
     assert.equal(bad.status, 401);
-    const ok = await call('POST', '/account/api/change-password', { current: 'longenough1', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf });
+    const ok = await call('POST', '/account/api/change-password', { current: 'longenough1', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf2 });
     assert.equal(ok.status, 200);
     assert.ok(ok.data.csrf);
     assert.equal((await call('GET', '/account/api/me')).status, 200, 'still signed in on this device');
@@ -456,6 +458,39 @@ test('dashboard: non-custodial vault balance (read-only), broadcast relay, marke
     assert.equal((await call('POST', '/account/api/bots/' + id + '/delete', {}, { 'X-CSRF-Token': csrf })).status, 200);
     assert.equal((await call('GET', '/account/api/bots')).data.bots.length, 0);
   }, { chain });
+});
+
+test('usernames: unique at signup, settable/changeable, collisions rejected', async () => {
+  await withServer(async ({ app, call }) => {
+    // signup with a username reserves it
+    const r1 = await call('POST', '/account/api/register', { email: 'a@b.com', password: 'longenough1', username: 'Satoshi' });
+    assert.equal(r1.status, 200);
+    // a second signup claiming the same username (case-insensitive) is rejected
+    const dup = await call('POST', '/account/api/register', { email: 'c@b.com', password: 'longenough1', username: 'satoshi' });
+    assert.equal(dup.status, 409);
+    // bad format rejected
+    const bad = await call('POST', '/account/api/register', { email: 'd@b.com', password: 'longenough1', username: 'no' });
+    assert.equal(bad.status, 400);
+
+    // verify + login the first user, then change username
+    const vtok = app.mailer.sent.find((m) => m.to === 'a@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + vtok);
+    const login = await call('POST', '/account/api/login', { email: 'a@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+    assert.equal(login.data.user.username, 'satoshi');
+
+    // taken by someone else → 409 (register a second verified user holding 'hodler')
+    await call('POST', '/account/api/register', { email: 'e@b.com', password: 'longenough1', username: 'hodler' });
+    const clash = await call('POST', '/account/api/username', { username: 'hodler' }, { 'X-CSRF-Token': csrf });
+    assert.equal(clash.status, 409);
+    // change to a free one works + releases the old
+    const chg = await call('POST', '/account/api/username', { username: 'nakamoto' }, { 'X-CSRF-Token': csrf });
+    assert.equal(chg.status, 200);
+    assert.equal((await call('GET', '/account/api/me')).data.user.username, 'nakamoto');
+    // the old username is now free to claim
+    const reuse = await call('POST', '/account/api/register', { email: 'f@b.com', password: 'longenough1', username: 'satoshi' });
+    assert.equal(reuse.status, 200);
+  });
 });
 
 test('2FA: enable, then login requires a valid code', async () => {

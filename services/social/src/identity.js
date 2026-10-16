@@ -24,5 +24,5 @@ export function resolveSession(req, config, now = () => Date.now()) {
   const users = readStore(config.accountsDataDir, 'users');
   const u = users[rec.uid];
   if (!u) return null;
-  return { uid: u.id, email: u.email, role: u.role || 'user', csrf: rec.csrf };
+  return { uid: u.id, email: u.email, username: u.username || null, role: u.role || 'user', csrf: rec.csrf };
 }

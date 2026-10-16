@@ -1429,6 +1429,13 @@ h1{font-size:clamp(40px,6.4vw,74px);line-height:.98;font-weight:850;letter-spaci
 h1 .thin{color:var(--muted);font-weight:450}
 .sub{margin:22px 0 0;font-size:clamp(16px,1.9vw,19px);color:var(--muted);max-width:34em}
 .hero-cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px;align-items:center}
+.hero-auth{margin-top:26px;display:flex;flex-wrap:wrap;gap:10px;max-width:440px}
+.hero-auth input{flex:1 1 180px;min-width:0;padding:13px 14px;border-radius:11px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit}
+.hero-auth input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+.hero-auth .btn-primary{flex:1 1 100%;justify-content:center;padding:13px}
+.hero-auth .hs-sub{flex:1 1 100%;font-size:13px;color:var(--mut)}
+.hero-auth .hs-msg{flex:1 1 100%;font-size:13px;display:none}
+.hero-auth .hs-msg.ok{display:block;color:var(--gain)}.hero-auth .hs-msg.err{display:block;color:var(--loss)}
 .micro{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:16px}.micro b{color:var(--muted);font-weight:600}
 .demo{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.6);min-height:300px;display:flex;flex-direction:column}
 .demo .dhead{display:flex;align-items:center;gap:8px;padding:12px 15px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;color:var(--faint)}
@@ -1481,7 +1488,14 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <span class="eyebrow">Self-custody trading super-app</span>
 <h1>Your keys.<br>Your bots.<br><span class="thin">Your trading desk.</span></h1>
 <p class="sub">A multi-chain wallet, a non-custodial exchange, and pro trading bots with an AI that trades on your command &mdash; without ever holding your coins.</p>
-<div class="hero-cta"><a class="btn btn-primary" href="#download">Download &mdash; free</a><a class="btn btn-ghost" href="#bots" style="display:inline-flex">See the bots</a></div>
+<form class="hero-auth" id="hero-signup" autocomplete="on">
+<input type="email" id="hs-email" placeholder="you@email.com" autocomplete="email" required>
+<input type="text" id="hs-user" placeholder="username (optional)" autocomplete="username" pattern="[A-Za-z0-9_]{3,20}">
+<input type="password" id="hs-pw" placeholder="Choose a password (10+ chars)" autocomplete="new-password" minlength="10" required>
+<button class="btn btn-primary" type="submit">Create free account</button>
+<div class="hs-sub">Already have one? <a href="/account/login">Sign in</a> &middot; or <a href="#download">download the wallet</a></div>
+<div class="hs-msg" id="hs-msg" role="status"></div>
+</form>
 <p class="micro"><b>Non-custodial.</b> Your keys stay on your device &middot; <b>Multi-chain</b> BTC &middot; ETH &middot; SOL &middot; BLOCK &middot; and more</p>
 </div>
 <div class="demo" aria-label="Conversational command bar demo">
@@ -1552,7 +1566,8 @@ function schedule(ms){if(reduce)return;setTimeout(function(){si=(si+1)%scenes.le
 function typeScene(){var sc=scenes[si],s=sc.cmd,i=0;typed.textContent="";stage.innerHTML="";if(reduce){typed.textContent=s;stage.innerHTML=sc.render();go(sc);return}(function tick(){if(i<=s.length){typed.textContent=s.slice(0,i++);setTimeout(tick,42+Math.random()*40)}else{setTimeout(function(){stage.innerHTML=sc.render();go(sc)},340)}})()}
 typeScene()}})();
 </script>
-<script>(function(){try{fetch("/account/api/me",{credentials:"include"}).then(function(r){return r.json()}).then(function(d){if(d&&d.user){var a=document.getElementById("nav-auth");if(a){a.textContent="Dashboard";a.setAttribute("href","/account");a.title=d.user.email;}}}).catch(function(){})}catch(e){}})();</script>
+<script>(function(){try{fetch("/account/api/me",{credentials:"include"}).then(function(r){return r.json()}).then(function(d){if(d&&d.user){var a=document.getElementById("nav-auth");if(a){a.textContent="Dashboard";a.setAttribute("href","/account");a.title=d.user.email;}var f=document.getElementById("hero-signup");if(f){f.innerHTML='<a class="btn btn-primary" href="/account" style="flex:1 1 100%;justify-content:center;padding:13px">Open your dashboard</a>';}}}).catch(function(){});
+var f=document.getElementById("hero-signup");if(f){f.addEventListener("submit",function(e){e.preventDefault();var m=document.getElementById("hs-msg");var em=document.getElementById("hs-email").value,pw=document.getElementById("hs-pw").value,un=(document.getElementById("hs-user")||{}).value||"";m.className="hs-msg";fetch("/account/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:em,password:pw,username:un})}).then(function(r){return r.json().then(function(j){return{s:r.status,j:j}})}).then(function(x){if(x.s===200){m.className="hs-msg ok";m.textContent=(x.j&&x.j.message)||"Check your email to confirm your account.";}else{m.className="hs-msg err";m.textContent=(x.j&&x.j.error)||"Could not sign up.";}}).catch(function(){m.className="hs-msg err";m.textContent="Network error. Try again.";});});}}catch(e){}})();</script>
 </body></html>"##.to_string()
 }
 

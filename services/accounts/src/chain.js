@@ -31,14 +31,25 @@ export function makeChain(config, deps = {}) {
       if (!j) throw new Error('broadcast failed');
       return j;
     },
-    // Public market list (BLOCK + BLOCK-20 tokens) with prices, for the Markets tab.
+    // Public market list for the Markets tab: BLOCK (native) always, plus any BLOCK-20 tokens
+    // with their AMM price (BLOCK-denominated). Never throws / never empty — if no tokens are
+    // listed yet, the caller shows a "launch a token" empty state rather than "unavailable".
     async markets() {
-      const j = await getJson('/api/dex/tokens');
-      const list = Array.isArray(j) ? j : (j && j.tokens) || [];
-      return list.slice(0, 50).map((t) => ({
-        symbol: t.symbol || t.ticker || t.id, name: t.name || t.symbol || '',
-        price: t.price ?? t.priceUsd ?? null, change: t.change24h ?? null, logo: t.logo || null,
-      }));
+      const rows = [{ symbol: 'BLOCK', name: 'Blockle', price: null, change: null, native: true }];
+      const [toks, pools] = await Promise.all([getJson('/api/dex/tokens'), getJson('/api/dex/pools')]);
+      const list = Array.isArray(toks)
+        ? toks
+        : (toks && typeof toks === 'object' ? Object.entries(toks).map(([id, v]) => ({ id, ...(v || {}) })) : []);
+      const priceByToken = {};
+      if (pools && Array.isArray(pools.pools)) {
+        for (const p of pools.pools) { if (p && p.token != null && p.price != null) priceByToken[p.token] = p.price; }
+      }
+      for (const t of list.slice(0, 50)) {
+        const sym = t.symbol || t.ticker || t.id;
+        rows.push({ symbol: sym, name: t.name || sym, logo: t.logo || null,
+          price: t.price ?? t.priceUsd ?? priceByToken[t.id] ?? null, change: t.change24h ?? null });
+      }
+      return rows;
     },
   };
 }

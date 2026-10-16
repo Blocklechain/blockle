@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { newBot, step, botView, mark, BOT_TYPES } from '../src/bots.js';
 
 test('bot types + param sanitization', () => {
-  assert.deepEqual(BOT_TYPES, ['dca', 'grid']);
+  assert.deepEqual(BOT_TYPES, ['dca', 'grid', 'smarttrade', 'signal']);
   const b = newBot({ id: 'b1', uid: 'u', type: 'dca', pair: 'BLOCK/USD', params: { budget: -5, buyAmount: 1e12, everyTicks: 0 }, now: 1 });
   assert.equal(b.params.budget >= 1, true);
   assert.equal(b.params.everyTicks >= 1, true);
@@ -35,6 +35,31 @@ test('a paused bot does not trade', () => {
   b.status = 'paused';
   step(b, 10); step(b, 10);
   assert.equal(b.state.trades.length, 0);
+});
+
+test('smart-trade exits at take-profit and at stop-loss', () => {
+  const tp = newBot({ id: 't', uid: 'u', type: 'smarttrade', pair: 'BLOCK/USD', params: { budget: 1000, takeProfitPct: 20, stopLossPct: 10 }, now: 1 });
+  step(tp, 10);                 // enter at 10
+  assert.equal(tp.state.entered, true);
+  const m = step(tp, 12.5);     // +25% ≥ +20% take-profit → exit in profit
+  assert.equal(tp.status, 'done');
+  assert.ok(m.pnl > 0 && tp.state.base === 0);
+
+  const sl = newBot({ id: 's', uid: 'u', type: 'smarttrade', pair: 'BLOCK/USD', params: { budget: 1000, takeProfitPct: 20, stopLossPct: 10 }, now: 1 });
+  step(sl, 10);
+  const m2 = step(sl, 8.9);     // -11% ≤ -10% stop-loss → exit at a loss
+  assert.equal(sl.status, 'done');
+  assert.ok(m2.pnl < 0 && sl.state.base === 0);
+});
+
+test('signal bot buys momentum up and sells momentum down', () => {
+  const b = newBot({ id: 'g', uid: 'u', type: 'signal', pair: 'BLOCK/USD', params: { budget: 1000, thresholdPct: 2 }, now: 1 });
+  step(b, 10);        // establishes lastPrice, no trade yet
+  step(b, 10.5);      // +5% ≥ 2% → buy
+  assert.ok(b.state.base > 0);
+  step(b, 10.0);      // -4.8% ≤ -2% → sell all
+  assert.equal(b.state.base, 0);
+  assert.ok(b.state.trades.length >= 2);
 });
 
 test('grid trades within its band and botView has the right shape', () => {
