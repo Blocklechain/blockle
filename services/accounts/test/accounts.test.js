@@ -285,6 +285,36 @@ test('wallet client: bearer-token login + backup without cookie/CSRF', async () 
   });
 });
 
+test('dashboard overview reports backup/session state; logout-all revokes everything', async () => {
+  await withServer(async ({ app, call, clock }) => {
+    await call('POST', '/account/api/register', { email: 'o@b.com', password: 'longenough1' });
+    const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'o@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+
+    let ov = await call('GET', '/account/api/overview');
+    assert.equal(ov.status, 200);
+    assert.equal(ov.data.hasBackup, false);
+    assert.ok(ov.data.sessions >= 1);
+    assert.equal(ov.data.user.email, 'o@b.com');
+
+    // enable 2FA + store a backup, then overview reflects it
+    const secret = (await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
+    await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    await call('PUT', '/account/api/backup', { ciphertext: 'blob==', meta: { device: 'extension' } }, { 'X-CSRF-Token': csrf, 'x-totp': totpCode(secret, clock.t) });
+    ov = await call('GET', '/account/api/overview');
+    assert.equal(ov.data.hasBackup, true);
+    assert.equal(ov.data.backupCount, 1);
+    assert.equal(ov.data.lastBackupDevice, 'extension');
+
+    // sign out everywhere → session is dead
+    const all = await call('POST', '/account/api/logout-all', {}, { 'X-CSRF-Token': csrf });
+    assert.equal(all.status, 200);
+    assert.equal((await call('GET', '/account/api/me')).status, 401);
+  });
+});
+
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });

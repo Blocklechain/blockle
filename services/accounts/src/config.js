@@ -9,6 +9,7 @@ export const config = {
   port: +(env.ACCOUNTS_PORT || 8930),
   host: env.ACCOUNTS_HOST || '127.0.0.1',
   dataDir: env.ACCOUNTS_DATA || '/opt/blockle/accounts-data',
+  socialDataDir: env.ACCOUNTS_SOCIAL_DATA || '/opt/blockle/social-data',
   publicOrigin: env.ACCOUNTS_ORIGIN || 'https://blockle.org',
   prod: bool(env.ACCOUNTS_PROD, false),
 

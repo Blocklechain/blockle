@@ -24,7 +24,13 @@
       $('#f').addEventListener('submit', async (e) => {
         e.preventDefault();
         const r = await api('POST', '/account/api/login', form(e.target));
-        if (r.status === 200) { location.href = r.data.user && r.data.user.onboarded ? '/account' : '/account/welcome'; return; }
+        if (r.status === 200) {
+          // honor a same-origin ?next= so sign-in returns you where you came from
+          const next = new URLSearchParams(location.search).get('next');
+          const safe = next && next.startsWith('/') && !next.startsWith('//') ? next : null;
+          location.href = safe || (r.data.user && r.data.user.onboarded ? '/account' : '/account/welcome');
+          return;
+        }
         if (r.data.error === '2fa') { $('#totpWrap').classList.remove('hidden'); show(r.data.message || 'Enter your 2FA code.', 'ok'); return; }
         show(r.data.error || 'Could not sign in.');
       });
@@ -67,32 +73,72 @@
     },
     async account() {
       const me = await api('GET', '/account/api/me');
-      if (me.status !== 200) { location.href = '/account/login'; return; }
+      if (me.status !== 200) { location.href = '/account/login?next=' + encodeURIComponent(location.pathname); return; }
       CSRF = me.data.csrf; const u = me.data.user;
-      $('#email').textContent = u.email + (u.role === 'admin' ? ' · admin' : '');
+      const ov = (await api('GET', '/account/api/overview')).data || {};
+      const social = ov.social || null;
       const plan = document.body.dataset.plan, price = document.body.dataset.price, ccy = document.body.dataset.ccy;
-      $('#subBox').innerHTML = u.sub && u.sub.active
-        ? `<p class="note">✓ ${plan} active.</p>`
-        : `<button id="sub">Upgrade to ${plan} — ${price} ${ccy}/mo</button>`;
-      const subBtn = $('#sub'); if (subBtn) subBtn.addEventListener('click', async () => {
-        const r = await api('POST', '/account/api/subscribe', {});
-        if (r.data.approveUrl) location.href = r.data.approveUrl; else show('Billing is not configured yet.');
-      });
+      const fmtk = (n) => (n == null ? '—' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n)));
+      const dt = (ms) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+
+      $('#email').textContent = u.email;
+      if (u.role === 'admin') { const b = $('#role'); b.textContent = 'admin'; b.className = 'badge admin'; b.style.display = ''; }
+
+      // headline stats
+      const stat = (n, k) => `<div class="stat"><div class="n">${n}</div><div class="k">${k}</div></div>`;
+      $('#stats').innerHTML =
+        stat(social ? social.blockUnits : '—', 'BLOCK') +
+        stat(social ? fmtk(social.karma) : '—', 'Karma') +
+        stat(u.sub && u.sub.active ? 'Pro' : 'Free', 'Plan') +
+        stat(u.totpEnabled ? 'On' : 'Off', '2FA') +
+        (u.createdAt ? stat(new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }), 'Member since') : '');
+
+      // security: 2FA
       $('#twofaBox').innerHTML = u.totpEnabled
-        ? `<p class="note">✓ Two-factor is on.</p>`
-        : `<button class="ghost" id="setup2fa">Turn on two-factor (recommended)</button><div id="setupArea"></div>`;
+        ? `<div class="statusline"><span class="on">✓ Two-factor is on</span></div>`
+        : `<div class="statusline"><span class="off">Two-factor is off</span><button class="ghost sm" id="setup2fa" style="max-width:150px">Turn on 2FA</button></div><div id="setupArea"></div>`;
       const setupBtn = $('#setup2fa'); if (setupBtn) setupBtn.addEventListener('click', async () => {
         const r = await api('POST', '/account/api/2fa/setup', {});
-        $('#setupArea').innerHTML = `<p class="note mono" style="word-break:break-all">${r.data.secret}</p>
+        $('#setupArea').innerHTML = `<p class="note mono" style="word-break:break-all">${esc(r.data.secret)}</p>
           <p class="note">Add that secret to your authenticator, then enter a code:</p>
-          <input id="code" class="mono" inputmode="numeric" placeholder="123456"><button id="en2fa">Enable</button>`;
+          <input id="code" class="mono" inputmode="numeric" placeholder="123456"><button id="en2fa" style="margin-top:8px">Enable</button>`;
         $('#en2fa').addEventListener('click', async () => {
           const er = await api('POST', '/account/api/2fa/enable', { totp: $('#code').value });
-          if (er.status === 200) { show('Two-factor enabled. Save your recovery codes: ' + er.data.recovery.join(' '), 'ok'); }
+          if (er.status === 200) show('Two-factor enabled. Save your recovery codes: ' + er.data.recovery.join(' '), 'ok');
           else show(er.data.error || 'Code did not match.');
         });
       });
-      if (u.role === 'admin') { const a = document.createElement('a'); a.href = '/account/admin'; a.textContent = 'Open admin →'; a.className = 'row'; $('.card').appendChild(a); }
+
+      // security: backup status
+      $('#backupBox').innerHTML = ov.hasBackup
+        ? `<div class="statusline"><span class="on">✓ Encrypted cloud backup — ${ov.backupCount} version${ov.backupCount === 1 ? '' : 's'}${ov.lastBackupAt ? ', last ' + dt(ov.lastBackupAt) : ''}${ov.lastBackupDevice ? ' (' + esc(ov.lastBackupDevice) + ')' : ''}</span></div>`
+        : `<div class="statusline"><span class="off">No cloud backup yet — create one from your wallet app</span></div>`;
+
+      // sessions
+      $('#sessLine').textContent = 'Active sessions: ' + (ov.sessions || 1);
+      $('#logoutAll').addEventListener('click', async () => {
+        if (!confirm('Sign out of all devices? You’ll need to sign in again everywhere.')) return;
+        await api('POST', '/account/api/logout-all', {}); location.href = '/account/login';
+      });
+
+      // plan
+      $('#subBox').innerHTML = u.sub && u.sub.active
+        ? `<div class="statusline"><span class="on">✓ ${esc(plan)} active</span></div>`
+        : `<div class="statusline"><span class="off">Free plan</span><button class="sm" id="sub" style="max-width:220px">Upgrade to ${esc(plan)} — ${esc(price)} ${esc(ccy)}/mo</button></div>`;
+      const subBtn = $('#sub'); if (subBtn) subBtn.addEventListener('click', async () => {
+        const r = await api('POST', '/account/api/subscribe', {});
+        if (r.data.approveUrl) location.href = r.data.approveUrl; else show(r.data.error || 'Billing is not configured yet.');
+      });
+
+      // quick links
+      const links = [
+        ['⬇ Download wallet', '/#download'],
+        ['◆ Social' + (social ? ' · @' + esc(social.handle) : ''), '/social'],
+        ['✉ Support', '/account/support'],
+      ];
+      if (u.role === 'admin') links.push(['🛠 Admin', '/account/admin']);
+      $('#links').innerHTML = links.map(([t, h]) => `<a href="${h}">${t}</a>`).join('');
+
       $('#logout').addEventListener('click', async () => { await api('POST', '/account/api/logout', {}); location.href = '/account/login'; });
     },
     async welcome() {
