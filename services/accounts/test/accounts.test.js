@@ -57,22 +57,22 @@ test('scrypt hash verifies and rejects', () => {
 // ---- register + verify + login -------------------------------------------------------------
 test('register emails a verify link; verify is single-use; login gated on verification', async () => {
   await withServer(async ({ app, call }) => {
-    const r = await call('POST', '/api/register', { email: 'a@b.com', password: 'longenough1' });
+    const r = await call('POST', '/account/api/register', { email: 'a@b.com', password: 'longenough1' });
     assert.equal(r.status, 200);
     const mail = app.mailer.sent.find((m) => m.to === 'a@b.com');
     assert.ok(mail, 'verification email sent');
     const token = mail.text.match(/token=([^\s]+)/)[1];
 
     // login before verify → 403
-    const pre = await call('POST', '/api/login', { email: 'a@b.com', password: 'longenough1' });
+    const pre = await call('POST', '/account/api/login', { email: 'a@b.com', password: 'longenough1' });
     assert.equal(pre.status, 403);
 
-    const v1 = await call('GET', '/api/verify?token=' + token);
+    const v1 = await call('GET', '/account/api/verify?token=' + token);
     assert.equal(v1.status, 200);
-    const v2 = await call('GET', '/api/verify?token=' + token); // reuse
+    const v2 = await call('GET', '/account/api/verify?token=' + token); // reuse
     assert.equal(v2.status, 400);
 
-    const ok = await call('POST', '/api/login', { email: 'a@b.com', password: 'longenough1' });
+    const ok = await call('POST', '/account/api/login', { email: 'a@b.com', password: 'longenough1' });
     assert.equal(ok.status, 200);
     assert.ok(ok.data.csrf);
   });
@@ -80,8 +80,8 @@ test('register emails a verify link; verify is single-use; login gated on verifi
 
 test('register never reveals existing accounts (identical response)', async () => {
   await withServer(async ({ call }) => {
-    const r1 = await call('POST', '/api/register', { email: 'dup@b.com', password: 'longenough1' });
-    const r2 = await call('POST', '/api/register', { email: 'dup@b.com', password: 'otherlong12' });
+    const r1 = await call('POST', '/account/api/register', { email: 'dup@b.com', password: 'longenough1' });
+    const r2 = await call('POST', '/account/api/register', { email: 'dup@b.com', password: 'otherlong12' });
     assert.equal(r1.status, 200); assert.equal(r2.status, 200);
     assert.deepEqual(r1.data, r2.data);
   });
@@ -90,12 +90,12 @@ test('register never reveals existing accounts (identical response)', async () =
 // ---- lockout -------------------------------------------------------------------------------
 test('account lockout engages after repeated failures', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'c@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'c@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
+    await call('GET', '/account/api/verify?token=' + token);
     let got429 = false;
     for (let i = 0; i < 12; i++) {
-      const r = await call('POST', '/api/login', { email: 'c@b.com', password: 'wrongpass123' });
+      const r = await call('POST', '/account/api/login', { email: 'c@b.com', password: 'wrongpass123' });
       if (r.status === 429) { got429 = true; break; }
     }
     assert.ok(got429, 'lockout returns 429');
@@ -105,7 +105,7 @@ test('account lockout engages after repeated failures', async () => {
 // ---- tokens stored hashed ------------------------------------------------------------------
 test('verification/reset tokens are stored only as hashes', async () => {
   await withServer(async ({ app, call, dataDir }) => {
-    await call('POST', '/api/register', { email: 'h@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'h@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
     await app.store.drain();
     const raw = readStore(dataDir, 'tokens');
@@ -117,20 +117,20 @@ test('verification/reset tokens are stored only as hashes', async () => {
 // ---- zero-knowledge backup -----------------------------------------------------------------
 test('backup stores opaque ciphertext the server cannot decrypt', async () => {
   await withServer(async ({ app, call, dataDir, clock }) => {
-    await call('POST', '/api/register', { email: 'z@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'z@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    const login = await call('POST', '/api/login', { email: 'z@b.com', password: 'longenough1' });
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'z@b.com', password: 'longenough1' });
     const csrf = login.data.csrf;
     // backup requires 2FA (fails closed) — enrol it
-    const secret = (await call('POST', '/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
-    await call('POST', '/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    const secret = (await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
+    await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
 
     const CIPHERTEXT = 'q1W2e3R4t5Y6u7I8o9P0aAsSdDfFgG_-Base64urlOpaqueBlob==';
-    const put = await call('PUT', '/api/backup', { ciphertext: CIPHERTEXT, meta: { version: 1, kdf: 'scrypt', device: 'test' } }, { 'X-CSRF-Token': csrf, 'x-totp': totpCode(secret, clock.t) });
+    const put = await call('PUT', '/account/api/backup', { ciphertext: CIPHERTEXT, meta: { version: 1, kdf: 'scrypt', device: 'test' } }, { 'X-CSRF-Token': csrf, 'x-totp': totpCode(secret, clock.t) });
     assert.equal(put.status, 200);
 
-    const get = await call('GET', '/api/backup', undefined, { 'x-totp': totpCode(secret, clock.t) });
+    const get = await call('GET', '/account/api/backup', undefined, { 'x-totp': totpCode(secret, clock.t) });
     assert.equal(get.status, 200);
     assert.equal(get.data.latest.ciphertext, CIPHERTEXT, 'returns exactly what was stored');
 
@@ -147,29 +147,29 @@ test('backup stores opaque ciphertext the server cannot decrypt', async () => {
 
 test('backup download survives a lapsed subscription', async () => {
   await withServer(async ({ app, call, clock }) => {
-    await call('POST', '/api/register', { email: 'lap@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'lap@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    const login = await call('POST', '/api/login', { email: 'lap@b.com', password: 'longenough1' });
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'lap@b.com', password: 'longenough1' });
     const csrf = login.data.csrf;
-    const secret = (await call('POST', '/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
-    await call('POST', '/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
-    await call('PUT', '/api/backup', { ciphertext: 'blobBlobBlob==', meta: {} }, { 'X-CSRF-Token': csrf, 'x-totp': totpCode(secret, clock.t) });
+    const secret = (await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
+    await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    await call('PUT', '/account/api/backup', { ciphertext: 'blobBlobBlob==', meta: {} }, { 'X-CSRF-Token': csrf, 'x-totp': totpCode(secret, clock.t) });
     // force sub inactive
     const uid = app._internal.userByEmail('lap@b.com').id;
     await app.store.update('users', uid, (u) => { u.sub = { active: false }; return u; });
-    const get = await call('GET', '/api/backup', undefined, { 'x-totp': totpCode(secret, clock.t) });
+    const get = await call('GET', '/account/api/backup', undefined, { 'x-totp': totpCode(secret, clock.t) });
     assert.equal(get.status, 200, 'backup still downloadable when plan lapsed');
   });
 });
 
 test('backup is refused without 2FA enrolled (fails closed)', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'no2fa@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'no2fa@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    const login = await call('POST', '/api/login', { email: 'no2fa@b.com', password: 'longenough1' });
-    const put = await call('PUT', '/api/backup', { ciphertext: 'abc==' }, { 'X-CSRF-Token': login.data.csrf });
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'no2fa@b.com', password: 'longenough1' });
+    const put = await call('PUT', '/account/api/backup', { ciphertext: 'abc==' }, { 'X-CSRF-Token': login.data.csrf });
     assert.equal(put.status, 403);
     assert.equal(put.data.error, '2fa_setup_required');
   });
@@ -178,11 +178,11 @@ test('backup is refused without 2FA enrolled (fails closed)', async () => {
 // ---- CSRF ----------------------------------------------------------------------------------
 test('authenticated mutation without CSRF token is rejected', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'x@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'x@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    await call('POST', '/api/login', { email: 'x@b.com', password: 'longenough1' });
-    const noCsrf = await call('PUT', '/api/backup', { ciphertext: 'abc==' }); // no X-CSRF-Token
+    await call('GET', '/account/api/verify?token=' + token);
+    await call('POST', '/account/api/login', { email: 'x@b.com', password: 'longenough1' });
+    const noCsrf = await call('PUT', '/account/api/backup', { ciphertext: 'abc==' }); // no X-CSRF-Token
     assert.equal(noCsrf.status, 403);
   });
 });
@@ -190,21 +190,21 @@ test('authenticated mutation without CSRF token is rejected', async () => {
 // ---- password reset revokes sessions -------------------------------------------------------
 test('reset changes password and revokes all sessions', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'r@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'r@b.com', password: 'longenough1' });
     const vtok = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + vtok);
-    await call('POST', '/api/login', { email: 'r@b.com', password: 'longenough1' });
-    const meBefore = await call('GET', '/api/me');
+    await call('GET', '/account/api/verify?token=' + vtok);
+    await call('POST', '/account/api/login', { email: 'r@b.com', password: 'longenough1' });
+    const meBefore = await call('GET', '/account/api/me');
     assert.equal(meBefore.status, 200);
 
-    await call('POST', '/api/request-reset', { email: 'r@b.com' });
+    await call('POST', '/account/api/request-reset', { email: 'r@b.com' });
     const rtok = app.mailer.sent.find((m) => /Reset/.test(m.subject)).text.match(/token=([^\s]+)/)[1];
-    const done = await call('POST', '/api/reset', { token: rtok, password: 'brandnewpass1' });
+    const done = await call('POST', '/account/api/reset', { token: rtok, password: 'brandnewpass1' });
     assert.equal(done.status, 200);
 
-    const meAfter = await call('GET', '/api/me');
+    const meAfter = await call('GET', '/account/api/me');
     assert.equal(meAfter.status, 401, 'old session revoked');
-    const relog = await call('POST', '/api/login', { email: 'r@b.com', password: 'brandnewpass1' });
+    const relog = await call('POST', '/account/api/login', { email: 'r@b.com', password: 'brandnewpass1' });
     assert.equal(relog.status, 200);
   });
 });
@@ -212,24 +212,24 @@ test('reset changes password and revokes all sessions', async () => {
 // ---- entitlement only via verified webhook -------------------------------------------------
 test('entitlement flips only on a verified webhook, and is idempotent', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'pay@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'pay@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    await call('POST', '/api/login', { email: 'pay@b.com', password: 'longenough1' });
+    await call('GET', '/account/api/verify?token=' + token);
+    await call('POST', '/account/api/login', { email: 'pay@b.com', password: 'longenough1' });
     const uid = app._internal.userByEmail('pay@b.com').id;
 
     const event = { id: 'EVT-1', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-9', custom_id: uid } };
     // unverified → rejected, no entitlement
-    const bad = await call('POST', '/api/paypal/webhook', event);
+    const bad = await call('POST', '/account/api/paypal/webhook', event);
     assert.equal(bad.status, 400);
     assert.equal(app.store.get('users', uid).sub.active, false);
     // verified → entitlement on
-    const good = await call('POST', '/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
+    const good = await call('POST', '/account/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
     assert.equal(good.status, 200);
     await app.store.drain();
     assert.equal(app.store.get('users', uid).sub.active, true);
     // duplicate event id → idempotent no-op
-    const dup = await call('POST', '/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
+    const dup = await call('POST', '/account/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
     assert.equal(dup.data.dup, true);
   });
 });
@@ -237,20 +237,20 @@ test('entitlement flips only on a verified webhook, and is idempotent', async ()
 // ---- admin is hidden (404 to non-admins) ---------------------------------------------------
 test('admin endpoints 404 for non-admins, work for the seeded admin', async () => {
   await withServer(async ({ app, call }) => {
-    await call('POST', '/api/register', { email: 'u@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 'u@b.com', password: 'longenough1' });
     const token = app.mailer.sent.find((m) => m.to === 'u@b.com').text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    await call('POST', '/api/login', { email: 'u@b.com', password: 'longenough1' });
-    const asUser = await call('GET', '/api/admin/stats');
+    await call('GET', '/account/api/verify?token=' + token);
+    await call('POST', '/account/api/login', { email: 'u@b.com', password: 'longenough1' });
+    const asUser = await call('GET', '/account/api/admin/stats');
     assert.equal(asUser.status, 404, 'hidden from normal users');
 
-    await call('POST', '/api/logout', {});
-    const asAnon = await call('GET', '/api/admin/stats'); // unauthenticated must also 404, not 401
+    await call('POST', '/account/api/logout', {});
+    const asAnon = await call('GET', '/account/api/admin/stats'); // unauthenticated must also 404, not 401
     assert.equal(asAnon.status, 404, 'admin routes indistinguishable from nonexistent to anon');
 
-    const adminLogin = await call('POST', '/api/login', { email: 'admin@example.test', password: 'test-admin-passphrase-123' });
+    const adminLogin = await call('POST', '/account/api/login', { email: 'admin@example.test', password: 'test-admin-passphrase-123' });
     assert.equal(adminLogin.status, 200);
-    const asAdmin = await call('GET', '/api/admin/stats');
+    const asAdmin = await call('GET', '/account/api/admin/stats');
     assert.equal(asAdmin.status, 200);
     assert.equal(typeof asAdmin.data.users, 'number');
   });
@@ -259,22 +259,22 @@ test('admin endpoints 404 for non-admins, work for the seeded admin', async () =
 // ---- TOTP end to end -----------------------------------------------------------------------
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
-    await call('POST', '/api/register', { email: 't@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });
     const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
-    await call('GET', '/api/verify?token=' + token);
-    const login = await call('POST', '/api/login', { email: 't@b.com', password: 'longenough1' });
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 't@b.com', password: 'longenough1' });
     const csrf = login.data.csrf;
-    const setup = await call('POST', '/api/2fa/setup', {}, { 'X-CSRF-Token': csrf });
+    const setup = await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf });
     const secret = setup.data.secret;
-    const en = await call('POST', '/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    const en = await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
     assert.equal(en.status, 200);
     assert.ok(Array.isArray(en.data.recovery) && en.data.recovery.length === 10);
 
-    await call('POST', '/api/logout', {}, { 'X-CSRF-Token': csrf });
-    const noCode = await call('POST', '/api/login', { email: 't@b.com', password: 'longenough1' });
+    await call('POST', '/account/api/logout', {}, { 'X-CSRF-Token': csrf });
+    const noCode = await call('POST', '/account/api/login', { email: 't@b.com', password: 'longenough1' });
     assert.equal(noCode.status, 401);
     assert.equal(noCode.data.error, '2fa');
-    const withCode = await call('POST', '/api/login', { email: 't@b.com', password: 'longenough1', totp: totpCode(secret, clock.t) });
+    const withCode = await call('POST', '/account/api/login', { email: 't@b.com', password: 'longenough1', totp: totpCode(secret, clock.t) });
     assert.equal(withCode.status, 200);
   });
 });

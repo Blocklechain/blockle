@@ -90,14 +90,14 @@ export function createApp(overrides = {}) {
   }
   const publicUser = (u) => u && ({
     id: u.id, email: u.email, verified: u.verified, role: u.role,
-    totpEnabled: !!u.totpEnabled, sub: u.sub || { active: false },
+    totpEnabled: !!u.totpEnabled, sub: u.sub || { active: false }, onboarded: !!u.onboarded,
   });
 
   // --- handlers -----------------------------------------------------------------------------
   const routes = [];
   const on = (method, re, fn) => routes.push({ method, re, fn });
 
-  on('POST', /^\/api\/register$/, async (req, res) => {
+  on('POST', /^\/account\/api\/register$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
     if (!loginIpRl.allow('reg:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 64 * 1024);
@@ -126,7 +126,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, message: 'If that email is new, a verification link is on its way.' });
   });
 
-  on('GET', /^\/api\/verify$/, async (req, res, url) => {
+  on('GET', /^\/account\/api\/verify$/, async (req, res, url) => {
     const token = url.searchParams.get('token') || '';
     const rec = store.get('tokens', sha256(token));
     if (!rec || rec.type !== 'verify' || rec.exp < now()) return json(res, 400, { error: 'Invalid or expired link.' });
@@ -135,7 +135,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   });
 
-  on('POST', /^\/api\/login$/, async (req, res) => {
+  on('POST', /^\/account\/api\/login$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
     const ip = clientIp(req);
     if (loginIpRl.lockedFor('ip:' + ip) || !loginIpRl.allow('login:' + ip)) return json(res, 429, { error: 'Too many attempts. Try again later.' });
@@ -174,21 +174,26 @@ export function createApp(overrides = {}) {
     return consumed;
   }
 
-  on('POST', /^\/api\/logout$/, async (req, res) => {
+  on('POST', /^\/account\/api\/logout$/, async (req, res) => {
     const sess = await currentSession(req);
     if (sess && requireCsrf(req, sess)) await sessions.destroy(sess.id);
     clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     return json(res, 200, { ok: true });
   });
 
-  on('GET', /^\/api\/me$/, async (req, res) => {
+  on('POST', /^\/account\/api\/onboarded$/, authed(async (req, res, { u }) => {
+    await store.update('users', u.id, (x) => { if (x) x.onboarded = true; return x; });
+    return json(res, 200, { ok: true });
+  }));
+
+  on('GET', /^\/account\/api\/me$/, async (req, res) => {
     const sess = await currentSession(req);
     if (!sess) return json(res, 401, { error: 'auth' });
     const u = store.get('users', sess.uid);
     return json(res, 200, { user: publicUser(u), csrf: sess.csrf });
   });
 
-  on('POST', /^\/api\/request-reset$/, async (req, res) => {
+  on('POST', /^\/account\/api\/request-reset$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
     if (!loginIpRl.allow('reset:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 64 * 1024);
@@ -205,7 +210,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, message: 'If that account exists, a reset link is on its way.' });
   });
 
-  on('POST', /^\/api\/reset$/, async (req, res) => {
+  on('POST', /^\/account\/api\/reset$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
     const b = await readJson(req, 64 * 1024);
     const token = String(b.token || '');
@@ -220,13 +225,13 @@ export function createApp(overrides = {}) {
   });
 
   // --- 2FA ----------------------------------------------------------------------------------
-  on('POST', /^\/api\/2fa\/setup$/, authed(async (req, res, { sess, u }) => {
+  on('POST', /^\/account\/api\/2fa\/setup$/, authed(async (req, res, { sess, u }) => {
     const secret = totpSecret();
     await store.update('users', u.id, (x) => { if (x) x.pendingTotp = secret; return x; });
     return json(res, 200, { secret, uri: totpUri(secret, u.email) });
   }));
 
-  on('POST', /^\/api\/2fa\/enable$/, authed(async (req, res, { u }) => {
+  on('POST', /^\/account\/api\/2fa\/enable$/, authed(async (req, res, { u }) => {
     const b = await readJson(req, 16 * 1024);
     const secret = u.pendingTotp;
     if (!secret || !totpVerify(secret, String(b.totp || ''), now())) return json(res, 400, { error: 'Code did not match. Try again.' });
@@ -239,7 +244,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, recovery });
   }));
 
-  on('POST', /^\/api\/2fa\/disable$/, authed(async (req, res, { u }) => {
+  on('POST', /^\/account\/api\/2fa\/disable$/, authed(async (req, res, { u }) => {
     const b = await readJson(req, 16 * 1024);
     if (!verifyPassword(String(b.password || ''), u.pwHash)) return json(res, 401, { error: 'Password is incorrect.' });
     await store.update('users', u.id, (x) => { if (x) { x.totpEnabled = false; x.totpSecret = null; x.recoveryHashes = []; } return x; });
@@ -256,7 +261,7 @@ export function createApp(overrides = {}) {
     return totpVerify(u.totpSecret, String(req.headers['x-totp'] || ''), now());
   }
 
-  on('PUT', /^\/api\/backup$/, authed(async (req, res, { u }) => {
+  on('PUT', /^\/account\/api\/backup$/, authed(async (req, res, { u }) => {
     if (!require2fa(req, u)) return json(res, 403, u.totpEnabled
       ? { error: '2fa', message: 'Enter your 2FA code.' }
       : { error: '2fa_setup_required', message: 'Enable two-factor authentication to use encrypted backup.' });
@@ -274,7 +279,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   }));
 
-  on('GET', /^\/api\/backup$/, authed(async (req, res, { u }) => {
+  on('GET', /^\/account\/api\/backup$/, authed(async (req, res, { u }) => {
     if (!require2fa(req, u)) return json(res, 403, u.totpEnabled
       ? { error: '2fa', message: 'Enter your 2FA code.' }
       : { error: '2fa_setup_required', message: 'Enable two-factor authentication to use encrypted backup.' });
@@ -283,7 +288,7 @@ export function createApp(overrides = {}) {
     return json(res, 200, { latest: rec.versions[0], versions: rec.versions.map((v, i) => ({ i, meta: v.meta, createdAt: v.createdAt })) });
   }));
 
-  on('DELETE', /^\/api\/backup$/, authed(async (req, res, { u }) => {
+  on('DELETE', /^\/account\/api\/backup$/, authed(async (req, res, { u }) => {
     if (!require2fa(req, u)) return json(res, 403, u.totpEnabled
       ? { error: '2fa', message: 'Enter your 2FA code.' }
       : { error: '2fa_setup_required', message: 'Enable two-factor authentication to use encrypted backup.' });
@@ -292,7 +297,7 @@ export function createApp(overrides = {}) {
   }));
 
   // --- paid tier ----------------------------------------------------------------------------
-  on('POST', /^\/api\/subscribe$/, authed(async (req, res, { u }) => {
+  on('POST', /^\/account\/api\/subscribe$/, authed(async (req, res, { u }) => {
     if (paypal.disabled) return json(res, 503, { error: 'Billing is not configured yet.' });
     try {
       const sub = await paypal.createSubscription(u.id,
@@ -302,7 +307,7 @@ export function createApp(overrides = {}) {
   }));
 
   // Entitlement changes ONLY here, and only after the webhook signature verifies.
-  on('POST', /^\/api\/paypal\/webhook$/, async (req, res) => {
+  on('POST', /^\/account\/api\/paypal\/webhook$/, async (req, res) => {
     const raw = (await readBody(req, 512 * 1024)).toString('utf8');
     let verified = false;
     try { verified = await paypal.verifyWebhook(req.headers, raw); } catch { verified = false; }
@@ -328,7 +333,7 @@ export function createApp(overrides = {}) {
   });
 
   // --- support tickets ----------------------------------------------------------------------
-  on('POST', /^\/api\/tickets$/, async (req, res) => {
+  on('POST', /^\/account\/api\/tickets$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
     if (!loginIpRl.allow('ticket:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 64 * 1024);
@@ -348,7 +353,7 @@ export function createApp(overrides = {}) {
   });
 
   // --- admin (role-gated) -------------------------------------------------------------------
-  on('GET', /^\/api\/admin\/stats$/, adminOnly((req, res) => {
+  on('GET', /^\/account\/api\/admin\/stats$/, adminOnly((req, res) => {
     const users = store.all('users');
     const tickets = store.all('tickets');
     return json(res, 200, {
@@ -361,11 +366,11 @@ export function createApp(overrides = {}) {
     });
   }));
 
-  on('GET', /^\/api\/admin\/tickets$/, adminOnly((req, res) => {
+  on('GET', /^\/account\/api\/admin\/tickets$/, adminOnly((req, res) => {
     return json(res, 200, { tickets: store.all('tickets').sort((a, b) => b.createdAt - a.createdAt) });
   }));
 
-  on('POST', /^\/api\/admin\/ticket-reply$/, adminOnly(async (req, res) => {
+  on('POST', /^\/account\/api\/admin\/ticket-reply$/, adminOnly(async (req, res) => {
     const b = await readJson(req, 64 * 1024);
     const t = store.get('tickets', String(b.id || ''));
     if (!t) return json(res, 404, { error: 'no ticket' });
@@ -405,7 +410,7 @@ export function createApp(overrides = {}) {
   const pageRoutes = {
     '/account/login': 'login', '/account/register': 'register', '/account': 'account',
     '/account/verify': 'verify', '/account/reset': 'reset', '/account/forgot': 'forgot',
-    '/account/support': 'support', '/account/admin': 'admin',
+    '/account/support': 'support', '/account/admin': 'admin', '/account/welcome': 'welcome',
   };
 
   const server = http.createServer(async (req, res) => {

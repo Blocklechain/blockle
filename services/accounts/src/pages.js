@@ -30,6 +30,12 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .admin{max-width:960px}.ticket{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;background:var(--bg)}
 iframe{width:100%;height:520px;border:1px solid var(--line);border-radius:10px;margin-top:14px;background:#fff}
 .hidden{display:none}
+.dots{display:flex;gap:7px;justify-content:center;margin-bottom:20px}
+.dots i{width:7px;height:7px;border-radius:50%;background:var(--line);transition:background .2s}
+.dots i.on{background:var(--accent)}
+.slide h2{font-size:22px;margin:0 0 10px;text-wrap:balance}
+.slide .ico{font-size:40px;margin-bottom:10px}
+.slide p{color:var(--mut);margin:0;font-size:15px;line-height:1.6}
 `;
 
 function shell(page, title, bodyHtml, cfg) {
@@ -93,10 +99,20 @@ const BODIES = {
 <h1 style="font-size:16px;margin-top:22px">Tickets</h1>
 <div id="tickets"></div>${msg}
 <button class="ghost" id="logout" style="max-width:160px">Sign out</button></div>`,
+
+  welcome: () => `<div class="card" style="max-width:520px">${brand}
+<div id="tour">
+  <div class="dots" id="dots"></div>
+  <div id="slide"></div>
+  <div class="row" style="margin-top:22px">
+    <button class="ghost" id="back" style="max-width:110px">Back</button>
+    <button id="next" style="max-width:160px">Next</button>
+  </div>
+</div>${msg}</div>`,
 };
 
 const TITLES = { login: 'Sign in', register: 'Create account', forgot: 'Reset', reset: 'Reset',
-  verify: 'Verify', support: 'Support', account: 'Account', admin: 'Admin' };
+  verify: 'Verify', support: 'Support', account: 'Account', admin: 'Admin', welcome: 'Welcome' };
 
 export function renderPage(name, cfg) {
   const body = (BODIES[name] || BODIES.login)();
