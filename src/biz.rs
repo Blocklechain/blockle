@@ -1471,7 +1471,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <nav class="top"><a href="#product">Product</a><a href="#bots">Bots</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
-<a class="btn btn-ghost" href="/account/login">Sign in</a>
+<a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
 <a class="btn btn-primary" href="#download">Get the wallet</a>
 </div></header>
 <main>
@@ -1551,7 +1551,9 @@ function go(sc){if(sc.hold){var f=stage.querySelector(".fill");if(f){setTimeout(
 function schedule(ms){if(reduce)return;setTimeout(function(){si=(si+1)%scenes.length;typeScene()},ms)}
 function typeScene(){var sc=scenes[si],s=sc.cmd,i=0;typed.textContent="";stage.innerHTML="";if(reduce){typed.textContent=s;stage.innerHTML=sc.render();go(sc);return}(function tick(){if(i<=s.length){typed.textContent=s.slice(0,i++);setTimeout(tick,42+Math.random()*40)}else{setTimeout(function(){stage.innerHTML=sc.render();go(sc)},340)}})()}
 typeScene()}})();
-</script></body></html>"##.to_string()
+</script>
+<script>(function(){try{fetch("/account/api/me",{credentials:"include"}).then(function(r){return r.json()}).then(function(d){if(d&&d.user){var a=document.getElementById("nav-auth");if(a){a.textContent="Dashboard";a.setAttribute("href","/account");a.title=d.user.email;}}}).catch(function(){})}catch(e){}})();</script>
+</body></html>"##.to_string()
 }
 
 fn page_network(reg: &Registry) -> String {

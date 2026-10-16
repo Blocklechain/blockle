@@ -10,7 +10,19 @@ const CSS = `
 .wrap{min-height:100vh;display:grid;place-items:center;padding:32px}
 .card{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:28px}
 .brand{display:flex;align-items:center;gap:9px;margin-bottom:18px;font-weight:700;letter-spacing:.2px}
-.brand b{color:var(--accent)}
+.brand{text-decoration:none;color:var(--ink)}.brand b{color:var(--accent)}
+.brand .logo{width:22px;height:22px;vertical-align:middle;margin-right:7px;border-radius:6px;object-fit:contain}
+.card.dash{max-width:560px}
+.dhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.badge{font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:6px;border:1px solid var(--line);color:var(--mut)}
+.badge.admin{color:var(--accent);border-color:var(--accent)}
+.sec{border-top:1px solid var(--line);margin-top:18px;padding-top:16px}
+.sec h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:0 0 12px}
+.links{display:flex;flex-wrap:wrap;gap:8px}
+.links a{display:inline-flex;align-items:center;gap:6px;padding:9px 13px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font-size:14px;text-decoration:none}
+.links a:hover{border-color:var(--accent);color:var(--accent)}
+.statusline{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;margin:8px 0}
+.statusline .on{color:var(--gain)}.statusline .off{color:var(--mut)}
 h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
 label{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:14px 0 6px}
 input{width:100%;padding:11px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}
@@ -47,7 +59,7 @@ function shell(page, title, bodyHtml, cfg) {
 <script src="/account/app.js"></script></body></html>`;
 }
 
-const brand = `<div class="brand"><span>◆ <b>Blockle</b></span></div>`;
+const brand = `<a class="brand" href="/"><img class="logo" src="/logo-mark.png" alt=""><b>Blockle</b></a>`;
 const msg = `<div class="msg" id="msg"></div>`;
 
 const BODIES = {
@@ -84,13 +96,16 @@ const BODIES = {
 <label>Message</label><input name="body" required>
 <button type="submit">Send</button></form>${msg}</div>`,
 
-  account: () => `<div class="card">${brand}<h1 id="hi">Your account</h1><p class="sub" id="email"></p>
+  account: () => `<div class="card dash">
+<div class="dhead">${brand}<span class="badge" id="role" style="display:none"></span></div>
+<h1 id="hi">Your account</h1><p class="sub" id="email"></p>
 <div class="grid" id="stats"></div>
-<div id="subBox"></div>
-<div id="twofaBox"></div>
-<p class="note" id="backupNote">Encrypted wallet backup is managed from inside the Blockle wallet app — it encrypts your vault on your device with a backup passphrase and uploads only ciphertext we can't read.</p>
-<button class="ghost" id="logout">Sign out</button>${msg}
-<div class="row"><a href="/account/support">Support</a><a href="/">blockle.org</a></div></div>`,
+<div class="sec"><h2>Security</h2><div id="twofaBox"></div><div id="backupBox"></div>
+  <div class="statusline"><span id="sessLine" class="off">Active sessions: —</span><button class="ghost sm" id="logoutAll" style="max-width:170px">Sign out everywhere</button></div></div>
+<div class="sec"><h2>Plan</h2><div id="subBox"></div></div>
+<div class="sec"><h2>Quick links</h2><div class="links" id="links"></div></div>
+<button class="ghost" id="logout" style="margin-top:18px">Sign out</button>${msg}
+<div class="row"><a href="/">← blockle.org</a><a href="/account/support">Support</a></div></div>`,
 
   admin: () => `<div class="card admin">${brand}<h1>Admin</h1><p class="sub" id="who"></p>
 <div class="grid" id="stats"></div>

@@ -93,9 +93,18 @@ export function createApp(overrides = {}) {
     return sessions.checkCsrf(sess, token);
   }
   const publicUser = (u) => u && ({
-    id: u.id, email: u.email, verified: u.verified, role: u.role,
+    id: u.id, email: u.email, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
     totpEnabled: !!u.totpEnabled, sub: u.sub || { active: false }, onboarded: !!u.onboarded,
   });
+
+  // Best-effort read of the user's social profile (handle/karma/BLOCK) from the social store.
+  function socialProfile(uid) {
+    try {
+      const raw = fs.readFileSync(path.join(cfg.socialDataDir, 'profiles.json'), 'utf8');
+      const p = JSON.parse(raw)[uid];
+      return p ? { handle: p.handle, karma: p.karma, blockUnits: p.blockUnits } : null;
+    } catch { return null; }
+  }
 
   // --- handlers -----------------------------------------------------------------------------
   const routes = [];
@@ -200,6 +209,29 @@ export function createApp(overrides = {}) {
     const u = store.get('users', sess.uid);
     return json(res, 200, { user: publicUser(u), csrf: sess.csrf });
   });
+
+  // Dashboard overview — non-secret account facts. Reveals backup COUNT/time (never ciphertext),
+  // active-session count, and the linked social profile. Powers the expanded dashboard.
+  on('GET', /^\/account\/api\/overview$/, authed(async (req, res, { u }) => {
+    const bk = store.get('backups', u.id);
+    const sessionCount = store.entries('sessions').filter(([, r]) => r.uid === u.id).length;
+    return json(res, 200, {
+      user: publicUser(u),
+      hasBackup: !!(bk && bk.versions && bk.versions.length),
+      backupCount: bk && bk.versions ? bk.versions.length : 0,
+      lastBackupAt: bk && bk.versions && bk.versions[0] ? bk.versions[0].createdAt : null,
+      lastBackupDevice: bk && bk.versions && bk.versions[0] && bk.versions[0].meta ? (bk.versions[0].meta.device || bk.versions[0].meta.app || null) : null,
+      sessions: sessionCount,
+      social: socialProfile(u.id),
+    });
+  }));
+
+  // Sign out of every device (revoke all sessions for this user).
+  on('POST', /^\/account\/api\/logout-all$/, authed(async (req, res, { u }) => {
+    await sessions.destroyAllForUser(u.id);
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    return json(res, 200, { ok: true });
+  }));
 
   on('POST', /^\/account\/api\/request-reset$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
