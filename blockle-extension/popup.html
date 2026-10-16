@@ -315,6 +315,8 @@
           <div class="row-btns">
             <button class="btn ghost" id="export-wallet">Export wallet file</button>
             <button class="btn ghost" id="export-keys">Export keys &amp; seed</button>
+            <button class="btn ghost" id="cloud-backup">Encrypted cloud backup</button>
+            <button class="btn ghost" id="cloud-restore">Restore from backup</button>
             <button class="btn ghost" id="lock-now">Lock now</button>
           </div>
           <button class="btn danger" id="reset-wallet">Reset wallet</button>
@@ -575,6 +577,9 @@
     <!-- Wallet export (seed/WIF/EVM/Solana keys + Core importwallet dump), gated -->
     <script src="wallet-export.js"></script>
     <script src="export-ui.js"></script>
+    <script src="backup-crypto.js"></script>
+    <script src="backup-client.js"></script>
+    <script src="backup-ui.js"></script>
     <script src="walletconnect.js"></script>
     <script src="wc-relay.js"></script>
     <script src="wallet-ui.js"></script>

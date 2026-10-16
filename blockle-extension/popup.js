@@ -148,6 +148,41 @@
     return wrap;
   }
 
+  // Encrypted cloud backup / restore form. Resolves with the entered values, or null on cancel.
+  function backupSheet(mode) {
+    const isRestore = mode === 'restore';
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'wallet-root';
+      wrap.style.position = 'fixed'; wrap.style.inset = '0'; wrap.style.zIndex = '2000';
+      const inp = (id, ph, type) => '<input id="' + id + '" placeholder="' + ph + '" type="' + type + '" autocomplete="off" style="width:100%;margin:6px 0;padding:10px;border-radius:9px;border:1px solid var(--line,#1e2838);background:var(--bg,#0b0e14);color:inherit">';
+      wrap.innerHTML =
+        '<div class="wscrim"></div>' +
+        '<div class="wsheet card" role="dialog" aria-modal="true">' +
+          '<h3>' + (isRestore ? 'Restore from backup' : 'Encrypted cloud backup') + '</h3>' +
+          '<div class="wnote">Signs in to your Blockle account and ' + (isRestore ? 'downloads your encrypted vault' : 'uploads your vault encrypted with a backup passphrase') + '. Self-custody: the server only stores ciphertext it can’t read. Support will never ask for your backup passphrase.</div>' +
+          inp('bk-email', 'Blockle account email', 'email') +
+          inp('bk-pw', 'Account password', 'password') +
+          inp('bk-totp', '2FA code (6 digits)', 'text') +
+          inp('bk-pass', 'Backup passphrase', 'password') +
+          (isRestore ? inp('bk-newpw', 'New password for this device', 'password') : '') +
+          '<div class="wsheet-actions">' +
+            '<button class="wbtn" data-act="cancel">Cancel</button>' +
+            '<button class="wbtn primary" data-act="ok">' + (isRestore ? 'Restore' : 'Back up now') + '</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(wrap);
+      const val = (id) => (wrap.querySelector('#' + id) || {}).value || '';
+      const done = (v) => { wrap.remove(); resolve(v); };
+      wrap.querySelector('.wscrim').addEventListener('click', () => done(null));
+      wrap.querySelector('[data-act="cancel"]').addEventListener('click', () => done(null));
+      wrap.querySelector('[data-act="ok"]').addEventListener('click', () => done({
+        email: val('bk-email').trim(), password: val('bk-pw'), totp: val('bk-totp').trim(),
+        passphrase: val('bk-pass'), newPassword: val('bk-newpw'),
+      }));
+    });
+  }
+
   function downloadText(filename, text) {
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -519,6 +554,34 @@
         onBlocked: (r) => toast(r && r.reason === 'locked' ? 'Unlock your wallet to export keys' : 'Export cancelled'),
       });
       if (res && res.ok) toast('Keys exported — keep them private and offline');
+    });
+    // Encrypted cloud backup — vault is encrypted on-device under a backup passphrase; only
+    // ciphertext is uploaded to your Blockle account (the server can never read it).
+    const cloudBackupBtn = $('#cloud-backup');
+    if (cloudBackupBtn) cloudBackupBtn.addEventListener('click', async () => {
+      if (!window.WalletBackupUI) return toast('Backup unavailable');
+      if (!Wallet.isUnlocked()) return toast('Unlock your wallet to back up');
+      const v = await backupSheet('backup');
+      if (!v) return;
+      if (!v.email || !v.password || !v.passphrase) return toast('Fill in email, password and a backup passphrase');
+      toast('Encrypting & uploading…');
+      try {
+        const res = await WalletBackupUI.backup({ email: v.email, password: v.password, totp: v.totp, passphrase: v.passphrase, device: 'extension' });
+        toast(res && res.ok ? 'Backed up — encrypted, we can’t read it' : 'Backup failed: ' + ((res && res.reason) || 'error'));
+      } catch (e) { toast('Backup failed: ' + (e && e.message ? e.message : e)); }
+    });
+    const cloudRestoreBtn = $('#cloud-restore');
+    if (cloudRestoreBtn) cloudRestoreBtn.addEventListener('click', async () => {
+      if (!window.WalletBackupUI) return toast('Backup unavailable');
+      const v = await backupSheet('restore');
+      if (!v) return;
+      if (!v.email || !v.password || !v.passphrase || !v.newPassword) return toast('Fill in all fields');
+      toast('Downloading & decrypting…');
+      try {
+        const res = await WalletBackupUI.restore({ email: v.email, password: v.password, totp: v.totp, passphrase: v.passphrase, newPassword: v.newPassword });
+        if (res && res.ok) { toast('Wallet restored'); setTimeout(() => location.reload(), 900); }
+        else toast('Restore failed: ' + (res && res.reason === 'bad-passphrase' ? 'wrong backup passphrase' : (res && res.reason) || 'error'));
+      } catch (e) { toast('Restore failed: ' + (e && e.message ? e.message : e)); }
     });
     $('#lock-now').addEventListener('click', async () => {
       await doLock();

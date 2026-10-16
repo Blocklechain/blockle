@@ -218,6 +218,39 @@
       return Signer.buildPoolSwapSell(session.secret, session.pub, utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice);
     },
 
+    // --- encrypted cloud backup --------------------------------------------
+
+    // Platform-neutral backup payload for the active (unlocked) wallet. This is the plaintext
+    // that backup-crypto.js encrypts under the user's SEPARATE backup passphrase before upload;
+    // the server only ever sees the opaque ciphertext. Requires the vault to be unlocked.
+    async backupPayload() {
+      if (!session.secret) return null; // locked
+      const rec = (await allWallets()).find((w) => w.id === session.id);
+      return {
+        v: 2, scheme: 'ML-DSA-44',
+        address: session.address, public: session.pub, secret: session.secret, seed: session.seed,
+        label: rec && rec.label,
+      };
+    },
+
+    // Restore a wallet from a decrypted backup payload, re-sealing its secrets under a NEW local
+    // password you set on this device. Appends + selects it; never overwrites an existing wallet.
+    async restoreFromPayload(payload, newPassword, label) {
+      if (!payload || !payload.secret || !payload.public) throw new Error('invalid backup payload');
+      const crypto_ = await Vault.seal(
+        { secret: payload.secret, public: payload.public, seed: payload.seed || null }, newPassword);
+      const list = await allWallets();
+      const rec = {
+        id: rid(), label: label || payload.label || 'Restored wallet',
+        format: 'blockle-wallet', version: 2, scheme: payload.scheme || 'ML-DSA-44',
+        address: payload.address, publicKey: payload.public, crypto: crypto_,
+      };
+      list.push(rec);
+      await saveWallets(list);
+      await Store.set({ selectedId: rec.id });
+      return { id: rec.id, address: rec.address };
+    },
+
     // --- import / export ---------------------------------------------------
 
     // Export the active wallet's sealed record.
