@@ -11,6 +11,8 @@ export const config = {
   dataDir: env.ACCOUNTS_DATA || '/opt/blockle/accounts-data',
   socialDataDir: env.ACCOUNTS_SOCIAL_DATA || '/opt/blockle/social-data',
   publicOrigin: env.ACCOUNTS_ORIGIN || 'https://blockle.org',
+  chainApiBase: env.ACCOUNTS_CHAIN_API || env.ACCOUNTS_ORIGIN || 'https://blockle.org',
+  botStepMs: +(env.ACCOUNTS_BOT_STEP_MS || 60 * 1000),
   prod: bool(env.ACCOUNTS_PROD, false),
 
   // Cookies: Secure in prod, SameSite=Lax, httpOnly always.

@@ -7,11 +7,12 @@ import { createApp } from '../src/server.js';
 import { hashPassword, verifyPassword, totpCode } from '../src/crypto.js';
 
 // ---- harness: live server + a cookie jar + a mutable clock ---------------------------------
-function freshApp() {
+function freshApp(extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blk-acct-'));
   const clock = { t: 1_700_000_000_000 };
   const app = createApp({
     now: () => clock.t,
+    ...extra,
     config: {
       dataDir, prod: false, cookieSecure: false, mailTransport: 'stub', paypalEnv: 'stub',
       publicOrigin: 'http://127.0.0.1', adminEmail: 'admin@example.test', adminPassword: 'test-admin-passphrase-123',
@@ -21,8 +22,8 @@ function freshApp() {
   return { app, dataDir, clock };
 }
 
-async function withServer(fn) {
-  const { app, dataDir, clock } = freshApp();
+async function withServer(fn, extra = {}) {
+  const { app, dataDir, clock } = freshApp(extra);
   await app.ensureAdmin();
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const port = app.server.address().port;
@@ -413,6 +414,48 @@ test('recovery codes can be regenerated with a valid 2FA code, not without', asy
     assert.equal(regen.data.recovery.length, 10);
     assert.notDeepEqual(regen.data.recovery, firstSet, 'a fresh set is issued');
   });
+});
+
+test('dashboard: non-custodial vault balance (read-only), broadcast relay, markets, paper bots', async () => {
+  const chain = {
+    stub: true,
+    async balance(addr) { return { address: addr, balance: 42.5, tokens: [{ symbol: 'TKN', amount: 10 }] }; },
+    async broadcast(rawtx) { chain._bx = rawtx; return { txid: 'deadbeef' }; },
+    async markets() { return [{ symbol: 'BLOCK', price: 2.5 }, { symbol: 'MEME', price: 0.01 }]; },
+  };
+  await withServer(async ({ app, call }) => {
+    await call('POST', '/account/api/register', { email: 'dash@b.com', password: 'longenough1' });
+    const tok = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + tok);
+    const csrf = (await call('POST', '/account/api/login', { email: 'dash@b.com', password: 'longenough1' })).data.csrf;
+    const uid = app._internal.userByEmail('dash@b.com').id;
+
+    // no linked address until a backup carries one
+    assert.equal((await call('GET', '/account/api/vault/balance')).data.address, null);
+    await app.store.put('backups', uid, { versions: [{ ciphertext: 'blob==', meta: { address: 'block1qtest' }, createdAt: 1 }] });
+    const bal = await call('GET', '/account/api/vault/balance');
+    assert.equal(bal.data.address, 'block1qtest');
+    assert.equal(bal.data.balance, 42.5);
+
+    // broadcast relays the opaque client-signed tx verbatim (server never signs)
+    const bx = await call('POST', '/account/api/vault/broadcast', { rawtx: 'AQID_signed==' }, { 'X-CSRF-Token': csrf });
+    assert.equal(bx.status, 200); assert.equal(bx.data.result.txid, 'deadbeef');
+    assert.equal(chain._bx, 'AQID_signed==');
+
+    // markets
+    const mk = await call('GET', '/account/api/markets');
+    assert.equal(mk.data.markets.length, 2);
+    assert.equal(mk.data.markets[0].symbol, 'BLOCK');
+
+    // paper bots CRUD
+    const create = await call('POST', '/account/api/bots', { type: 'dca', pair: 'BLOCK/USD', params: { budget: 300, buyAmount: 100, everyTicks: 1 } }, { 'X-CSRF-Token': csrf });
+    assert.equal(create.status, 200); assert.equal(create.data.bot.paper, true);
+    const id = create.data.bot.id;
+    assert.equal((await call('GET', '/account/api/bots')).data.bots.length, 1);
+    assert.equal((await call('POST', '/account/api/bots/' + id + '/pause', {}, { 'X-CSRF-Token': csrf })).status, 200);
+    assert.equal((await call('POST', '/account/api/bots/' + id + '/delete', {}, { 'X-CSRF-Token': csrf })).status, 200);
+    assert.equal((await call('GET', '/account/api/bots')).data.bots.length, 0);
+  }, { chain });
 });
 
 test('2FA: enable, then login requires a valid code', async () => {
