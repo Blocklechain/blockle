@@ -48,6 +48,22 @@ button.danger:hover{background:rgba(255,93,106,.12)}
 .botrow .meta{color:var(--mut);font-size:12px}
 .pnl.up{color:var(--gain)}.pnl.down{color:var(--loss)}.pnl{font-family:ui-monospace,Menlo,monospace;font-weight:600}
 .hold{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}.hold:last-child{border-bottom:0}
+/* --- dashboard polish --- */
+.card.dash{padding:0;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.card.dash .dhead{padding:18px 22px 0}
+.card.dash>.sub{padding:0 22px;color:var(--mut)}
+.card.dash .tabnav{padding:0 22px;margin:10px 0 0;position:sticky;top:0;background:var(--panel);z-index:2}
+.card.dash .tabpane{padding:18px 22px 22px}
+.card.dash .tabnav button{font-weight:600}
+.pf-hero{background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 14%,var(--panel)),var(--panel));border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:14px}
+.grid{gap:10px}
+.stat{transition:border-color .15s,transform .15s}.stat:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+.mkrow,.botrow{padding:13px 12px;border-radius:10px;margin-bottom:6px;border-bottom:0;background:var(--bg);border:1px solid transparent;transition:border-color .15s}
+.mkrow:hover,.botrow:hover{border-color:var(--line)}
+.sec h2{display:flex;align-items:center;gap:8px}
+button.sm,.btn.sm{padding:8px 14px;border-radius:9px}
+input,select,textarea{transition:border-color .15s}
+@media(max-width:560px){.card.dash .tabnav{overflow-x:auto}.card.dash .tabpane{padding:16px 16px 20px}.card.dash .dhead{padding:16px 16px 0}.card.dash>.sub{padding:0 16px}}
 h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
 label{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:14px 0 6px}
 input{width:100%;padding:11px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}

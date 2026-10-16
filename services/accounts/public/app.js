@@ -250,23 +250,57 @@
         if (mkLoaded) return; mkLoaded = true;
         const r = await api('GET', '/account/api/markets');
         const list = (r.data && r.data.markets) || [];
-        $('#mk-list').innerHTML = list.map((m) => { const up = (m.change || 0) >= 0; return `<div class="mkrow"><span class="sym">${esc(m.symbol || '')}</span><span class="px">${m.price != null ? esc(String(m.price)) : '—'}</span>${m.change != null ? `<span class="chg ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(m.change))}%</span>` : '<span class="muted">—</span>'}</div>`; }).join('') || '<p class="muted">Markets unavailable right now.</p>';
+        const rows = list.map((m) => {
+          const up = (m.change || 0) >= 0;
+          const price = m.price != null ? esc(String(m.price)) + (m.native ? '' : ' BLK') : (m.native ? 'on-chain' : '—');
+          const chg = m.change != null ? `<span class="chg ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(m.change))}%</span>` : '<span class="muted">—</span>';
+          return `<div class="mkrow"><span class="sym">${esc(m.symbol || '')}${m.native ? ' <span class="pill">native</span>' : ''}</span><span class="px">${price}</span>${chg}</div>`;
+        }).join('');
+        const hint = list.length <= 1
+          ? '<p class="muted" style="margin-top:12px">No BLOCK-20 tokens listed yet — <a href="/launch">launch one on the launchpad</a> and it shows up here with a live AMM price.</p>'
+          : '';
+        $('#mk-list').innerHTML = rows + hint;
       }
       async function renderBots() {
         botsLoaded = true;
         const r = await api('GET', '/account/api/bots');
         const bots = (r.data && r.data.bots) || [];
-        $('#bots-list').innerHTML = bots.map((b) => { const up = (b.pnl || 0) >= 0; return `<div class="botrow"><div><b>${esc(b.type.toUpperCase())}</b> ${esc(b.pair)} <span class="meta">· ${esc(b.status)} · ${b.trades} trades</span></div><div style="display:flex;gap:10px;align-items:center"><span class="pnl ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(b.pnl))} (${up ? '+' : ''}${esc(String(b.pnlPct))}%)</span><button class="ghost sm bot-del" data-id="${esc(b.id)}" style="max-width:70px">Delete</button></div></div>`; }).join('') || '<p class="muted">No bots yet. Create a paper bot to test a strategy risk-free.</p>';
+        const TN = { dca: 'DCA', grid: 'Grid', smarttrade: 'Smart Trade', signal: 'Signal' };
+        $('#bots-list').innerHTML = bots.map((b) => { const up = (b.pnl || 0) >= 0; return `<div class="botrow"><div><b>${esc(TN[b.type] || b.type)}</b> <span class="meta">${esc(b.pair)} · ${esc(b.status)} · ${b.trades} trades</span></div><div style="display:flex;gap:10px;align-items:center"><span class="pnl ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(b.pnl))} (${up ? '+' : ''}${esc(String(b.pnlPct))}%)</span><button class="ghost sm bot-del" data-id="${esc(b.id)}" style="max-width:70px">Delete</button></div></div>`; }).join('') || '<p class="muted">No bots yet. Create a paper bot to test a strategy risk-free.</p>';
         $('#bots-list').querySelectorAll('.bot-del').forEach((btn) => btn.addEventListener('click', async () => { await api('POST', '/account/api/bots/' + btn.dataset.id + '/delete', {}); renderBots(); }));
       }
+      const BOT_FIELDS = {
+        dca: [['buyAmount', 'Buy amount each time', 50], ['everyTicks', 'Buy every N ticks', 3]],
+        grid: [['lower', 'Lower price', 0], ['upper', 'Upper price', 0], ['grids', 'Grid levels', 6]],
+        smarttrade: [['takeProfitPct', 'Take-profit %', 10], ['stopLossPct', 'Stop-loss %', 5]],
+        signal: [['thresholdPct', 'Signal threshold %', 1]],
+      };
+      const BOT_DESC = {
+        dca: 'Buys a fixed amount on a schedule — smooths your entry.',
+        grid: 'Buys low and sells high across a price band.',
+        smarttrade: 'Enters once, then exits at your take-profit or stop-loss.',
+        signal: 'Buys on upward momentum, sells on downward — follows the trend.',
+      };
+      function botFields(type) {
+        return BOT_FIELDS[type].map(([k, label, def]) =>
+          `<label>${label}</label><input id="nb-${k}" type="number" value="${def}">`).join('');
+      }
       $('#bot-new').addEventListener('click', () => {
-        $('#bot-create').innerHTML = `<div class="sec" style="margin-top:10px"><label>Strategy</label>
-          <select id="nb-type"><option value="dca">DCA — buy on a schedule</option><option value="grid">Grid — buy low / sell high</option></select>
-          <label>Pair</label><input id="nb-pair" value="BLOCK/USD"><label>Budget (paper)</label><input id="nb-budget" type="number" value="1000">
-          <button class="sm" id="nb-go" style="margin-top:10px;max-width:140px">Create</button></div>`;
+        const types = [['dca', 'DCA'], ['grid', 'Grid'], ['smarttrade', 'Smart Trade'], ['signal', 'Signal']];
+        $('#bot-create').innerHTML = `<div class="sec" style="margin-top:10px">
+          <label>Strategy</label>
+          <select id="nb-type">${types.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select>
+          <p class="note" id="nb-desc">${BOT_DESC.dca}</p>
+          <label>Pair</label><input id="nb-pair" value="BLOCK/USD">
+          <label>Budget (paper)</label><input id="nb-budget" type="number" value="1000">
+          <div id="nb-fields">${botFields('dca')}</div>
+          <button class="sm" id="nb-go" style="margin-top:12px;max-width:140px">Create bot</button></div>`;
+        const syncType = () => { const t = $('#nb-type').value; $('#nb-desc').textContent = BOT_DESC[t]; $('#nb-fields').innerHTML = botFields(t); };
+        $('#nb-type').addEventListener('change', syncType);
         $('#nb-go').addEventListener('click', async () => {
           const type = $('#nb-type').value; const budget = Number($('#nb-budget').value) || 1000;
-          const params = type === 'dca' ? { budget, buyAmount: Math.max(1, Math.round(budget / 10)), everyTicks: 3 } : { budget, lower: 0, upper: 0, grids: 6 };
+          const params = { budget };
+          for (const [k] of BOT_FIELDS[type]) params[k] = Number(($('#nb-' + k) || {}).value);
           const r = await api('POST', '/account/api/bots', { type, pair: $('#nb-pair').value, params });
           if (r.status === 200) { $('#bot-create').innerHTML = ''; renderBots(); } else show(r.data.error || 'Could not create bot.');
         });

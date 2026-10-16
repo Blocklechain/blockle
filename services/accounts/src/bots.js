@@ -5,7 +5,14 @@
 // A bot = { id, uid, type, pair, params, paper:true, createdAt, state }. `state` carries the
 // simulated { cash, base, trades, avgCost }. step(bot, price) advances one tick and returns pnl.
 
-export const BOT_TYPES = ['dca', 'grid'];
+export const BOT_TYPES = ['dca', 'grid', 'smarttrade', 'signal'];
+
+export const BOT_LABELS = {
+  dca: 'DCA — buy on a schedule',
+  grid: 'Grid — buy low / sell high in a band',
+  smarttrade: 'Smart Trade — entry + take-profit / stop-loss',
+  signal: 'Signal — follow momentum signals',
+};
 
 export function newBot({ id, uid, type, pair, params, now }) {
   type = BOT_TYPES.includes(type) ? type : 'dca';
@@ -13,7 +20,7 @@ export function newBot({ id, uid, type, pair, params, now }) {
   return {
     id, uid, type, pair: String(pair || 'BLOCK/USD').slice(0, 20), params: p, paper: true,
     createdAt: now, status: 'running',
-    state: { cash: p.budget, base: 0, trades: [], avgCost: 0, lastGrid: null, tick: 0 },
+    state: { cash: p.budget, base: 0, trades: [], avgCost: 0, lastGrid: null, tick: 0, entry: 0, entered: false, lastPrice: null },
   };
 }
 
@@ -23,6 +30,15 @@ function sanitizeParams(type, p) {
     budget: num(p.budget, 1000, 1, 1e9),
     buyAmount: num(p.buyAmount, 50, 1, 1e9),
     everyTicks: Math.round(num(p.everyTicks, 3, 1, 1000)),
+  };
+  if (type === 'smarttrade') return {
+    budget: num(p.budget, 1000, 1, 1e9),
+    takeProfitPct: num(p.takeProfitPct, 10, 0.1, 1000),
+    stopLossPct: num(p.stopLossPct, 5, 0.1, 100),
+  };
+  if (type === 'signal') return {
+    budget: num(p.budget, 1000, 1, 1e9),
+    thresholdPct: num(p.thresholdPct, 1, 0.1, 100),
   };
   // grid
   return {
@@ -44,6 +60,35 @@ export function step(bot, price) {
       s.base += qty; s.cash -= spend;
       s.trades.push({ side: 'buy', qty, price, tick: s.tick });
     }
+  } else if (bot.type === 'smarttrade') { // enter once, exit on take-profit or stop-loss
+    const { takeProfitPct, stopLossPct } = bot.params;
+    if (!s.entered && s.cash > 0) {
+      const spend = s.cash; const qty = spend / price;
+      s.avgCost = price; s.base += qty; s.cash -= spend; s.entry = price; s.entered = true;
+      s.trades.push({ side: 'buy', qty, price, tick: s.tick });
+    } else if (s.entered && s.base > 0) {
+      const tp = s.entry * (1 + takeProfitPct / 100);
+      const sl = s.entry * (1 - stopLossPct / 100);
+      if (price >= tp || price <= sl) {
+        const qty = s.base; s.cash += qty * price; s.base = 0;
+        s.trades.push({ side: 'sell', qty, price, tick: s.tick, reason: price >= tp ? 'take-profit' : 'stop-loss' });
+        bot.status = 'done';
+      }
+    }
+  } else if (bot.type === 'signal') { // momentum: buy on a rise past threshold, sell on a drop
+    const thr = bot.params.thresholdPct / 100;
+    if (s.lastPrice != null && s.lastPrice > 0) {
+      const chg = (price - s.lastPrice) / s.lastPrice;
+      if (chg >= thr && s.cash > 0) {
+        const spend = Math.min(s.cash, bot.params.budget / 5); const qty = spend / price;
+        s.avgCost = (s.avgCost * s.base + spend) / (s.base + qty || 1);
+        s.base += qty; s.cash -= spend; s.trades.push({ side: 'buy', qty, price, tick: s.tick });
+      } else if (chg <= -thr && s.base > 0) {
+        const qty = s.base; s.cash += qty * price; s.base = 0;
+        s.trades.push({ side: 'sell', qty, price, tick: s.tick });
+      }
+    }
+    s.lastPrice = price;
   } else { // grid: buy when price crosses a level down, sell when it crosses up
     const { lower, upper, grids } = bot.params;
     if (upper > lower && grids >= 2) {
