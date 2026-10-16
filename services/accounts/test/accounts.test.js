@@ -458,6 +458,39 @@ test('dashboard: non-custodial vault balance (read-only), broadcast relay, marke
   }, { chain });
 });
 
+test('usernames: unique at signup, settable/changeable, collisions rejected', async () => {
+  await withServer(async ({ app, call }) => {
+    // signup with a username reserves it
+    const r1 = await call('POST', '/account/api/register', { email: 'a@b.com', password: 'longenough1', username: 'Satoshi' });
+    assert.equal(r1.status, 200);
+    // a second signup claiming the same username (case-insensitive) is rejected
+    const dup = await call('POST', '/account/api/register', { email: 'c@b.com', password: 'longenough1', username: 'satoshi' });
+    assert.equal(dup.status, 409);
+    // bad format rejected
+    const bad = await call('POST', '/account/api/register', { email: 'd@b.com', password: 'longenough1', username: 'no' });
+    assert.equal(bad.status, 400);
+
+    // verify + login the first user, then change username
+    const vtok = app.mailer.sent.find((m) => m.to === 'a@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + vtok);
+    const login = await call('POST', '/account/api/login', { email: 'a@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+    assert.equal(login.data.user.username, 'satoshi');
+
+    // taken by someone else → 409 (register a second verified user holding 'hodler')
+    await call('POST', '/account/api/register', { email: 'e@b.com', password: 'longenough1', username: 'hodler' });
+    const clash = await call('POST', '/account/api/username', { username: 'hodler' }, { 'X-CSRF-Token': csrf });
+    assert.equal(clash.status, 409);
+    // change to a free one works + releases the old
+    const chg = await call('POST', '/account/api/username', { username: 'nakamoto' }, { 'X-CSRF-Token': csrf });
+    assert.equal(chg.status, 200);
+    assert.equal((await call('GET', '/account/api/me')).data.user.username, 'nakamoto');
+    // the old username is now free to claim
+    const reuse = await call('POST', '/account/api/register', { email: 'f@b.com', password: 'longenough1', username: 'satoshi' });
+    assert.equal(reuse.status, 200);
+  });
+});
+
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });

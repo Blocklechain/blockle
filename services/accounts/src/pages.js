@@ -34,6 +34,20 @@ button.danger:hover{background:rgba(255,93,106,.12)}
 .row2{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn-sm-link{font-size:13px;padding:5px 10px;border:1px solid var(--line);border-radius:9px;color:var(--accent);text-decoration:none}
 .codes .note b{color:var(--ink)}
+.tabnav{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:4px 0 18px}
+.tabnav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);font:inherit;font-size:14px;padding:10px 12px;cursor:pointer;margin-bottom:-1px}
+.tabnav button.on{color:var(--ink);border-bottom-color:var(--accent)}
+.tabpane.hidden{display:none}
+.pf-hero{padding:6px 0 14px}.pf-hero .k{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.pf-hero .n{font-size:34px;font-weight:700;font-family:ui-monospace,Menlo,monospace;letter-spacing:-.5px}
+.pill{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--gold);border:1px solid color-mix(in srgb,var(--gold) 40%,var(--line));border-radius:999px;padding:1px 8px;vertical-align:middle}
+.mkrow,.botrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--line);font-size:14px}
+.mkrow:last-child,.botrow:last-child{border-bottom:0}
+.mkrow .sym{font-weight:600}.mkrow .px{font-family:ui-monospace,Menlo,monospace}
+.chg.up{color:var(--gain)}.chg.down{color:var(--loss)}
+.botrow .meta{color:var(--mut);font-size:12px}
+.pnl.up{color:var(--gain)}.pnl.down{color:var(--loss)}.pnl{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.hold{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px}.hold:last-child{border-bottom:0}
 h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
 label{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:14px 0 6px}
 input{width:100%;padding:11px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}
@@ -86,6 +100,8 @@ const BODIES = {
 
   register: () => `<div class="card">${brand}<h1>Create account</h1><p class="sub">Self-custody stays self-custody — we store credentials and an encrypted backup blob we can't read.</p>
 <form id="f"><label>Email</label><input name="email" type="email" autocomplete="email" required>
+<label>Username</label><input name="username" autocomplete="username" placeholder="yourname" pattern="[A-Za-z0-9_]{3,20}">
+<p class="note">Optional — your public @handle (3–20 letters, numbers, underscore). You can set or change it later.</p>
 <label>Password</label><input name="password" type="password" autocomplete="new-password" minlength="10" required>
 <p class="note">At least 10 characters. Use a passphrase you don't use elsewhere.</p>
 <button type="submit">Create account</button></form>${msg}
@@ -113,27 +129,64 @@ const BODIES = {
 <label>Message</label><input name="body" required>
 <button type="submit">Send</button></form>${msg}</div>`,
 
-  account: () => `<div class="card dash">
+  account: () => `<div class="card dash" style="max-width:720px">
 <div class="dhead">${brand}<span class="badge" id="role" style="display:none"></span></div>
-<h1 id="hi">Your account</h1><p class="sub" id="email"></p>
-<div class="grid" id="stats"></div>
-<div class="sec"><h2>Security</h2><div id="twofaBox"></div><div id="backupBox"></div>
-  <div class="statusline"><span id="sessLine" class="off">Active sessions: —</span><button class="ghost sm" id="logoutAll" style="max-width:170px">Sign out everywhere</button></div></div>
-<div class="sec"><h2>Devices</h2><div id="devices"><p class="muted">Loading…</p></div></div>
-<div class="sec"><h2>Plan</h2><div id="subBox"></div></div>
-<div class="sec"><h2>Quick links</h2><div class="links" id="links"></div></div>
-<div class="sec"><h2>Email</h2>
-  <div class="statusline"><span id="emailLine" class="off"></span><button class="ghost sm" id="email-open" style="max-width:150px">Change email</button></div>
-  <div id="email-area" class="hidden"></div></div>
-<div class="sec"><h2>Change password</h2>
-  <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password">
-  <input id="pw-next" type="password" placeholder="New password (10+ chars)" autocomplete="new-password" minlength="10">
-  <button class="ghost sm" id="pw-save" style="margin-top:8px;max-width:180px">Update password</button></div>
-<div class="sec danger-zone"><h2>Danger zone</h2>
-  <button class="ghost sm danger" id="del-open" style="max-width:180px">Delete account</button>
-  <div id="del-area" class="hidden"></div></div>
-<button class="ghost" id="logout" style="margin-top:18px">Sign out</button>${msg}
-<div class="row"><a href="/">← blockle.org</a><a href="/account/support">Support</a></div></div>`,
+<p class="sub" id="email"></p>
+<div class="tabnav" id="tabnav">
+  <button data-tab="portfolio" class="on">Portfolio</button>
+  <button data-tab="markets">Markets</button>
+  <button data-tab="bots">Bots</button>
+  <button data-tab="account">Account</button>
+</div>
+
+<div class="tabpane" id="tab-portfolio">
+  <div class="pf-hero"><div class="k">Portfolio value</div><div class="n" id="pf-total">—</div></div>
+  <div class="grid" id="stats"></div>
+  <div class="sec"><h2>Holdings</h2><div id="pf-holdings"><p class="muted">Loading…</p></div></div>
+  <div class="sec"><h2>Deposit</h2><p class="note">Send funds to your receive address — they stay in your self-custody vault; we only read the public balance.</p>
+    <pre class="codeblock" id="pf-address"><span class="muted">Loading…</span></pre>
+    <div class="row2"><button class="ghost sm" id="pf-copy">Copy address</button></div></div>
+  <div class="sec"><h2>Send</h2><p class="note">Sending is signed on your device in the Blockle wallet — your keys never leave it. <a href="/#download">Open your wallet →</a></p></div>
+</div>
+
+<div class="tabpane hidden" id="tab-markets">
+  <div class="sec" style="border:0;padding-top:0"><h2>Markets</h2><div id="mk-list"><p class="muted">Loading…</p></div></div>
+</div>
+
+<div class="tabpane hidden" id="tab-bots">
+  <div class="sec" style="border:0;padding-top:0"><h2>Trading bots <span class="pill">paper</span></h2>
+    <p class="note">Test strategies risk-free with play money. Live bots run in your wallet, where every trade is signed by you.</p>
+    <div id="bots-list"><p class="muted">Loading…</p></div>
+    <div id="bot-create"></div>
+    <button class="ghost sm" id="bot-new" style="margin-top:12px;max-width:150px">+ New paper bot</button>
+  </div>
+</div>
+
+<div class="tabpane hidden" id="tab-account">
+  <h1 id="hi" style="font-size:18px;margin-top:4px">Account</h1>
+  <div class="sec"><h2>Security</h2><div id="twofaBox"></div><div id="backupBox"></div>
+    <div class="statusline"><span id="sessLine" class="off">Active sessions: —</span><button class="ghost sm" id="logoutAll" style="max-width:170px">Sign out everywhere</button></div></div>
+  <div class="sec"><h2>Devices</h2><div id="devices"><p class="muted">Loading…</p></div></div>
+  <div class="sec"><h2>Plan</h2><div id="subBox"></div></div>
+  <div class="sec"><h2>Quick links</h2><div class="links" id="links"></div></div>
+  <div class="sec"><h2>Username</h2>
+    <div class="statusline"><span id="unameLine" class="off"></span></div>
+    <input id="uname-new" autocomplete="username" placeholder="username (3–20: a–z0–9_)" pattern="[A-Za-z0-9_]{3,20}">
+    <button class="ghost sm" id="uname-save" style="margin-top:8px;max-width:160px">Save username</button></div>
+  <div class="sec"><h2>Email</h2>
+    <div class="statusline"><span id="emailLine" class="off"></span><button class="ghost sm" id="email-open" style="max-width:150px">Change email</button></div>
+    <div id="email-area" class="hidden"></div></div>
+  <div class="sec"><h2>Change password</h2>
+    <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password">
+    <input id="pw-next" type="password" placeholder="New password (10+ chars)" autocomplete="new-password" minlength="10">
+    <button class="ghost sm" id="pw-save" style="margin-top:8px;max-width:180px">Update password</button></div>
+  <div class="sec danger-zone"><h2>Danger zone</h2>
+    <button class="ghost sm danger" id="del-open" style="max-width:180px">Delete account</button>
+    <div id="del-area" class="hidden"></div></div>
+  <button class="ghost" id="logout" style="margin-top:18px">Sign out</button>
+  <div class="row"><a href="/">← blockle.org</a><a href="/account/support">Support</a></div>
+</div>
+${msg}</div>`,
 
   admin: () => `<div class="card admin">${brand}<h1>Admin</h1><p class="sub" id="who"></p>
 <div class="grid" id="stats"></div>

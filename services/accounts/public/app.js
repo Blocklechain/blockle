@@ -112,7 +112,7 @@
       const fmtk = (n) => (n == null ? '—' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n)));
       const dt = (ms) => new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
-      $('#email').textContent = u.email;
+      $('#email').textContent = (u.username ? '@' + u.username + ' · ' : '') + u.email;
       if (u.role === 'admin') { const b = $('#role'); b.textContent = 'admin'; b.className = 'badge admin'; b.style.display = ''; }
 
       // headline stats
@@ -205,6 +205,15 @@
         else show(r.data.error || 'Could not change password.');
       });
 
+      // username (unique @handle)
+      $('#unameLine').textContent = u.username ? '@' + u.username : 'No username set';
+      $('#uname-new').value = u.username || '';
+      $('#uname-save').addEventListener('click', async () => {
+        const r = await api('POST', '/account/api/username', { username: $('#uname-new').value });
+        if (r.status === 200) { u.username = r.data.username; $('#unameLine').textContent = '@' + r.data.username; $('#email').textContent = '@' + r.data.username + ' · ' + u.email; show('Username saved.', 'ok'); }
+        else show(r.data.error || 'Could not save username.');
+      });
+
       // change email (re-verification)
       $('#emailLine').textContent = u.email;
       $('#email-open').addEventListener('click', () => {
@@ -219,6 +228,57 @@
           else show(r.data.error || 'Could not change email.');
         });
       });
+
+      // ---- Coinbase×3Commas tabs ----
+      let pfLoaded = false, mkLoaded = false, botsLoaded = false;
+      async function renderPortfolio() {
+        if (pfLoaded) return; pfLoaded = true;
+        const [addrR, balR] = await Promise.all([api('GET', '/account/api/vault/address'), api('GET', '/account/api/vault/balance')]);
+        const bal = balR.data || {};
+        const addr = (addrR.data && addrR.data.address) || bal.address;
+        $('#pf-address').innerHTML = addr ? `<span>${esc(addr)}</span>` : '<span class="muted">Back up your wallet to link a receive address.</span>';
+        $('#pf-total').textContent = bal.balance == null ? '—' : (Number(bal.balance).toLocaleString() + ' BLOCK');
+        const tokens = bal.tokens || [];
+        $('#pf-holdings').innerHTML = ((bal.balance != null ? `<div class="hold"><span>BLOCK</span><span>${Number(bal.balance).toLocaleString()}</span></div>` : '') +
+          tokens.map((t) => `<div class="hold"><span>${esc(t.symbol || t.ticker || 'token')}</span><span>${esc(String(t.amount ?? t.balance ?? ''))}</span></div>`).join('')) || '<p class="muted">No holdings yet — deposit to your address below.</p>';
+        const cp = $('#pf-copy');
+        if (cp && addr) cp.addEventListener('click', async (e) => { e.target.textContent = (await copyText(addr)) ? 'Copied ✓' : 'Copy failed'; });
+        else if (cp) cp.style.display = 'none';
+      }
+      async function renderMarkets() {
+        if (mkLoaded) return; mkLoaded = true;
+        const r = await api('GET', '/account/api/markets');
+        const list = (r.data && r.data.markets) || [];
+        $('#mk-list').innerHTML = list.map((m) => { const up = (m.change || 0) >= 0; return `<div class="mkrow"><span class="sym">${esc(m.symbol || '')}</span><span class="px">${m.price != null ? esc(String(m.price)) : '—'}</span>${m.change != null ? `<span class="chg ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(m.change))}%</span>` : '<span class="muted">—</span>'}</div>`; }).join('') || '<p class="muted">Markets unavailable right now.</p>';
+      }
+      async function renderBots() {
+        botsLoaded = true;
+        const r = await api('GET', '/account/api/bots');
+        const bots = (r.data && r.data.bots) || [];
+        $('#bots-list').innerHTML = bots.map((b) => { const up = (b.pnl || 0) >= 0; return `<div class="botrow"><div><b>${esc(b.type.toUpperCase())}</b> ${esc(b.pair)} <span class="meta">· ${esc(b.status)} · ${b.trades} trades</span></div><div style="display:flex;gap:10px;align-items:center"><span class="pnl ${up ? 'up' : 'down'}">${up ? '+' : ''}${esc(String(b.pnl))} (${up ? '+' : ''}${esc(String(b.pnlPct))}%)</span><button class="ghost sm bot-del" data-id="${esc(b.id)}" style="max-width:70px">Delete</button></div></div>`; }).join('') || '<p class="muted">No bots yet. Create a paper bot to test a strategy risk-free.</p>';
+        $('#bots-list').querySelectorAll('.bot-del').forEach((btn) => btn.addEventListener('click', async () => { await api('POST', '/account/api/bots/' + btn.dataset.id + '/delete', {}); renderBots(); }));
+      }
+      $('#bot-new').addEventListener('click', () => {
+        $('#bot-create').innerHTML = `<div class="sec" style="margin-top:10px"><label>Strategy</label>
+          <select id="nb-type"><option value="dca">DCA — buy on a schedule</option><option value="grid">Grid — buy low / sell high</option></select>
+          <label>Pair</label><input id="nb-pair" value="BLOCK/USD"><label>Budget (paper)</label><input id="nb-budget" type="number" value="1000">
+          <button class="sm" id="nb-go" style="margin-top:10px;max-width:140px">Create</button></div>`;
+        $('#nb-go').addEventListener('click', async () => {
+          const type = $('#nb-type').value; const budget = Number($('#nb-budget').value) || 1000;
+          const params = type === 'dca' ? { budget, buyAmount: Math.max(1, Math.round(budget / 10)), everyTicks: 3 } : { budget, lower: 0, upper: 0, grids: 6 };
+          const r = await api('POST', '/account/api/bots', { type, pair: $('#nb-pair').value, params });
+          if (r.status === 200) { $('#bot-create').innerHTML = ''; renderBots(); } else show(r.data.error || 'Could not create bot.');
+        });
+      });
+      $('#tabnav').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+        const tab = b.dataset.tab;
+        $('#tabnav').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+        ['portfolio', 'markets', 'bots', 'account'].forEach((t) => $('#tab-' + t).classList.toggle('hidden', t !== tab));
+        if (tab === 'portfolio') renderPortfolio();
+        if (tab === 'markets') renderMarkets();
+        if (tab === 'bots' && !botsLoaded) renderBots();
+      }));
+      renderPortfolio();
 
       // danger zone: delete account
       $('#del-open').addEventListener('click', () => {

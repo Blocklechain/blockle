@@ -49,6 +49,13 @@ export function createApp(overrides = {}) {
     set: (email, uid) => store.put('emails', email.toLowerCase(), uid),
     del: (email) => store.del('emails', email.toLowerCase()),
   };
+  // Unique, public usernames (the @handle shown across the site + social). 3–20 chars a–z0–9_.
+  const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
+  const usernameIndex = {
+    get: (n) => store.get('usernames', String(n).toLowerCase()),
+    set: (n, uid) => store.put('usernames', String(n).toLowerCase(), uid),
+    del: (n) => store.del('usernames', String(n).toLowerCase()),
+  };
   const userByEmail = (email) => {
     const uid = emailIndex.get(email || '');
     return uid ? store.get('users', uid) : null;
@@ -98,7 +105,7 @@ export function createApp(overrides = {}) {
     return sessions.checkCsrf(sess, token);
   }
   const publicUser = (u) => u && ({
-    id: u.id, email: u.email, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
+    id: u.id, email: u.email, username: u.username || null, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
     totpEnabled: !!u.totpEnabled, recoveryLeft: (u.recoveryHashes || []).length,
     sub: u.sub || { active: false }, onboarded: !!u.onboarded,
   });
@@ -124,17 +131,24 @@ export function createApp(overrides = {}) {
     const password = String(b.password || '');
     if (!EMAIL_RE.test(email) || password.length < 10)
       return json(res, 400, { error: 'Enter a valid email and a password of at least 10 characters.' });
+    // Optional username — public + unique, so (unlike email) a collision is safe to report.
+    const username = b.username != null ? String(b.username).toLowerCase().trim() : '';
+    if (username) {
+      if (!USERNAME_RE.test(username)) return json(res, 400, { error: 'Username must be 3–20 chars: letters, numbers, underscore.' });
+      if (usernameIndex.get(username)) return json(res, 409, { error: 'That username is taken.' });
+    }
     // Always hash (even if the account exists) so timing can't reveal account existence.
     const pwHash = hashPassword(password);
     // Generic success even if the email exists — never reveal account existence.
     if (!userByEmail(email)) {
       const uid = randomToken(9);
       await store.put('users', uid, {
-        id: uid, email, pwHash, verified: false, role: 'user',
+        id: uid, email, username: username || null, pwHash, verified: false, role: 'user',
         createdAt: now(), totpEnabled: false, totpSecret: null, recoveryHashes: [],
         sub: { active: false, subId: null, plan: null },
       });
       await emailIndex.set(email, uid);
+      if (username) await usernameIndex.set(username, uid);
       const token = randomToken(32);
       await store.put('tokens', sha256(token), { type: 'verify', uid, exp: now() + cfg.tokenTtlMs });
       const url = `${cfg.publicOrigin}/account/verify?token=${token}`;
@@ -342,6 +356,21 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, revokedSelf });
   }));
 
+  // Set / change the unique username (the public @handle).
+  on('POST', /^\/account\/api\/username$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 8 * 1024);
+    const name = String(b.username || '').toLowerCase().trim();
+    if (!USERNAME_RE.test(name)) return json(res, 400, { error: 'Username must be 3–20 chars: letters, numbers, underscore.' });
+    if (name === (u.username || '')) return json(res, 200, { ok: true, username: name });
+    const taken = usernameIndex.get(name);
+    if (taken && taken !== u.id) return json(res, 409, { error: 'That username is taken.' });
+    const old = u.username;
+    await store.update('users', u.id, (x) => { if (x) x.username = name; return x; });
+    if (old) await usernameIndex.del(old);
+    await usernameIndex.set(name, u.id);
+    return json(res, 200, { ok: true, username: name });
+  }));
+
   // Change email: verify the password, then email a confirmation link to the NEW address. The
   // swap only happens when that link is clicked (so a typo/attacker can't move your login).
   on('POST', /^\/account\/api\/change-email$/, authed(async (req, res, { u }) => {
@@ -404,6 +433,7 @@ export function createApp(overrides = {}) {
     await store.del('backups', u.id);
     await store.del('users', u.id);
     await emailIndex.del(u.email);
+    if (u.username) await usernameIndex.del(u.username);
     for (const [k, rec] of store.entries('tokens')) if (rec.uid === u.id) await store.del('tokens', k);
     clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     return json(res, 200, { ok: true });
