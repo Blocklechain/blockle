@@ -668,7 +668,8 @@ fn route(
                 None => jerr("404 Not Found", "no such chain"),
             }
         }
-        "/" => ("200 OK", "text/html; charset=utf-8", page_home(&reg).into_bytes()),
+        "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
+        "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
@@ -1384,7 +1385,174 @@ fn parent_rows() -> String {
         .collect()
 }
 
-fn page_home(reg: &Registry) -> String {
+fn page_home() -> String {
+    // Standalone "Instrument" landing — self-custody trading super-app. Served raw
+    // (its own doc/CSS/JS), not the pool-directory shell. Mining/network content
+    // lives at /network; every existing page is linked from the nav + footer.
+    r##"<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blockle — self-custody trading super-app</title>
+<meta name="description" content="A non-custodial multi-chain wallet, a cross-chain exchange, and AI trading bots that trade on your command — your keys, your desk.">
+<link rel="icon" href="/favicon.ico">
+<style>
+:root{--ground:#0a0d14;--surface:#111725;--surface-2:#0e1420;--line:#1d2535;--text:#e8ebf2;--muted:#8b93a6;--faint:#5a6577;--accent:#4d8bff;--accent-soft:#2a4a8f;--accent-ink:#0a0d14;--gain:#2fc08a;--loss:#ff5d6a;--mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--maxw:1120px}
+@media(prefers-color-scheme:light){:root{--ground:#eef1f7;--surface:#fff;--surface-2:#f4f6fb;--line:#dde3ee;--text:#0b0f1a;--muted:#56617a;--faint:#8a93a6;--accent:#2f6bf0;--accent-soft:#c7d7fb;--accent-ink:#fff;--gain:#12a06b;--loss:#e5424f}}
+:root[data-theme="dark"]{--ground:#0a0d14;--surface:#111725;--surface-2:#0e1420;--line:#1d2535;--text:#e8ebf2;--muted:#8b93a6;--faint:#5a6577;--accent:#4d8bff;--accent-ink:#0a0d14;--gain:#2fc08a;--loss:#ff5d6a}
+:root[data-theme="light"]{--ground:#eef1f7;--surface:#fff;--surface-2:#f4f6fb;--line:#dde3ee;--text:#0b0f1a;--muted:#56617a;--faint:#8a93a6;--accent:#2f6bf0;--accent-ink:#fff;--gain:#12a06b;--loss:#e5424f}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.55;letter-spacing:-.004em;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:600}
+.gain{color:var(--gain)}.loss{color:var(--loss)}
+header.bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--ground) 82%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.bar .wrap{display:flex;align-items:center;gap:22px;height:60px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;font-size:17px}
+.brand .glyph{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 210deg,var(--accent),#7db0ff 55%,var(--accent));box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent) inset;flex:none}
+nav.top{display:none;gap:22px;margin-left:12px}nav.top a{font-size:14px;color:var(--muted);font-weight:500}nav.top a:hover{color:var(--text)}
+.bar .spacer{flex:1}
+.btn{font:600 14px/1 var(--sans);padding:10px 16px;border-radius:9px;cursor:pointer;border:1px solid transparent;display:inline-flex;align-items:center;gap:8px;transition:transform .12s,background .15s,border-color .15s}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:var(--accent);color:var(--accent-ink)}.btn-primary:hover{background:#6ba0ff}
+.btn-ghost{background:transparent;color:var(--text);border-color:var(--line);display:none}.btn-ghost:hover{border-color:var(--accent)}
+@media(min-width:760px){nav.top{display:flex}.bar .btn-ghost{display:inline-flex}}
+.hero{position:relative;border-bottom:1px solid var(--line);overflow:hidden}
+#candles{position:absolute;inset:0;width:100%;height:100%;z-index:0}
+:root[data-theme="light"] #candles{opacity:.32}:root[data-theme="dark"] #candles{opacity:.5}
+@media(prefers-color-scheme:light){#candles{opacity:.32}}@media(prefers-color-scheme:dark){#candles{opacity:.5}}
+.hero-fade{position:absolute;inset:0;z-index:1;pointer-events:none;background:radial-gradient(120% 90% at 18% 20%,transparent 40%,var(--ground) 82%)}
+.hero .wrap{position:relative;z-index:2;display:grid;gap:40px;padding-top:76px;padding-bottom:84px;grid-template-columns:1fr}
+@media(min-width:940px){.hero .wrap{grid-template-columns:1.05fr .95fr;align-items:center;padding-top:92px;padding-bottom:104px}}
+h1{font-size:clamp(40px,6.4vw,74px);line-height:.98;font-weight:850;letter-spacing:-.03em;margin:18px 0 0;text-wrap:balance}
+h1 .thin{color:var(--muted);font-weight:450}
+.sub{margin:22px 0 0;font-size:clamp(16px,1.9vw,19px);color:var(--muted);max-width:34em}
+.hero-cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px;align-items:center}
+.micro{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:16px}.micro b{color:var(--muted);font-weight:600}
+.demo{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 24px 60px -30px rgba(0,0,0,.6);min-height:300px;display:flex;flex-direction:column}
+.demo .dhead{display:flex;align-items:center;gap:8px;padding:12px 15px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--line)}.demo .dhead .label{margin-left:6px;text-transform:uppercase;letter-spacing:.18em}
+.demo .body{padding:18px 18px 20px;flex:1;display:flex;flex-direction:column;gap:14px}
+.prompt{display:flex;align-items:flex-start;gap:10px;font-family:var(--mono);font-size:14.5px}.prompt .chev{color:var(--accent);font-weight:700}.prompt .txt{color:var(--text)}
+.caret{display:inline-block;width:8px;height:17px;background:var(--accent);margin-left:2px;transform:translateY(3px);animation:blink 1s steps(1) infinite}@keyframes blink{50%{opacity:0}}
+.card{border:1px solid var(--line);border-radius:11px;background:var(--surface-2);padding:14px;opacity:0;transform:translateY(8px);transition:opacity .35s,transform .35s}.card.show{opacity:1;transform:none}
+.card .row{display:flex;justify-content:space-between;gap:12px;font-family:var(--mono);font-size:13px;padding:3px 0}.card .row .k{color:var(--muted)}.card .row .v{color:var(--text);text-align:right}
+.card .ctitle{font-weight:700;font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.pill{font-family:var(--mono);font-size:10.5px;padding:3px 8px;border-radius:999px;letter-spacing:.06em;border:1px solid var(--line);color:var(--muted)}
+.hold{margin-top:10px;height:38px;border-radius:9px;border:1px solid var(--accent);color:var(--accent);display:flex;align-items:center;justify-content:center;gap:8px;font:600 13px/1 var(--sans);position:relative;overflow:hidden}
+.hold .fill{position:absolute;inset:0;background:var(--accent);width:0}.hold .fill.go{width:100%;transition:width 1.1s linear}.hold .lbl{position:relative;z-index:2;mix-blend-mode:difference;color:#fff}
+.answer{font-family:var(--mono);font-size:13px;color:var(--muted);line-height:1.7}.answer .big{color:var(--text);font-size:15px}
+section{padding:84px 0;border-bottom:1px solid var(--line)}
+.shead{max-width:40em}.shead h2{font-size:clamp(26px,3.6vw,38px);font-weight:800;letter-spacing:-.025em;margin:12px 0 0;text-wrap:balance}.shead p{color:var(--muted);margin:14px 0 0;font-size:17px}
+.pillars{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:40px}
+@media(min-width:720px){.pillars{grid-template-columns:1fr 1fr}}@media(min-width:980px){.pillars{grid-template-columns:repeat(4,1fr)}}
+.pillar{background:var(--surface);padding:26px 22px 28px;display:flex;flex-direction:column;gap:12px;min-height:220px;transition:background .18s}.pillar:hover{background:var(--surface-2)}
+.pillar .ico{width:34px;height:34px;color:var(--accent)}.pillar h3{font-size:17px;font-weight:700;margin:4px 0 0}.pillar p{color:var(--muted);font-size:14px;margin:0}
+.pillar .tag{margin-top:auto;font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.trust{display:grid;gap:26px;margin-top:38px}@media(min-width:820px){.trust{grid-template-columns:repeat(3,1fr)}}
+.trust .t{border-left:2px solid var(--accent);padding:4px 0 4px 18px}.trust .t h4{margin:0 0 6px;font-size:15.5px;font-weight:700}.trust .t p{margin:0;color:var(--muted);font-size:14px}
+.proof{background:var(--surface-2)}
+.stats{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:36px}@media(min-width:680px){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:var(--surface);padding:22px 20px}.stat .n{font-family:var(--mono);font-size:27px;font-weight:600}.stat .l{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-top:7px}.stat .d{color:var(--muted);font-size:12.5px;margin-top:7px}
+.disclaim{margin-top:22px;font-size:12.5px;color:var(--faint);max-width:60em}
+.chains{display:flex;flex-wrap:wrap;gap:10px;margin-top:34px}.chip{font-family:var(--mono);font-size:13px;border:1px solid var(--line);border-radius:999px;padding:8px 15px;color:var(--muted);display:flex;align-items:center;gap:8px}.chip .d{width:8px;height:8px;border-radius:50%}
+.dl{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-top:40px}@media(min-width:640px){.dl{grid-template-columns:1fr 1fr}}@media(min-width:1000px){.dl{grid-template-columns:repeat(5,1fr)}}
+.dli{background:var(--surface);padding:22px 18px;display:flex;flex-direction:column;gap:10px;transition:background .18s}.dli:hover{background:var(--surface-2)}.dli .plat{font-weight:700;font-size:15px}.dli .meta{font-family:var(--mono);font-size:11.5px;color:var(--faint)}.dli .go{margin-top:auto;font-family:var(--mono);font-size:12.5px;color:var(--accent);font-weight:600}
+footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justify-content:space-between}
+.foot .legal{color:var(--faint);font-size:13px;max-width:40em;line-height:1.7;margin-top:14px}
+.fcol{display:flex;flex-direction:column;gap:9px}.fcol .h{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-bottom:3px}.fcol a{color:var(--muted);font-size:13.5px}.fcol a:hover{color:var(--text)}
+.reg{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:16px}.reg a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.caret{opacity:1}}
+</style></head><body>
+<header class="bar"><div class="wrap">
+<a class="brand" href="/"><span class="glyph"></span>Blockle</a>
+<nav class="top"><a href="#product">Product</a><a href="#bots">Bots</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
+<span class="spacer"></span>
+<a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
+<a class="btn btn-primary" href="#download">Get the wallet</a>
+</div></header>
+<main>
+<section class="hero" style="padding:0">
+<canvas id="candles" aria-hidden="true"></canvas><div class="hero-fade" aria-hidden="true"></div>
+<div class="wrap"><div>
+<span class="eyebrow">Self-custody trading super-app</span>
+<h1>Your keys.<br>Your bots.<br><span class="thin">Your trading desk.</span></h1>
+<p class="sub">A multi-chain wallet, a non-custodial exchange, and pro trading bots with an AI that trades on your command &mdash; without ever holding your coins.</p>
+<div class="hero-cta"><a class="btn btn-primary" href="#download">Download &mdash; free</a><a class="btn btn-ghost" href="#bots" style="display:inline-flex">See the bots</a></div>
+<p class="micro"><b>Non-custodial.</b> Your keys stay on your device &middot; <b>Multi-chain</b> BTC &middot; ETH &middot; SOL &middot; BLOCK &middot; and more</p>
+</div>
+<div class="demo" aria-label="Conversational command bar demo">
+<div class="dhead"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="label">Blockle &middot; command</span></div>
+<div class="body"><div class="prompt"><span class="chev">&gt;</span><span class="txt" id="typed"></span><span class="caret" id="caret"></span></div><div id="stage"></div></div>
+</div></div>
+</section>
+<section id="product"><div class="wrap"><span class="eyebrow">What's inside</span>
+<div class="shead"><h2>One app for the whole trade &mdash; custody to execution.</h2><p>Most tools make you choose: a wallet, or an exchange, or a bot platform. Blockle is all three, non-custodial, with the AI agent wired through the same safety gate.</p></div>
+<div class="pillars">
+<div class="pillar"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="12" r="3.2"/><path d="M11 12h9m-3 0v3m-3-3v2"/></svg><h3>Self-custody wallet</h3><p>One wallet across BTC, Ethereum &amp; EVM chains, Solana, BLOCK, LTC and DOGE. Keys never leave your device; export them anytime.</p><span class="tag">6+ chains</span></div>
+<div class="pillar"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg><h3>AI trading bots</h3><p>DCA, grid, SmartTrade, signal &mdash; plus an autopilot that scans every pair and trades only the ones profitable after fees. Paper-trade first.</p><span class="tag">Paper + live</span></div>
+<div class="pillar"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8h13l-3-3m6 11H7l3 3"/></svg><h3>Non-custodial exchange</h3><p>Swap any asset across chains at the cheapest all-in route &mdash; no account, no deposit, no handing over custody. A 0.05% agent fee, nothing hidden.</p><span class="tag">Cross-chain</span></div>
+<div class="pillar"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5.5h16v10H9l-5 4z" stroke-linejoin="round"/><path d="M8 10.5h8M8 13h5"/></svg><h3>Conversational agent</h3><p>&ldquo;Send 0.1 ETH to alice.eth.&rdquo; &ldquo;Which bot made money this week?&rdquo; The AI drafts it &mdash; every move still clears your on-device confirm.</p><span class="tag">Talk to it</span></div>
+</div></div></section>
+<section id="safe"><div class="wrap"><span class="eyebrow">Why it's safe to let a bot &mdash; or an AI &mdash; trade</span>
+<div class="shead"><h2>The AI is the brain. It is never the hands.</h2><p>Bots and the agent can only <em>propose</em> a trade. Moving value always runs through one non-bypassable gate on your device.</p></div>
+<div class="trust">
+<div class="t"><h4>Your keys, your device</h4><p>Private keys are encrypted locally and never sent to our servers or any model. A lapsed subscription or a dead server never traps your funds.</p></div>
+<div class="t"><h4>One gate, always on</h4><p>Every send, swap and bot order passes a per-asset cap, a scam/approval check, and a confirm &mdash; a risky one forces an explicit tap. Nothing auto-signs silently.</p></div>
+<div class="t"><h4>A kill switch that means it</h4><p>One tap stops every bot, cancels open orders, and locks the vault. A hostile or confused model can't do anything your own tap couldn't.</p></div>
+</div></div></section>
+<section id="bots" class="proof"><div class="wrap"><span class="eyebrow">Measured, not promised</span>
+<div class="shead"><h2>Bots that refuse to lose money to fees.</h2><p>The autopilot only opens a trade whose edge is positive <em>after</em> every fee &mdash; venue, gas, slippage and the 0.05% agent cut. We backtested the real engine on 30 days of live market data, in paper mode.</p></div>
+<div class="stats">
+<div class="stat"><div class="n gain">+$74</div><div class="l">Arbitrage &middot; net</div><div class="d">2 trades taken &middot; 3 losing edges skipped</div></div>
+<div class="stat"><div class="n gain">+$85.88</div><div class="l">Autopilot &middot; net</div><div class="d">traded 2 of 6 scanned pairs</div></div>
+<div class="stat"><div class="n gain">+$16.67</div><div class="l">Grid &middot; net</div><div class="d">positive across every regime</div></div>
+<div class="stat"><div class="n">100%</div><div class="l">Edges checked</div><div class="d">never a trade with &le;0 net edge</div></div>
+</div>
+<p class="disclaim">Figures are from a paper backtest of the shipped engine on 30 days of real hourly prices &mdash; illustrative of how the strategies behave net of fees, not a forecast. Directional strategies still depend on the market; the discipline is that the bot declines negative-edge trades, not that any trade is guaranteed to win. Crypto is volatile and you can lose money. Not investment advice.</p></div></section>
+<section><div class="wrap"><span class="eyebrow">Supported today</span><div class="shead"><h2>Every major chain, one seed phrase.</h2></div>
+<div class="chains"><span class="chip"><span class="d" style="background:#f7931a"></span>Bitcoin</span><span class="chip"><span class="d" style="background:#627eea"></span>Ethereum &amp; EVM</span><span class="chip"><span class="d" style="background:#9945ff"></span>Solana</span><span class="chip"><span class="d" style="background:#4d8bff"></span>BLOCK</span><span class="chip"><span class="d" style="background:#345d9d"></span>Litecoin</span><span class="chip"><span class="d" style="background:#c2a633"></span>Dogecoin</span><span class="chip"><span class="d" style="background:#2fc08a"></span>USDC / USDT</span><span class="chip">+ WalletConnect &middot; NFTs</span></div></div></section>
+<section id="download"><div class="wrap"><span class="eyebrow">Free &middot; no account &middot; open source</span>
+<div class="shead"><h2>Get Blockle.</h2><p>Install on any device. Create a wallet in seconds, or import your seed. You hold the keys from the first second.</p></div>
+<div class="dl">
+<a class="dli" href="/releases/latest/download/BlockleWallet-android.apk"><span class="plat">Android</span><span class="meta">APK &middot; sideload</span><span class="go">Download &uarr;</span></a>
+<a class="dli" href="/releases/latest/download/BlockleWallet-extension.zip"><span class="plat">Browser</span><span class="meta">Chrome &middot; Edge &middot; Brave</span><span class="go">Download &uarr;</span></a>
+<a class="dli" href="/releases/latest/download/BlockleWallet-macos-arm64.zip"><span class="plat">macOS</span><span class="meta">Apple Silicon</span><span class="go">Download &uarr;</span></a>
+<a class="dli" href="/releases/latest/download/BlockleWallet-windows-x86_64.zip"><span class="plat">Windows</span><span class="meta">x86-64</span><span class="go">Download &uarr;</span></a>
+<a class="dli" href="/releases/latest/download/BlockleWallet-linux-x86_64.zip"><span class="plat">Linux</span><span class="meta">x86-64</span><span class="go">Download &uarr;</span></a>
+</div></div></section>
+</main>
+<footer><div class="wrap"><div class="foot">
+<div><a class="brand" href="/"><span class="glyph"></span>Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
+<div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">More</span><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
+</div></div></footer>
+<script>
+(function(){var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+var cv=document.getElementById("candles");
+if(cv){var ctx=cv.getContext("2d"),W,H,dpr,candles=[],step=14,t=0;
+function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+function mk(price){var drift=(Math.random()-0.46)*3.2,open=price,close=price+drift,hi=Math.max(open,close)+Math.random()*2.2,lo=Math.min(open,close)-Math.random()*2.2;candles.push({o:open,c:close,h:hi,l:lo});return close}
+function seed(){candles=[];var price=100,n=Math.ceil(cv.clientWidth/step)+4;for(var i=0;i<n;i++){price=mk(price)}}
+function resize(){dpr=Math.min(window.devicePixelRatio||1,2);W=cv.clientWidth;H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);seed()}
+function draw(){ctx.clearRect(0,0,W,H);var up=css("--gain"),dn=css("--loss"),vals=[];candles.forEach(function(c){vals.push(c.h,c.l)});var max=Math.max.apply(null,vals),min=Math.min.apply(null,vals),rng=(max-min)||1,pad=H*0.12;function y(v){return H-pad-((v-min)/rng)*(H-pad*2)}var x=W-(candles.length-1)*step+(reduce?0:-(t%step));for(var i=0;i<candles.length;i++){var c=candles[i],cx=x+i*step,col=c.c>=c.o?up:dn;ctx.strokeStyle=col;ctx.globalAlpha=.55;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(cx,y(c.h));ctx.lineTo(cx,y(c.l));ctx.stroke();ctx.globalAlpha=.85;ctx.fillStyle=col;var yo=y(c.o),yc=y(c.c),top=Math.min(yo,yc),hgt=Math.max(Math.abs(yo-yc),1.5);ctx.fillRect(cx-3.2,top,6.4,hgt)}ctx.globalAlpha=1}
+var last=0;function loop(){if(reduce){draw();return}t+=0.6;if(t-last>step){last=t;candles.shift();mk(candles.length?candles[candles.length-1].c:100)}draw();requestAnimationFrame(loop)}
+window.addEventListener("resize",resize);resize();if(reduce){draw()}else requestAnimationFrame(loop)}
+var typed=document.getElementById("typed"),stage=document.getElementById("stage");
+var scenes=[{cmd:"send 0.1 ETH to alice.eth",hold:true,render:function(){return '<div class="card show"><div class="ctitle">Confirm transfer <span class="pill">drafted by AI</span></div><div class="row"><span class="k">send</span><span class="v">0.1 ETH</span></div><div class="row"><span class="k">to &middot; alice.eth</span><span class="v">0xA1b2&hellip;9F3d</span></div><div class="row"><span class="k">network fee</span><span class="v">~$0.41</span></div><div class="row"><span class="k">agent fee 0.05%</span><span class="v">$0.00</span></div><div class="hold"><span class="fill"></span><span class="lbl">Hold to confirm</span></div></div>'}},
+{cmd:"rebalance to 60/40 stables",render:function(){return '<div class="card show"><div class="ctitle">Plan &middot; 2 swaps <span class="pill">each needs your OK</span></div><div class="row"><span class="k">1 &middot; sell</span><span class="v">0.42 ETH &rarr; USDC</span></div><div class="row"><span class="k">2 &middot; sell</span><span class="v">5.1 SOL &rarr; USDC</span></div><div class="row"><span class="k">target</span><span class="v">60% stable / 40% crypto</span></div></div>'}},
+{cmd:"which bot made money this week?",render:function(){return '<div class="card show"><div class="answer"><span class="big">Grid &middot; SOL/USDC</span> led the week.<br><span class="gain">+$16.67</span> realized across 46 flips.<br>Autopilot <span class="gain">+$8.20</span> &middot; DCA <span class="gain">+$3.10</span>.</div></div>'}}];
+if(typed&&stage){var si=0;
+function go(sc){if(sc.hold){var f=stage.querySelector(".fill");if(f){setTimeout(function(){f.classList.add("go")},400)}schedule(3200)}else schedule(2800)}
+function schedule(ms){if(reduce)return;setTimeout(function(){si=(si+1)%scenes.length;typeScene()},ms)}
+function typeScene(){var sc=scenes[si],s=sc.cmd,i=0;typed.textContent="";stage.innerHTML="";if(reduce){typed.textContent=s;stage.innerHTML=sc.render();go(sc);return}(function tick(){if(i<=s.length){typed.textContent=s.slice(0,i++);setTimeout(tick,42+Math.random()*40)}else{setTimeout(function(){stage.innerHTML=sc.render();go(sc)},340)}})()}
+typeScene()}})();
+</script></body></html>"##.to_string()
+}
+
+fn page_network(reg: &Registry) -> String {
     let card = |k: &str, v: String| format!(r#"<div class="card"><div class="v">{v}</div><div class="k">{k}</div></div>"#);
     let chain = chain_snapshot();
     let (height, supply, lanes_live) = match &chain {
@@ -1442,9 +1610,9 @@ fn page_home(reg: &Registry) -> String {
         c4 = card("Directory Pools", dirpools),
     );
     page_shell_seo(
-        "Blockle: post-quantum L1, merge-mined, native DEX",
+        "Blockle network — post-quantum L1, merge-mined, native DEX",
         "Post-quantum (ML-DSA) layer-1 merge-mined by every major ASIC algorithm, with a native AMM DEX, BLOCK-20 tokens and a meme launchpad.",
-        "/", "", body)
+        "/network", "", body)
 }
 
 fn query_get<'a>(query: &'a str, key: &str) -> Option<&'a str> {
