@@ -33,6 +33,17 @@
   }
   const form = (el) => Object.fromEntries(new FormData(el).entries());
   const qs = (k) => new URLSearchParams(location.search).get(k);
+  const copyText = async (t) => { try { await navigator.clipboard.writeText(t); return true; } catch (e) { return false; } };
+  const downloadText = (name, t) => { const b = new Blob([t], { type: 'text/plain' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u); };
+  // Render a copyable/downloadable panel of recovery codes into `el`.
+  function showRecovery(el, codes) {
+    const text = codes.join('\n');
+    el.innerHTML = `<div class="codes"><p class="note"><b>Save these recovery codes</b> — each works once if you lose your authenticator. They won't be shown again.</p>
+      <pre class="codeblock">${codes.map((c) => `<span>${c}</span>`).join('')}</pre>
+      <div class="row2"><button class="ghost sm" data-a="copy">Copy</button><button class="ghost sm" data-a="dl">Download</button></div></div>`;
+    el.querySelector('[data-a="copy"]').addEventListener('click', async (e) => { e.target.textContent = (await copyText(text)) ? 'Copied ✓' : 'Copy failed'; });
+    el.querySelector('[data-a="dl"]').addEventListener('click', () => downloadText('blockle-recovery-codes.txt', text + '\n'));
+  }
 
   const pages = {
     login() {
@@ -117,18 +128,20 @@
           <input id="regen-code" class="mono" inputmode="numeric" placeholder="123456"><button class="sm" id="regen-go" style="margin-top:8px;max-width:140px">Generate</button>`;
         $('#regen-go').addEventListener('click', async () => {
           const r = await api('POST', '/account/api/2fa/recovery', { totp: $('#regen-code').value });
-          if (r.status === 200) show('New recovery codes — save them now: ' + r.data.recovery.join(' '), 'ok');
+          if (r.status === 200) { show('New recovery codes generated.', 'ok'); showRecovery($('#regenArea'), r.data.recovery); }
           else show(r.data.error || 'Could not regenerate.');
         });
       });
       const setupBtn = $('#setup2fa'); if (setupBtn) setupBtn.addEventListener('click', async () => {
         const r = await api('POST', '/account/api/2fa/setup', {});
-        $('#setupArea').innerHTML = `<p class="note mono" style="word-break:break-all">${esc(r.data.secret)}</p>
-          <p class="note">Add that secret to your authenticator, then enter a code:</p>
-          <input id="code" class="mono" inputmode="numeric" placeholder="123456"><button id="en2fa" style="margin-top:8px">Enable</button>`;
+        $('#setupArea').innerHTML = `<p class="note">Add this secret to your authenticator app (or tap it on mobile), then enter a code:</p>
+          <pre class="codeblock"><span>${esc(r.data.secret)}</span></pre>
+          <div class="row2"><button class="ghost sm" id="copy-secret">Copy secret</button>${r.data.uri ? `<a class="btn-sm-link" href="${esc(r.data.uri)}">Open in app</a>` : ''}</div>
+          <input id="code" class="mono" inputmode="numeric" placeholder="123456" style="margin-top:10px"><button id="en2fa" style="margin-top:8px;max-width:140px">Enable</button>`;
+        $('#copy-secret').addEventListener('click', async (e) => { e.target.textContent = (await copyText(r.data.secret)) ? 'Copied ✓' : 'Copy failed'; });
         $('#en2fa').addEventListener('click', async () => {
           const er = await api('POST', '/account/api/2fa/enable', { totp: $('#code').value });
-          if (er.status === 200) show('Two-factor enabled. Save your recovery codes: ' + er.data.recovery.join(' '), 'ok');
+          if (er.status === 200) { show('Two-factor enabled.', 'ok'); showRecovery($('#setupArea'), er.data.recovery); }
           else show(er.data.error || 'Code did not match.');
         });
       });
