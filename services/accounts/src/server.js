@@ -20,6 +20,8 @@ import {
   json, html, redirect, sameOrigin, EMAIL_RE,
 } from './http.js';
 import { renderPage } from './pages.js';
+import { makeChain } from './chain.js';
+import { newBot, botView, step as botStep, BOT_TYPES } from './bots.js';
 
 const SESSION_COOKIE = 'blk_sess';
 const APP_JS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/app.js'), 'utf8');
@@ -35,6 +37,8 @@ export function createApp(overrides = {}) {
   const sessions = new Sessions(store, cfg, now);
   const mailer = overrides.mailer || makeMailer(cfg);
   const paypal = overrides.paypal || makePaypal(cfg, overrides.paypalDeps);
+  const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
+  let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
   const loginIpRl = new RateLimiter({ windowMs: cfg.rateWindowMs, max: cfg.maxLoginPerIp, lockoutBaseMs: cfg.lockoutBaseMs, lockThreshold: 10 }, now);
   const acctRl = new RateLimiter({ windowMs: cfg.rateWindowMs, max: cfg.maxLoginPerAccount, lockoutBaseMs: cfg.lockoutBaseMs, lockThreshold: 4 }, now);
   // Per-recipient cap so register/reset can't be used to mail-bomb an address.
@@ -227,6 +231,83 @@ export function createApp(overrides = {}) {
       social: socialProfile(u.id),
     });
   }));
+
+  // ===== Coinbase-style portfolio (non-custodial hosted vault) =============================
+  const vaultMeta = (uid) => { const bk = store.get('backups', uid); return (bk && bk.versions && bk.versions[0] && bk.versions[0].meta) || {}; };
+
+  on('GET', /^\/account\/api\/vault\/address$/, authed((req, res, { u }) => json(res, 200, { address: vaultMeta(u.id).address || null })));
+
+  on('GET', /^\/account\/api\/vault\/balance$/, authed(async (req, res, { u }) => {
+    const addr = vaultMeta(u.id).address;
+    if (!addr) return json(res, 200, { address: null, balance: null, tokens: [], note: 'Back up your wallet to link its address.' });
+    return json(res, 200, await chain.balance(addr));
+  }));
+
+  // The encrypted vault blob (session + 2FA) — the browser decrypts + signs locally; never here.
+  on('GET', /^\/account\/api\/vault$/, authed(async (req, res, { u }) => {
+    if (!require2fa(req, u)) return json(res, 403, u.totpEnabled ? { error: '2fa' } : { error: '2fa_setup_required' });
+    const bk = store.get('backups', u.id);
+    if (!bk || !bk.versions.length) return json(res, 404, { error: 'No vault stored.' });
+    return json(res, 200, { latest: bk.versions[0] });
+  }));
+
+  // Relay an opaque, client-SIGNED raw transaction. The server forwards bytes; it cannot sign.
+  on('POST', /^\/account\/api\/vault\/broadcast$/, authed(async (req, res) => {
+    const b = await readJson(req, 256 * 1024);
+    const rawtx = String(b.rawtx || '');
+    if (!rawtx || !/^[A-Za-z0-9+/=_-]+$/.test(rawtx)) return json(res, 400, { error: 'Invalid transaction.' });
+    try { return json(res, 200, { ok: true, result: await chain.broadcast(rawtx) }); }
+    catch { return json(res, 502, { error: 'Broadcast failed. Please try again.' }); }
+  }));
+
+  on('GET', /^\/account\/api\/markets$/, async (req, res) => {
+    const sess = await currentSession(req);
+    if (!sess) return json(res, 401, { error: 'auth' });
+    try { return json(res, 200, { markets: await chain.markets(), price: lastKnownPrice }); }
+    catch { return json(res, 200, { markets: [], price: lastKnownPrice }); }
+  });
+
+  // ===== 3Commas-style paper bots (play money; live trading stays client-signed in the wallet) =
+  const priceFor = () => (lastKnownPrice || 1);
+  on('GET', /^\/account\/api\/bots$/, authed((req, res, { u }) => {
+    const bots = store.all('bots').filter((x) => x.uid === u.id).map((x) => botView(x, priceFor()));
+    return json(res, 200, { bots, price: lastKnownPrice, types: BOT_TYPES });
+  }));
+
+  on('POST', /^\/account\/api\/bots$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 8 * 1024);
+    if (!BOT_TYPES.includes(b.type)) return json(res, 400, { error: 'Unknown bot type.' });
+    if (store.all('bots').filter((x) => x.uid === u.id).length >= 25) return json(res, 400, { error: 'Bot limit reached (25).' });
+    const id = randomToken(8);
+    const bot = newBot({ id, uid: u.id, type: b.type, pair: b.pair, params: b.params, now: now() });
+    await store.put('bots', id, bot);
+    return json(res, 200, { ok: true, bot: botView(bot, priceFor()) });
+  }));
+
+  on('POST', /^\/account\/api\/bots\/([^/]+)\/(pause|resume|delete)$/, authed(async (req, res, { u, m }) => {
+    const bot = store.get('bots', m[1]);
+    if (!bot || bot.uid !== u.id) return json(res, 404, { error: 'No such bot.' });
+    if (m[2] === 'delete') { await store.del('bots', m[1]); return json(res, 200, { ok: true }); }
+    await store.update('bots', m[1], (x) => { if (x) x.status = m[2] === 'pause' ? 'paused' : 'running'; return x; });
+    return json(res, 200, { ok: true });
+  }));
+
+  // Background stepper: fetch the BLOCK price + advance every running paper bot. Best-effort —
+  // if no price is available, bots simply hold. Started only in the live run (not in tests).
+  async function stepAllBots() {
+    try {
+      const mk = await chain.markets();
+      const block = mk.find((t) => /^block$/i.test(t.symbol));
+      const price = block && block.price ? Number(block.price) : lastKnownPrice;
+      if (!price) return;
+      lastKnownPrice = price;
+      for (const [id, bot] of store.entries('bots')) {
+        if (bot.status !== 'running') continue;
+        botStep(bot, price);
+        await store.put('bots', id, bot);
+      }
+    } catch { /* best-effort */ }
+  }
 
   // Sign out of every device (revoke all sessions for this user).
   on('POST', /^\/account\/api\/logout-all$/, authed(async (req, res, { u }) => {
@@ -530,7 +611,7 @@ export function createApp(overrides = {}) {
 
   // --- middleware wrappers ------------------------------------------------------------------
   function authed(fn) {
-    return async (req, res) => {
+    return async (req, res, url, m) => {
       const sess = await currentSession(req);
       if (!sess) return json(res, 401, { error: 'auth' });
       // Bearer-token (native wallet) requests aren't ambient, so CSRF doesn't apply to them;
@@ -538,7 +619,7 @@ export function createApp(overrides = {}) {
       if (req.method !== 'GET' && !sess.viaBearer && !requireCsrf(req, sess)) return json(res, 403, { error: 'csrf' });
       const u = store.get('users', sess.uid);
       if (!u) return json(res, 401, { error: 'auth' });
-      return fn(req, res, { sess, u });
+      return fn(req, res, { sess, u, url, m });
     };
   }
   // Hidden surface: ANY non-admin (including unauthenticated) gets an indistinguishable 404 —
@@ -584,7 +665,9 @@ export function createApp(overrides = {}) {
       }
       if (pathn === '/healthz') return json(res, 200, { ok: true });
       for (const r of routes) {
-        if (r.method === req.method && r.re.test(pathn)) return await r.fn(req, res, url);
+        if (r.method !== req.method) continue;
+        const m = r.re.exec(pathn);
+        if (m) return await r.fn(req, res, url, m); // pass the regex match (param routes need it)
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {
@@ -595,12 +678,12 @@ export function createApp(overrides = {}) {
     }
   });
 
-  return { server, store, sessions, mailer, paypal, cfg, ensureAdmin, _internal: { loginIpRl, acctRl, userByEmail } };
+  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, _internal: { loginIpRl, acctRl, userByEmail } };
 }
 
 function sanitizeMeta(meta) {
   const out = {};
-  for (const k of ['version', 'kdf', 'salt', 'nonce', 'device', 'walletKind', 'createdAt', 'app']) {
+  for (const k of ['version', 'kdf', 'salt', 'nonce', 'device', 'walletKind', 'createdAt', 'app', 'address', 'scheme']) {
     if (meta[k] != null) out[k] = String(meta[k]).slice(0, 256);
   }
   return out;
@@ -612,4 +695,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   await app.ensureAdmin();
   app.server.listen(app.cfg.port, app.cfg.host, () =>
     console.log(`[accounts] listening on ${app.cfg.host}:${app.cfg.port} (prod=${app.cfg.prod}, mail=${app.cfg.mailTransport}, paypal=${app.paypal.stub ? 'stub' : app.cfg.paypalEnv})`));
+  // Advance paper bots on an interval (best-effort price feed).
+  const timer = setInterval(() => { app.stepAllBots().catch(() => {}); }, app.cfg.botStepMs);
+  if (timer.unref) timer.unref();
 }
