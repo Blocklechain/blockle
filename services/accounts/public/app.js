@@ -89,6 +89,11 @@
       $('#status').textContent = r.status === 200 ? 'Email verified — you can sign in.' : (r.data.error || 'Invalid link.');
       if (r.status === 200) show('Verified.', 'ok'); else show(r.data.error || 'Invalid link.');
     },
+    async verifyEmail() {
+      const r = await api('GET', '/account/api/verify-email?token=' + encodeURIComponent(qs('token') || ''));
+      $('#status').textContent = r.status === 200 ? 'Email updated — you can use the new address to sign in.' : (r.data.error || 'Invalid link.');
+      show(r.status === 200 ? 'Email confirmed.' : (r.data.error || 'Invalid link.'), r.status === 200 ? 'ok' : 'err');
+    },
     support() {
       $('#f').addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -198,6 +203,21 @@
         const r = await api('POST', '/account/api/change-password', { current: cur, next: nxt });
         if (r.status === 200) { CSRF = r.data.csrf; $('#pw-current').value = ''; $('#pw-next').value = ''; show('Password updated — other devices were signed out.', 'ok'); loadDevices(); }
         else show(r.data.error || 'Could not change password.');
+      });
+
+      // change email (re-verification)
+      $('#emailLine').textContent = u.email;
+      $('#email-open').addEventListener('click', () => {
+        const area = $('#email-area'); area.classList.remove('hidden');
+        area.innerHTML = `<p class="note">We'll send a confirmation link to the new address; your email changes only after you click it.</p>
+          <input id="email-new" type="email" placeholder="New email" autocomplete="email">
+          <input id="email-pw" type="password" placeholder="Password" autocomplete="current-password">
+          <button class="ghost sm" id="email-go" style="margin-top:8px;max-width:180px">Send confirmation</button>`;
+        $('#email-go').addEventListener('click', async () => {
+          const r = await api('POST', '/account/api/change-email', { newEmail: $('#email-new').value, password: $('#email-pw').value });
+          if (r.status === 200) { show(r.data.message || 'Check the new address for a link.', 'ok'); area.classList.add('hidden'); }
+          else show(r.data.error || 'Could not change email.');
+        });
       });
 
       // danger zone: delete account

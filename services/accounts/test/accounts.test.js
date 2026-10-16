@@ -365,6 +365,35 @@ test('delete account wipes the user + backup and requires the password', async (
   });
 });
 
+test('change email requires the password and only swaps after confirming the new address', async () => {
+  await withServer(async ({ app, call }) => {
+    await call('POST', '/account/api/register', { email: 'old@b.com', password: 'longenough1' });
+    const vtok = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + vtok);
+    const login = await call('POST', '/account/api/login', { email: 'old@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+
+    // wrong password rejected
+    const bad = await call('POST', '/account/api/change-email', { newEmail: 'new@b.com', password: 'nope' }, { 'X-CSRF-Token': csrf });
+    assert.equal(bad.status, 401);
+
+    // correct password → confirmation mailed to the NEW address; email not changed yet
+    const req = await call('POST', '/account/api/change-email', { newEmail: 'new@b.com', password: 'longenough1' }, { 'X-CSRF-Token': csrf });
+    assert.equal(req.status, 200);
+    assert.equal((await call('GET', '/account/api/me')).data.user.email, 'old@b.com', 'not changed before confirm');
+    const mail = app.mailer.sent.find((m) => m.to === 'new@b.com' && /new Blockle email/.test(m.subject));
+    assert.ok(mail, 'confirmation sent to the new address');
+    const etok = mail.text.match(/token=([^\s]+)/)[1];
+
+    // confirm → email swaps; the new address resolves, the old one doesn't
+    assert.equal((await call('GET', '/account/api/verify-email?token=' + etok)).status, 200);
+    await app.store.drain();
+    assert.equal((await call('GET', '/account/api/me')).data.user.email, 'new@b.com');
+    assert.equal(app._internal.userByEmail('old@b.com'), null);
+    assert.ok(app._internal.userByEmail('new@b.com'));
+  });
+});
+
 test('recovery codes can be regenerated with a valid 2FA code, not without', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 'rc@b.com', password: 'longenough1' });

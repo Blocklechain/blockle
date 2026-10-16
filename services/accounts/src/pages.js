@@ -104,6 +104,9 @@ const BODIES = {
   verify: () => `<div class="card">${brand}<h1>Verifying…</h1><p class="sub" id="status">Checking your link.</p>${msg}
 <a class="row" href="/account/login">Continue to sign in</a></div>`,
 
+  verifyEmail: () => `<div class="card">${brand}<h1>Confirming email…</h1><p class="sub" id="status">Checking your link.</p>${msg}
+<a class="row" href="/account">Go to your account</a></div>`,
+
   support: () => `<div class="card">${brand}<h1>Contact support</h1><p class="sub">We'll reply by email. Never share your seed phrase or backup passphrase with anyone — support will never ask.</p>
 <form id="f"><label>Email</label><input name="email" type="email" autocomplete="email" required>
 <label>Subject</label><input name="subject" required>
@@ -119,6 +122,9 @@ const BODIES = {
 <div class="sec"><h2>Devices</h2><div id="devices"><p class="muted">Loading…</p></div></div>
 <div class="sec"><h2>Plan</h2><div id="subBox"></div></div>
 <div class="sec"><h2>Quick links</h2><div class="links" id="links"></div></div>
+<div class="sec"><h2>Email</h2>
+  <div class="statusline"><span id="emailLine" class="off"></span><button class="ghost sm" id="email-open" style="max-width:150px">Change email</button></div>
+  <div id="email-area" class="hidden"></div></div>
 <div class="sec"><h2>Change password</h2>
   <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password">
   <input id="pw-next" type="password" placeholder="New password (10+ chars)" autocomplete="new-password" minlength="10">
@@ -149,7 +155,7 @@ const BODIES = {
 };
 
 const TITLES = { login: 'Sign in', register: 'Create account', forgot: 'Reset', reset: 'Reset',
-  verify: 'Verify', support: 'Support', account: 'Account', admin: 'Admin', welcome: 'Welcome' };
+  verify: 'Verify', verifyEmail: 'Confirm email', support: 'Support', account: 'Account', admin: 'Admin', welcome: 'Welcome' };
 
 export function renderPage(name, cfg) {
   const body = (BODIES[name] || BODIES.login)();
