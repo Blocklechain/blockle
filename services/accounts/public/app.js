@@ -185,13 +185,14 @@
       const shortUA = (ua) => ua ? esc(ua.replace(/^Mozilla\/[\d.]+ \(/, '').split(')')[0]) : 'Unknown device';
       async function loadDevices() {
         const r = await api('GET', '/account/api/sessions');
-        const list = r.data.sessions || [];
-        $('#devices').innerHTML = list.map((s) =>
-          `<div class="device"><div class="d"><div class="ua">${shortUA(s.ua)}</div><div class="meta">${s.ip ? esc(s.ip) + ' · ' : ''}seen ${dt(s.lastSeen)}${s.current ? ' · <span class="here">this device</span>' : ''}</div></div>${s.current ? '' : `<button class="ghost sm revoke" data-sid="${esc(s.sid)}" style="max-width:90px">Revoke</button>`}</div>`).join('') || '<p class="muted">No active sessions.</p>';
+        const devices = (r.data && r.data.devices) || [];
+        $('#devices').innerHTML = devices.map((d, i) =>
+          `<div class="device"><div class="d"><div class="ua">${shortUA(d.ua)}</div><div class="meta">${d.ip ? esc(d.ip) + ' · ' : ''}seen ${dt(d.lastSeen)}${d.count > 1 ? ' · ' + d.count + ' sessions' : ''}${d.current ? ' · <span class="here">this device</span>' : ''}</div></div>${d.current ? '' : `<button class="ghost sm revoke" data-i="${i}" style="max-width:90px">Revoke</button>`}</div>`).join('') || '<p class="muted">No active sessions.</p>';
+        $('#sessLine').textContent = 'Active devices: ' + devices.length;
         $('#devices').querySelectorAll('.revoke').forEach((b) => b.addEventListener('click', async () => {
-          const r2 = await api('POST', '/account/api/sessions/revoke', { sid: b.dataset.sid });
-          if (r2.status === 200) { loadDevices(); $('#sessLine').textContent = 'Active sessions: ' + Math.max(1, (list.length - 1)); }
-          else show(r2.data.error || 'Could not revoke.');
+          const d = devices[+b.dataset.i]; if (!d) return;
+          const r2 = await api('POST', '/account/api/sessions/revoke', { sids: d.sids });
+          if (r2.status === 200) loadDevices(); else show(r2.data.error || 'Could not revoke.');
         }));
       }
       loadDevices();

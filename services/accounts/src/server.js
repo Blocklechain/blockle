@@ -333,25 +333,39 @@ export function createApp(overrides = {}) {
   // List this user's active sessions (devices). The `sid` returned is the stored HASH of the
   // cookie — safe to expose (it can't be turned back into a usable cookie) and used only to
   // revoke that specific session below. The current device is flagged.
+  // Active DEVICES, not raw sessions — multiple logins from the same browser (same UA + IP)
+  // collapse into one device entry (with a session count), so a device isn't shown repeatedly.
   on('GET', /^\/account\/api\/sessions$/, async (req, res) => {
     const sess = await currentSession(req);
     if (!sess) return json(res, 401, { error: 'auth' });
     const hereKey = sha256(sess.id);
-    const list = store.entries('sessions')
-      .filter(([, r]) => r.uid === sess.uid)
-      .map(([key, r]) => ({ sid: key, ua: r.ua || '', ip: r.ip || '', createdAt: r.createdAt, lastSeen: r.lastSeen, current: key === hereKey }))
-      .sort((a, b) => b.lastSeen - a.lastSeen);
-    return json(res, 200, { sessions: list });
+    const groups = new Map();
+    for (const [key, r] of store.entries('sessions')) {
+      if (r.uid !== sess.uid) continue;
+      const gk = (r.ua || '') + '|' + (r.ip || '');
+      let g = groups.get(gk);
+      if (!g) { g = { ua: r.ua || '', ip: r.ip || '', sids: [], count: 0, lastSeen: 0, createdAt: r.createdAt || 0, current: false }; groups.set(gk, g); }
+      g.sids.push(key); g.count += 1;
+      g.lastSeen = Math.max(g.lastSeen, r.lastSeen || 0);
+      g.createdAt = Math.min(g.createdAt || r.createdAt || 0, r.createdAt || g.createdAt);
+      if (key === hereKey) g.current = true;
+    }
+    const devices = [...groups.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+    return json(res, 200, { devices });
   });
 
-  // Revoke one specific session by its sid (hash). Only the owner can revoke their own session.
+  // Revoke a device (all its sessions). Owner-scoped; signing out the current device clears the cookie.
   on('POST', /^\/account\/api\/sessions\/revoke$/, authed(async (req, res, { sess, u }) => {
-    const b = await readJson(req, 4 * 1024);
-    const sid = String(b.sid || '');
-    const target = store.get('sessions', sid);
-    if (!target || target.uid !== u.id) return json(res, 404, { error: 'No such session.' });
-    await store.del('sessions', sid);
-    const revokedSelf = sid === sha256(sess.id);
+    const b = await readJson(req, 8 * 1024);
+    const sids = Array.isArray(b.sids) ? b.sids.map(String) : (b.sid ? [String(b.sid)] : []);
+    if (!sids.length) return json(res, 400, { error: 'No device specified.' });
+    const hereKey = sha256(sess.id);
+    let revokedSelf = false, any = false;
+    for (const sid of sids) {
+      const t = store.get('sessions', sid);
+      if (t && t.uid === u.id) { await store.del('sessions', sid); any = true; if (sid === hereKey) revokedSelf = true; }
+    }
+    if (!any) return json(res, 404, { error: 'No such device.' });
     if (revokedSelf) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     return json(res, 200, { ok: true, revokedSelf });
   }));
