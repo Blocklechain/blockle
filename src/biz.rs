@@ -1265,7 +1265,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 <main>{body}</main>
-<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c" rel="noopener noreferrer" target="_blank">ALienbeing LLC</a>, a Minnesota LLC in good standing</footer>
 <script>
 (function(){{
   var p=location.pathname;
