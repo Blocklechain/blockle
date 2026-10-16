@@ -261,6 +261,41 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, revokedSelf });
   }));
 
+  // Change email: verify the password, then email a confirmation link to the NEW address. The
+  // swap only happens when that link is clicked (so a typo/attacker can't move your login).
+  on('POST', /^\/account\/api\/change-email$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 16 * 1024);
+    const newEmail = String(b.newEmail || '').toLowerCase().trim();
+    if (!EMAIL_RE.test(newEmail)) return json(res, 400, { error: 'Enter a valid email address.' });
+    if (!verifyPassword(String(b.password || ''), u.pwHash)) return json(res, 401, { error: 'Password is incorrect.' });
+    if (newEmail === u.email) return json(res, 400, { error: 'That is already your email.' });
+    // Generic response; only send if the address is free (no enumeration of existing accounts).
+    if (!userByEmail(newEmail)) {
+      const token = randomToken(32);
+      await store.put('tokens', sha256(token), { type: 'email-change', uid: u.id, newEmail, exp: now() + cfg.tokenTtlMs });
+      const url = `${cfg.publicOrigin}/account/verify-email?token=${token}`;
+      if (mailRl.allow('mail:' + newEmail))
+        await mailer.send({ to: newEmail, subject: 'Confirm your new Blockle email',
+          text: `Confirm this address for your Blockle account:\n\n${url}\n\nThis link expires in 15 minutes. If you didn't request this, you can ignore it.` });
+    }
+    return json(res, 200, { ok: true, message: 'Check the new address for a confirmation link.' });
+  }));
+
+  on('GET', /^\/account\/api\/verify-email$/, async (req, res, url) => {
+    const token = url.searchParams.get('token') || '';
+    const rec = store.get('tokens', sha256(token));
+    if (!rec || rec.type !== 'email-change' || rec.exp < now()) return json(res, 400, { error: 'Invalid or expired link.' });
+    if (userByEmail(rec.newEmail)) { await store.del('tokens', sha256(token)); return json(res, 409, { error: 'That email is now in use.' }); }
+    const u = store.get('users', rec.uid);
+    if (!u) { await store.del('tokens', sha256(token)); return json(res, 400, { error: 'Account not found.' }); }
+    await store.del('tokens', sha256(token));
+    const old = u.email;
+    await store.update('users', rec.uid, (x) => { if (x) x.email = rec.newEmail; return x; });
+    await emailIndex.del(old);
+    await emailIndex.set(rec.newEmail, rec.uid);
+    return json(res, 200, { ok: true });
+  });
+
   // Change password: verify the current one, set the new one, and re-issue THIS device's session
   // (every other session is revoked). Keeps the user signed in here without a round-trip to login.
   on('POST', /^\/account\/api\/change-password$/, authed(async (req, res, { sess, u }) => {
@@ -523,6 +558,7 @@ export function createApp(overrides = {}) {
     '/account/login': 'login', '/account/register': 'register', '/account': 'account',
     '/account/verify': 'verify', '/account/reset': 'reset', '/account/forgot': 'forgot',
     '/account/support': 'support', '/account/admin': 'admin', '/account/welcome': 'welcome',
+    '/account/verify-email': 'verifyEmail',
   };
 
   const server = http.createServer(async (req, res) => {
