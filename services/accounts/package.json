@@ -1,0 +1,12 @@
+{
+  "name": "blockle-accounts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Blockle accounts: auth, 2FA, zero-knowledge wallet backup, paid tier, tickets, admin. Non-custodial.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}
