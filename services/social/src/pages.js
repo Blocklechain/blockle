@@ -38,6 +38,8 @@ textarea{min-height:120px;resize:vertical}label{display:block;font-size:12px;tex
 .msg.err{display:block;background:rgba(255,93,106,.12);color:var(--loss)}.msg.ok{display:block;background:rgba(47,192,138,.12);color:var(--gain)}
 .cmt{border-left:2px solid var(--line);padding:8px 0 8px 12px;margin:8px 0}
 .muted{color:var(--mut);font-size:13px}.hidden{display:none}
+.theme-toggle{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:14px;cursor:pointer;line-height:1}
+.theme-toggle:hover{border-color:var(--accent)}
 h1{font-size:22px;margin:0 0 4px}
 `;
 
@@ -51,6 +53,7 @@ export function renderShell(cfg) {
   <a class="brand" href="${cfg.basePath}">◆ <b>Blockle</b> Social</a>
   <nav><a href="${cfg.basePath}">Home</a><a href="${cfg.basePath}/communities">Communities</a><a href="${cfg.basePath}/submit">Submit</a></nav>
   <span class="spacer"></span>
+  <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
   <span id="who"></span>
 </div></div>
 <div class="wrap" id="app"><p class="muted">Loading…</p></div>

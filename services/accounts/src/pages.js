@@ -48,6 +48,8 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .admin{max-width:960px}.ticket{border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:10px;background:var(--bg)}
 iframe{width:100%;height:520px;border:1px solid var(--line);border-radius:10px;margin-top:14px;background:#fff}
 .hidden{display:none}
+.theme-toggle{position:fixed;top:14px;right:16px;z-index:10;width:36px;height:36px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:15px;cursor:pointer;line-height:1}
+.theme-toggle:hover{border-color:var(--accent)}
 .dots{display:flex;gap:7px;justify-content:center;margin-bottom:20px}
 .dots i{width:7px;height:7px;border-radius:50%;background:var(--line);transition:background .2s}
 .dots i.on{background:var(--accent)}
@@ -61,6 +63,7 @@ function shell(page, title, bodyHtml, cfg) {
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${title} · Blockle</title><style>${CSS}</style></head>
 <body data-page="${page}" data-plan="${cfg.planName}" data-price="${cfg.planPrice}" data-ccy="${cfg.planCurrency}">
+<button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
 <div class="wrap">${bodyHtml}</div>
 <script src="/account/app.js"></script></body></html>`;
 }
