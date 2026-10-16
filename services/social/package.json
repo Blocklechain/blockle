@@ -1,0 +1,9 @@
+{
+  "name": "blockle-social",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "social.blockle.org — contribution-gated social layer; BLOCK is the gold. Reuses the accounts identity.",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node src/server.js", "test": "node --test" }
+}

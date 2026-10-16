@@ -1410,6 +1410,7 @@ header.bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--g
 .bar .wrap{display:flex;align-items:center;gap:22px;height:60px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;font-size:17px}
 .brand .glyph{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 210deg,var(--accent),#7db0ff 55%,var(--accent));box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent) inset;flex:none}
+.brand .mark{width:24px;height:24px;flex:none;vertical-align:middle;object-fit:contain}
 nav.top{display:none;gap:22px;margin-left:12px}nav.top a{font-size:14px;color:var(--muted);font-weight:500}nav.top a:hover{color:var(--text)}
 .bar .spacer{flex:1}
 .btn{font:600 14px/1 var(--sans);padding:10px 16px;border-radius:9px;cursor:pointer;border:1px solid transparent;display:inline-flex;align-items:center;gap:8px;transition:transform .12s,background .15s,border-color .15s}
@@ -1466,8 +1467,8 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.caret{opacity:1}}
 </style></head><body>
 <header class="bar"><div class="wrap">
-<a class="brand" href="/"><span class="glyph"></span>Blockle</a>
-<nav class="top"><a href="#product">Product</a><a href="#bots">Bots</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
+<a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
+<nav class="top"><a href="#product">Product</a><a href="#bots">Bots</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" href="/account/login">Sign in</a>
@@ -1525,9 +1526,9 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </div></div></section>
 </main>
 <footer><div class="wrap"><div class="foot">
-<div><a class="brand" href="/"><span class="glyph"></span>Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
+<div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
 <div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a><a href="/account/register">Create account</a></div>
-<div class="fcol"><span class="h">Network</span><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
