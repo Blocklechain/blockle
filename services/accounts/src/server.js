@@ -76,12 +76,16 @@ export function createApp(overrides = {}) {
     return (req.socket.remoteAddress || '').trim();
   }
   async function currentSession(req) {
-    const cookies = parseCookies(req);
-    const id = cookies[SESSION_COOKIE];
+    // Native wallet clients authenticate with a bearer token (the session id) instead of the
+    // browser cookie, since the SameSite=Lax cookie won't ride cross-site fetches.
+    const authz = req.headers['authorization'];
+    let id, viaBearer = false;
+    if (authz && /^Bearer\s+/i.test(authz)) { id = authz.replace(/^Bearer\s+/i, '').trim(); viaBearer = true; }
+    else id = parseCookies(req)[SESSION_COOKIE];
     const sess = await sessions.get(id);
     if (!sess) return null;
     await sessions.touch(id);
-    return { id, ...sess };
+    return { id, viaBearer, ...sess };
   }
   function requireCsrf(req, sess) {
     if (!sameOrigin(req, cfg)) return false;
@@ -157,7 +161,11 @@ export function createApp(overrides = {}) {
     acctRl.reset(acctKey);
     const { id, csrf } = await sessions.create(u.id, { ip, ua: req.headers['user-agent'] });
     setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure });
-    return json(res, 200, { ok: true, csrf, user: publicUser(u) });
+    const resp = { ok: true, csrf, user: publicUser(u) };
+    // Native wallet clients (not browsers) get the session id as a bearer token. Browsers never
+    // send this header, so the token stays out of any JS-readable response in the web context.
+    if (req.headers['x-blockle-client']) resp.token = id;
+    return json(res, 200, resp);
   });
 
   // Atomic check-and-consume: the membership test and removal happen inside the same store.update
@@ -388,7 +396,9 @@ export function createApp(overrides = {}) {
     return async (req, res) => {
       const sess = await currentSession(req);
       if (!sess) return json(res, 401, { error: 'auth' });
-      if (req.method !== 'GET' && !requireCsrf(req, sess)) return json(res, 403, { error: 'csrf' });
+      // Bearer-token (native wallet) requests aren't ambient, so CSRF doesn't apply to them;
+      // cookie-based (browser) mutations still require the CSRF token + same-origin.
+      if (req.method !== 'GET' && !sess.viaBearer && !requireCsrf(req, sess)) return json(res, 403, { error: 'csrf' });
       const u = store.get('users', sess.uid);
       if (!u) return json(res, 401, { error: 'auth' });
       return fn(req, res, { sess, u });

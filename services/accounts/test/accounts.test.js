@@ -257,6 +257,34 @@ test('admin endpoints 404 for non-admins, work for the seeded admin', async () =
 });
 
 // ---- TOTP end to end -----------------------------------------------------------------------
+test('wallet client: bearer-token login + backup without cookie/CSRF', async () => {
+  await withServer(async ({ app, call, clock, base }) => {
+    await call('POST', '/account/api/register', { email: 'w@b.com', password: 'longenough1' });
+    const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    // browser-style login to enable 2FA (cookie + csrf via the jar)
+    const login = await call('POST', '/account/api/login', { email: 'w@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+    const secret = (await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
+    await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+
+    // native wallet login → bearer token (no cookie needed)
+    const wl = await call('POST', '/account/api/login', { email: 'w@b.com', password: 'longenough1', totp: totpCode(secret, clock.t) }, { 'x-blockle-client': 'wallet' });
+    assert.ok(wl.data.token, 'wallet login returns a bearer token');
+    const bearer = wl.data.token;
+
+    // PUT backup with ONLY the bearer + totp — no cookie, no CSRF header
+    const put = await fetch(base + '/account/api/backup', { method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + bearer, 'x-totp': totpCode(secret, clock.t) },
+      body: JSON.stringify({ ciphertext: 'WalletEnvelopeBlob123==', meta: { app: 'extension' } }) });
+    assert.equal(put.status, 200);
+    const get = await fetch(base + '/account/api/backup', { headers: { Authorization: 'Bearer ' + bearer, 'x-totp': totpCode(secret, clock.t) } });
+    const gj = await get.json();
+    assert.equal(get.status, 200);
+    assert.equal(gj.latest.ciphertext, 'WalletEnvelopeBlob123==');
+  });
+});
+
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });
