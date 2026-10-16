@@ -1,0 +1,11 @@
+{
+  "note": "Cross-platform backup envelope v1 test vector. All wallets must match.",
+  "passphrase": "correct horse battery staple 2026",
+  "plaintext": "{\"mnemonic\":\"legal winner thank year wave sausage worth useful legal winner thank yellow\",\"accounts\":[{\"chain\":\"BLOCK\",\"addr\":\"blk1qexampleaddr\"}],\"v\":1}",
+  "iter": 600000,
+  "aad": "blockle-backup-v1",
+  "saltB64": "AAECAwQFBgcICQoLDA0ODw==",
+  "nonceB64": "EBESExQVFhcYGRob",
+  "ctB64": "GFYczW7upoz+UCSlL2T9tyQ2cfWZ4B1tAtLAuKXszZkqbIhaXoWiWlgo9gHDghDzc7Dk/cdW4ICtRTB2N+y/AeIOfzV4yQfjShiJVT3Gu/R8jvlgDu8pz0iISAAK8BfSctNG6z9fKK0FoJ5kG8CMMRtBTlrFaV5erydnNXI/YMXujfRiotptA9/h+G9YCINbn2JCr1mdYSAHsyLUNk5pMsZhzkm2K5Wwew==",
+  "blob": "eyJ2IjoxLCJrZGYiOiJwYmtkZjItc2hhMjU2IiwiaXRlciI6NjAwMDAwLCJzYWx0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9Edz09Iiwibm9uY2UiOiJFQkVTRXhRVkZoY1lHUm9iIiwiY3QiOiJHRlljelc3dXBveitVQ1NsTDJUOXR5UTJjZldaNEIxdEF0TEF1S1hzelprcWJJaGFYb1dpV2xnbzlnSERnaER6YzdEay9jZFc0SUN0UlRCMk4reS9BZUlPZnpWNHlRZmpTaGlKVlQzR3UvUjhqdmxnRHU4cHowaUlTQUFLOEJmU2N0Tkc2ejlmS0swRm9KNWtHOENNTVJ0QlRsckZhVjVlcnlkbk5YSS9ZTVh1amZSaW90cHRBOS9oK0c5WUNJTmJuMkpDcjFtZFlTQUhzeUxVTms1cE1zWmh6a20ySzVXd2V3PT0ifQ=="
+}
