@@ -315,6 +315,56 @@ test('dashboard overview reports backup/session state; logout-all revokes everyt
   });
 });
 
+test('device list + per-session revoke + change password', async () => {
+  await withServer(async ({ app, call }) => {
+    await call('POST', '/account/api/register', { email: 'd@b.com', password: 'longenough1' });
+    const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' }); // session #1
+    const login2 = await call('POST', '/account/api/login', { email: 'd@b.com', password: 'longenough1' }); // #2 (jar now holds #2)
+    const csrf = login2.data.csrf;
+
+    let list = (await call('GET', '/account/api/sessions')).data.sessions;
+    assert.equal(list.length, 2);
+    const other = list.find((s) => !s.current);
+    assert.ok(other, 'the non-current session is identifiable');
+    const rev = await call('POST', '/account/api/sessions/revoke', { sid: other.sid }, { 'X-CSRF-Token': csrf });
+    assert.equal(rev.status, 200);
+    list = (await call('GET', '/account/api/sessions')).data.sessions;
+    assert.equal(list.length, 1);
+    assert.equal(list[0].current, true);
+
+    // change password: wrong current rejected; correct one works and keeps THIS device signed in
+    const bad = await call('POST', '/account/api/change-password', { current: 'nope', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf });
+    assert.equal(bad.status, 401);
+    const ok = await call('POST', '/account/api/change-password', { current: 'longenough1', next: 'brandnewpass1' }, { 'X-CSRF-Token': csrf });
+    assert.equal(ok.status, 200);
+    assert.ok(ok.data.csrf);
+    assert.equal((await call('GET', '/account/api/me')).status, 200, 'still signed in on this device');
+  });
+});
+
+test('delete account wipes the user + backup and requires the password', async () => {
+  await withServer(async ({ app, call }) => {
+    await call('POST', '/account/api/register', { email: 'del@b.com', password: 'longenough1' });
+    const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'del@b.com', password: 'longenough1' });
+    const uid = app._internal.userByEmail('del@b.com').id;
+
+    const bad = await call('POST', '/account/api/delete-account', { password: 'wrong' }, { 'X-CSRF-Token': login.data.csrf });
+    assert.equal(bad.status, 401);
+    assert.ok(app.store.get('users', uid), 'still there after a bad password');
+
+    const ok = await call('POST', '/account/api/delete-account', { password: 'longenough1' }, { 'X-CSRF-Token': login.data.csrf });
+    assert.equal(ok.status, 200);
+    await app.store.drain();
+    assert.equal(app.store.get('users', uid), null);
+    assert.equal(app._internal.userByEmail('del@b.com'), null);
+    assert.equal((await call('GET', '/account/api/me')).status, 401);
+  });
+});
+
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });

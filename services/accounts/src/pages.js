@@ -23,6 +23,12 @@ const CSS = `
 .links a:hover{border-color:var(--accent);color:var(--accent)}
 .statusline{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px;margin:8px 0}
 .statusline .on{color:var(--gain)}.statusline .off{color:var(--mut)}
+.device{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px}
+.device:last-child{border-bottom:0}.device .d{min-width:0}.device .ua{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
+.device .meta{color:var(--mut);font-size:12px}.device .here{color:var(--gain);font-size:12px}
+button.danger,.wbtn.danger{background:transparent;border:1px solid rgba(255,93,106,.4);color:var(--loss)}
+button.danger:hover{background:rgba(255,93,106,.12)}
+.danger-zone h2{color:var(--loss)}
 h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
 label{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:14px 0 6px}
 input{width:100%;padding:11px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}
@@ -102,8 +108,16 @@ const BODIES = {
 <div class="grid" id="stats"></div>
 <div class="sec"><h2>Security</h2><div id="twofaBox"></div><div id="backupBox"></div>
   <div class="statusline"><span id="sessLine" class="off">Active sessions: —</span><button class="ghost sm" id="logoutAll" style="max-width:170px">Sign out everywhere</button></div></div>
+<div class="sec"><h2>Devices</h2><div id="devices"><p class="muted">Loading…</p></div></div>
 <div class="sec"><h2>Plan</h2><div id="subBox"></div></div>
 <div class="sec"><h2>Quick links</h2><div class="links" id="links"></div></div>
+<div class="sec"><h2>Change password</h2>
+  <input id="pw-current" type="password" placeholder="Current password" autocomplete="current-password">
+  <input id="pw-next" type="password" placeholder="New password (10+ chars)" autocomplete="new-password" minlength="10">
+  <button class="ghost sm" id="pw-save" style="margin-top:8px;max-width:180px">Update password</button></div>
+<div class="sec danger-zone"><h2>Danger zone</h2>
+  <button class="ghost sm danger" id="del-open" style="max-width:180px">Delete account</button>
+  <div id="del-area" class="hidden"></div></div>
 <button class="ghost" id="logout" style="margin-top:18px">Sign out</button>${msg}
 <div class="row"><a href="/">← blockle.org</a><a href="/account/support">Support</a></div></div>`,
 

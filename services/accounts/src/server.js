@@ -43,6 +43,7 @@ export function createApp(overrides = {}) {
   const emailIndex = {
     get: (email) => store.get('emails', email.toLowerCase()),
     set: (email, uid) => store.put('emails', email.toLowerCase(), uid),
+    del: (email) => store.del('emails', email.toLowerCase()),
   };
   const userByEmail = (email) => {
     const uid = emailIndex.get(email || '');
@@ -229,6 +230,64 @@ export function createApp(overrides = {}) {
   // Sign out of every device (revoke all sessions for this user).
   on('POST', /^\/account\/api\/logout-all$/, authed(async (req, res, { u }) => {
     await sessions.destroyAllForUser(u.id);
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    return json(res, 200, { ok: true });
+  }));
+
+  // List this user's active sessions (devices). The `sid` returned is the stored HASH of the
+  // cookie — safe to expose (it can't be turned back into a usable cookie) and used only to
+  // revoke that specific session below. The current device is flagged.
+  on('GET', /^\/account\/api\/sessions$/, async (req, res) => {
+    const sess = await currentSession(req);
+    if (!sess) return json(res, 401, { error: 'auth' });
+    const hereKey = sha256(sess.id);
+    const list = store.entries('sessions')
+      .filter(([, r]) => r.uid === sess.uid)
+      .map(([key, r]) => ({ sid: key, ua: r.ua || '', ip: r.ip || '', createdAt: r.createdAt, lastSeen: r.lastSeen, current: key === hereKey }))
+      .sort((a, b) => b.lastSeen - a.lastSeen);
+    return json(res, 200, { sessions: list });
+  });
+
+  // Revoke one specific session by its sid (hash). Only the owner can revoke their own session.
+  on('POST', /^\/account\/api\/sessions\/revoke$/, authed(async (req, res, { sess, u }) => {
+    const b = await readJson(req, 4 * 1024);
+    const sid = String(b.sid || '');
+    const target = store.get('sessions', sid);
+    if (!target || target.uid !== u.id) return json(res, 404, { error: 'No such session.' });
+    await store.del('sessions', sid);
+    const revokedSelf = sid === sha256(sess.id);
+    if (revokedSelf) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    return json(res, 200, { ok: true, revokedSelf });
+  }));
+
+  // Change password: verify the current one, set the new one, and re-issue THIS device's session
+  // (every other session is revoked). Keeps the user signed in here without a round-trip to login.
+  on('POST', /^\/account\/api\/change-password$/, authed(async (req, res, { sess, u }) => {
+    const b = await readJson(req, 16 * 1024);
+    if (!verifyPassword(String(b.current || ''), u.pwHash)) return json(res, 401, { error: 'Current password is incorrect.' });
+    const next = String(b.next || '');
+    if (next.length < 10) return json(res, 400, { error: 'New password must be at least 10 characters.' });
+    await store.update('users', u.id, (x) => { if (x) x.pwHash = hashPassword(next); return x; });
+    await sessions.destroyAllForUser(u.id); // revoke everything, incl. this one…
+    const { id, csrf } = await sessions.create(u.id, { ip: clientIp(req), ua: req.headers['user-agent'] }); // …then re-issue here
+    setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure });
+    const resp = { ok: true, csrf };
+    if (req.headers['x-blockle-client']) resp.token = id;
+    return json(res, 200, resp);
+  }));
+
+  // Delete the account (danger zone): requires the password, and a 2FA code if 2FA is on. Wipes
+  // the user, email index, all sessions, the encrypted backup blob, and any pending tokens. The
+  // social profile lives in a separate service and is not touched here.
+  on('POST', /^\/account\/api\/delete-account$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 16 * 1024);
+    if (!verifyPassword(String(b.password || ''), u.pwHash)) return json(res, 401, { error: 'Password is incorrect.' });
+    if (u.totpEnabled && !totpVerify(u.totpSecret, String(b.totp || ''), now())) return json(res, 401, { error: 'Enter your 2FA code to delete the account.' });
+    await sessions.destroyAllForUser(u.id);
+    await store.del('backups', u.id);
+    await store.del('users', u.id);
+    await emailIndex.del(u.email);
+    for (const [k, rec] of store.entries('tokens')) if (rec.uid === u.id) await store.del('tokens', k);
     clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     return json(res, 200, { ok: true });
   }));
