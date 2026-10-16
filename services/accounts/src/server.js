@@ -95,7 +95,8 @@ export function createApp(overrides = {}) {
   }
   const publicUser = (u) => u && ({
     id: u.id, email: u.email, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
-    totpEnabled: !!u.totpEnabled, sub: u.sub || { active: false }, onboarded: !!u.onboarded,
+    totpEnabled: !!u.totpEnabled, recoveryLeft: (u.recoveryHashes || []).length,
+    sub: u.sub || { active: false }, onboarded: !!u.onboarded,
   });
 
   // Best-effort read of the user's social profile (handle/karma/BLOCK) from the social store.
@@ -340,6 +341,16 @@ export function createApp(overrides = {}) {
       x.totpSecret = secret; x.totpEnabled = true; x.pendingTotp = null;
       x.recoveryHashes = recovery.map((c) => sha256(c)); return x;
     });
+    return json(res, 200, { ok: true, recovery });
+  }));
+
+  // Regenerate recovery codes (requires a current 2FA code). Invalidates the old set.
+  on('POST', /^\/account\/api\/2fa\/recovery$/, authed(async (req, res, { u }) => {
+    if (!u.totpEnabled) return json(res, 400, { error: 'Turn on two-factor first.' });
+    const b = await readJson(req, 16 * 1024);
+    if (!totpVerify(u.totpSecret, String(b.totp || ''), now())) return json(res, 401, { error: 'Enter a valid 2FA code.' });
+    const recovery = genRecoveryCodes();
+    await store.update('users', u.id, (x) => { if (x) x.recoveryHashes = recovery.map((c) => sha256(c)); return x; });
     return json(res, 200, { ok: true, recovery });
   }));
 

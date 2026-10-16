@@ -7,6 +7,21 @@
   const app = $('#app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let me = null, CSRF = null;
+  // Theme: apply saved choice + wire the toggle (light ⇄ dark, persisted, shared key with accounts).
+  try { const t = localStorage.getItem('blk-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+  function wireTheme() {
+    const tt = $('#theme-toggle'); if (!tt) return;
+    const pd = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (pd() ? 'dark' : 'light'); tt.textContent = c === 'light' ? '☀' : '☾'; };
+    sync();
+    tt.addEventListener('click', () => {
+      const c = document.documentElement.getAttribute('data-theme') || (pd() ? 'dark' : 'light');
+      const next = c === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('blk-theme', next); } catch (e) {}
+      sync();
+    });
+  }
 
   async function api(method, path, body) {
     const h = {}; if (body) h['Content-Type'] = 'application/json';
@@ -147,6 +162,7 @@
   }
 
   (async () => {
+    wireTheme();
     const r = await api('GET', '/api/me');
     me = r.data.user; CSRF = r.data.csrf || null;
     header(); route();

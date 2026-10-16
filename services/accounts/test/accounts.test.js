@@ -365,6 +365,27 @@ test('delete account wipes the user + backup and requires the password', async (
   });
 });
 
+test('recovery codes can be regenerated with a valid 2FA code, not without', async () => {
+  await withServer(async ({ app, call, clock }) => {
+    await call('POST', '/account/api/register', { email: 'rc@b.com', password: 'longenough1' });
+    const token = app.mailer.sent[0].text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'rc@b.com', password: 'longenough1' });
+    const csrf = login.data.csrf;
+    const secret = (await call('POST', '/account/api/2fa/setup', {}, { 'X-CSRF-Token': csrf })).data.secret;
+    const en = await call('POST', '/account/api/2fa/enable', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    const firstSet = en.data.recovery.slice();
+
+    assert.equal((await call('GET', '/account/api/me')).data.user.recoveryLeft, 10);
+    const bad = await call('POST', '/account/api/2fa/recovery', { totp: '000000' }, { 'X-CSRF-Token': csrf });
+    assert.equal(bad.status, 401);
+    const regen = await call('POST', '/account/api/2fa/recovery', { totp: totpCode(secret, clock.t) }, { 'X-CSRF-Token': csrf });
+    assert.equal(regen.status, 200);
+    assert.equal(regen.data.recovery.length, 10);
+    assert.notDeepEqual(regen.data.recovery, firstSet, 'a fresh set is issued');
+  });
+});
+
 test('2FA: enable, then login requires a valid code', async () => {
   await withServer(async ({ app, call, clock }) => {
     await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });

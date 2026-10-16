@@ -4,6 +4,21 @@
 (() => {
   const page = document.body.dataset.page;
   const $ = (s, r = document) => r.querySelector(s);
+  // Theme: apply the saved choice immediately, then wire the toggle (light ⇄ dark, persisted).
+  try { const t = localStorage.getItem('blk-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+  function wireTheme() {
+    const tt = $('#theme-toggle'); if (!tt) return;
+    const prefersDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (prefersDark() ? 'dark' : 'light'); tt.textContent = c === 'light' ? '☀' : '☾'; };
+    sync();
+    tt.addEventListener('click', () => {
+      const c = document.documentElement.getAttribute('data-theme') || (prefersDark() ? 'dark' : 'light');
+      const next = c === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      try { localStorage.setItem('blk-theme', next); } catch (e) {}
+      sync();
+    });
+  }
   const msgEl = () => $('#msg');
   const show = (text, kind = 'err') => { const m = msgEl(); if (!m) return; m.textContent = text; m.className = 'msg ' + kind; };
   let CSRF = null;
@@ -95,8 +110,17 @@
 
       // security: 2FA
       $('#twofaBox').innerHTML = u.totpEnabled
-        ? `<div class="statusline"><span class="on">✓ Two-factor is on</span></div>`
+        ? `<div class="statusline"><span class="on">✓ Two-factor is on${u.recoveryLeft != null ? ' · ' + u.recoveryLeft + ' recovery code' + (u.recoveryLeft === 1 ? '' : 's') + ' left' : ''}</span><button class="ghost sm" id="regen" style="max-width:210px">Regenerate recovery codes</button></div><div id="regenArea"></div>`
         : `<div class="statusline"><span class="off">Two-factor is off</span><button class="ghost sm" id="setup2fa" style="max-width:150px">Turn on 2FA</button></div><div id="setupArea"></div>`;
+      const regenBtn = $('#regen'); if (regenBtn) regenBtn.addEventListener('click', () => {
+        $('#regenArea').innerHTML = `<p class="note">Enter a current 2FA code to generate a fresh set (the old codes stop working).</p>
+          <input id="regen-code" class="mono" inputmode="numeric" placeholder="123456"><button class="sm" id="regen-go" style="margin-top:8px;max-width:140px">Generate</button>`;
+        $('#regen-go').addEventListener('click', async () => {
+          const r = await api('POST', '/account/api/2fa/recovery', { totp: $('#regen-code').value });
+          if (r.status === 200) show('New recovery codes — save them now: ' + r.data.recovery.join(' '), 'ok');
+          else show(r.data.error || 'Could not regenerate.');
+        });
+      });
       const setupBtn = $('#setup2fa'); if (setupBtn) setupBtn.addEventListener('click', async () => {
         const r = await api('POST', '/account/api/2fa/setup', {});
         $('#setupArea').innerHTML = `<p class="note mono" style="word-break:break-all">${esc(r.data.secret)}</p>
@@ -239,5 +263,6 @@
     },
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  wireTheme();
   (pages[page] || (() => {}))();
 })();
