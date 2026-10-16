@@ -139,6 +139,48 @@
       if (u.role === 'admin') links.push(['🛠 Admin', '/account/admin']);
       $('#links').innerHTML = links.map(([t, h]) => `<a href="${h}">${t}</a>`).join('');
 
+      // devices / sessions
+      const shortUA = (ua) => ua ? esc(ua.replace(/^Mozilla\/[\d.]+ \(/, '').split(')')[0]) : 'Unknown device';
+      async function loadDevices() {
+        const r = await api('GET', '/account/api/sessions');
+        const list = r.data.sessions || [];
+        $('#devices').innerHTML = list.map((s) =>
+          `<div class="device"><div class="d"><div class="ua">${shortUA(s.ua)}</div><div class="meta">${s.ip ? esc(s.ip) + ' · ' : ''}seen ${dt(s.lastSeen)}${s.current ? ' · <span class="here">this device</span>' : ''}</div></div>${s.current ? '' : `<button class="ghost sm revoke" data-sid="${esc(s.sid)}" style="max-width:90px">Revoke</button>`}</div>`).join('') || '<p class="muted">No active sessions.</p>';
+        $('#devices').querySelectorAll('.revoke').forEach((b) => b.addEventListener('click', async () => {
+          const r2 = await api('POST', '/account/api/sessions/revoke', { sid: b.dataset.sid });
+          if (r2.status === 200) { loadDevices(); $('#sessLine').textContent = 'Active sessions: ' + Math.max(1, (list.length - 1)); }
+          else show(r2.data.error || 'Could not revoke.');
+        }));
+      }
+      loadDevices();
+
+      // change password
+      $('#pw-save').addEventListener('click', async () => {
+        const cur = $('#pw-current').value, nxt = $('#pw-next').value;
+        if (!cur || nxt.length < 10) return show('Enter your current password and a new password of 10+ characters.');
+        const r = await api('POST', '/account/api/change-password', { current: cur, next: nxt });
+        if (r.status === 200) { CSRF = r.data.csrf; $('#pw-current').value = ''; $('#pw-next').value = ''; show('Password updated — other devices were signed out.', 'ok'); loadDevices(); }
+        else show(r.data.error || 'Could not change password.');
+      });
+
+      // danger zone: delete account
+      $('#del-open').addEventListener('click', () => {
+        const area = $('#del-area'); area.classList.remove('hidden');
+        area.innerHTML = `<p class="note">This permanently deletes your account, encrypted backup and sessions. Your wallet funds are unaffected — Blockle is self-custody. Type <b>DELETE</b> to confirm.</p>
+          <input id="del-pw" type="password" placeholder="Password" autocomplete="current-password">
+          ${u.totpEnabled ? '<input id="del-totp" class="mono" inputmode="numeric" placeholder="2FA code">' : ''}
+          <input id="del-confirm" placeholder="Type DELETE">
+          <button class="danger sm" id="del-go" style="margin-top:8px;max-width:220px">Permanently delete account</button>`;
+        $('#del-go').addEventListener('click', async () => {
+          if ($('#del-confirm').value !== 'DELETE') return show('Type DELETE to confirm.');
+          const body = { password: $('#del-pw').value };
+          if (u.totpEnabled) body.totp = $('#del-totp').value;
+          const r = await api('POST', '/account/api/delete-account', body);
+          if (r.status === 200) { show('Account deleted.', 'ok'); setTimeout(() => { location.href = '/'; }, 1200); }
+          else show(r.data.error || 'Could not delete account.');
+        });
+      });
+
       $('#logout').addEventListener('click', async () => { await api('POST', '/account/api/logout', {}); location.href = '/account/login'; });
     },
     async welcome() {
