@@ -29,6 +29,11 @@ const CSS = `
 button.danger,.wbtn.danger{background:transparent;border:1px solid rgba(255,93,106,.4);color:var(--loss)}
 button.danger:hover{background:rgba(255,93,106,.12)}
 .danger-zone h2{color:var(--loss)}
+.codeblock{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:12px;margin:8px 0;display:flex;flex-direction:column;gap:4px;font-family:ui-monospace,Menlo,monospace;font-size:13px;overflow-x:auto}
+.codeblock span{white-space:nowrap}
+.row2{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn-sm-link{font-size:13px;padding:5px 10px;border:1px solid var(--line);border-radius:9px;color:var(--accent);text-decoration:none}
+.codes .note b{color:var(--ink)}
 h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--mut);margin:0 0 20px;font-size:14px}
 label{display:block;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--mut);margin:14px 0 6px}
 input{width:100%;padding:11px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}
