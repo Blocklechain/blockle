@@ -185,11 +185,11 @@ class PanelTest(unittest.TestCase):
         self.assertIs(wp.ctrl, tabs[0][0].ctrl)
         tabs[0][0].ctrl.loop and tabs[0][0].ctrl.loop.stop()
 
-    def test_five_surfaces_build(self):
+    def test_surfaces_build(self):
         from blockle.qtwalletui import WalletPanel
         wp = WalletPanel(self._ctrl())
         self.assertEqual([wp.tabs.tabText(i) for i in range(wp.tabs.count())],
-                         ["Portfolio", "Activity", "NFTs", "Connect", "Address book"])
+                         ["Portfolio", "Activity", "NFTs", "Mining", "Connect", "Address book"])
         wp.ctrl.loop and wp.ctrl.loop.stop()
 
     def test_locked_state_is_honest_empty_no_fake_data(self):
