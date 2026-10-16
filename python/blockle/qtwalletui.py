@@ -2181,6 +2181,167 @@ class AddressBookPanel(_ScrollPanel):
 # =========================================================================== #
 # WalletPanel — the five-surface tab host + header + theme toggle.             #
 # =========================================================================== #
+class MiningPanel(QWidget):
+    """Merge-mine BLOCK from the wallet. Blockle is merge-mined, so this doesn't hash in-process
+    (Python is too slow for these algos) — it picks an algorithm, auto-fills the Blockle pool
+    stratum + your BLOCK payout address, and launches an EXTERNAL miner binary you point to. Live
+    algos mine now; others light up as their pools come online."""
+
+    def __init__(self, wc: Any, tok: Any):
+        super().__init__()
+        self.wc = wc
+        self.tok = tok
+        self.payout = ""
+        self._proc = None
+        from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
+                                       QPushButton, QPlainTextEdit, QFormLayout)
+        from . import mining
+        self._mining = mining
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+        intro = QLabel("Merge-mine BLOCK: point a miner at a Blockle pool and earn BLOCK alongside the parent chain — no extra power.")
+        intro.setWordWrap(True)
+        intro.setObjectName("muted")
+        root.addWidget(intro)
+
+        form = QFormLayout()
+        self.algo = QComboBox()
+        for a in mining.ALGOS:
+            label = f"{a['algo']}  ·  {a['parent']}" if a["status"] == "live" else f"{a['algo']}  ·  (pool coming soon)"
+            self.algo.addItem(label, a["algo"])
+        self.algo.currentIndexChanged.connect(self._on_algo)
+        form.addRow("Algorithm", self.algo)
+
+        self.mode = QComboBox()
+        self.mode.addItem("PPLNS (shared, steadier)", "pplns")
+        self.mode.addItem("Solo (full block or nothing)", "solo")
+        self.mode.currentIndexChanged.connect(self._refresh_cmd)
+        form.addRow("Pool mode", self.mode)
+
+        self.pool_lbl = QLabel("—")
+        self.pool_lbl.setObjectName("mono")
+        self.pool_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("Pool", self.pool_lbl)
+
+        self.payout_lbl = QLabel("unlock your wallet")
+        self.payout_lbl.setObjectName("mono")
+        self.payout_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        form.addRow("BLOCK payout", self.payout_lbl)
+
+        self.miner_path = QLineEdit()
+        self.miner_path.setPlaceholderText("path to your miner binary (cpuminer, ccminer, SRBMiner…)")
+        self.miner_path.textChanged.connect(self._refresh_cmd)
+        form.addRow("Miner", self.miner_path)
+
+        self.worker = QLineEdit("blockle")
+        self.worker.textChanged.connect(self._refresh_cmd)
+        form.addRow("Worker", self.worker)
+        root.addLayout(form)
+
+        self.cmd_lbl = QPlainTextEdit()
+        self.cmd_lbl.setReadOnly(True)
+        self.cmd_lbl.setFixedHeight(54)
+        self.cmd_lbl.setObjectName("mono")
+        root.addWidget(QLabel("Miner command"))
+        root.addWidget(self.cmd_lbl)
+
+        btns = QHBoxLayout()
+        self.copy_btn = QPushButton("Copy command")
+        self.copy_btn.setObjectName("ghost")
+        self.copy_btn.clicked.connect(self._copy)
+        self.start_btn = QPushButton("Start mining")
+        self.start_btn.clicked.connect(self._start)
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setObjectName("ghost")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self._stop)
+        btns.addWidget(self.copy_btn)
+        btns.addStretch(1)
+        btns.addWidget(self.stop_btn)
+        btns.addWidget(self.start_btn)
+        root.addLayout(btns)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setObjectName("mono")
+        root.addWidget(self.log, 1)
+
+        self.refresh()
+        self._on_algo()
+
+    def set_tokens(self, tok: Any):
+        self.tok = tok
+
+    def refresh(self):
+        try:
+            accts = self.wc.accounts_list() or []
+        except Exception:
+            accts = []
+        blk = next((a.get("address") for a in accts if str(a.get("chain", "")).lower() == "block"), None)
+        self.payout = blk or (accts[0].get("address") if accts else "")
+        self.payout_lbl.setText(self.payout or "unlock your wallet to mine to your address")
+        self._refresh_cmd()
+
+    def _cur_algo(self):
+        return self.algo.currentData()
+
+    def _on_algo(self):
+        a = self._mining.get_algo(self._cur_algo()) or {}
+        live = a.get("status") == "live"
+        url = self._mining.stratum_url(self._cur_algo(), self.mode.currentData())
+        self.pool_lbl.setText(url if url else "pool coming soon — this algorithm isn't live yet")
+        hint = a.get("miner", "")
+        if hint:
+            self.miner_path.setToolTip("Suggested: " + hint)
+        self.start_btn.setEnabled(live)
+        self._refresh_cmd()
+
+    def _build_cmd(self):
+        return self._mining.miner_command(self.miner_path.text().strip(), self._cur_algo(),
+                                          self.payout, mode=self.mode.currentData(),
+                                          worker=self.worker.text().strip() or "blockle")
+
+    def _refresh_cmd(self):
+        cmd = self._build_cmd()
+        self.cmd_lbl.setPlainText(" ".join(cmd) if cmd else
+                                  "Select a live algorithm, point to your miner, and unlock your wallet.")
+
+    def _copy(self):
+        cmd = self._build_cmd()
+        if cmd:
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(" ".join(cmd))
+            self.copy_btn.setText("Copied ✓")
+
+    def _start(self):
+        cmd = self._build_cmd()
+        if not cmd:
+            self.log.appendPlainText("Can't start: choose a live algorithm, a miner binary, and unlock your wallet.")
+            return
+        from PySide6.QtCore import QProcess
+        self._proc = QProcess(self)
+        self._proc.setProcessChannelMode(QProcess.MergedChannels)
+        self._proc.readyReadStandardOutput.connect(
+            lambda: self.log.appendPlainText(bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace").rstrip()))
+        self._proc.finished.connect(self._on_finished)
+        self.log.appendPlainText("$ " + " ".join(cmd))
+        self._proc.start(cmd[0], cmd[1:])
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+
+    def _stop(self):
+        if self._proc:
+            self._proc.terminate()
+
+    def _on_finished(self, *_):
+        self.log.appendPlainText("— miner stopped —")
+        self.start_btn.setEnabled(self._mining.is_live(self._cur_algo()))
+        self.stop_btn.setEnabled(False)
+        self._proc = None
+
+
 class WalletPanel(QWidget):
     def __init__(self, ctrl: Any, theme: str = "dark"):
         super().__init__()
@@ -2219,9 +2380,11 @@ class WalletPanel(QWidget):
         self.nfts = NftPanel(self.wc, self.tok)
         self.connect = ConnectPanel(self.wc, self.tok)
         self.book = AddressBookPanel(self.wc, self.tok)
+        self.mining = MiningPanel(self.wc, self.tok)
         self.tabs.addTab(self.portfolio, "Portfolio")
         self.tabs.addTab(self.activity, "Activity")
         self.tabs.addTab(self.nfts, "NFTs")
+        self.tabs.addTab(self.mining, "Mining")
         self.tabs.addTab(self.connect, "Connect")
         self.tabs.addTab(self.book, "Address book")
         root.addWidget(self.tabs, 1)
@@ -2249,7 +2412,7 @@ class WalletPanel(QWidget):
         self.theme = "light" if self.theme == "dark" else "dark"
         self.tok = TOKENS_DARK if self.theme == "dark" else TOKENS_LIGHT
         self.theme_btn.setText("☾" if self.theme == "dark" else "☀")
-        for p in (self.portfolio, self.activity, self.nfts, self.connect, self.book):
+        for p in (self.portfolio, self.activity, self.nfts, self.mining, self.connect, self.book):
             p.set_tokens(self.tok)
         self.setStyleSheet(build_qss(self.tok))
         self._refresh_current()
