@@ -7,6 +7,13 @@
   const app = $('#app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let me = null, CSRF = null;
+  // BLOCK gold — award catalog (mirrors services/social/src/awards.js).
+  const AWARDS_CAT = [
+    { id: 'rocket', e: '🚀', c: 50, label: 'Rocket' }, { id: 'gold', e: '🏅', c: 100, label: 'Gold' },
+    { id: 'builder', e: '🛠️', c: 200, label: 'Builder' }, { id: 'alpha', e: '🔑', c: 300, label: 'Alpha' },
+    { id: 'diamond', e: '💎', c: 500, label: 'Diamond' },
+  ];
+  const AWARDS_EMOJI = Object.fromEntries(AWARDS_CAT.map((a) => [a.id, a.e]));
   // Theme: apply saved choice + wire the toggle (light ⇄ dark, persisted, shared key with accounts).
   try { const t = localStorage.getItem('blk-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
   function wireTheme() {
@@ -41,11 +48,19 @@
   }
 
   // ---- post card ----
+  function awardBadges(target) {
+    if (!target.awards) return '';
+    return Object.entries(target.awards).filter(([, n]) => n > 0)
+      .map(([id, n]) => `<span class="awb" title="${esc(id)}">${AWARDS_EMOJI[id] || '🏅'}${n > 1 ? ' ' + n : ''}</span>`).join('');
+  }
+  const isBoosted = (p) => p.boostedUntil && p.boostedUntil > Date.now();
+
   function postCard(p, { full = false } = {}) {
-    const el = document.createElement('div'); el.className = 'card';
+    const el = document.createElement('div'); el.className = 'card' + (isBoosted(p) ? ' boosted' : '');
     const bodyHtml = p.kind === 'link'
       ? `<a class="excerpt" href="${esc(p.body)}" rel="nofollow noopener" target="_blank">${esc(p.body)}</a>`
       : (full ? `<div class="excerpt">${esc(p.body)}</div>` : (p.body ? `<div class="excerpt">${esc(p.body.slice(0, 240))}${p.body.length > 240 ? '…' : ''}</div>` : ''));
+    const badges = awardBadges(p);
     el.innerHTML = `
       <div class="vote" data-type="post" data-id="${p.id}">
         <button class="up" aria-label="upvote">▲</button>
@@ -53,16 +68,47 @@
         <button class="down" aria-label="downvote">▼</button>
       </div>
       <div class="body">
-        <div class="meta">${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
+        <div class="meta">${isBoosted(p) ? '<span class="boostlbl">⚡ Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
         <a href="${BASE}/post/${p.id}"><div class="title">${esc(p.title)}</div></a>
         ${bodyHtml}
+        ${badges ? `<div class="badges">${badges}</div>` : ''}
         <div class="acts">
           <a href="${BASE}/post/${p.id}">💬 ${p.comments || 0}</a>
           <button class="tip" data-type="post" data-id="${p.id}">◆ Tip</button>
+          <button class="award" data-type="post" data-id="${p.id}">🏅 Award</button>
+          <button class="boost" data-id="${p.id}">⚡ Boost</button>
         </div>
+        <div class="awardbar" hidden></div>
       </div>`;
-    wireVote(el); wireTip(el);
+    wireVote(el); wireTip(el); wireAward(el); wireBoost(el);
     return el;
+  }
+
+  function wireAward(el) {
+    const b = el.querySelector('.award'); if (!b) return;
+    const bar = el.querySelector('.awardbar');
+    b.addEventListener('click', () => {
+      if (!me) { location.href = '/account/login'; return; }
+      if (!bar.hidden) { bar.hidden = true; return; }
+      bar.hidden = false;
+      bar.innerHTML = AWARDS_CAT.map((a) => `<button class="awpick" data-a="${a.id}" title="${a.label} — ${a.c} BLOCK">${a.e} ${a.c}</button>`).join('');
+      bar.querySelectorAll('.awpick').forEach((btn) => btn.addEventListener('click', async () => {
+        const r = await api('POST', '/api/award', { targetType: b.dataset.type, targetId: b.dataset.id, award: btn.dataset.a });
+        if (r.status === 200) { toast('Awarded ✓', 'ok'); bar.hidden = true; const a = AWARDS_CAT.find((x) => x.id === btn.dataset.a); if (a && me) { me.blockUnits -= a.c; header(); } }
+        else toast(r.data.error || 'Award failed.');
+      }));
+    });
+  }
+  function wireBoost(el) {
+    const b = el.querySelector('.boost'); if (!b) return;
+    b.addEventListener('click', async () => {
+      if (!me) { location.href = '/account/login'; return; }
+      const amt = parseInt(prompt('Boost this post with how much BLOCK? (min 20) — extends its reach for 24h', '20'), 10);
+      if (!amt) return;
+      const r = await api('POST', '/api/boost', { targetId: b.dataset.id, amount: amt });
+      if (r.status === 200) { toast('Boosted ⚡', 'ok'); if (me) { me.blockUnits -= amt; header(); } }
+      else toast(r.data.error || 'Boost failed.');
+    });
   }
 
   function wireVote(el) {

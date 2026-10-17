@@ -47,6 +47,14 @@ textarea{min-height:120px;resize:vertical}label{display:block;font-size:12px;tex
 .ccChip:hover{border-color:var(--accent);color:var(--accent)}
 .catH{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:18px 0 8px}
 .off{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--gain);border:1px solid color-mix(in srgb,var(--gain) 40%,var(--line));border-radius:5px;padding:1px 6px;vertical-align:middle}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 2px}
+.awb{font-size:13px;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:2px 9px}
+.boostlbl{color:var(--gold);font-weight:600}
+.card.boosted{border-color:color-mix(in srgb,var(--gold) 45%,var(--line))}
+.awardbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.awpick{font-size:13px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:5px 10px;color:var(--ink);cursor:pointer}
+.awpick:hover{border-color:var(--gold);color:var(--gold)}
+.acts .award:hover,.acts .boost:hover{color:var(--gold)}
 h1{font-size:22px;margin:0 0 4px}
 `;
 
