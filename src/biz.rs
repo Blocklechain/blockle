@@ -673,6 +673,8 @@ fn route(
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
+        "/world-overworld.jpg" => ("200 OK", "image/jpeg", WORLD_SHOT1.to_vec()),
+        "/world-quest.jpg" => ("200 OK", "image/jpeg", WORLD_SHOT2.to_vec()),
         "/pools" => ("200 OK", "text/html; charset=utf-8", page_pools(&reg, query).into_bytes()),
         p if p.starts_with("/pool/") => {
             let id = &p["/pool/".len()..];
@@ -1021,6 +1023,8 @@ fn chains_json(reg: &Registry) -> Value {
 const LOGO_PNG: &[u8] = include_bytes!("assets/logo-512.png");
 const LOGO_MARK_PNG: &[u8] = include_bytes!("assets/logo-mark-128.png");
 const FAVICON_PNG: &[u8] = include_bytes!("assets/favicon-32.png");
+const WORLD_SHOT1: &[u8] = include_bytes!("assets/world-overworld.jpg");
+const WORLD_SHOT2: &[u8] = include_bytes!("assets/world-quest.jpg");
 
 const CSS: &str = r#"
 :root{
@@ -1551,6 +1555,28 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <p class="disclaim">Figures are from a paper backtest of the shipped engine on 30 days of real hourly prices &mdash; illustrative of how the strategies behave net of fees, not a forecast. Directional strategies still depend on the market; the discipline is that the bot declines negative-edge trades, not that any trade is guaranteed to win. Crypto is volatile and you can lose money. Not investment advice.</p></div></section>
 <section><div class="wrap"><span class="eyebrow">Supported today</span><div class="shead"><h2>Every major chain, one seed phrase.</h2></div>
 <div class="chains"><span class="chip"><span class="d" style="background:#f7931a"></span>Bitcoin</span><span class="chip"><span class="d" style="background:#627eea"></span>Ethereum &amp; EVM</span><span class="chip"><span class="d" style="background:#9945ff"></span>Solana</span><span class="chip"><span class="d" style="background:#4d8bff"></span>BLOCK</span><span class="chip"><span class="d" style="background:#345d9d"></span>Litecoin</span><span class="chip"><span class="d" style="background:#c2a633"></span>Dogecoin</span><span class="chip"><span class="d" style="background:#2fc08a"></span>USDC / USDT</span><span class="chip">+ WalletConnect &middot; NFTs</span></div></div></section>
+<section id="world"><div class="wrap"><span class="eyebrow">Play &middot; on-chain</span>
+<div class="shead"><h2>WORLD &mdash; a live 3D overworld on BLOCK.</h2></div>
+<p style="color:var(--muted);max-width:62ch;margin:0 0 20px">Explore Hearthmere with other players in real time, right in your browser. One Blockle account signs you into everything &mdash; the wallet, the exchange and WORLD &mdash; and you connect with the same post-quantum Blockle wallet. Your characters and items live on BLOCK.</p>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:22px">
+  <img src="/world-overworld.jpg" alt="WORLD — the Hearthmere overworld" loading="lazy" style="width:100%;border:1px solid var(--line);border-radius:12px;display:block">
+  <img src="/world-quest.jpg" alt="WORLD — quests and inventory" loading="lazy" style="width:100%;border:1px solid var(--line);border-radius:12px;display:block">
+</div>
+<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;margin-bottom:22px">
+  <a class="btn" href="https://world.blockle.org" style="background:var(--accent);color:var(--accent-ink);font-weight:700">Play WORLD &rarr;</a>
+  <span style="color:var(--faint);font-size:14px">world.blockle.org &middot; connect with the Blockle wallet extension</span>
+</div>
+<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:18px 20px;max-width:720px">
+  <div style="font-weight:700;margin-bottom:10px">Set up the Blockle wallet extension (2 min)</div>
+  <ol style="color:var(--muted);margin:0;padding-left:20px;line-height:1.9">
+    <li>Download <a href="/releases/latest/download/BlockleWallet-extension.zip" style="color:var(--accent)">BlockleWallet-extension.zip</a> and unzip it.</li>
+    <li>Open <span class="mono">chrome://extensions</span> (or <span class="mono">edge://extensions</span> / <span class="mono">brave://extensions</span>).</li>
+    <li>Turn on <b>Developer mode</b> (top-right toggle).</li>
+    <li>Click <b>Load unpacked</b> and pick the unzipped folder.</li>
+    <li>Pin Blockle, create or import a wallet &mdash; then open WORLD and connect. Sign once; you stay connected to that wallet.</li>
+  </ol>
+</div>
+</div></section>
 <section id="download"><div class="wrap"><span class="eyebrow">Free &middot; no account &middot; open source</span>
 <div class="shead"><h2>Get Blockle.</h2><p>Install on any device. Create a wallet in seconds, or import your seed. You hold the keys from the first second.</p></div>
 <div class="dl">
