@@ -167,6 +167,40 @@ jobs:
           name: ${{ matrix.bin-artifact }}
           path: cli-bin/
 
+  # ── Promote a dispatched release to "Latest" ONLY once every download the site
+  # links is actually attached. A release is cut as --prerelease, so GitHub's
+  # "Latest" (= newest non-prerelease) stays on the previous COMPLETE release while
+  # the desktop zips build — no 404 window on blockle.org/releases/latest/download.
+  # This job runs after all 3 desktop legs upload their zip; if any required asset
+  # is missing it fails and leaves the release as prerelease (latest never regresses).
+  promote-release:
+    name: promote release to latest
+    needs: build
+    if: ${{ github.event.inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Mark release latest once all assets are attached
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+          REQUIRED="BlockleWallet-linux-x86_64.zip BlockleWallet-macos-arm64.zip BlockleWallet-windows-x86_64.zip BlockleWallet-extension.zip BlockleWallet-android.apk"
+          ASSETS=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          echo "Attached assets:"; echo "$ASSETS"
+          missing=0
+          for a in $REQUIRED; do
+            if ! echo "$ASSETS" | grep -qx "$a"; then echo "::warning::missing required asset $a"; missing=1; fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "::error::not all required assets are attached — leaving $TAG as prerelease so 'Latest' stays on the previous complete release"
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          echo "Promoted $TAG to Latest — all $(echo $REQUIRED | wc -w) download assets present."
+
   # ── Agent stack: @blockle/agent-sdk (sdk/) + @blockle/mcp (mcp/) ──────────────
   # Both link the ML-DSA wasm signer (blockle-wasm/pkg-node), so build it first.
   agent-stack:
