@@ -16,7 +16,7 @@ import {
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
 } from './crypto.js';
 import {
-  securityHeaders, readJson, readBody, parseCookies, setCookie, clearCookie,
+  securityHeaders, readJson, readBody, parseCookies, parseCookieValues, setCookie, clearCookie,
   json, html, redirect, sameOrigin, EMAIL_RE,
 } from './http.js';
 import { renderPage } from './pages.js';
@@ -91,13 +91,25 @@ export function createApp(overrides = {}) {
     // Native wallet clients authenticate with a bearer token (the session id) instead of the
     // browser cookie, since the SameSite=Lax cookie won't ride cross-site fetches.
     const authz = req.headers['authorization'];
-    let id, viaBearer = false;
-    if (authz && /^Bearer\s+/i.test(authz)) { id = authz.replace(/^Bearer\s+/i, '').trim(); viaBearer = true; }
-    else id = parseCookies(req)[SESSION_COOKIE];
-    const sess = await sessions.get(id);
-    if (!sess) return null;
-    await sessions.touch(id);
-    return { id, viaBearer, ...sess };
+    if (authz && /^Bearer\s+/i.test(authz)) {
+      const id = authz.replace(/^Bearer\s+/i, '').trim();
+      const sess = await sessions.get(id);
+      if (!sess) return null;
+      await sessions.touch(id);
+      return { id, viaBearer: true, ...sess };
+    }
+    // The cookie name can appear more than once — a stale host-only blk_sess sent
+    // alongside the newer Domain=.blockle.org one. Header order is browser-defined, so
+    // try every value and use the first that resolves to a live session (otherwise a
+    // stale duplicate wins and the user bounces back to the login screen).
+    for (const id of parseCookieValues(req, SESSION_COOKIE)) {
+      const sess = await sessions.get(id);
+      if (sess) {
+        await sessions.touch(id);
+        return { id, viaBearer: false, ...sess };
+      }
+    }
+    return null;
   }
   function requireCsrf(req, sess) {
     if (!sameOrigin(req, cfg)) return false;
@@ -189,6 +201,9 @@ export function createApp(overrides = {}) {
     }
     acctRl.reset(acctKey);
     const { id, csrf } = await sessions.create(u.id, { ip, ua: req.headers['user-agent'] });
+    // migrating to a Domain-scoped cookie? drop any stale host-only blk_sess first so the
+    // browser doesn't keep sending two values for the same name.
+    if (cfg.cookieDomain) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     const resp = { ok: true, csrf, user: publicUser(u) };
     // Native wallet clients (not browsers) get the session id as a bearer token. Browsers never
@@ -430,6 +445,9 @@ export function createApp(overrides = {}) {
     await store.update('users', u.id, (x) => { if (x) x.pwHash = hashPassword(next); return x; });
     await sessions.destroyAllForUser(u.id); // revoke everything, incl. this one…
     const { id, csrf } = await sessions.create(u.id, { ip: clientIp(req), ua: req.headers['user-agent'] }); // …then re-issue here
+    // migrating to a Domain-scoped cookie? drop any stale host-only blk_sess first so the
+    // browser doesn't keep sending two values for the same name.
+    if (cfg.cookieDomain) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
     setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     const resp = { ok: true, csrf };
     if (req.headers['x-blockle-client']) resp.token = id;

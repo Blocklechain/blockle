@@ -79,6 +79,30 @@ test('register emails a verify link; verify is single-use; login gated on verifi
   });
 });
 
+test('a stale duplicate blk_sess cookie still resolves the session (login-loop regression)', async () => {
+  // Regression for the .blockle.org cookie migration: a browser that still holds the old
+  // host-only blk_sess sends TWO values for the name. The server must try every value and
+  // use the one that resolves, or the user bounces back to the login screen.
+  await withServer(async ({ app, call, base }) => {
+    await call('POST', '/account/api/register', { email: 'dupcookie@b.com', password: 'longenough1' });
+    const token = app.mailer.sent.find((m) => m.to === 'dupcookie@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const login = await call('POST', '/account/api/login', { email: 'dupcookie@b.com', password: 'longenough1' });
+    assert.equal(login.status, 200);
+    const setc = login.raw.headers.getSetCookie();
+    const m = setc.map((c) => c.match(/^blk_sess=([^;]+)/)).find(Boolean);
+    assert.ok(m, 'login set blk_sess');
+    const valid = m[1];
+    // both header orders: the valid value first AND last (parseCookies-last-wins would fail)
+    for (const cookie of [`blk_sess=STALE_DEAD_VALUE; blk_sess=${valid}`, `blk_sess=${valid}; blk_sess=STALE_DEAD_VALUE`]) {
+      const r = await fetch(base + '/account/api/me', { headers: { Cookie: cookie } });
+      assert.equal(r.status, 200, 'session resolves regardless of duplicate order');
+      const d = await r.json();
+      assert.equal(d.user && d.user.email, 'dupcookie@b.com');
+    }
+  });
+});
+
 test('register never reveals existing accounts (identical response)', async () => {
   await withServer(async ({ call }) => {
     const r1 = await call('POST', '/account/api/register', { email: 'dup@b.com', password: 'longenough1' });
