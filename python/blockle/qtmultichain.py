@@ -1081,9 +1081,15 @@ class AccountsTab(QWidget):
 
             w = Worker(fetch)
             w.done.connect(lambda bals, r=r: self._show_balance(r, bals))
-            w.failed.connect(lambda e, r=r: self.table.setItem(r, 3, QTableWidgetItem("err: " + e[:24])))
+            w.failed.connect(lambda e, r=r: self._balance_failed(r, e))
             self._workers.append(w)
             w.start()
+
+    def _balance_failed(self, r, e):
+        # Couldn't reach the network — show 0 (not "err") with the reason on hover.
+        item = QTableWidgetItem("0")
+        item.setToolTip("Couldn't reach the network to refresh this balance — showing 0. (" + str(e)[:80] + ")")
+        self.table.setItem(r, 3, item)
 
     def _show_balance(self, r, bals):
         # Cache the held balances per chain so the Sell flow can pre-fill the
@@ -1092,12 +1098,17 @@ class AccountsTab(QWidget):
         if 0 <= r < len(rows):
             self._bal_by_chain[rows[r]] = bals
         parts = []
+        had_err = False
         for b in bals:
             if getattr(b, "error", None):
-                parts.append(f"{b.asset.symbol}: err")
+                had_err = True
+                parts.append(f"0 {b.asset.symbol}")  # unreachable/empty -> show 0, not a scary "err"
             else:
                 parts.append(f"{b.display} {b.asset.symbol}")
-        self.table.setItem(r, 3, QTableWidgetItem("  ".join(parts) or "—"))
+        item = QTableWidgetItem("  ".join(parts) or "0")
+        if had_err:
+            item.setToolTip("Some balances couldn't be refreshed just now — showing 0; they'll update on the next refresh.")
+        self.table.setItem(r, 3, item)
 
     def _held_display(self, cid, symbol):
         """The current held balance (human-units ``display`` string) for
@@ -1925,6 +1936,7 @@ class AgentTab(QWidget):
     _log = Signal(str)
     _refresh = Signal(list)
     _warn = Signal(str)
+    _info = Signal(str)
 
     def __init__(self, ctrl: MultiChainController):
         super().__init__()
@@ -1934,6 +1946,7 @@ class AgentTab(QWidget):
         self._log.connect(self._append)
         self._refresh.connect(self._fill_list)
         self._warn.connect(lambda m: QMessageBox.warning(self, "Agent", m))
+        self._info.connect(lambda m: QMessageBox.information(self, "Agent", m))
         lay = QVBoxLayout(self)
 
         warn = QLabel("Safety rails are enforced in code: a per-session spend cap, a REQUIRED "
@@ -1944,15 +1957,18 @@ class AgentTab(QWidget):
         lay.addWidget(warn)
 
         top = QHBoxLayout()
-        self.connect_btn = QPushButton("Connect a provider…")
-        self.connect_btn.setObjectName("primary")
+        self.hosted_btn = QPushButton("Use Blockle hosted agent (no key)")
+        self.hosted_btn.setObjectName("primary")
+        self.hosted_btn.setToolTip("Keyless — Blockle runs the model for you. No API key, no seed ever leaves this device.")
+        self.hosted_btn.clicked.connect(self._connect_hosted)
+        self.connect_btn = QPushButton("Connect your own key…")
         self.connect_btn.clicked.connect(self._connect_provider)
         self.new_ch_btn = QPushButton("New channel…")
         self.new_ch_btn.clicked.connect(self._new_channel)
         self.kill_btn = QPushButton("KILL ALL")
         self.kill_btn.setStyleSheet("QPushButton{background:#7a1f1f;color:white;border:none}")
         self.kill_btn.clicked.connect(self._kill_all)
-        for b in (self.connect_btn, self.new_ch_btn):
+        for b in (self.hosted_btn, self.connect_btn, self.new_ch_btn):
             top.addWidget(b)
         top.addStretch(1)
         top.addWidget(self.kill_btn)
@@ -2072,6 +2088,38 @@ class AgentTab(QWidget):
         QMessageBox.information(self, "Agent",
                                 f"{guide['label']} connected and sealed in the vault. "
                                 "Create a channel to use it.")
+
+    def _connect_hosted(self):
+        """Keyless connect to Blockle's hosted agent — no API key. Uses the anon-safe
+        ``providers.hosted_connect`` (never 401s) and seals the session token in the vault."""
+        try:
+            self._ensure_mgr()
+        except Exception as e:
+            QMessageBox.warning(self, "Agent", str(e))
+            return
+        from .agent import providers as _prov
+        gw = _prov.DEFAULT_GATEWAY_URL
+        self._log.emit("Connecting Blockle hosted agent…")
+        fut = self.ctrl.loop.submit(_prov.hosted_connect({"gatewayUrl": gw}))
+
+        def done(f):
+            try:
+                sess = f.result() or {}
+                token = sess.get("sessionToken")
+                if not token:
+                    self._warn.emit("Could not connect the hosted agent — try again.")
+                    return
+                ref = "cred:hosted:" + format(int(time.time()), "x")
+                self.ctrl.vault.set_credential(ref, {"provider": "hosted", "gatewayUrl": gw, "sessionToken": token})
+                self._pending_cred_ref = ref
+                self._pending_provider = "hosted"
+                self._pending_model = None
+                self._pending_base = None
+                self._log.emit("Blockle hosted agent connected (keyless). Create a channel to use it.")
+                self._info.emit("Blockle hosted agent connected — no API key needed. Now create a channel to use it.")
+            except Exception as e:  # noqa: BLE001
+                self._warn.emit("Hosted connect failed: " + str(e))
+        fut.add_done_callback(done)
 
     # ---- channels ----
     def _new_channel(self):

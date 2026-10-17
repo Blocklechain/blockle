@@ -41,6 +41,16 @@ DEFAULT_CAPS = {"sessionUsd": 100, "perAsset": {}}
 # "How do I get credentials" guidance shown in the UI for each provider, so a
 # user can connect a channel without leaving the wallet to hunt for docs.
 PROVIDER_GUIDES = {
+    "hosted": {
+        "label": "Blockle hosted agent (no key)",
+        "provider": "hosted",
+        "needs": [],  # keyless — a session token, not an apiKey
+        "defaultModel": "",
+        "url": "",
+        "how": ("Keyless. Blockle runs the model for you via the hosted agent gateway — no API "
+                "key to create or paste. Your seed never leaves this device; only the chat turns "
+                "and a short-lived session token are sent to the gateway."),
+    },
     "claude": {
         "label": "Claude (Anthropic)",
         "provider": "claude",
@@ -316,14 +326,23 @@ class ChannelManager:
         cred = None
         if self.resolve_credential:
             cred = await maybe_await(self.resolve_credential(meta.get("credRef"), meta))
-        if not cred or not cred.get("apiKey"):
+        provider = meta.get("provider") or (cred or {}).get("provider")
+        # HOSTED is keyless: it needs a gatewayUrl + sessionToken (the wallet never
+        # holds the upstream LLM key). Every other provider still needs an apiKey.
+        if provider == "hosted":
+            if not cred or not cred.get("gatewayUrl") or not cred.get("sessionToken"):
+                raise ValueError('cannot start "' + meta["label"]
+                                 + '": no hosted session available (connect the Blockle hosted agent)')
+        elif not cred or not cred.get("apiKey"):
             raise ValueError('cannot start "' + meta["label"]
                              + '": no LLM credential available (unlock the wallet and connect this channel)')
         credential = {
-            "provider": meta.get("provider") or cred.get("provider"),
-            "apiKey": cred["apiKey"],
+            "provider": provider,
+            "apiKey": cred.get("apiKey"),
             "model": meta.get("model") or cred.get("model"),
             "baseUrl": meta.get("baseUrl") or cred.get("baseUrl"),
+            "gatewayUrl": cred.get("gatewayUrl"),
+            "sessionToken": cred.get("sessionToken"),
         }
 
         async def on_kill(reason):
