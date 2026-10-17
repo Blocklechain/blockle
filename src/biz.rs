@@ -671,6 +671,8 @@ fn route(
         "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
         "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
         "/stats" => ("200 OK", "text/html; charset=utf-8", page_stats().into_bytes()),
+        "/tokenomics" => ("200 OK", "text/html; charset=utf-8", page_tokenomics().into_bytes()),
+        "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
@@ -1287,7 +1289,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {aads_top}
 <main>{body}</main>
 {aads_foot}
-<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -1405,6 +1407,124 @@ fn parent_rows() -> String {
             )
         })
         .collect()
+}
+
+fn page_tokenomics() -> String {
+    let body = r##"<h1>BLOCK tokenomics</h1>
+<p class="sub">Fixed supply, Bitcoin-style emission, no inflation surprises. BLOCK is mined across every merge-mining lane &mdash; there is no separate issuance.</p>
+<div class="tkgrid">
+  <div class="tkcard"><div class="k">Max supply</div><div class="v">21,210,000</div><div class="s">21,000,000 mined + 210,000 premine</div></div>
+  <div class="tkcard"><div class="k">Mined so far (live)</div><div class="v mono" id="tk-mined">&mdash;</div><div class="s" id="tk-pct">of the mining cap</div></div>
+  <div class="tkcard"><div class="k">Block subsidy</div><div class="v">50 &rarr; &frac12;</div><div class="s">halves every 210,000 blocks</div></div>
+  <div class="tkcard"><div class="k">Smallest unit</div><div class="v">1e-8</div><div class="s">1 BLOCK = 100,000,000 base units</div></div>
+</div>
+<h2 class="sh">Emission schedule</h2>
+<p class="pp">Identical to Bitcoin's curve: the block subsidy starts at 50 BLOCK and halves every 210,000 blocks, so ~21,000,000 BLOCK are ever mined. The geometric total converges &mdash; the last satoshis are mined deep into the next century.</p>
+<div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Epoch</th><th>Blocks</th><th>Subsidy</th><th>BLOCK minted this epoch</th></tr></thead><tbody>
+<tr><td>1</td><td class="mono">1 &ndash; 210,000</td><td class="mono">50</td><td class="mono">10,500,000</td></tr>
+<tr><td>2</td><td class="mono">210,001 &ndash; 420,000</td><td class="mono">25</td><td class="mono">5,250,000</td></tr>
+<tr><td>3</td><td class="mono">420,001 &ndash; 630,000</td><td class="mono">12.5</td><td class="mono">2,625,000</td></tr>
+<tr><td>4</td><td class="mono">630,001 &ndash; 840,000</td><td class="mono">6.25</td><td class="mono">1,312,500</td></tr>
+<tr><td>&hellip;</td><td class="mono">&hellip;</td><td class="mono">&frac12; each epoch</td><td class="mono">&rarr; 0</td></tr>
+</tbody></table></div>
+<h2 class="sh">Distribution</h2>
+<div class="tkbars">
+  <div class="tkbar"><div class="lbl"><span>Mined by proof-of-work</span><span class="mono">~99.0%</span></div><div class="track"><div class="fill" style="width:99%"></div></div></div>
+  <div class="tkbar"><div class="lbl"><span>Genesis premine</span><span class="mono">~1.0%</span></div><div class="track"><div class="fill alt" style="width:4%"></div></div></div>
+</div>
+<p class="pp">The <b>210,000 BLOCK premine</b> is ~1% of the mining cap &mdash; a one-time genesis allocation for development, liquidity and ecosystem bootstrapping. Everything else is earned by miners across the merge-mining lanes.</p>
+<h2 class="sh">Why fixed supply matters here</h2>
+<p class="pp">Because the cap is hard, BLOCK used as "gold" across the ecosystem &mdash; tips, awards and boosts in <a href="/social" style="color:var(--accent)">Social</a>, fees on the <a href="/dex" style="color:var(--accent)">DEX</a>, in-game value in <a href="https://world.blockle.org" style="color:var(--accent)">WORLD</a> &mdash; moves <b>circulating</b> BLOCK between people. Nothing is minted to pay for it.</p>
+<p class="sub" style="margin-top:22px"><a href="/stats" style="color:var(--accent)">Live network stats &rarr;</a> &middot; <a href="/guide" style="color:var(--accent)">What is Blockle? &rarr;</a></p>
+<style>
+.tkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0 8px}
+.tkcard{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
+.tkcard .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
+.tkcard .v{font-size:28px;font-weight:800;margin:6px 0 2px;color:#e8ebf2}
+.tkcard .s{font-size:12px;color:#5a6577}
+.sh{font-size:18px;margin:28px 0 10px}
+.pp{color:#9aa3b4;max-width:70ch;line-height:1.7}
+.tkbars{margin:10px 0 6px;max-width:560px}
+.tkbar{margin:12px 0}
+.tkbar .lbl{display:flex;justify-content:space-between;font-size:13px;color:#c7cedb;margin-bottom:5px}
+.tkbar .track{height:10px;background:#1a2029;border-radius:6px;overflow:hidden}
+.tkbar .fill{height:100%;background:linear-gradient(90deg,#4d8bff,#7db0ff);border-radius:6px}
+.tkbar .fill.alt{background:linear-gradient(90deg,#f5b945,#ffd77a)}
+.stbl{width:100%;border-collapse:collapse;font-size:14px}
+.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
+.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
+@media(prefers-color-scheme:light){.tkcard{background:#fff;border-color:#e4e9f2}.tkcard .v{color:#0d1420}.pp{color:#45506a}.stbl td{color:#2a3346;border-color:#eef1f7}.tkbar .track{background:#e9edf5}}
+</style>
+<script>
+(function(){
+  function minted(h){var sub=50,epoch=210000,total=0,left=h;while(left>0&&sub>=1e-8){var n=Math.min(left,epoch);total+=n*sub;left-=n;sub/=2;}return total+210000;}
+  async function go(){try{var r=await fetch('/api/chain',{cache:'no-store'});if(!r.ok)return;var j=await r.json();var b=j.blocks||[];if(!b.length)return;var h=b[0].height;var minedPow=minted(h)-210000;var el=document.getElementById('tk-mined');if(el)el.textContent=Math.round(minted(h)).toLocaleString('en-US');var p=document.getElementById('tk-pct');if(p)p.textContent=(minedPow/21000000*100).toFixed(2)+'% of the 21M mining cap';}catch(e){}}
+  go();
+})();
+</script>"##.to_string();
+    page_shell_seo(
+        "Tokenomics",
+        "BLOCK tokenomics — 21,210,000 fixed max supply, 50-BLOCK subsidy halving every 210,000 blocks, 210,000 premine, mined across merge-mining lanes.",
+        "/tokenomics",
+        "",
+        body,
+    )
+}
+
+fn page_roadmap() -> String {
+    let body = r##"<h1>Roadmap</h1>
+<p class="sub">Where Blockle is and where it's going. Shipped means live in production today.</p>
+<div class="rmcol">
+  <div class="rmphase shipped"><div class="rmtag">Shipped</div>
+    <ul class="rml">
+      <li><b>Post-quantum layer-1</b> &mdash; ML-DSA-44 (FIPS-204) signatures, bech32m <span class="mono">block1&hellip;</span> addresses, 50-BLOCK subsidy.</li>
+      <li><b>Universal merge-mining</b> &mdash; one aux chain mined across SHA-256d, Scrypt, X11, Equihash and more; live pools for the majors.</li>
+      <li><b>Non-custodial wallets</b> &mdash; Qt desktop, Flutter mobile and a browser extension; one seed across BTC/ETH/SOL/BLOCK/LTC/DOGE.</li>
+      <li><b>Cross-chain exchange</b> &mdash; non-custodial atomic swaps at exchange.blockle.org.</li>
+      <li><b>BLOCK-20 tokens + native AMM DEX</b> &mdash; constant-product, 0.30% fee, one-week LP lock, with a launchpad.</li>
+      <li><b>AI trading bots</b> &mdash; DCA / grid / SmartTrade / signal + autopilot, paper-first, behind one safety gate.</li>
+      <li><b>Accounts + Social</b> &mdash; one post-quantum account; a contribution-gated social layer with BLOCK "gold" and agent members.</li>
+      <li><b>WORLD</b> &mdash; a live 3D multiplayer game on BLOCK, single sign-on with your Blockle account.</li>
+      <li><b>Self-hosted AI agent</b> &mdash; keyless hosted agent gateway so the in-wallet bot needs no API key.</li>
+    </ul>
+  </div>
+  <div class="rmphase wip"><div class="rmtag">In progress</div>
+    <ul class="rml">
+      <li>WORLD as a full dApp &mdash; connect with the extension wallet, in-game items as BLOCK NFTs in your wallet.</li>
+      <li>Every synced parent-chain node promoted to a live pool with BLOCK aux.</li>
+      <li>Dogecoin full-indexed node + Esplora shim wired into the wallet.</li>
+      <li>Self-hosted mail + deliverability (DNS/rDNS) for account email.</li>
+    </ul>
+  </div>
+  <div class="rmphase next"><div class="rmtag">Planned</div>
+    <ul class="rml">
+      <li>On-chain governance &amp; staking for BLOCK holders.</li>
+      <li>Mobile app-store releases (iOS / Play) alongside the sideload builds.</li>
+      <li>Deeper NFT tooling and a marketplace surface.</li>
+      <li>More first-party chains and fiat on-ramps.</li>
+    </ul>
+  </div>
+</div>
+<p class="sub" style="margin-top:22px">Build with us &middot; <a href="https://github.com/blocklechain/blockle" style="color:var(--accent)">GitHub</a> &middot; <a href="https://discord.gg/tx4MfyD9Vu" style="color:var(--accent)">Discord</a> &middot; <a href="/developers" style="color:var(--accent)">Developers</a></p>
+<style>
+.rmcol{display:flex;flex-direction:column;gap:16px;margin-top:18px;max-width:820px}
+.rmphase{border:1px solid #222a37;border-left-width:3px;border-radius:12px;background:#141821;padding:16px 20px}
+.rmphase.shipped{border-left-color:#2fc08a}
+.rmphase.wip{border-left-color:#f5b945}
+.rmphase.next{border-left-color:#4d8bff}
+.rmtag{font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px}
+.rmphase.shipped .rmtag{color:#2fc08a}.rmphase.wip .rmtag{color:#f5b945}.rmphase.next .rmtag{color:#4d8bff}
+.rml{margin:0;padding-left:20px;color:#9aa3b4;line-height:1.85}
+.rml b{color:#e8ebf2}
+@media(prefers-color-scheme:light){.rmphase{background:#fff;border-color:#e4e9f2}.rml{color:#45506a}.rml b{color:#0d1420}}
+</style>"##.to_string();
+    page_shell_seo(
+        "Roadmap",
+        "The Blockle roadmap — what's shipped (post-quantum L1, merge mining, wallets, exchange, DEX, bots, social, WORLD) and what's next (governance, staking, NFTs).",
+        "/roadmap",
+        "",
+        body,
+    )
 }
 
 fn page_stats() -> String {
@@ -1706,7 +1826,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
 <div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a><a href="/account/register">Create account</a></div>
 <div class="fcol"><span class="h">Network</span><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
-<div class="fcol"><span class="h">More</span><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
+<div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
 (function(){var reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;
