@@ -17,6 +17,9 @@ export const config = {
 
   // Cookies: Secure in prod, SameSite=Lax, httpOnly always.
   cookieSecure: bool(env.ACCOUNTS_COOKIE_SECURE, bool(env.ACCOUNTS_PROD, false)),
+  // Optional cookie Domain for cross-subdomain SSO (e.g. ".blockle.org" so the
+  // session cookie reaches world.blockle.org). Empty = host-only (current behavior).
+  cookieDomain: env.ACCOUNTS_COOKIE_DOMAIN || '',
   sessionIdleMs: +(env.ACCOUNTS_SESSION_IDLE_MS || 15 * 60 * 1000),
   sessionAbsoluteMs: +(env.ACCOUNTS_SESSION_ABS_MS || 7 * 24 * 60 * 60 * 1000),
 

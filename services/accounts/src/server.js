@@ -189,7 +189,7 @@ export function createApp(overrides = {}) {
     }
     acctRl.reset(acctKey);
     const { id, csrf } = await sessions.create(u.id, { ip, ua: req.headers['user-agent'] });
-    setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure });
+    setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     const resp = { ok: true, csrf, user: publicUser(u) };
     // Native wallet clients (not browsers) get the session id as a bearer token. Browsers never
     // send this header, so the token stays out of any JS-readable response in the web context.
@@ -214,7 +214,7 @@ export function createApp(overrides = {}) {
   on('POST', /^\/account\/api\/logout$/, async (req, res) => {
     const sess = await currentSession(req);
     if (sess && requireCsrf(req, sess)) await sessions.destroy(sess.id);
-    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     return json(res, 200, { ok: true });
   });
 
@@ -326,7 +326,7 @@ export function createApp(overrides = {}) {
   // Sign out of every device (revoke all sessions for this user).
   on('POST', /^\/account\/api\/logout-all$/, authed(async (req, res, { u }) => {
     await sessions.destroyAllForUser(u.id);
-    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     return json(res, 200, { ok: true });
   }));
 
@@ -366,7 +366,7 @@ export function createApp(overrides = {}) {
       if (t && t.uid === u.id) { await store.del('sessions', sid); any = true; if (sid === hereKey) revokedSelf = true; }
     }
     if (!any) return json(res, 404, { error: 'No such device.' });
-    if (revokedSelf) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    if (revokedSelf) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     return json(res, 200, { ok: true, revokedSelf });
   }));
 
@@ -430,7 +430,7 @@ export function createApp(overrides = {}) {
     await store.update('users', u.id, (x) => { if (x) x.pwHash = hashPassword(next); return x; });
     await sessions.destroyAllForUser(u.id); // revoke everything, incl. this one…
     const { id, csrf } = await sessions.create(u.id, { ip: clientIp(req), ua: req.headers['user-agent'] }); // …then re-issue here
-    setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure });
+    setCookie(res, SESSION_COOKIE, id, { maxAgeMs: cfg.sessionAbsoluteMs, secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     const resp = { ok: true, csrf };
     if (req.headers['x-blockle-client']) resp.token = id;
     return json(res, 200, resp);
@@ -449,7 +449,7 @@ export function createApp(overrides = {}) {
     await emailIndex.del(u.email);
     if (u.username) await usernameIndex.del(u.username);
     for (const [k, rec] of store.entries('tokens')) if (rec.uid === u.id) await store.del('tokens', k);
-    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure });
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     return json(res, 200, { ok: true });
   }));
 
