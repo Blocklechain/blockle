@@ -2355,13 +2355,9 @@ class WalletPanel(QWidget):
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(10)
 
+        # No redundant brand/top bar — the window title + tab bar already say "Blockle Wallet".
+        # Keep only a slim right-aligned utility row: the active-account chip + theme toggle.
         header = QHBoxLayout()
-        brand = QLabel("◆ Blockle Wallet")
-        brand.setStyleSheet("font-size:16px;font-weight:800;")
-        header.addWidget(brand)
-        kind = QLabel("MULTI-CHAIN")
-        kind.setObjectName("chip")
-        header.addWidget(kind)
         header.addStretch(1)
         self.acct_chip = QLabel("locked")
         self.acct_chip.setObjectName("mchip")

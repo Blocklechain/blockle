@@ -78,6 +78,33 @@ def test_provider_guides_present():
     assert "console.anthropic.com" in g["claude"]["url"]
     assert "platform.openai.com" in g["chatgpt"]["url"]
     assert "github.com" in g["copilot"]["url"]
+    # hosted is keyless: it must be present but needs NO apiKey
+    assert g.get("hosted") and g["hosted"]["provider"] == "hosted"
+    assert g["hosted"]["needs"] == []
+
+
+def test_hosted_channel_starts_without_apikey():
+    """A hosted channel is keyless — it starts on a gatewayUrl+sessionToken and must
+    NOT be rejected for lacking an apiKey (regression: ChannelManager.start used to
+    hard-require apiKey, hiding the hosted agent from the Qt wallet)."""
+    hosted_cred = {"provider": "hosted", "gatewayUrl": "https://agent.blockle.org",
+                   "sessionToken": "sess-xyz"}
+    mgr = channels_mod.create(base_opts(
+        mem_store(), resolveCredential=resolver({"h": hosted_cred})))
+    run(mgr.create({"id": "hc", "label": "hosted", "walletId": "w1", "provider": "hosted",
+                    "credRef": "h", "readOnly": True, "caps": {}}))
+    d = run(mgr.start("hc"))
+    assert d["running"] is True
+
+
+def test_hosted_channel_refuses_without_session():
+    """But a hosted channel with no gatewayUrl/sessionToken still refuses to start."""
+    mgr = channels_mod.create(base_opts(
+        mem_store(), resolveCredential=resolver({"h": {"provider": "hosted"}})))
+    run(mgr.create({"id": "hc", "label": "hosted", "walletId": "w1", "provider": "hosted",
+                    "credRef": "h", "readOnly": True, "caps": {}}))
+    with pytest.raises(ValueError, match="hosted session"):
+        run(mgr.start("hc"))
 
 
 # ------------------------------------------------------------------ isolation
