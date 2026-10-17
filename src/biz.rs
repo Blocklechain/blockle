@@ -670,6 +670,7 @@ fn route(
         }
         "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
         "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
+        "/stats" => ("200 OK", "text/html; charset=utf-8", page_stats().into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
@@ -1280,7 +1281,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {site_jsonld}{head_extra}
 <title>{full_title}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 {aads_top}
@@ -1406,6 +1407,72 @@ fn parent_rows() -> String {
         .collect()
 }
 
+fn page_stats() -> String {
+    let body = r##"<h1>Network stats</h1>
+<p class="sub">Live from the BLOCK mainnet node &mdash; auto-refreshing every 15s.</p>
+<div class="sgrid">
+  <div class="scard big"><div class="k">Block height</div><div class="v mono" id="s-height">&mdash;</div><div class="s">post-quantum L1 &middot; 600s target</div></div>
+  <div class="scard"><div class="k">Mining lanes active</div><div class="v mono" id="s-lanes">&mdash;</div></div>
+  <div class="scard"><div class="k">Avg block time</div><div class="v mono" id="s-time">&mdash;</div></div>
+  <div class="scard"><div class="k">Blocks (last hour)</div><div class="v mono" id="s-hour">&mdash;</div></div>
+</div>
+<h2 class="sh">Mining lanes</h2>
+<table class="stbl"><thead><tr><th>Lane / algorithm</th><th>Latest height</th><th>Difficulty</th><th>Last block</th></tr></thead><tbody id="s-lanetbl"><tr><td colspan="4" class="mut">loading&hellip;</td></tr></tbody></table>
+<h2 class="sh">Recent blocks</h2>
+<div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Height</th><th>Lane</th><th>Miner</th><th>Txs</th><th>Reward</th><th>Time</th></tr></thead><tbody id="s-blocks"><tr><td colspan="6" class="mut">loading&hellip;</td></tr></tbody></table></div>
+<style>
+.sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:18px 0}
+.scard{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
+.scard.big{grid-column:span 2;min-width:260px}
+.scard .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
+.scard .v{font-size:30px;font-weight:800;margin:6px 0 2px;color:#e8ebf2}
+.scard.big .v{font-size:44px}
+.scard .s{font-size:12px;color:#5a6577}
+.sh{font-size:17px;margin:26px 0 10px}
+.stbl{width:100%;border-collapse:collapse;font-size:14px}
+.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
+.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
+.stbl td.mut{color:#5a6577}
+.stbl tr:hover td{background:#12161e}
+.stbl a{color:#4d8bff}
+@media(prefers-color-scheme:light){.scard{background:#fff;border-color:#e4e9f2}.scard .v{color:#0d1420}.stbl td{color:#2a3346;border-color:#eef1f7}.stbl tr:hover td{background:#f6f8fc}}
+</style>
+<script>
+(function(){
+  var fmt=function(n){return Number(n).toLocaleString('en-US');};
+  function esc(s){return String(s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+  function rel(ts){var s=Math.max(0,Math.floor(Date.now()/1000)-ts);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';return Math.floor(s/3600)+'h ago';}
+  function addr(a){a=String(a||'');return a.length>16?a.slice(0,10)+'&hellip;'+a.slice(-5):a;}
+  function diff(d){d=Number(d);if(d>=1e12)return(d/1e12).toFixed(2)+'T';if(d>=1e9)return(d/1e9).toFixed(2)+'G';if(d>=1e6)return(d/1e6).toFixed(2)+'M';if(d>=1e3)return(d/1e3).toFixed(2)+'k';return d.toFixed(2);}
+  var set=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
+  async function tick(){
+    try{
+      var r=await fetch('/api/chain',{cache:'no-store'});if(!r.ok)return;var j=await r.json();var b=j.blocks||[];if(!b.length)return;
+      var top=b[0];
+      set('s-height','#'+fmt(top.height));
+      var lanes={};b.forEach(function(x){if(!x.lane)return;var l=lanes[x.lane];if(!l||x.height>l.height)lanes[x.lane]={height:x.height,difficulty:x.difficulty,time:x.time};});
+      var keys=Object.keys(lanes).sort(function(a,c){return lanes[c].height-lanes[a].height;});
+      set('s-lanes',keys.length);
+      var n=Math.min(20,b.length-1),dt=0,c=0;for(var i=0;i<n;i++){var d=b[i].time-b[i+1].time;if(d>0&&d<36000){dt+=d;c++;}}
+      var avg=c?Math.round(dt/c):0;set('s-time',avg?(avg>=60?(Math.round(avg/6)/10)+'m':avg+'s'):'—');
+      var hourAgo=Math.floor(Date.now()/1000)-3600,inHour=b.filter(function(x){return x.time>=hourAgo;}).length;
+      set('s-hour',b.length>inHour?fmt(inHour):fmt(inHour)+'+');
+      document.getElementById('s-lanetbl').innerHTML=keys.map(function(k){var l=lanes[k];return '<tr><td><b>'+esc(k)+'</b></td><td class="mono">#'+fmt(l.height)+'</td><td class="mono">'+diff(l.difficulty)+'</td><td>'+rel(l.time)+'</td></tr>';}).join('');
+      document.getElementById('s-blocks').innerHTML=b.slice(0,25).map(function(x){return '<tr><td class="mono"><a href="/explorer/block/'+x.height+'">#'+fmt(x.height)+'</a></td><td>'+esc(x.lane||'')+'</td><td class="mono">'+addr(x.miner)+'</td><td>'+(x.txs||0)+'</td><td class="mono">'+(Number(x.reward)/1e8)+' BLOCK</td><td>'+rel(x.time)+'</td></tr>';}).join('');
+    }catch(e){}
+  }
+  tick();setInterval(tick,15000);
+})();
+</script>"##.to_string();
+    page_shell_seo(
+        "Network stats",
+        "Live BLOCK network statistics — block height, mining lanes, difficulty and recent blocks on the post-quantum Blockle layer-1.",
+        "/stats",
+        "",
+        body,
+    )
+}
+
 fn page_home() -> String {
     // Standalone "Instrument" landing — self-custody trading super-app. Served raw
     // (its own doc/CSS/JS), not the pool-directory shell. Mining/network content
@@ -1529,6 +1596,49 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <div class="body"><div class="prompt"><span class="chev">&gt;</span><span class="txt" id="typed"></span><span class="caret" id="caret"></span></div><div id="stage"></div></div>
 </div></div>
 </section>
+<section id="live" style="padding:30px 0 6px"><div class="wrap">
+<div class="livehead"><span class="eyebrow">Live on BLOCK</span><span class="livedot" aria-hidden="true"></span><span class="livelbl">mainnet</span></div>
+<div class="livegrid">
+<div class="livecard"><div class="k">Block height</div><div class="v mono" id="l-height">&mdash;</div><div class="s">post-quantum L1 &middot; 600s blocks</div></div>
+<div class="livecard"><div class="k">Mining lanes active</div><div class="v mono" id="l-lanes">&mdash;</div><div class="s">merge-mined algorithms</div></div>
+<div class="livecard"><div class="k">Avg block time</div><div class="v mono" id="l-time">&mdash;</div><div class="s">recent blocks</div></div>
+<div class="livecard"><div class="k">Latest block</div><div class="v mono" id="l-latest">&mdash;</div><div class="s" id="l-latest-s">&mdash;</div></div>
+</div>
+<div style="margin-top:10px"><a href="/stats" style="color:var(--accent);font-size:14px">Full network stats &rarr;</a></div>
+</div></section>
+<style>
+#live .livehead{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+#live .livedot{width:9px;height:9px;border-radius:50%;background:var(--gain);animation:lpulse 2s infinite}
+@keyframes lpulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--gain) 70%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+#live .livelbl{font-family:var(--mono);font-size:12px;color:var(--gain);text-transform:uppercase;letter-spacing:.1em}
+#live .livegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:14px}
+#live .livecard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+#live .livecard .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+#live .livecard .v{font-size:30px;font-weight:800;margin:6px 0 2px;letter-spacing:-.02em}
+#live .livecard .s{font-size:12px;color:var(--faint)}
+@media(prefers-reduced-motion:reduce){#live .livedot{animation:none}}
+</style>
+<script>
+(function(){
+  var fmt=function(n){return Number(n).toLocaleString('en-US');};
+  function animate(el,to){var from=Number(el.dataset.v||0);if(!isFinite(from))from=0;el.dataset.v=to;var t0=null;function step(ts){if(!t0)t0=ts;var p=Math.min(1,(ts-t0)/600);var val=Math.round(from+(to-from)*(1-Math.pow(1-p,3)));el.textContent=fmt(val);if(p<1)requestAnimationFrame(step);}requestAnimationFrame(step);}
+  function rel(ts){var s=Math.max(0,Math.floor(Date.now()/1000)-ts);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';return Math.floor(s/3600)+'h ago';}
+  async function tick(){
+    try{
+      var r=await fetch('/api/chain',{cache:'no-store'});if(!r.ok)return;var j=await r.json();var b=j.blocks||[];if(!b.length)return;
+      var top=b[0];
+      var h=document.getElementById('l-height');if(h)animate(h,top.height);
+      var lanes={};b.slice(0,40).forEach(function(x){if(x.lane)lanes[x.lane]=1;});
+      var ln=document.getElementById('l-lanes');if(ln)animate(ln,Object.keys(lanes).length);
+      var n=Math.min(20,b.length-1),dt=0,c=0;for(var i=0;i<n;i++){var d=b[i].time-b[i+1].time;if(d>0&&d<36000){dt+=d;c++;}}
+      var avg=c?Math.round(dt/c):0;var tm=document.getElementById('l-time');if(tm)tm.textContent=avg?(avg>=60?(Math.round(avg/6)/10)+'m':avg+'s'):'—';
+      var lt=document.getElementById('l-latest');if(lt)lt.textContent='#'+fmt(top.height);
+      var ls=document.getElementById('l-latest-s');if(ls)ls.textContent=(top.lane||'')+' · '+rel(top.time);
+    }catch(e){}
+  }
+  tick();setInterval(tick,15000);
+})();
+</script>
 <section id="product"><div class="wrap"><span class="eyebrow">What's inside</span>
 <div class="shead"><h2>One app for the whole trade &mdash; custody to execution.</h2><p>Most tools make you choose: a wallet, or an exchange, or a bot platform. Blockle is all three, non-custodial, with the AI agent wired through the same safety gate.</p></div>
 <div class="pillars">
