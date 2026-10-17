@@ -40,6 +40,13 @@ textarea{min-height:120px;resize:vertical}label{display:block;font-size:12px;tex
 .muted{color:var(--mut);font-size:13px}.hidden{display:none}
 .theme-toggle{width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:14px;cursor:pointer;line-height:1}
 .theme-toggle:hover{border-color:var(--accent)}
+.explore{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin:0 0 14px}
+.exhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.ccChip{font-size:13px;padding:5px 11px;border:1px solid var(--line);border-radius:999px;background:var(--bg);color:var(--ink);text-decoration:none}
+.ccChip:hover{border-color:var(--accent);color:var(--accent)}
+.catH{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin:18px 0 8px}
+.off{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--gain);border:1px solid color-mix(in srgb,var(--gain) 40%,var(--line));border-radius:5px;padding:1px 6px;vertical-align:middle}
 h1{font-size:22px;margin:0 0 4px}
 `;
 

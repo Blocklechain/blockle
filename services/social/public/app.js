@@ -92,13 +92,28 @@
   function toast(t, kind = 'err') { let m = $('#msg'); if (!m) { m = document.createElement('div'); m.id = 'msg'; app.prepend(m); } m.className = 'msg ' + kind; m.textContent = t; setTimeout(() => { m.className = 'msg'; }, 4000); }
 
   // ---- views ----
+  // Explore strip on the home view: official communities as quick chips.
+  async function renderExplore() {
+    const el = $('#explore'); if (!el) return;
+    const r = await api('GET', '/api/communities');
+    const comms = (r.data && r.data.communities) || [];
+    if (!comms.length) return;
+    const chips = comms.slice(0, 14).map((cm) =>
+      `<a class="ccChip" href="${BASE}/c/${esc(cm.name)}">b/${esc(cm.name)}${cm.official ? ' ✓' : ''}</a>`).join('');
+    el.innerHTML = `<div class="explore"><div class="exhead"><span class="meta">Explore communities</span><a href="${BASE}/communities">All →</a></div><div class="chips">${chips}</div></div>`;
+  }
+
   const views = {
     async home(sort = 'hot', c = null) {
       const r = await api('GET', `/api/feed?sort=${sort}${c ? '&c=' + encodeURIComponent(c) : ''}`);
       const tabs = ['hot', 'new', 'top'].map((s) => `<a href="${BASE}${c ? '/c/' + c : ''}?sort=${s}" class="${s === sort ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</a>`).join('');
-      app.innerHTML = `${c ? `<h1>b/${esc(c)}</h1>` : '<h1>Home</h1>'}<div class="tabs">${tabs}</div><div id="feed"></div>`;
+      app.innerHTML = `${c ? `<h1>b/${esc(c)}</h1>` : '<h1>Home</h1>'}${c ? '' : '<div id="explore"></div>'}<div class="tabs">${tabs}</div><div id="feed"></div>`;
+      if (!c) renderExplore();
       const feed = $('#feed');
-      if (!r.data.posts || !r.data.posts.length) { feed.innerHTML = '<p class="muted">Nothing here yet. Be the first to post.</p>'; return; }
+      if (!r.data.posts || !r.data.posts.length) {
+        feed.innerHTML = `<div class="card"><div class="body"><div class="title">It's quiet in here</div><div class="excerpt">Pick a community above and start the conversation${me ? '' : ' — <a href="/account/login">sign in</a> to post, vote and tip'}.</div></div></div>`;
+        return;
+      }
       r.data.posts.forEach((p) => feed.appendChild(postCard(p)));
     },
     async post(id) {
@@ -124,11 +139,21 @@
     },
     async communities() {
       const r = await api('GET', '/api/communities');
-      const list = (r.data.communities || []).map((c) => `<div class="card"><div class="body"><a href="${BASE}/c/${esc(c.name)}"><div class="title">b/${esc(c.name)} — ${esc(c.title)}</div></a><div class="excerpt">${esc(c.desc)}</div><div class="meta">${c.members} member(s)</div></div></div>`).join('') || '<p class="muted">No communities yet.</p>';
+      const comms = r.data.communities || [];
+      const cats = r.data.categories || [];
+      const byCat = {};
+      comms.forEach((cm) => { const k = cm.category || 'Other'; (byCat[k] = byCat[k] || []).push(cm); });
+      const order = [...cats, ...Object.keys(byCat).filter((k) => !cats.includes(k))];
+      const commCard = (cm) => `<div class="card"><div class="body"><a href="${BASE}/c/${esc(cm.name)}"><div class="title">b/${esc(cm.name)} — ${esc(cm.title)}${cm.official ? ' <span class="off">official</span>' : ''}</div></a><div class="excerpt">${esc(cm.desc)}</div><div class="meta">${cm.members} member(s)</div></div></div>`;
+      const groups = order.filter((k) => byCat[k]).map((k) =>
+        `<h2 class="catH">${esc(k)}</h2>` + byCat[k].map(commCard).join('')).join('') || '<p class="muted">No communities yet.</p>';
       const canCreate = me && ['member', 'trusted', 'curator', 'luminary'].includes(me.tier);
-      app.innerHTML = `<h1>Communities</h1>${canCreate ? `<div class="panel" style="margin-bottom:14px"><label>New community</label><input id="cn" placeholder="name (a-z0-9_)"><label>Title</label><input id="ct"><label>Description</label><input id="cd"><button class="btn sm" id="cc" style="margin-top:10px">Create</button></div>` : (me ? '<p class="muted">Reach the Member tier (100 karma) to create a community.</p>' : '')}<div>${list}</div>`;
+      const catOpts = cats.map((k) => `<option>${esc(k)}</option>`).join('');
+      app.innerHTML = `<h1>Communities</h1>${canCreate
+        ? `<div class="panel" style="margin-bottom:14px"><label>New community</label><input id="cn" placeholder="name (a-z0-9_)"><label>Title</label><input id="ct"><label>Category</label><select id="ccat">${catOpts}</select><label>Description</label><input id="cd"><button class="btn sm" id="cc" style="margin-top:10px">Create</button></div>`
+        : (me ? '<p class="muted">Reach the Member tier (100 karma) to create a community.</p>' : '')}<div>${groups}</div>`;
       if (canCreate) $('#cc').addEventListener('click', async () => {
-        const r2 = await api('POST', '/api/communities', { name: $('#cn').value, title: $('#ct').value, desc: $('#cd').value });
+        const r2 = await api('POST', '/api/communities', { name: $('#cn').value, title: $('#ct').value, desc: $('#cd').value, category: $('#ccat').value });
         if (r2.status === 200) location.href = `${BASE}/c/${r2.data.community.name}`; else toast(r2.data.error || 'Could not create.');
       });
     },

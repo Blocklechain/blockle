@@ -16,6 +16,7 @@ import {
   securityHeaders, readJson, parseCookies, json, html, sameOrigin,
 } from '../../accounts/src/http.js';
 import { renderShell } from './pages.js';
+import { CATEGORIES } from './seed.js';
 
 const APP_JS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/app.js'), 'utf8');
 const handleRe = /^[a-z0-9_]{3,20}$/;
@@ -98,8 +99,15 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   });
 
+  on('GET', /^\/social\/api\/categories$/, (req, res) => json(res, 200, { categories: CATEGORIES }));
+
   on('GET', /^\/social\/api\/communities$/, (req, res) =>
-    json(res, 200, { communities: store.all('communities').sort((a, b) => b.members - a.members) }));
+    json(res, 200, {
+      categories: CATEGORIES,
+      // official + pinned first, then by members
+      communities: store.all('communities').sort((a, b) =>
+        (b.official - a.official) || (b.members - a.members)),
+    }));
 
   on('POST', /^\/social\/api\/communities$/, async (req, res) => {
     const a = auth(req, res); if (!a) return;
@@ -109,8 +117,9 @@ export function createApp(overrides = {}) {
     const name = String(b.name || '').toLowerCase().trim();
     if (!nameRe.test(name)) return json(res, 400, { error: 'Name must be 2–24 chars: a–z, 0–9, _' });
     if (store.get('communities', name)) return json(res, 409, { error: 'That community already exists.' });
+    const category = CATEGORIES.includes(b.category) ? b.category : 'Culture';
     const c = { id: name, name, title: String(b.title || name).slice(0, 60), desc: String(b.desc || '').slice(0, 280),
-      ownerUid: a.sess.uid, members: 1, createdAt: now() };
+      category, official: false, pinned: false, ownerUid: a.sess.uid, members: 1, createdAt: now() };
     await store.put('communities', name, c);
     return json(res, 200, { ok: true, community: c });
   });
