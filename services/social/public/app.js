@@ -3,6 +3,7 @@
 // All user content is escaped. Mutations carry the shared accounts CSRF token.
 (() => {
   const BASE = document.body.dataset.base;
+  const ORIGIN = document.body.dataset.origin || '';
   const $ = (s, r = document) => r.querySelector(s);
   const app = $('#app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -55,11 +56,29 @@
   }
   const isBoosted = (p) => p.boostedUntil && p.boostedUntil > Date.now();
 
+  // Inline trade card: a BLOCK-20 reference renders a live card that links out to the
+  // user's OWN non-custodial DEX. Social never holds keys or routes the order — the
+  // button is a deep-link into blockle.org/dex, where the user signs in their wallet.
+  function tokenLabel(ref) {
+    return /^0x[0-9a-f]{40}$/.test(ref) ? ref.slice(0, 6) + '…' + ref.slice(-4) : ref;
+  }
+  function tradeCard(p) {
+    const ref = p.token; if (!ref) return '';
+    const label = tokenLabel(ref);
+    const href = ORIGIN + '/dex?token=' + encodeURIComponent(ref);
+    return `<div class="tcard">
+      <div class="tsym"><span class="tdot">◆</span> ${esc(label)}</div>
+      <div class="tmeta">BLOCK-20 token · trade in your own wallet</div>
+      <a class="btn sm tbuy" href="${esc(href)}" target="_blank" rel="noopener">Trade on Blockle →</a>
+    </div>`;
+  }
+
   function postCard(p, { full = false } = {}) {
     const el = document.createElement('div'); el.className = 'card' + (isBoosted(p) ? ' boosted' : '');
     const bodyHtml = p.kind === 'link'
       ? `<a class="excerpt" href="${esc(p.body)}" rel="nofollow noopener" target="_blank">${esc(p.body)}</a>`
       : (full ? `<div class="excerpt">${esc(p.body)}</div>` : (p.body ? `<div class="excerpt">${esc(p.body.slice(0, 240))}${p.body.length > 240 ? '…' : ''}</div>` : ''));
+    const tcard = p.kind === 'token' ? tradeCard(p) : '';
     const badges = awardBadges(p);
     el.innerHTML = `
       <div class="vote" data-type="post" data-id="${p.id}">
@@ -71,6 +90,7 @@
         <div class="meta">${isBoosted(p) ? '<span class="boostlbl">⚡ Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
         <a href="${BASE}/post/${p.id}"><div class="title">${esc(p.title)}</div></a>
         ${bodyHtml}
+        ${tcard}
         ${badges ? `<div class="badges">${badges}</div>` : ''}
         <div class="acts">
           <a href="${BASE}/post/${p.id}">💬 ${p.comments || 0}</a>
@@ -209,13 +229,20 @@
       const opts = (r.data.communities || []).map((c) => `<option value="${esc(c.name)}">b/${esc(c.name)}</option>`).join('');
       app.innerHTML = `<h1>New post</h1><div class="panel">
         <label>Community</label><select id="cid">${opts || '<option value="">(create one first)</option>'}</select>
-        <label>Type</label><select id="kind"><option value="text">Text</option><option value="link">Link</option></select>
+        <label>Type</label><select id="kind"><option value="text">Text</option><option value="link">Link</option><option value="token">Token card</option></select>
+        <div id="tokwrap" hidden><label>Token — symbol or 0x address</label><input id="token" maxlength="42" placeholder="BLOCK  or  0x…"></div>
         <label>Title</label><input id="title" maxlength="200">
         <label id="blabel">Body</label><textarea id="body"></textarea>
         <button class="btn" id="go" style="margin-top:12px">Post</button></div>`;
-      $('#kind').addEventListener('change', (e) => { $('#blabel').textContent = e.target.value === 'link' ? 'URL' : 'Body'; });
+      $('#kind').addEventListener('change', (e) => {
+        const k = e.target.value;
+        $('#blabel').textContent = k === 'link' ? 'URL' : (k === 'token' ? 'Note (optional)' : 'Body');
+        $('#tokwrap').hidden = k !== 'token';
+      });
       $('#go').addEventListener('click', async () => {
-        const r2 = await api('POST', '/api/posts', { cid: $('#cid').value, kind: $('#kind').value, title: $('#title').value, body: $('#body').value });
+        const body = { cid: $('#cid').value, kind: $('#kind').value, title: $('#title').value, body: $('#body').value };
+        if (body.kind === 'token') body.token = $('#token').value;
+        const r2 = await api('POST', '/api/posts', body);
         if (r2.status === 200) location.href = `${BASE}/post/${r2.data.id}`; else toast(r2.data.error || 'Could not post.');
       });
     },

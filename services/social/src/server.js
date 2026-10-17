@@ -143,11 +143,20 @@ export function createApp(overrides = {}) {
     if (!store.get('communities', cid)) return json(res, 400, { error: 'Pick a community.' });
     const title = String(b.title || '').trim().slice(0, 200);
     if (!title) return json(res, 400, { error: 'Add a title.' });
-    const kind = b.kind === 'link' ? 'link' : 'text';
+    const kind = b.kind === 'link' ? 'link' : (b.kind === 'token' ? 'token' : 'text');
     const body = String(b.body || '').slice(0, cfg.postMaxBytes);
     if (kind === 'link' && !/^https?:\/\/\S+$/.test(body)) return json(res, 400, { error: 'Enter a valid URL.' });
+    // A token card embeds a live BLOCK-20 reference (symbol or contract) that renders
+    // an inline trade card linking out to the user's own non-custodial DEX — social
+    // never holds keys or routes an order.
+    let token;
+    if (kind === 'token') {
+      token = normalizeTokenRef(b.token);
+      if (!token) return json(res, 400, { error: 'Enter a token symbol (e.g. BLOCK) or 0x contract address.' });
+    }
     const id = randomToken(8);
     const post = { id, cid, uid: a.sess.uid, kind, title, body, score: 0, up: 0, down: 0, comments: 0, createdAt: now() };
+    if (token) post.token = token;
     await store.put('posts', id, post);
     return json(res, 200, { ok: true, id });
   });
@@ -312,6 +321,17 @@ export function createApp(overrides = {}) {
 
 // --- helpers --------------------------------------------------------------------------------
 function round1(n) { return Math.round(n * 10) / 10; }
+
+// A token reference is either a ticker symbol (1–12 alphanumerics, a leading $ allowed
+// and stripped) or a BLOCK-20 / EVM-style 0x contract address. Symbols are upper-cased so
+// cards dedupe; anything else is rejected. Returns null when the ref is unusable.
+function normalizeTokenRef(raw) {
+  let s = String(raw || '').trim();
+  if (s.startsWith('$')) s = s.slice(1);
+  if (/^0x[0-9a-fA-F]{40}$/.test(s)) return s.toLowerCase();
+  if (/^[A-Za-z][A-Za-z0-9]{0,11}$/.test(s)) return s.toUpperCase();
+  return null;
+}
 
 function authorOf(uid, store) {
   const p = store.get('profiles', uid);

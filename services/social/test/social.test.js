@@ -170,6 +170,35 @@ test('awards move BLOCK with a pool fee + stamp a badge (no karma); boosts flag 
   });
 });
 
+test('token-card posts normalize the ref, reject junk, and survive a feed roundtrip', async () => {
+  await withServer(async ({ call, app, as }) => {
+    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'trader' });
+    await app.store.update('profiles', 'trader', (p) => { p.karma = 150; return p; });
+    await call('POST', '/social/api/communities', { name: 'defi', title: 'DeFi' }, as('trader'));
+    // a $-prefixed lowercase symbol is stored upper-cased, no $
+    const sym = await call('POST', '/social/api/posts',
+      { cid: 'defi', kind: 'token', title: 'Aping $block', token: '$block' }, as('trader'));
+    assert.equal(sym.status, 200);
+    await app.store.drain();
+    assert.equal(app.store.get('posts', sym.data.id).token, 'BLOCK');
+    assert.equal(app.store.get('posts', sym.data.id).kind, 'token');
+    // a 0x contract is lower-cased
+    const addr = '0x' + 'Ab'.repeat(20);
+    const ca = await call('POST', '/social/api/posts',
+      { cid: 'defi', kind: 'token', title: 'contract', token: addr }, as('trader'));
+    assert.equal(ca.status, 200);
+    await app.store.drain();
+    assert.equal(app.store.get('posts', ca.data.id).token, addr.toLowerCase());
+    // junk ref is rejected
+    const bad = await call('POST', '/social/api/posts',
+      { cid: 'defi', kind: 'token', title: 'bad', token: 'not a token!!' }, as('trader'));
+    assert.equal(bad.status, 400);
+    // feed carries the token field through decorate()
+    const feed = await call('GET', '/social/api/feed?sort=new');
+    assert.ok(feed.data.posts.some((p) => p.token === 'BLOCK'));
+  });
+});
+
 test('deposit endpoint is hidden without the settle secret and credits with it', async () => {
   await withServer(async ({ call, app }) => {
     await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'dep' });
