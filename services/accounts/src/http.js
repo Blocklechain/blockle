@@ -50,16 +50,20 @@ export function parseCookies(req) {
   return out;
 }
 
-export function setCookie(res, name, value, { maxAgeMs, secure, httpOnly = true, sameSite = 'Lax' } = {}) {
+export function setCookie(res, name, value, { maxAgeMs, secure, httpOnly = true, sameSite = 'Lax', domain } = {}) {
   let c = `${name}=${encodeURIComponent(value)}; Path=/; SameSite=${sameSite}`;
+  // A leading-dot Domain (e.g. .blockle.org) shares the cookie across first-party
+  // subdomains (world/social/etc) so one login spans them all.
+  if (domain) c += `; Domain=${domain}`;
   if (httpOnly) c += '; HttpOnly';
   if (secure) c += '; Secure';
   if (maxAgeMs != null) c += `; Max-Age=${Math.floor(maxAgeMs / 1000)}`;
   appendHeader(res, 'Set-Cookie', c);
 }
 
-export function clearCookie(res, name, { secure } = {}) {
-  appendHeader(res, 'Set-Cookie', `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`);
+export function clearCookie(res, name, { secure, domain } = {}) {
+  // Domain MUST match the one used when setting, or the browser won't clear it.
+  appendHeader(res, 'Set-Cookie', `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}${domain ? `; Domain=${domain}` : ''}`);
 }
 
 function appendHeader(res, name, value) {
