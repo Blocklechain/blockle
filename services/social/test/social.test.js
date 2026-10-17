@@ -199,6 +199,77 @@ test('token-card posts normalize the ref, reject junk, and survive a feed roundt
   });
 });
 
+test('agents-as-members: registration is tier-gated, agents post/comment but can never move value', async () => {
+  await withServer(async ({ call, app, as }) => {
+    // owner must be Member to register an agent
+    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'owner' });
+    const denied = await call('POST', '/social/api/agents', { handle: 'botzero' }, as('owner'));
+    assert.equal(denied.status, 403);
+    await app.store.update('profiles', 'owner', (p) => { p.karma = 150; return p; }); // promote
+
+    // register: token returned ONCE
+    const reg = await call('POST', '/social/api/agents', { handle: 'alphabot', name: 'Alpha Bot' }, as('owner'));
+    assert.equal(reg.status, 200);
+    const token = reg.data.token;
+    assert.match(token, /^blk_agent_/);
+    const agentAuth = { Authorization: `Bearer ${token}` };
+
+    // owner lists the agent
+    const mine = await call('GET', '/social/api/agents', undefined, as('owner'));
+    assert.equal(mine.data.agents.length, 1);
+    assert.equal(mine.data.agents[0].handle, 'alphabot');
+
+    // the agent can post + comment (no cookie, no CSRF — the bearer token is the capability)
+    await call('POST', '/social/api/communities', { name: 'alpha', title: 'Alpha' }, as('owner'));
+    const pr = await call('POST', '/social/api/posts',
+      { cid: 'alpha', kind: 'text', title: 'My read on BLOCK', body: 'thesis' }, agentAuth);
+    assert.equal(pr.status, 200);
+    const pid = pr.data.id;
+    const cr = await call('POST', '/social/api/comments', { pid, body: 'and a follow-up' }, agentAuth);
+    assert.equal(cr.status, 200);
+
+    // the post author is transparently labeled as an agent run by @owner
+    const feed = await call('GET', '/social/api/feed?sort=new');
+    const md = feed.data.posts.find((p) => p.id === pid);
+    assert.equal(md.author.handle, 'alphabot');
+    assert.equal(md.author.kind, 'agent');
+    assert.equal(md.author.ownerHandle, 'owner');
+
+    // VALUE ACTIONS are human-only: the agent token is rejected (401) on vote/tip/award/boost
+    assert.equal((await call('POST', '/social/api/vote', { targetType: 'post', targetId: pid, dir: 1 }, agentAuth)).status, 401);
+    assert.equal((await call('POST', '/social/api/tip', { targetType: 'post', targetId: pid, amount: 1 }, agentAuth)).status, 401);
+    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, agentAuth)).status, 401);
+    assert.equal((await call('POST', '/social/api/boost', { targetId: pid, amount: 20 }, agentAuth)).status, 401);
+    // and an agent cannot spawn agents
+    assert.equal((await call('POST', '/social/api/agents', { handle: 'nested' }, agentAuth)).status, 401);
+  });
+});
+
+test('agents-as-members: revoke disables the token; per-owner cap is enforced', async () => {
+  await withServer(async ({ call, app, as }) => {
+    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'boss' });
+    await app.store.update('profiles', 'boss', (p) => { p.karma = 150; return p; });
+    await call('POST', '/social/api/communities', { name: 'den', title: 'Den' }, as('boss'));
+
+    const reg = await call('POST', '/social/api/agents', { handle: 'worker' }, as('boss'));
+    const token = reg.data.token; const uid = reg.data.agent.uid;
+    const agentAuth = { Authorization: `Bearer ${token}` };
+    // works before revoke
+    assert.equal((await call('POST', '/social/api/posts', { cid: 'den', kind: 'text', title: 'hi', body: 'x' }, agentAuth)).status, 200);
+    // revoke → token no longer authenticates
+    assert.equal((await call('POST', `/social/api/agents/${encodeURIComponent(uid)}/revoke`, {}, as('boss'))).status, 200);
+    assert.equal((await call('POST', '/social/api/posts', { cid: 'den', kind: 'text', title: 'again', body: 'x' }, agentAuth)).status, 401);
+
+    // cap: fill to max (default 5; one slot freed by the revoke) then the next 409s
+    for (let i = 0; i < 5; i++) {
+      const r = await call('POST', '/social/api/agents', { handle: `cap${i}bot` }, as('boss'));
+      assert.equal(r.status, 200, `agent ${i} should register`);
+    }
+    const over = await call('POST', '/social/api/agents', { handle: 'overflowbot' }, as('boss'));
+    assert.equal(over.status, 409);
+  });
+});
+
 test('deposit endpoint is hidden without the settle secret and credits with it', async () => {
   await withServer(async ({ call, app }) => {
     await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'dep' });

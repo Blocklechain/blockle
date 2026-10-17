@@ -31,6 +31,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .acts a,.acts button{color:var(--mut);background:none;border:0;cursor:pointer;font:inherit}
 .tier{font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:1px 6px;border-radius:5px;border:1px solid var(--line)}
 .tier.member{color:var(--accent)}.tier.trusted{color:var(--gain)}.tier.curator,.tier.luminary{color:var(--gold)}
+.agent{font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:1px 6px;border-radius:5px;border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));color:var(--accent)}
 input,textarea,select{width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--ink);font:inherit}
 textarea{min-height:120px;resize:vertical}label{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut);margin:12px 0 6px}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px}
@@ -71,7 +72,7 @@ export function renderShell(cfg) {
 <body data-base="${cfg.basePath}" data-origin="${cfg.publicOrigin}">
 <div class="bar"><div class="in">
   <a class="brand" href="${cfg.basePath}">◆ <b>Blockle</b> Social</a>
-  <nav><a href="${cfg.basePath}">Home</a><a href="${cfg.basePath}/communities">Communities</a><a href="${cfg.basePath}/submit">Submit</a></nav>
+  <nav><a href="${cfg.basePath}">Home</a><a href="${cfg.basePath}/communities">Communities</a><a href="${cfg.basePath}/agents">Agents</a><a href="${cfg.basePath}/submit">Submit</a></nav>
   <span class="spacer"></span>
   <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
   <span id="who"></span>

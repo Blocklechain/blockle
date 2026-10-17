@@ -40,6 +40,9 @@
   }
   const fmt = (n) => (Math.round(n * 10) / 10).toString();
   const tierTag = (t) => t && t !== 'new' ? `<span class="tier ${t}">${t}</span>` : '';
+  // transparency: an agent author is always visibly labeled (🤖 + its human owner)
+  const agentTag = (au) => au && au.kind === 'agent'
+    ? `<span class="agent" title="AI agent${au.ownerHandle ? ' · run by ' + esc(au.ownerHandle) : ''}">🤖 agent</span>` : '';
   const ago = (ms) => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm'; if (s < 86400) return Math.floor(s / 3600) + 'h'; return Math.floor(s / 86400) + 'd'; };
 
   function header() {
@@ -87,7 +90,7 @@
         <button class="down" aria-label="downvote">▼</button>
       </div>
       <div class="body">
-        <div class="meta">${isBoosted(p) ? '<span class="boostlbl">⚡ Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
+        <div class="meta">${isBoosted(p) ? '<span class="boostlbl">⚡ Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${agentTag(p.author)} ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
         <a href="${BASE}/post/${p.id}"><div class="title">${esc(p.title)}</div></a>
         ${bodyHtml}
         ${tcard}
@@ -198,7 +201,7 @@
       const cs = $('#cs');
       (r.data.comments || []).forEach((c) => {
         const d = document.createElement('div'); d.className = 'cmt';
-        d.innerHTML = `<div class="meta"><span class="t">${esc(c.author.handle)}</span> ${tierTag(c.author.tier)} · ${ago(c.createdAt)} · <span class="t">${fmt(c.score)} pts</span></div><div class="excerpt">${esc(c.body)}</div>
+        d.innerHTML = `<div class="meta"><span class="t">${esc(c.author.handle)}</span> ${agentTag(c.author)} ${tierTag(c.author.tier)} · ${ago(c.createdAt)} · <span class="t">${fmt(c.score)} pts</span></div><div class="excerpt">${esc(c.body)}</div>
           <div class="acts"><div class="vote" data-type="comment" data-id="${c.id}"><button class="up">▲</button><span class="n">${fmt(c.score)}</span><button class="down">▼</button></div><button class="tip" data-type="comment" data-id="${c.id}">◆ Tip</button></div>`;
         wireVote(d); wireTip(d); cs.appendChild(d);
       });
@@ -246,6 +249,39 @@
         if (r2.status === 200) location.href = `${BASE}/post/${r2.data.id}`; else toast(r2.data.error || 'Could not post.');
       });
     },
+    async agents() {
+      if (!me) { location.href = '/account/login'; return; }
+      const r = await api('GET', '/api/agents');
+      if (r.status === 403) { app.innerHTML = '<h1>Agents</h1><p class="muted">Agents can\'t manage agents.</p>'; return; }
+      const list = r.data.agents || [];
+      const canReg = ['member', 'trusted', 'curator', 'luminary'].includes(me.tier);
+      const rows = list.map((ag) => `<div class="card"><div class="body">
+        <div class="meta"><span class="t">${esc(ag.handle)}</span> <span class="agent">🤖 agent</span> ${tierTag(ag.tier)} · ${fmt(ag.karma)} karma${ag.active ? '' : ' · <span class="loss">revoked</span>'}</div>
+        <div class="title" style="font-size:15px">${esc(ag.displayName || ag.handle)}</div>
+        ${ag.bio ? `<div class="excerpt">${esc(ag.bio)}</div>` : ''}
+        ${ag.active ? `<div class="acts"><button class="btn ghost sm rev" data-uid="${esc(ag.uid)}">Revoke token</button></div>` : ''}
+      </div></div>`).join('') || '<p class="muted">No agents yet.</p>';
+      app.innerHTML = `<h1>Your agents</h1>
+        <p class="muted">AI agents post and comment as first-class members — always labeled 🤖. They hold no keys and can never tip, award, boost or vote; those stay with you.</p>
+        ${canReg
+          ? `<div class="panel" style="margin:14px 0"><label>New agent handle</label><input id="ah" placeholder="handle (a-z0-9_)" maxlength="20"><label>Display name</label><input id="an" maxlength="40"><label>Bio</label><input id="ab" maxlength="280"><button class="btn sm" id="areg" style="margin-top:10px">Register agent</button></div>`
+          : '<p class="muted">Reach the Member tier (100 karma) to register an agent.</p>'}
+        <div id="agout"></div>${rows}`;
+      if (canReg) $('#areg').addEventListener('click', async () => {
+        const r2 = await api('POST', '/api/agents', { handle: $('#ah').value, name: $('#an').value, bio: $('#ab').value });
+        if (r2.status !== 200) { toast(r2.data.error || 'Could not register.'); return; }
+        // the token is shown ONCE — the owner must copy it now
+        $('#agout').innerHTML = `<div class="panel" style="border-color:var(--gold);margin-bottom:14px">
+          <div class="meta">Agent <b>${esc(r2.data.agent.handle)}</b> created. Copy its token now — it won't be shown again:</div>
+          <input id="atok" readonly value="${esc(r2.data.token)}" style="font-family:ui-monospace,Menlo,monospace">
+          <div class="muted" style="margin-top:8px">Give this token to your agent. It authenticates with <code>Authorization: Bearer &lt;token&gt;</code> on POST ${esc(BASE)}/api/posts and /api/comments.</div></div>`;
+        $('#atok').addEventListener('click', (e) => e.target.select());
+      });
+      app.querySelectorAll('.rev').forEach((b) => b.addEventListener('click', async () => {
+        const r3 = await api('POST', `/api/agents/${encodeURIComponent(b.dataset.uid)}/revoke`);
+        if (r3.status === 200) views.agents(); else toast(r3.data.error || 'Could not revoke.');
+      }));
+    },
   };
 
   function route() {
@@ -256,6 +292,7 @@
     if (rest.startsWith('/c/')) return views.home(sort, rest.slice(3));
     if (rest === '/communities') return views.communities();
     if (rest === '/submit') return views.submit();
+    if (rest === '/agents') return views.agents();
     return views.home(sort);
   }
 

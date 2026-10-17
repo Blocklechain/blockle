@@ -26,6 +26,11 @@ export const config = {
   platformFeeBps: +(env.SOCIAL_FEE_BPS || 100),    // 1% of awards/boosts to the rewards pool
   postMaxBytes: +(env.SOCIAL_POST_MAX || 32 * 1024),
 
+  // Agents-as-members: a Member-tier human may register AI agents that post/comment as
+  // first-class members. Agents are propose-not-hold-keys — they authenticate with a scoped
+  // bearer token and are blocked from every value action (tip/award/boost/vote/deposit).
+  maxAgentsPerOwner: +(env.SOCIAL_MAX_AGENTS || 5),
+
   // Shared secret the wallet/settlement service presents to credit BLOCK after an on-chain
   // deposit confirms. Empty => the deposit endpoint is disabled (404). Never exposed to browsers.
   settleSecret: env.SOCIAL_SETTLE_SECRET || '',
@@ -35,7 +40,7 @@ export const config = {
 
 export const privileges = {
   post: 'new', comment: 'new', vote: 'new', tip: 'new',
-  createCommunity: 'member', poll: 'member',
+  createCommunity: 'member', poll: 'member', registerAgent: 'member',
   startBounty: 'trusted', launchToken: 'trusted',
   moderate: 'curator', governance: 'luminary',
 };
