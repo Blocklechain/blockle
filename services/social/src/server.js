@@ -17,6 +17,7 @@ import {
 } from '../../accounts/src/http.js';
 import { renderShell } from './pages.js';
 import { CATEGORIES } from './seed.js';
+import { AWARDS, AWARD_BY_ID, AWARD_FEE_BPS, BOOST_DURATION_MS, MIN_BOOST } from './awards.js';
 
 const APP_JS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/app.js'), 'utf8');
 const handleRe = /^[a-z0-9_]{3,20}$/;
@@ -224,6 +225,49 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, net, fee });
   });
 
+  // BLOCK gold — the award catalog (for the UI).
+  on('GET', /^\/social\/api\/awards$/, (req, res) => json(res, 200, { awards: AWARDS }));
+
+  // Give an AWARD: spend BLOCK, tip the creator (minus a pool fee), stamp a badge. No karma.
+  on('POST', /^\/social\/api\/award$/, async (req, res) => {
+    const a = auth(req, res); if (!a) return;
+    if (!rl.allow('award:' + a.sess.uid)) return json(res, 429, { error: 'Slow down a moment.' });
+    const b = await readJson(req, 4 * 1024);
+    const type = b.targetType === 'comment' ? 'comments' : 'posts';
+    const target = store.get(type, String(b.targetId || ''));
+    if (!target) return json(res, 404, { error: 'Not found.' });
+    if (target.uid === a.sess.uid) return json(res, 400, { error: 'You can’t award your own post.' });
+    const award = AWARD_BY_ID[String(b.award || '')];
+    if (!award) return json(res, 400, { error: 'Unknown award.' });
+    const sender = store.get('profiles', a.sess.uid);
+    if ((sender.blockUnits || 0) < award.cost) return json(res, 402, { error: 'Not enough BLOCK — fund your balance from your wallet.' });
+    const fee = Math.floor((award.cost * AWARD_FEE_BPS) / 10000);
+    const net = award.cost - fee;
+    await store.update('profiles', a.sess.uid, (p) => { if (p) p.blockUnits -= award.cost; return p; });
+    await store.update('profiles', target.uid, (p) => { if (p) p.blockUnits += net; return p; });
+    await store.update('meta', 'pool', (m) => ({ units: ((m && m.units) || 0) + fee }));
+    await store.update(type, target.id, (t) => { if (t) { t.awards = t.awards || {}; t.awards[award.id] = (t.awards[award.id] || 0) + 1; } return t; });
+    await store.put('tips', randomToken(8), { id: randomToken(8), kind: 'award', award: award.id, fromUid: a.sess.uid, toUid: target.uid, type, targetId: target.id, amount: award.cost, fee, at: now() });
+    return json(res, 200, { ok: true, net, fee });
+  });
+
+  // BOOST a post: pay BLOCK (to the rewards pool) to extend its reach for a window. Always labeled.
+  on('POST', /^\/social\/api\/boost$/, async (req, res) => {
+    const a = auth(req, res); if (!a) return;
+    if (!rl.allow('boost:' + a.sess.uid)) return json(res, 429, { error: 'Slow down a moment.' });
+    const b = await readJson(req, 4 * 1024);
+    const target = store.get('posts', String(b.targetId || ''));
+    if (!target) return json(res, 404, { error: 'Not found.' });
+    const amount = Math.floor(Number(b.amount));
+    if (!Number.isFinite(amount) || amount < MIN_BOOST) return json(res, 400, { error: `Minimum boost is ${MIN_BOOST} BLOCK.` });
+    const sender = store.get('profiles', a.sess.uid);
+    if ((sender.blockUnits || 0) < amount) return json(res, 402, { error: 'Not enough BLOCK — fund your balance from your wallet.' });
+    await store.update('profiles', a.sess.uid, (p) => { if (p) p.blockUnits -= amount; return p; });
+    await store.update('meta', 'pool', (m) => ({ units: ((m && m.units) || 0) + amount })); // boosts fund the rewards pool
+    await store.update('posts', target.id, (t) => { if (t) { t.boost = (t.boost || 0) + amount; t.boostedUntil = now() + BOOST_DURATION_MS; } return t; });
+    return json(res, 200, { ok: true });
+  });
+
   // Deposit hook: the wallet credits social BLOCK after an on-chain deposit is confirmed.
   // Guarded so only the trusted settlement caller (shared secret) can credit — NEVER a browser.
   on('POST', /^\/social\/api\/deposit$/, async (req, res) => {
@@ -281,7 +325,9 @@ function decorate(post, store) {
 function rank(posts, sort, t) {
   if (sort === 'new') return posts.sort((a, b) => b.createdAt - a.createdAt);
   if (sort === 'top') return posts.sort((a, b) => b.score - a.score);
-  const hot = (p) => (p.score + 1) / Math.pow(((t - p.createdAt) / 3600000) + 2, 1.5);
+  // Hot = score decayed by age; a currently-boosted post gets a bounded reach bump (labeled in UI).
+  const boosted = (p) => p.boostedUntil && p.boostedUntil > t;
+  const hot = (p) => ((p.score + 1) / Math.pow(((t - p.createdAt) / 3600000) + 2, 1.5)) * (boosted(p) ? 3 : 1);
   return posts.sort((a, b) => hot(b) - hot(a));
 }
 

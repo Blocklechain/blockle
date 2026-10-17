@@ -136,6 +136,40 @@ test('tipping moves BLOCK with a fee to the pool; conserves total; guards self-t
   });
 });
 
+test('awards move BLOCK with a pool fee + stamp a badge (no karma); boosts flag + fund the pool', async () => {
+  await withServer(async ({ app, call, as }) => {
+    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'giver' });
+    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'poster' });
+    await app.store.update('profiles', 'poster', (p) => { p.karma = 150; return p; });
+    await app.store.update('profiles', 'giver', (p) => { p.blockUnits = 1000; return p; });
+    await call('POST', '/social/api/communities', { name: 'aw', title: 'Aw' }, as('poster'));
+    const pid = (await call('POST', '/social/api/posts', { cid: 'aw', kind: 'text', title: 'T', body: 'b' }, as('poster'))).data.id;
+
+    // award 'gold' (100): 10% fee=10 -> poster +90, pool +10; badge stamped; poster karma unchanged
+    const aw = await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, as('giver'));
+    assert.equal(aw.status, 200);
+    await app.store.drain();
+    assert.equal(app.store.get('profiles', 'giver').blockUnits, 900);
+    assert.equal(app.store.get('profiles', 'poster').blockUnits, 90);
+    assert.equal(app.store.get('meta', 'pool').units, 10);
+    assert.equal(app.store.get('profiles', 'poster').karma, 150, 'awards grant NO karma');
+    assert.equal(app.store.get('posts', pid).awards.gold, 1);
+
+    // unknown award + self-award + insufficient funds are rejected
+    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'nope' }, as('giver'))).status, 400);
+    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, as('poster'))).status, 400);
+
+    // boost: deducts from giver, funds the pool, flags boostedUntil
+    const bo = await call('POST', '/social/api/boost', { targetId: pid, amount: 50 }, as('giver'));
+    assert.equal(bo.status, 200);
+    await app.store.drain();
+    assert.equal(app.store.get('profiles', 'giver').blockUnits, 850);
+    assert.equal(app.store.get('meta', 'pool').units, 60);
+    assert.ok(app.store.get('posts', pid).boostedUntil > 0);
+    assert.equal((await call('POST', '/social/api/boost', { targetId: pid, amount: 5 }, as('giver'))).status, 400); // below min
+  });
+});
+
 test('deposit endpoint is hidden without the settle secret and credits with it', async () => {
   await withServer(async ({ call, app }) => {
     await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'dep' });
