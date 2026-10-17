@@ -1223,7 +1223,22 @@ const STUDIO_SOFTWARE_JSONLD: &str = r##"<script type="application/ld+json">{"@c
 /// * `canonical_path` — path WITH QUERY STRIPPED, e.g. "/mine"; "" => omit
 ///                      canonical + og:url (use for dynamic/non-indexable pages).
 /// * `head_extra`     — raw extra `<head>` HTML (per-page JSON-LD blocks); "" if none.
+/// A-ADS ad unit (2458805) — the anonymous crypto ad network. `slot` makes the
+/// wrapper id unique so the same unit can render more than once on a page (header
+/// + footer) without an invalid duplicate `id`. The iframe self-sizes (Adaptive).
+fn aads_unit(slot: &str) -> String {
+    format!(
+        r##"<!-- BEGIN AADS AD UNIT 2458805 -->
+<div id="aads-{slot}" class="aads" style="width: 100%;margin: 18px auto;position: relative; z-index: 99998;">
+  <iframe data-aa='2458805' src='//acceptable.a-ads.com/2458805/?size=Adaptive' style='border:0; padding:0; width:70%; height:auto; overflow:hidden;display: block;margin: auto'></iframe>
+</div>
+<!-- END AADS AD UNIT 2458805 -->"##
+    )
+}
+
 fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &str, body: String) -> String {
+    let aads_top = aads_unit("top");
+    let aads_foot = aads_unit("foot");
     let domain = PUBLIC_HOST;
     let full_title = format!("{title} · {domain}");
     let (canonical_tag, ogurl_tag) = if canonical_path.is_empty() {
@@ -1264,7 +1279,9 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
+{aads_top}
 <main>{body}</main>
+{aads_foot}
 <footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
@@ -1481,6 +1498,11 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
 <a class="btn btn-primary" href="#download">Get the wallet</a>
 </div></header>
+<!-- BEGIN AADS AD UNIT 2458805 -->
+<div id="aads-home-top" class="aads" style="width: 100%;margin: 14px auto;position: relative; z-index: 99998;">
+  <iframe data-aa='2458805' src='//acceptable.a-ads.com/2458805/?size=Adaptive' style='border:0; padding:0; width:70%; height:auto; overflow:hidden;display: block;margin: auto'></iframe>
+</div>
+<!-- END AADS AD UNIT 2458805 -->
 <main>
 <section class="hero" style="padding:0">
 <canvas id="candles" aria-hidden="true"></canvas><div class="hero-fade" aria-hidden="true"></div>
@@ -1539,6 +1561,11 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <a class="dli" href="/releases/latest/download/BlockleWallet-linux-x86_64.zip"><span class="plat">Linux</span><span class="meta">x86-64</span><span class="go">Download &uarr;</span></a>
 </div></div></section>
 </main>
+<!-- BEGIN AADS AD UNIT 2458805 -->
+<div id="aads-home-foot" class="aads" style="width: 100%;margin: 14px auto;position: relative; z-index: 99998;">
+  <iframe data-aa='2458805' src='//acceptable.a-ads.com/2458805/?size=Adaptive' style='border:0; padding:0; width:70%; height:auto; overflow:hidden;display: block;margin: auto'></iframe>
+</div>
+<!-- END AADS AD UNIT 2458805 -->
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
 <div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a><a href="/account/register">Create account</a></div>
