@@ -50,6 +50,24 @@ export function parseCookies(req) {
   return out;
 }
 
+// All values for a cookie name (a name can legitimately appear more than once when a
+// host-only and a Domain-scoped cookie of the same name coexist — e.g. during the
+// blk_sess host-only → .blockle.org migration). Order in the header is browser-defined,
+// so callers must try every value rather than trust the first/last.
+export function parseCookieValues(req, name) {
+  const raw = req.headers.cookie;
+  if (!raw) return [];
+  const vals = [];
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() !== name) continue;
+    const v = part.slice(i + 1).trim();
+    try { vals.push(decodeURIComponent(v)); } catch { vals.push(v); }
+  }
+  return vals;
+}
+
 export function setCookie(res, name, value, { maxAgeMs, secure, httpOnly = true, sameSite = 'Lax', domain } = {}) {
   let c = `${name}=${encodeURIComponent(value)}; Path=/; SameSite=${sameSite}`;
   // A leading-dot Domain (e.g. .blockle.org) shares the cookie across first-party
