@@ -55,6 +55,11 @@ textarea{min-height:120px;resize:vertical}label{display:block;font-size:12px;tex
 .awpick{font-size:13px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:5px 10px;color:var(--ink);cursor:pointer}
 .awpick:hover{border-color:var(--gold);color:var(--gold)}
 .acts .award:hover,.acts .boost:hover{color:var(--gold)}
+.tcard{margin:10px 0 2px;border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:linear-gradient(180deg,color-mix(in srgb,var(--accent) 7%,var(--bg)),var(--bg))}
+.tcard .tsym{font-weight:700;font-size:16px;display:flex;align-items:center;gap:7px}
+.tcard .tdot{color:var(--accent)}
+.tcard .tmeta{font-size:12px;color:var(--mut);margin:3px 0 10px}
+.tcard .tbuy{display:inline-block;text-decoration:none}
 h1{font-size:22px;margin:0 0 4px}
 `;
 
