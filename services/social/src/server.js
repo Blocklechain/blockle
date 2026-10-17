@@ -65,15 +65,42 @@ export function createApp(overrides = {}) {
   const pubProfile = (p) => p && ({ handle: p.handle, displayName: p.displayName, bio: p.bio,
     karma: p.karma, tier: tierOf(p.karma), blockUnits: p.blockUnits });
 
+  // --- agent identity ----------------------------------------------------------------------
+  // An agent authenticates with a scoped bearer token (never a cookie), so its requests carry
+  // NO CSRF/same-origin — the secret token IS the capability. A deactivated agent's token stops
+  // authenticating immediately (we gate on profile.active), so revoke == deactivate.
+  const agentTokenRe = /^blk_agent_[A-Za-z0-9]+$/;
+  function agentFromReq(req) {
+    const authz = req.headers['authorization'] || '';
+    const m = /^Bearer\s+(\S+)$/i.exec(authz);
+    const raw = (m && m[1]) || req.headers['x-blockle-agent-token'] || '';
+    if (!agentTokenRe.test(raw)) return null;
+    const rec = store.get('agentTokens', sha256(raw));
+    if (!rec || rec.revoked) return null;
+    const p = store.get('profiles', rec.uid);
+    if (!p || p.kind !== 'agent' || p.active === false) return null;
+    return { sess: { uid: rec.uid, kind: 'agent', ownerUid: rec.ownerUid, csrf: null }, profile: p };
+  }
+
   // --- auth middleware ---------------------------------------------------------------------
-  function auth(req, res, { mutating = true } = {}) {
+  // allowAgent=true lets a bearer-token agent through; EVERY other endpoint stays human-only by
+  // default, which is exactly why agents are blocked from all value actions (tip/award/boost/
+  // vote/deposit) without a per-endpoint guard — they simply never authenticate there.
+  function auth(req, res, { mutating = true, allowAgent = false } = {}) {
     const sess = session(req);
-    if (!sess) { json(res, 401, { error: 'Sign in at blockle.org/account to join the conversation.' }); return null; }
-    if (mutating) {
-      if (!sameOrigin(req, cfg)) { json(res, 403, { error: 'origin' }); return null; }
-      if (!timingSafeEqualStr(sess.csrf, req.headers['x-csrf-token'] || '')) { json(res, 403, { error: 'csrf' }); return null; }
+    if (sess) {
+      if (mutating) {
+        if (!sameOrigin(req, cfg)) { json(res, 403, { error: 'origin' }); return null; }
+        if (!timingSafeEqualStr(sess.csrf, req.headers['x-csrf-token'] || '')) { json(res, 403, { error: 'csrf' }); return null; }
+      }
+      return { sess: { ...sess, kind: 'user' }, profile: ensureProfile(sess) };
     }
-    return { sess, profile: ensureProfile(sess) };
+    if (allowAgent) {
+      const ag = agentFromReq(req);
+      if (ag) return ag;
+    }
+    json(res, 401, { error: 'Sign in at blockle.org/account to join the conversation.' });
+    return null;
   }
   const gate = (karma, action) => can(karma, action);
 
@@ -97,6 +124,54 @@ export function createApp(overrides = {}) {
       if (typeof b.bio === 'string') p.bio = b.bio.slice(0, 280);
       return p;
     });
+    return json(res, 200, { ok: true });
+  });
+
+  // --- agents-as-members -------------------------------------------------------------------
+  // A Member-tier human registers an AI agent as a first-class member. The agent posts/comments
+  // under a scoped bearer token (returned ONCE at creation) and can NEVER move value — it holds
+  // no keys and every value endpoint is human-only. Agent authorship is always labeled in the UI.
+  on('GET', /^\/social\/api\/agents$/, (req, res) => {
+    const a = auth(req, res, { mutating: false }); if (!a) return;
+    if (a.sess.kind === 'agent') return json(res, 403, { error: 'Agents cannot manage agents.' });
+    const mine = store.all('profiles')
+      .filter((p) => p.kind === 'agent' && p.ownerUid === a.sess.uid)
+      .map((p) => ({ uid: p.uid, handle: p.handle, displayName: p.displayName, bio: p.bio,
+        karma: p.karma, tier: tierOf(p.karma), active: p.active !== false, createdAt: p.createdAt }))
+      .sort((x, y) => y.createdAt - x.createdAt);
+    return json(res, 200, { agents: mine, max: cfg.maxAgentsPerOwner });
+  });
+
+  on('POST', /^\/social\/api\/agents$/, async (req, res) => {
+    const a = auth(req, res); if (!a) return;
+    if (a.sess.kind === 'agent') return json(res, 403, { error: 'Agents cannot register agents.' });
+    if (!gate(a.profile.karma, 'registerAgent'))
+      return json(res, 403, { error: `Reach the Member tier (${config.tiers.member} karma) to register an agent.` });
+    const active = store.all('profiles').filter((p) => p.kind === 'agent' && p.ownerUid === a.sess.uid && p.active !== false);
+    if (active.length >= cfg.maxAgentsPerOwner)
+      return json(res, 409, { error: `You can run up to ${cfg.maxAgentsPerOwner} agents. Revoke one first.` });
+    const b = await readJson(req, 8 * 1024);
+    const handle = String(b.handle || '').toLowerCase().trim();
+    if (!handleRe.test(handle)) return json(res, 400, { error: 'Handle must be 3–20 chars: a–z, 0–9, _' });
+    if (store.get('handles', handle)) return json(res, 409, { error: 'That handle is taken.' });
+    const uid = 'agent:' + randomToken(10);
+    const raw = 'blk_agent_' + randomToken(24);
+    const p = { uid, handle, displayName: String(b.name || handle).slice(0, 40), bio: String(b.bio || '').slice(0, 280),
+      kind: 'agent', ownerUid: a.sess.uid, active: true, karma: 0, blockUnits: 0, createdAt: now() };
+    await store.put('profiles', uid, p);
+    await store.put('handles', handle, uid);
+    await store.put('agentTokens', sha256(raw), { uid, ownerUid: a.sess.uid, createdAt: now() });
+    // the raw token is returned ONCE and never stored in the clear
+    return json(res, 200, { ok: true, agent: { uid, handle, displayName: p.displayName }, token: raw });
+  });
+
+  on('POST', /^\/social\/api\/agents\/([^/]+)\/revoke$/, async (req, res, url, m) => {
+    const a = auth(req, res); if (!a) return;
+    if (a.sess.kind === 'agent') return json(res, 403, { error: 'Agents cannot manage agents.' });
+    const agentUid = decodeURIComponent(m[1]);
+    const p = store.get('profiles', agentUid);
+    if (!p || p.kind !== 'agent' || p.ownerUid !== a.sess.uid) return json(res, 404, { error: 'No such agent.' });
+    await store.update('profiles', agentUid, (pp) => { if (pp) pp.active = false; return pp; });
     return json(res, 200, { ok: true });
   });
 
@@ -136,7 +211,7 @@ export function createApp(overrides = {}) {
   });
 
   on('POST', /^\/social\/api\/posts$/, async (req, res) => {
-    const a = auth(req, res); if (!a) return;
+    const a = auth(req, res, { allowAgent: true }); if (!a) return;
     if (!rl.allow('post:' + a.sess.uid)) return json(res, 429, { error: 'Slow down a moment.' });
     const b = await readJson(req, cfg.postMaxBytes);
     const cid = String(b.cid || '').toLowerCase();
@@ -171,7 +246,7 @@ export function createApp(overrides = {}) {
   });
 
   on('POST', /^\/social\/api\/comments$/, async (req, res) => {
-    const a = auth(req, res); if (!a) return;
+    const a = auth(req, res, { allowAgent: true }); if (!a) return;
     if (!rl.allow('comment:' + a.sess.uid)) return json(res, 429, { error: 'Slow down a moment.' });
     const b = await readJson(req, cfg.postMaxBytes);
     const post = store.get('posts', String(b.pid || ''));
@@ -335,7 +410,15 @@ function normalizeTokenRef(raw) {
 
 function authorOf(uid, store) {
   const p = store.get('profiles', uid);
-  return p ? { handle: p.handle, tier: tierOf(p.karma) } : { handle: '[deleted]', tier: 'new' };
+  if (!p) return { handle: '[deleted]', tier: 'new' };
+  const out = { handle: p.handle, tier: tierOf(p.karma) };
+  if (p.kind === 'agent') {
+    // transparency: an agent author is always labeled with its human owner's handle
+    out.kind = 'agent';
+    const owner = store.get('profiles', p.ownerUid);
+    out.ownerHandle = owner ? owner.handle : null;
+  }
+  return out;
 }
 function decorate(post, store) {
   const c = store.get('communities', post.cid);
