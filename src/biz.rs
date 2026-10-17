@@ -671,6 +671,7 @@ fn route(
         "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
         "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
         "/stats" => ("200 OK", "text/html; charset=utf-8", page_stats().into_bytes()),
+        "/markets" => ("200 OK", "text/html; charset=utf-8", page_markets().into_bytes()),
         "/tokenomics" => ("200 OK", "text/html; charset=utf-8", page_tokenomics().into_bytes()),
         "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
@@ -1283,7 +1284,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {site_jsonld}{head_extra}
 <title>{full_title}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
+<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 {aads_top}
@@ -1407,6 +1408,79 @@ fn parent_rows() -> String {
             )
         })
         .collect()
+}
+
+fn page_markets() -> String {
+    let body = r##"<h1>Markets</h1>
+<p class="sub">Live BLOCK-20 tokens and liquidity on the native AMM DEX. Non-custodial &mdash; trade from your own wallet.</p>
+<div class="mkbar">
+  <div class="mkstat"><span class="k">Tokens</span><span class="v mono" id="mk-tokens">&mdash;</span></div>
+  <div class="mkstat"><span class="k">Liquidity pools</span><span class="v mono" id="mk-pools">&mdash;</span></div>
+  <div class="mkstat"><span class="k">Chain height</span><span class="v mono" id="mk-height">&mdash;</span></div>
+  <a class="mkcta" href="/launch">Launch a token &rarr;</a>
+</div>
+<div id="mk-body"><p class="mut" style="padding:30px 0">Loading markets&hellip;</p></div>
+<style>
+.mkbar{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:16px 0 22px;padding-bottom:16px;border-bottom:1px solid #222a37}
+.mkstat{display:flex;flex-direction:column}
+.mkstat .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
+.mkstat .v{font-size:24px;font-weight:800;color:#e8ebf2}
+.mkcta{margin-left:auto;background:#4d8bff;color:#071018;font-weight:700;padding:9px 16px;border-radius:9px;text-decoration:none}
+.mkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.mktok{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
+.mktok .sym{font-weight:800;font-size:17px;color:#e8ebf2}
+.mktok .nm{font-size:13px;color:#8a93a6;margin-bottom:8px}
+.mktok .row{display:flex;justify-content:space-between;font-size:13px;color:#c7cedb;margin-top:4px}
+.mkempty{background:#141821;border:1px dashed #2a3444;border-radius:16px;padding:40px 28px;text-align:center}
+.mkempty h3{margin:0 0 6px;color:#e8ebf2}
+.mkempty p{color:#8a93a6;max-width:52ch;margin:0 auto 16px}
+.mkempty a{background:#4d8bff;color:#071018;font-weight:700;padding:10px 18px;border-radius:9px;text-decoration:none}
+.stbl{width:100%;border-collapse:collapse;font-size:14px}
+.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
+.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
+.mut{color:#5a6577}
+@media(prefers-color-scheme:light){.mkstat .v{color:#0d1420}.mktok,.mkempty{background:#fff;border-color:#e4e9f2}.mktok .sym{color:#0d1420}.stbl td{color:#2a3346;border-color:#eef1f7}}
+</style>
+<script>
+(function(){
+  var fmt=function(n){return Number(n).toLocaleString('en-US');};
+  function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+  var set=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
+  async function j(u){try{var r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null;}catch(e){return null;}}
+  async function go(){
+    var tk=await j('/api/dex/tokens')||{}, pl=await j('/api/dex/pools')||{}, ch=await j('/api/chain')||{};
+    var tokens=Array.isArray(tk)?tk:Object.keys(tk).map(function(k){var o=tk[k]||{};o.id=o.id||k;return o;});
+    var pools=(pl&&pl.pools)||[];
+    set('mk-tokens',tokens.length); set('mk-pools',pools.length);
+    set('mk-height', (pl&&pl.height)?('#'+fmt(pl.height)):((ch.blocks&&ch.blocks[0])?('#'+fmt(ch.blocks[0].height)):'—'));
+    var el=document.getElementById('mk-body');
+    if(!tokens.length && !pools.length){
+      el.innerHTML='<div class="mkempty"><h3>No tokens launched yet</h3><p>The native AMM DEX is live and waiting. Be the first to mint a BLOCK-20 token and seed a pool &mdash; it shows up here instantly.</p><a href="/launch">Launch the first token &rarr;</a></div>';
+      return;
+    }
+    var html='';
+    if(tokens.length){
+      html+='<h2 class="sh" style="font-size:17px;margin:4px 0 12px">Tokens</h2><div class="mkgrid">';
+      tokens.forEach(function(t){html+='<a class="mktok" href="/token/'+encodeURIComponent(t.id||t.symbol||'')+'" style="text-decoration:none;display:block"><div class="sym">'+esc(t.symbol||t.id)+'</div><div class="nm">'+esc(t.name||'')+'</div><div class="row"><span>Supply</span><span class="mono">'+esc(t.supply!=null?fmt(t.supply):'—')+'</span></div></a>';});
+      html+='</div>';
+    }
+    if(pools.length){
+      html+='<h2 class="sh" style="font-size:17px;margin:22px 0 10px">Liquidity pools</h2><div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Pair</th><th>Liquidity</th><th>Price</th></tr></thead><tbody>';
+      pools.forEach(function(p){html+='<tr><td><b>'+esc(p.pair||((p.base||'?')+'/'+(p.quote||'BLOCK')))+'</b></td><td class="mono">'+esc(p.liquidity!=null?fmt(p.liquidity):'—')+'</td><td class="mono">'+esc(p.price!=null?p.price:'—')+'</td></tr>';});
+      html+='</tbody></table></div>';
+    }
+    el.innerHTML=html;
+  }
+  go();setInterval(go,20000);
+})();
+</script>"##.to_string();
+    page_shell_seo(
+        "Markets",
+        "Live BLOCK-20 token markets and AMM liquidity pools on the non-custodial Blockle DEX.",
+        "/markets",
+        "",
+        body,
+    )
 }
 
 fn page_tokenomics() -> String {
@@ -1825,7 +1899,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
 <div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a><a href="/account/register">Create account</a></div>
-<div class="fcol"><span class="h">Network</span><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
@@ -1851,6 +1925,15 @@ typeScene()}})();
 </script>
 <script>(function(){try{fetch("/account/api/me",{credentials:"include"}).then(function(r){return r.json()}).then(function(d){if(d&&d.user){var a=document.getElementById("nav-auth");if(a){a.textContent="Dashboard";a.setAttribute("href","/account");a.title=d.user.email;}var f=document.getElementById("hero-signup");if(f){f.innerHTML='<a class="btn btn-primary" href="/account" style="flex:1 1 100%;justify-content:center;padding:13px">Open your dashboard</a>';}}}).catch(function(){});
 var f=document.getElementById("hero-signup");if(f){f.addEventListener("submit",function(e){e.preventDefault();var m=document.getElementById("hs-msg");var em=document.getElementById("hs-email").value,pw=document.getElementById("hs-pw").value,un=(document.getElementById("hs-user")||{}).value||"";m.className="hs-msg";fetch("/account/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:em,password:pw,username:un})}).then(function(r){return r.json().then(function(j){return{s:r.status,j:j}})}).then(function(x){if(x.s===200){m.className="hs-msg ok";m.textContent=(x.j&&x.j.message)||"Check your email to confirm your account.";}else{m.className="hs-msg err";m.textContent=(x.j&&x.j.error)||"Could not sign up.";}}).catch(function(){m.className="hs-msg err";m.textContent="Network error. Try again.";});});}}catch(e){}})();</script>
+<style>@media (prefers-reduced-motion: no-preference){main > section.reveal{opacity:0;transform:translateY(20px);transition:opacity .7s ease,transform .7s ease}main > section.reveal.in{opacity:1;transform:none}}</style>
+<script>(function(){try{
+  if(!('IntersectionObserver' in window))return;
+  if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  var secs=document.querySelectorAll('main > section');
+  secs.forEach(function(s,i){if(i>0)s.classList.add('reveal');}); // hero stays instant
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:0.08,rootMargin:'0px 0px -6% 0px'});
+  document.querySelectorAll('main > section.reveal').forEach(function(s){io.observe(s);});
+}catch(e){}})();</script>
 </body></html>"##.to_string()
 }
 
@@ -2394,6 +2477,10 @@ fn page_mine(_reg: &Registry) -> String {
     let body = format!(
         r##"<h1>Mine with us</h1>
 <p class="sub">Two BLOCK pools, both 1% fee, both trust-minimized. Authorize with your <b>BLOCK address</b> as the stratum username (get one from the <a href="/wallet">wallet</a>) — an optional <span class="mono">.rigname</span> suffix names your worker.</p>
+<div style="background:linear-gradient(135deg,#1a2233,#141821);border:1px solid #2a3647;border-radius:14px;padding:16px 20px;margin:18px 0;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+  <div style="flex:1 1 320px"><div style="font-weight:700;color:#e8ebf2;margin-bottom:3px">No miner of your own? Rent hashpower.</div><div style="color:#9aa3b4;font-size:14px">Rent rigs on MiningRigRentals and point them at a Blockle stratum below &mdash; mine BLOCK with zero hardware. <span style="color:#5a6577">(partner link)</span></div></div>
+  <a href="https://www.miningrigrentals.com/register?ref=2700674" target="_blank" rel="sponsored noopener" style="background:#4d8bff;color:#071018;font-weight:700;padding:10px 18px;border-radius:9px;text-decoration:none;white-space:nowrap">Rent hashpower &rarr;</a>
+</div>
 
 <h2>BLOCK · Solo <span class="badge">equihash 200,9 · reward straight to your coinbase</span></h2>
 <pre><code>stratum+tcp://{domain}:3333
