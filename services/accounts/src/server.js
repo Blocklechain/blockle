@@ -585,12 +585,31 @@ export function createApp(overrides = {}) {
   }));
 
   // --- paid tier ----------------------------------------------------------------------------
+  // The purchasable Copilot tiers (+ legacy Pro). A tier is offered ONLY when its PayPal plan
+  // id is configured, so the catalog is empty until the live plans exist — nothing to buy, no
+  // broken checkout. Order = how they're shown (entry tier first).
+  const planCatalog = () => [
+    { tier: 'copilot', name: 'Blockle Copilot', price: cfg.copilotPrice, ccy: cfg.planCurrency, planId: cfg.copilotPlanId },
+    { tier: 'copilot_pro', name: 'Copilot Pro', price: cfg.copilotProPrice, ccy: cfg.planCurrency, planId: cfg.copilotProPlanId },
+    { tier: 'pro', name: cfg.planName, price: cfg.planPrice, ccy: cfg.planCurrency, planId: cfg.paypalPlanId },
+  ].filter((p) => p.planId);
+  const planByTier = (tier) => planCatalog().find((p) => p.tier === tier) || null;
+  const planByPlanId = (id) => planCatalog().find((p) => p.planId === id) || null;
+
+  on('GET', /^\/account\/api\/plans$/, (req, res) =>
+    json(res, 200, { plans: planCatalog().map(({ tier, name, price, ccy }) => ({ tier, name, price, ccy })), billing: !paypal.disabled }));
+
   on('POST', /^\/account\/api\/subscribe$/, authed(async (req, res, { u }) => {
     if (paypal.disabled) return json(res, 503, { error: 'Billing is not configured yet.' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    // Pick the requested tier's plan; fall back to the catalog's entry tier (or the legacy Pro plan).
+    const chosen = (b && b.tier && planByTier(b.tier)) || planCatalog()[0] || null;
+    const planId = chosen ? chosen.planId : cfg.paypalPlanId;
+    if (!planId) return json(res, 503, { error: 'That plan is not available yet.' });
     try {
       const sub = await paypal.createSubscription(u.id,
-        `${cfg.publicOrigin}/account?sub=ok`, `${cfg.publicOrigin}/account?sub=cancel`);
-      return json(res, 200, { approveUrl: sub.approveUrl, id: sub.id });
+        `${cfg.publicOrigin}/account?sub=ok`, `${cfg.publicOrigin}/account?sub=cancel`, planId);
+      return json(res, 200, { approveUrl: sub.approveUrl, id: sub.id, tier: chosen ? chosen.tier : null });
     } catch { return json(res, 502, { error: 'Could not start checkout. Please try again.' }); }
   }));
 
@@ -612,9 +631,17 @@ export function createApp(overrides = {}) {
     if (dup) return json(res, 200, { ok: true, dup: true });
     const ent = entitlementFromEvent(event);
     if (ent && ent.userId) {
+      const plan = ent.planId ? planByPlanId(ent.planId) : null;
       await store.update('users', ent.userId, (u) => {
         if (!u) return u;
-        u.sub = { active: ent.active, subId: ent.subId, plan: cfg.planName }; return u;
+        u.sub = {
+          active: ent.active,
+          subId: ent.subId,
+          plan: plan ? plan.name : cfg.planName,
+          tier: plan ? plan.tier : (u.sub && u.sub.tier) || 'pro',
+          planId: ent.planId || (u.sub && u.sub.planId) || null,
+        };
+        return u;
       });
     }
     return json(res, 200, { ok: true });

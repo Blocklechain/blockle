@@ -49,6 +49,13 @@ export const config = {
   planName: env.ACCOUNTS_PLAN_NAME || 'Blockle Pro',
   planPrice: env.ACCOUNTS_PLAN_PRICE || '10.00',
   planCurrency: env.ACCOUNTS_PLAN_CCY || 'USD',
+  // Blockle Copilot subscription tiers (the flagship AI trading-agent product). Each tier is
+  // offered only when its PayPal plan id is configured, so this is safe to ship before the
+  // live plans exist. Prices are display-only; the real amount lives in the PayPal plan.
+  copilotPlanId: env.PAYPAL_COPILOT_PLAN_ID || '',
+  copilotPrice: env.PAYPAL_COPILOT_PRICE || '19.00',
+  copilotProPlanId: env.PAYPAL_COPILOT_PRO_PLAN_ID || '',
+  copilotProPrice: env.PAYPAL_COPILOT_PRO_PRICE || '49.00',
 
   sessionSecret: env.ACCOUNTS_SESSION_SECRET || '',
 

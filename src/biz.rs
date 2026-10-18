@@ -671,6 +671,7 @@ fn route(
         "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
         "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
         "/stats" => ("200 OK", "text/html; charset=utf-8", page_stats().into_bytes()),
+        "/copilot" => ("200 OK", "text/html; charset=utf-8", page_copilot().into_bytes()),
         "/markets" => ("200 OK", "text/html; charset=utf-8", page_markets().into_bytes()),
         "/tokenomics" => ("200 OK", "text/html; charset=utf-8", page_tokenomics().into_bytes()),
         "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
@@ -1284,7 +1285,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {site_jsonld}{head_extra}
 <title>{full_title}</title><style>{CSS}</style></head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
+<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
 {aads_top}
@@ -1408,6 +1409,95 @@ fn parent_rows() -> String {
             )
         })
         .collect()
+}
+
+fn page_copilot() -> String {
+    let body = r##"<section class="cphero">
+  <span class="eyebrow">Blockle Copilot</span>
+  <h1>Your AI trading desk.</h1>
+  <p class="lede">An AI that watches the markets and trades <b>on your command</b> &mdash; from your own wallet, behind one hard safety gate. Keyless, non-custodial, paper-first. The agent proposes; <b>you</b> approve every move.</p>
+  <div class="cpcta">
+    <button class="cpbtn primary" data-plan="copilot">Start Copilot &mdash; $19/mo</button>
+    <a class="cpbtn ghost" href="/account/register">Try free (paper)</a>
+  </div>
+  <div class="cmd" aria-hidden="true">
+    <div class="cmdhead"><span class="d"></span><span class="d"></span><span class="d"></span><span class="lbl">blockle · copilot</span></div>
+    <div class="cmdbody"><span class="chev">&gt;</span> scan every pair and buy what's profitable after fees
+      <div class="cmdcard"><div class="r"><span>proposed</span><span class="mono">BUY 0.4 SOL @ 182.10</span></div><div class="r"><span>edge after fees</span><span class="mono gain">+0.7%</span></div><div class="r"><span>risk gate</span><span class="mono">within caps ✓</span></div><button class="hold">Hold to approve</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="cptiers"><div class="eyebrow" style="text-align:center">Plans</div>
+<h2 class="cph2">Start free. Go live when you're ready.</h2>
+<div class="tiers">
+  <div class="tier"><div class="tname">Free</div><div class="tprice">$0</div><ul><li>1 agent, <b>paper only</b></li><li>Conversational command bar</li><li>Arena (play-money)</li><li>Non-custodial wallet</li></ul><a class="cpbtn ghost full" href="/account/register">Create account</a></div>
+  <div class="tier best"><div class="badge">Most popular</div><div class="tname">Copilot</div><div class="tprice">$19<span>/mo</span></div><ul><li><b>Live trading</b> + autopilot</li><li>Up to 3 agents</li><li>Priority hosted agent (no API key)</li><li>Fee-aware routing</li></ul><button class="cpbtn primary full" data-plan="copilot">Get Copilot</button></div>
+  <div class="tier"><div class="tname">Copilot Pro</div><div class="tprice">$49<span>/mo</span></div><ul><li>Everything in Copilot</li><li><b>Unlimited agents</b></li><li>Bigger model + priority</li><li>Portfolio analytics &amp; early signals</li></ul><button class="cpbtn primary full" data-plan="copilot_pro">Get Copilot Pro</button></div>
+</div>
+<p class="fine">Billed monthly via PayPal. Cancel anytime. Not financial advice &mdash; Copilot is a tool; you approve every trade and your keys never leave your device.</p>
+</section>
+
+<section class="cphow"><div class="eyebrow" style="text-align:center">How it stays safe</div>
+<h2 class="cph2">Brain, not hands.</h2>
+<div class="steps">
+  <div class="step"><div class="num">1</div><h3>Propose</h3><p>The agent reads your real balances and the markets and drafts a trade &mdash; with the edge after fees shown.</p></div>
+  <div class="step"><div class="num">2</div><h3>Gate</h3><p>Every action passes one non-bypassable risk gate: spend caps, per-asset limits, allow-lists. Out of bounds? Rejected.</p></div>
+  <div class="step"><div class="num">3</div><h3>Approve</h3><p>You confirm on your device. Keys never leave it. A weak or compromised model literally cannot move your funds.</p></div>
+</div>
+<div class="cpcta center"><button class="cpbtn primary" data-plan="copilot">Start Copilot &mdash; $19/mo</button><a class="cpbtn ghost" href="/account/register">Try free first</a></div>
+</section>
+
+<style>
+.cphero{text-align:center;padding:30px 0 10px}
+.cphero h1{font-size:clamp(34px,6vw,60px);margin:10px 0 6px;letter-spacing:-.02em}
+.cphero .lede{color:#9aa3b4;max-width:60ch;margin:0 auto 22px;font-size:17px;line-height:1.6}
+.cpcta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.cpcta.center{margin-top:26px}
+.cpbtn{display:inline-flex;align-items:center;justify-content:center;font-weight:700;padding:12px 22px;border-radius:11px;cursor:pointer;border:1px solid transparent;font-size:15px;text-decoration:none}
+.cpbtn.primary{background:#4d8bff;color:#071018}
+.cpbtn.ghost{background:transparent;color:#cfe0ff;border-color:#2a3647}
+.cpbtn.full{width:100%;margin-top:6px}
+.cmd{max-width:560px;margin:34px auto 0;background:#0e1420;border:1px solid #222a37;border-radius:16px;text-align:left;overflow:hidden}
+.cmd .cmdhead{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid #1a2029}
+.cmd .cmdhead .d{width:10px;height:10px;border-radius:50%;background:#2a3647}.cmd .cmdhead .lbl{margin-left:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#8a93a6}
+.cmd .cmdbody{padding:16px 16px 18px;color:#cfe0ff;font-size:15px}.cmd .chev{color:#4d8bff;font-weight:700}
+.cmdcard{margin-top:14px;background:#141821;border:1px solid #222a37;border-radius:12px;padding:12px 14px}
+.cmdcard .r{display:flex;justify-content:space-between;font-size:14px;color:#9aa3b4;padding:4px 0}
+.cmdcard .mono{font-family:ui-monospace,Menlo,monospace;color:#e8ebf2}.cmdcard .gain{color:#2fc08a}
+.cmdcard .hold{margin-top:10px;width:100%;background:#17324e;color:#cfe0ff;border:1px solid #2a4a7a;border-radius:9px;padding:9px;font-weight:600}
+.cptiers,.cphow{padding:40px 0;border-top:1px solid #1a2029;margin-top:30px}
+.cph2{text-align:center;font-size:28px;margin:6px 0 26px;letter-spacing:-.01em}
+.tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:900px;margin:0 auto}
+.tier{position:relative;background:#141821;border:1px solid #222a37;border-radius:16px;padding:22px 20px;display:flex;flex-direction:column}
+.tier.best{border-color:#4d8bff;box-shadow:0 0 0 1px #4d8bff inset}
+.tier .badge{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:#4d8bff;color:#071018;font-size:11px;font-weight:800;padding:3px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em}
+.tier .tname{font-weight:700;color:#e8ebf2}
+.tier .tprice{font-size:36px;font-weight:800;color:#fff;margin:6px 0 12px}.tier .tprice span{font-size:15px;color:#8a93a6;font-weight:500}
+.tier ul{list-style:none;padding:0;margin:0 0 16px;flex:1}
+.tier li{color:#9aa3b4;font-size:14px;padding:5px 0 5px 22px;position:relative}
+.tier li:before{content:"✓";position:absolute;left:0;color:#2fc08a;font-weight:700}
+.tier li b{color:#e8ebf2}
+.fine{text-align:center;color:#5a6577;font-size:12.5px;max-width:60ch;margin:22px auto 0}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;max-width:900px;margin:0 auto}
+.step{background:#141821;border:1px solid #222a37;border-radius:14px;padding:20px}
+.step .num{width:30px;height:30px;border-radius:9px;background:#17324e;color:#8fc0ff;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:10px}
+.step h3{margin:0 0 6px;color:#e8ebf2}.step p{color:#9aa3b4;font-size:14px;line-height:1.6;margin:0}
+@media(prefers-color-scheme:light){.cphero .lede,.tier li,.step p{color:#45506a}.cmd{background:#f4f6fb}.tier,.step,.cmdcard{background:#fff;border-color:#e4e9f2}.tier .tprice{color:#0d1420}.cpbtn.ghost{color:#2f6bf0;border-color:#cdd8ee}}
+</style>
+<script>
+(function(){
+  function go(plan){ try{ localStorage.setItem('blk_copilot_plan', plan); }catch(e){} location.href='/account?plan='+encodeURIComponent(plan); }
+  document.querySelectorAll('[data-plan]').forEach(function(b){ b.addEventListener('click', function(){ go(b.getAttribute('data-plan')); }); });
+})();
+</script>"##.to_string();
+    page_shell_seo(
+        "Blockle Copilot — your AI trading desk",
+        "Blockle Copilot: an AI that trades on your command from your own non-custodial wallet, behind one hard safety gate. Keyless, paper-first. From $19/mo.",
+        "/copilot",
+        "",
+        body,
+    )
 }
 
 fn page_markets() -> String {
@@ -1757,7 +1847,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="#product">Product</a><a href="#bots">Bots</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
+<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="#product">Product</a><a href="#bots">Bots</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
@@ -1833,6 +1923,12 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
   tick();setInterval(tick,15000);
 })();
 </script>
+<section style="padding:10px 0 0"><div class="wrap">
+<a href="/copilot" style="display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:linear-gradient(135deg,#17324e,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:14px;padding:16px 20px;text-decoration:none">
+<span style="color:var(--text);font-size:15px"><b>Meet Blockle Copilot</b> &mdash; an AI that trades on your command, from your own wallet, behind one hard safety gate. Paper-first, from $19/mo.</span>
+<span style="background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 16px;border-radius:9px;white-space:nowrap">Explore Copilot &rarr;</span>
+</a>
+</div></section>
 <section id="product"><div class="wrap"><span class="eyebrow">What's inside</span>
 <div class="shead"><h2>One app for the whole trade &mdash; custody to execution.</h2><p>Most tools make you choose: a wallet, or an exchange, or a bot platform. Blockle is all three, non-custodial, with the AI agent wired through the same safety gate.</p></div>
 <div class="pillars">
