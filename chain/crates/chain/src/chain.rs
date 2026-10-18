@@ -399,6 +399,15 @@ impl Chain {
                     return Err(ChainError::ContractRules("gas limit too high".into()));
                 }
             }
+            Some(ContractAction::LaunchToken { code, gas_limit, .. })
+            | Some(ContractAction::LaunchNft { code, gas_limit, .. }) => {
+                if code.is_empty() || code.len() > self.params.max_contract_code {
+                    return Err(ChainError::ContractRules("bad code size".into()));
+                }
+                if *gas_limit > self.params.block_gas_limit {
+                    return Err(ChainError::ContractRules("gas limit too high".into()));
+                }
+            }
             // Native AMM pool actions — bound gas like other actions. Economic
             // validity (balances, slippage, lock) is enforced at apply time,
             // which refunds the BLOCK value if the action can't execute.
@@ -593,21 +602,45 @@ impl Chain {
                 UtxoEntry { output: output.clone(), height, coinbase: false },
             );
         }
-        let effects = contracts::apply_contract_action(tx, txid, height, contracts, storage);
-        let mut payouts = effects.payouts;
-        let logs = effects.logs;
-        if let Some(action) = &tx.contract {
-            if matches!(
-                action,
-                ContractAction::PoolCreate { .. }
-                    | ContractAction::PoolAdd { .. }
-                    | ContractAction::PoolRemove { .. }
-                    | ContractAction::PoolSwapBuy { .. }
-                    | ContractAction::PoolSwapSell { .. }
-            ) {
-                payouts.extend(crate::pools::apply_pool_action(action, tx, height, pools, storage));
+        let (mut payouts, logs) = match &tx.contract {
+            // Atomic deploy + mint + pool — one tx, one block, no race.
+            Some(ContractAction::LaunchToken { code, block_amt, token_amt, gas_limit }) => {
+                Self::apply_launch_token(
+                    tx, txid, height, code, *block_amt, *token_amt, *gas_limit, contracts, storage,
+                    pools,
+                )
             }
-        }
+            // Atomic NFT collection launch — deploy + init (set minter), one block.
+            Some(ContractAction::LaunchNft { code, gas_limit }) => {
+                let cid = contracts::contract_id(txid);
+                contracts.insert(cid, contracts::ContractInfo { code: code.to_vec(), balance: 0 });
+                let caller = blockle_core::keys::pubkey_to_address(&tx.inputs[0].pubkey);
+                let init = contracts::execute_call(&cid, &[0u8], 0, *gas_limit, caller, height, contracts, storage);
+                let logs: Vec<([u8; 32], Vec<u8>)> = if init.success {
+                    init.logs.into_iter().map(|l| (cid, l)).collect()
+                } else {
+                    Vec::new()
+                };
+                (Vec::new(), logs)
+            }
+            _ => {
+                let effects = contracts::apply_contract_action(tx, txid, height, contracts, storage);
+                let mut p = effects.payouts;
+                if let Some(action) = &tx.contract {
+                    if matches!(
+                        action,
+                        ContractAction::PoolCreate { .. }
+                            | ContractAction::PoolAdd { .. }
+                            | ContractAction::PoolRemove { .. }
+                            | ContractAction::PoolSwapBuy { .. }
+                            | ContractAction::PoolSwapSell { .. }
+                    ) {
+                        p.extend(crate::pools::apply_pool_action(action, tx, height, pools, storage));
+                    }
+                }
+                (p, effects.logs)
+            }
+        };
         let pay_txid = contracts::payout_txid(txid);
         for (vout, (recipient, amount)) in payouts.into_iter().enumerate() {
             utxos.insert(
@@ -620,6 +653,43 @@ impl Chain {
             );
         }
         logs
+    }
+
+    /// Apply `ContractAction::LaunchToken`: deploy the code, run its `init()`
+    /// (selector 0 — mints the baked supply to the sender), then seed the AMM
+    /// pool with `block_amt` BLOCK + `token_amt` of that fresh supply. All three
+    /// happen here, in order, against the same in-block state, so the pool can
+    /// never fire before the mint. If deploy/init fails or the pool can't be
+    /// created, `block_amt` is refunded. Returns (BLOCK payouts, event logs).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_launch_token(
+        tx: &Transaction,
+        txid: &Hash32,
+        height: u64,
+        code: &[u8],
+        block_amt: u64,
+        token_amt: u64,
+        gas_limit: u64,
+        contracts: &mut ContractMap,
+        storage: &mut StorageMap,
+        pools: &mut crate::pools::PoolState,
+    ) -> (Vec<([u8; 32], u64)>, Vec<([u8; 32], Vec<u8>)>) {
+        let cid = contracts::contract_id(txid);
+        contracts.insert(cid, contracts::ContractInfo { code: code.to_vec(), balance: 0 });
+        let caller = blockle_core::keys::pubkey_to_address(&tx.inputs[0].pubkey);
+        // init() — selector 0 — mints the baked supply to the caller.
+        let init = contracts::execute_call(&cid, &[0u8], 0, gas_limit, caller, height, contracts, storage);
+        let logs: Vec<([u8; 32], Vec<u8>)> = if init.success {
+            init.logs.into_iter().map(|l| (cid, l)).collect()
+        } else {
+            Vec::new()
+        };
+        if !init.success {
+            // deploy stands, but no supply was minted — refund the seed BLOCK.
+            return (vec![(caller, block_amt)], logs);
+        }
+        let payouts = crate::pools::launch_pool(cid, caller, block_amt, token_amt, height, pools, storage);
+        (payouts, logs)
     }
 
     /// Validate `block` as the next block and connect it.

@@ -55,6 +55,11 @@
         return { chain: 'block', to: action.token, amount: String(action.blockAmt || 0), fee: feeOf(action), asset };
       case 'init':
         return { chain: 'block', to: action.contractId, amount: '0', fee: feeOf(action), asset };
+      case 'launch':
+        // atomic deploy+mint+pool; the BLOCK that leaves the wallet is the seed.
+        return { chain: 'block', to: action.symbol || 'new token', amount: String(action.blockAmt || 0), fee: feeOf(action), asset };
+      case 'launchNft':
+        return { chain: 'block', to: 'new NFT collection', amount: '0', fee: feeOf(action), asset };
       case 'deploy':
         // a deploy has no recipient; still inspected for a uniform preview.
         return { chain: 'block', to: action.to, amount: String(action.value || 0), fee: feeOf(action), asset };

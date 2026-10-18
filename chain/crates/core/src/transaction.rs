@@ -106,6 +106,18 @@ pub enum ContractAction {
     /// Swap `token_in` of the token for BLOCK (paid out); no-op if the output
     /// would be below `min_block_out`.
     PoolSwapSell { token: Hash32, token_in: u64, min_block_out: u64, gas_limit: u64 },
+    /// Atomic token launch — deploy `code`, run its `init()` (minting the baked
+    /// supply to the sender), and seed a BLOCK/token AMM pool with `block_amt`
+    /// BLOCK (from inputs) and `token_amt` of the freshly minted supply, all in
+    /// ONE transaction (one block). Removes the deploy→init→pool race entirely:
+    /// the pool can't fire before the mint exists. If any step fails the whole
+    /// action reverts and `block_amt` is refunded to the sender.
+    LaunchToken { code: Vec<u8>, block_amt: u64, token_amt: u64, gas_limit: u64 },
+    /// Atomic NFT-collection launch — deploy `code` (a BLOCK-721 collection) and
+    /// run its `init()` (selector 0, which fixes the deployer as the minter) in
+    /// ONE transaction. Removes the deploy→init race for collections; subsequent
+    /// `mint`s are independent single calls once this confirms.
+    LaunchNft { code: Vec<u8>, gas_limit: u64 },
 }
 
 impl ContractAction {
@@ -118,6 +130,8 @@ impl ContractAction {
             ContractAction::PoolRemove { gas_limit, .. } => *gas_limit,
             ContractAction::PoolSwapBuy { gas_limit, .. } => *gas_limit,
             ContractAction::PoolSwapSell { gas_limit, .. } => *gas_limit,
+            ContractAction::LaunchToken { gas_limit, .. } => *gas_limit,
+            ContractAction::LaunchNft { gas_limit, .. } => *gas_limit,
         }
     }
 
@@ -131,6 +145,8 @@ impl ContractAction {
             ContractAction::PoolRemove { .. } => 0,
             ContractAction::PoolSwapBuy { block_in, .. } => *block_in,
             ContractAction::PoolSwapSell { .. } => 0,
+            ContractAction::LaunchToken { block_amt, .. } => *block_amt,
+            ContractAction::LaunchNft { .. } => 0,
         }
     }
 }
@@ -298,6 +314,18 @@ impl Transaction {
                 put_fixed(&mut out, token);
                 put_u64(&mut out, *token_in);
                 put_u64(&mut out, *min_block_out);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::LaunchToken { code, block_amt, token_amt, gas_limit }) => {
+                put_u32(&mut out, 8);
+                put_bytes(&mut out, code);
+                put_u64(&mut out, *block_amt);
+                put_u64(&mut out, *token_amt);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::LaunchNft { code, gas_limit }) => {
+                put_u32(&mut out, 9);
+                put_bytes(&mut out, code);
                 put_u64(&mut out, *gas_limit);
             }
         }

@@ -83,6 +83,16 @@
     createPool(token, blockAmt, tokenAmt, gasLimit) {
       return rpc('blockle_createPool', [token, blockAmt, tokenAmt, gasLimit]);
     },
+    // Atomic token launch — deploy + mint + seed pool in ONE transaction. Amounts
+    // are WHOLE coins (supply, seedToken are token counts; seedBlock is BLOCK).
+    // Resolves { txid, contractId } once submitted.
+    launchToken(name, symbol, decimals, supply, seedBlock, seedToken, gasLimit) {
+      return rpc('blockle_launchToken', [name, symbol, decimals, supply, seedBlock, seedToken, gasLimit]);
+    },
+    // Atomic BLOCK-721 collection launch — deploy + init (set minter) in ONE tx.
+    launchNft(codeHex, gasLimit) {
+      return rpc('blockle_launchNft', [codeHex, gasLimit]);
+    },
     // Swap against a pool. side = 'buy' (BLOCK->token) | 'sell' (token->BLOCK).
     // amountIn / minOut are base units (strings).
     swap(token, side, amountIn, minOut, gasLimit) {

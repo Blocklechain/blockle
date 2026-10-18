@@ -97,6 +97,25 @@
       await init();
       return wb().build_block20_token(name, symbol, BigInt(decimals), BigInt(supply));
     },
+    // Atomic deploy + mint + pool — amounts in WHOLE coins (scaled by decimals
+    // inside the wasm so the minted supply and pool token leg always match).
+    async buildLaunchToken(secretHex, publicHex, utxos, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_launch_token(secretHex, publicHex, JSON.stringify(utxos), name, symbol,
+          BigInt(decimals), BigInt(supply), BigInt(seedBlock), BigInt(seedToken), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
+    // Atomic deploy + init of a BLOCK-721 collection (codeHex = prebuilt bytecode).
+    async buildLaunchNft(secretHex, publicHex, utxos, codeHex, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_launch_nft(secretHex, publicHex, JSON.stringify(utxos), codeHex, BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
+    contractIdForTxid(txid) {
+      return wb().contract_id_for_txid(txid);
+    },
     async buildPoolSwapBuy(secretHex, publicHex, utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice) {
       await init();
       return JSON.parse(

@@ -208,6 +208,16 @@
       return Signer.buildPoolCreate(session.secret, session.pub, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice);
     },
 
+    async buildLaunchToken(utxos, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildLaunchToken(session.secret, session.pub, utxos, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice);
+    },
+
+    async buildLaunchNft(utxos, codeHex, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildLaunchNft(session.secret, session.pub, utxos, codeHex, gasLimit, gasPrice);
+    },
+
     async buildPoolSwapBuy(utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice) {
       if (!session.secret) throw new Error('locked');
       return Signer.buildPoolSwapBuy(session.secret, session.pub, utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice);

@@ -48,6 +48,15 @@ pub fn address_from_pubkey(public_hex: &str) -> Result<String, JsError> {
     Ok(encode_address(&pubkey_to_address(&pk)))
 }
 
+/// The contract id a deploy/launch tx produces, derived from its txid (hex).
+/// Lets a one-shot atomic launch report the id of the contract it just created.
+#[wasm_bindgen]
+pub fn contract_id_for_txid(txid_hex: &str) -> Result<String, JsError> {
+    let txid = hex::decode(txid_hex.trim()).map_err(|_| JsError::new("bad txid hex"))?;
+    let t: [u8; 32] = txid.as_slice().try_into().map_err(|_| JsError::new("txid must be 32 bytes"))?;
+    Ok(hexs(&blake2b_256_personal(b"BlklCntr", &t)))
+}
+
 /// Sign a UTF-8 message with the wallet key. Returns JSON:
 /// `{ scheme, address, publicKey, signature }`.
 #[wasm_bindgen]
@@ -569,6 +578,69 @@ pub fn build_pool_create(secret_hex: &str, public_hex: &str, utxos_json: &str, t
     let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
     let token = parse_token(token_hex)?;
     finalize_action_tx(&kp, &utxos, ContractAction::PoolCreate { token, block_amt, token_amt, gas_limit }, block_amt, fee)
+}
+
+/// Atomic token launch — deploy a BLOCK-20 token, mint its supply, and seed a
+/// BLOCK/token AMM pool, all in ONE transaction (one block). Amounts are given
+/// in WHOLE coins and scaled by `decimals` here so the minted supply and the
+/// pool's token leg are consistent (the old deploy→init→pool flow mismatched
+/// these, which made PoolCreate silently refund). `supply`/`seed_token` are
+/// whole-token counts; `seed_block` is whole BLOCK.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_launch_token(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    name: &str,
+    symbol: &str,
+    decimals: u64,
+    supply: u64,
+    seed_block: u64,
+    seed_token: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    if decimals > 18 {
+        return Err(JsError::new("decimals too large"));
+    }
+    if seed_token > supply {
+        return Err(JsError::new("seed tokens exceed total supply"));
+    }
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let scale = 10u64.checked_pow(decimals as u32).ok_or_else(|| JsError::new("decimals overflow"))?;
+    let supply_raw = supply.checked_mul(scale).ok_or_else(|| JsError::new("supply overflow"))?;
+    let token_amt = seed_token.checked_mul(scale).ok_or_else(|| JsError::new("seed token overflow"))?;
+    let block_amt = seed_block.checked_mul(100_000_000).ok_or_else(|| JsError::new("seed block overflow"))?;
+    let code = blockle_vm::asm::assemble(&block20_asm(name, symbol, decimals, supply_raw))
+        .map_err(|e| JsError::new(&format!("asm error: {e:?}")))?;
+    finalize_action_tx(
+        &kp,
+        &utxos,
+        ContractAction::LaunchToken { code, block_amt, token_amt, gas_limit },
+        block_amt,
+        fee,
+    )
+}
+
+/// Atomic NFT-collection launch — deploy a BLOCK-721 collection and run its
+/// init() (fixing the deployer as minter) in ONE transaction. `code_hex` is the
+/// pre-built BLOCK-721 bytecode (hex).
+#[wasm_bindgen]
+pub fn build_launch_nft(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    code_hex: &str,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let code = hex::decode(code_hex.trim()).map_err(|_| JsError::new("bad code hex"))?;
+    if code.is_empty() {
+        return Err(JsError::new("empty code"));
+    }
+    finalize_action_tx(&kp, &utxos, ContractAction::LaunchNft { code, gas_limit }, 0, fee)
 }
 
 #[wasm_bindgen]

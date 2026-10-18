@@ -242,6 +242,36 @@ impl PoolState {
 /// and the BLOCK-20 token storage; returns BLOCK payouts (UTXOs to mint):
 /// liquidity/swap proceeds, or a refund of the BLOCK `value` if the action
 /// can't execute (slippage, missing pool, insufficient balance, lock). The
+/// Seed a BLOCK/`token` pool from a balance the SAME transaction just minted
+/// (the pool half of `ContractAction::LaunchToken`). Identical semantics to the
+/// `PoolCreate` arm — refund `block_amt` if the sender can't cover `token_amt`
+/// or the pool can't be created — but callable directly so the launch action
+/// can deploy + mint + pool atomically. Returns the BLOCK refund payouts (empty
+/// on success).
+pub fn launch_pool(
+    token: Hash32,
+    caller: Hash32,
+    block_amt: u64,
+    token_amt: u64,
+    height: u64,
+    pools: &mut PoolState,
+    storage: &mut StorageMap,
+) -> Vec<([u8; 32], u64)> {
+    if get_tok(storage, &token, &caller) < token_amt {
+        return vec![(caller, block_amt)]; // refund BLOCK
+    }
+    match pools.create_pool(token, caller, block_amt, token_amt, height) {
+        Ok((id, _)) => {
+            let cb = get_tok(storage, &token, &caller);
+            set_tok(storage, &token, &caller, cb - token_amt);
+            let pb = get_tok(storage, &token, &id);
+            set_tok(storage, &token, &id, pb + token_amt);
+            vec![]
+        }
+        Err(_) => vec![(caller, block_amt)],
+    }
+}
+
 /// gas fee is always consumed (anti-spam), like a reverted contract call.
 pub fn apply_pool_action(
     action: &ContractAction,
