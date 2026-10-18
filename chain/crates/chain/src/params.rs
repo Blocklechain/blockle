@@ -109,11 +109,16 @@ impl ChainParams {
         }
     }
 
-    /// Public test network: identical ASIC-class parameters, separate chain
-    /// identity and faster maturity so testing coins move sooner.
+    /// Public test network: separate chain identity, faster maturity, and
+    /// CPU-mineable PoW (Equihash 48,5 + a low difficulty + short spacing) so a
+    /// single node keeps producing blocks without ASICs — testnet coins move and
+    /// txs confirm reliably for rehearsals. (Mainnet keeps ASIC-class 200,9.)
     pub fn testnet() -> Self {
         ChainParams {
             name: "blockle-test".into(),
+            equihash: equihash::Params::new(48, 5).expect("valid params"),
+            pow_limit: U256::MAX >> 4,
+            target_spacing: 15,
             coinbase_maturity: 10,
             decay_activation_height: 0,
             decay_v2_height: 0,

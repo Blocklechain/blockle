@@ -706,6 +706,7 @@ fn route(
         // The in-game WORLD token icon (used by the launchpad preset, the DEX
         // logo registration, and the WORLD token metadata).
         "/world-token.svg" => serve_web_file("world-token.svg", "image/svg+xml; charset=utf-8"),
+        "/usdb-token.svg" => serve_web_file("usdb-token.svg", "image/svg+xml; charset=utf-8"),
         "/bridge/transactions" => ("200 OK", "text/html; charset=utf-8", page_bridge_transactions().into_bytes()),
         p if p.starts_with("/bridge/transactions/") => {
             let id = &p["/bridge/transactions/".len()..];
