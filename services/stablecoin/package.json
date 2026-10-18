@@ -1,0 +1,9 @@
+{
+  "name": "blockle-stablecoin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "USDB (Blockle USD) issuance + reserve service — mint against verified USD reserves, redeem, proof-of-reserves. Gated/dry-run until the issuer enables it with real backing.",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" }
+}
