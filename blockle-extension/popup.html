@@ -110,6 +110,8 @@
         </div>
         <a class="buybar" href="https://blockle.org/buy" target="_blank" rel="noopener"
            style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:10px;padding:12px;border-radius:12px;background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;font-weight:700;text-decoration:none">↕ Buy / Sell BLOCK</a>
+        <button class="buybar" data-go="usdb"
+           style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px;padding:12px;border-radius:12px;border:0;cursor:pointer;background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a;font-weight:800">$ Buy / Redeem USDB</button>
         <div class="section-h" style="display:flex;align-items:center;justify-content:space-between">Tokens
           <button id="import-token" style="background:none;border:1px solid var(--line2,#2e323c);color:var(--text,#dfe6f5);border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">+ Import</button>
         </div>
@@ -169,6 +171,27 @@
         </div>
         <div class="stack bottom">
           <button class="btn primary" id="send-go">Send</button>
+        </div>
+      </section>
+
+      <!-- USDB (Blockle USD stablecoin) -->
+      <section class="screen" data-screen="usdb" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Blockle USD · USDB</span></header>
+        <div class="pad">
+          <div class="balance-card" style="margin-bottom:12px">
+            <div class="bc-label">Your USDB</div>
+            <div class="bc-amount"><span id="usdb-bal">—</span> <span class="bc-ticker">USDB</span></div>
+          </div>
+          <button class="btn primary" id="usdb-buy" style="background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a">Buy USDB with PayPal</button>
+          <div class="notice" style="margin-top:8px">Opens a secure PayPal checkout; USDB is delivered to this wallet in seconds, fully backed 1:1.</div>
+          <div class="section-h" style="padding-left:0;margin-top:16px">Redeem USDB → USD</div>
+          <label class="field"><span>Amount (USDB)</span><input type="text" id="usdb-ramt" placeholder="0.00" inputmode="decimal" /></label>
+          <label class="field"><span>Your PayPal email</span><input type="text" id="usdb-remail" placeholder="you@example.com" /></label>
+          <div class="notice" id="usdb-rquote" hidden></div>
+          <button class="btn" id="usdb-redeem" style="margin-top:8px">Redeem to PayPal</button>
+          <div class="notice" style="margin-top:8px">Burns your USDB on-chain via the USDB contract (you sign it) — no custody — then the USD is paid to your PayPal automatically.</div>
+          <div class="err" id="usdb-err"></div>
+          <div id="usdb-ok" class="notice" hidden style="color:#4ADE80"></div>
         </div>
       </section>
 

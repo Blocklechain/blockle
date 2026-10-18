@@ -20,7 +20,7 @@
   // renders as "Blockle USD" with its brand mark rather than a bare monogram.
   // Keyed by lowercase contract id. Node-read metadata still wins for balance.
   const CURATED = {
-    '946b4f3771970c8be5ca9416898408ac88fdbaedcd2177f3cbfd564a639ada09': {
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': {
       symbol: 'USDB', name: 'Blockle USD', decimals: 6,
       logoURI: 'https://blockle.org/usdb-token.svg', stablecoin: true, peg: 'USD',
     },

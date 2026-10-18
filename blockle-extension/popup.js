@@ -542,6 +542,62 @@
       }
     });
 
+    // ---- USDB (Blockle USD stablecoin) ----
+    const USDB_API = 'https://blockle.org/api/usdb';
+    let usdbInfo = null;
+    function u64leHex(n) {
+      const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true);
+      return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+    }
+    async function usdbLoad() {
+      const bEl = $('#usdb-bal'); if (bEl) bEl.textContent = '…';
+      try {
+        usdbInfo = await (await fetch(USDB_API + '/info')).json();
+        const dec = (usdbInfo && usdbInfo.decimals) || 6;
+        if (usdbInfo && usdbInfo.contract && Wallet.address) {
+          let bal = 0;
+          try { const t = await Chain.token(usdbInfo.contract, Wallet.address); bal = Number((t && (t.holderBalance != null ? t.holderBalance : t.balance)) || 0); } catch {}
+          if (bEl) bEl.textContent = (bal / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: 2 });
+        } else if (bEl) bEl.textContent = '0';
+      } catch { if (bEl) bEl.textContent = '—'; }
+    }
+    $('#usdb-buy').addEventListener('click', () => {
+      const url = 'https://blockle.org/usdb?to=' + encodeURIComponent(Wallet.address || '');
+      if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url });
+      else window.open(url, '_blank', 'noopener');
+    });
+    $('#usdb-redeem').addEventListener('click', async () => {
+      const err = $('#usdb-err'), ok = $('#usdb-ok'); err.textContent = ''; ok.hidden = true;
+      const amt = parseFloat($('#usdb-ramt').value);
+      const email = $('#usdb-remail').value.trim();
+      if (!(amt > 0)) return (err.textContent = 'Enter a USDB amount.');
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return (err.textContent = 'Enter your PayPal email.');
+      if (!Wallet.isUnlocked()) return (err.textContent = 'Unlock your wallet to redeem.');
+      const btn = $('#usdb-redeem'); btn.disabled = true; btn.textContent = 'Preparing…';
+      try {
+        // 1) register the payout intent -> payoutRef + the on-chain amount to burn
+        const intent = await (await fetch(USDB_API + '/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ payoutEmail: email, amountUsd: amt }) })).json();
+        if (intent.error) throw new Error(intent.error);
+        if (!intent.payoutRef || !intent.contract) throw new Error('redeem not available');
+        // 2) sign the on-chain redeem: selector 15 (0x0f) ‖ payoutRef(32) ‖ amount(8 LE)
+        const input = '0f' + intent.payoutRef + u64leHex(intent.amountBase);
+        const u = await Chain.utxos(Wallet.address);
+        if (!u || !u.utxos.length) throw new Error('no spendable BLOCK for gas');
+        btn.textContent = 'Signing redeem…';
+        const built = await Wallet.buildCall(u.utxos, intent.contract, input, 0, 120000, 10);
+        const res = await Chain.submit(built.raw);
+        await recordPending(res.txid || built.txid, 'Redeem USDB');
+        ok.hidden = false;
+        ok.textContent = 'Redeem submitted — $' + intent.estPayoutUsd + ' will arrive in your PayPal once the burn confirms (~1 block).';
+        $('#usdb-ramt').value = '';
+        setTimeout(usdbLoad, 1500);
+      } catch (e) {
+        err.textContent = 'Redeem failed: ' + (e.message || e);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Redeem to PayPal';
+      }
+    });
+
     // settings
     $('#export-wallet').addEventListener('click', async () => {
       try {
@@ -1307,6 +1363,11 @@
     if (name === 'swap') {
       show('swap');
       initSwap();
+      return;
+    }
+    if (name === 'usdb') {
+      show('usdb');
+      usdbLoad();
       return;
     }
     if (name === 'exchange') {
