@@ -714,6 +714,8 @@ fn route(
         }
         "/bridge/reserves" => ("200 OK", "text/html; charset=utf-8", page_bridge_reserves().into_bytes()),
         "/faucet" => serve_web_file("faucet.html", "text/html; charset=utf-8"),
+        // Buy/redeem USDB (Blockle USD stablecoin) via the live PayPal rail.
+        "/usdb" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
@@ -844,13 +846,8 @@ fn route(
         // Old Transak-backed Buy/Sell page retired (the fiat widget never came
         // online). Being replaced by a non-custodial exchange at
         // exchange.blockle.org — BLOCK/ETH/SOL/USDC/USDT, wallet-to-wallet.
-        "/buy" => ("200 OK", "text/html; charset=utf-8", page_shell("Buy / Sell",
-            "<section style=\"max-width:640px;margin:60px auto;text-align:center\">\
-             <h1>Buy / Sell is moving</h1>\
-             <p class=\"muted\">The old fiat buy/sell page has been retired. A new <strong>non-custodial exchange</strong> is on the way — trade BLOCK against ETH, SOL, USDC and USDT wallet-to-wallet, with no custody and nothing to deposit.</p>\
-             <p style=\"margin-top:24px\"><a href=\"/dex\" style=\"background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:10px 20px;border-radius:8px;font-weight:700;text-decoration:none\">Trade on the DEX →</a></p>\
-             <p class=\"muted\" style=\"margin-top:16px;font-size:13px\">Coming soon: exchange.blockle.org</p>\
-             </section>".into()).into_bytes()),
+        // "Buy" now goes to the USDB on-ramp (buy a USD stablecoin with PayPal).
+        "/buy" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
         "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
         "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
         // Sign a MoonPay buy-widget URL for production. The `url` query param is
@@ -1397,7 +1394,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
 </head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/buy">Buy</a><a href="/mine">Mine</a>
+<a href="/usdb" style="background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a;padding:6px 14px;border-radius:8px;font-weight:800">Buy USDB</a><a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/mine">Mine</a>
 <span class="spacer"></span>
 <a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/status">Status</a><a href="/api">API</a><a href="/developers">Developers</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
 {aads_top}
@@ -2229,7 +2226,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
+<nav class="top"><a href="/usdb" style="background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a;padding:5px 12px;border-radius:8px;font-weight:800">Buy USDB</a><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>

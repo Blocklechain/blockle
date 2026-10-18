@@ -87,7 +87,7 @@ fs.mkdirSync(DATA, { recursive: true });
 const LEDGER = path.join(DATA, 'reserve-ledger.json');
 function load() {
   let l; try { l = JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { l = {}; }
-  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, ...l };
+  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, pending: {}, ...l };
 }
 function save(l) { fs.writeFileSync(LEDGER, JSON.stringify(l)); }
 
@@ -234,12 +234,17 @@ const server = http.createServer(async (req, res) => {
       let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
       if (!ENABLED) return j(res, 200, { dryRun: true, note: 'public issuance not enabled' });
       if (!paypal.configured()) return j(res, 503, { error: 'PayPal rail not configured' });
+      const to = String(b.recipient || b.to || '').trim();
+      if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
       const q = b.amountUsdb > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(Number(b.amountUsd || b.amount || 0));
       if (!(q.payUsd > 0)) return j(res, 400, { error: 'amount must be positive' });
       if (q.payUsd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
       try {
         const o = await paypal.createOrder(q.payUsd, { description: `Buy ${q.receiveUsdb} USDB`, returnUrl: b.returnUrl, cancelUrl: b.cancelUrl });
-        return j(res, 200, { ...o, quote: q });
+        // Bind the recipient to the order server-side so the PayPal return only
+        // needs the order id (no block1 address rides in the redirect URL).
+        const l = load(); l.pending[o.orderId] = { recipient: to, payUsd: q.payUsd, t: Date.now() }; save(l);
+        return j(res, 200, { ...o, quote: q, recipient: to });
       } catch (e) { return j(res, 502, { error: 'PayPal order create failed: ' + e.message }); }
     }
 
@@ -287,10 +292,10 @@ const server = http.createServer(async (req, res) => {
         // CAPTURE order the buyer paid; we capture + verify it covers payUsd in
         // USD and COMPLETED, reject replays, THEN mint. Self-funding: the payment
         // IS the backing, so reserves += the minted (backed) amount.
-        const to = String(b.recipient || b.to || '').trim();
         const orderId = String(b.orderId || b.depositRef || '').trim();
-        if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
+        const to = String(b.recipient || b.to || (l.pending[orderId] && l.pending[orderId].recipient) || '').trim();
         if (!orderId) return j(res, 402, { error: 'PayPal orderId required (create one via /api/usdb/paypal/create, have the buyer approve+pay, then submit it here)' });
+        if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
         if (l.consumed[orderId]) return j(res, 409, { error: 'this PayPal order was already redeemed for USDB' });
         let cap; try { cap = await paypal.captureOrder(orderId); } catch (e) { return j(res, 402, { error: 'PayPal capture failed: ' + e.message }); }
         if (!paypal.captureOk(cap, quote.payUsd)) {
@@ -301,6 +306,7 @@ const server = http.createServer(async (req, res) => {
         const txid = await mintTo(to, base);
         l.reserveUsd = round2(l.reserveUsd + quote.receiveUsdb); l.dayUsd = round2(l.dayUsd + quote.payUsd); l.volumeUsd = round2(l.volumeUsd + quote.payUsd);
         l.issued.push({ t: Date.now(), side, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, usdb: base / UNIT, to, txid, orderId, captureId: cap.captureId });
+        delete l.pending[orderId];
         save(l);
         return j(res, 200, { ok: true, side, txid, mintedUsdb: base / UNIT, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, reserveUsd: l.reserveUsd });
       } else {
