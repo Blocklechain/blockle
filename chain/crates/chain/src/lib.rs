@@ -2,6 +2,7 @@
 
 pub mod block20;
 pub mod block721;
+pub mod stablecoin;
 pub mod chain;
 pub mod contracts;
 pub mod genesis;
