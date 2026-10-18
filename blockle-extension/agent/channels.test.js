@@ -270,3 +270,42 @@ test('pnl: realized P&L is recorded per channel and persisted in the summary', a
   await mgr2.load();
   assert.equal(mgr2.get('p').describe().pnl.realizedUsd, 9.5);
 });
+
+// ---------------------------------------------------------------------------
+// Blockle Copilot tier gating
+// ---------------------------------------------------------------------------
+
+test('tier: free is paper-only and single-agent', async () => {
+  const mgr = AgentChannels.create(baseOpts(memStore(), { entitlement: () => 'free' }));
+  await assert.rejects(mgr.create({ walletId: 'w1', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } }), /paper-only/);
+  await mgr.create({ id: 'a', walletId: 'w1', provider: 'claude', credRef: 'main', readOnly: true, caps: {} });
+  await assert.rejects(mgr.create({ id: 'b', walletId: 'w1', provider: 'claude', credRef: 'main', readOnly: true, caps: {} }), /agent/);
+  const p = mgr.plan();
+  assert.equal(p.tier, 'free'); assert.equal(p.live, false); assert.equal(p.maxChannels, 1);
+});
+
+test('tier: copilot allows live up to three agents', async () => {
+  const mgr = AgentChannels.create(baseOpts(memStore(), { entitlement: 'copilot' }));
+  for (let i = 0; i < 3; i++) await mgr.create({ id: 'c' + i, walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } });
+  await assert.rejects(mgr.create({ id: 'c3', walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } }), /agent/);
+  assert.equal(mgr.plan().maxChannels, 3); assert.equal(mgr.plan().live, true);
+});
+
+test('tier: copilot_pro is unlimited', async () => {
+  const mgr = AgentChannels.create(baseOpts(memStore(), { entitlement: 'copilot_pro' }));
+  for (let i = 0; i < 5; i++) await mgr.create({ id: 'p' + i, walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } });
+  assert.equal(mgr.plan().maxChannels, null);
+});
+
+test('tier: a downgrade blocks arming a previously-created live channel', async () => {
+  let tier = 'copilot';
+  const mgr = AgentChannels.create(baseOpts(memStore(), { entitlement: () => tier }));
+  await mgr.create({ id: 'x', walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } });
+  tier = 'free';
+  await assert.rejects(mgr.start('x'), /Copilot/);
+});
+
+test('tier: no entitlement source means no gating (backward compatible)', async () => {
+  const mgr = AgentChannels.create(baseOpts(memStore()));
+  for (let i = 0; i < 4; i++) await mgr.create({ id: 'u' + i, walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } });
+});

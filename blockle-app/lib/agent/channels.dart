@@ -79,6 +79,27 @@ bool _hasCaps(Map<String, dynamic>? caps) {
   return false;
 }
 
+/// Blockle Copilot subscription tiers → what the agent engine allows. The host injects the
+/// current tier (ChannelManager.entitlement); we FAIL CLOSED to 'free' for an unknown tier so a
+/// missing or unreachable account can never silently unlock live trading or extra agents.
+const String kCopilotUpsell = 'Upgrade at blockle.org/copilot';
+
+class _TierLimit {
+  final int maxChannels; // -1 == unlimited
+  final bool live;
+  const _TierLimit(this.maxChannels, this.live);
+}
+
+const Map<String, _TierLimit> _tierLimits = {
+  'free': _TierLimit(1, false),
+  'pro': _TierLimit(3, true), // legacy Blockle Pro
+  'copilot': _TierLimit(3, true),
+  'copilot_pro': _TierLimit(-1, true),
+};
+
+_TierLimit _limitsFor(String? tier) =>
+    _tierLimits[(tier ?? 'free').toLowerCase()] ?? _tierLimits['free']!;
+
 final Random _rng = Random.secure();
 String _rid() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -196,6 +217,11 @@ class ChannelManager {
   final Future<void> Function(String id, String? reason)? onChannelKill;
   final void Function(String id, Map<String, dynamic> ev)? onEvent;
   final AgentContext Function(Map<String, dynamic> meta)? ctxFor;
+
+  /// Copilot tier source: returns the live tier string ('free'/'copilot'/'copilot_pro'/'pro').
+  /// Null → gating OFF (backward compatible). When set, gating is enforced and fails CLOSED
+  /// to 'free' for an unknown tier.
+  final String Function()? entitlement;
   final Map<String, dynamic> defaults;
   final Map<String, Channel> channels = {};
 
@@ -209,8 +235,33 @@ class ChannelManager {
     this.onChannelKill,
     this.onEvent,
     this.ctxFor,
+    this.entitlement,
     Map<String, dynamic>? defaults,
   }) : defaults = defaults ?? const {};
+
+  String currentTier() {
+    final e = entitlement;
+    if (e == null) return 'free';
+    try {
+      final t = e();
+      return (t).toLowerCase();
+    } catch (_) {
+      return 'free';
+    }
+  }
+
+  _TierLimit _limits() => _limitsFor(currentTier());
+
+  /// The active subscription tier + what it unlocks, for the UI.
+  Map<String, dynamic> plan() {
+    final t = currentTier();
+    final lim = _limitsFor(t);
+    return {
+      'tier': t,
+      'maxChannels': lim.maxChannels < 0 ? null : lim.maxChannels,
+      'live': lim.live,
+    };
+  }
 
   /// Load persisted records into memory (does NOT start them — call resume()).
   Future<List<Map<String, dynamic>>> load() async {
@@ -251,6 +302,18 @@ class ChannelManager {
     }
     final guide = providerGuides[spec['provider']];
     final readOnly = spec['readOnly'] == true;
+    // Subscription gating — ACTIVE ONLY when the host wires entitlement (backward compatible);
+    // fails closed to 'free' for an unknown tier.
+    if (entitlement != null) {
+      final lim = _limits();
+      if (!readOnly && !lim.live) {
+        throw StateError(
+            'Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. $kCopilotUpsell');
+      }
+      if (lim.maxChannels >= 0 && channels.length >= lim.maxChannels) {
+        throw StateError('Your plan includes ${lim.maxChannels} agent(s). $kCopilotUpsell to add more.');
+      }
+    }
     final meta = <String, dynamic>{
       'id': spec['id'] ?? _rid(),
       'label': spec['label'] ?? 'Channel ${channels.length + 1}',
@@ -289,6 +352,12 @@ class ChannelManager {
 
     // Refuse to arm a value-moving channel without caps + a confirm handler.
     if (!readOnly) {
+      // subscription gate (active only when wired; fails closed): live trading needs a paid
+      // tier, re-checked at arm time so a downgrade can't leave a live agent running.
+      if (entitlement != null && !_limits().live) {
+        throw StateError(
+            'refusing to start "${meta['label']}": live trading needs Blockle Copilot. $kCopilotUpsell');
+      }
       if (!_hasCaps((meta['caps'] as Map?)?.cast<String, dynamic>())) {
         throw StateError(
             'refusing to start "${meta['label']}": set spend/risk caps first (value-moving channels require caps)');
