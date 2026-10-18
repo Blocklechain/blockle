@@ -230,8 +230,11 @@ class _WalletTabState extends State<WalletTab> {
                       .then((_) => _refresh());
                 }),
                 const SizedBox(width: 10),
-                _action(Icons.swap_vert, 'Buy / Sell',
-                    () => app.openBrowser('https://blockle.org/buy')),
+                _action(Icons.attach_money, 'Buy USDB', () {
+                  final a = app.store.address;
+                  app.openBrowser('https://blockle.org/usdb' +
+                      ((a != null && a.isNotEmpty) ? '?to=$a' : ''));
+                }),
               ],
             ),
             const SizedBox(height: 10),
