@@ -944,6 +944,28 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 "utxos": utxos,
             }))
         }
+        p if p.starts_with("/explorer/nfts/") => {
+            // BLOCK-721 tokens currently owned by an address, derived from the
+            // on-chain Transfer events. contract + tokenId are RAW hex so they
+            // round-trip straight into contract calls (ownerOf/transfer).
+            let addr_s = &p["/explorer/nfts/".len()..];
+            let Ok(addr) = decode_address(addr_s) else { return err404("bad address") };
+            let nfts: Vec<Value> = chain
+                .nfts_of(&addr)
+                .into_iter()
+                .map(|(contract, id)| {
+                    json!({
+                        "contract": hex::encode(contract),
+                        "tokenId": hex::encode(id),
+                    })
+                })
+                .collect();
+            ok(json!({
+                "address": addr_s,
+                "count": nfts.len(),
+                "nfts": nfts,
+            }))
+        }
         "/explorer/peers" => {
             let peers: Vec<Value> = node
                 .peer_list()

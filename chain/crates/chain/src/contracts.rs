@@ -165,15 +165,26 @@ pub fn execute_call(
 /// Returns payout outputs `(address, amount)` to be minted as UTXOs under
 /// [`payout_txid`]. Never fails: user-level failures burn the prepaid gas and
 /// leave state untouched (minus value refunds).
+/// The side effects of applying a contract action: UTXO payouts, plus any
+/// event logs the call emitted paired with the contract that emitted them.
+/// Logs are consumed by the node to maintain derived indexes (e.g. BLOCK-721
+/// NFT ownership); they are not part of consensus.
+#[derive(Default)]
+pub struct ContractEffects {
+    pub payouts: Vec<([u8; 32], u64)>,
+    /// (emitting contract id, raw log bytes) for each log a successful call produced.
+    pub logs: Vec<([u8; 32], Vec<u8>)>,
+}
+
 pub fn apply_contract_action(
     tx: &Transaction,
     txid: &Hash32,
     height: u64,
     contracts: &mut ContractMap,
     storage: &mut StorageMap,
-) -> Vec<([u8; 32], u64)> {
+) -> ContractEffects {
     let Some(action) = &tx.contract else {
-        return vec![];
+        return ContractEffects::default();
     };
     match action {
         ContractAction::Deploy { code, gas_limit } => {
@@ -185,7 +196,7 @@ pub fn apply_contract_action(
                     ContractInfo { code: code.clone(), balance: 0 },
                 );
             }
-            vec![]
+            ContractEffects::default()
         }
         ContractAction::Call { contract, input, value, gas_limit } => {
             // Non-coinbase is guaranteed by validation, so inputs exist.
@@ -194,10 +205,15 @@ pub fn apply_contract_action(
             let result = execute_call(
                 contract, input, *value, *gas_limit, sender, height, contracts, storage,
             );
-            result.payouts
+            let logs = if result.success {
+                result.logs.into_iter().map(|l| (*contract, l)).collect()
+            } else {
+                Vec::new()
+            };
+            ContractEffects { payouts: result.payouts, logs }
         }
         // Native AMM pool actions are applied separately (they need pool state);
         // see crate::pools::apply_pool_action.
-        _ => vec![],
+        _ => ContractEffects::default(),
     }
 }

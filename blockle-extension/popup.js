@@ -930,8 +930,15 @@
       if (!cell) return;
       const t = infos[i];
       const confd = t && (t.confirmations != null || t.height != null);
+      // A tx that is neither mined nor in the mempool after several block
+      // intervals was almost certainly dropped (e.g. it lost a double-spend race
+      // to another attempt on the same input) and will never confirm.
+      const agedMs = Date.now() - (x.time || 0);
+      const dropped = !confd && agedMs > 20 * 60 * 1000;
       cell.innerHTML = confd
         ? `<span style="color:#34d399">confirmed${t.confirmations != null ? ' · ' + t.confirmations + ' conf' : ''}</span>`
+        : dropped
+        ? '<span style="color:#9aa0aa">dropped · safe to ignore</span>'
         : '<span style="color:#f2b04a">pending…</span>';
     });
   }
@@ -1466,6 +1473,31 @@
             : { kind: 'init', contractId: detail.contractId, fee: gas * GAS_PRICE };
           const cleared = await securityGate(gateAction);
           if (!cleared) { btn.disabled = false; btn.textContent = 'Approve'; $('#action-err').textContent = 'Cancelled by the security review.'; return; }
+          // Prerequisite gate — blocks can be ~10 min and the prototype mempool
+          // has no unconfirmed-tx chaining, so a step whose predecessor is still
+          // pending would re-spend the predecessor's input and be rejected as a
+          // double-spend. Refuse early with a clear message instead of submitting
+          // a doomed tx (which also stops the deploy→init retry loop).
+          if (detail.kind === 'init') {
+            const t = await Chain.token(detail.contractId, Wallet.address);
+            if (!t) {
+              btn.disabled = false; btn.textContent = 'Approve';
+              $('#action-err').textContent = 'Your token deploy isn’t confirmed on-chain yet. Wait for it to be mined (watch the Transaction queue — usually 1–2 minutes), then Initialize. Don’t re-deploy.';
+              return;
+            }
+          } else if (detail.kind === 'pool') {
+            const t = await Chain.token(detail.token, Wallet.address);
+            if (!t) {
+              btn.disabled = false; btn.textContent = 'Approve';
+              $('#action-err').textContent = 'The token isn’t confirmed on-chain yet. Wait for the deploy to be mined, then Initialize, then create the pool.';
+              return;
+            }
+            if (!t.balance || Number(t.balance) === 0) {
+              btn.disabled = false; btn.textContent = 'Approve';
+              $('#action-err').textContent = 'You hold 0 of this token — the Initialize (mint) step must be confirmed first. Wait for it to be mined (Transaction queue), then create the pool.';
+              return;
+            }
+          }
           const u = await Chain.utxos(Wallet.address);
           if (!u || !u.utxos.length) throw new Error('no spendable funds');
           let built;
@@ -1486,8 +1518,12 @@
         } catch (e) {
           btn.disabled = false;
           btn.textContent = 'Approve';
-          $('#action-err').textContent = /locked|no wallet|password/i.test(e.message)
-            ? 'Wrong password.' : 'Failed: ' + e.message;
+          const msg = e && e.message ? e.message : String(e);
+          $('#action-err').textContent = /locked|no wallet|password/i.test(msg)
+            ? 'Wrong password.'
+            : /double-spend|already in the mempool|invalid/i.test(msg)
+            ? 'Rejected — a previous step is still confirming. Wait for the next block (watch the Transaction queue, usually 1–2 min), then try again. Don’t re-submit in the meantime.'
+            : 'Failed: ' + msg;
         }
       });
     } else {

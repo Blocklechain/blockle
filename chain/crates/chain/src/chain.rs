@@ -92,6 +92,10 @@ pub struct Chain {
     pub note_anchors: HashSet<Hash32>,
     /// Revealed nullifiers (spent notes).
     pub nullifiers: HashSet<Hash32>,
+    /// Derived (non-consensus) BLOCK-721 ownership index: (contract, token id)
+    /// -> current owner. Rebuilt from Transfer events as blocks connect, so a
+    /// reorg (which replays via `from_blocks`) reconstructs it from scratch.
+    pub nft_owner: HashMap<([u8; 32], [u8; 32]), [u8; 32]>,
 }
 
 pub fn now_unix() -> i64 {
@@ -115,6 +119,7 @@ impl Chain {
             note_leaves: Vec::new(),
             note_anchors,
             nullifiers: HashSet::new(),
+            nft_owner: HashMap::new(),
         }
     }
 
@@ -565,7 +570,7 @@ impl Chain {
         pools: &mut crate::pools::PoolState,
         nullifiers: &mut HashSet<Hash32>,
         note_leaves: &mut Vec<Hash32>,
-    ) {
+    ) -> Vec<([u8; 32], Vec<u8>)> {
         if let Some(bundle) = &tx.shielded {
             for spend in &bundle.spends {
                 nullifiers.insert(spend.nullifier);
@@ -588,7 +593,9 @@ impl Chain {
                 UtxoEntry { output: output.clone(), height, coinbase: false },
             );
         }
-        let mut payouts = contracts::apply_contract_action(tx, txid, height, contracts, storage);
+        let effects = contracts::apply_contract_action(tx, txid, height, contracts, storage);
+        let mut payouts = effects.payouts;
+        let logs = effects.logs;
         if let Some(action) = &tx.contract {
             if matches!(
                 action,
@@ -612,6 +619,7 @@ impl Chain {
                 },
             );
         }
+        logs
     }
 
     /// Validate `block` as the next block and connect it.
@@ -693,6 +701,7 @@ impl Chain {
         let mut lview = self.note_leaves.clone();
         let mut fees: u64 = 0;
         let mut gas_total: u64 = 0;
+        let mut block_logs: Vec<([u8; 32], Vec<u8>)> = Vec::new();
         for tx in &block.transactions[1..] {
             let fee = self.check_transaction(tx, &view, height)?;
             fees = fees.checked_add(fee).ok_or(ChainError::ValueOutOfRange)?;
@@ -710,10 +719,11 @@ impl Chain {
                 }
             }
             let txid = tx.txid();
-            Self::apply_tx_effects(
+            let logs = Self::apply_tx_effects(
                 tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
                 &mut lview,
             );
+            block_logs.extend(logs);
         }
 
         // -- Coinbase amount --
@@ -754,8 +764,41 @@ impl Chain {
         self.pools = pview;
         self.nullifiers = nview;
         self.note_leaves = lview;
+        self.index_nft_logs(&block_logs);
         self.blocks.push(block);
         Ok(())
+    }
+
+    /// Fold BLOCK-721 Transfer events into the ownership index. Each Transfer
+    /// log is `[tag=1 ‖ from(32) ‖ to(32) ‖ id(32)]` (97 bytes); any other log
+    /// shape is ignored. A mint has `from = 0`; we key purely on (contract, id)
+    /// and set the new owner, which handles mints and transfers uniformly.
+    fn index_nft_logs(&mut self, logs: &[([u8; 32], Vec<u8>)]) {
+        for (contract, log) in logs {
+            if log.len() != 97 || log[0] != 1 {
+                continue;
+            }
+            let mut to = [0u8; 32];
+            let mut id = [0u8; 32];
+            to.copy_from_slice(&log[33..65]);
+            id.copy_from_slice(&log[65..97]);
+            self.nft_owner.insert((*contract, id), to);
+        }
+    }
+
+    /// All BLOCK-721 tokens currently owned by `address`, as (contract, token
+    /// id) pairs. Linear over the index — fine at prototype scale, matching the
+    /// explorer's other on-demand scans.
+    #[allow(clippy::type_complexity)]
+    pub fn nfts_of(&self, address: &[u8; 32]) -> Vec<([u8; 32], [u8; 32])> {
+        let mut out: Vec<([u8; 32], [u8; 32])> = self
+            .nft_owner
+            .iter()
+            .filter(|(_, owner)| *owner == address)
+            .map(|((contract, id), _)| (*contract, *id))
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Dry-run a contract call against current state (no mutation). Used by
@@ -780,5 +823,48 @@ impl Chain {
             &mut cview,
             &mut sview,
         )
+    }
+}
+
+#[cfg(test)]
+mod nft_index_tests {
+    use super::*;
+
+    // Build a BLOCK-721 Transfer log: [tag=1 ‖ from(32) ‖ to(32) ‖ id(32)].
+    fn transfer_log(from: [u8; 32], to: [u8; 32], id: [u8; 32]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(97);
+        v.push(1);
+        v.extend_from_slice(&from);
+        v.extend_from_slice(&to);
+        v.extend_from_slice(&id);
+        v
+    }
+
+    #[test]
+    fn index_tracks_mints_and_transfers() {
+        let mut chain = Chain::new(ChainParams::testnet());
+        let nft = [0x21u8; 32];
+        let zero = [0u8; 32];
+        let bob = [0xBBu8; 32];
+        let carol = [0xCCu8; 32];
+        let id1 = [0x01u8; 32];
+        let id2 = [0x02u8; 32];
+
+        // mint id1 -> bob, mint id2 -> carol
+        chain.index_nft_logs(&[
+            (nft, transfer_log(zero, bob, id1)),
+            (nft, transfer_log(zero, carol, id2)),
+        ]);
+        assert_eq!(chain.nfts_of(&bob), vec![(nft, id1)]);
+        assert_eq!(chain.nfts_of(&carol), vec![(nft, id2)]);
+
+        // bob transfers id1 -> carol; carol now holds both, bob none
+        chain.index_nft_logs(&[(nft, transfer_log(bob, carol, id1))]);
+        assert!(chain.nfts_of(&bob).is_empty());
+        assert_eq!(chain.nfts_of(&carol), vec![(nft, id1), (nft, id2)]);
+
+        // a non-Transfer log (wrong len / wrong tag) is ignored
+        chain.index_nft_logs(&[(nft, vec![1, 2, 3]), (nft, transfer_log(carol, bob, id2))]);
+        assert_eq!(chain.nfts_of(&bob), vec![(nft, id2)]);
     }
 }
