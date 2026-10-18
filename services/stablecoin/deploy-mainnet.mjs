@@ -30,13 +30,16 @@ async function rpc(method, params) {
   return b.result != null ? b.result : b;
 }
 async function utxos() { const u = await get('/explorer/utxos/' + encodeURIComponent(k.address)); return (u.utxos || []).map((x) => ({ txid: x.txid, vout: x.vout, amount: Number(x.amount) })); }
+// NOTE: the node's /explorer/tx does NOT index contract txs (deploy/call), so we
+// confirm by the tx's BLOCK change output landing back in the issuer's UTXO set
+// (every build_* here sends change to the issuer). Robust for all tx kinds.
 async function waitConf(txid, n = 1, label = '') {
-  process.stdout.write(`  waiting ${n} conf for ${label} ${txid.slice(0, 12)}… `);
+  process.stdout.write(`  confirm ${label} ${txid.slice(0, 12)}… `);
   for (let i = 0; i < 1200; i++) { // ~40 min budget per step (mainnet ~10-min blocks)
-    try { const t = await get('/explorer/tx/' + encodeURIComponent(txid)); const c = (t && t.tx && t.tx.confirmations) || t.confirmations || 0; if (c >= n) { console.log('ok (' + c + ')'); return; } } catch {}
+    try { const u = await get('/explorer/utxos/' + encodeURIComponent(k.address)); if ((u.utxos || []).some((x) => x.txid === txid)) { console.log('ok'); return; } } catch {}
     await sleep(2000);
   }
-  throw new Error('timeout waiting for ' + txid);
+  throw new Error('timeout confirming ' + txid);
 }
 async function supply(contract) { const t = await rpc('tokeninfo', [{ contract }]); return Number(t.totalSupply != null ? t.totalSupply : t.supply || 0); }
 

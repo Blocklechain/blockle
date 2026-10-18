@@ -15,6 +15,18 @@
   'use strict';
   const COIN = 100000000;
 
+  // Curated BLOCK-20 tokens: official contracts get a canonical name / symbol /
+  // decimals / logo even before the node metadata loads, so e.g. USDB always
+  // renders as "Blockle USD" with its brand mark rather than a bare monogram.
+  // Keyed by lowercase contract id. Node-read metadata still wins for balance.
+  const CURATED = {
+    '946b4f3771970c8be5ca9416898408ac88fdbaedcd2177f3cbfd564a639ada09': {
+      symbol: 'USDB', name: 'Blockle USD', decimals: 6,
+      logoURI: 'https://blockle.org/usdb-token.svg', stablecoin: true, peg: 'USD',
+    },
+  };
+  function curatedFor(cid) { return (cid && CURATED[String(cid).toLowerCase()]) || null; }
+
   function fmtUnits(baseStr, decimals) {
     try {
       const d = Number(decimals) || 0;
@@ -69,8 +81,9 @@
               const cid = t.contract || t.contractId || t.id || t.token;
               let bal; try { bal = BigInt(t.balance != null ? t.balance : (t.holderBalance || 0)); } catch { bal = 0n; }
               if (!cid || bal <= 0n) continue;
-              const dec = Number(t.decimals || 0);
-              out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: t.symbol || 'TOKEN', decimals: dec, name: t.name || undefined, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
+              const cur = curatedFor(cid);
+              const dec = Number((cur && cur.decimals != null ? cur.decimals : t.decimals) || 0);
+              out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: (cur && cur.symbol) || t.symbol || 'TOKEN', decimals: dec, name: (cur && cur.name) || t.name || undefined, logoURI: cur && cur.logoURI, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
             }
             if (out.length) return out;
           }
@@ -87,8 +100,9 @@
             if (!info) continue;
             let bal; try { bal = BigInt(info.holderBalance != null ? info.holderBalance : (info.balance != null ? info.balance : 0)); } catch { bal = 0n; }
             if (bal <= 0n) continue;
-            const dec = Number(info.decimals || 0);
-            out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: info.symbol || 'TOKEN', decimals: dec, name: info.name || undefined, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
+            const cur = curatedFor(cid);
+            const dec = Number((cur && cur.decimals != null ? cur.decimals : info.decimals) || 0);
+            out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: (cur && cur.symbol) || info.symbol || 'TOKEN', decimals: dec, name: (cur && cur.name) || info.name || undefined, logoURI: cur && cur.logoURI, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
           }
         } catch { /* best-effort */ }
         return out;
