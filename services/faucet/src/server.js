@@ -24,12 +24,19 @@ const DATA = process.env.FAUCET_DATA || '/var/lib/blockle-faucet';
 const KEYPATH = process.env.FAUCET_KEYPAIR || '/opt/blockle/secrets/faucet-block.json';
 const NODE = (process.env.FAUCET_NODE_URL || 'http://127.0.0.1:8445').replace(/\/+$/, '');
 const COIN = 100000000n;
-const DRIP_BLOCK = BigInt(process.env.FAUCET_DRIP || 25);       // whole BLOCK per claim
-const FEE_BASE = BigInt(process.env.FAUCET_FEE_BASE || 10000);  // 0.0001 BLOCK
+// Decimal BLOCK string -> integer base units (8 dp exact). Lets the drip be a
+// fraction like 0.1 BLOCK.
+function toBase(v) {
+  const m = String(v).trim().match(/^(\d+)(?:\.(\d{1,8}))?$/);
+  if (!m) throw new Error(`bad BLOCK amount "${v}"`);
+  return BigInt(m[1]) * COIN + BigInt((m[2] || '').padEnd(8, '0') || '0');
+}
+const DRIP_WHOLE = process.env.FAUCET_DRIP || '0.1';           // BLOCK per claim (decimal ok)
+const FEE_BASE = BigInt(process.env.FAUCET_FEE_BASE || 10000); // 0.0001 BLOCK
 const COOLDOWN_MS = Number(process.env.FAUCET_COOLDOWN_HRS || 6) * 3600 * 1000;
-const DAILY_CAP_BLOCK = BigInt(process.env.FAUCET_DAILY_CAP || 5000); // operator-total/day
+const DAILY_CAP_BLOCK = toBase(process.env.FAUCET_DAILY_CAP || '5000'); // operator-total/day (base units)
 
-const DRIP_BASE = DRIP_BLOCK * COIN;
+const DRIP_BASE = toBase(DRIP_WHOLE);
 
 fs.mkdirSync(DATA, { recursive: true });
 const CLAIMS = path.join(DATA, 'claims.json');
@@ -75,9 +82,9 @@ const server = http.createServer(async (req, res) => {
       const bal = await faucetBalance();
       return j(res, 200, {
         faucetAddress: kp.address,
-        dripBlock: Number(DRIP_BLOCK),
+        dripBlock: Number(DRIP_WHOLE),
         cooldownHours: COOLDOWN_MS / 3600000,
-        dailyCapBlock: Number(DAILY_CAP_BLOCK),
+        dailyCapBlock: Number(fmt(DAILY_CAP_BLOCK)),
         balance: bal == null ? null : fmt(bal),
         dry: bal != null && bal < DRIP_BASE,
         // The faucet is funded by PoW coinbase: the node mines to the faucet
@@ -97,7 +104,7 @@ const server = http.createServer(async (req, res) => {
       const now = Date.now();
       // daily operator cap (reset per UTC day)
       if (c.day !== today()) { c.day = today(); c.dayTotalBase = '0'; }
-      if (BigInt(c.dayTotalBase) + DRIP_BASE > DAILY_CAP_BLOCK * COIN) return j(res, 429, { error: 'faucet daily cap reached — try again tomorrow' });
+      if (BigInt(c.dayTotalBase) + DRIP_BASE > DAILY_CAP_BLOCK) return j(res, 429, { error: 'faucet daily cap reached — try again tomorrow' });
       // per-address + per-ip cooldown
       const ip = clientIp(req);
       const lastA = c.byAddr[addr] || 0, lastI = c.byIp[ip] || 0;
@@ -123,4 +130,4 @@ const server = http.createServer(async (req, res) => {
     return j(res, 500, { error: (e && e.message) || String(e) });
   }
 });
-server.listen(PORT, '127.0.0.1', () => console.log(`[faucet] on 127.0.0.1:${PORT} drip=${DRIP_BLOCK} BLOCK cooldown=${COOLDOWN_MS / 3600000}h addr=${kp.address}`));
+server.listen(PORT, '127.0.0.1', () => console.log(`[faucet] on 127.0.0.1:${PORT} drip=${DRIP_WHOLE} BLOCK cooldown=${COOLDOWN_MS / 3600000}h addr=${kp.address}`));

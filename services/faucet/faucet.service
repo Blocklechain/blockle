@@ -11,7 +11,7 @@ Environment=FAUCET_PORT=8799
 Environment=FAUCET_DATA=/var/lib/blockle-faucet
 Environment=FAUCET_KEYPAIR=/opt/blockle/secrets/faucet-block.json
 Environment=FAUCET_NODE_URL=http://127.0.0.1:8445
-Environment=FAUCET_DRIP=25
+Environment=FAUCET_DRIP=0.1
 Environment=FAUCET_COOLDOWN_HRS=6
 Environment=FAUCET_DAILY_CAP=5000
 ExecStart=/usr/bin/node /opt/blockle/services/faucet/src/server.js
