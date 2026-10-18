@@ -508,6 +508,56 @@ pub fn build_call(
     Ok(serde_json::json!({ "txid": hexs(&txid), "raw": hexs(&raw), "fee": fee }).to_string())
 }
 
+// ---- BLOCK-20S stablecoin (USDB) issuer ops --------------------------------
+// Encode a BLOCK-20S mint/burn calldata: selector(1) ‖ addr(32) ‖ amount_u64_le(8).
+// The amount is in the token's BASE units (USDB has 6 decimals → 1 USDB = 1e6).
+fn stablecoin_call_input(selector: u8, addr: &str, amount_base: u64) -> Result<String, JsError> {
+    let a = decode_address(addr).map_err(|_| JsError::new("bad stablecoin address"))?;
+    let mut input = Vec::with_capacity(41);
+    input.push(selector);
+    input.extend_from_slice(&a);
+    input.extend_from_slice(&amount_base.to_le_bytes());
+    Ok(hexs(&input))
+}
+
+/// Issuer-signed MINT of `amount_base` USDB base units to `to_addr` (selector 7).
+/// Only the contract's issuer key may do this; the node rejects non-issuer calls.
+/// `value` is 0 — minting moves no BLOCK, only the gas fee (gas_limit*gas_price)
+/// is paid from the issuer's `utxos_json`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_stablecoin_mint(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    contract_hex: &str,
+    to_addr: &str,
+    amount_base: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let input = stablecoin_call_input(7, to_addr, amount_base)?;
+    build_call(secret_hex, public_hex, utxos_json, contract_hex, &input, 0, gas_limit, gas_price)
+}
+
+/// Issuer-signed BURN of `amount_base` USDB base units from `from_addr`
+/// (selector 8) — the redemption side. Issuer-only; reverts if balance < amount.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_stablecoin_burn(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    contract_hex: &str,
+    from_addr: &str,
+    amount_base: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let input = stablecoin_call_input(8, from_addr, amount_base)?;
+    build_call(secret_hex, public_hex, utxos_json, contract_hex, &input, 0, gas_limit, gas_price)
+}
+
 // ---- native AMM pool transactions ------------------------------------------
 fn parse_token(contract_hex: &str) -> Result<[u8; 32], JsError> {
     let b = hex::decode(contract_hex).map_err(|_| JsError::new("bad token hex"))?;
