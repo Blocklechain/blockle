@@ -12,6 +12,35 @@
     return wasmReady;
   }
 
+  // The prototype mempool has no unconfirmed-tx chaining: a step that spends the
+  // previous step's change (or calls a contract that step just deployed) is
+  // rejected until that previous tx is mined. So between on-chain steps we wait
+  // for the wallet's confirmed UTXO set to change before firing the next one.
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  async function utxoSig(addr) {
+    try {
+      var r = await fetch('/api/explorer/utxos/' + encodeURIComponent(addr), { cache: 'no-store' });
+      if (!r.ok) return null;
+      var j = await r.json();
+      var ids = (j.utxos || []).map(function (u) { return u.txid + ':' + u.vout; }).sort().join(',');
+      return (j.count || 0) + '|' + (j.spendable || 0) + '|' + ids;
+    } catch (_) { return null; }
+  }
+  // Poll until the confirmed UTXO set differs from `prev` (the prior step mined
+  // and produced/spent outputs). Resolves true on change, false on timeout —
+  // the caller then lets the user retry that single step manually.
+  async function waitConfirmed(addr, prev, k, label) {
+    if (!addr) { await sleep(3000); return true; }
+    var deadline = Date.now() + 240000; // ~4 min — a few block intervals
+    while (Date.now() < deadline) {
+      await sleep(5000);
+      var now = await utxoSig(addr);
+      if (now !== null && now !== prev) return true;
+      if (k) setStep(k, 'active', label + ' — waiting for confirmation…');
+    }
+    return false;
+  }
+
   function setStep(k, state, sub) {
     var li = document.querySelector('.steps li[data-k="' + k + '"]');
     if (!li) return;
@@ -79,14 +108,21 @@
 
       // 2. connect
       setStep('connect', 'active');
-      await window.blockle.connect();
+      var conn = await window.blockle.connect();
+      var addr = (conn && (conn.address || conn.addr)) || (typeof conn === 'string' ? conn : null);
       setStep('connect', 'done');
 
       // 3. deploy
       setStep('deploy', 'active');
+      var sigBeforeDeploy = await utxoSig(addr);
       var dep = await window.blockle.deployContract(bytecode, 300000);
       var contract = dep && dep.contractId;
       if (!contract) throw new Error('deploy did not return a contract id');
+      setStep('deploy', 'active', contract + ' — waiting for confirmation…');
+      // init calls this contract + spends deploy's change, so deploy must mine first.
+      if (!(await waitConfirmed(addr, sigBeforeDeploy, 'deploy', contract))) {
+        throw new Error('deploy not confirmed yet — wait for the next block, then re-run to continue from init');
+      }
       setStep('deploy', 'done', contract);
 
       // 4. register logo
@@ -104,7 +140,14 @@
         throw new Error('your wallet version does not support one-click init/pool — update the extension');
       }
       setStep('init', 'active');
+      var sigBeforeInit = await utxoSig(addr);
       var initRes = await window.blockle.tokenInit(contract, 120000);
+      setStep('init', 'active', 'minting — waiting for confirmation…');
+      // pool creation reads the deployer's token balance (minted by init) and
+      // spends the seed BLOCK, so init must mine before the pool step.
+      if (!(await waitConfirmed(addr, sigBeforeInit, 'init', 'minting'))) {
+        throw new Error('mint not confirmed yet — wait for the next block, then re-run to continue from the pool step');
+      }
       setStep('init', 'done', (initRes && initRes.txid) || '');
 
       // 6. create pool
