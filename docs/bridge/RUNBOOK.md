@@ -113,3 +113,25 @@ require confirmation against live network params at execution time — do not tr
 **Rough all-in SOL floor (deploy + a handful of ATAs + per-tx fees), excluding pool seed:**
 on the order of **~0.01 SOL** of rent/fees. The dominant cost is the operator-chosen pool seed,
 which is an ESTIMATE, not a known protocol figure.
+
+## Wiring the HTTP API behind the site (deploy)
+
+The `/bridge` frontend + explorer fetch same-origin `/api/bridge/*`. Serve them by
+proxying to the loopback bridge service:
+
+1. Deploy `services/bridge` to `/opt/blockle/services/bridge`; `npm ci` (installs
+   `@solana/web3.js` + `@solana/spl-token`).
+2. Install `services/bridge/bridge.service` (systemd), create
+   `/opt/blockle/secrets/bridge.env` (see `docs/bridge/ENV.md`, chmod 600). The
+   service binds `127.0.0.1:8797` only.
+3. nginx (blockle.org vhost) — proxy the API to the service:
+   ```nginx
+   location /api/bridge/ { proxy_pass http://127.0.0.1:8797; proxy_set_header Host $host; }
+   ```
+4. `systemctl enable --now bridge`. Until a wBLOCK mint is configured
+   (`BRIDGE_wBLOCK_MINT`) and un-paused, `/api/bridge/info` reports `live:false`
+   and the UI shows the honest "not yet live" state — nothing is minted or moved.
+5. Turn on the relayer (`BRIDGE_RELAYER_ENABLED=1`) only after the mint exists and
+   Solana sends + reserve-signer mainnet are explicitly authorized. The minter and
+   reserve-signer adapters THROW while gated, so a deposit waits in `minting` /
+   a redeem waits in `releasing` rather than ever being falsely completed.
