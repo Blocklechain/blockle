@@ -1040,7 +1040,27 @@ const CSS: &str = r#"
   --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
   --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,monospace;
   --r:12px; --r-sm:8px;
+  color-scheme:dark;
 }
+/* Light theme — tokens only, so every component (which uses var()) follows along.
+   Default = OS preference; the nav toggle stamps data-theme on <html> to override. */
+@media (prefers-color-scheme:light){
+  :root:not([data-theme=dark]){
+    --bg:#f6f8fc; --bg2:#eef2f8; --surface:#ffffff; --surface2:#f4f7fb;
+    --border:#e2e8f1; --border2:#d2dae6;
+    --ink:#0d1420; --ink2:#38414f; --muted:#64708a;
+    --accent:#2f6bf0; --accent2:#2a5fd0; --accent-dim:rgba(47,107,240,.10);
+    color-scheme:light;
+  }
+}
+:root[data-theme=light]{
+  --bg:#f6f8fc; --bg2:#eef2f8; --surface:#ffffff; --surface2:#f4f7fb;
+  --border:#e2e8f1; --border2:#d2dae6;
+  --ink:#0d1420; --ink2:#38414f; --muted:#64708a;
+  --accent:#2f6bf0; --accent2:#2a5fd0; --accent-dim:rgba(47,107,240,.10);
+  color-scheme:light;
+}
+:root[data-theme=dark]{color-scheme:dark}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
 body{background:var(--bg);color:var(--ink);margin:0;
@@ -1076,6 +1096,10 @@ nav a.active{color:var(--ink);background:var(--surface)}
 nav .spacer{flex:1}
 nav::-webkit-scrollbar{display:none}
 nav a{flex:0 0 auto}
+nav .themebtn{flex:0 0 auto;margin-left:.4rem;width:34px;height:34px;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink);cursor:pointer;
+  font-size:.95rem;line-height:1;transition:border-color .15s,background .15s}
+nav .themebtn:hover{border-color:var(--accent)}
 
 main{max-width:1120px;margin:0 auto;padding:2.2rem clamp(1rem,4vw,2.5rem) 3rem}
 
@@ -1283,11 +1307,13 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <meta name="twitter:description" content="{desc}">
 <meta name="twitter:image" content="https://{domain}/logo.png">
 {site_jsonld}{head_extra}
-<title>{full_title}</title><style>{CSS}</style></head><body>
+<title>{full_title}</title><style>{CSS}</style>
+<script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
+</head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
 <a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
-<a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a></nav>
+<a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
 {aads_top}
 <main>{body}</main>
 {aads_foot}
@@ -1298,6 +1324,19 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
   document.querySelectorAll('nav a:not(.brand)').forEach(function(a){{
     var h=a.getAttribute('href');
     if(h===p||(h!=='/'&&p.indexOf(h)===0))a.classList.add('active');
+  }});
+  // light/dark theme toggle — persisted under the same key the homepage uses, so the
+  // choice follows the visitor across every page. Default follows the OS preference.
+  var tb=document.getElementById('themebtn');
+  function sysDark(){{return window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches;}}
+  function cur(){{return document.documentElement.getAttribute('data-theme')||(sysDark()?'dark':'light');}}
+  function sync(){{if(tb)tb.textContent=cur()==='light'?'☀':'☾';}}
+  sync();
+  if(tb)tb.addEventListener('click',function(){{
+    var next=cur()==='dark'?'light':'dark';
+    document.documentElement.setAttribute('data-theme',next);
+    try{{localStorage.setItem('blk-theme',next);}}catch(e){{}}
+    sync();
   }});
   document.querySelectorAll('.chart').forEach(function(ch){{
     var svg=ch.querySelector('svg.spark');if(!svg)return;
@@ -1451,39 +1490,38 @@ fn page_copilot() -> String {
 <style>
 .cphero{text-align:center;padding:30px 0 10px}
 .cphero h1{font-size:clamp(34px,6vw,60px);margin:10px 0 6px;letter-spacing:-.02em}
-.cphero .lede{color:#9aa3b4;max-width:60ch;margin:0 auto 22px;font-size:17px;line-height:1.6}
+.cphero .lede{color:var(--ink2);max-width:60ch;margin:0 auto 22px;font-size:17px;line-height:1.6}
 .cpcta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
 .cpcta.center{margin-top:26px}
 .cpbtn{display:inline-flex;align-items:center;justify-content:center;font-weight:700;padding:12px 22px;border-radius:11px;cursor:pointer;border:1px solid transparent;font-size:15px;text-decoration:none}
 .cpbtn.primary{background:#4d8bff;color:#071018}
-.cpbtn.ghost{background:transparent;color:#cfe0ff;border-color:#2a3647}
+.cpbtn.ghost{background:transparent;color:#cfe0ff;border-color:var(--border2)}
 .cpbtn.full{width:100%;margin-top:6px}
-.cmd{max-width:560px;margin:34px auto 0;background:#0e1420;border:1px solid #222a37;border-radius:16px;text-align:left;overflow:hidden}
-.cmd .cmdhead{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid #1a2029}
-.cmd .cmdhead .d{width:10px;height:10px;border-radius:50%;background:#2a3647}.cmd .cmdhead .lbl{margin-left:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:#8a93a6}
+.cmd{max-width:560px;margin:34px auto 0;background:var(--bg2);border:1px solid var(--border);border-radius:16px;text-align:left;overflow:hidden}
+.cmd .cmdhead{display:flex;align-items:center;gap:7px;padding:11px 14px;border-bottom:1px solid var(--border)}
+.cmd .cmdhead .d{width:10px;height:10px;border-radius:50%;background:var(--border2)}.cmd .cmdhead .lbl{margin-left:8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted)}
 .cmd .cmdbody{padding:16px 16px 18px;color:#cfe0ff;font-size:15px}.cmd .chev{color:#4d8bff;font-weight:700}
-.cmdcard{margin-top:14px;background:#141821;border:1px solid #222a37;border-radius:12px;padding:12px 14px}
-.cmdcard .r{display:flex;justify-content:space-between;font-size:14px;color:#9aa3b4;padding:4px 0}
-.cmdcard .mono{font-family:ui-monospace,Menlo,monospace;color:#e8ebf2}.cmdcard .gain{color:#2fc08a}
+.cmdcard{margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px}
+.cmdcard .r{display:flex;justify-content:space-between;font-size:14px;color:var(--ink2);padding:4px 0}
+.cmdcard .mono{font-family:ui-monospace,Menlo,monospace;color:var(--ink)}.cmdcard .gain{color:#2fc08a}
 .cmdcard .hold{margin-top:10px;width:100%;background:#17324e;color:#cfe0ff;border:1px solid #2a4a7a;border-radius:9px;padding:9px;font-weight:600}
-.cptiers,.cphow{padding:40px 0;border-top:1px solid #1a2029;margin-top:30px}
+.cptiers,.cphow{padding:40px 0;border-top:1px solid var(--border);margin-top:30px}
 .cph2{text-align:center;font-size:28px;margin:6px 0 26px;letter-spacing:-.01em}
 .tiers{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:900px;margin:0 auto}
-.tier{position:relative;background:#141821;border:1px solid #222a37;border-radius:16px;padding:22px 20px;display:flex;flex-direction:column}
+.tier{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px 20px;display:flex;flex-direction:column}
 .tier.best{border-color:#4d8bff;box-shadow:0 0 0 1px #4d8bff inset}
 .tier .badge{position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:#4d8bff;color:#071018;font-size:11px;font-weight:800;padding:3px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em}
-.tier .tname{font-weight:700;color:#e8ebf2}
-.tier .tprice{font-size:36px;font-weight:800;color:#fff;margin:6px 0 12px}.tier .tprice span{font-size:15px;color:#8a93a6;font-weight:500}
+.tier .tname{font-weight:700;color:var(--ink)}
+.tier .tprice{font-size:36px;font-weight:800;color:var(--ink);margin:6px 0 12px}.tier .tprice span{font-size:15px;color:var(--muted);font-weight:500}
 .tier ul{list-style:none;padding:0;margin:0 0 16px;flex:1}
-.tier li{color:#9aa3b4;font-size:14px;padding:5px 0 5px 22px;position:relative}
+.tier li{color:var(--ink2);font-size:14px;padding:5px 0 5px 22px;position:relative}
 .tier li:before{content:"✓";position:absolute;left:0;color:#2fc08a;font-weight:700}
-.tier li b{color:#e8ebf2}
-.fine{text-align:center;color:#5a6577;font-size:12.5px;max-width:60ch;margin:22px auto 0}
+.tier li b{color:var(--ink)}
+.fine{text-align:center;color:var(--muted);font-size:12.5px;max-width:60ch;margin:22px auto 0}
 .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;max-width:900px;margin:0 auto}
-.step{background:#141821;border:1px solid #222a37;border-radius:14px;padding:20px}
+.step{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px}
 .step .num{width:30px;height:30px;border-radius:9px;background:#17324e;color:#8fc0ff;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:10px}
-.step h3{margin:0 0 6px;color:#e8ebf2}.step p{color:#9aa3b4;font-size:14px;line-height:1.6;margin:0}
-@media(prefers-color-scheme:light){.cphero .lede,.tier li,.step p{color:#45506a}.cmd{background:#f4f6fb}.tier,.step,.cmdcard{background:#fff;border-color:#e4e9f2}.tier .tprice{color:#0d1420}.cpbtn.ghost{color:#2f6bf0;border-color:#cdd8ee}}
+.step h3{margin:0 0 6px;color:var(--ink)}.step p{color:var(--ink2);font-size:14px;line-height:1.6;margin:0}
 </style>
 <script>
 (function(){
@@ -1511,25 +1549,24 @@ fn page_markets() -> String {
 </div>
 <div id="mk-body"><p class="mut" style="padding:30px 0">Loading markets&hellip;</p></div>
 <style>
-.mkbar{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:16px 0 22px;padding-bottom:16px;border-bottom:1px solid #222a37}
+.mkbar{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:16px 0 22px;padding-bottom:16px;border-bottom:1px solid var(--border)}
 .mkstat{display:flex;flex-direction:column}
-.mkstat .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
-.mkstat .v{font-size:24px;font-weight:800;color:#e8ebf2}
+.mkstat .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.mkstat .v{font-size:24px;font-weight:800;color:var(--ink)}
 .mkcta{margin-left:auto;background:#4d8bff;color:#071018;font-weight:700;padding:9px 16px;border-radius:9px;text-decoration:none}
 .mkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
-.mktok{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
-.mktok .sym{font-weight:800;font-size:17px;color:#e8ebf2}
-.mktok .nm{font-size:13px;color:#8a93a6;margin-bottom:8px}
-.mktok .row{display:flex;justify-content:space-between;font-size:13px;color:#c7cedb;margin-top:4px}
-.mkempty{background:#141821;border:1px dashed #2a3444;border-radius:16px;padding:40px 28px;text-align:center}
-.mkempty h3{margin:0 0 6px;color:#e8ebf2}
-.mkempty p{color:#8a93a6;max-width:52ch;margin:0 auto 16px}
+.mktok{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.mktok .sym{font-weight:800;font-size:17px;color:var(--ink)}
+.mktok .nm{font-size:13px;color:var(--muted);margin-bottom:8px}
+.mktok .row{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-top:4px}
+.mkempty{background:var(--surface);border:1px dashed #2a3444;border-radius:16px;padding:40px 28px;text-align:center}
+.mkempty h3{margin:0 0 6px;color:var(--ink)}
+.mkempty p{color:var(--muted);max-width:52ch;margin:0 auto 16px}
 .mkempty a{background:#4d8bff;color:#071018;font-weight:700;padding:10px 18px;border-radius:9px;text-decoration:none}
 .stbl{width:100%;border-collapse:collapse;font-size:14px}
-.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
-.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
-.mut{color:#5a6577}
-@media(prefers-color-scheme:light){.mkstat .v{color:#0d1420}.mktok,.mkempty{background:#fff;border-color:#e4e9f2}.mktok .sym{color:#0d1420}.stbl td{color:#2a3346;border-color:#eef1f7}}
+.stbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
+.stbl td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink2)}
+.mut{color:var(--muted)}
 </style>
 <script>
 (function(){
@@ -1602,22 +1639,21 @@ fn page_tokenomics() -> String {
 <p class="sub" style="margin-top:22px"><a href="/stats" style="color:var(--accent)">Live network stats &rarr;</a> &middot; <a href="/guide" style="color:var(--accent)">What is Blockle? &rarr;</a></p>
 <style>
 .tkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0 8px}
-.tkcard{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
-.tkcard .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
-.tkcard .v{font-size:28px;font-weight:800;margin:6px 0 2px;color:#e8ebf2}
-.tkcard .s{font-size:12px;color:#5a6577}
+.tkcard{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.tkcard .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.tkcard .v{font-size:28px;font-weight:800;margin:6px 0 2px;color:var(--ink)}
+.tkcard .s{font-size:12px;color:var(--muted)}
 .sh{font-size:18px;margin:28px 0 10px}
-.pp{color:#9aa3b4;max-width:70ch;line-height:1.7}
+.pp{color:var(--ink2);max-width:70ch;line-height:1.7}
 .tkbars{margin:10px 0 6px;max-width:560px}
 .tkbar{margin:12px 0}
-.tkbar .lbl{display:flex;justify-content:space-between;font-size:13px;color:#c7cedb;margin-bottom:5px}
-.tkbar .track{height:10px;background:#1a2029;border-radius:6px;overflow:hidden}
+.tkbar .lbl{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-bottom:5px}
+.tkbar .track{height:10px;background:var(--border);border-radius:6px;overflow:hidden}
 .tkbar .fill{height:100%;background:linear-gradient(90deg,#4d8bff,#7db0ff);border-radius:6px}
 .tkbar .fill.alt{background:linear-gradient(90deg,#f5b945,#ffd77a)}
 .stbl{width:100%;border-collapse:collapse;font-size:14px}
-.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
-.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
-@media(prefers-color-scheme:light){.tkcard{background:#fff;border-color:#e4e9f2}.tkcard .v{color:#0d1420}.pp{color:#45506a}.stbl td{color:#2a3346;border-color:#eef1f7}.tkbar .track{background:#e9edf5}}
+.stbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
+.stbl td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink2)}
 </style>
 <script>
 (function(){
@@ -1672,15 +1708,14 @@ fn page_roadmap() -> String {
 <p class="sub" style="margin-top:22px">Build with us &middot; <a href="https://github.com/blocklechain/blockle" style="color:var(--accent)">GitHub</a> &middot; <a href="https://discord.gg/tx4MfyD9Vu" style="color:var(--accent)">Discord</a> &middot; <a href="/developers" style="color:var(--accent)">Developers</a></p>
 <style>
 .rmcol{display:flex;flex-direction:column;gap:16px;margin-top:18px;max-width:820px}
-.rmphase{border:1px solid #222a37;border-left-width:3px;border-radius:12px;background:#141821;padding:16px 20px}
+.rmphase{border:1px solid var(--border);border-left-width:3px;border-radius:12px;background:var(--surface);padding:16px 20px}
 .rmphase.shipped{border-left-color:#2fc08a}
 .rmphase.wip{border-left-color:#f5b945}
 .rmphase.next{border-left-color:#4d8bff}
 .rmtag{font-size:12px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px}
 .rmphase.shipped .rmtag{color:#2fc08a}.rmphase.wip .rmtag{color:#f5b945}.rmphase.next .rmtag{color:#4d8bff}
-.rml{margin:0;padding-left:20px;color:#9aa3b4;line-height:1.85}
-.rml b{color:#e8ebf2}
-@media(prefers-color-scheme:light){.rmphase{background:#fff;border-color:#e4e9f2}.rml{color:#45506a}.rml b{color:#0d1420}}
+.rml{margin:0;padding-left:20px;color:var(--ink2);line-height:1.85}
+.rml b{color:var(--ink)}
 </style>"##.to_string();
     page_shell_seo(
         "Roadmap",
@@ -1706,20 +1741,19 @@ fn page_stats() -> String {
 <div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Height</th><th>Lane</th><th>Miner</th><th>Txs</th><th>Reward</th><th>Time</th></tr></thead><tbody id="s-blocks"><tr><td colspan="6" class="mut">loading&hellip;</td></tr></tbody></table></div>
 <style>
 .sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:18px 0}
-.scard{background:#141821;border:1px solid #222a37;border-radius:14px;padding:16px 18px}
+.scard{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
 .scard.big{grid-column:span 2;min-width:260px}
-.scard .k{font-size:12px;color:#8a93a6;text-transform:uppercase;letter-spacing:.06em}
-.scard .v{font-size:30px;font-weight:800;margin:6px 0 2px;color:#e8ebf2}
+.scard .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.scard .v{font-size:30px;font-weight:800;margin:6px 0 2px;color:var(--ink)}
 .scard.big .v{font-size:44px}
-.scard .s{font-size:12px;color:#5a6577}
+.scard .s{font-size:12px;color:var(--muted)}
 .sh{font-size:17px;margin:26px 0 10px}
 .stbl{width:100%;border-collapse:collapse;font-size:14px}
-.stbl th{text-align:left;color:#8a93a6;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid #222a37}
-.stbl td{padding:9px 10px;border-bottom:1px solid #1a2029;color:#c7cedb}
-.stbl td.mut{color:#5a6577}
+.stbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
+.stbl td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink2)}
+.stbl td.mut{color:var(--muted)}
 .stbl tr:hover td{background:#12161e}
 .stbl a{color:#4d8bff}
-@media(prefers-color-scheme:light){.scard{background:#fff;border-color:#e4e9f2}.scard .v{color:#0d1420}.stbl td{color:#2a3346;border-color:#eef1f7}.stbl tr:hover td{background:#f6f8fc}}
 </style>
 <script>
 (function(){
