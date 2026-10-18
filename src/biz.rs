@@ -636,6 +636,9 @@ fn route(
         // wBLOCK SPL token metadata (Metaplex off-chain JSON): full BLOCK ecosystem
         // info + the BLOCK logo. Referenced by services/bridge/solana/mint.js.
         "/wblock-token.json" => serve_web_file("wblock-token.json", "application/json"),
+        // The in-game WORLD token icon (used by the launchpad preset, the DEX
+        // logo registration, and the WORLD token metadata).
+        "/world-token.svg" => serve_web_file("world-token.svg", "image/svg+xml; charset=utf-8"),
         "/bridge/transactions" => ("200 OK", "text/html; charset=utf-8", page_bridge_transactions().into_bytes()),
         p if p.starts_with("/bridge/transactions/") => {
             let id = &p["/bridge/transactions/".len()..];
