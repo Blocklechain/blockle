@@ -1,0 +1,22 @@
+[Unit]
+Description=Blockle BLOCK<->wBLOCK bridge API + relayer (loopback)
+After=network-online.target blockle-node.service reserve-signer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/bridge
+# Nonsecret config via env; secrets (the Solana mint-authority keypair PATH, the
+# reserve-signer bearer) are referenced by path/name only — never inline here.
+EnvironmentFile=/opt/blockle/secrets/bridge.env
+Environment=BRIDGE_PORT=8797
+# Set BRIDGE_RELAYER_ENABLED=1 only once the wBLOCK mint exists AND Solana sends
+# are authorized; until then the API serves an honest "not live" state and the
+# relayer (if on) never settles without a real mint/release (both throw when gated).
+ExecStart=/usr/bin/node /opt/blockle/services/bridge/src/server.js
+Restart=on-failure
+RestartSec=5
+# loopback only — nginx proxies /api/bridge/ to 127.0.0.1:8797 (see docs/bridge/RUNBOOK.md)
+
+[Install]
+WantedBy=multi-user.target
