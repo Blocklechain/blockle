@@ -1629,62 +1629,81 @@ fn page_copilot() -> String {
 
 fn page_markets() -> String {
     let body = r##"<h1>Markets</h1>
-<p class="sub">Live BLOCK-20 tokens and liquidity on the native AMM DEX. Non-custodial &mdash; trade from your own wallet.</p>
+<p class="sub">Every BLOCK-20 token with a live liquidity pool on Blockle's native AMM DEX. Prices are in BLOCK; trade non-custodially from your own wallet. Looking for order-book or cross-chain trading? That's the <a href="https://exchange.blockle.org">Exchange</a>.</p>
 <div class="mkbar">
-  <div class="mkstat"><span class="k">Tokens</span><span class="v mono" id="mk-tokens">&mdash;</span></div>
-  <div class="mkstat"><span class="k">Liquidity pools</span><span class="v mono" id="mk-pools">&mdash;</span></div>
+  <div class="mkstat"><span class="k">Live markets</span><span class="v mono" id="mk-pools">&mdash;</span></div>
+  <div class="mkstat"><span class="k">Pooled BLOCK</span><span class="v mono" id="mk-tvl">&mdash;</span></div>
   <div class="mkstat"><span class="k">Chain height</span><span class="v mono" id="mk-height">&mdash;</span></div>
   <a class="mkcta" href="/launch">Launch a token &rarr;</a>
 </div>
 <div id="mk-body"><p class="mut" style="padding:30px 0">Loading markets&hellip;</p></div>
 <style>
-.mkbar{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:16px 0 22px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.mkbar{display:flex;gap:26px;align-items:center;flex-wrap:wrap;margin:16px 0 22px;padding-bottom:16px;border-bottom:1px solid var(--border)}
 .mkstat{display:flex;flex-direction:column}
 .mkstat .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .mkstat .v{font-size:24px;font-weight:800;color:var(--ink)}
 .mkcta{margin-left:auto;background:#4d8bff;color:#071018;font-weight:700;padding:9px 16px;border-radius:9px;text-decoration:none}
-.mkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
-.mktok{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
-.mktok .sym{font-weight:800;font-size:17px;color:var(--ink)}
-.mktok .nm{font-size:13px;color:var(--muted);margin-bottom:8px}
-.mktok .row{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);margin-top:4px}
 .mkempty{background:var(--surface);border:1px dashed #2a3444;border-radius:16px;padding:40px 28px;text-align:center}
 .mkempty h3{margin:0 0 6px;color:var(--ink)}
-.mkempty p{color:var(--muted);max-width:52ch;margin:0 auto 16px}
+.mkempty p{color:var(--muted);max-width:56ch;margin:0 auto 16px}
 .mkempty a{background:#4d8bff;color:#071018;font-weight:700;padding:10px 18px;border-radius:9px;text-decoration:none}
 .stbl{width:100%;border-collapse:collapse;font-size:14px}
-.stbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
-.stbl td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink2)}
+.stbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:9px 12px;border-bottom:1px solid var(--border)}
+.stbl th.r,.stbl td.r{text-align:right}
+.stbl td{padding:11px 12px;border-bottom:1px solid var(--border);color:var(--ink2);white-space:nowrap}
+.stbl tr:hover td{background:var(--surface)}
+.mktk{display:flex;align-items:center;gap:10px}
+.mktk img{width:26px;height:26px;border-radius:50%;background:var(--surface);object-fit:cover;flex:none}
+.mktk .sy{font-weight:800;color:var(--ink)}
+.mktk .nm{font-size:12px;color:var(--muted)}
+.mktrade{background:#4d8bff;color:#071018;font-weight:700;padding:6px 13px;border-radius:8px;text-decoration:none;font-size:13px}
+.mksub{font-size:13px;color:var(--muted);margin:26px 0 10px}
 .mut{color:var(--muted)}
 </style>
 <script>
 (function(){
-  var fmt=function(n){return Number(n).toLocaleString('en-US');};
-  function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+  var COIN=100000000;
+  function fmt(n,d){n=Number(n);if(!isFinite(n))return '—';return n.toLocaleString('en-US',{maximumFractionDigits:d==null?4:d});}
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   var set=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
   async function j(u){try{var r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null;}catch(e){return null;}}
+  function logoFor(reg,id){var e=reg[id];var l=e&&e.logo;return (l&&/^https?:|^\//.test(l))?l:'/logo.png';}
   async function go(){
-    var tk=await j('/api/dex/tokens')||{}, pl=await j('/api/dex/pools')||{}, ch=await j('/api/chain')||{};
-    var tokens=Array.isArray(tk)?tk:Object.keys(tk).map(function(k){var o=tk[k]||{};o.id=o.id||k;return o;});
+    var reg=await j('/api/dex/tokens')||{}, pl=await j('/api/dex/pools')||{};
     var pools=(pl&&pl.pools)||[];
-    set('mk-tokens',tokens.length); set('mk-pools',pools.length);
-    set('mk-height', (pl&&pl.height)?('#'+fmt(pl.height)):((ch.blocks&&ch.blocks[0])?('#'+fmt(ch.blocks[0].height)):'—'));
+    // Resolve each pool's token metadata (symbol/name/decimals) on-chain; skip
+    // any that don't resolve. Price = BLOCK per whole token from the reserves.
+    var rows=await Promise.all(pools.map(async function(p){
+      var id=p.token||p.id; if(!id) return null;
+      var t=await j('/api/token/'+encodeURIComponent(id));
+      var tok=(t&&t.result)?t.result:t;
+      var dec=(tok&&tok.decimals!=null)?Number(tok.decimals):8;
+      var br=Number(p.blockReserve||0), tr=Number(p.tokenReserve||0);
+      var blockWhole=br/COIN, tokWhole=tr/Math.pow(10,dec);
+      var price=(tokWhole>0)?(blockWhole/tokWhole):null; // BLOCK per 1 token
+      return {id:id, sym:(tok&&tok.symbol)||id.slice(0,6), name:(tok&&tok.name)||'', dec:dec, blockWhole:blockWhole, tokWhole:tokWhole, price:price, logo:logoFor(reg,id)};
+    }));
+    rows=rows.filter(Boolean);
+    var tvl=rows.reduce(function(a,r){return a+(r.blockWhole||0);},0);
+    set('mk-pools',rows.length);
+    set('mk-tvl', fmt(tvl,2)+' BLOCK');
+    set('mk-height', (pl&&pl.height)?('#'+fmt(pl.height,0)):'—');
     var el=document.getElementById('mk-body');
-    if(!tokens.length && !pools.length){
-      el.innerHTML='<div class="mkempty"><h3>No tokens launched yet</h3><p>The native AMM DEX is live and waiting. Be the first to mint a BLOCK-20 token and seed a pool &mdash; it shows up here instantly.</p><a href="/launch">Launch the first token &rarr;</a></div>';
+    if(!rows.length){
+      el.innerHTML='<div class="mkempty"><h3>No live markets yet</h3><p>A market appears here the moment a BLOCK-20 token seeds a liquidity pool. Launch a token (one transaction &mdash; deploy, mint and pool together) and it shows up instantly.</p><a href="/launch">Launch the first market &rarr;</a></div>';
       return;
     }
-    var html='';
-    if(tokens.length){
-      html+='<h2 class="sh" style="font-size:17px;margin:4px 0 12px">Tokens</h2><div class="mkgrid">';
-      tokens.forEach(function(t){html+='<a class="mktok" href="/token/'+encodeURIComponent(t.id||t.symbol||'')+'" style="text-decoration:none;display:block"><div class="sym">'+esc(t.symbol||t.id)+'</div><div class="nm">'+esc(t.name||'')+'</div><div class="row"><span>Supply</span><span class="mono">'+esc(t.supply!=null?fmt(t.supply):'—')+'</span></div></a>';});
-      html+='</div>';
-    }
-    if(pools.length){
-      html+='<h2 class="sh" style="font-size:17px;margin:22px 0 10px">Liquidity pools</h2><div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Pair</th><th>Liquidity</th><th>Price</th></tr></thead><tbody>';
-      pools.forEach(function(p){html+='<tr><td><b>'+esc(p.pair||((p.base||'?')+'/'+(p.quote||'BLOCK')))+'</b></td><td class="mono">'+esc(p.liquidity!=null?fmt(p.liquidity):'—')+'</td><td class="mono">'+esc(p.price!=null?p.price:'—')+'</td></tr>';});
-      html+='</tbody></table></div>';
-    }
+    rows.sort(function(a,b){return (b.blockWhole||0)-(a.blockWhole||0);});
+    var html='<div style="overflow-x:auto"><table class="stbl"><thead><tr><th>Market</th><th class="r">Price (BLOCK)</th><th class="r">Pool liquidity</th><th class="r"></th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      html+='<tr>'
+        +'<td><div class="mktk"><img src="'+esc(r.logo)+'" alt="" onerror="this.src=\'/logo.png\'"><div><div class="sy">'+esc(r.sym)+'<span class="mut" style="font-weight:500"> /BLOCK</span></div>'+(r.name?('<div class="nm">'+esc(r.name)+'</div>'):'')+'</div></div></td>'
+        +'<td class="r mono">'+(r.price!=null?fmt(r.price,6):'—')+'</td>'
+        +'<td class="r mono">'+fmt(r.blockWhole,2)+' BLOCK<span class="mut"> + '+fmt(r.tokWhole,2)+' '+esc(r.sym)+'</span></td>'
+        +'<td class="r"><a class="mktrade" href="/dex?token='+encodeURIComponent(r.id)+'">Trade</a></td>'
+        +'</tr>';
+    });
+    html+='</tbody></table></div>';
     el.innerHTML=html;
   }
   go();setInterval(go,20000);
