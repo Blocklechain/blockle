@@ -49,6 +49,18 @@ export async function createCounterparty({ name, routingNumber, accountNumber, a
   return { counterpartyId: j.id, externalAccountId: ea.id };
 }
 
+// Create a counterparty whose external (bank) account comes from a Plaid
+// processor token — no hand-typed routing/account; the account is Plaid-verified.
+export async function createCounterpartyFromPlaid({ name, processorToken, email, idemKey }) {
+  const j = await mt('POST', '/counterparties', {
+    name,
+    email: email || undefined,
+    accounts: [{ plaid_processor_token: processorToken }],
+  }, idemKey);
+  const ea = (j.accounts || [])[0] || {};
+  return { counterpartyId: j.id, externalAccountId: ea.id };
+}
+
 // Create an ACH payment order. direction 'credit' pays the external account
 // (off-ramp payout); 'debit' pulls from it (on-ramp collection). Amount in CENTS.
 export async function createPaymentOrder({ amountCents, direction, externalAccountId, description, idemKey }) {

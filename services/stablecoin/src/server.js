@@ -20,6 +20,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
 import * as mt from './modern_treasury.js';
+import * as plaid from './plaid.js';
 
 const require = createRequire(import.meta.url);
 const wasm = require('../wasm/blockle_wasm.js');
@@ -133,6 +134,27 @@ const server = http.createServer(async (req, res) => {
       return j(res, 200, { supplyUsdb: supply, reserveUsd: l.reserveUsd, deltaUsd: supply == null ? null : l.reserveUsd - supply, fullyBacked: supply == null ? null : l.reserveUsd >= supply, asOf: Date.now() });
     }
 
+    // Plaid Link: mint a link token for the browser widget.
+    if (req.method === 'POST' && url.pathname === '/api/usdb/plaid/link-token') {
+      if (!plaid.configured()) return j(res, 503, { error: 'Plaid not configured' });
+      let raw = ''; for await (const c of req) raw += c; let b = {}; try { b = JSON.parse(raw || '{}'); } catch { /* */ }
+      try { return j(res, 200, await plaid.linkToken(b.userId || 'usdb-' + crypto.randomUUID())); }
+      catch (e) { return j(res, 502, { error: 'plaid link token: ' + e.message }); }
+    }
+    // Plaid connect: public_token + account -> MT external account (Plaid-verified).
+    if (req.method === 'POST' && url.pathname === '/api/usdb/plaid/connect') {
+      if (!plaid.configured() || !mt.configured()) return j(res, 503, { error: 'Plaid/MT not configured' });
+      let raw = ''; for await (const c of req) raw += c; let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
+      const publicToken = String(b.publicToken || '').trim(), accountId = String(b.accountId || '').trim(), name = String(b.name || 'USDB user').trim();
+      if (!publicToken || !accountId) return j(res, 400, { error: 'publicToken + accountId required' });
+      try {
+        const { accessToken } = await plaid.exchange(publicToken);
+        const proc = await plaid.mtProcessorToken(accessToken, accountId);
+        const cp = await mt.createCounterpartyFromPlaid({ name, processorToken: proc, idemKey: 'plaid-' + crypto.randomUUID() });
+        return j(res, 200, { ok: true, externalAccountId: cp.externalAccountId });
+      } catch (e) { return j(res, 502, { error: 'plaid connect: ' + e.message }); }
+    }
+
     if (req.method === 'POST' && (url.pathname === '/api/usdb/quote' || url.pathname === '/api/usdb/buy' || url.pathname === '/api/usdb/redeem')) {
       let raw = ''; for await (const c of req) raw += c;
       let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
@@ -153,30 +175,37 @@ const server = http.createServer(async (req, res) => {
       if (l.day !== today()) { l.day = today(); l.dayUsd = 0; }
       if (l.dayUsd + usd > DAILY_CAP_USD) return j(res, 429, { error: 'daily cap reached' });
 
+      // The bank account is either a Plaid-connected MT external account id
+      // (preferred) or manual bank details we turn into an MT counterparty.
+      const hasExt = !!b.externalAccountId;
+      if (!hasExt && !validBank(b.bank || {})) return j(res, 400, { error: 'connect a bank (Plaid) or provide bank {name, routingNumber(9), accountNumber}' });
+      async function externalAccount(tag) {
+        if (hasExt) return String(b.externalAccountId);
+        const bank = b.bank;
+        const cp = await mt.createCounterparty({ name: bank.name, routingNumber: bank.routingNumber, accountNumber: bank.accountNumber, accountType: bank.accountType || 'checking', email: bank.email, idemKey: tag + '-cp-' + crypto.randomUUID() });
+        return cp.externalAccountId;
+      }
+
       if (side === 'buy') {
         // ON-RAMP: pull USD from the buyer's bank via an ACH debit. USDB is minted
         // by the settlement watcher only when the debit reaches `completed`.
         const to = String(b.recipient || b.to || '').trim();
-        const bank = b.bank || {};
         if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
-        if (!validBank(bank)) return j(res, 400, { error: 'bank {name, routingNumber(9), accountNumber} required' });
-        let cp, po;
+        let po;
         try {
-          cp = await mt.createCounterparty({ name: bank.name, routingNumber: bank.routingNumber, accountNumber: bank.accountNumber, accountType: bank.accountType || 'checking', email: bank.email, idemKey: 'buy-cp-' + crypto.randomUUID() });
-          po = await mt.createPaymentOrder({ amountCents: Math.round(quote.payUsd * 100), direction: 'debit', externalAccountId: cp.externalAccountId, description: 'USDB buy ' + quote.receiveUsdb, idemKey: 'buy-po-' + crypto.randomUUID() });
+          const ext = await externalAccount('buy');
+          po = await mt.createPaymentOrder({ amountCents: Math.round(quote.payUsd * 100), direction: 'debit', externalAccountId: ext, description: 'USDB buy ' + quote.receiveUsdb, idemKey: 'buy-po-' + crypto.randomUUID() });
         } catch (e) { return j(res, 502, { error: 'Modern Treasury debit failed: ' + e.message }); }
         l.pendingBuys[po.id] = { recipient: to, grossUsd: quote.payUsd, receiveUsdb: quote.receiveUsdb, feeUsd: quote.feeUsd, t: Date.now() };
         l.dayUsd = round2(l.dayUsd + quote.payUsd); save(l);
         return j(res, 200, { ok: true, side, status: 'collecting', paymentOrderId: po.id, poStatus: po.status, receiveUsdb: quote.receiveUsdb, feeUsd: quote.feeUsd, note: 'ACH debit initiated; USDB is delivered to ' + to + ' once the payment settles.' });
       } else {
-        // OFF-RAMP: register the redeemer's bank as an MT counterparty, return the
-        // payoutRef + amount the WALLET signs into redeem(). The redeem watcher
-        // pays out (net 3.7%) via an ACH credit once the on-chain burn is seen.
-        const bank = b.bank || {};
-        if (!validBank(bank)) return j(res, 400, { error: 'bank {name, routingNumber(9), accountNumber} required' });
-        let cp; try { cp = await mt.createCounterparty({ name: bank.name, routingNumber: bank.routingNumber, accountNumber: bank.accountNumber, accountType: bank.accountType || 'checking', email: bank.email, idemKey: 'rd-cp-' + crypto.randomUUID() }); } catch (e) { return j(res, 502, { error: 'Modern Treasury counterparty failed: ' + e.message }); }
+        // OFF-RAMP: register the redeemer's bank, return the payoutRef + amount the
+        // WALLET signs into redeem(). The redeem watcher ACH-credits (net 3.7%)
+        // once the on-chain burn is seen.
+        let ext; try { ext = await externalAccount('rd'); } catch (e) { return j(res, 502, { error: 'Modern Treasury counterparty failed: ' + e.message }); }
         const ref = crypto.randomBytes(32).toString('hex');
-        l.redeemIntents[ref] = { externalAccountId: cp.externalAccountId, name: bank.name, amountUsdb: usd, t: Date.now() };
+        l.redeemIntents[ref] = { externalAccountId: ext, amountUsdb: usd, t: Date.now() };
         save(l);
         return j(res, 200, { ok: true, action: 'sign-redeem', contract: CONTRACT, payoutRef: ref, amountBase: Math.round(usd * UNIT), amountUsdb: usd, estPayoutUsd: quote.payoutUsd, feeUsd: quote.feeUsd, note: 'Sign redeem(payoutRef, amountBase) in your wallet; USD is ACH-credited to your bank once the burn confirms.' });
       }
