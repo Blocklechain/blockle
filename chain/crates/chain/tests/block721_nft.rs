@@ -61,7 +61,14 @@ fn block721_conformance() {
     assert!(!call(8, &two(&id1, &bob), bob, &mut contracts, &mut storage).success, "non-minter mint reverts");
 
     // the minter (alice) mints id1 -> bob
-    assert!(call(8, &two(&id1, &bob), alice, &mut contracts, &mut storage).success, "mint id1->bob");
+    let mintr = call(8, &two(&id1, &bob), alice, &mut contracts, &mut storage);
+    assert!(mintr.success, "mint id1->bob");
+    // emits a Transfer event [tag=1 ‖ from(32, zero) ‖ to(32) ‖ id(32)] = 97 bytes
+    let ev = mintr.logs.iter().find(|l| l.len() == 97).expect("mint Transfer log");
+    assert_eq!(ev[0], 1, "event tag");
+    assert_eq!(&ev[1..33], &[0u8; 32], "mint from = 0");
+    assert_eq!(&ev[33..65], &bob, "mint to = bob");
+    assert_eq!(&ev[65..97], &id1, "mint id = id1");
     assert_eq!(call(7, &id1, alice, &mut contracts, &mut storage).return_data, bob.to_vec(), "ownerOf id1 == bob");
     assert_eq!(u64_of(&call(1, &bob, bob, &mut contracts, &mut storage).return_data), 1, "bob balance 1");
     assert_eq!(u64_of(&call(3, &[], alice, &mut contracts, &mut storage).return_data), 1, "supply 1");
@@ -73,7 +80,12 @@ fn block721_conformance() {
     assert!(!call(2, &two(&id1, &carol), carol, &mut contracts, &mut storage).success, "non-owner transfer reverts");
 
     // the owner (bob) transfers id1 -> carol
-    assert!(call(2, &two(&id1, &carol), bob, &mut contracts, &mut storage).success, "transfer id1 bob->carol");
+    let xfer = call(2, &two(&id1, &carol), bob, &mut contracts, &mut storage);
+    assert!(xfer.success, "transfer id1 bob->carol");
+    let ev2 = xfer.logs.iter().find(|l| l.len() == 97).expect("transfer Transfer log");
+    assert_eq!(&ev2[1..33], &bob, "transfer from = bob");
+    assert_eq!(&ev2[33..65], &carol, "transfer to = carol");
+    assert_eq!(&ev2[65..97], &id1, "transfer id = id1");
     assert_eq!(call(7, &id1, alice, &mut contracts, &mut storage).return_data, carol.to_vec(), "ownerOf id1 == carol");
     assert_eq!(u64_of(&call(1, &bob, bob, &mut contracts, &mut storage).return_data), 0, "bob balance 0");
     assert_eq!(u64_of(&call(1, &carol, carol, &mut contracts, &mut storage).return_data), 1, "carol balance 1");

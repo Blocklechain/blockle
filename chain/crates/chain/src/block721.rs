@@ -49,6 +49,7 @@ pub fn block721_asm(name: &str, symbol: &str) -> String {
     let owner = 0x200; // 32-byte owner value (ownerOf return)
     let tobuf = 0x240; // `to` address from calldata (32), used as an SSTORE value
     let strbuf = 0x300; // name/symbol out
+    let evt = 0x380; // Transfer event buffer: [tag(1) ‖ from(32) ‖ to(32) ‖ id(32)] = 97
 
     // calldata helpers: copy a 32-byte field from calldata[off..off+32] into mem[dst]
     let cd32 = |dst: u64, off: u64| format!("  PUSH {dst}\n  PUSH8 {off}\n  PUSH8 32\n  CALLDATACOPY\n");
@@ -165,6 +166,12 @@ pub fn block721_asm(name: &str, symbol: &str) -> String {
     a += &format!("  PUSH {val}\n  PUSH8 0\n  MSTORE64\n  PUSH {fixed}\n  PUSH {val}\n  SLOAD\n  POP\n");
     a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH 1\n  ADD\n  PUSH {n1}\n  SWAP 1\n  MSTORE64\n");
     a += &format!("  PUSH {fixed}\n  PUSH {n1}\n  PUSH8 8\n  SSTORE\n");
+    // emit Transfer(from=0, to, id): [tag=1 ‖ from(32, zero) ‖ to(32) ‖ id(32)] (97 bytes).
+    // LOG pops (len, off) so push off then len. The `from` slot stays zero (fresh memory).
+    a += &format!("  PUSH {evt}\n  PUSH8 1\n  MSTORE8\n");
+    a += &cd32(evt + 33, 33); // to
+    a += &cd32(evt + 65, 1); // id
+    a += &format!("  PUSH {evt}\n  PUSH 97\n  LOG\n");
     a += &set_u64(one, 1);
     a += &format!("  PUSH {one}\n  PUSH8 8\n  RETURN\n");
 
@@ -205,6 +212,12 @@ pub fn block721_asm(name: &str, symbol: &str) -> String {
     a += &load_u64(val);
     a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH 1\n  ADD\n  PUSH {n1}\n  SWAP 1\n  MSTORE64\n");
     a += &store_u64(n1);
+    // emit Transfer(from=caller, to, id): [tag=1 ‖ from(32) ‖ to(32) ‖ id(32)] (97 bytes)
+    a += &format!("  PUSH {evt}\n  PUSH8 1\n  MSTORE8\n");
+    a += &caller_to(evt + 1); // from = caller
+    a += &cd32(evt + 33, 33); // to
+    a += &cd32(evt + 65, 1); // id
+    a += &format!("  PUSH {evt}\n  PUSH 97\n  LOG\n");
     a += &set_u64(one, 1);
     a += &format!("  PUSH {one}\n  PUSH8 8\n  RETURN\n");
 
