@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLOCK test faucet — Blockle</title>
+<meta name="description" content="Get free test BLOCK to try the Blockle launchpad and the BLOCK↔wBLOCK bridge. Rate-limited.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --teal:#37E0C8;
+    --good:#4ADE80; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:640px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px;max-width:1040px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)}
+  h1{font-size:clamp(26px,4vw,34px);letter-spacing:-.02em;margin:26px 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:2px 0 6px}
+  input.t{width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px 13px;font:14px var(--mono);outline:none}
+  input.t:focus{border-color:var(--accent)}
+  .cta{width:100%;background:var(--accent);color:#fff;border:0;border-radius:12px;padding:14px;font:700 16px var(--sans);cursor:pointer;margin-top:14px}
+  .cta:disabled{opacity:.5;cursor:not-allowed}
+  .stat{display:flex;justify-content:space-between;gap:12px;font-size:13.5px;padding:7px 0;border-top:1px solid var(--line)}
+  .stat:first-child{border-top:0}
+  .stat .k{color:var(--muted)} .stat .v{font-family:var(--mono)}
+  .msg{margin-top:12px;font-size:13.5px;word-break:break-all}
+  .ok{color:var(--good)} .bad{color:var(--bad)}
+  .note{color:var(--muted);font-size:12.5px;margin-top:10px}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle</a>
+  <nav><a href="/launch">Launch</a><a href="/bridge">Bridge</a><a href="/dex">DEX</a><a href="/explorer">Explorer</a></nav>
+</div></header>
+<main class="wrap">
+  <h1>BLOCK test faucet</h1>
+  <p class="sub">Free test BLOCK to try the <a href="/launch">launchpad</a> and the <a href="/bridge">BLOCK↔wBLOCK bridge</a>. Rate-limited per address.</p>
+
+  <div class="card">
+    <label class="fld">Your BLOCK address</label>
+    <input class="t" id="addr" placeholder="block1…" autocomplete="off" spellcheck="false">
+    <button class="cta" id="go">Request BLOCK</button>
+    <div class="msg" id="msg"></div>
+    <div class="note">Open the Blockle wallet (extension/desktop) → Receive to copy your <span class="mono">block1…</span> address.</div>
+  </div>
+
+  <div class="card">
+    <div class="stat"><span class="k">Drip per request</span><span class="v" id="drip">—</span></div>
+    <div class="stat"><span class="k">Cooldown</span><span class="v" id="cd">—</span></div>
+    <div class="stat"><span class="k">Faucet balance</span><span class="v" id="bal">—</span></div>
+    <div class="stat"><span class="k">Faucet address</span><span class="v" id="faddr" style="font-size:11px">—</span></div>
+  </div>
+</main>
+<script>
+(function(){
+  var $=function(id){return document.getElementById(id);};
+  function load(){
+    fetch('/api/faucet/info',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      $('drip').textContent=(d.dripBlock!=null?d.dripBlock:'—')+' BLOCK';
+      $('cd').textContent=(d.cooldownHours!=null?d.cooldownHours+' h':'—');
+      $('bal').textContent=(d.balance!=null?d.balance+' BLOCK':'offline')+(d.dry?' (dry)':'');
+      $('faddr').textContent=d.faucetAddress||'—';
+    }).catch(function(){});
+  }
+  load();
+  $('go').onclick=function(){
+    var addr=$('addr').value.trim(), msg=$('msg'), btn=$('go');
+    msg.className='msg'; msg.textContent='';
+    if(!/^block1[0-9a-z]{20,}$/.test(addr)){ msg.className='msg bad'; msg.textContent='Enter a valid block1… address.'; return; }
+    btn.disabled=true; btn.textContent='Sending…';
+    fetch('/api/faucet/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({address:addr})})
+      .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+      .then(function(res){
+        if(res.ok&&res.j.ok){ msg.className='msg ok'; msg.innerHTML='Sent '+res.j.amount+' BLOCK ✓ — tx '+res.j.txid.slice(0,20)+'… (confirms in a block). <a href="/explorer">Explorer</a>'; }
+        else { msg.className='msg bad'; msg.textContent=(res.j && res.j.error)||'request failed'; }
+        load();
+      })
+      .catch(function(e){ msg.className='msg bad'; msg.textContent=(e&&e.message)||'network error'; })
+      .finally(function(){ btn.disabled=false; btn.textContent='Request BLOCK'; });
+  };
+})();
+</script>
+</body>
+</html>

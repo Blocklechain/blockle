@@ -1,0 +1,11 @@
+{
+  "name": "blockle-faucet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Blockle test-BLOCK faucet — drips small amounts of BLOCK to any block1 address, rate-limited, for testing the launchpad + bridge.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}

@@ -645,6 +645,7 @@ fn route(
             ("200 OK", "text/html; charset=utf-8", page_bridge_tx(id).into_bytes())
         }
         "/bridge/reserves" => ("200 OK", "text/html; charset=utf-8", page_bridge_reserves().into_bytes()),
+        "/faucet" => serve_web_file("faucet.html", "text/html; charset=utf-8"),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
