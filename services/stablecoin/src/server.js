@@ -25,6 +25,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import * as paypal from './paypal.js';
 
 const require = createRequire(import.meta.url);
 // ML-DSA signer / tx builder — same wasm the wallets use, vendored next to this
@@ -55,7 +56,13 @@ const PAYPAL_PAYOUT_CAP_USD = Number(process.env.USDB_PAYPAL_PAYOUT_CAP_USD || 1
 const PER_TX_CAP_USD = Number(process.env.USDB_PER_TX_CAP_USD || 10000);
 const DAILY_CAP_USD = Number(process.env.USDB_DAILY_CAP_USD || 100000);
 const ENABLED = (process.env.USDB_ENABLED || '0') === '1';      // master gate for REAL public mint/burn
-const KYC_URL = (process.env.USDB_KYC_URL || '').trim();         // sanctions/KYC verifier (required when ENABLED)
+const KYC_URL = (process.env.USDB_KYC_URL || '').trim();         // sanctions/KYC verifier
+// Regulatory posture: the issuer is cleared to operate KYC-FREE until cumulative
+// volume reaches this threshold ($10M). At/above it, KYC becomes mandatory and
+// issuance fails closed until USDB_KYC_URL is configured. Self-funding model:
+// reserves accrue from each sale's captured PayPal payment (not pre-funded), so
+// supply stays <= reserves without any up-front float.
+const KYC_THRESHOLD_USD = Number(process.env.USDB_KYC_THRESHOLD_USD || 10_000_000);
 const KEYPATH = (process.env.USDB_ISSUER_KEYPAIR || '').trim();  // issuer wallet {address,publicKey,secretKey} (box-only)
 const GAS_LIMIT = BigInt(process.env.USDB_GAS_LIMIT || 120000);  // mint/burn gas
 const GAS_PRICE = BigInt(process.env.USDB_GAS_PRICE || 10);      // mainnet gas_price
@@ -78,7 +85,10 @@ function treasuryAddr() { const k = loadIssuer(); return TREASURY || (k && k.add
 
 fs.mkdirSync(DATA, { recursive: true });
 const LEDGER = path.join(DATA, 'reserve-ledger.json');
-function load() { try { return JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { return { reserveUsd: 0, issued: [], day: '', dayUsd: 0 }; } }
+function load() {
+  let l; try { l = JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { l = {}; }
+  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, ...l };
+}
 function save(l) { fs.writeFileSync(LEDGER, JSON.stringify(l)); }
 
 function j(res, code, obj) {
@@ -195,10 +205,12 @@ const server = http.createServer(async (req, res) => {
           note: 'off-ramp payout passes through PayPal payout fee + our 0.5% margin' },
         exampleBuy100: buyFromPay(100), exampleRedeem100: redeemQuote(100),
         perTxCapUsd: PER_TX_CAP_USD, dailyCapUsd: DAILY_CAP_USD,
-        enabled: ENABLED, issuerReady: !!k, kycConfigured: !!KYC_URL,
+        enabled: ENABLED, issuerReady: !!k, rail: 'paypal', paypalConfigured: paypal.configured(), paypalEnv: paypal.env(),
+        kyc: { configured: !!KYC_URL, requiredAtVolumeUsd: KYC_THRESHOLD_USD, requiredNow: l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL },
+        volumeUsd: l.volumeUsd,
         supply, reserveUsd: l.reserveUsd,
         fullyBacked: supply == null ? null : l.reserveUsd >= supply,
-        note: ENABLED ? 'live' : 'public issuance not enabled — buy/redeem return a dry-run plan and mint/burn nothing',
+        note: ENABLED ? 'live — self-funding (reserves accrue from PayPal-captured sales); KYC-free until $' + KYC_THRESHOLD_USD.toLocaleString() + ' volume' : 'public issuance not enabled — buy/redeem return a dry-run plan and mint/burn nothing',
       });
     }
 
@@ -212,6 +224,23 @@ const server = http.createServer(async (req, res) => {
         fullyBacked: supply == null ? null : l.reserveUsd >= supply,
         asOf: Date.now(),
       });
+    }
+
+    // Start a PayPal checkout for a buy: create a CAPTURE order for the GROSS
+    // payUsd (so the quote's receiveUsdb ends up fully backed). The client opens
+    // approveUrl, the buyer pays, then POSTs the orderId to /api/usdb/buy.
+    if (req.method === 'POST' && url.pathname === '/api/usdb/paypal/create') {
+      let raw = ''; for await (const c of req) raw += c;
+      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
+      if (!ENABLED) return j(res, 200, { dryRun: true, note: 'public issuance not enabled' });
+      if (!paypal.configured()) return j(res, 503, { error: 'PayPal rail not configured' });
+      const q = b.amountUsdb > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(Number(b.amountUsd || b.amount || 0));
+      if (!(q.payUsd > 0)) return j(res, 400, { error: 'amount must be positive' });
+      if (q.payUsd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
+      try {
+        const o = await paypal.createOrder(q.payUsd, { description: `Buy ${q.receiveUsdb} USDB`, returnUrl: b.returnUrl, cancelUrl: b.cancelUrl });
+        return j(res, 200, { ...o, quote: q });
+      } catch (e) { return j(res, 502, { error: 'PayPal order create failed: ' + e.message }); }
     }
 
     if (req.method === 'POST' && (url.pathname === '/api/usdb/quote' || url.pathname === '/api/usdb/buy' || url.pathname === '/api/usdb/redeem')) {
@@ -239,50 +268,59 @@ const server = http.createServer(async (req, res) => {
 
       // --- money paths: gated + fail-closed ---
       if (!ENABLED) {
-        return j(res, 200, { dryRun: true, ...quote, note: 'DRY-RUN: public issuance is not enabled. No USDB minted/burned, no reserve moved. The issuer must fund reserves, configure the KYC/sanctions verifier + fiat rail, and set USDB_ENABLED=1.' });
+        return j(res, 200, { dryRun: true, ...quote, note: 'DRY-RUN: public issuance is not enabled (USDB_ENABLED=0). No USDB minted/burned, no reserve moved.' });
       }
       if (!CONTRACT) return j(res, 503, { error: 'USDB contract not configured' });
       if (!loadIssuer()) return j(res, 503, { error: 'issuer signer not configured — refusing to issue (fail-closed)' });
-      if (!KYC_URL) return j(res, 503, { error: 'KYC/sanctions verifier not configured — refusing to issue (fail-closed)' });
-      // daily cap
+      if (!paypal.configured()) return j(res, 503, { error: 'PayPal rail not configured — refusing to issue (fail-closed)' });
       const l = load();
+      // KYC becomes mandatory only once cumulative volume reaches the threshold.
+      if (l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL) {
+        return j(res, 503, { error: `KYC required beyond $${KYC_THRESHOLD_USD.toLocaleString()} cumulative volume — configure USDB_KYC_URL (fail-closed)` });
+      }
+      // daily cap
       if (l.day !== today()) { l.day = today(); l.dayUsd = 0; }
       if (l.dayUsd + usd > DAILY_CAP_USD) return j(res, 429, { error: 'daily issuance cap reached' });
 
       if (side === 'buy') {
-        // Real mint: require a VERIFIED USD-deposit reference + a recipient. We
-        // mint the NET USDB and credit the GROSS USD to reserves (fee = margin,
-        // so reserves over-cover supply). The deposit must be verified by the
-        // fiat rail BEFORE calling this — depositRef is that rail's receipt id.
+        // Real mint, tied to a captured PayPal payment. `orderId` is the PayPal
+        // CAPTURE order the buyer paid; we capture + verify it covers payUsd in
+        // USD and COMPLETED, reject replays, THEN mint. Self-funding: the payment
+        // IS the backing, so reserves += the minted (backed) amount.
         const to = String(b.recipient || b.to || '').trim();
-        const depositRef = String(b.depositRef || '').trim();
+        const orderId = String(b.orderId || b.depositRef || '').trim();
         if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
-        if (!depositRef) return j(res, 402, { error: 'verified PayPal capture id required before mint (fail-closed)' });
+        if (!orderId) return j(res, 402, { error: 'PayPal orderId required (create one via /api/usdb/paypal/create, have the buyer approve+pay, then submit it here)' });
+        if (l.consumed[orderId]) return j(res, 409, { error: 'this PayPal order was already redeemed for USDB' });
+        let cap; try { cap = await paypal.captureOrder(orderId); } catch (e) { return j(res, 402, { error: 'PayPal capture failed: ' + e.message }); }
+        if (!paypal.captureOk(cap, quote.payUsd)) {
+          return j(res, 402, { error: 'PayPal payment not verified (need COMPLETED, USD, >= $' + quote.payUsd + '); got ' + JSON.stringify({ status: cap.status, captureStatus: cap.captureStatus, value: cap.value, currency: cap.currency }) });
+        }
+        l.consumed[orderId] = { t: Date.now(), value: cap.value, captureId: cap.captureId }; save(l); // mark consumed BEFORE mint (no double-mint even on retry)
         const base = Math.round(quote.receiveUsdb * UNIT);
         const txid = await mintTo(to, base);
-        // Reserves are credited the BACKED amount (== minted USDB); the PayPal
-        // fee was paid to PayPal and our margin is profit, neither backs supply.
-        l.reserveUsd = round2(l.reserveUsd + quote.receiveUsdb); l.dayUsd = round2(l.dayUsd + quote.payUsd);
-        l.issued.push({ t: Date.now(), side, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, usdb: base / UNIT, to, txid, depositRef });
+        l.reserveUsd = round2(l.reserveUsd + quote.receiveUsdb); l.dayUsd = round2(l.dayUsd + quote.payUsd); l.volumeUsd = round2(l.volumeUsd + quote.payUsd);
+        l.issued.push({ t: Date.now(), side, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, usdb: base / UNIT, to, txid, orderId, captureId: cap.captureId });
         save(l);
         return j(res, 200, { ok: true, side, txid, mintedUsdb: base / UNIT, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, reserveUsd: l.reserveUsd });
       } else {
-        // Real redeem: the user first SENDS USDB back to the treasury; redeem is
-        // called with that return txid. We confirm the treasury received >= the
-        // redeemed amount on-chain, burn it from the treasury, pay out net USD,
-        // and debit reserves by the burned amount.
+        // Real redeem: the user SENDS USDB back to the treasury (returnTxid) and
+        // gives a PayPal email. We confirm the treasury holds the USDB, PAY OUT
+        // first (PayPal Payouts), then burn — so we never burn without having paid.
         const returnTxid = String(b.returnTxid || '').trim();
-        if (!returnTxid) return j(res, 402, { error: 'returnTxid (USDB sent to treasury) required before burn (fail-closed)' });
+        const email = String(b.payoutEmail || b.email || '').trim();
+        if (!returnTxid) return j(res, 402, { error: 'returnTxid (USDB sent to treasury) required (fail-closed)' });
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return j(res, 400, { error: 'payoutEmail (PayPal) required' });
         const tre = treasuryAddr(); if (!tre) return j(res, 503, { error: 'treasury not configured' });
-        await waitConf(returnTxid, CONF_TARGET); // the USDB-return must be confirmed
         const base = Math.round(usd * UNIT);
         const bal = await balanceOfBase(tre);
-        if (bal < base) return j(res, 409, { error: 'treasury has not received the USDB to burn yet' });
+        if (bal < base) return j(res, 409, { error: 'treasury has not received the USDB to burn yet (send USDB to ' + tre + ' first)' });
+        let pay; try { pay = await paypal.payout(email, quote.payoutUsd, 'USDB redemption'); } catch (e) { return j(res, 502, { error: 'PayPal payout failed (nothing burned): ' + e.message }); }
         const txid = await burnFrom(tre, base);
-        l.reserveUsd = round2(Math.max(0, l.reserveUsd - usd)); l.dayUsd = round2(l.dayUsd + usd);
-        l.issued.push({ t: Date.now(), side, usd, usdb: base / UNIT, from: tre, returnTxid, burnTxid: txid, payoutUsd: quote.payoutUsd });
+        l.reserveUsd = round2(Math.max(0, l.reserveUsd - usd)); l.dayUsd = round2(l.dayUsd + usd); l.volumeUsd = round2(l.volumeUsd + usd);
+        l.issued.push({ t: Date.now(), side, usd, usdb: base / UNIT, from: tre, returnTxid, burnTxid: txid, payoutUsd: quote.payoutUsd, payoutBatch: pay.batchId });
         save(l);
-        return j(res, 200, { ok: true, side, txid, burnedUsdb: base / UNIT, payoutUsd: quote.payoutUsd, reserveUsd: l.reserveUsd, feeUsd: quote.feeUsd });
+        return j(res, 200, { ok: true, side, txid, burnedUsdb: base / UNIT, payoutUsd: quote.payoutUsd, payoutBatch: pay.batchId, reserveUsd: l.reserveUsd, feeUsd: quote.feeUsd });
       }
     }
     return j(res, 404, { error: 'not found' });
