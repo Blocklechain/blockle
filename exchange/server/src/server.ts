@@ -151,6 +151,27 @@ export function buildServer(cfg: Config): BuiltServer {
 
   app.get("/markets", (_req, res) => res.json(registry.markets()));
 
+  // The published maker/taker fee schedule (rate card). Non-custodial: fees are
+  // taken on-chain in the settlement HTLC at withdraw — the relay never holds
+  // funds. Taker (crosses the book) pays the taker bps; maker (provides
+  // liquidity) pays the maker bps; both fall with trailing-30d volume.
+  app.get("/fees", (_req, res) =>
+    res.json({
+      model: "maker-taker",
+      tiers: cfg.fees.tiers,
+      base: cfg.fees.tiers[0],
+      protocolFeeBps: cfg.fees.protocolFeeBps,
+      // Whether the maker/taker tiers are enforced on-chain yet. Until true the
+      // flat protocol fee is what's actually collected (effectiveBps) — the UI
+      // shows that, and the tiers as the published rate card.
+      enforced: cfg.fees.tieredOnChain,
+      effectiveBps: cfg.fees.tieredOnChain ? null : cfg.fees.protocolFeeBps,
+      listingFeeUsd: cfg.fees.listingFeeUsd,
+      perPairFeeUsd: cfg.fees.perPairFeeUsd,
+      custody: "non-custodial — fees settle on-chain in the HTLC; the relay holds no funds or keys",
+    }),
+  );
+
   app.get("/book/:market", (req, res) => {
     const market = decodeURIComponent(req.params.market);
     if (!registry.market(market)) return res.status(404).json({ error: "unknown market" });

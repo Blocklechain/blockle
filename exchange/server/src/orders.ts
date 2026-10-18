@@ -8,6 +8,7 @@ import * as crypto from "crypto";
 import type { DB } from "./db";
 import { audit } from "./db";
 import type { Config } from "./config";
+import { feeTierFor } from "./config";
 import type { Registry } from "./registry";
 import { SwapEngine } from "./swaps";
 import type { Session } from "./auth";
@@ -385,6 +386,15 @@ export class OrderBook {
     );
   }
 
+  /** A trader's trailing-30-day volume in USD, used to pick the maker/taker fee
+   *  tier. Honest-by-default: returns 0 (everyone at the base tier) until a
+   *  cross-asset price feed is wired, since only stable-quoted legs can be valued
+   *  in USD without one. Scaffolded here so enabling volume tiers is a one-spot
+   *  change, never a silent over-credit. */
+  private volume30dUsd(_address: string): number {
+    return 0;
+  }
+
   book(market: string): { bids: any[]; asks: any[] } {
     this.expireStale();
     const open = this.db
@@ -476,13 +486,28 @@ export class OrderBook {
       const buyer = taker.side === "buy" ? taker : maker;
       const seller = taker.side === "buy" ? maker : taker;
       // maker leg = resting order's obligation; taker leg = incoming order's
+      // Maker/taker fee tiers (by each party's trailing-30d volume). The fee on a
+      // leg is borne by its RECIPIENT: the maker leg is received by the taker (so
+      // it carries the TAKER fee); the taker leg is received by the maker (so it
+      // carries the MAKER fee). Taker crosses the book → pays more; maker provides
+      // liquidity → pays less. Encoded into settlement, taken on-chain at withdraw.
+      // Only encode differentiated maker/taker fees once a venue's HTLC enforces
+      // them on-chain; otherwise encode the flat protocol fee (what's actually
+      // collected), so settlement never silently diverges from what's shown.
+      const takerFeeBps = this.cfg.fees.tieredOnChain
+        ? feeTierFor(this.cfg.fees, this.volume30dUsd(taker.maker)).takerBps
+        : this.cfg.fees.protocolFeeBps;
+      const makerFeeBps = this.cfg.fees.tieredOnChain
+        ? feeTierFor(this.cfg.fees, this.volume30dUsd(maker.maker)).makerBps
+        : this.cfg.fees.protocolFeeBps;
+
       const makerGivesBase = maker.side === "sell";
       const makerLeg = makerGivesBase
-        ? { chain: market.baseAsset.chain, asset: market.baseAsset.addr, amount: fill.toString(), recipient: taker.maker }
-        : { chain: market.quoteAsset.chain, asset: market.quoteAsset.addr, amount: quoteAmt.toString(), recipient: taker.maker };
+        ? { chain: market.baseAsset.chain, asset: market.baseAsset.addr, amount: fill.toString(), recipient: taker.maker, feeBps: takerFeeBps }
+        : { chain: market.quoteAsset.chain, asset: market.quoteAsset.addr, amount: quoteAmt.toString(), recipient: taker.maker, feeBps: takerFeeBps };
       const takerLeg = makerGivesBase
-        ? { chain: market.quoteAsset.chain, asset: market.quoteAsset.addr, amount: quoteAmt.toString(), recipient: maker.maker }
-        : { chain: market.baseAsset.chain, asset: market.baseAsset.addr, amount: fill.toString(), recipient: maker.maker };
+        ? { chain: market.quoteAsset.chain, asset: market.quoteAsset.addr, amount: quoteAmt.toString(), recipient: maker.maker, feeBps: makerFeeBps }
+        : { chain: market.baseAsset.chain, asset: market.baseAsset.addr, amount: fill.toString(), recipient: maker.maker, feeBps: makerFeeBps };
 
       const swap = this.swaps.create({
         market: taker.market,
@@ -492,7 +517,7 @@ export class OrderBook {
         takerOrder: takerId,
         makerLeg,
         takerLeg,
-        feeBps: this.cfg.fees.protocolFeeBps,
+        feeBps: takerFeeBps, // headline (taker) fee for the trade record
       });
 
       const tradeId = "trd_" + crypto.randomBytes(8).toString("hex");
@@ -508,7 +533,7 @@ export class OrderBook {
           fill.toString(),
           maker.orderId,
           takerId,
-          this.cfg.fees.protocolFeeBps,
+          takerFeeBps,
           swap.swapId,
           Date.now(),
         );

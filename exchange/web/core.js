@@ -112,6 +112,7 @@
     nonce: function (address, chain) { return req('POST', '/auth/nonce', { address: address, chain: chain }); },
     verify: function (b) { return req('POST', '/auth/verify', b); },
     markets: function () { return req('GET', '/markets'); },
+    fees: function () { return req('GET', '/fees'); },
     book: function (m) { return req('GET', '/book/' + encodeURIComponent(m)); },
     trades: function (m) { return req('GET', '/trades/' + encodeURIComponent(m)); },
     placeOrder: function (b) { return req('POST', '/orders', b); },

@@ -72,12 +72,16 @@ test("crossing limit orders match at the resting price and create a swap", () =>
   assert.equal(book.getOrder(askRes.orderId)!.status, "filled");
   assert.equal(book.getOrder(bidRes.orderId)!.status, "filled");
 
-  // a swap exists with the right legs + fee
+  // a swap exists with the right legs + fee. Default config has tieredOnChain
+  // OFF, so the flat protocol fee is encoded on every leg (what the deployed
+  // HTLCs actually collect) — never a tier the chain wouldn't take.
   const swap = swaps.get(trade.swapId)!;
   assert.ok(swap);
   assert.equal(swap.feeBps, cfg.fees.protocolFeeBps);
   const makerLeg = swap.legs.find((l) => l.role === "maker")!; // seller gives BASE (BLOCK)
   const takerLeg = swap.legs.find((l) => l.role === "taker")!; // buyer gives QUOTE (USDC)
+  assert.equal(makerLeg.feeBps, cfg.fees.protocolFeeBps);
+  assert.equal(takerLeg.feeBps, cfg.fees.protocolFeeBps);
   assert.equal(makerLeg.chain, "block");
   assert.equal(makerLeg.amount, "100000000");
   assert.equal(takerLeg.chain, "base"); // USDC lives on base in the registry

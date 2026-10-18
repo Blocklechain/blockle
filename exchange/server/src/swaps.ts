@@ -34,6 +34,11 @@ export interface SwapLeg {
   amount: string;
   recipient?: string;
   role: "maker" | "taker";
+  /** fee (bps) taken from THIS leg at withdraw — borne by its recipient. The
+   *  maker leg is received by the taker (so it carries the TAKER fee); the taker
+   *  leg is received by the maker (so it carries the MAKER fee). Falls back to
+   *  the swap's feeBps when a venue's HTLC only supports a flat fee. */
+  feeBps?: number;
   timelock: number;
   lockRef?: string;
   status: "pending" | "locked" | "withdrawn" | "refunded";
@@ -79,10 +84,12 @@ export interface CreateSwapParams {
   taker: string;
   makerOrder?: string;
   takerOrder?: string;
-  /** what the maker locks (gives); recipient = taker's addr on that chain */
-  makerLeg: { chain: string; asset?: string; amount: string; recipient?: string };
-  /** what the taker locks (gives); recipient = maker's addr on that chain */
-  takerLeg: { chain: string; asset?: string; amount: string; recipient?: string };
+  /** what the maker locks (gives); recipient = taker's addr on that chain.
+   *  feeBps here is the TAKER fee (the taker receives + is debited this leg). */
+  makerLeg: { chain: string; asset?: string; amount: string; recipient?: string; feeBps?: number };
+  /** what the taker locks (gives); recipient = maker's addr on that chain.
+   *  feeBps here is the MAKER fee (the maker receives + is debited this leg). */
+  takerLeg: { chain: string; asset?: string; amount: string; recipient?: string; feeBps?: number };
   feeBps: number;
   /** seconds from now the whole swap expires (drives timelocks) */
   ttlSec?: number;
@@ -147,6 +154,7 @@ export class SwapEngine {
         amount: p.makerLeg.amount,
         recipient: p.makerLeg.recipient,
         role: "maker",
+        feeBps: p.makerLeg.feeBps ?? p.feeBps,
         timelock: makerTimelock,
         status: "pending",
         htlcAddress: makerHtlc?.address,
@@ -158,6 +166,7 @@ export class SwapEngine {
         amount: p.takerLeg.amount,
         recipient: p.takerLeg.recipient,
         role: "taker",
+        feeBps: p.takerLeg.feeBps ?? p.feeBps,
         timelock: takerTimelock,
         status: "pending",
         htlcAddress: takerHtlc?.address,

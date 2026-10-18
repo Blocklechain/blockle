@@ -8,6 +8,12 @@
   var EX = window.EX, $ = EX.$, esc = EX.esc;
   var markets = [], market = null, book = { bids: [], asks: [] };
   var side = 'buy', otype = 'limit', ws = null, lastPx = null;
+  // Maker/taker fee schedule (base tier used for the live quote). Falls back to
+  // the flat protocol fee until /fees is loaded.
+  var feeBase = { makerBps: EX.PROTOCOL_FEE_BPS, takerBps: EX.PROTOCOL_FEE_BPS };
+  var feeTiers = [];
+  var feeEnforced = false;            // are maker/taker tiers enforced on-chain yet?
+  var feeEffectiveBps = EX.PROTOCOL_FEE_BPS; // flat fee actually collected until then
 
   function curMarket() { return markets.filter(function (m) { return m.market === market; })[0]; }
   function baseDec() { var m = curMarket(); return (m && m.baseAsset && m.baseAsset.decimals) || 0; }
@@ -24,6 +30,14 @@
     try {
       markets = await EX.api.markets() || [];
     } catch (e) { EX.toast('Could not load markets: ' + e.message, 'err'); markets = []; }
+    try {
+      var fsch = await EX.api.fees();
+      if (fsch && fsch.base) {
+        feeBase = fsch.base; feeTiers = fsch.tiers || [];
+        feeEnforced = !!fsch.enforced;
+        if (fsch.effectiveBps != null) feeEffectiveBps = fsch.effectiveBps;
+      }
+    } catch (e) { /* keep flat fallback */ }
     var sel = $('marketSel');
     if (!markets.length) {
       sel.innerHTML = '<option>No markets</option>';
@@ -241,7 +255,15 @@
     var px = otype === 'market' ? (lastPx || 0) : (parseFloat($('price').value) || 0);
     var total = amt * px;
     $('orderTotal').textContent = total > 0 ? EX.fmtNum(total, 8) + ' ' + quoteSym() : '—';
-    $('orderFee').textContent = total > 0 ? EX.fmtNum(total * EX.PROTOCOL_FEE_BPS / 10000, 8) + ' ' + quoteSym() : '—';
+    // Honest fee display: once maker/taker tiers are enforced on-chain, show the
+    // applicable side's rate; until then show the flat protocol fee that's
+    // actually collected in the HTLC (the maker/taker schedule is the rate card).
+    var isTaker = otype === 'market'; // market = taker; resting limit = maker
+    var bps = feeEnforced ? (isTaker ? feeBase.takerBps : feeBase.makerBps) : feeEffectiveBps;
+    var label = feeEnforced ? ' (' + (isTaker ? 'taker' : 'maker') + ' ' + (bps / 100) + '%)' : ' (' + (bps / 100) + '%)';
+    $('orderFee').textContent = total > 0
+      ? EX.fmtNum(total * bps / 10000, 8) + ' ' + quoteSym() + label
+      : (bps / 100) + '%';
   }
 
   async function placeOrder() {

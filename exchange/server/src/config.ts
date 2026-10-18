@@ -22,14 +22,45 @@ export interface LegalReview {
   note?: string;
 }
 
+/** A maker/taker fee tier, selected by the trader's trailing-30d USD volume.
+ *  Fees are encoded into settlement (taken on-chain in the HTLC at withdraw),
+ *  NOT collected by the relay — the venue stays non-custodial. */
+export interface FeeTier {
+  /** inclusive floor of trailing-30d volume (USD) for this tier. */
+  minVolumeUsd: number;
+  /** maker (resting/liquidity-providing order) fee, bps. */
+  makerBps: number;
+  /** taker (crossing/liquidity-taking order) fee, bps. */
+  takerBps: number;
+}
+
 export interface FeeConfig {
-  /** protocol swap fee in basis points (0.1% = 10). Encoded into settlement,
-   *  NOT collected by the relay. */
+  /** protocol swap fee in basis points (0.1% = 10). Legacy flat fee + the
+   *  fallback/cap when no tier matches. Encoded into settlement, NOT collected
+   *  by the relay. */
   protocolFeeBps: number;
+  /** maker/taker fee schedule, ascending by minVolumeUsd. The first tier
+   *  (minVolumeUsd:0) is the default. Taker crosses the book and pays more;
+   *  maker provides liquidity and pays less (or zero at high volume). */
+  tiers: FeeTier[];
+  /** Whether the settlement HTLCs actually enforce differentiated per-leg
+   *  (maker/taker) fees on-chain. FALSE until the per-lock-fee HTLC is deployed
+   *  on a venue — while false the engine encodes the flat `protocolFeeBps` so
+   *  what's charged on-chain matches what's shown. Never display a tier the
+   *  chain doesn't collect. */
+  tieredOnChain: boolean;
   /** base listing fee (asset + mandatory BLOCK pair), USD. */
   listingFeeUsd: number;
   /** per extra trading pair, USD. */
   perPairFeeUsd: number;
+}
+
+/** Pick the maker/taker tier for a trailing-30d USD volume (0 if unknown). */
+export function feeTierFor(fees: FeeConfig, volumeUsd: number): FeeTier {
+  const v = Number.isFinite(volumeUsd) && volumeUsd > 0 ? volumeUsd : 0;
+  let picked = fees.tiers[0];
+  for (const t of fees.tiers) if (v >= t.minVolumeUsd && t.minVolumeUsd >= picked.minVolumeUsd) picked = t;
+  return picked || { minVolumeUsd: 0, makerBps: fees.protocolFeeBps, takerBps: fees.protocolFeeBps };
 }
 
 export interface SeedConfig {
@@ -244,7 +275,19 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     confirmationDepth: envNum("BLOCKLE_EXCHANGE_CONF_DEPTH", fileCfg.confirmationDepth ?? 6),
     dailyCapUsd: envNum("BLOCKLE_EXCHANGE_DAILY_CAP_USD", fileCfg.dailyCapUsd ?? 100_000),
     fees: {
-      protocolFeeBps: fileCfg.fees?.protocolFeeBps ?? 10, // 0.1%
+      protocolFeeBps: fileCfg.fees?.protocolFeeBps ?? 10, // 0.1% legacy flat / cap
+      // Maker/taker schedule. Default: maker 0.10% / taker 0.20%, falling with
+      // 30d volume to maker-free / taker 0.10% for whales. All <= the 1% HTLC cap.
+      tiers: fileCfg.fees?.tiers ?? [
+        { minVolumeUsd: 0, makerBps: 10, takerBps: 20 },
+        { minVolumeUsd: 50_000, makerBps: 8, takerBps: 16 },
+        { minVolumeUsd: 250_000, makerBps: 5, takerBps: 12 },
+        { minVolumeUsd: 1_000_000, makerBps: 2, takerBps: 10 },
+        { minVolumeUsd: 5_000_000, makerBps: 0, takerBps: 8 },
+      ],
+      // Off until a per-lock-fee HTLC is deployed; until then the flat protocol
+      // fee is what's actually taken on-chain and what the UI shows.
+      tieredOnChain: fileCfg.fees?.tieredOnChain ?? false,
       listingFeeUsd: fileCfg.fees?.listingFeeUsd ?? 5,
       perPairFeeUsd: fileCfg.fees?.perPairFeeUsd ?? 1,
     },
