@@ -258,7 +258,15 @@ const server = http.createServer(async (req, res) => {
       // the USDB they burn (in USD terms, 1:1) for a USD payout minus our fee.
       let quote;
       if (side === 'buy') {
-        quote = b.amountUsdb > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(Number(b.amountUsd || b.amount || 0));
+        // On the PayPal return we only receive the orderId — recover the amount
+        // from the order we bound at create-time (so the quote is authoritative
+        // and matches what was actually paid), falling back to a body amount.
+        let payAmt = Number(b.amountUsd || b.amount || 0);
+        const oid0 = String(b.orderId || b.depositRef || '').trim();
+        if (!(payAmt > 0) && !(Number(b.amountUsdb) > 0) && oid0) {
+          const pend = load().pending[oid0]; if (pend && pend.payUsd > 0) payAmt = pend.payUsd;
+        }
+        quote = Number(b.amountUsdb) > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(payAmt);
         if (!(quote.payUsd > 0)) return j(res, 400, { error: 'amount (USD) must be positive' });
         if (quote.payUsd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
       } else {
