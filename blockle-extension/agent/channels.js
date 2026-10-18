@@ -33,6 +33,18 @@
   // the user is expected to review, not a blank cheque.
   const DEFAULT_CAPS = { sessionUsd: 100, perAsset: {} };
 
+  // Blockle Copilot subscription tiers → what the agent engine allows. The host injects the
+  // current tier (opts.entitlement); we FAIL CLOSED to 'free' for an unknown tier so a missing
+  // or unreachable account can never silently unlock live trading or extra agents.
+  const UPSELL = 'Upgrade at blockle.org/copilot';
+  const TIER_LIMITS = {
+    free: { maxChannels: 1, live: false },
+    pro: { maxChannels: 3, live: true },           // legacy Blockle Pro
+    copilot: { maxChannels: 3, live: true },
+    copilot_pro: { maxChannels: Infinity, live: true },
+  };
+  const tierLimits = (t) => TIER_LIMITS[String(t || 'free').toLowerCase()] || TIER_LIMITS.free;
+
   // "How do I get credentials" guidance shown in the UI for each provider, so a
   // user can connect a channel without leaving the wallet to hunt for docs.
   // `provider` maps the human label to the internal AgentProviders key.
@@ -227,6 +239,10 @@
       this.ctxFor = typeof opts.ctxFor === 'function' ? opts.ctxFor : null;         // (channelMeta) -> adapters/ctx
       this.defaults = opts.defaults || {};
       this.fetchImpl = opts.fetchImpl;
+      // Copilot tier source: a function returning the tier (so the host can update it live
+      // after an account login), a plain string, or null → gating OFF (backward compatible).
+      this.entitlement = (typeof opts.entitlement === 'function' || typeof opts.entitlement === 'string')
+        ? opts.entitlement : null;
       this.channels = new Map(); // id -> Channel
     }
 
@@ -258,11 +274,39 @@
 
     // Create a new channel record (does NOT start it unless `start: true` and a
     // credential can be resolved). Persists immediately so it survives reload.
+    currentTier() {
+      const e = this.entitlement;
+      let t = null;
+      try { t = (typeof e === 'function') ? e() : e; } catch (_) { t = null; }
+      return String(t || 'free').toLowerCase();
+    }
+
+    _limits() { return tierLimits(this.currentTier()); }
+
+    // The active subscription tier + what it unlocks, for the UI.
+    plan() {
+      const t = this.currentTier();
+      const lim = tierLimits(t);
+      return { tier: t, maxChannels: (lim.maxChannels === Infinity ? null : lim.maxChannels), live: lim.live };
+    }
+
     async create(spec) {
       spec = spec || {};
       if (!spec.provider) throw new Error('channel requires a provider');
       if (!spec.walletId && !spec.accountId) {
         throw new Error('channel must be bound to a wallet/account (walletId or accountId)');
+      }
+      // Subscription gating — ACTIVE ONLY when the host wires entitlement (so the engine is
+      // backward-compatible when unused); fails closed to 'free' for an unknown tier.
+      if (this.entitlement !== null) {
+        const lim = this._limits();
+        if (!spec.readOnly && !lim.live) {
+          throw new Error('Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. ' + UPSELL);
+        }
+        if (this.channels.size >= lim.maxChannels) {
+          const allowed = lim.maxChannels === Infinity ? 'unlimited' : lim.maxChannels;
+          throw new Error('Your plan includes ' + allowed + ' agent(s). ' + UPSELL + ' to add more.');
+        }
       }
       const guide = PROVIDER_GUIDES[spec.provider] || null;
       const meta = {
@@ -301,6 +345,11 @@
       // RED-3: refuse to arm a value-moving channel without caps + a confirm
       // handler the host enforces. Read-only channels are exempt.
       if (!meta.readOnly) {
+        // subscription gate (active only when wired; fails closed): live trading needs a paid
+        // tier, re-checked at arm time so a downgrade can't leave a live agent running.
+        if (this.entitlement !== null && !this._limits().live) {
+          throw new Error('refusing to start "' + meta.label + '": live trading needs Blockle Copilot. ' + UPSELL);
+        }
         if (!hasCaps(meta.caps)) {
           throw new Error('refusing to start "' + meta.label + '": set spend/risk caps first — a value-moving channel requires a catch-all caps.sessionUsd that covers every asset');
         }
