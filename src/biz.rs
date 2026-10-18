@@ -1098,9 +1098,9 @@ pre{background:var(--surface);border:1px solid var(--border);border-radius:var(-
 pre code{background:none;border:none;padding:0}
 
 /* ---- nav ---- */
-nav{position:sticky;top:0;z-index:50;display:flex;gap:.25rem;align-items:center;
-  overflow-x:auto;scrollbar-width:none;white-space:nowrap;
-  padding:.7rem clamp(1rem,4vw,2.5rem);
+nav{position:sticky;top:0;z-index:50;display:flex;gap:.25rem .3rem;align-items:center;
+  flex-wrap:wrap;row-gap:.15rem;
+  padding:.6rem clamp(1rem,4vw,2.5rem);
   background:rgba(10,11,14,.78);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border-bottom:1px solid var(--border)}
 nav .brand{font-weight:700;font-size:1rem;letter-spacing:-.02em;color:var(--ink);
@@ -1329,13 +1329,17 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
 </head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
+<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/buy">Buy</a><a href="/mine">Mine</a>
 <span class="spacer"></span>
-<a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
+<a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/status">Status</a><a href="/api">API</a><a href="/developers">Developers</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
 {aads_top}
 <main>{body}</main>
 {aads_foot}
-<footer>{domain} — mining pools for the majors, every one merge-mining BLOCK, the universal auxiliary chain. Directory statistics marked operator-reported are not independently verified. · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+<footer>
+<div style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;justify-content:center;margin-bottom:.6rem">
+<a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/launch">Launch</a> · <a href="/faucet">Faucet</a> · <a href="/buy">Buy</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
+</div>
+{domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -2074,13 +2078,13 @@ header.bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--g
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.02em;font-size:17px}
 .brand .glyph{width:22px;height:22px;border-radius:6px;background:conic-gradient(from 210deg,var(--accent),#7db0ff 55%,var(--accent));box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent) inset;flex:none}
 .brand .mark{width:24px;height:24px;flex:none;vertical-align:middle;object-fit:contain}
-nav.top{display:none;gap:22px;margin-left:12px}nav.top a{font-size:14px;color:var(--muted);font-weight:500}nav.top a:hover{color:var(--text)}
+nav.top{display:flex;gap:16px;margin-left:12px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;min-width:0}nav.top::-webkit-scrollbar{display:none}nav.top a{font-size:14px;color:var(--muted);font-weight:500;white-space:nowrap;flex:0 0 auto}nav.top a:hover{color:var(--text)}
 .bar .spacer{flex:1}
 .btn{font:600 14px/1 var(--sans);padding:10px 16px;border-radius:9px;cursor:pointer;border:1px solid transparent;display:inline-flex;align-items:center;gap:8px;transition:transform .12s,background .15s,border-color .15s}
 .btn:active{transform:translateY(1px)}
 .btn-primary{background:var(--accent);color:var(--accent-ink)}.btn-primary:hover{background:#6ba0ff}
 .btn-ghost{background:transparent;color:var(--text);border-color:var(--line);display:none}.btn-ghost:hover{border-color:var(--accent)}
-@media(min-width:760px){nav.top{display:flex}.bar .btn-ghost{display:inline-flex}}
+@media(min-width:760px){nav.top{gap:22px;overflow:visible}.bar .btn-ghost{display:inline-flex}}
 .hero{position:relative;border-bottom:1px solid var(--line);overflow:hidden}
 #candles{position:absolute;inset:0;width:100%;height:100%;z-index:0}
 :root[data-theme="light"] #candles{opacity:.32}:root[data-theme="dark"] #candles{opacity:.5}
@@ -2138,7 +2142,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="#product">Product</a><a href="#bots">Bots</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="#download">Download</a></nav>
+<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
@@ -2285,8 +2289,8 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <!-- END AADS AD UNIT 2458805 -->
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
-<div class="fcol"><span class="h">Product</span><a href="#product">Wallet</a><a href="#bots">Bots</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a><a href="/account/register">Create account</a></div>
-<div class="fcol"><span class="h">Network</span><a href="/social">Social</a><a href="/network">Mining</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launchpad</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Copilot</a><a href="/buy">Buy BLOCK</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launchpad</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
