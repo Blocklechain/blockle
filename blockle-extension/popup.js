@@ -249,9 +249,22 @@
   }
   async function refreshDashboard() {
     const addr = Wallet.address;
-    $('#addr-short').textContent = shortAddr(addr);
-    const acct = await Chain.account(addr);
-    $('#bal').textContent = acct && acct.balanceFmt != null ? acct.balanceFmt : '0';
+    const shortEl = $('#addr-short'); if (shortEl) shortEl.textContent = shortAddr(addr);
+    const balEl = $('#bal');
+    // Fetch the account defensively: a transport/throw must never leave the
+    // balance stuck on its "—" placeholder. Set a value no matter what, and log
+    // the real cause so it's visible in the popup console.
+    let acct = null;
+    try {
+      acct = await Chain.account(addr);
+    } catch (e) {
+      console.error('[dashboard] balance fetch failed', e);
+    }
+    if (balEl) {
+      balEl.textContent = acct && acct.balanceFmt != null
+        ? acct.balanceFmt
+        : (acct && acct.balance != null ? String(Number(acct.balance) / 1e8) : '0');
+    }
     const act = $('#activity');
     const txs = (acct && acct.txs) || [];
     if (!txs.length) {
