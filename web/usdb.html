@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Buy USDB — Blockle USD stablecoin</title>
-<meta name="description" content="Buy Blockle USD (USDB), a fully-backed USD stablecoin on the Blockle chain. Pay with PayPal, receive USDB in seconds. Redeem back to USD anytime.">
+<title>USDB — Blockle USD · buy & redeem</title>
+<meta name="description" content="Buy and redeem Blockle USD (USDB), a fully-backed USD stablecoin. Bank-to-chain via Modern Treasury ACH. Flat 3.7% — no hidden spread.">
 <link rel="icon" type="image/svg+xml" href="/usdb-token.svg">
-<meta property="og:title" content="Buy USDB — Blockle USD">
-<meta property="og:description" content="A fully-backed USD stablecoin. Pay with PayPal, receive USDB in seconds.">
+<meta property="og:title" content="USDB — Blockle USD">
+<meta property="og:description" content="A fully-backed USD stablecoin. Buy & redeem by bank (ACH) with a flat 3.7%.">
 <meta property="og:image" content="/usdb-token.svg">
 <style>
   :root{
@@ -27,196 +27,188 @@
   .brand{display:flex;align-items:center;gap:9px;font-weight:700;color:var(--text)}
   .brand img{width:24px;height:24px;border-radius:6px;display:block}
   header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
-  header.top nav a{color:var(--muted)}
-  .hero{text-align:center;padding:34px 0 8px}
-  .hero img{width:76px;height:76px;filter:drop-shadow(0 6px 22px rgba(52,227,158,.28))}
-  h1{font-size:clamp(28px,5vw,38px);letter-spacing:-.025em;margin:16px 0 6px}
-  .sub{color:var(--muted);margin:0 auto;max-width:42ch}
-  .peg{display:inline-flex;align-items:center;gap:7px;margin-top:14px;font-size:12.5px;color:var(--muted);
-       background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 13px}
+  header.top nav a{color:var(--muted);cursor:pointer}
+  .hero{text-align:center;padding:30px 0 6px}
+  .hero img{width:72px;height:72px;filter:drop-shadow(0 6px 22px rgba(52,227,158,.28))}
+  h1{font-size:clamp(26px,5vw,36px);letter-spacing:-.025em;margin:14px 0 6px}
+  .sub{color:var(--muted);margin:0 auto;max-width:44ch}
+  .peg{display:inline-flex;align-items:center;gap:7px;margin-top:12px;font-size:12.5px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 13px}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 25%,transparent)}
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:22px;margin:22px 0 16px}
-  label.fld{display:block;font-size:12px;color:var(--muted);margin:0 0 7px;text-transform:uppercase;letter-spacing:.04em}
+  .tabs{display:flex;gap:6px;margin:22px 0 0;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:5px}
+  .tab{flex:1;text-align:center;padding:10px;border-radius:9px;font-weight:700;color:var(--muted);cursor:pointer;border:0;background:none;font:inherit;font-weight:700}
+  .tab.on{background:linear-gradient(135deg,var(--greenlite),var(--green2));color:#06231a}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:22px;margin:14px 0 16px}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:14px 0 7px;text-transform:uppercase;letter-spacing:.04em}
+  label.fld:first-child{margin-top:0}
   .amtrow{display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px solid var(--line);border-radius:14px;padding:4px 14px}
   .amtrow .cur{font:700 20px var(--sans);color:var(--muted)}
-  input.amt{flex:1;background:none;border:0;color:var(--text);font:700 30px var(--sans);outline:none;width:100%;padding:12px 0}
-  .chips{display:flex;gap:8px;margin:12px 0 2px;flex-wrap:wrap}
-  .chip{flex:1;min-width:64px;background:var(--surface2);border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:9px 0;font:600 14px var(--sans);cursor:pointer;text-align:center}
-  .chip:hover{color:var(--text);border-color:var(--green2)}
-  label.fld2{display:block;font-size:12px;color:var(--muted);margin:16px 0 7px;text-transform:uppercase;letter-spacing:.04em}
+  input.amt{flex:1;background:none;border:0;color:var(--text);font:700 28px var(--sans);outline:none;width:100%;padding:12px 0}
   input.t{width:100%;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px 13px;font:13px var(--mono);outline:none}
   input.t:focus,.amtrow:focus-within{border-color:var(--green2)}
-  .recv{text-align:center;margin:18px 0 4px}
-  .recv .big{font:800 34px var(--sans);letter-spacing:-.02em}
+  .two{display:flex;gap:10px}.two>div{flex:1}
+  .recv{text-align:center;margin:16px 0 2px}
+  .recv .big{font:800 30px var(--sans);letter-spacing:-.02em}
   .recv .big b{color:var(--green)}
   .recv .lbl{color:var(--muted);font-size:12.5px;margin-top:2px}
-  .break{margin:16px 0 4px;border-top:1px solid var(--line)}
-  .stat{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:7px 0}
+  .break{margin:14px 0 4px;border-top:1px solid var(--line)}
+  .stat{display:flex;justify-content:space-between;gap:12px;font-size:13px;padding:6px 0}
   .stat .k{color:var(--muted)} .stat .v{font-family:var(--mono)}
-  .cta{width:100%;background:linear-gradient(135deg,var(--greenlite),var(--green2));color:#06231a;border:0;border-radius:14px;
-       padding:15px;font:800 16px var(--sans);cursor:pointer;margin-top:16px;display:flex;align-items:center;justify-content:center;gap:9px}
+  .cta{width:100%;background:linear-gradient(135deg,var(--greenlite),var(--green2));color:#06231a;border:0;border-radius:14px;padding:15px;font:800 16px var(--sans);cursor:pointer;margin-top:16px}
   .cta:disabled{opacity:.5;cursor:not-allowed}
-  .cta svg{width:17px;height:17px}
   .msg{margin-top:14px;font-size:13.5px;word-break:break-word;text-align:center}
   .ok{color:var(--good)} .bad{color:var(--bad)}
-  .note{color:var(--muted);font-size:12px;margin-top:14px;text-align:center}
-  .spin{width:16px;height:16px;border:2px solid rgba(0,0,0,.25);border-top-color:#06231a;border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-3px}
-  @keyframes sp{to{transform:rotate(360deg)}}
-  .feat{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:2px 0 34px;color:var(--muted);font-size:12.5px}
-  .feat span{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:5px 12px}
-  footer{border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;text-align:center;padding:22px 0;margin-top:20px}
+  .note{color:var(--muted);font-size:12px;margin-top:12px}
+  .rail{display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:12px;margin:2px 0 30px}
+  .rail b{color:var(--text)}
+  footer{border-top:1px solid var(--line);color:var(--muted);font-size:12.5px;text-align:center;padding:22px 0;margin-top:14px}
+  .hide{display:none}
 </style>
 </head>
 <body>
 <header class="top"><div class="wrap">
-  <a class="brand" href="/"><img src="/usdb-token.svg" alt="">Blockle</a>
-  <nav><a href="/wallet">Wallet</a><a href="/markets">Markets</a><a href="/explorer">Explorer</a><a href="#redeem" id="redeemlink">Redeem</a></nav>
+  <a class="brand" href="/"><img src="/usdb-token.svg" alt="">Blockle USD</a>
+  <nav><a href="https://blockle.org/wallet">Wallet</a><a href="/api/usdb/reserves">Reserves</a><a href="/api/usdb/info">Token</a></nav>
 </div></header>
 
 <main class="wrap">
   <div class="hero">
     <img src="/usdb-token.svg" alt="USDB">
-    <h1>Buy USDB</h1>
-    <p class="sub">Blockle USD — a fully-backed US-dollar stablecoin. Pay with PayPal, receive USDB in your wallet in seconds.</p>
-    <div class="peg"><span class="dot"></span> 1 USDB = $1.00 · fully backed · redeemable anytime</div>
+    <h1>Blockle USD</h1>
+    <p class="sub">A fully-backed US-dollar stablecoin. Move dollars bank-to-chain over ACH — a flat <b>3.7%</b>, no hidden spread.</p>
+    <div class="peg"><span class="dot"></span> 1 USDB = $1.00 · fully backed · redeemable to your bank</div>
   </div>
 
-  <!-- payment-return / status panel (shown when coming back from PayPal) -->
-  <div class="card" id="returnCard" style="display:none">
-    <div id="returnMsg" class="msg">Confirming your payment…</div>
+  <div class="tabs">
+    <button class="tab on" id="tab-buy">Buy</button>
+    <button class="tab" id="tab-redeem">Redeem</button>
   </div>
 
-  <!-- buy form -->
+  <!-- BUY -->
   <div class="card" id="buyCard">
-    <label class="fld" for="amt">You pay</label>
-    <div class="amtrow"><span class="cur">$</span><input class="amt" id="amt" type="number" inputmode="decimal" min="1" step="1" value="25" placeholder="0"></div>
-    <div class="chips">
-      <div class="chip" data-v="10">$10</div><div class="chip" data-v="25">$25</div>
-      <div class="chip" data-v="50">$50</div><div class="chip" data-v="100">$100</div>
-    </div>
-
-    <div class="recv">
-      <div class="big">≈ <b id="recv">—</b> USDB</div>
-      <div class="lbl">you receive</div>
-    </div>
-
+    <label class="fld" for="bamt">You pay (USD)</label>
+    <div class="amtrow"><span class="cur">$</span><input class="amt" id="bamt" type="number" inputmode="decimal" min="1" step="1" value="100"></div>
+    <div class="recv"><div class="big">≈ <b id="brecv">—</b> USDB</div><div class="lbl">you receive</div></div>
     <div class="break"></div>
-    <div class="stat"><span class="k">PayPal processing</span><span class="v" id="fPaypal">—</span></div>
-    <div class="stat"><span class="k">Service fee (0.5%)</span><span class="v" id="fOurs">—</span></div>
-    <div class="stat"><span class="k">Total you pay</span><span class="v" id="fTotal">—</span></div>
-
-    <label class="fld2" for="addr">Deliver USDB to your Blockle address</label>
-    <input class="t" id="addr" placeholder="block1…" autocomplete="off" spellcheck="false">
-    <div class="note" style="text-align:left;margin-top:7px">No wallet yet? Get the <a href="/wallet">Blockle wallet</a> (free) and copy your <code>block1…</code> address.</div>
-
-    <button class="cta" id="buyBtn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M6 2l1 4h10l2 7H8"/><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/></svg>
-      <span id="buyLabel">Buy with PayPal</span>
-    </button>
+    <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="bfee">—</span></div>
+    <div class="stat"><span class="k">Total debited from your bank</span><span class="v" id="btot">—</span></div>
+    <label class="fld" for="baddr">Deliver USDB to your Blockle address</label>
+    <input class="t" id="baddr" placeholder="block1…" spellcheck="false" autocomplete="off">
+    <label class="fld">Your bank (ACH)</label>
+    <input class="t" id="bname" placeholder="Account holder name" style="margin-bottom:8px">
+    <div class="two"><div><input class="t" id="brouting" placeholder="Routing (9 digits)" inputmode="numeric"></div><div><input class="t" id="bacct" placeholder="Account number" inputmode="numeric"></div></div>
+    <button class="cta" id="buyBtn">Buy USDB</button>
     <div class="msg" id="buyMsg"></div>
+    <div class="note">An ACH debit is created via Modern Treasury; your USDB is minted to your wallet once the transfer settles — fully backed 1:1.</div>
   </div>
 
-  <div class="feat">
-    <span>⚡ Minted in seconds</span><span>🔒 Non-custodial</span><span>🔁 Redeem to USD anytime</span><span>🛡️ Post-quantum chain</span>
+  <!-- REDEEM -->
+  <div class="card hide" id="redeemCard">
+    <label class="fld" for="ramt">You redeem (USDB)</label>
+    <div class="amtrow"><span class="cur">$</span><input class="amt" id="ramt" type="number" inputmode="decimal" min="1" step="1" value="100"></div>
+    <div class="recv"><div class="big">≈ <b id="rrecv">—</b></div><div class="lbl">paid to your bank</div></div>
+    <div class="break"></div>
+    <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="rfee">—</span></div>
+    <label class="fld">Your bank (ACH credit)</label>
+    <input class="t" id="rname" placeholder="Account holder name" style="margin-bottom:8px">
+    <div class="two"><div><input class="t" id="rrouting" placeholder="Routing (9 digits)" inputmode="numeric"></div><div><input class="t" id="racct" placeholder="Account number" inputmode="numeric"></div></div>
+    <button class="cta" id="redeemBtn" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff">Prepare redemption</button>
+    <div class="msg" id="redeemMsg"></div>
+    <div class="note">Redemption is signed in your <b>Blockle wallet</b>: it burns your USDB on-chain (no custody) and the USD is ACH-credited to your bank. This page prepares the request; approve the burn in your wallet to complete it.</div>
   </div>
 
-  <!-- redeem -->
-  <div class="card" id="redeem">
-    <label class="fld">Redeem USDB → USD</label>
-    <p class="note" style="text-align:left;margin:0 0 6px">Redemption is a <b>signed, on-chain action</b> — you burn your USDB directly on the USDB smart contract and the USD is paid to your PayPal automatically. Because it's signed with your key, redeem from your <b>Blockle wallet</b>, where it's one tap:</p>
-    <div class="stat"><span class="k">1 · Open the Blockle wallet → USDB</span><span class="v">Buy / Redeem</span></div>
-    <div class="stat"><span class="k">2 · Enter amount + PayPal email → Redeem</span><span class="v">signs redeem()</span></div>
-    <div class="stat"><span class="k">3 · USD arrives in your PayPal</span><span class="v">~1 block</span></div>
-    <a class="cta" href="/wallet" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff;text-decoration:none;margin-top:14px">Get / open the Blockle wallet</a>
-    <div class="note" style="margin-top:10px">No treasury, no custody — the contract burns your own USDB and the issuer can't take tokens without destroying them.</div>
+  <div class="rail">⛓ on-chain mint/burn · <b>Modern Treasury</b> ACH rails · fully reserved</div>
+
+  <div class="card" id="statusCard">
+    <div class="stat"><span class="k">Supply (on-chain)</span><span class="v" id="sSupply">…</span></div>
+    <div class="stat"><span class="k">Reserves (USD)</span><span class="v" id="sReserve">…</span></div>
+    <div class="stat"><span class="k">Fully backed</span><span class="v" id="sBacked">…</span></div>
+    <div class="stat"><span class="k">Status</span><span class="v" id="sStatus">…</span></div>
   </div>
 </main>
 
 <footer class="wrap">
-  USDB is issued by Alienbeing LLC on the Blockle chain · <a href="/api/usdb/reserves">Proof of reserves</a> · <a href="/api/usdb/info">Token info</a><br>
-  Not available where prohibited. USDB is redeemable 1:1 for USD subject to the issuer's terms.
+  USDB is issued by Alienbeing LLC on the Blockle chain · <a href="/api/usdb/reserves">Proof of reserves</a><br>
+  <span id="envnote"></span> Not available where prohibited.
 </footer>
 
 <script>
 const API='/api/usdb';
 const $=id=>document.getElementById(id);
 const fmt=n=>'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-let quoteTimer=null, lastQuote=null;
+let qt=null;
+function debounce(fn){clearTimeout(qt);qt=setTimeout(fn,180);}
 
-async function refreshQuote(){
-  const usd=Number($('amt').value||0);
-  if(!(usd>0)){ $('recv').textContent='—'; $('fPaypal').textContent=$('fOurs').textContent=$('fTotal').textContent='—'; lastQuote=null; return; }
-  try{
-    const r=await fetch(API+'/quote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({side:'buy',amountUsd:usd})});
-    const q=await r.json(); if(q.error){ $('recv').textContent='—'; return; }
-    lastQuote=q;
-    $('recv').textContent=Number(q.receiveUsdb).toLocaleString(undefined,{maximumFractionDigits:2});
-    $('fPaypal').textContent=fmt(q.paypalFeeUsd);
-    $('fOurs').textContent=fmt(q.ourFeeUsd);
-    $('fTotal').textContent=fmt(q.payUsd);
-  }catch(e){ /* keep last */ }
+async function quote(side,usd){
+  const r=await fetch(API+'/quote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({side,amountUsd:usd})});
+  return r.json();
 }
-function onAmt(){ clearTimeout(quoteTimer); quoteTimer=setTimeout(refreshQuote,180); }
-$('amt').addEventListener('input',onAmt);
-document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{ $('amt').value=c.dataset.v; refreshQuote(); }));
-
-// recipient: ?to=<block1…> deep-link (from a wallet's Buy button) wins, else the
-// last-used address persisted across the PayPal redirect.
-const ADDR_KEY='usdb_recipient';
-try{
-  const to=new URLSearchParams(location.search).get('to');
-  if(to && /^block1[0-9a-z]{20,}$/.test(to)){ $('addr').value=to; localStorage.setItem(ADDR_KEY,to); }
-  else { const saved=localStorage.getItem(ADDR_KEY); if(saved) $('addr').value=saved; }
-}catch(e){}
-try{ const a=new URLSearchParams(location.search).get('amt'); if(a && Number(a)>0){ $('amt').value=a; } }catch(e){}
-
-async function startBuy(){
-  const usd=Number($('amt').value||0);
-  const addr=$('addr').value.trim();
-  const msg=$('buyMsg'); msg.textContent='';
-  if(!(usd>=1)){ msg.className='msg bad'; msg.textContent='Enter at least $1.'; return; }
-  if(!/^block1[0-9a-z]{20,}$/.test(addr)){ msg.className='msg bad'; msg.textContent='Enter your Blockle address (block1…).'; return; }
-  try{ localStorage.setItem(ADDR_KEY,addr); }catch(e){}
-  const btn=$('buyBtn'); btn.disabled=true; $('buyLabel').innerHTML='<span class="spin"></span> Redirecting to PayPal…';
-  try{
-    const ret=location.origin+'/usdb';
-    const r=await fetch(API+'/paypal/create',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({amountUsd:usd,recipient:addr,returnUrl:ret,cancelUrl:ret+'?cancel=1'})});
-    const o=await r.json();
-    if(o.error||!o.approveUrl){ throw new Error(o.error||'could not start checkout'); }
-    location.href=o.approveUrl;   // off to PayPal
-  }catch(e){
-    btn.disabled=false; $('buyLabel').textContent='Buy with PayPal';
-    msg.className='msg bad'; msg.textContent=e.message||String(e);
-  }
+async function refreshBuy(){
+  const usd=Number($('bamt').value||0);
+  if(!(usd>0)){$('brecv').textContent='—';$('bfee').textContent=$('btot').textContent='—';return;}
+  try{const q=await quote('buy',usd);if(q.error)return;
+    $('brecv').textContent=Number(q.receiveUsdb).toLocaleString(undefined,{maximumFractionDigits:2});
+    $('bfee').textContent=fmt(q.feeUsd);$('btot').textContent=fmt(q.payUsd);}catch(e){}
 }
-$('buyBtn').addEventListener('click',startBuy);
-
-// On return from PayPal, ?token=<orderId> is appended. Capture + mint.
-async function handleReturn(){
-  const p=new URLSearchParams(location.search);
-  const token=p.get('token');          // PayPal order id
-  if(p.get('cancel')){ history.replaceState({},'',location.pathname); return; }
-  if(!token) return;
-  $('buyCard').style.display='none';
-  const card=$('returnCard'), m=$('returnMsg'); card.style.display='';
-  m.className='msg'; m.innerHTML='<span class="spin" style="border-top-color:var(--green)"></span> Confirming your payment and minting USDB…';
-  try{
-    const r=await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({orderId:token})});
-    const j=await r.json();
-    if(j.error) throw new Error(j.error);
-    m.className='msg ok';
-    m.innerHTML='✅ <b>'+Number(j.mintedUsdb).toLocaleString()+' USDB</b> delivered to your wallet.<br><span style="color:var(--muted);font-size:12px">tx '+String(j.txid).slice(0,24)+'…</span><br><br><a href="/usdb" class="cta" style="display:inline-flex;text-decoration:none;max-width:220px;margin:8px auto 0">Buy more</a>';
-    try{ localStorage.removeItem(ADDR_KEY); }catch(e){}
-  }catch(e){
-    m.className='msg bad';
-    m.innerHTML='Payment capture failed: '+(e.message||e)+'<br><br>If PayPal shows the payment completed, keep this order id and contact support — nothing is lost.<br><a href="/usdb">Try again</a>';
-  }
+async function refreshRedeem(){
+  const usd=Number($('ramt').value||0);
+  if(!(usd>0)){$('rrecv').textContent='—';$('rfee').textContent='—';return;}
+  try{const q=await quote('redeem',usd);if(q.error)return;
+    $('rrecv').textContent=fmt(q.payoutUsd);$('rfee').textContent=fmt(q.feeUsd);}catch(e){}
 }
+$('bamt').addEventListener('input',()=>debounce(refreshBuy));
+$('ramt').addEventListener('input',()=>debounce(refreshRedeem));
 
-$('redeemlink').addEventListener('click',e=>{ $('redeem').scrollIntoView({behavior:'smooth'}); });
+function showTab(which){
+  const buy=which==='buy';
+  $('tab-buy').classList.toggle('on',buy);$('tab-redeem').classList.toggle('on',!buy);
+  $('buyCard').classList.toggle('hide',!buy);$('redeemCard').classList.toggle('hide',buy);
+}
+$('tab-buy').addEventListener('click',()=>showTab('buy'));
+$('tab-redeem').addEventListener('click',()=>{showTab('redeem');refreshRedeem();});
 
-refreshQuote(); handleReturn();
+$('buyBtn').addEventListener('click',async()=>{
+  const m=$('buyMsg');m.textContent='';m.className='msg';
+  const usd=Number($('bamt').value||0),addr=$('baddr').value.trim();
+  const bank={name:$('bname').value.trim(),routingNumber:$('brouting').value.trim(),accountNumber:$('bacct').value.trim()};
+  if(!(usd>=1))return m.className='msg bad',m.textContent='Enter at least $1.';
+  if(!/^block1[0-9a-z]{20,}$/.test(addr))return m.className='msg bad',m.textContent='Enter your Blockle address (block1…).';
+  if(!/^\d{9}$/.test(bank.routingNumber)||!/^\d{4,17}$/.test(bank.accountNumber)||bank.name.length<2)return m.className='msg bad',m.textContent='Enter your bank name, 9-digit routing, and account number.';
+  const btn=$('buyBtn');btn.disabled=true;btn.textContent='Submitting…';
+  try{
+    const r=await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,recipient:addr,bank})});
+    const j=await r.json();if(j.error)throw new Error(j.error);
+    if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: you would receive <b>'+j.receiveUsdb+' USDB</b> for '+fmt(j.payUsd)+' (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
+    else{m.className='msg ok';m.innerHTML='✅ ACH debit initiated — <b>'+j.receiveUsdb+' USDB</b> will arrive at your wallet once it settles.';}
+  }catch(e){m.className='msg bad';m.textContent=e.message||String(e);}
+  finally{btn.disabled=false;btn.textContent='Buy USDB';}
+});
+
+$('redeemBtn').addEventListener('click',async()=>{
+  const m=$('redeemMsg');m.textContent='';m.className='msg';
+  const usd=Number($('ramt').value||0);
+  const bank={name:$('rname').value.trim(),routingNumber:$('rrouting').value.trim(),accountNumber:$('racct').value.trim()};
+  if(!(usd>=1))return m.className='msg bad',m.textContent='Enter at least 1 USDB.';
+  if(!/^\d{9}$/.test(bank.routingNumber)||!/^\d{4,17}$/.test(bank.accountNumber)||bank.name.length<2)return m.className='msg bad',m.textContent='Enter your bank name, 9-digit routing, and account number.';
+  const btn=$('redeemBtn');btn.disabled=true;btn.textContent='Preparing…';
+  try{
+    const r=await fetch(API+'/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,bank})});
+    const j=await r.json();if(j.error)throw new Error(j.error);
+    if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: redeeming '+usd+' USDB pays <b>'+fmt(j.payoutUsd)+'</b> to your bank (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
+    else{m.className='msg ok';m.innerHTML='✅ Redemption prepared. Open your <b>Blockle wallet → USDB → Redeem</b> and approve the burn; $'+j.estPayoutUsd+' will be ACH-credited to your bank.';}
+  }catch(e){m.className='msg bad';m.textContent=e.message||String(e);}
+  finally{btn.disabled=false;btn.textContent='Prepare redemption';}
+});
+
+async function loadInfo(){
+  try{const i=await fetch(API+'/info').then(r=>r.json());
+    $('sSupply').textContent=(i.supply==null?'—':Number(i.supply).toLocaleString())+' USDB';
+    $('sReserve').textContent=i.reserveUsd==null?'—':fmt(i.reserveUsd);
+    $('sBacked').textContent=i.fullyBacked==null?'—':(i.fullyBacked?'Yes':'No');
+    $('sStatus').textContent=i.enabled?'Live':'Demo (issuance paused)';
+    $('envnote').textContent=i.enabled?'':'Demo environment — Modern Treasury '+(i.mtEnv||'sandbox')+'. ';
+  }catch(e){$('sStatus').textContent='unavailable';}
+}
+refreshBuy(); loadInfo();
 </script>
 </body>
 </html>
