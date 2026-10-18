@@ -3,6 +3,7 @@
 // Exposed as global `Chain`.
 (function (global) {
   const DEFAULT_API = 'https://blockle.org/api/explorer';
+  const TESTNET_API = 'https://blockle.org/api/testnet/explorer';
   const COIN = 100000000; // base units per BLOCK
 
   async function endpoint() {
@@ -32,6 +33,8 @@
 
   const Chain = {
     DEFAULT_API,
+    TESTNET_API,
+    async isTestnet() { return (await endpoint()) === TESTNET_API; },
     async stats() {
       const s = await get('/stats');
       if (!s) return null;
@@ -103,7 +106,10 @@
 
     // Broadcast a bincode-hex transaction via the submit proxy.
     async submit(rawHex) {
-      const base = (await endpoint()).replace(/\/api\/explorer$/, '/api');
+      // Derive the submit endpoint by stripping the trailing /explorer. Works for
+      // mainnet (…/api/explorer → …/api/submit) AND testnet (…/api/testnet/explorer
+      // → …/api/testnet/submit).
+      const base = (await endpoint()).replace(/\/explorer$/, '');
       try {
         const r = await fetch(base + '/submit', {
           method: 'POST',

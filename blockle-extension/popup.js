@@ -247,6 +247,14 @@
     const s = await Chain.stats();
     $$('[data-height]').forEach((e) => (e.textContent = s ? 'height ' + s.height : 'offline'));
   }
+  // Reflect the current BLOCK network (mainnet vs the valueless testnet) in the
+  // settings badge + toggle label + a dashboard pill.
+  async function syncNetBadge() {
+    const onTest = await Chain.isTestnet();
+    const badge = $('#net-badge'); if (badge) { badge.textContent = onTest ? 'Testnet' : 'Mainnet'; badge.style.color = onTest ? '#f2b04a' : 'var(--muted)'; }
+    const tgl = $('#net-toggle'); if (tgl) tgl.textContent = onTest ? 'Switch to Mainnet' : 'Switch to Testnet';
+    const pill = $('#testnet-pill'); if (pill) pill.hidden = !onTest;
+  }
   async function refreshDashboard() {
     const addr = Wallet.address;
     const shortEl = $('#addr-short'); if (shortEl) shortEl.textContent = shortAddr(addr);
@@ -603,8 +611,22 @@
     $('#api-base').addEventListener('change', async (e) => {
       await Store.set({ apiBase: e.target.value.trim() || Chain.DEFAULT_API });
       toast('Endpoint saved');
+      await syncNetBadge();
       refreshNet();
     });
+    // One-click Mainnet <-> Testnet. Testnet BLOCK is valueless (free from the
+    // faucet) — for rehearsing launches/bridging without spending real BLOCK.
+    $('#net-toggle').addEventListener('click', async () => {
+      const onTest = await Chain.isTestnet();
+      const next = onTest ? Chain.DEFAULT_API : Chain.TESTNET_API;
+      await Store.set({ apiBase: next });
+      if ($('#api-base')) $('#api-base').value = next;
+      toast(onTest ? 'Switched to Mainnet' : 'Switched to Testnet — BLOCK here is free test coin');
+      await syncNetBadge();
+      refreshNet();
+      refreshDashboard();
+    });
+    syncNetBadge();
     $('#exchange-base').addEventListener('change', async (e) => {
       await Store.set({ exchangeBase: e.target.value.trim() || Exchange.DEFAULT_BASE });
       await Exchange.signOut(); // a different relay means a new session
@@ -1266,6 +1288,7 @@
       $('#watch-pill').hidden = !(rec && rec.watchOnly);
       setActiveLabel();
       show('dashboard');
+      syncNetBadge();
       refreshDashboard();
       refreshNet();
       return;

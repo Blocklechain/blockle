@@ -324,6 +324,19 @@ fn chain_api_post(body: &[u8]) -> Option<Value> {
     serde_json::from_slice(&raw).ok()
 }
 
+/// The TESTNET node's aux-http base (valueless test BLOCK). The /api/testnet/*
+/// surface mirrors the mainnet /api/* surface but targets this node, so a wallet
+/// can switch to testnet with one toggle. Loopback — same box as biz.
+const TESTNET_CHAIN_API: &str = "http://127.0.0.1:8455";
+fn chain_api_t(path: &str) -> Option<Value> {
+    let raw = http::get(&format!("{TESTNET_CHAIN_API}{path}"), Duration::from_secs(5)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+fn chain_api_post_t(body: &[u8]) -> Option<Value> {
+    let raw = http::post(&format!("{TESTNET_CHAIN_API}/"), "application/json", body, Duration::from_secs(10)).ok()?;
+    serde_json::from_slice(&raw).ok()
+}
+
 /// Our dedicated direct BLOCK pools: (stats-feed name, row title, port).
 const DIRECT_POOLS: &[(&str, &str, u16)] = &[
     ("sha256d", "BLOCK · SHA-256d direct", 3340),
@@ -540,6 +553,30 @@ fn route(
                 let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("");
                 moonpay_sign(url)
             }
+            // ---- TESTNET mirrors (valueless test BLOCK; target the testnet node) ----
+            "/api/testnet/submit" => {
+                let raw_hex = body.get("raw").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_hex.is_empty() { return jerr("400 Bad Request", "missing raw transaction"); }
+                let rpc = json!({"jsonrpc":"1.0","id":"ext","method":"submitrawtransaction","params":[raw_hex]});
+                match chain_api_post_t(rpc.to_string().as_bytes()) {
+                    Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                    None => jerr("503 Service Unavailable", "testnet chain api not reachable"),
+                }
+            }
+            "/api/testnet/dex/register" => {
+                let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                let logo = body.get("logo").and_then(|v| v.as_str()).unwrap_or("");
+                if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return jerr("400 Bad Request", "token must be a 64-hex contract id");
+                }
+                let path = "/var/lib/blockle-biz/dex-tokens-testnet.json";
+                let mut map: Value = fs::read_to_string(path).ok()
+                    .and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}));
+                let created = map.get(token).and_then(|e| e.get("created").and_then(|c| c.as_u64())).unwrap_or_else(now_unix);
+                map[token] = json!({ "logo": logo, "created": created });
+                let _ = fs::write(path, map.to_string());
+                ("200 OK", "application/json", json!({"ok": true}).to_string().into_bytes())
+            }
             _ => jerr("404 Not Found", "unknown endpoint"),
         };
     }
@@ -574,6 +611,36 @@ fn route(
                 None => jerr("503 Service Unavailable", "chain api not configured"),
             }
         }
+        // ---- TESTNET read mirrors ----
+        p if p.starts_with("/api/testnet/explorer/") => {
+            let sub = &p["/api/testnet/explorer".len()..];
+            match chain_api_t(&format!("/explorer{sub}")) {
+                Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                None => jerr("503 Service Unavailable", "testnet chain api not reachable"),
+            }
+        }
+        p if p.starts_with("/api/testnet/token/") => {
+            let id = &p["/api/testnet/token/".len()..];
+            let holder = query.split('&').find_map(|kv| kv.strip_prefix("holder=")).unwrap_or("");
+            let rpc = json!({"jsonrpc":"1.0","id":"tok","method":"tokeninfo","params":[{ "contract": id, "holder": holder }]});
+            match chain_api_post_t(rpc.to_string().as_bytes()) {
+                Some(v) => ("200 OK", "application/json", v.to_string().into_bytes()),
+                None => ("503 Service Unavailable", "application/json", json!({"error":"testnet chain api not reachable"}).to_string().into_bytes()),
+            }
+        }
+        "/api/testnet/dex/pools" => {
+            let rpc = json!({"jsonrpc":"1.0","id":"dex","method":"listpools","params":[]});
+            match chain_api_post_t(rpc.to_string().as_bytes()) {
+                Some(v) => ("200 OK", "application/json", v.get("result").cloned().unwrap_or(v).to_string().into_bytes()),
+                None => ("503 Service Unavailable", "application/json", json!({"error":"testnet chain api not reachable"}).to_string().into_bytes()),
+            }
+        }
+        "/api/testnet/dex/tokens" => {
+            let body = fs::read_to_string("/var/lib/blockle-biz/dex-tokens-testnet.json").unwrap_or_else(|_| "{}".to_string());
+            ("200 OK", "application/json", body.into_bytes())
+        }
+        "/api/testnet/info" => ("200 OK", "application/json",
+            json!({"network":"blockle-testnet","chainApi":"/api/testnet/explorer","faucet":"/faucet","note":"valueless test BLOCK"}).to_string().into_bytes()),
         p if p.starts_with("/api/token/") => {
             // Read a BLOCK-20 token by contract id (hex). Optional ?holder=<hex>
             // returns that address's balance too. Proxies the node's read-only

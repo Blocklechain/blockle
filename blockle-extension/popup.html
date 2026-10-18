@@ -93,7 +93,7 @@
           </div>
         </header>
         <div class="balance-card">
-          <div class="bc-label">Balance</div>
+          <div class="bc-label">Balance <span class="pill" id="testnet-pill" hidden style="background:#f2b04a;color:#1a1200">TESTNET</span></div>
           <div class="bc-amount"><span id="bal">—</span> <span class="bc-ticker">BLOCK</span></div>
           <button class="addr-chip" id="addr-chip" title="Copy address"><span id="addr-short">—</span><span class="copy">⧉</span></button>
         </div>
@@ -268,6 +268,12 @@
       <section class="screen" data-screen="settings" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Settings</span></header>
         <div class="pad">
+          <label class="field"><span>Network</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button type="button" id="net-toggle" class="btn btn-ghost" style="flex:0 0 auto">Switch to Testnet</button>
+              <span id="net-badge" class="mono" style="font-size:12px;color:var(--muted)">Mainnet</span>
+            </div>
+          </label>
           <label class="field"><span>Chain API endpoint (BLOCK)</span><input type="text" id="api-base" class="mono" /></label>
           <label class="field"><span>Exchange endpoint</span><input type="text" id="exchange-base" class="mono" placeholder="https://exchange.blockle.org" /></label>
           <div class="section-h" style="padding-left:0">Multi-chain endpoints</div>
