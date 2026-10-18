@@ -36,6 +36,18 @@ Future<String> login(String? origin, String email, String password, {String? tot
   return token;
 }
 
+/// The signed-in account (incl. `sub` with the Copilot tier) — for feature gating.
+Future<Map<String, dynamic>?> me(String? origin, String token) async {
+  final d = await _req(origin, 'GET', '/account/api/me', token: token);
+  return d['user'] as Map<String, dynamic>?;
+}
+
+/// Extract the Copilot subscription tier from a /me user object. 'free' when inactive.
+String tierOf(Map<String, dynamic>? user) {
+  final sub = (user?['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
+  return (sub['active'] == true) ? (sub['tier'] as String? ?? 'free') : 'free';
+}
+
 /// Encrypt [vault] with [passphrase] and upload. [meta] is non-secret.
 Future<void> backup(String? origin, String token, String totp, Object vault, String passphrase,
     {Map<String, dynamic> meta = const {}}) async {

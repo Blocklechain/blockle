@@ -29,6 +29,12 @@
 
   let UI = null;
   let manager = null;
+  // Blockle Copilot tier — supplied to the channel engine's `entitlement` so paying unlocks
+  // live trading + more agents. Default 'free' until the user connects their blockle.org account.
+  let copilotTier = 'free';
+  let acctOrigin = 'https://blockle.org';
+  let acctToken = null;
+  let acctEmail = null;
   // Confirmation QUEUE: concurrent channels can each await their own prompt. We
   // show one modal at a time and never drop or overwrite a pending request — each
   // enqueued {summary, resolve} is answered in turn (FIFO).
@@ -106,6 +112,8 @@
       onEvent: (id, ev) => onChannelEvent(id, ev),
       ctxFor: () => Wiring.agentCtx(),                    // incl. venues + 0.05% fee
       fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined,
+      // Copilot subscription gate: the engine reads the live tier here.
+      entitlement: () => copilotTier,
     });
     return manager;
   }
@@ -231,8 +239,33 @@
     }
     buildManager();
     if (!manager.list().length) { try { await manager.load(); } catch {} }
-    body.innerHTML = renderConnections() + renderTelemetry() + renderChannels() + renderConnectForm() + renderNewChannelForm();
+    body.innerHTML = renderPlan() + renderConnections() + renderTelemetry() + renderChannels() + renderConnectForm() + renderNewChannelForm();
     wireBody();
+  }
+
+  const TIER_BLURB = {
+    free: 'Free · paper-only, 1 agent',
+    pro: 'Blockle Pro · live, up to 3 agents',
+    copilot: 'Copilot · live, up to 3 agents',
+    copilot_pro: 'Copilot Pro · live, unlimited agents',
+  };
+
+  // Blockle Copilot plan chip — shows the active tier and links the account that supplies it.
+  function renderPlan() {
+    const blurb = TIER_BLURB[copilotTier] || TIER_BLURB.free;
+    const upsell = copilotTier === 'free'
+      ? ` <a class="btn link" href="${esc(acctOrigin)}/copilot" target="_blank" rel="noopener" style="padding:0">Upgrade ↗</a>` : '';
+    return `<div class="row" style="align-items:center">
+      <div class="l"><b>Plan: ${esc(blurb.split(' · ')[0])}</b><small>${esc(blurb.split(' · ')[1] || '')}${acctEmail ? ' · ' + esc(acctEmail) : ''}</small></div>
+      <div><button class="mini-btn" id="agent-plan-connect">${acctToken ? 'Reconnect' : 'Connect account'}</button>${upsell}</div>
+    </div>
+    <div id="agent-plan-form" hidden class="agent-card" style="margin:0 0 10px">
+      <div class="section-h" style="padding-top:0">Connect Blockle account</div>
+      <label>Email<input id="pl-email" type="email" placeholder="you@email.com"></label>
+      <label>Password<input id="pl-pw" type="password"></label>
+      <label>2FA code (if on)<input id="pl-totp" class="mono" inputmode="numeric" maxlength="10"></label>
+      <div class="row-btns"><button class="btn ghost" id="pl-cancel">Cancel</button><button class="btn primary" id="pl-save">Connect</button></div>
+    </div>`;
   }
 
   function renderConnections() {
@@ -367,6 +400,20 @@
 
   // ---- wiring (CSP-safe: addEventListener only) -----------------------------
   function wireBody() {
+    const planConn = $('#agent-plan-connect');
+    if (planConn) planConn.addEventListener('click', () => { const f = $('#agent-plan-form'); if (f) f.hidden = !f.hidden; });
+    const plCancel = $('#pl-cancel');
+    if (plCancel) plCancel.addEventListener('click', () => { const f = $('#agent-plan-form'); if (f) f.hidden = true; });
+    const plSave = $('#pl-save');
+    if (plSave) plSave.addEventListener('click', async () => {
+      const em = ($('#pl-email') || {}).value, pw = ($('#pl-pw') || {}).value, code = (($('#pl-totp') || {}).value || '').trim() || undefined;
+      if (!em || !pw) { UI.toast('Enter email and password'); return; }
+      try {
+        const tier = await connectBlockleAccount(em, pw, code);
+        UI.toast(tier === 'free' ? 'Connected — Free plan (upgrade for live trading)' : 'Connected — ' + (TIER_BLURB[tier] || tier));
+        enter();
+      } catch (e) { UI.toast('Could not connect: ' + (e && e.message || e)); }
+    });
     const addConn = $('#agent-add-conn');
     if (addConn) addConn.addEventListener('click', () => { const f = $('#agent-connect'); f.hidden = !f.hidden; if (!f.hidden) fillGuide(); });
     const newCh = $('#agent-new-ch');
@@ -563,6 +610,31 @@
     el.scrollTop = el.scrollHeight;
   }
 
-  global.AgentUI = { init, enter, onUnlock, onResume, onLock };
+  // ---- Blockle Copilot account link (supplies the tier to the engine) ----
+  function backupClient() {
+    return global.BLKBackupClient || ((typeof require !== 'undefined') ? require('./backup-client.js') : null);
+  }
+  async function connectBlockleAccount(email, password, totp, origin) {
+    const client = backupClient();
+    if (!client) throw new Error('account client unavailable');
+    acctOrigin = origin || acctOrigin;
+    const { token, user } = await client.login(acctOrigin, email, password, totp);
+    acctToken = token; acctEmail = email;
+    copilotTier = client.tierOf(user);
+    return copilotTier;
+  }
+  async function refreshTier() {
+    const client = backupClient();
+    if (!client || !acctToken) return copilotTier;
+    try { copilotTier = client.tierOf(await client.me(acctOrigin, acctToken)); } catch (_) {}
+    return copilotTier;
+  }
+  function disconnectBlockleAccount() { acctToken = null; acctEmail = null; copilotTier = 'free'; }
+  function plan() {
+    return (manager && manager.plan) ? manager.plan()
+      : { tier: copilotTier, maxChannels: copilotTier === 'copilot_pro' ? null : (copilotTier === 'free' ? 1 : 3), live: copilotTier !== 'free' };
+  }
+
+  global.AgentUI = { init, enter, onUnlock, onResume, onLock, connectBlockleAccount, refreshTier, disconnectBlockleAccount, plan };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.AgentUI;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));

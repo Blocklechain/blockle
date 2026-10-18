@@ -25,6 +25,7 @@ import '../agent/providers.dart'
     show ProviderFetch, ProviderResponse, hostedSession, defaultGatewayUrl;
 import '../agent/tools.dart' show AgentContext, AmmLike, ExchangeLike;
 import '../multichain/accounts.dart';
+import '../multichain/backup_client.dart' as bc;
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/evm.dart' show erc20ApproveData;
 import '../multichain/chains/registry.dart';
@@ -140,8 +141,50 @@ class AgentService {
       ctxFor: _ctxFor,
       onEvent: _onEvent,
       defaults: defaults ?? const {},
+      // Blockle Copilot subscription gate: the engine reads the live tier here. Default
+      // 'free' until the user links their blockle.org account (connectCopilotAccount).
+      entitlement: () => _copilotTier,
     );
   }
+
+  // ---- Blockle Copilot account link (supplies the tier to the engine) ----
+  String _copilotTier = 'free';
+  String? _acctToken;
+  String? _acctEmail;
+  String _acctOrigin = bc.kDefaultOrigin;
+
+  String get copilotTier => _copilotTier;
+  String? get copilotEmail => _acctEmail;
+
+  /// Sign into the blockle.org account and cache the Copilot tier. Returns the tier.
+  Future<String> connectCopilotAccount(String email, String password,
+      {String? totp, String? origin}) async {
+    _acctOrigin = origin ?? _acctOrigin;
+    final token = await bc.login(_acctOrigin, email, password, totp: totp);
+    _acctToken = token;
+    _acctEmail = email;
+    _copilotTier = bc.tierOf(await bc.me(_acctOrigin, token));
+    return _copilotTier;
+  }
+
+  /// Re-read the tier (e.g. after the user subscribes). Best-effort.
+  Future<String> refreshCopilotTier() async {
+    final token = _acctToken;
+    if (token == null) return _copilotTier;
+    try {
+      _copilotTier = bc.tierOf(await bc.me(_acctOrigin, token));
+    } catch (_) {}
+    return _copilotTier;
+  }
+
+  void disconnectCopilotAccount() {
+    _acctToken = null;
+    _acctEmail = null;
+    _copilotTier = 'free';
+  }
+
+  /// The active tier + what it unlocks, for the UI.
+  Map<String, dynamic> plan() => manager.plan();
 
   final Accounts accounts;
   final VenueRegistry venues;

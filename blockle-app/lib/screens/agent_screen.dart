@@ -56,6 +56,113 @@ class _AgentScreenState extends State<AgentScreen> {
     setState(() => _channels = c.agent.manager.list());
   }
 
+  static const Map<String, String> _tierBlurb = {
+    'free': 'Free · paper-only, 1 agent',
+    'pro': 'Blockle Pro · live, up to 3 agents',
+    'copilot': 'Copilot · live, up to 3 agents',
+    'copilot_pro': 'Copilot Pro · live, unlimited agents',
+  };
+
+  // Blockle Copilot plan banner — shows the active tier and links the account that supplies it.
+  Widget _planBanner(MultichainController c) {
+    final tier = c.agent.copilotTier;
+    final label = _tierBlurb[tier] ?? _tierBlurb['free']!;
+    final parts = label.split(' · ');
+    final email = c.agent.copilotEmail;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Bk.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Bk.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Plan: ${parts.first}',
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                Text('${parts.skip(1).join(' · ')}${email != null ? ' · $email' : ''}',
+                    style: const TextStyle(color: Bk.muted, fontSize: 11)),
+              ],
+            ),
+          ),
+          if (tier == 'free')
+            TextButton(
+              onPressed: () =>
+                  context.read<AppState>().openBrowser('https://blockle.org/copilot'),
+              child: const Text('Upgrade'),
+            ),
+          TextButton(
+            onPressed: () => _connectAccount(c),
+            child: Text(email != null ? 'Reconnect' : 'Connect account'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _connectAccount(MultichainController c) async {
+    final email = TextEditingController();
+    final pw = TextEditingController();
+    final totp = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('Connect Blockle account'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                  controller: email,
+                  decoration: const InputDecoration(labelText: 'Email')),
+              const SizedBox(height: 8),
+              TextField(
+                  controller: pw,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Password')),
+              const SizedBox(height: 8),
+              TextField(
+                  controller: totp,
+                  decoration:
+                      const InputDecoration(labelText: '2FA code (if on)')),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Connect')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final tier = await c.agent.connectCopilotAccount(
+        email.text.trim(),
+        pw.text,
+        totp: totp.text.trim().isEmpty ? null : totp.text.trim(),
+      );
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(tier == 'free'
+              ? 'Connected — Free plan (upgrade for live trading)'
+              : 'Connected — ${_tierBlurb[tier] ?? tier}')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not connect: $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MultichainController>();
@@ -76,6 +183,8 @@ class _AgentScreenState extends State<AgentScreen> {
           if (!c.vaultUnlocked)
             _lockedBanner()
           else ...[
+            _planBanner(c),
+            const SizedBox(height: 14),
             _providerCard(c, connected),
             const SizedBox(height: 18),
             _commandBarCard(c),

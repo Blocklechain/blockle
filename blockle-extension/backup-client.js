@@ -42,7 +42,19 @@
     return Backup.decryptVault(passphrase, d.latest.ciphertext);
   }
 
-  const api = { login, backup, restore };
+  // The signed-in account (incl. `sub` with the Copilot tier) — for feature gating.
+  async function me(origin, token) {
+    const d = await req(origin, 'GET', '/account/api/me', { token });
+    return d.user || null;
+  }
+
+  // Extract the Copilot subscription tier from a /me user object. 'free' when inactive.
+  function tierOf(user) {
+    const sub = (user && user.sub) || {};
+    return sub.active ? (sub.tier || 'free') : 'free';
+  }
+
+  const api = { login, me, tierOf, backup, restore };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.BLKBackupClient = api;
 })(typeof window !== 'undefined' ? window : globalThis);
