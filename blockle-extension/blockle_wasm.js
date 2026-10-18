@@ -169,6 +169,96 @@ let wasm_bindgen = (function(exports) {
     exports.build_deploy = build_deploy;
 
     /**
+     * Atomic NFT-collection launch — deploy a BLOCK-721 collection and run its
+     * init() (fixing the deployer as minter) in ONE transaction. `code_hex` is the
+     * pre-built BLOCK-721 bytecode (hex).
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} code_hex
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_launch_nft(secret_hex, public_hex, utxos_json, code_hex, gas_limit, gas_price) {
+        let deferred6_0;
+        let deferred6_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(code_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ret = wasm.build_launch_nft(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, gas_limit, gas_price);
+            var ptr5 = ret[0];
+            var len5 = ret[1];
+            if (ret[3]) {
+                ptr5 = 0; len5 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred6_0 = ptr5;
+            deferred6_1 = len5;
+            return getStringFromWasm0(ptr5, len5);
+        } finally {
+            wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+        }
+    }
+    exports.build_launch_nft = build_launch_nft;
+
+    /**
+     * Atomic token launch — deploy a BLOCK-20 token, mint its supply, and seed a
+     * BLOCK/token AMM pool, all in ONE transaction (one block). Amounts are given
+     * in WHOLE coins and scaled by `decimals` here so the minted supply and the
+     * pool's token leg are consistent (the old deploy→init→pool flow mismatched
+     * these, which made PoolCreate silently refund). `supply`/`seed_token` are
+     * whole-token counts; `seed_block` is whole BLOCK.
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} name
+     * @param {string} symbol
+     * @param {bigint} decimals
+     * @param {bigint} supply
+     * @param {bigint} seed_block
+     * @param {bigint} seed_token
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_launch_token(secret_hex, public_hex, utxos_json, name, symbol, decimals, supply, seed_block, seed_token, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_launch_token(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, decimals, supply, seed_block, seed_token, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_launch_token = build_launch_token;
+
+    /**
      * @param {string} secret_hex
      * @param {string} public_hex
      * @param {string} utxos_json
@@ -425,6 +515,34 @@ let wasm_bindgen = (function(exports) {
         }
     }
     exports.compile_script = compile_script;
+
+    /**
+     * The contract id a deploy/launch tx produces, derived from its txid (hex).
+     * Lets a one-shot atomic launch report the id of the contract it just created.
+     * @param {string} txid_hex
+     * @returns {string}
+     */
+    function contract_id_for_txid(txid_hex) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(txid_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.contract_id_for_txid(ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    exports.contract_id_for_txid = contract_id_for_txid;
 
     /**
      * Generate a fresh ML-DSA-44 wallet. Returns JSON:

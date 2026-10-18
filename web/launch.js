@@ -47,6 +47,23 @@
     return false;
   }
 
+  // Poll the DEX until the pool for `contract` is listed (created), or time out.
+  async function waitPoolListed(contract) {
+    var deadline = Date.now() + 180000; // ~3 min
+    while (Date.now() < deadline) {
+      try {
+        var r = await fetch('/api/dex/pools', { cache: 'no-store' });
+        if (r.ok) {
+          var j = await r.json();
+          var ps = (j && j.pools) || [];
+          if (ps.some(function (p) { return (p.token || p.contract) === contract; })) return true;
+        }
+      } catch (_) {}
+      await sleep(5000);
+    }
+    return false;
+  }
+
   function setStep(k, state, sub) {
     var li = document.querySelector('.steps li[data-k="' + k + '"]');
     if (!li) return;
@@ -92,7 +109,7 @@
     set('name', 'World'); set('symbol', 'WORLD'); set('decimals', '8');
     set('supply', '1000000'); set('seedBlock', '10000'); set('seedToken', '1000000');
     var logo = $('logo'); if (logo && !logo.value) { logo.value = location.origin + '/world-token.svg'; showPrev(logo.value); }
-    var err = $('err'); if (err) err.textContent = 'WORLD preset loaded. Review the fields, then Launch — sign each step from the wallet holding the premine (10,000 BLOCK + the 1,000,000 WORLD minted on deploy).';
+    var err = $('err'); if (err) err.textContent = 'WORLD preset loaded. Review the fields, then Launch — sign ONE transaction from the wallet holding the premine (deploys WORLD, mints 1,000,000, and seeds the 10,000 BLOCK pool atomically).';
     $('go').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
@@ -113,39 +130,30 @@
     $('perr').textContent = '';
 
     try {
-      // 1. build bytecode
-      setStep('build', 'active');
-      await initWasm();
-      var bytecode = wasm_bindgen.build_block20_token(name, symbol, BigInt(decimals), BigInt(supply));
-      setStep('build', 'done');
-
-      // 2. connect
+      // 1. connect
       setStep('connect', 'active');
       var conn = await window.blockle.connect();
       // connect() resolves to an EIP-1193-style address array ['block1…']; also
-      // accept {address}/string shapes, and fall back to the provider's
-      // selectedAddress. Getting this right is essential: without a real address
-      // the confirmation wait below can't poll and would skip, firing the next
-      // step before the previous tx is mined.
+      // accept {address}/string shapes, and fall back to selectedAddress.
       var addr = Array.isArray(conn) ? conn[0]
         : (conn && (conn.address || conn.addr)) || (typeof conn === 'string' ? conn : null);
       if (!addr && window.blockle.selectedAddress) addr = window.blockle.selectedAddress;
       setStep('connect', 'done');
 
-      // 3. deploy
-      setStep('deploy', 'active');
-      var sigBeforeDeploy = await utxoSig(addr);
-      var dep = await window.blockle.deployContract(bytecode, 300000);
-      var contract = dep && dep.contractId;
-      if (!contract) throw new Error('deploy did not return a contract id');
-      setStep('deploy', 'active', contract + ' — waiting for confirmation…');
-      // init calls this contract + spends deploy's change, so deploy must mine first.
-      if (!(await waitConfirmed(addr, sigBeforeDeploy, 'deploy', contract))) {
-        throw new Error('deploy not confirmed yet — wait for the next block, then re-run to continue from init');
+      // 2. launch — ONE atomic transaction: deploy + mint + seed pool. No more
+      // deploy→init→pool race (which refunded the seed BLOCK if the mint wasn't
+      // on-chain yet). Amounts are whole coins; the wallet scales by decimals.
+      if (typeof window.blockle.launchToken !== 'function') {
+        throw new Error('Your Blockle extension is out of date — reload/update it (chrome://extensions → ↻) to launch in one transaction.');
       }
-      setStep('deploy', 'done', contract);
+      setStep('launch', 'active', 'approve in your wallet…');
+      var res = await window.blockle.launchToken(name, symbol, decimals, supply, seedBlock, seedToken, 300000);
+      var contract = res && res.contractId;
+      var txid = res && res.txid;
+      if (!contract) throw new Error('launch did not return a contract id');
+      setStep('launch', 'done', contract);
 
-      // 4. register logo
+      // 3. register logo (DEX stores it by contract id)
       setStep('logo', 'active');
       try {
         await fetch('/api/dex/register', {
@@ -155,27 +163,13 @@
       } catch (_) {}
       setStep('logo', 'done');
 
-      // 5. init (mint)
-      if (typeof window.blockle.tokenInit !== 'function') {
-        throw new Error('your wallet version does not support one-click init/pool — update the extension');
+      // 4. confirm — the single tx mines and the pool appears on the DEX.
+      setStep('confirm', 'active', 'waiting for the block, then the pool');
+      var created = await waitPoolListed(contract);
+      if (!created) {
+        throw new Error('the launch didn’t confirm a pool within a few minutes — it may still be mining. Check /token/' + contract + ' shortly. Your BLOCK is safe (the chain refunds the seed if the pool can’t be created).');
       }
-      setStep('init', 'active');
-      var sigBeforeInit = await utxoSig(addr);
-      var initRes = await window.blockle.tokenInit(contract, 120000);
-      setStep('init', 'active', 'minting — waiting for confirmation…');
-      // pool creation reads the deployer's token balance (minted by init) and
-      // spends the seed BLOCK, so init must mine before the pool step.
-      if (!(await waitConfirmed(addr, sigBeforeInit, 'init', 'minting'))) {
-        throw new Error('mint not confirmed yet — wait for the next block, then re-run to continue from the pool step');
-      }
-      setStep('init', 'done', (initRes && initRes.txid) || '');
-
-      // 6. create pool
-      setStep('pool', 'active');
-      var blockBase = (BigInt(seedBlock) * 100000000n).toString();
-      var tokenBase = (BigInt(seedToken) * (10n ** BigInt(decimals))).toString();
-      var poolRes = await window.blockle.createPool(contract, blockBase, tokenBase, 250000);
-      setStep('pool', 'done', (poolRes && poolRes.txid) || '');
+      setStep('confirm', 'done', txid || '');
 
       var done = $('done');
       done.href = '/token/' + contract;

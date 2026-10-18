@@ -143,18 +143,16 @@
 
   <div class="card" id="progress" hidden>
     <ol class="steps" id="stepList">
-      <li data-k="build"><span class="dot">1</span><div class="lx">Build token bytecode</div></li>
-      <li data-k="connect"><span class="dot">2</span><div class="lx">Connect wallet</div></li>
-      <li data-k="deploy"><span class="dot">3</span><div class="lx">Deploy token <small id="s-deploy"></small></div></li>
-      <li data-k="logo"><span class="dot">4</span><div class="lx">Register logo for the DEX</div></li>
-      <li data-k="init"><span class="dot">5</span><div class="lx">Mint supply to you <small id="s-init"></small></div></li>
-      <li data-k="pool"><span class="dot">6</span><div class="lx">Create &amp; lock liquidity pool <small id="s-pool"></small></div></li>
+      <li data-k="connect"><span class="dot">1</span><div class="lx">Connect wallet</div></li>
+      <li data-k="launch"><span class="dot">2</span><div class="lx">Launch — deploy, mint &amp; seed pool in one transaction <small id="s-launch"></small></div></li>
+      <li data-k="logo"><span class="dot">3</span><div class="lx">Register logo for the DEX</div></li>
+      <li data-k="confirm"><span class="dot">4</span><div class="lx">Confirm the pool on the DEX <small id="s-confirm"></small></div></li>
     </ol>
     <div class="err" id="perr"></div>
     <a class="cta" id="done" href="/dex" hidden style="display:block;text-align:center">View it on the DEX →</a>
   </div>
 </main>
 <script src="/blockle_wasm.js"></script>
-<script src="/launch.js?v=20261018c"></script>
+<script src="//launch.js?v=20261018e"></script>
 </body>
 </html>

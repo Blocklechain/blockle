@@ -179,6 +179,31 @@ async function handle(method, params, origin) {
       return { result: dec.payload };
     }
 
+    case 'blockle_launchToken': {
+      if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
+      const name = params && params[0] != null ? String(params[0]) : '';
+      const symbol = params && params[1] != null ? String(params[1]) : '';
+      const decimals = String((params && params[2]) != null ? params[2] : 8);
+      const supply = String((params && params[3]) || 0);
+      const seedBlock = String((params && params[4]) || 0);
+      const seedToken = String((params && params[5]) || 0);
+      const gas = String((params && params[6]) || 300000);
+      if (!name || !symbol || supply === '0') return err(4200, 'name, symbol and supply are required');
+      const dec = await openApproval('action', origin, { kind: 'launch', name, symbol, decimals, supply, seedBlock, seedToken, gas });
+      if (!dec.approved) return err(4001, 'User rejected the token launch');
+      return { result: dec.payload };
+    }
+
+    case 'blockle_launchNft': {
+      if (!(await isConnected(origin))) return err(4100, 'Not connected — call connect() first');
+      const code = params && params[0] != null ? String(params[0]) : '';
+      const gas = String((params && params[1]) || 300000);
+      if (!/^[0-9a-fA-F]+$/.test(code) || code.length === 0) return err(4200, 'invalid collection bytecode');
+      const dec = await openApproval('action', origin, { kind: 'launchNft', code, gas });
+      if (!dec.approved) return err(4001, 'User rejected the collection launch');
+      return { result: dec.payload };
+    }
+
     default:
       return err(4200, 'Unsupported method: ' + method);
   }

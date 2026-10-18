@@ -1460,7 +1460,7 @@
       const GAS_PRICE = 10, COIN = 100000000;
       const gas = parseInt(detail.gas) || 200000;
       $('#action-origin').textContent = detail.origin;
-      const titles = { pool: 'Create liquidity pool', init: 'Initialize token (mint supply)', swap: 'Swap' };
+      const titles = { pool: 'Create liquidity pool', init: 'Initialize token (mint supply)', swap: 'Swap', launch: 'Launch token', launchNft: 'Launch NFT collection' };
       $('#action-title').textContent = titles[detail.kind] || 'Confirm';
       $('#action-detail').textContent =
         detail.kind === 'pool'
@@ -1469,6 +1469,10 @@
           ? (detail.side === 'buy'
               ? 'Spend ' + (Number(detail.amountIn) / COIN) + ' BLOCK for ' + (detail.token || '').slice(0, 10) + '… tokens (min ' + detail.minOut + ' base units).'
               : 'Sell ' + detail.amountIn + ' base-unit tokens for BLOCK (min ' + (Number(detail.minOut) / COIN) + ' BLOCK).')
+          : detail.kind === 'launch'
+          ? 'Launch ' + detail.supply + ' ' + detail.symbol + ' — deploy, mint to you, and seed a pool with ' + detail.seedBlock + ' BLOCK / ' + detail.seedToken + ' ' + detail.symbol + ', all in ONE transaction. LP locks 1 week.'
+          : detail.kind === 'launchNft'
+          ? 'Deploy an NFT collection and set you as its minter — one transaction.'
           : 'Mint the full supply of ' + (detail.contractId || '').slice(0, 12) + '… to your wallet.';
       $('#action-fee').textContent = (gas * GAS_PRICE) / COIN + ' BLOCK';
       show('approve-action');
@@ -1487,6 +1491,10 @@
             ? { kind: 'pool', token: detail.token, blockAmt: detail.blockAmt, fee: gas * GAS_PRICE }
             : detail.kind === 'swap'
             ? { kind: 'swap', side: detail.side, token: detail.token, amountIn: detail.amountIn, fee: gas * GAS_PRICE }
+            : detail.kind === 'launch'
+            ? { kind: 'launch', symbol: detail.symbol, blockAmt: String(Number(detail.seedBlock) * COIN), fee: gas * GAS_PRICE }
+            : detail.kind === 'launchNft'
+            ? { kind: 'launchNft', fee: gas * GAS_PRICE }
             : { kind: 'init', contractId: detail.contractId, fee: gas * GAS_PRICE };
           const cleared = await securityGate(gateAction);
           if (!cleared) { btn.disabled = false; btn.textContent = 'Approve'; $('#action-err').textContent = 'Cancelled by the security review.'; return; }
@@ -1538,14 +1546,26 @@
             built = detail.side === 'buy'
               ? await Wallet.buildPoolSwapBuy(u.utxos, detail.token, detail.amountIn, detail.minOut, gas, GAS_PRICE)
               : await Wallet.buildPoolSwapSell(u.utxos, detail.token, detail.amountIn, detail.minOut, gas, GAS_PRICE);
+          } else if (detail.kind === 'launch') {
+            built = await Wallet.buildLaunchToken(u.utxos, detail.name, detail.symbol, detail.decimals, detail.supply, detail.seedBlock, detail.seedToken, gas, GAS_PRICE);
+          } else if (detail.kind === 'launchNft') {
+            built = await Wallet.buildLaunchNft(u.utxos, detail.code, gas, GAS_PRICE);
           } else {
             built = await Wallet.buildCall(u.utxos, detail.contractId, '00', 0, gas, GAS_PRICE);
           }
           const res = await Chain.submit(built.raw);
+          const txid = res.txid || built.txid;
           const kindLabel = detail.kind === 'pool' ? 'Create pool'
-            : detail.kind === 'swap' ? (detail.side === 'buy' ? 'Buy' : 'Sell') : 'Init';
-          await recordPending(res.txid || built.txid, kindLabel);
-          respond(true, { txid: res.txid || built.txid });
+            : detail.kind === 'swap' ? (detail.side === 'buy' ? 'Buy' : 'Sell')
+            : detail.kind === 'launch' ? 'Launch'
+            : detail.kind === 'launchNft' ? 'Launch NFT' : 'Init';
+          await recordPending(txid, kindLabel);
+          // Atomic launches create a contract; report its id (derived from txid).
+          var contractId = null;
+          if (detail.kind === 'launch' || detail.kind === 'launchNft') {
+            try { contractId = Signer.contractIdForTxid(txid); } catch (_) {}
+          }
+          respond(true, { txid, contractId });
         } catch (e) {
           btn.disabled = false;
           btn.textContent = 'Approve';
