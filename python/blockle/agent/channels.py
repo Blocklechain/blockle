@@ -38,6 +38,21 @@ STORE_KEY = "agentChannels"
 # channel must have caps before it can start.
 DEFAULT_CAPS = {"sessionUsd": 100, "perAsset": {}}
 
+# Blockle Copilot subscription tiers → what the agent engine allows. The host injects the
+# current tier (opts["entitlement"]); we FAIL CLOSED to 'free' when it's unknown, so a missing
+# or unreachable account can never silently unlock live trading or extra agents.
+UPSELL = "Upgrade at blockle.org/copilot"
+TIER_LIMITS = {
+    "free":        {"max_channels": 1,            "live": False},
+    "pro":         {"max_channels": 3,            "live": True},   # legacy Blockle Pro
+    "copilot":     {"max_channels": 3,            "live": True},
+    "copilot_pro": {"max_channels": float("inf"), "live": True},
+}
+
+
+def tier_limits(tier):
+    return TIER_LIMITS.get(str(tier or "free").lower(), TIER_LIMITS["free"])
+
 # "How do I get credentials" guidance shown in the UI for each provider, so a
 # user can connect a channel without leaving the wallet to hunt for docs.
 PROVIDER_GUIDES = {
@@ -229,6 +244,9 @@ class ChannelManager:
         self.ctx_for = cx if callable(cx) else None
         self.defaults = opts.get("defaults") or {}
         self.fetch_impl = opts.get("fetchImpl")
+        # Subscription tier source: a callable returning the tier string (so the host can
+        # update it live after an account login), or a plain string, or None → 'free'.
+        self._entitlement = opts.get("entitlement")
         self.channels: Dict[str, Channel] = {}
 
     async def load(self):
@@ -259,6 +277,24 @@ class ChannelManager:
     def get(self, cid):
         return self.channels.get(cid)
 
+    def current_tier(self) -> str:
+        e = self._entitlement
+        try:
+            t = e() if callable(e) else e
+        except Exception:
+            t = None
+        return str(t or "free").lower()
+
+    def _limits(self):
+        return tier_limits(self.current_tier())
+
+    def plan(self) -> Dict[str, Any]:
+        """The active subscription tier + what it unlocks, for the UI."""
+        t = self.current_tier()
+        lim = tier_limits(t)
+        mx = lim["max_channels"]
+        return {"tier": t, "maxChannels": (None if mx == float("inf") else int(mx)), "live": lim["live"]}
+
     async def create(self, spec: Optional[Dict[str, Any]] = None):
         spec = spec or {}
         if not spec.get("provider"):
@@ -267,6 +303,16 @@ class ChannelManager:
             raise ValueError("channel must be bound to a wallet/account (walletId or accountId)")
         guide = PROVIDER_GUIDES.get(spec["provider"])
         read_only = bool(spec.get("readOnly"))
+        # Subscription gating — ACTIVE ONLY when the host wires an entitlement source (so the
+        # engine is backward-compatible when unused). Fails closed to 'free' for an unknown tier:
+        # a live (value-moving) agent needs a paid tier, and agents are capped per plan.
+        if self._entitlement is not None:
+            lim = self._limits()
+            if not read_only and not lim["live"]:
+                raise ValueError("Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. " + UPSELL)
+            if len(self.channels) >= lim["max_channels"]:
+                allowed = "unlimited" if lim["max_channels"] == float("inf") else int(lim["max_channels"])
+                raise ValueError(f"Your plan includes {allowed} agent(s). {UPSELL} to add more.")
         meta = {
             "id": spec.get("id") or _rid(),
             "label": spec.get("label") or ("Channel " + str(len(self.channels) + 1)),
@@ -307,6 +353,11 @@ class ChannelManager:
 
         # refuse to arm a value-moving channel without caps + a confirm handler.
         if not meta.get("readOnly"):
+            # subscription gate (active only when wired; fail-closed): live trading needs a paid
+            # tier, re-checked at arm time so a downgrade can't leave a live agent running.
+            if self._entitlement is not None and not self._limits()["live"]:
+                raise ValueError('refusing to start "' + meta["label"]
+                                 + '": live trading needs Blockle Copilot. ' + UPSELL)
             if not _has_caps(meta.get("caps")):
                 raise ValueError('refusing to start "' + meta["label"]
                                  + '": set spend/risk caps first (value-moving channels require caps)')

@@ -189,6 +189,7 @@ class MultiChainControllerTest(unittest.TestCase):
 
     def test_value_moving_channel_refuses_to_start_without_caps(self):
         ctrl = self._ctrl()
+        ctrl.copilot_tier = "copilot"  # paid tier so the live channel can be created (isolates the caps check)
         ctrl.create("pw")
         ctrl.vault.set_credential("cref", {"provider": "claude", "apiKey": "sk-ant-x",
                                            "model": "claude-sonnet-4-5"})

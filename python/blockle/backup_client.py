@@ -42,6 +42,17 @@ def login(origin, email, password, totp=None):
     return d["token"], d.get("user")
 
 
+def me(origin, token):
+    """The signed-in account (incl. ``sub`` with the Copilot tier) — for feature gating."""
+    return _req(origin, "GET", "/account/api/me", token=token).get("user")
+
+
+def tier_of(user):
+    """Extract the Copilot subscription tier from a /me user object. 'free' when inactive."""
+    sub = (user or {}).get("sub") or {}
+    return (sub.get("tier") or "free") if sub.get("active") else "free"
+
+
 def backup(origin, token, totp, vault_obj, passphrase, meta=None):
     plaintext = vault_obj if isinstance(vault_obj, str) else json.dumps(vault_obj)
     ciphertext = backup_crypto.encrypt_vault(passphrase, plaintext)
