@@ -1438,9 +1438,13 @@ class PortfolioPanel(_ScrollPanel):
         swap = QPushButton("⇄  Swap")
         swap.clicked.connect(lambda: QMessageBox.information(
             self, "Swap", "Swap routes through the Exchange tab's non-custodial swap."))
+        usdb = QPushButton("$  USDB")
+        usdb.setToolTip("Buy Blockle USD (USDB) with PayPal — delivered to this wallet")
+        usdb.clicked.connect(self._buy_usdb)
         send_row.addWidget(self.send_btn)
         send_row.addWidget(recv)
         send_row.addWidget(swap)
+        send_row.addWidget(usdb)
         send_row.addStretch(1)
         hl.addLayout(send_row)
         self.body.addWidget(self.hero)
@@ -1481,6 +1485,18 @@ class PortfolioPanel(_ScrollPanel):
         self.spark.set_tokens(tok)
         self.chainbar.set_tokens(tok)
         self.setStyleSheet(build_qss(tok))
+
+    def _buy_usdb(self):
+        # One-click Buy USDB: open the PayPal checkout prefilled with this
+        # wallet's BLOCK address so the minted USDB lands here.
+        import webbrowser
+        addr = ''
+        try:
+            addr = next((a['address'] for a in (self.wc.accounts_list() or []) if a.get('chain') == 'block'), '')
+        except Exception:
+            addr = ''
+        url = 'https://blockle.org/usdb' + ('?to=' + addr if addr else '')
+        webbrowser.open(url)
 
     def _receive(self):
         accts = self.wc.accounts_list()

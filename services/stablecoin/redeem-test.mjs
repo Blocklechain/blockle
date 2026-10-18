@@ -32,7 +32,7 @@ async function usdbBal(holder) { const t = await rpc('tokeninfo', [{ contract: C
   // 1) fund the test wallet's gas (0.1 BLOCK) from the issuer
   if ((await utxos(tst.address)).spendable < 3_000_000) {
     const iu = await utxos(iss.address);
-    const ft = JSON.parse(wasm.build_transfer(iss.secretKey, iss.publicKey, JSON.stringify(iu.utxos), tst.address, 10_000_000, 10_000));
+    const ft = JSON.parse(wasm.build_transfer(iss.secretKey, iss.publicKey, JSON.stringify(iu.utxos), tst.address, 10_000_000n, 10_000n));
     console.log('gas txid:', ft.txid);
     await rpc('submitrawtransaction', [ft.raw]);
     await waitChange(tst.address, ft.txid, 'gas');
