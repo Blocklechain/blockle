@@ -17,6 +17,7 @@ function freshApp(extra = {}) {
       dataDir, prod: false, cookieSecure: false, mailTransport: 'stub', paypalEnv: 'stub',
       publicOrigin: 'http://127.0.0.1', adminEmail: 'admin@example.test', adminPassword: 'test-admin-passphrase-123',
       planName: 'Blockle Pro', sessionSecret: 'test-secret',
+      ...(extra.config || {}),
     },
   });
   return { app, dataDir, clock };
@@ -257,6 +258,38 @@ test('entitlement flips only on a verified webhook, and is idempotent', async ()
     const dup = await call('POST', '/account/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
     assert.equal(dup.data.dup, true);
   });
+});
+
+// ---- Copilot subscription tiers ------------------------------------------------------------
+test('Copilot tiers: /plans lists configured tiers and the webhook maps plan_id to the tier', async () => {
+  await withServer(async ({ app, call }) => {  // eslint-disable-line
+    // /plans exposes only tiers with a configured PayPal plan id
+    const plans = (await call('GET', '/account/api/plans')).data.plans;
+    const tiers = plans.map((p) => p.tier);
+    assert.ok(tiers.includes('copilot') && tiers.includes('copilot_pro'), 'copilot tiers offered');
+    assert.equal(plans.find((p) => p.tier === 'copilot').name, 'Blockle Copilot');
+
+    await call('POST', '/account/api/register', { email: 'cp@b.com', password: 'longenough1' });
+    const token = app.mailer.sent.find((m) => m.to === 'cp@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const csrf = (await call('POST', '/account/api/login', { email: 'cp@b.com', password: 'longenough1' })).data.csrf;
+    const uid = app._internal.userByEmail('cp@b.com').id;
+
+    // subscribe to a specific tier returns that tier
+    const sub = await call('POST', '/account/api/subscribe', { tier: 'copilot_pro' }, { 'X-CSRF-Token': csrf });
+    assert.equal(sub.status, 200);
+    assert.equal(sub.data.tier, 'copilot_pro');
+
+    // a verified webhook carrying the Copilot Pro plan_id lands the user on that tier
+    const event = { id: 'EVT-CP', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED',
+      resource: { id: 'SUB-CP', custom_id: uid, plan_id: 'P-COPILOT-PRO' } };
+    await call('POST', '/account/api/paypal/webhook', event, { 'x-stub-verified': 'yes' });
+    await app.store.drain();
+    const s = app.store.get('users', uid).sub;
+    assert.equal(s.active, true);
+    assert.equal(s.tier, 'copilot_pro');
+    assert.equal(s.plan, 'Copilot Pro');
+  }, { config: { copilotPlanId: 'P-COPILOT', copilotProPlanId: 'P-COPILOT-PRO' } });
 });
 
 // ---- admin is hidden (404 to non-admins) ---------------------------------------------------

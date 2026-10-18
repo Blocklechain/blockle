@@ -120,7 +120,7 @@
       $('#stats').innerHTML =
         stat(social ? social.blockUnits : '—', 'BLOCK') +
         stat(social ? fmtk(social.karma) : '—', 'Karma') +
-        stat(u.sub && u.sub.active ? 'Pro' : 'Free', 'Plan') +
+        stat(u.sub && u.sub.active ? (u.sub.tier === 'copilot_pro' ? 'Copilot Pro' : u.sub.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free', 'Plan') +
         stat(u.totpEnabled ? 'On' : 'Off', '2FA') +
         (u.createdAt ? stat(new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }), 'Member since') : '');
 
@@ -163,14 +163,31 @@
         await api('POST', '/account/api/logout-all', {}); location.href = '/account/login';
       });
 
-      // plan
-      $('#subBox').innerHTML = u.sub && u.sub.active
-        ? `<div class="statusline"><span class="on">✓ ${esc(plan)} active</span></div>`
-        : `<div class="statusline"><span class="off">Free plan</span><button class="sm" id="sub" style="max-width:220px">Upgrade to ${esc(plan)} — ${esc(price)} ${esc(ccy)}/mo</button></div>`;
-      const subBtn = $('#sub'); if (subBtn) subBtn.addEventListener('click', async () => {
-        const r = await api('POST', '/account/api/subscribe', {});
+      // plan / Blockle Copilot subscription tiers
+      const subBox = $('#subBox');
+      const startCheckout = async (tier) => {
+        const r = await api('POST', '/account/api/subscribe', tier ? { tier } : {});
         if (r.data.approveUrl) location.href = r.data.approveUrl; else show(r.data.error || 'Billing is not configured yet.');
-      });
+      };
+      if (u.sub && u.sub.active) {
+        subBox.innerHTML = `<div class="statusline"><span class="on">✓ ${esc(u.sub.plan || plan)} active</span></div>`;
+      } else {
+        const plans = ((await api('GET', '/account/api/plans')).data || {}).plans || [];
+        if (!plans.length) {
+          subBox.innerHTML = `<div class="statusline"><span class="off">Free plan</span></div><p class="note">Paid plans are coming soon.</p>`;
+        } else {
+          subBox.innerHTML = `<div class="statusline"><span class="off">Free plan</span></div>`
+            + `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:340px">`
+            + plans.map((p) => `<button class="sm planbtn" data-tier="${esc(p.tier)}">Get ${esc(p.name)} — ${esc(p.price)} ${esc(p.ccy)}/mo</button>`).join('')
+            + `</div>`;
+          subBox.querySelectorAll('.planbtn').forEach((b) => b.addEventListener('click', () => startCheckout(b.dataset.tier)));
+        }
+        // deep link from the /copilot landing: ?plan=<tier> (or a localStorage fallback that
+        // survives the login redirect) auto-starts that tier's checkout once signed in.
+        let want = new URLSearchParams(location.search).get('plan');
+        try { if (!want) want = localStorage.getItem('blk_copilot_plan'); localStorage.removeItem('blk_copilot_plan'); } catch (e) {}
+        if (want && plans.some((p) => p.tier === want)) startCheckout(want);
+      }
 
       // quick links
       const links = [

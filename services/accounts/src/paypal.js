@@ -24,13 +24,13 @@ export function makePaypal(config, deps = {}) {
 
   return {
     stub: false,
-    async createSubscription(userId, returnUrl, cancelUrl) {
+    async createSubscription(userId, returnUrl, cancelUrl, planId) {
       const t = await token();
       const r = await fetchFn(`${base}/v1/billing/subscriptions`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          plan_id: config.paypalPlanId,
+          plan_id: planId || config.paypalPlanId,
           custom_id: userId,
           application_context: { return_url: returnUrl, cancel_url: cancelUrl, user_action: 'SUBSCRIBE_NOW' },
         }),
@@ -89,9 +89,11 @@ export function entitlementFromEvent(event) {
   const type = event?.event_type || '';
   const custom = event?.resource?.custom_id || event?.resource?.subscriber?.custom_id || null;
   const subId = event?.resource?.id || event?.resource?.billing_agreement_id || null;
+  // plan_id lets the host map the subscription to a tier (Copilot vs Copilot Pro vs Pro).
+  const planId = event?.resource?.plan_id || null;
   if (/BILLING\.SUBSCRIPTION\.(ACTIVATED|RE-?ACTIVATED)/i.test(type) || /PAYMENT\.SALE\.COMPLETED/i.test(type))
-    return { userId: custom, subId, active: true };
+    return { userId: custom, subId, planId, active: true };
   if (/BILLING\.SUBSCRIPTION\.(CANCELLED|SUSPENDED|EXPIRED)/i.test(type))
-    return { userId: custom, subId, active: false };
+    return { userId: custom, subId, planId, active: false };
   return null;
 }
