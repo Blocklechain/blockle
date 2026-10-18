@@ -1476,25 +1476,39 @@
           // Prerequisite gate — blocks can be ~10 min and the prototype mempool
           // has no unconfirmed-tx chaining, so a step whose predecessor is still
           // pending would re-spend the predecessor's input and be rejected as a
-          // double-spend. Refuse early with a clear message instead of submitting
-          // a doomed tx (which also stops the deploy→init retry loop).
+          // double-spend. So AUTO-WAIT for the prerequisite to confirm, then
+          // submit — no doomed tx, no retry loop. The user already approved; we
+          // just hold until the chain is ready (polling, ~5 min cap).
+          const waitFor = async (label, ready) => {
+            const deadline = Date.now() + 300000; // ~5 min — several block intervals
+            // one immediate check, then poll
+            if (await ready()) return true;
+            $('#action-err').textContent = '';
+            while (Date.now() < deadline) {
+              btn.textContent = label + ' — waiting for a block…';
+              await new Promise((r) => setTimeout(r, 5000));
+              if (await ready()) { btn.textContent = 'Submitting…'; return true; }
+            }
+            return false;
+          };
           if (detail.kind === 'init') {
-            const t = await Chain.token(detail.contractId, Wallet.address);
-            if (!t) {
+            // init needs the deployed contract to exist on-chain first.
+            const ok = await waitFor('Deploy confirming', async () =>
+              !!(await Chain.token(detail.contractId, Wallet.address)));
+            if (!ok) {
               btn.disabled = false; btn.textContent = 'Approve';
-              $('#action-err').textContent = 'Your token deploy isn’t confirmed on-chain yet. Wait for it to be mined (watch the Transaction queue — usually 1–2 minutes), then Initialize. Don’t re-deploy.';
+              $('#action-err').textContent = 'Your token deploy still isn’t confirmed. Leave it a moment and try Initialize again — don’t re-deploy.';
               return;
             }
           } else if (detail.kind === 'pool') {
-            const t = await Chain.token(detail.token, Wallet.address);
-            if (!t) {
+            // pool creation needs the minted token balance (init confirmed).
+            const ok = await waitFor('Mint confirming', async () => {
+              const t = await Chain.token(detail.token, Wallet.address);
+              return !!(t && t.balance && Number(t.balance) > 0);
+            });
+            if (!ok) {
               btn.disabled = false; btn.textContent = 'Approve';
-              $('#action-err').textContent = 'The token isn’t confirmed on-chain yet. Wait for the deploy to be mined, then Initialize, then create the pool.';
-              return;
-            }
-            if (!t.balance || Number(t.balance) === 0) {
-              btn.disabled = false; btn.textContent = 'Approve';
-              $('#action-err').textContent = 'You hold 0 of this token — the Initialize (mint) step must be confirmed first. Wait for it to be mined (Transaction queue), then create the pool.';
+              $('#action-err').textContent = 'The mint (Initialize) still isn’t confirmed. Leave it a moment and try Create pool again.';
               return;
             }
           }

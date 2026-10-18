@@ -30,7 +30,13 @@
   // and produced/spent outputs). Resolves true on change, false on timeout —
   // the caller then lets the user retry that single step manually.
   async function waitConfirmed(addr, prev, k, label) {
-    if (!addr) { await sleep(3000); return true; }
+    // No address to poll (shouldn't happen) — still hold ~2.5 min so we never
+    // fire the next step into the same block as the previous unconfirmed tx.
+    if (!addr) {
+      if (k) setStep(k, 'active', (label || '') + ' — waiting for confirmation…');
+      await sleep(150000);
+      return true;
+    }
     var deadline = Date.now() + 240000; // ~4 min — a few block intervals
     while (Date.now() < deadline) {
       await sleep(5000);
@@ -109,7 +115,14 @@
       // 2. connect
       setStep('connect', 'active');
       var conn = await window.blockle.connect();
-      var addr = (conn && (conn.address || conn.addr)) || (typeof conn === 'string' ? conn : null);
+      // connect() resolves to an EIP-1193-style address array ['block1…']; also
+      // accept {address}/string shapes, and fall back to the provider's
+      // selectedAddress. Getting this right is essential: without a real address
+      // the confirmation wait below can't poll and would skip, firing the next
+      // step before the previous tx is mined.
+      var addr = Array.isArray(conn) ? conn[0]
+        : (conn && (conn.address || conn.addr)) || (typeof conn === 'string' ? conn : null);
+      if (!addr && window.blockle.selectedAddress) addr = window.blockle.selectedAddress;
       setStep('connect', 'done');
 
       // 3. deploy
