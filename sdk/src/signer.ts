@@ -128,6 +128,47 @@ export class BlockSigner {
     );
   }
 
+  /**
+   * Atomic token launch — deploy + mint + seed an AMM pool in ONE transaction.
+   * Amounts are WHOLE coins (supply / seedToken are token counts, seedBlock is
+   * BLOCK); the wasm scales by `decimals` so the mint and pool legs always
+   * match. Returns { txid, contractId, raw, fee }.
+   */
+  buildLaunchToken(
+    utxos: Utxo[],
+    name: string,
+    symbol: string,
+    decimals: bigint,
+    supply: bigint,
+    seedBlock: bigint,
+    seedToken: bigint,
+    gasLimit: bigint,
+    gasPrice: bigint,
+  ): BuiltTx {
+    return JSON.parse(
+      wasm.build_launch_token(
+        this.keys.secretKey,
+        this.keys.publicKey,
+        utxosJson(utxos),
+        name,
+        symbol,
+        decimals,
+        supply,
+        seedBlock,
+        seedToken,
+        gasLimit,
+        gasPrice,
+      ),
+    );
+  }
+
+  /** Atomic BLOCK-721 collection launch — deploy + init (set deployer as minter). */
+  buildLaunchNft(utxos: Utxo[], codeHex: string, gasLimit: bigint, gasPrice: bigint): BuiltTx {
+    return JSON.parse(
+      wasm.build_launch_nft(this.keys.secretKey, this.keys.publicKey, utxosJson(utxos), codeHex, gasLimit, gasPrice),
+    );
+  }
+
   buildPoolAdd(
     utxos: Utxo[],
     tokenHex: string,
