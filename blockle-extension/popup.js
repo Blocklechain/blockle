@@ -929,14 +929,18 @@
       const cell = box.querySelector(`[data-tx="${x.txid}"]`);
       if (!cell) return;
       const t = infos[i];
-      const confd = t && (t.confirmations != null || t.height != null);
+      // The node returns { block_hash, tx:{ block_height, confirmations, … } }.
+      // A non-null block_hash means it's mined; confirmations live on tx.
+      const txo = (t && t.tx) || t || null;
+      const confd = !!(t && t.block_hash) || !!(txo && (txo.confirmations != null || txo.block_height != null));
+      const confs = txo && txo.confirmations != null ? txo.confirmations : null;
       // A tx that is neither mined nor in the mempool after several block
       // intervals was almost certainly dropped (e.g. it lost a double-spend race
       // to another attempt on the same input) and will never confirm.
       const agedMs = Date.now() - (x.time || 0);
       const dropped = !confd && agedMs > 20 * 60 * 1000;
       cell.innerHTML = confd
-        ? `<span style="color:#34d399">confirmed${t.confirmations != null ? ' · ' + t.confirmations + ' conf' : ''}</span>`
+        ? `<span style="color:#34d399">confirmed${confs != null ? ' · ' + confs + ' conf' : ''}</span>`
         : dropped
         ? '<span style="color:#9aa0aa">dropped · safe to ignore</span>'
         : '<span style="color:#f2b04a">pending…</span>';

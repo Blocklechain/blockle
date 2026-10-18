@@ -52,7 +52,14 @@
     if (!li) return;
     li.classList.remove('active', 'done');
     if (state) li.classList.add(state);
-    if (sub && $('s-' + k)) $('s-' + k).textContent = sub;
+    var sm = $('s-' + k);
+    if (sub && sm) {
+      // A "waiting…" substatus animates its trailing dots via CSS — strip any
+      // literal ellipsis so it isn't doubled.
+      var waiting = /waiting/i.test(sub);
+      sm.classList.toggle('waiting', waiting);
+      sm.textContent = waiting ? sub.replace(/[.…]+\s*$/, '') : sub;
+    }
   }
 
   // logo preview + file -> data URL
