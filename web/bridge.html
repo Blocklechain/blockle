@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blockle Bridge — BLOCK ⇄ wBLOCK</title>
+<meta name="description" content="Move value between the Blockle post-quantum L1 (BLOCK) and Solana (wBLOCK, a wrapped SPL token). A custodial, trusted-operator bridge — wBLOCK is backed 1:1 by BLOCK held in the operator reserve.">
+<link rel="canonical" href="https://blockle.org/bridge">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Blockle">
+<meta property="og:url" content="https://blockle.org/bridge">
+<meta property="og:title" content="Blockle Bridge — BLOCK ⇄ wBLOCK">
+<meta property="og:description" content="Bridge between BLOCK (Blockle L1) and wBLOCK (wrapped SPL token on Solana). Custodial, trusted-operator design — read the risk notes before using.">
+<meta property="og:image" content="https://blockle.org/logo.png">
+<meta property="og:image:alt" content="Blockle">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Blockle Bridge — BLOCK ⇄ wBLOCK">
+<meta name="twitter:description" content="Bridge between BLOCK (Blockle L1) and wBLOCK (wrapped SPL token on Solana). Custodial, trusted-operator design.">
+<meta name="twitter:image" content="https://blockle.org/logo.png">
+<link rel="icon" type="image/png" href="/favicon.png">
+<style>
+  :root{
+    --bg:#0B0B14; --surface:#15152A; --surface2:#1C1C34; --line:#2A2A45;
+    --text:#ECECF5; --muted:#9A9AB5; --accent:#8B6DFF; --teal:#37E0C8;
+    --good:#4ADE80; --warn:#F2B04A; --bad:#FB7185;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.55}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(11,11,20,.86);backdrop-filter:blur(10px);z-index:10}
+  header.top .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700}
+  .cube{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,var(--accent),var(--teal))}
+  header.top nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  header.top nav a{color:var(--muted)} header.top nav a:hover{color:var(--text)}
+  header.top nav a.on{color:var(--text)}
+  h1{font-size:clamp(26px,4vw,36px);letter-spacing:-.02em;margin:26px 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px;max-width:70ch}
+  .cols{display:grid;grid-template-columns:1fr;gap:18px;margin-bottom:50px}
+  @media(min-width:860px){.cols{grid-template-columns:1.15fr .85fr}}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .banner{border-radius:14px;padding:13px 15px;margin:0 0 18px;font-size:13.5px;display:flex;gap:10px;align-items:flex-start}
+  .banner.warn{background:#2e2512;border:1px solid #4a3a15;color:#f3cf8f}
+  .banner.live{background:#132a1f;border:1px solid #1e4a34;color:#bff0d4}
+  .banner.off{background:#241626;border:1px solid #432447;color:#e0b6e8}
+  .banner b{color:#fff}
+  /* wallet connect */
+  .wrows{display:flex;flex-direction:column;gap:10px}
+  .wrow{display:flex;align-items:center;gap:12px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
+  .wrow .chainbadge{width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex:none;color:#fff}
+  .chainbadge.block{background:linear-gradient(135deg,var(--accent),#5b40c9)}
+  .chainbadge.sol{background:linear-gradient(135deg,#14F195,#9945FF)}
+  .wrow .winfo{flex:1;min-width:0}
+  .wrow .wname{font-weight:700;font-size:14px}
+  .wrow .waddr{font:11px var(--mono);color:var(--muted);word-break:break-all}
+  .wrow .wbal{font:600 13px var(--mono);text-align:right;white-space:nowrap}
+  .wbtn{background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:8px 13px;font:600 13px var(--sans);cursor:pointer;white-space:nowrap}
+  .wbtn:hover{border-color:var(--accent)}
+  .wbtn.conn{background:var(--accent);color:#fff;border-color:var(--accent)}
+  /* direction + form */
+  .dir{display:flex;align-items:stretch;gap:0;background:var(--surface2);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:14px}
+  .dir .side{flex:1;padding:11px 10px;text-align:center}
+  .dir .side .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .dir .side .tok{font-weight:800;font-size:15px}
+  .dir .swap{width:44px;flex:none;background:var(--surface);border:0;border-left:1px solid var(--line);border-right:1px solid var(--line);color:var(--accent);font-size:17px;cursor:pointer}
+  .dir .swap:hover{background:var(--line)}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  input.t{width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:12px;color:var(--text);font:700 17px var(--mono);padding:11px 13px;outline:none}
+  input.t:focus{border-color:var(--accent)}
+  input.t.err{border-color:var(--bad)}
+  .maxrow{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:4px}
+  .maxrow a{cursor:pointer}
+  .qrow{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;color:var(--muted)}
+  .qrow b{color:var(--text);font-family:var(--mono)}
+  .quote{margin:14px 0 4px;padding:12px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .go{width:100%;margin-top:16px;border:0;border-radius:12px;padding:13px;font:700 15px var(--sans);cursor:pointer;background:var(--accent);color:#fff}
+  .go:disabled{opacity:.5;cursor:not-allowed}
+  .terr{color:var(--bad);font-size:13px;margin-top:10px;min-height:1px}
+  /* stages */
+  .stages{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+  .stages li{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);padding:7px 0}
+  .stages li .dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--line);flex:none}
+  .stages li.done{color:var(--text)} .stages li.done .dot{background:var(--good);border-color:var(--good)}
+  .stages li.active{color:var(--text)} .stages li.active .dot{background:var(--accent);border-color:var(--accent);animation:pulse 1.2s infinite}
+  .stages li.fail .dot{background:var(--bad);border-color:var(--bad)}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(139,109,255,.5)}50%{box-shadow:0 0 0 5px rgba(139,109,255,0)}}
+  .statepill{display:inline-flex;align-items:center;gap:6px;font:700 12px var(--sans);padding:4px 10px;border-radius:999px;background:var(--surface2);border:1px solid var(--line)}
+  /* reserves panel */
+  .rrow{display:flex;justify-content:space-between;font-size:13.5px;padding:7px 0;border-bottom:1px solid var(--line)}
+  .rrow:last-child{border-bottom:0}
+  .rrow .k{color:var(--muted)} .rrow .v{font-family:var(--mono);font-weight:600;text-align:right}
+  .ratio{font-size:28px;font-weight:800;font-family:var(--mono)}
+  .ratio small{font-size:13px;color:var(--muted);font-weight:500}
+  .explain{font-size:13px;color:var(--muted)}
+  .explain h3{font-size:14px;color:var(--text);margin:14px 0 4px}
+  .explain p{margin:0 0 8px}
+  .empty{color:var(--muted);text-align:center;padding:34px 0}
+  .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding:22px 0 50px}
+  .risk{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:12px;padding:16px 18px;margin:0 0 50px;font-size:13px;color:var(--muted)}
+  .risk h3{margin:0 0 8px;color:var(--text);font-size:14px}
+  .risk ul{margin:0;padding-left:18px} .risk li{margin:5px 0}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="/"><span class="cube"></span> Blockle</a>
+  <nav><a href="/buy">Buy</a><a href="/dex">DEX</a><a href="/bridge" class="on">Bridge</a><a href="/launch">Launch</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a></nav>
+</div></header>
+<main class="wrap">
+  <h1>Bridge — BLOCK ⇄ wBLOCK</h1>
+  <p class="sub">Move value between the Blockle post-quantum layer-1 (native <b>BLOCK</b>) and Solana, where it is represented by <b>wBLOCK</b>, a wrapped SPL token. This is a <b>custodial, trusted-operator bridge</b>: every wBLOCK in circulation is meant to be backed 1:1 by BLOCK held in the operator reserve. It is not a trustless on-chain vault.</p>
+
+  <div id="banner" class="banner off"><span>⏳</span><div><b>Checking bridge status…</b> Live figures load from the bridge API.</div></div>
+
+  <div class="cols">
+    <!-- left: bridge form -->
+    <div class="card">
+      <h2>Bridge assets</h2>
+      <div class="wrows">
+        <div class="wrow">
+          <span class="chainbadge block">BLK</span>
+          <div class="winfo">
+            <div class="wname">Blockle wallet</div>
+            <div class="waddr" id="blk-addr">Not connected</div>
+          </div>
+          <div class="wbal" id="blk-bal"></div>
+          <button class="wbtn" id="blk-connect">Connect</button>
+        </div>
+        <div class="wrow">
+          <span class="chainbadge sol">SOL</span>
+          <div class="winfo">
+            <div class="wname">Solana wallet</div>
+            <div class="waddr" id="sol-addr">Not connected</div>
+          </div>
+          <div class="wbal" id="sol-bal"></div>
+          <button class="wbtn" id="sol-connect">Connect</button>
+        </div>
+      </div>
+
+      <div class="dir" id="dir">
+        <div class="side"><div class="lbl">From</div><div class="tok" id="dir-from">BLOCK</div></div>
+        <button class="swap" id="dir-swap" title="Reverse direction">⇅</button>
+        <div class="side"><div class="lbl">To</div><div class="tok" id="dir-to">wBLOCK</div></div>
+      </div>
+
+      <label class="fld" id="amt-label">Amount to send (BLOCK)</label>
+      <input class="t" id="amt" inputmode="decimal" placeholder="0.00">
+      <div class="maxrow"><span id="amt-hint">&nbsp;</span><a id="amt-max">Max</a></div>
+
+      <label class="fld" id="dest-label">Destination Solana address</label>
+      <input class="t" id="dest" style="font-size:13px" placeholder="Recipient address on the target chain">
+      <div class="maxrow"><span id="dest-hint">&nbsp;</span><a id="dest-self">Use my connected wallet</a></div>
+
+      <div class="quote">
+        <div class="qrow"><span>Bridge fee</span><b id="q-fee">—</b></div>
+        <div class="qrow"><span>You receive ≈</span><b id="q-out">—</b></div>
+        <div class="qrow"><span>Source confirmations required</span><b id="q-conf">—</b></div>
+      </div>
+
+      <button class="go" id="go" disabled>Connect a wallet to begin</button>
+      <div class="terr" id="err"></div>
+
+      <ol class="stages" id="stages" hidden></ol>
+    </div>
+
+    <!-- right: reserves + explain -->
+    <div>
+      <div class="card" style="margin-bottom:18px">
+        <h2>Reserves &amp; backing</h2>
+        <div id="reserves"><div class="empty">Loading reserves…</div></div>
+      </div>
+      <div class="card">
+        <h2>BLOCK vs wBLOCK</h2>
+        <div class="explain">
+          <p><b>BLOCK</b> is the native coin of the Blockle post-quantum L1 (8 decimals, <span style="font-family:var(--mono)">block1…</span> addresses). It exists only on the Blockle chain.</p>
+          <p><b>wBLOCK</b> is a standard SPL token on Solana (also 8 decimals) that <i>represents</i> BLOCK. It is minted when BLOCK is deposited to the bridge and burned when wBLOCK is redeemed back to BLOCK.</p>
+          <h3>How a bridge works here</h3>
+          <p>BLOCK→wBLOCK: you send BLOCK to the bridge address; after enough confirmations the operator mints the equivalent wBLOCK to your Solana address.</p>
+          <p>wBLOCK→BLOCK: you burn wBLOCK to the bridge; the operator then releases BLOCK from the reserve to your Blockle address.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="risk">
+    <h3>⚠ Risks — read before bridging</h3>
+    <ul>
+      <li><b>Custodial trust.</b> wBLOCK is only as safe as the operator. If the operator's reserve or keys are lost, compromised, or mismanaged, wBLOCK can lose its backing. There is no on-chain vault or smart-contract guarantee enforcing 1:1 backing.</li>
+      <li><b>Wrapped-token risk.</b> wBLOCK is not BLOCK. Its value depends entirely on the bridge honoring redemptions. A wrapped asset can trade below its backing or become non-redeemable.</li>
+      <li><b>Cross-chain risk.</b> Bridges are a common target for exploits. Transfers cross two independent networks and are irreversible once confirmed. Always double-check the destination address and the direction.</li>
+      <li><b>No finality from a signature.</b> Signing a transaction in your wallet only <i>submits</i> it. A bridge transfer is complete only after the source chain confirms and the mint/release lands on the destination chain. Watch the status stages.</li>
+      <li><b>Operator discretion &amp; limits.</b> Per-transfer and daily limits apply. The operator may pause the bridge. Funds sent outside the supported flow may be unrecoverable.</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    Reserve balances, wrapped supply, fees and limits are read live from the bridge service — figures shown without live data are not estimates and are omitted. The operator never asks for your private keys or seed phrase. Bridge status and history are public on the <a href="/bridge/transactions">transactions explorer</a> and <a href="/bridge/reserves">reserves page</a>.
+  </div>
+</main>
+<script src="/bridge.js"></script>
+</body>
+</html>

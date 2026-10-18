@@ -1,0 +1,33 @@
+{
+  "name": "Wrapped Blockle",
+  "symbol": "wBLOCK",
+  "decimals": 8,
+  "image": "https://blockle.org/logo.png",
+  "external_url": "https://blockle.org/bridge",
+  "description": "wBLOCK (Wrapped Blockle) is a Solana SPL token that represents native BLOCK bridged from the Blockle layer-1 chain. Each wBLOCK is backed 1:1 by native BLOCK held in the Blockle bridge's reserve and is redeemable for native BLOCK by burning wBLOCK. IMPORTANT: wBLOCK is a CUSTODIAL, trusted-operator wrapped asset — it is NOT native BLOCK and NOT a trustless on-chain vault. Redemption depends on the bridge operator's solvency; its market price depends on pool liquidity. Verify the reserve on the Blockle explorer and read the risks at https://blockle.org/bridge before using. ABOUT BLOCK: Blockle is an independent, post-quantum layer-1 blockchain — ML-DSA-44 (FIPS-204) signatures and bech32m block1… addresses, 600-second blocks. BLOCK has Bitcoin-style fixed-supply tokenomics: a 50-BLOCK block subsidy halving every 210,000 blocks (~21,000,000 mined) plus a 210,000 genesis premine (~21,210,000 max), 1 BLOCK = 100,000,000 base units (8 decimals). BLOCK is merge-mined as a universal auxiliary chain across SHA-256d, Scrypt, X11, Equihash and more. The ecosystem includes non-custodial Qt/mobile/extension wallets, a cross-chain exchange, a native in-consensus AMM DEX, BLOCK-20 tokens + a launchpad, BLOCK-721 NFTs, an AI trading copilot, a contribution-gated social layer, and the Blockle WORLD game.",
+  "tags": ["wrapped", "bridge", "blockle", "block", "custodial"],
+  "attributes": [
+    { "trait_type": "Asset type", "value": "Wrapped (custodial)" },
+    { "trait_type": "Backing", "value": "Native BLOCK 1:1" },
+    { "trait_type": "Native chain", "value": "Blockle L1 (post-quantum, ML-DSA-44)" },
+    { "trait_type": "Decimals", "value": "8" },
+    { "trait_type": "Redeemable", "value": "Yes — burn wBLOCK to release native BLOCK" }
+  ],
+  "properties": {
+    "category": "fungible",
+    "files": [{ "uri": "https://blockle.org/logo.png", "type": "image/png" }]
+  },
+  "extensions": {
+    "website": "https://blockle.org",
+    "bridge": "https://blockle.org/bridge",
+    "explorer": "https://blockle.org/explorer",
+    "tokenomics": "https://blockle.org/tokenomics",
+    "dex": "https://blockle.org/dex",
+    "github": "https://github.com/blocklechain/blockle",
+    "discord": "https://discord.gg/tx4MfyD9Vu",
+    "nativeAsset": "BLOCK",
+    "nativeDecimals": 8,
+    "custodial": true,
+    "riskDisclosure": "wBLOCK is a custodial wrapped asset, not native BLOCK; redemption depends on operator solvency and price on pool liquidity. See https://blockle.org/bridge."
+  }
+}
