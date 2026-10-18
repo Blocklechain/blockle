@@ -123,17 +123,12 @@
   <!-- redeem -->
   <div class="card" id="redeem">
     <label class="fld">Redeem USDB → USD</label>
-    <p class="note" style="text-align:left;margin:0 0 12px">Send USDB back and receive USD to your PayPal. Redeem from the <a href="/wallet">Blockle wallet</a> in one tap, or follow the two-step flow below.</p>
-    <div class="stat"><span class="k">1 · Send USDB to the treasury</span><span class="v" id="treasury">loading…</span></div>
-    <div class="stat"><span class="k">2 · Paste the tx id + your PayPal email</span><span class="v">then Redeem</span></div>
-    <label class="fld2" for="rtx">USDB-send transaction id</label>
-    <input class="t" id="rtx" placeholder="transaction id" autocomplete="off" spellcheck="false">
-    <label class="fld2" for="remail">Your PayPal email</label>
-    <input class="t" id="remail" placeholder="you@example.com" autocomplete="off">
-    <label class="fld2" for="ramt">USDB amount to redeem</label>
-    <input class="t" id="ramt" placeholder="100" inputmode="decimal">
-    <button class="cta" id="redeemBtn" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff">Redeem to USD</button>
-    <div class="msg" id="redeemMsg"></div>
+    <p class="note" style="text-align:left;margin:0 0 6px">Redemption is a <b>signed, on-chain action</b> — you burn your USDB directly on the USDB smart contract and the USD is paid to your PayPal automatically. Because it's signed with your key, redeem from your <b>Blockle wallet</b>, where it's one tap:</p>
+    <div class="stat"><span class="k">1 · Open the Blockle wallet → USDB</span><span class="v">Buy / Redeem</span></div>
+    <div class="stat"><span class="k">2 · Enter amount + PayPal email → Redeem</span><span class="v">signs redeem()</span></div>
+    <div class="stat"><span class="k">3 · USD arrives in your PayPal</span><span class="v">~1 block</span></div>
+    <a class="cta" href="/wallet" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff;text-decoration:none;margin-top:14px">Get / open the Blockle wallet</a>
+    <div class="note" style="margin-top:10px">No treasury, no custody — the contract burns your own USDB and the issuer can't take tokens without destroying them.</div>
   </div>
 </main>
 
@@ -219,28 +214,9 @@ async function handleReturn(){
   }
 }
 
-async function loadInfo(){
-  try{ const r=await fetch(API+'/info'); const i=await r.json(); if(i.treasury) $('treasury').textContent=i.treasury.slice(0,14)+'…'+i.treasury.slice(-6);
-    $('treasury').title=i.treasury||''; }catch(e){}
-}
-async function doRedeem(){
-  const m=$('redeemMsg'); m.textContent='';
-  const returnTxid=$('rtx').value.trim(), email=$('remail').value.trim(), amt=Number($('ramt').value||0);
-  if(!returnTxid){ m.className='msg bad'; m.textContent='Paste the USDB-send transaction id.'; return; }
-  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ m.className='msg bad'; m.textContent='Enter your PayPal email.'; return; }
-  if(!(amt>0)){ m.className='msg bad'; m.textContent='Enter the USDB amount.'; return; }
-  const btn=$('redeemBtn'); btn.disabled=true; m.className='msg'; m.innerHTML='<span class="spin"></span> Paying out + burning…';
-  try{
-    const r=await fetch(API+'/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({returnTxid,payoutEmail:email,amountUsd:amt})});
-    const j=await r.json(); if(j.error) throw new Error(j.error);
-    m.className='msg ok'; m.innerHTML='✅ Paid '+fmt(j.payoutUsd)+' to your PayPal · burned '+j.burnedUsdb+' USDB.';
-  }catch(e){ m.className='msg bad'; m.textContent=e.message||String(e); }
-  finally{ btn.disabled=false; }
-}
-$('redeemBtn').addEventListener('click',doRedeem);
 $('redeemlink').addEventListener('click',e=>{ $('redeem').scrollIntoView({behavior:'smooth'}); });
 
-refreshQuote(); handleReturn(); loadInfo();
+refreshQuote(); handleReturn();
 </script>
 </body>
 </html>
