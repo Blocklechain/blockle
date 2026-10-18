@@ -205,4 +205,39 @@ void main() {
     final idx = ni.LiveNftIndexer(alchemy: const {'apiKey': 'k'}, helius: const {'apiKey': 'k'}, fetchImpl: fetchStub([_Route((u, b) => true, body: const {})]));
     expect(await idx.getNFTsForOwner('bitcoin', 'bc1xyz'), isNull);
   });
+
+  // ---- native BLOCK-721 — the node ownership index (no API key) ------------
+  const blockNftsBody = {
+    'address': 'block1owner', 'count': 2,
+    'nfts': [
+      {'contract': 'eba51266e429aa00', 'tokenId': '01'},
+      {'contract': 'eba51266e429aa00', 'tokenId': '02'},
+    ],
+  };
+
+  test('block: maps /api/explorer/nfts to raw block721 items (no key, no fabrication)', () async {
+    final idx = ni.LiveNftIndexer(fetchImpl: fetchStub([
+      _Route((u, b) => RegExp(r'/api/explorer/nfts/block1owner$').hasMatch(u), body: blockNftsBody),
+    ]));
+    final raw = await idx.getNFTsForOwner('block', 'block1owner');
+    expect(raw, isNotNull);
+    expect(raw!.length, 2);
+    expect(raw[0]['chain'], 'block');
+    expect(raw[0]['standard'], 'block721');
+    expect(raw[0]['contract'], 'eba51266e429aa00');
+    expect(raw[0]['tokenId'], '01');
+    expect(raw[0]['metadataOk'], false);
+    expect(raw[0]['name'], isNull);
+
+    final res = await nft.nfts([{'chain': 'block', 'address': 'block1owner'}], nft.NftCtx(indexer: idx, config: const {}));
+    expect((res['unavailable'] as List).length, 0);
+    expect((res['items'] as List).length, 2);
+    expect((res['items'] as List)[0]['balance'], '1');
+    expect((res['collections'] as List).length, 1);
+  });
+
+  test('block: a node hiccup => null (honest unavailable)', () async {
+    final idx = ni.LiveNftIndexer(fetchImpl: fetchStub([_Route((u, b) => true, ok: false, status: 502, body: const {})]));
+    expect(await idx.getNFTsForOwner('block', 'block1owner'), isNull);
+  });
 }

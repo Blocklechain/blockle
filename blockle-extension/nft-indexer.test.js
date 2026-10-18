@@ -190,3 +190,42 @@ test('unsupported chain => null (honest)', async () => {
   const idx = NI.createIndexer({ alchemy: { apiKey: 'k' }, helius: { apiKey: 'k' }, fetchImpl: fetchStub([{ match: () => true, body: {} }]) });
   assert.equal(await idx.getNFTsForOwner('bitcoin', 'bc1xyz'), null);
 });
+
+// ===========================================================================
+// native BLOCK-721 — the node ownership index (needs no API key)
+// ===========================================================================
+const BLOCK_NFTS_BODY = {
+  address: 'block1owner',
+  count: 2,
+  nfts: [
+    { contract: 'eba51266e429aa00', tokenId: '01' },
+    { contract: 'eba51266e429aa00', tokenId: '02' },
+  ],
+};
+
+test('block: maps /api/explorer/nfts to raw block721 items (no key, no fabrication)', async () => {
+  const idx = NI.createIndexer({ fetchImpl: fetchStub([
+    { match: (u) => /\/api\/explorer\/nfts\/block1owner$/.test(u), body: BLOCK_NFTS_BODY },
+  ]) });
+  const raw = await idx.getNFTsForOwner('block', 'block1owner');
+  assert.ok(Array.isArray(raw) && raw.length === 2, 'two owned tokens');
+  assert.equal(raw[0].chain, 'block');
+  assert.equal(raw[0].standard, 'block721');
+  assert.equal(raw[0].contract, 'eba51266e429aa00');
+  assert.equal(raw[0].tokenId, '01');
+  assert.equal(raw[0].metadataOk, false, 'ownership-only index => metadataOk:false');
+  assert.equal(raw[0].name, undefined, 'never fabricates a name');
+
+  // feeds nft.js into a grouped, normalized inventory
+  const res = await NFT.nfts([{ chain: 'block', address: 'block1owner' }], { indexer: idx, config: {} });
+  assert.deepEqual(res.unavailable, [], 'account resolved');
+  assert.equal(res.items.length, 2);
+  assert.equal(res.items[0].balance, '1', 'a 721 token is balance 1');
+  assert.equal(res.collections.length, 1, 'both ids group under the one contract');
+  assert.equal(res.items[0].metadataNote, 'metadata-unavailable');
+});
+
+test('block: a node hiccup => null (honest unavailable, never a fake empty inventory)', async () => {
+  const idx = NI.createIndexer({ fetchImpl: fetchStub([{ match: () => true, ok: false, status: 502, body: {} }]) });
+  assert.equal(await idx.getNFTsForOwner('block', 'block1owner'), null);
+});

@@ -184,6 +184,9 @@ class Indexer:
         self._alchemy = opts.get("alchemy") or {}
         self._das = opts.get("das") or opts.get("helius") or {}
         self._fetch: Optional[Callable] = opts.get("fetchImpl") or opts.get("fetch_impl") or _default_fetch
+        # Native BLOCK-721 NFTs come from the node's ownership index (no API key).
+        self._block_api = (opts.get("blockApi") or opts.get("block_api")
+                           or "https://blockle.org/api/explorer").rstrip("/")
 
     def _alchemy_url(self, chain: str) -> Optional[str]:
         net = ALCHEMY_NET.get(chain)
@@ -254,9 +257,36 @@ class Indexer:
                     out.append(map_das_item(a))
                 return out
 
+            if chain == "block":
+                # Native Blockle L1: the node indexes BLOCK-721 ownership from
+                # Transfer events. Returns {address, count, nfts:[{contract, tokenId}]}.
+                url = self._block_api + "/nfts/" + quote(str(owner), safe="")
+                res = await maybe_await(self._fetch(url, {"method": "GET",
+                                                          "headers": {"accept": "application/json"}}))
+                if not res or not getattr(res, "ok", False):
+                    return None
+                body = await maybe_await(res.json())
+                lst = body.get("nfts") if isinstance(body, dict) else None
+                if not isinstance(lst, list):
+                    return None
+                return [map_block_item(n) for n in lst]
+
             return None  # unsupported chain -> unavailable (honest)
         except Exception:
             return None  # any error -> unavailable (NEVER a fabricated empty inventory)
+
+
+def map_block_item(n: Dict[str, Any]) -> Dict[str, Any]:
+    """A native BLOCK-721 item. The node index knows only ownership (contract +
+    token id); it carries no metadata yet, so flag metadataOk False rather than
+    invent a name/image — the UI renders an honest 'metadata unavailable' tile."""
+    return {
+        "chain": "block",
+        "standard": "block721",
+        "contract": str(n.get("contract")) if n and n.get("contract") is not None else None,
+        "tokenId": str(n.get("tokenId")) if n and n.get("tokenId") is not None else None,
+        "metadataOk": False,
+    }
 
 
 def create_indexer(opts: Optional[Dict[str, Any]] = None) -> Indexer:

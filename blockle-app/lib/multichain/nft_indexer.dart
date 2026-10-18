@@ -195,13 +195,18 @@ class LiveNftIndexer implements NftIndexer {
     Map<String, dynamic>? alchemy,
     Map<String, dynamic>? das,
     Map<String, dynamic>? helius,
+    String? blockApi,
     NftFetch? fetchImpl,
   })  : _alchemy = alchemy ?? const {},
         _das = das ?? helius ?? const {},
+        _blockApi = (blockApi ?? 'https://blockle.org/api/explorer')
+            .replaceAll(RegExp(r'/+$'), ''),
         _fetch = fetchImpl ?? _defaultFetch;
 
   final Map<String, dynamic> _alchemy;
   final Map<String, dynamic> _das;
+  // Native BLOCK-721 NFTs come from the node's ownership index (no API key).
+  final String _blockApi;
   final NftFetch _fetch;
 
   String? _alchemyUrl(String chain) {
@@ -278,9 +283,38 @@ class LiveNftIndexer implements NftIndexer {
               mapDasItem(a.cast<String, dynamic>())
         ];
       }
+      if (chain == 'block') {
+        // Native Blockle L1: the node indexes BLOCK-721 ownership from Transfer
+        // events. Returns {address, count, nfts:[{contract, tokenId}]}.
+        final url = '$_blockApi/nfts/${Uri.encodeComponent(owner)}';
+        final res = await _fetch(url, method: 'GET', headers: const {'accept': 'application/json'});
+        if (!res.ok) return null;
+        final body = res.body;
+        if (body is! Map) return null;
+        final list = body['nfts'];
+        if (list is! List) return null;
+        return [
+          for (final n in list)
+            if (n is Map) mapBlockItem(n.cast<String, dynamic>())
+        ];
+      }
       return null; // unsupported chain -> unavailable (honest)
     } catch (_) {
       return null; // any error -> unavailable (NEVER a fabricated empty inventory)
     }
   }
+}
+
+/// A native BLOCK-721 item. The node index knows only ownership (contract +
+/// token id); it carries no metadata yet, so we flag metadataOk:false rather
+/// than invent a name/image — the UI renders an honest "metadata unavailable"
+/// tile.
+Map<String, dynamic> mapBlockItem(Map<String, dynamic> n) {
+  return {
+    'chain': 'block',
+    'standard': 'block721',
+    if (n['contract'] != null) 'contract': '${n['contract']}',
+    if (n['tokenId'] != null) 'tokenId': '${n['tokenId']}',
+    'metadataOk': false,
+  };
 }

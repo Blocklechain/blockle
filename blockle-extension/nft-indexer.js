@@ -95,6 +95,20 @@
     return out;
   }
 
+  // ---- native BLOCK-721 item ------------------------------------------------
+  // The node index only knows ownership (contract + token id); it carries no
+  // on-chain metadata yet, so we flag metadataOk:false rather than invent a
+  // name/image. The UI renders an honest "metadata unavailable" tile.
+  function mapBlockItem(n) {
+    return {
+      chain: 'block',
+      standard: 'block721',
+      contract: n && n.contract != null ? String(n.contract) : undefined,
+      tokenId: n && n.tokenId != null ? String(n.tokenId) : undefined,
+      metadataOk: false,
+    };
+  }
+
   // ---- the factory ----------------------------------------------------------
   // createIndexer({ alchemy:{apiKey,baseUrl?}, helius:{apiKey,baseUrl?} | das:{url},
   //   fetchImpl? }) -> { getNFTsForOwner(chain, owner) -> raw[] | null }
@@ -103,6 +117,9 @@
     const alchemy = opts.alchemy || {};
     const das = opts.das || opts.helius || {};
     const fetchImpl = opts.fetchImpl || (typeof fetch !== 'undefined' ? fetch.bind(global) : null);
+    // Native BLOCK-721 NFTs come from the node's ownership index (built from the
+    // on-chain Transfer events); no third-party key needed.
+    const blockApi = (opts.blockApi || 'https://blockle.org/api/explorer').replace(/\/+$/, '');
 
     function alchemyUrl(chain) {
       const net = ALCHEMY_NET[chain];
@@ -147,6 +164,17 @@
           return items
             .filter(function (a) { const iface = String(a.interface || ''); return iface !== 'FungibleToken' && iface !== 'FungibleAsset'; })
             .map(mapDasItem);
+        }
+        if (chain === 'block') {
+          // Native Blockle L1: the node indexes BLOCK-721 ownership from Transfer
+          // events. Returns { address, count, nfts:[{contract, tokenId}] }.
+          const url = blockApi + '/nfts/' + encodeURIComponent(owner);
+          const res = await fetchImpl(url, { method: 'GET', headers: { accept: 'application/json' } });
+          if (!res || !res.ok) return null;
+          const body = await res.json();
+          const list = body && body.nfts;
+          if (!Array.isArray(list)) return null;
+          return list.map(function (n) { return mapBlockItem(n); });
         }
         return null; // unsupported chain -> unavailable (honest)
       } catch (_) {

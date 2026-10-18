@@ -212,3 +212,38 @@ def test_unsupported_chain_is_none():
     idx = NI.create_indexer({"alchemy": {"apiKey": "k"}, "helius": {"apiKey": "k"},
                              "fetchImpl": fetch_stub([{"match": lambda u, i: True, "body": {}}])})
     assert run(idx.getNFTsForOwner("bitcoin", "bc1xyz")) is None
+
+
+# ---- native BLOCK-721 — the node ownership index (no API key) --------------
+BLOCK_NFTS_BODY = {
+    "address": "block1owner", "count": 2,
+    "nfts": [
+        {"contract": "eba51266e429aa00", "tokenId": "01"},
+        {"contract": "eba51266e429aa00", "tokenId": "02"},
+    ],
+}
+
+
+def test_block_maps_node_index_no_key_no_fabrication():
+    idx = NI.create_indexer({"fetchImpl": fetch_stub([
+        {"match": lambda u, i: bool(re.search(r"/api/explorer/nfts/block1owner$", u)), "body": BLOCK_NFTS_BODY},
+    ])})
+    raw = run(idx.getNFTsForOwner("block", "block1owner"))
+    assert isinstance(raw, list) and len(raw) == 2
+    assert raw[0]["chain"] == "block"
+    assert raw[0]["standard"] == "block721"
+    assert raw[0]["contract"] == "eba51266e429aa00"
+    assert raw[0]["tokenId"] == "01"
+    assert raw[0]["metadataOk"] is False
+    assert raw[0].get("name") is None  # never fabricates
+
+    res = run(NFT.nfts([{"chain": "block", "address": "block1owner"}], {"indexer": idx, "config": {}}))
+    assert res["unavailable"] == []
+    assert len(res["items"]) == 2
+    assert res["items"][0]["balance"] == "1"
+    assert len(res["collections"]) == 1
+
+
+def test_block_node_hiccup_is_none():
+    idx = NI.create_indexer({"fetchImpl": fetch_stub([{"match": lambda u, i: True, "ok": False, "status": 502, "body": {}}])})
+    assert run(idx.getNFTsForOwner("block", "block1owner")) is None

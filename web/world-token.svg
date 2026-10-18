@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="WORLD token">
+  <defs>
+    <linearGradient id="wt-coin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffdd7a"/>
+      <stop offset="0.5" stop-color="#f3b63a"/>
+      <stop offset="1" stop-color="#c8871a"/>
+    </linearGradient>
+    <linearGradient id="wt-globe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3fa7ff"/>
+      <stop offset="1" stop-color="#1f6fd0"/>
+    </linearGradient>
+    <radialGradient id="wt-shine" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- coin -->
+  <circle cx="64" cy="64" r="60" fill="url(#wt-coin)" stroke="#8a5a12" stroke-width="3"/>
+  <circle cx="64" cy="64" r="52" fill="none" stroke="#fff3cf" stroke-width="2" opacity="0.7"/>
+  <!-- globe disc -->
+  <circle cx="64" cy="64" r="40" fill="url(#wt-globe)"/>
+  <!-- continents (simple blobs) -->
+  <path d="M44 48 q10 -6 20 -2 q8 3 4 11 q-5 8 -16 6 q-12 -2 -8 -15z" fill="#6fe39a" opacity="0.95"/>
+  <path d="M74 70 q10 -2 14 6 q3 8 -6 12 q-11 4 -16 -4 q-4 -11 8 -14z" fill="#6fe39a" opacity="0.95"/>
+  <path d="M44 82 q8 -3 12 3 q2 6 -5 9 q-9 2 -11 -5 q-1 -5 4 -7z" fill="#6fe39a" opacity="0.9"/>
+  <!-- meridians -->
+  <g fill="none" stroke="#dff1ff" stroke-width="1.6" opacity="0.5">
+    <ellipse cx="64" cy="64" rx="40" ry="16"/>
+    <ellipse cx="64" cy="64" rx="16" ry="40"/>
+    <line x1="24" y1="64" x2="104" y2="64"/>
+  </g>
+  <!-- W monogram -->
+  <path d="M40 46 L48 86 L58 60 L64 78 L70 60 L80 86 L88 46"
+        fill="none" stroke="#fff8e6" stroke-width="6.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.95"/>
+  <!-- top shine -->
+  <circle cx="64" cy="64" r="60" fill="url(#wt-shine)"/>
+</svg>
