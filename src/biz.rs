@@ -628,6 +628,20 @@ fn route(
         }
         "/dex" => serve_web_file("dex.html", "text/html; charset=utf-8"),
         "/dex.js" => serve_web_file("dex.js", "application/javascript; charset=utf-8"),
+        // BLOCK <-> wBLOCK bridge (custodial, trusted-operator). The /bridge
+        // app is a static page that reads /api/bridge/* client-side; the
+        // explorer pages below are SEO shells that do the same.
+        "/bridge" => serve_web_file("bridge.html", "text/html; charset=utf-8"),
+        "/bridge.js" => serve_web_file("bridge.js", "application/javascript; charset=utf-8"),
+        // wBLOCK SPL token metadata (Metaplex off-chain JSON): full BLOCK ecosystem
+        // info + the BLOCK logo. Referenced by services/bridge/solana/mint.js.
+        "/wblock-token.json" => serve_web_file("wblock-token.json", "application/json"),
+        "/bridge/transactions" => ("200 OK", "text/html; charset=utf-8", page_bridge_transactions().into_bytes()),
+        p if p.starts_with("/bridge/transactions/") => {
+            let id = &p["/bridge/transactions/".len()..];
+            ("200 OK", "text/html; charset=utf-8", page_bridge_tx(id).into_bytes())
+        }
+        "/bridge/reserves" => ("200 OK", "text/html; charset=utf-8", page_bridge_reserves().into_bytes()),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
@@ -1311,7 +1325,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
 </head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
+<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/mine">Mine with us</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/explorer">Explorer</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/markets">Markets</a><a href="/launch">Launch</a><a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/status">Status</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a>
 <span class="spacer"></span>
 <a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="/api">API</a><a href="/developers">Developers</a><a href="/open-source">Open Source</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
 {aads_top}
@@ -1605,6 +1619,245 @@ fn page_markets() -> String {
         "Markets",
         "Live BLOCK-20 token markets and AMM liquidity pools on the non-custodial Blockle DEX.",
         "/markets",
+        "",
+        body,
+    )
+}
+
+// ---- Bridge explorer pages -------------------------------------------------
+// Public, read-only views of the BLOCK<->wBLOCK bridge. Every figure is
+// fetched client-side from /api/bridge/* and rendered from real data (or an
+// honest "not yet live" empty state). We NEVER fabricate numbers here. The
+// trust model (custodial / trusted-operator, wBLOCK backed by reserve BLOCK,
+// not an on-chain vault) is stated plainly on every page.
+const BRIDGE_CSS: &str = r##"<style>
+.brbar{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin:16px 0 20px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.brstat{display:flex;flex-direction:column}
+.brstat .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.brstat .v{font-size:24px;font-weight:800;color:var(--ink);font-family:var(--mono)}
+.brcta{margin-left:auto;background:var(--accent);color:#fff;font-weight:700;padding:9px 16px;border-radius:9px;text-decoration:none}
+.brnote{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--warn);border-radius:10px;padding:12px 15px;margin:0 0 20px;font-size:13px;color:var(--ink2)}
+.brnote b{color:var(--ink)}
+.brtabs{display:flex;gap:10px;margin:0 0 18px;font-size:14px}
+.brtabs a{color:var(--muted)} .brtabs a.on{color:var(--ink);font-weight:700}
+.btbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.btbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;padding:8px 10px;border-bottom:1px solid var(--border)}
+.btbl td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--ink2);vertical-align:top}
+.btbl td.mono,.btbl th.mono{font-family:var(--mono)}
+.pill{display:inline-block;font:700 11px var(--sans);padding:2px 9px;border-radius:999px;background:var(--surface2);border:1px solid var(--border);color:var(--ink2)}
+.pill.completed{background:rgba(12,163,12,.14);color:var(--good);border-color:transparent}
+.pill.failed,.pill.refunded,.pill.refund_pending{background:rgba(208,59,59,.14);color:var(--crit);border-color:transparent}
+.pill.confirming_source,.pill.awaiting_verification,.pill.minting,.pill.releasing,.pill.crediting,.pill.submitted{background:rgba(250,178,25,.16);color:var(--warn);border-color:transparent}
+.brgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:0 0 22px}
+.brcard{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 18px}
+.brcard .lbl{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.brcard .big{font-size:26px;font-weight:800;color:var(--ink);font-family:var(--mono);margin-top:4px}
+.brempty{background:var(--surface);border:1px dashed var(--border2);border-radius:14px;padding:40px 28px;text-align:center;color:var(--muted)}
+.brempty h3{margin:0 0 6px;color:var(--ink)}
+.kv{display:flex;justify-content:space-between;font-size:14px;padding:9px 0;border-bottom:1px solid var(--border)}
+.kv:last-child{border-bottom:0}.kv .k{color:var(--muted)}.kv .v{font-family:var(--mono);color:var(--ink);text-align:right;word-break:break-all;max-width:70%}
+.mut{color:var(--muted)}
+</style>"##;
+
+fn bridge_trust_note() -> &'static str {
+    r##"<div class="brnote"><b>Custodial, trusted-operator bridge.</b> wBLOCK is a wrapped SPL token on Solana, backed by BLOCK held in the operator's reserve wallet. It is <b>not</b> a trustless on-chain vault and an off-chain balance is not the same as on-chain collateral. All figures below are read live from the bridge service; nothing on this page is fabricated or estimated.</div>"##
+}
+
+fn bridge_tabs(active: &str) -> String {
+    let t = |path: &str, label: &str| {
+        let on = if path == active { " class=\"on\"" } else { "" };
+        format!("<a href=\"{path}\"{on}>{label}</a>")
+    };
+    format!(
+        "<div class=\"brtabs\">{}{}{}</div>",
+        t("/bridge", "Bridge app"),
+        t("/bridge/transactions", "Transactions"),
+        t("/bridge/reserves", "Reserves")
+    )
+}
+
+fn page_bridge_transactions() -> String {
+    let tabs = bridge_tabs("/bridge/transactions");
+    let note = bridge_trust_note();
+    let body = format!(
+        r##"<h1>Bridge transactions</h1>
+<p class="sub">Every BLOCK&harr;wBLOCK transfer — deposits, mints, burns and releases — as reported by the bridge service.</p>
+{tabs}{note}
+<div class="brbar">
+  <div class="brstat"><span class="k">Transfers</span><span class="v" id="b-count">&mdash;</span></div>
+  <div class="brstat"><span class="k">Pending</span><span class="v" id="b-pending">&mdash;</span></div>
+  <div class="brstat"><span class="k">Failed</span><span class="v" id="b-failed">&mdash;</span></div>
+  <a class="brcta" href="/bridge">Open the bridge &rarr;</a>
+</div>
+<div id="b-body"><p class="mut" style="padding:30px 0">Loading transactions&hellip;</p></div>
+{BRIDGE_CSS}
+<script>
+(function(){{
+  var COIN=100000000;
+  function esc(s){{return String(s==null?'':s).replace(/[&<>]/g,function(c){{return{{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c];}});}}
+  function fmt(n){{return (n==null||!isFinite(n))?'—':Number(n).toLocaleString('en-US',{{maximumFractionDigits:8}});}}
+  function amt(base){{return base==null?null:Number(base)/COIN;}}
+  function shortid(s){{s=String(s||'');return s.length>18?s.slice(0,10)+'…'+s.slice(-6):s;}}
+  function dir(d){{return d==='b2s'?'BLOCK → wBLOCK':d==='s2b'?'wBLOCK → BLOCK':esc(d||'');}}
+  function set(id,v){{var e=document.getElementById(id);if(e)e.textContent=v;}}
+  async function j(u){{try{{var r=await fetch(u,{{cache:'no-store'}});return r.ok?await r.json():null;}}catch(e){{return null;}}}}
+  async function go(){{
+    var r=await j('/api/bridge/transactions');
+    var el=document.getElementById('b-body');
+    if(!r){{
+      el.innerHTML='<div class="brempty"><h3>Bridge not yet live</h3><p>The bridge service is not online yet, so there are no transactions to show. This page will populate automatically once transfers begin.</p></div>';
+      return;
+    }}
+    var list=Array.isArray(r)?r:(r.transactions||r.transfers||[]);
+    var pending=list.filter(function(t){{return ['submitted','confirming_source','awaiting_verification','minting','releasing','crediting','refund_pending'].indexOf(t.state)>=0;}}).length;
+    var failed=list.filter(function(t){{return t.state==='failed';}}).length;
+    set('b-count',list.length); set('b-pending',pending); set('b-failed',failed);
+    if(!list.length){{
+      el.innerHTML='<div class="brempty"><h3>No transfers yet</h3><p>The bridge is live but no one has bridged yet. Be the first from the <a href="/bridge">bridge app</a>.</p></div>';
+      return;
+    }}
+    var h='<div style="overflow-x:auto"><table class="btbl"><thead><tr><th>ID</th><th>Direction</th><th>Amount</th><th>Fee</th><th>Received</th><th>State</th><th>When</th></tr></thead><tbody>';
+    list.forEach(function(t){{
+      var when=t.createdAt?new Date(t.createdAt).toLocaleString():'';
+      h+='<tr>'+
+        '<td class="mono"><a href="/bridge/transactions/'+encodeURIComponent(t.id||'')+'">'+esc(shortid(t.id))+'</a></td>'+
+        '<td>'+dir(t.direction)+'</td>'+
+        '<td class="mono">'+fmt(amt(t.amountBase))+'</td>'+
+        '<td class="mono">'+fmt(amt(t.feeBase))+'</td>'+
+        '<td class="mono">'+fmt(amt(t.receivedBase))+'</td>'+
+        '<td><span class="pill '+esc(t.state||'')+'">'+esc(t.state||'unknown')+'</span></td>'+
+        '<td class="mut">'+esc(when)+'</td>'+
+      '</tr>';
+    }});
+    h+='</tbody></table></div>';
+    el.innerHTML=h;
+  }}
+  go();setInterval(go,20000);
+}})();
+</script>"##
+    );
+    page_shell_seo(
+        "Bridge transactions",
+        "Public log of every BLOCK↔wBLOCK bridge transfer — deposits, mints, burns and releases — from the Blockle bridge service.",
+        "/bridge/transactions",
+        "",
+        body,
+    )
+}
+
+fn page_bridge_tx(id: &str) -> String {
+    let tabs = bridge_tabs("/bridge/transactions");
+    let note = bridge_trust_note();
+    let id_esc = clean(id);
+    let id_js = json!(id).to_string();
+    let body = format!(
+        r##"<h1>Bridge transfer</h1>
+<p class="sub mono" style="word-break:break-all">{id_esc}</p>
+{tabs}{note}
+<div id="b-detail"><p class="mut" style="padding:30px 0">Loading transfer&hellip;</p></div>
+<p class="sub" style="margin-top:20px"><a href="/bridge/transactions">&larr; all transactions</a></p>
+{BRIDGE_CSS}
+<script>
+(function(){{
+  var COIN=100000000, ID={id_js};
+  function esc(s){{return String(s==null?'':s).replace(/[&<>]/g,function(c){{return{{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c];}});}}
+  function fmt(n){{return (n==null||!isFinite(n))?'—':Number(n).toLocaleString('en-US',{{maximumFractionDigits:8}});}}
+  function amt(base){{return base==null?null:Number(base)/COIN;}}
+  function dir(d){{return d==='b2s'?'BLOCK → wBLOCK':d==='s2b'?'wBLOCK → BLOCK':esc(d||'');}}
+  async function j(u){{try{{var r=await fetch(u,{{cache:'no-store'}});return r.ok?await r.json():null;}}catch(e){{return null;}}}}
+  function row(k,v){{return v==null||v===''?'':'<div class="kv"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';}}
+  async function go(){{
+    var t=await j('/api/bridge/transactions/'+encodeURIComponent(ID));
+    var el=document.getElementById('b-detail');
+    if(!t){{
+      el.innerHTML='<div class="brempty"><h3>Transfer not found</h3><p>No transfer with this id is known to the bridge service. It may not exist, or the bridge may not be live yet.</p></div>';
+      return;
+    }}
+    var when=t.createdAt?new Date(t.createdAt).toLocaleString():'';
+    var upd=t.updatedAt?new Date(t.updatedAt).toLocaleString():'';
+    var h='<div style="max-width:620px">';
+    h+='<div style="margin-bottom:14px"><span class="pill '+esc(t.state||'')+'" style="font-size:13px;padding:4px 12px">'+esc(t.state||'unknown')+'</span></div>';
+    h+=row('Direction',dir(t.direction));
+    h+=row('Amount sent',t.amountBase!=null?('<b>'+fmt(amt(t.amountBase))+'</b> '+(t.direction==='b2s'?'BLOCK':'wBLOCK')):null);
+    h+=row('Bridge fee',t.feeBase!=null?fmt(amt(t.feeBase)):null);
+    h+=row('Received',t.receivedBase!=null?('<b>'+fmt(amt(t.receivedBase))+'</b> '+(t.direction==='b2s'?'wBLOCK':'BLOCK')):null);
+    h+=row('Destination',t.to?'<span class="mono">'+esc(t.to)+'</span>':null);
+    h+=row('Source confirmations',t.confirmations!=null?(esc(''+t.confirmations)+(t.requiredConfirmations!=null?(' / '+esc(''+t.requiredConfirmations)):'')):null);
+    h+=row('Source tx',t.sourceTxid?'<span class="mono">'+esc(t.sourceTxid)+'</span>':null);
+    h+=row('Destination tx',t.destTxid?'<span class="mono">'+esc(t.destTxid)+'</span>':null);
+    h+=row('Created',esc(when));
+    h+=row('Updated',esc(upd));
+    if(t.error)h+=row('Error','<span style="color:var(--crit)">'+esc(t.error)+'</span>');
+    h+='</div>';
+    el.innerHTML=h;
+  }}
+  go();setInterval(go,10000);
+}})();
+</script>"##
+    );
+    page_shell_seo(
+        "Bridge transfer",
+        "Status and details of a single BLOCK↔wBLOCK bridge transfer.",
+        "",
+        "<meta name=\"robots\" content=\"noindex\">",
+        body,
+    )
+}
+
+fn page_bridge_reserves() -> String {
+    let tabs = bridge_tabs("/bridge/reserves");
+    let note = bridge_trust_note();
+    let body = format!(
+        r##"<h1>Bridge reserves &amp; backing</h1>
+<p class="sub">BLOCK held in the operator reserve versus wBLOCK in circulation. A healthy bridge keeps the backing ratio at or above 100%.</p>
+{tabs}{note}
+<div id="r-body"><p class="mut" style="padding:30px 0">Loading reserves&hellip;</p></div>
+{BRIDGE_CSS}
+<script>
+(function(){{
+  var COIN=100000000;
+  function esc(s){{return String(s==null?'':s).replace(/[&<>]/g,function(c){{return{{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c];}});}}
+  function fmt(n){{return (n==null||!isFinite(n))?'—':Number(n).toLocaleString('en-US',{{maximumFractionDigits:8}});}}
+  function amt(base){{return base==null?null:Number(base)/COIN;}}
+  async function j(u){{try{{var r=await fetch(u,{{cache:'no-store'}});return r.ok?await r.json():null;}}catch(e){{return null;}}}}
+  function row(k,v){{return v==null||v===''?'':'<div class="kv"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';}}
+  async function go(){{
+    var r=await j('/api/bridge/reserves');
+    var el=document.getElementById('r-body');
+    if(!r){{
+      el.innerHTML='<div class="brempty"><h3>Bridge not yet live</h3><p>Reserve and supply figures will appear here once the bridge service is online. Nothing is shown until there is real data to report.</p></div>';
+      return;
+    }}
+    var reserve=amt(r.reserveBlock), wrapped=amt(r.wrappedSupply);
+    var ratio=(reserve!=null&&wrapped!=null)?(wrapped>0?reserve/wrapped:1):null;
+    var h='<div class="brgrid">';
+    h+='<div class="brcard"><div class="lbl">Backing ratio</div><div class="big">'+(ratio!=null?(ratio*100).toFixed(1)+'%':'—')+'</div></div>';
+    h+='<div class="brcard"><div class="lbl">BLOCK in reserve</div><div class="big">'+fmt(reserve)+'</div></div>';
+    h+='<div class="brcard"><div class="lbl">wBLOCK supply</div><div class="big">'+fmt(wrapped)+'</div></div>';
+    h+='</div>';
+    h+='<div style="max-width:620px">';
+    h+=row('Reserve BLOCK (base units)',r.reserveBlock!=null?'<span class="mono">'+esc(''+r.reserveBlock)+'</span>':null);
+    h+=row('wBLOCK supply (base units)',r.wrappedSupply!=null?'<span class="mono">'+esc(''+r.wrappedSupply)+'</span>':null);
+    h+=row('Bridge fee',r.feeBps!=null?(r.feeBps/100)+'%':null);
+    h+=row('Min per transfer',r.minAmount!=null?fmt(amt(r.minAmount)):null);
+    h+=row('Max per transfer',r.maxAmount!=null?fmt(amt(r.maxAmount)):null);
+    h+=row('Daily cap',r.dailyCap!=null?fmt(amt(r.dailyCap)):null);
+    h+=row('Daily headroom left',r.dailyRemaining!=null?fmt(amt(r.dailyRemaining)):null);
+    h+=row('wBLOCK mint',r.mint?'<span class="mono">'+esc(r.mint)+'</span>':null);
+    h+=row('BLOCK deposit address',r.bridgeAddress?'<span class="mono">'+esc(r.bridgeAddress)+'</span>':null);
+    h+=row('Status',r.paused?'<span style="color:var(--warn)">paused</span>':'<span style="color:var(--good)">live</span>');
+    h+='</div>';
+    if(ratio!=null&&ratio<1){{h+='<div class="brnote" style="border-left-color:var(--crit)"><b>Under-collateralized.</b> Less than 100% of wBLOCK is currently covered by reserve BLOCK. Redemptions may be constrained until the reserve is topped up.</div>';}}
+    el.innerHTML=h;
+  }}
+  go();setInterval(go,20000);
+}})();
+</script>"##
+    );
+    page_shell_seo(
+        "Bridge reserves",
+        "Live reserve BLOCK, wrapped wBLOCK supply, and backing ratio for the custodial Blockle bridge.",
+        "/bridge/reserves",
         "",
         body,
     )
