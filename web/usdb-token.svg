@@ -1,30 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="USDB — Blockle USD">
   <defs>
-    <linearGradient id="ub-coin" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3be6b0"/>
-      <stop offset="0.55" stop-color="#1fb886"/>
-      <stop offset="1" stop-color="#0e7d5c"/>
+    <linearGradient id="ub-top" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#5affb9"/><stop offset="1" stop-color="#34e39e"/>
     </linearGradient>
-    <linearGradient id="ub-ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#8b6dff"/>
-      <stop offset="1" stop-color="#37e0c8"/>
+    <linearGradient id="ub-left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#23c78f"/><stop offset="1" stop-color="#139b6d"/>
     </linearGradient>
-    <radialGradient id="ub-shine" cx="0.35" cy="0.28" r="0.8">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
-      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
+    <linearGradient id="ub-right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#139b6d"/><stop offset="1" stop-color="#0a6f4e"/>
+    </linearGradient>
+    <linearGradient id="ub-dollar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eafff7"/><stop offset="1" stop-color="#bff3df"/>
+    </linearGradient>
   </defs>
-  <!-- coin -->
-  <circle cx="64" cy="64" r="60" fill="url(#ub-coin)" stroke="#0a5c43" stroke-width="3"/>
-  <!-- accent ring (blockle brand) -->
-  <circle cx="64" cy="64" r="52" fill="none" stroke="url(#ub-ring)" stroke-width="3" opacity="0.9"/>
-  <circle cx="64" cy="64" r="45" fill="none" stroke="#eafff7" stroke-width="1.5" opacity="0.35"/>
-  <!-- dollar sign -->
-  <text x="64" y="86" text-anchor="middle" font-family="ui-sans-serif,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
-        font-size="74" font-weight="800" fill="#eafff7">$</text>
-  <!-- USDB wordmark -->
-  <text x="64" y="112" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace"
-        font-size="13" font-weight="700" letter-spacing="2" fill="#eafff7" opacity="0.92">USDB</text>
-  <!-- top shine -->
-  <circle cx="64" cy="64" r="60" fill="url(#ub-shine)"/>
+  <!-- dark ground (brand mark style) -->
+  <rect x="2" y="2" width="124" height="124" rx="26" fill="#0B0B14"/>
+  <rect x="2.75" y="2.75" width="122.5" height="122.5" rx="25.3" fill="none" stroke="#1dd68f" stroke-width="1.5" opacity="0.25"/>
+  <!-- isometric cube (the Blockle mark) -->
+  <g stroke="#0B0B14" stroke-width="2.4" stroke-linejoin="round">
+    <polygon points="64,20 104,42 64,64 24,42" fill="url(#ub-top)"/>   <!-- top face -->
+    <polygon points="24,42 64,64 64,108 24,86"  fill="url(#ub-left)"/>  <!-- left face -->
+    <polygon points="104,42 104,86 64,108 64,64" fill="url(#ub-right)"/> <!-- right face -->
+  </g>
+  <!-- edge highlights -->
+  <g stroke="#9bffd8" stroke-width="1.2" opacity="0.5" fill="none" stroke-linecap="round">
+    <line x1="64" y1="20" x2="24" y2="42"/>
+    <line x1="64" y1="20" x2="104" y2="42"/>
+  </g>
+  <!-- $ carved across the cube faces (in the brand's extruded-letter spirit) -->
+  <text x="64" y="86" text-anchor="middle"
+        font-family="ui-sans-serif,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="58" font-weight="800" fill="url(#ub-dollar)"
+        stroke="#0a6f4e" stroke-width="1.2" paint-order="stroke">$</text>
 </svg>
