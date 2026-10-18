@@ -1,5 +1,30 @@
 # USDB (Blockle USD) — mainnet deploy walkthrough
 
+## ✅ LIVE ON MAINNET (as of 2026-10-18)
+- **Contract id:** `946b4f3771970c8be5ca9416898408ac88fdbaedcd2177f3cbfd564a639ada09`
+- **Issuer wallet:** `block16qp45xs7qy5agu7vre34h8xfw766rr2pcyh5d3m2vgq7vtgtp2es4hy3yu`
+  (dedicated key, box-only at `/opt/blockle/secrets/usdb-issuer.json`, chmod 600 — **never** the premine key).
+- **Status:** deployed + `init()` (issuer set) + a net-zero mint/burn self-test proving
+  the issuer rails. Metadata on-chain: name "Blockle USD", symbol "USDB", 6 decimals.
+- **Issuance service:** `blockle-usdb.service` on `127.0.0.1:8801`, proxied at
+  `https://blockle.org/api/usdb/`. Reads the issuer key by path; `USDB_ENABLED=0`
+  so the **public** buy/redeem stay dry-run until the fiat rail + KYC are wired.
+- **Fees (both ramps = our 0.5% + PayPal pass-through):** on-ramp = PayPal 2.9%+$0.30
+  + 0.5%; off-ramp = PayPal payout 2% (cap $1) + 0.5%. USDB received == reserves
+  credited (fully backed). Override the PayPal rates in `usdb.env` to the account's real rate.
+- **Gas note:** the reserve-signer (`:8795`) rejected the deploy-gas dispense because
+  its wallet datadir (`/var/lib/blockle-mainnet`) is a **stale Oct-4 snapshot** → it
+  builds txs against spent outpoints. Worked around by funding 1 BLOCK of gas from the
+  live synced node operator wallet. **TODO: resync/repoint the reserve-signer datadir.**
+
+### To enable PUBLIC issuance (issuer action, when ready)
+Fund USD reserves + configure a KYC/sanctions verifier + the PayPal capture/payout rail,
+then set in `/opt/blockle/secrets/usdb.env`: `USDB_KYC_URL=<verifier>` and `USDB_ENABLED=1`,
+and `systemctl restart blockle-usdb`. Until then every public mint/burn is fail-closed.
+
+---
+
+
 > **Regulated-asset deploy. The issuer (ALienbeing LLC) performs + signs every
 > step. Nothing here is auto-run.** USDB is a BLOCK-20S stablecoin: issuer-only
 > mint/burn, freeze/blacklist, global pause, mutable supply. Peg integrity is
