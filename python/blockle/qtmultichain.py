@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -483,6 +484,13 @@ class MultiChainController:
         self._store: Optional[_DictStore] = None
         self.loop: Optional[AgentLoop] = None
         self.confirm_bridge: Optional[ConfirmBridge] = None
+        # Blockle Copilot subscription link: the tier drives agent gating (see channel_mgr
+        # "entitlement"). Default 'free' until the user connects their blockle.org account;
+        # set here (not in _build) so it SURVIVES wallet unlock/create.
+        self.copilot_origin = os.environ.get("BLOCKLE_ORIGIN", "https://blockle.org")
+        self.copilot_tier = "free"
+        self.copilot_email = None
+        self._acct_token = None
 
     # ---- unlock everything from the sealed seed ----
     def unlock(self, password: str) -> None:
@@ -532,6 +540,33 @@ class MultiChainController:
             self.loop = AgentLoop()
             self.loop.start()
         self._store = _DictStore(self.vault)
+
+    # ---- Blockle Copilot account link ----
+    def connect_copilot_account(self, email: str, password: str, totp: Optional[str] = None) -> str:
+        """Sign into the blockle.org account (native bearer token) and cache the Copilot tier.
+        Blocking HTTP — call off the GUI thread. Returns the tier; raises on bad credentials."""
+        from . import backup_client
+        token, user = backup_client.login(self.copilot_origin, email, password, totp)
+        self._acct_token = token
+        self.copilot_email = email
+        self.copilot_tier = backup_client.tier_of(user)
+        return self.copilot_tier
+
+    def refresh_copilot_tier(self) -> str:
+        """Re-read the tier from /me (e.g. after a user subscribes). Best-effort."""
+        if not self._acct_token:
+            return self.copilot_tier
+        from . import backup_client
+        try:
+            self.copilot_tier = backup_client.tier_of(backup_client.me(self.copilot_origin, self._acct_token))
+        except Exception:
+            pass
+        return self.copilot_tier
+
+    def disconnect_copilot_account(self) -> None:
+        self._acct_token = None
+        self.copilot_email = None
+        self.copilot_tier = "free"
 
     # ---- chain ordering + labels (built-ins first, then custom networks) ----
     def ordered_chains(self) -> List[str]:
@@ -760,6 +795,9 @@ class MultiChainController:
             "ctxFor": self._ctx,
             "onEvent": on_event,
             "onChannelKill": on_channel_kill,
+            # Blockle Copilot tier gating: the engine reads the live tier here (paper-only +
+            # 1 agent on Free; live + more on paid). Linked to the user's blockle.org account.
+            "entitlement": lambda: self.copilot_tier,
         })
         return self.channel_mgr
 
@@ -1937,6 +1975,7 @@ class AgentTab(QWidget):
     _refresh = Signal(list)
     _warn = Signal(str)
     _info = Signal(str)
+    _plan = Signal()
 
     def __init__(self, ctrl: MultiChainController):
         super().__init__()
@@ -1947,6 +1986,7 @@ class AgentTab(QWidget):
         self._refresh.connect(self._fill_list)
         self._warn.connect(lambda m: QMessageBox.warning(self, "Agent", m))
         self._info.connect(lambda m: QMessageBox.information(self, "Agent", m))
+        self._plan.connect(self._update_plan_label)
         lay = QVBoxLayout(self)
 
         warn = QLabel("Safety rails are enforced in code: a per-session spend cap, a REQUIRED "
@@ -1955,6 +1995,24 @@ class AgentTab(QWidget):
         warn.setObjectName("sub")
         warn.setWordWrap(True)
         lay.addWidget(warn)
+
+        # Blockle Copilot plan bar — the subscription that unlocks live trading + more agents.
+        plan_row = QHBoxLayout()
+        self.plan_lbl = QLabel()
+        self.plan_lbl.setObjectName("sub")
+        self.plan_lbl.setWordWrap(True)
+        self.plan_connect_btn = QPushButton("Connect account")
+        self.plan_connect_btn.setToolTip("Link your blockle.org account to unlock your Copilot plan")
+        self.plan_connect_btn.clicked.connect(self._connect_account)
+        self.plan_upgrade_btn = QPushButton("Upgrade ↗")
+        self.plan_upgrade_btn.setToolTip("See Blockle Copilot plans")
+        self.plan_upgrade_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(self.ctrl.copilot_origin + "/copilot")))
+        plan_row.addWidget(self.plan_lbl, 1)
+        plan_row.addWidget(self.plan_connect_btn)
+        plan_row.addWidget(self.plan_upgrade_btn)
+        lay.addLayout(plan_row)
+        self._update_plan_label()
 
         top = QHBoxLayout()
         self.hosted_btn = QPushButton("Use Blockle hosted agent (no key)")
@@ -2088,6 +2146,61 @@ class AgentTab(QWidget):
         QMessageBox.information(self, "Agent",
                                 f"{guide['label']} connected and sealed in the vault. "
                                 "Create a channel to use it.")
+
+    # ---- Blockle Copilot plan ----
+    _TIER_BLURB = {
+        "free": "Free · paper-only, 1 agent",
+        "pro": "Blockle Pro · live, up to 3 agents",
+        "copilot": "Copilot · live, up to 3 agents",
+        "copilot_pro": "Copilot Pro · live, unlimited agents",
+    }
+
+    def _update_plan_label(self):
+        tier = getattr(self.ctrl, "copilot_tier", "free")
+        blurb = self._TIER_BLURB.get(tier, self._TIER_BLURB["free"])
+        who = getattr(self.ctrl, "copilot_email", None)
+        self.plan_lbl.setText("Plan: " + blurb + (f"  ({who})" if who else ""))
+        connected = bool(getattr(self.ctrl, "_acct_token", None))
+        self.plan_connect_btn.setText("Reconnect" if connected else "Connect account")
+        # paid tiers hide the upsell
+        self.plan_upgrade_btn.setVisible(tier in ("free",))
+
+    def _connect_account(self):
+        """Link the user's blockle.org account to unlock their Copilot plan. The user types
+        their OWN credentials; login runs off the GUI thread; the tier then drives gating."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Connect Blockle account")
+        form = QFormLayout(dlg)
+        email = QLineEdit(); email.setPlaceholderText("you@email.com")
+        pw = QLineEdit(); pw.setEchoMode(QLineEdit.Password)
+        totp = QLineEdit(); totp.setPlaceholderText("if 2FA is on"); totp.setMaxLength(10)
+        form.addRow("Email", email)
+        form.addRow("Password", pw)
+        form.addRow("2FA code", totp)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        em, p, code = email.text().strip(), pw.text(), totp.text().strip() or None
+        if not em or not p:
+            self._warn.emit("Enter your email and password.")
+            return
+        self._log.emit("Connecting your Blockle account…")
+        fut = self.ctrl.loop.submit(asyncio.to_thread(self.ctrl.connect_copilot_account, em, p, code))
+
+        def done(f):
+            try:
+                tier = f.result()
+                self._plan.emit()
+                if tier in ("free",):
+                    self._info.emit("Account connected. You're on the Free plan — upgrade to Blockle "
+                                    "Copilot to run a live agent.")
+                else:
+                    self._info.emit(f"Account connected — {self._TIER_BLURB.get(tier, tier)} unlocked.")
+            except Exception as e:  # noqa: BLE001
+                self._warn.emit("Could not connect: " + str(e))
+        fut.add_done_callback(done)
 
     def _connect_hosted(self):
         """Keyless connect to Blockle's hosted agent — no API key. Uses the anon-safe

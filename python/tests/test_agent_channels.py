@@ -97,6 +97,52 @@ def test_hosted_channel_starts_without_apikey():
     assert d["running"] is True
 
 
+def test_tier_free_is_paper_only_and_single_agent():
+    mgr = channels_mod.create(base_opts(mem_store(), entitlement=lambda: "free"))
+    # a live (value-moving) agent is rejected on the free tier
+    with pytest.raises(ValueError, match="paper-only"):
+        run(mgr.create({"walletId": "w1", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+    # one paper (read-only) agent is allowed...
+    run(mgr.create({"id": "a", "walletId": "w1", "provider": "claude", "credRef": "main", "readOnly": True, "caps": {}}))
+    # ...but a second agent hits the 1-agent cap
+    with pytest.raises(ValueError, match="agent"):
+        run(mgr.create({"id": "b", "walletId": "w1", "provider": "claude", "credRef": "main", "readOnly": True, "caps": {}}))
+    p = mgr.plan()
+    assert p["tier"] == "free" and p["live"] is False and p["maxChannels"] == 1
+
+
+def test_tier_copilot_allows_live_up_to_three():
+    mgr = channels_mod.create(base_opts(mem_store(), entitlement="copilot"))
+    for i in range(3):
+        run(mgr.create({"id": f"c{i}", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+    with pytest.raises(ValueError, match="agent"):
+        run(mgr.create({"id": "c3", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+    assert mgr.plan()["maxChannels"] == 3 and mgr.plan()["live"] is True
+
+
+def test_tier_copilot_pro_is_unlimited():
+    mgr = channels_mod.create(base_opts(mem_store(), entitlement="copilot_pro"))
+    for i in range(5):
+        run(mgr.create({"id": f"p{i}", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+    assert mgr.plan()["maxChannels"] is None  # unlimited
+
+
+def test_tier_downgrade_blocks_starting_a_live_channel():
+    ent = {"t": "copilot"}
+    mgr = channels_mod.create(base_opts(mem_store(), entitlement=lambda: ent["t"]))
+    run(mgr.create({"id": "x", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+    ent["t"] = "free"  # subscription lapses before the agent is armed
+    with pytest.raises(ValueError, match="Copilot"):
+        run(mgr.start("x"))
+
+
+def test_no_entitlement_source_means_no_gating():
+    # backward compat: a host that doesn't wire entitlement gets the old unrestricted behaviour
+    mgr = channels_mod.create(base_opts(mem_store()))
+    for i in range(4):
+        run(mgr.create({"id": f"u{i}", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
+
+
 def test_hosted_channel_refuses_without_session():
     """But a hosted channel with no gatewayUrl/sessionToken still refuses to start."""
     mgr = channels_mod.create(base_opts(
