@@ -1,96 +1,60 @@
-// USDB (Blockle USD) issuance + reserve service.
+// USDB (Blockle USD) issuance + reserve service — Modern Treasury rails.
 //
-// The licensed issuer (ALienbeing LLC) mints USDB against VERIFIED USD reserves
-// and burns it on redemption, so on-chain supply never exceeds custodied USD
-// (supply <= reserves, fully backed). A small mint/redeem fee is the issuer's
-// margin, taken on the fiat side so it never mints unbacked tokens.
+// The licensed issuer (Alienbeing LLC) mints USDB against USD collected via
+// Modern Treasury (ACH) and burns it on redemption, paying USD back out via MT.
+// On-chain supply never exceeds custodied USD (supply <= reserves, fully backed).
+// A FLAT 3.7% fee is taken on BOTH ramps (our margin; ACH costs pennies, so it
+// settles to our MT account as revenue).
 //
-// This process holds the ISSUER key by PATH (box-only, chmod 600) and signs
-// BLOCK-20S mint/burn calls with the SAME ML-DSA wasm the wallets use (vendored
-// at ./wasm). The key never enters any other service and is never logged.
+// This process holds the ISSUER key by PATH (box-only) and signs BLOCK-20S
+// mint/burn/markRedeemed with the same ML-DSA wasm the wallets use. MT API
+// credentials come from the env (box-only secrets); MT egress is forced to IPv4
+// so it comes from our allow-listed address.
 //
-// SAFETY POSTURE (money + regulated product — public issuance OFF by default):
-//   * USDB_ENABLED defaults 0 -> the PUBLIC buy/redeem endpoints return an
-//     honest DRY-RUN plan and mint/burn NOTHING. The operator flips it on only
-//     AFTER the fiat deposit rail + reserve custody + KYC/sanctions verifier are
-//     wired, so no USDB is ever minted against uncollected or unscreened USD.
-//   * Every real mint requires a verified USD-deposit reference; every real burn
-//     (redeem) requires the user's USDB-return txid to the treasury, confirmed
-//     on-chain. Missing either => fail-closed (nothing issued).
-//   * supply <= reserveUsd is the invariant: a buy records the GROSS USD to
-//     reserves and mints the NET (fee is margin, so reserves over-cover supply).
-//   * Per-tx + daily issuance caps bound the blast radius. The proof-of-reserves
-//     endpoint compares live on-chain supply vs recorded USD backing.
+// SAFETY: USDB_ENABLED=0 -> buy/redeem return a dry-run and move nothing. Mints
+// are SETTLEMENT-GATED: a buy's USDB is minted only when its ACH debit reaches
+// `completed` in MT, so we never mint against money we haven't collected.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
-import * as paypal from './paypal.js';
+import * as mt from './modern_treasury.js';
 
 const require = createRequire(import.meta.url);
-// ML-DSA signer / tx builder — same wasm the wallets use, vendored next to this
-// service as ./wasm (pkg-node build) at deploy time. Exposes build_stablecoin_mint
-// / build_stablecoin_burn (issuer-signed BLOCK-20S selectors 7/8).
 const wasm = require('../wasm/blockle_wasm.js');
 
 const PORT = Number(process.env.USDB_PORT || 8801);
 const DATA = process.env.USDB_DATA || '/var/lib/blockle-usdb';
 const NODE = (process.env.USDB_NODE_URL || 'http://127.0.0.1:8445').replace(/\/+$/, '');
-const CONTRACT = (process.env.USDB_CONTRACT || '').trim();     // deployed USDB contract id (64 hex)
+const CONTRACT = (process.env.USDB_CONTRACT || '').trim();
 const DECIMALS = Number(process.env.USDB_DECIMALS || 6);
 const UNIT = 10 ** DECIMALS;
-// Buy pricing: the buyer pays via PayPal, so the quote PASSES THROUGH PayPal's
-// processing fee (so the issuer never nets less than the USDB it backs) and adds
-// OUR margin on top. PayPal's published goods-&-services rate defaults to
-// 2.9% + $0.30 (override per the account's actual rate); our margin is 0.5% of
-// the post-PayPal net. USDB received = reserves credited (fully backed).
-// Estimate rate for the PRE-PURCHASE quote only (the actual fee is read from the
-// PayPal capture at mint time). PayPal's US goods-&-services rate is 3.49% + $0.49.
-const PAYPAL_PCT_BPS = Number(process.env.USDB_PAYPAL_PCT_BPS || 349);   // 3.49%
-const PAYPAL_FIXED_USD = Number(process.env.USDB_PAYPAL_FIXED_USD || 0.49);
-const BUY_MARGIN_BPS = Number(process.env.USDB_BUY_MARGIN_BPS || 50);    // our 0.50% on-ramp
-// Redeem (off-ramp) mirrors the buy: pass through PayPal's PAYOUT fee (US
-// domestic default 2% capped at $1.00) + OUR 0.50% margin, both borne by the
-// redeemer. Reserves are debited the full burned amount; our margin is profit.
-const REDEEM_MARGIN_BPS = Number(process.env.USDB_REDEEM_MARGIN_BPS || 50);       // our 0.50% off-ramp
-const PAYPAL_PAYOUT_PCT_BPS = Number(process.env.USDB_PAYPAL_PAYOUT_PCT_BPS || 200); // 2%
-const PAYPAL_PAYOUT_CAP_USD = Number(process.env.USDB_PAYPAL_PAYOUT_CAP_USD || 1.0); // $1 cap
+// FLAT fee, both ramps (basis points). Modern Treasury ACH is ~pennies, so this
+// is our margin and settles to the MT internal account.
+const FEE_BPS = Number(process.env.MT_FEE_BPS || process.env.USDB_FEE_BPS || 370); // 3.7%
 const PER_TX_CAP_USD = Number(process.env.USDB_PER_TX_CAP_USD || 10000);
 const DAILY_CAP_USD = Number(process.env.USDB_DAILY_CAP_USD || 100000);
-const ENABLED = (process.env.USDB_ENABLED || '0') === '1';      // master gate for REAL public mint/burn
-const KYC_URL = (process.env.USDB_KYC_URL || '').trim();         // sanctions/KYC verifier
-// Regulatory posture: the issuer is cleared to operate KYC-FREE until cumulative
-// volume reaches this threshold ($10M). At/above it, KYC becomes mandatory and
-// issuance fails closed until USDB_KYC_URL is configured. Self-funding model:
-// reserves accrue from each sale's captured PayPal payment (not pre-funded), so
-// supply stays <= reserves without any up-front float.
+const ENABLED = (process.env.USDB_ENABLED || '0') === '1';
+const KYC_URL = (process.env.USDB_KYC_URL || '').trim();
 const KYC_THRESHOLD_USD = Number(process.env.USDB_KYC_THRESHOLD_USD || 10_000_000);
-const KEYPATH = (process.env.USDB_ISSUER_KEYPAIR || '').trim();  // issuer wallet {address,publicKey,secretKey} (box-only)
-const GAS_LIMIT = BigInt(process.env.USDB_GAS_LIMIT || 120000);  // mint/burn gas
-const GAS_PRICE = BigInt(process.env.USDB_GAS_PRICE || 10);      // mainnet gas_price
-const CONF_TARGET = Number(process.env.USDB_CONF_TARGET || 1);   // confirmations before "done"
+const KEYPATH = (process.env.USDB_ISSUER_KEYPAIR || '').trim();
+const GAS_LIMIT = BigInt(process.env.USDB_GAS_LIMIT || 150000);
+const GAS_PRICE = BigInt(process.env.USDB_GAS_PRICE || 10);
 
-// Issuer key is OPTIONAL at boot (service runs read-only/dry-run without it) but
-// REQUIRED before any real mint/burn. Load lazily + fail-closed if missing.
 let issuer = null;
 function loadIssuer() {
   if (issuer) return issuer;
   if (!KEYPATH) return null;
-  try {
-    const kp = JSON.parse(fs.readFileSync(KEYPATH, 'utf8'));
-    if (kp && kp.address && kp.publicKey && kp.secretKey) { issuer = kp; return issuer; }
-  } catch { /* fall through */ }
+  try { const kp = JSON.parse(fs.readFileSync(KEYPATH, 'utf8')); if (kp && kp.address && kp.publicKey && kp.secretKey) { issuer = kp; return issuer; } } catch { /* */ }
   return null;
 }
-const TREASURY = (process.env.USDB_TREASURY || '').trim(); // where redeemers send USDB to be burned (default: issuer addr)
-function treasuryAddr() { const k = loadIssuer(); return TREASURY || (k && k.address) || ''; }
 
 fs.mkdirSync(DATA, { recursive: true });
 const LEDGER = path.join(DATA, 'reserve-ledger.json');
 function load() {
   let l; try { l = JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { l = {}; }
-  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, pending: {}, redeemIntents: {}, paidRedeems: {}, ...l };
+  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, pendingBuys: {}, redeemIntents: {}, paidRedeems: {}, ...l };
 }
 function save(l) { fs.writeFileSync(LEDGER, JSON.stringify(l)); }
 
@@ -100,115 +64,49 @@ function j(res, code, obj) {
 }
 async function nodeGet(p) { const r = await fetch(NODE + p, { headers: { accept: 'application/json' } }); if (!r.ok) throw new Error('node ' + r.status); return r.json(); }
 async function nodeRpc(method, params) {
-  const r = await fetch(NODE, { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '1.0', id: 'usdb', method, params }) });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok || (body && body.error)) throw new Error((body.error && (body.error.message || body.error)) || 'rpc failed');
-  return body.result != null ? body.result : body;
-}
-function today() { return new Date(Date.now()).toISOString().slice(0, 10); }
-function net(usd, bps) { return usd - (usd * bps) / 10000; }
-function round2(x) { return Math.round(x * 100) / 100; }
-
-// Buy pricing. The buyer pays `pay` USD through PayPal. PayPal takes its
-// processing fee off the top; of what lands in our account we keep OUR margin
-// and back the rest 1:1 with minted USDB (so reserves credited == USDB minted,
-// fully backed). PayPal fee + our margin are both borne by the buyer.
-function buyFromPay(pay) {
-  const paypalFee = (pay * PAYPAL_PCT_BPS) / 10000 + PAYPAL_FIXED_USD;
-  const netAfterPaypal = Math.max(0, pay - paypalFee);
-  const ourFee = (netAfterPaypal * BUY_MARGIN_BPS) / 10000;
-  const receiveUsdb = Math.max(0, netAfterPaypal - ourFee);
-  return { side: 'buy', payUsd: round2(pay), paypalFeeUsd: round2(paypalFee), ourFeeUsd: round2(ourFee), feeUsd: round2(paypalFee + ourFee), receiveUsdb: round2(receiveUsdb) };
-}
-// Inverse: the buyer wants `want` USDB — solve for the USD they must pay so that,
-// after PayPal + our margin, exactly `want` USD backs the minted USDB.
-function buyFromUsdb(want) {
-  const m = BUY_MARGIN_BPS / 10000, pct = PAYPAL_PCT_BPS / 10000;
-  const netAfterPaypal = want / (1 - m);
-  const pay = (netAfterPaypal + PAYPAL_FIXED_USD) / (1 - pct);
-  return buyFromPay(pay);
-}
-// Redeem quote: burn `burn` USDB ($burn), pay out via PayPal minus PayPal's
-// payout fee and our 0.5% margin.
-function redeemQuote(burn) {
-  const paypalFee = Math.min((burn * PAYPAL_PAYOUT_PCT_BPS) / 10000, PAYPAL_PAYOUT_CAP_USD);
-  const ourFee = (burn * REDEEM_MARGIN_BPS) / 10000;
-  const payoutUsd = Math.max(0, burn - paypalFee - ourFee);
-  return { side: 'redeem', burnUsdb: round2(burn), paypalFeeUsd: round2(paypalFee), ourFeeUsd: round2(ourFee), feeUsd: round2(paypalFee + ourFee), payoutUsd: round2(payoutUsd) };
+  const r = await fetch(NODE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '1.0', id: 'usdb', method, params }) });
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok || (b && b.error)) throw new Error((b.error && (b.error.message || b.error)) || 'rpc failed');
+  return b.result != null ? b.result : b;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// On-chain USDB supply (whole USDB) via the stablecoin contract's totalSupply
-// (BLOCK-20S selector 3), read through the node's `tokeninfo` RPC.
-async function onchainSupply() {
-  if (!CONTRACT) return null;
-  try {
-    const t = await nodeRpc('tokeninfo', [{ contract: CONTRACT }]);
-    const sup = t && (t.totalSupply != null ? t.totalSupply : t.supply);
-    return sup != null ? Number(sup) / UNIT : null;
-  } catch { return null; }
-}
-async function balanceOfBase(addr) {
-  const t = await nodeRpc('tokeninfo', [{ contract: CONTRACT, holder: addr }]);
-  const b = t && (t.balance != null ? t.balance : t.balanceOf);
-  return b != null ? Number(b) : 0;
-}
-async function issuerUtxos() {
-  const k = loadIssuer();
-  const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address));
-  return (u.utxos || []).map((x) => ({ txid: x.txid, vout: x.vout, amount: Number(x.amount) }));
-}
-// Confirm an issuer-signed tx by its BLOCK change landing back in the issuer's
-// UTXO set. The node's /explorer/tx does NOT index contract txs, so this is the
-// reliable signal (every mint/burn/markRedeemed sends change to the issuer).
-async function waitConf(txid) {
-  const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
-  for (let i = 0; i < 1200; i++) { // ~40 min budget (mainnet ~10-min blocks)
-    try { const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address));
-      if ((u.utxos || []).some((x) => x.txid === txid)) return;
-    } catch { /* keep polling */ }
-    await sleep(2000);
-  }
-  throw new Error('timed out confirming ' + txid);
-}
-// Read-only contract view call (callcontract RPC) -> { success, returnHex, u64 }.
-async function callRead(calldataHex) {
-  return nodeRpc('callcontract', [{ contract: CONTRACT, calldata: calldataHex }]);
-}
+const round2 = (x) => Math.round(x * 100) / 100;
+function today() { return new Date(Date.now()).toISOString().slice(0, 10); }
 function u64le(n) { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b.toString('hex'); }
 function leU64(hex, off) { return Number(Buffer.from(hex, 'hex').readBigUInt64LE(off)); }
 
-// Issuer-signed mint of `base` USDB base units to `to` (block1 addr). Pays only
-// gas from the issuer wallet; reverts at the node if the signer isn't the issuer.
+// FLAT 3.7% both ramps.
+function buyQuote(usd) { const fee = round2((usd * FEE_BPS) / 10000); return { side: 'buy', payUsd: round2(usd), feeUsd: fee, feeBps: FEE_BPS, receiveUsdb: round2(usd - fee) }; }
+function redeemQuote(usdb) { const fee = round2((usdb * FEE_BPS) / 10000); return { side: 'redeem', burnUsdb: round2(usdb), feeUsd: fee, feeBps: FEE_BPS, payoutUsd: round2(usdb - fee) }; }
+
+async function onchainSupply() {
+  if (!CONTRACT) return null;
+  try { const t = await nodeRpc('tokeninfo', [{ contract: CONTRACT }]); const s = t && (t.totalSupply != null ? t.totalSupply : t.supply); return s != null ? Number(s) / UNIT : null; } catch { return null; }
+}
+async function issuerUtxos() { const k = loadIssuer(); const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address)); return (u.utxos || []).map((x) => ({ txid: x.txid, vout: x.vout, amount: Number(x.amount) })); }
+// Confirm an issuer-signed tx by its BLOCK change returning to the issuer (the
+// node doesn't index contract txs in /explorer/tx).
+async function waitConf(txid) {
+  const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
+  for (let i = 0; i < 1200; i++) { try { const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address)); if ((u.utxos || []).some((x) => x.txid === txid)) return; } catch { /* */ } await sleep(2000); }
+  throw new Error('timed out confirming ' + txid);
+}
+async function callRead(calldataHex) { return nodeRpc('callcontract', [{ contract: CONTRACT, calldata: calldataHex }]); }
+
 async function mintTo(to, base) {
   const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
-  const utxos = await issuerUtxos();
-  const built = JSON.parse(wasm.build_stablecoin_mint(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, to, BigInt(base), GAS_LIMIT, GAS_PRICE));
-  const sub = await nodeRpc('submitrawtransaction', [built.raw]);
-  const txid = (sub && sub.txid) || built.txid;
-  await waitConf(txid);
-  return txid;
+  const built = JSON.parse(wasm.build_stablecoin_mint(k.secretKey, k.publicKey, JSON.stringify(await issuerUtxos()), CONTRACT, to, BigInt(base), GAS_LIMIT, GAS_PRICE));
+  const sub = await nodeRpc('submitrawtransaction', [built.raw]); const txid = (sub && sub.txid) || built.txid; await waitConf(txid); return txid;
 }
-async function burnFrom(from, base) {
-  const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
-  const utxos = await issuerUtxos();
-  const built = JSON.parse(wasm.build_stablecoin_burn(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, from, BigInt(base), GAS_LIMIT, GAS_PRICE));
-  const sub = await nodeRpc('submitrawtransaction', [built.raw]);
-  const txid = (sub && sub.txid) || built.txid;
-  await waitConf(txid);
-  return txid;
-}
-// Issuer-signed markRedeemed(id) (selector 18) — flags an on-chain redeem request fulfilled.
 async function markRedeemed(id) {
   const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
-  const utxos = await issuerUtxos();
   const input = '12' + u64le(id); // selector 18 (0x12) ‖ id(8 LE)
-  const built = JSON.parse(wasm.build_call(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, input, 0n, GAS_LIMIT, GAS_PRICE));
-  const sub = await nodeRpc('submitrawtransaction', [built.raw]);
-  const txid = (sub && sub.txid) || built.txid;
-  await waitConf(txid);
-  return txid;
+  const built = JSON.parse(wasm.build_call(k.secretKey, k.publicKey, JSON.stringify(await issuerUtxos()), CONTRACT, input, 0n, GAS_LIMIT, GAS_PRICE));
+  const sub = await nodeRpc('submitrawtransaction', [built.raw]); const txid = (sub && sub.txid) || built.txid; await waitConf(txid); return txid;
+}
+
+function validBank(b) {
+  return b && /^\d{9}$/.test(String(b.routingNumber || '')) && /^\d{4,17}$/.test(String(b.accountNumber || '')) && String(b.name || '').trim().length >= 2;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -216,203 +114,132 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (req.method === 'GET' && url.pathname === '/api/usdb/info') {
-      const l = load();
-      const supply = await onchainSupply();
-      const k = loadIssuer();
+      const l = load(); const supply = await onchainSupply(); const k = loadIssuer();
       return j(res, 200, {
-        asset: 'USDB', name: 'Blockle USD', peg: 'USD', decimals: DECIMALS,
-        contract: CONTRACT || null, treasury: treasuryAddr() || null,
-        buyFee: { paypalPctBps: PAYPAL_PCT_BPS, paypalFixedUsd: PAYPAL_FIXED_USD, ourMarginBps: BUY_MARGIN_BPS, rail: 'paypal',
-          note: 'on-ramp quote passes through PayPal processing fee + our 0.5% margin; USDB received is fully backed' },
-        redeemFee: { paypalPayoutPctBps: PAYPAL_PAYOUT_PCT_BPS, paypalPayoutCapUsd: PAYPAL_PAYOUT_CAP_USD, ourMarginBps: REDEEM_MARGIN_BPS, rail: 'paypal',
-          note: 'off-ramp payout passes through PayPal payout fee + our 0.5% margin' },
-        exampleBuy100: buyFromPay(100), exampleRedeem100: redeemQuote(100),
+        asset: 'USDB', name: 'Blockle USD', peg: 'USD', decimals: DECIMALS, contract: CONTRACT || null,
+        rail: 'modern_treasury', mtEnv: mt.env(), mtConfigured: mt.configured(),
+        fee: { flatBps: FEE_BPS, pct: FEE_BPS / 100, appliesTo: 'both ramps', note: '3.7% on buy and redeem; USD moves via Modern Treasury ACH' },
+        exampleBuy100: buyQuote(100), exampleRedeem100: redeemQuote(100),
         perTxCapUsd: PER_TX_CAP_USD, dailyCapUsd: DAILY_CAP_USD,
-        enabled: ENABLED, issuerReady: !!k, rail: 'paypal', paypalConfigured: paypal.configured(), paypalEnv: paypal.env(),
-        kyc: { configured: !!KYC_URL, requiredAtVolumeUsd: KYC_THRESHOLD_USD, requiredNow: l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL },
-        volumeUsd: l.volumeUsd,
-        supply, reserveUsd: l.reserveUsd,
+        enabled: ENABLED, issuerReady: !!k, kyc: { configured: !!KYC_URL, requiredAtVolumeUsd: KYC_THRESHOLD_USD, requiredNow: l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL },
+        volumeUsd: l.volumeUsd, supply, reserveUsd: l.reserveUsd,
         fullyBacked: supply == null ? null : l.reserveUsd >= supply,
-        note: ENABLED ? 'live — self-funding (reserves accrue from PayPal-captured sales); KYC-free until $' + KYC_THRESHOLD_USD.toLocaleString() + ' volume' : 'public issuance not enabled — buy/redeem return a dry-run plan and mint/burn nothing',
+        note: ENABLED ? 'live — Modern Treasury ACH, 3.7% both ramps' : 'public issuance not enabled (USDB_ENABLED=0)',
       });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/usdb/reserves') {
-      // Proof-of-reserves: on-chain USDB supply vs recorded USD backing.
-      const l = load();
-      const supply = await onchainSupply();
-      return j(res, 200, {
-        supplyUsdb: supply, reserveUsd: l.reserveUsd,
-        deltaUsd: supply == null ? null : (l.reserveUsd - supply),
-        fullyBacked: supply == null ? null : l.reserveUsd >= supply,
-        asOf: Date.now(),
-      });
-    }
-
-    // Start a PayPal checkout for a buy: create a CAPTURE order for the GROSS
-    // payUsd (so the quote's receiveUsdb ends up fully backed). The client opens
-    // approveUrl, the buyer pays, then POSTs the orderId to /api/usdb/buy.
-    if (req.method === 'POST' && url.pathname === '/api/usdb/paypal/create') {
-      let raw = ''; for await (const c of req) raw += c;
-      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
-      if (!ENABLED) return j(res, 200, { dryRun: true, note: 'public issuance not enabled' });
-      if (!paypal.configured()) return j(res, 503, { error: 'PayPal rail not configured' });
-      const to = String(b.recipient || b.to || '').trim();
-      if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
-      const q = b.amountUsdb > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(Number(b.amountUsd || b.amount || 0));
-      if (!(q.payUsd > 0)) return j(res, 400, { error: 'amount must be positive' });
-      if (q.payUsd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
-      try {
-        const o = await paypal.createOrder(q.payUsd, { description: `Buy ${q.receiveUsdb} USDB`, returnUrl: b.returnUrl, cancelUrl: b.cancelUrl });
-        // Bind the recipient to the order server-side so the PayPal return only
-        // needs the order id (no block1 address rides in the redirect URL).
-        const l = load(); l.pending[o.orderId] = { recipient: to, payUsd: q.payUsd, t: Date.now() }; save(l);
-        return j(res, 200, { ...o, quote: q, recipient: to });
-      } catch (e) { return j(res, 502, { error: 'PayPal order create failed: ' + e.message }); }
+      const l = load(); const supply = await onchainSupply();
+      return j(res, 200, { supplyUsdb: supply, reserveUsd: l.reserveUsd, deltaUsd: supply == null ? null : l.reserveUsd - supply, fullyBacked: supply == null ? null : l.reserveUsd >= supply, asOf: Date.now() });
     }
 
     if (req.method === 'POST' && (url.pathname === '/api/usdb/quote' || url.pathname === '/api/usdb/buy' || url.pathname === '/api/usdb/redeem')) {
       let raw = ''; for await (const c of req) raw += c;
       let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
       const side = url.pathname.endsWith('/redeem') ? 'redeem' : (url.pathname.endsWith('/buy') ? 'buy' : (b.side === 'redeem' ? 'redeem' : 'buy'));
-
-      // BUY: `amountUsd` is what the buyer pays via PayPal; `amountUsdb` (optional)
-      // lets them instead request a target USDB amount. REDEEM: `amount(Usd)` is
-      // the USDB they burn (in USD terms, 1:1) for a USD payout minus our fee.
-      let quote;
-      if (side === 'buy') {
-        // On the PayPal return we only receive the orderId — recover the amount
-        // from the order we bound at create-time (so the quote is authoritative
-        // and matches what was actually paid), falling back to a body amount.
-        let payAmt = Number(b.amountUsd || b.amount || 0);
-        const oid0 = String(b.orderId || b.depositRef || '').trim();
-        if (!(payAmt > 0) && !(Number(b.amountUsdb) > 0) && oid0) {
-          const pend = load().pending[oid0]; if (pend && pend.payUsd > 0) payAmt = pend.payUsd;
-        }
-        quote = Number(b.amountUsdb) > 0 ? buyFromUsdb(Number(b.amountUsdb)) : buyFromPay(payAmt);
-        if (!(quote.payUsd > 0)) return j(res, 400, { error: 'amount (USD) must be positive' });
-        if (quote.payUsd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
-      } else {
-        const usd = Number(b.amountUsd || b.amount || b.amountUsdb || 0);
-        if (!(usd > 0)) return j(res, 400, { error: 'amount (USDB) must be positive' });
-        if (usd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
-        quote = redeemQuote(usd);
-      }
-
+      const usd = Number(b.amountUsd || b.amount || b.amountUsdb || 0);
+      if (!(usd > 0)) return j(res, 400, { error: 'amount must be positive' });
+      if (usd > PER_TX_CAP_USD) return j(res, 400, { error: 'exceeds per-tx cap of $' + PER_TX_CAP_USD });
+      const quote = side === 'buy' ? buyQuote(usd) : redeemQuote(usd);
       if (url.pathname === '/api/usdb/quote') return j(res, 200, quote);
-      const usd = side === 'buy' ? quote.payUsd : quote.burnUsdb;
 
       // --- money paths: gated + fail-closed ---
-      if (!ENABLED) {
-        return j(res, 200, { dryRun: true, ...quote, note: 'DRY-RUN: public issuance is not enabled (USDB_ENABLED=0). No USDB minted/burned, no reserve moved.' });
-      }
+      if (!ENABLED) return j(res, 200, { dryRun: true, ...quote, note: 'DRY-RUN: public issuance is not enabled (USDB_ENABLED=0).' });
       if (!CONTRACT) return j(res, 503, { error: 'USDB contract not configured' });
-      if (!loadIssuer()) return j(res, 503, { error: 'issuer signer not configured — refusing to issue (fail-closed)' });
-      if (!paypal.configured()) return j(res, 503, { error: 'PayPal rail not configured — refusing to issue (fail-closed)' });
+      if (!loadIssuer()) return j(res, 503, { error: 'issuer signer not configured (fail-closed)' });
+      if (!mt.configured()) return j(res, 503, { error: 'Modern Treasury rail not configured (fail-closed)' });
       const l = load();
-      // KYC becomes mandatory only once cumulative volume reaches the threshold.
-      if (l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL) {
-        return j(res, 503, { error: `KYC required beyond $${KYC_THRESHOLD_USD.toLocaleString()} cumulative volume — configure USDB_KYC_URL (fail-closed)` });
-      }
-      // daily cap
+      if (l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL) return j(res, 503, { error: `KYC required beyond $${KYC_THRESHOLD_USD.toLocaleString()} volume (fail-closed)` });
       if (l.day !== today()) { l.day = today(); l.dayUsd = 0; }
-      if (l.dayUsd + usd > DAILY_CAP_USD) return j(res, 429, { error: 'daily issuance cap reached' });
+      if (l.dayUsd + usd > DAILY_CAP_USD) return j(res, 429, { error: 'daily cap reached' });
 
       if (side === 'buy') {
-        // Real mint, tied to a captured PayPal payment. `orderId` is the PayPal
-        // CAPTURE order the buyer paid; we capture + verify it covers payUsd in
-        // USD and COMPLETED, reject replays, THEN mint. Self-funding: the payment
-        // IS the backing, so reserves += the minted (backed) amount.
-        const orderId = String(b.orderId || b.depositRef || '').trim();
-        const to = String(b.recipient || b.to || (l.pending[orderId] && l.pending[orderId].recipient) || '').trim();
-        if (!orderId) return j(res, 402, { error: 'PayPal orderId required (create one via /api/usdb/paypal/create, have the buyer approve+pay, then submit it here)' });
+        // ON-RAMP: pull USD from the buyer's bank via an ACH debit. USDB is minted
+        // by the settlement watcher only when the debit reaches `completed`.
+        const to = String(b.recipient || b.to || '').trim();
+        const bank = b.bank || {};
         if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1 address) required' });
-        if (l.consumed[orderId]) return j(res, 409, { error: 'this PayPal order was already redeemed for USDB' });
-        let cap; try { cap = await paypal.captureOrder(orderId); } catch (e) { return j(res, 402, { error: 'PayPal capture failed: ' + e.message }); }
-        if (!paypal.captureOk(cap, quote.payUsd)) {
-          return j(res, 402, { error: 'PayPal payment not verified (need COMPLETED, USD, >= $' + quote.payUsd + '); got ' + JSON.stringify({ status: cap.status, captureStatus: cap.captureStatus, value: cap.value, currency: cap.currency }) });
-        }
-        // Mint against the ACTUAL net PayPal deposited (not an estimate), minus
-        // our margin. This keeps USDB exactly backed no matter PayPal's real fee.
-        const gross = cap.grossValue || cap.value;
-        const net = cap.netValue > 0 ? cap.netValue : Math.max(0, gross - (gross * PAYPAL_PCT_BPS) / 10000 - PAYPAL_FIXED_USD);
-        const paypalFeeUsd = cap.paypalFee > 0 ? cap.paypalFee : round2(gross - net);
-        const ourFeeUsd = round2((net * BUY_MARGIN_BPS) / 10000);
-        const mintUsdb = round2(Math.max(0, net - ourFeeUsd));
-        l.consumed[orderId] = { t: Date.now(), gross, paypalFee: paypalFeeUsd, net, captureId: cap.captureId }; save(l); // mark consumed BEFORE mint
-        const base = Math.round(mintUsdb * UNIT);
-        const txid = await mintTo(to, base);
-        l.reserveUsd = round2(l.reserveUsd + mintUsdb); l.dayUsd = round2(l.dayUsd + gross); l.volumeUsd = round2(l.volumeUsd + gross);
-        l.issued.push({ t: Date.now(), side, payUsd: gross, paypalFeeUsd, ourFeeUsd, usdb: mintUsdb, to, txid, orderId, captureId: cap.captureId });
-        delete l.pending[orderId];
-        save(l);
-        return j(res, 200, { ok: true, side, txid, mintedUsdb: mintUsdb, payUsd: gross, paypalFeeUsd, ourFeeUsd, reserveUsd: l.reserveUsd });
+        if (!validBank(bank)) return j(res, 400, { error: 'bank {name, routingNumber(9), accountNumber} required' });
+        let cp, po;
+        try {
+          cp = await mt.createCounterparty({ name: bank.name, routingNumber: bank.routingNumber, accountNumber: bank.accountNumber, accountType: bank.accountType || 'checking', email: bank.email, idemKey: 'buy-cp-' + crypto.randomUUID() });
+          po = await mt.createPaymentOrder({ amountCents: Math.round(quote.payUsd * 100), direction: 'debit', externalAccountId: cp.externalAccountId, description: 'USDB buy ' + quote.receiveUsdb, idemKey: 'buy-po-' + crypto.randomUUID() });
+        } catch (e) { return j(res, 502, { error: 'Modern Treasury debit failed: ' + e.message }); }
+        l.pendingBuys[po.id] = { recipient: to, grossUsd: quote.payUsd, receiveUsdb: quote.receiveUsdb, feeUsd: quote.feeUsd, t: Date.now() };
+        l.dayUsd = round2(l.dayUsd + quote.payUsd); save(l);
+        return j(res, 200, { ok: true, side, status: 'collecting', paymentOrderId: po.id, poStatus: po.status, receiveUsdb: quote.receiveUsdb, feeUsd: quote.feeUsd, note: 'ACH debit initiated; USDB is delivered to ' + to + ' once the payment settles.' });
       } else {
-        // Contract-based redeem (no treasury custody). We register the PayPal
-        // payout email against a fresh 32-byte payoutRef and return the params
-        // the WALLET signs: the on-chain redeem(payoutRef, amountBase) burns the
-        // caller's own USDB and records the request. Our watcher then pays the
-        // USD out via PayPal and calls markRedeemed(id). The burn is trustless —
-        // we never hold the user's tokens.
-        const email = String(b.payoutEmail || b.email || '').trim();
-        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return j(res, 400, { error: 'payoutEmail (PayPal) required' });
+        // OFF-RAMP: register the redeemer's bank as an MT counterparty, return the
+        // payoutRef + amount the WALLET signs into redeem(). The redeem watcher
+        // pays out (net 3.7%) via an ACH credit once the on-chain burn is seen.
+        const bank = b.bank || {};
+        if (!validBank(bank)) return j(res, 400, { error: 'bank {name, routingNumber(9), accountNumber} required' });
+        let cp; try { cp = await mt.createCounterparty({ name: bank.name, routingNumber: bank.routingNumber, accountNumber: bank.accountNumber, accountType: bank.accountType || 'checking', email: bank.email, idemKey: 'rd-cp-' + crypto.randomUUID() }); } catch (e) { return j(res, 502, { error: 'Modern Treasury counterparty failed: ' + e.message }); }
         const ref = crypto.randomBytes(32).toString('hex');
-        l.redeemIntents[ref] = { email, t: Date.now(), amountUsdb: usd };
+        l.redeemIntents[ref] = { externalAccountId: cp.externalAccountId, name: bank.name, amountUsdb: usd, t: Date.now() };
         save(l);
-        return j(res, 200, {
-          ok: true, action: 'sign-redeem', contract: CONTRACT, payoutRef: ref,
-          amountBase: Math.round(usd * UNIT), amountUsdb: usd, estPayoutUsd: quote.payoutUsd, feeUsd: quote.feeUsd,
-          note: 'Sign redeem(payoutRef, amountBase) on the USDB contract from your wallet; the USD payout to your PayPal follows automatically once the burn confirms.',
-        });
+        return j(res, 200, { ok: true, action: 'sign-redeem', contract: CONTRACT, payoutRef: ref, amountBase: Math.round(usd * UNIT), amountUsdb: usd, estPayoutUsd: quote.payoutUsd, feeUsd: quote.feeUsd, note: 'Sign redeem(payoutRef, amountBase) in your wallet; USD is ACH-credited to your bank once the burn confirms.' });
       }
     }
     return j(res, 404, { error: 'not found' });
   } catch (e) { return j(res, 500, { error: (e && e.message) || String(e) }); }
 });
-// ---- redeem fulfillment watcher -------------------------------------------
-// Polls the USDB contract's on-chain redeem requests; for each one whose
-// payoutRef we have a registered email for, pays the USD out via PayPal Payouts
-// and marks it fulfilled on-chain. Idempotent per redeem id (paidRedeems ledger
-// + the contract's own fulfilled flag). Fully trustless: the user already burned
-// their USDB on-chain; we only pay and record.
+
+// ---- on-ramp settlement watcher: mint USDB once the ACH debit `completed` ----
+let buyBusy = false;
+async function processBuys() {
+  if (buyBusy || !ENABLED || !CONTRACT || !loadIssuer() || !mt.configured()) return;
+  buyBusy = true;
+  try {
+    const l = load();
+    for (const [poId, p] of Object.entries(l.pendingBuys)) {
+      let po; try { po = await mt.getPaymentOrder(poId); } catch { continue; }
+      if (po.status === 'completed') {
+        const base = Math.round(p.receiveUsdb * UNIT);
+        const txid = await mintTo(p.recipient, base);
+        const l2 = load();
+        l2.reserveUsd = round2(l2.reserveUsd + p.receiveUsdb); l2.volumeUsd = round2(l2.volumeUsd + p.grossUsd);
+        l2.issued.push({ t: Date.now(), side: 'buy', payUsd: p.grossUsd, feeUsd: p.feeUsd, usdb: p.receiveUsdb, to: p.recipient, txid, paymentOrderId: poId });
+        delete l2.pendingBuys[poId]; save(l2);
+        console.log('[usdb] buy settled ' + poId + ' -> minted ' + p.receiveUsdb + ' USDB to ' + p.recipient);
+      } else if (['returned', 'failed', 'cancelled', 'reversed'].includes(po.status)) {
+        const l2 = load(); delete l2.pendingBuys[poId]; save(l2);
+        console.log('[usdb] buy ' + poId + ' ' + po.status + ' — no mint');
+      }
+    }
+  } catch (e) { console.error('[usdb] buy watch: ' + (e && e.message)); } finally { buyBusy = false; }
+}
+
+// ---- off-ramp watcher: on an on-chain redeem, ACH-credit the payout + mark done ----
 let redeemBusy = false;
 async function processRedeems() {
-  if (redeemBusy || !ENABLED || !CONTRACT || !loadIssuer() || !paypal.configured()) return;
+  if (redeemBusy || !ENABLED || !CONTRACT || !loadIssuer() || !mt.configured()) return;
   redeemBusy = true;
   try {
-    const cnt = await callRead('10'); // redeemCount (selector 16)
-    const count = cnt && cnt.u64 != null ? Number(cnt.u64) : 0;
+    const cnt = await callRead('10'); const count = cnt && cnt.u64 != null ? Number(cnt.u64) : 0;
     for (let id = 0; id < count; id++) {
-      let l = load();
-      if (l.paidRedeems[id]) continue;                 // already handled
-      const rec = await callRead('11' + u64le(id));    // redeemRecord (selector 17) -> 80 bytes
-      const hex = rec && rec.returnHex; if (!hex || hex.length < 160) continue;
+      let l = load(); if (l.paidRedeems[id]) continue;
+      const rec = await callRead('11' + u64le(id)); const hex = rec && rec.returnHex; if (!hex || hex.length < 160) continue;
       if (leU64(hex, 72) === 1) { l.paidRedeems[id] = { already: true, t: Date.now() }; save(l); continue; }
-      const ref = hex.slice(64, 128);                  // payoutRef (bytes 32..64)
-      const amountBase = leU64(hex, 64);               // amount (bytes 64..72)
-      const intent = l.redeemIntents[ref];
-      if (!intent) continue;                            // email not registered yet — wait
-      const usdb = amountBase / UNIT;
-      const q = redeemQuote(usdb);
-      l.paidRedeems[id] = { pending: true, ref, usdb, t: Date.now() }; save(l); // claim BEFORE paying (no double-pay)
-      let pay;
-      try { pay = await paypal.payout(intent.email, q.payoutUsd, 'USDB redemption'); }
+      const ref = hex.slice(64, 128); const amountBase = leU64(hex, 64);
+      const intent = l.redeemIntents[ref]; if (!intent) continue; // bank not registered yet
+      const usdb = amountBase / UNIT; const q = redeemQuote(usdb);
+      l.paidRedeems[id] = { pending: true, ref, usdb, t: Date.now() }; save(l); // claim before paying
+      let po; try { po = await mt.createPaymentOrder({ amountCents: Math.round(q.payoutUsd * 100), direction: 'credit', externalAccountId: intent.externalAccountId, description: 'USDB redeem ' + usdb, idemKey: 'rd-po-' + id }); }
       catch (e) { const lr = load(); delete lr.paidRedeems[id]; save(lr); console.error('[usdb] payout failed id ' + id + ': ' + e.message); break; }
-      let markTxid = null;
-      try { markTxid = await markRedeemed(id); } catch (e) { console.error('[usdb] markRedeemed id ' + id + ' failed (payout already sent): ' + e.message); }
+      let markTxid = null; try { markTxid = await markRedeemed(id); } catch (e) { console.error('[usdb] markRedeemed ' + id + ' failed (payout sent): ' + e.message); }
       const l3 = load();
-      l3.paidRedeems[id] = { paid: true, ref, usdb, payoutUsd: q.payoutUsd, email: intent.email, batch: pay.batchId, markTxid, t: Date.now() };
+      l3.paidRedeems[id] = { paid: true, ref, usdb, payoutUsd: q.payoutUsd, paymentOrderId: po.id, markTxid, t: Date.now() };
       l3.reserveUsd = round2(Math.max(0, l3.reserveUsd - usdb)); l3.volumeUsd = round2(l3.volumeUsd + usdb);
-      delete l3.redeemIntents[ref];
-      save(l3);
-      console.log('[usdb] redeem id ' + id + ': ' + usdb + ' USDB -> $' + q.payoutUsd + ' to ' + intent.email);
+      delete l3.redeemIntents[ref]; save(l3);
+      console.log('[usdb] redeem id ' + id + ': ' + usdb + ' USDB -> $' + q.payoutUsd + ' ACH credit ' + po.id);
     }
-  } catch (e) { console.error('[usdb] redeem watch: ' + (e && e.message)); }
-  finally { redeemBusy = false; }
+  } catch (e) { console.error('[usdb] redeem watch: ' + (e && e.message)); } finally { redeemBusy = false; }
 }
+setInterval(() => { processBuys().catch(() => {}); }, 30000);
 setInterval(() => { processRedeems().catch(() => {}); }, 30000);
 
 server.listen(PORT, '127.0.0.1', () => {
   const k = loadIssuer();
-  console.log(`[usdb] issuance on 127.0.0.1:${PORT} enabled=${ENABLED} issuer=${k ? k.address : '(unset)'} contract=${CONTRACT || '(unset)'} buy=paypal(${PAYPAL_PCT_BPS}bps+$${PAYPAL_FIXED_USD})+${BUY_MARGIN_BPS}bps redeem=paypal(${PAYPAL_PAYOUT_PCT_BPS}bps cap$${PAYPAL_PAYOUT_CAP_USD})+${REDEEM_MARGIN_BPS}bps`);
+  console.log(`[usdb] on 127.0.0.1:${PORT} enabled=${ENABLED} rail=modern_treasury(${mt.env()}) fee=${FEE_BPS}bps issuer=${k ? k.address : '(unset)'} contract=${CONTRACT || '(unset)'}`);
 });
