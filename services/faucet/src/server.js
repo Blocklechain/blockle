@@ -91,7 +91,7 @@ const server = http.createServer(async (req, res) => {
         // wallet, so it self-mints test BLOCK (matures ~100 blocks). No manual
         // top-ups. When "dry" it's just warming up, not broken.
         source: 'mining-coinbase',
-        network: 'BLOCK mainnet L1 (test faucet)',
+        network: 'BLOCK testnet',
       });
     }
     if (req.method === 'POST' && url.pathname === '/api/faucet/block') {
