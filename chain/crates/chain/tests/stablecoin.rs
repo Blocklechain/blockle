@@ -95,4 +95,30 @@ fn stablecoin_conformance() {
     assert_eq!(u64_of(&call(3, &[], issuer, &mut c, &mut s).return_data), sup_before - 10_000000, "supply -10");
     // burning more than held reverts
     assert!(!call(8, &two(&alice, 999_000000), issuer, &mut c, &mut s).success, "over-burn reverts");
+
+    // --- redeem (off-ramp via contract): caller burns OWN USDB + records a
+    // request the issuer service fulfills off-chain (PayPal) then marks done ---
+    let payref = [0x3Cu8; 32];
+    let idbytes = |n: u64| n.to_le_bytes().to_vec();
+    let sup0 = u64_of(&call(3, &[], issuer, &mut c, &mut s).return_data);
+    let alice0 = u64_of(&call(1, &alice, issuer, &mut c, &mut s).return_data);
+    assert_eq!(u64_of(&call(16, &[], issuer, &mut c, &mut s).return_data), 0, "redeemCount starts 0");
+    // alice redeems 5 USDB — burns her own, supply drops, request recorded
+    assert!(call(15, &two(&payref, 5_000000), alice, &mut c, &mut s).success, "alice redeem 5");
+    assert_eq!(u64_of(&call(1, &alice, issuer, &mut c, &mut s).return_data), alice0 - 5_000000, "alice -5");
+    assert_eq!(u64_of(&call(3, &[], issuer, &mut c, &mut s).return_data), sup0 - 5_000000, "supply -5");
+    assert_eq!(u64_of(&call(16, &[], issuer, &mut c, &mut s).return_data), 1, "redeemCount 1");
+    // redeemRecord(0) = [from(32) ‖ ref(32) ‖ amount(8) ‖ fulfilled(8)]
+    let rec = call(17, &idbytes(0), issuer, &mut c, &mut s).return_data;
+    assert_eq!(rec.len(), 80, "record 80 bytes");
+    assert_eq!(&rec[0..32], &alice, "record from = alice");
+    assert_eq!(&rec[32..64], &payref, "record payoutRef");
+    assert_eq!(u64_of(&rec[64..72]), 5_000000, "record amount");
+    assert_eq!(u64_of(&rec[72..80]), 0, "record unfulfilled");
+    // redeeming more than held reverts
+    assert!(!call(15, &two(&payref, 999_000000), alice, &mut c, &mut s).success, "over-redeem reverts");
+    // only the issuer can mark a request fulfilled
+    assert!(!call(18, &idbytes(0), evil, &mut c, &mut s).success, "non-issuer markRedeemed reverts");
+    assert!(call(18, &idbytes(0), issuer, &mut c, &mut s).success, "issuer markRedeemed");
+    assert_eq!(u64_of(&call(17, &idbytes(0), issuer, &mut c, &mut s).return_data[72..80]), 1, "now fulfilled");
 }

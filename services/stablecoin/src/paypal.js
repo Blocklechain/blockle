@@ -54,7 +54,19 @@ export async function captureOrder(orderId) {
   const pu = (o.purchase_units || [])[0] || {};
   const cap = ((pu.payments && pu.payments.captures) || [])[0] || {};
   const amt = cap.amount || (pu.amount) || {};
-  return { status: o.status, captureStatus: cap.status || null, captureId: cap.id || null, value: Number(amt.value || 0), currency: amt.currency_code || null, raw: o };
+  // The authoritative numbers: what PayPal actually deposits to us after THEIR
+  // fee. seller_receivable_breakdown.{gross_amount,paypal_fee,net_amount} — we
+  // mint against net_amount so USDB is always fully backed by cash received.
+  const brk = cap.seller_receivable_breakdown || {};
+  const num = (x) => Number((x || {}).value || 0);
+  return {
+    status: o.status, captureStatus: cap.status || null, captureId: cap.id || null,
+    value: num(amt), currency: amt.currency_code || (brk.gross_amount || {}).currency_code || null,
+    grossValue: num(brk.gross_amount) || num(amt),
+    paypalFee: num(brk.paypal_fee),
+    netValue: num(brk.net_amount),
+    raw: o,
+  };
 }
 
 // Verify a capture covers at least `expectedUsd` and is COMPLETED in USD.

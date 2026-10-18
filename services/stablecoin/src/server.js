@@ -25,6 +25,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import crypto from 'node:crypto';
 import * as paypal from './paypal.js';
 
 const require = createRequire(import.meta.url);
@@ -44,8 +45,10 @@ const UNIT = 10 ** DECIMALS;
 // OUR margin on top. PayPal's published goods-&-services rate defaults to
 // 2.9% + $0.30 (override per the account's actual rate); our margin is 0.5% of
 // the post-PayPal net. USDB received = reserves credited (fully backed).
-const PAYPAL_PCT_BPS = Number(process.env.USDB_PAYPAL_PCT_BPS || 290);   // 2.9%
-const PAYPAL_FIXED_USD = Number(process.env.USDB_PAYPAL_FIXED_USD || 0.30);
+// Estimate rate for the PRE-PURCHASE quote only (the actual fee is read from the
+// PayPal capture at mint time). PayPal's US goods-&-services rate is 3.49% + $0.49.
+const PAYPAL_PCT_BPS = Number(process.env.USDB_PAYPAL_PCT_BPS || 349);   // 3.49%
+const PAYPAL_FIXED_USD = Number(process.env.USDB_PAYPAL_FIXED_USD || 0.49);
 const BUY_MARGIN_BPS = Number(process.env.USDB_BUY_MARGIN_BPS || 50);    // our 0.50% on-ramp
 // Redeem (off-ramp) mirrors the buy: pass through PayPal's PAYOUT fee (US
 // domestic default 2% capped at $1.00) + OUR 0.50% margin, both borne by the
@@ -87,7 +90,7 @@ fs.mkdirSync(DATA, { recursive: true });
 const LEDGER = path.join(DATA, 'reserve-ledger.json');
 function load() {
   let l; try { l = JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { l = {}; }
-  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, pending: {}, ...l };
+  return { reserveUsd: 0, issued: [], day: '', dayUsd: 0, volumeUsd: 0, consumed: {}, pending: {}, redeemIntents: {}, paidRedeems: {}, ...l };
 }
 function save(l) { fs.writeFileSync(LEDGER, JSON.stringify(l)); }
 
@@ -156,16 +159,25 @@ async function issuerUtxos() {
   const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address));
   return (u.utxos || []).map((x) => ({ txid: x.txid, vout: x.vout, amount: Number(x.amount) }));
 }
-async function waitConf(txid, n) {
+// Confirm an issuer-signed tx by its BLOCK change landing back in the issuer's
+// UTXO set. The node's /explorer/tx does NOT index contract txs, so this is the
+// reliable signal (every mint/burn/markRedeemed sends change to the issuer).
+async function waitConf(txid) {
+  const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
   for (let i = 0; i < 1200; i++) { // ~40 min budget (mainnet ~10-min blocks)
-    try { const t = await nodeGet('/explorer/tx/' + encodeURIComponent(txid));
-      const c = (t && t.tx && t.tx.confirmations) || t.confirmations || 0;
-      if (c >= n) return c;
+    try { const u = await nodeGet('/explorer/utxos/' + encodeURIComponent(k.address));
+      if ((u.utxos || []).some((x) => x.txid === txid)) return;
     } catch { /* keep polling */ }
     await sleep(2000);
   }
-  throw new Error('timed out waiting for ' + n + ' confirmation(s) of ' + txid);
+  throw new Error('timed out confirming ' + txid);
 }
+// Read-only contract view call (callcontract RPC) -> { success, returnHex, u64 }.
+async function callRead(calldataHex) {
+  return nodeRpc('callcontract', [{ contract: CONTRACT, calldata: calldataHex }]);
+}
+function u64le(n) { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b.toString('hex'); }
+function leU64(hex, off) { return Number(Buffer.from(hex, 'hex').readBigUInt64LE(off)); }
 
 // Issuer-signed mint of `base` USDB base units to `to` (block1 addr). Pays only
 // gas from the issuer wallet; reverts at the node if the signer isn't the issuer.
@@ -175,7 +187,7 @@ async function mintTo(to, base) {
   const built = JSON.parse(wasm.build_stablecoin_mint(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, to, BigInt(base), GAS_LIMIT, GAS_PRICE));
   const sub = await nodeRpc('submitrawtransaction', [built.raw]);
   const txid = (sub && sub.txid) || built.txid;
-  await waitConf(txid, CONF_TARGET);
+  await waitConf(txid);
   return txid;
 }
 async function burnFrom(from, base) {
@@ -184,7 +196,18 @@ async function burnFrom(from, base) {
   const built = JSON.parse(wasm.build_stablecoin_burn(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, from, BigInt(base), GAS_LIMIT, GAS_PRICE));
   const sub = await nodeRpc('submitrawtransaction', [built.raw]);
   const txid = (sub && sub.txid) || built.txid;
-  await waitConf(txid, CONF_TARGET);
+  await waitConf(txid);
+  return txid;
+}
+// Issuer-signed markRedeemed(id) (selector 18) — flags an on-chain redeem request fulfilled.
+async function markRedeemed(id) {
+  const k = loadIssuer(); if (!k) throw new Error('issuer key not configured');
+  const utxos = await issuerUtxos();
+  const input = '12' + u64le(id); // selector 18 (0x12) ‖ id(8 LE)
+  const built = JSON.parse(wasm.build_call(k.secretKey, k.publicKey, JSON.stringify(utxos), CONTRACT, input, 0n, GAS_LIMIT, GAS_PRICE));
+  const sub = await nodeRpc('submitrawtransaction', [built.raw]);
+  const txid = (sub && sub.txid) || built.txid;
+  await waitConf(txid);
   return txid;
 }
 
@@ -309,37 +332,86 @@ const server = http.createServer(async (req, res) => {
         if (!paypal.captureOk(cap, quote.payUsd)) {
           return j(res, 402, { error: 'PayPal payment not verified (need COMPLETED, USD, >= $' + quote.payUsd + '); got ' + JSON.stringify({ status: cap.status, captureStatus: cap.captureStatus, value: cap.value, currency: cap.currency }) });
         }
-        l.consumed[orderId] = { t: Date.now(), value: cap.value, captureId: cap.captureId }; save(l); // mark consumed BEFORE mint (no double-mint even on retry)
-        const base = Math.round(quote.receiveUsdb * UNIT);
+        // Mint against the ACTUAL net PayPal deposited (not an estimate), minus
+        // our margin. This keeps USDB exactly backed no matter PayPal's real fee.
+        const gross = cap.grossValue || cap.value;
+        const net = cap.netValue > 0 ? cap.netValue : Math.max(0, gross - (gross * PAYPAL_PCT_BPS) / 10000 - PAYPAL_FIXED_USD);
+        const paypalFeeUsd = cap.paypalFee > 0 ? cap.paypalFee : round2(gross - net);
+        const ourFeeUsd = round2((net * BUY_MARGIN_BPS) / 10000);
+        const mintUsdb = round2(Math.max(0, net - ourFeeUsd));
+        l.consumed[orderId] = { t: Date.now(), gross, paypalFee: paypalFeeUsd, net, captureId: cap.captureId }; save(l); // mark consumed BEFORE mint
+        const base = Math.round(mintUsdb * UNIT);
         const txid = await mintTo(to, base);
-        l.reserveUsd = round2(l.reserveUsd + quote.receiveUsdb); l.dayUsd = round2(l.dayUsd + quote.payUsd); l.volumeUsd = round2(l.volumeUsd + quote.payUsd);
-        l.issued.push({ t: Date.now(), side, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, usdb: base / UNIT, to, txid, orderId, captureId: cap.captureId });
+        l.reserveUsd = round2(l.reserveUsd + mintUsdb); l.dayUsd = round2(l.dayUsd + gross); l.volumeUsd = round2(l.volumeUsd + gross);
+        l.issued.push({ t: Date.now(), side, payUsd: gross, paypalFeeUsd, ourFeeUsd, usdb: mintUsdb, to, txid, orderId, captureId: cap.captureId });
         delete l.pending[orderId];
         save(l);
-        return j(res, 200, { ok: true, side, txid, mintedUsdb: base / UNIT, payUsd: quote.payUsd, paypalFeeUsd: quote.paypalFeeUsd, ourFeeUsd: quote.ourFeeUsd, reserveUsd: l.reserveUsd });
+        return j(res, 200, { ok: true, side, txid, mintedUsdb: mintUsdb, payUsd: gross, paypalFeeUsd, ourFeeUsd, reserveUsd: l.reserveUsd });
       } else {
-        // Real redeem: the user SENDS USDB back to the treasury (returnTxid) and
-        // gives a PayPal email. We confirm the treasury holds the USDB, PAY OUT
-        // first (PayPal Payouts), then burn — so we never burn without having paid.
-        const returnTxid = String(b.returnTxid || '').trim();
+        // Contract-based redeem (no treasury custody). We register the PayPal
+        // payout email against a fresh 32-byte payoutRef and return the params
+        // the WALLET signs: the on-chain redeem(payoutRef, amountBase) burns the
+        // caller's own USDB and records the request. Our watcher then pays the
+        // USD out via PayPal and calls markRedeemed(id). The burn is trustless —
+        // we never hold the user's tokens.
         const email = String(b.payoutEmail || b.email || '').trim();
-        if (!returnTxid) return j(res, 402, { error: 'returnTxid (USDB sent to treasury) required (fail-closed)' });
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return j(res, 400, { error: 'payoutEmail (PayPal) required' });
-        const tre = treasuryAddr(); if (!tre) return j(res, 503, { error: 'treasury not configured' });
-        const base = Math.round(usd * UNIT);
-        const bal = await balanceOfBase(tre);
-        if (bal < base) return j(res, 409, { error: 'treasury has not received the USDB to burn yet (send USDB to ' + tre + ' first)' });
-        let pay; try { pay = await paypal.payout(email, quote.payoutUsd, 'USDB redemption'); } catch (e) { return j(res, 502, { error: 'PayPal payout failed (nothing burned): ' + e.message }); }
-        const txid = await burnFrom(tre, base);
-        l.reserveUsd = round2(Math.max(0, l.reserveUsd - usd)); l.dayUsd = round2(l.dayUsd + usd); l.volumeUsd = round2(l.volumeUsd + usd);
-        l.issued.push({ t: Date.now(), side, usd, usdb: base / UNIT, from: tre, returnTxid, burnTxid: txid, payoutUsd: quote.payoutUsd, payoutBatch: pay.batchId });
+        const ref = crypto.randomBytes(32).toString('hex');
+        l.redeemIntents[ref] = { email, t: Date.now(), amountUsdb: usd };
         save(l);
-        return j(res, 200, { ok: true, side, txid, burnedUsdb: base / UNIT, payoutUsd: quote.payoutUsd, payoutBatch: pay.batchId, reserveUsd: l.reserveUsd, feeUsd: quote.feeUsd });
+        return j(res, 200, {
+          ok: true, action: 'sign-redeem', contract: CONTRACT, payoutRef: ref,
+          amountBase: Math.round(usd * UNIT), amountUsdb: usd, estPayoutUsd: quote.payoutUsd, feeUsd: quote.feeUsd,
+          note: 'Sign redeem(payoutRef, amountBase) on the USDB contract from your wallet; the USD payout to your PayPal follows automatically once the burn confirms.',
+        });
       }
     }
     return j(res, 404, { error: 'not found' });
   } catch (e) { return j(res, 500, { error: (e && e.message) || String(e) }); }
 });
+// ---- redeem fulfillment watcher -------------------------------------------
+// Polls the USDB contract's on-chain redeem requests; for each one whose
+// payoutRef we have a registered email for, pays the USD out via PayPal Payouts
+// and marks it fulfilled on-chain. Idempotent per redeem id (paidRedeems ledger
+// + the contract's own fulfilled flag). Fully trustless: the user already burned
+// their USDB on-chain; we only pay and record.
+let redeemBusy = false;
+async function processRedeems() {
+  if (redeemBusy || !ENABLED || !CONTRACT || !loadIssuer() || !paypal.configured()) return;
+  redeemBusy = true;
+  try {
+    const cnt = await callRead('10'); // redeemCount (selector 16)
+    const count = cnt && cnt.u64 != null ? Number(cnt.u64) : 0;
+    for (let id = 0; id < count; id++) {
+      let l = load();
+      if (l.paidRedeems[id]) continue;                 // already handled
+      const rec = await callRead('11' + u64le(id));    // redeemRecord (selector 17) -> 80 bytes
+      const hex = rec && rec.returnHex; if (!hex || hex.length < 160) continue;
+      if (leU64(hex, 72) === 1) { l.paidRedeems[id] = { already: true, t: Date.now() }; save(l); continue; }
+      const ref = hex.slice(64, 128);                  // payoutRef (bytes 32..64)
+      const amountBase = leU64(hex, 64);               // amount (bytes 64..72)
+      const intent = l.redeemIntents[ref];
+      if (!intent) continue;                            // email not registered yet — wait
+      const usdb = amountBase / UNIT;
+      const q = redeemQuote(usdb);
+      l.paidRedeems[id] = { pending: true, ref, usdb, t: Date.now() }; save(l); // claim BEFORE paying (no double-pay)
+      let pay;
+      try { pay = await paypal.payout(intent.email, q.payoutUsd, 'USDB redemption'); }
+      catch (e) { const lr = load(); delete lr.paidRedeems[id]; save(lr); console.error('[usdb] payout failed id ' + id + ': ' + e.message); break; }
+      let markTxid = null;
+      try { markTxid = await markRedeemed(id); } catch (e) { console.error('[usdb] markRedeemed id ' + id + ' failed (payout already sent): ' + e.message); }
+      const l3 = load();
+      l3.paidRedeems[id] = { paid: true, ref, usdb, payoutUsd: q.payoutUsd, email: intent.email, batch: pay.batchId, markTxid, t: Date.now() };
+      l3.reserveUsd = round2(Math.max(0, l3.reserveUsd - usdb)); l3.volumeUsd = round2(l3.volumeUsd + usdb);
+      delete l3.redeemIntents[ref];
+      save(l3);
+      console.log('[usdb] redeem id ' + id + ': ' + usdb + ' USDB -> $' + q.payoutUsd + ' to ' + intent.email);
+    }
+  } catch (e) { console.error('[usdb] redeem watch: ' + (e && e.message)); }
+  finally { redeemBusy = false; }
+}
+setInterval(() => { processRedeems().catch(() => {}); }, 30000);
+
 server.listen(PORT, '127.0.0.1', () => {
   const k = loadIssuer();
   console.log(`[usdb] issuance on 127.0.0.1:${PORT} enabled=${ENABLED} issuer=${k ? k.address : '(unset)'} contract=${CONTRACT || '(unset)'} buy=paypal(${PAYPAL_PCT_BPS}bps+$${PAYPAL_FIXED_USD})+${BUY_MARGIN_BPS}bps redeem=paypal(${PAYPAL_PAYOUT_PCT_BPS}bps cap$${PAYPAL_PAYOUT_CAP_USD})+${REDEEM_MARGIN_BPS}bps`);

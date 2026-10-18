@@ -558,6 +558,32 @@ pub fn build_stablecoin_burn(
     build_call(secret_hex, public_hex, utxos_json, contract_hex, &input, 0, gas_limit, gas_price)
 }
 
+/// Caller-initiated REDEEM (off-ramp, selector 15): burns the caller's own USDB
+/// and records an on-chain redeem request tagged with `payout_ref_hex` (a 32-byte
+/// reference the issuer service maps to the payout destination off-chain). Trustless
+/// — no treasury custody; the burn is verifiable and the issuer can't take tokens
+/// without destroying them. `value` is 0 (only gas is paid).
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_stablecoin_redeem(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    contract_hex: &str,
+    payout_ref_hex: &str,
+    amount_base: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let r = hex::decode(payout_ref_hex.trim()).map_err(|_| JsError::new("bad payoutRef hex"))?;
+    if r.len() != 32 { return Err(JsError::new("payoutRef must be 32 bytes")); }
+    let mut input = Vec::with_capacity(41);
+    input.push(15);
+    input.extend_from_slice(&r);
+    input.extend_from_slice(&amount_base.to_le_bytes());
+    build_call(secret_hex, public_hex, utxos_json, contract_hex, &hexs(&input), 0, gas_limit, gas_price)
+}
+
 // ---- native AMM pool transactions ------------------------------------------
 fn parse_token(contract_hex: &str) -> Result<[u8; 32], JsError> {
     let b = hex::decode(contract_hex).map_err(|_| JsError::new("bad token hex"))?;

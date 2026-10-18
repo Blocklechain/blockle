@@ -53,6 +53,12 @@ pub fn stablecoin_asm(name: &str, symbol: &str, decimals: u64) -> String {
     let hbuf = 0xC0; // hash input [slot ‖ addr] (33)
     let amt = 0x100; // amount (8)
     let sup = 0x110; // supply scratch (8)
+    let idbuf = 0x120; // redeem id scratch (8)
+    let inc = 0x128; // id+1 scratch (8)
+    let zbuf = 0x130; // zero (8)
+    let refbuf = 0x140; // payoutRef (32)
+    let frombuf = 0x160; // caller for redeem record (32)
+    let recbuf = 0x1A0; // redeemRecord output: [from(32) ‖ ref(32) ‖ amount(8) ‖ fulfilled(8)] = 80
     let fixed = 0x240; // fixed (zeroed) 32-byte key region
     let strbuf = 0x300; // name/symbol out
 
@@ -82,6 +88,14 @@ pub fn stablecoin_asm(name: &str, symbol: &str, decimals: u64) -> String {
         "{hash}{load}  PUSH {val}\n  MLOAD64\n  PUSH @revert\n  JUMPI\n",
         hash = hash_key(9), load = sload_key(val)
     );
+    // id-keyed storage: hash [slot ‖ id(8)] at hbuf -> keya. id must be at hbuf+1.
+    let hash_key_id = |slot: u64| {
+        format!("  PUSH {hbuf}\n  PUSH8 {slot}\n  MSTORE8\n  PUSH {hbuf}\n  PUSH8 9\n  PUSH {keya}\n  BLAKE2B\n")
+    };
+    // copy the u64 at mem[src] -> hbuf+1 (the id for an id-keyed hash)
+    let id_from_scratch = |src: u64| format!("  PUSH {}\n  PUSH {src}\n  MLOAD64\n  MSTORE64\n", hbuf + 1);
+    // copy calldata[1..9] (an 8-byte id arg) -> hbuf+1
+    let id_from_calldata = format!("  PUSH {}\n  PUSH8 1\n  PUSH8 8\n  CALLDATACOPY\n", hbuf + 1);
 
     let mut a = String::new();
     // ---- dispatcher ----
@@ -102,6 +116,10 @@ pub fn stablecoin_asm(name: &str, symbol: &str, decimals: u64) -> String {
         (12, "fn_unpause"),
         (13, "fn_isFrozen"),
         (14, "fn_isPaused"),
+        (15, "fn_redeem"),
+        (16, "fn_redeemCount"),
+        (17, "fn_redeemRecord"),
+        (18, "fn_markRedeemed"),
     ] {
         a += &format!("  DUP 0\n  PUSH8 {s}\n  EQ\n  PUSH @{label}\n  JUMPI\n");
     }
@@ -235,6 +253,85 @@ pub fn stablecoin_asm(name: &str, symbol: &str, decimals: u64) -> String {
     a += "fn_isPaused:\n";
     a += &sload_singleton(10, val);
     a += &format!("  PUSH {val}\n  PUSH8 8\n  RETURN\n");
+
+    // ---- fn_redeem(payoutRef:32, amt) : caller-initiated off-ramp ----
+    // Burns the CALLER's own USDB (trustless — no treasury custody) and records
+    // an on-chain redeem request {from, payoutRef, amount, fulfilled=0}. The
+    // off-chain issuer service watches these (via redeemCount/redeemRecord),
+    // pays the USD out through PayPal, then calls markRedeemed(id).
+    // calldata: payoutRef@1 (32), amount@33 (8).
+    a += "fn_redeem:\n";
+    // require !paused
+    a += &sload_singleton(10, flag);
+    a += &format!("  PUSH {flag}\n  MLOAD64\n  PUSH @revert\n  JUMPI\n");
+    // amount <- calldata[33..41]
+    a += &format!("  PUSH {amt}\n  PUSH8 33\n  PUSH8 8\n  CALLDATACOPY\n");
+    // require !frozen(caller)
+    a += &caller_to_hbuf;
+    a += &require_not_frozen;
+    // balances[caller] -= amount
+    a += &caller_to_hbuf;
+    a += &hash_key(1);
+    a += &sload_key(val);
+    a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  LT\n  PUSH @revert\n  JUMPI\n");
+    a += &format!("  PUSH {val}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  SUB\n  PUSH {nf}\n  SWAP 1\n  MSTORE64\n");
+    a += &format!("  PUSH {keya}\n  PUSH {nf}\n  PUSH8 8\n  SSTORE\n");
+    // supply -= amount
+    a += &sload_singleton(8, sup);
+    a += &format!("  PUSH {sup}\n  MLOAD64\n  PUSH {amt}\n  MLOAD64\n  SUB\n  PUSH {sup}\n  SWAP 1\n  MSTORE64\n");
+    a += &sstore_singleton(8, sup);
+    // id = redeemCount (slot 11)
+    a += &sload_singleton(11, idbuf);
+    // from(caller) @ H(12 ‖ id)
+    a += &format!("  PUSH {frombuf}\n  CALLER\n");
+    a += &id_from_scratch(idbuf);
+    a += &hash_key_id(12);
+    a += &format!("  PUSH {keya}\n  PUSH {frombuf}\n  PUSH8 32\n  SSTORE\n");
+    // payoutRef (calldata[1..33]) @ H(13 ‖ id)
+    a += &format!("  PUSH {refbuf}\n  PUSH8 1\n  PUSH8 32\n  CALLDATACOPY\n");
+    a += &id_from_scratch(idbuf);
+    a += &hash_key_id(13);
+    a += &format!("  PUSH {keya}\n  PUSH {refbuf}\n  PUSH8 32\n  SSTORE\n");
+    // amount @ H(14 ‖ id)
+    a += &id_from_scratch(idbuf);
+    a += &hash_key_id(14);
+    a += &format!("  PUSH {keya}\n  PUSH {amt}\n  PUSH8 8\n  SSTORE\n");
+    // fulfilled = 0 @ H(15 ‖ id)
+    a += &format!("  PUSH {zbuf}\n  PUSH8 0\n  MSTORE64\n");
+    a += &id_from_scratch(idbuf);
+    a += &hash_key_id(15);
+    a += &format!("  PUSH {keya}\n  PUSH {zbuf}\n  PUSH8 8\n  SSTORE\n");
+    // redeemCount = id + 1
+    a += &format!("  PUSH {idbuf}\n  MLOAD64\n  PUSH 1\n  ADD\n  PUSH {inc}\n  SWAP 1\n  MSTORE64\n");
+    a += &sstore_singleton(11, inc);
+    // return id
+    a += &format!("  PUSH {idbuf}\n  PUSH8 8\n  RETURN\n");
+
+    // ---- fn_redeemCount() -> u64 ----
+    a += "fn_redeemCount:\n";
+    a += &sload_singleton(11, val);
+    a += &format!("  PUSH {val}\n  PUSH8 8\n  RETURN\n");
+
+    // ---- fn_redeemRecord(id) -> [from(32) ‖ ref(32) ‖ amount(8) ‖ fulfilled(8)] ----
+    a += "fn_redeemRecord:\n";
+    a += &id_from_calldata;
+    a += &hash_key_id(12);
+    a += &format!("  PUSH {keya}\n  PUSH {recbuf}\n  SLOAD\n  POP\n");
+    a += &hash_key_id(13);
+    a += &format!("  PUSH {keya}\n  PUSH {}\n  SLOAD\n  POP\n", recbuf + 32);
+    a += &hash_key_id(14);
+    a += &format!("  PUSH {keya}\n  PUSH {}\n  SLOAD\n  POP\n", recbuf + 64);
+    a += &hash_key_id(15);
+    a += &format!("  PUSH {keya}\n  PUSH {}\n  SLOAD\n  POP\n", recbuf + 72);
+    a += &format!("  PUSH {recbuf}\n  PUSH8 80\n  RETURN\n");
+
+    // ---- fn_markRedeemed(id) : issuer-only ; fulfilled[id] = 1 ----
+    a += "fn_markRedeemed:\n";
+    a += &require_issuer;
+    a += &id_from_calldata;
+    a += &hash_key_id(15);
+    a += &format!("  PUSH {one}\n  PUSH8 1\n  MSTORE64\n  PUSH {keya}\n  PUSH {one}\n  PUSH8 8\n  SSTORE\n");
+    a += &format!("  PUSH {one}\n  PUSH8 1\n  MSTORE64\n  PUSH {one}\n  PUSH8 8\n  RETURN\n");
 
     // ---- revert ----
     a += "revert:\n  PUSH8 0\n  PUSH8 0\n  REVERT\n";
