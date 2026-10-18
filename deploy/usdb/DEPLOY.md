@@ -7,8 +7,12 @@
 - **Status:** deployed + `init()` (issuer set) + a net-zero mint/burn self-test proving
   the issuer rails. Metadata on-chain: name "Blockle USD", symbol "USDB", 6 decimals.
 - **Issuance service:** `blockle-usdb.service` on `127.0.0.1:8801`, proxied at
-  `https://blockle.org/api/usdb/`. Reads the issuer key by path; `USDB_ENABLED=0`
-  so the **public** buy/redeem stay dry-run until the fiat rail + KYC are wired.
+  `https://blockle.org/api/usdb/`. Reads the issuer key by path. **`USDB_ENABLED=1`
+  — PUBLIC ISSUANCE IS LIVE** with the real PayPal rail (live creds via a 2nd
+  EnvironmentFile `paypal.env`). Self-funding (reserves accrue from captured
+  sales), KYC-free until $10M cumulative volume. Mint is tied to a verified,
+  single-use PayPal capture; redeem pays out via PayPal Payouts before burning.
+  Anti-fraud verified (bogus order → rejected, no mint).
 - **Fees (both ramps = our 0.5% + PayPal pass-through):** on-ramp = PayPal 2.9%+$0.30
   + 0.5%; off-ramp = PayPal payout 2% (cap $1) + 0.5%. USDB received == reserves
   credited (fully backed). Override the PayPal rates in `usdb.env` to the account's real rate.
