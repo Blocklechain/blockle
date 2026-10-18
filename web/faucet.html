@@ -54,7 +54,7 @@
     <input class="t" id="addr" placeholder="block1…" autocomplete="off" spellcheck="false">
     <button class="cta" id="go">Request BLOCK</button>
     <div class="msg" id="msg"></div>
-    <div class="note">Open the Blockle wallet (extension/desktop) → Receive to copy your <span class="mono">block1…</span> address.</div>
+    <div class="note">Open the Blockle wallet (extension/desktop) → Receive to copy your <span class="mono">block1…</span> address. The faucet is self-minting — it's funded by the chain's mining rewards (coinbase), so it refills automatically; no top-ups.</div>
   </div>
 
   <div class="card">
@@ -71,7 +71,7 @@
     fetch('/api/faucet/info',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
       $('drip').textContent=(d.dripBlock!=null?d.dripBlock:'—')+' BLOCK';
       $('cd').textContent=(d.cooldownHours!=null?d.cooldownHours+' h':'—');
-      $('bal').textContent=(d.balance!=null?d.balance+' BLOCK':'offline')+(d.dry?' (dry)':'');
+      $('bal').textContent=(d.balance!=null?d.balance+' BLOCK':'offline')+(d.dry?' (minting — warming up)':'');
       $('faddr').textContent=d.faucetAddress||'—';
     }).catch(function(){});
   }

@@ -80,6 +80,10 @@ const server = http.createServer(async (req, res) => {
         dailyCapBlock: Number(DAILY_CAP_BLOCK),
         balance: bal == null ? null : fmt(bal),
         dry: bal != null && bal < DRIP_BASE,
+        // The faucet is funded by PoW coinbase: the node mines to the faucet
+        // wallet, so it self-mints test BLOCK (matures ~100 blocks). No manual
+        // top-ups. When "dry" it's just warming up, not broken.
+        source: 'mining-coinbase',
         network: 'BLOCK mainnet L1 (test faucet)',
       });
     }
