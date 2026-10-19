@@ -101,18 +101,6 @@
 
   $('go').onclick = run;
 
-  // Official WORLD token preset — pre-fills the launch form; the user still reviews
-  // and signs every step (deploy + pool) from their own wallet. Nothing auto-signs.
-  var pw = $('preset-world');
-  if (pw) pw.onclick = function () {
-    var set = function (id, v) { var e = $(id); if (e) e.value = v; };
-    set('name', 'World'); set('symbol', 'WORLD'); set('decimals', '8');
-    set('supply', '1000000'); set('seedBlock', '10000'); set('seedToken', '1000000');
-    var logo = $('logo'); if (logo && !logo.value) { logo.value = location.origin + '/world-token.svg'; showPrev(logo.value); }
-    var err = $('err'); if (err) err.textContent = 'WORLD preset loaded. Review the fields, then Launch — sign ONE transaction from the wallet holding the premine (deploys WORLD, mints 1,000,000, and seeds the 10,000 BLOCK pool atomically).';
-    $('go').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-
   async function run() {
     var err = $('err'); err.textContent = '';
     var name = $('name').value.trim(), symbol = $('symbol').value.trim();
