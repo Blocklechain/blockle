@@ -394,6 +394,20 @@
       $('#stats').innerHTML = [['Users', s.users], ['Verified', s.verified], ['Subscribers', s.subscribers],
         ['2FA on', s.with2fa], ['Backups', s.backups], ['Open tickets', s.tickets.open]]
         .map(([k, n]) => `<div class="stat"><div class="n">${n}</div><div class="k">${k}</div></div>`).join('');
+      // --- traffic report + hourly time chart ---
+      try {
+        const tr = (await api('GET', '/account/api/admin/traffic')).data;
+        if (tr && tr.totals) {
+          const T = tr.totals;
+          $('#traffic-stats').innerHTML = [['Requests (24h)', T.requests24h.toLocaleString()],
+            ['Unique IPs (24h)', T.unique24h.toLocaleString()], ['Bot traffic', T.botPct + '%'],
+            ['Errors (24h)', T.errors24h.toLocaleString()]]
+            .map(([k, n]) => `<div class="stat"><div class="n">${n}</div><div class="k">${k}</div></div>`).join('');
+          drawTrafficChart(tr.hourly || []);
+          $('#traffic-top').innerHTML = 'Top paths (24h, humans): ' + (tr.topPaths || []).slice(0, 6)
+            .map((p) => `<code>${esc(p.path)}</code> ${p.n}`).join(' · ');
+        }
+      } catch (e) { /* traffic is best-effort */ }
       const t = await api('GET', '/account/api/admin/tickets');
       $('#tickets').innerHTML = (t.data.tickets || []).map((x) => `<div class="ticket">
         <b>${esc(x.subject)}</b> <span class="note">· ${esc(x.email)} · ${x.status}</span>
@@ -408,6 +422,33 @@
     },
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function drawTrafficChart(hourly) {
+    const c = $('#traffic-chart'); if (!c || !hourly.length) return;
+    const tip = $('#traffic-tip');
+    const cs = getComputedStyle(document.body);
+    const accent = (cs.getPropertyValue('--accent') || '#4d8bff').trim();
+    const grid = (cs.getPropertyValue('--line') || '#2a2e38').trim();
+    const mut = (cs.getPropertyValue('--mut') || cs.getPropertyValue('--muted') || '#8b93a6').trim();
+    const W = c.clientWidth || 680, H = 200, dpr = window.devicePixelRatio || 1;
+    c.width = W * dpr; c.height = H * dpr; const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const padL = 40, padR = 8, padT = 10, padB = 22, pw = W - padL - padR, ph = H - padT - padB;
+    const vals = hourly.map((h) => h.requests), max = Math.max(1, ...vals);
+    const mag = Math.pow(10, Math.floor(Math.log10(max))); const top = Math.ceil(max / mag) * mag || 5;
+    const X = (i) => padL + (hourly.length <= 1 ? pw / 2 : (i / (hourly.length - 1)) * pw);
+    const Y = (v) => padT + ph - (v / top) * ph;
+    g.clearRect(0, 0, W, H); g.font = '10px ui-sans-serif,system-ui'; g.textBaseline = 'middle';
+    [0, 0.5, 1].forEach((f) => { const gy = padT + ph - f * ph; g.strokeStyle = grid; g.globalAlpha = 0.55; g.beginPath(); g.moveTo(padL, gy); g.lineTo(W - padR, gy); g.stroke(); g.globalAlpha = 1; g.fillStyle = mut; g.textAlign = 'right'; g.fillText(Math.round(top * f).toLocaleString(), padL - 6, gy); });
+    g.beginPath(); g.moveTo(X(0), Y(vals[0])); for (let i = 1; i < vals.length; i++) g.lineTo(X(i), Y(vals[i]));
+    g.lineTo(X(vals.length - 1), padT + ph); g.lineTo(X(0), padT + ph); g.closePath();
+    const grad = g.createLinearGradient(0, padT, 0, padT + ph); grad.addColorStop(0, accent + '55'); grad.addColorStop(1, accent + '0a'); g.fillStyle = grad; g.fill();
+    g.beginPath(); g.moveTo(X(0), Y(vals[0])); for (let i = 1; i < vals.length; i++) g.lineTo(X(i), Y(vals[i])); g.strokeStyle = accent; g.lineWidth = 2; g.stroke();
+    g.fillStyle = accent; g.beginPath(); g.arc(X(vals.length - 1), Y(vals[vals.length - 1]), 3, 0, 7); g.fill();
+    g.fillStyle = mut; g.textAlign = 'center'; g.textBaseline = 'top';
+    for (let i = 0; i < hourly.length; i += 12) { const d = new Date(hourly[i].t); g.fillText((d.getUTCMonth() + 1) + '/' + d.getUTCDate() + ' ' + String(d.getUTCHours()).padStart(2, '0') + 'h', X(i), padT + ph + 5); }
+    c.onmousemove = (ev) => { const r = c.getBoundingClientRect(); let i = Math.round(((ev.clientX - r.left) - padL) / pw * (hourly.length - 1)); i = Math.max(0, Math.min(hourly.length - 1, i)); const h = hourly[i], d = new Date(h.t); tip.style.display = 'block'; tip.style.left = X(i) + 'px'; tip.style.top = Y(h.requests) + 'px'; tip.innerHTML = (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + ' ' + String(d.getUTCHours()).padStart(2, '0') + ':00 UTC<br><b>' + h.requests.toLocaleString() + '</b> req · ' + h.unique + ' IPs'; };
+    c.onmouseleave = () => { tip.style.display = 'none'; };
+  }
   wireTheme();
   (pages[page] || (() => {}))();
 })();

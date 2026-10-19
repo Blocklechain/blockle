@@ -206,7 +206,12 @@ ${msg}</div>`,
 
   admin: () => `<div class="card admin">${brand}<h1>Admin</h1><p class="sub" id="who"></p>
 <div class="grid" id="stats"></div>
-<h1 style="font-size:16px">Support inbox (webmail)</h1>
+<h1 style="font-size:16px;margin-top:22px">Traffic — blockle.org</h1>
+<div class="grid" id="traffic-stats"></div>
+<div style="position:relative;margin-top:10px"><canvas id="traffic-chart" height="200" style="width:100%;display:block"></canvas>
+<div id="traffic-tip" style="position:absolute;pointer-events:none;display:none;background:var(--card,#1a1d24);border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%)"></div></div>
+<div id="traffic-top" class="note" style="margin-top:8px"></div>
+<h1 style="font-size:16px;margin-top:22px">Support inbox (webmail)</h1>
 <iframe src="/webmail/" title="support@blockle.org webmail"></iframe>
 <h1 style="font-size:16px;margin-top:22px">Tickets</h1>
 <div id="tickets"></div>${msg}

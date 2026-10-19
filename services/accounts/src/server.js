@@ -22,6 +22,7 @@ import {
 import { renderPage } from './pages.js';
 import { makeChain } from './chain.js';
 import { newBot, botView, step as botStep, BOT_TYPES } from './bots.js';
+import { trafficReport } from './traffic.js';
 
 const SESSION_COOKIE = 'blk_sess';
 const APP_JS = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/app.js'), 'utf8');
@@ -679,6 +680,10 @@ export function createApp(overrides = {}) {
       backups: store.all('backups').length,
       tickets: { open: tickets.filter((t) => t.status === 'open').length, total: tickets.length },
     });
+  }));
+
+  on('GET', /^\/account\/api\/admin\/traffic$/, adminOnly((req, res) => {
+    try { return json(res, 200, trafficReport()); } catch (e) { return json(res, 500, { error: String(e && e.message) }); }
   }));
 
   on('GET', /^\/account\/api\/admin\/tickets$/, adminOnly((req, res) => {
