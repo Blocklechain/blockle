@@ -78,6 +78,17 @@ DEFAULT_TOKENS = {
         _erc20("avalanche", "USDC", 6, "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"),
         _erc20("avalanche", "USDT", 6, "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7"),
     ],
+    # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
+    # its AMM pool; USDB has no pool, so this list is the only way a held USDB
+    # balance surfaces. Curated tokens are never hidden (zero shows as 0).
+    "block": [
+        AssetRef(chain="block", kind="block20", symbol="WORLD", decimals=8,
+                 address="32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f",
+                 name="World", logo="https://blockle.org/world-token.svg"),
+        AssetRef(chain="block", kind="block20", symbol="USDB", decimals=6,
+                 address="2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a",
+                 name="Blockle USD", logo="https://blockle.org/usdb-token.svg"),
+    ],
 }
 
 DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "bitcoin", "litecoin", "dogecoin"]

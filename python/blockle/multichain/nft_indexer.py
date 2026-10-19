@@ -269,24 +269,68 @@ class Indexer:
                 lst = body.get("nfts") if isinstance(body, dict) else None
                 if not isinstance(lst, list):
                     return None
-                return [map_block_item(n) for n in lst]
+                # Enrich with each collection's on-chain name/symbol (from the
+                # node token getters) so tiles show a real collection name, not a
+                # blank "metadata unavailable" card. One fetch per distinct contract.
+                base = self._block_api
+                token_base = (base[:-len("/explorer")] if base.endswith("/explorer") else base) + "/token/"
+                contracts: List[str] = []
+                for n in lst:
+                    c = str(n.get("contract")) if isinstance(n, dict) and n.get("contract") is not None else None
+                    if c and c not in contracts:
+                        contracts.append(c)
+                meta_by: Dict[str, Dict[str, Any]] = {}
+                for c in contracts:
+                    try:
+                        r = await maybe_await(self._fetch(token_base + quote(c, safe=""),
+                                                          {"method": "GET", "headers": {"accept": "application/json"}}))
+                        if r and getattr(r, "ok", False):
+                            j0 = await maybe_await(r.json())
+                            j = j0.get("result") if isinstance(j0, dict) and isinstance(j0.get("result"), dict) else j0
+                            if isinstance(j, dict) and (j.get("name") or j.get("symbol")):
+                                meta_by[c] = {"name": j.get("name"), "symbol": j.get("symbol")}
+                    except Exception:
+                        pass
+                return [map_block_item(n, meta_by.get(str(n.get("contract")) if isinstance(n, dict) else None)) for n in lst]
 
             return None  # unsupported chain -> unavailable (honest)
         except Exception:
             return None  # any error -> unavailable (NEVER a fabricated empty inventory)
 
 
-def map_block_item(n: Dict[str, Any]) -> Dict[str, Any]:
-    """A native BLOCK-721 item. The node index knows only ownership (contract +
-    token id); it carries no metadata yet, so flag metadataOk False rather than
-    invent a name/image — the UI renders an honest 'metadata unavailable' tile."""
-    return {
+# Official BLOCK-721 collections get a canonical image (name/symbol still come
+# from the chain). Keyed by lowercase contract id.
+_CURATED_NFT = {
+    "4a8234f9dda44e953f1a5d4877920431e7d991cdc4b718ff3315dcad7363be4e": {
+        "image": "https://blockle.org/world-token.svg", "name": "World Items",
+    },
+}
+
+
+def map_block_item(n: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """A native BLOCK-721 item. `meta` is the collection's on-chain metadata
+    ({name,symbol}) read from the node token getters — a REAL source, so when
+    present we set a name/collection and metadataOk True. A curated image may be
+    attached for official collections; otherwise metadataOk stays False and the
+    UI renders an honest 'metadata unavailable' tile."""
+    contract = str(n.get("contract")) if n and n.get("contract") is not None else None
+    token_id = str(n.get("tokenId")) if n and n.get("tokenId") is not None else None
+    cur = _CURATED_NFT.get(contract.lower()) if contract else None
+    coll = (meta or {}).get("name") or (meta or {}).get("symbol") or (cur or {}).get("name")
+    short = ("#" + token_id[:6]) if token_id else ""
+    out: Dict[str, Any] = {
         "chain": "block",
         "standard": "block721",
-        "contract": str(n.get("contract")) if n and n.get("contract") is not None else None,
-        "tokenId": str(n.get("tokenId")) if n and n.get("tokenId") is not None else None,
-        "metadataOk": False,
+        "contract": contract,
+        "tokenId": token_id,
+        "metadataOk": bool(coll),
     }
+    if coll:
+        out["collection"] = coll
+        out["name"] = (coll + " " + short).strip()
+    if cur and cur.get("image"):
+        out["image"] = cur["image"]
+    return out
 
 
 def create_indexer(opts: Optional[Dict[str, Any]] = None) -> Indexer:
