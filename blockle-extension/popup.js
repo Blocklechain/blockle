@@ -295,17 +295,19 @@
     '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f',
     '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a',
   ];
+  // Logos are bundled in the extension (local, same-origin — reliable in the
+  // popup regardless of network/CSP).
   const CURATED_TOKEN_LOGO = {
-    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': 'https://blockle.org/world-token.svg',
-    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': 'https://blockle.org/usdb-token.svg',
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': 'world-token.svg',
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': 'usdb-token.svg',
   };
+  // The monogram letter is the base; the logo <img> layers on top and simply
+  // hides itself on error (onerror holds NO markup, so it can't break the HTML).
   function tokenIcon(id, sym) {
-    const logo = CURATED_TOKEN_LOGO[id];
     const ch = (sym || '?').slice(0, 1).toUpperCase();
-    const fallback = `<span class="tok-ico">${ch}</span>`;
-    return logo
-      ? `<img class="tok-ico" src="${logo}" alt="" onerror="this.outerHTML='${fallback.replace(/'/g, "&#39;")}'">`
-      : fallback;
+    const logo = CURATED_TOKEN_LOGO[id];
+    if (!logo) return `<span class="tok-ico">${ch}</span>`;
+    return `<span class="tok-ico">${ch}<img src="${logo}" alt="" onerror="this.style.display='none'"></span>`;
   }
 
   async function renderTokens() {
