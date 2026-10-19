@@ -9,6 +9,7 @@
 <meta property="og:title" content="USDB — Blockle USD">
 <meta property="og:description" content="A fully-backed USD stablecoin. Buy & redeem by bank (ACH) with a flat 3.7%.">
 <meta property="og:image" content="/usdb-token.svg">
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 <style>
   :root{
     --bg:#0B0B14; --surface:#141427; --surface2:#1b1b31; --line:#2A2A45;
@@ -55,6 +56,10 @@
   .stat .k{color:var(--muted)} .stat .v{font-family:var(--mono)}
   .cta{width:100%;background:linear-gradient(135deg,var(--greenlite),var(--green2));color:#06231a;border:0;border-radius:14px;padding:15px;font:800 16px var(--sans);cursor:pointer;margin-top:16px}
   .cta:disabled{opacity:.5;cursor:not-allowed}
+  .plaid{width:100%;background:var(--surface2);border:1px solid var(--green2);color:var(--text);border-radius:12px;padding:13px;font:700 14px var(--sans);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px}
+  .plaid:hover{border-color:var(--green)}
+  .connected{margin-top:8px;font-size:13px;color:var(--good);background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .connected .chg{color:var(--muted);cursor:pointer;font-weight:600;text-decoration:underline}
   .msg{margin-top:14px;font-size:13.5px;word-break:break-word;text-align:center}
   .ok{color:var(--good)} .bad{color:var(--bad)}
   .note{color:var(--muted);font-size:12px;margin-top:12px}
@@ -93,9 +98,9 @@
     <div class="stat"><span class="k">Total debited from your bank</span><span class="v" id="btot">—</span></div>
     <label class="fld" for="baddr">Deliver USDB to your Blockle address</label>
     <input class="t" id="baddr" placeholder="block1…" spellcheck="false" autocomplete="off">
-    <label class="fld">Your bank (ACH)</label>
-    <input class="t" id="bname" placeholder="Account holder name" style="margin-bottom:8px">
-    <div class="two"><div><input class="t" id="brouting" placeholder="Routing (9 digits)" inputmode="numeric"></div><div><input class="t" id="bacct" placeholder="Account number" inputmode="numeric"></div></div>
+    <label class="fld">Your bank</label>
+    <button class="plaid" id="bplaid" type="button">🔗 Connect bank with Plaid</button>
+    <div class="connected" id="bconn" style="display:none"></div>
     <button class="cta" id="buyBtn">Buy USDB</button>
     <div class="msg" id="buyMsg"></div>
     <div class="note">An ACH debit is created via Modern Treasury; your USDB is minted to your wallet once the transfer settles — fully backed 1:1.</div>
@@ -108,9 +113,9 @@
     <div class="recv"><div class="big">≈ <b id="rrecv">—</b></div><div class="lbl">paid to your bank</div></div>
     <div class="break"></div>
     <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="rfee">—</span></div>
-    <label class="fld">Your bank (ACH credit)</label>
-    <input class="t" id="rname" placeholder="Account holder name" style="margin-bottom:8px">
-    <div class="two"><div><input class="t" id="rrouting" placeholder="Routing (9 digits)" inputmode="numeric"></div><div><input class="t" id="racct" placeholder="Account number" inputmode="numeric"></div></div>
+    <label class="fld">Your bank (receives the payout)</label>
+    <button class="plaid" id="rplaid" type="button">🔗 Connect bank with Plaid</button>
+    <div class="connected" id="rconn" style="display:none"></div>
     <button class="cta" id="redeemBtn" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff">Prepare redemption</button>
     <div class="msg" id="redeemMsg"></div>
     <div class="note">Redemption is signed in your <b>Blockle wallet</b>: it burns your USDB on-chain (no custody) and the USD is ACH-credited to your bank. This page prepares the request; approve the burn in your wallet to complete it.</div>
@@ -167,16 +172,49 @@ function showTab(which){
 $('tab-buy').addEventListener('click',()=>showTab('buy'));
 $('tab-redeem').addEventListener('click',()=>{showTab('redeem');refreshRedeem();});
 
+// ---- Plaid Link: connect a bank -> MT external account (no hand-typed ACH) ----
+const ext={buy:null,redeem:null};
+async function plaidConnect(which){
+  const btn=which==='buy'?$('bplaid'):$('rplaid');
+  const conn=which==='buy'?$('bconn'):$('rconn');
+  btn.disabled=true;const label=btn.textContent;btn.textContent='Opening Plaid…';
+  function fail(msg){conn.style.display='flex';conn.style.color='var(--bad)';conn.textContent=msg;btn.disabled=false;btn.textContent=label;}
+  try{
+    const lt=await (await fetch(API+'/plaid/link-token',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).json();
+    if(lt.error||!lt.linkToken) throw new Error(lt.error||'no link token');
+    if(typeof Plaid==='undefined') throw new Error('Plaid failed to load');
+    const handler=Plaid.create({token:lt.linkToken,
+      onSuccess:async(public_token,metadata)=>{
+        const acct=(metadata.accounts&&metadata.accounts[0])||{};
+        const inst=(metadata.institution&&metadata.institution.name)||'Bank';
+        btn.textContent='Linking…';
+        try{
+          const c=await (await fetch(API+'/plaid/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({publicToken:public_token,accountId:acct.id,name:inst})})).json();
+          if(c.error||!c.externalAccountId) throw new Error(c.error||'connect failed');
+          ext[which]=c.externalAccountId;
+          conn.style.display='flex';conn.style.color='var(--good)';
+          conn.innerHTML='✓ '+inst+' '+(acct.mask?'••'+acct.mask:'')+' connected <span class="chg">change</span>';
+          conn.querySelector('.chg').addEventListener('click',()=>{ext[which]=null;conn.style.display='none';btn.style.display='flex';btn.disabled=false;btn.textContent=label;});
+          btn.style.display='none';
+        }catch(e){ fail('Connect failed: '+e.message); }
+      },
+      onExit:()=>{ if(!ext[which]){btn.disabled=false;btn.textContent=label;} }
+    });
+    handler.open();
+  }catch(e){ fail(e.message); }
+}
+$('bplaid').addEventListener('click',()=>plaidConnect('buy'));
+$('rplaid').addEventListener('click',()=>plaidConnect('redeem'));
+
 $('buyBtn').addEventListener('click',async()=>{
   const m=$('buyMsg');m.textContent='';m.className='msg';
   const usd=Number($('bamt').value||0),addr=$('baddr').value.trim();
-  const bank={name:$('bname').value.trim(),routingNumber:$('brouting').value.trim(),accountNumber:$('bacct').value.trim()};
   if(!(usd>=1))return m.className='msg bad',m.textContent='Enter at least $1.';
   if(!/^block1[0-9a-z]{20,}$/.test(addr))return m.className='msg bad',m.textContent='Enter your Blockle address (block1…).';
-  if(!/^\d{9}$/.test(bank.routingNumber)||!/^\d{4,17}$/.test(bank.accountNumber)||bank.name.length<2)return m.className='msg bad',m.textContent='Enter your bank name, 9-digit routing, and account number.';
+  if(!ext.buy)return m.className='msg bad',m.textContent='Connect your bank with Plaid first.';
   const btn=$('buyBtn');btn.disabled=true;btn.textContent='Submitting…';
   try{
-    const r=await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,recipient:addr,bank})});
+    const r=await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,recipient:addr,externalAccountId:ext.buy})});
     const j=await r.json();if(j.error)throw new Error(j.error);
     if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: you would receive <b>'+j.receiveUsdb+' USDB</b> for '+fmt(j.payUsd)+' (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
     else{m.className='msg ok';m.innerHTML='✅ ACH debit initiated — <b>'+j.receiveUsdb+' USDB</b> will arrive at your wallet once it settles.';}
@@ -187,12 +225,11 @@ $('buyBtn').addEventListener('click',async()=>{
 $('redeemBtn').addEventListener('click',async()=>{
   const m=$('redeemMsg');m.textContent='';m.className='msg';
   const usd=Number($('ramt').value||0);
-  const bank={name:$('rname').value.trim(),routingNumber:$('rrouting').value.trim(),accountNumber:$('racct').value.trim()};
   if(!(usd>=1))return m.className='msg bad',m.textContent='Enter at least 1 USDB.';
-  if(!/^\d{9}$/.test(bank.routingNumber)||!/^\d{4,17}$/.test(bank.accountNumber)||bank.name.length<2)return m.className='msg bad',m.textContent='Enter your bank name, 9-digit routing, and account number.';
+  if(!ext.redeem)return m.className='msg bad',m.textContent='Connect your bank with Plaid first.';
   const btn=$('redeemBtn');btn.disabled=true;btn.textContent='Preparing…';
   try{
-    const r=await fetch(API+'/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,bank})});
+    const r=await fetch(API+'/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,externalAccountId:ext.redeem})});
     const j=await r.json();if(j.error)throw new Error(j.error);
     if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: redeeming '+usd+' USDB pays <b>'+fmt(j.payoutUsd)+'</b> to your bank (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
     else{m.className='msg ok';m.innerHTML='✅ Redemption prepared. Open your <b>Blockle wallet → USDB → Redeem</b> and approve the burn; $'+j.estPayoutUsd+' will be ACH-credited to your bank.';}
