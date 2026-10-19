@@ -99,14 +99,35 @@
   // The node index only knows ownership (contract + token id); it carries no
   // on-chain metadata yet, so we flag metadataOk:false rather than invent a
   // name/image. The UI renders an honest "metadata unavailable" tile.
-  function mapBlockItem(n) {
-    return {
-      chain: 'block',
-      standard: 'block721',
-      contract: n && n.contract != null ? String(n.contract) : undefined,
-      tokenId: n && n.tokenId != null ? String(n.tokenId) : undefined,
-      metadataOk: false,
-    };
+  // Official BLOCK-721 collections get a canonical image (their on-chain
+  // name/symbol still come from the chain, never invented). Keyed by lowercase
+  // contract id.
+  const CURATED_NFT = {
+    '4a8234f9dda44e953f1a5d4877920431e7d991cdc4b718ff3315dcad7363be4e': {
+      image: 'https://blockle.org/world-token.svg', name: 'World Items',
+    },
+  };
+  function curatedNft(cid) { return (cid && CURATED_NFT[String(cid).toLowerCase()]) || null; }
+
+  // `meta` is the collection's on-chain metadata ({name,symbol}) read from the
+  // node's token getters — a REAL source, so when present we set a name/collection
+  // and metadataOk:true. A curated image may be attached for official collections.
+  function mapBlockItem(n, meta) {
+    const contract = n && n.contract != null ? String(n.contract) : undefined;
+    const tokenId = n && n.tokenId != null ? String(n.tokenId) : undefined;
+    const cur = curatedNft(contract);
+    const collName = (meta && (meta.name || meta.symbol)) || (cur && cur.name) || null;
+    const shortId = tokenId ? ('#' + tokenId.slice(0, 6)) : '';
+    const out = { chain: 'block', standard: 'block721', contract: contract, tokenId: tokenId };
+    if (collName) {
+      out.collection = collName;
+      out.name = (collName + ' ' + shortId).trim();
+      out.metadataOk = true;
+    } else {
+      out.metadataOk = false;
+    }
+    if (cur && cur.image) out.image = cur.image;
+    return out;
   }
 
   // ---- the factory ----------------------------------------------------------
@@ -174,7 +195,26 @@
           const body = await res.json();
           const list = body && body.nfts;
           if (!Array.isArray(list)) return null;
-          return list.map(function (n) { return mapBlockItem(n); });
+          // Enrich with each collection's on-chain name/symbol (read from the
+          // node's token getters) so tiles show a real collection name, not a
+          // blank "metadata unavailable" card. One fetch per distinct contract.
+          const tokenBase = blockApi.replace(/\/explorer$/, '') + '/token/';
+          const metaByContract = {};
+          const contracts = [];
+          for (let i = 0; i < list.length; i++) {
+            const c = list[i] && list[i].contract != null ? String(list[i].contract) : null;
+            if (c && contracts.indexOf(c) < 0) contracts.push(c);
+          }
+          await Promise.all(contracts.map(async function (c) {
+            try {
+              const r = await fetchImpl(tokenBase + encodeURIComponent(c), { method: 'GET', headers: { accept: 'application/json' } });
+              if (r && r.ok) { const j0 = await r.json(); const j = (j0 && j0.result) ? j0.result : j0; if (j && (j.name || j.symbol)) metaByContract[c] = { name: j.name, symbol: j.symbol }; }
+            } catch (_) { /* leave unresolved for this contract */ }
+          }));
+          return list.map(function (n) {
+            const c = n && n.contract != null ? String(n.contract) : null;
+            return mapBlockItem(n, c ? metaByContract[c] : null);
+          });
         }
         return null; // unsupported chain -> unavailable (honest)
       } catch (_) {

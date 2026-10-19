@@ -293,9 +293,36 @@ class LiveNftIndexer implements NftIndexer {
         if (body is! Map) return null;
         final list = body['nfts'];
         if (list is! List) return null;
+        // Enrich with each collection's on-chain name/symbol (read from the
+        // node token getters) so tiles show a real collection name, not a blank
+        // "metadata unavailable" card. One fetch per distinct contract.
+        final tokenBase =
+            '${_blockApi.replaceFirst(RegExp(r'/explorer$'), '')}/token/';
+        final contracts = <String>{
+          for (final n in list)
+            if (n is Map && n['contract'] != null) '${n['contract']}'
+        };
+        final metaByContract = <String, Map<String, dynamic>>{};
+        await Future.wait(contracts.map((c) async {
+          try {
+            final r = await _fetch('$tokenBase${Uri.encodeComponent(c)}',
+                method: 'GET', headers: const {'accept': 'application/json'});
+            if (r.ok && r.body is Map) {
+              final b = (r.body as Map).cast<String, dynamic>();
+              final j = (b['result'] is Map)
+                  ? (b['result'] as Map).cast<String, dynamic>()
+                  : b;
+              if (j['name'] != null || j['symbol'] != null) {
+                metaByContract[c] = {'name': j['name'], 'symbol': j['symbol']};
+              }
+            }
+          } catch (_) {/* leave unresolved for this contract */}
+        }));
         return [
           for (final n in list)
-            if (n is Map) mapBlockItem(n.cast<String, dynamic>())
+            if (n is Map)
+              mapBlockItem(n.cast<String, dynamic>(),
+                  metaByContract['${n['contract']}'])
         ];
       }
       return null; // unsupported chain -> unavailable (honest)
@@ -309,12 +336,33 @@ class LiveNftIndexer implements NftIndexer {
 /// token id); it carries no metadata yet, so we flag metadataOk:false rather
 /// than invent a name/image — the UI renders an honest "metadata unavailable"
 /// tile.
-Map<String, dynamic> mapBlockItem(Map<String, dynamic> n) {
+/// Official BLOCK-721 collections get a canonical image (name/symbol still come
+/// from the chain). Keyed by lowercase contract id.
+const Map<String, Map<String, String>> _curatedNft = {
+  '4a8234f9dda44e953f1a5d4877920431e7d991cdc4b718ff3315dcad7363be4e': {
+    'image': 'https://blockle.org/world-token.svg',
+    'name': 'World Items',
+  },
+};
+
+/// [meta] is the collection's on-chain metadata ({name,symbol}) — a real source,
+/// so when present we set a name/collection and metadataOk:true. A curated image
+/// may be attached for official collections.
+Map<String, dynamic> mapBlockItem(Map<String, dynamic> n,
+    [Map<String, dynamic>? meta]) {
+  final contract = n['contract'] != null ? '${n['contract']}' : null;
+  final tokenId = n['tokenId'] != null ? '${n['tokenId']}' : null;
+  final cur = contract != null ? _curatedNft[contract.toLowerCase()] : null;
+  final collName = (meta?['name'] ?? meta?['symbol'] ?? cur?['name']) as String?;
+  final shortId = tokenId != null ? '#${tokenId.substring(0, tokenId.length < 6 ? tokenId.length : 6)}' : '';
   return {
     'chain': 'block',
     'standard': 'block721',
-    if (n['contract'] != null) 'contract': '${n['contract']}',
-    if (n['tokenId'] != null) 'tokenId': '${n['tokenId']}',
-    'metadataOk': false,
+    if (contract != null) 'contract': contract,
+    if (tokenId != null) 'tokenId': tokenId,
+    if (collName != null) 'collection': collName,
+    if (collName != null) 'name': '$collName $shortId'.trim(),
+    if (cur?['image'] != null) 'image': cur!['image'],
+    'metadataOk': collName != null,
   };
 }

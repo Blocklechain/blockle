@@ -168,6 +168,29 @@ final Map<String, List<AssetRef>> defaultTokens = {
         decimals: 6,
         address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7'),
   ],
+  // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
+  // auto-discovered); USDB has no pool, so listing it here is the only way a
+  // held balance surfaces. Zero balances show as 0 (curated tokens aren't hidden).
+  'block': const [
+    AssetRef(
+        chain: 'block',
+        kind: 'block20',
+        symbol: 'WORLD',
+        decimals: 8,
+        address:
+            '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f',
+        name: 'World',
+        logo: 'https://blockle.org/world-token.svg'),
+    AssetRef(
+        chain: 'block',
+        kind: 'block20',
+        symbol: 'USDB',
+        decimals: 6,
+        address:
+            '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a',
+        name: 'Blockle USD',
+        logo: 'https://blockle.org/usdb-token.svg'),
+  ],
 };
 
 class ChainRegistry {

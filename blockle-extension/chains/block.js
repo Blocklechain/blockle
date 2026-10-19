@@ -109,6 +109,21 @@
             out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: (cur && cur.symbol) || info.symbol || 'TOKEN', decimals: dec, name: (cur && cur.name) || info.name || undefined, logoURI: cur && cur.logoURI, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
           }
         } catch { /* best-effort */ }
+        // 3) always probe the curated/official tokens by balanceOf. Some (e.g.
+        // USDB) have no AMM pool to enumerate from, so a held official token
+        // would otherwise never surface. Dedups against what pools already found.
+        try {
+          const have = new Set(out.map(function (t) { return String(t.contract).toLowerCase(); }));
+          for (const cid in CURATED) {
+            if (have.has(cid)) continue;
+            let info; try { info = await Chain.token(cid, holder); } catch { info = null; }
+            let bal; try { bal = BigInt(info && (info.holderBalance != null ? info.holderBalance : (info.balance != null ? info.balance : 0))); } catch { bal = 0n; }
+            if (bal <= 0n) continue;
+            const cur = CURATED[cid];
+            const dec = Number((cur && cur.decimals != null ? cur.decimals : (info && info.decimals)) || 0);
+            out.push({ chain: id, kind: 'block20', contract: cid, address: cid, symbol: (cur && cur.symbol) || (info && info.symbol) || 'TOKEN', decimals: dec, name: (cur && cur.name) || (info && info.name) || undefined, logoURI: cur && cur.logoURI, balance: bal.toString(), display: fmtUnits(bal.toString(), dec) });
+          }
+        } catch { /* best-effort */ }
         return out;
       },
 

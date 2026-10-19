@@ -717,6 +717,7 @@ fn route(
         // Buy/redeem USDB (Blockle USD stablecoin) via the live PayPal rail.
         "/usdb" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
+        "/market" => serve_web_file("market.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
         "/robots.txt" => serve_web_file("robots.txt", "text/plain; charset=utf-8"),
@@ -788,6 +789,7 @@ fn route(
         "/explorer" => ("200 OK", "text/html; charset=utf-8", page_explorer(&reg).into_bytes()),
         "/explorer/peers" => ("200 OK", "text/html; charset=utf-8", page_peers().into_bytes()),
         "/explorer/richlist" => ("200 OK", "text/html; charset=utf-8", page_richlist().into_bytes()),
+        "/explorer/tokens" | "/tokens" => ("200 OK", "text/html; charset=utf-8", page_tokens().into_bytes()),
         p if p.starts_with("/explorer/block/") => {
             let id = &p["/explorer/block/".len()..];
             match chain_api(&format!("/explorer/block/{id}")) {
@@ -3763,7 +3765,64 @@ fn explorer_search_box() -> String {
     r##"<form class="filters" method="get" action="/explorer/search">
 <input type="text" name="q" placeholder="height · block hash · txid · block1… address" style="flex:1;min-width:16rem">
 <button class="btn primary" type="submit">Search</button></form>
-<p class="sub" style="margin-top:.4rem"><a href="/explorer">Blocks</a> · <a href="/explorer/richlist">Rich list</a> · <a href="/explorer/peers">Peers</a></p>"##.into()
+<p class="sub" style="margin-top:.4rem"><a href="/explorer">Blocks</a> · <a href="/explorer/tokens">Tokens</a> · <a href="/explorer/richlist">Rich list</a> · <a href="/explorer/peers">Peers</a></p>"##.into()
+}
+
+// A dedicated token area for the explorer: every BLOCK-20 token with a live AMM
+// market, with price, liquidity and a link to its full token page. Fed entirely
+// by the existing /api/dex/pools + /api/dex/tokens endpoints (no new chain API).
+fn page_tokens() -> String {
+    let body = r##"<h1>Tokens</h1>
+<p class="sub">Every BLOCK-20 token with a live market on Blockle, newest first. <a href="/launch">Launch a token →</a></p>
+<div class="cards">
+  <div class="card"><div class="v" id="tk-count">—</div><div class="k">Tokens with markets</div></div>
+  <div class="card"><div class="v" id="tk-liq">—</div><div class="k">Total liquidity</div></div>
+  <div class="card"><div class="v" id="tk-newest">—</div><div class="k">Newest</div></div>
+</div>
+<table id="toktable"><tr><th></th><th>token</th><th>price (BLOCK)</th><th>liquidity (BLOCK)</th><th>created</th><th>contract</th></tr>
+<tr><td colspan="6" class="sub">Loading tokens…</td></tr></table>
+<p class="sub" style="margin-top:.6rem"><a href="/explorer">← explorer home</a> · <a href="/dex">open the DEX →</a></p>
+<script>
+(function(){
+  function short(h){return h.length>18?h.slice(0,10)+'…'+h.slice(-6):h;}
+  function fmt(n,d){n=Number(n);if(!isFinite(n))return '—';return n.toLocaleString(undefined,{maximumFractionDigits:d||0});}
+  var CUR={'2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a':{symbol:'USDB',name:'Blockle USD',logo:'/usdb-token.svg'},
+           '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f':{symbol:'WORLD',name:'World',logo:'/world-token.svg'}};
+  Promise.all([
+    fetch('/api/dex/pools').then(function(r){return r.json();}).catch(function(){return {pools:[]};}),
+    fetch('/api/dex/tokens').then(function(r){return r.json();}).catch(function(){return {};})
+  ]).then(function(res){
+    var pools=(res[0]&&res[0].pools)||[]; var meta=res[1]||{};
+    var totalLiq=0, newest={h:-1,sym:'—'};
+    pools.sort(function(a,b){return (b.createdHeight||0)-(a.createdHeight||0);});
+    var rows=pools.map(function(p){
+      var cid=p.token||p.id||''; var cur=CUR[cid]||{}; var m=meta[cid]||{};
+      var dec=p.decimals||8;
+      var tokenReserve=Number(p.tokenReserve||0)/Math.pow(10,dec);
+      var blockReserve=Number(p.blockReserve||0)/1e8;
+      var price=tokenReserve>0?blockReserve/tokenReserve:0;
+      var liq=blockReserve*2; totalLiq+=liq;
+      var sym=cur.symbol||p.symbol||'TOKEN';
+      if((p.createdHeight||0)>newest.h){newest={h:p.createdHeight||0,sym:sym};}
+      var logo=cur.logo||(m&&m.logo)||'';
+      var img=logo?('<img src="'+logo+'" width="22" height="22" style="border-radius:6px;vertical-align:middle" onerror="this.style.display=&#39;none&#39;">'):'';
+      return '<tr><td>'+img+'</td><td><a href="/token/'+cid+'"><b>'+sym+'</b></a><div class="sub" style="font-size:.8em">'+(cur.name||p.name||'')+'</div></td>'+
+        '<td class="mono">'+(price?price.toPrecision(4):'—')+'</td><td class="mono">'+fmt(liq,2)+'</td>'+
+        '<td class="mono">#'+(p.createdHeight||'—')+'</td><td class="mono"><a href="/token/'+cid+'">'+short(cid)+'</a></td></tr>';
+    });
+    document.getElementById('tk-count').textContent=pools.length;
+    document.getElementById('tk-liq').textContent=fmt(totalLiq,0)+' BLOCK';
+    document.getElementById('tk-newest').textContent=newest.sym;
+    document.getElementById('toktable').innerHTML=
+      '<tr><th></th><th>token</th><th>price (BLOCK)</th><th>liquidity (BLOCK)</th><th>created</th><th>contract</th></tr>'+
+      (rows.join('')||'<tr><td colspan="6" class="sub">No tokens with live markets yet. <a href="/launch">Launch the first →</a></td></tr>');
+  });
+})();
+</script>"##.to_string();
+    page_shell_seo(
+        "Tokens — BLOCK-20 markets on Blockle",
+        "Browse every BLOCK-20 token with a live AMM market on the post-quantum Blockle layer-1 — price, liquidity and contract, each linking to its full token page.",
+        "/explorer/tokens", "", body)
 }
 
 fn page_peers() -> String {
