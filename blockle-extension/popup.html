@@ -115,7 +115,12 @@
         <div class="section-h" style="display:flex;align-items:center;justify-content:space-between">Tokens
           <button id="import-token" style="background:none;border:1px solid var(--line2,#2e323c);color:var(--text,#dfe6f5);border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">+ Import</button>
         </div>
-        <div class="list" id="tokens"><div class="empty">No BLOCK-20 tokens imported.</div></div>
+        <div id="import-row" style="display:none;gap:6px;margin:4px 0 8px">
+          <input id="import-id" placeholder="token contract id (64 hex)" style="flex:1;background:var(--surface2,#1a1d26);border:1px solid var(--line2,#2e323c);color:var(--text,#dfe6f5);border-radius:7px;padding:7px 9px;font-size:12px;font-family:ui-monospace,monospace;outline:none">
+          <button id="import-add" style="background:var(--accent,#7c5cff);border:0;color:#fff;border-radius:7px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer">Add</button>
+        </div>
+        <div id="import-msg" style="display:none;font-size:11.5px;color:#ff6b6b;margin:0 0 6px"></div>
+        <div class="list" id="tokens"><div class="empty">Loading tokens…</div></div>
         <div class="section-h">Activity</div>
         <div class="list" id="activity"><div class="empty">No transactions yet.</div></div>
         <nav class="tabbar">

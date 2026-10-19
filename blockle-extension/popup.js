@@ -289,35 +289,69 @@
     await renderTokens();
   }
 
+  // Official BLOCK-20 tokens always appear (even at 0 balance), ahead of any the
+  // user imported. WORLD (game currency) + USDB (stablecoin).
+  const CURATED_TOKEN_IDS = [
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f',
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a',
+  ];
+  // Logos are bundled in the extension (local, same-origin — reliable in the
+  // popup regardless of network/CSP).
+  const CURATED_TOKEN_LOGO = {
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': 'world-token.svg',
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': 'usdb-token.svg',
+  };
+  // The monogram letter is the base; the logo <img> layers on top and simply
+  // hides itself on error (onerror holds NO markup, so it can't break the HTML).
+  function tokenIcon(id, sym) {
+    const ch = (sym || '?').slice(0, 1).toUpperCase();
+    const logo = CURATED_TOKEN_LOGO[id];
+    if (!logo) return `<span class="tok-ico">${ch}</span>`;
+    return `<span class="tok-ico">${ch}<img src="${logo}" alt="" onerror="this.style.display='none'"></span>`;
+  }
+
   async function renderTokens() {
     const box = $('#tokens');
     if (!box) return;
-    const ids = (await Store.get('tokens')).tokens || [];
-    if (!ids.length) {
-      box.innerHTML = '<div class="empty">No BLOCK-20 tokens imported.</div>';
-      return;
-    }
+    const stored = (await Store.get('tokens')).tokens || [];
+    const ids = CURATED_TOKEN_IDS.concat(stored.filter((i) => CURATED_TOKEN_IDS.indexOf(i) < 0));
     const infos = await Promise.all(ids.map((id) => Chain.token(id, Wallet.address)));
     box.innerHTML = ids
       .map((id, i) => {
         const t = infos[i];
-        if (!t) return `<div class="row"><div class="l"><b class="mono">${id.slice(0, 12)}…</b><small>unavailable</small></div></div>`;
+        if (!t) return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, '?')}<div><b class="mono">${id.slice(0, 12)}…</b><small>unavailable</small></div></div></div>`;
         const dec = Number(t.decimals || 0);
-        const bal = t.balance != null ? (Number(t.balance) / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: dec }) : '—';
+        const bal = t.balance != null ? (Number(t.balance) / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: dec }) : '0';
         const sym = t.symbol || '?';
-        return `<div class="row"><div class="l"><b>${sym}</b><small>${t.name || ''}</small></div><div class="r">${bal} ${sym}</div></div>`;
+        return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, sym)}<div><b>${sym}</b><small>${t.name || ''}</small></div></div><div class="r">${bal} ${sym}</div></div>`;
       })
       .join('');
   }
 
-  async function importToken() {
-    const id = (prompt('BLOCK-20 token contract id (64 hex chars):') || '').trim().toLowerCase();
-    if (!id) return;
-    if (!/^[0-9a-f]{64}$/.test(id)) { alert('That is not a 64-hex-char contract id.'); return; }
-    const t = await Chain.token(id, Wallet.address);
-    if (!t || !t.isToken) { alert('No BLOCK-20 token found at that contract id.'); return; }
+  // Toggle the inline import field (window.prompt is blocked in MV3 popups, so
+  // we use an in-popup input instead).
+  function importToken() {
+    const row = $('#import-row');
+    if (!row) return;
+    const open = row.style.display === 'flex';
+    row.style.display = open ? 'none' : 'flex';
+    const msg = $('#import-msg'); if (msg) msg.style.display = 'none';
+    if (!open) { const inp = $('#import-id'); if (inp) inp.focus(); }
+  }
+
+  async function addImportedToken() {
+    const msg = $('#import-msg');
+    const fail = (m) => { if (msg) { msg.style.display = 'block'; msg.textContent = m; } };
+    if (msg) { msg.style.display = 'none'; msg.textContent = ''; }
+    const id = (($('#import-id') && $('#import-id').value) || '').trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(id)) return fail('Enter a 64-hex-character contract id.');
+    let t;
+    try { t = await Chain.token(id, Wallet.address); } catch { t = null; }
+    if (!t || !(t.isToken || t.name || t.symbol)) return fail('No BLOCK-20 token found at that id.');
     const ids = (await Store.get('tokens')).tokens || [];
-    if (!ids.includes(id)) { ids.push(id); await Store.set({ tokens: ids }); }
+    if (ids.indexOf(id) < 0) { ids.push(id); await Store.set({ tokens: ids }); }
+    if ($('#import-id')) $('#import-id').value = '';
+    if ($('#import-row')) $('#import-row').style.display = 'none';
     await renderTokens();
   }
   async function refreshConnections() {
@@ -501,6 +535,10 @@
     });
     const impBtn = $('#import-token');
     if (impBtn) impBtn.addEventListener('click', importToken);
+    const impAdd = $('#import-add');
+    if (impAdd) impAdd.addEventListener('click', addImportedToken);
+    const impId = $('#import-id');
+    if (impId) impId.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addImportedToken(); } });
     const qref = $('#queue-refresh');
     if (qref) qref.addEventListener('click', renderQueue);
     $('#addr-chip').addEventListener('click', () => copy(Wallet.address));
