@@ -24,6 +24,10 @@
       symbol: 'USDB', name: 'Blockle USD', decimals: 6,
       logoURI: 'https://blockle.org/usdb-token.svg', stablecoin: true, peg: 'USD',
     },
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': {
+      symbol: 'WORLD', name: 'World', decimals: 8,
+      logoURI: 'https://blockle.org/world-token.svg',
+    },
   };
   function curatedFor(cid) { return (cid && CURATED[String(cid).toLowerCase()]) || null; }
 
