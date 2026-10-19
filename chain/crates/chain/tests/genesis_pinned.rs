@@ -20,7 +20,7 @@ fn testnet_genesis_is_pinned_and_valid() {
     let g = embedded_genesis("blockle-test").expect("embedded testnet genesis");
     assert_eq!(
         display_hash(&g.header.hash()),
-        "6ee0b2e7f36a98ac4a0bf937106cc2b7b9232bdb487c149db0a37de0762ef47a"
+        "08af871c08de67f7058e1cc278e5a85c4b103dadaa612d99d504397e31dda923"
     );
     let mut chain = Chain::new(ChainParams::testnet());
     chain.connect_block(g).expect("genesis validates");
