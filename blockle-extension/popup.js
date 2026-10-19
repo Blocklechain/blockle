@@ -295,6 +295,18 @@
     '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f',
     '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a',
   ];
+  const CURATED_TOKEN_LOGO = {
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': 'https://blockle.org/world-token.svg',
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': 'https://blockle.org/usdb-token.svg',
+  };
+  function tokenIcon(id, sym) {
+    const logo = CURATED_TOKEN_LOGO[id];
+    const ch = (sym || '?').slice(0, 1).toUpperCase();
+    const fallback = `<span class="tok-ico">${ch}</span>`;
+    return logo
+      ? `<img class="tok-ico" src="${logo}" alt="" onerror="this.outerHTML='${fallback.replace(/'/g, "&#39;")}'">`
+      : fallback;
+  }
 
   async function renderTokens() {
     const box = $('#tokens');
@@ -305,11 +317,11 @@
     box.innerHTML = ids
       .map((id, i) => {
         const t = infos[i];
-        if (!t) return `<div class="row"><div class="l"><b class="mono">${id.slice(0, 12)}…</b><small>unavailable</small></div></div>`;
+        if (!t) return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, '?')}<div><b class="mono">${id.slice(0, 12)}…</b><small>unavailable</small></div></div></div>`;
         const dec = Number(t.decimals || 0);
         const bal = t.balance != null ? (Number(t.balance) / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: dec }) : '0';
         const sym = t.symbol || '?';
-        return `<div class="row"><div class="l"><b>${sym}</b><small>${t.name || ''}</small></div><div class="r">${bal} ${sym}</div></div>`;
+        return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, sym)}<div><b>${sym}</b><small>${t.name || ''}</small></div></div><div class="r">${bal} ${sym}</div></div>`;
       })
       .join('');
   }

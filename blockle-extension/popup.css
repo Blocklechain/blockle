@@ -170,6 +170,10 @@ canvas.logo {
    a generous cap so a long list still scrolls within itself rather than pushing
    the page endlessly. */
 #tokens, #activity { flex: none; max-height: 340px; }
+/* token logo (or monogram fallback) shown beside the symbol/name */
+.tok-ico { width: 26px; height: 26px; border-radius: 7px; flex: none; object-fit: cover;
+  background: var(--surface2, #1a1d26); display: inline-flex; align-items: center;
+  justify-content: center; font-weight: 700; font-size: 12px; color: var(--muted, #9aa3b2); }
 .empty { color: var(--muted); text-align: center; padding: 30px 10px; font-size: 13px; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 10px; border-bottom: 1px solid var(--line); }
 .row .l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
