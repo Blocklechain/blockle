@@ -96,10 +96,20 @@
         <div style="display:flex;gap:8px;align-items:flex-end"><button class="sm ghost" id="claimBtn">Claim deposit</button></div>
       </div>
       <div class="row" style="margin-top:12px;align-items:flex-end">
+        <div style="flex:2">
+          <label class="fld">Your self-custody wallet</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="addr" id="myWallet" style="flex:1">not linked</span>
+            <button class="sm ghost" id="linkBtn">Link extension wallet</button>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px;align-items:flex-end">
         <div style="flex:2"><label class="fld">Withdraw WORLD to address</label><input class="t" id="wTo" placeholder="block1…"></div>
         <div><label class="fld">Amount</label><input class="t" id="wAmt" type="number" min="1" step="1" placeholder="10"></div>
         <div><button class="sm" id="wBtn">Withdraw</button></div>
       </div>
+      <p class="hint">Your in-game WORLD &amp; items are held by your game account. <b>Link your extension wallet</b> above to withdraw WORLD or send items to it — then they appear in your own wallet.</p>
       <p class="hint" id="claimHint"></p>
     </div>
 
@@ -143,9 +153,31 @@
   };
   $('#logout').onclick=function(){sessionStorage.clear();location.reload();};
 
+  // ---- self-custody wallet link (the Blockle extension, injected on this origin) ----
+  var myWallet=sessionStorage.getItem('world_mywallet')||'';
+  function setMyWallet(a){
+    myWallet=a||'';
+    if(myWallet){
+      sessionStorage.setItem('world_mywallet',myWallet);
+      var el=$('#myWallet'); if(el) el.textContent=myWallet;
+      var wt=$('#wTo'); if(wt && !wt.value) wt.value=myWallet;
+    }
+  }
+  $('#linkBtn').onclick=async function(){
+    try{
+      if(typeof window.blockle==='undefined'){ toast('Install/enable the Blockle extension, then reload',true); return; }
+      var a=await window.blockle.connect();
+      var addr=Array.isArray(a)?a[0]:((a&&(a.address||a.addr))||(typeof a==='string'?a:null));
+      if(!addr && window.blockle.selectedAddress) addr=window.blockle.selectedAddress;
+      if(!addr){ toast('No address returned by the wallet',true); return; }
+      setMyWallet(addr); toast('Linked '+addr.slice(0,10)+'…'); loadMine();
+    }catch(e){ toast((e&&e.message)||'connect failed',true); }
+  };
+
   function enter(name){
     $('#loginCard').style.display='none';$('#app').style.display='block';
     $('#logout').style.display='inline-block';$('#who').textContent=name?('▸ '+name):'';
+    if(myWallet) setMyWallet(myWallet);
     refreshAll();
   }
 
@@ -200,14 +232,18 @@
           '<div class="meta">#'+t.tokenId.slice(0,10)+'…</div>'+
           '<div class="row"><input class="t sm" style="padding:7px 9px" type="number" min="1" placeholder="price" id="p_'+t.tokenId+'"></div>'+
           '<div class="row"><button class="sm list" data-id="'+t.tokenId+'">List</button>'+
-          '<button class="sm ghost redeem" data-id="'+t.tokenId+'">Redeem</button></div></div>';
+          '<button class="sm ghost redeem" data-id="'+t.tokenId+'">Redeem</button></div>'+
+          (myWallet?('<button class="sm ghost send" data-id="'+t.tokenId+'" style="margin-top:6px">Send to my wallet</button>'):'')+
+          '</div>';
       }).join('');
       el.querySelectorAll('.list').forEach(function(b){b.onclick=function(){list(b.dataset.id);};});
       el.querySelectorAll('.redeem').forEach(function(b){b.onclick=function(){redeem(b.dataset.id);};});
+      el.querySelectorAll('.send').forEach(function(b){b.onclick=function(){sendToWallet(b.dataset.id);};});
     }catch(e){toast(e.message,true);}
   }
   async function list(id){try{var pr=parseInt(($('#p_'+id)||{}).value,10);var r=await api('/market/list',{method:'POST',body:JSON.stringify({tokenId:id,price:pr})});toast('Listing for '+r.priceWorld+' WORLD — escrowing on-chain…');setTimeout(loadMine,1200);}catch(e){toast(e.message,true);}}
   async function redeem(id){try{await api('/nft/redeem',{method:'POST',body:JSON.stringify({tokenId:id})});toast('Redeeming to your bag — confirms in ~a block');setTimeout(loadMine,1200);}catch(e){toast(e.message,true);}}
+  async function sendToWallet(id){if(!myWallet){toast('Link your extension wallet first',true);return;}try{await api('/nft/withdraw',{method:'POST',body:JSON.stringify({tokenId:id,to:myWallet})});toast('Sending to your wallet — confirms in ~a block, then appears in your extension');setTimeout(loadMine,1200);}catch(e){toast(e.message,true);}}
 
   // ---- inventory ----
   async function loadInv(){
