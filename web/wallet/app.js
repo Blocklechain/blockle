@@ -444,6 +444,7 @@
         if (had) chainsWith++;
       });
       Promise.all(jobs).then(function () {
+        if (!$('#pf-total')) return; // user navigated away before balances resolved
         $('#pf-total').textContent = total > 0 ? fmtUsd(total) : '—';
         $('#pf-chains').textContent = chainsWith; $('#pf-assets').textContent = assetCount;
         $('#pf-list').innerHTML = rowsHtml || '<div class="empty">No balances yet. Receive BLOCK or a token to get started.</div>';
@@ -748,10 +749,16 @@
     ensureAgent().then(function () { $('#ag-conn').textContent = S.agentConn && S.agentConn.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }).catch(function () { $('#ag-conn').textContent = 'offline'; });
     function run() {
       var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
+      S._lastAgentText = null;
+      var pending = elFrom('<div class="li" id="ag-pending"><span class="ico">' + ic('agent', 17) + '</span><div class="col" style="align-items:flex-start"><span class="dim">thinking…</span></div></div>');
+      log.appendChild(pending); log.scrollTop = log.scrollHeight;
       ensureAgent().then(function (router) {
-        if (!router) { add('err', 'Agent unavailable.'); return; }
+        if (!router) throw new Error('Agent unavailable.');
         return router.run(text);
-      }).catch(function (e) { add('err', e.message || String(e)); });
+      }).then(function (res) {
+        // Query answers come back as the resolved value; show it if no 'text' event already did.
+        if (res && res.text && res.text !== S._lastAgentText) add('agent', res.text);
+      }).catch(function (e) { add('err', e.message || String(e)); }).then(function () { var p = $('#ag-pending'); if (p) p.remove(); });
     }
     S._agentLog = add;
     $('#ag-go').onclick = run; $('#ag-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
@@ -798,7 +805,7 @@
   function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
   function agentEvent(ev) {
     if (!ev) return; var add = S._agentLog;
-    if (ev.type === 'text' && ev.text && add) add('agent', ev.text);
+    if (ev.type === 'text' && ev.text && add) { S._lastAgentText = ev.text; add('agent', ev.text); }
     else if (ev.type === 'plan' && add) add('agent', 'Plan: ' + (ev.summary || (ev.steps && ev.steps.length + ' step(s)')));
     else if (ev.type === 'step' && add) add('agent', '→ ' + (ev.name || ev.tool || 'step') + (ev.result && ev.result.txid ? ' · ' + String(ev.result.txid).slice(0, 12) + '…' : ''));
     else if (ev.type === 'resolved' && add) add('agent', 'Resolved ' + (ev.name || '') + ' → ' + shortAddr(ev.address || ''));
