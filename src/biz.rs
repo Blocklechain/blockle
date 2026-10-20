@@ -2238,7 +2238,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
-<a class="btn btn-primary" href="#download">Get the wallet</a>
+<a class="btn btn-primary" href="/wallet">Open Web Wallet</a>
 </div></header>
 <!-- BEGIN AADS AD UNIT 2458805 -->
 <div id="aads-home-top" class="aads" style="width: 100%;margin: 14px auto;position: relative; z-index: 99998;">
@@ -2252,12 +2252,17 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <span class="eyebrow">Self-custody trading super-app</span>
 <h1>Your keys.<br>Your bots.<br><span class="thin">Your trading desk.</span></h1>
 <p class="sub">A multi-chain wallet, a non-custodial exchange, and pro trading bots with an AI that trades on your command &mdash; without ever holding your coins.</p>
+<div class="hero-cta">
+<a class="btn btn-primary" href="/wallet" style="padding:13px 20px;font-size:15px">Open the Web Wallet &rarr;</a>
+<a class="btn" href="#download" style="background:transparent;border:1px solid var(--line)">Get the apps</a>
+<span class="pill" style="border-color:var(--accent);color:var(--accent)">New &middot; runs in your browser &middot; no install</span>
+</div>
 <form class="hero-auth" id="hero-signup" autocomplete="on">
 <input type="email" id="hs-email" placeholder="you@email.com" autocomplete="email" required>
 <input type="text" id="hs-user" placeholder="username (optional)" autocomplete="username" pattern="[A-Za-z0-9_]{3,20}">
 <input type="password" id="hs-pw" placeholder="Choose a password (10+ chars)" autocomplete="new-password" minlength="10" required>
 <button class="btn btn-primary" type="submit">Create free account</button>
-<div class="hs-sub">Already have one? <a href="/account/login">Sign in</a> &middot; or <a href="#download">download the wallet</a></div>
+<div class="hs-sub">No account needed to use the wallet &mdash; <a href="/wallet">open it now</a>. Already have one? <a href="/account/login">Sign in</a></div>
 <div class="hs-msg" id="hs-msg" role="status"></div>
 </form>
 <p class="micro"><b>Non-custodial.</b> Your keys stay on your device &middot; <b>Multi-chain</b> BTC &middot; ETH &middot; SOL &middot; BLOCK &middot; and more</p>
@@ -2367,6 +2372,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <section id="download"><div class="wrap"><span class="eyebrow">Free &middot; no account &middot; open source</span>
 <div class="shead"><h2>Get Blockle.</h2><p>Install on any device. Create a wallet in seconds, or import your seed. You hold the keys from the first second.</p></div>
 <div class="dl">
+<a class="dli" href="/wallet" style="border-color:var(--accent)"><span class="plat">Web &middot; instant</span><span class="meta">runs in your browser &middot; no install</span><span class="go">Open &rarr;</span></a>
 <a class="dli" href="/releases/latest/download/BlockleWallet-android.apk"><span class="plat">Android</span><span class="meta">APK &middot; sideload</span><span class="go">Download &uarr;</span></a>
 <a class="dli" href="/releases/latest/download/BlockleWallet-extension.zip"><span class="plat">Browser</span><span class="meta">Chrome &middot; Edge &middot; Brave</span><span class="go">Download &uarr;</span></a>
 <a class="dli" href="/releases/latest/download/BlockleWallet-macos-arm64.zip"><span class="plat">macOS</span><span class="meta">Apple Silicon</span><span class="go">Download &uarr;</span></a>
