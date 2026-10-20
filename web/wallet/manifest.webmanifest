@@ -1,0 +1,16 @@
+{
+  "name": "Blockle Wallet",
+  "short_name": "Blockle",
+  "description": "Non-custodial Blockle wallet with the agent, bots, DEX, bridge and USDB built in. Your keys never leave your device.",
+  "id": "/wallet/",
+  "start_url": "/wallet/",
+  "scope": "/wallet/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b0b14",
+  "theme_color": "#0b0b14",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    { "src": "vendor/world-token.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
