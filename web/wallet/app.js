@@ -101,6 +101,7 @@
       if (ok && Wallet.isUnlocked && Wallet.isUnlocked()) enterApp();
       else showGate();
     }).catch(showGate);
+    if (CONNECT.active) CONNECT.boot();
   }
 
   /* ---------------- onboarding / unlock gate ---------------- */
@@ -218,6 +219,67 @@
   ];
   var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
 
+  /* ---------------- dApp connect bridge (popup) ----------------
+   * When this wallet is opened as a popup with ?connect=<dappOrigin>, a dApp
+   * (e.g. the WORLD game) can connect to it over postMessage. Two steps, both
+   * explicitly approved by the user and scoped to the requesting origin:
+   *   1) connect:request  → wallet shows an approval sheet, returns the address
+   *      + public key (connect:account).
+   *   2) connect:sign      → wallet signs the dApp-provided message (a login
+   *      challenge) and returns the signature (connect:signed). Messages are
+   *      SIGNED, never built into transactions here, so this can never move
+   *      funds — a transfer always goes through the normal send + approval UI.
+   * Secrets never leave the wallet; only address/pubkey/signature cross over. */
+  var CONNECT = (function () {
+    var params = new URLSearchParams(location.search);
+    var raw = params.get('connect');
+    var origin = null;
+    var app = (params.get('app') || '').replace(/[^\w .-]/g, '').slice(0, 40) || 'A dApp';
+    if (raw) { try { var u = new URL(raw); if (u.protocol === 'https:' || u.protocol === 'http:') origin = u.origin; } catch (_) {} }
+    var approved = false, pending = false, busy = false;
+    function post(msg) { try { if (window.opener && origin) window.opener.postMessage(Object.assign({ _blockle: 1 }, msg), origin); } catch (_) {} }
+    function ready() { post({ type: 'blockle:wallet:ready' }); }
+    async function doConnect() {
+      if (busy) return; busy = true;
+      try {
+        if (!S.unlocked) { pending = true; return; }
+        var ok = await confirmSheet({
+          title: 'Connect to ' + app,
+          subtitle: app + ' wants to see your address and ask you to sign in. It can never move funds without a separate send approval.',
+          lines: [['Site', origin], ['Wallet', shortAddr(Wallet.address)]],
+          okText: 'Connect',
+        });
+        if (!ok) { post({ type: 'blockle:connect:rejected' }); return; }
+        approved = true;
+        var balFmt = null, ticker = 'BLOCK';
+        try { var a = await Chain.account(Wallet.address); balFmt = a && a.balanceFmt; } catch (_) {}
+        post({ type: 'blockle:connect:account', address: Wallet.address, publicKey: Wallet.publicKeyHex, balanceFmt: balFmt, ticker: ticker });
+      } finally { busy = false; }
+    }
+    async function doSign(message) {
+      if (!approved || !S.unlocked) { post({ type: 'blockle:connect:rejected' }); return; }
+      if (typeof message !== 'string' || !message.length || message.length > 2048) { post({ type: 'blockle:connect:error', message: 'bad message' }); return; }
+      try {
+        var signed = await Wallet.signMessage(message);
+        post({ type: 'blockle:connect:signed', address: signed.address || Wallet.address, publicKey: signed.publicKey || Wallet.publicKeyHex, signature: signed.signature });
+      } catch (e) { post({ type: 'blockle:connect:error', message: (e && e.message) || 'sign failed' }); }
+    }
+    if (origin) {
+      window.addEventListener('message', function (e) {
+        if (e.origin !== origin || e.source !== window.opener) return;
+        var d = e.data || {};
+        if (d.type === 'blockle:connect:request') doConnect();
+        else if (d.type === 'blockle:connect:sign') doSign(d.message);
+      });
+      window.addEventListener('beforeunload', function () { post({ type: 'blockle:wallet:closed' }); });
+    }
+    return {
+      active: !!origin,
+      boot: function () { if (origin) ready(); },
+      onEnter: function () { if (!origin) return; ready(); if (pending) { pending = false; doConnect(); } },
+    };
+  })();
+
   function enterApp() {
     S.unlocked = true; S.address = Wallet.address;
     $('#overlay').classList.add('hide'); $('#overlay').innerHTML = ''; $('#authed').classList.remove('hide');
@@ -229,6 +291,7 @@
     if (!location.hash) location.hash = '#portfolio';
     onRoute();
     ['click', 'keydown', 'mousemove', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, resetAutoLock, { passive: true }); });
+    if (CONNECT.active) CONNECT.onEnter();
   }
   function buildNav() {
     $('#sidenav').innerHTML = NAV.map(function (n) {
@@ -367,14 +430,40 @@
     $$('#view .tab').forEach(function (t) { t.onclick = function () { $$('#view .tab').forEach(function (x) { x.classList.remove('active'); }); t.classList.add('active'); t.getAttribute('data-t') === 'nfts' ? loadNfts() : loadTokens(); }; });
     loadTokens();
   };
+  // Curated BLOCK-20 tokens that are ALWAYS shown (even at zero balance), matching the
+  // extension/desktop/mobile wallets. getHoldings is balance-gated, so we surface these
+  // (plus any user-imported contract ids) explicitly.
+  var CURATED_BLOCK = [
+    { id: '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f', symbol: 'WORLD', name: 'World', decimals: 8, logoURI: 'https://blockle.org/world-token.svg' },
+    { id: '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a', symbol: 'USDB', name: 'Blockle USD', decimals: 6, logoURI: 'https://blockle.org/usdb-token.svg' },
+  ];
+  function assetId(a) { return String((a && (a.address || a.contract || a.id || a.contractId)) || '').toLowerCase(); }
+  function augmentCuratedBlock(rows) {
+    var present = {}; rows.forEach(function (r) { var k = assetId(r.asset); if (k) present[k] = true; });
+    var want = CURATED_BLOCK.slice();
+    var imported = []; try { imported = JSON.parse(localStorage.getItem('blk:tokens') || '[]'); } catch (_) {}
+    imported.forEach(function (cid) { var lc = String(cid).toLowerCase(); if (!want.some(function (c) { return c.id.toLowerCase() === lc; })) want.push({ id: cid }); });
+    var jobs = want.filter(function (c) { return !present[c.id.toLowerCase()]; }).map(function (c) {
+      return Chain.token(c.id, Wallet.address).then(function (t) {
+        var dec = c.decimals != null ? c.decimals : ((t && t.decimals) || 0);
+        var bal = (t && (t.holderBalance != null ? t.holderBalance : t.balance)) || '0';
+        return { asset: { symbol: c.symbol || (t && t.symbol) || 'TOKEN', name: c.name || (t && t.name) || '', decimals: dec, address: c.id, logoURI: c.logoURI || (t && t.logoURI) }, confirmed: String(bal), display: baseToNum(String(bal), dec) };
+      }).catch(function () { return { asset: { symbol: c.symbol || 'TOKEN', name: c.name || '', decimals: c.decimals || 0, address: c.id, logoURI: c.logoURI }, confirmed: '0', display: 0 }; });
+    });
+    return Promise.all(jobs).then(function (extra) { return rows.concat(extra); });
+  }
   function loadTokens() {
     var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading…</div>';
-    Wiring.getHoldings(S.chain).then(function (rows) {
+    var chain = S.chain;
+    Wiring.getHoldings(chain).then(function (rows) {
+      rows = rows || [];
+      return chain === 'block' ? augmentCuratedBlock(rows) : rows;
+    }).then(function (rows) {
       var html = (rows || []).map(function (r) {
         var dec = (r.asset && r.asset.decimals) || 0;
         var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
-        var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || S.chain.toUpperCase();
-        return assetRow(sym, S.chain, amt, dec, null, r.asset && r.asset.logoURI);
+        var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chain.toUpperCase();
+        return assetRow(sym, chain, amt, dec, null, r.asset && r.asset.logoURI);
       }).join('');
       body.innerHTML = html || '<div class="empty">No tokens found on this network.</div>';
     }).catch(function () { body.innerHTML = '<div class="empty">Could not load tokens.</div>'; });
@@ -382,7 +471,9 @@
   function loadNfts() {
     var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading NFTs…</div>';
     try {
-      var idx = WalletNftIndexer.createIndexer({ blockApi: Chain });
+      // blockApi must be a URL STRING base (the indexer does .replace on it); same-origin
+      // /api/explorer is proxied to the node. EVM/Solana need keys → honest-empty without them.
+      var idx = WalletNftIndexer.createIndexer({ blockApi: '/api/explorer' });
       chainAddress(S.chain).then(function (owner) {
         return idx.getNFTsForOwner(S.chain, owner);
       }).then(function (items) {
