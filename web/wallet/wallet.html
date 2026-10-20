@@ -47,6 +47,12 @@ html,body{margin:0;height:100%}
 body{background:radial-gradient(1200px 700px at 80% -10%,#1b2140 0%,transparent 60%),var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 a{color:var(--accent);text-decoration:none}
 button{font-family:inherit;font-size:inherit;cursor:pointer}
+.ic-svg{display:inline-block;vertical-align:middle;flex:none}
+.btn .ic-svg{margin:0}
+.navlink .ic{display:flex;align-items:center;justify-content:center}
+.navlink .ic .ic-svg,.botnav .ic-svg{display:block}
+.navlink .tag .ic-svg{display:block}
+.ico .ic-svg{color:var(--ink2)}
 .mono{font-family:var(--mono)}
 .num{font-variant-numeric:tabular-nums}
 .muted{color:var(--ink2)}.dim{color:var(--ink3)}
@@ -172,11 +178,11 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
   <div id="authed" class="hide">
     <header class="topbar"><div class="inner">
       <div class="brand"><span class="logo">B</span><span>Wallet</span></div>
-      <button id="acctsel" class="selbtn" title="Account & network"><span id="acctsel-label">—</span> <span class="dim">▾</span></button>
+      <button id="acctsel" class="selbtn" title="Account & network"><span id="acctsel-label">—</span> <svg class="ic-svg dim" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg></button>
       <div style="flex:1"></div>
       <span id="tierbadge" class="chip">free</span>
-      <button id="btn-theme" class="btn sm ghost" title="Theme">◐</button>
-      <button id="btn-lock" class="btn sm ghost" title="Lock wallet">🔒</button>
+      <button id="btn-theme" class="btn sm ghost" title="Theme" aria-label="Toggle theme"><svg class="ic-svg" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.2"/><path d="M12 3.8v16.4a8.2 8.2 0 0 0 0-16.4z" fill="currentColor" stroke="none"/></svg></button>
+      <button id="btn-lock" class="btn sm ghost" title="Lock wallet" aria-label="Lock wallet"><svg class="ic-svg" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2.2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/><circle cx="12" cy="15.5" r="1.1"/></svg></button>
     </div></header>
 
     <div class="shell">
