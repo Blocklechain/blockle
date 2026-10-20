@@ -25,6 +25,46 @@
   function fmtUsd(n) { var x = Number(n); if (!isFinite(x)) return '—'; return '$' + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function baseToNum(confirmed, decimals) { try { return Number(BigInt(confirmed || '0')) / Math.pow(10, decimals || 0); } catch (_) { return Number(confirmed || 0) / Math.pow(10, decimals || 0); } }
 
+  /* ---------------- icon set (unique inline SVGs; no emoji, currentColor) ---------------- */
+  var ICONS = {
+    portfolio: '<circle cx="12" cy="12" r="8.2"/><path d="M12 3.8A8.2 8.2 0 0 1 20.2 12H12z"/>',
+    assets: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+    send: '<path d="M7 17 17 7"/><path d="M8 7h9v9"/>',
+    receive: '<path d="M17 7 7 17"/><path d="M16 17H7V8"/>',
+    swap: '<path d="M4 8h13l-3.2-3.2"/><path d="M20 16H7l3.2 3.2"/>',
+    bridge: '<path d="M3 9.5v8"/><path d="M21 9.5v8"/><path d="M3 11.5c4.5 0 4-4.5 9-4.5s4.5 4.5 9 4.5"/><path d="M8 11.5v6"/><path d="M16 11.5v6"/>',
+    buy: '<rect x="3" y="6" width="18" height="12" rx="2.2"/><path d="M3 10h18"/><path d="M7 15h3"/>',
+    agent: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+    bots: '<rect x="4.5" y="8" width="15" height="10.5" rx="2.4"/><path d="M12 8V4.6"/><circle cx="12" cy="4" r="1.1"/><circle cx="9.3" cy="13" r="1.2"/><circle cx="14.7" cy="13" r="1.2"/><path d="M9.5 16.2h5"/>',
+    activity: '<path d="M3 12h4l2.2 6 4-14 2 8H21"/>',
+    pro: '<path d="M12 3.2l2.6 5.5 6 .8-4.4 4.2 1.1 6-5.3-2.9-5.3 2.9 1.1-6L3.4 9.5l6-.8z"/>',
+    settings: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.2v3M12 18.8v3M2.2 12h3M18.8 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/>',
+    lock: '<rect x="5" y="11" width="14" height="9" rx="2.2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/><circle cx="12" cy="15.5" r="1.1"/>',
+    theme: '<circle cx="12" cy="12" r="8.2"/><path d="M12 3.8v16.4a8.2 8.2 0 0 0 0-16.4z" fill="currentColor" stroke="none"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    warn: '<path d="M12 3.5 2.3 20.2h19.4z"/><path d="M12 9.5v5"/><circle cx="12" cy="17.3" r="0.7" fill="currentColor" stroke="none"/>',
+    shield: '<path d="M12 3l7 2.8v4.9c0 4.9-3 7.1-7 9.1-4-2-7-4.2-7-9.1V5.8z"/><path d="M9 12l2 2 4-4.2"/>',
+    refresh: '<path d="M20 11a8 8 0 1 0-1.3 5.4"/><path d="M20 4.5V11h-6.5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    image: '<rect x="3" y="4.5" width="18" height="15" rx="2.2"/><circle cx="8.3" cy="9.3" r="1.6"/><path d="M4 17.5l5-5 3.5 3.5 3-3 4.5 4.5"/>',
+    arena: '<path d="M7 4.5h10v3.5a5 5 0 0 1-10 0z"/><path d="M7 6H4.5v1.5A2.5 2.5 0 0 0 7 10M17 6h2.5v1.5A2.5 2.5 0 0 1 17 10"/><path d="M12 13v3.5M8.5 20h7M10 20v-1a2 2 0 0 1 4 0v1"/>',
+    live: '<circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M6.5 6.5a8 8 0 0 0 0 11M17.5 6.5a8 8 0 0 1 0 11"/>',
+    dca: '<path d="M4 14.5l4.5-4.5 3.5 3L20 6"/><path d="M15 6h5v5"/>',
+    grid: '<rect x="4" y="4" width="7" height="7" rx="1.2"/><rect x="13" y="4" width="7" height="7" rx="1.2"/><rect x="4" y="13" width="7" height="7" rx="1.2"/><rect x="13" y="13" width="7" height="7" rx="1.2"/>',
+    smart: '<path d="M12 2.8 21.2 12 12 21.2 2.8 12z"/><circle cx="12" cy="12" r="2.6"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20c0-4 3.8-6 7.5-6s7.5 2 7.5 6"/>',
+    chevron: '<path d="M6 9.5l6 6 6-6"/>',
+    download: '<path d="M12 3v12"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4.5 20h15"/>',
+    wallet: '<rect x="3" y="6" width="18" height="13" rx="2.4"/><path d="M3 10h18"/><circle cx="16.5" cy="13.5" r="1.3" fill="currentColor" stroke="none"/>',
+    link: '<path d="M9.5 14.5l5-5"/><path d="M8 11.5 6 13.5a3 3 0 0 0 4.2 4.2l2-2"/><path d="M16 12.5l2-2a3 3 0 0 0-4.2-4.2l-2 2"/>',
+    key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8"/><path d="M16 7l2 2M14 9l2 2"/>',
+    doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6M9 15.5h6M9 8.5h2"/>',
+  };
+  function ic(name, size) {
+    var p = ICONS[name] || ICONS.close;
+    return '<svg class="ic-svg" viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18) + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+  }
+
   /* ---------------- modal sheet ---------------- */
   var _sheetResolve = null;
   function openSheet(html) {
@@ -44,11 +84,11 @@
       var warnHtml = '';
       if (opts.warnings && opts.warnings.length) {
         warnHtml = '<div class="banner ' + (danger ? 'danger' : 'warn') + '" style="margin:10px 0">' +
-          '<span>⚠</span><div>' + opts.warnings.map(function (w) { return esc(typeof w === 'string' ? w : (w.message || w.code || JSON.stringify(w))); }).join('<br>') + '</div></div>';
+          '<span>' + ic('warn', 18) + '</span><div>' + opts.warnings.map(function (w) { return esc(typeof w === 'string' ? w : (w.message || w.code || JSON.stringify(w))); }).join('<br>') + '</div></div>';
       }
       var rows = (opts.lines || []).map(function (l) { return '<div class="kv"><span class="muted">' + esc(l[0]) + '</span><span class="mono num">' + esc(l[1]) + '</span></div>'; }).join('');
       openSheet(
-        '<div class="spread"><h2>' + esc(opts.title || 'Confirm') + '</h2><button class="btn sm ghost" id="cs-x">✕</button></div>' +
+        '<div class="spread"><h2>' + esc(opts.title || 'Confirm') + '</h2><button class="btn sm ghost" id="cs-x">' + ic('close', 15) + '</button></div>' +
         '<p class="muted" style="margin:6px 0 10px">' + esc(opts.subtitle || 'Review this action. It will be signed on your device and broadcast.') + '</p>' +
         warnHtml + '<div class="list">' + rows + '</div>' +
         (danger ? '<label class="row" style="margin:12px 0;text-transform:none;font-weight:500"><input type="checkbox" id="cs-ack" style="width:auto"> I understand the risk and want to proceed</label>' : '') +
@@ -140,7 +180,7 @@
   function renderCreate() {
     gateShell(
       '<p class="muted" style="margin:2px 0 12px">Create a non-custodial wallet. The keys are generated here, in your browser, and never sent anywhere. Pick a strong password — it encrypts your keys on this device.</p>' +
-      '<div class="banner info" style="margin-bottom:12px"><span>🔐</span><div>Nobody can recover this password for you. After creating, download your encrypted backup file.</div></div>' +
+      '<div class="banner info" style="margin-bottom:12px"><span>' + ic('shield', 18) + '</span><div>Nobody can recover this password for you. After creating, download your encrypted backup file.</div></div>' +
       '<div class="field"><label>Password</label><input id="c-pw" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>' +
       '<div class="field"><label>Confirm</label><input id="c-pw2" type="password" autocomplete="new-password" placeholder="Repeat password"></div>' +
       '<div id="c-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
@@ -184,7 +224,7 @@
     });
   }
   function offerBackup() {
-    openSheet('<div class="spread"><h2>Back up your wallet</h2><button class="btn sm ghost" id="b-x">✕</button></div>' +
+    openSheet('<div class="spread"><h2>Back up your wallet</h2><button class="btn sm ghost" id="b-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:8px 0">Download the encrypted wallet file now. Keep it safe — it is the only way to restore this wallet on another device. The file is useless without your password.</p>' +
       '<button class="btn primary wide" id="b-dl">Download encrypted backup</button>' +
       '<button class="btn wide ghost" id="b-skip" style="margin-top:8px">I\'ll do it later</button>');
@@ -204,18 +244,18 @@
 
   /* ---------------- enter authenticated app ---------------- */
   var NAV = [
-    { id: 'portfolio', ic: '◎', label: 'Portfolio' },
-    { id: 'assets', ic: '🪙', label: 'Assets' },
-    { id: 'send', ic: '↑', label: 'Send' },
-    { id: 'receive', ic: '↓', label: 'Receive' },
-    { id: 'swap', ic: '⇄', label: 'Swap' },
-    { id: 'bridge', ic: '🌉', label: 'Bridge' },
-    { id: 'buy', ic: '＄', label: 'Buy USDB' },
-    { id: 'agent', ic: '✨', label: 'Agent' },
-    { id: 'bots', ic: '🤖', label: 'Bots' },
-    { id: 'activity', ic: '≡', label: 'Activity' },
-    { id: 'pro', ic: '★', label: 'Pro' },
-    { id: 'settings', ic: '⚙', label: 'Settings' },
+    { id: 'portfolio', ic: 'portfolio', label: 'Portfolio' },
+    { id: 'assets', ic: 'assets', label: 'Assets' },
+    { id: 'send', ic: 'send', label: 'Send' },
+    { id: 'receive', ic: 'receive', label: 'Receive' },
+    { id: 'swap', ic: 'swap', label: 'Swap' },
+    { id: 'bridge', ic: 'bridge', label: 'Bridge' },
+    { id: 'buy', ic: 'buy', label: 'Buy USDB' },
+    { id: 'agent', ic: 'agent', label: 'Agent' },
+    { id: 'bots', ic: 'bots', label: 'Bots' },
+    { id: 'activity', ic: 'activity', label: 'Activity' },
+    { id: 'pro', ic: 'pro', label: 'Pro' },
+    { id: 'settings', ic: 'settings', label: 'Settings' },
   ];
   var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
 
@@ -295,11 +335,11 @@
   }
   function buildNav() {
     $('#sidenav').innerHTML = NAV.map(function (n) {
-      return '<a class="navlink" href="#' + n.id + '" data-id="' + n.id + '"><span class="ic">' + n.ic + '</span><span>' + n.label + '</span>' + (n.id === 'pro' ? '<span class="tag">★</span>' : '') + '</a>';
+      return '<a class="navlink" href="#' + n.id + '" data-id="' + n.id + '"><span class="ic">' + ic(n.ic, 20) + '</span><span>' + n.label + '</span>' + (n.id === 'pro' ? '<span class="tag">' + ic('pro', 13) + '</span>' : '') + '</a>';
     }).join('');
     $('#botnav').innerHTML = BOTNAV.map(function (id) {
       var n = NAV.filter(function (x) { return x.id === id; })[0];
-      return '<a href="#' + id + '" data-id="' + id + '"><span>' + n.ic + '</span><span>' + n.label + '</span></a>';
+      return '<a href="#' + id + '" data-id="' + id + '"><span>' + ic(n.ic, 21) + '</span><span>' + n.label + '</span></a>';
     }).join('');
   }
 
@@ -335,7 +375,7 @@
         '<span class="ico">' + esc(c.slice(0, 1).toUpperCase()) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(c.toUpperCase()) + '</b>' +
         '<span class="dim mono" id="ca-' + i + '">…</span></span>' + (c === S.chain ? '<span class="chip good" style="margin-left:auto">active</span>' : '') + '</button>';
     }).join('');
-    openSheet('<div class="spread"><h2>Network</h2><button class="btn sm ghost" id="as-x">✕</button></div><div class="list" style="margin-top:8px">' + rows + '</div>');
+    openSheet('<div class="spread"><h2>Network</h2><button class="btn sm ghost" id="as-x">' + ic('close', 15) + '</button></div><div class="list" style="margin-top:8px">' + rows + '</div>');
     $('#as-x').addEventListener('click', closeSheet);
     S.chains.forEach(function (c, i) { chainAddress(c).then(function (a) { var e = $('#ca-' + i); if (e) e.textContent = shortAddr(a); }); });
     $$('#sheet .li').forEach(function (b) {
@@ -379,7 +419,7 @@
       '<div class="statline"><div class="stat"><div class="n num" id="pf-chains">—</div><div class="l">networks</div></div>' +
       '<div class="stat"><div class="n num" id="pf-assets">—</div><div class="l">assets held</div></div>' +
       '<div class="stat"><div class="n">' + (S.pro ? '<span class="good">On</span>' : '<span class="dim">Off</span>') + '</div><div class="l">Pro analytics</div></div></div>' +
-      '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">Send</a><a class="btn" href="#receive">Receive</a><a class="btn" href="#swap">Swap</a><a class="btn" href="#agent">✨ Ask the agent</a></div></div>' +
+      '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">' + ic('send', 16) + ' Send</a><a class="btn" href="#receive">' + ic('receive', 16) + ' Receive</a><a class="btn" href="#swap">' + ic('swap', 16) + ' Swap</a><a class="btn" href="#agent">' + ic('agent', 16) + ' Ask the agent</a></div></div>' +
       '<div class="card"><div class="sechead"><h2>Holdings</h2><a class="btn sm ghost" href="#assets">All assets</a></div><div id="pf-list" class="list"><div class="empty">Loading balances…</div></div></div>' +
       (S.pro ? '' : proNudge('Unlock allocation charts, P&L history and price alerts with Pro.'));
     loadPortfolio();
@@ -417,12 +457,12 @@
       '<span class="col" style="margin-left:auto;align-items:flex-end"><b class="num">' + fmtAmt(amt, Math.min(dec || 6, 6)) + '</b>' + (usd ? '<span class="dim num" style="font-size:12px">' + fmtUsd(usd) + '</span>' : '') + '</span></div>';
   }
   function proNudge(msg) {
-    return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">★</span><div class="col" style="align-items:flex-start"><b>Blockle Pro</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
+    return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">' + ic('pro', 16) + '</span><div class="col" style="align-items:flex-start"><b>Blockle Pro</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
   }
 
   VIEWS.assets = function (v) {
     v.innerHTML = '<div class="card"><div class="sechead"><h2>Assets · ' + esc(S.chain.toUpperCase()) + '</h2>' +
-      '<div class="row"><button class="btn sm" id="a-import">+ Import token</button><button class="btn sm ghost" id="a-refresh">↻</button></div></div>' +
+      '<div class="row"><button class="btn sm" id="a-import">' + ic('plus', 15) + ' Import token</button><button class="btn sm ghost" id="a-refresh" title="Refresh">' + ic('refresh', 16) + '</button></div></div>' +
       '<div class="tabs"><div class="tab active" data-t="tokens">Tokens</div><div class="tab" data-t="nfts">NFTs</div></div>' +
       '<div id="a-body"><div class="empty">Loading…</div></div></div>';
     $('#a-refresh').onclick = function () { VIEWS.assets(v); };
@@ -481,13 +521,13 @@
         if (!items.length) { body.innerHTML = '<div class="empty">No NFTs held on ' + esc(S.chain.toUpperCase()) + '.</div>'; return; }
         body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">' + items.map(function (n) {
           var img = n.image || (n.media && n.media[0]) || '';
-          return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' + (img ? '<img src="' + esc(img) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : '🖼') + '</div><div style="padding:9px"><b style="font-size:13px">' + esc(n.name || ('#' + (n.tokenId || ''))) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || n.contract || '') + '</div></div></div>';
+          return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' + (img ? '<img src="' + esc(img) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : '' + ic('image', 26) + '') + '</div><div style="padding:9px"><b style="font-size:13px">' + esc(n.name || ('#' + (n.tokenId || ''))) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || n.contract || '') + '</div></div></div>';
         }).join('') + '</div>';
       }).catch(function () { body.innerHTML = '<div class="empty">Could not load NFTs.</div>'; });
     } catch (e) { body.innerHTML = '<div class="empty">NFT view unavailable.</div>'; }
   }
   function importTokenSheet() {
-    openSheet('<div class="spread"><h2>Import token</h2><button class="btn sm ghost" id="it-x">✕</button></div>' +
+    openSheet('<div class="spread"><h2>Import token</h2><button class="btn sm ghost" id="it-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:8px 0">Paste a BLOCK-20 contract id (or an EVM token address on this network). Held tokens are usually auto-detected.</p>' +
       '<div class="field"><label>Contract</label><input id="it-c" placeholder="contract id / address"></div>' +
       '<button class="btn primary wide" id="it-go">Import</button>');
@@ -562,7 +602,7 @@
 
   VIEWS.swap = function (v) {
     v.innerHTML = '<div class="card"><div class="sechead"><h2>Swap</h2><span class="pill">native AMM · 0.3% pool fee</span></div>' +
-      '<div class="banner info" style="margin-bottom:12px"><span>⇄</span><div>Swap BLOCK for any BLOCK-20 token on the native constant-product AMM. Trades are signed on your device.</div></div>' +
+      '<div class="banner info" style="margin-bottom:12px"><span>' + ic('swap', 18) + '</span><div>Swap BLOCK for any BLOCK-20 token on the native constant-product AMM. Trades are signed on your device.</div></div>' +
       '<div class="field"><label>Token contract</label><input id="sw-token" placeholder="BLOCK-20 contract id"></div>' +
       '<div class="field"><label>Direction</label><select id="sw-side"><option value="buy">Buy token with BLOCK</option><option value="sell">Sell token for BLOCK</option></select></div>' +
       '<div class="field"><label>Amount in</label><input id="sw-amt" inputmode="decimal" placeholder="0.0"></div>' +
@@ -597,11 +637,11 @@
     fetch('/api/bridge/info').then(function (r) { return r.json(); }).then(function (info) {
       var body = $('#br-body');
       if (!info || info.live === false) {
-        body.innerHTML = '<div class="banner info"><span>🌉</span><div>The BLOCK↔wBLOCK Solana bridge is configured but not yet live on mainnet. Deposits/redemptions open once the wrapped mint is set. Reserves and status are shown honestly as empty until then.</div></div>' +
+        body.innerHTML = '<div class="banner info"><span>' + ic('bridge', 18) + '</span><div>The BLOCK↔wBLOCK Solana bridge is configured but not yet live on mainnet. Deposits/redemptions open once the wrapped mint is set. Reserves and status are shown honestly as empty until then.</div></div>' +
           '<div class="list" style="margin-top:10px"><div class="kv"><span class="muted">Status</span><span>' + (info && info.enabled ? 'enabled (not live)' : 'offline') + '</span></div><div class="kv"><span class="muted">wBLOCK mint</span><span class="mono">' + esc((info && info.wblockMint) || '—') + '</span></div></div>';
         return;
       }
-      body.innerHTML = '<div class="banner info"><span>🌉</span><div>Deposit BLOCK to receive wBLOCK on Solana, or redeem wBLOCK back to BLOCK. Fee ' + ((info.feeBps || 0) / 100) + '%.</div></div>' +
+      body.innerHTML = '<div class="banner info"><span>' + ic('bridge', 18) + '</span><div>Deposit BLOCK to receive wBLOCK on Solana, or redeem wBLOCK back to BLOCK. Fee ' + ((info.feeBps || 0) / 100) + '%.</div></div>' +
         '<div class="field" style="margin-top:12px"><label>Amount (BLOCK)</label><input id="br-amt" inputmode="decimal" placeholder="0.0"></div>' +
         '<div class="field"><label>Destination (Solana address)</label><input id="br-to" placeholder="your Solana address"></div>' +
         '<button class="btn primary wide" id="br-go">Deposit → wBLOCK</button>';
@@ -688,7 +728,7 @@
         if (!txs.length) { $('#ac-body').innerHTML = '<div class="empty">No transactions yet on this network. Sends, swaps and deploys appear here.</div>'; return; }
         $('#ac-body').innerHTML = txs.slice(0, 40).map(function (t) {
           var id = t.txid || t.hash || t.id || '';
-          return '<div class="li"><span class="ico">≡</span><span class="col" style="align-items:flex-start"><b class="mono">' + esc(String(id).slice(0, 18)) + '…</b><span class="dim" style="font-size:12px">' + esc(t.type || t.kind || 'tx') + (t.confirmations != null ? ' · ' + esc(String(t.confirmations)) + ' conf' : '') + '</span></span></div>';
+          return '<div class="li"><span class="ico">' + ic('activity', 17) + '</span><span class="col" style="align-items:flex-start"><b class="mono">' + esc(String(id).slice(0, 18)) + '…</b><span class="dim" style="font-size:12px">' + esc(t.type || t.kind || 'tx') + (t.confirmations != null ? ' · ' + esc(String(t.confirmations)) + ' conf' : '') + '</span></span></div>';
         }).join('');
       } catch (e) { $('#ac-body').innerHTML = '<div class="empty">Could not load activity.</div>'; }
     })();
@@ -697,14 +737,14 @@
   /* ---------------- AGENT ---------------- */
   VIEWS.agent = function (v) {
     var quotaNote = S.pro ? 'Pro: signed hosted session, higher budget.' : 'Free: anonymous hosted brain (rate-limited). Upgrade to Pro for a signed session + larger budget.';
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>✨ Agent</h2><span class="pill" id="ag-conn">connecting…</span></div>' +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('agent', 17) + ' Agent</h2><span class="pill" id="ag-conn">connecting…</span></div>' +
       '<p class="muted" style="margin-bottom:10px">Ask in plain language — "send 5 BLOCK to alice.eth", "swap 20 BLOCK for WORLD", "what\'s my net worth?". Every value-moving step is gated by the same approval sheet. Nothing executes without your tap.</p>' +
       '<div id="ag-log" class="list" style="max-height:340px;overflow:auto;margin-bottom:10px"></div>' +
       '<div class="row" style="gap:8px"><input id="ag-in" placeholder="Ask or instruct the agent…"><button class="btn primary" id="ag-go">Run</button></div>' +
       '<p class="dim" style="font-size:12px;margin-top:10px">' + esc(quotaNote) + '</p></div>' +
       (S.pro ? '' : proNudge('Pro raises the hosted-agent budget and unlocks live trading bots.'));
     var log = $('#ag-log');
-    function add(role, text) { log.appendChild(elFrom('<div class="li"><span class="ico">' + (role === 'you' ? '🧑' : role === 'err' ? '⚠' : '✨') + '</span><div class="col" style="align-items:flex-start"><b style="font-size:12px" class="dim">' + role + '</b><span>' + esc(text) + '</span></div></div>')); log.scrollTop = log.scrollHeight; }
+    function add(role, text) { log.appendChild(elFrom('<div class="li"><span class="ico">' + (role === 'you' ? '' + ic('user', 17) + '' : role === 'err' ? '' + ic('warn', 18) + '' : '' + ic('agent', 17) + '') + '</span><div class="col" style="align-items:flex-start"><b style="font-size:12px" class="dim">' + role + '</b><span>' + esc(text) + '</span></div></div>')); log.scrollTop = log.scrollHeight; }
     ensureAgent().then(function () { $('#ag-conn').textContent = S.agentConn && S.agentConn.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }).catch(function () { $('#ag-conn').textContent = 'offline'; });
     function run() {
       var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
@@ -768,12 +808,12 @@
 
   /* ---------------- BOTS ---------------- */
   VIEWS.bots = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>🤖 Bots</h2><div class="row"><button class="btn sm" id="bt-new">+ New bot</button><button class="btn sm ghost" id="bt-kill" title="Stop everything">Kill all</button></div></div>' +
-      '<div class="banner ' + (S.pro ? 'info' : 'warn') + '" style="margin-bottom:12px"><span>' + (S.pro ? '🔓' : '🔒') + '</span><div>' +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('bots', 18) + ' Bots</h2><div class="row"><button class="btn sm" id="bt-new">+ New bot</button><button class="btn sm ghost" id="bt-kill" title="Stop everything">Kill all</button></div></div>' +
+      '<div class="banner ' + (S.pro ? 'info' : 'warn') + '" style="margin-bottom:12px"><span>' + (S.pro ? '' + ic('lock', 16) + '' : '' + ic('lock', 16) + '') + '</span><div>' +
       (S.pro ? 'Live trading unlocked. Bots run <b>fully auto within their allocation cap</b> — no per-order tap inside the cap — but every order still passes the session caps, allowlist, hash-chained audit, the 0.05% fee and the kill switch. Mainnet stays off until you enable it.' :
         'Free plan: <b>paper trading + 1 bot</b>. Bots simulate fills and never move funds. Upgrade to Pro for live trading and more bots.') + '</div></div>' +
       '<div id="bt-dash"></div><div id="bt-list" class="list"><div class="empty">Loading bots…</div></div>' +
-      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>🏟 Arena</b><span class="dim" style="font-size:12px">Practice strategies with play money — zero risk.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div></div>' +
+      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>' + ic('arena', 18) + ' Arena</b><span class="dim" style="font-size:12px">Practice strategies with play money — zero risk.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div></div>' +
       (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Copilot Pro unlocks unlimited.'));
     $('#bt-new').onclick = newBotSheet;
     $('#bt-arena').onclick = openArena;
@@ -796,12 +836,12 @@
     if (!bots.length) { box.innerHTML = '<div class="empty">No bots yet. Create one — it starts in paper mode.</div>'; return; }
     box.innerHTML = bots.map(function (b) {
       var live = b.mode === 'live';
-      return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '▦' : b.type === 'dca' ? '∿' : '◆') + '</span>' +
+      return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '' + ic('grid', 16) + '' : b.type === 'dca' ? '' + ic('dca', 16) + '' : '' + ic('smart', 16) + '') + '</span>' +
         '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) + ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
         '<span class="row" style="margin-left:auto;gap:6px">' +
         '<button class="btn sm ghost" data-act="toggle" data-id="' + esc(b.id) + '">' + (b.enabled ? 'Pause' : 'Start') + '</button>' +
-        (S.pro ? '<button class="btn sm" data-act="live" data-id="' + esc(b.id) + '">' + (live ? '●' : 'Go live') + '</button>' : '') +
-        '<button class="btn sm ghost" data-act="rm" data-id="' + esc(b.id) + '">✕</button></span></div>';
+        (S.pro ? '<button class="btn sm" data-act="live" data-id="' + esc(b.id) + '">' + (live ? '' + ic('live', 15) + '' : 'Go live') + '</button>' : '') +
+        '<button class="btn sm ghost" data-act="rm" data-id="' + esc(b.id) + '">' + ic('close', 15) + '</button></span></div>';
     }).join('');
     $$('#bt-list [data-act]').forEach(function (btn) {
       btn.onclick = function () {
@@ -813,11 +853,11 @@
     });
   }
   function newBotSheet() {
-    openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">✕</button></div>' +
+    openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">' + ic('close', 15) + '</button></div>' +
       '<div class="field"><label>Strategy</label><select id="nb-type"><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option><option value="signal">Signal</option></select></div>' +
       '<div class="field"><label>Pair</label><input id="nb-pair" value="BLOCK/USDC"></div>' +
       '<div class="field"><label>Name</label><input id="nb-name" placeholder="My DCA bot"></div>' +
-      '<div class="banner info"><span>📝</span><div>Starts in <b>paper mode</b> (simulated). You can arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
+      '<div class="banner info"><span>' + ic('doc', 18) + '</span><div>Starts in <b>paper mode</b> (simulated). You can arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
       '<button class="btn primary wide" id="nb-go" style="margin-top:12px">Create (paper)</button>');
     $('#nb-x').onclick = closeSheet;
     $('#nb-go').onclick = function () {
@@ -833,8 +873,8 @@
   }
   function armLiveSheet(id) {
     if (!isPro()) { toast('Live trading is a Pro feature', 'bad'); location.hash = '#pro'; return; }
-    openSheet('<div class="spread"><h2>Arm live trading</h2><button class="btn sm ghost" id="al-x">✕</button></div>' +
-      '<div class="banner warn"><span>⚠</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
+    openSheet('<div class="spread"><h2>Arm live trading</h2><button class="btn sm ghost" id="al-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="banner warn"><span>' + ic('warn', 18) + '</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
       '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"></div>' +
       '<button class="btn primary wide" id="al-go">Arm live</button>');
     $('#al-x').onclick = closeSheet;
@@ -844,7 +884,7 @@
     };
   }
   function openArena() {
-    openSheet('<div class="spread"><h2>🏟 Arena</h2><button class="btn sm ghost" id="ar-x">✕</button></div>' +
+    openSheet('<div class="spread"><h2>' + ic('arena', 18) + ' Arena</h2><button class="btn sm ghost" id="ar-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:8px 0">Backtest a strategy on play-money scenarios — bull, crab, bear, crash, pump. No funds, no gate, pure practice.</p>' +
       '<div class="field"><label>Strategy</label><select id="ar-type"><option value="dca">DCA</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option></select></div>' +
       '<div class="field"><label>Scenario</label><select id="ar-sc"><option>bull</option><option>crab</option><option>bear</option><option>crash</option><option>pump</option></select></div>' +
@@ -858,7 +898,7 @@
 
   /* ---------------- PRO ---------------- */
   VIEWS.pro = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>★ Blockle Pro &amp; Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free') + '</span></div>' +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('pro', 16) + ' Blockle Pro &amp; Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free') + '</span></div>' +
       '<p class="muted">Your plan is checked live against your Blockle account — no key access, ever. Upgrade unlocks live trading, a bigger agent brain, pro strategies and analytics across every Blockle wallet and the dashboard.</p>' +
       '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Pro / Copilot</th><th class="c">Copilot Pro</th></tr></thead><tbody>' +
       featRow('Non-custodial wallet · all chains', '✓', '✓', '✓') +
@@ -903,7 +943,7 @@
       settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
       '</div></div>' +
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
-      '<div class="banner info" style="margin-top:14px"><span>🔐</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
+      '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
     $('#set-export') && ($('#set-export').onclick = offerBackup);
     $('#set-theme') && ($('#set-theme').onclick = function () { var cur = document.documentElement.getAttribute('data-theme'); themeApply(cur === 'light' ? 'dark' : 'light'); });
     $('#set-lock') && ($('#set-lock').onclick = lock);
@@ -911,7 +951,7 @@
   };
   function settingRow(title, sub, action) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(title) + '</b><span class="dim" style="font-size:12px">' + sub + '</span></span><span style="margin-left:auto">' + action + '</span></div>'; }
   function wcSheet() {
-    openSheet('<div class="spread"><h2>WalletConnect</h2><button class="btn sm ghost" id="wc-x">✕</button></div>' +
+    openSheet('<div class="spread"><h2>WalletConnect</h2><button class="btn sm ghost" id="wc-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:8px 0">Paste a WalletConnect v2 URI from a dApp. Sessions and signature requests pass the same security gate.</p>' +
       '<div class="field"><label>WC URI</label><input id="wc-uri" placeholder="wc:..."></div><button class="btn primary wide" id="wc-go">Connect</button>');
     $('#wc-x').onclick = closeSheet;
