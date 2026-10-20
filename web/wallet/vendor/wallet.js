@@ -1,0 +1,355 @@
+// wallet.js — multi-wallet key management, backed by the post-quantum WASM
+// signer (ML-DSA-44). Each wallet's secret lives only in its password-sealed
+// vault; the active wallet's key is held in an ephemeral session with auto-lock.
+//
+// Storage: `wallets` = [rec, …]  (rec: {id,label,address,publicKey,crypto,
+// watchOnly,scheme}), `selectedId` = active wallet id.  Session: the decrypted
+// secret for the active wallet.
+//
+// Exposed as global `Wallet`.
+(function (global) {
+  const AUTO_LOCK_MS = 30 * 60 * 1000;
+  let session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
+
+  const rid = () => 'w' + Math.random().toString(36).slice(2, 10);
+
+  // 256-bit HD root for every secp256k1 chain (EVM / BTC / LTC / DOGE). It is
+  // generated once per wallet, stored INSIDE the password-sealed vault next to
+  // the BLOCK ML-DSA keypair, and never leaves the device. BLOCK is NOT derived
+  // from this seed — it is its own ML-DSA-44 keypair.
+  function newSeedHex() {
+    const b = crypto.getRandomValues(new Uint8Array(32));
+    return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function allWallets() {
+    return (await Store.get('wallets')).wallets || [];
+  }
+  async function saveWallets(list) {
+    await Store.set({ wallets: list });
+  }
+  async function selectedRec() {
+    const list = await allWallets();
+    const sel = (await Store.get('selectedId')).selectedId;
+    return list.find((w) => w.id === sel) || list[0] || null;
+  }
+  async function saveSession() {
+    await Session.set('session', {
+      id: session.id,
+      address: session.address,
+      pub: session.pub,
+      secret: session.secret,
+      seed: session.seed,
+      at: session.at,
+    });
+  }
+
+  const Wallet = {
+    get address() {
+      return session.address;
+    },
+    get publicKeyHex() {
+      return session.pub;
+    },
+    // secp256k1 HD root (hex) for EVM/BTC/LTC/DOGE derivation; null when locked.
+    get seedHex() {
+      return session.seed;
+    },
+    get activeId() {
+      return session.id;
+    },
+    isUnlocked() {
+      return !!session.secret;
+    },
+    scheme: 'ML-DSA-44',
+
+    async exists() {
+      return (await allWallets()).length > 0;
+    },
+
+    // Public list for the UI: [{id, label, address, watchOnly, active}].
+    async list() {
+      const sel = (await Store.get('selectedId')).selectedId;
+      return (await allWallets()).map((w) => ({
+        id: w.id,
+        label: w.label,
+        address: w.address,
+        watchOnly: !!w.watchOnly,
+        active: w.id === (sel || (session.id)),
+      }));
+    },
+
+    async selected() {
+      return selectedRec();
+    },
+
+    // Switch active wallet (locks the previous session).
+    async select(id) {
+      await Store.set({ selectedId: id });
+      await this.lock();
+      await this.loadPublic();
+      return session.address;
+    },
+
+    async loadPublic() {
+      const rec = await selectedRec();
+      if (!rec) {
+        session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
+        return null;
+      }
+      session.id = rec.id;
+      session.address = rec.address;
+      session.pub = rec.publicKey;
+      return { address: rec.address, id: rec.id, watchOnly: !!rec.watchOnly };
+    },
+
+    // Create a new wallet, seal under `password`, append, select, unlock.
+    async create(password, label) {
+      const kp = await Signer.keygen();
+      const seed = newSeedHex();
+      const crypto_ = await Vault.seal(
+        { secret: kp.secretKey, public: kp.publicKey, seed },
+        password
+      );
+      const list = await allWallets();
+      const rec = {
+        id: rid(),
+        label: label || 'Wallet ' + (list.length + 1),
+        format: 'blockle-wallet',
+        version: 2,
+        scheme: 'ML-DSA-44',
+        address: kp.address,
+        publicKey: kp.publicKey,
+        crypto: crypto_,
+      };
+      list.push(rec);
+      await saveWallets(list);
+      await Store.set({ selectedId: rec.id });
+      session = { id: rec.id, address: kp.address, pub: kp.publicKey, secret: kp.secretKey, seed, at: Date.now() };
+      await saveSession();
+      return { address: kp.address, id: rec.id };
+    },
+
+    // Unlock the active wallet.
+    async unlock(password) {
+      const rec = await selectedRec();
+      if (!rec || !rec.crypto) throw new Error('no wallet');
+      const pt = await Vault.open(rec.crypto, password);
+      const { secret, public: pub } = pt;
+      // Wallets created before the multi-chain seed existed get one minted now,
+      // so the re-seal below persists it. BLOCK identity is untouched.
+      const seed = pt.seed || newSeedHex();
+      // Transparent vault upgrade: re-seal legacy (v1 PBKDF2) blobs — or any
+      // blob missing the HD seed — as the current v2 (scrypt) format. The user
+      // never loses access and never has to re-enter anything.
+      if (Vault.needsUpgrade(rec.crypto) || !pt.seed) {
+        try {
+          rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed }, password);
+          const list = await allWallets();
+          const i = list.findIndex((w) => w.id === rec.id);
+          if (i >= 0) {
+            list[i] = rec;
+            await saveWallets(list);
+          }
+        } catch (_) {
+          /* re-seal is best-effort; a failure must not block unlock */
+        }
+      }
+      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, at: Date.now() };
+      await saveSession();
+      return { address: rec.address };
+    },
+
+    async resumeSession() {
+      const s = await Session.get('session');
+      const sel = (await Store.get('selectedId')).selectedId;
+      if (!s || !s.secret || (sel && s.id !== sel)) return false;
+      if (Date.now() - (s.at || 0) > AUTO_LOCK_MS) {
+        await Session.clear('session');
+        return false;
+      }
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.seed || null, at: s.at };
+      return true;
+    },
+
+    async lock() {
+      // Wipe ALL decrypted secret material from memory: the BLOCK ML-DSA secret
+      // and the secp256k1 HD seed. (Public address/pubkey may remain for display.)
+      session = { id: session.id, address: session.address, pub: session.pub, secret: null, seed: null, at: 0 };
+      await Session.clear('session');
+    },
+
+    async signMessage(message) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.signMessage(session.secret, session.pub, message);
+    },
+
+    async verify(message, publicKeyHex, signatureHex) {
+      return Signer.verify(publicKeyHex, message, signatureHex);
+    },
+
+    async buildTransfer(utxos, toAddress, amountBase, feeBase) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildTransfer(session.secret, session.pub, utxos, toAddress, amountBase, feeBase);
+    },
+
+    async buildDeploy(utxos, codeHex, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildDeploy(session.secret, session.pub, utxos, codeHex, gasLimit, gasPrice);
+    },
+
+    async buildCall(utxos, contractHex, inputHex, value, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildCall(session.secret, session.pub, utxos, contractHex, inputHex, value, gasLimit, gasPrice);
+    },
+
+    async buildPoolCreate(utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolCreate(session.secret, session.pub, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice);
+    },
+
+    async buildLaunchToken(utxos, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildLaunchToken(session.secret, session.pub, utxos, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice);
+    },
+
+    async buildLaunchNft(utxos, codeHex, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildLaunchNft(session.secret, session.pub, utxos, codeHex, gasLimit, gasPrice);
+    },
+
+    async buildPoolSwapBuy(utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolSwapBuy(session.secret, session.pub, utxos, tokenHex, blockIn, minTokenOut, gasLimit, gasPrice);
+    },
+
+    async buildPoolSwapSell(utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildPoolSwapSell(session.secret, session.pub, utxos, tokenHex, tokenIn, minBlockOut, gasLimit, gasPrice);
+    },
+
+    // --- encrypted cloud backup --------------------------------------------
+
+    // Platform-neutral backup payload for the active (unlocked) wallet. This is the plaintext
+    // that backup-crypto.js encrypts under the user's SEPARATE backup passphrase before upload;
+    // the server only ever sees the opaque ciphertext. Requires the vault to be unlocked.
+    async backupPayload() {
+      if (!session.secret) return null; // locked
+      const rec = (await allWallets()).find((w) => w.id === session.id);
+      return {
+        v: 2, scheme: 'ML-DSA-44',
+        address: session.address, public: session.pub, secret: session.secret, seed: session.seed,
+        label: rec && rec.label,
+      };
+    },
+
+    // Restore a wallet from a decrypted backup payload, re-sealing its secrets under a NEW local
+    // password you set on this device. Appends + selects it; never overwrites an existing wallet.
+    async restoreFromPayload(payload, newPassword, label) {
+      if (!payload || !payload.secret || !payload.public) throw new Error('invalid backup payload');
+      const crypto_ = await Vault.seal(
+        { secret: payload.secret, public: payload.public, seed: payload.seed || null }, newPassword);
+      const list = await allWallets();
+      const rec = {
+        id: rid(), label: label || payload.label || 'Restored wallet',
+        format: 'blockle-wallet', version: 2, scheme: payload.scheme || 'ML-DSA-44',
+        address: payload.address, publicKey: payload.public, crypto: crypto_,
+      };
+      list.push(rec);
+      await saveWallets(list);
+      await Store.set({ selectedId: rec.id });
+      return { id: rec.id, address: rec.address };
+    },
+
+    // --- import / export ---------------------------------------------------
+
+    // Export the active wallet's sealed record.
+    async exportFile(id) {
+      const target = id || session.id;
+      const rec = (await allWallets()).find((w) => w.id === target);
+      if (!rec) throw new Error('no wallet');
+      return rec;
+    },
+
+    // Import a wallet and set a NEW local password on it.
+    //   - Our format: decrypt with the file's password, then RE-SEAL under the
+    //     new password so the imported wallet is protected by a password you set.
+    //   - Raw secret/public hex (e.g. exported from a desktop wallet): sealed
+    //     under the new password as a full, signable wallet.
+    //   - Desktop wallet.json with no usable secret: imported watch-only.
+    async importFile(obj, filePassword, newPassword, label) {
+      const list = await allWallets();
+      const addRec = async (secret, pub, address, watchOnly) => {
+        const seed = watchOnly ? null : newSeedHex();
+        const crypto_ = watchOnly ? null : await Vault.seal({ secret, public: pub, seed }, newPassword);
+        const rec = {
+          id: rid(),
+          label: label || (watchOnly ? 'Imported (watch)' : 'Imported ' + (list.length + 1)),
+          format: 'blockle-wallet',
+          version: 2,
+          scheme: 'ML-DSA-44',
+          address,
+          publicKey: pub || '',
+          crypto: crypto_,
+          watchOnly: !!watchOnly,
+        };
+        list.push(rec);
+        await saveWallets(list);
+        await Store.set({ selectedId: rec.id });
+        if (!watchOnly) {
+          session = { id: rec.id, address, pub, secret, seed, at: Date.now() };
+          await saveSession();
+        } else {
+          session = { id: rec.id, address, pub: pub || '', secret: null, seed: null, at: 0 };
+        }
+        return { address, id: rec.id, mode: watchOnly ? 'watch-only' : 'full' };
+      };
+
+      // Our encrypted format → decrypt with the file password, re-seal with new.
+      if (obj && obj.format === 'blockle-wallet' && obj.crypto) {
+        const { secret, public: pub } = await Vault.open(obj.crypto, filePassword);
+        const address = obj.address || (await Signer.addressFromPubkey(pub));
+        return addRec(secret, pub, address, false);
+      }
+      // Raw ML-DSA key material (hex) → FULL wallet under the new password.
+      // Covers the desktop wallet.json (secret_hex / public_hex) and generic
+      // {secret, public} exports.
+      const rawSecret = obj && (obj.secret || obj.secretKey || obj.sk || obj.secret_hex);
+      const rawPublic = obj && (obj.public || obj.publicKey || obj.pk || obj.public_hex);
+      if (rawSecret && rawPublic && /^[0-9a-fA-F]+$/.test(rawSecret)) {
+        const address = obj.address || (await Signer.addressFromPubkey(rawPublic));
+        return addRec(rawSecret, rawPublic, address, false);
+      }
+      // An encrypted desktop wallet (no plaintext secret) can't be signed from
+      // here yet — decrypt it in the desktop wallet first and re-export.
+      if (obj && obj.encrypted && obj.address) {
+        throw new Error('this wallet file is encrypted — decrypt it in the desktop wallet and export again');
+      }
+      // Address only → watch-only.
+      const addr = obj && (obj.address || obj.block_address || obj.receive_address);
+      if (addr && /^block1/.test(addr)) {
+        return addRec(null, '', addr, true);
+      }
+      throw new Error('unrecognized wallet file');
+    },
+
+    async remove(id) {
+      let list = await allWallets();
+      list = list.filter((w) => w.id !== id);
+      await saveWallets(list);
+      if (session.id === id) await this.lock();
+      await Store.set({ selectedId: list[0] ? list[0].id : null });
+      await this.loadPublic();
+    },
+
+    async reset() {
+      await Store.remove('wallets');
+      await Store.remove('selectedId');
+      await Store.remove('sites');
+      await Session.clear('session');
+      session = { id: null, address: null, pub: null, secret: null, at: 0 };
+    },
+  };
+
+  global.Wallet = Wallet;
+})(typeof self !== 'undefined' ? self : window);

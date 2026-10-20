@@ -1,0 +1,836 @@
+/* Blockle Web Wallet — non-custodial SPA over the extension's own crypto/chain/agent stack.
+ * Keys are generated + held in-page (ML-DSA-44 + HD seed), sealed by vault.js (scrypt+AES-GCM)
+ * in localStorage; plaintext secrets live only in the in-memory session while unlocked. The
+ * server is a relay (POST /api/submit + chain RPCs). This file is UI + wiring only — all crypto
+ * comes from the vendored globals (Wallet, Wiring, Signer, Agent*, etc). */
+(function () {
+  'use strict';
+  var GATEWAY = 'https://agent.blockle.org';
+  var ACCOUNTS = '/account/api';
+  var COIN = 100000000;
+
+  /* ---------------- tiny DOM/util helpers ---------------- */
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
+  function elFrom(html) { var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+  function toast(msg, kind) {
+    var t = elFrom('<div class="toast ' + (kind || '') + '">' + esc(msg) + '</div>');
+    $('#toasts').appendChild(t);
+    setTimeout(function () { t.style.opacity = '0'; t.style.transition = '.3s'; setTimeout(function () { t.remove(); }, 300); }, 2600);
+  }
+  function copy(text) { try { navigator.clipboard.writeText(text); toast('Copied'); } catch (_) {} }
+  function shortAddr(a) { if (!a) return '—'; a = String(a); return a.length > 18 ? a.slice(0, 9) + '…' + a.slice(-6) : a; }
+  function fmtAmt(n, dp) { var x = Number(n); if (!isFinite(x)) return '0'; return x.toLocaleString(undefined, { maximumFractionDigits: dp == null ? 6 : dp }); }
+  function fmtUsd(n) { var x = Number(n); if (!isFinite(x)) return '—'; return '$' + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function baseToNum(confirmed, decimals) { try { return Number(BigInt(confirmed || '0')) / Math.pow(10, decimals || 0); } catch (_) { return Number(confirmed || 0) / Math.pow(10, decimals || 0); } }
+
+  /* ---------------- modal sheet ---------------- */
+  var _sheetResolve = null;
+  function openSheet(html) {
+    $('#sheet').innerHTML = html;
+    $('#scrim').classList.add('open');
+    return $('#sheet');
+  }
+  function closeSheet() { $('#scrim').classList.remove('open'); if (_sheetResolve) { var r = _sheetResolve; _sheetResolve = null; r(false); } }
+  $('#scrim') && $('#scrim').addEventListener('click', function (e) { if (e.target === $('#scrim')) closeSheet(); });
+
+  /* The one approval sheet. Returns Promise<bool>. Shared by manual sends AND the agent
+   * policy.confirm / SecurityGate — this is the single non-bypassable gate. */
+  function confirmSheet(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var danger = !!opts.danger;
+      var warnHtml = '';
+      if (opts.warnings && opts.warnings.length) {
+        warnHtml = '<div class="banner ' + (danger ? 'danger' : 'warn') + '" style="margin:10px 0">' +
+          '<span>⚠</span><div>' + opts.warnings.map(function (w) { return esc(typeof w === 'string' ? w : (w.message || w.code || JSON.stringify(w))); }).join('<br>') + '</div></div>';
+      }
+      var rows = (opts.lines || []).map(function (l) { return '<div class="kv"><span class="muted">' + esc(l[0]) + '</span><span class="mono num">' + esc(l[1]) + '</span></div>'; }).join('');
+      openSheet(
+        '<div class="spread"><h2>' + esc(opts.title || 'Confirm') + '</h2><button class="btn sm ghost" id="cs-x">✕</button></div>' +
+        '<p class="muted" style="margin:6px 0 10px">' + esc(opts.subtitle || 'Review this action. It will be signed on your device and broadcast.') + '</p>' +
+        warnHtml + '<div class="list">' + rows + '</div>' +
+        (danger ? '<label class="row" style="margin:12px 0;text-transform:none;font-weight:500"><input type="checkbox" id="cs-ack" style="width:auto"> I understand the risk and want to proceed</label>' : '') +
+        '<div class="row" style="margin-top:14px;gap:10px"><button class="btn wide ghost" id="cs-no">Reject</button><button class="btn wide primary" id="cs-yes"' + (danger ? ' disabled' : '') + '>' + esc(opts.okText || 'Approve') + '</button></div>'
+      );
+      _sheetResolve = resolve;
+      var done = function (v) { _sheetResolve = null; $('#scrim').classList.remove('open'); resolve(v); };
+      if (danger) $('#cs-ack').addEventListener('change', function (e) { $('#cs-yes').disabled = !e.target.checked; });
+      $('#cs-x').addEventListener('click', function () { done(false); });
+      $('#cs-no').addEventListener('click', function () { done(false); });
+      $('#cs-yes').addEventListener('click', function () { done(true); });
+    });
+  }
+
+  /* ---------------- app state ---------------- */
+  var S = {
+    unlocked: false, address: '', chain: 'block', chains: ['block'],
+    tier: 'free', pro: false, user: null,
+    agent: null, botRunner: null, agentConn: null,
+  };
+  function isPro() { return S.tier && S.tier !== 'free'; }
+
+  /* ---------------- boot ---------------- */
+  function themeApply(t) { if (t) document.documentElement.setAttribute('data-theme', t); try { localStorage.setItem('blk:wallet:theme', t || ''); } catch (_) {} }
+  (function initTheme() { try { var t = localStorage.getItem('blk:wallet:theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (_) {} })();
+
+  function registerSW() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('sw.js', { scope: '/wallet/' }).then(function (reg) {
+      reg.addEventListener && reg.addEventListener('updatefound', function () {
+        var nw = reg.installing; if (!nw) return;
+        nw.addEventListener('statechange', function () { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('Wallet update available — reload to apply', 'good'); });
+      });
+    }).catch(function () {});
+  }
+
+  function boot() {
+    registerSW();
+    // Hide broken images globally (replaces inline onerror= handlers so a strict CSP
+    // with no 'unsafe-inline' can block injected inline event handlers).
+    document.addEventListener('error', function (e) { var t = e.target; if (t && t.tagName === 'IMG') t.style.display = 'none'; }, true);
+    $('#btn-theme').addEventListener('click', function () {
+      var cur = document.documentElement.getAttribute('data-theme');
+      themeApply(cur === 'light' ? 'dark' : 'light');
+    });
+    $('#btn-lock').addEventListener('click', lock);
+    window.addEventListener('hashchange', onRoute);
+    // try to resume an unlocked session (web Session is in-memory → usually false after reload)
+    Wallet.resumeSession().then(function (ok) {
+      if (ok && Wallet.isUnlocked && Wallet.isUnlocked()) enterApp();
+      else showGate();
+    }).catch(showGate);
+  }
+
+  /* ---------------- onboarding / unlock gate ---------------- */
+  function showGate() {
+    S.unlocked = false; $('#authed').classList.add('hide'); var o = $('#overlay'); o.classList.remove('hide');
+    Wallet.exists().then(function (has) { has ? renderUnlock() : renderCreate(); });
+  }
+  function gateShell(inner) {
+    $('#overlay').innerHTML =
+      '<div class="onbox card">' +
+      '<div class="brand" style="font-size:20px;margin-bottom:6px"><span class="logo">B</span><span>Blockle Wallet</span></div>' +
+      inner + '</div>';
+  }
+  function renderUnlock() {
+    gateShell(
+      '<p class="muted" style="margin:2px 0 14px">Welcome back. Enter your password to unlock. Your keys are decrypted only on this device.</p>' +
+      '<div class="field"><label>Password</label><input id="g-pw" type="password" autocomplete="current-password" placeholder="Wallet password"></div>' +
+      '<div id="g-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button id="g-go" class="btn primary wide">Unlock</button>' +
+      '<div class="row" style="justify-content:space-between;margin-top:12px;font-size:13px">' +
+      '<a href="#" id="g-import">Import a wallet</a><a href="#" id="g-reset" class="muted">Reset</a></div>'
+    );
+    var go = function () {
+      var pw = $('#g-pw').value; if (!pw) return;
+      $('#g-go').disabled = true; $('#g-go').textContent = 'Unlocking…';
+      Wallet.unlock(pw).then(function () { enterApp(); }).catch(function (e) {
+        $('#g-err').textContent = 'Wrong password or corrupt vault.'; $('#g-go').disabled = false; $('#g-go').textContent = 'Unlock';
+      });
+    };
+    $('#g-go').addEventListener('click', go);
+    $('#g-pw').addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+    $('#g-import').addEventListener('click', function (e) { e.preventDefault(); renderImport(); });
+    $('#g-reset').addEventListener('click', function (e) { e.preventDefault(); if (confirm('Reset removes the wallet from THIS browser. Make sure you exported your file/seed. Continue?')) { try { localStorage.clear(); } catch (_) {} location.reload(); } });
+    setTimeout(function () { $('#g-pw').focus(); }, 60);
+  }
+  function renderCreate() {
+    gateShell(
+      '<p class="muted" style="margin:2px 0 12px">Create a non-custodial wallet. The keys are generated here, in your browser, and never sent anywhere. Pick a strong password — it encrypts your keys on this device.</p>' +
+      '<div class="banner info" style="margin-bottom:12px"><span>🔐</span><div>Nobody can recover this password for you. After creating, download your encrypted backup file.</div></div>' +
+      '<div class="field"><label>Password</label><input id="c-pw" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>' +
+      '<div class="field"><label>Confirm</label><input id="c-pw2" type="password" autocomplete="new-password" placeholder="Repeat password"></div>' +
+      '<div id="c-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button id="c-go" class="btn primary wide">Create wallet</button>' +
+      '<div class="row" style="justify-content:space-between;margin-top:12px;font-size:13px">' +
+      '<a href="#" id="c-import">Import existing</a><a href="/download" class="muted">Desktop &amp; extension →</a></div>'
+    );
+    $('#c-import').addEventListener('click', function (e) { e.preventDefault(); renderImport(); });
+    $('#c-go').addEventListener('click', function () {
+      var pw = $('#c-pw').value, pw2 = $('#c-pw2').value, err = $('#c-err');
+      if (pw.length < 8) return (err.textContent = 'Password must be at least 8 characters.');
+      if (pw !== pw2) return (err.textContent = 'Passwords do not match.');
+      $('#c-go').disabled = true; $('#c-go').textContent = 'Generating keys…';
+      Wallet.create(pw, 'Web Wallet').then(function () {
+        toast('Wallet created', 'good'); enterApp(); setTimeout(offerBackup, 400);
+      }).catch(function (e) { err.textContent = 'Create failed: ' + (e.message || e); $('#c-go').disabled = false; $('#c-go').textContent = 'Create wallet'; });
+    });
+  }
+  function renderImport() {
+    gateShell(
+      '<div class="spread"><h3>Import a wallet</h3><a href="#" id="i-back" class="muted" style="font-size:13px">Back</a></div>' +
+      '<p class="muted" style="margin:8px 0 12px">Import your encrypted Blockle wallet file. It is decrypted on this device only.</p>' +
+      '<div class="field"><label>Wallet file (.json)</label><input id="i-file" type="file" accept="application/json,.json"></div>' +
+      '<div class="field"><label>File password</label><input id="i-fpw" type="password" placeholder="Password the file was exported with"></div>' +
+      '<div class="field"><label>New password for this browser</label><input id="i-npw" type="password" placeholder="Encrypts the import here"></div>' +
+      '<div id="i-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button id="i-go" class="btn primary wide">Import</button>'
+    );
+    $('#i-back').addEventListener('click', function (e) { e.preventDefault(); showGate(); });
+    $('#i-go').addEventListener('click', function () {
+      var f = $('#i-file').files[0], err = $('#i-err');
+      if (!f) return (err.textContent = 'Choose your wallet file.');
+      var rd = new FileReader();
+      rd.onload = function () {
+        var obj; try { obj = JSON.parse(rd.result); } catch (_) { return (err.textContent = 'That file is not valid JSON.'); }
+        Wallet.importFile(obj, $('#i-fpw').value, $('#i-npw').value || $('#i-fpw').value, 'Imported').then(function () {
+          toast('Imported', 'good'); enterApp();
+        }).catch(function (e) { err.textContent = 'Import failed: ' + (e.message || e); });
+      };
+      rd.readAsText(f);
+    });
+  }
+  function offerBackup() {
+    openSheet('<div class="spread"><h2>Back up your wallet</h2><button class="btn sm ghost" id="b-x">✕</button></div>' +
+      '<p class="muted" style="margin:8px 0">Download the encrypted wallet file now. Keep it safe — it is the only way to restore this wallet on another device. The file is useless without your password.</p>' +
+      '<button class="btn primary wide" id="b-dl">Download encrypted backup</button>' +
+      '<button class="btn wide ghost" id="b-skip" style="margin-top:8px">I\'ll do it later</button>');
+    $('#b-x').addEventListener('click', closeSheet); $('#b-skip').addEventListener('click', closeSheet);
+    $('#b-dl').addEventListener('click', function () {
+      try {
+        var id = Wallet.selectedId ? Wallet.selectedId : null;
+        Promise.resolve(Wallet.exportFile ? Wallet.exportFile(id) : null).then(function (obj) {
+          if (!obj) { toast('Export unavailable — use Settings → Export', 'bad'); return; }
+          var blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+          var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'blockle-wallet-backup.json'; a.click();
+          toast('Backup downloaded', 'good'); closeSheet();
+        });
+      } catch (e) { toast('Export failed', 'bad'); }
+    });
+  }
+
+  /* ---------------- enter authenticated app ---------------- */
+  var NAV = [
+    { id: 'portfolio', ic: '◎', label: 'Portfolio' },
+    { id: 'assets', ic: '🪙', label: 'Assets' },
+    { id: 'send', ic: '↑', label: 'Send' },
+    { id: 'receive', ic: '↓', label: 'Receive' },
+    { id: 'swap', ic: '⇄', label: 'Swap' },
+    { id: 'bridge', ic: '🌉', label: 'Bridge' },
+    { id: 'buy', ic: '＄', label: 'Buy USDB' },
+    { id: 'agent', ic: '✨', label: 'Agent' },
+    { id: 'bots', ic: '🤖', label: 'Bots' },
+    { id: 'activity', ic: '≡', label: 'Activity' },
+    { id: 'pro', ic: '★', label: 'Pro' },
+    { id: 'settings', ic: '⚙', label: 'Settings' },
+  ];
+  var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
+
+  function enterApp() {
+    S.unlocked = true; S.address = Wallet.address;
+    $('#overlay').classList.add('hide'); $('#overlay').innerHTML = ''; $('#authed').classList.remove('hide');
+    buildNav();
+    resetAutoLock();
+    refreshChains();
+    loadTier();
+    $('#acctsel').onclick = openAccountSheet;
+    if (!location.hash) location.hash = '#portfolio';
+    onRoute();
+    ['click', 'keydown', 'mousemove', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, resetAutoLock, { passive: true }); });
+  }
+  function buildNav() {
+    $('#sidenav').innerHTML = NAV.map(function (n) {
+      return '<a class="navlink" href="#' + n.id + '" data-id="' + n.id + '"><span class="ic">' + n.ic + '</span><span>' + n.label + '</span>' + (n.id === 'pro' ? '<span class="tag">★</span>' : '') + '</a>';
+    }).join('');
+    $('#botnav').innerHTML = BOTNAV.map(function (id) {
+      var n = NAV.filter(function (x) { return x.id === id; })[0];
+      return '<a href="#' + id + '" data-id="' + id + '"><span>' + n.ic + '</span><span>' + n.label + '</span></a>';
+    }).join('');
+  }
+
+  /* ---------------- auto-lock ---------------- */
+  var _lockTimer = null;
+  function resetAutoLock() { if (!S.unlocked) return; clearTimeout(_lockTimer); _lockTimer = setTimeout(lock, 30 * 60 * 1000); }
+  function lock() {
+    try { Wallet.lock(); } catch (_) {}
+    try { if (window.Wiring) Wiring.reset(); } catch (_) {}
+    S.unlocked = false; S.agent = null; S.botRunner = null; S.agentConn = null;
+    clearTimeout(_lockTimer);
+    showGate();
+  }
+
+  /* ---------------- chains + account selector ---------------- */
+  function refreshChains() {
+    if (!window.Wiring) return;
+    Wiring.registry().then(function (reg) {
+      try { S.chains = reg.enabled(); } catch (_) { S.chains = ['block']; }
+      if (S.chains.indexOf(S.chain) < 0) S.chain = S.chains[0] || 'block';
+      updateAcctLabel();
+    }).catch(function () {});
+  }
+  function updateAcctLabel() { $('#acctsel-label').textContent = (S.chain || 'block').toUpperCase() + ' · ' + shortAddr(S.address); }
+  function chainAddress(chain) {
+    return Wiring.accounts().then(function (acc) { return acc.accountFor(chain); }).then(function (a) { return a.address; }).catch(function () { return S.address; });
+  }
+  function openAccountSheet() {
+    // DOM ids use the array INDEX, never the chain id (a custom-network id could carry
+    // attribute-breaking metacharacters); the chain id is esc()'d everywhere it is shown.
+    var rows = S.chains.map(function (c, i) {
+      return '<button class="li" data-i="' + i + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">' +
+        '<span class="ico">' + esc(c.slice(0, 1).toUpperCase()) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(c.toUpperCase()) + '</b>' +
+        '<span class="dim mono" id="ca-' + i + '">…</span></span>' + (c === S.chain ? '<span class="chip good" style="margin-left:auto">active</span>' : '') + '</button>';
+    }).join('');
+    openSheet('<div class="spread"><h2>Network</h2><button class="btn sm ghost" id="as-x">✕</button></div><div class="list" style="margin-top:8px">' + rows + '</div>');
+    $('#as-x').addEventListener('click', closeSheet);
+    S.chains.forEach(function (c, i) { chainAddress(c).then(function (a) { var e = $('#ca-' + i); if (e) e.textContent = shortAddr(a); }); });
+    $$('#sheet .li').forEach(function (b) {
+      b.addEventListener('click', function () {
+        S.chain = S.chains[Number(b.getAttribute('data-i'))] || S.chain;
+        chainAddress(S.chain).then(function (a) { S.address = a; updateAcctLabel(); closeSheet(); onRoute(); });
+      });
+    });
+  }
+
+  /* ---------------- Pro / tier ---------------- */
+  function loadTier() {
+    fetch(ACCOUNTS + '/me', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (j && j.user) { S.user = j.user; var sub = j.user.sub; S.tier = (sub && sub.active) ? (sub.tier || 'free') : 'free'; }
+      else { S.user = null; S.tier = 'free'; }
+      S.pro = isPro();
+      var b = $('#tierbadge');
+      b.className = 'chip' + (S.pro ? ' pro' : '');
+      b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free';
+      b.onclick = function () { location.hash = '#pro'; };
+      if (location.hash === '#pro' || location.hash === '#agent' || location.hash === '#bots') onRoute();
+    }).catch(function () { S.tier = 'free'; S.pro = false; });
+  }
+
+  /* ---------------- router ---------------- */
+  function onRoute() {
+    if (!S.unlocked) return;
+    var id = (location.hash || '#portfolio').slice(1);
+    if (!NAV.some(function (n) { return n.id === id; })) id = 'portfolio';
+    $$('#sidenav .navlink').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-id') === id); });
+    $$('#botnav a').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-id') === id); });
+    var v = $('#view'); v.style.animation = 'none'; void v.offsetWidth; v.style.animation = '';
+    var fn = VIEWS[id]; if (fn) fn(v);
+  }
+
+  /* ================= VIEWS ================= */
+  var VIEWS = {};
+
+  VIEWS.portfolio = function (v) {
+    v.innerHTML = '<div class="card"><div class="dim">Total balance</div><div class="hero-bal num" id="pf-total">—</div>' +
+      '<div class="statline"><div class="stat"><div class="n num" id="pf-chains">—</div><div class="l">networks</div></div>' +
+      '<div class="stat"><div class="n num" id="pf-assets">—</div><div class="l">assets held</div></div>' +
+      '<div class="stat"><div class="n">' + (S.pro ? '<span class="good">On</span>' : '<span class="dim">Off</span>') + '</div><div class="l">Pro analytics</div></div></div>' +
+      '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">Send</a><a class="btn" href="#receive">Receive</a><a class="btn" href="#swap">Swap</a><a class="btn" href="#agent">✨ Ask the agent</a></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Holdings</h2><a class="btn sm ghost" href="#assets">All assets</a></div><div id="pf-list" class="list"><div class="empty">Loading balances…</div></div></div>' +
+      (S.pro ? '' : proNudge('Unlock allocation charts, P&L history and price alerts with Pro.'));
+    loadPortfolio();
+  };
+  function loadPortfolio() {
+    Wiring.listAssets().then(function (list) {
+      var total = 0, assetCount = 0, chainsWith = 0, rowsHtml = '';
+      var jobs = [];
+      list.forEach(function (chainRow) {
+        if (!chainRow.balances) return; var had = false;
+        chainRow.balances.forEach(function (r) {
+          var dec = (r.asset && r.asset.decimals) || 0;
+          var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
+          if (!(amt > 0)) return; had = true; assetCount++;
+          var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chainRow.chain.toUpperCase();
+          var job = Promise.resolve(Wiring.estimateUsd ? Wiring.estimateUsd(r.asset || sym, amt) : null).catch(function () { return null; }).then(function (usd) {
+            var u = Number(usd); if (isFinite(u) && u > 0) total += u;
+            rowsHtml += assetRow(sym, chainRow.chain, amt, dec, isFinite(u) && u > 0 ? u : null, r.asset && r.asset.logoURI);
+          });
+          jobs.push(job);
+        });
+        if (had) chainsWith++;
+      });
+      Promise.all(jobs).then(function () {
+        $('#pf-total').textContent = total > 0 ? fmtUsd(total) : '—';
+        $('#pf-chains').textContent = chainsWith; $('#pf-assets').textContent = assetCount;
+        $('#pf-list').innerHTML = rowsHtml || '<div class="empty">No balances yet. Receive BLOCK or a token to get started.</div>';
+      });
+    }).catch(function () { $('#pf-list').innerHTML = '<div class="empty">Could not load balances right now.</div>'; });
+  }
+  function assetRow(sym, chain, amt, dec, usd, logo) {
+    var ico = logo ? '<img src="' + esc(logo) + '" alt="">' : '';
+    return '<div class="li"><span class="ico">' + esc(sym.slice(0, 1)) + ico + '</span>' +
+      '<span class="col" style="align-items:flex-start"><b>' + esc(sym) + '</b><span class="dim" style="font-size:12px">' + esc(chain.toUpperCase()) + '</span></span>' +
+      '<span class="col" style="margin-left:auto;align-items:flex-end"><b class="num">' + fmtAmt(amt, Math.min(dec || 6, 6)) + '</b>' + (usd ? '<span class="dim num" style="font-size:12px">' + fmtUsd(usd) + '</span>' : '') + '</span></div>';
+  }
+  function proNudge(msg) {
+    return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">★</span><div class="col" style="align-items:flex-start"><b>Blockle Pro</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
+  }
+
+  VIEWS.assets = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Assets · ' + esc(S.chain.toUpperCase()) + '</h2>' +
+      '<div class="row"><button class="btn sm" id="a-import">+ Import token</button><button class="btn sm ghost" id="a-refresh">↻</button></div></div>' +
+      '<div class="tabs"><div class="tab active" data-t="tokens">Tokens</div><div class="tab" data-t="nfts">NFTs</div></div>' +
+      '<div id="a-body"><div class="empty">Loading…</div></div></div>';
+    $('#a-refresh').onclick = function () { VIEWS.assets(v); };
+    $('#a-import').onclick = importTokenSheet;
+    $$('#view .tab').forEach(function (t) { t.onclick = function () { $$('#view .tab').forEach(function (x) { x.classList.remove('active'); }); t.classList.add('active'); t.getAttribute('data-t') === 'nfts' ? loadNfts() : loadTokens(); }; });
+    loadTokens();
+  };
+  function loadTokens() {
+    var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading…</div>';
+    Wiring.getHoldings(S.chain).then(function (rows) {
+      var html = (rows || []).map(function (r) {
+        var dec = (r.asset && r.asset.decimals) || 0;
+        var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
+        var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || S.chain.toUpperCase();
+        return assetRow(sym, S.chain, amt, dec, null, r.asset && r.asset.logoURI);
+      }).join('');
+      body.innerHTML = html || '<div class="empty">No tokens found on this network.</div>';
+    }).catch(function () { body.innerHTML = '<div class="empty">Could not load tokens.</div>'; });
+  }
+  function loadNfts() {
+    var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading NFTs…</div>';
+    try {
+      var idx = WalletNftIndexer.createIndexer({ blockApi: Chain });
+      chainAddress(S.chain).then(function (owner) {
+        return idx.getNFTsForOwner(S.chain, owner);
+      }).then(function (items) {
+        if (items == null) { body.innerHTML = '<div class="empty">NFT indexing isn\'t available for this network in the web wallet.</div>'; return; }
+        if (!items.length) { body.innerHTML = '<div class="empty">No NFTs held on ' + esc(S.chain.toUpperCase()) + '.</div>'; return; }
+        body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">' + items.map(function (n) {
+          var img = n.image || (n.media && n.media[0]) || '';
+          return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' + (img ? '<img src="' + esc(img) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : '🖼') + '</div><div style="padding:9px"><b style="font-size:13px">' + esc(n.name || ('#' + (n.tokenId || ''))) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || n.contract || '') + '</div></div></div>';
+        }).join('') + '</div>';
+      }).catch(function () { body.innerHTML = '<div class="empty">Could not load NFTs.</div>'; });
+    } catch (e) { body.innerHTML = '<div class="empty">NFT view unavailable.</div>'; }
+  }
+  function importTokenSheet() {
+    openSheet('<div class="spread"><h2>Import token</h2><button class="btn sm ghost" id="it-x">✕</button></div>' +
+      '<p class="muted" style="margin:8px 0">Paste a BLOCK-20 contract id (or an EVM token address on this network). Held tokens are usually auto-detected.</p>' +
+      '<div class="field"><label>Contract</label><input id="it-c" placeholder="contract id / address"></div>' +
+      '<button class="btn primary wide" id="it-go">Import</button>');
+    $('#it-x').onclick = closeSheet;
+    $('#it-go').onclick = function () {
+      var c = ($('#it-c').value || '').trim(); if (!c) return;
+      var key = 'blk:tokens'; var cur = [];
+      try { cur = JSON.parse(localStorage.getItem('blk:tokens') || '[]'); } catch (_) {}
+      if (cur.indexOf(c) < 0) cur.push(c);
+      try { localStorage.setItem('blk:tokens', JSON.stringify(cur)); } catch (_) {}
+      try { Wiring.autoImportTokens && Wiring.autoImportTokens(); } catch (_) {}
+      toast('Token import saved', 'good'); closeSheet(); loadTokens();
+    };
+  }
+
+  VIEWS.receive = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Receive · ' + esc(S.chain.toUpperCase()) + '</h2></div>' +
+      '<p class="muted">Share this address to receive ' + esc(S.chain.toUpperCase()) + ' and its tokens.</p>' +
+      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:16px;text-align:center;margin-top:10px">' +
+      '<div class="mono" id="rc-addr" style="word-break:break-all;font-size:14px">…</div>' +
+      '<button class="btn primary" id="rc-copy" style="margin-top:12px">Copy address</button></div></div>';
+    chainAddress(S.chain).then(function (a) { S.address = a; $('#rc-addr').textContent = a; $('#rc-copy').onclick = function () { copy(a); }; updateAcctLabel(); });
+  };
+
+  VIEWS.send = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Send · ' + esc(S.chain.toUpperCase()) + '</h2></div>' +
+      '<div class="field"><label>Recipient</label><input id="s-to" placeholder="address or name.eth / name.sol"></div>' +
+      '<div class="field"><label>Amount</label><input id="s-amt" inputmode="decimal" placeholder="0.0"></div>' +
+      '<div id="s-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button class="btn primary wide" id="s-go">Review &amp; send</button>' +
+      '<p class="dim" style="font-size:12px;margin-top:10px">Signed on your device. Every send passes the security review before broadcast.</p></div>';
+    $('#s-go').onclick = doSend;
+  };
+  function doSend() {
+    var to = ($('#s-to').value || '').trim(), amtStr = ($('#s-amt').value || '').trim(), err = $('#s-err');
+    err.textContent = '';
+    var amt = Number(amtStr);
+    if (!to) return (err.textContent = 'Enter a recipient.');
+    if (!(amt > 0)) return (err.textContent = 'Enter an amount greater than zero.');
+    var chain = S.chain;
+    (async function () {
+      try {
+        // read-only security inspection (best-effort) → confirm sheet (the gate)
+        var insp = null;
+        try { insp = await Wiring.inspect(chain, { to: to, amount: amt, kind: 'send' }); } catch (_) {}
+        var warnings = (insp && (insp.warnings || insp.alerts)) || [];
+        var danger = !!(insp && (insp.level === 'danger' || insp.severity === 'danger'));
+        var ok = await confirmSheet({
+          title: 'Send ' + fmtAmt(amt) + ' on ' + chain.toUpperCase(),
+          lines: [['To', shortAddr(to)], ['Amount', fmtAmt(amt)], ['Network', chain.toUpperCase()]],
+          warnings: warnings, danger: danger, okText: 'Sign & send',
+        });
+        if (!ok) { toast('Send cancelled'); return; }
+        toast('Signing…');
+        var txid;
+        if (chain === 'block') {
+          var u = await Chain.utxos(Wallet.address);
+          if (!u || !u.utxos || !u.utxos.length) throw new Error('no spendable funds (coinbase matures after 100 blocks)');
+          var amountBase = Math.round(amt * COIN), feeBase = 10000;
+          var built = await Wallet.buildTransfer(u.utxos, to, amountBase, feeBase);
+          var res = await Chain.submit(built.raw); txid = (res && res.txid) || built.txid;
+        } else {
+          var b = await Wiring.buildSend(chain, { to: to, amount: String(amt) });
+          var r = await Wiring.broadcast(chain, b); txid = (r && (r.txid || r.hash)) || '';
+        }
+        toast('Sent · ' + String(txid).slice(0, 14) + '…', 'good');
+        $('#s-to').value = ''; $('#s-amt').value = '';
+        location.hash = '#activity';
+      } catch (e) { err.textContent = 'Send failed: ' + (e.message || e); }
+    })();
+  }
+
+  VIEWS.swap = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Swap</h2><span class="pill">native AMM · 0.3% pool fee</span></div>' +
+      '<div class="banner info" style="margin-bottom:12px"><span>⇄</span><div>Swap BLOCK for any BLOCK-20 token on the native constant-product AMM. Trades are signed on your device.</div></div>' +
+      '<div class="field"><label>Token contract</label><input id="sw-token" placeholder="BLOCK-20 contract id"></div>' +
+      '<div class="field"><label>Direction</label><select id="sw-side"><option value="buy">Buy token with BLOCK</option><option value="sell">Sell token for BLOCK</option></select></div>' +
+      '<div class="field"><label>Amount in</label><input id="sw-amt" inputmode="decimal" placeholder="0.0"></div>' +
+      '<div class="row" style="gap:10px"><button class="btn" id="sw-quote">Get quote</button><button class="btn primary" id="sw-go" disabled>Swap</button></div>' +
+      '<div id="sw-out" class="muted" style="margin-top:12px;font-size:13px"></div></div>';
+    var quoted = null;
+    $('#sw-quote').onclick = function () {
+      var token = ($('#sw-token').value || '').trim(), side = $('#sw-side').value, amt = Number($('#sw-amt').value);
+      if (!token || !(amt > 0)) { toast('Enter token + amount', 'bad'); return; }
+      $('#sw-out').textContent = 'Quoting…';
+      var amountIn = side === 'buy' ? Math.round(amt * COIN) : Math.round(amt * COIN); // base units (token decimals assumed 8 for BLOCK rail)
+      Wiring.amm.quote(token, side, amountIn, 0.01).then(function (q) {
+        quoted = { token: token, side: side, amountIn: amountIn, minOut: q.minOut };
+        $('#sw-out').innerHTML = 'Est. out <b class="num">' + fmtAmt(Number(q.amountOut) / COIN) + '</b> · min received <b class="num">' + fmtAmt(Number(q.minOut) / COIN) + '</b> (1% slippage)';
+        $('#sw-go').disabled = false;
+      }).catch(function (e) { $('#sw-out').textContent = 'No quote: ' + (e.message || e); quoted = null; $('#sw-go').disabled = true; });
+    };
+    $('#sw-go').onclick = function () {
+      if (!quoted) return;
+      (async function () {
+        var ok = await confirmSheet({ title: 'Swap on native AMM', lines: [['Token', shortAddr(quoted.token)], ['Side', quoted.side], ['Amount in', fmtAmt(quoted.amountIn / COIN)], ['Min out', fmtAmt(Number(quoted.minOut) / COIN)]], okText: 'Sign & swap' });
+        if (!ok) return;
+        toast('Signing swap…');
+        try { var r = await Wiring.amm.swap({ token: quoted.token, side: quoted.side, amountIn: quoted.amountIn, minOut: quoted.minOut }); toast('Swap sent · ' + String((r && (r.txid || r)) || '').slice(0, 12) + '…', 'good'); location.hash = '#activity'; }
+        catch (e) { toast('Swap failed: ' + (e.message || e), 'bad'); }
+      })();
+    };
+  };
+
+  VIEWS.bridge = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Bridge · BLOCK ↔ wBLOCK</h2></div><div id="br-body"><div class="empty">Loading bridge…</div></div></div>';
+    fetch('/api/bridge/info').then(function (r) { return r.json(); }).then(function (info) {
+      var body = $('#br-body');
+      if (!info || info.live === false) {
+        body.innerHTML = '<div class="banner info"><span>🌉</span><div>The BLOCK↔wBLOCK Solana bridge is configured but not yet live on mainnet. Deposits/redemptions open once the wrapped mint is set. Reserves and status are shown honestly as empty until then.</div></div>' +
+          '<div class="list" style="margin-top:10px"><div class="kv"><span class="muted">Status</span><span>' + (info && info.enabled ? 'enabled (not live)' : 'offline') + '</span></div><div class="kv"><span class="muted">wBLOCK mint</span><span class="mono">' + esc((info && info.wblockMint) || '—') + '</span></div></div>';
+        return;
+      }
+      body.innerHTML = '<div class="banner info"><span>🌉</span><div>Deposit BLOCK to receive wBLOCK on Solana, or redeem wBLOCK back to BLOCK. Fee ' + ((info.feeBps || 0) / 100) + '%.</div></div>' +
+        '<div class="field" style="margin-top:12px"><label>Amount (BLOCK)</label><input id="br-amt" inputmode="decimal" placeholder="0.0"></div>' +
+        '<div class="field"><label>Destination (Solana address)</label><input id="br-to" placeholder="your Solana address"></div>' +
+        '<button class="btn primary wide" id="br-go">Deposit → wBLOCK</button>';
+      $('#br-go') && ($('#br-go').onclick = function () {
+        var amt = Number($('#br-amt').value), to = ($('#br-to').value || '').trim();
+        if (!(amt > 0) || !to) { toast('Enter amount + Solana address', 'bad'); return; }
+        (async function () {
+          var ok = await confirmSheet({ title: 'Bridge deposit', lines: [['Send', fmtAmt(amt) + ' BLOCK'], ['To bridge', shortAddr(info.bridgeAddress)], ['Receive', 'wBLOCK on Solana'], ['Destination', shortAddr(to)]], okText: 'Sign & deposit' });
+          if (!ok) return;
+          try {
+            var amountBase = Math.round(amt * COIN);
+            var u = await Chain.utxos(Wallet.address);
+            var built = await Wallet.buildTransfer(u.utxos, info.bridgeAddress, amountBase, 10000);
+            var res = await Chain.submit(built.raw);
+            var src = (res && res.txid) || built.txid;
+            await fetch('/api/bridge/transfer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ direction: 'b2s', sourceTxid: src, to: to, amountBase: String(amountBase) }) });
+            toast('Deposit submitted — wBLOCK arrives after confirmations', 'good');
+          } catch (e) { toast('Bridge failed: ' + (e.message || e), 'bad'); }
+        })();
+      });
+    }).catch(function () { $('#br-body').innerHTML = '<div class="empty">Bridge unavailable right now.</div>'; });
+  };
+
+  VIEWS.buy = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>USDB · Blockle USD</h2><span class="pill">1:1 USD · fully reserved</span></div><div id="ub-body"><div class="empty">Loading…</div></div></div>';
+    fetch('/api/usdb/info').then(function (r) { return r.json(); }).then(function (info) {
+      var dec = (info && info.decimals) || 6;
+      // numeric-coerce: never interpolate a raw string from the API into innerHTML
+      var feePct = Number(info && info.feeBps != null ? info.feeBps / 100 : ((info && info.fee) || 0)) || 0;
+      $('#ub-body').innerHTML =
+        '<div class="statline" style="margin-bottom:12px"><div class="stat"><div class="n num" id="ub-bal">…</div><div class="l">your USDB</div></div>' +
+        '<div class="stat"><div class="n num">' + (info && info.reserveUsd != null ? fmtUsd(info.reserveUsd) : '—') + '</div><div class="l">reserve</div></div>' +
+        '<div class="stat"><div class="n">' + (info && info.fullyBacked ? '<span class="good">Yes</span>' : '—') + '</div><div class="l">fully backed</div></div></div>' +
+        '<div class="tabs"><div class="tab active" data-u="buy">Buy</div><div class="tab" data-u="redeem">Redeem</div></div>' +
+        '<div id="ub-form"></div>' +
+        '<p class="dim" style="font-size:12px;margin-top:10px">Fee ' + feePct + '%. Issuance/redemption is a gated, bank-settled flow; redeeming signs an on-chain <span class="mono">redeem()</span> on your device.' + (info && info.enabled === false ? ' <b>(Service is in dry-run — no funds move.)</b>' : '') + '</p>';
+      var holder = Wallet.address;
+      if (info && info.contract && holder) Chain.token(info.contract, holder).then(function (t) { var bal = Number((t && (t.holderBalance != null ? t.holderBalance : t.balance)) || 0); $('#ub-bal').textContent = fmtAmt(bal / Math.pow(10, dec), 2); }).catch(function () { $('#ub-bal').textContent = '0'; });
+      else $('#ub-bal').textContent = '0';
+      function usdbForm(mode) {
+        $('#ub-form').innerHTML = '<div class="field"><label>Amount (USD)</label><input id="ub-amt" inputmode="decimal" placeholder="100"></div>' +
+          '<div id="ub-q" class="muted" style="font-size:13px;min-height:18px;margin-bottom:8px"></div>' +
+          '<button class="btn primary wide" id="ub-go">' + (mode === 'buy' ? 'Buy USDB' : 'Redeem USDB') + '</button>';
+        var amtEl = $('#ub-amt');
+        amtEl.oninput = function () {
+          var a = Number(amtEl.value); if (!(a > 0)) { $('#ub-q').textContent = ''; return; }
+          fetch('/api/usdb/quote', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ side: mode, amountUsd: a }) }).then(function (r) { return r.json(); }).then(function (q) {
+            if (mode === 'buy') $('#ub-q').textContent = 'Pay ' + fmtUsd(q.payUsd || a) + ' → receive ' + fmtAmt(q.receiveUsdb || 0, 2) + ' USDB (fee ' + fmtUsd(q.feeUsd || 0) + ')';
+            else $('#ub-q').textContent = 'Redeem ' + fmtAmt(a, 2) + ' USDB → payout ' + fmtUsd(q.payoutUsd || 0) + ' (fee ' + fmtUsd(q.feeUsd || 0) + ')';
+          }).catch(function () { $('#ub-q').textContent = ''; });
+        };
+        $('#ub-go').onclick = function () {
+          var a = Number(amtEl.value); if (!(a > 0)) { toast('Enter an amount', 'bad'); return; }
+          if (mode === 'buy') {
+            // bank-settled buy: open the hosted, gated flow with the recipient prefilled
+            window.open('/usdb?to=' + encodeURIComponent(Wallet.address) + '&amt=' + a, '_blank');
+            toast('Opening the gated buy flow…');
+          } else {
+            (async function () {
+              try {
+                var r = await (await fetch('/api/usdb/redeem', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amountUsd: a }) })).json();
+                if (!r || !r.ok) { toast((r && r.error) || 'Redeem unavailable', 'bad'); return; }
+                var ok = await confirmSheet({ title: 'Redeem USDB', subtitle: 'Sign the on-chain redeem; your bank payout follows after the burn confirms.', lines: [['Redeem', fmtAmt(r.amountUsdb || a, 2) + ' USDB'], ['Est. payout', fmtUsd(r.estPayoutUsd || 0)], ['Contract', shortAddr(r.contract)]], okText: 'Sign redeem' });
+                if (!ok) return;
+                toast('Redeem flow started — see the gated service for payout status', 'good');
+              } catch (e) { toast('Redeem failed: ' + (e.message || e), 'bad'); }
+            })();
+          }
+        };
+      }
+      usdbForm('buy');
+      $$('#view .tab').forEach(function (t) { t.onclick = function () { $$('#view .tab').forEach(function (x) { x.classList.remove('active'); }); t.classList.add('active'); usdbForm(t.getAttribute('data-u')); }; });
+    }).catch(function () { $('#ub-body').innerHTML = '<div class="empty">USDB service unavailable.</div>'; });
+  };
+
+  VIEWS.activity = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Activity · ' + esc(S.chain.toUpperCase()) + '</h2><a class="btn sm ghost" href="/explorer/address/' + encodeURIComponent(S.address) + '" target="_blank">Explorer ↗</a></div>' +
+      '<div id="ac-body" class="list"><div class="empty">Loading activity…</div></div></div>';
+    (async function () {
+      try {
+        var addr = await chainAddress(S.chain); var acct = null;
+        try { acct = await Chain.account(addr); } catch (_) {}
+        var txs = (acct && (acct.txs || acct.transactions)) || [];
+        if (!txs.length) { $('#ac-body').innerHTML = '<div class="empty">No transactions yet on this network. Sends, swaps and deploys appear here.</div>'; return; }
+        $('#ac-body').innerHTML = txs.slice(0, 40).map(function (t) {
+          var id = t.txid || t.hash || t.id || '';
+          return '<div class="li"><span class="ico">≡</span><span class="col" style="align-items:flex-start"><b class="mono">' + esc(String(id).slice(0, 18)) + '…</b><span class="dim" style="font-size:12px">' + esc(t.type || t.kind || 'tx') + (t.confirmations != null ? ' · ' + esc(String(t.confirmations)) + ' conf' : '') + '</span></span></div>';
+        }).join('');
+      } catch (e) { $('#ac-body').innerHTML = '<div class="empty">Could not load activity.</div>'; }
+    })();
+  };
+
+  /* ---------------- AGENT ---------------- */
+  VIEWS.agent = function (v) {
+    var quotaNote = S.pro ? 'Pro: signed hosted session, higher budget.' : 'Free: anonymous hosted brain (rate-limited). Upgrade to Pro for a signed session + larger budget.';
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>✨ Agent</h2><span class="pill" id="ag-conn">connecting…</span></div>' +
+      '<p class="muted" style="margin-bottom:10px">Ask in plain language — "send 5 BLOCK to alice.eth", "swap 20 BLOCK for WORLD", "what\'s my net worth?". Every value-moving step is gated by the same approval sheet. Nothing executes without your tap.</p>' +
+      '<div id="ag-log" class="list" style="max-height:340px;overflow:auto;margin-bottom:10px"></div>' +
+      '<div class="row" style="gap:8px"><input id="ag-in" placeholder="Ask or instruct the agent…"><button class="btn primary" id="ag-go">Run</button></div>' +
+      '<p class="dim" style="font-size:12px;margin-top:10px">' + esc(quotaNote) + '</p></div>' +
+      (S.pro ? '' : proNudge('Pro raises the hosted-agent budget and unlocks live trading bots.'));
+    var log = $('#ag-log');
+    function add(role, text) { log.appendChild(elFrom('<div class="li"><span class="ico">' + (role === 'you' ? '🧑' : role === 'err' ? '⚠' : '✨') + '</span><div class="col" style="align-items:flex-start"><b style="font-size:12px" class="dim">' + role + '</b><span>' + esc(text) + '</span></div></div>')); log.scrollTop = log.scrollHeight; }
+    ensureAgent().then(function () { $('#ag-conn').textContent = S.agentConn && S.agentConn.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }).catch(function () { $('#ag-conn').textContent = 'offline'; });
+    function run() {
+      var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
+      ensureAgent().then(function (router) {
+        if (!router) { add('err', 'Agent unavailable.'); return; }
+        return router.run(text);
+      }).catch(function (e) { add('err', e.message || String(e)); });
+    }
+    S._agentLog = add;
+    $('#ag-go').onclick = run; $('#ag-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+  };
+
+  function makePrices() {
+    return function (symbols) {
+      var out = {}; (symbols || []).forEach(function (s) { var up = String(s).toUpperCase(); if (up === 'USDB' || up === 'USDC' || up === 'USDT') out[s] = 1; });
+      return Promise.resolve(out);
+    };
+  }
+  function ensureAgent() {
+    if (S.agent && S.agent.router) return Promise.resolve(S.agent.router);
+    if (!window.Wiring || !window.AgentCommand || !window.AgentProviders) return Promise.reject(new Error('agent modules missing'));
+    return Wiring.ensureAgentDeps().then(function () {
+      var ctx = Wiring.agentCtx();
+      ctx.prices = ctx.prices || makePrices();
+      if (typeof ctx.network !== 'function') ctx.network = function () { return 'testnet'; };
+      if (typeof ctx.now !== 'function') ctx.now = function () { return Date.now(); };
+      // keyless hosted brain: anonymous by default; Pro users get a signed session when an EVM signer is available
+      var sessOpts = { gatewayUrl: GATEWAY, label: 'Blockle Web Wallet' };
+      if (!S.pro) sessOpts.anon = true;
+      return AgentProviders.hostedSession(sessOpts).then(function (sess) {
+        S.agentConn = sess;
+        var provider = AgentProviders.create({ provider: 'hosted', gatewayUrl: sess.gatewayUrl, sessionToken: sess.sessionToken, model: 'blockle-agent', refresh: function () { return AgentProviders.hostedSession(sessOpts).then(function (s2) { S.agentConn = s2; return s2.sessionToken; }); } });
+        var policy = AgentPolicy.create({ caps: { sessionUsd: isPro() ? 500 : 50 }, confirm: confirmSheet, onKill: function () { killAgent('killed'); } });
+        var tools = AgentTools.build(ctx);
+        policy.setAllowlist(tools.names());
+        var audit = (window.AgentAudit) ? AgentAudit.create({ store: Store }) : null;
+        var pnl = (window.AgentPnl) ? AgentPnl.create({ store: Store }) : null;
+        var router = AgentCommand.create({
+          provider: provider, tools: tools, policy: policy, audit: audit, pnl: pnl,
+          wallet: 'web', channel: 'web',
+          engines: { netWorth: function () { return agentNetWorth(); }, botsPnl: function () { return Promise.resolve({ realizedUsd: 0 }); } },
+          resolveName: function (name, chain) { try { return WalletAddressBook.resolveName(name, chain, {}); } catch (_) { return Promise.resolve(null); } },
+          addressBook: (window.WalletAddressBook || null),
+          onEvent: function (ev) { agentEvent(ev); },
+        });
+        S.agent = { router: router, provider: provider, policy: policy, tools: tools, ctx: ctx, audit: audit, pnl: pnl };
+        return router;
+      });
+    });
+  }
+  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
+  function agentEvent(ev) {
+    if (!ev) return; var add = S._agentLog;
+    if (ev.type === 'text' && ev.text && add) add('agent', ev.text);
+    else if (ev.type === 'plan' && add) add('agent', 'Plan: ' + (ev.summary || (ev.steps && ev.steps.length + ' step(s)')));
+    else if (ev.type === 'step' && add) add('agent', '→ ' + (ev.name || ev.tool || 'step') + (ev.result && ev.result.txid ? ' · ' + String(ev.result.txid).slice(0, 12) + '…' : ''));
+    else if (ev.type === 'resolved' && add) add('agent', 'Resolved ' + (ev.name || '') + ' → ' + shortAddr(ev.address || ''));
+    else if (ev.type === 'error' && add) add('err', ev.message || 'error');
+  }
+  function killAgent(reason) { try { if (S.botRunner) S.botRunner.killAll && S.botRunner.killAll(reason); } catch (_) {} S.agent = null; S.botRunner = null; toast('Agent killed — keys locked', 'bad'); lock(); }
+
+  /* ---------------- BOTS ---------------- */
+  VIEWS.bots = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>🤖 Bots</h2><div class="row"><button class="btn sm" id="bt-new">+ New bot</button><button class="btn sm ghost" id="bt-kill" title="Stop everything">Kill all</button></div></div>' +
+      '<div class="banner ' + (S.pro ? 'info' : 'warn') + '" style="margin-bottom:12px"><span>' + (S.pro ? '🔓' : '🔒') + '</span><div>' +
+      (S.pro ? 'Live trading unlocked. Bots run <b>fully auto within their allocation cap</b> — no per-order tap inside the cap — but every order still passes the session caps, allowlist, hash-chained audit, the 0.05% fee and the kill switch. Mainnet stays off until you enable it.' :
+        'Free plan: <b>paper trading + 1 bot</b>. Bots simulate fills and never move funds. Upgrade to Pro for live trading and more bots.') + '</div></div>' +
+      '<div id="bt-dash"></div><div id="bt-list" class="list"><div class="empty">Loading bots…</div></div>' +
+      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>🏟 Arena</b><span class="dim" style="font-size:12px">Practice strategies with play money — zero risk.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div></div>' +
+      (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Copilot Pro unlocks unlimited.'));
+    $('#bt-new').onclick = newBotSheet;
+    $('#bt-arena').onclick = openArena;
+    $('#bt-kill').onclick = function () { if (S.botRunner) { S.botRunner.killAll && S.botRunner.killAll('user'); toast('All bots stopped'); renderBotList(); } };
+    ensureBotRunner().then(renderBotList).catch(function () { $('#bt-list').innerHTML = '<div class="empty">Bots engine unavailable.</div>'; });
+  };
+  function ensureBotRunner() {
+    if (S.botRunner) return Promise.resolve(S.botRunner);
+    if (!window.AgentBotRunner) return Promise.reject(new Error('bot runner missing'));
+    return ensureAgent().then(function () {
+      var a = S.agent;
+      S.botRunner = AgentBotRunner.create({ policy: a.policy, tools: a.tools, audit: a.audit, ctx: a.ctx, pnl: a.pnl, discovery: a.ctx.discovery || null, mainnetEnabled: false, persist: Store, wallet: 'web', channel: 'web' });
+      return S.botRunner;
+    });
+  }
+  function renderBotList() {
+    var runner = S.botRunner, box = $('#bt-list'); if (!box) return;
+    var bots = []; try { bots = (runner.store && runner.store.all && runner.store.all()) || []; } catch (_) {}
+    try { var agg = runner.aggregate && runner.aggregate(); if (agg) $('#bt-dash').innerHTML = '<div class="statline" style="margin-bottom:12px"><div class="stat"><div class="n num">' + fmtUsd(agg.realizedUsd || 0) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num">' + (agg.activeDeals || 0) + '</div><div class="l">active deals</div></div><div class="stat"><div class="n num">' + fmtUsd(agg.allocationUsd || 0) + '</div><div class="l">allocation</div></div></div>'; } catch (_) {}
+    if (!bots.length) { box.innerHTML = '<div class="empty">No bots yet. Create one — it starts in paper mode.</div>'; return; }
+    box.innerHTML = bots.map(function (b) {
+      var live = b.mode === 'live';
+      return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '▦' : b.type === 'dca' ? '∿' : '◆') + '</span>' +
+        '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) + ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
+        '<span class="row" style="margin-left:auto;gap:6px">' +
+        '<button class="btn sm ghost" data-act="toggle" data-id="' + esc(b.id) + '">' + (b.enabled ? 'Pause' : 'Start') + '</button>' +
+        (S.pro ? '<button class="btn sm" data-act="live" data-id="' + esc(b.id) + '">' + (live ? '●' : 'Go live') + '</button>' : '') +
+        '<button class="btn sm ghost" data-act="rm" data-id="' + esc(b.id) + '">✕</button></span></div>';
+    }).join('');
+    $$('#bt-list [data-act]').forEach(function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute('data-id'), act = btn.getAttribute('data-act'), runner = S.botRunner;
+        if (act === 'toggle') { var b = (runner.store.all() || []).filter(function (x) { return x.id === id; })[0]; (b && b.enabled ? runner.pause(id) : runner.enablePaper(id)); setTimeout(renderBotList, 150); }
+        else if (act === 'rm') { runner.remove(id); setTimeout(renderBotList, 100); }
+        else if (act === 'live') { armLiveSheet(id); }
+      };
+    });
+  }
+  function newBotSheet() {
+    openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">✕</button></div>' +
+      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option><option value="signal">Signal</option></select></div>' +
+      '<div class="field"><label>Pair</label><input id="nb-pair" value="BLOCK/USDC"></div>' +
+      '<div class="field"><label>Name</label><input id="nb-name" placeholder="My DCA bot"></div>' +
+      '<div class="banner info"><span>📝</span><div>Starts in <b>paper mode</b> (simulated). You can arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
+      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">Create (paper)</button>');
+    $('#nb-x').onclick = closeSheet;
+    $('#nb-go').onclick = function () {
+      var type = $('#nb-type').value, pair = ($('#nb-pair').value || 'BLOCK/USDC').trim(), name = ($('#nb-name').value || '').trim() || (type.toUpperCase() + ' ' + pair);
+      ensureBotRunner().then(function (runner) {
+        var bots = (runner.store.all && runner.store.all()) || [];
+        if (!isPro() && bots.length >= 1) { closeSheet(); toast('Free plan allows 1 bot — upgrade for more', 'bad'); location.hash = '#pro'; return; }
+        try { runner.add({ name: name, type: type, universe: { pairs: [pair] }, config: {}, mode: 'paper', network: 'testnet' }); toast('Bot created (paper)', 'good'); }
+        catch (e) { toast('Create failed: ' + (e.message || e), 'bad'); }
+        closeSheet(); renderBotList();
+      }).catch(function () { toast('Bots engine unavailable', 'bad'); });
+    };
+  }
+  function armLiveSheet(id) {
+    if (!isPro()) { toast('Live trading is a Pro feature', 'bad'); location.hash = '#pro'; return; }
+    openSheet('<div class="spread"><h2>Arm live trading</h2><button class="btn sm ghost" id="al-x">✕</button></div>' +
+      '<div class="banner warn"><span>⚠</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
+      '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"></div>' +
+      '<button class="btn primary wide" id="al-go">Arm live</button>');
+    $('#al-x').onclick = closeSheet;
+    $('#al-go').onclick = function () {
+      var alloc = Number($('#al-alloc').value); if (!(alloc > 0)) { toast('Set an allocation cap', 'bad'); return; }
+      S.botRunner.armLive(id, { allocationUsd: alloc }).then(function () { toast('Bot armed live (within $' + alloc + ')', 'good'); closeSheet(); renderBotList(); }).catch(function (e) { toast('Arm failed: ' + (e.message || e), 'bad'); });
+    };
+  }
+  function openArena() {
+    openSheet('<div class="spread"><h2>🏟 Arena</h2><button class="btn sm ghost" id="ar-x">✕</button></div>' +
+      '<p class="muted" style="margin:8px 0">Backtest a strategy on play-money scenarios — bull, crab, bear, crash, pump. No funds, no gate, pure practice.</p>' +
+      '<div class="field"><label>Strategy</label><select id="ar-type"><option value="dca">DCA</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option></select></div>' +
+      '<div class="field"><label>Scenario</label><select id="ar-sc"><option>bull</option><option>crab</option><option>bear</option><option>crash</option><option>pump</option></select></div>' +
+      '<button class="btn primary wide" id="ar-go">Run scenario</button><div id="ar-out" class="muted" style="margin-top:12px;font-size:13px"></div>');
+    $('#ar-x').onclick = closeSheet;
+    $('#ar-go').onclick = function () {
+      if (!window.AgentArena) { $('#ar-out').textContent = 'Arena module not loaded.'; return; }
+      $('#ar-out').textContent = 'Arena is ready — vectors load from the live scenario set. Use the bots tab to deploy a practiced strategy as a paper bot.';
+    };
+  }
+
+  /* ---------------- PRO ---------------- */
+  VIEWS.pro = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>★ Blockle Pro &amp; Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free') + '</span></div>' +
+      '<p class="muted">Your plan is checked live against your Blockle account — no key access, ever. Upgrade unlocks live trading, a bigger agent brain, pro strategies and analytics across every Blockle wallet and the dashboard.</p>' +
+      '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Pro / Copilot</th><th class="c">Copilot Pro</th></tr></thead><tbody>' +
+      featRow('Non-custodial wallet · all chains', '✓', '✓', '✓') +
+      featRow('DEX swap · bridge · USDB', '✓', '✓', '✓') +
+      featRow('Agent command bar', 'anon brain', 'signed · bigger budget', 'signed · biggest') +
+      featRow('Trading bots', 'paper · 1', 'live · 3', 'live · ∞') +
+      featRow('Pro strategy templates', '—', '✓', '✓') +
+      featRow('Portfolio analytics & P&L history', 'summary', '✓', '✓') +
+      featRow('Price alerts · CSV export · custom RPC', '—', '✓', '✓') +
+      '</tbody></table></div></div>' +
+      '<div id="pro-plans" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:14px"></div>';
+    fetch(ACCOUNTS + '/plans', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      var box = $('#pro-plans');
+      if (!S.user) { box.innerHTML = '<div class="card"><b>Sign in to upgrade</b><p class="muted" style="font-size:13px">Your Blockle account carries your plan across every wallet.</p><a class="btn primary wide" href="/account/login?next=/wallet%23pro">Sign in / create account</a></div>'; return; }
+      var plans = (j && j.plans) || [];
+      if (!plans.length) { box.innerHTML = '<div class="card"><b>Paid plans are coming soon.</b><p class="muted" style="font-size:13px">Billing isn\'t enabled on this deployment yet. Everything in Free works today.</p></div>'; return; }
+      box.innerHTML = plans.map(function (p) {
+        var feat = p.tier === 'copilot_pro';
+        return '<div class="planbox ' + (feat ? 'feat' : '') + '"><b>' + esc(p.name) + '</b><div class="price">' + esc((p.ccy || '$') === 'USD' ? '$' + (p.price || '') : (p.price || '')) + '<span class="dim" style="font-size:14px;font-weight:500">/mo</span></div>' +
+          '<button class="btn primary wide" data-tier="' + esc(p.tier) + '">' + (S.tier === p.tier ? 'Current plan' : 'Choose ' + esc(p.name)) + '</button></div>';
+      }).join('');
+      $$('#pro-plans [data-tier]').forEach(function (b) {
+        b.onclick = function () {
+          var tier = b.getAttribute('data-tier'); if (S.tier === tier) return;
+          fetch(ACCOUNTS + '/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ tier: tier }) }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res && res.approveUrl) location.href = res.approveUrl; else toast((res && res.error) || 'Could not start checkout', 'bad');
+          }).catch(function () { toast('Checkout unavailable', 'bad'); });
+        };
+      });
+    }).catch(function () { $('#pro-plans').innerHTML = '<div class="card"><span class="muted">Plan info unavailable right now.</span></div>'; });
+  };
+  function featRow(label, f, p, cp) { return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + f + '</td><td class="c good">' + p + '</td><td class="c good">' + cp + '</td></tr>'; }
+
+  /* ---------------- SETTINGS ---------------- */
+  VIEWS.settings = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Settings</h2></div>' +
+      '<div class="list">' +
+      settingRow('Account', S.user ? esc(S.user.email || S.user.username || 'signed in') : 'Not signed in', S.user ? '' : '<a class="btn sm" href="/account/login?next=/wallet">Sign in</a>') +
+      settingRow('Export wallet file', 'Encrypted backup for another device', '<button class="btn sm" id="set-export">Export</button>') +
+      settingRow('WalletConnect', 'Connect to a dApp by pasting a WC URI', '<button class="btn sm" id="set-wc">Connect</button>') +
+      settingRow('Theme', 'Light / dark follows your system by default', '<button class="btn sm" id="set-theme">Toggle</button>') +
+      settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
+      '</div></div>' +
+      '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
+      '<div class="banner info" style="margin-top:14px"><span>🔐</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
+    $('#set-export') && ($('#set-export').onclick = offerBackup);
+    $('#set-theme') && ($('#set-theme').onclick = function () { var cur = document.documentElement.getAttribute('data-theme'); themeApply(cur === 'light' ? 'dark' : 'light'); });
+    $('#set-lock') && ($('#set-lock').onclick = lock);
+    $('#set-wc') && ($('#set-wc').onclick = wcSheet);
+  };
+  function settingRow(title, sub, action) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(title) + '</b><span class="dim" style="font-size:12px">' + sub + '</span></span><span style="margin-left:auto">' + action + '</span></div>'; }
+  function wcSheet() {
+    openSheet('<div class="spread"><h2>WalletConnect</h2><button class="btn sm ghost" id="wc-x">✕</button></div>' +
+      '<p class="muted" style="margin:8px 0">Paste a WalletConnect v2 URI from a dApp. Sessions and signature requests pass the same security gate.</p>' +
+      '<div class="field"><label>WC URI</label><input id="wc-uri" placeholder="wc:..."></div><button class="btn primary wide" id="wc-go">Connect</button>');
+    $('#wc-x').onclick = closeSheet;
+    $('#wc-go').onclick = function () {
+      var uri = ($('#wc-uri').value || '').trim(); if (uri.indexOf('wc:') !== 0) { toast('Paste a valid wc: URI', 'bad'); return; }
+      try { WalletConnect.parsePairingUri(uri); toast('Pairing… approve the session when prompted', 'good'); closeSheet(); }
+      catch (e) { toast('Invalid WC URI', 'bad'); }
+    };
+  }
+
+  /* ---------------- go ---------------- */
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();

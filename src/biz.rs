@@ -837,7 +837,13 @@ fn route(
                 None => ("404 Not Found", "text/html; charset=utf-8", page_notfound("pool", name).into_bytes()),
             }
         }
-        "/wallet" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
+        // The non-custodial web wallet SPA (web/wallet/). `/wallet` serves the shell;
+        // `/wallet/<asset>` serves static files (MIME by extension); unknown sub-paths
+        // fall back to the shell for the client router. See docs/WEB-WALLET.md.
+        p if p == "/wallet" || p.starts_with("/wallet/") => serve_wallet(p),
+        // The former `/wallet` download page now lives at `/download`.
+        "/download" => ("200 OK", "text/html; charset=utf-8", page_wallet().into_bytes()),
+        // (`/copilot` is served by page_copilot() above — the existing upsell page.)
         "/studio" => ("200 OK", "text/html; charset=utf-8", page_studio().into_bytes()),
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
         // Agent-facing docs: SDK + MCP install, the buy→launch→pool→trade→sell
@@ -3044,6 +3050,50 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
     match std::fs::read(format!("/opt/blockle/web/{name}")) {
         Ok(b) => ("200 OK", ct, b),
         Err(_) => ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec()),
+    }
+}
+
+/// Content-Type from a file extension — the web wallet SPA ships many asset types
+/// and (unlike every other page here) is served through one prefix handler rather
+/// than an explicit arm per file.
+fn mime_for(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "webmanifest" => "application/manifest+json",
+        "wasm" => "application/wasm",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "map" => "application/json; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Serve the web-wallet SPA + its assets from /opt/blockle/web/wallet/.
+///   /wallet            -> wallet.html (shell)
+///   /wallet/<file>     -> the file, MIME by extension
+///   /wallet/<route>    -> wallet.html (client-router fallback; no dot in the name)
+/// `..` is rejected (no path traversal out of the wallet dir).
+fn serve_wallet(path: &str) -> (&'static str, &'static str, Vec<u8>) {
+    let rest = path.strip_prefix("/wallet").unwrap_or("").trim_start_matches('/');
+    if rest.contains("..") {
+        return ("400 Bad Request", "text/plain; charset=utf-8", b"bad path".to_vec());
+    }
+    if rest.is_empty() {
+        return serve_web_file("wallet/wallet.html", "text/html; charset=utf-8");
+    }
+    match std::fs::read(format!("/opt/blockle/web/wallet/{rest}")) {
+        Ok(b) => ("200 OK", mime_for(rest), b),
+        // A dotted name that is missing is a real 404 (asset); a bare path is a client route.
+        Err(_) if rest.contains('.') => {
+            ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec())
+        }
+        Err(_) => serve_web_file("wallet/wallet.html", "text/html; charset=utf-8"),
     }
 }
 

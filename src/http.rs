@@ -153,9 +153,12 @@ pub fn read_request(stream: &mut TcpStream) -> Result<Request> {
 
 /// Write a response with a body.
 pub fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) {
+    // Baseline security headers on every response: nosniff stops MIME-sniffing an asset
+    // into executable HTML; SAMEORIGIN blocks cross-origin framing/clickjacking (matters
+    // most for the key-holding /wallet page). The wallet page adds a strict CSP via meta.
     let _ = write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: SAMEORIGIN\r\nConnection: close\r\n\r\n",
         body.len()
     );
     let _ = stream.write_all(body);
