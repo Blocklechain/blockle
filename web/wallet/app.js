@@ -8,6 +8,7 @@
   var GATEWAY = 'https://agent.blockle.org';
   var ACCOUNTS = '/account/api';
   var COIN = 100000000;
+  var BLOCKLE_MARK = 'blockle-mark.png'; // the real Blockle logo mark (served under /wallet/)
 
   /* ---------------- tiny DOM/util helpers ---------------- */
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -114,6 +115,38 @@
   };
   function isPro() { return S.tier && S.tier !== 'free'; }
 
+  /* Gas sponsorship: paid users never need to hold BLOCK to swap. If the active BLOCK
+   * address lacks gas, a paid plan drips a little BLOCK from the operator (non-custodial —
+   * the user still signs their own swap). Returns true when there's enough gas to proceed. */
+  var GAS_NEED_BASE = 3000000; // ~0.03 BLOCK: a swap's gas + fee
+  function blockSpendableBase(addr) { return Chain.utxos(addr).then(function (u) { return Number((u && u.spendable) || 0); }).catch(function () { return 0; }); }
+  function ensureGas() {
+    if (S.chain !== 'block') return Promise.resolve(true); // only BLOCK ops need BLOCK gas
+    var addr = Wallet.address;
+    return blockSpendableBase(addr).then(function (have) {
+      if (have >= GAS_NEED_BASE) return true;
+      if (!isPro()) { toast('A little BLOCK is needed for gas — upgrade to Pro for sponsored gas', 'bad'); return false; }
+      toast('Sponsoring gas…');
+      return fetch('/api/gas/sponsor', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ address: addr }) })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res || (!res.ok && !res.skipped)) { toast((res && res.error) || 'Gas sponsorship unavailable', 'bad'); return false; }
+          if (res.skipped) return true;
+          // wait for the sponsored gas to confirm
+          var tries = 0;
+          return (function poll() {
+            return new Promise(function (r2) { setTimeout(r2, 4000); }).then(function () {
+              return blockSpendableBase(addr).then(function (now) {
+                if (now >= GAS_NEED_BASE) { toast('Gas received — continuing', 'good'); return true; }
+                if (++tries >= 30) { toast('Gas sent; waiting on confirmation — try again shortly', 'bad'); return false; }
+                return poll();
+              });
+            });
+          })();
+        }).catch(function (e) { toast('Gas sponsorship failed: ' + (e.message || e), 'bad'); return false; });
+    });
+  }
+
   /* ---------------- boot ---------------- */
   function themeApply(t) { if (t) document.documentElement.setAttribute('data-theme', t); try { localStorage.setItem('blk:wallet:theme', t || ''); } catch (_) {} }
   (function initTheme() { try { var t = localStorage.getItem('blk:wallet:theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (_) {} })();
@@ -155,7 +188,7 @@
   function gateShell(inner) {
     $('#overlay').innerHTML =
       '<div class="onbox card">' +
-      '<div class="brand" style="font-size:20px;margin-bottom:6px"><span class="logo">B</span><span>Blockle Wallet</span></div>' +
+      '<div class="brand" style="font-size:20px;margin-bottom:6px;gap:10px"><img src="' + BLOCKLE_MARK + '" alt="Blockle" style="width:30px;height:30px;border-radius:8px;object-fit:cover"><span>Blockle Wallet</span></div>' +
       inner + '</div>';
   }
   function renderUnlock() {
@@ -456,6 +489,7 @@
     }).catch(function () { $('#pf-list').innerHTML = '<div class="empty">Could not load balances right now.</div>'; });
   }
   function assetRow(sym, chain, amt, dec, usd, logo, cid, name) {
+    if (!logo && String(sym).toUpperCase() === 'BLOCK') logo = BLOCKLE_MARK; // native BLOCK coin -> real logo
     var ico = logo ? '<img src="' + esc(logo) + '" alt="">' : '';
     return '<div class="li li-asset" role="button" tabindex="0" data-chain="' + esc(chain) + '" data-cid="' + esc(cid || 'native') + '" data-sym="' + esc(sym) + '">' +
       '<span class="ico">' + esc(sym.slice(0, 1)) + ico + '</span>' +
@@ -706,6 +740,7 @@
       (async function () {
         var ok = await confirmSheet({ title: 'Swap on native AMM', lines: [['Token', shortAddr(quoted.token)], ['Side', quoted.side], ['Amount in', fmtAmt(quoted.amountIn / COIN)], ['Min out', fmtAmt(Number(quoted.minOut) / COIN)]], okText: 'Sign & swap' });
         if (!ok) return;
+        if (!(await ensureGas())) return; // sponsor BLOCK gas for paid users with no BLOCK
         toast('Signing swap…');
         try { var r = await Wiring.amm.swap({ token: quoted.token, side: quoted.side, amountIn: quoted.amountIn, minOut: quoted.minOut }); toast('Swap sent · ' + String((r && (r.txid || r)) || '').slice(0, 12) + '…', 'good'); location.hash = '#activity'; }
         catch (e) { toast('Swap failed: ' + (e.message || e), 'bad'); }
@@ -994,6 +1029,7 @@
       featRow('Trading bots', 'paper · 1', 'live · 3', 'live · ∞') +
       featRow('Pro strategy templates', '—', '✓', '✓') +
       featRow('Portfolio analytics & P&L history', 'summary', '✓', '✓') +
+      featRow('Sponsored gas — swap with no BLOCK', '—', '✓', '✓') +
       featRow('Price alerts · CSV export · custom RPC', '—', '✓', '✓') +
       '</tbody></table></div></div>' +
       '<div id="pro-plans" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:14px"></div>';

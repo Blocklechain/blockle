@@ -1,0 +1,24 @@
+[Unit]
+Description=Blockle gas sponsor (drips BLOCK gas to paid users so they never need BLOCK to swap)
+After=network-online.target blockle-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Draws BLOCK gas from the operator pool hot wallet; reads the accounts service to
+# verify the caller is on a paid tier. Loopback only — nginx proxies /api/gas/.
+Environment=GAS_PORT=8802
+Environment=GAS_CHAIN_API=http://127.0.0.1:8445
+Environment=GAS_ACCOUNTS_URL=http://127.0.0.1:8930
+Environment=GAS_HOT_WALLET=/var/lib/blockle-pool/wallet.json
+Environment=GAS_WASM_NODE=/opt/blockle/services/gas-sponsor/vendor/blockle-wasm-node
+Environment=GAS_STATE=/var/lib/blockle-gas-sponsor/state.json
+ExecStart=/usr/bin/node /opt/blockle/services/gas-sponsor/index.js
+Restart=on-failure
+RestartSec=3
+StateDirectory=blockle-gas-sponsor
+# the hot wallet file is root-only (chmod 600); run as root like the other signers
+User=root
+
+[Install]
+WantedBy=multi-user.target
