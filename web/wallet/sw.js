@@ -3,10 +3,12 @@
  * cache-first under a versioned cache. An installed wallet therefore runs PINNED code,
  * not a fresh download per visit — the code-integrity guarantee from docs/WEB-WALLET.md.
  * Bumping CACHE invalidates everything and triggers the "update available" prompt. */
-var CACHE = 'blk-wallet-v4';
+var CACHE = 'blk-wallet-v7';
 var ASSETS = [
   "./",
   "wallet.html",
+  "blockle-mark.png",
+  "blockle-logo.png",
   "app.js",
   "manifest.webmanifest",
   "blockle_wasm_bg.wasm",

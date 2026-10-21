@@ -11,6 +11,7 @@
   "theme_color": "#0b0b14",
   "categories": ["finance", "productivity"],
   "icons": [
-    { "src": "vendor/world-token.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "blockle-mark.png", "sizes": "128x128", "type": "image/png", "purpose": "any maskable" },
+    { "src": "blockle-logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }
