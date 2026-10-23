@@ -102,6 +102,7 @@
           <button class="tile" data-go="receive"><span class="t-ic">↓</span>Receive</button>
           <button class="tile" data-go="send"><span class="t-ic">↑</span>Send</button>
           <button class="tile" data-go="swap"><span class="t-ic">⇄</span>Swap</button>
+          <button class="tile" data-go="trade"><span class="t-ic">⇅</span>Trade</button>
           <button class="tile" data-go="exchange"><span class="t-ic">↹</span>Exchange</button>
           <button class="tile" data-go="accounts"><span class="t-ic">▦</span>Accounts</button>
           <button class="tile" data-go="agent"><span class="t-ic">✦</span>AI Agent</button>
@@ -180,6 +181,32 @@
       </section>
 
       <!-- USDB (Blockle USD stablecoin) -->
+      <section class="screen" data-screen="trade" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Trade BLOCK</span></header>
+        <div class="pad">
+          <div class="balance-card" style="margin-bottom:12px">
+            <div class="bc-label">BLOCK price <span id="amm-mode" class="pill"></span></div>
+            <div class="bc-amount"><span id="amm-price">—</span></div>
+            <div class="bc-label" id="amm-sub" style="margin-top:4px"></div>
+          </div>
+          <div style="display:flex;gap:8px;margin:4px 0 12px">
+            <button class="btn" id="amm-buy" style="flex:1">Buy BLOCK</button>
+            <button class="btn ghost" id="amm-sell" style="flex:1">Sell BLOCK</button>
+          </div>
+          <label class="field"><span id="amm-amt-l">You pay</span>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="amm-amt" placeholder="0.00" inputmode="decimal" style="flex:1" />
+              <select id="amm-cur" class="mono" style="min-width:92px;background:#181b21;border:1px solid #2e323c;border-radius:10px;color:#dfe6f5;padding:10px"></select>
+            </div>
+          </label>
+          <div class="notice" id="amm-quote">Enter an amount to see a quote.</div>
+          <div class="section-h" style="padding-left:0;margin-top:14px">Pairs &amp; liquidity</div>
+          <div id="amm-pairs" class="list"></div>
+          <div class="err" id="amm-err"></div>
+        </div>
+        <div class="stack bottom"><button class="btn primary" id="amm-go" disabled>Enter an amount</button></div>
+      </section>
+
       <section class="screen" data-screen="usdb" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Blockle USD · USDB</span></header>
         <div class="pad">

@@ -5,6 +5,7 @@ import '../theme.dart';
 import 'wallet_tab.dart';
 import 'accounts_screen.dart';
 import 'exchange_screen.dart';
+import 'trade_screen.dart';
 import 'agent_screen.dart';
 import 'bots_screen.dart';
 import 'browser_tab.dart';
@@ -18,6 +19,7 @@ class HomeScreen extends StatelessWidget {
     WalletTab(),
     AccountsScreen(),
     ExchangeScreen(),
+    TradeScreen(),
     AgentScreen(),
     BotsScreen(),
     BrowserTab(),
@@ -54,6 +56,10 @@ class HomeScreen extends StatelessWidget {
                 icon: Icon(Icons.candlestick_chart_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.candlestick_chart, color: Bk.accent),
                 label: 'Exchange'),
+            NavigationDestination(
+                icon: Icon(Icons.swap_horiz_outlined, color: Bk.muted),
+                selectedIcon: Icon(Icons.swap_horiz, color: Bk.accent),
+                label: 'Trade'),
             NavigationDestination(
                 icon: Icon(Icons.smart_toy_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.smart_toy, color: Bk.accent),

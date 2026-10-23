@@ -1,0 +1,16 @@
+{
+  "name": "@blockle/super-amm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Custodial oracle-priced single-shared-price BLOCK AMM (model B). Replaces the exchange; wallets trade against it.",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js", "test": "node test/amm.test.js && node test/intents.test.js" },
+  "dependencies": {
+    "@solana/web3.js": "^1",
+    "ethers": "^6",
+    "bitcoinjs-lib": "^6",
+    "ecpair": "^2",
+    "tiny-secp256k1": "^2"
+  }
+}

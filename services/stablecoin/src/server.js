@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
-import * as mt from './modern_treasury.js';
+import * as mt from './rail.js'; // rail-agnostic: USDB_RAIL selects modern_treasury (default) | arival
 import * as plaid from './plaid.js';
 
 const require = createRequire(import.meta.url);
@@ -118,8 +118,8 @@ const server = http.createServer(async (req, res) => {
       const l = load(); const supply = await onchainSupply(); const k = loadIssuer();
       return j(res, 200, {
         asset: 'USDB', name: 'Blockle USD', peg: 'USD', decimals: DECIMALS, contract: CONTRACT || null,
-        rail: 'modern_treasury', mtEnv: mt.env(), mtConfigured: mt.configured(),
-        fee: { flatBps: FEE_BPS, pct: FEE_BPS / 100, appliesTo: 'both ramps', note: '3.7% on buy and redeem; USD moves via Modern Treasury ACH' },
+        rail: mt.name, mtEnv: mt.env(), mtConfigured: mt.configured(),
+        fee: { flatBps: FEE_BPS, pct: FEE_BPS / 100, appliesTo: 'both ramps', note: '3.7% on buy and redeem; USD moves via ' + mt.name + ' ACH' },
         exampleBuy100: buyQuote(100), exampleRedeem100: redeemQuote(100),
         perTxCapUsd: PER_TX_CAP_USD, dailyCapUsd: DAILY_CAP_USD,
         enabled: ENABLED, issuerReady: !!k, kyc: { configured: !!KYC_URL, requiredAtVolumeUsd: KYC_THRESHOLD_USD, requiredNow: l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL },
@@ -210,6 +210,50 @@ const server = http.createServer(async (req, res) => {
         return j(res, 200, { ok: true, action: 'sign-redeem', contract: CONTRACT, payoutRef: ref, amountBase: Math.round(usd * UNIT), amountUsdb: usd, estPayoutUsd: quote.payoutUsd, feeUsd: quote.feeUsd, note: 'Sign redeem(payoutRef, amountBase) in your wallet; USD is ACH-credited to your bank once the burn confirms.' });
       }
     }
+    // Per-holder USDB balance (so the demo can poll for "arrived").
+    if (req.method === 'GET' && url.pathname === '/api/usdb/balance') {
+      const holder = (url.searchParams.get('holder') || '').trim();
+      if (!/^block1[0-9a-z]{20,}$/.test(holder)) return j(res, 400, { error: 'holder (block1…) required' });
+      if (!CONTRACT) return j(res, 503, { error: 'contract not configured' });
+      try {
+        const t = await nodeRpc('tokeninfo', [{ contract: CONTRACT, holder }]);
+        const base = (t && (t.holderBalance != null ? t.holderBalance : t.balance)) || 0;
+        return j(res, 200, { holder, balanceBase: String(base), balance: Number(base) / UNIT });
+      } catch (e) { return j(res, 502, { error: e.message }); }
+    }
+
+    // DEMO FAUCET — gated to USDB_DEMO_FAUCET=1 (demo/sandbox box only). Mints a small,
+    // capped amount of TEST USDB to a recipient and returns immediately (the caller
+    // polls /balance to show loading -> confirmed). NOT the production buy path; the
+    // settlement-gated buy above stays dry-run. Bounded by per-send + daily caps.
+    if (req.method === 'POST' && url.pathname === '/api/usdb/demo-mint') {
+      let raw = ''; for await (const c of req) raw += c;
+      let b = {}; try { b = JSON.parse(raw || '{}'); } catch { return j(res, 400, { error: 'bad json' }); }
+      if ((process.env.USDB_DEMO_FAUCET || '') !== '1') return j(res, 403, { error: 'demo faucet disabled' });
+      const to = String(b.recipient || b.to || '').trim();
+      if (!/^block1[0-9a-z]{20,}$/.test(to)) return j(res, 400, { error: 'recipient (block1…) required' });
+      const k = loadIssuer(); if (!k) return j(res, 503, { error: 'issuer signer not configured' });
+      if (!CONTRACT) return j(res, 503, { error: 'contract not configured' });
+      const CAP = Number(process.env.USDB_DEMO_CAP || '25');
+      let amt = Number(b.amountUsdb || b.amount || 10); if (!(amt > 0)) amt = 10; amt = Math.min(amt, CAP);
+      const l = load(); if (l.day !== today()) { l.day = today(); l.dayUsd = 0; l.demoUsd = 0; } l.demoUsd = l.demoUsd || 0;
+      const DAYCAP = Number(process.env.USDB_DEMO_DAY_CAP || '500');
+      if (l.demoUsd + amt > DAYCAP) return j(res, 429, { error: 'demo faucet daily cap reached' });
+      try {
+        async function usdbBase(addr) { try { const t = await nodeRpc('tokeninfo', [{ contract: CONTRACT, holder: addr }]); return BigInt((t && (t.holderBalance != null ? t.holderBalance : t.balance)) || 0); } catch { return -1n; } }
+        const base = Math.round(amt * UNIT);
+        const before = await usdbBase(to);
+        const built = JSON.parse(wasm.build_stablecoin_mint(k.secretKey, k.publicKey, JSON.stringify(await issuerUtxos()), CONTRACT, to, BigInt(base), GAS_LIMIT, GAS_PRICE));
+        const sub = await nodeRpc('submitrawtransaction', [built.raw]); const txid = (sub && sub.txid) || built.txid;
+        l.demoUsd = round2(l.demoUsd + amt); save(l);
+        // Return immediately with the txid + the pre-mint balance + the target; the
+        // browser polls /api/usdb/balance until the balance reaches `targetBase` and
+        // only then shows "confirmed" (contract txs land on native-lane blocks, which
+        // can be several minutes apart — a server-side wait would time out).
+        return j(res, 200, { ok: true, demo: true, txid, amountUsdb: amt, beforeBase: before >= 0n ? String(before) : '0', targetBase: String((before >= 0n ? before : 0n) + BigInt(base)), contract: CONTRACT, to });
+      } catch (e) { return j(res, 502, { error: 'demo mint failed: ' + e.message }); }
+    }
+
     return j(res, 404, { error: 'not found' });
   } catch (e) { return j(res, 500, { error: (e && e.message) || String(e) }); }
 });

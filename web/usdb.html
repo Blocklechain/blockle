@@ -60,6 +60,11 @@
   .plaid:hover{border-color:var(--green)}
   .connected{margin-top:8px;font-size:13px;color:var(--good);background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px}
   .connected .chg{color:var(--muted);cursor:pointer;font-weight:600;text-decoration:underline}
+  .usdb-load{margin-top:14px;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--surface2);text-align:center}
+  .usdb-load .sp{width:34px;height:34px;margin:0 auto 10px;border:3px solid var(--line);border-top-color:var(--good);border-radius:50%;animation:usdbspin .8s linear infinite}
+  .usdb-load.done .sp{border:0;animation:none;font-size:30px;line-height:34px;color:var(--good)}
+  @keyframes usdbspin{to{transform:rotate(360deg)}}
+  .usdb-load .lb{font-weight:600}.usdb-load .sub{color:var(--muted);font-size:13px;margin-top:4px;word-break:break-all}
   .msg{margin-top:14px;font-size:13.5px;word-break:break-word;text-align:center}
   .ok{color:var(--good)} .bad{color:var(--bad)}
   .note{color:var(--muted);font-size:12px;margin-top:12px}
@@ -96,7 +101,8 @@
     <div class="break"></div>
     <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="bfee">—</span></div>
     <div class="stat"><span class="k">Total debited from your bank</span><span class="v" id="btot">—</span></div>
-    <label class="fld" for="baddr">Deliver USDB to your Blockle address</label>
+    <label class="fld" for="baddr">Deliver USDB to your Blockle wallet</label>
+<button class="plaid" id="bwallet" type="button" style="margin-bottom:8px">🔌 Connect Blockle wallet</button>
     <input class="t" id="baddr" placeholder="block1…" spellcheck="false" autocomplete="off">
     <label class="fld">Your bank</label>
     <button class="plaid" id="bplaid" type="button">🔗 Connect bank with Plaid</button>
@@ -206,18 +212,48 @@ async function plaidConnect(which){
 $('bplaid').addEventListener('click',()=>plaidConnect('buy'));
 $('rplaid').addEventListener('click',()=>plaidConnect('redeem'));
 
+// Connect a Blockle wallet (browser extension) to auto-fill the delivery address.
+$('bwallet').addEventListener('click',async()=>{
+  const b=$('bwallet');const orig='🔌 Connect Blockle wallet';
+  if(!window.blockle){b.textContent='Blockle extension not found — paste an address below';setTimeout(()=>b.textContent=orig,3000);return;}
+  b.disabled=true;b.textContent='Connecting…';
+  try{
+    const acct=await window.blockle.connect();
+    const addr=(typeof acct==='string'?acct:(acct&&(acct.address||(Array.isArray(acct)&&acct[0]))))||window.blockle.selectedAddress;
+    if(addr){$('baddr').value=addr;b.textContent='✓ '+addr.slice(0,10)+'…'+addr.slice(-5);}else{b.textContent=orig;}
+  }catch(e){b.textContent=orig;}finally{b.disabled=false;}
+});
+
 $('buyBtn').addEventListener('click',async()=>{
   const m=$('buyMsg');m.textContent='';m.className='msg';
   const usd=Number($('bamt').value||0),addr=$('baddr').value.trim();
   if(!(usd>=1))return m.className='msg bad',m.textContent='Enter at least $1.';
-  if(!/^block1[0-9a-z]{20,}$/.test(addr))return m.className='msg bad',m.textContent='Enter your Blockle address (block1…).';
+  if(!/^block1[0-9a-z]{20,}$/.test(addr))return m.className='msg bad',m.textContent='Connect your wallet or paste a block1… address.';
   if(!ext.buy)return m.className='msg bad',m.textContent='Connect your bank with Plaid first.';
-  const btn=$('buyBtn');btn.disabled=true;btn.textContent='Submitting…';
+  const btn=$('buyBtn');btn.disabled=true;btn.textContent='Processing…';
+  // loading screen
+  m.className='msg';m.innerHTML='<div class="usdb-load" id="uload"><div class="sp"></div><div class="lb" id="ulb">Settling bank payment &amp; minting your test USDB…</div><div class="sub" id="usub">waiting for on-chain confirmation</div></div>';
   try{
-    const r=await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,recipient:addr,externalAccountId:ext.buy})});
+    // 1) the production buy call (dry-run in this demo) — shows the ACH/settlement step
+    await fetch(API+'/buy',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,recipient:addr,externalAccountId:ext.buy})}).catch(()=>{});
+    // 2) dispense test USDB (returns a txid immediately); then poll the on-chain
+    //    balance until it actually arrives — the spinner stays until it confirms.
+    const r=await fetch(API+'/demo-mint',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({recipient:addr,amountUsdb:usd})});
     const j=await r.json();if(j.error)throw new Error(j.error);
-    if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: you would receive <b>'+j.receiveUsdb+' USDB</b> for '+fmt(j.payUsd)+' (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
-    else{m.className='msg ok';m.innerHTML='✅ ACH debit initiated — <b>'+j.receiveUsdb+' USDB</b> will arrive at your wallet once it settles.';}
+    const target=BigInt(j.targetBase||'0');const t0=Date.now();
+    $('ulb').innerHTML='Minting <b>'+j.amountUsdb+' test USDB</b> — waiting for confirmation…';
+    $('usub').textContent='tx '+String(j.txid).slice(0,18)+'…';
+    let confirmed=false;
+    for(let i=0;i<240;i++){ // ~12 min
+      await new Promise(s=>setTimeout(s,3000));
+      try{const bj=await (await fetch(API+'/balance?holder='+encodeURIComponent(addr))).json();
+        if(bj&&bj.balanceBase!=null&&BigInt(bj.balanceBase)>=target&&target>0n){confirmed=true;var finalBal=bj.balance;break;}
+      }catch(e){}
+      $('usub').textContent='tx '+String(j.txid).slice(0,14)+'… · confirming ('+Math.round((Date.now()-t0)/1000)+'s)';
+    }
+    const el=$('uload');el.className='usdb-load done';
+    if(confirmed){el.querySelector('.sp').textContent='✓';$('ulb').innerHTML='Confirmed — <b>'+j.amountUsdb+' test USDB</b> delivered to your wallet';$('usub').innerHTML='balance '+finalBal+' USDB · tx '+String(j.txid).slice(0,18)+'…';}
+    else{el.querySelector('.sp').textContent='↻';$('ulb').innerHTML='Submitted — <b>'+j.amountUsdb+' test USDB</b> on the way';$('usub').textContent='tx '+String(j.txid).slice(0,18)+'… · still confirming';}
   }catch(e){m.className='msg bad';m.textContent=e.message||String(e);}
   finally{btn.disabled=false;btn.textContent='Buy USDB';}
 });

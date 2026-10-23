@@ -1371,6 +1371,149 @@
     }
   }
 
+  // ---- Trade (super-AMM: custodial shared-price BLOCK market) -------------
+  const AMM_API = 'https://blockle.org/api/amm';
+  let ammSide = 'buy', ammPairs = [], ammDec = { BLOCK: 8 }, ammWired = false, ammQTimer = null, ammLive = false, ammPollTimer = null;
+  function ammToBase(str, dec) {
+    str = String(str == null ? '' : str).trim();
+    if (!str || !/^\d*\.?\d*$/.test(str)) return '0';
+    const parts = str.split('.'); const whole = parts[0] || '0';
+    let frac = (parts[1] || '').slice(0, dec); while (frac.length < dec) frac += '0';
+    try { return (BigInt(whole) * (10n ** BigInt(dec)) + BigInt(frac || '0')).toString(); } catch (_) { return '0'; }
+  }
+  function ammWhole(base, dec) { try { return Number(BigInt(base)) / Math.pow(10, dec); } catch (_) { return Number(base) / Math.pow(10, dec); } }
+  function ammCur() { return $('#amm-cur').value; }
+  function ammCurDec() { return ammDec[ammCur()] || 8; }
+  function ammSetSide(s) {
+    ammSide = s;
+    $('#amm-buy').classList.toggle('ghost', s !== 'buy');
+    $('#amm-sell').classList.toggle('ghost', s !== 'sell');
+    $('#amm-amt-l').textContent = s === 'buy' ? 'You pay' : 'You sell (BLOCK)';
+    ammQuote();
+  }
+  async function tradeLoad() {
+    $('#amm-err').textContent = '';
+    if (!ammWired) {
+      ammWired = true;
+      $('#amm-buy').addEventListener('click', () => ammSetSide('buy'));
+      $('#amm-sell').addEventListener('click', () => ammSetSide('sell'));
+      $('#amm-amt').addEventListener('input', () => { clearTimeout(ammQTimer); ammQTimer = setTimeout(ammQuote, 220); });
+      $('#amm-cur').addEventListener('change', ammQuote);
+      $('#amm-go').addEventListener('click', ammExecute);
+    }
+    try {
+      const info = await fetch(AMM_API + '/info').then((r) => r.json());
+      ammLive = !!info.live;
+      ammPairs = info.pairs || [];
+      ammDec = { BLOCK: info.blockDecimals || 8 };
+      ammPairs.forEach((p) => (ammDec[p.sym] = p.decimals));
+      $('#amm-price').textContent = '$' + Number(info.priceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      $('#amm-mode').textContent = info.paper ? 'paper' : 'live';
+      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet · ' : '') + 'fee ' + (info.feeBps / 100) + '% · seed ' + info.seed.block.toLocaleString() + ' BLOCK @ $' + info.seed.priceUsd;
+      const sel = $('#amm-cur');
+      if (sel.options.length !== ammPairs.length) sel.innerHTML = ammPairs.map((p) => `<option value="${p.sym}">${p.sym} · ${p.network}</option>`).join('');
+      $('#amm-pairs').innerHTML = ammPairs.map((p) => {
+        const liq = p.hasLiquidity; const maxBlk = ammWhole(p.maxSellableBlockBase, info.blockDecimals || 8);
+        return `<div class="row"><div class="l"><b>${p.pair}</b><br><small>${p.network} · ${liq ? 'sellable ≤ ' + maxBlk.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK' : 'no liquidity yet — buys seed it'}</small></div><span class="pill">${liq ? 'live' : 'empty'}</span></div>`;
+      }).join('') || '<div class="muted">No pairs.</div>';
+      ammQuote();
+    } catch (_) { $('#amm-err').textContent = 'Market unavailable right now.'; }
+  }
+  async function ammQuote() {
+    const amtStr = $('#amm-amt').value, sym = ammCur(), side = ammSide;
+    const go = $('#amm-go'), q = $('#amm-quote');
+    $('#amm-err').textContent = '';
+    const inDec = side === 'buy' ? ammCurDec() : (ammDec.BLOCK || 8);
+    const amountBase = ammToBase(amtStr, inDec);
+    if (!amtStr || amountBase === '0') { q.textContent = 'Enter an amount to see a quote.'; go.disabled = true; go.textContent = 'Enter an amount'; return; }
+    q.textContent = 'Quoting…'; go.disabled = true;
+    try {
+      const r = await fetch(`${AMM_API}/quote?side=${side}&sym=${encodeURIComponent(sym)}&amount=${amountBase}`);
+      const d = await r.json();
+      if (!r.ok) { q.textContent = d.error || 'Quote failed'; return; }
+      const impact = Number(d.priceBeforeMicroUsd) > 0 ? (Number(d.priceAfterMicroUsd) - Number(d.priceBeforeMicroUsd)) / Number(d.priceBeforeMicroUsd) * 100 : 0;
+      if (side === 'buy') {
+        q.innerHTML = `Receive <b>${ammWhole(d.blockOut, ammDec.BLOCK || 8).toLocaleString(undefined, { maximumFractionDigits: 4 })} BLOCK</b> · fee $${(Number(d.feeUsd) / 1e6).toFixed(2)} · impact ${impact.toFixed(2)}%`;
+        go.disabled = false; go.textContent = 'Buy BLOCK';
+      } else {
+        const out = ammWhole(d.assetOut, ammCurDec());
+        if (!d.liquidity) {
+          const p = ammPairs.find((x) => x.sym === sym) || {}; const maxBlk = ammWhole(p.maxSellableBlockBase || '0', ammDec.BLOCK || 8);
+          q.innerHTML = `<small>Would receive ${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${sym}, but the ${sym} pair only has liquidity for ≤ ${maxBlk.toLocaleString(undefined, { maximumFractionDigits: 2 })} BLOCK.</small>`;
+          go.disabled = true; go.textContent = maxBlk > 0 ? 'Reduce amount' : 'No ' + sym + ' liquidity';
+        } else {
+          q.innerHTML = `Receive <b>${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${sym}</b> · fee $${(Number(d.feeUsd) / 1e6).toFixed(2)} · impact ${impact.toFixed(2)}%`;
+          go.disabled = false; go.textContent = 'Sell BLOCK';
+        }
+      }
+    } catch (_) { q.textContent = 'Quote unavailable'; }
+  }
+  async function ammExecute() {
+    if (ammLive) return ammLiveIntent();
+    const side = ammSide, sym = ammCur();
+    const inDec = side === 'buy' ? ammCurDec() : (ammDec.BLOCK || 8);
+    const amountBase = ammToBase($('#amm-amt').value, inDec);
+    if (amountBase === '0') return;
+    const go = $('#amm-go'); const label = go.textContent; go.disabled = true; go.textContent = 'Submitting…';
+    try {
+      const r = await fetch(AMM_API + '/trade', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ side, sym, amount: amountBase, to: Wallet.address }) });
+      const d = await r.json();
+      if (!r.ok) { toast(d.code === 'NO_LIQUIDITY' ? ('Not enough ' + sym + ' liquidity') : (d.error || 'Trade failed')); go.disabled = false; go.textContent = label; return; }
+      if (side === 'buy') toast('Bought ' + ammWhole(d.blockOut, ammDec.BLOCK || 8).toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK' + (d.paper ? ' (paper)' : ''));
+      else toast('Sold BLOCK for ' + ammWhole(d.assetOut, ammCurDec()).toLocaleString(undefined, { maximumFractionDigits: 4 }) + ' ' + sym + (d.paper ? ' (paper)' : ''));
+      $('#amm-amt').value = ''; go.textContent = label;
+      tradeLoad();
+    } catch (_) { toast('Trade unavailable'); go.disabled = false; go.textContent = label; }
+  }
+
+  // LIVE: create an intent -> show deposit instructions -> poll to settlement.
+  async function ammLiveIntent() {
+    const side = ammSide, sym = ammCur();
+    const pair = ammPairs.find((p) => p.sym === sym) || {};
+    const inDec = side === 'buy' ? ammCurDec() : (ammDec.BLOCK || 8);
+    const amountBase = ammToBase($('#amm-amt').value, inDec);
+    if (amountBase === '0') return;
+    const go = $('#amm-go'); const label = go.textContent; go.disabled = true; go.textContent = 'Creating order…';
+    let payoutAddress = Wallet.address; // buy -> your BLOCK address
+    if (side === 'sell') {
+      try { payoutAddress = window.Wiring ? await Wiring.accounts().then((a) => a.accountFor(pair.chain || 'block')).then((x) => x.address) : Wallet.address; }
+      catch (_) { payoutAddress = Wallet.address; }
+    }
+    try {
+      const r = await fetch(AMM_API + '/intent', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ side, sym, amount: amountBase, payoutAddress }) });
+      const it = await r.json();
+      go.textContent = label; go.disabled = false;
+      if (!r.ok) { toast(it.code === 'NO_LIQUIDITY' ? ('Not enough ' + sym + ' liquidity') : (it.error || 'Could not create order')); return; }
+      ammShowDeposit(it);
+    } catch (_) { toast('Order failed'); go.textContent = label; go.disabled = false; }
+  }
+  function ammShowDeposit(it) {
+    const depDec = ammDec[it.depositAsset] || 8, outDec = ammDec[it.payoutAsset] || 8;
+    const amt = ammWhole(it.amountInBase, depDec), out = ammWhole(it.quote.outBase, outDec);
+    $('#amm-quote').innerHTML = `Send exactly <b>${amt} ${it.depositAsset}</b> to:<br><code style="font-size:10px;word-break:break-all">${it.depositAddress}</code> <button class="btn" id="amm-dp-copy" style="padding:2px 8px">copy</button><br>You receive ≈ <b>${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${it.payoutAsset}</b><br><span id="amm-dp-status" class="muted">Waiting for your deposit…</span>`;
+    const cp = $('#amm-dp-copy'); if (cp) cp.onclick = () => { navigator.clipboard.writeText(it.depositAddress); toast('Copied'); };
+    ammPollIntent(it.id);
+  }
+  function ammPollIntent(id) {
+    clearInterval(ammPollTimer);
+    const tick = async () => {
+      try {
+        const it = await fetch(AMM_API + '/intent/' + encodeURIComponent(id)).then((r) => r.json());
+        const el = $('#amm-dp-status'); if (!el) { clearInterval(ammPollTimer); return; }
+        const outDec = ammDec[it.payoutAsset] || 8;
+        if (it.status === 'awaiting_deposit') el.textContent = 'Waiting for your deposit…';
+        else if (it.status === 'funded') el.textContent = 'Deposit detected — executing…';
+        else if (it.status === 'executed' || it.status === 'paid') el.textContent = 'Paying out…';
+        else if (it.status === 'settled') { el.innerHTML = `<b style="color:#4ADE80">✓ Done</b> — received ${ammWhole(it.executedOutBase || it.quote.outBase, outDec).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${it.payoutAsset}`; clearInterval(ammPollTimer); tradeLoad(); }
+        else if (it.status === 'refund') { el.innerHTML = '<b style="color:#f87171">Refunded</b> — ' + (it.error || 'price moved / no liquidity'); clearInterval(ammPollTimer); }
+        else if (it.status === 'expired') { el.textContent = 'Order expired — no deposit received.'; clearInterval(ammPollTimer); }
+      } catch (_) {}
+    };
+    tick(); ammPollTimer = setInterval(tick, 5000);
+  }
+
   async function route(name) {
     if (name === 'queue') {
       show('queue');
@@ -1401,6 +1544,11 @@
     if (name === 'swap') {
       show('swap');
       initSwap();
+      return;
+    }
+    if (name === 'trade') {
+      show('trade');
+      tradeLoad();
       return;
     }
     if (name === 'usdb') {
