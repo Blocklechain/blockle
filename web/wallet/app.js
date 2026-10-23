@@ -127,6 +127,15 @@
 
   function boot() {
     registerSW();
+    // One-time repair: an earlier build could persist a testnet `apiBase`, which makes
+    // BLOCK + token balances read the testnet chain and show 0 for a mainnet address.
+    // The web wallet has no legitimate testnet endpoint, so drop a stale testnet value.
+    try {
+      Store.get('apiBase').then(function (r) {
+        var ab = r && r.apiBase;
+        if (ab && Chain && ab === Chain.TESTNET_API) Store.set({ apiBase: Chain.DEFAULT_API });
+      }).catch(function () {});
+    } catch (_) {}
     // Hide broken images globally (replaces inline onerror= handlers so a strict CSP
     // with no 'unsafe-inline' can block injected inline event handlers).
     document.addEventListener('error', function (e) { var t = e.target; if (t && t.tagName === 'IMG') t.style.display = 'none'; }, true);
@@ -249,6 +258,7 @@
     { id: 'send', ic: 'send', label: 'Send' },
     { id: 'receive', ic: 'receive', label: 'Receive' },
     { id: 'swap', ic: 'swap', label: 'Swap' },
+    { id: 'trade', ic: 'buy', label: 'Trade' },
     { id: 'bridge', ic: 'bridge', label: 'Bridge' },
     { id: 'buy', ic: 'buy', label: 'Buy USDB' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
@@ -257,7 +267,7 @@
     { id: 'pro', ic: 'pro', label: 'Pro' },
     { id: 'settings', ic: 'settings', label: 'Settings' },
   ];
-  var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
+  var BOTNAV = ['portfolio', 'assets', 'trade', 'agent', 'bots'];
 
   /* ---------------- dApp connect bridge (popup) ----------------
    * When this wallet is opened as a popup with ?connect=<dappOrigin>, a dApp
@@ -413,6 +423,202 @@
 
   /* ================= VIEWS ================= */
   var VIEWS = {};
+
+  /* ---- Trade (super-AMM: custodial shared-price BLOCK market) ---- */
+  function ammApi(path, opts) {
+    return fetch('/api/amm' + path, opts).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; });
+    });
+  }
+  // decimal string -> BigInt base units (string), no float
+  function toBase(str, dec) {
+    str = String(str == null ? '' : str).trim();
+    if (!str || !/^\d*\.?\d*$/.test(str)) return '0';
+    var parts = str.split('.'); var whole = parts[0] || '0';
+    var frac = (parts[1] || '').slice(0, dec); while (frac.length < dec) frac += '0';
+    try { return (BigInt(whole) * (10n ** BigInt(dec)) + BigInt(frac || '0')).toString(); } catch (_) { return '0'; }
+  }
+  function baseToWhole(baseStr, dec) { try { return Number(BigInt(baseStr)) / Math.pow(10, dec); } catch (_) { return Number(baseStr) / Math.pow(10, dec); } }
+
+  VIEWS.trade = function (v) {
+    S.amm = { side: 'buy', pairs: [], dec: {}, info: null };
+    v.innerHTML =
+      '<div class="card"><div class="spread"><div><div class="dim">BLOCK price</div><div class="hero-bal num" id="amm-price">—</div></div>' +
+        '<span class="chip" id="amm-mode" style="align-self:flex-start">—</span></div>' +
+        '<div class="dim" id="amm-sub" style="font-size:12px;margin-top:4px"></div></div>' +
+      '<div class="card">' +
+        '<div class="wrap" style="margin-bottom:10px"><button class="btn sm primary" id="amm-t-buy" style="flex:1">Buy BLOCK</button><button class="btn sm ghost" id="amm-t-sell" style="flex:1">Sell BLOCK</button></div>' +
+        '<div class="field"><label id="amm-amt-l">You pay</label><div class="row" style="gap:8px">' +
+          '<input id="amm-amt" inputmode="decimal" placeholder="0.0" style="flex:1">' +
+          '<select id="amm-cur" style="min-width:96px"></select></div></div>' +
+        '<div id="amm-quote" class="muted" style="font-size:13px;min-height:20px;margin:4px 0"></div>' +
+        '<button class="btn primary" id="amm-go" disabled style="width:100%">Enter an amount</button>' +
+        '<div class="dim" id="amm-note" style="font-size:12px;margin-top:8px"></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Pairs &amp; liquidity</h2></div><div id="amm-pairs" class="list"><div class="empty">Loading…</div></div></div>';
+
+    function setSide(side) {
+      S.amm.side = side;
+      $('#amm-t-buy').className = 'btn sm ' + (side === 'buy' ? 'primary' : 'ghost');
+      $('#amm-t-sell').className = 'btn sm ' + (side === 'sell' ? 'primary' : 'ghost');
+      $('#amm-amt-l').textContent = side === 'buy' ? 'You pay' : 'You sell (BLOCK)';
+      refillCurrencies(); quote();
+    }
+    function refillCurrencies() {
+      // buy: pick the currency you pay with; sell: pick the currency you receive
+      var sel = $('#amm-cur');
+      sel.innerHTML = S.amm.pairs.map(function (p) { return '<option value="' + p.sym + '">' + p.sym + ' · ' + p.network + '</option>'; }).join('');
+    }
+    function curSym() { return $('#amm-cur').value; }
+    function curDec() { return S.amm.dec[curSym()] || 8; }
+
+    function renderInfo(info) {
+      S.amm.info = info;
+      S.amm.live = !!info.live;
+      S.amm.pairs = info.pairs || [];
+      S.amm.dec = { BLOCK: info.blockDecimals || 8 };
+      S.amm.pairs.forEach(function (p) { S.amm.dec[p.sym] = p.decimals; });
+      $('#amm-price').textContent = '$' + Number(info.priceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      $('#amm-mode').textContent = info.paper ? 'paper' : 'live';
+      $('#amm-mode').className = 'chip ' + (info.paper ? 'warn' : 'good');
+      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet. ' : '') + 'Fee ' + (info.feeBps / 100) + '% · seed ' + info.seed.block.toLocaleString() + ' BLOCK @ $' + info.seed.priceUsd;
+      $('#amm-pairs').innerHTML = S.amm.pairs.map(function (p) {
+        var liq = p.hasLiquidity;
+        var maxBlk = baseToWhole(p.maxSellableBlockBase, info.blockDecimals || 8);
+        return '<div class="li"><span class="ico">' + esc(p.sym.slice(0, 1)) + '</span>' +
+          '<span class="col" style="align-items:flex-start"><b>' + esc(p.pair) + '</b>' +
+          '<span class="dim" style="font-size:12px">' + esc(p.network) + ' · ' + (liq ? 'sellable ≤ ' + fmtAmt(maxBlk, 2) + ' BLOCK' : 'no liquidity yet — buys seed it') + '</span></span>' +
+          '<span class="chip ' + (liq ? 'good' : '') + '" style="margin-left:auto">' + (liq ? 'live' : 'empty') + '</span></div>';
+      }).join('') || '<div class="empty">No pairs.</div>';
+      if (!$('#amm-cur').options.length) refillCurrencies();
+    }
+
+    var qTimer = null;
+    function quote() {
+      clearTimeout(qTimer);
+      qTimer = setTimeout(doQuote, 220);
+    }
+    function doQuote() {
+      var amtStr = $('#amm-amt').value, sym = curSym(), side = S.amm.side;
+      var go = $('#amm-go'), q = $('#amm-quote'), note = $('#amm-note');
+      note.textContent = '';
+      var inDec = side === 'buy' ? curDec() : (S.amm.dec.BLOCK || 8);
+      var amountBase = toBase(amtStr, inDec);
+      if (!amtStr || amountBase === '0') { q.textContent = ''; go.disabled = true; go.textContent = 'Enter an amount'; return; }
+      q.textContent = 'Quoting…'; go.disabled = true;
+      ammApi('/quote?side=' + side + '&sym=' + encodeURIComponent(sym) + '&amount=' + amountBase).then(function (r) {
+        if (!r.ok) { q.textContent = (r.j && r.j.error) || 'Quote failed'; return; }
+        var d = r.j;
+        var impact = d.priceBeforeMicroUsd > 0 ? (Number(d.priceAfterMicroUsd) - Number(d.priceBeforeMicroUsd)) / Number(d.priceBeforeMicroUsd) * 100 : 0;
+        if (side === 'buy') {
+          var blk = baseToWhole(d.blockOut, S.amm.dec.BLOCK || 8);
+          q.innerHTML = 'Receive <b>' + fmtAmt(blk, 4) + ' BLOCK</b> · fee $' + (Number(d.feeUsd) / 1e6).toFixed(2) + ' · price impact ' + impact.toFixed(2) + '%';
+          go.disabled = false; go.textContent = 'Buy BLOCK';
+        } else {
+          var out = baseToWhole(d.assetOut, curDec());
+          if (!d.liquidity) {
+            var pair = (S.amm.pairs.filter(function (p) { return p.sym === sym; })[0]) || {};
+            var maxBlk = baseToWhole(pair.maxSellableBlockBase || '0', S.amm.dec.BLOCK || 8);
+            q.innerHTML = '<span class="dim">Would receive ' + fmtAmt(out, 6) + ' ' + esc(sym) + ' — but the ' + esc(sym) + ' pair only has liquidity for ≤ ' + fmtAmt(maxBlk, 2) + ' BLOCK.</span>';
+            go.disabled = true; go.textContent = maxBlk > 0 ? 'Reduce amount' : 'No ' + sym + ' liquidity';
+          } else {
+            q.innerHTML = 'Receive <b>' + fmtAmt(out, 6) + ' ' + esc(sym) + '</b> · fee $' + (Number(d.feeUsd) / 1e6).toFixed(2) + ' · price impact ' + impact.toFixed(2) + '%';
+            go.disabled = false; go.textContent = 'Sell BLOCK';
+          }
+        }
+      }).catch(function () { q.textContent = 'Quote unavailable'; });
+    }
+
+    function doTrade() {
+      if (S.amm.live) return doLiveTrade();
+      var side = S.amm.side, sym = curSym();
+      var inDec = side === 'buy' ? curDec() : (S.amm.dec.BLOCK || 8);
+      var amountBase = toBase($('#amm-amt').value, inDec);
+      if (amountBase === '0') return;
+      var go = $('#amm-go'); go.disabled = true; var label = go.textContent; go.textContent = 'Submitting…';
+      ammApi('/trade', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ side: side, sym: sym, amount: amountBase, to: S.address }) }).then(function (r) {
+        if (!r.ok) {
+          if (r.j && r.j.code === 'NO_LIQUIDITY') toast('Not enough ' + sym + ' liquidity in that pair', 'bad');
+          else toast((r.j && r.j.error) || 'Trade failed', 'bad');
+          go.disabled = false; go.textContent = label; return;
+        }
+        var d = r.j;
+        if (side === 'buy') toast('Bought ' + fmtAmt(baseToWhole(d.blockOut, S.amm.dec.BLOCK || 8), 2) + ' BLOCK' + (d.paper ? ' (paper)' : ''), 'good');
+        else toast('Sold BLOCK for ' + fmtAmt(baseToWhole(d.assetOut, curDec()), 4) + ' ' + sym + (d.paper ? ' (paper)' : ''), 'good');
+        $('#amm-amt').value = '';
+        load(); // refresh price + pairs
+        $('#amm-quote').textContent = ''; go.textContent = label;
+      }).catch(function () { toast('Trade unavailable', 'bad'); go.disabled = false; go.textContent = label; });
+    }
+
+    // LIVE: create a trade intent, then show a deposit sheet + poll to settlement.
+    function doLiveTrade() {
+      var side = S.amm.side, sym = curSym();
+      var pair = (S.amm.pairs.filter(function (p) { return p.sym === sym; })[0]) || {};
+      var inDec = side === 'buy' ? curDec() : (S.amm.dec.BLOCK || 8);
+      var amountBase = toBase($('#amm-amt').value, inDec);
+      if (amountBase === '0') return;
+      var go = $('#amm-go'); go.disabled = true; var label = go.textContent; go.textContent = 'Creating order…';
+      // payout address: buy -> your BLOCK address; sell -> your address on the quote chain
+      Promise.resolve(side === 'buy' ? S.address : chainAddress(pair.chain || 'block')).then(function (payoutAddress) {
+        return ammApi('/intent', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ side: side, sym: sym, amount: amountBase, payoutAddress: payoutAddress }) });
+      }).then(function (r) {
+        go.textContent = label; go.disabled = false;
+        if (!r.ok) { toast((r.j && (r.j.error)) || 'Could not create order', 'bad'); return; }
+        showDepositSheet(r.j, side);
+      }).catch(function () { toast('Order failed', 'bad'); go.textContent = label; go.disabled = false; });
+    }
+    function showDepositSheet(it, side) {
+      var depDec = S.amm.dec[it.depositAsset] || 8, outDec = S.amm.dec[it.payoutAsset] || 8;
+      var amt = baseToWhole(it.amountInBase, depDec);
+      var out = baseToWhole(it.quote.outBase, outDec), minOut = baseToWhole(it.quote.minOutBase, outDec);
+      openSheet(
+        '<div class="spread"><h2>Complete your ' + (side === 'buy' ? 'buy' : 'sell') + '</h2><button class="btn sm ghost" id="dp-x">' + ic('close', 15) + '</button></div>' +
+        '<p class="muted" style="font-size:13px">Send exactly this amount to the pool. We detect the deposit, execute at the quoted price (min protects you from slippage), and pay you automatically.</p>' +
+        '<div class="field"><label>Send exactly</label><div class="row"><b class="num" style="font-size:18px">' + fmtAmt(amt, 8) + ' ' + esc(it.depositAsset) + '</b></div></div>' +
+        '<div class="field"><label>To — ' + esc(it.depositAsset) + ' pool address</label><div class="row" style="gap:6px"><input readonly id="dp-addr" value="' + esc(it.depositAddress) + '" style="flex:1;font-size:11px"><button class="btn sm" id="dp-copy">Copy</button></div></div>' +
+        '<div class="muted" style="font-size:12px;margin:4px 0">You receive ≈ <b>' + fmtAmt(out, 6) + ' ' + esc(it.payoutAsset) + '</b> · minimum <b>' + fmtAmt(minOut, 6) + '</b></div>' +
+        '<div class="card" id="dp-status" style="margin-top:8px"><span class="dim">Waiting for your deposit…</span></div>');
+      $('#dp-x').onclick = function () { stopPoll(); closeSheet(); };
+      $('#dp-copy').onclick = function () { copy(it.depositAddress); };
+      pollIntent(it.id);
+    }
+    function stopPoll() { if (S.amm.pollTimer) { clearInterval(S.amm.pollTimer); S.amm.pollTimer = null; } }
+    function pollIntent(id) {
+      stopPoll();
+      function tick() {
+        ammApi('/intent/' + encodeURIComponent(id)).then(function (r) {
+          if (!r.ok) return; var it = r.j; var el = $('#dp-status'); if (!el) { stopPoll(); return; }
+          var outDec = S.amm.dec[it.payoutAsset] || 8;
+          if (it.status === 'awaiting_deposit') { el.innerHTML = '<span class="dim">Waiting for your deposit…</span>'; }
+          else if (it.status === 'funded') { el.innerHTML = '<span class="num">●</span> Deposit detected — executing…'; }
+          else if (it.status === 'executed' || it.status === 'paid') { el.innerHTML = '<span class="num">●</span> Paying out…'; }
+          else if (it.status === 'settled') {
+            var got = baseToWhole(it.executedOutBase || it.quote.outBase, outDec);
+            el.innerHTML = '<b class="good">✓ Done</b> — received ' + fmtAmt(got, 6) + ' ' + esc(it.payoutAsset) + (it.payoutTxid ? '<br><span class="dim" style="font-size:11px">tx ' + esc(String(it.payoutTxid).slice(0, 18)) + '…</span>' : '');
+            stopPoll(); $('#amm-amt').value = ''; load();
+          } else if (it.status === 'refund') { el.innerHTML = '<b class="bad">Refunded</b> — ' + esc(it.error || 'price moved or no liquidity') + '. Your deposit is being returned.'; stopPoll(); }
+          else if (it.status === 'expired') { el.innerHTML = '<span class="dim">Order expired — no deposit received. Close and try again.</span>'; stopPoll(); }
+        }).catch(function () {});
+      }
+      tick(); S.amm.pollTimer = setInterval(tick, 5000);
+    }
+
+    function load() {
+      ammApi('/info').then(function (r) {
+        if (!r.ok) { $('#amm-pairs').innerHTML = '<div class="empty">Market unavailable right now.</div>'; return; }
+        renderInfo(r.j);
+      }).catch(function () { $('#amm-pairs').innerHTML = '<div class="empty">Market unavailable right now.</div>'; });
+    }
+
+    $('#amm-t-buy').addEventListener('click', function () { setSide('buy'); });
+    $('#amm-t-sell').addEventListener('click', function () { setSide('sell'); });
+    $('#amm-amt').addEventListener('input', quote);
+    $('#amm-cur').addEventListener('change', quote);
+    $('#amm-go').addEventListener('click', doTrade);
+    load();
+  };
 
   VIEWS.portfolio = function (v) {
     v.innerHTML = '<div class="card"><div class="dim">Total balance</div><div class="hero-bal num" id="pf-total">—</div>' +

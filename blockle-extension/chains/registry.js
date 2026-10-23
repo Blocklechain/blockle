@@ -58,7 +58,7 @@
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
-    solana:    { rpcUrl: 'https://api.mainnet-beta.solana.com' },
+    solana:    { rpcUrl: 'https://solana-rpc.publicnode.com' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
