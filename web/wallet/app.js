@@ -8,6 +8,7 @@
   var GATEWAY = 'https://agent.blockle.org';
   var ACCOUNTS = '/account/api';
   var COIN = 100000000;
+  var BLOCKLE_MARK = 'blockle-mark.png'; // the real Blockle logo mark (served under /wallet/)
 
   /* ---------------- tiny DOM/util helpers ---------------- */
   var $ = function (s, r) { return (r || document).querySelector(s); };
@@ -54,6 +55,9 @@
     smart: '<path d="M12 2.8 21.2 12 12 21.2 2.8 12z"/><circle cx="12" cy="12" r="2.6"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4.5 20c0-4 3.8-6 7.5-6s7.5 2 7.5 6"/>',
     chevron: '<path d="M6 9.5l6 6 6-6"/>',
+    chevronR: '<path d="M9.5 6l6 6-6 6"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+    external: '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"/>',
     download: '<path d="M12 3v12"/><path d="M7.5 10.5 12 15l4.5-4.5"/><path d="M4.5 20h15"/>',
     wallet: '<rect x="3" y="6" width="18" height="13" rx="2.4"/><path d="M3 10h18"/><circle cx="16.5" cy="13.5" r="1.3" fill="currentColor" stroke="none"/>',
     link: '<path d="M9.5 14.5l5-5"/><path d="M8 11.5 6 13.5a3 3 0 0 0 4.2 4.2l2-2"/><path d="M16 12.5l2-2a3 3 0 0 0-4.2-4.2l-2 2"/>',
@@ -111,6 +115,38 @@
   };
   function isPro() { return S.tier && S.tier !== 'free'; }
 
+  /* Gas sponsorship: paid users never need to hold BLOCK to swap. If the active BLOCK
+   * address lacks gas, a paid plan drips a little BLOCK from the operator (non-custodial —
+   * the user still signs their own swap). Returns true when there's enough gas to proceed. */
+  var GAS_NEED_BASE = 3000000; // ~0.03 BLOCK: a swap's gas + fee
+  function blockSpendableBase(addr) { return Chain.utxos(addr).then(function (u) { return Number((u && u.spendable) || 0); }).catch(function () { return 0; }); }
+  function ensureGas() {
+    if (S.chain !== 'block') return Promise.resolve(true); // only BLOCK ops need BLOCK gas
+    var addr = Wallet.address;
+    return blockSpendableBase(addr).then(function (have) {
+      if (have >= GAS_NEED_BASE) return true;
+      if (!isPro()) { toast('A little BLOCK is needed for gas — upgrade to Pro for sponsored gas', 'bad'); return false; }
+      toast('Sponsoring gas…');
+      return fetch('/api/gas/sponsor', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ address: addr }) })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res || (!res.ok && !res.skipped)) { toast((res && res.error) || 'Gas sponsorship unavailable', 'bad'); return false; }
+          if (res.skipped) return true;
+          // wait for the sponsored gas to confirm
+          var tries = 0;
+          return (function poll() {
+            return new Promise(function (r2) { setTimeout(r2, 4000); }).then(function () {
+              return blockSpendableBase(addr).then(function (now) {
+                if (now >= GAS_NEED_BASE) { toast('Gas received — continuing', 'good'); return true; }
+                if (++tries >= 30) { toast('Gas sent; waiting on confirmation — try again shortly', 'bad'); return false; }
+                return poll();
+              });
+            });
+          })();
+        }).catch(function (e) { toast('Gas sponsorship failed: ' + (e.message || e), 'bad'); return false; });
+    });
+  }
+
   /* ---------------- boot ---------------- */
   function themeApply(t) { if (t) document.documentElement.setAttribute('data-theme', t); try { localStorage.setItem('blk:wallet:theme', t || ''); } catch (_) {} }
   (function initTheme() { try { var t = localStorage.getItem('blk:wallet:theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (_) {} })();
@@ -161,7 +197,7 @@
   function gateShell(inner) {
     $('#overlay').innerHTML =
       '<div class="onbox card">' +
-      '<div class="brand" style="font-size:20px;margin-bottom:6px"><span class="logo">B</span><span>Blockle Wallet</span></div>' +
+      '<div class="brand" style="font-size:20px;margin-bottom:6px;gap:10px"><img src="' + BLOCKLE_MARK + '" alt="Blockle" style="width:30px;height:30px;border-radius:8px;object-fit:cover"><span>Blockle Wallet</span></div>' +
       inner + '</div>';
   }
   function renderUnlock() {
@@ -643,24 +679,101 @@
           var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chainRow.chain.toUpperCase();
           var job = Promise.resolve(Wiring.estimateUsd ? Wiring.estimateUsd(r.asset || sym, amt) : null).catch(function () { return null; }).then(function (usd) {
             var u = Number(usd); if (isFinite(u) && u > 0) total += u;
-            rowsHtml += assetRow(sym, chainRow.chain, amt, dec, isFinite(u) && u > 0 ? u : null, r.asset && r.asset.logoURI);
+            rowsHtml += assetRow(sym, chainRow.chain, amt, dec, isFinite(u) && u > 0 ? u : null, r.asset && r.asset.logoURI, assetId(r.asset), r.asset && r.asset.name);
           });
           jobs.push(job);
         });
         if (had) chainsWith++;
       });
       Promise.all(jobs).then(function () {
+        if (!$('#pf-total')) return; // user navigated away before balances resolved
         $('#pf-total').textContent = total > 0 ? fmtUsd(total) : '—';
         $('#pf-chains').textContent = chainsWith; $('#pf-assets').textContent = assetCount;
         $('#pf-list').innerHTML = rowsHtml || '<div class="empty">No balances yet. Receive BLOCK or a token to get started.</div>';
+        wireAssetRows($('#pf-list'));
       });
     }).catch(function () { $('#pf-list').innerHTML = '<div class="empty">Could not load balances right now.</div>'; });
   }
-  function assetRow(sym, chain, amt, dec, usd, logo) {
+  function assetRow(sym, chain, amt, dec, usd, logo, cid, name) {
+    if (!logo && String(sym).toUpperCase() === 'BLOCK') logo = BLOCKLE_MARK; // native BLOCK coin -> real logo
     var ico = logo ? '<img src="' + esc(logo) + '" alt="">' : '';
-    return '<div class="li"><span class="ico">' + esc(sym.slice(0, 1)) + ico + '</span>' +
-      '<span class="col" style="align-items:flex-start"><b>' + esc(sym) + '</b><span class="dim" style="font-size:12px">' + esc(chain.toUpperCase()) + '</span></span>' +
-      '<span class="col" style="margin-left:auto;align-items:flex-end"><b class="num">' + fmtAmt(amt, Math.min(dec || 6, 6)) + '</b>' + (usd ? '<span class="dim num" style="font-size:12px">' + fmtUsd(usd) + '</span>' : '') + '</span></div>';
+    return '<div class="li li-asset" role="button" tabindex="0" data-chain="' + esc(chain) + '" data-cid="' + esc(cid || 'native') + '" data-sym="' + esc(sym) + '">' +
+      '<span class="ico">' + esc(sym.slice(0, 1)) + ico + '</span>' +
+      '<span class="col" style="align-items:flex-start"><b>' + esc(sym) + '</b><span class="dim" style="font-size:12px">' + esc(name || chain.toUpperCase()) + '</span></span>' +
+      '<span class="col" style="margin-left:auto;align-items:flex-end"><b class="num">' + fmtAmt(amt, Math.min(dec || 6, 6)) + '</b>' + (usd ? '<span class="dim num" style="font-size:12px">' + fmtUsd(usd) + '</span>' : '') + '</span>' +
+      '<span class="dim" style="margin-left:4px;display:flex">' + ic('chevronR', 16) + '</span></div>';
+  }
+  // Wire clickable asset rows -> generated asset info sheet.
+  function wireAssetRows(container) {
+    $$('.li-asset', container || document).forEach(function (row) {
+      var open = function () { openAssetInfo(row.getAttribute('data-chain'), row.getAttribute('data-cid'), row.getAttribute('data-sym')); };
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }
+  // Generated per-asset info page (modal sheet): identity, your balance + USD, on-chain
+  // details, and context actions. Fetches live data from the node/explorer.
+  function openAssetInfo(chain, cid, sym) {
+    var native = !cid || cid === 'native';
+    openSheet('<div class="spread"><h2>' + esc(sym || (native ? chain.toUpperCase() : 'Asset')) + '</h2><button class="btn sm ghost" id="ai-x">' + ic('close', 15) + '</button></div><div id="ai-body"><div class="empty">Loading…</div></div>');
+    $('#ai-x').addEventListener('click', closeSheet);
+    var body = $('#ai-body');
+    var curated = null;
+    if (!native) { var lc = String(cid).toLowerCase(); curated = CURATED_BLOCK.filter(function (c) { return c.id.toLowerCase() === lc; })[0] || null; }
+
+    chainAddress(chain).then(function (addr) {
+      if (native) return { addr: addr, info: null };
+      // BLOCK-20 (and other chains': best-effort token read via same-origin explorer proxy)
+      return fetch('/api/token/' + encodeURIComponent(cid) + '?holder=' + encodeURIComponent(addr))
+        .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+        .then(function (j) { return { addr: addr, info: (j && (j.result || j)) || null }; });
+    }).then(function (ctx) {
+      var addr = ctx.addr, info = ctx.info || {};
+      var name = (curated && curated.name) || info.name || sym || '';
+      var symbol = sym || info.symbol || (curated && curated.symbol) || chain.toUpperCase();
+      var dec = (curated && curated.decimals != null) ? curated.decimals : (info.decimals != null ? info.decimals : (native ? 8 : 0));
+      var logo = (curated && curated.logoURI) || info.logoURI || '';
+      var balBase = native ? null : (info.holderBalance != null ? info.holderBalance : (info.balance != null ? info.balance : '0'));
+      var bal = native ? null : baseToNum(String(balBase || '0'), dec);
+      var supplyBase = info.supply != null ? info.supply : (info.totalSupply != null ? info.totalSupply : null);
+      var supply = supplyBase != null ? baseToNum(String(supplyBase), dec) : null;
+      var typeLabel = native ? 'Native coin' : (curated && curated.stablecoin) || info.stablecoin ? ('Stablecoin · ' + ((curated && curated.peg) || info.peg || 'USD') + '-pegged') : 'BLOCK-20 token';
+
+      var icoLogo = logo ? '<img src="' + esc(logo) + '" alt="">' : '';
+      var head = '<div class="row" style="gap:12px;margin-bottom:6px">' +
+        '<span class="ico" style="width:46px;height:46px;font-size:18px">' + esc(symbol.slice(0, 1)) + icoLogo + '</span>' +
+        '<div class="col" style="align-items:flex-start"><b style="font-size:18px">' + esc(name || symbol) + '</b><span class="dim">' + esc(symbol) + ' · ' + esc(typeLabel) + '</span></div></div>';
+
+      var rows = '';
+      function kv(k, v) { rows += '<div class="kv"><span class="muted">' + esc(k) + '</span><span class="mono num">' + v + '</span></div>'; }
+      if (!native) kv('Your balance', esc(fmtAmt(bal, Math.min(dec || 6, 6))) + ' ' + esc(symbol));
+      kv('Network', esc(chain.toUpperCase()));
+      kv('Decimals', esc(String(dec)));
+      if (supply != null) kv('Total supply', esc(fmtAmt(supply, 2)));
+      if (!native) rows += '<div class="kv"><span class="muted">Contract</span><button class="btn sm ghost" id="ai-copy" title="Copy">' + esc(shortAddr(cid)) + ' ' + ic('copy', 13) + '</button></div>';
+
+      // USD value (best-effort)
+      var usdHtml = '';
+      var usdP = Promise.resolve(null);
+      if (!native && bal > 0 && Wiring.estimateUsd) usdP = Promise.resolve(Wiring.estimateUsd({ symbol: symbol, decimals: dec, address: cid, stablecoin: !!(curated && curated.stablecoin) }, bal)).catch(function () { return null; });
+
+      // actions
+      var acts = [];
+      acts.push('<a class="btn" href="#receive" id="ai-recv">' + ic('receive', 15) + ' Receive</a>');
+      if (!native) acts.push('<button class="btn" id="ai-swap">' + ic('swap', 15) + ' Swap</button>');
+      if (!native && (symbol === 'USDB' || (curated && curated.symbol === 'USDB'))) acts.push('<a class="btn" href="#buy">' + ic('buy', 15) + ' Buy / Redeem</a>');
+      if (!native && (symbol === 'WORLD' || (curated && curated.symbol === 'WORLD'))) acts.push('<a class="btn" href="/market" target="_blank">' + ic('external', 15) + ' Marketplace</a>');
+      if (native) acts.push('<a class="btn" href="#send" id="ai-send">' + ic('send', 15) + ' Send</a>');
+      var explorerHref = native ? ('/explorer/address/' + encodeURIComponent(addr)) : ('/token/' + encodeURIComponent(cid));
+      acts.push('<a class="btn ghost" href="' + explorerHref + '" target="_blank">' + ic('external', 15) + ' Explorer</a>');
+
+      body.innerHTML = head + '<div class="list" style="margin:10px 0">' + rows + '</div><div id="ai-usd" class="dim" style="font-size:13px;min-height:16px"></div><div class="wrap" style="margin-top:12px">' + acts.join('') + '</div>';
+      if ($('#ai-copy')) $('#ai-copy').addEventListener('click', function () { copy(cid); });
+      if ($('#ai-swap')) $('#ai-swap').addEventListener('click', function () { S._swapPrefill = cid; closeSheet(); S.chain = chain; location.hash = '#swap'; });
+      if ($('#ai-recv')) $('#ai-recv').addEventListener('click', function () { closeSheet(); S.chain = chain; });
+      if ($('#ai-send')) $('#ai-send').addEventListener('click', function () { closeSheet(); S.chain = chain; });
+      usdP.then(function (u) { if (isFinite(Number(u)) && Number(u) > 0) $('#ai-usd').textContent = '≈ ' + fmtUsd(u) + ' at current price'; });
+    }).catch(function () { body.innerHTML = '<div class="empty">Could not load asset details.</div>'; });
   }
   function proNudge(msg) {
     return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">' + ic('pro', 16) + '</span><div class="col" style="align-items:flex-start"><b>Blockle Pro</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
@@ -709,9 +822,10 @@
         var dec = (r.asset && r.asset.decimals) || 0;
         var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
         var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chain.toUpperCase();
-        return assetRow(sym, chain, amt, dec, null, r.asset && r.asset.logoURI);
+        return assetRow(sym, chain, amt, dec, null, r.asset && r.asset.logoURI, assetId(r.asset), r.asset && r.asset.name);
       }).join('');
       body.innerHTML = html || '<div class="empty">No tokens found on this network.</div>';
+      wireAssetRows(body);
     }).catch(function () { body.innerHTML = '<div class="empty">Could not load tokens.</div>'; });
   }
   function loadNfts() {
@@ -814,6 +928,7 @@
       '<div class="field"><label>Amount in</label><input id="sw-amt" inputmode="decimal" placeholder="0.0"></div>' +
       '<div class="row" style="gap:10px"><button class="btn" id="sw-quote">Get quote</button><button class="btn primary" id="sw-go" disabled>Swap</button></div>' +
       '<div id="sw-out" class="muted" style="margin-top:12px;font-size:13px"></div></div>';
+    if (S._swapPrefill) { $('#sw-token').value = S._swapPrefill; S._swapPrefill = null; }
     var quoted = null;
     $('#sw-quote').onclick = function () {
       var token = ($('#sw-token').value || '').trim(), side = $('#sw-side').value, amt = Number($('#sw-amt').value);
@@ -831,6 +946,7 @@
       (async function () {
         var ok = await confirmSheet({ title: 'Swap on native AMM', lines: [['Token', shortAddr(quoted.token)], ['Side', quoted.side], ['Amount in', fmtAmt(quoted.amountIn / COIN)], ['Min out', fmtAmt(Number(quoted.minOut) / COIN)]], okText: 'Sign & swap' });
         if (!ok) return;
+        if (!(await ensureGas())) return; // sponsor BLOCK gas for paid users with no BLOCK
         toast('Signing swap…');
         try { var r = await Wiring.amm.swap({ token: quoted.token, side: quoted.side, amountIn: quoted.amountIn, minOut: quoted.minOut }); toast('Swap sent · ' + String((r && (r.txid || r)) || '').slice(0, 12) + '…', 'good'); location.hash = '#activity'; }
         catch (e) { toast('Swap failed: ' + (e.message || e), 'bad'); }
@@ -954,10 +1070,16 @@
     ensureAgent().then(function () { $('#ag-conn').textContent = S.agentConn && S.agentConn.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }).catch(function () { $('#ag-conn').textContent = 'offline'; });
     function run() {
       var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
+      S._lastAgentText = null;
+      var pending = elFrom('<div class="li" id="ag-pending"><span class="ico">' + ic('agent', 17) + '</span><div class="col" style="align-items:flex-start"><span class="dim">thinking…</span></div></div>');
+      log.appendChild(pending); log.scrollTop = log.scrollHeight;
       ensureAgent().then(function (router) {
-        if (!router) { add('err', 'Agent unavailable.'); return; }
+        if (!router) throw new Error('Agent unavailable.');
         return router.run(text);
-      }).catch(function (e) { add('err', e.message || String(e)); });
+      }).then(function (res) {
+        // Query answers come back as the resolved value; show it if no 'text' event already did.
+        if (res && res.text && res.text !== S._lastAgentText) add('agent', res.text);
+      }).catch(function (e) { add('err', e.message || String(e)); }).then(function () { var p = $('#ag-pending'); if (p) p.remove(); });
     }
     S._agentLog = add;
     $('#ag-go').onclick = run; $('#ag-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
@@ -1004,7 +1126,7 @@
   function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
   function agentEvent(ev) {
     if (!ev) return; var add = S._agentLog;
-    if (ev.type === 'text' && ev.text && add) add('agent', ev.text);
+    if (ev.type === 'text' && ev.text && add) { S._lastAgentText = ev.text; add('agent', ev.text); }
     else if (ev.type === 'plan' && add) add('agent', 'Plan: ' + (ev.summary || (ev.steps && ev.steps.length + ' step(s)')));
     else if (ev.type === 'step' && add) add('agent', '→ ' + (ev.name || ev.tool || 'step') + (ev.result && ev.result.txid ? ' · ' + String(ev.result.txid).slice(0, 12) + '…' : ''));
     else if (ev.type === 'resolved' && add) add('agent', 'Resolved ' + (ev.name || '') + ' → ' + shortAddr(ev.address || ''));
@@ -1113,6 +1235,7 @@
       featRow('Trading bots', 'paper · 1', 'live · 3', 'live · ∞') +
       featRow('Pro strategy templates', '—', '✓', '✓') +
       featRow('Portfolio analytics & P&L history', 'summary', '✓', '✓') +
+      featRow('Sponsored gas — swap with no BLOCK', '—', '✓', '✓') +
       featRow('Price alerts · CSV export · custom RPC', '—', '✓', '✓') +
       '</tbody></table></div></div>' +
       '<div id="pro-plans" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:14px"></div>';

@@ -781,12 +781,38 @@ class HttpError extends Error {
 // ---- HTTP (loopback only) --------------------------------------------------
 function createServer(cfg, deps) {
   const gw = (deps && deps.gateway) || new Gateway(cfg, deps);
+  // CORS: the web wallet (a blockle.org page) calls this gateway cross-origin, so it
+  // needs an Access-Control-Allow-Origin header + an OPTIONS preflight responder. The
+  // extension/desktop/mobile clients are not web origins and are unaffected. Allowlist
+  // blockle.org + any *.blockle.org subdomain (+ localhost for dev); never a bare "*".
+  const corsOrigin = (origin) => {
+    if (!origin) return null;
+    if (/^https:\/\/([a-z0-9-]+\.)*blockle\.org$/i.test(origin)) return origin;
+    if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return origin;
+    return null;
+  };
   const server = http.createServer((req, res) => {
+    const allowed = corsOrigin(req.headers.origin);
+    const cors = allowed
+      ? {
+          "access-control-allow-origin": allowed,
+          "vary": "Origin",
+          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-headers": "content-type",
+          "access-control-max-age": "600",
+        }
+      : {};
     const send = (code, obj) => {
       const bodyStr = JSON.stringify(obj);
-      res.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(bodyStr) });
+      res.writeHead(code, Object.assign({ "content-type": "application/json", "content-length": Buffer.byteLength(bodyStr) }, cors));
       res.end(bodyStr);
     };
+
+    // CORS preflight — browsers send this before a cross-origin POST with a JSON body.
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, cors);
+      return res.end();
+    }
 
     if (req.method === "GET" && req.url.startsWith("/healthz")) {
       // NO SECRETS: report only reachability + remaining budget. upstreamKeyPresent

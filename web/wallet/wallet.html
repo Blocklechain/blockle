@@ -15,7 +15,8 @@
 <meta name="description" content="Blockle Web Wallet — a non-custodial, installable wallet for BLOCK and every chain, with the Blockle agent, bots, DEX, bridge and USDB built in. Your keys never leave your device.">
 <title>Blockle Wallet</title>
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="vendor/world-token.svg">
+<link rel="icon" href="blockle-mark.png">
+<link rel="apple-touch-icon" href="blockle-mark.png">
 <style>
 /* ---- design tokens ---------------------------------------------------- */
 :root{
@@ -84,7 +85,7 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.02em;text-wrap:balance}
 .topbar{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);background:color-mix(in srgb,var(--bg) 78%,transparent);border-bottom:1px solid var(--line)}
 .topbar .inner{max-width:var(--maxw);margin:0 auto;padding:11px 18px;display:flex;align-items:center;gap:14px}
 .brand{display:flex;align-items:center;gap:9px;font-weight:750;letter-spacing:-.02em}
-.brand .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--indigo));display:grid;place-items:center;color:#04120b;font-weight:800}
+.brand .logo{width:27px;height:27px;border-radius:7px;object-fit:cover;display:block}
 .shell{max-width:var(--maxw);margin:0 auto;padding:18px;display:grid;grid-template-columns:208px 1fr;gap:18px;align-items:start}
 .sidenav{position:sticky;top:70px;display:flex;flex-direction:column;gap:3px}
 .navlink{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:10px;color:var(--ink2);font-weight:600;border:1px solid transparent}
@@ -105,6 +106,10 @@ h1,h2,h3{margin:0;font-weight:650;letter-spacing:-.02em;text-wrap:balance}
 .list{display:flex;flex-direction:column}
 .li{display:flex;align-items:center;gap:12px;padding:12px 2px;border-bottom:1px solid var(--line)}
 .li:last-child{border-bottom:0}
+.li-asset{cursor:pointer;border-radius:10px;margin:0 -8px;padding-left:8px;padding-right:8px;transition:background .12s}
+.li-asset:hover{background:var(--card2)}
+.li-asset:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.li-asset .ic-svg{color:var(--ink3)}
 .ico{width:34px;height:34px;border-radius:50%;flex:none;display:grid;place-items:center;font-weight:700;background:var(--card2);border:1px solid var(--line);position:relative;overflow:hidden}
 .ico img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .empty{color:var(--ink3);text-align:center;padding:26px 10px;font-size:14px}
@@ -177,7 +182,7 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
   <!-- authenticated shell (hidden until unlocked) -->
   <div id="authed" class="hide">
     <header class="topbar"><div class="inner">
-      <div class="brand"><span class="logo">B</span><span>Wallet</span></div>
+      <div class="brand"><img class="logo" src="blockle-mark.png" alt="Blockle"><span>Wallet</span></div>
       <button id="acctsel" class="selbtn" title="Account & network"><span id="acctsel-label">—</span> <svg class="ic-svg dim" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg></button>
       <div style="flex:1"></div>
       <span id="tierbadge" class="chip">free</span>
