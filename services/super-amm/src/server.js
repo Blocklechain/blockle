@@ -88,7 +88,7 @@ function info() {
   return {
     paper: PAPER, live: LIVE, feeBps: Number(FEE_BPS), blockDecimals: A.BLOCK_DECIMALS,
     priceUsd: A.priceUsd(s), priceMicroUsd: A.priceMicroUsd(s), rBlock: s.rBlock, rUsd: s.rUsd,
-    seed: { block: SEED_BLOCK, priceUsd: SEED_PRICE }, pairs: pairsView(s),
+    seed: { block: SEED_BLOCK_BASE != null ? Number(SEED_BLOCK_BASE) / 1e8 : SEED_BLOCK, priceUsd: SEED_PRICE }, pairs: pairsView(s),
     paused: store.isPaused(), stats: store.stats(),
     readyAssets: LIVE ? ['BLOCK', ...QUOTE_SYMS.filter((s2) => custody.ready(s2))] : null,
     note: PAPER ? 'PAPER — no real funds move; curve/price/liquidity are live.' : (store.isPaused() ? 'LIVE — PAUSED by solvency monitor.' : 'LIVE'),

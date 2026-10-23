@@ -2585,4 +2585,13 @@ def build_tabs(block_wallet, datadir) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Wallet panel unavailable ({e})", file=sys.stderr)
+    # Native Trade panel (ADDITIVE): the custodial shared-price BLOCK AMM
+    # (super-amm) via the live /api/amm endpoints. Guarded so a problem here never
+    # drops the other panels.
+    try:
+        from .qttrade import build_trade_tab
+        tabs.append(build_trade_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Trade panel unavailable ({e})", file=sys.stderr)
     return tabs
