@@ -153,7 +153,7 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     // defaults to the public mainnet endpoint (config-overridable, no key).
     ok('registry has solana adapter', reg.has('solana'));
     ok('registry enables solana', reg.enabled().includes('solana'));
-    eq('registry solana default rpc', reg.endpoints('solana').rpcUrl, 'https://api.mainnet-beta.solana.com');
+    eq('registry solana default rpc', reg.endpoints('solana').rpcUrl, 'https://solana-rpc.publicnode.com');
     const sol = await reg.get('solana').deriveAccount({ seed });
     eq('registry solana scheme', sol.scheme, 'ed25519');
     eq('registry solana path', sol.path, "m/44'/501'/0'/0'");

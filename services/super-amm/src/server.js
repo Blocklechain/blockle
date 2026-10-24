@@ -158,7 +158,16 @@ async function solvencyLoop() {
     try { observed[sym] = await ad.observedBalanceBase(); } catch { /* skip; can't confirm */ }
   }
   const rep = S.check(state, observed, TOL);
-  if (rep.shouldPause && !store.isPaused()) { store.setPaused(true); console.log('[super-amm] SOLVENCY PAUSE', JSON.stringify(rep.rows)); }
+  // Only auto-(un)pause when we actually have an observed balance for every owed
+  // asset — otherwise a transient node/RPC outage reads 0 and false-trips.
+  const haveAllObs = Object.keys(S.expected(state)).every((s2) => observed[s2] != null);
+  if (rep.shouldPause && !store.isPaused() && haveAllObs) {
+    store.setPaused(true);
+    console.log('[super-amm] SOLVENCY PAUSE', JSON.stringify(rep.rows));
+  } else if (rep.healthy && store.isPaused() && haveAllObs) {
+    store.setPaused(false);
+    console.log('[super-amm] SOLVENCY OK — auto-unpaused (pool holds what it owes)');
+  }
 }
 
 // ---- server ----------------------------------------------------------------
