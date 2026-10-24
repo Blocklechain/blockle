@@ -142,7 +142,7 @@ class MultiChainControllerTest(unittest.TestCase):
         titles = [t for _w, t in tabs]
         # the native Bots cockpit + Wallet surfaces are appended after
         # Accounts/Exchange/Agent (each additive, guarded).
-        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots", "Wallet"])
+        self.assertEqual(titles, ["Accounts", "Exchange", "Agent", "Bots", "Wallet", "Trade"])
         widgets = [w for w, _t in tabs]
         self.assertIsInstance(widgets[0], AccountsTab)
         self.assertIsInstance(widgets[1], ExchangeTab)
