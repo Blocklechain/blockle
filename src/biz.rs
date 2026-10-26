@@ -804,11 +804,23 @@ fn route(
                 _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("transaction", id).into_bytes()),
             }
         }
+        p if p.starts_with("/explorer/token/") => {
+            let id = &p["/explorer/token/".len()..];
+            match token_info(id) {
+                Some(info) => ("200 OK", "text/html; charset=utf-8", page_token(id, &info).into_bytes()),
+                None => ("404 Not Found", "text/html; charset=utf-8", page_notfound("token", id).into_bytes()),
+            }
+        }
         p if p.starts_with("/explorer/address/") => {
             let id = &p["/explorer/address/".len()..];
             match chain_api(&format!("/explorer/address/{id}")) {
                 Some(a) if a.get("error").is_none() => ("200 OK", "text/html; charset=utf-8", page_address(&a).into_bytes()),
-                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("address", id).into_bytes()),
+                // A 64-hex id that isn't an address may be a BLOCK-20 token
+                // contract — resolve it to the token page instead of 404ing.
+                _ => match token_info(id) {
+                    Some(info) => ("200 OK", "text/html; charset=utf-8", page_token(id, &info).into_bytes()),
+                    None => ("404 Not Found", "text/html; charset=utf-8", page_notfound("address", id).into_bytes()),
+                },
             }
         }
         "/explorer/search" => {
@@ -821,12 +833,19 @@ fn route(
                         "block" => format!("/explorer/block/{id}"),
                         "tx" => format!("/explorer/tx/{id}"),
                         "address" => format!("/explorer/address/{id}"),
+                        "token" => format!("/explorer/token/{id}"),
                         _ => "/explorer".into(),
                     };
                     ("302 Found", "text/html; charset=utf-8",
                      format!("<meta http-equiv=\"refresh\" content=\"0;url={loc}\">").into_bytes())
                 }
-                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("result for", q).into_bytes()),
+                // Node search didn't resolve it — a 64-hex BLOCK-20 contract id
+                // won't match a block/tx/address, so try the token view.
+                _ => match token_info(q) {
+                    Some(_) => ("302 Found", "text/html; charset=utf-8",
+                        format!("<meta http-equiv=\"refresh\" content=\"0;url=/explorer/token/{q}\">").into_bytes()),
+                    None => ("404 Not Found", "text/html; charset=utf-8", page_notfound("result for", q).into_bytes()),
+                },
             }
         }
         "/mine" => ("200 OK", "text/html; charset=utf-8", page_mine(&reg).into_bytes()),
@@ -3879,6 +3898,158 @@ fn page_tokens() -> String {
         "Tokens — BLOCK-20 markets on Blockle",
         "Browse every BLOCK-20 token with a live AMM market on the post-quantum Blockle layer-1 — price, liquidity and contract, each linking to its full token page.",
         "/explorer/tokens", "", body)
+}
+
+fn is_hex64(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Group a u64 with thousands separators (e.g. 1000000 -> "1,000,000").
+fn group_u64(mut n: u64) -> String {
+    if n == 0 {
+        return "0".into();
+    }
+    let mut parts: Vec<u64> = Vec::new();
+    while n > 0 {
+        parts.push(n % 1000);
+        n /= 1000;
+    }
+    parts.reverse();
+    let mut s = parts[0].to_string();
+    for p in &parts[1..] {
+        s.push_str(&format!(",{p:03}"));
+    }
+    s
+}
+
+/// Logo URI for a token contract id: known tokens first, then the DEX logo
+/// registry written by /api/dex/register (keyed by contract id).
+fn token_logo(id: &str) -> Option<String> {
+    match id {
+        "2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a" => {
+            return Some("/usdb-token.svg".into())
+        }
+        "32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f" => {
+            return Some("/world-token.svg".into())
+        }
+        _ => {}
+    }
+    let map: Value = fs::read_to_string("/var/lib/blockle-biz/dex-tokens.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    map.get(id)?
+        .get("logo")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// On-chain BLOCK-20 info for a contract id (node `tokeninfo` view). None if the
+/// id is not a 64-hex contract or does not resolve to a token.
+fn token_info(id: &str) -> Option<Value> {
+    if !is_hex64(id) {
+        return None;
+    }
+    let rpc = json!({"jsonrpc":"1.0","id":"tok","method":"tokeninfo","params":[{ "contract": id, "holder": "" }]});
+    let v = chain_api_post(rpc.to_string().as_bytes())?;
+    let res = v.get("result")?.clone();
+    if res.get("isToken").and_then(|b| b.as_bool()) == Some(true) {
+        Some(res)
+    } else {
+        None
+    }
+}
+
+/// The AMM pool pairing BLOCK with this token, if one exists.
+fn token_pool(id: &str) -> Option<Value> {
+    let rpc = json!({"jsonrpc":"1.0","id":"dex","method":"listpools","params":[]});
+    let v = chain_api_post(rpc.to_string().as_bytes())?;
+    let res = v.get("result").cloned().unwrap_or(v);
+    res.get("pools")?
+        .as_array()?
+        .iter()
+        .find(|p| p.get("token").and_then(|t| t.as_str()) == Some(id))
+        .cloned()
+}
+
+/// Server-rendered explorer page for a single BLOCK-20 token: icon, supply,
+/// decimals, contract id and its live AMM market (price + liquidity).
+fn page_token(id: &str, info: &Value) -> String {
+    let name = clean(info.get("name").and_then(|v| v.as_str()).unwrap_or("Token"));
+    let symbol = clean(info.get("symbol").and_then(|v| v.as_str()).unwrap_or("TOKEN"));
+    let decimals = info.get("decimals").and_then(|v| v.as_u64()).unwrap_or(8);
+    let supply_raw = info.get("totalSupply").and_then(|v| v.as_u64()).unwrap_or(0);
+    let supply_whole = supply_raw / 10u64.pow(decimals.min(18) as u32);
+    let img = match token_logo(id) {
+        Some(u) => format!(
+            r#"<img src="{u}" width="54" height="54" style="border-radius:14px;vertical-align:middle;margin-right:16px" onerror="this.style.display='none'">"#
+        ),
+        None => String::new(),
+    };
+    let card = |k: &str, v: String| {
+        format!(r#"<div class="card"><div class="v">{v}</div><div class="k">{k}</div></div>"#)
+    };
+
+    let (price_card, liq_card, market_note) = match token_pool(id) {
+        Some(p) => {
+            let br = p.get("blockReserve").and_then(|v| v.as_u64()).unwrap_or(0) as f64 / 1e8;
+            let tr = p.get("tokenReserve").and_then(|v| v.as_u64()).unwrap_or(0) as f64
+                / 10f64.powi(decimals.min(18) as i32);
+            let price = if tr > 0.0 { br / tr } else { 0.0 };
+            let created = p.get("createdHeight").and_then(|v| v.as_u64()).unwrap_or(0);
+            (
+                card("Price", format!("{price:.8} BLOCK")),
+                card("Liquidity", format!("{:.2} BLOCK", br * 2.0)),
+                format!(
+                    r#"<p class="sub">Live AMM pool (created at block #{created}): <b>{br:.4} BLOCK</b> paired with <b>{tr:.2} {symbol}</b>. <a href="/dex">Trade {symbol} on the DEX →</a></p>"#
+                ),
+            )
+        }
+        None => (
+            card("Price", "—".into()),
+            card("Liquidity", "no market".into()),
+            r#"<p class="sub">No live AMM market for this token yet. <a href="/launch">Create a pool →</a></p>"#.to_string(),
+        ),
+    };
+
+    let body = format!(
+        r##"{search}<h1 style="display:flex;align-items:center">{img}<span>{name} <span class="sub" style="font-size:.55em;font-weight:400">{symbol}</span></span></h1>
+<p class="sub mono">{id}</p>
+<div class="cards">{c_supply}{c_dec}{price_card}{liq_card}</div>
+{market_note}
+{meta}
+<p class="sub" style="margin-top:.8rem"><a href="/explorer/tokens">← all tokens</a> · <a href="/token/{id}">open token app page →</a></p>"##,
+        search = explorer_search_box(),
+        img = img,
+        name = name,
+        symbol = symbol,
+        id = clean(id),
+        c_supply = card("Total supply", format!("{} {symbol}", group_u64(supply_whole))),
+        c_dec = card("Decimals", decimals.to_string()),
+        price_card = price_card,
+        liq_card = liq_card,
+        market_note = market_note,
+        meta = kv(&[
+            ("standard", "BLOCK-20".into()),
+            ("contract id", clean(id)),
+            ("symbol", symbol.clone()),
+            ("decimals", decimals.to_string()),
+            ("total supply (raw)", group_u64(supply_raw)),
+        ]),
+    );
+    let crumb = format!(
+        r##"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{{"@type":"ListItem","position":1,"name":"Explorer","item":"https://{d}/explorer"}},{{"@type":"ListItem","position":2,"name":"Tokens","item":"https://{d}/explorer/tokens"}},{{"@type":"ListItem","position":3,"name":"{symbol}","item":"https://{d}/explorer/token/{id}"}}]}}</script>"##,
+        d = PUBLIC_HOST,
+        symbol = symbol,
+        id = clean(id)
+    );
+    page_shell_seo(
+        &format!("{name} ({symbol}) — BLOCK-20 token on Blockle"),
+        &format!("{name} ({symbol}) is a BLOCK-20 token on the post-quantum Blockle layer-1 — total supply, decimals, contract id and its live AMM market."),
+        &format!("/explorer/token/{}", clean(id)),
+        &crumb,
+        body,
+    )
 }
 
 fn page_peers() -> String {

@@ -126,23 +126,55 @@
       <div><label class="fld">Seed liquidity — BLOCK</label><input class="t" id="seedBlock" type="number" value="100" min="0"></div>
       <div><label class="fld">Seed liquidity — tokens</label><input class="t" id="seedToken" type="number" value="500000" min="0"></div>
     </div>
+    <div class="row" style="margin-top:6px">
+      <div><label class="fld">Liquidity lock</label>
+        <select class="t" id="lock" disabled title="Longer locks are coming in a chain upgrade">
+          <option value="7d">7 days (minimum)</option>
+        </select>
+      </div>
+      <div><label class="fld">&nbsp;</label>
+        <label class="fld" id="preseedRow" style="display:none;margin-top:11px;color:var(--text);cursor:pointer">
+          <input type="checkbox" id="preseed" checked style="vertical-align:middle"> Add <b id="preseedAmt">50</b> BLOCK free preseed (promo)
+        </label>
+      </div>
+    </div>
+    <div class="note" id="feebanner">Loading launch terms…</div>
     <button class="cta" id="go">Launch token</button>
     <div class="err" id="err"></div>
-    <div class="note">Your wallet (the Blockle extension) will ask you to approve each step. The seed BLOCK + tokens form the pool; LP is locked 1 week.</div>
+    <div class="note">The fee is a developer deploy &amp; listing service charge (paid via PayPal) — not a purchase of BLOCK or of your token. You deploy your own token and seed your own pool by signing in your wallet; LP locks for 1 week. Longer locks are coming in a chain upgrade.</div>
   </div>
 
   <div class="card" id="progress" hidden>
     <ol class="steps" id="stepList">
       <li data-k="connect"><span class="dot">1</span><div class="lx">Connect wallet</div></li>
-      <li data-k="launch"><span class="dot">2</span><div class="lx">Launch — deploy, mint &amp; seed pool in one transaction <small id="s-launch"></small></div></li>
-      <li data-k="logo"><span class="dot">3</span><div class="lx">Register logo for the DEX</div></li>
-      <li data-k="confirm"><span class="dot">4</span><div class="lx">Confirm the pool on the DEX <small id="s-confirm"></small></div></li>
+      <li data-k="pay"><span class="dot">2</span><div class="lx">Pay the launch fee (PayPal) <small id="s-pay"></small></div></li>
+      <li data-k="launch"><span class="dot">3</span><div class="lx">Launch — deploy, mint &amp; seed pool in one transaction <small id="s-launch"></small></div></li>
+      <li data-k="register"><span class="dot">4</span><div class="lx">Register logo &amp; listing <small id="s-register"></small></div></li>
+      <li data-k="confirm"><span class="dot">5</span><div class="lx">Confirm the pool on the DEX <small id="s-confirm"></small></div></li>
     </ol>
     <div class="err" id="perr"></div>
-    <a class="cta" id="done" href="/dex" hidden style="display:block;text-align:center">View it on the DEX →</a>
+    <a class="cta" id="done" href="/dex" hidden style="display:block;text-align:center">View your token →</a>
+  </div>
+
+  <div class="card" id="promote">
+    <h1 style="font-size:20px;margin:0 0 4px">Promote a token</h1>
+    <p class="sub" style="margin:0 0 10px">Buy premium placement on the DEX. This is advertising — a visibility fee, paid via PayPal.</p>
+    <label class="fld">Token contract id</label>
+    <input class="t" id="pmToken" placeholder="64-hex contract id">
+    <div class="row" style="margin-top:10px">
+      <div><label class="fld">Placement</label>
+        <select class="t" id="pmTier"><option value="featured">Featured (pinned top)</option><option value="boost">Boost (higher rank)</option></select>
+      </div>
+      <div><label class="fld">Duration</label>
+        <select class="t" id="pmDur"><option value="24h">24 hours</option><option value="7d">7 days</option></select>
+      </div>
+    </div>
+    <button class="cta" id="pmGo">Buy placement</button>
+    <div class="err" id="pmErr"></div>
+    <div class="ok" id="pmOk" style="font-size:13px;margin-top:8px"></div>
   </div>
 </main>
 <script src="/blockle_wasm.js"></script>
-<script src="/launch.js?v=20261019b"></script>
+<script src="/launch.js?v=20261026a"></script>
 </body>
 </html>

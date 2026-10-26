@@ -87,6 +87,13 @@
         wb().build_call(secretHex, publicHex, JSON.stringify(utxos), contractHex, inputHex, BigInt(value), BigInt(gasLimit), BigInt(gasPrice))
       );
     },
+    // Transfer a BLOCK-20 token (fn_transfer) — consensus calldata encoded in wasm.
+    async buildTokenTransfer(secretHex, publicHex, utxos, contractHex, toAddr, amountBase, gasLimit, gasPrice) {
+      await init();
+      return JSON.parse(
+        wb().build_token_transfer(secretHex, publicHex, JSON.stringify(utxos), contractHex, toAddr, BigInt(amountBase), BigInt(gasLimit), BigInt(gasPrice))
+      );
+    },
     async buildPoolCreate(secretHex, publicHex, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice) {
       await init();
       return JSON.parse(

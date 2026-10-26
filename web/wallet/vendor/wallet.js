@@ -203,6 +203,11 @@
       return Signer.buildCall(session.secret, session.pub, utxos, contractHex, inputHex, value, gasLimit, gasPrice);
     },
 
+    async buildTokenTransfer(utxos, contractHex, toAddr, amountBase, gasLimit, gasPrice) {
+      if (!session.secret) throw new Error('locked');
+      return Signer.buildTokenTransfer(session.secret, session.pub, utxos, contractHex, toAddr, amountBase, gasLimit, gasPrice);
+    },
+
     async buildPoolCreate(utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice) {
       if (!session.secret) throw new Error('locked');
       return Signer.buildPoolCreate(session.secret, session.pub, utxos, tokenHex, blockAmt, tokenAmt, gasLimit, gasPrice);

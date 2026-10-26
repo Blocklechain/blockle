@@ -23,6 +23,8 @@ extension type _EngineJS._(JSObject _) implements JSObject {
       JSString s, JSString p, JSString utxos, JSString to, JSString amt, JSString fee);
   external JSPromise<JSString> buildDeploy(
       JSString s, JSString p, JSString utxos, JSString code, JSString gl, JSString gp);
+  external JSPromise<JSString> buildTokenTransfer(JSString s, JSString p, JSString utxos,
+      JSString contract, JSString to, JSString amt, JSString gl, JSString gp);
   external JSPromise<JSString> buildPoolSwapBuy(JSString s, JSString p, JSString utxos,
       JSString tok, JSString amt, JSString min, JSString gl, JSString gp);
   external JSPromise<JSString> buildPoolSwapSell(JSString s, JSString p, JSString utxos,
@@ -93,6 +95,14 @@ class Engine {
     await ensureStarted();
     return _json(await _str(_engine.buildDeploy(secretHex.toJS, publicHex.toJS,
         utxosJson.toJS, codeHex.toJS, gasLimit.toJS, gasPrice.toJS)));
+  }
+
+  Future<Map<String, dynamic>> buildTokenTransfer(String secretHex, String publicHex,
+      String utxosJson, String contractHex, String toAddr, String amountBase,
+      String gasLimit, String gasPrice) async {
+    await ensureStarted();
+    return _json(await _str(_engine.buildTokenTransfer(secretHex.toJS, publicHex.toJS,
+        utxosJson.toJS, contractHex.toJS, toAddr.toJS, amountBase.toJS, gasLimit.toJS, gasPrice.toJS)));
   }
 
   Future<Map<String, dynamic>> buildPoolSwapBuy(String secretHex, String publicHex,

@@ -7,8 +7,12 @@
   const COIN = 100000000; // base units per BLOCK
 
   async function endpoint() {
+    // Honor a stored apiBase ONLY if it is a currently-recognized endpoint. Any
+    // stale/legacy value (an old host or path persisted by a previous build)
+    // falls back to mainnet — otherwise BLOCK + token balances read a dead API
+    // and show 0 for a funded mainnet address.
     const { apiBase } = await Store.get('apiBase');
-    return apiBase || DEFAULT_API;
+    return apiBase === DEFAULT_API || apiBase === TESTNET_API ? apiBase : DEFAULT_API;
   }
 
   async function get(path) {

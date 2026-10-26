@@ -194,6 +194,16 @@ class ChainWallet:
             args += ["--node", self.node]
         return self._run_json(*args)
 
+    def send_token(self, contract: str, to: str, amount_base: int, gas: int = 200000) -> dict:
+        """Transfer a BLOCK-20 token. `amount_base` is in the token's base units
+        (scaled by its decimals); the CLI encodes the consensus transfer calldata.
+        Gas fee (gas * gas_price) is paid in BLOCK."""
+        args = ["contract", "token-transfer", contract,
+                "--to", to, "--amount-base", str(int(amount_base)), "--gas", str(int(gas))]
+        if self.node:
+            args += ["--node", self.node]
+        return self._run_json(*args)
+
     # ---- shielded ----
 
     def shield(self, amount: str, fee: str = "0.0001") -> dict:

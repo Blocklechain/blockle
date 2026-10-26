@@ -1,0 +1,30 @@
+[Unit]
+Description=Blockle Launchpad — paid token-launch + listing service (loopback)
+After=network-online.target blockle-node.service blockle-biz.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/launchpad
+# Non-secret config via env; PayPal creds + the preseed wallet key are referenced
+# by path / injected via the EnvironmentFile below (box-only, chmod 600).
+Environment=LAUNCHPAD_PORT=8808
+Environment=LAUNCHPAD_DATA=/var/lib/blockle-launchpad
+Environment=LAUNCHPAD_KEYPAIR=/opt/blockle/secrets/launch-block.json
+Environment=LAUNCHPAD_NODE_URL=http://127.0.0.1:8445
+Environment=LAUNCHPAD_BIZ_URL=http://127.0.0.1:8900
+Environment=LAUNCHPAD_PUBLIC_BASE=https://blockle.org/launch
+Environment=LAUNCHPAD_PROMO_CAP=1000
+Environment=LAUNCHPAD_PRESEED_BLOCK=50
+Environment=LAUNCHPAD_FEE_PROMO_USD=5
+Environment=LAUNCHPAD_FEE_STD_USD=1
+Environment=LAUNCHPAD_PRESEED_DAILY_CAP=2000
+# PAYPAL_CLIENT_ID / PAYPAL_SECRET / PAYPAL_ENV
+EnvironmentFile=/opt/blockle/secrets/launchpad.env
+ExecStart=/usr/bin/node /opt/blockle/services/launchpad/src/server.js
+Restart=on-failure
+RestartSec=5
+# loopback only — nginx proxies /api/launch/ to 127.0.0.1:8808
+
+[Install]
+WantedBy=multi-user.target

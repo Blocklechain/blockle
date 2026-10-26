@@ -1,0 +1,11 @@
+{
+  "name": "blockle-launchpad",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Blockle token-launch service: a paid developer/listing service (PayPal) that gates BLOCK-20 token launches, optionally preseeds early launches with BLOCK from a platform wallet, and sells Featured/Boost listing placement. Never sells tokens for fiat — the fiat charge is for the deploy/listing service; users supply their own pool liquidity.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  }
+}

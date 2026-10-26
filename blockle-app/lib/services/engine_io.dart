@@ -134,6 +134,20 @@ class Engine {
     return _json(v);
   }
 
+  Future<Map<String, dynamic>> buildTokenTransfer(
+      String secretHex,
+      String publicHex,
+      String utxosJson,
+      String contractHex,
+      String toAddr,
+      String amountBase,
+      String gasLimit,
+      String gasPrice) async {
+    final v = await _call(
+        'return await window.Engine.buildTokenTransfer(${_s(secretHex)}, ${_s(publicHex)}, ${_s(utxosJson)}, ${_s(contractHex)}, ${_s(toAddr)}, ${_s(amountBase)}, ${_s(gasLimit)}, ${_s(gasPrice)});');
+    return _json(v);
+  }
+
   /// Swap BLOCK -> token against a pool. amountIn/minOut are decimal strings
   /// in base units.
   Future<Map<String, dynamic>> buildPoolSwapBuy(

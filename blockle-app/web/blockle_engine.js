@@ -63,6 +63,12 @@
         secretHex, publicHex, utxosJson, codeHex, BigInt(gasLimit), BigInt(gasPrice));
     },
 
+    async buildTokenTransfer(secretHex, publicHex, utxosJson, contractHex, toAddr, amountBase, gasLimit, gasPrice) {
+      await initWasm();
+      return wasm_bindgen.build_token_transfer(
+        secretHex, publicHex, utxosJson, contractHex, toAddr, BigInt(amountBase), BigInt(gasLimit), BigInt(gasPrice));
+    },
+
     async buildPoolSwapBuy(secretHex, publicHex, utxosJson, tokenHex, blockIn, minOut, gasLimit, gasPrice) {
       await initWasm();
       return wasm_bindgen.build_pool_swap_buy(

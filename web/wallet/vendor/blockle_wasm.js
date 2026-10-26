@@ -453,6 +453,185 @@ let wasm_bindgen = (function(exports) {
     exports.build_pool_swap_sell = build_pool_swap_sell;
 
     /**
+     * Issuer-signed BURN of `amount_base` USDB base units from `from_addr`
+     * (selector 8) — the redemption side. Issuer-only; reverts if balance < amount.
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} contract_hex
+     * @param {string} from_addr
+     * @param {bigint} amount_base
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_stablecoin_burn(secret_hex, public_hex, utxos_json, contract_hex, from_addr, amount_base, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(contract_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(from_addr, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_stablecoin_burn(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, amount_base, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_stablecoin_burn = build_stablecoin_burn;
+
+    /**
+     * Issuer-signed MINT of `amount_base` USDB base units to `to_addr` (selector 7).
+     * Only the contract's issuer key may do this; the node rejects non-issuer calls.
+     * `value` is 0 — minting moves no BLOCK, only the gas fee (gas_limit*gas_price)
+     * is paid from the issuer's `utxos_json`.
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} contract_hex
+     * @param {string} to_addr
+     * @param {bigint} amount_base
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_stablecoin_mint(secret_hex, public_hex, utxos_json, contract_hex, to_addr, amount_base, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(contract_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(to_addr, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_stablecoin_mint(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, amount_base, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_stablecoin_mint = build_stablecoin_mint;
+
+    /**
+     * Caller-initiated REDEEM (off-ramp, selector 15): burns the caller's own USDB
+     * and records an on-chain redeem request tagged with `payout_ref_hex` (a 32-byte
+     * reference the issuer service maps to the payout destination off-chain). Trustless
+     * — no treasury custody; the burn is verifiable and the issuer can't take tokens
+     * without destroying them. `value` is 0 (only gas is paid).
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} contract_hex
+     * @param {string} payout_ref_hex
+     * @param {bigint} amount_base
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_stablecoin_redeem(secret_hex, public_hex, utxos_json, contract_hex, payout_ref_hex, amount_base, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(contract_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(payout_ref_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_stablecoin_redeem(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, amount_base, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_stablecoin_redeem = build_stablecoin_redeem;
+
+    /**
+     * Send `amount_base` base units of the BLOCK-20 token at `contract_hex` to
+     * `to_addr`, signed by the caller (CALLER in the VM). `value` is 0 — only the
+     * gas fee (gas_limit*gas_price) is paid from `utxos_json`. Reverts on the chain
+     * if the caller's token balance < amount.
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} contract_hex
+     * @param {string} to_addr
+     * @param {bigint} amount_base
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_token_transfer(secret_hex, public_hex, utxos_json, contract_hex, to_addr, amount_base, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(contract_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(to_addr, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_token_transfer(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, amount_base, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_token_transfer = build_token_transfer;
+
+    /**
      * Build and sign a transfer. `utxos_json` is `[{txid, vout, amount}]` (base
      * units). Selects inputs greedily, adds change back to the sender, signs every
      * input with ML-DSA over the tx sighash, and returns JSON:

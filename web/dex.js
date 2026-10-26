@@ -33,6 +33,9 @@
       window.__height = r.height || 0;
     } catch (e) { pools = []; }
     try { logos = await (await fetch('/api/dex/tokens')).json(); } catch (e) { logos = {}; }
+    // Paid placement (sold on /launch): featured pins to the top, boosted ranks above the rest.
+    try { var L = await (await fetch('/api/launch/listings')).json(); window.__featured = new Set(L.featured || []); window.__boosted = new Set(L.boosted || []); }
+    catch (e) { window.__featured = new Set(); window.__boosted = new Set(); }
     render();
   }
 
@@ -52,7 +55,10 @@
       var hay = ((p.symbol || '') + ' ' + (p.name || '') + ' ' + (p.token || '')).toLowerCase();
       return hay.indexOf(q.toLowerCase()) >= 0;
     });
+    var FEAT = window.__featured || new Set(), BOOST = window.__boosted || new Set();
+    function placeRank(p) { return (FEAT.has(p.token) ? 2 : 0) + (BOOST.has(p.token) ? 1 : 0); }
     list.sort(function (a, b) {
+      var rb = placeRank(b) - placeRank(a); if (rb) return rb; // featured first, then boosted
       if (sort === 'new') return (b.createdHeight || 0) - (a.createdHeight || 0);
       if (sort === 'price') return (price(b) || 0) - (price(a) || 0);
       return (b.lpTotal || 0) - (a.lpTotal || 0);
@@ -70,9 +76,10 @@
       var avatar = logo
         ? '<span class="logo"><img src="' + logo + '" alt="" onerror="this.parentNode.textContent=\'' + sym.slice(0, 2).toUpperCase() + '\'"></span>'
         : '<span class="logo">' + sym.slice(0, 2).toUpperCase() + '</span>';
+      var featBadge = FEAT.has(p.token) ? '<span style="margin-left:8px;font-size:10.5px;font-weight:700;color:#05231a;background:linear-gradient(135deg,#5affb9,#37E0C8);padding:2px 7px;border-radius:999px;vertical-align:middle">★ Featured</span>' : '';
       return '<div class="card">' +
         '<a class="chead" href="/token/' + p.token + '" style="color:inherit;text-decoration:none">' + avatar +
-          '<div><div class="csym">' + sym + '</div><div class="cname">' + (p.name || 'BLOCK-20 token') + '</div></div>' +
+          '<div><div class="csym">' + sym + featBadge + '</div><div class="cname">' + (p.name || 'BLOCK-20 token') + '</div></div>' +
           '<span style="margin-left:auto" class="lock ' + (locked ? 'locked' : 'open') + '">' +
             (locked ? '🔒 ' + dur(lockBlocks) : '🔓 unlocked') + '</span>' +
         '</a>' +
@@ -119,7 +126,7 @@
       '</div>' +
       '<div class="terr" id="t-err"></div>' +
       '<div class="act"><button class="cancel" id="t-cancel">Cancel</button><button class="go" id="t-go">Swap</button></div>' +
-      '<div class="tnote">Approve in the Blockle wallet extension. Needs the extension installed &amp; connected.</div>';
+      '<div class="tnote">Approve in the Blockle wallet extension — or the Web Wallet if you don’t have the extension installed.</div>';
     $('t-inlabel').textContent = tSide === 'buy' ? 'You pay (BLOCK)' : 'You pay (' + sym + ')';
     $('t-buy').onclick = function () { tSide = 'buy'; renderTrade(); };
     $('t-sell').onclick = function () { tSide = 'sell'; renderTrade(); };
@@ -146,7 +153,14 @@
     var raw = parseFloat($('t-amt').value), r = tradeReserves(), err = $('t-err');
     err.textContent = '';
     if (!(raw > 0)) { err.textContent = 'Enter an amount.'; return; }
-    if (typeof window.blockle === 'undefined') { err.textContent = 'Install the Blockle wallet extension to trade.'; return; }
+    if (typeof window.blockle === 'undefined') {
+      // No browser extension — fall back to the non-custodial Web Wallet,
+      // deep-linking into its swap view with this token, side and amount prefilled.
+      var wl = '/wallet?swap=' + tPool.token + '&side=' + tSide + '&amt=' + encodeURIComponent(String(raw)) + '#swap';
+      err.innerHTML = 'No wallet extension detected — opening the <a href="' + wl + '" target="_blank" style="color:#37E0C8;text-decoration:underline">Blockle Web Wallet</a> to complete this swap.';
+      window.open(wl, '_blank');
+      return;
+    }
     var btn = $('t-go'); btn.disabled = true; btn.textContent = 'Confirm in wallet…';
     try {
       await window.blockle.connect();

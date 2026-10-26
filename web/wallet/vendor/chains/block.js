@@ -131,17 +131,31 @@
         try {
           const a = await Chain.account(address || W.address);
           const confirmed = a ? String(a.balance) : '0';
-          return [{ asset: native, confirmed, spendable: confirmed, display: a ? a.balanceFmt : '—' }];
+          // display is a NUMBER (whole BLOCK), not a locale-formatted string —
+          // callers do Number(display), and a comma-grouped string ("140,001.74")
+          // would become NaN and render as 0 for balances ≥ 1,000.
+          const display = a ? Number(BigInt(confirmed)) / 1e8 : 0;
+          return [{ asset: native, confirmed, spendable: confirmed, display }];
         } catch (e) {
           return [{ asset: native, confirmed: '0', display: '—', error: String(e.message || e) }];
         }
       },
 
-      // req: {to, amount(base), feeRate?(fee base)}
+      // Native:   req = {to, amount(base), feeRate?(fee base)}
+      // BLOCK-20: req = {to, amount(base), asset:{kind:'block20', contract|address}, gasLimit?, gasPrice?}
       async buildSend(account, req) {
         if (!W.isUnlocked()) throw new Error('locked');
         const u = await Chain.utxos(W.address);
         const utxos = (u && u.utxos) || [];
+        const asset = req.asset;
+        const contract = asset && (asset.contract || asset.address);
+        const isToken = !!(asset && (asset.kind === 'block20' || (contract && /^[0-9a-f]{64}$/i.test(String(contract)))));
+        if (isToken) {
+          const gasLimit = BigInt(req.gasLimit || 200000);
+          const gasPrice = BigInt(req.gasPrice || 10);
+          const built = await W.buildTokenTransfer(utxos, String(contract).toLowerCase(), req.to, BigInt(req.amount), gasLimit, gasPrice);
+          return { chain: id, raw: built.raw, txid: built.txid, fee: (gasLimit * gasPrice).toString(), token: String(contract).toLowerCase(), summary: req };
+        }
         const fee = BigInt(req.feeRate || 100000);
         const built = await W.buildTransfer(utxos, req.to, BigInt(req.amount), fee);
         // Signer.buildTransfer returns { raw, txid } (bincode hex)

@@ -167,11 +167,17 @@
       <section class="screen" data-screen="send" hidden>
         <header class="bar"><button class="back" data-go="dashboard">‹</button><span>Send BLOCK</span></header>
         <div class="pad">
+          <div class="notice" id="send-token-banner" hidden></div>
           <label class="field"><span>To address</span><input type="text" id="send-to" placeholder="block1…" class="mono" /></label>
-          <label class="field"><span>Amount (BLOCK)</span><input type="text" id="send-amt" placeholder="0.00" inputmode="decimal" /></label>
+          <label class="field"><span id="send-amt-label">Amount (BLOCK)</span><input type="text" id="send-amt" placeholder="0.00" inputmode="decimal" /></label>
           <label class="field"><span>Note (optional)</span><input type="text" id="send-note" placeholder="" /></label>
+          <details id="send-adv" style="margin:2px 0 6px"><summary style="cursor:pointer;font-size:12px;opacity:.75">Advanced · adjust gas / fee</summary>
+            <label class="field" id="send-fee-row"><span>Network fee (BLOCK)</span><input type="text" id="send-fee" value="0.0001" inputmode="decimal" /></label>
+            <label class="field" id="send-gaslimit-row" hidden><span>Gas limit</span><input type="text" id="send-gaslimit" value="200000" inputmode="numeric" /></label>
+            <label class="field" id="send-gasprice-row" hidden><span>Gas price</span><input type="text" id="send-gasprice" value="10" inputmode="numeric" /></label>
+          </details>
           <div class="notice" id="send-notice">
-            Signed with your post-quantum key (ML-DSA-44) and broadcast to the BLOCK network. A 0.0001 BLOCK fee applies; change returns to you.
+            Signed with your post-quantum key (ML-DSA-44) and broadcast to the BLOCK network. A fee applies; change returns to you.
           </div>
           <div class="err" id="send-err"></div>
         </div>

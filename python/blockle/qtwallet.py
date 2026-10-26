@@ -631,7 +631,28 @@ class WalletWindow(QMainWindow):
         self.tokens_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.tokens_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.tokens_table.verticalHeader().hide()
+        self.tokens_table.cellClicked.connect(self._on_token_row_clicked)
         lay.addWidget(self.tokens_table, 1)
+
+        send_box = QGroupBox("Send a BLOCK-20 token")
+        sform = QFormLayout(send_box)
+        self.tok_send_contract = QLineEdit()
+        self.tok_send_contract.setObjectName("mono")
+        self.tok_send_contract.setPlaceholderText("token contract id (or click a row above)")
+        self.tok_send_to = QLineEdit()
+        self.tok_send_to.setPlaceholderText("block1… recipient")
+        self.tok_send_amount = QLineEdit()
+        self.tok_send_amount.setPlaceholderText("amount")
+        self.tok_send_gas = QLineEdit("200000")
+        tok_send_btn = QPushButton("Send token")
+        tok_send_btn.setObjectName("primary")
+        tok_send_btn.clicked.connect(self._do_send_token)
+        sform.addRow("Token", self.tok_send_contract)
+        sform.addRow("To", self.tok_send_to)
+        sform.addRow("Amount", self.tok_send_amount)
+        sform.addRow("Gas limit", self.tok_send_gas)
+        sform.addRow("", tok_send_btn)
+        lay.addWidget(send_box)
 
         self.token_worker: TokenWorker | None = None
         self.token_data: dict[str, dict] = {}
@@ -664,6 +685,61 @@ class WalletWindow(QMainWindow):
     def _token_holder_hex(self) -> str | None:
         addr = (self.snap or {}).get("wallet", {}).get("address")
         return _address_to_holder_hex(addr)
+
+    def _on_token_row_clicked(self, row: int, _col: int):
+        item = self.tokens_table.item(row, 4)  # Contract column
+        if item:
+            self.tok_send_contract.setText(item.text().strip())
+
+    def _do_send_token(self):
+        from .qtwalletui import to_base_units
+        contract = self.tok_send_contract.text().strip().lower()
+        to = self.tok_send_to.text().strip()
+        amount = self.tok_send_amount.text().strip()
+        gas_s = self.tok_send_gas.text().strip() or "200000"
+        if len(contract) != 64 or not all(c in "0123456789abcdef" for c in contract):
+            QMessageBox.warning(self, "Blockle", "Enter a valid 64-hex token contract id.")
+            return
+        if not to or not amount:
+            QMessageBox.warning(self, "Blockle", "Recipient and amount are required.")
+            return
+        info = self.token_data.get(contract) or {}
+        dec = int(info.get("decimals", 0) or 0)
+        try:
+            amount_base = to_base_units(amount, dec)
+            gas = int(gas_s)
+        except Exception as e:
+            QMessageBox.warning(self, "Blockle", f"Bad amount or gas: {e}")
+            return
+        # SECURITY GATE: same read-only inspect + confirm sheet as a BLOCK send,
+        # with the token asset so the preview shows the real token + amount.
+        try:
+            inspection = self._inspect_block_token_send(
+                contract, to, str(amount_base), dec, info.get("symbol") or "TOKEN")
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
+            return
+        if not self._confirm_security(inspection, "Review token send"):
+            return   # rejected / danger un-acknowledged -> abort WITHOUT signing
+        self.wallet.node = self.node.p2p_address if self.node.running else None
+        if self._guarded(lambda: self.wallet.send_token(contract, to, amount_base, gas),
+                         "Token transfer submitted."):
+            self.tok_send_to.clear()
+            self.tok_send_amount.clear()
+            QTimer.singleShot(1500, self._do_refresh_tokens)
+
+    def _inspect_block_token_send(self, contract: str, to: str, amount_base_str: str,
+                                  dec: int, symbol: str) -> dict:
+        from .multichain import security as security_mod
+        tx = {
+            "chain": "block", "to": to,
+            "amount": str(amount_base_str),
+            "fee": None,
+            "asset": {"chain": "block", "kind": "block20", "symbol": symbol,
+                      "decimals": dec, "address": contract},
+            "_recipient": to,
+        }
+        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
 
     def _do_import_token(self):
         cid = self.token_input.text().strip().lower()

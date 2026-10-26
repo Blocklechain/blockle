@@ -351,7 +351,34 @@ class _WalletTabState extends State<WalletTab> {
               ],
             ),
           ),
-          Text(bal, style: kMono),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(bal, style: kMono),
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 28,
+                child: TextButton(
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () {
+                    final cid = (t['contract'] ?? t['address'] ?? t['id'] ?? '').toString();
+                    if (cid.isEmpty) return;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => SendScreen(token: {'contract': cid, 'decimals': dec, 'symbol': sym}),
+                      ),
+                    );
+                  },
+                  child: const Text('Send', style: TextStyle(fontSize: 12)),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );

@@ -226,18 +226,26 @@
   async function listAssets() {
     const acc = await accounts();
     const reg = await registry();
-    const out = [];
-    for (const id of reg.enabled()) {
+    // Run every chain in PARALLEL with a per-chain timeout. Previously this was a
+    // sequential await-loop, so a single slow/hung chain RPC stalled the whole
+    // balance view ("stuck on loading") — and a try/catch can't rescue a promise
+    // that never settles. Now a chain that hangs or errors just yields an error
+    // row after the timeout, and the healthy chains (e.g. BLOCK) still render.
+    const withTimeout = (p, ms) => Promise.race([
+      Promise.resolve(p),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+    ]);
+    const jobs = reg.enabled().map(async (id) => {
       try {
-        const acct = await acc.accountFor(id);
+        const acct = await withTimeout(acc.accountFor(id), 8000);
         // auto-detect view: native + every held token, merged with the known list
-        const bals = await getHoldings(id);
-        out.push({ chain: id, address: acct.address, balances: bals });
+        const bals = await withTimeout(getHoldings(id), 12000);
+        return { chain: id, address: acct.address, balances: bals };
       } catch (e) {
-        out.push({ chain: id, error: String(e.message || e) });
+        return { chain: id, error: String((e && e.message) || e) };
       }
-    }
-    return out;
+    });
+    return Promise.all(jobs);
   }
 
   async function explorerTx(chain, txid) {

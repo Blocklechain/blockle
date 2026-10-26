@@ -25,6 +25,20 @@
   function fmtAmt(n, dp) { var x = Number(n); if (!isFinite(x)) return '0'; return x.toLocaleString(undefined, { maximumFractionDigits: dp == null ? 6 : dp }); }
   function fmtUsd(n) { var x = Number(n); if (!isFinite(x)) return '—'; return '$' + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function baseToNum(confirmed, decimals) { try { return Number(BigInt(confirmed || '0')) / Math.pow(10, decimals || 0); } catch (_) { return Number(confirmed || 0) / Math.pow(10, decimals || 0); } }
+  // A row's `display` may be a locale-formatted string ("140,001.74") from some
+  // adapters; Number() of that is NaN (→ renders 0 and gets filtered out). Strip
+  // grouping separators before converting so large balances (≥1,000) are correct.
+  function numVal(x) { return typeof x === 'number' ? x : Number(String(x == null ? '' : x).replace(/,/g, '')); }
+  // Exact decimal-string -> base-units (BigInt string), no float rounding — safe
+  // for large amounts (e.g. sending 140,000 BLOCK) where amt*1e8 would lose bits.
+  function toBaseUnits(decStr, decimals) {
+    var s = String(decStr == null ? '' : decStr).trim().replace(/,/g, '');
+    if (s === '' || s === '.' || !/^\d*(\.\d*)?$/.test(s)) return '0';
+    var d = Math.max(0, decimals || 0), parts = s.split('.');
+    var whole = parts[0] || '0', frac = (parts[1] || '');
+    frac = (frac + '00000000000000000000').slice(0, d);
+    try { return (BigInt(whole) * (10n ** BigInt(d)) + BigInt(frac || '0')).toString(); } catch (_) { return '0'; }
+  }
 
   /* ---------------- icon set (unique inline SVGs; no emoji, currentColor) ---------------- */
   var ICONS = {
@@ -153,10 +167,18 @@
 
   function registerSW() {
     if (!('serviceWorker' in navigator)) return;
+    // When a bumped service worker takes control (skipWaiting + clients.claim),
+    // reload ONCE so the page actually runs the new vendor code (e.g. an updated
+    // chain.js) instead of the stale in-memory bundle — the classic PWA
+    // "two reloads" trap that otherwise leaves a fix looking un-applied.
+    var swReloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      if (swReloaded) return; swReloaded = true; location.reload();
+    });
     navigator.serviceWorker.register('sw.js', { scope: '/wallet/' }).then(function (reg) {
       reg.addEventListener && reg.addEventListener('updatefound', function () {
         var nw = reg.installing; if (!nw) return;
-        nw.addEventListener('statechange', function () { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('Wallet update available — reload to apply', 'good'); });
+        nw.addEventListener('statechange', function () { if (nw.state === 'installed' && navigator.serviceWorker.controller) toast('Updating the wallet…', 'good'); });
       });
     }).catch(function () {});
   }
@@ -169,7 +191,7 @@
     try {
       Store.get('apiBase').then(function (r) {
         var ab = r && r.apiBase;
-        if (ab && Chain && ab === Chain.TESTNET_API) Store.set({ apiBase: Chain.DEFAULT_API });
+        if (ab && Chain && ab !== Chain.DEFAULT_API && ab !== Chain.TESTNET_API) Store.set({ apiBase: Chain.DEFAULT_API });
       }).catch(function () {});
     } catch (_) {}
     // Hide broken images globally (replaces inline onerror= handlers so a strict CSP
@@ -374,6 +396,18 @@
     refreshChains();
     loadTier();
     $('#acctsel').onclick = openAccountSheet;
+    // Deep-link from the DEX / token pages: /wallet?swap=<contract>&side=buy&amt=1
+    // opens the swap view with the token, direction and amount prefilled.
+    try {
+      var _sp = new URLSearchParams(location.search);
+      var _swt = (_sp.get('swap') || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(_swt)) {
+        S._swapPrefill = _swt;
+        S._swapSide = _sp.get('side') === 'sell' ? 'sell' : 'buy';
+        S._swapAmt = _sp.get('amt') || _sp.get('amount') || '';
+        location.hash = '#swap';
+      }
+    } catch (_) {}
     if (!location.hash) location.hash = '#portfolio';
     onRoute();
     ['click', 'keydown', 'mousemove', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, resetAutoLock, { passive: true }); });
@@ -674,7 +708,7 @@
         if (!chainRow.balances) return; var had = false;
         chainRow.balances.forEach(function (r) {
           var dec = (r.asset && r.asset.decimals) || 0;
-          var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
+          var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec);
           if (!(amt > 0)) return; had = true; assetCount++;
           var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chainRow.chain.toUpperCase();
           var job = Promise.resolve(Wiring.estimateUsd ? Wiring.estimateUsd(r.asset || sym, amt) : null).catch(function () { return null; }).then(function (usd) {
@@ -759,11 +793,11 @@
 
       // actions
       var acts = [];
+      acts.push('<a class="btn primary" href="#send" id="ai-send">' + ic('send', 15) + ' Send</a>');
       acts.push('<a class="btn" href="#receive" id="ai-recv">' + ic('receive', 15) + ' Receive</a>');
       if (!native) acts.push('<button class="btn" id="ai-swap">' + ic('swap', 15) + ' Swap</button>');
       if (!native && (symbol === 'USDB' || (curated && curated.symbol === 'USDB'))) acts.push('<a class="btn" href="#buy">' + ic('buy', 15) + ' Buy / Redeem</a>');
       if (!native && (symbol === 'WORLD' || (curated && curated.symbol === 'WORLD'))) acts.push('<a class="btn" href="/market" target="_blank">' + ic('external', 15) + ' Marketplace</a>');
-      if (native) acts.push('<a class="btn" href="#send" id="ai-send">' + ic('send', 15) + ' Send</a>');
       var explorerHref = native ? ('/explorer/address/' + encodeURIComponent(addr)) : ('/token/' + encodeURIComponent(cid));
       acts.push('<a class="btn ghost" href="' + explorerHref + '" target="_blank">' + ic('external', 15) + ' Explorer</a>');
 
@@ -771,7 +805,11 @@
       if ($('#ai-copy')) $('#ai-copy').addEventListener('click', function () { copy(cid); });
       if ($('#ai-swap')) $('#ai-swap').addEventListener('click', function () { S._swapPrefill = cid; closeSheet(); S.chain = chain; location.hash = '#swap'; });
       if ($('#ai-recv')) $('#ai-recv').addEventListener('click', function () { closeSheet(); S.chain = chain; });
-      if ($('#ai-send')) $('#ai-send').addEventListener('click', function () { closeSheet(); S.chain = chain; });
+      if ($('#ai-send')) $('#ai-send').addEventListener('click', function () {
+        closeSheet(); S.chain = chain;
+        // Prefill the Send view with THIS token (BLOCK-20); null => native coin.
+        S._sendAsset = native ? null : { kind: 'block20', contract: cid, decimals: dec, symbol: symbol, name: name, logoURI: logo };
+      });
       usdP.then(function (u) { if (isFinite(Number(u)) && Number(u) > 0) $('#ai-usd').textContent = '≈ ' + fmtUsd(u) + ' at current price'; });
     }).catch(function () { body.innerHTML = '<div class="empty">Could not load asset details.</div>'; });
   }
@@ -820,7 +858,7 @@
     }).then(function (rows) {
       var html = (rows || []).map(function (r) {
         var dec = (r.asset && r.asset.decimals) || 0;
-        var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec);
+        var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec);
         var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chain.toUpperCase();
         return assetRow(sym, chain, amt, dec, null, r.asset && r.asset.logoURI, assetId(r.asset), r.asset && r.asset.name);
       }).join('');
@@ -872,10 +910,22 @@
     chainAddress(S.chain).then(function (a) { S.address = a; $('#rc-addr').textContent = a; $('#rc-copy').onclick = function () { copy(a); }; updateAcctLabel(); });
   };
 
+  var _sendAsset = null; // the asset captured for the current Send view (BLOCK-20 token, or null = native)
   VIEWS.send = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>Send · ' + esc(S.chain.toUpperCase()) + '</h2></div>' +
-      '<div class="field"><label>Recipient</label><input id="s-to" placeholder="address or name.eth / name.sol"></div>' +
-      '<div class="field"><label>Amount</label><input id="s-amt" inputmode="decimal" placeholder="0.0"></div>' +
+    _sendAsset = (S._sendAsset && S._sendAsset.kind === 'block20' && S.chain === 'block') ? S._sendAsset : null;
+    S._sendAsset = null; // consume the prefill
+    var a = _sendAsset, isToken = !!a;
+    var sym = isToken ? (a.symbol || 'TOKEN') : S.chain.toUpperCase();
+    var adv = isToken
+      ? '<div class="row" style="gap:10px"><div class="field" style="flex:1"><label>Gas limit</label><input id="s-gaslimit" inputmode="numeric" value="200000"></div>' +
+        '<div class="field" style="flex:1"><label>Gas price</label><input id="s-gasprice" inputmode="numeric" value="10"></div></div>' +
+        '<p class="dim" style="font-size:12px;margin:0">Fee = gas limit × gas price, paid in BLOCK (default ≈ 0.02 BLOCK).</p>'
+      : (S.chain === 'block' ? '<div class="field"><label>Network fee (BLOCK)</label><input id="s-fee" inputmode="decimal" value="0.0001"></div>' : '');
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Send ' + esc(sym) + '</h2></div>' +
+      (isToken ? '<div class="banner info" style="margin-bottom:10px"><span>' + ic('send', 16) + '</span><div>Sending the BLOCK-20 token <b>' + esc(sym) + '</b>. The gas fee is paid in BLOCK.</div></div>' : '') +
+      '<div class="field"><label>Recipient</label><input id="s-to" placeholder="' + (S.chain === 'block' ? 'block1… address' : 'address or name.eth / name.sol') + '"></div>' +
+      '<div class="field"><label>Amount (' + esc(sym) + ')</label><input id="s-amt" inputmode="decimal" placeholder="0.0"></div>' +
+      (adv ? '<details style="margin:2px 0 8px"><summary class="dim" style="cursor:pointer;font-size:13px">Advanced · adjust gas / fee</summary><div style="margin-top:8px">' + adv + '</div></details>' : '') +
       '<div id="s-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
       '<button class="btn primary wide" id="s-go">Review &amp; send</button>' +
       '<p class="dim" style="font-size:12px;margin-top:10px">Signed on your device. Every send passes the security review before broadcast.</p></div>';
@@ -887,31 +937,39 @@
     var amt = Number(amtStr);
     if (!to) return (err.textContent = 'Enter a recipient.');
     if (!(amt > 0)) return (err.textContent = 'Enter an amount greater than zero.');
-    var chain = S.chain;
+    var chain = S.chain, a = _sendAsset, isToken = !!a;
+    var sym = isToken ? (a.symbol || 'TOKEN') : chain.toUpperCase();
     (async function () {
       try {
         // read-only security inspection (best-effort) → confirm sheet (the gate)
         var insp = null;
-        try { insp = await Wiring.inspect(chain, { to: to, amount: amt, kind: 'send' }); } catch (_) {}
+        try { insp = await Wiring.inspect(chain, { to: to, amount: amt, kind: 'send', asset: a || undefined }); } catch (_) {}
         var warnings = (insp && (insp.warnings || insp.alerts)) || [];
         var danger = !!(insp && (insp.level === 'danger' || insp.severity === 'danger'));
         var ok = await confirmSheet({
-          title: 'Send ' + fmtAmt(amt) + ' on ' + chain.toUpperCase(),
-          lines: [['To', shortAddr(to)], ['Amount', fmtAmt(amt)], ['Network', chain.toUpperCase()]],
+          title: 'Send ' + fmtAmt(amt) + ' ' + sym,
+          lines: [['To', shortAddr(to)], ['Amount', fmtAmt(amt) + ' ' + sym], ['Network', chain.toUpperCase()]],
           warnings: warnings, danger: danger, okText: 'Sign & send',
         });
         if (!ok) { toast('Send cancelled'); return; }
         toast('Signing…');
         var txid;
-        if (chain === 'block') {
+        if (isToken) {
+          var dec = Number(a.decimals || 0);
+          var gasLimit = Math.max(1, Math.round(Number(($('#s-gaslimit') && $('#s-gaslimit').value) || 200000) || 200000));
+          var gasPrice = Math.max(1, Math.round(Number(($('#s-gasprice') && $('#s-gasprice').value) || 10) || 10));
+          var b = await Wiring.buildSend('block', { to: to, amount: toBaseUnits(amtStr, dec), asset: { kind: 'block20', contract: (a.contract || a.address), decimals: dec }, gasLimit: gasLimit, gasPrice: gasPrice });
+          var r = await Wiring.broadcast('block', b); txid = (r && (r.txid || r.hash)) || (b && b.txid) || '';
+        } else if (chain === 'block') {
           var u = await Chain.utxos(Wallet.address);
           if (!u || !u.utxos || !u.utxos.length) throw new Error('no spendable funds (coinbase matures after 100 blocks)');
-          var amountBase = Math.round(amt * COIN), feeBase = 10000;
-          var built = await Wallet.buildTransfer(u.utxos, to, amountBase, feeBase);
+          var feeBlk = Number(($('#s-fee') && $('#s-fee').value) || 0.0001); if (!isFinite(feeBlk) || feeBlk < 0) feeBlk = 0.0001;
+          var feeBase = Math.round(feeBlk * COIN);
+          var built = await Wallet.buildTransfer(u.utxos, to, toBaseUnits(amtStr, 8), feeBase);
           var res = await Chain.submit(built.raw); txid = (res && res.txid) || built.txid;
         } else {
-          var b = await Wiring.buildSend(chain, { to: to, amount: String(amt) });
-          var r = await Wiring.broadcast(chain, b); txid = (r && (r.txid || r.hash)) || '';
+          var bb = await Wiring.buildSend(chain, { to: to, amount: String(amt) });
+          var rr = await Wiring.broadcast(chain, bb); txid = (rr && (rr.txid || rr.hash)) || '';
         }
         toast('Sent · ' + String(txid).slice(0, 14) + '…', 'good');
         $('#s-to').value = ''; $('#s-amt').value = '';
@@ -929,6 +987,8 @@
       '<div class="row" style="gap:10px"><button class="btn" id="sw-quote">Get quote</button><button class="btn primary" id="sw-go" disabled>Swap</button></div>' +
       '<div id="sw-out" class="muted" style="margin-top:12px;font-size:13px"></div></div>';
     if (S._swapPrefill) { $('#sw-token').value = S._swapPrefill; S._swapPrefill = null; }
+    if (S._swapSide) { $('#sw-side').value = S._swapSide; S._swapSide = null; }
+    if (S._swapAmt) { $('#sw-amt').value = S._swapAmt; S._swapAmt = null; }
     var quoted = null;
     $('#sw-quote').onclick = function () {
       var token = ($('#sw-token').value || '').trim(), side = $('#sw-side').value, amt = Number($('#sw-amt').value);
@@ -1123,7 +1183,7 @@
       });
     });
   }
-  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? Number(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
+  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
   function agentEvent(ev) {
     if (!ev) return; var add = S._agentLog;
     if (ev.type === 'text' && ev.text && add) { S._lastAgentText = ev.text; add('agent', ev.text); }
@@ -1270,6 +1330,7 @@
       settingRow('WalletConnect', 'Connect to a dApp by pasting a WC URI', '<button class="btn sm" id="set-wc">Connect</button>') +
       settingRow('Theme', 'Light / dark follows your system by default', '<button class="btn sm" id="set-theme">Toggle</button>') +
       settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
+      settingRow('Force update &amp; reload', 'Fetch the latest wallet code if something looks stale. Does NOT delete your keys.', '<button class="btn sm" id="set-update">Update</button>') +
       '</div></div>' +
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
       '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
@@ -1277,8 +1338,28 @@
     $('#set-theme') && ($('#set-theme').onclick = function () { var cur = document.documentElement.getAttribute('data-theme'); themeApply(cur === 'light' ? 'dark' : 'light'); });
     $('#set-lock') && ($('#set-lock').onclick = lock);
     $('#set-wc') && ($('#set-wc').onclick = wcSheet);
+    $('#set-update') && ($('#set-update').onclick = forceUpdate);
   };
   function settingRow(title, sub, action) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(title) + '</b><span class="dim" style="font-size:12px">' + sub + '</span></span><span style="margin-left:auto">' + action + '</span></div>'; }
+  // Hard-refresh the wallet CODE: unregister the service worker and drop every
+  // cache, then reload fresh from the network. This touches ONLY cached code —
+  // your encrypted keys live in IndexedDB and are left completely untouched, so
+  // the wallet is still there after the reload. Fixes "stale code after a
+  // deploy" (e.g. a balance not showing because old vendor JS was cached).
+  async function forceUpdate() {
+    try { toast('Updating the wallet…'); } catch (_) {}
+    try {
+      if ('serviceWorker' in navigator) {
+        var regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(function (r) { return r.unregister(); }));
+      }
+      if (window.caches && caches.keys) {
+        var keys = await caches.keys();
+        await Promise.all(keys.map(function (k) { return caches.delete(k); }));
+      }
+    } catch (_) { /* best-effort; reload anyway */ }
+    setTimeout(function () { location.reload(); }, 300);
+  }
   function wcSheet() {
     openSheet('<div class="spread"><h2>WalletConnect</h2><button class="btn sm ghost" id="wc-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:8px 0">Paste a WalletConnect v2 URI from a dApp. Sessions and signature requests pass the same security gate.</p>' +

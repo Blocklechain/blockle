@@ -304,6 +304,22 @@ enum ContractCmd {
         #[arg(long)]
         node: Option<String>,
     },
+    /// Transfer a BLOCK-20 token (fn_transfer) to an address. Encodes the
+    /// consensus calldata (selector 2 ‖ recipient 32 bytes ‖ amount u64 LE).
+    TokenTransfer {
+        /// Token contract id (hex).
+        id: String,
+        /// Recipient block1… address.
+        #[arg(long)]
+        to: String,
+        /// Amount in the token's BASE units (scaled by its decimals).
+        #[arg(long)]
+        amount_base: u64,
+        #[arg(long, default_value_t = 200_000)]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
     /// Dry-run a call against current state (no transaction, no mutation).
     Simulate {
         id: String,
@@ -1012,6 +1028,32 @@ fn contract_cmd(datadir: &Path, params: ChainParams, cmd: ContractCmd) -> Result
                 hex::encode(id),
                 gas,
                 format_amount(value)
+            );
+            submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+        }
+        ContractCmd::TokenTransfer { id, to, amount_base, gas, node } => {
+            let id = parse_hash32(&id)?;
+            let to_addr = decode_address(&to).map_err(|e| anyhow!("bad recipient: {e}"))?;
+            // fn_transfer calldata: selector(2) ‖ recipient addr(32) ‖ amount u64 LE(8).
+            let mut input = Vec::with_capacity(41);
+            input.push(2u8);
+            input.extend_from_slice(&to_addr);
+            input.extend_from_slice(&amount_base.to_le_bytes());
+            let kp = load_wallet(datadir)?;
+            let chain = storage::load_chain(datadir, params)?;
+            let mut mempool = storage::load_mempool(datadir)?;
+            let fee = gas
+                .checked_mul(chain.params.gas_price)
+                .ok_or_else(|| anyhow!("gas overflow"))?;
+            let action =
+                blockle_core::ContractAction::Call { contract: id, input, value: 0, gas_limit: gas };
+            let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
+            println!(
+                "token transfer {} ({} base units) → {} ({} gas)",
+                hex::encode(id),
+                amount_base,
+                to,
+                gas
             );
             submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
         }

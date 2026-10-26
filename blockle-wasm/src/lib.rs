@@ -446,6 +446,38 @@ pub fn build_block20_token(name: &str, symbol: &str, decimals: u64, supply: u64)
     Ok(hexs(&code))
 }
 
+/// Encode BLOCK-20 fn_transfer calldata: selector(2) ‖ recipient addr(32) ‖
+/// amount_u64_le(8) — exactly the layout block20_asm's fn_transfer reads
+/// (calldata[0]=selector, [1..33]=to, [33..41]=amount LE).
+fn block20_transfer_input(to_addr: &str, amount_base: u64) -> Result<String, JsError> {
+    let a = decode_address(to_addr).map_err(|_| JsError::new("bad recipient address"))?;
+    let mut input = Vec::with_capacity(41);
+    input.push(2u8); // fn_transfer selector
+    input.extend_from_slice(&a);
+    input.extend_from_slice(&amount_base.to_le_bytes());
+    Ok(hexs(&input))
+}
+
+/// Send `amount_base` base units of the BLOCK-20 token at `contract_hex` to
+/// `to_addr`, signed by the caller (CALLER in the VM). `value` is 0 — only the
+/// gas fee (gas_limit*gas_price) is paid from `utxos_json`. Reverts on the chain
+/// if the caller's token balance < amount.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_token_transfer(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    contract_hex: &str,
+    to_addr: &str,
+    amount_base: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    let input = block20_transfer_input(to_addr, amount_base)?;
+    build_call(secret_hex, public_hex, utxos_json, contract_hex, &input, 0, gas_limit, gas_price)
+}
+
 /// Build a signed contract-call transaction (ContractAction::Call). Used for
 /// init(), transfer(), and any BLOCK-20/contract method. `value` moves into
 /// the contract; fee = gas_limit * gas_price. Inputs must cover value + fee.

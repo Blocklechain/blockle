@@ -310,6 +310,22 @@
     return `<span class="tok-ico">${ch}<img src="${logo}" alt="" onerror="this.style.display='none'"></span>`;
   }
 
+  // Send context: a BLOCK-20 token {contract, decimals, symbol} when sending a
+  // token, or null for native BLOCK. `pendingSendCtx` is a one-shot set by a
+  // token row's Send button just before route('send').
+  let sendCtx = null;
+  let pendingSendCtx;
+  function configureSendScreen() {
+    const isTok = !!sendCtx;
+    const lbl = $('#send-amt-label'); if (lbl) lbl.textContent = 'Amount (' + (isTok ? (sendCtx.symbol || 'TOKEN') : 'BLOCK') + ')';
+    const ban = $('#send-token-banner');
+    if (ban) { ban.hidden = !isTok; if (isTok) ban.textContent = 'Sending BLOCK-20 token ' + (sendCtx.symbol || '') + ' · gas paid in BLOCK.'; }
+    const setHidden = (id, on) => { const e = $(id); if (e) e.hidden = !on; };
+    setHidden('#send-fee-row', !isTok);
+    setHidden('#send-gaslimit-row', isTok);
+    setHidden('#send-gasprice-row', isTok);
+  }
+
   async function renderTokens() {
     const box = $('#tokens');
     if (!box) return;
@@ -323,9 +339,16 @@
         const dec = Number(t.decimals || 0);
         const bal = t.balance != null ? (Number(t.balance) / Math.pow(10, dec)).toLocaleString(undefined, { maximumFractionDigits: dec }) : '0';
         const sym = t.symbol || '?';
-        return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, sym)}<div><b>${sym}</b><small>${t.name || ''}</small></div></div><div class="r">${bal} ${sym}</div></div>`;
+        return `<div class="row"><div class="l" style="display:flex;align-items:center;gap:10px">${tokenIcon(id, sym)}<div><b>${sym}</b><small>${t.name || ''}</small></div></div><div class="r" style="display:flex;align-items:center;gap:8px"><span>${bal} ${sym}</span><button class="btn tiny" data-tok-send="${id}" data-tok-dec="${dec}" data-tok-sym="${sym}">Send</button></div></div>`;
       })
       .join('');
+    box.querySelectorAll('[data-tok-send]').forEach((b) => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pendingSendCtx = { contract: b.getAttribute('data-tok-send'), decimals: Number(b.getAttribute('data-tok-dec') || 0), symbol: b.getAttribute('data-tok-sym') || 'TOKEN' };
+        route('send');
+      });
+    });
   }
 
   // Toggle the inline import field (window.prompt is blocked in MV3 popups, so
@@ -544,30 +567,52 @@
     $('#addr-chip').addEventListener('click', () => copy(Wallet.address));
     $('#copy-addr').addEventListener('click', () => copy(Wallet.address));
 
-    // send — build (ML-DSA signed) + broadcast
+    // send — native BLOCK or a BLOCK-20 token (sendCtx), ML-DSA signed + broadcast
     $('#send-go').addEventListener('click', async () => {
       const to = $('#send-to').value.trim();
-      const amt = parseFloat($('#send-amt').value);
+      const amtStr = ($('#send-amt').value || '').trim();
+      const amt = parseFloat(amtStr);
       const err = $('#send-err');
       err.textContent = '';
       if (!/^block1[0-9a-z]+$/.test(to)) return (err.textContent = 'Enter a valid block1… address.');
       if (!(amt > 0)) return (err.textContent = 'Enter an amount greater than 0.');
       if (!Wallet.isUnlocked()) return (err.textContent = 'Unlock your wallet to send.');
       const COIN = 100000000;
-      const amountBase = Math.round(amt * COIN);
-      const feeBase = 10000; // 0.0001 BLOCK
+      // Exact decimal -> base units (no float rounding; safe for large amounts).
+      const toBase = (v, d) => {
+        const s = String(v == null ? '' : v).trim().replace(/,/g, '');
+        if (s === '' || s === '.' || !/^\d*(\.\d*)?$/.test(s)) return '0';
+        const dd = Math.max(0, d || 0), p = s.split('.');
+        const frac = ((p[1] || '') + '00000000000000000000').slice(0, dd);
+        try { return (BigInt(p[0] || '0') * (10n ** BigInt(dd)) + BigInt(frac || '0')).toString(); } catch (_) { return '0'; }
+      };
+      const isTok = !!sendCtx;
+      const dec = isTok ? Number(sendCtx.decimals || 0) : 8;
+      const amountBase = toBase(amtStr, dec);
+      let feeBase, gasLimit, gasPrice;
+      if (isTok) {
+        gasLimit = Math.max(1, Math.round(Number(($('#send-gaslimit') && $('#send-gaslimit').value) || 200000) || 200000));
+        gasPrice = Math.max(1, Math.round(Number(($('#send-gasprice') && $('#send-gasprice').value) || 10) || 10));
+        feeBase = gasLimit * gasPrice;
+      } else {
+        let feeBlk = Number(($('#send-fee') && $('#send-fee').value) || 0.0001);
+        if (!isFinite(feeBlk) || feeBlk < 0) feeBlk = 0.0001;
+        feeBase = Math.round(feeBlk * COIN);
+      }
       // SECURITY GATE: inspect (read-only) + shared confirm sheet BEFORE signing.
-      const cleared = await securityGate({ kind: 'send', to, amount: amountBase, fee: feeBase });
+      const cleared = await securityGate({ kind: 'send', to, amount: Number(amountBase), fee: feeBase, token: isTok ? sendCtx.contract : undefined, symbol: isTok ? sendCtx.symbol : 'BLOCK' });
       if (!cleared) { err.textContent = 'Send cancelled by the security review.'; return; }
       const btn = $('#send-go');
       btn.disabled = true;
       btn.textContent = 'Signing & sending…';
       try {
         const u = await Chain.utxos(Wallet.address);
-        if (!u || !u.utxos.length) throw new Error('no spendable funds (coinbase matures after 100 blocks)');
-        const built = await Wallet.buildTransfer(u.utxos, to, amountBase, feeBase);
+        if (!u || !u.utxos.length) throw new Error(isTok ? 'need a little BLOCK for gas (coinbase matures after 100 blocks)' : 'no spendable funds (coinbase matures after 100 blocks)');
+        const built = isTok
+          ? await Wallet.buildTokenTransfer(u.utxos, String(sendCtx.contract).toLowerCase(), to, amountBase, gasLimit, gasPrice)
+          : await Wallet.buildTransfer(u.utxos, to, amountBase, feeBase);
         const res = await Chain.submit(built.raw);
-        await recordPending(res.txid || built.txid, 'Send');
+        await recordPending(res.txid || built.txid, isTok ? ('Send ' + (sendCtx.symbol || 'token')) : 'Send');
         toast('Sent · ' + (res.txid || built.txid).slice(0, 14) + '…');
         $('#send-to').value = '';
         $('#send-amt').value = '';
@@ -1611,6 +1656,7 @@
       await renderCustomNetworks();
       return;
     }
+    if (name === 'send') { sendCtx = (pendingSendCtx !== undefined) ? pendingSendCtx : null; pendingSendCtx = undefined; configureSendScreen(); }
     show(name);
   }
 

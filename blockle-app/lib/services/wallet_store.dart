@@ -203,6 +203,14 @@ class WalletStore {
         _session.secret!, _session.pub!, utxosJson, codeHex, gasLimit, gasPrice);
   }
 
+  Future<Map<String, dynamic>> buildTokenTransfer(String utxosJson, String contractHex,
+      String toAddr, String amountBase, String gasLimit, String gasPrice) {
+    if (!isUnlocked) throw Exception('locked');
+    _touch();
+    return _engine.buildTokenTransfer(
+        _session.secret!, _session.pub!, utxosJson, contractHex, toAddr, amountBase, gasLimit, gasPrice);
+  }
+
   Future<Map<String, dynamic>> buildPoolSwapBuy(String utxosJson, String token,
       String amountIn, String minOut, int gasLimit, int gasPrice) {
     if (!isUnlocked) throw Exception('locked');

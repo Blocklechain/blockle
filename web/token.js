@@ -104,7 +104,7 @@
           '</div>' +
           '<div class="terr" id="t-err"></div>' +
           '<button class="cta" id="t-go">Buy ' + sym + '</button>' +
-          '<div class="note">Trades are approved in the Blockle wallet extension.</div>' +
+          '<div class="note">Trades are signed in the Blockle wallet extension — or the Web Wallet if you don’t have the extension.</div>' +
         '</div>' +
         '<div class="card"><div class="fld">Share this token</div><div class="sharebar">' +
           '<button id="sh-copy">Copy link</button><button id="sh-x">Share on X</button></div></div>' +
@@ -143,7 +143,14 @@
     var raw = parseFloat($('t-amt').value), d = dec(), err = $('t-err'); err.textContent = '';
     var br = (pool.blockReserve || 0) / COIN, tr = (pool.tokenReserve || 0) / Math.pow(10, d);
     if (!(raw > 0)) { err.textContent = 'Enter an amount.'; return; }
-    if (typeof window.blockle === 'undefined') { err.textContent = 'Install the Blockle wallet extension to trade.'; return; }
+    if (typeof window.blockle === 'undefined') {
+      // No browser extension — fall back to the non-custodial Web Wallet,
+      // deep-linking into its swap view with this token, side and amount prefilled.
+      var wl = '/wallet?swap=' + id + '&side=' + tSide + '&amt=' + encodeURIComponent(String(raw)) + '#swap';
+      err.innerHTML = 'No wallet extension detected — opening the <a href="' + wl + '" target="_blank" style="color:#37E0C8;text-decoration:underline">Blockle Web Wallet</a> to complete this swap.';
+      window.open(wl, '_blank');
+      return;
+    }
     var btn = $('t-go'); btn.disabled = true; btn.textContent = 'Confirm in wallet…';
     try {
       await window.blockle.connect();
@@ -169,17 +176,27 @@
     try { hist = await (await fetch('/api/dex/history?token=' + id)).json(); } catch (e) {}
     var c = $('chart'); if (!c) return; var ctx = c.getContext('2d'), W = c.width, H = c.height;
     ctx.clearRect(0, 0, W, H);
-    if (!hist || hist.length < 2) { if ($('chartnote')) $('chartnote').textContent = 'Price history fills in as snapshots record (every ~15 min).'; return; }
+    var sparse = !hist || hist.length < 2;
+    if (sparse) {
+      // Not enough recorded snapshots yet — render a flat baseline at the live
+      // pool price so there is always a graphic. It fills with real movement as
+      // 15-minute snapshots accumulate.
+      var p0 = price();
+      if (p0 == null || !isFinite(p0) || p0 <= 0) { if ($('chartnote')) $('chartnote').textContent = 'Price history fills in as snapshots record (every ~15 min).'; return; }
+      hist = [{ price: p0 }, { price: p0 }];
+    }
     var ps = hist.map(function (h) { return Number(h.price); });
-    var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps), rng = (hi - lo) || 1, pad = 6;
+    var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps), pad = 6;
+    if (hi === lo) { var v = hi; lo = v - (v * 0.5 || 1); hi = v + (v * 0.5 || 1); } // center a flat line
+    var rng = (hi - lo) || 1;
     ctx.beginPath();
     hist.forEach(function (h, i) { var x = pad + (W - 2 * pad) * (i / (hist.length - 1)); var y = H - pad - (H - 2 * pad) * ((Number(h.price) - lo) / rng); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     var g = ctx.createLinearGradient(0, 0, W, 0); g.addColorStop(0, '#8B6DFF'); g.addColorStop(1, '#37E0C8');
     ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
     ctx.lineTo(W - pad, H - pad); ctx.lineTo(pad, H - pad); ctx.closePath(); ctx.fillStyle = 'rgba(139,109,255,.10)'; ctx.fill();
     var chg = ((ps[ps.length - 1] - ps[0]) / ps[0]) * 100, el = $('chg');
-    if (el) { el.textContent = (chg >= 0 ? '+' : '') + fmt(chg, 2) + '%'; el.className = 'chg ' + (chg >= 0 ? 'pos' : 'neg'); }
-    if ($('chartnote')) $('chartnote').textContent = hist.length + ' snapshots';
+    if (el && !sparse) { el.textContent = (chg >= 0 ? '+' : '') + fmt(chg, 2) + '%'; el.className = 'chg ' + (chg >= 0 ? 'pos' : 'neg'); }
+    if ($('chartnote')) $('chartnote').textContent = sparse ? 'Current price — history builds every ~15 min.' : (hist.length + ' snapshots');
   }
 
   load();
