@@ -3008,6 +3008,12 @@ username: block1…youraddress.rig1     password: x</code></pre>
 
 <h2 id="cli">Mine from the command line <span class="badge">blockle-miner · CPU · any pool</span></h2>
 <p class="sub">No mining software? <b>blockle-miner</b> is a tiny multi-algorithm CPU miner that speaks standard Stratum v1 — pick an algorithm, point it at any pool here (or anywhere else), and mine on any hardware.</p>
+<p class="sub"><b>Download a prebuilt binary — no Rust needed:</b>
+<a href="https://github.com/Blocklechain/blockle/releases/latest/download/blockle-miner-linux-x86_64">Linux&nbsp;x86-64</a> ·
+<a href="https://github.com/Blocklechain/blockle/releases/latest/download/blockle-miner-macos-arm64">macOS&nbsp;(Apple&nbsp;Silicon)</a> ·
+<a href="https://github.com/Blocklechain/blockle/releases/latest/download/blockle-miner-windows-x86_64.exe">Windows&nbsp;x64</a>
+&mdash; then <span class="mono">chmod +x blockle-miner-linux-x86_64 &amp;&amp; ./blockle-miner-linux-x86_64 mine --algo sha256d --url stratum+tcp://{domain}:3340 --user block1…youraddress.rig1</span></p>
+<p class="sub">Or build from source:</p>
 <pre><code># build it (needs Rust: https://rustup.rs)
 git clone {github}
 cd blockle/blockle-miner &amp;&amp; cargo build --release

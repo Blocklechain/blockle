@@ -153,6 +153,28 @@ jobs:
           cd ..
           gh release upload "$TAG" "$ZIP" --clobber --repo "$GITHUB_REPOSITORY"
 
+      # Standalone CPU miner (blockle-miner): build per-OS and attach the raw
+      # binary so people can mine with no Rust toolchain. Uses the same
+      # rs-x11-hash Windows shim set earlier in this job.
+      - name: Build blockle-miner
+        run: cargo build --release --manifest-path blockle-miner/Cargo.toml
+
+      - name: Attach blockle-miner to release
+        if: ${{ github.event.inputs.release_tag != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+          EXE=""; NAME=""
+          case "$RUNNER_OS" in
+            Linux)   NAME="blockle-miner-linux-x86_64" ;;
+            macOS)   NAME="blockle-miner-macos-arm64" ;;
+            Windows) EXE=".exe"; NAME="blockle-miner-windows-x86_64.exe" ;;
+          esac
+          cp "blockle-miner/target/release/blockle-miner$EXE" "$NAME"
+          gh release upload "$TAG" "$NAME" --clobber --repo "$GITHUB_REPOSITORY"
+
       - name: Collect CLI binaries
         shell: bash
         run: |
