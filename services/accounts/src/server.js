@@ -586,13 +586,12 @@ export function createApp(overrides = {}) {
   }));
 
   // --- paid tier ----------------------------------------------------------------------------
-  // The purchasable Copilot tiers (+ legacy Pro). A tier is offered ONLY when its PayPal plan
-  // id is configured, so the catalog is empty until the live plans exist — nothing to buy, no
-  // broken checkout. Order = how they're shown (entry tier first).
+  // The purchasable tiers: Blockle Copilot and Copilot Pro only. A tier is offered ONLY when
+  // its PayPal plan id is configured, so the catalog is empty until the live plans exist —
+  // nothing to buy, no broken checkout. Order = how they're shown (entry tier first).
   const planCatalog = () => [
     { tier: 'copilot', name: 'Blockle Copilot', price: cfg.copilotPrice, ccy: cfg.planCurrency, planId: cfg.copilotPlanId },
     { tier: 'copilot_pro', name: 'Copilot Pro', price: cfg.copilotProPrice, ccy: cfg.planCurrency, planId: cfg.copilotProPlanId },
-    { tier: 'pro', name: cfg.planName, price: cfg.planPrice, ccy: cfg.planCurrency, planId: cfg.paypalPlanId },
   ].filter((p) => p.planId);
   const planByTier = (tier) => planCatalog().find((p) => p.tier === tier) || null;
   const planByPlanId = (id) => planCatalog().find((p) => p.planId === id) || null;

@@ -55,6 +55,10 @@ struct Client {
     window_shares: u32,
     accepted: u64,
     rejected: u64,
+    /// Σ of accepted share difficulty over the whole connection (never reset) —
+    /// drives a stable hashrate estimate that doesn't drop to 0 at each retarget.
+    accepted_weight: f64,
+    connected_at: Instant,
 }
 
 /// A per-client job: the BLOCK template this parent work commits to, plus
@@ -402,6 +406,8 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
             window_shares: 0,
             accepted: 0,
             rejected: 0,
+            accepted_weight: 0.0,
+            connected_at: Instant::now(),
         },
     );
     println!("[stratum-direct:{}] miner {client_id} connected ({peer})", state.algo);
@@ -719,6 +725,9 @@ fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, _lane_t: 
     let Some(c) = clients.get_mut(&client_id) else { return };
     c.accepted += 1;
     c.window_shares += 1;
+    // Accumulate this share's difficulty (at the diff it was mined at) for the
+    // stable lifetime hashrate estimate.
+    c.accepted_weight += u256_f64(state.node.params().pow_limit) / u256_f64(c.share_target).max(1.0);
     let elapsed = c.window_start.elapsed().as_secs();
     if elapsed < RETARGET_SECS {
         return;
@@ -752,10 +761,10 @@ fn stats_loop(state: Arc<DirectState>) {
         let Some(path) = &state.opts.stats_path else { continue };
         let (miners, workers, accepted, rejected, hashrate, miners_detail) = {
             let clients = state.clients.lock().unwrap();
-            let pow_limit = u256_f64(state.node.params().pow_limit);
             let per_client = |c: &Client| {
-                let diff = pow_limit / u256_f64(c.share_target).max(1.0);
-                diff * c.window_shares as f64 / c.window_start.elapsed().as_secs_f64().max(1.0)
+                // Stable lifetime estimate: Σ accepted share difficulty / seconds
+                // connected (the old window value reset to 0 on each vardiff retarget).
+                c.accepted_weight / c.connected_at.elapsed().as_secs_f64().max(1.0)
             };
             let miners_detail: Vec<serde_json::Value> = clients
                 .values()

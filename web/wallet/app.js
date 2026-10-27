@@ -469,12 +469,12 @@
   /* ---------------- Pro / tier ---------------- */
   function loadTier() {
     fetch(ACCOUNTS + '/me', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
-      if (j && j.user) { S.user = j.user; var sub = j.user.sub; S.tier = (sub && sub.active) ? (sub.tier || 'free') : 'free'; }
-      else { S.user = null; S.tier = 'free'; }
+      if (j && j.user) { S.user = j.user; S.csrf = j.csrf || S.csrf; var sub = j.user.sub; S.tier = (sub && sub.active) ? (sub.tier || 'free') : 'free'; }
+      else { S.user = null; S.tier = 'free'; S.csrf = null; }
       S.pro = isPro();
       var b = $('#tierbadge');
       b.className = 'chip' + (S.pro ? ' pro' : '');
-      b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free';
+      b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') : 'Free';
       b.onclick = function () { location.hash = '#pro'; };
       if (location.hash === '#pro' || location.hash === '#agent' || location.hash === '#bots') onRoute();
     }).catch(function () { S.tier = 'free'; S.pro = false; });
@@ -1286,9 +1286,9 @@
 
   /* ---------------- PRO ---------------- */
   VIEWS.pro = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('pro', 16) + ' Blockle Pro &amp; Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free') + '</span></div>' +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('pro', 16) + ' Blockle Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Copilot') : 'Free') + '</span></div>' +
       '<p class="muted">Your plan is checked live against your Blockle account — no key access, ever. Upgrade unlocks live trading, a bigger agent brain, pro strategies and analytics across every Blockle wallet and the dashboard.</p>' +
-      '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Pro / Copilot</th><th class="c">Copilot Pro</th></tr></thead><tbody>' +
+      '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Copilot</th><th class="c">Copilot Pro</th></tr></thead><tbody>' +
       featRow('Non-custodial wallet · all chains', '✓', '✓', '✓') +
       featRow('DEX swap · bridge · USDB', '✓', '✓', '✓') +
       featRow('Agent command bar', 'anon brain', 'signed · bigger budget', 'signed · biggest') +
@@ -1312,8 +1312,12 @@
       $$('#pro-plans [data-tier]').forEach(function (b) {
         b.onclick = function () {
           var tier = b.getAttribute('data-tier'); if (S.tier === tier) return;
-          fetch(ACCOUNTS + '/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ tier: tier }) }).then(function (r) { return r.json(); }).then(function (res) {
-            if (res && res.approveUrl) location.href = res.approveUrl; else toast((res && res.error) || 'Could not start checkout', 'bad');
+          var hdrs = { 'content-type': 'application/json' };
+          if (S.csrf) hdrs['x-csrf-token'] = S.csrf; // cookie-auth mutations require the CSRF token
+          fetch(ACCOUNTS + '/subscribe', { method: 'POST', headers: hdrs, credentials: 'include', body: JSON.stringify({ tier: tier }) }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res && res.approveUrl) location.href = res.approveUrl;
+            else if (res && res.error === 'csrf') toast('Session expired — reload and sign in again', 'bad');
+            else toast((res && res.error) || 'Could not start checkout', 'bad');
           }).catch(function () { toast('Checkout unavailable', 'bad'); });
         };
       });

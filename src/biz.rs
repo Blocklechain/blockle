@@ -3006,6 +3006,25 @@ username: block1…youraddress.rig1     password: x</code></pre>
 <h2>Hardware</h2>
 <p class="sub">BLOCK's native lane is Equihash (200,9) — Zcash-class ASICs and GPU miners (EWBF/lolMiner-compatible stratum) connect directly today. Other ASIC families join by merge-mining through a parent pool (below). Miner-firmware byte-order quirks are still being shaken down against real hardware; if your ASIC rejects jobs, tell us on <a href="https://discord.gg/tx4MfyD9Vu">Discord</a>.</p>
 
+<h2 id="cli">Mine from the command line <span class="badge">blockle-miner · CPU · any pool</span></h2>
+<p class="sub">No mining software? <b>blockle-miner</b> is a tiny multi-algorithm CPU miner that speaks standard Stratum v1 — pick an algorithm, point it at any pool here (or anywhere else), and mine on any hardware.</p>
+<pre><code># build it (needs Rust: https://rustup.rs)
+git clone {github}
+cd blockle/blockle-miner &amp;&amp; cargo build --release
+
+# mine the BLOCK sha256d lane with your address
+./target/release/blockle-miner mine --algo sha256d \
+    --url stratum+tcp://{domain}:3340 \
+    --user block1…youraddress.rig1
+
+# or ANY other Stratum v1 pool — e.g. a Litecoin/Dogecoin (Scrypt) pool
+./target/release/blockle-miner mine --algo scrypt \
+    --url stratum+tcp://ltc.somepool.com:3333 --user LTCADDR.rig1
+
+# see every supported algorithm
+./target/release/blockle-miner algos</code></pre>
+<p class="sub">Supported algorithms: <span class="mono">sha256d, scrypt, x11, blake2b, blake2s, blake3</span>. It works with <b>any</b> Stratum v1 pool, not just Blockle's, and prints your live hashrate + accepted/rejected shares. (BLOCK's native Equihash lanes on :3333/:3334 need an Equihash miner; use the direct algo lanes above with the CLI.)</p>
+
 <h2 id="stats">Pool stats APIs <span class="badge">MiningPoolStats-compatible JSON</span></h2>
 <table><tr><th>pool</th><th>endpoint</th></tr>
 <tr><td>BLOCK Solo</td><td class="mono"><a href="/api/mps/solo">https://{domain}/api/mps/solo</a></td></tr>
