@@ -7,7 +7,8 @@
 //! single-transaction "block" is a coinbase committing to a BLOCK template
 //! that pays that miner (solo semantics, pool fee in the coinbase split).
 //!
-//! Dialect: `mining.subscribe` → `[[subs], extranonce1, 4]`,
+//! Dialect: `mining.subscribe` → `[[subs], extranonce1, 8]` (extranonce2 width;
+//! >= 7 so Braiins OS connects),
 //! `mining.authorize` (username = BLOCK address[.rig]),
 //! `mining.set_difficulty` + `mining.notify` with
 //! `[job, prevhash, coinb1, coinb2, merkle_branch, version, nbits, ntime,
@@ -37,6 +38,10 @@ use crate::stratum::{append_ledger_record, PoolMode, PoolOpts};
 
 const TARGET_SHARE_SECS: u64 = 10;
 const RETARGET_SECS: u64 = 30;
+/// extranonce2 width (bytes) advertised in mining.subscribe. Braiins OS refuses
+/// to mine a pool that offers < 7 ("extranonce2_size: 4, requires >= 7"); 8 keeps
+/// it happy and is fine for every other miner (they use the advertised size).
+const EN2_SIZE: usize = 8;
 /// BIP 310 version-rolling mask every modern SHA-256 ASIC uses.
 const STD_VERSION_MASK: u32 = 0x1fff_e000;
 
@@ -308,8 +313,8 @@ fn build_direct_job(state: &DirectState, addr: Address) -> Option<DirectJob> {
     let bip34 = bip34_height(height);
     let reward: u64 = block.transactions[0].outputs.iter().map(|o| o.amount).sum();
 
-    // scriptSig = bip34_height ‖ extranonce1(4) ‖ extranonce2(4) ‖ commitment(44)
-    let script_len = bip34.len() + 4 + 4 + commitment.len();
+    // scriptSig = bip34_height ‖ extranonce1(4) ‖ extranonce2(EN2_SIZE) ‖ commitment(44)
+    let script_len = bip34.len() + 4 + EN2_SIZE + commitment.len();
     let mut coinb1 = Vec::new();
     coinb1.extend_from_slice(&1u32.to_le_bytes()); // tx version
     coinb1.push(1); // one input
@@ -533,7 +538,7 @@ fn handle_request(
             Ok(json!([
                 [["mining.set_difficulty", "d"], ["mining.notify", "n"]],
                 hex::encode(en1),
-                4
+                EN2_SIZE
             ]))
         }
         "mining.authorize" => {
@@ -571,7 +576,7 @@ fn handle_request(
                 return Err("expected [worker, job, extranonce2, ntime, nonce]".into());
             }
             let job_id = p[1].as_str().ok_or("bad job id")?;
-            let en2: [u8; 4] = decode_fixed(p[2].as_str().ok_or("bad extranonce2")?)?;
+            let en2: [u8; EN2_SIZE] = decode_fixed(p[2].as_str().ok_or("bad extranonce2")?)?;
             let ntime = u32::from_str_radix(p[3].as_str().ok_or("bad ntime")?, 16)
                 .map_err(|_| "bad ntime hex")?;
             let nonce = u32::from_str_radix(p[4].as_str().ok_or("bad nonce")?, 16)
@@ -600,7 +605,7 @@ fn handle_request(
                     return Err("unknown job".into());
                 };
                 let mut coinbase =
-                    Vec::with_capacity(job.coinb1.len() + 8 + job.coinb2.len());
+                    Vec::with_capacity(job.coinb1.len() + 4 + EN2_SIZE + job.coinb2.len());
                 coinbase.extend_from_slice(&job.coinb1);
                 coinbase.extend_from_slice(&en1);
                 coinbase.extend_from_slice(&en2);
