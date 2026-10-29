@@ -118,7 +118,11 @@ fn target_hex(t: U256) -> String {
 /// mid-range hardware of that family; vardiff corrects from there.
 fn initial_diff(algo: &str) -> u64 {
     match algo {
-        "sha256d" => 4096,
+        // sha256d miners are ASIC/rental class — a 4096 start trips Mining-Rig-
+        // Rentals' "difficulty too low" guard and floods the pool with shares from
+        // a multi-TH/s rig. Start at 65536 (vardiff refines from here; genuinely
+        // small solo miners get eased down by ease_idle_miners).
+        "sha256d" => 65536,
         "scrypt" => 16,
         "x11" => 64,
         "kheavyhash" | "blake3" => 1024,
@@ -181,8 +185,14 @@ fn ease_idle_miners(state: &Arc<DirectState>) {
     let min_target = diff1() * U256::from(4u64); // difficulty 0.25
     let mut clients = state.clients.lock().unwrap();
     for c in clients.values_mut() {
+        // Only ease a GENUINELY SILENT miner (too small for the floor). A miner that
+        // is actively submitting but getting REJECTED is misconfigured, not idle —
+        // easing it down to 0.25 would flood the pool with sub-diff spam, trip
+        // Mining-Rig-Rentals' "difficulty too low" guard, and bury the real reject
+        // cause. Leave it at the floor so the reject reason stays visible.
         if c.address.is_some()
             && c.accepted == 0
+            && c.rejected == 0
             && c.window_start.elapsed().as_secs() >= 60
         {
             let eased = (c.share_target << 4).min(min_target);
