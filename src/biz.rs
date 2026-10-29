@@ -865,6 +865,7 @@ fn route(
         // (`/copilot` is served by page_copilot() above — the existing upsell page.)
         "/studio" => ("200 OK", "text/html; charset=utf-8", page_studio().into_bytes()),
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
+        "/trade-demo.js" => serve_web_file("trade-demo.js", "application/javascript; charset=utf-8"),
         // Agent-facing docs: SDK + MCP install, the buy→launch→pool→trade→sell
         // loop, base-unit + fee conventions, and the mainnet legal-review notice.
         "/agents" => serve_web_file("agents.html", "text/html; charset=utf-8"),
@@ -2355,15 +2356,11 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <div class="t"><h4>One gate, always on</h4><p>Every send, swap and bot order passes a per-asset cap, a scam/approval check, and a confirm &mdash; a risky one forces an explicit tap. Nothing auto-signs silently.</p></div>
 <div class="t"><h4>A kill switch that means it</h4><p>One tap stops every bot, cancels open orders, and locks the vault. A hostile or confused model can't do anything your own tap couldn't.</p></div>
 </div></div></section>
-<section id="bots" class="proof"><div class="wrap"><span class="eyebrow">Measured, not promised</span>
-<div class="shead"><h2>Bots that refuse to lose money to fees.</h2><p>The autopilot only opens a trade whose edge is positive <em>after</em> every fee &mdash; venue, gas, slippage and the 0.05% agent cut. We backtested the real engine on 30 days of live market data, in paper mode.</p></div>
-<div class="stats">
-<div class="stat"><div class="n gain">+$74</div><div class="l">Arbitrage &middot; net</div><div class="d">2 trades taken &middot; 3 losing edges skipped</div></div>
-<div class="stat"><div class="n gain">+$85.88</div><div class="l">Autopilot &middot; net</div><div class="d">traded 2 of 6 scanned pairs</div></div>
-<div class="stat"><div class="n gain">+$16.67</div><div class="l">Grid &middot; net</div><div class="d">positive across every regime</div></div>
-<div class="stat"><div class="n">100%</div><div class="l">Edges checked</div><div class="d">never a trade with &le;0 net edge</div></div>
-</div>
-<p class="disclaim">Figures are from a paper backtest of the shipped engine on 30 days of real hourly prices &mdash; illustrative of how the strategies behave net of fees, not a forecast. Directional strategies still depend on the market; the discipline is that the bot declines negative-edge trades, not that any trade is guaranteed to win. Crypto is volatile and you can lose money. Not investment advice.</p></div></section>
+<section id="bots" class="proof"><div class="wrap"><span class="eyebrow">Measured, not promised &middot; live paper backtest</span>
+<div class="shead"><h2>Watch the bot trade &mdash; on real market history.</h2><p>Our momentum strategy, run in <b>paper mode</b> over the last 90 days of real daily prices across a safety-screened basket on Solana, Ethereum and BSC. Each token first clears the rug / holder-concentration / liquidity gate; the bot then trades the survivors. Below is a replay of those paper trades, with the real logos of the tokens it traded.</p></div>
+<div id="trade-demo" class="trade-demo" data-src="/backtest.json"><div class="td-loading">Loading the paper-trading demo&hellip;</div></div>
+<p class="disclaim" id="td-disclaim">Paper backtest of the shipped momentum engine on 90 days of real daily prices &mdash; illustrative, not a forecast. Past performance is not a guarantee; crypto is volatile and you can lose money. Not investment advice.</p></div></section>
+<script src="/trade-demo.js?v=20261028"></script>
 <section><div class="wrap"><span class="eyebrow">Supported today</span><div class="shead"><h2>Every major chain, one seed phrase.</h2></div>
 <div class="chains"><span class="chip"><span class="d" style="background:#f7931a"></span>Bitcoin</span><span class="chip"><span class="d" style="background:#627eea"></span>Ethereum &amp; EVM</span><span class="chip"><span class="d" style="background:#9945ff"></span>Solana</span><span class="chip"><span class="d" style="background:#4d8bff"></span>BLOCK</span><span class="chip"><span class="d" style="background:#345d9d"></span>Litecoin</span><span class="chip"><span class="d" style="background:#c2a633"></span>Dogecoin</span><span class="chip"><span class="d" style="background:#2fc08a"></span>USDC / USDT</span><span class="chip">+ WalletConnect &middot; NFTs</span></div></div></section>
 <section id="world"><div class="wrap"><span class="eyebrow">Play &middot; on-chain</span>
