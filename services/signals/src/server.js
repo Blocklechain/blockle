@@ -345,6 +345,94 @@ async function discover(mode = 'sniper', chain = null, limit = 12) {
   return { mode, chain: chain || 'all', generatedAt: now(), count: Math.min(out.length, limit), candidates: out.slice(0, limit) };
 }
 
+// --- ARBITRAGE board: REAL current same-chain cross-DEX spreads -----------------
+// For a token, DexScreener lists every DEX pair with its current priceUsd. Buying on
+// the cheaper pool and selling on the dearer is a genuine, currently-observable
+// arbitrage. We take the min/max priced LIQUID pools on the SAME chain, subtract a
+// conservative round-trip cost (two swap fees + the 0.05% agent fee + a slippage
+// buffer), and report the NET spread. HONEST: this is a live snapshot, not a
+// historical backtest; spreads are fleeting, size-limited, and compete with MEV
+// bots, so many opportunities are net-negative (shown as-is). No arb is executed here.
+const ARB_FEE_PCT = Number(process.env.SIGNALS_ARB_FEE_PCT || 0.80); // 2×~0.3% swap + 0.05% agent + ~0.15% slip
+// Liquid majors per chain — they have many deep DEX pools, so safe/medium modes
+// always have real (usually tight, often sub-fee) cross-DEX spreads to show.
+const ARB_MAJORS = {
+  solana: ['So11111111111111111111111111111111111111112', 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL'],
+  ethereum: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', '0x514910771AF9Ca656af840dff83E8264EcF986CA', '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', '0x6982508145454Ce325dDbE47a25d4ec3d2311933', '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9'],
+  bsc: ['0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82', '0x4B0F1812e5Df2A09796481Ff14017e6005508003'],
+};
+const ARB_MIN_VOL_USD = Number(process.env.SIGNALS_ARB_MIN_VOL || 3_000); // both legs must be ACTIVE
+const ARB_MAX_PCT = Number(process.env.SIGNALS_ARB_MAX_PCT || 5);          // > this ⇒ stale/dead pool, not real arb
+async function arbPairs(chain, token) {
+  const j = await jget(`${DEXSCREENER}/latest/dex/tokens/${encodeURIComponent(token)}`, { timeout: 9000 });
+  const dc = DEX_CHAIN[chain];
+  return ((j && j.pairs) || [])
+    .filter((p) => p.chainId === dc && Number(p.priceUsd) > 0 && Number(p.liquidity?.usd) > 0)
+    .map((p) => ({ dex: p.dexId || '?', priceUsd: Number(p.priceUsd), liqUsd: Number(p.liquidity?.usd) || 0, volUsd: Number(p.volume?.h24) || 0, sym: p.baseToken?.symbol || null, quote: p.quoteToken?.symbol || null }));
+}
+function arbOpp(chain, token, pairs, minLiqUsd) {
+  // both legs must be DEEP (liquidity) AND ACTIVE (real 24h volume) — dead/stale
+  // pools carry garbage prices that look like huge fake spreads.
+  const liq = pairs.filter((p) => p.liqUsd >= minLiqUsd && p.volUsd >= ARB_MIN_VOL_USD);
+  if (liq.length < 2) return null;
+  liq.sort((a, b) => a.priceUsd - b.priceUsd);
+  const lo = liq[0], hi = liq[liq.length - 1];
+  const grossPct = (hi.priceUsd - lo.priceUsd) / lo.priceUsd * 100;
+  // reject implausible spreads — a persistent double-digit same-chain gap on active
+  // pools doesn't exist; it's a mispriced/stale pool, not a capturable arb.
+  if (!(grossPct > 0) || grossPct > ARB_MAX_PCT) return null;
+  const netPct = +(grossPct - ARB_FEE_PCT).toFixed(3);
+  return {
+    chain, token, sym: lo.sym || String(token).slice(0, 6),
+    buyDex: lo.dex, sellDex: hi.dex, buyPrice: lo.priceUsd, sellPrice: hi.priceUsd,
+    grossPct: +grossPct.toFixed(3), feesPct: ARB_FEE_PCT, netPct, profitable: netPct > 0,
+    buyLiqUsd: Math.round(lo.liqUsd), sellLiqUsd: Math.round(hi.liqUsd),
+    // size the capture by the shallower pool (you can't arb more than the pool holds)
+    sizeCapUsd: Math.round(Math.min(lo.liqUsd, hi.liqUsd) * 0.01), // ~1% of the shallower pool
+  };
+}
+async function arbBoard(mode = 'medium', chain = null, limit = 12) {
+  const C = modeCfg(mode);
+  const minLiqUsd = Math.max(10_000, Math.round(C.minLiquidityUsd / 5)); // need real depth on BOTH legs
+  const [latest, top] = await Promise.all([boostFeed('token-boosts/top/v1'), boostFeed('token-boosts/latest/v1')]);
+  const seen = new Set(), cands = [];
+  // Seed with liquid majors (deep pools → safe/medium always have real spreads),
+  // then add freshly-boosted microcaps (wider, less-efficient gaps for high/sniper).
+  const majorChains = chain ? [chain] : ['solana', 'ethereum', 'bsc'];
+  for (const ch of majorChains) for (const addr of (ARB_MAJORS[ch] || [])) {
+    const k = `${ch}:${addr}`; if (seen.has(k)) continue; seen.add(k); cands.push({ chain: ch, token: addr });
+  }
+  for (const b of [...top, ...latest]) {
+    const ch = CHAIN_OF[(b.chainId || '').toLowerCase()];
+    const addr = b.tokenAddress || b.address;
+    if (!ch || !addr) continue;
+    if (chain && ch !== chain) continue;
+    const k = `${ch}:${addr}`; if (seen.has(k)) continue; seen.add(k);
+    cands.push({ chain: ch, token: addr });
+    if (cands.length >= 46) break;
+  }
+  const out = []; let scanned = 0;
+  const BATCH = 5;
+  for (let i = 0; i < cands.length; i += BATCH) {
+    const slice = cands.slice(i, i + BATCH);
+    const res = await Promise.all(slice.map(async (c) => {
+      const ps = await arbPairs(c.chain, c.token).catch(() => []);
+      scanned++;
+      return arbOpp(c.chain, c.token, ps, minLiqUsd);
+    }));
+    for (const o of res) if (o) out.push(o);
+    if (out.length >= limit * 3) break;
+  }
+  out.sort((a, b) => b.netPct - a.netPct);
+  return {
+    mode, chain: chain || 'all', generatedAt: now(), scanned,
+    profitableAfterFees: out.filter((o) => o.profitable).length,
+    feesPct: ARB_FEE_PCT, minLiquidityUsd: minLiqUsd,
+    note: 'Live same-chain cross-DEX spreads, net of a conservative round-trip cost. Real-time snapshot, not a backtest — spreads are fleeting, size-limited, and compete with MEV bots; many are net-negative.',
+    opportunities: out.slice(0, limit),
+  };
+}
+
 const SUPPORTED = ['block', 'solana', 'ethereum', 'bsc'];
 function j(res, code, obj) {
   res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' });
@@ -366,6 +454,12 @@ const server = http.createServer(async (req, res) => {
       const lim = Math.max(1, Math.min(25, Number(url.searchParams.get('limit')) || 12));
       const m2 = parts[0] === 'new-launches' ? 'sniper' : useMode;
       return j(res, 200, await discover(m2, CHAIN_OF[dchain] || null, lim));
+    }
+    // /api/signals/arb?mode=&chain=&limit= — live cross-DEX spread board
+    if (parts[0] === 'arb') {
+      const dchain = (url.searchParams.get('chain') || '').toLowerCase();
+      const lim = Math.max(1, Math.min(25, Number(url.searchParams.get('limit')) || 12));
+      return j(res, 200, await arbBoard(useMode, CHAIN_OF[dchain] || null, lim));
     }
     // /api/signals/:chain/token/:id?mode=high
     const chain = (parts[0] || '').toLowerCase();

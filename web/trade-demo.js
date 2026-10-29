@@ -1,36 +1,29 @@
-// trade-demo.js — auto-playing "watch the bot trade" demo for the home page.
-// Replays the REAL paper backtest (/backtest.json) across THREE risk modes
-// (Safe / Medium / High) with the REAL logos of the tokens it traded.
-//
-// Honest by construction: every number comes from the backtest file; nothing is
-// invented. Each mode shows the strategy return AND the buy&hold return for the
-// same basket, so the comparison is always visible. Loops like a short video;
-// respects prefers-reduced-motion.
-//
-// Lane framing: the bot trades ONE lane at a time — you hold a single base asset
-// (SOL on Solana, ETH on Ethereum, BNB on BSC) and it only trades same-chain
-// tokens quoted in that base. The demo labels every trade with its lane.
+// trade-demo.js — an auto-playing "watch the bot hunt arbitrage" demo for the home
+// page. Replays a LIVE cross-DEX spread board (/arb.json) across four modes
+// (Safe / Medium / High / Sniper). Every number is REAL: same-chain cross-DEX price
+// gaps from DexScreener, net of a conservative round-trip cost. HONEST by design —
+// this is a real-time snapshot, not a historical backtest; spreads are fleeting,
+// size-limited, compete with MEV bots, and many are net-negative (shown as-is).
+// Loops like a short video; respects prefers-reduced-motion.
 (function () {
   'use strict';
   var host = document.getElementById('trade-demo');
   if (!host) return;
-  var SRC = host.getAttribute('data-src') || '/backtest.json';
+  var SRC = host.getAttribute('data-src') || '/arb.json';
   var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   function usd(n) { return '$' + Math.round(n).toLocaleString(); }
+  function pct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(3) + '%'; }
   function logo(sym) { return '/assets/tokens/' + String(sym).toLowerCase() + '.png'; }
   var CHAIN_COLOR = { solana: '#9945ff', ethereum: '#627eea', bsc: '#f0b90b', block: '#4d8bff' };
   var CHAIN_NAME = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BSC', block: 'BLOCK' };
   var BASE_ASSET = { solana: 'SOL', ethereum: 'ETH', bsc: 'BNB', block: 'BLOCK' };
-  // Per-mode visual identity + animation pacing. `screened` = illustrative count of
-  // candidates the scanner evaluates over the 90d window (the gate rejects almost
-  // all of them). It conveys the funnel scale; the traded set + returns are real.
   var MODE_STYLE = {
-    safe:   { accent: '#4d8bff', tag: 'Large-cap', beat: 760, flavor: 'blue-chip momentum', screened: 140 },
-    medium: { accent: '#f0a92b', tag: 'Mid-cap',   beat: 560, flavor: 'balanced rotation',  screened: 820 },
-    high:   { accent: '#ff5d8f', tag: 'Microcap',  beat: 300, flavor: 'social-driven degen', screened: 4200 },
-    sniper: { accent: '#ff3b3b', tag: 'New launches', beat: 150, flavor: 'brand-new · survivors shown', screened: 11000 },
+    safe:   { accent: '#4d8bff', tag: 'Large-cap', beat: 620, flavor: 'deep pools · tight spreads' },
+    medium: { accent: '#f0a92b', tag: 'Mid-cap',   beat: 480, flavor: 'balanced depth' },
+    high:   { accent: '#ff5d8f', tag: 'Microcap',  beat: 340, flavor: 'less-efficient · wider gaps' },
+    sniper: { accent: '#ff3b3b', tag: 'New launches', beat: 220, flavor: 'freshest · widest gaps' },
   };
   var ORDER = ['safe', 'medium', 'high', 'sniper'];
 
@@ -53,23 +46,24 @@
       '.td-lane.dim{opacity:.32}' +
       '.td-lanenote{color:var(--faint)}' +
       '.td-head{display:flex;flex-wrap:wrap;gap:10px 26px;align-items:baseline;margin-bottom:14px}' +
-      '.td-eq{font-family:var(--mono);font-size:clamp(26px,4vw,40px);font-weight:800;letter-spacing:-.02em}' +
-      '.td-arrow{color:var(--faint);font-size:22px}' +
-      '.td-ret{font-family:var(--mono);font-weight:800;font-size:clamp(18px,2.4vw,26px)}' +
+      '.td-eq{font-family:var(--mono);font-size:clamp(24px,3.6vw,38px);font-weight:800;letter-spacing:-.02em}' +
+      '.td-eqlbl{font-size:12px;color:var(--muted);font-weight:500;letter-spacing:.04em;text-transform:uppercase}' +
       '.td-kpis{display:flex;gap:22px;margin-left:auto;flex-wrap:wrap}' +
       '.td-kpi .n{font-family:var(--mono);font-weight:700;font-size:16px}.td-kpi .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}' +
-      '.td-kpi .hold{color:var(--muted)}' +
       '.td-stage{position:relative;border:1px solid var(--line);border-radius:14px;background:var(--surface-2);overflow:hidden}' +
       '.td-spark{display:block;width:100%;height:120px}' +
-      '.td-feed{display:flex;gap:8px;padding:10px;overflow:hidden;flex-wrap:wrap;min-height:52px;border-top:1px solid var(--line)}' +
-      '.td-chip{display:flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid var(--line);border-radius:999px;background:var(--surface);font-size:12.5px;opacity:0;transform:translateY(6px);transition:opacity .35s,transform .35s}' +
-      '.td-chip.in{opacity:1;transform:none}' +
-      '.td-chip img{width:17px;height:17px;border-radius:50%;flex:none}' +
-      '.td-chip .dot{width:6px;height:6px;border-radius:50%;flex:none}' +
-      '.td-chip .r{font-family:var(--mono);font-weight:700}' +
+      '.td-feed{display:flex;flex-direction:column;gap:6px;padding:10px;overflow:hidden;min-height:52px;border-top:1px solid var(--line)}' +
+      '.td-row{display:flex;align-items:center;gap:9px;font-size:12.5px;opacity:0;transform:translateY(6px);transition:opacity .3s,transform .3s}' +
+      '.td-row.in{opacity:1;transform:none}' +
+      '.td-row img{width:18px;height:18px;border-radius:50%;flex:none}' +
+      '.td-row .dot{width:6px;height:6px;border-radius:50%;flex:none}' +
+      '.td-row .sym{font-weight:700;min-width:62px}' +
+      '.td-row .route{color:var(--muted);font-family:var(--mono);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+      '.td-row .net{font-family:var(--mono);font-weight:700;margin-left:auto}' +
+      '.td-row .sz{font-family:var(--mono);color:var(--faint);font-size:11px}' +
+      '.td-row .tag{font-size:10.5px;padding:1px 6px;border-radius:999px;border:1px solid var(--line)}' +
       '.td-now{position:absolute;top:8px;right:10px;font-family:var(--mono);font-size:11px;color:var(--muted);z-index:2}' +
-      '.td-scan{position:absolute;top:8px;left:10px;font-size:11px;color:var(--muted);z-index:2;opacity:0;transition:opacity .3s}' +
-      '.td-scan.on{opacity:1}' +
+      '.td-scan{position:absolute;top:8px;left:10px;font-size:11px;color:var(--muted);z-index:2}' +
       '.td-note{font-size:11.5px;color:var(--faint);margin-top:8px}' +
       '.td-loading{color:var(--muted);font-size:14px;padding:18px}';
     document.head.appendChild(s);
@@ -78,16 +72,15 @@
   fetch(SRC, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
     css();
     var modes = d.modes || null;
-    if (!modes) { host.innerHTML = '<div class="td-loading">Backtest data unavailable.</div>'; return; }
-    var keys = ORDER.filter(function (k) { return modes[k] && ((modes[k].perToken || []).length || modes[k].noBacktest); });
-    if (!keys.length) { host.innerHTML = '<div class="td-loading">Backtest data unavailable.</div>'; return; }
+    if (!modes) { host.innerHTML = '<div class="td-loading">Arbitrage board unavailable.</div>'; return; }
+    var keys = ORDER.filter(function (k) { return modes[k] && (modes[k].opportunities || []).length; });
+    if (!keys.length) { host.innerHTML = '<div class="td-loading">No live spreads in this snapshot — markets are efficient right now.</div>'; return; }
 
-    // Build shell: mode tabs + head + lanes + stage.
     var tabs = keys.map(function (k) {
       var m = modes[k], st = MODE_STYLE[k] || {};
       return '<div class="td-mode" data-mode="' + k + '">' +
-        '<span class="mt"><span class="md" style="background:' + (st.accent || '#4d8bff') + '"></span>' + esc(m.label || k) + '</span>' +
-        '<span class="ms">' + esc((st.tag || '') + ' · ' + (st.flavor || '')) + '</span>' +
+        '<span class="mt"><span class="md" style="background:' + (st.accent || '#4d8bff') + '"></span>' + esc((st.tag || k)) + '</span>' +
+        '<span class="ms">' + esc(st.flavor || '') + '</span>' +
         '<span class="td-progress"><i></i></span></div>';
     }).join('');
 
@@ -95,28 +88,24 @@
       '<div class="td-modes">' + tabs + '</div>' +
       '<div class="td-lanes" id="td-lanes"></div>' +
       '<div class="td-head">' +
-        '<span class="td-eq"><span style="color:var(--muted);font-weight:500" id="td-eqstart"></span> <span class="td-arrow">&rarr;</span> <span id="td-eqnow"></span></span>' +
-        '<span class="td-ret" id="td-ret">&nbsp;</span>' +
+        '<span class="td-eq"><span id="td-cap">$0</span></span> <span class="td-eqlbl">net captured &middot; this snapshot</span>' +
         '<span class="td-kpis">' +
-          '<span class="td-kpi"><div class="n" id="td-screened">—</div><div class="l">screened</div></span>' +
-          '<span class="td-kpi"><div class="n" id="td-win">—</div><div class="l">win rate</div></span>' +
-          '<span class="td-kpi"><div class="n" id="td-tr">—</div><div class="l">paper trades</div></span>' +
-          '<span class="td-kpi"><div class="n hold" id="td-hold">—</div><div class="l">buy &amp; hold</div></span>' +
-          '<span class="td-kpi"><div class="n">90d</div><div class="l">paper window</div></span>' +
+          '<span class="td-kpi"><div class="n" id="td-scanned">—</div><div class="l">pairs scanned</div></span>' +
+          '<span class="td-kpi"><div class="n" id="td-prof">—</div><div class="l">profitable net of fees</div></span>' +
+          '<span class="td-kpi"><div class="n" id="td-best">—</div><div class="l">best net spread</div></span>' +
+          '<span class="td-kpi"><div class="n" id="td-fees">—</div><div class="l">round-trip cost</div></span>' +
         '</span>' +
       '</div>' +
-      '<div class="td-stage"><span class="td-now" id="td-now"></span><span class="td-scan" id="td-scan">◉ scanning social + on-chain signals…</span>' +
+      '<div class="td-stage"><span class="td-now" id="td-now"></span><span class="td-scan" id="td-scan">◉ scanning cross-DEX spreads…</span>' +
       '<canvas class="td-spark" id="td-spark"></canvas><div class="td-feed" id="td-feed"></div></div>' +
       '<div class="td-note" id="td-note"></div>';
 
-    var elEqStart = document.getElementById('td-eqstart');
-    var elEqNow = document.getElementById('td-eqnow');
-    var elRet = document.getElementById('td-ret');
-    var elWin = document.getElementById('td-win');
-    var elTr = document.getElementById('td-tr');
-    var elHold = document.getElementById('td-hold');
+    var elCap = document.getElementById('td-cap');
+    var elScanned = document.getElementById('td-scanned');
+    var elProf = document.getElementById('td-prof');
+    var elBest = document.getElementById('td-best');
+    var elFees = document.getElementById('td-fees');
     var elNow = document.getElementById('td-now');
-    var elScan = document.getElementById('td-scan');
     var elNote = document.getElementById('td-note');
     var elLanes = document.getElementById('td-lanes');
     var feed = document.getElementById('td-feed');
@@ -143,171 +132,104 @@
       ctx.beginPath(); ctx.arc(X(points.length - 1), Y(points[points.length - 1]), 3.2 * devicePixelRatio, 0, 7); ctx.fillStyle = accent; ctx.fill();
     }
 
-    var timer = null, cur = null, raf = null;
-    var elScreened = document.getElementById('td-screened');
-    function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } if (raf) { cancelAnimationFrame(raf); raf = null; } }
+    function renderLanes(activeChain) {
+      var chains = ['solana', 'ethereum', 'bsc'];
+      elLanes.innerHTML = chains.map(function (c) {
+        return '<span class="td-lane' + (activeChain && activeChain !== c ? ' dim' : '') + '">' +
+          '<span class="ld" style="background:' + (CHAIN_COLOR[c] || '#888') + '"></span>' +
+          esc(CHAIN_NAME[c] || c) + ' <span style="color:var(--faint)">(' + esc(BASE_ASSET[c] || '?') + ')</span></span>';
+      }).join('') + '<span class="td-lanenote">— one lane at a time: buy on the cheaper DEX, sell on the dearer, same chain</span>';
+    }
 
-    // "screened" odometer — climbs 0→target across the whole animation so the funnel
-    // scale (thousands evaluated, a handful traded) reads at a glance. Illustrative
-    // count; the traded tokens + returns below are the real backtest.
-    function runScreenOdometer(target, durationMs) {
-      if (!elScreened) return;
-      if (reduce || !window.requestAnimationFrame) { elScreened.textContent = '~' + target.toLocaleString(); return; }
+    var timer = null, raf = null;
+    function clearTimers() { if (timer) { clearTimeout(timer); timer = null; } if (raf) { cancelAnimationFrame(raf); raf = null; } }
+
+    function odometer(el, target, durationMs, fmt) {
+      if (reduce || !window.requestAnimationFrame) { el.textContent = fmt(target); return; }
       var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
       (function tick(now) {
         now = now || ((window.performance && performance.now) ? performance.now() : Date.now());
-        var p = Math.min(1, (now - t0) / durationMs);
-        var eased = 1 - Math.pow(1 - p, 2); // decelerate
-        elScreened.textContent = '~' + Math.round(target * eased).toLocaleString();
+        var p = Math.min(1, (now - t0) / durationMs), e = 1 - Math.pow(1 - p, 2);
+        el.textContent = fmt(target * e);
         if (p < 1) raf = requestAnimationFrame(tick);
       })();
     }
 
-    function renderLanes(mode, activeChain) {
-      var chains = modes[mode].chains || [];
-      elLanes.innerHTML = chains.map(function (c) {
-        return '<span class="td-lane' + (activeChain && activeChain !== c ? ' dim' : '') + '" data-chain="' + c + '">' +
-          '<span class="ld" style="background:' + (CHAIN_COLOR[c] || '#888') + '"></span>' +
-          esc(CHAIN_NAME[c] || c) + ' <span style="color:var(--faint)">(' + esc(BASE_ASSET[c] || '?') + ')</span></span>';
-      }).join('') +
-        '<span class="td-lanenote">— one lane at a time: the bot holds your base asset and only trades that chain</span>';
-    }
-
     function play(mode) {
-      clearTimer();
-      cur = mode;
+      clearTimers();
       var m = modes[mode], st = MODE_STYLE[mode] || {};
       var accent = st.accent || '#4d8bff';
-      var beat = reduce ? 260 : (st.beat || 800);
+      var beat = reduce ? 240 : (st.beat || 500);
       document.documentElement.style.setProperty('--accent-dyn', accent);
-      // tab state
       ORDER.forEach(function (k) { if (tabEls[k]) tabEls[k].classList.toggle('on', k === mode); });
       Array.prototype.forEach.call(host.querySelectorAll('.td-progress>i'), function (i) { i.style.width = '0'; });
 
-      // Live-only mode (sniper): NO historical backtest exists. Show the scanning
-      // behaviour + a loud warning instead of any fabricated return.
-      if (m.noBacktest) {
-        document.documentElement.style.setProperty('--accent-dyn', accent);
-        var watch = (m.watchlist || []).slice();
-        var laneByIdx = (m.chains || ['solana', 'ethereum', 'bsc']);
-        elEqStart.textContent = 'live only';
-        elEqNow.textContent = '—';
-        elRet.textContent = 'no backtest';
-        elRet.style.color = 'var(--muted)';
-        elWin.textContent = '—'; elTr.textContent = '—'; elHold.textContent = '—';
-        elScan.classList.add('on');
-        renderLanes(mode, null);
-        elNote.innerHTML = '⚠ ' + esc(m.note || '');
-        ctx.clearRect(0, 0, spark.width, spark.height);
-        feed.innerHTML = '';
-        var prog2 = tabEls[mode] ? tabEls[mode].querySelector('.td-progress>i') : null;
-        var j = 0;
-        (function scanOne() {
-          if (j >= watch.length) {
-            elNow.textContent = 'watching for new launches';
-            if (prog2) prog2.style.width = '100%';
-            var next2 = keys[(keys.indexOf(mode) + 1) % keys.length];
-            timer = setTimeout(function () { play(next2); }, reduce ? 3200 : 3800);
-            return;
-          }
-          var sym = watch[j]; var ch = laneByIdx[j % laneByIdx.length]; j++;
-          renderLanes(mode, ch);
-          var chip2 = document.createElement('span'); chip2.className = 'td-chip';
-          chip2.innerHTML =
-            '<span class="dot" style="background:' + (CHAIN_COLOR[ch] || '#888') + '"></span>' +
-            '<img src="' + logo(sym) + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'' + esc(sym.slice(0, 1)) + '\',style:\'width:17px;height:17px;border-radius:50%;background:var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:9px\'}))">' +
-            '<b>' + esc(sym) + '</b><span style="color:var(--muted)">scanning…</span>';
-          feed.appendChild(chip2);
-          requestAnimationFrame(function () { chip2.classList.add('in'); });
-          if (feed.children.length > 8) feed.removeChild(feed.firstChild);
-          elNow.textContent = 'sniffing ' + esc(sym) + ' on ' + esc(CHAIN_NAME[ch] || ch);
-          if (prog2) prog2.style.width = Math.round((j / watch.length) * 100) + '%';
-          timer = setTimeout(scanOne, beat);
-        })();
-        return;
-      }
+      var ops = (m.opportunities || []).slice().sort(function (a, b) { return b.netPct - a.netPct; });
+      var best = ops.length ? ops[0].netPct : 0;
+      var profitable = ops.filter(function (o) { return o.profitable; });
+      var totalCapture = profitable.reduce(function (s, o) { return s + (o.netPct / 100) * (o.sizeCapUsd || 0); }, 0);
 
-      // KPIs for this mode
-      elEqStart.textContent = usd(m.startAmount);
-      elEqNow.textContent = usd(m.startAmount);
-      elWin.textContent = (m.winRatePct != null ? m.winRatePct + '%' : '—');
-      elTr.textContent = (m.trades || 0);
-      elHold.textContent = (m.buyHoldReturnPct >= 0 ? '+' : '') + m.buyHoldReturnPct + '%';
-      elRet.textContent = '';
-      elScan.classList.toggle('on', mode === 'high' || mode === 'sniper'); // high + sniper "scan socials"
-      renderLanes(mode, null);
+      elScanned.textContent = '—'; elProf.textContent = (m.profitableAfterFees != null ? m.profitableAfterFees : profitable.length);
+      elBest.textContent = pct(best); elBest.style.color = best > 0 ? 'var(--gain)' : 'var(--muted)';
+      elFees.textContent = '−' + (m.feesPct != null ? m.feesPct : 0.8) + '%';
+      elCap.textContent = '$0';
+      renderLanes(null);
+      odometer(elScanned, (m.scanned || ops.length), Math.max(2000, ops.length * beat), function (v) { return Math.round(v).toLocaleString(); });
 
-      // play order: group by lane (chain) so it reads as one-lane-at-a-time
-      var rows = m.perToken.slice().sort(function (a, b) {
-        return (a.chain || '').localeCompare(b.chain || '') || a.sym.localeCompare(b.sym);
-      });
-      var screenTarget = (st.screened || rows.length * 40);
-      var animMs = Math.max(2500, rows.length * beat);
-      runScreenOdometer(screenTarget, animMs);
-
-      var note = 'The bot <b>screens the live feed one launch at a time</b> — ~' + screenTarget.toLocaleString() +
-        ' candidates over 90d, the gate rejects almost all, and it trades only the <b>' + rows.length + '</b> that pass. ' +
-        '$' + (m.startAmount / (m.perToken.length || 1)).toLocaleString() + ' paper each · ' + esc(m.strategy || '') +
-        ' · trend filter + 8% stop. Strategy ' + (m.returnPct >= 0 ? '+' : '') + m.returnPct + '% vs buy&hold ' +
-        (m.buyHoldReturnPct >= 0 ? '+' : '') + m.buyHoldReturnPct + '% this window. (screened count illustrative; trades + returns are real.)';
-      if ((mode === 'high' || mode === 'sniper') && m.survivorshipNote) note += ' ⚠ ' + esc(m.survivorshipNote);
-      elNote.innerHTML = note;
+      elNote.innerHTML = 'Live same-chain cross-DEX spreads (DexScreener), net of a ~' + (m.feesPct != null ? m.feesPct : 0.8) +
+        '% round-trip cost (two swaps + 0.05% agent fee + slippage). <b>Real-time snapshot, not a backtest</b> — spreads are fleeting, ' +
+        'capped by the shallower pool, and compete with MEV bots, so most are below cost (shown as-is). The bot only fires the ones that clear fees. Not investment advice.';
 
       feed.innerHTML = '';
-      var equity = m.startAmount, curve = [equity], perToken = m.startAmount / rows.length, i = 0;
+      var captured = 0, curve = [0], i = 0;
       var prog = tabEls[mode] ? tabEls[mode].querySelector('.td-progress>i') : null;
 
-      function stepOne() {
-        if (i >= rows.length) {
-          elRet.textContent = (m.returnPct >= 0 ? '+' : '') + m.returnPct + '%';
-          elRet.style.color = m.returnPct >= 0 ? 'var(--gain)' : 'var(--loss)';
-          elEqNow.textContent = usd(m.endAmount);
-          elNow.textContent = 'paper result';
-          if (elScreened) elScreened.textContent = '~' + screenTarget.toLocaleString();
+      function step() {
+        if (i >= ops.length) {
+          elCap.textContent = usd(totalCapture);
+          elNow.textContent = profitable.length + ' of ' + ops.length + ' cleared fees';
           if (prog) prog.style.width = '100%';
-          // advance to next mode after a beat
           var next = keys[(keys.indexOf(mode) + 1) % keys.length];
-          timer = setTimeout(function () { play(next); }, reduce ? 3200 : 3600);
+          timer = setTimeout(function () { play(next); }, reduce ? 3200 : 4200);
           return;
         }
-        var t = rows[i]; i++;
-        equity += perToken * (t.ret / 100);
-        curve.push(equity);
-        elEqNow.textContent = usd(equity);
-        renderLanes(mode, t.chain);
-        var pos = t.ret >= 0;
-        var chip = document.createElement('span'); chip.className = 'td-chip';
-        chip.innerHTML =
-          '<span class="dot" style="background:' + (CHAIN_COLOR[t.chain] || '#4d8bff') + '"></span>' +
-          '<img src="' + logo(t.sym) + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'' + esc(t.sym.slice(0, 1)) + '\',style:\'width:17px;height:17px;border-radius:50%;background:var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:9px\'}))">' +
-          '<b>' + esc(t.sym) + '</b>' +
-          '<span style="color:var(--muted)">' + esc(BASE_ASSET[t.chain] || '') + '&rarr;' + esc(t.sym) + '&rarr;' + esc(BASE_ASSET[t.chain] || '') + '</span>' +
-          '<span class="r" style="color:' + (pos ? 'var(--gain)' : 'var(--loss)') + '">' + (pos ? '+' : '') + t.ret + '%</span>';
-        feed.appendChild(chip);
-        requestAnimationFrame(function () { chip.classList.add('in'); });
-        if (feed.children.length > 8) feed.removeChild(feed.firstChild);
+        var o = ops[i]; i++;
+        if (o.profitable) { captured += (o.netPct / 100) * (o.sizeCapUsd || 0); }
+        curve.push(captured);
+        elCap.textContent = usd(captured);
+        renderLanes(o.chain);
+        var row = document.createElement('div'); row.className = 'td-row';
+        var pos = o.netPct > 0;
+        row.innerHTML =
+          '<span class="dot" style="background:' + (CHAIN_COLOR[o.chain] || '#888') + '"></span>' +
+          '<img src="' + logo(o.sym) + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'' + esc(String(o.sym).slice(0, 1)) + '\',style:\'width:18px;height:18px;border-radius:50%;background:var(--line);display:inline-flex;align-items:center;justify-content:center;font-size:9px\'}))">' +
+          '<span class="sym">' + esc(o.sym) + '</span>' +
+          '<span class="route">buy ' + esc(o.buyDex) + ' &rarr; sell ' + esc(o.sellDex) + '</span>' +
+          '<span class="sz">~' + usd(o.sizeCapUsd || 0) + '</span>' +
+          '<span class="net" style="color:' + (pos ? 'var(--gain)' : 'var(--loss)') + '">' + pct(o.netPct) + '</span>' +
+          '<span class="tag" style="color:' + (pos ? 'var(--gain)' : 'var(--muted)') + '">' + (pos ? 'fire' : 'skip') + '</span>';
+        feed.appendChild(row);
+        requestAnimationFrame(function () { row.classList.add('in'); });
+        if (feed.children.length > 7) feed.removeChild(feed.firstChild);
         drawSpark(curve, accent);
-        elNow.textContent = 'screening… → trading ' + esc(t.sym) + ' on ' + esc(CHAIN_NAME[t.chain] || t.chain);
-        if (prog) prog.style.width = Math.round((i / rows.length) * 100) + '%';
-        timer = setTimeout(stepOne, beat);
+        elNow.textContent = 'checking ' + esc(o.sym) + ' on ' + esc(CHAIN_NAME[o.chain] || o.chain);
+        if (prog) prog.style.width = Math.round((i / ops.length) * 100) + '%';
+        timer = setTimeout(step, beat);
       }
-      stepOne();
+      step();
     }
 
-    // click a mode tab to jump to it
     Array.prototype.forEach.call(host.querySelectorAll('.td-mode'), function (el) {
       el.addEventListener('click', function () { play(el.getAttribute('data-mode')); });
     });
 
-    // honest buy&hold line into the external disclaimer
     var dis = document.getElementById('td-disclaim');
     if (dis) {
-      dis.innerHTML = 'Paper backtest of the shipped momentum engine (EMA crossover + trend filter + 8% stop) on 90 days of real hourly prices (CoinGecko), across Safe / Medium / High / Sniper baskets &mdash; illustrative, not a forecast. ' +
-        'The &ldquo;screened&rdquo; count shows the funnel scale (a live scanner evaluates thousands of launches and trades only the few that clear the gate) and is illustrative; the traded tokens and their returns are real. ' +
-        'Each mode shows the strategy return <b>and</b> the buy&amp;hold return for the same basket; over this bull window, holding often did better. ' +
-        'The <b>High</b> and <b>Sniper</b> baskets are survivorship-biased &mdash; the Sniper basket is 2024-25 launches that <i>survived</i>; most real new launches rug or go to zero and are not shown, and the Sniper backtest itself <b>lost money</b>. Past performance is not a guarantee; crypto is volatile and you can lose money. Not investment advice.';
+      dis.innerHTML = 'Live <b>arbitrage</b> board: real same-chain cross-DEX price gaps (DexScreener), net of a conservative round-trip cost (two swaps + the 0.05% agent fee + slippage). ' +
+        'This is a <b>real-time snapshot, not a historical backtest</b>. Spreads are fleeting, capped by the shallower pool, and compete with MEV bots — so most pairs are below cost and the bot only fires the few that clear fees. ' +
+        'Edge concentrates in the less-efficient (microcap / new-launch) tiers; majors are near-efficient. Past performance is not a guarantee; crypto is volatile and you can lose money. Not investment advice.';
     }
 
     play(keys[0]);
-  }).catch(function () { host.innerHTML = '<div class="td-loading">Backtest demo unavailable right now.</div>'; });
+  }).catch(function () { host.innerHTML = '<div class="td-loading">Arbitrage demo unavailable right now.</div>'; });
 })();
