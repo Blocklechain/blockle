@@ -1,0 +1,18 @@
+[Unit]
+Description=Blockle cross-chain token signals (due-diligence for trading bots, loopback)
+After=network-online.target blockle-biz.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/signals
+Environment=SIGNALS_PORT=8809
+Environment=SIGNALS_BIZ_URL=http://127.0.0.1:8900
+Environment=SIGNALS_SOL_RPC=https://solana-rpc.publicnode.com
+ExecStart=/usr/bin/node /opt/blockle/services/signals/src/server.js
+Restart=on-failure
+RestartSec=5
+# loopback only — nginx proxies /api/signals/ to 127.0.0.1:8809
+
+[Install]
+WantedBy=multi-user.target

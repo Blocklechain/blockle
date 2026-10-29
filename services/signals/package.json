@@ -1,0 +1,9 @@
+{
+  "name": "blockle-signals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-chain token due-diligence signals for the Blockle trading bots: rug/LP checks, top-holder concentration, holder count, market cap, liquidity, volume/popularity, and a composite safety + profit score. Chains: BLOCK, Solana, Ethereum, BSC.",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" }
+}
