@@ -347,12 +347,11 @@
   // on the chosen pair.
   function specFromCreate() {
     var T = dep('AgentBotTemplates', './bot-templates.js');
-    var B2 = dep('AgentBots', './bots.js');
-    var laneBase = (B2 && B2.laneBase && B2.laneBase(create.lane)) || create.profitCurrency || 'USDC';
     if (create.pairMode !== 'manual') {
       var sc = T.fromTemplate('scan_and_trade', {});
-      // In lane mode the base asset IS the settlement/quote currency.
-      sc.config = Object.assign({}, sc.config, { profitCurrency: laneBase });
+      // The settlement/quote currency is the user's chosen profitCurrency (the lane
+      // selector keeps this synced to the lane's base asset). Carry it through.
+      sc.config = Object.assign({}, sc.config, { profitCurrency: (create.profitCurrency || 'USDC') });
       sc.name = (T.TEMPLATES.scan_and_trade && T.TEMPLATES.scan_and_trade.name) || sc.name;
       sc.lane = create.lane; sc.riskMode = create.riskMode;
       return sc;

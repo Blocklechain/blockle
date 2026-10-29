@@ -141,7 +141,9 @@ fn run_direct(mode: PoolMode, port_off: u16) -> (std::path::PathBuf, std::sync::
     let ntime = u32::from_str_radix(p[7].as_str().unwrap(), 16).unwrap();
 
     // Grind like an ASIC would: fixed extranonce2, roll the header nonce.
-    let en2 = [0u8; 4];
+    // extranonce2 is EN2_SIZE=8 bytes (bumped from 4 for Braiins compatibility);
+    // the pool reserves 8 bytes in coinb1/coinb2, so we must insert 8 here too.
+    let en2 = [0u8; 8];
     let mut coinbase = Vec::new();
     coinbase.extend_from_slice(&coinb1);
     coinbase.extend_from_slice(&en1);
