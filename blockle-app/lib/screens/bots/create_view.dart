@@ -64,6 +64,26 @@ class CreateView extends StatefulWidget {
 // Profit-currency choices (settlement/quote assets). USDC is the default.
 const List<String> _profitCurrencies = ['USDC', 'USDT', 'DAI', 'USD'];
 
+// LANE choices — a bot trades ONE lane (chain + base asset), never cross-chain.
+// null = unconstrained (legacy; the autopilot may wander any discoverable chain).
+const List<MapEntry<String?, String>> _laneChoices = [
+  MapEntry(null, 'Any lane'),
+  MapEntry('solana', 'Solana · SOL'),
+  MapEntry('ethereum', 'Ethereum · ETH'),
+  MapEntry('bsc', 'BSC · BNB'),
+  MapEntry('block', 'BLOCK'),
+];
+
+// RISK-MODE choices — tune discovery/scanner strictness. null = engine default
+// (medium). `high`/`sniper` loosen the gates and carry a warning.
+const List<MapEntry<String?, String>> _riskChoices = [
+  MapEntry(null, 'Default'),
+  MapEntry('safe', 'Safe'),
+  MapEntry('medium', 'Medium'),
+  MapEntry('high', 'High'),
+  MapEntry('sniper', 'Sniper'),
+];
+
 class _CreateViewState extends State<CreateView> {
   int _tpl = 0;
   final _pair = TextEditingController(text: 'SOL / USDC');
@@ -80,6 +100,11 @@ class _CreateViewState extends State<CreateView> {
   // PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO (AI
   // mode: user-chosen; manual mode: derived from the pair quote).
   String _profitCurrency = 'USDC';
+
+  // LANE + RISK MODE — both optional (null = legacy/unconstrained). A lane pins
+  // the bot to one chain; the risk mode tunes discovery/scanner strictness.
+  String? _lane;
+  String? _riskMode;
 
   bool get _aiPicksPairs => _pairMode != 'manual';
 
@@ -161,6 +186,8 @@ class _CreateViewState extends State<CreateView> {
         'scan_and_trade',
         allocationUsd: alloc,
         configOverride: {'profitCurrency': _profitCurrency},
+        lane: _lane,
+        riskMode: _riskMode,
       );
     }
     final tpl = _templates[_tpl];
@@ -169,12 +196,16 @@ class _CreateViewState extends State<CreateView> {
       pair: _normPair(),
       allocationUsd: alloc,
       configOverride: tpl.type == 'dca' ? _dcaOverride() : null,
+      lane: _lane,
+      riskMode: _riskMode,
     );
   }
 
   Future<void> _startPaper() async {
     final bot = _createBot(_allocUsd);
-    await widget.controller.enablePaper(bot.id);
+    // Pass the amount as the paper BUDGET so the sandbox is the same size as a
+    // live run would be (depletes as it spends). Omitted/0 -> unbounded paper.
+    await widget.controller.enablePaper(bot.id, allocationUsd: _allocUsd);
     widget.onCreated(bot.id, false);
   }
 
@@ -304,6 +335,8 @@ class _CreateViewState extends State<CreateView> {
               decoration: _inputDec(t, prefix: '\$', suffix: _aiPicksPairs ? _profitCurrency : 'USDC'),
             ),
           ),
+          const SizedBox(height: 16),
+          _laneRiskSelect(t),
           const SizedBox(height: 16),
           if (_aiPicksPairs)
             _AutopilotNote(profitCurrency: _profitCurrency, alloc: _allocUsd)
@@ -455,6 +488,74 @@ class _CreateViewState extends State<CreateView> {
           ),
         ),
       ),
+    );
+  }
+
+  // LANE + RISK-MODE selectors. Both optional: "Any lane" / "Default" keep the
+  // bot legacy (null). high/sniper show a caution line (sniper is the loudest).
+  Widget _laneRiskSelect(BotTokens t) {
+    Widget dropdown(String? value, List<MapEntry<String?, String>> choices,
+        ValueChanged<String?> onCh) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13),
+        decoration: BoxDecoration(
+          color: t.elevated,
+          borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+          border: Border.all(color: t.line),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<String?>(
+            value: value,
+            isExpanded: true,
+            dropdownColor: t.surface,
+            style: mono(t, size: 15, color: t.ink),
+            items: [
+              for (final c in choices)
+                DropdownMenuItem<String?>(value: c.key, child: Text(c.value)),
+            ],
+            onChanged: (v) => setState(() => onCh(v)),
+          ),
+        ),
+      );
+    }
+
+    final warn = _riskMode == 'sniper'
+        ? 'Sniper targets brand-new launches — no track record, most go to zero. '
+            'Every rug/holder/liquidity check still runs, but only risk what you can lose.'
+        : _riskMode == 'high'
+            ? 'High relaxes the liquidity + age gates to reach smaller, younger '
+                'tokens — higher upside, higher chance of a loss.'
+            : null;
+
+    return _Field(
+      label: 'Lane & risk',
+      hint: 'one chain, one risk profile',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: dropdown(_lane, _laneChoices, (v) => _lane = v)),
+          const SizedBox(width: 10),
+          Expanded(child: dropdown(_riskMode, _riskChoices, (v) => _riskMode = v)),
+        ]),
+        if (warn != null) ...[
+          const SizedBox(height: 9),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: t.warn.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+              border: Border.all(color: t.warn.withValues(alpha: 0.5)),
+            ),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Icon(Icons.warning_amber_rounded, size: 16, color: t.warn),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(warn,
+                    style: TextStyle(fontSize: 11.5, color: t.ink, height: 1.4)),
+              ),
+            ]),
+          ),
+        ],
+      ]),
     );
   }
 

@@ -621,10 +621,54 @@
   }
   function buildRevoke(chain, token, spender) { return Security.buildRevoke(chain, token, spender); }
 
+  // SIGNALS-BACKED DISCOVERY (browser only): a READ-ONLY candidate feed powered by
+  // the cross-chain signals service (/api/signals/discover). Lane- and mode-aware:
+  // the bot passes its { lane, mode } and we fetch same-chain, same-mode candidates
+  // that already cleared the rug/holder/liquidity gate, mapped to the discovery row
+  // shape the runner expects. Never trades, never auto-allowlists. Null in Node
+  // (tests keep ctx.discovery === null, unchanged).
+  const _signalsDiscovery = inNode ? null : {
+    async scan(opts) {
+      opts = opts || {};
+      const Bots = global.AgentBots;
+      const lane = Bots && Bots.validateLane ? Bots.validateLane(opts.lane) : (opts.lane || null);
+      const mode = Bots && Bots.validateRiskMode ? (Bots.validateRiskMode(opts.mode) || 'medium') : (opts.mode || 'medium');
+      const chain = lane && Bots ? Bots.laneChain(lane) : (opts.chain || '');
+      const base = lane && Bots ? Bots.laneBase(lane) : (opts.base || 'USDC');
+      const qs = 'mode=' + encodeURIComponent(mode) + (chain ? '&chain=' + encodeURIComponent(chain) : '') + '&limit=15';
+      let j = null;
+      try {
+        const r = await fetch('/api/signals/discover?' + qs, { headers: { accept: 'application/json' } });
+        if (r.ok) j = await r.json();
+      } catch (_) { j = null; }
+      const cands = (j && Array.isArray(j.candidates)) ? j.candidates : [];
+      return cands.map((c) => {
+        const m = c.metrics || {};
+        const sym = (m.symbol || String(c.token).slice(0, 6)).toUpperCase();
+        const quote = (base || 'USDC').toUpperCase();
+        return {
+          pair: sym + '/' + quote,
+          token: c.token, chain: c.chain, symbol: sym, lane,
+          approved: c.safe === true,
+          score: Math.max(0, Math.min(1, (Number(c.score) || 0) / 100)), // discovery uses 0..1
+          hype: c.hype,
+          // enriched slots the discovery/scanner evaluators read:
+          liquidityUsd: m.liquidityUsd, volume24hUsd: m.volume24hUsd,
+          marketCapUsd: m.marketCapUsd, ageSec: m.ageSec,
+          topHolderPct: m.topHolderPct, honeypot: m.honeypot === true,
+          liquidityLocked: (m.lpLockedPct != null ? m.lpLockedPct >= 50 : undefined),
+          mintAuthorityRenounced: m.mintRenounced,
+          flags: c.flags || [],
+        };
+      });
+    },
+  };
+
   // The agent tool CTX: exactly the capabilities tools.js wires to. Value-moving
   // tools still go through the runner's cap -> confirm -> commit rails.
   function agentCtx() {
     return {
+      discovery: _signalsDiscovery, // READ-ONLY lane/mode-aware candidate feed
       getAddress: async (chain) => (await accountFor(chain)).address,
       // Agent balance view = the auto-detect holdings (native + every held
       // token). An explicit `tokens` arg is still honored verbatim.

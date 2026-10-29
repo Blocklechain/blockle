@@ -32,8 +32,11 @@ Four surfaces, one widget (:class:`BotsPanel`):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -598,6 +601,74 @@ def resolve_market_mark(sym: str, markets: Any, get_book, get_trades) -> Optiona
     return price if direct is not None else (1.0 / price)
 
 
+#: Signals service base — the cross-chain discovery feed powering lane/mode bots.
+_SIGNALS_DISCOVER_URL = "https://blockle.org/api/signals/discover"
+
+
+class SignalsDiscovery:
+    """READ-ONLY, lane/mode-aware candidate feed powered by the cross-chain signals
+    service (``/api/signals/discover``). Faithful port of the extension's
+    ``_signalsDiscovery`` (wiring.js): a bot passes its ``{lane, mode}`` and we fetch
+    same-chain, same-mode candidates that already cleared the rug/holder/liquidity
+    gate, mapped to the discovery-row shape the :class:`BotRunner` expects. Never
+    trades, never auto-allowlists. Returns ``[]`` on any error."""
+
+    def __init__(self, base_url: str = _SIGNALS_DISCOVER_URL):
+        self.base_url = base_url
+
+    def _fetch(self, url: str):
+        req = urllib.request.Request(url, headers={"accept": "application/json",
+                                                   "user-agent": "blockle-qt"})
+        with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 (fixed host)
+            return json.loads(r.read().decode())
+
+    async def scan(self, opts: Optional[Dict[str, Any]] = None):
+        opts = opts or {}
+        lane = bots_mod.validate_lane(opts.get("lane"))
+        mode = bots_mod.validate_risk_mode(opts.get("mode")) or "medium"
+        chain = bots_mod.lane_chain(lane) if lane else (opts.get("chain") or "")
+        base = (bots_mod.lane_base(lane) if lane else (opts.get("base") or "USDC")) or "USDC"
+        params = {"mode": mode, "limit": "15"}
+        if chain:
+            params["chain"] = chain
+        url = self.base_url + "?" + urllib.parse.urlencode(params)
+        try:
+            loop = asyncio.get_event_loop()
+            j = await loop.run_in_executor(None, self._fetch, url)
+        except Exception:
+            return []
+        cands = j.get("candidates") if isinstance(j, dict) else None
+        if not isinstance(cands, list):
+            return []
+        rows: List[Dict[str, Any]] = []
+        quote = str(base).upper()
+        for c in cands:
+            if not isinstance(c, dict):
+                continue
+            m = c.get("metrics") or {}
+            sym = str(m.get("symbol") or str(c.get("token") or "")[:6]).upper()
+            try:
+                score = max(0.0, min(1.0, (float(c.get("score") or 0)) / 100.0))  # discovery uses 0..1
+            except (TypeError, ValueError):
+                score = 0.0
+            lp = m.get("lpLockedPct")
+            rows.append({
+                "pair": sym + "/" + quote,
+                "token": c.get("token"), "chain": c.get("chain"), "symbol": sym, "lane": lane,
+                "approved": c.get("safe") is True,
+                "score": score,
+                "hype": c.get("hype"),
+                # enriched slots the discovery/scanner evaluators read:
+                "liquidityUsd": m.get("liquidityUsd"), "volume24hUsd": m.get("volume24hUsd"),
+                "marketCapUsd": m.get("marketCapUsd"), "ageSec": m.get("ageSec"),
+                "topHolderPct": m.get("topHolderPct"), "honeypot": m.get("honeypot") is True,
+                "liquidityLocked": (lp >= 50) if lp is not None else None,
+                "mintAuthorityRenounced": m.get("mintRenounced"),
+                "flags": c.get("flags") or [],
+            })
+        return rows
+
+
 # =========================================================================== #
 # BotsController — assembles the REAL engine for the UI.                        #
 # =========================================================================== #
@@ -747,6 +818,9 @@ class BotsController(QObject):
         bots_ctx = dict(base_ctx)
         bots_ctx["network"] = _network
         bots_ctx["prices"] = _prices
+        # READ-ONLY lane/mode-aware candidate feed (signals service). The BotRunner
+        # picks this up as ``self.discovery``; it never trades or auto-allowlists.
+        bots_ctx.setdefault("discovery", SignalsDiscovery())
         tools = agentpkg.tools.build(bots_ctx)
         notifier = notify_mod.QtTrayNotifier()
         pnl = agentpkg.pnl.create({"notifier": notifier, "audit": audit})
@@ -1274,6 +1348,27 @@ _TPL_ORDER = ["conservative_dca", "aggressive_dca", "wide_grid", "block_accumula
 # Profit-currency choices (settlement/quote assets). USDC is the default.
 _PROFIT_CURRENCIES = ["USDC", "USDT", "DAI", "USD"]
 
+#: Lane selector options — (label, lane-key). A bot trades ONE lane (chain + base
+#: asset) and never crosses chains. Order mirrors the extension create form.
+_LANE_OPTIONS = [
+    ("Solana · SOL", "solana"),
+    ("Ethereum · ETH", "ethereum"),
+    ("BSC · BNB", "bsc"),
+    ("BLOCK", "block"),
+]
+#: Risk-mode selector options — (label, mode-key).
+_RISK_OPTIONS = [
+    ("Safe", "safe"),
+    ("Medium", "medium"),
+    ("High", "high"),
+    ("Sniper", "sniper"),
+]
+#: Per-mode warning line shown under the risk selector (empty = no warning).
+_RISK_WARNINGS = {
+    "high": "High risk: low-liquidity, young tokens — expect big swings and losses.",
+    "sniper": "Sniper targets brand-new launches, no track record — most go to zero.",
+}
+
 
 class CreatePanel(QWidget):
     created = Signal()  # a bot was added -> cockpit refresh
@@ -1291,6 +1386,10 @@ class CreatePanel(QWidget):
         # PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO
         # (AI mode: user-chosen; manual mode: derived from the pair quote).
         self.profit_currency = "USDC"
+        # LANE + RISK MODE — a bot is pinned to one lane (chain + base asset) and a
+        # risk preset. Defaults: Solana lane, Medium risk.
+        self.lane = _LANE_OPTIONS[0][1]
+        self.risk_mode = "medium"
         # advanced slider state (seeded from the chosen template)
         self.adv = {"base": 100, "tp": 2.0, "so": 3, "step": 2.0, "vol": 1.4, "tr": 0.6}
 
@@ -1361,6 +1460,31 @@ class CreatePanel(QWidget):
         self.profit_cur.setCurrentText(self.profit_currency)
         self.profit_cur.currentTextChanged.connect(self._profit_cur_changed)
         lv.addWidget(self.profit_cur)
+
+        # LANE — the single chain + base asset the bot trades (never cross-chain).
+        self.lane_label = self._field_label("Lane", "the chain + base asset this bot trades")
+        lv.addWidget(self.lane_label)
+        self.lane_cur = QComboBox()
+        for label, _key in _LANE_OPTIONS:
+            self.lane_cur.addItem(label)
+        self.lane_cur.setCurrentIndex(0)
+        self.lane_cur.currentIndexChanged.connect(self._lane_changed)
+        lv.addWidget(self.lane_cur)
+
+        # RISK MODE — how aggressive the discovery/scanner candidate gate is.
+        self.risk_label = self._field_label("Risk mode", "how aggressive the pair-discovery gate is")
+        lv.addWidget(self.risk_label)
+        self.risk_cur = QComboBox()
+        for label, _key in _RISK_OPTIONS:
+            self.risk_cur.addItem(label)
+        self.risk_cur.setCurrentIndex(1)  # Medium
+        self.risk_cur.currentIndexChanged.connect(self._risk_changed)
+        lv.addWidget(self.risk_cur)
+        self.risk_warn = QLabel("")
+        self.risk_warn.setObjectName("sub")
+        self.risk_warn.setWordWrap(True)
+        self.risk_warn.setVisible(False)
+        lv.addWidget(self.risk_warn)
 
         # Manual mode: the pair picker (hidden by default — AI mode is the default).
         self.pair_in = QLineEdit("SOL/USDC")
@@ -1526,6 +1650,19 @@ class CreatePanel(QWidget):
     def _profit_cur_changed(self, _text=None):
         self.profit_currency = (self.profit_cur.currentText() or "USDC").upper()
 
+    def _lane_changed(self, idx=None):
+        i = self.lane_cur.currentIndex()
+        if 0 <= i < len(_LANE_OPTIONS):
+            self.lane = _LANE_OPTIONS[i][1]
+
+    def _risk_changed(self, idx=None):
+        i = self.risk_cur.currentIndex()
+        if 0 <= i < len(_RISK_OPTIONS):
+            self.risk_mode = _RISK_OPTIONS[i][1]
+        warn = _RISK_WARNINGS.get(self.risk_mode, "")
+        self.risk_warn.setText(warn)
+        self.risk_warn.setVisible(bool(warn))
+
     def _pair_changed(self, _text=None):
         # manual: profit currency tracks the pair quote. In AI mode the pair box is
         # hidden and the user-chosen profit currency is left untouched.
@@ -1651,6 +1788,9 @@ class CreatePanel(QWidget):
             spec["config"] = dict(spec["config"],
                                   profitCurrency=(self.profit_currency or "USDC"))
             spec["allocationUsd"] = self._alloc()
+            # LANE + RISK MODE pin the autopilot to one chain + candidate gate.
+            spec["lane"] = self.lane
+            spec["riskMode"] = self.risk_mode
             return spec
         t = templates_mod.TEMPLATES[self.sel_template]
         cfg = self._config() if t["type"] == "dca" else dict(t["config"])
@@ -1661,6 +1801,8 @@ class CreatePanel(QWidget):
             # the chosen profit currency the engine SETTLES every realized exit into
             # (for a manual pair this is its native quote, so there is no extra hop).
             "profitCurrency": (self.profit_currency or "USDC"),
+            # LANE + RISK MODE: single-chain + candidate-gate presets.
+            "lane": self.lane, "riskMode": self.risk_mode,
             "mode": "paper", "enabled": False, "network": "testnet",
             "template": self.sel_template,
         }
@@ -1679,7 +1821,11 @@ class CreatePanel(QWidget):
                                     f"{bot.name} is running in PAPER mode — it simulates fills at "
                                     f"live quotes and books P&L to the dashboard, but never "
                                     f"broadcasts. Arm it live from Bot detail when you're ready.")
-        self.bc.run_async(runner.enable_paper(bot.id), on_done=lambda r: _done(r),
+        # Start the paper bot with its allocation as a BUDGET so the sandbox is the
+        # same size as a live run would be (the paper ledger depletes it). A 0/blank
+        # amount leaves paper unbounded, exactly as before.
+        self.bc.run_async(runner.enable_paper(bot.id, allocation_usd=self._alloc()),
+                          on_done=lambda r: _done(r),
                           on_error=lambda e: QMessageBox.warning(self, "Bots", str(e)))
 
     def _go_live(self):

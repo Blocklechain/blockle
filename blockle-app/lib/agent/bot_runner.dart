@@ -250,12 +250,18 @@ class BotRunner {
     return bot;
   }
 
-  Future<b.Bot> enablePaper(String id) async {
+  Future<b.Bot> enablePaper(String id, {num? allocationUsd}) async {
     final bot = store.get(id);
     if (bot == null) throw ArgumentError('unknown bot: $id');
+    // Optional paper BUDGET: when provided (>0) it bounds cumulative paper spend
+    // exactly like the live allocation cap — a sandbox the same size as the real
+    // one. Omitted -> unbounded paper (legacy/arena behavior, allocationUsd stays 0).
+    if (allocationUsd != null && allocationUsd.toDouble() > 0) {
+      bot.allocationUsd = allocationUsd.toDouble();
+    }
     bot.mode = 'paper';
     bot.enabled = true;
-    await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'paper'});
+    await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'paper', 'allocationUsd': bot.allocationUsd});
     await store.persist();
     startScheduler(); // a running bot is actually ticked
     return bot;
@@ -587,9 +593,14 @@ class BotRunner {
       // accrue trade+fee — cumulative live spend can never exceed allocationUsd.
       final feeUc = b.agentFeeUc(usdSizeUc);
 
-      // --- allocation gate (LIVE buys only; BigInt-exact, non-bypassable) ---
+      // --- allocation gate (BigInt-exact, non-bypassable) ------------------
+      // LIVE always enforces the per-bot budget. PAPER enforces it too WHEN a
+      // budget was set (allocationUsd > 0) — so a paper run is a sandbox the same
+      // size as the real one. Legacy/arena paper bots (allocationUsd == 0) are
+      // unbounded, preserving the deterministic fixtures exactly.
       BigInt? remainingUc;
-      if (bot.mode == 'live') {
+      final enforceBudget = bot.mode == 'live' || (bot.mode == 'paper' && bot.allocationUsd > 0);
+      if (enforceBudget) {
         final allocUc = b.microUsd(bot.allocationUsd);
         remainingUc = allocUc - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
         if (usdSizeUc + feeUc > remainingUc) {
@@ -615,6 +626,12 @@ class BotRunner {
       }
 
       if (bot.mode == 'paper') {
+        // Mirror the live ledger in paper WHEN a budget is set, so the sandbox
+        // depletes its budget identically. No-op when unbounded (alloc 0).
+        if (enforceBudget) {
+          bot.state['committedUc'] =
+              ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) + usdSizeUc + feeUc;
+        }
         await _audit({
           'type': 'bot_paper_fill', 'bot': bot.id, 'side': 'buy', 'kind': order['kind'],
           'pair': '${m['base']}/${m['quote']}', 'qty': qty.toString(), 'priceUc': execPriceUc.toString(), 'costUc': costUc.toString(),
@@ -894,13 +911,13 @@ class BotRunner {
     final source = cfg['source'];
     final minScore = (cfg['minScore'] as num).toDouble();
     if ((source == 'discovery' || source == 'both') && discovery != null) {
-      List<dynamic> cands = const [];
-      try {
-        cands = List<dynamic>.from(await discovery.scan());
-      } catch (_) {
-        cands = const [];
-      }
+      // Lane + risk-mode aware discovery: the feed returns only same-chain,
+      // same-mode candidates that already cleared the safety gate.
+      final cands = await _discoveryScan(discovery, bot.lane, bot.riskMode);
+      final laneChain = bot.lane != null ? b.laneChain(bot.lane) : null;
       for (final c in cands) {
+        final chain = _field(c, 'chain');
+        if (laneChain != null && chain != null && chain != laneChain) continue; // never cross-lane
         final approved = _field(c, 'approved') == true;
         final score = _field(c, 'score');
         final pair = _field(c, 'pair');
@@ -946,9 +963,29 @@ class BotRunner {
           return (c as dynamic).score;
         case 'pair':
           return (c as dynamic).pair;
+        case 'chain':
+          return (c as dynamic).chain;
       }
     } catch (_) {}
     return null;
+  }
+
+  /// Call a duck-typed discovery feed's `scan`, passing the bot's {lane, mode} so
+  /// a signals-backed client can fetch same-chain/same-mode candidates. Falls back
+  /// to the legacy no-arg `scan()` when the feed does not accept options (test
+  /// fakes), and to [] on any error. READ-ONLY.
+  Future<List<dynamic>> _discoveryScan(dynamic d, String? lane, String? mode) async {
+    try {
+      return List<dynamic>.from(await d.scan({'lane': lane, 'mode': mode}));
+    } on NoSuchMethodError {
+      try {
+        return List<dynamic>.from(await d.scan());
+      } catch (_) {
+        return const [];
+      }
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// Post a local signal to a signal bot's inbox (user / NL agent). READ side only.
@@ -1124,7 +1161,15 @@ class BotRunner {
     }
     if (discovery != null) {
       try {
-        return List<dynamic>.from(await discovery.scan());
+        var rows = await _discoveryScan(discovery, bot.lane, bot.riskMode);
+        final laneChain = bot.lane != null ? b.laneChain(bot.lane) : null;
+        if (laneChain != null) {
+          rows = rows.where((r) {
+            final chain = _field(r, 'chain');
+            return chain == null || chain == laneChain; // never cross-lane
+          }).toList();
+        }
+        return rows;
       } catch (_) {
         return const [];
       }
@@ -1201,8 +1246,10 @@ class BotRunner {
       'bot': bot.id, 'name': bot.name, 'type': bot.type, 'mode': bot.mode, 'enabled': bot.enabled, 'network': bot.network,
       'status': _killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
       'allocationUsd': bot.allocationUsd,
+      'lane': bot.lane, 'riskMode': bot.riskMode,
       'committedUsd': b.ucToUsd((bot.state['committedUc'] as BigInt?) ?? BigInt.zero),
-      'remainingUsd': bot.mode == 'live'
+      // remaining budget shown whenever one is set (live always; paper when a budget was given)
+      'remainingUsd': (bot.mode == 'live' || bot.allocationUsd > 0)
           ? b.ucToUsd(b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero))
           : null,
       'activeDeals': openDeals,

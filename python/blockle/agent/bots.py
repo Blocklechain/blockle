@@ -148,6 +148,64 @@ def decimals_for(sym: Any, overrides: Optional[Dict[str, Any]] = None) -> int:
 TYPES = ["dca", "grid", "smarttrade", "signal", "rebalance", "momentum", "scanner"]
 
 
+# LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
+# single base asset and the bot only trades same-chain tokens quoted in it.
+# ``lane`` is the chain id; ``base`` is the held/quote asset for that lane.
+LANES: Dict[str, Dict[str, str]] = {
+    "solana":   {"chain": "solana",   "base": "SOL"},
+    "ethereum": {"chain": "ethereum", "base": "ETH"},
+    "bsc":      {"chain": "bsc",      "base": "BNB"},
+    "block":    {"chain": "block",    "base": "BLOCK"},
+}
+
+
+def validate_lane(v: Any) -> Optional[str]:
+    """null/'' (unconstrained legacy bots) or a key of LANES; else null."""
+    if v is None or v == "":
+        return None
+    k = str(v).lower()
+    return k if k in LANES else None
+
+
+def lane_base(lane: Any) -> Optional[str]:
+    return LANES[lane]["base"] if lane in LANES else None
+
+
+def lane_chain(lane: Any) -> Optional[str]:
+    return LANES[lane]["chain"] if lane in LANES else None
+
+
+# RISK MODES — presets that tune discovery/signals/scanner strictness. These are
+# passed to the signals API (mode=) and used to gate candidates. ``sniper`` targets
+# brand-new microcap launches (relaxes the age gate, keeps every rug check).
+RISK_MODES: Dict[str, Dict[str, Any]] = {
+    "safe":   {"label": "Safe",   "minSignalScore": 60, "minLiquidityUsd": 1_000_000, "minAgeSec": 30 * 86400, "allowNewLaunches": False},
+    "medium": {"label": "Medium", "minSignalScore": 50, "minLiquidityUsd": 100_000,   "minAgeSec": 14 * 86400, "allowNewLaunches": False},
+    "high":   {"label": "High",   "minSignalScore": 40, "minLiquidityUsd": 15_000,    "minAgeSec": 6 * 3600,   "allowNewLaunches": False},
+    "sniper": {"label": "Sniper", "minSignalScore": 55, "minLiquidityUsd": 4_000,     "minAgeSec": 0,          "allowNewLaunches": True},
+}
+
+
+def validate_risk_mode(v: Any) -> Optional[str]:
+    """null/'' (unconstrained legacy bots) or a key of RISK_MODES; else null."""
+    if v is None or v == "":
+        return None
+    k = str(v).lower()
+    return k if k in RISK_MODES else None
+
+
+def risk_preset(mode: Any) -> Optional[Dict[str, Any]]:
+    return RISK_MODES.get(mode)
+
+
+# JS-parity aliases (camelCase) so a shared caller can reach either spelling.
+validateLane = validate_lane
+validateRiskMode = validate_risk_mode
+laneBase = lane_base
+laneChain = lane_chain
+riskPreset = risk_preset
+
+
 def _num(v: Any, dflt: float) -> float:
     try:
         n = float(v)
@@ -672,7 +730,13 @@ class Bot:
         self.name = spec.get("name") or (spec["type"] + " bot")
         self.type = spec["type"]
         self.universe = spec.get("universe") or {"pairs": []}
-        self.chain_prefs = spec.get("chainPrefs")
+        # LANE + RISK MODE: a bot is pinned to a single lane (chain + base asset)
+        # and a risk mode. Both default to None for legacy bots (no behavior change).
+        self.lane = validate_lane(spec.get("lane"))
+        self.risk_mode = validate_risk_mode(spec.get("riskMode"))
+        # When a lane is set, force chainPrefs to that chain so discovery/venue
+        # resolution can never wander cross-chain.
+        self.chain_prefs = [lane_chain(self.lane)] if self.lane else spec.get("chainPrefs")
         self.venue_prefs = spec.get("venuePrefs")
         self.config = validate_config(spec["type"], spec.get("config") or {})
         # PROFIT CURRENCY (shared across all lanes): the asset a realized SELL/exit
@@ -743,6 +807,7 @@ class Bot:
     def to_json(self) -> Dict[str, Any]:
         return {
             "id": self.id, "name": self.name, "type": self.type, "universe": self.universe,
+            "lane": self.lane, "riskMode": self.risk_mode,
             "chainPrefs": self.chain_prefs, "venuePrefs": self.venue_prefs, "config": self.config,
             "profitCurrency": self.profit_currency,
             "allocationUsd": self.allocation_usd, "mode": self.mode, "enabled": self.enabled,

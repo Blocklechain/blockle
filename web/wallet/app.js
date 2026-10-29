@@ -1225,7 +1225,10 @@
     box.innerHTML = bots.map(function (b) {
       var live = b.mode === 'live';
       return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '' + ic('grid', 16) + '' : b.type === 'dca' ? '' + ic('dca', 16) + '' : '' + ic('smart', 16) + '') + '</span>' +
-        '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) + ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
+        '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) +
+        (b.lane ? ' · ' + esc(((BOT_LANES[b.lane] || {}).name || b.lane)) : '') + (b.riskMode ? ' · ' + esc(b.riskMode) : '') +
+        ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' +
+        (b.allocationUsd > 0 ? ' · $' + b.allocationUsd : '') + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
         '<span class="row" style="margin-left:auto;gap:6px">' +
         '<button class="btn sm ghost" data-act="toggle" data-id="' + esc(b.id) + '">' + (b.enabled ? 'Pause' : 'Start') + '</button>' +
         (S.pro ? '<button class="btn sm" data-act="live" data-id="' + esc(b.id) + '">' + (live ? '' + ic('live', 15) + '' : 'Go live') + '</button>' : '') +
@@ -1240,22 +1243,59 @@
       };
     });
   }
+  // Lane = the ONE chain + base asset a bot trades (never cross-chain).
+  var BOT_LANES = { solana: { base: 'SOL', name: 'Solana' }, ethereum: { base: 'ETH', name: 'Ethereum' }, bsc: { base: 'BNB', name: 'BSC' }, block: { base: 'BLOCK', name: 'BLOCK' } };
+  var BOT_MODES = {
+    safe: 'Safe — large-cap, established tokens only',
+    medium: 'Medium — mid-cap, balanced',
+    high: 'High — microcap, social-driven (risky)',
+    sniper: 'Sniper — brand-new launches, maximum risk',
+  };
   function newBotSheet() {
     openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option><option value="signal">Signal</option></select></div>' +
-      '<div class="field"><label>Pair</label><input id="nb-pair" value="BLOCK/USDC"></div>' +
-      '<div class="field"><label>Name</label><input id="nb-name" placeholder="My DCA bot"></div>' +
-      '<div class="banner info"><span>' + ic('doc', 18) + '</span><div>Starts in <b>paper mode</b> (simulated). You can arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
-      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">Create (paper)</button>');
+      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="scanner">Autopilot (scan &amp; trade the lane)</option><option value="signal">Signal (auto-find tokens)</option><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option></select></div>' +
+      '<div class="field"><label>Lane — one chain, one base asset</label><select id="nb-lane"><option value="solana">Solana · hold SOL</option><option value="ethereum">Ethereum · hold ETH</option><option value="bsc">BSC · hold BNB</option><option value="block">BLOCK · hold BLOCK</option></select></div>' +
+      '<div class="field"><label>Risk mode</label><select id="nb-mode"><option value="safe">Safe — large-cap only</option><option value="medium" selected>Medium — mid-cap, balanced</option><option value="high">High — microcap, social-driven</option><option value="sniper">Sniper — brand-new launches</option></select></div>' +
+      '<div class="field" id="nb-pair-wrap" style="display:none"><label>Token pair (quoted in your base)</label><input id="nb-pair" value=""></div>' +
+      '<div class="field"><label>Paper budget (USD)</label><input id="nb-budget" inputmode="decimal" placeholder="1000"></div>' +
+      '<div class="field"><label>Name</label><input id="nb-name" placeholder="My autopilot bot"></div>' +
+      '<div class="banner warn" id="nb-risk" style="display:none"><span>' + ic('warn', 18) + '</span><div id="nb-risk-t"></div></div>' +
+      '<div class="banner info"><span>' + ic('doc', 18) + '</span><div>Starts in <b>paper mode</b> (simulated) with the budget above. The bot trades <b>only this lane</b> with your base asset. Arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
+      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">Create &amp; start (paper)</button>');
     $('#nb-x').onclick = closeSheet;
+    function syncUi() {
+      var type = $('#nb-type').value, lane = $('#nb-lane').value, mode = $('#nb-mode').value;
+      var base = (BOT_LANES[lane] || {}).base || 'USDC';
+      // DCA/grid/smarttrade trade a user-named token; signal/scanner auto-discover.
+      var needsPair = (type === 'dca' || type === 'grid' || type === 'smarttrade');
+      $('#nb-pair-wrap').style.display = needsPair ? '' : 'none';
+      if (needsPair && !$('#nb-pair').value) $('#nb-pair').value = 'TOKEN/' + base;
+      var risky = (mode === 'high' || mode === 'sniper');
+      $('#nb-risk').style.display = risky ? '' : 'none';
+      if (risky) $('#nb-risk-t').innerHTML = mode === 'sniper'
+        ? 'Sniper trades <b>brand-new</b> microcaps the moment they clear the rug/liquidity gate. There is no track record for new tokens and <b>most go to zero</b> — risk only what you can lose.'
+        : 'High mode trades volatile microcaps driven by social hype. Higher upside, much higher risk of loss.';
+    }
+    $('#nb-type').onchange = syncUi; $('#nb-lane').onchange = syncUi; $('#nb-mode').onchange = syncUi;
+    syncUi();
     $('#nb-go').onclick = function () {
-      var type = $('#nb-type').value, pair = ($('#nb-pair').value || 'BLOCK/USDC').trim(), name = ($('#nb-name').value || '').trim() || (type.toUpperCase() + ' ' + pair);
+      var type = $('#nb-type').value, lane = $('#nb-lane').value, mode = $('#nb-mode').value;
+      var base = (BOT_LANES[lane] || {}).base || 'USDC';
+      var needsPair = (type === 'dca' || type === 'grid' || type === 'smarttrade');
+      var pair = needsPair ? (($('#nb-pair').value || ('TOKEN/' + base)).trim()) : (base + '/' + base);
+      var budget = Number($('#nb-budget').value);
+      var name = ($('#nb-name').value || '').trim() || (type.toUpperCase() + ' ' + (BOT_LANES[lane] || {}).name);
+      if (!(budget > 0)) { toast('Set a paper budget (USD)', 'bad'); return; }
       ensureBotRunner().then(function (runner) {
         var bots = (runner.store.all && runner.store.all()) || [];
         if (!isPro() && bots.length >= 1) { closeSheet(); toast('Free plan allows 1 bot — upgrade for more', 'bad'); location.hash = '#pro'; return; }
-        try { runner.add({ name: name, type: type, universe: { pairs: [pair] }, config: {}, mode: 'paper', network: 'testnet' }); toast('Bot created (paper)', 'good'); }
-        catch (e) { toast('Create failed: ' + (e.message || e), 'bad'); }
-        closeSheet(); renderBotList();
+        try {
+          var bot = runner.add({ name: name, type: type, lane: lane, riskMode: mode, universe: { pairs: needsPair ? [pair] : [] }, config: {}, mode: 'paper', network: 'testnet' });
+          runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
+            toast('Bot started (paper, $' + budget + ' on ' + (BOT_LANES[lane] || {}).name + ')', 'good');
+            closeSheet(); renderBotList();
+          }).catch(function (e) { toast('Start failed: ' + (e.message || e), 'bad'); closeSheet(); renderBotList(); });
+        } catch (e) { toast('Create failed: ' + (e.message || e), 'bad'); }
       }).catch(function () { toast('Bots engine unavailable', 'bad'); });
     };
   }

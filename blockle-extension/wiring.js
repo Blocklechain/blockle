@@ -613,10 +613,42 @@
   }
   function buildRevoke(chain, token, spender) { return Security.buildRevoke(chain, token, spender); }
 
+  // SIGNALS-BACKED DISCOVERY (browser only): READ-ONLY lane/mode-aware candidate
+  // feed from the cross-chain signals service. The extension is cross-origin, so it
+  // calls the absolute blockle.org endpoint. Null in Node (tests unchanged).
+  const _signalsDiscovery = inNode ? null : {
+    async scan(opts) {
+      opts = opts || {};
+      const B = global.AgentBots;
+      const lane = B && B.validateLane ? B.validateLane(opts.lane) : (opts.lane || null);
+      const mode = B && B.validateRiskMode ? (B.validateRiskMode(opts.mode) || 'medium') : (opts.mode || 'medium');
+      const chain = lane && B ? B.laneChain(lane) : (opts.chain || '');
+      const base = lane && B ? B.laneBase(lane) : (opts.base || 'USDC');
+      const qs = 'mode=' + encodeURIComponent(mode) + (chain ? '&chain=' + encodeURIComponent(chain) : '') + '&limit=15';
+      let j = null;
+      try { const r = await fetch('https://blockle.org/api/signals/discover?' + qs, { headers: { accept: 'application/json' } }); if (r.ok) j = await r.json(); } catch (_) { j = null; }
+      const cands = (j && Array.isArray(j.candidates)) ? j.candidates : [];
+      return cands.map((c) => {
+        const m = c.metrics || {};
+        const sym = (m.symbol || String(c.token).slice(0, 6)).toUpperCase();
+        const quote = (base || 'USDC').toUpperCase();
+        return {
+          pair: sym + '/' + quote, token: c.token, chain: c.chain, symbol: sym, lane,
+          approved: c.safe === true, score: Math.max(0, Math.min(1, (Number(c.score) || 0) / 100)), hype: c.hype,
+          liquidityUsd: m.liquidityUsd, volume24hUsd: m.volume24hUsd, marketCapUsd: m.marketCapUsd, ageSec: m.ageSec,
+          topHolderPct: m.topHolderPct, honeypot: m.honeypot === true,
+          liquidityLocked: (m.lpLockedPct != null ? m.lpLockedPct >= 50 : undefined),
+          mintAuthorityRenounced: m.mintRenounced, flags: c.flags || [],
+        };
+      });
+    },
+  };
+
   // The agent tool CTX: exactly the capabilities tools.js wires to. Value-moving
   // tools still go through the runner's cap -> confirm -> commit rails.
   function agentCtx() {
     return {
+      discovery: _signalsDiscovery, // READ-ONLY lane/mode-aware candidate feed
       getAddress: async (chain) => (await accountFor(chain)).address,
       // Agent balance view = the auto-detect holdings (native + every held
       // token). An explicit `tokens` arg is still honored verbatim.

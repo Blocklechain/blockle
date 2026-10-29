@@ -125,6 +125,52 @@ const List<String> kBotTypes = [
   'dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner',
 ];
 
+// LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
+// single base asset and the bot only trades same-chain tokens quoted in it.
+// `lane` is the chain id; `base` is the held/quote asset for that lane.
+const Map<String, Map<String, String>> kLanes = {
+  'solana': {'chain': 'solana', 'base': 'SOL'},
+  'ethereum': {'chain': 'ethereum', 'base': 'ETH'},
+  'bsc': {'chain': 'bsc', 'base': 'BNB'},
+  'block': {'chain': 'block', 'base': 'BLOCK'},
+};
+
+/// null = unconstrained (legacy bots); else a key of [kLanes] or null.
+String? validateLane(dynamic v) {
+  if (v == null || v == '') return null;
+  final k = '$v'.toLowerCase();
+  return kLanes.containsKey(k) ? k : null;
+}
+
+String? laneBase(String? lane) {
+  if (lane == null) return null;
+  return kLanes[lane]?['base'];
+}
+
+String? laneChain(String? lane) {
+  if (lane == null) return null;
+  return kLanes[lane]?['chain'];
+}
+
+// RISK MODES — presets that tune discovery/signals/scanner strictness. These are
+// passed to the signals API (mode=) and used to gate candidates. `sniper` targets
+// brand-new microcap launches (relaxes the age gate, keeps every rug check).
+const Map<String, Map<String, dynamic>> kRiskModes = {
+  'safe': {'label': 'Safe', 'minSignalScore': 60, 'minLiquidityUsd': 1000000, 'minAgeSec': 30 * 86400, 'allowNewLaunches': false},
+  'medium': {'label': 'Medium', 'minSignalScore': 50, 'minLiquidityUsd': 100000, 'minAgeSec': 14 * 86400, 'allowNewLaunches': false},
+  'high': {'label': 'High', 'minSignalScore': 40, 'minLiquidityUsd': 15000, 'minAgeSec': 6 * 3600, 'allowNewLaunches': false},
+  'sniper': {'label': 'Sniper', 'minSignalScore': 55, 'minLiquidityUsd': 4000, 'minAgeSec': 0, 'allowNewLaunches': true},
+};
+
+/// null = unconstrained (legacy bots); else a key of [kRiskModes] or null.
+String? validateRiskMode(dynamic v) {
+  if (v == null || v == '') return null;
+  final k = '$v'.toLowerCase();
+  return kRiskModes.containsKey(k) ? k : null;
+}
+
+Map<String, dynamic>? riskPreset(String? mode) => mode != null ? kRiskModes[mode] : null;
+
 num _num(dynamic v, num dflt) {
   if (v == null) return dflt;
   final n = v is num ? v : num.tryParse('$v');
@@ -663,6 +709,10 @@ class Bot {
   String name;
   String type;
   Map<String, dynamic> universe;
+  // LANE + RISK MODE: a bot is pinned to a single lane (chain + base asset) and
+  // a risk mode. Both default to null for legacy bots (no behavior change).
+  String? lane;
+  String? riskMode;
   dynamic chainPrefs;
   dynamic venuePrefs;
   Map<String, dynamic> config;
@@ -682,7 +732,13 @@ class Bot {
         name = spec['name'] as String? ?? '${spec['type']} bot',
         type = spec['type'] as String,
         universe = (spec['universe'] as Map?)?.cast<String, dynamic>() ?? {'pairs': <dynamic>[]},
-        chainPrefs = spec['chainPrefs'],
+        lane = validateLane(spec['lane']),
+        riskMode = validateRiskMode(spec['riskMode']),
+        // When a lane is set, force chainPrefs to that chain so discovery/venue
+        // resolution can never wander cross-chain.
+        chainPrefs = validateLane(spec['lane']) != null
+            ? [laneChain(validateLane(spec['lane']))]
+            : spec['chainPrefs'],
         venuePrefs = spec['venuePrefs'],
         config = validateConfig(
             spec['type'] as String, (spec['config'] as Map?)?.cast<String, dynamic>()),
@@ -742,6 +798,7 @@ class Bot {
 
   Map<String, dynamic> toJson() => {
         'id': id, 'name': name, 'type': type, 'universe': universe,
+        'lane': lane, 'riskMode': riskMode,
         'chainPrefs': chainPrefs, 'venuePrefs': venuePrefs, 'config': config,
         'allocationUsd': allocationUsd, 'mode': mode, 'enabled': enabled,
         'network': network, 'pollSec': pollSec, 'cooldownSec': cooldownSec,

@@ -24,3 +24,6 @@ exchange/contracts/evm/cache/
 exchange/contracts/**/target/
 *.tsbuildinfo
 /scratchpad/
+
+# blockle-miner build artifacts
+blockle-miner/target/

@@ -162,11 +162,18 @@
       return bot;
     }
 
-    async enablePaper(id) {
+    async enablePaper(id, opts) {
+      opts = opts || {};
       const bot = this.store.get(id);
       if (!bot) throw new Error('unknown bot: ' + id);
+      // Optional paper BUDGET: when provided (>0) it bounds cumulative paper spend
+      // exactly like the live allocation cap — a sandbox the same size as the real
+      // one. Omitted → unbounded paper (legacy/arena behavior, allocationUsd stays 0).
+      if (opts.allocationUsd != null && Number(opts.allocationUsd) > 0) {
+        bot.allocationUsd = Number(opts.allocationUsd);
+      }
       bot.mode = 'paper'; bot.enabled = true;
-      await this._audit({ type: 'bot_armed', bot: id, mode: 'paper' });
+      await this._audit({ type: 'bot_armed', bot: id, mode: 'paper', allocationUsd: bot.allocationUsd || 0 });
       await this.store.persist();
       this._restartScheduler(); // enabling a bot starts/refreshes the background ticker
       return bot;
@@ -426,9 +433,14 @@
         // accrue trade+fee — cumulative live spend can never exceed allocationUsd.
         const feeUc = B.agentFeeUc(usdSizeUc);
 
-        // --- allocation gate (LIVE buys only; BigInt-exact, non-bypassable) ---
+        // --- allocation gate (BigInt-exact, non-bypassable) ------------------
+        // LIVE always enforces the per-bot budget. PAPER enforces it too WHEN a
+        // budget was set (allocationUsd > 0) — so a paper run is a sandbox the same
+        // size as the real one. Legacy/arena paper bots (allocationUsd === 0) are
+        // unbounded, preserving the deterministic fixtures exactly.
         let remainingUc = null;
-        if (bot.mode === 'live') {
+        const enforceBudget = bot.mode === 'live' || (bot.mode === 'paper' && bot.allocationUsd > 0);
+        if (enforceBudget) {
           const allocUc = B.microUsd(bot.allocationUsd);
           remainingUc = allocUc - (bot.state.committedUc || 0n);
           if (usdSizeUc + feeUc > remainingUc) {
@@ -451,6 +463,9 @@
         }
 
         if (bot.mode === 'paper') {
+          // Mirror the live ledger in paper WHEN a budget is set, so the sandbox
+          // depletes its budget identically. No-op when unbounded (alloc 0).
+          if (enforceBudget) bot.state.committedUc = (bot.state.committedUc || 0n) + usdSizeUc + feeUc;
           await this._audit({ type: 'bot_paper_fill', bot: bot.id, side: 'buy', kind: order.kind, pair: m.base + '/' + m.quote, qty: qty.toString(), priceUc: execPriceUc.toString(), costUc: costUc.toString() });
           return { side: 'buy', qty, priceUc: execPriceUc, costUc, paper: true };
         }
@@ -657,8 +672,12 @@
       const signals = [];
       if ((cfg.source === 'discovery' || cfg.source === 'both') && this.discovery && typeof this.discovery.scan === 'function') {
         let cands = [];
-        try { cands = (await this.discovery.scan()) || []; } catch (_) { cands = []; }
+        // Lane + risk-mode aware discovery: the feed returns only same-chain,
+        // same-mode candidates that already cleared the safety gate.
+        try { cands = (await this.discovery.scan({ lane: bot.lane, mode: bot.riskMode })) || []; } catch (_) { cands = []; }
+        const laneChain = bot.lane && B.laneChain ? B.laneChain(bot.lane) : null;
         for (const c of cands) {
+          if (laneChain && c.chain && c.chain !== laneChain) continue; // never cross-lane
           if (c.approved === true && (c.score == null || c.score >= cfg.minScore) && c.pair) signals.push({ pair: c.pair, score: c.score, source: 'discovery' });
         }
       }
@@ -800,7 +819,13 @@
         try { return (await this.ctx.scanUniverse(bot && bot.config)) || []; } catch (_) { return []; }
       }
       if (this.discovery && typeof this.discovery.scan === 'function') {
-        try { return (await this.discovery.scan()) || []; } catch (_) { return []; }
+        try {
+          const B = this.Bots;
+          let rows = (await this.discovery.scan({ lane: bot && bot.lane, mode: bot && bot.riskMode })) || [];
+          const laneChain = bot && bot.lane && B.laneChain ? B.laneChain(bot.lane) : null;
+          if (laneChain) rows = rows.filter((r) => !r.chain || r.chain === laneChain); // never cross-lane
+          return rows;
+        } catch (_) { return []; }
       }
       return [];
     }
@@ -848,8 +873,10 @@
         bot: bot.id, name: bot.name, type: bot.type, mode: bot.mode, enabled: bot.enabled, network: bot.network,
         status: this._killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
         allocationUsd: bot.allocationUsd,
+        lane: bot.lane || null, riskMode: bot.riskMode || null,
         committedUsd: B.ucToUsd(bot.state.committedUc || 0n),
-        remainingUsd: bot.mode === 'live' ? B.ucToUsd(B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n)) : null,
+        // remaining budget shown whenever one is set (live always; paper when a budget was given)
+        remainingUsd: (bot.mode === 'live' || bot.allocationUsd > 0) ? B.ucToUsd(B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n)) : null,
         activeDeals: openDeals,
         safetyOrdersUsed: safetyUsed,
         realizedUsd: B.ucToUsd(bot.state.realizedUc || 0n),

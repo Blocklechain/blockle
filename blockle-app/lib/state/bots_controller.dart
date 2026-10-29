@@ -34,6 +34,7 @@ import '../agent/index.dart' show AgentInstance;
 import '../agent/notify.dart';
 import '../agent/pnl.dart';
 import '../agent/policy.dart';
+import '../agent/signals_discovery.dart' show SignalsDiscovery;
 import '../agent/tools.dart' show ToolRegistry;
 import '../services/agent_service.dart' show SecureChannelStore;
 import '../services/exchange_client.dart' show ExchangeClient, ExchangeMarket;
@@ -54,6 +55,9 @@ class BotsController extends ChangeNotifier {
   late final ToolRegistry _fallbackTools;
   late final PnlLedger _pnlLedger;
   late final PnlHook _pnl;
+  // READ-ONLY lane/mode-aware candidate feed for signal bots + the scanner (§7).
+  // Never trades, never auto-allowlists; approval + the gate still apply.
+  final SignalsDiscovery _discovery = SignalsDiscovery();
   BotRunner? _runner;
   final ar.ArenaProfile arena = ar.ArenaProfile();
   Map<String, dynamic>? _vectors;
@@ -161,6 +165,8 @@ class BotsController extends ChangeNotifier {
         // non-custodial Exchange the agent ctx uses (§5). A market with no data
         // simply yields no mark and the engine skips that tick.
         prices: _prices,
+        // READ-ONLY lane/mode-aware candidate feed (signal bots + scanner).
+        discovery: _discovery,
       ),
       mainnetEnabled: false,
       onEvent: _onEvent,
@@ -304,6 +310,8 @@ class BotsController extends ChangeNotifier {
     String? name,
     num allocationUsd = 0,
     Map<String, dynamic>? configOverride,
+    String? lane,
+    String? riskMode,
   }) {
     final spec = tpl.fromTemplate(templateKey, pair: pair, name: name);
     if (configOverride != null) {
@@ -313,6 +321,10 @@ class BotsController extends ChangeNotifier {
       };
     }
     spec['allocationUsd'] = allocationUsd;
+    // LANE + RISK MODE: optional; the Bot constructor validates + nulls unknowns
+    // and (when a lane is set) pins chainPrefs to that chain. Null = legacy.
+    if (lane != null) spec['lane'] = lane;
+    if (riskMode != null) spec['riskMode'] = riskMode;
     final created = _runner!.add(spec);
     _persist();
     notifyListeners();
@@ -320,9 +332,10 @@ class BotsController extends ChangeNotifier {
   }
 
   /// Arm a bot in PAPER mode (simulated fills; never broadcasts). Allocation is
-  /// not required for paper.
-  Future<void> enablePaper(String id) async {
-    await _runner!.enablePaper(id);
+  /// not required for paper; when an [allocationUsd] > 0 is given the paper run is
+  /// a bounded sandbox the same size as the real one (the budget depletes).
+  Future<void> enablePaper(String id, {num? allocationUsd}) async {
+    await _runner!.enablePaper(id, allocationUsd: allocationUsd);
     notifyListeners();
   }
 

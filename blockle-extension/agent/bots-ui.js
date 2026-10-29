@@ -51,6 +51,10 @@
     // PROFIT CURRENCY — the settlement/quote asset realized profit settles INTO
     // (AI mode: user-chosen; manual mode: derived from the pair quote).
     profitCurrency: 'USDC',
+    // LANE (one chain + base asset the bot trades) + RISK MODE (safe/medium/high/
+    // sniper). The lane's base asset is the settlement/quote asset.
+    lane: 'solana',
+    riskMode: 'medium',
     alloc: 500,
     base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0,
     type: 'dca',
@@ -343,13 +347,18 @@
   // on the chosen pair.
   function specFromCreate() {
     var T = dep('AgentBotTemplates', './bot-templates.js');
+    var B2 = dep('AgentBots', './bots.js');
+    var laneBase = (B2 && B2.laneBase && B2.laneBase(create.lane)) || create.profitCurrency || 'USDC';
     if (create.pairMode !== 'manual') {
       var sc = T.fromTemplate('scan_and_trade', {});
-      sc.config = Object.assign({}, sc.config, { profitCurrency: (create.profitCurrency || 'USDC') });
+      // In lane mode the base asset IS the settlement/quote currency.
+      sc.config = Object.assign({}, sc.config, { profitCurrency: laneBase });
       sc.name = (T.TEMPLATES.scan_and_trade && T.TEMPLATES.scan_and_trade.name) || sc.name;
+      sc.lane = create.lane; sc.riskMode = create.riskMode;
       return sc;
     }
     var spec = T.fromTemplate(create.tplKey, { pair: create.pair });
+    spec.lane = create.lane; spec.riskMode = create.riskMode;
     // overlay the (simple + advanced) create controls onto the template config
     if (spec.type === 'dca') {
       spec.config = Object.assign({}, spec.config, {
@@ -589,6 +598,21 @@
       '<div class="bpane card">' +
         '<h3>Create a bot</h3><p class="bhint">Pick a starting point, choose a pair, set one amount. Tune the rest under Advanced.</p>' +
         '<span class="beyebrow">1 · Template</span><div class="btpl-grid">' + cards + '</div>' +
+        '<div class="bfield"><label>Lane <span class="fhint">one chain · one base asset</span></label>' +
+          '<select id="b-lane" class="bselect" aria-label="Lane">' +
+            '<option value="solana"' + (create.lane === 'solana' ? ' selected' : '') + '>Solana · hold SOL</option>' +
+            '<option value="ethereum"' + (create.lane === 'ethereum' ? ' selected' : '') + '>Ethereum · hold ETH</option>' +
+            '<option value="bsc"' + (create.lane === 'bsc' ? ' selected' : '') + '>BSC · hold BNB</option>' +
+            '<option value="block"' + (create.lane === 'block' ? ' selected' : '') + '>BLOCK · hold BLOCK</option>' +
+          '</select></div>' +
+        '<div class="bfield"><label>Risk mode <span class="fhint">how aggressive</span></label>' +
+          '<select id="b-riskmode" class="bselect" aria-label="Risk mode">' +
+            '<option value="safe"' + (create.riskMode === 'safe' ? ' selected' : '') + '>Safe — large-cap only</option>' +
+            '<option value="medium"' + (create.riskMode === 'medium' ? ' selected' : '') + '>Medium — mid-cap, balanced</option>' +
+            '<option value="high"' + (create.riskMode === 'high' ? ' selected' : '') + '>High — microcap, social-driven</option>' +
+            '<option value="sniper"' + (create.riskMode === 'sniper' ? ' selected' : '') + '>Sniper — brand-new launches</option>' +
+          '</select>' +
+          '<div id="b-risk-warn" class="bhint" style="color:var(--b-warn,#c47d00);margin-top:6px"></div></div>' +
         pairSelectHtml() +
         '<div class="bfield"><label>3 · Amount to allocate <span class="fhint">the bot\'s hard cap</span></label>' +
           '<div class="bcontrol"><span class="bcur">$</span><input id="b-alloc" class="num" value="' + esc(create.alloc) + '" inputmode="decimal" aria-label="Allocation in US dollars"><span class="bsuffix">USD</span></div></div>' +
@@ -646,6 +670,21 @@
         enter();
       });
     });
+    var laneSel = $('#b-lane');
+    if (laneSel) laneSel.addEventListener('change', function () {
+      create.lane = laneSel.value;
+      var B3 = dep('AgentBots', './bots.js');
+      if (create.pairMode !== 'manual' && B3 && B3.laneBase) create.profitCurrency = B3.laneBase(create.lane) || create.profitCurrency;
+    });
+    var riskSel = $('#b-riskmode');
+    function syncRiskWarn() {
+      var el = $('#b-risk-warn'); if (!el) return;
+      el.textContent = create.riskMode === 'sniper'
+        ? 'Sniper trades brand-new microcaps — no track record, most go to zero. Risk only what you can lose.'
+        : (create.riskMode === 'high' ? 'High mode trades volatile, hype-driven microcaps. High risk of loss.' : '');
+    }
+    if (riskSel) riskSel.addEventListener('change', function () { create.riskMode = riskSel.value; syncRiskWarn(); });
+    syncRiskWarn();
     var pcur = $('#b-profit-cur');
     if (pcur) pcur.addEventListener('change', function () { create.profitCurrency = (pcur.value || 'USDC').toUpperCase(); });
     var pair = $('#b-pair');
@@ -742,7 +781,7 @@
     try {
       var spec = specFromCreate();
       var bot = runner.add(spec);
-      await runner.enablePaper(bot.id);
+      await runner.enablePaper(bot.id, { allocationUsd: Number(create.alloc) || 0 });
       selectedBotId = bot.id;
       UI.toast('Paper bot started');
       activeTab = 'cockpit'; enter();

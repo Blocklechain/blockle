@@ -117,6 +117,39 @@
 
   const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner'];
 
+  // LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
+  // single base asset and the bot only trades same-chain tokens quoted in it.
+  // `lane` is the chain id; `base` is the held/quote asset for that lane.
+  const LANES = {
+    solana:   { chain: 'solana',   base: 'SOL' },
+    ethereum: { chain: 'ethereum', base: 'ETH' },
+    bsc:      { chain: 'bsc',      base: 'BNB' },
+    block:    { chain: 'block',    base: 'BLOCK' },
+  };
+  function validateLane(v) {
+    if (v == null || v === '') return null;                 // null = unconstrained (legacy bots)
+    const k = String(v).toLowerCase();
+    return LANES[k] ? k : null;
+  }
+  function laneBase(lane) { return LANES[lane] ? LANES[lane].base : null; }
+  function laneChain(lane) { return LANES[lane] ? LANES[lane].chain : null; }
+
+  // RISK MODES — presets that tune discovery/signals/scanner strictness. These are
+  // passed to the signals API (mode=) and used to gate candidates. `sniper` targets
+  // brand-new microcap launches (relaxes the age gate, keeps every rug check).
+  const RISK_MODES = {
+    safe:   { label: 'Safe',   minSignalScore: 60, minLiquidityUsd: 1_000_000, minAgeSec: 30 * 86400, allowNewLaunches: false },
+    medium: { label: 'Medium', minSignalScore: 50, minLiquidityUsd: 100_000,   minAgeSec: 14 * 86400, allowNewLaunches: false },
+    high:   { label: 'High',   minSignalScore: 40, minLiquidityUsd: 15_000,    minAgeSec: 6 * 3600,   allowNewLaunches: false },
+    sniper: { label: 'Sniper', minSignalScore: 55, minLiquidityUsd: 4_000,     minAgeSec: 0,          allowNewLaunches: true },
+  };
+  function validateRiskMode(v) {
+    if (v == null || v === '') return null;                 // null = unconstrained (legacy bots)
+    const k = String(v).toLowerCase();
+    return RISK_MODES[k] ? k : null;
+  }
+  function riskPreset(mode) { return RISK_MODES[mode] || null; }
+
   function clampNum(v, lo, hi, dflt) {
     let n = Number(v); if (!isFinite(n)) n = dflt;
     return Math.max(lo, Math.min(hi, n));
@@ -545,7 +578,13 @@
       this.name = spec.name || (spec.type + ' bot');
       this.type = spec.type;
       this.universe = spec.universe || { pairs: [] };
-      this.chainPrefs = spec.chainPrefs || null;
+      // LANE + RISK MODE: a bot is pinned to a single lane (chain + base asset) and
+      // a risk mode. Both default to null for legacy bots (no behavior change).
+      this.lane = validateLane(spec.lane);
+      this.riskMode = validateRiskMode(spec.riskMode);
+      // When a lane is set, force chainPrefs to that chain so discovery/venue
+      // resolution can never wander cross-chain.
+      this.chainPrefs = this.lane ? [laneChain(this.lane)] : (spec.chainPrefs || null);
       this.venuePrefs = spec.venuePrefs || null;
       this.config = validateConfig(spec.type, spec.config || {});
       this.allocationUsd = spec.allocationUsd != null ? Number(spec.allocationUsd) : 0;
@@ -609,6 +648,7 @@
     toJSON() {
       return {
         id: this.id, name: this.name, type: this.type, universe: this.universe,
+        lane: this.lane, riskMode: this.riskMode,
         chainPrefs: this.chainPrefs, venuePrefs: this.venuePrefs, config: this.config,
         allocationUsd: this.allocationUsd, mode: this.mode, enabled: this.enabled,
         network: this.network, pollSec: this.pollSec, cooldownSec: this.cooldownSec,
@@ -706,6 +746,8 @@
     AGENT_FEE_BPS, agentFeeUc,
     // config
     validateConfig, dcaBps,
+    // lane + risk mode
+    LANES, RISK_MODES, validateLane, validateRiskMode, laneBase, laneChain, riskPreset,
     // deal engines (pure)
     newDcaDeal, dcaObserve, dcaStep, dcaApply,
     newGridDeal, gridBuild, gridBcfg, gridStep, gridApply,

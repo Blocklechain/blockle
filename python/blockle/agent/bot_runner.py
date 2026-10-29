@@ -29,6 +29,7 @@ THE FULLY-AUTO-WITHIN-ALLOCATION GATE (§5), made non-bypassable:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,20 @@ from .policy import AgentHalted
 from .runner import dispatch_prepared
 
 STABLE_USD = {"USDC": 1, "USDT": 1, "DAI": 1, "USD": 1, "USDBC": 1, "PYUSD": 1}
+
+
+def _call_scan(scan, opts):
+    """Invoke a discovery ``scan`` the way the JS reference does (``scan({lane,mode})``)
+    while staying compatible with a legacy no-arg ``scan()`` stub. JS silently ignores
+    extra args; Python does not, so we pass ``opts`` only when the callable accepts a
+    positional parameter, else call it bare. Returns the (possibly awaitable) result."""
+    try:
+        params = inspect.signature(scan).parameters.values()
+        accepts = any(p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL)
+                      for p in params)
+    except (TypeError, ValueError):
+        accepts = True
+    return scan(opts) if accepts else scan()
 
 
 class BotRunner:
@@ -136,13 +151,19 @@ class BotRunner:
         self.start_scheduler()
         return bot
 
-    async def enable_paper(self, id_: str) -> Any:
+    async def enable_paper(self, id_: str, allocation_usd: Any = None) -> Any:
         bot = self.store.get(id_)
         if not bot:
             raise ValueError("unknown bot: " + str(id_))
+        # Optional paper BUDGET: when provided (>0) it bounds cumulative paper spend
+        # exactly like the live allocation cap — a sandbox the same size as the real
+        # one. Omitted → unbounded paper (legacy/arena behavior, allocationUsd stays 0).
+        if allocation_usd is not None and float(allocation_usd) > 0:
+            bot.allocation_usd = float(allocation_usd)
         bot.mode = "paper"
         bot.enabled = True
-        await self._audit({"type": "bot_armed", "bot": id_, "mode": "paper"})
+        await self._audit({"type": "bot_armed", "bot": id_, "mode": "paper",
+                           "allocationUsd": bot.allocation_usd or 0})
         await self.store.persist()
         self.start_scheduler()
         return bot
@@ -532,9 +553,14 @@ class BotRunner:
             # accrue trade+fee — cumulative live spend can never exceed allocationUsd.
             fee_uc = B.agent_fee_uc(usd_size_uc)
 
-            # --- allocation gate (LIVE buys only; int-exact, non-bypassable) ---
+            # --- allocation gate (int-exact, non-bypassable) --------------------
+            # LIVE always enforces the per-bot budget. PAPER enforces it too WHEN a
+            # budget was set (allocationUsd > 0) — so a paper run is a sandbox the
+            # same size as the real one. Legacy/arena paper bots (allocationUsd == 0)
+            # are unbounded, preserving the deterministic fixtures exactly.
             remaining_uc = None
-            if bot.mode == "live":
+            enforce_budget = bot.mode == "live" or (bot.mode == "paper" and bot.allocation_usd > 0)
+            if enforce_budget:
                 alloc_uc = B.micro_usd(bot.allocation_usd)
                 remaining_uc = alloc_uc - (bot.state.get("committedUc") or 0)
                 if usd_size_uc + fee_uc > remaining_uc:
@@ -557,6 +583,10 @@ class BotRunner:
                 return None
 
             if bot.mode == "paper":
+                # Mirror the live ledger in paper WHEN a budget is set, so the sandbox
+                # depletes its budget identically. No-op when unbounded (alloc 0).
+                if enforce_budget:
+                    bot.state["committedUc"] = (bot.state.get("committedUc") or 0) + usd_size_uc + fee_uc
                 await self._audit({"type": "bot_paper_fill", "bot": bot.id, "side": "buy", "kind": order["kind"],
                                    "pair": m["base"] + "/" + m["quote"], "qty": str(qty),
                                    "priceUc": str(exec_price_uc), "costUc": str(cost_uc)})
@@ -790,6 +820,7 @@ class BotRunner:
 
     # ---- signal bot (§2.4) --------------------------------------------------
     async def _tick_signal(self, bot, now, opts):
+        B = self.Bots
         cfg = bot.config
         spawn = cfg["onSignal"]  # { type, config }
         open_count = sum(1 for p in bot.state["byPair"].values()
@@ -801,11 +832,16 @@ class BotRunner:
         if cfg["source"] in ("discovery", "both") and self.discovery is not None:
             scan = member(self.discovery, "scan")
             if callable(scan):
+                # Lane + risk-mode aware discovery: the feed returns only same-chain,
+                # same-mode candidates that already cleared the safety gate.
                 try:
-                    cands = (await maybe_await(scan())) or []
+                    cands = (await maybe_await(_call_scan(scan, {"lane": bot.lane, "mode": bot.risk_mode}))) or []
                 except Exception:
                     cands = []
+                lane_chain = B.lane_chain(bot.lane) if bot.lane else None
                 for c in cands:
+                    if lane_chain and c.get("chain") and c.get("chain") != lane_chain:
+                        continue  # never cross-lane
                     if c.get("approved") is True and (c.get("score") is None or c.get("score") >= cfg["minScore"]) and c.get("pair"):
                         signals.append({"pair": c["pair"], "score": c.get("score"), "source": "discovery"})
         if cfg["source"] in ("inbox", "both"):
@@ -988,7 +1024,13 @@ class BotRunner:
             scan = member(self.discovery, "scan")
             if callable(scan):
                 try:
-                    return (await maybe_await(scan())) or []
+                    B = self.Bots
+                    rows = (await maybe_await(_call_scan(scan, {"lane": bot.lane if bot else None,
+                                                                "mode": bot.risk_mode if bot else None}))) or []
+                    lane_chain = B.lane_chain(bot.lane) if (bot and bot.lane) else None
+                    if lane_chain:
+                        rows = [r for r in rows if not r.get("chain") or r.get("chain") == lane_chain]  # never cross-lane
+                    return rows
                 except Exception:
                     return []
         return []
@@ -1043,8 +1085,11 @@ class BotRunner:
             "enabled": bot.enabled, "network": bot.network,
             "status": "killed" if self._killed else ("running" if bot.enabled else "stopped"),
             "allocationUsd": bot.allocation_usd,
+            "lane": bot.lane or None, "riskMode": bot.risk_mode or None,
             "committedUsd": B.uc_to_usd(bot.state.get("committedUc") or 0),
-            "remainingUsd": B.uc_to_usd(B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)) if bot.mode == "live" else None,
+            # remaining budget shown whenever one is set (live always; paper when a budget was given)
+            "remainingUsd": B.uc_to_usd(B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0))
+            if (bot.mode == "live" or bot.allocation_usd > 0) else None,
             "activeDeals": open_deals,
             "safetyOrdersUsed": safety_used,
             "realizedUsd": B.uc_to_usd(bot.state.get("realizedUc") or 0),

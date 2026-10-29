@@ -35,6 +35,19 @@ const CFG = {
   mcapSweetHighUsd: Number(process.env.SIGNALS_MCAP_SWEET_HIGH || 5_000_000),
 };
 
+// Risk MODES — each tightens or relaxes the gate + reshapes the mcap sweet-spot.
+// safe: blue-chips only. medium: balanced (≈ base CFG). high: microcap/social.
+// sniper: brand-new launches — relax the age gate (that's the point) but KEEP
+// the hard rug checks (honeypot / lp-unlock / mintable / extreme concentration).
+const MODES = {
+  safe:   { minLiquidityUsd: 1_000_000, minAgeSec: 30 * 86400, maxTopHolderPct: 20, maxTop10Pct: 60, minHolders: 10_000, maxSellTaxPct: 5,  mcapSweetLowUsd: 1e9,    mcapSweetHighUsd: 1e13,     sniper: false },
+  medium: { minLiquidityUsd: 100_000,   minAgeSec: 14 * 86400, maxTopHolderPct: 25, maxTop10Pct: 65, minHolders: 1_000,  maxSellTaxPct: 8,  mcapSweetLowUsd: 1e7,    mcapSweetHighUsd: 2e9,      sniper: false },
+  high:   { minLiquidityUsd: 15_000,    minAgeSec: 6 * 3600,   maxTopHolderPct: 35, maxTop10Pct: 75, minHolders: 150,    maxSellTaxPct: 10, mcapSweetLowUsd: 50_000, mcapSweetHighUsd: 5_000_000, sniper: false },
+  sniper: { minLiquidityUsd: 4_000,     minAgeSec: 0,          maxTopHolderPct: 40, maxTop10Pct: 85, minHolders: 30,     maxSellTaxPct: 12, mcapSweetLowUsd: 10_000, mcapSweetHighUsd: 2_000_000, sniper: true },
+};
+const DEFAULT_MODE = 'medium';
+function modeCfg(mode) { return { ...CFG, ...(MODES[mode] || MODES[DEFAULT_MODE]) }; }
+
 const now = () => Date.now();
 const cache = new Map(); // key -> {at, data}
 function cached(key) { const v = cache.get(key); return v && now() - v.at < CACHE_MS ? v.data : null; }
@@ -69,13 +82,26 @@ async function dexscreener(chain, token) {
   mine.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
   const p = mine[0];
   const createdMs = p.pairCreatedAt || 0;
+  const buys = Number(p.txns?.h24?.buys) || 0;
+  const sells = Number(p.txns?.h24?.sells) || 0;
+  const socials = Array.isArray(p.info?.socials) ? p.info.socials.map((s) => s.type || s.platform).filter(Boolean) : [];
+  const websites = Array.isArray(p.info?.websites) ? p.info.websites.length : 0;
   return {
     priceUsd: Number(p.priceUsd) || null,
     liquidityUsd: Number(p.liquidity?.usd) || 0,
     marketCapUsd: Number(p.marketCap || p.fdv) || null,
     fdvUsd: Number(p.fdv) || null,
     volume24hUsd: Number(p.volume?.h24) || 0,
+    volume1hUsd: Number(p.volume?.h1) || 0,
     priceChange24hPct: Number(p.priceChange?.h24) || 0,
+    priceChange1hPct: Number(p.priceChange?.h1) || 0,
+    buys24h: buys,
+    sells24h: sells,
+    buySellRatio: sells > 0 ? +(buys / sells).toFixed(2) : (buys > 0 ? buys : null),
+    socials,                              // e.g. ['twitter','telegram']
+    socialCount: socials.length,
+    websites,
+    boosts: Number(p.boosts?.active) || 0, // DexScreener paid-promo boosts (hype proxy)
     ageSec: createdMs ? Math.max(0, Math.floor((now() - createdMs) / 1000)) : null,
     dex: p.dexId || null,
     pair: p.pairAddress || null,
@@ -182,21 +208,40 @@ async function blockSignals(token) {
   };
 }
 
+// --- social / hype sub-score (0–100) -----------------------------------------
+// A transparent proxy for "social activity and popularity" from the free data we
+// have: buyer velocity (buys vs sells), DexScreener boosts, declared socials, and
+// volume churned relative to liquidity. NOTE: true Twitter/Telegram engagement
+// needs a paid API (LunarCrush/Twitter) — this is a best-effort on-chain proxy,
+// and that limitation is reported in the output as `hypeBasis`.
+function hypeScore(m) {
+  let h = 0;
+  if (m.buySellRatio != null) h += Math.min(28, Math.max(0, (m.buySellRatio - 0.8) * 28)); // buy pressure
+  h += Math.min(22, (Number(m.boosts) || 0) * 7);                                           // paid promo boosts
+  h += Math.min(16, (Number(m.socialCount) || 0) * 7 + (m.websites ? 2 : 0));               // declared presence
+  const churn = (m.liquidityUsd > 0) ? (m.volume24hUsd || 0) / m.liquidityUsd : 0;          // vol/liq churn
+  h += Math.min(20, churn * 10);
+  h += Math.min(14, Math.max(0, (m.priceChange1hPct || 0)));                                 // very-recent momentum
+  return Math.max(0, Math.min(100, Math.round(h)));
+}
+
 // --- unify + gate + score ----------------------------------------------------
-function assess(chain, token, m) {
+function assess(chain, token, m, mode = DEFAULT_MODE) {
+  const C = modeCfg(mode);
   const flags = [];
-  // Hard safety gate.
+  const hype = hypeScore(m);
+  // Hard safety gate (mode-tuned thresholds; sniper relaxes the age gate only).
   if (chain === 'block') {
     if (!m.hasPool) flags.push('no-liquidity-pool');
     else if (!m.liquidityLocked) flags.push('lp-unlocked');
   } else {
-    if ((m.liquidityUsd || 0) < CFG.minLiquidityUsd) flags.push('low-liquidity');
-    if (m.ageSec != null && m.ageSec < CFG.minAgeSec) flags.push('too-new');
+    if ((m.liquidityUsd || 0) < C.minLiquidityUsd) flags.push('low-liquidity');
+    if (!C.sniper && m.ageSec != null && m.ageSec < C.minAgeSec) flags.push('too-new');
     if (m.honeypot) flags.push('honeypot');
-    if (m.sellTaxPct != null && m.sellTaxPct > CFG.maxSellTaxPct) flags.push('high-sell-tax');
-    if (m.topHolderPct != null && m.topHolderPct > CFG.maxTopHolderPct) flags.push('holder-concentration');
-    if (m.top10Pct != null && m.top10Pct > CFG.maxTop10Pct) flags.push('top10-concentration');
-    if (m.holders != null && m.holders < CFG.minHolders) flags.push('few-holders');
+    if (m.sellTaxPct != null && m.sellTaxPct > C.maxSellTaxPct) flags.push('high-sell-tax');
+    if (m.topHolderPct != null && m.topHolderPct > C.maxTopHolderPct) flags.push('holder-concentration');
+    if (m.top10Pct != null && m.top10Pct > C.maxTop10Pct) flags.push('top10-concentration');
+    if (m.holders != null && m.holders < C.minHolders) flags.push('few-holders');
     if (chain === 'solana') {
       if (m.mintRenounced === false) flags.push('mint-not-renounced');
       if (m.lpLockedPct != null && m.lpLockedPct < 50) flags.push('lp-unlocked');
@@ -206,7 +251,8 @@ function assess(chain, token, m) {
       if (m.mintable) flags.push('mintable');
     }
   }
-  const hardFail = flags.some((f) => ['no-liquidity-pool', 'honeypot', 'lp-unlocked', 'holder-concentration', 'top10-concentration', 'mintable'].includes(f));
+  // Rug checks are hard-fail in EVERY mode — sniper never bypasses them.
+  const hardFail = flags.some((f) => ['no-liquidity-pool', 'honeypot', 'lp-unlocked', 'holder-concentration', 'top10-concentration', 'mintable', 'low-liquidity'].includes(f));
   const safe = !hardFail;
 
   // Profit-oriented 0–100 score (only meaningful when safe).
@@ -217,21 +263,28 @@ function assess(chain, token, m) {
   if (m.holders != null) score += Math.min(15, Math.log10(Math.max(1, m.holders)) / Math.log10(5000) * 15); // holder base
   else score += 7;                                                                 // unknown → neutral
   const mcap = m.marketCapUsd || 0;
-  if (mcap > 0) {                                                                   // favor the growth sweet-spot
-    score += (mcap >= CFG.mcapSweetLowUsd && mcap <= CFG.mcapSweetHighUsd) ? 20 : 8;
+  if (mcap > 0) {                                                                   // favor the mode's growth sweet-spot
+    score += (mcap >= C.mcapSweetLowUsd && mcap <= C.mcapSweetHighUsd) ? 20 : 8;
   } else score += 8;
   score += Math.max(0, Math.min(15, (m.priceChange24hPct || 0) / 2));              // upward momentum (capped)
   if (m.ageSec != null) score += Math.min(5, m.ageSec / (7 * 86400) * 5);          // survival/age
   else if (m.ageBlocks != null) score += Math.min(5, m.ageBlocks / 1008 * 5);
   if (m.topHolderPct != null) score -= Math.max(0, (m.topHolderPct - 10) / 2);     // concentration penalty
+  // High/sniper modes weight social hype more heavily (social-driven by design).
+  const hypeW = C.sniper ? 0.35 : (mode === 'high' ? 0.25 : 0.1);
+  score = score * (1 - hypeW) + hype * hypeW;
   score = Math.max(0, Math.min(100, Math.round(score)));
   if (!safe) score = 0;
 
-  return { chain, token, safe, score, flags, metrics: m, assessedAt: now() };
+  return {
+    chain, token, mode, safe, score, hype,
+    hypeBasis: 'on-chain proxy (buy/sell velocity, DexScreener boosts, declared socials, vol/liq churn); not Twitter/Telegram engagement',
+    flags, metrics: m, assessedAt: now(),
+  };
 }
 
-async function report(chain, token) {
-  const key = `${chain}:${token}`;
+async function report(chain, token, mode = DEFAULT_MODE) {
+  const key = `${chain}:${token}:${mode}`;
   const hit = cached(key);
   if (hit) return hit;
   let m;
@@ -246,7 +299,50 @@ async function report(chain, token) {
   } else {
     throw new Error('unsupported chain');
   }
-  return put(key, assess(chain, token, m));
+  return put(key, assess(chain, token, m, mode));
+}
+
+// --- discovery: freshly-promoted / trending tokens for sniper & high modes ----
+// DexScreener's token-boosts feeds surface newly-promoted tokens (a strong proxy
+// for "just launched + getting attention"). We filter to the requested chain,
+// run each candidate through the mode gate, and return the ones that PASS, best
+// score first. Honest: this is a discovery aid, not a guarantee — most brand-new
+// tokens still fail the gate or go to zero.
+const CHAIN_OF = { solana: 'solana', ethereum: 'ethereum', bsc: 'bsc' };
+async function boostFeed(path) {
+  const j = await jget(`${DEXSCREENER}/${path}`, { timeout: 9000 });
+  const arr = Array.isArray(j) ? j : (j && Array.isArray(j.data) ? j.data : []);
+  return arr || [];
+}
+async function discover(mode = 'sniper', chain = null, limit = 12) {
+  const [latest, top] = await Promise.all([
+    boostFeed('token-boosts/latest/v1'),
+    boostFeed('token-boosts/top/v1'),
+  ]);
+  const seen = new Set();
+  const cands = [];
+  for (const b of [...latest, ...top]) {
+    const ch = CHAIN_OF[(b.chainId || '').toLowerCase()];
+    const addr = b.tokenAddress || b.address;
+    if (!ch || !addr) continue;
+    if (chain && ch !== chain) continue;
+    const k = `${ch}:${addr}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    cands.push({ chain: ch, token: addr });
+    if (cands.length >= 40) break;
+  }
+  // Assess candidates (bounded concurrency to be gentle on the free APIs).
+  const out = [];
+  const BATCH = 5;
+  for (let i = 0; i < cands.length; i += BATCH) {
+    const slice = cands.slice(i, i + BATCH);
+    const reps = await Promise.all(slice.map((c) => report(c.chain, c.token, mode).catch(() => null)));
+    for (const r of reps) if (r && r.safe) out.push(r);
+    if (out.length >= limit) break;
+  }
+  out.sort((a, b) => b.score - a.score);
+  return { mode, chain: chain || 'all', generatedAt: now(), count: Math.min(out.length, limit), candidates: out.slice(0, limit) };
 }
 
 const SUPPORTED = ['block', 'solana', 'ethereum', 'bsc'];
@@ -260,13 +356,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const parts = url.pathname.replace(/^\/api\/signals\/?/, '').split('/').filter(Boolean);
   try {
-    if (parts[0] === 'health' || url.pathname === '/api/signals/health') return j(res, 200, { ok: true, chains: SUPPORTED });
-    if (parts[0] === 'config') return j(res, 200, { chains: SUPPORTED, thresholds: CFG });
-    // /api/signals/:chain/token/:id
+    if (parts[0] === 'health' || url.pathname === '/api/signals/health') return j(res, 200, { ok: true, chains: SUPPORTED, modes: Object.keys(MODES) });
+    if (parts[0] === 'config') return j(res, 200, { chains: SUPPORTED, modes: MODES, thresholds: CFG, defaultMode: DEFAULT_MODE });
+    const mode = (url.searchParams.get('mode') || DEFAULT_MODE).toLowerCase();
+    const useMode = MODES[mode] ? mode : DEFAULT_MODE;
+    // /api/signals/discover?mode=sniper&chain=solana&limit=12 — new-launch / trending feed
+    if (parts[0] === 'discover' || parts[0] === 'trending' || parts[0] === 'new-launches') {
+      const dchain = (url.searchParams.get('chain') || '').toLowerCase();
+      const lim = Math.max(1, Math.min(25, Number(url.searchParams.get('limit')) || 12));
+      const m2 = parts[0] === 'new-launches' ? 'sniper' : useMode;
+      return j(res, 200, await discover(m2, CHAIN_OF[dchain] || null, lim));
+    }
+    // /api/signals/:chain/token/:id?mode=high
     const chain = (parts[0] || '').toLowerCase();
     if (!SUPPORTED.includes(chain)) return j(res, 400, { error: 'unsupported chain', supported: SUPPORTED });
-    if (parts[1] === 'token' && parts[2]) return j(res, 200, await report(chain, parts[2]));
-    return j(res, 404, { error: 'not found — use /api/signals/<chain>/token/<address>' });
+    if (parts[1] === 'token' && parts[2]) return j(res, 200, await report(chain, parts[2], useMode));
+    return j(res, 404, { error: 'not found — use /api/signals/<chain>/token/<address>?mode=<safe|medium|high|sniper> or /api/signals/discover?mode=sniper&chain=<chain>' });
   } catch (e) {
     return j(res, 500, { error: (e && e.message) || String(e) });
   }
