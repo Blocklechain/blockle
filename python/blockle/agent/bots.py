@@ -198,9 +198,29 @@ def risk_preset(mode: Any) -> Optional[Dict[str, Any]]:
     return RISK_MODES.get(mode)
 
 
+# PROFIT MODES — what happens to a bot's REALIZED profit:
+#   'off'      : legacy default — the deploy cap is the fixed budget (allocationUsd).
+#   'take'     : skim profit to the profit currency; cap-wise identical to 'off'
+#                (realized profit already settles out, so the cap stays at the budget).
+#   'compound' : reinvest realized profit — positive cumulative realized RAISES the
+#                deploy cap so the next orders can be larger. Losses NEVER lower the
+#                cap below the budget and NEVER pull from the wallet; the budget is a
+#                hard floor; profit is the only thing that can lift it.
+PROFIT_MODES = ["off", "take", "compound"]
+
+
+def validate_profit_mode(v: Any) -> str:
+    """null/''/unknown -> 'off' (the legacy default); else the matched mode."""
+    if v is None or v == "":
+        return "off"
+    k = str(v).lower()
+    return k if k in PROFIT_MODES else "off"
+
+
 # JS-parity aliases (camelCase) so a shared caller can reach either spelling.
 validateLane = validate_lane
 validateRiskMode = validate_risk_mode
+validateProfitMode = validate_profit_mode
 laneBase = lane_base
 laneChain = lane_chain
 riskPreset = risk_preset
@@ -734,6 +754,9 @@ class Bot:
         # and a risk mode. Both default to None for legacy bots (no behavior change).
         self.lane = validate_lane(spec.get("lane"))
         self.risk_mode = validate_risk_mode(spec.get("riskMode"))
+        # PROFIT MODE: off (default) | take | compound. Governs whether realized
+        # profit raises this bot's deploy cap (compound) or leaves it at the budget.
+        self.profit_mode = validate_profit_mode(spec.get("profitMode"))
         # When a lane is set, force chainPrefs to that chain so discovery/venue
         # resolution can never wander cross-chain.
         self.chain_prefs = [lane_chain(self.lane)] if self.lane else spec.get("chainPrefs")
@@ -807,7 +830,7 @@ class Bot:
     def to_json(self) -> Dict[str, Any]:
         return {
             "id": self.id, "name": self.name, "type": self.type, "universe": self.universe,
-            "lane": self.lane, "riskMode": self.risk_mode,
+            "lane": self.lane, "riskMode": self.risk_mode, "profitMode": self.profit_mode,
             "chainPrefs": self.chain_prefs, "venuePrefs": self.venue_prefs, "config": self.config,
             "profitCurrency": self.profit_currency,
             "allocationUsd": self.allocation_usd, "mode": self.mode, "enabled": self.enabled,

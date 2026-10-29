@@ -1368,6 +1368,12 @@ _RISK_WARNINGS = {
     "high": "High risk: low-liquidity, young tokens — expect big swings and losses.",
     "sniper": "Sniper targets brand-new launches, no track record — most go to zero.",
 }
+#: Profit-handling selector options — (label, profit-mode-key). 'take' skims realized
+#: profit to the profit currency; 'compound' reinvests it, raising the deploy cap.
+_PROFIT_OPTIONS = [
+    ("Take (skim)", "take"),
+    ("Compound (reinvest)", "compound"),
+]
 
 
 class CreatePanel(QWidget):
@@ -1390,6 +1396,9 @@ class CreatePanel(QWidget):
         # risk preset. Defaults: Solana lane, Medium risk.
         self.lane = _LANE_OPTIONS[0][1]
         self.risk_mode = "medium"
+        # PROFIT MODE — how realized profit is handled: 'take' (skim) [default] or
+        # 'compound' (reinvest, lifting the deploy cap). Never pulls from the wallet.
+        self.profit_mode = "take"
         # advanced slider state (seeded from the chosen template)
         self.adv = {"base": 100, "tp": 2.0, "so": 3, "step": 2.0, "vol": 1.4, "tr": 0.6}
 
@@ -1485,6 +1494,21 @@ class CreatePanel(QWidget):
         self.risk_warn.setWordWrap(True)
         self.risk_warn.setVisible(False)
         lv.addWidget(self.risk_warn)
+
+        # PROFIT HANDLING — what happens to realized profit: Take (skim to the profit
+        # currency) or Compound (reinvest, lifting the deploy cap). Default Take.
+        self.profit_mode_label = self._field_label("Profit handling", "take profit or compound it")
+        lv.addWidget(self.profit_mode_label)
+        self.profit_mode_cur = QComboBox()
+        for label, _key in _PROFIT_OPTIONS:
+            self.profit_mode_cur.addItem(label)
+        self.profit_mode_cur.setCurrentIndex(0)  # Take
+        self.profit_mode_cur.currentIndexChanged.connect(self._profit_mode_changed)
+        lv.addWidget(self.profit_mode_cur)
+        self.profit_mode_note = QLabel("Losses only draw down this bot's budget — never your wallet.")
+        self.profit_mode_note.setObjectName("sub")
+        self.profit_mode_note.setWordWrap(True)
+        lv.addWidget(self.profit_mode_note)
 
         # Manual mode: the pair picker (hidden by default — AI mode is the default).
         self.pair_in = QLineEdit("SOL/USDC")
@@ -1663,6 +1687,11 @@ class CreatePanel(QWidget):
         self.risk_warn.setText(warn)
         self.risk_warn.setVisible(bool(warn))
 
+    def _profit_mode_changed(self, idx=None):
+        i = self.profit_mode_cur.currentIndex()
+        if 0 <= i < len(_PROFIT_OPTIONS):
+            self.profit_mode = _PROFIT_OPTIONS[i][1]
+
     def _pair_changed(self, _text=None):
         # manual: profit currency tracks the pair quote. In AI mode the pair box is
         # hidden and the user-chosen profit currency is left untouched.
@@ -1791,6 +1820,8 @@ class CreatePanel(QWidget):
             # LANE + RISK MODE pin the autopilot to one chain + candidate gate.
             spec["lane"] = self.lane
             spec["riskMode"] = self.risk_mode
+            # PROFIT MODE: take (skim) or compound (reinvest, lifting the deploy cap).
+            spec["profitMode"] = self.profit_mode
             return spec
         t = templates_mod.TEMPLATES[self.sel_template]
         cfg = self._config() if t["type"] == "dca" else dict(t["config"])
@@ -1803,6 +1834,8 @@ class CreatePanel(QWidget):
             "profitCurrency": (self.profit_currency or "USDC"),
             # LANE + RISK MODE: single-chain + candidate-gate presets.
             "lane": self.lane, "riskMode": self.risk_mode,
+            # PROFIT MODE: take (skim) or compound (reinvest, lifting the deploy cap).
+            "profitMode": self.profit_mode,
             "mode": "paper", "enabled": False, "network": "testnet",
             "template": self.sel_template,
         }

@@ -55,6 +55,7 @@
     // sniper). The lane's base asset is the settlement/quote asset.
     lane: 'solana',
     riskMode: 'medium',
+    profitMode: 'take',   // take = skim realized profit; compound = reinvest it
     alloc: 500,
     base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0,
     type: 'dca',
@@ -353,11 +354,11 @@
       // selector keeps this synced to the lane's base asset). Carry it through.
       sc.config = Object.assign({}, sc.config, { profitCurrency: (create.profitCurrency || 'USDC') });
       sc.name = (T.TEMPLATES.scan_and_trade && T.TEMPLATES.scan_and_trade.name) || sc.name;
-      sc.lane = create.lane; sc.riskMode = create.riskMode;
+      sc.lane = create.lane; sc.riskMode = create.riskMode; sc.profitMode = create.profitMode;
       return sc;
     }
     var spec = T.fromTemplate(create.tplKey, { pair: create.pair });
-    spec.lane = create.lane; spec.riskMode = create.riskMode;
+    spec.lane = create.lane; spec.riskMode = create.riskMode; spec.profitMode = create.profitMode;
     // overlay the (simple + advanced) create controls onto the template config
     if (spec.type === 'dca') {
       spec.config = Object.assign({}, spec.config, {
@@ -612,6 +613,12 @@
             '<option value="sniper"' + (create.riskMode === 'sniper' ? ' selected' : '') + '>Sniper — brand-new launches</option>' +
           '</select>' +
           '<div id="b-risk-warn" class="bhint" style="color:var(--b-warn,#c47d00);margin-top:6px"></div></div>' +
+        '<div class="bfield"><label>Profit handling <span class="fhint">gains: skim or reinvest</span></label>' +
+          '<select id="b-profit" class="bselect" aria-label="Profit handling">' +
+            '<option value="take"' + (create.profitMode === 'take' ? ' selected' : '') + '>Take profit — skim gains to your balance</option>' +
+            '<option value="compound"' + (create.profitMode === 'compound' ? ' selected' : '') + '>Compound — reinvest gains, grow the position</option>' +
+          '</select>' +
+          '<div class="bhint" style="margin-top:4px">Losses only draw down this bot&rsquo;s budget — never your wallet.</div></div>' +
         pairSelectHtml() +
         '<div class="bfield"><label>3 · Amount to allocate <span class="fhint">the bot\'s hard cap</span></label>' +
           '<div class="bcontrol"><span class="bcur">$</span><input id="b-alloc" class="num" value="' + esc(create.alloc) + '" inputmode="decimal" aria-label="Allocation in US dollars"><span class="bsuffix">USD</span></div></div>' +
@@ -684,6 +691,8 @@
     }
     if (riskSel) riskSel.addEventListener('change', function () { create.riskMode = riskSel.value; syncRiskWarn(); });
     syncRiskWarn();
+    var profitSel = $('#b-profit');
+    if (profitSel) profitSel.addEventListener('change', function () { create.profitMode = profitSel.value; });
     var pcur = $('#b-profit-cur');
     if (pcur) pcur.addEventListener('change', function () { create.profitCurrency = (pcur.value || 'USDC').toUpperCase(); });
     var pair = $('#b-pair');

@@ -519,6 +519,20 @@ class BotRunner:
         ps["signalArmed"] = False
 
     # =========================================================================
+    # effective deploy cap (§ PROFIT MODE) — the per-bot budget, optionally lifted
+    # by realized profit. 'off'/'take' -> EXACTLY micro_usd(allocationUsd) (the
+    # legacy cap, byte-for-byte). 'compound' -> budget + cumulative realized when
+    # realized > 0 (losses never lower the cap below the budget; the budget is a
+    # hard floor and the cap NEVER pulls from the wallet).
+    # =========================================================================
+    def _effective_cap_uc(self, bot) -> int:
+        base = self.Bots.micro_usd(bot.allocation_usd)
+        if getattr(bot, "profit_mode", "off") == "compound":
+            r = bot.state.get("realizedUc") or 0
+            return base + r if r > 0 else base
+        return base
+
+    # =========================================================================
     # execute a single order — PAPER simulates; LIVE routes through the ONE gate.
     # Returns a fill dict or None when the order did not fire (all audited).
     # =========================================================================
@@ -561,7 +575,7 @@ class BotRunner:
             remaining_uc = None
             enforce_budget = bot.mode == "live" or (bot.mode == "paper" and bot.allocation_usd > 0)
             if enforce_budget:
-                alloc_uc = B.micro_usd(bot.allocation_usd)
+                alloc_uc = self._effective_cap_uc(bot)  # budget, + realized profit when compounding
                 remaining_uc = alloc_uc - (bot.state.get("committedUc") or 0)
                 if usd_size_uc + fee_uc > remaining_uc:
                     # does NOT fire, is NOT prompted — the hard per-bot cap (trade + fee).
@@ -930,7 +944,7 @@ class BotRunner:
                     continue
                 est_usd_uc = B.micro_usd(it["estUsd"])
                 fee_uc = B.agent_fee_uc(est_usd_uc)  # allocation bounds the trade + 0.05% fee
-                remaining_uc = B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0)
+                remaining_uc = self._effective_cap_uc(bot) - (bot.state.get("committedUc") or 0)  # + realized profit when compounding
                 if est_usd_uc + fee_uc > remaining_uc:
                     await self._audit({"type": "bot_skip", "bot": bot.id, "reason": "allocation", "tag": it.get("tag")})
                     events.append({"tag": it.get("tag"), "skipped": "allocation"})
@@ -1086,9 +1100,12 @@ class BotRunner:
             "status": "killed" if self._killed else ("running" if bot.enabled else "stopped"),
             "allocationUsd": bot.allocation_usd,
             "lane": bot.lane or None, "riskMode": bot.risk_mode or None,
+            "profitMode": getattr(bot, "profit_mode", "off") or "off",
+            # effective deploy cap = budget, + realized profit when compounding (else == budget)
+            "effectiveCapUsd": B.uc_to_usd(self._effective_cap_uc(bot)),
             "committedUsd": B.uc_to_usd(bot.state.get("committedUc") or 0),
             # remaining budget shown whenever one is set (live always; paper when a budget was given)
-            "remainingUsd": B.uc_to_usd(B.micro_usd(bot.allocation_usd) - (bot.state.get("committedUc") or 0))
+            "remainingUsd": B.uc_to_usd(self._effective_cap_uc(bot) - (bot.state.get("committedUc") or 0))
             if (bot.mode == "live" or bot.allocation_usd > 0) else None,
             "activeDeals": open_deals,
             "safetyOrdersUsed": safety_used,

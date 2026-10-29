@@ -74,6 +74,15 @@ const List<MapEntry<String?, String>> _laneChoices = [
   MapEntry('block', 'BLOCK'),
 ];
 
+// PROFIT-HANDLING choices — what happens to realized profit. 'take' (default)
+// skims profit to the profit currency and keeps the deploy cap at the fixed
+// budget; 'compound' reinvests realized profit so gains raise the cap. Losses
+// only ever draw down this bot's budget — never the wallet (the budget is a floor).
+const List<MapEntry<String, String>> _profitModeChoices = [
+  MapEntry('take', 'Take (skim profit)'),
+  MapEntry('compound', 'Compound (reinvest)'),
+];
+
 // RISK-MODE choices — tune discovery/scanner strictness. null = engine default
 // (medium). `high`/`sniper` loosen the gates and carry a warning.
 const List<MapEntry<String?, String>> _riskChoices = [
@@ -105,6 +114,11 @@ class _CreateViewState extends State<CreateView> {
   // the bot to one chain; the risk mode tunes discovery/scanner strictness.
   String? _lane;
   String? _riskMode;
+
+  // PROFIT HANDLING — Take (skim, default) | Compound (reinvest realized profit).
+  // Defaults to 'take'. Passed into the bot spec; 'compound' lifts the deploy cap
+  // by realized profit (losses only draw down this bot's budget, never the wallet).
+  String _profitMode = 'take';
 
   bool get _aiPicksPairs => _pairMode != 'manual';
 
@@ -188,6 +202,7 @@ class _CreateViewState extends State<CreateView> {
         configOverride: {'profitCurrency': _profitCurrency},
         lane: _lane,
         riskMode: _riskMode,
+        profitMode: _profitMode,
       );
     }
     final tpl = _templates[_tpl];
@@ -198,6 +213,7 @@ class _CreateViewState extends State<CreateView> {
       configOverride: tpl.type == 'dca' ? _dcaOverride() : null,
       lane: _lane,
       riskMode: _riskMode,
+      profitMode: _profitMode,
     );
   }
 
@@ -337,6 +353,8 @@ class _CreateViewState extends State<CreateView> {
           ),
           const SizedBox(height: 16),
           _laneRiskSelect(t),
+          const SizedBox(height: 16),
+          _profitSelect(t),
           const SizedBox(height: 16),
           if (_aiPicksPairs)
             _AutopilotNote(profitCurrency: _profitCurrency, alloc: _allocUsd)
@@ -555,6 +573,50 @@ class _CreateViewState extends State<CreateView> {
             ]),
           ),
         ],
+      ]),
+    );
+  }
+
+  // PROFIT-HANDLING selector — Take (skim) vs Compound (reinvest realized profit).
+  // Defaults to 'take'. Compound lifts the deploy cap by realized profit; the note
+  // makes the hard floor explicit: losses only draw down this bot's budget.
+  Widget _profitSelect(BotTokens t) {
+    return _Field(
+      label: 'Profit handling',
+      hint: 'what happens to realized profit',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 13),
+          decoration: BoxDecoration(
+            color: t.elevated,
+            borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+            border: Border.all(color: t.line),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _profitMode,
+              isExpanded: true,
+              dropdownColor: t.surface,
+              style: mono(t, size: 15, color: t.ink),
+              items: [
+                for (final c in _profitModeChoices)
+                  DropdownMenuItem<String>(value: c.key, child: Text(c.value)),
+              ],
+              onChanged: (v) => setState(() => _profitMode = v ?? 'take'),
+            ),
+          ),
+        ),
+        const SizedBox(height: 7),
+        Text(
+          _profitMode == 'compound'
+              ? 'Realized profit is reinvested — gains raise this bot’s deploy '
+                  'cap so the next orders can be larger. Losses only draw down this '
+                  'bot’s budget — never your wallet.'
+              : 'Realized profit is skimmed to your profit currency and the deploy '
+                  'cap stays at your budget. Losses only draw down this bot’s '
+                  'budget — never your wallet.',
+          style: TextStyle(fontSize: 11.5, color: t.inkMuted, height: 1.45),
+        ),
       ]),
     );
   }

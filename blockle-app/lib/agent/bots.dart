@@ -171,6 +171,22 @@ String? validateRiskMode(dynamic v) {
 
 Map<String, dynamic>? riskPreset(String? mode) => mode != null ? kRiskModes[mode] : null;
 
+// PROFIT MODES — what happens to a bot's REALIZED profit. 'off' (default/legacy)
+// and 'take' are IDENTICAL in cap terms: the deploy cap is the fixed budget
+// (realized profit already settles out to the profit currency; 'take' just names
+// that intent). 'compound' reinvests realized profit — gains RAISE the deploy cap
+// so the next orders can be larger; losses NEVER lower the cap below the budget
+// and NEVER pull from the wallet (the budget is a hard floor).
+const List<String> kProfitModes = ['off', 'take', 'compound'];
+
+/// Returns 'off' for null/empty/unknown — so a legacy bot's cap is byte-for-byte
+/// the fixed budget (the deterministic fixtures run with 'off').
+String validateProfitMode(dynamic v) {
+  if (v == null || v == '') return 'off';
+  final k = '$v'.toLowerCase();
+  return kProfitModes.contains(k) ? k : 'off';
+}
+
 num _num(dynamic v, num dflt) {
   if (v == null) return dflt;
   final n = v is num ? v : num.tryParse('$v');
@@ -713,6 +729,9 @@ class Bot {
   // a risk mode. Both default to null for legacy bots (no behavior change).
   String? lane;
   String? riskMode;
+  // PROFIT MODE: off (default/legacy) | take | compound. Governs the deploy cap
+  // in bot_runner (_effectiveCapUc). Default 'off' keeps the legacy fixed cap.
+  String profitMode;
   dynamic chainPrefs;
   dynamic venuePrefs;
   Map<String, dynamic> config;
@@ -734,6 +753,7 @@ class Bot {
         universe = (spec['universe'] as Map?)?.cast<String, dynamic>() ?? {'pairs': <dynamic>[]},
         lane = validateLane(spec['lane']),
         riskMode = validateRiskMode(spec['riskMode']),
+        profitMode = validateProfitMode(spec['profitMode']),
         // When a lane is set, force chainPrefs to that chain so discovery/venue
         // resolution can never wander cross-chain.
         chainPrefs = validateLane(spec['lane']) != null
@@ -798,7 +818,7 @@ class Bot {
 
   Map<String, dynamic> toJson() => {
         'id': id, 'name': name, 'type': type, 'universe': universe,
-        'lane': lane, 'riskMode': riskMode,
+        'lane': lane, 'riskMode': riskMode, 'profitMode': profitMode,
         'chainPrefs': chainPrefs, 'venuePrefs': venuePrefs, 'config': config,
         'allocationUsd': allocationUsd, 'mode': mode, 'enabled': enabled,
         'network': network, 'pollSec': pollSec, 'cooldownSec': cooldownSec,

@@ -150,6 +150,22 @@
   }
   function riskPreset(mode) { return RISK_MODES[mode] || null; }
 
+  // PROFIT MODE — what happens to REALIZED profit:
+  //   'off'      (default): the bot deploys up to its budget; realized profit
+  //              settles out to the profit currency. No behavior change — the
+  //              deterministic fixtures all run with this.
+  //   'take'     : skim realized profit out of the working balance (keeps trading
+  //              at the base budget). Behaviourally the same safe default, labelled.
+  //   'compound' : reinvest realized profit — gains RAISE the bot's deploy cap so
+  //              the next orders can be larger. Losses NEVER lower the cap below the
+  //              budget and NEVER pull from the wallet; the budget is a hard floor.
+  const PROFIT_MODES = ['off', 'take', 'compound'];
+  function validateProfitMode(v) {
+    if (v == null || v === '') return 'off';
+    const k = String(v).toLowerCase();
+    return PROFIT_MODES.includes(k) ? k : 'off';
+  }
+
   function clampNum(v, lo, hi, dflt) {
     let n = Number(v); if (!isFinite(n)) n = dflt;
     return Math.max(lo, Math.min(hi, n));
@@ -582,6 +598,7 @@
       // a risk mode. Both default to null for legacy bots (no behavior change).
       this.lane = validateLane(spec.lane);
       this.riskMode = validateRiskMode(spec.riskMode);
+      this.profitMode = validateProfitMode(spec.profitMode); // off | take | compound
       // When a lane is set, force chainPrefs to that chain so discovery/venue
       // resolution can never wander cross-chain.
       this.chainPrefs = this.lane ? [laneChain(this.lane)] : (spec.chainPrefs || null);
@@ -648,7 +665,7 @@
     toJSON() {
       return {
         id: this.id, name: this.name, type: this.type, universe: this.universe,
-        lane: this.lane, riskMode: this.riskMode,
+        lane: this.lane, riskMode: this.riskMode, profitMode: this.profitMode,
         chainPrefs: this.chainPrefs, venuePrefs: this.venuePrefs, config: this.config,
         allocationUsd: this.allocationUsd, mode: this.mode, enabled: this.enabled,
         network: this.network, pollSec: this.pollSec, cooldownSec: this.cooldownSec,
@@ -746,8 +763,9 @@
     AGENT_FEE_BPS, agentFeeUc,
     // config
     validateConfig, dcaBps,
-    // lane + risk mode
+    // lane + risk mode + profit mode
     LANES, RISK_MODES, validateLane, validateRiskMode, laneBase, laneChain, riskPreset,
+    PROFIT_MODES, validateProfitMode,
     // deal engines (pure)
     newDcaDeal, dcaObserve, dcaStep, dcaApply,
     newGridDeal, gridBuild, gridBcfg, gridStep, gridApply,

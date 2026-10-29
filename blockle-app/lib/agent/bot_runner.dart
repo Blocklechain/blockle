@@ -350,6 +350,22 @@ class BotRunner {
 
   int _now() => (ctx.now != null ? ctx.now!() : DateTime.now().millisecondsSinceEpoch);
 
+  // The EFFECTIVE deploy cap (micro-dollars) for a bot's BUY gates.
+  //   off / take → the fixed budget, microUsd(allocationUsd) — byte-for-byte the
+  //                legacy cap (the deterministic fixtures all run here).
+  //   compound   → budget + the bot's POSITIVE cumulative realized profit. Gains
+  //                raise the cap so the next orders can be larger (reinvested);
+  //                losses (realized <= 0) floor it at the budget so the cap NEVER
+  //                drops below the budget and NEVER pulls from the wallet.
+  BigInt _effectiveCapUc(b.Bot bot) {
+    final base = b.microUsd(bot.allocationUsd);
+    if (bot.profitMode == 'compound') {
+      final r = (bot.state['realizedUc'] as BigInt?) ?? BigInt.zero;
+      return r > BigInt.zero ? base + r : base;
+    }
+    return base;
+  }
+
   // ===========================================================================
   // tick
   // ===========================================================================
@@ -601,7 +617,7 @@ class BotRunner {
       BigInt? remainingUc;
       final enforceBudget = bot.mode == 'live' || (bot.mode == 'paper' && bot.allocationUsd > 0);
       if (enforceBudget) {
-        final allocUc = b.microUsd(bot.allocationUsd);
+        final allocUc = _effectiveCapUc(bot); // budget, + realized profit when compounding
         remainingUc = allocUc - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
         if (usdSizeUc + feeUc > remainingUc) {
           // does NOT fire, is NOT prompted — the hard per-bot cap (trade + fee).
@@ -1036,7 +1052,7 @@ class BotRunner {
         }
         final estUsdUc = b.microUsd(est);
         final feeUc = b.agentFeeUc(estUsdUc); // allocation bounds the trade + 0.05% fee
-        final remainingUc = b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
+        final remainingUc = _effectiveCapUc(bot) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero); // + realized profit when compounding
         if (estUsdUc + feeUc > remainingUc) {
           await _audit({'type': 'bot_skip', 'bot': bot.id, 'reason': 'allocation', 'tag': it.tag});
           events.add({'tag': it.tag, 'skipped': 'allocation'});
@@ -1246,11 +1262,13 @@ class BotRunner {
       'bot': bot.id, 'name': bot.name, 'type': bot.type, 'mode': bot.mode, 'enabled': bot.enabled, 'network': bot.network,
       'status': _killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
       'allocationUsd': bot.allocationUsd,
-      'lane': bot.lane, 'riskMode': bot.riskMode,
+      'lane': bot.lane, 'riskMode': bot.riskMode, 'profitMode': bot.profitMode,
+      // The effective deploy cap (budget, + realized profit when compounding).
+      'effectiveCapUsd': b.ucToUsd(_effectiveCapUc(bot)),
       'committedUsd': b.ucToUsd((bot.state['committedUc'] as BigInt?) ?? BigInt.zero),
       // remaining budget shown whenever one is set (live always; paper when a budget was given)
       'remainingUsd': (bot.mode == 'live' || bot.allocationUsd > 0)
-          ? b.ucToUsd(b.microUsd(bot.allocationUsd) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero))
+          ? b.ucToUsd(_effectiveCapUc(bot) - ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero))
           : null,
       'activeDeals': openDeals,
       'safetyOrdersUsed': safetyUsed,

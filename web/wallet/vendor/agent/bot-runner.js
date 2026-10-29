@@ -399,6 +399,25 @@
       ps.signalArmed = false;
     }
 
+    // Effective deploy cap (micro-dollars). PROFIT MODE governs it:
+    //   off / take → the fixed budget (allocationUsd). Realized profit settles out;
+    //                losses just consume the budget. (Byte-for-byte the legacy cap —
+    //                the deterministic fixtures all run here.)
+    //   compound   → budget + cumulative realized PROFIT. Gains raise the cap so the
+    //                next orders can be larger (reinvested); losses are floored at 0
+    //                so the cap NEVER drops below the budget and NEVER pulls from the
+    //                wallet. The budget is a hard floor; profit is the only thing that
+    //                can lift it.
+    _effectiveCapUc(bot) {
+      const B = this.Bots;
+      const base = B.microUsd(bot.allocationUsd);
+      if (bot.profitMode === 'compound') {
+        const r = bot.state.realizedUc || 0n;
+        return r > 0n ? base + r : base;
+      }
+      return base;
+    }
+
     // ===========================================================================
     // execute a single order — PAPER simulates; LIVE routes through the ONE gate.
     // Returns a fill { side, qty, priceUc, costUc|proceedsUc, paper?, txid? } or
@@ -441,7 +460,7 @@
         let remainingUc = null;
         const enforceBudget = bot.mode === 'live' || (bot.mode === 'paper' && bot.allocationUsd > 0);
         if (enforceBudget) {
-          const allocUc = B.microUsd(bot.allocationUsd);
+          const allocUc = this._effectiveCapUc(bot); // budget, + realized profit when compounding
           remainingUc = allocUc - (bot.state.committedUc || 0n);
           if (usdSizeUc + feeUc > remainingUc) {
             // does NOT fire, is NOT prompted — the hard per-bot cap (trade + fee).
@@ -751,7 +770,7 @@
           }
           const estUsdUc = B.microUsd(it.estUsd);
           const feeUc = B.agentFeeUc(estUsdUc); // allocation bounds the trade + 0.05% fee
-          const remainingUc = B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n);
+          const remainingUc = this._effectiveCapUc(bot) - (bot.state.committedUc || 0n); // + realized profit when compounding
           if (estUsdUc + feeUc > remainingUc) { await this._audit({ type: 'bot_skip', bot: bot.id, reason: 'allocation', tag: it.tag }); events.push({ tag: it.tag, skipped: 'allocation' }); continue; }
           if ((it.mainnet || ctxMainnet) && !this.mainnetEnabled) { await this._audit({ type: 'bot_skip', bot: bot.id, reason: 'mainnet', tag: it.tag }); events.push({ tag: it.tag, skipped: 'mainnet' }); continue; }
           if (!this.policy.isAllowed(it.tool)) { await this._audit({ type: 'bot_blocked', bot: bot.id, tool: it.tool }); events.push({ tag: it.tag, blocked: true }); continue; }
@@ -873,10 +892,12 @@
         bot: bot.id, name: bot.name, type: bot.type, mode: bot.mode, enabled: bot.enabled, network: bot.network,
         status: this._killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
         allocationUsd: bot.allocationUsd,
-        lane: bot.lane || null, riskMode: bot.riskMode || null,
+        lane: bot.lane || null, riskMode: bot.riskMode || null, profitMode: bot.profitMode || 'off',
+        // compounding effective cap (budget + realized profit); equals the budget for off/take
+        effectiveCapUsd: B.ucToUsd(this._effectiveCapUc(bot)),
         committedUsd: B.ucToUsd(bot.state.committedUc || 0n),
         // remaining budget shown whenever one is set (live always; paper when a budget was given)
-        remainingUsd: (bot.mode === 'live' || bot.allocationUsd > 0) ? B.ucToUsd(B.microUsd(bot.allocationUsd) - (bot.state.committedUc || 0n)) : null,
+        remainingUsd: (bot.mode === 'live' || bot.allocationUsd > 0) ? B.ucToUsd(this._effectiveCapUc(bot) - (bot.state.committedUc || 0n)) : null,
         activeDeals: openDeals,
         safetyOrdersUsed: safetyUsed,
         realizedUsd: B.ucToUsd(bot.state.realizedUc || 0n),

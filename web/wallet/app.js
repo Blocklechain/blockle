@@ -1227,6 +1227,7 @@
       return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '' + ic('grid', 16) + '' : b.type === 'dca' ? '' + ic('dca', 16) + '' : '' + ic('smart', 16) + '') + '</span>' +
         '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) +
         (b.lane ? ' · ' + esc(((BOT_LANES[b.lane] || {}).name || b.lane)) : '') + (b.riskMode ? ' · ' + esc(b.riskMode) : '') +
+        (b.profitMode && b.profitMode !== 'off' ? ' · ' + esc(b.profitMode) : '') +
         ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' +
         (b.allocationUsd > 0 ? ' · $' + b.allocationUsd : '') + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
         '<span class="row" style="margin-left:auto;gap:6px">' +
@@ -1256,6 +1257,7 @@
       '<div class="field"><label>Strategy</label><select id="nb-type"><option value="scanner">Autopilot (scan &amp; trade the lane)</option><option value="signal">Signal (auto-find tokens)</option><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option></select></div>' +
       '<div class="field"><label>Lane — one chain, one base asset</label><select id="nb-lane"><option value="solana">Solana · hold SOL</option><option value="ethereum">Ethereum · hold ETH</option><option value="bsc">BSC · hold BNB</option><option value="block">BLOCK · hold BLOCK</option></select></div>' +
       '<div class="field"><label>Risk mode</label><select id="nb-mode"><option value="safe">Safe — large-cap only</option><option value="medium" selected>Medium — mid-cap, balanced</option><option value="high">High — microcap, social-driven</option><option value="sniper">Sniper — brand-new launches</option></select></div>' +
+      '<div class="field"><label>Profit handling</label><select id="nb-profit"><option value="take" selected>Take profit — skim gains to your balance</option><option value="compound">Compound — reinvest gains, grow the position</option></select><div class="hint" style="font-size:12px;color:var(--muted);margin-top:4px">Losses only ever draw down this bot\'s budget — never your wallet.</div></div>' +
       '<div class="field" id="nb-pair-wrap" style="display:none"><label>Token pair (quoted in your base)</label><input id="nb-pair" value=""></div>' +
       '<div class="field"><label>Paper budget (USD)</label><input id="nb-budget" inputmode="decimal" placeholder="1000"></div>' +
       '<div class="field"><label>Name</label><input id="nb-name" placeholder="My autopilot bot"></div>' +
@@ -1280,6 +1282,7 @@
     syncUi();
     $('#nb-go').onclick = function () {
       var type = $('#nb-type').value, lane = $('#nb-lane').value, mode = $('#nb-mode').value;
+      var profitMode = $('#nb-profit').value;
       var base = (BOT_LANES[lane] || {}).base || 'USDC';
       var needsPair = (type === 'dca' || type === 'grid' || type === 'smarttrade');
       var pair = needsPair ? (($('#nb-pair').value || ('TOKEN/' + base)).trim()) : (base + '/' + base);
@@ -1290,7 +1293,7 @@
         var bots = (runner.store.all && runner.store.all()) || [];
         if (!isPro() && bots.length >= 1) { closeSheet(); toast('Free plan allows 1 bot — upgrade for more', 'bad'); location.hash = '#pro'; return; }
         try {
-          var bot = runner.add({ name: name, type: type, lane: lane, riskMode: mode, universe: { pairs: needsPair ? [pair] : [] }, config: {}, mode: 'paper', network: 'testnet' });
+          var bot = runner.add({ name: name, type: type, lane: lane, riskMode: mode, profitMode: profitMode, universe: { pairs: needsPair ? [pair] : [] }, config: {}, mode: 'paper', network: 'testnet' });
           runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
             toast('Bot started (paper, $' + budget + ' on ' + (BOT_LANES[lane] || {}).name + ')', 'good');
             closeSheet(); renderBotList();

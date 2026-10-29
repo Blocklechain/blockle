@@ -23,6 +23,17 @@ const MODES = {
     tokens: [['bonk','solana','BONK'],['dogwifcoin','solana','WIF'],['popcat','solana','POPCAT'],['cat-in-a-dogs-world','solana','MEW'],['based-brett','ethereum','BRETT'],['book-of-meme','solana','BOME'],['turbo','ethereum','TURBO'],['mog-coin','ethereum','MOG']],
     fast: 9, slow: 21, // fastest crossover — rapid in/out
   },
+  sniper: { // BRAND-NEW launches (2024-25 microcaps) — the fastest, riskiest lane.
+    // SURVIVORSHIP BIAS by construction: these are launches that SURVIVED long
+    // enough to have 90d of history. The ones that rugged/died in their first
+    // hours — the majority of real new launches — are NOT here and CANNOT be.
+    // So this is an illustration of sniper BEHAVIOUR on survivors, never a
+    // forecast. Reported honestly with a loud warning + the buy&hold line.
+    label: 'Sniper', risk: 'Brand-new launches · maximum risk · survivors only',
+    tokens: [['peanut-the-squirrel','solana','PNUT'],['goatseus-maximus','solana','GOAT'],['moo-deng','solana','MOODENG'],['act-i-the-ai-prophecy','solana','ACT'],['just-a-chill-guy','solana','CHILLGUY'],['gigachad-2','solana','GIGA'],['ai16z','solana','AI16Z'],['fwog','solana','FWOG'],['zerebro','solana','ZEREBRO'],['michicoin','solana','MICHI']],
+    fast: 6, slow: 13, // fastest crossover of all — snipe in, take profit / stop fast
+    sniper: true,
+  },
 };
 const START = 1000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -107,18 +118,9 @@ for (const [key, m] of Object.entries(MODES)) {
     perToken: rows,
   };
   if (key === 'high') out.modes[key].survivorshipNote = 'Microcap basket is survivorship-biased — only tokens that survived the window are included; many microcaps rug or die. Treat as illustrative of behavior on volatile small-caps, not expected returns.';
+  if (key === 'sniper') {
+    out.modes[key].newLaunch = true;
+    out.modes[key].survivorshipNote = 'SURVIVOR BASKET: these are 2024-25 launches that SURVIVED long enough to have history. Most real new launches rug or go to zero in their first hours and are NOT shown here — so this illustrates sniper BEHAVIOUR on survivors, never an expected return. Live sniper sizes tiny, takes profit or stops out fast, and still expects most positions to be total losses.';
+  }
 }
-
-// Sniper mode: brand-new launches only. There is NO honest historical backtest
-// for this — tokens that are new by definition have no price history, and any
-// that survived long enough to backtest are pure survivorship bias. So we ship
-// it as live-only with a loud warning and NO fabricated return number.
-out.modes.sniper = {
-  label: 'Sniper', risk: 'Brand-new launches · maximum risk',
-  strategy: 'New-listing sniper (live-only, paper by default)',
-  noBacktest: true,
-  chains: ['solana', 'ethereum', 'bsc'],
-  watchlist: ['WIF', 'POPCAT', 'BOME', 'MEW', 'BRETT', 'TURBO', 'MOG', 'BONK', 'PEPE'],
-  note: 'Brand-new tokens have no price history to backtest, and the ones that survive are survivorship bias — so there is NO honest historical return to show here. Sniper is live-only: it watches freshly-launched microcaps, buys only those that clear a relaxed rug/liquidity/holder gate, sizes tiny, and takes profit or stops out fast. Expect most positions to go to zero. Paper mode by default; real trading only after you set a budget and pass the gate.',
-};
 console.log(JSON.stringify(out, null, 2));

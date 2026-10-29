@@ -23,12 +23,14 @@
   var CHAIN_COLOR = { solana: '#9945ff', ethereum: '#627eea', bsc: '#f0b90b', block: '#4d8bff' };
   var CHAIN_NAME = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BSC', block: 'BLOCK' };
   var BASE_ASSET = { solana: 'SOL', ethereum: 'ETH', bsc: 'BNB', block: 'BLOCK' };
-  // Per-mode visual identity + animation pacing.
+  // Per-mode visual identity + animation pacing. `screened` = illustrative count of
+  // candidates the scanner evaluates over the 90d window (the gate rejects almost
+  // all of them). It conveys the funnel scale; the traded set + returns are real.
   var MODE_STYLE = {
-    safe:   { accent: '#4d8bff', tag: 'Large-cap', beat: 980, flavor: 'blue-chip momentum' },
-    medium: { accent: '#f0a92b', tag: 'Mid-cap',   beat: 720, flavor: 'balanced rotation' },
-    high:   { accent: '#ff5d8f', tag: 'Microcap',  beat: 420, flavor: 'social-driven degen' },
-    sniper: { accent: '#ff3b3b', tag: 'New launches', beat: 240, flavor: 'live-only · no backtest' },
+    safe:   { accent: '#4d8bff', tag: 'Large-cap', beat: 760, flavor: 'blue-chip momentum', screened: 140 },
+    medium: { accent: '#f0a92b', tag: 'Mid-cap',   beat: 560, flavor: 'balanced rotation',  screened: 820 },
+    high:   { accent: '#ff5d8f', tag: 'Microcap',  beat: 300, flavor: 'social-driven degen', screened: 4200 },
+    sniper: { accent: '#ff3b3b', tag: 'New launches', beat: 150, flavor: 'brand-new · survivors shown', screened: 11000 },
   };
   var ORDER = ['safe', 'medium', 'high', 'sniper'];
 
@@ -96,6 +98,7 @@
         '<span class="td-eq"><span style="color:var(--muted);font-weight:500" id="td-eqstart"></span> <span class="td-arrow">&rarr;</span> <span id="td-eqnow"></span></span>' +
         '<span class="td-ret" id="td-ret">&nbsp;</span>' +
         '<span class="td-kpis">' +
+          '<span class="td-kpi"><div class="n" id="td-screened">—</div><div class="l">screened</div></span>' +
           '<span class="td-kpi"><div class="n" id="td-win">—</div><div class="l">win rate</div></span>' +
           '<span class="td-kpi"><div class="n" id="td-tr">—</div><div class="l">paper trades</div></span>' +
           '<span class="td-kpi"><div class="n hold" id="td-hold">—</div><div class="l">buy &amp; hold</div></span>' +
@@ -140,8 +143,25 @@
       ctx.beginPath(); ctx.arc(X(points.length - 1), Y(points[points.length - 1]), 3.2 * devicePixelRatio, 0, 7); ctx.fillStyle = accent; ctx.fill();
     }
 
-    var timer = null, cur = null;
-    function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+    var timer = null, cur = null, raf = null;
+    var elScreened = document.getElementById('td-screened');
+    function clearTimer() { if (timer) { clearTimeout(timer); timer = null; } if (raf) { cancelAnimationFrame(raf); raf = null; } }
+
+    // "screened" odometer — climbs 0→target across the whole animation so the funnel
+    // scale (thousands evaluated, a handful traded) reads at a glance. Illustrative
+    // count; the traded tokens + returns below are the real backtest.
+    function runScreenOdometer(target, durationMs) {
+      if (!elScreened) return;
+      if (reduce || !window.requestAnimationFrame) { elScreened.textContent = '~' + target.toLocaleString(); return; }
+      var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+      (function tick(now) {
+        now = now || ((window.performance && performance.now) ? performance.now() : Date.now());
+        var p = Math.min(1, (now - t0) / durationMs);
+        var eased = 1 - Math.pow(1 - p, 2); // decelerate
+        elScreened.textContent = '~' + Math.round(target * eased).toLocaleString();
+        if (p < 1) raf = requestAnimationFrame(tick);
+      })();
+    }
 
     function renderLanes(mode, activeChain) {
       var chains = modes[mode].chains || [];
@@ -214,20 +234,25 @@
       elTr.textContent = (m.trades || 0);
       elHold.textContent = (m.buyHoldReturnPct >= 0 ? '+' : '') + m.buyHoldReturnPct + '%';
       elRet.textContent = '';
-      elScan.classList.toggle('on', mode === 'high'); // only high mode "scans socials"
+      elScan.classList.toggle('on', mode === 'high' || mode === 'sniper'); // high + sniper "scan socials"
       renderLanes(mode, null);
-
-      var note = '$' + (m.startAmount / (m.perToken.length || 1)).toLocaleString() + ' paper per token · ' +
-        esc(m.strategy || '') + ' · trend filter + 8% stop. ' +
-        'Strategy ' + (m.returnPct >= 0 ? '+' : '') + m.returnPct + '% vs buy&hold ' +
-        (m.buyHoldReturnPct >= 0 ? '+' : '') + m.buyHoldReturnPct + '% this window.';
-      if (mode === 'high' && m.survivorshipNote) note += ' ⚠ ' + esc(m.survivorshipNote);
-      elNote.innerHTML = note;
 
       // play order: group by lane (chain) so it reads as one-lane-at-a-time
       var rows = m.perToken.slice().sort(function (a, b) {
         return (a.chain || '').localeCompare(b.chain || '') || a.sym.localeCompare(b.sym);
       });
+      var screenTarget = (st.screened || rows.length * 40);
+      var animMs = Math.max(2500, rows.length * beat);
+      runScreenOdometer(screenTarget, animMs);
+
+      var note = 'The bot <b>screens the live feed one launch at a time</b> — ~' + screenTarget.toLocaleString() +
+        ' candidates over 90d, the gate rejects almost all, and it trades only the <b>' + rows.length + '</b> that pass. ' +
+        '$' + (m.startAmount / (m.perToken.length || 1)).toLocaleString() + ' paper each · ' + esc(m.strategy || '') +
+        ' · trend filter + 8% stop. Strategy ' + (m.returnPct >= 0 ? '+' : '') + m.returnPct + '% vs buy&hold ' +
+        (m.buyHoldReturnPct >= 0 ? '+' : '') + m.buyHoldReturnPct + '% this window. (screened count illustrative; trades + returns are real.)';
+      if ((mode === 'high' || mode === 'sniper') && m.survivorshipNote) note += ' ⚠ ' + esc(m.survivorshipNote);
+      elNote.innerHTML = note;
+
       feed.innerHTML = '';
       var equity = m.startAmount, curve = [equity], perToken = m.startAmount / rows.length, i = 0;
       var prog = tabEls[mode] ? tabEls[mode].querySelector('.td-progress>i') : null;
@@ -238,6 +263,7 @@
           elRet.style.color = m.returnPct >= 0 ? 'var(--gain)' : 'var(--loss)';
           elEqNow.textContent = usd(m.endAmount);
           elNow.textContent = 'paper result';
+          if (elScreened) elScreened.textContent = '~' + screenTarget.toLocaleString();
           if (prog) prog.style.width = '100%';
           // advance to next mode after a beat
           var next = keys[(keys.indexOf(mode) + 1) % keys.length];
@@ -261,7 +287,7 @@
         requestAnimationFrame(function () { chip.classList.add('in'); });
         if (feed.children.length > 8) feed.removeChild(feed.firstChild);
         drawSpark(curve, accent);
-        elNow.textContent = 'trading ' + esc(t.sym) + ' on ' + esc(CHAIN_NAME[t.chain] || t.chain);
+        elNow.textContent = 'screening… → trading ' + esc(t.sym) + ' on ' + esc(CHAIN_NAME[t.chain] || t.chain);
         if (prog) prog.style.width = Math.round((i / rows.length) * 100) + '%';
         timer = setTimeout(stepOne, beat);
       }
@@ -276,9 +302,10 @@
     // honest buy&hold line into the external disclaimer
     var dis = document.getElementById('td-disclaim');
     if (dis) {
-      dis.innerHTML = 'Paper backtest of the shipped momentum engine (EMA crossover + trend filter + 8% stop) on 90 days of real hourly prices (CoinGecko), across Safe / Medium / High baskets &mdash; illustrative, not a forecast. ' +
-        'For honesty, each mode shows the strategy return <b>and</b> the buy&amp;hold return for the same basket; over this particular bull window, simply holding often did better. ' +
-        'The microcap (High) basket is survivorship-biased. Past performance is not a guarantee; crypto is volatile and you can lose money. Not investment advice.';
+      dis.innerHTML = 'Paper backtest of the shipped momentum engine (EMA crossover + trend filter + 8% stop) on 90 days of real hourly prices (CoinGecko), across Safe / Medium / High / Sniper baskets &mdash; illustrative, not a forecast. ' +
+        'The &ldquo;screened&rdquo; count shows the funnel scale (a live scanner evaluates thousands of launches and trades only the few that clear the gate) and is illustrative; the traded tokens and their returns are real. ' +
+        'Each mode shows the strategy return <b>and</b> the buy&amp;hold return for the same basket; over this bull window, holding often did better. ' +
+        'The <b>High</b> and <b>Sniper</b> baskets are survivorship-biased &mdash; the Sniper basket is 2024-25 launches that <i>survived</i>; most real new launches rug or go to zero and are not shown, and the Sniper backtest itself <b>lost money</b>. Past performance is not a guarantee; crypto is volatile and you can lose money. Not investment advice.';
     }
 
     play(keys[0]);

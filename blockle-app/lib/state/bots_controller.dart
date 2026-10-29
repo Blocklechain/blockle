@@ -312,6 +312,7 @@ class BotsController extends ChangeNotifier {
     Map<String, dynamic>? configOverride,
     String? lane,
     String? riskMode,
+    String? profitMode,
   }) {
     final spec = tpl.fromTemplate(templateKey, pair: pair, name: name);
     if (configOverride != null) {
@@ -325,6 +326,9 @@ class BotsController extends ChangeNotifier {
     // and (when a lane is set) pins chainPrefs to that chain. Null = legacy.
     if (lane != null) spec['lane'] = lane;
     if (riskMode != null) spec['riskMode'] = riskMode;
+    // PROFIT MODE: optional; the Bot constructor validates + defaults unknowns to
+    // 'off' (the legacy fixed cap). 'compound' reinvests realized profit.
+    if (profitMode != null) spec['profitMode'] = profitMode;
     final created = _runner!.add(spec);
     _persist();
     notifyListeners();
