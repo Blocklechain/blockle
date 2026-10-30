@@ -59,7 +59,15 @@ All of the above live in on-chain state introduced by the upgrade (§3).
 ## 3. The consensus upgrade (height-activated, backwards compatible)
 
 ### 3.1 Activation
-- A single activation height **H_INTEL** (chosen with ≥ 4 weeks' node-upgrade lead).
+- **Testnet activation height: `H_INTEL_TESTNET = 18888`** (operator-set). As of writing
+  the tip is ~16,970, so this is ~1,918 blocks ≈ **8 days** out — a good target to first
+  exercise the new consensus rules **on testnet**.
+- **Mainnet activation height: TBD, audit-gated.** Set only after Phases 1–5 (§11)
+  complete — 8 days is far too little to simulate, run on testnet, ship a reference
+  subnet, and audit the incentive + `α`-budget math. Activating an unbuilt consensus
+  change on mainnet would be reckless; mainnet H is chosen at Phase 5 with ≥ 4 weeks'
+  node-upgrade lead. (If the operator intends 18888 for *mainnet*, that needs an explicit
+  override — this spec treats it as the testnet target.)
 - **Backwards compatibility guarantees:**
   - Every block and transaction valid before H stays valid forever. No historical
     reinterpretation, no reorg.
@@ -270,9 +278,10 @@ share(subnet) ∝  w_rev · normalizedRevenue(subnet)     # real x402 USDC the s
 - **Phase 1 — simulation.** Implement the §5 incentive mechanism as a pure, testable
   module + an agent-based simulator (honest/colluding/lazy validators, good/bad miners);
   verify anti-collusion + budget behavior *before* any chain code. Deliverable: numbers.
-- **Phase 2 — testnet consensus.** Add the §3 actions + state + height activation to a
-  **testnet** node (the node already supports height forks + atomic VM actions). Fold
-  beacon derivation in-node. Run `EmissionEpoch` deterministically across ≥ 3 testnet nodes.
+- **Phase 2 — testnet consensus (target height `H_INTEL_TESTNET = 18888`).** Add the §3
+  actions + state + height activation to a **testnet** node (the node already supports
+  height forks + atomic VM actions). Fold beacon derivation in-node. Run `EmissionEpoch`
+  deterministically across ≥ 3 testnet nodes. Phase 1 simulation must pass **before** this.
 - **Phase 3 — reference subnet (Tier 0).** One fully verifiable subnet end-to-end
   (e.g. deterministic-compute or retrieval-QA): reference miner + validator + x402 task
   intake + organic acceptance. Prove the full loop pays the right neurons on testnet.
