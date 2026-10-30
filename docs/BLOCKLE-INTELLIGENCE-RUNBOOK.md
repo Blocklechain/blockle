@@ -20,7 +20,7 @@ mainnet". **Mainnet consensus is never changed without the Phase-5 audit.**
 | Explorer page `blockle.org/intelligence` | ✅ (lights up when a node serves the RPC) |
 | **Remaining — operator/time-gated:** | |
 | Testnet node deploy + activation at a low test height | ⏳ |
-| Reference Tier-0 subnet + off-chain serving/validator daemon | ⏳ |
+| Reference Tier-0 subnet + off-chain serving/validator daemon | ✅ `services/neuron/` (self-test PASS; on-chain submit needs a live testnet node) |
 | Wallet "Earnings/Intelligence" tabs (web/ext/Flutter/Qt) | ⏳ |
 | Correctness-slashing (on-chain-verifiable tasks / dispute game) | ⏳ (2c) |
 | Cross-epoch commit-reveal + x402-revenue demand-weighting | ⏳ |
