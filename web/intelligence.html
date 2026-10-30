@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blockle Intelligence — subnets, neurons & emission</title>
+<meta name="description" content="Blockle Intelligence: a verifiable, demand-backed decentralized-intelligence network secured by BLOCK proof-of-work. Browse subnets, neurons and emission.">
+<style>
+  :root{--bg:#0b0e14;--surface:#121622;--surface2:#171c2b;--line:#26304a;--ink:#e7ecf5;--muted:#9aa6bd;--faint:#6b768f;--accent:#4d8bff;--gain:#2fc08a;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px}
+  header.top{border-bottom:1px solid var(--line);padding:14px 0}
+  header.top .wrap{display:flex;align-items:center;gap:14px}
+  .logo{font-weight:800;letter-spacing:-.02em;font-size:18px}
+  .logo span{color:var(--accent)}
+  nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  nav a{color:var(--muted)}
+  .hero{padding:44px 0 10px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(28px,4.4vw,42px);letter-spacing:-.02em;margin:10px 0 8px;text-wrap:balance}
+  .sub{color:var(--muted);max-width:60ch}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;padding:4px 11px;border:1px solid var(--line);border-radius:999px;color:var(--muted);margin-top:14px}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+  .pill.on .dot{background:var(--gain)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:28px 0}
+  .stat{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:16px 18px}
+  .stat .n{font-family:var(--mono);font-size:22px;font-weight:800}
+  .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-top:3px}
+  h2{font-size:20px;margin:34px 0 12px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+  th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+  td.num,th.num{text-align:right;font-family:var(--mono)}
+  .tier{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .tier0{color:var(--gain);border-color:#20503f}
+  .card{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:18px;margin:14px 0}
+  .lookup{display:flex;gap:10px;flex-wrap:wrap}
+  .lookup input{flex:1;min-width:240px;background:var(--surface2);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:10px 12px;font-family:var(--mono);font-size:13px}
+  .lookup button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 18px;font-weight:600;cursor:pointer}
+  .muted{color:var(--muted)}.faint{color:var(--faint)}
+  .note{font-size:12.5px;color:var(--faint);margin-top:8px}
+  footer{border-top:1px solid var(--line);margin-top:48px;padding:22px 0;color:var(--faint);font-size:13px}
+  .cmd{background:var(--surface2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-family:var(--mono);font-size:12.5px;overflow-x:auto;color:var(--muted)}
+  .cmd b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <span class="logo">Blockle<span> Intelligence</span></span>
+  <nav><a href="/">Home</a><a href="/explorer">Explorer</a><a href="/mine">Mine</a><a href="/wallet">Wallet</a></nav>
+</div></header>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="eyebrow">Proof-of-work · decentralized intelligence</div>
+    <h1>Verifiable intelligence, paid for in BLOCK.</h1>
+    <p class="sub">Subnets are task markets. Miners produce work; validators score it against beacon-seeded checks; honest work earns a share of the BLOCK emission. One command to start — <code>blockle intel register-neuron</code> — and earnings land in your wallet.</p>
+    <span class="pill" id="status-pill"><span class="dot"></span><span id="status-text">checking network…</span></span>
+  </section>
+
+  <div class="stats" id="stats"></div>
+
+  <h2>Subnets</h2>
+  <div id="subnets"><p class="muted">Loading…</p></div>
+
+  <h2>Your earnings</h2>
+  <div class="card">
+    <div class="lookup">
+      <input id="addr" placeholder="block1… address" spellcheck="false">
+      <button id="go">Look up</button>
+    </div>
+    <div id="earn" class="note">Enter a BLOCK address to see its neurons and claimable emission.</div>
+  </div>
+
+  <h2>Start earning — one command</h2>
+  <div class="card">
+    <div class="cmd"># register as a miner on subnet 0 (locks a small BLOCK bond)<br><b>blockle intel register-neuron --subnet 0 --role miner --bond 1</b><br><br># check what you've earned, then claim it to your wallet<br><b>blockle intel status</b><br><b>blockle intel claim</b></div>
+    <p class="note">Validators additionally run <b>commit-weights</b> → <b>reveal-weights</b> → <b>validate</b> each epoch. See the <a href="https://github.com/Blocklechain/blockle/blob/main/docs/BLOCKLE-INTELLIGENCE.md">protocol spec</a>.</p>
+  </div>
+</div>
+
+<footer><div class="wrap">Blockle Intelligence is on testnet; mainnet activation is audit-gated. Emission redirects a small share of the block subsidy to useful work — the BLOCK supply schedule is unchanged. Not investment advice.</div></footer>
+
+<script>
+(function(){
+  var fmt = function(base){ return (Number(base||0)/1e8).toLocaleString(undefined,{maximumFractionDigits:4}); };
+  var esc = function(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];}); };
+  function setStatus(on, text){ var p=document.getElementById('status-pill'); p.classList.toggle('on',!!on); document.getElementById('status-text').textContent=text; }
+
+  fetch('/api/explorer/intel',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    if(!d || d.error || d.alpha_bps===undefined){ throw new Error('unavailable'); }
+    setStatus(d.active, d.active ? 'live on this network' : ('activates at height '+(d.activation_height>1e18?'TBD':d.activation_height)));
+    var tier = function(t){ return '<span class="tier tier'+t+'">tier '+t+'</span>'; };
+    document.getElementById('stats').innerHTML =
+      stat(d.subnet_count,'subnets') + stat(d.neuron_count,'neurons') +
+      stat(fmt(d.pool)+' ','pool (BLOCK)') + stat((d.alpha_bps/100)+'%','emission α') +
+      stat(d.epoch_len,'epoch (blocks)');
+    var rows = (d.subnets||[]).map(function(s){
+      return '<tr><td class="num">'+s.id+'</td><td>'+tier(s.tier)+'</td><td class="num">'+s.miners+'</td><td class="num">'+s.validators+'</td><td class="num">'+fmt(s.total_bond)+'</td></tr>';
+    }).join('');
+    document.getElementById('subnets').innerHTML = rows
+      ? '<table><thead><tr><th class="num">id</th><th>tier</th><th class="num">miners</th><th class="num">validators</th><th class="num">bond (BLOCK)</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      : '<p class="muted">No subnets registered yet — be the first with <code>blockle intel register-subnet</code>.</p>';
+  }).catch(function(){
+    setStatus(false,'not live on this network yet');
+    document.getElementById('stats').innerHTML = '';
+    document.getElementById('subnets').innerHTML = '<p class="muted">Blockle Intelligence isn’t live on this node yet. It runs on testnet first; mainnet activation is audit-gated. The protocol is built and tested — see the <a href="https://github.com/Blocklechain/blockle/blob/main/docs/BLOCKLE-INTELLIGENCE.md">spec</a>.</p>';
+  });
+  function stat(n,l){ return '<div class="stat"><div class="n">'+esc(n)+'</div><div class="l">'+esc(l)+'</div></div>'; }
+
+  function lookup(){
+    var a=(document.getElementById('addr').value||'').trim();
+    if(!a){ return; }
+    var el=document.getElementById('earn'); el.textContent='Looking up…';
+    fetch('/api/explorer/intel/neuron/'+encodeURIComponent(a),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+      if(!d || d.error){ el.textContent='No intelligence activity for that address (or intel isn’t live here yet).'; return; }
+      var ns=(d.neurons||[]).map(function(n){ return 'subnet '+n.subnet_id+' · uid '+n.uid+' · '+(n.role===1?'validator':'miner')+' · bond '+fmt(n.bond); }).join('<br>');
+      el.innerHTML = '<b style="color:var(--gain)">claimable: '+fmt(d.claimable_emission)+' BLOCK</b>'+(ns?'<br>'+ns:'<br><span class="faint">no neurons registered</span>');
+    }).catch(function(){ el.textContent='Lookup unavailable.'; });
+  }
+  document.getElementById('go').addEventListener('click',lookup);
+  document.getElementById('addr').addEventListener('keydown',function(e){ if(e.key==='Enter') lookup(); });
+})();
+</script>
+</body>
+</html>

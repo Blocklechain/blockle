@@ -721,6 +721,7 @@ fn route(
         "/usdb" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
         "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
         "/market" => serve_web_file("market.html", "text/html; charset=utf-8"),
+        "/intelligence" => serve_web_file("intelligence.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
         "/robots.txt" => serve_web_file("robots.txt", "text/plain; charset=utf-8"),
