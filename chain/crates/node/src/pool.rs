@@ -1019,6 +1019,8 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
             ok(json!({
                 "active": chain.height().map(|h| h >= chain.params.intel_activation_height).unwrap_or(false),
                 "activation_height": chain.params.intel_activation_height,
+                "height": chain.height(),
+                "last_epoch_seed": hex::encode(it.last_epoch_seed),
                 "alpha_bps": chain.params.intel_alpha_bps,
                 "epoch_len": chain.params.intel_epoch_len,
                 "pool": it.pool,
