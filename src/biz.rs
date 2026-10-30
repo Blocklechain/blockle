@@ -312,7 +312,10 @@ fn pool_feed_names() -> Vec<String> {
 fn chain_api(path: &str) -> Option<Value> {
     let (_, _, api) = EXTRAS.get()?;
     let base = api.as_ref()?;
-    let raw = http::get(&format!("{base}{path}"), Duration::from_secs(5)).ok()?;
+    // 8s (was 5s): an explorer read can briefly wait on the node state lock while a
+    // block is being connected; 5s occasionally tripped and surfaced as the bogus
+    // "chain api not configured" error to users.
+    let raw = http::get(&format!("{base}{path}"), Duration::from_secs(8)).ok()?;
     serde_json::from_slice(&raw).ok()
 }
 
