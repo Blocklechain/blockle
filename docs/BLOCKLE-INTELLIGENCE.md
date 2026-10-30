@@ -39,6 +39,30 @@ has.*
 
 ---
 
+## 1.5 Non-negotiable design goal — radical ease of use & earning
+
+The network only wins if a newcomer can **mine/earn in one command** and a user can **buy
+a result in one call**. This is a first-class requirement, not polish:
+
+- **Miners — one command, auto-earn.** `blockle-neuron mine --subnet <id>` auto-registers
+  (pays the bond from the local wallet), serves the task on sensible defaults, and
+  **emissions land directly in the user's BLOCK wallet** — visible in the existing web /
+  extension / Flutter / Qt wallets. No validator ops, no infra, runs on modest hardware.
+  A "just earn" mode auto-picks the most profitable subnet the hardware can serve.
+- **Validators — also one command.** `blockle-neuron validate --subnet <id>` handles
+  commit-reveal, the beacon-seeded proof-of-validation, and slashing avoidance
+  automatically; the operator never hand-computes weights.
+- **End users — one x402 call.** Submitting a task is the *same shape* as the beacon:
+  `POST /api/intel/<subnet>/task` → 402 → pay USDC → get the result. No need to understand
+  subnets, stake, or emissions. Exposed through the agent command bar and a `getResult()`
+  SDK helper, plus a "Tasks" tab in the wallets.
+- **Earnings are obvious.** Subnet dashboards in the explorer + an "Earnings" view in the
+  wallets show live incentive/dividends/emission per neuron, estimated daily BLOCK, and
+  one-tap claim/compound.
+
+Every protocol decision below is checked against this: if it makes mining or buying harder,
+it needs a very good reason.
+
 ## 2. Roles & objects
 
 - **Subnet** — a market for one task type (e.g., `embeddings`, `det-compute`,
@@ -183,6 +207,20 @@ input) pairs the validator must have actually evaluated. The validator submits a
   that merely **copies** another's revealed weights cannot produce correct spot-check
   answers → copying stops being profitable. This is the key anti-collusion upgrade.
 
+### 5.5 Phase-1 simulation results (`scripts/intel_sim.py`)
+An agent-based ablation (honest / colluding / lazy validators; good / bad / confederate
+miners) over 120 epochs confirms the mechanism:
+- **Incentive tracks quality:** good 60% / mediocre 33% / bad 5% of miner emission.
+- **Proof-of-validation + slashing eliminates freeloaders:** lazy weight-copiers earned
+  **24.6%** of validator rewards with defenses OFF but **0%** ON (their stake slashed to
+  zero); honest validators capture 100%.
+- **Clipping caps minority cartels:** a 36.4%-stake cartel dumping weight on a bad
+  confederate inflated it to **7.91%** of emission un-clipped → **2.43%** clipped (and
+  →0 once PoV slashes them); good miners' share rises.
+- **Honest-stake compounding** erodes cartel influence over time (an emergent robustness
+  property) — but is NOT relied on; the defenses stand without it.
+- **Budget conserves exactly** (α=0.25 → PoW miners keep 75% of subsidy).
+
 ### 5.4 Commit-reveal weights
 `SetWeightsCommit` in epoch e, `SetWeightsReveal` in e+1 — validators can't see each
 other's weights before committing, so intra-epoch copying is impossible. Beacon round
@@ -262,8 +300,13 @@ share(subnet) ∝  w_rev · normalizedRevenue(subnet)     # real x402 USDC the s
    checkable today (our own inference tests showed CPU LLM output isn't bit-reproducible).
    Tier-2 relies on redundancy + spot-checks + capped emission — honest but imperfect.
    Real fixes (ZKML for tiny models, TEE attestation) are future work, not claimed now.
-3. **Validator stake centralization.** Clipping + proof-of-validation blunt it but don't
-   remove it; cap per-validator emission share and consider quadratic-ish dampening.
+3. **Validator stake centralization / >50% cartels.** Clipping only defends against a
+   *minority* coalition — the Phase-1 sim confirms that above κ (50%) stake the cartel
+   *is* the consensus and clipping can't help; there, **proof-of-validation + slashing is
+   the only backstop** (a >50% cartel still has to pass fresh beacon spot-checks or get
+   slashed). Honest-majority *stake* is therefore an assumption we must protect: cap
+   per-validator emission share, consider quadratic-ish dampening, and keep registration
+   bonds meaningful.
 4. **Challenge design is the hard part.** A subnet is only as good as its verifiable
    challenge generator. Tier-0 subnets must ship a strong, un-memorizable task generator.
 5. **Beacon liveness dependency.** Proof-of-validation needs the beacon each epoch; the
