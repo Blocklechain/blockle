@@ -48,6 +48,11 @@ pub struct ChainParams {
     pub block_gas_limit: u64,
     pub max_contract_code: usize,
     pub max_contract_input: usize,
+    /// Height at which Blockle Intelligence consensus actions activate (see
+    /// docs/BLOCKLE-INTELLIGENCE.md §3). Below it, `ContractAction::Intel` txs are
+    /// rejected (backwards compatible — pre-H blocks validate unchanged). `u64::MAX`
+    /// = disabled. Mainnet stays disabled (audit-gated); testnet target is 18888.
+    pub intel_activation_height: u64,
 }
 
 impl ChainParams {
@@ -87,6 +92,8 @@ impl ChainParams {
             block_gas_limit: 10_000_000,
             max_contract_code: 24_576,
             max_contract_input: 8_192,
+            // Mainnet: disabled until the Phase-5 audit sets a real activation height.
+            intel_activation_height: u64::MAX,
         }
     }
 
@@ -105,6 +112,8 @@ impl ChainParams {
             // Exercise the decay (v2 schedule) from genesis in tests/dev.
             decay_activation_height: 0,
             decay_v2_height: 0,
+            // Intelligence active from genesis in regtest so tests can exercise it.
+            intel_activation_height: 0,
             ..Self::mainnet()
         }
     }
@@ -122,6 +131,8 @@ impl ChainParams {
             coinbase_maturity: 10,
             decay_activation_height: 0,
             decay_v2_height: 0,
+            // Testnet target for the Blockle Intelligence consensus upgrade (spec §3.1).
+            intel_activation_height: 18_888,
             ..Self::mainnet()
         }
     }

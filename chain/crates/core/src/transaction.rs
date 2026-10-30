@@ -81,6 +81,38 @@ pub struct ShieldedBundle {
 /// A Blockle VM action carried by a transaction. Gas is prepaid: consensus
 /// requires `fee >= gas_limit * gas_price`, whether or not execution
 /// succeeds or uses less.
+/// Blockle Intelligence actions (height-gated at `ChainParams::intel_activation_height`;
+/// see docs/BLOCKLE-INTELLIGENCE.md §3). Wrapped in `ContractAction::Intel` so they ride
+/// the existing contract-action rails (fees, gas, refunds) without touching base-tx rules.
+/// Additive: old nodes decode the unknown tag as malformed, so these are inherently a
+/// height-activated fork — rejected below H_INTEL, accepted at/above it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum IntelAction {
+    /// Register a subnet (a task market). `tier` = verifiability tier (0 checkable,
+    /// 1 redundant/reference, 2 subjective). `schema` describes the task.
+    SubnetRegister { schema: Vec<u8>, tier: u8, gas_limit: u64 },
+    /// Register a neuron (miner `role`=0 / validator `role`=1) in a subnet, locking a
+    /// `bond` of BLOCK (from inputs; recoverable later via Unbond). `hotkey` is the
+    /// serving/identity key.
+    NeuronRegister { subnet_id: u32, role: u8, hotkey: Vec<u8>, bond: u64, gas_limit: u64 },
+}
+
+impl IntelAction {
+    pub fn gas_limit(&self) -> u64 {
+        match self {
+            IntelAction::SubnetRegister { gas_limit, .. } => *gas_limit,
+            IntelAction::NeuronRegister { gas_limit, .. } => *gas_limit,
+        }
+    }
+    /// BLOCK moved from inputs into locked state (the neuron bond).
+    pub fn value(&self) -> u64 {
+        match self {
+            IntelAction::SubnetRegister { .. } => 0,
+            IntelAction::NeuronRegister { bond, .. } => *bond,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ContractAction {
     /// Store `code` as a new contract. The contract id is derived from the
@@ -118,6 +150,8 @@ pub enum ContractAction {
     /// ONE transaction. Removes the deploy→init race for collections; subsequent
     /// `mint`s are independent single calls once this confirms.
     LaunchNft { code: Vec<u8>, gas_limit: u64 },
+    /// Blockle Intelligence action (height-gated; see `IntelAction`).
+    Intel(IntelAction),
 }
 
 impl ContractAction {
@@ -132,6 +166,7 @@ impl ContractAction {
             ContractAction::PoolSwapSell { gas_limit, .. } => *gas_limit,
             ContractAction::LaunchToken { gas_limit, .. } => *gas_limit,
             ContractAction::LaunchNft { gas_limit, .. } => *gas_limit,
+            ContractAction::Intel(a) => a.gas_limit(),
         }
     }
 
@@ -147,6 +182,7 @@ impl ContractAction {
             ContractAction::PoolSwapSell { .. } => 0,
             ContractAction::LaunchToken { block_amt, .. } => *block_amt,
             ContractAction::LaunchNft { .. } => 0,
+            ContractAction::Intel(a) => a.value(),
         }
     }
 }
@@ -326,6 +362,23 @@ impl Transaction {
             Some(ContractAction::LaunchNft { code, gas_limit }) => {
                 put_u32(&mut out, 9);
                 put_bytes(&mut out, code);
+                put_u64(&mut out, *gas_limit);
+            }
+            // Intelligence actions: tag 10, then an inner sub-tag + fields.
+            Some(ContractAction::Intel(IntelAction::SubnetRegister { schema, tier, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 0); // inner: SubnetRegister
+                put_bytes(&mut out, schema);
+                out.push(*tier);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::NeuronRegister { subnet_id, role, hotkey, bond, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 1); // inner: NeuronRegister
+                put_u32(&mut out, *subnet_id);
+                out.push(*role);
+                put_bytes(&mut out, hotkey);
+                put_u64(&mut out, *bond);
                 put_u64(&mut out, *gas_limit);
             }
         }

@@ -53,9 +53,11 @@ fn apply(tx: &Transaction, pools: &mut PoolState, contracts: &mut ContractMap, s
     let mut utxos = HashMap::new();
     let mut nullifiers = HashSet::new();
     let mut note_leaves = Vec::new();
+    let mut intel = blockle_chain::intel::IntelState::default();
     let txid = tx.txid();
     Chain::apply_tx_effects(
         tx, &txid, 100, &mut utxos, contracts, storage, pools, &mut nullifiers, &mut note_leaves,
+        &mut intel,
     );
 }
 
@@ -105,10 +107,11 @@ fn launch_token_refunds_when_pool_exceeds_supply() {
     let mut utxos = HashMap::new();
     let mut nullifiers = HashSet::new();
     let mut note_leaves = Vec::new();
+    let mut intel = blockle_chain::intel::IntelState::default();
     let txid = tx.txid();
     Chain::apply_tx_effects(
         &tx, &txid, 100, &mut utxos, &mut contracts, &mut storage, &mut pools,
-        &mut nullifiers, &mut note_leaves,
+        &mut nullifiers, &mut note_leaves, &mut intel,
     );
 
     // the token still deployed + fully minted to alice (the mint succeeded)...

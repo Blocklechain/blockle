@@ -6,6 +6,8 @@ pub mod stablecoin;
 pub mod chain;
 pub mod contracts;
 pub mod genesis;
+pub mod intel;
+pub mod intel_consensus;
 pub mod miner;
 pub mod params;
 pub mod pools;

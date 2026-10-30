@@ -96,6 +96,9 @@ pub struct Chain {
     /// -> current owner. Rebuilt from Transfer events as blocks connect, so a
     /// reorg (which replays via `from_blocks`) reconstructs it from scratch.
     pub nft_owner: HashMap<([u8; 32], [u8; 32]), [u8; 32]>,
+    /// Blockle Intelligence consensus state (subnet/neuron registries). Empty and
+    /// inert until `params.intel_activation_height`. See crate::intel.
+    pub intel: crate::intel::IntelState,
 }
 
 pub fn now_unix() -> i64 {
@@ -120,6 +123,7 @@ impl Chain {
             note_anchors,
             nullifiers: HashSet::new(),
             nft_owner: HashMap::new(),
+            intel: crate::intel::IntelState::default(),
         }
     }
 
@@ -408,6 +412,18 @@ impl Chain {
                     return Err(ChainError::ContractRules("gas limit too high".into()));
                 }
             }
+            // Blockle Intelligence actions — HEIGHT-GATED (backwards compatible): rejected
+            // below the activation height so pre-fork blocks validate unchanged.
+            Some(ContractAction::Intel(a)) => {
+                if height < self.params.intel_activation_height {
+                    return Err(ChainError::ContractRules(
+                        "intelligence actions are not active until the activation height".into(),
+                    ));
+                }
+                if a.gas_limit() > self.params.block_gas_limit {
+                    return Err(ChainError::ContractRules("gas limit too high".into()));
+                }
+            }
             // Native AMM pool actions — bound gas like other actions. Economic
             // validity (balances, slippage, lock) is enforced at apply time,
             // which refunds the BLOCK value if the action can't execute.
@@ -579,6 +595,7 @@ impl Chain {
         pools: &mut crate::pools::PoolState,
         nullifiers: &mut HashSet<Hash32>,
         note_leaves: &mut Vec<Hash32>,
+        intel: &mut crate::intel::IntelState,
     ) -> Vec<([u8; 32], Vec<u8>)> {
         if let Some(bundle) = &tx.shielded {
             for spend in &bundle.spends {
@@ -622,6 +639,10 @@ impl Chain {
                     Vec::new()
                 };
                 (Vec::new(), logs)
+            }
+            // Blockle Intelligence native action (height-gated in check_transaction).
+            Some(ContractAction::Intel(a)) => {
+                (crate::intel::apply_intel_action(intel, a, tx, height), Vec::new())
             }
             _ => {
                 let effects = contracts::apply_contract_action(tx, txid, height, contracts, storage);
@@ -769,6 +790,7 @@ impl Chain {
         let mut pview = self.pools.clone();
         let mut nview = self.nullifiers.clone();
         let mut lview = self.note_leaves.clone();
+        let mut iview = self.intel.clone();
         let mut fees: u64 = 0;
         let mut gas_total: u64 = 0;
         let mut block_logs: Vec<([u8; 32], Vec<u8>)> = Vec::new();
@@ -791,7 +813,7 @@ impl Chain {
             let txid = tx.txid();
             let logs = Self::apply_tx_effects(
                 tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
-                &mut lview,
+                &mut lview, &mut iview,
             );
             block_logs.extend(logs);
         }
@@ -834,6 +856,7 @@ impl Chain {
         self.pools = pview;
         self.nullifiers = nview;
         self.note_leaves = lview;
+        self.intel = iview;
         self.index_nft_logs(&block_logs);
         self.blocks.push(block);
         Ok(())
