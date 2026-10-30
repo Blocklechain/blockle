@@ -165,6 +165,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ContractCmd,
     },
+    /// Blockle Intelligence — register/mine/validate/earn on subnets.
+    Intel {
+        #[command(subcommand)]
+        cmd: IntelCmd,
+    },
     /// Move transparent funds into the shielded pool (creates a note).
     Shield {
         #[arg(long)]
@@ -267,6 +272,75 @@ enum WalletCmd {
         signature: String,
         message: String,
     },
+}
+
+#[derive(Subcommand)]
+enum IntelCmd {
+    /// Register a subnet (task market). tier: 0 checkable, 1 redundant, 2 subjective.
+    RegisterSubnet {
+        #[arg(long, default_value = "0")]
+        tier: u8,
+        #[arg(long, default_value = "")]
+        schema: String,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Register a neuron and start earning. role: miner | validator. Locks a BLOCK bond.
+    RegisterNeuron {
+        #[arg(long)]
+        subnet: u32,
+        #[arg(long, default_value = "miner")]
+        role: String,
+        #[arg(long, default_value = "neuron")]
+        hotkey: String,
+        #[arg(long, default_value = "1")]
+        bond: String,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Validator: commit a weight vector. `weights` = "uid:w,uid:w" (w in 0..1000000).
+    /// Saves the nonce locally so `reveal-weights` can open it.
+    CommitWeights {
+        #[arg(long)]
+        subnet: u32,
+        #[arg(long)]
+        weights: String,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Validator: reveal the previously committed weights.
+    RevealWeights {
+        #[arg(long)]
+        subnet: u32,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Validator: submit a proof-of-validation for the current epoch (acks the beacon).
+    Validate {
+        #[arg(long)]
+        subnet: u32,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Claim your accrued intelligence emission to your wallet.
+    Claim {
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Show your neurons, claimable emission, and the pool.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -374,6 +448,7 @@ fn main() -> Result<()> {
         Cmd::Info => info(&datadir, params),
         Cmd::Validate => validate(&datadir, params),
         Cmd::Contract { cmd } => contract_cmd(&datadir, params, cmd),
+        Cmd::Intel { cmd } => intel_cmd(&datadir, params, cmd),
         Cmd::Shield { amount, fee, node } => shield(&datadir, params, &amount, &fee, node),
         Cmd::Unshield { note, to, fee, node } => unshield(&datadir, params, note, to, &fee, node),
         Cmd::Zsend { note, amount, to, fee, node } => {
@@ -967,6 +1042,106 @@ fn load_code(file: &Path) -> Result<Vec<u8>> {
             blockle_vm::script::compile(&source).map_err(|e| anyhow!("compile failed: {e}"))
         }
         _ => Ok(fs::read(file)?),
+    }
+}
+
+fn parse_weight_pairs(s: &str) -> Result<(Vec<u32>, Vec<u32>)> {
+    let mut uids = Vec::new();
+    let mut ws = Vec::new();
+    for pair in s.split(',').filter(|p| !p.trim().is_empty()) {
+        let (u, w) = pair.split_once(':').ok_or_else(|| anyhow!("weights must be uid:weight,uid:weight"))?;
+        uids.push(u.trim().parse::<u32>().map_err(|_| anyhow!("bad uid {u}"))?);
+        ws.push(w.trim().parse::<u32>().map_err(|_| anyhow!("bad weight {w}"))?.min(1_000_000));
+    }
+    Ok((uids, ws))
+}
+
+fn intel_cmd(datadir: &Path, params: ChainParams, cmd: IntelCmd) -> Result<()> {
+    use blockle_core::transaction::{ContractAction, IntelAction};
+    let wfile = |s: u32| datadir.join(format!("intel-weights-{s}.json"));
+    let gas_fee = |g: u64, c: &blockle_chain::Chain| -> Result<u64> {
+        g.checked_mul(c.params.gas_price).ok_or_else(|| anyhow!("gas overflow"))
+    };
+    let send = |datadir: &Path, action: ContractAction, gas: u64, node: Option<String>, msg: &str| -> Result<()> {
+        let kp = load_wallet(datadir)?;
+        let chain = storage::load_chain(datadir, params.clone())?;
+        let mut mempool = storage::load_mempool(datadir)?;
+        let fee = gas_fee(gas, &chain)?;
+        let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
+        println!("{msg}");
+        submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+    };
+    match cmd {
+        IntelCmd::RegisterSubnet { tier, schema, gas, node } => send(
+            datadir,
+            ContractAction::Intel(IntelAction::SubnetRegister { schema: schema.into_bytes(), tier, gas_limit: gas }),
+            gas, node, &format!("registering subnet (tier {tier})"),
+        ),
+        IntelCmd::RegisterNeuron { subnet, role, hotkey, bond, gas, node } => {
+            let role_n: u8 = if role.to_lowercase().starts_with('v') { 1 } else { 0 };
+            let bond_u = parse_amount(&bond).map_err(|e| anyhow!("{e}"))?;
+            send(
+                datadir,
+                ContractAction::Intel(IntelAction::NeuronRegister { subnet_id: subnet, role: role_n, hotkey: hotkey.into_bytes(), bond: bond_u, gas_limit: gas }),
+                gas, node,
+                &format!("registering {} in subnet {subnet} (bond {})", if role_n == 1 { "validator" } else { "miner" }, format_amount(bond_u)),
+            )
+        }
+        IntelCmd::CommitWeights { subnet, weights, gas, node } => {
+            let (uids, ws) = parse_weight_pairs(&weights)?;
+            let nonce = blockle_core::blake2b_256(&Keypair::generate().public_bytes());
+            let commit = blockle_chain::intel::weights_commit(&uids, &ws, &nonce);
+            std::fs::write(wfile(subnet), serde_json::to_vec(&serde_json::json!({"uids": uids, "weights": ws, "nonce": hex::encode(nonce)}))?)?;
+            send(
+                datadir,
+                ContractAction::Intel(IntelAction::SetWeightsCommit { subnet_id: subnet, commit, gas_limit: gas }),
+                gas, node,
+                &format!("committed weights for subnet {subnet}; run `intel reveal-weights --subnet {subnet}` next"),
+            )
+        }
+        IntelCmd::RevealWeights { subnet, gas, node } => {
+            let raw = std::fs::read(wfile(subnet)).map_err(|_| anyhow!("no saved commit for subnet {subnet}; run commit-weights first"))?;
+            let v: serde_json::Value = serde_json::from_slice(&raw)?;
+            let uids: Vec<u32> = serde_json::from_value(v["uids"].clone())?;
+            let ws: Vec<u32> = serde_json::from_value(v["weights"].clone())?;
+            let nonce_b = hex::decode(v["nonce"].as_str().unwrap_or_default())?;
+            let mut nonce = [0u8; 32];
+            nonce.copy_from_slice(&nonce_b);
+            send(
+                datadir,
+                ContractAction::Intel(IntelAction::SetWeightsReveal { subnet_id: subnet, uids, weights: ws, nonce, gas_limit: gas }),
+                gas, node, &format!("revealed weights for subnet {subnet}"),
+            )
+        }
+        IntelCmd::Validate { subnet, gas, node } => {
+            let ack = storage::load_chain(datadir, params.clone())?.intel.last_epoch_seed;
+            send(
+                datadir,
+                ContractAction::Intel(IntelAction::ValidationProof { subnet_id: subnet, beacon_ack: ack, gas_limit: gas }),
+                gas, node, &format!("submitting proof-of-validation for subnet {subnet}"),
+            )
+        }
+        IntelCmd::Claim { gas, node } => send(
+            datadir,
+            ContractAction::Intel(IntelAction::NeuronClaim { gas_limit: gas }),
+            gas, node, "claiming intelligence emission",
+        ),
+        IntelCmd::Status => {
+            let kp = load_wallet(datadir)?;
+            let chain = storage::load_chain(datadir, params)?;
+            let me = kp.address();
+            println!("address:    {}", encode_address(&me));
+            println!("pool:       {}", format_amount(chain.intel.pool));
+            println!("claimable:  {}", format_amount(chain.intel.emission_ledger.get(&me).copied().unwrap_or(0)));
+            println!("subnets: {}   neurons(total): {}", chain.intel.subnets.len(), chain.intel.neurons.len());
+            for n in chain.intel.neurons.iter().filter(|n| n.owner == me) {
+                println!(
+                    "  subnet {} uid {} [{}]  bond {}",
+                    n.subnet_id, n.uid, if n.role == 1 { "validator" } else { "miner" }, format_amount(n.bond)
+                );
+            }
+            Ok(())
+        }
     }
 }
 

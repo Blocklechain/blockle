@@ -1002,6 +1002,65 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 .collect();
             ok(json!({ "count": rows.len(), "supply": supply, "holders": holders, "richlist": rows }))
         }
+        // ---- Blockle Intelligence (subnets / neurons / emission) ----
+        "/explorer/intel" => {
+            let it = &chain.intel;
+            let subnets: Vec<Value> = it
+                .subnets
+                .iter()
+                .map(|s| {
+                    let miners = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 0).count();
+                    let vals = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 1).count();
+                    let bond: u64 = it.neurons.iter().filter(|n| n.subnet_id == s.id).map(|n| n.bond).sum();
+                    json!({ "id": s.id, "tier": s.tier, "miners": miners, "validators": vals,
+                            "total_bond": bond, "created_height": s.created_height })
+                })
+                .collect();
+            ok(json!({
+                "active": chain.height().map(|h| h >= chain.params.intel_activation_height).unwrap_or(false),
+                "activation_height": chain.params.intel_activation_height,
+                "alpha_bps": chain.params.intel_alpha_bps,
+                "epoch_len": chain.params.intel_epoch_len,
+                "pool": it.pool,
+                "subnet_count": it.subnets.len(),
+                "neuron_count": it.neurons.len(),
+                "subnets": subnets,
+            }))
+        }
+        p if p.starts_with("/explorer/intel/subnet/") => {
+            let id_s = &p["/explorer/intel/subnet/".len()..];
+            match id_s.parse::<u32>().ok().and_then(|id| chain.intel.subnet(id).map(|s| (id, s.clone()))) {
+                Some((id, s)) => {
+                    let neurons: Vec<Value> = chain
+                        .intel
+                        .neurons
+                        .iter()
+                        .filter(|n| n.subnet_id == id)
+                        .map(|n| json!({ "uid": n.uid, "role": n.role, "owner": encode_address(&n.owner),
+                                         "bond": n.bond, "registered_height": n.registered_height }))
+                        .collect();
+                    ok(json!({ "id": id, "tier": s.tier, "created_height": s.created_height, "neurons": neurons }))
+                }
+                None => err404("unknown subnet"),
+            }
+        }
+        p if p.starts_with("/explorer/intel/neuron/") => {
+            let addr_s = &p["/explorer/intel/neuron/".len()..];
+            match decode_address(addr_s) {
+                Ok(addr) => {
+                    let mine: Vec<Value> = chain
+                        .intel
+                        .neurons
+                        .iter()
+                        .filter(|n| n.owner == addr)
+                        .map(|n| json!({ "subnet_id": n.subnet_id, "uid": n.uid, "role": n.role, "bond": n.bond }))
+                        .collect();
+                    let claimable = chain.intel.emission_ledger.get(&addr).copied().unwrap_or(0);
+                    ok(json!({ "address": addr_s, "neurons": mine, "claimable_emission": claimable }))
+                }
+                Err(_) => err404("bad address"),
+            }
+        }
         "/explorer/mempool" => {
             let idx = outpoint_index(&chain);
             let txs: Vec<Value> = mempool
