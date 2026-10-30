@@ -1,0 +1,24 @@
+[Unit]
+Description=Blockle Beacon — verifiable PoW randomness + seeded inference (x402, loopback :8811)
+After=network.target blockle-node.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/beacon
+# Reuse the x402 npm SDK already installed for the exchange service.
+Environment=NODE_PATH=/opt/blockle/services/x402-buy/node_modules
+Environment=BEACON_PORT=8811
+Environment=BEACON_PUBLIC_BASE=https://blockle.org/api/beacon
+Environment=BEACON_NETWORK=base-sepolia
+Environment=BEACON_FACILITATOR=https://x402.org/facilitator
+Environment=BEACON_EXPLORER=http://127.0.0.1:8445
+Environment=BEACON_OLLAMA=http://127.0.0.1:11434
+Environment=BEACON_MODEL=blockle-agent:latest
+# Payment target + mainnet switch live in the secrets env file (not committed).
+EnvironmentFile=-/opt/blockle/secrets/beacon.env
+ExecStart=/usr/bin/node /opt/blockle/services/beacon/src/server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

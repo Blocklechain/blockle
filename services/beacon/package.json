@@ -1,0 +1,10 @@
+{
+  "name": "blockle-beacon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Blockle Beacon — verifiable PoW randomness + beacon-seeded inference, served over x402 at blockle.org/api/beacon",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" },
+  "comment": "Runtime deps (the x402 npm SDK) are resolved via NODE_PATH -> services/x402-buy/node_modules; see beacon.service.",
+  "license": "MIT"
+}
