@@ -35,16 +35,18 @@ async function score(beaconHex, round, miners, ask, iters = task.DEFAULT_ITERS) 
     const raw = correct ? 1 / (1 + Math.max(0, (ms || 0)) / 1000) : 0;
     detail.push({ uid: m.uid, correct, ms, raw });
   }
-  const total = detail.reduce((s, d) => s + d.raw, 0) || 1;
   const uids = detail.map((d) => d.uid);
+  const total = detail.reduce((s, d) => s + d.raw, 0);
+  // Nobody correct/reachable => all-zero weights. Never dump the rounding remainder
+  // onto a wrong or absent miner (that would reward unreachability).
+  if (total <= 0) return { uids, weights: uids.map(() => 0), detail };
   const weights = detail.map((d) => Math.round((d.raw / total) * SCALE));
-  // fix rounding so the vector sums to exactly SCALE (deterministic on-chain match)
+  // fix rounding so the vector sums to exactly SCALE (deterministic on-chain match);
+  // put the remainder on the highest-raw (genuinely best) miner.
   const diff = SCALE - weights.reduce((s, w) => s + w, 0);
-  if (weights.length) {
-    let top = 0;
-    for (let i = 1; i < weights.length; i++) if (weights[i] > weights[top]) top = i;
-    weights[top] += diff;
-  }
+  let top = 0;
+  for (let i = 1; i < detail.length; i++) if (detail[i].raw > detail[top].raw) top = i;
+  weights[top] += diff;
   return { uids, weights, detail };
 }
 
