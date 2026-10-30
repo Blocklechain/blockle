@@ -10,8 +10,11 @@
 //! commit/reveal, proof-of-validation, the coinbase α-split and EmissionEpoch land in
 //! a following increment.
 
+use crate::intel_consensus as ic;
+use blockle_core::hash::blake2b_256;
 use blockle_core::keys::pubkey_to_address;
 use blockle_core::transaction::{IntelAction, Transaction};
+use std::collections::HashMap;
 
 /// A subnet = a task market (see spec §2). Tier: 0 checkable, 1 redundant/reference,
 /// 2 subjective.
@@ -43,6 +46,18 @@ pub struct Neuron {
 pub struct IntelState {
     pub subnets: Vec<Subnet>,
     pub neurons: Vec<Neuron>,
+    /// Withheld α·subsidy accrued since the last epoch (base units), awaiting distribution.
+    pub pool: u64,
+    /// Claimable emission per owner address (base units), paid out by `NeuronClaim`.
+    pub emission_ledger: HashMap<[u8; 32], u64>,
+    /// Current-epoch weight commits: (subnet_id, validator_uid) -> commit hash.
+    pub commits: HashMap<(u32, u32), [u8; 32]>,
+    /// Current-epoch revealed weights: (subnet_id, validator_uid) -> (miner_uids, weights).
+    pub revealed: HashMap<(u32, u32), (Vec<u32>, Vec<u32>)>,
+    /// EMA bonds carried across epochs: (subnet_id, validator_uid) -> per-miner bond (fixed-point).
+    pub bonds: HashMap<(u32, u32), Vec<u128>>,
+    /// Last epoch's in-node beacon seed (transparency; proof-of-validation uses it in 2b-ii).
+    pub last_epoch_seed: [u8; 32],
 }
 
 impl IntelState {
@@ -53,6 +68,29 @@ impl IntelState {
     fn neuron_count(&self, subnet_id: u32) -> u32 {
         self.neurons.iter().filter(|n| n.subnet_id == subnet_id).count() as u32
     }
+    /// The uid of the validator (role 1) owned by `owner` in `subnet_id`, if any.
+    fn validator_uid(&self, subnet_id: u32, owner: &[u8; 32]) -> Option<u32> {
+        self.neurons
+            .iter()
+            .find(|n| n.subnet_id == subnet_id && n.role == 1 && &n.owner == owner)
+            .map(|n| n.uid)
+    }
+}
+
+/// Canonical bytes for a weight set, hashed for the commit-reveal. The off-chain
+/// validator SDK must produce the identical bytes.
+pub fn weights_commit(uids: &[u32], weights: &[u32], nonce: &[u8; 32]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(8 + uids.len() * 4 + weights.len() * 4 + 32);
+    buf.extend_from_slice(&(uids.len() as u32).to_le_bytes());
+    for u in uids {
+        buf.extend_from_slice(&u.to_le_bytes());
+    }
+    buf.extend_from_slice(&(weights.len() as u32).to_le_bytes());
+    for w in weights {
+        buf.extend_from_slice(&w.to_le_bytes());
+    }
+    buf.extend_from_slice(nonce);
+    blake2b_256(&buf)
 }
 
 /// Apply a native intelligence action to the staged state. Returns BLOCK payouts
@@ -103,7 +141,139 @@ pub fn apply_intel_action(
             });
             Vec::new()
         }
+        IntelAction::SetWeightsCommit { subnet_id, commit, .. } => {
+            // Only a registered validator may commit; silently ignore otherwise.
+            if let Some(uid) = intel.validator_uid(*subnet_id, &sender) {
+                intel.commits.insert((*subnet_id, uid), *commit);
+            }
+            Vec::new()
+        }
+        IntelAction::SetWeightsReveal { subnet_id, uids, weights, nonce, .. } => {
+            // Must be a validator, lengths must match, and the reveal must open the
+            // committed hash; otherwise it's a no-op (can't frontrun/forge weights).
+            if uids.len() == weights.len() && uids.len() <= 4096 {
+                if let Some(uid) = intel.validator_uid(*subnet_id, &sender) {
+                    if intel.commits.get(&(*subnet_id, uid))
+                        == Some(&weights_commit(uids, weights, nonce))
+                    {
+                        intel.revealed.insert((*subnet_id, uid), (uids.clone(), weights.clone()));
+                    }
+                }
+            }
+            Vec::new()
+        }
+        IntelAction::NeuronClaim { .. } => {
+            // Pay out everything the sender has accrued; zero the ledger entry.
+            match intel.emission_ledger.remove(&sender) {
+                Some(amt) if amt > 0 => vec![(sender, amt)],
+                _ => Vec::new(),
+            }
+        }
     }
+}
+
+/// Deterministic in-node beacon seed for an epoch — blake2b of the tip hash at the epoch
+/// boundary. (Proof-of-validation spot-check selection consumes this in Phase 2b-ii.)
+pub fn epoch_beacon(tip_hash: &[u8; 32]) -> [u8; 32] {
+    blake2b_256(tip_hash)
+}
+
+/// Run the EmissionEpoch (spec §5): distribute the accrued `pool` across eligible subnets
+/// and credit neuron owners' emission_ledger via the deterministic incentive math. Clears
+/// the per-epoch weight commits/reveals. Decrements `pool` by exactly what was distributed
+/// (dust carries to the next epoch — never over-mints). Called at the epoch boundary.
+pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) {
+    intel.last_epoch_seed = seed;
+    // Eligible subnets: ≥1 miner and ≥1 revealed validator this epoch.
+    let eligible: Vec<u32> = intel
+        .subnets
+        .iter()
+        .map(|s| s.id)
+        .filter(|&sid| {
+            intel.neurons.iter().any(|n| n.subnet_id == sid && n.role == 0)
+                && intel.revealed.keys().any(|(s, _)| *s == sid)
+        })
+        .collect();
+    if eligible.is_empty() {
+        return;
+    }
+    let per_subnet = intel.pool / eligible.len() as u64; // equal split; remainder carries
+    if per_subnet == 0 {
+        return;
+    }
+    let miner_frac = ic::SCALE / 2; // 50/50 miners/validators
+    let kappa = ic::SCALE / 2;
+    let lam: u128 = 900_000; // 0.9
+    let mut distributed: u64 = 0;
+
+    for sid in eligible {
+        // miners (role 0) in uid order -> columns
+        let mut miners: Vec<(u32, [u8; 32])> = intel
+            .neurons
+            .iter()
+            .filter(|n| n.subnet_id == sid && n.role == 0)
+            .map(|n| (n.uid, n.owner))
+            .collect();
+        miners.sort_by_key(|(u, _)| *u);
+        let nm = miners.len();
+        let col_of: HashMap<u32, usize> =
+            miners.iter().enumerate().map(|(k, (u, _))| (*u, k)).collect();
+
+        // validators that revealed this epoch -> rows
+        let mut vals: Vec<(u32, [u8; 32], u128)> = Vec::new();
+        for n in intel.neurons.iter().filter(|n| n.subnet_id == sid && n.role == 1) {
+            if intel.revealed.contains_key(&(sid, n.uid)) {
+                vals.push((n.uid, n.owner, n.bond as u128));
+            }
+        }
+        if vals.is_empty() || nm == 0 {
+            continue;
+        }
+
+        let mut w: Vec<Vec<u128>> = Vec::with_capacity(vals.len());
+        let mut s: Vec<u128> = Vec::with_capacity(vals.len());
+        let mut bonds_prev: Vec<Vec<u128>> = Vec::with_capacity(vals.len());
+        for (v_uid, _owner, stake) in &vals {
+            let mut row = vec![0u128; nm];
+            if let Some((uids, weights)) = intel.revealed.get(&(sid, *v_uid)) {
+                for (mu, wt) in uids.iter().zip(weights.iter()) {
+                    if let Some(&col) = col_of.get(mu) {
+                        row[col] = (*wt as u128).min(ic::SCALE);
+                    }
+                }
+            }
+            w.push(row);
+            s.push(*stake);
+            let mut bp = intel.bonds.get(&(sid, *v_uid)).cloned().unwrap_or_default();
+            bp.resize(nm, 0);
+            bonds_prev.push(bp);
+        }
+        let active = vec![true; vals.len()]; // revealed == active in 2b-i (PoV slashing in 2b-ii)
+
+        let (miner_em, val_em, new_bonds) =
+            ic::emission_epoch(&w, &s, &active, &bonds_prev, per_subnet as u128, miner_frac, kappa, lam);
+
+        for (k, (_uid, owner)) in miners.iter().enumerate() {
+            let amt = miner_em[k] as u64;
+            if amt > 0 {
+                *intel.emission_ledger.entry(*owner).or_insert(0) += amt;
+                distributed += amt;
+            }
+        }
+        for (vi, (v_uid, owner, _)) in vals.iter().enumerate() {
+            let amt = val_em[vi] as u64;
+            if amt > 0 {
+                *intel.emission_ledger.entry(*owner).or_insert(0) += amt;
+                distributed += amt;
+            }
+            intel.bonds.insert((sid, *v_uid), new_bonds[vi].clone());
+        }
+    }
+
+    intel.pool = intel.pool.saturating_sub(distributed);
+    // reset per-epoch weight state
+    intel.commits.clear();
+    intel.revealed.clear();
 }
 
 #[cfg(test)]

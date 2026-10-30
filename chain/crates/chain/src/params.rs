@@ -53,6 +53,13 @@ pub struct ChainParams {
     /// rejected (backwards compatible — pre-H blocks validate unchanged). `u64::MAX`
     /// = disabled. Mainnet stays disabled (audit-gated); testnet target is 18888.
     pub intel_activation_height: u64,
+    /// Fraction of the block subsidy (basis points) redirected from the PoW coinbase
+    /// into the intelligence emission pool once intel is active (spec §3.4). The supply
+    /// schedule is unchanged — this only *redirects* part of each block's subsidy.
+    pub intel_alpha_bps: u32,
+    /// Blocks per emission epoch. At each boundary the accrued pool is distributed to
+    /// neurons by the §5 consensus over the epoch's revealed weights.
+    pub intel_epoch_len: u64,
 }
 
 impl ChainParams {
@@ -94,6 +101,8 @@ impl ChainParams {
             max_contract_input: 8_192,
             // Mainnet: disabled until the Phase-5 audit sets a real activation height.
             intel_activation_height: u64::MAX,
+            intel_alpha_bps: 1_000, // 10% of subsidy → intelligence pool (when active)
+            intel_epoch_len: 360,
         }
     }
 
@@ -112,8 +121,12 @@ impl ChainParams {
             // Exercise the decay (v2 schedule) from genesis in tests/dev.
             decay_activation_height: 0,
             decay_v2_height: 0,
-            // Intelligence active from genesis in regtest so tests can exercise it.
+            // Intelligence actions active from genesis in regtest, but alpha=0 by default
+            // so the subsidy schedule is UNCHANGED (existing regtest tests assert exact
+            // subsidies). Emission tests opt in by setting intel_alpha_bps on a clone.
             intel_activation_height: 0,
+            intel_alpha_bps: 0,
+            intel_epoch_len: 4,
             ..Self::mainnet()
         }
     }

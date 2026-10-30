@@ -93,3 +93,67 @@ fn intel_actions_rejected_below_activation_height() {
     // ...and at/above H it validates (returns a fee).
     assert!(chain.check_transaction(&tx, &chain.utxos, 150).is_ok(), "accepted at/above H_INTEL");
 }
+
+#[test]
+fn emission_epoch_distributes_and_claims() {
+    // regtest clone with alpha=20%, epoch=4 so distribution happens fast.
+    let mut p = ChainParams::regtest();
+    p.intel_alpha_bps = 2_000;
+    p.intel_epoch_len = 4;
+    let mut chain = Chain::new(p);
+    let f = Keypair::generate();
+    let fee = COIN / 50;
+
+    let tip = |chain: &mut Chain, txs: &[Transaction]| {
+        let (b, _) = mine_block(chain, f.address(), txs).unwrap();
+        chain.connect_block(b).unwrap();
+    };
+    let step = |chain: &mut Chain, action: ContractAction, bond: u64| {
+        let tx = spend(chain, &f, action, bond, fee);
+        let (b, _) = mine_block(chain, f.address(), &[tx]).unwrap();
+        chain.connect_block(b).unwrap();
+    };
+    tip(&mut chain, &[]); // h0 genesis premine -> f
+
+    // An EMPTY block at height 1 must pay only (1-α)=80% of the 50 subsidy to the coinbase.
+    tip(&mut chain, &[]); // h1
+    let cb = &chain.blocks[1].transactions[0];
+    assert_eq!(cb.total_output().unwrap(), 40 * COIN, "coinbase α-split: 80% of 50");
+    assert_eq!(chain.intel.pool, 10 * COIN, "withheld α accrued to the pool");
+
+    // h2: register subnet; h3: miner neuron (uid 0); h4(boundary): validator neuron (uid 1, 10-BLOCK bond)
+    step(&mut chain, ContractAction::Intel(IntelAction::SubnetRegister { schema: b"det".to_vec(), tier: 0, gas_limit: GAS }), 0); // h2
+    step(&mut chain, ContractAction::Intel(IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: b"m".to_vec(), bond: COIN, gas_limit: GAS }), COIN); // h3 miner uid0
+    step(&mut chain, ContractAction::Intel(IntelAction::NeuronRegister { subnet_id: 0, role: 1, hotkey: b"v".to_vec(), bond: 10 * COIN, gas_limit: GAS }), 10 * COIN); // h4 validator uid1
+    assert_eq!(chain.intel.neurons.len(), 2);
+
+    // h5: validator commits weights on the miner (uid 0); h6: reveal. Both inside the
+    // h5..h8 epoch window so the h8 boundary processes them.
+    let nonce = [7u8; 32];
+    let uids = vec![0u32];
+    let weights = vec![1_000_000u32]; // full weight (= SCALE)
+    let commit = blockle_chain::intel::weights_commit(&uids, &weights, &nonce);
+    step(&mut chain, ContractAction::Intel(IntelAction::SetWeightsCommit { subnet_id: 0, commit, gas_limit: GAS }), 0); // h5
+    step(&mut chain, ContractAction::Intel(IntelAction::SetWeightsReveal { subnet_id: 0, uids: uids.clone(), weights: weights.clone(), nonce, gas_limit: GAS }), 0); // h6
+    assert!(chain.intel.revealed.contains_key(&(0, 1)), "validator uid1 revealed");
+
+    tip(&mut chain, &[]); // h7
+    tip(&mut chain, &[]); // h8 -> EPOCH BOUNDARY: EmissionEpoch distributes the pool
+
+    let credited = chain.intel.emission_ledger.get(&f.address()).copied().unwrap_or(0);
+    assert!(credited > 0, "emission distributed to the neuron owner at the epoch boundary");
+    assert!(chain.intel.pool < 10 * COIN, "pool drained by distribution (dust may remain)");
+    assert!(chain.intel.revealed.is_empty(), "epoch cleared the revealed weights");
+
+    // Claim pays the accrued emission out to f.
+    step(&mut chain, ContractAction::Intel(IntelAction::NeuronClaim { gas_limit: GAS }), 0); // h9
+    assert_eq!(
+        chain.intel.emission_ledger.get(&f.address()).copied().unwrap_or(0),
+        0,
+        "ledger zeroed after claim"
+    );
+
+    // Replay determinism: the whole emission/claim history rebuilds identically.
+    let rebuilt = Chain::from_blocks({ let mut q = ChainParams::regtest(); q.intel_alpha_bps = 2_000; q.intel_epoch_len = 4; q }, chain.blocks.clone()).unwrap();
+    assert_eq!(rebuilt.intel, chain.intel, "intel emission state is deterministic on replay");
+}

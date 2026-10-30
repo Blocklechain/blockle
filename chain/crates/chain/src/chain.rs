@@ -827,11 +827,18 @@ impl Chain {
             return Err(ChainError::ContractRules("contract action on coinbase".into()));
         }
         let paid = coinbase.total_output().ok_or(ChainError::ValueOutOfRange)?;
-        let allowed = self
-            .params
-            .block_subsidy(height)
-            .checked_add(fees)
-            .ok_or(ChainError::ValueOutOfRange)?;
+        // Intelligence α-split (spec §3.4): once active (and not genesis), redirect
+        // `intel_alpha_bps` of the subsidy away from the coinbase into the emission pool.
+        // Supply schedule unchanged — the withheld α is paid out later via NeuronClaim.
+        let subsidy = self.params.block_subsidy(height);
+        let intel_on = height >= self.params.intel_activation_height && height > 0;
+        let intel_share = if intel_on {
+            (subsidy as u128 * self.params.intel_alpha_bps as u128 / 10_000) as u64
+        } else {
+            0
+        };
+        let miner_subsidy = subsidy - intel_share;
+        let allowed = miner_subsidy.checked_add(fees).ok_or(ChainError::ValueOutOfRange)?;
         if paid > allowed {
             return Err(ChainError::CoinbaseOverpays { paid, allowed });
         }
@@ -841,6 +848,15 @@ impl Chain {
                 OutPoint { txid: coinbase_txid, vout: vout as u32 },
                 UtxoEntry { output: output.clone(), height, coinbase: true },
             );
+        }
+
+        // Accrue the withheld α; on an epoch boundary, run EmissionEpoch (deterministic).
+        if intel_on {
+            iview.pool = iview.pool.saturating_add(intel_share);
+            if height % self.params.intel_epoch_len == 0 {
+                let seed = crate::intel::epoch_beacon(&self.tip_hash());
+                crate::intel::run_emission_epoch(&mut iview, seed, height);
+            }
         }
 
         // Commit; if the note tree grew, its new root becomes a valid anchor

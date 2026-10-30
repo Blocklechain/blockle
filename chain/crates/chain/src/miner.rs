@@ -68,8 +68,15 @@ pub fn build_template(
         included_ids.push(txid);
     }
 
-    let reward = params
-        .block_subsidy(height)
+    // Match the validator's intelligence α-split: once active (not genesis), the coinbase
+    // may only claim (1-α) of the subsidy; the rest is withheld into the emission pool.
+    let subsidy = params.block_subsidy(height);
+    let intel_share = if height >= params.intel_activation_height && height > 0 {
+        (subsidy as u128 * params.intel_alpha_bps as u128 / 10_000) as u64
+    } else {
+        0
+    };
+    let reward = (subsidy - intel_share)
         .checked_add(fees)
         .ok_or(ChainError::ValueOutOfRange)?;
     let coinbase = Transaction::coinbase(height, reward_to, reward, &params.coinbase_tag);

@@ -95,6 +95,14 @@ pub enum IntelAction {
     /// `bond` of BLOCK (from inputs; recoverable later via Unbond). `hotkey` is the
     /// serving/identity key.
     NeuronRegister { subnet_id: u32, role: u8, hotkey: Vec<u8>, bond: u64, gas_limit: u64 },
+    /// Validator commits a hash of its weight vector for the epoch (commit-reveal §5.4).
+    SetWeightsCommit { subnet_id: u32, commit: [u8; 32], gas_limit: u64 },
+    /// Validator reveals the weights committed last epoch. `uids` are miner UIDs and
+    /// `weights` the matching fixed-point weights (0..1_000_000). The reveal is accepted
+    /// only if sha256(canonical(uids,weights) ‖ nonce) equals the stored commit.
+    SetWeightsReveal { subnet_id: u32, uids: Vec<u32>, weights: Vec<u32>, nonce: [u8; 32], gas_limit: u64 },
+    /// Pay out the sender's accrued intelligence emission to a new BLOCK output.
+    NeuronClaim { gas_limit: u64 },
 }
 
 impl IntelAction {
@@ -102,13 +110,17 @@ impl IntelAction {
         match self {
             IntelAction::SubnetRegister { gas_limit, .. } => *gas_limit,
             IntelAction::NeuronRegister { gas_limit, .. } => *gas_limit,
+            IntelAction::SetWeightsCommit { gas_limit, .. } => *gas_limit,
+            IntelAction::SetWeightsReveal { gas_limit, .. } => *gas_limit,
+            IntelAction::NeuronClaim { gas_limit, .. } => *gas_limit,
         }
     }
-    /// BLOCK moved from inputs into locked state (the neuron bond).
+    /// BLOCK moved from inputs into locked state (the neuron bond). Weight/claim actions
+    /// move no BLOCK in (claim pays OUT via a payout).
     pub fn value(&self) -> u64 {
         match self {
-            IntelAction::SubnetRegister { .. } => 0,
             IntelAction::NeuronRegister { bond, .. } => *bond,
+            _ => 0,
         }
     }
 }
@@ -379,6 +391,29 @@ impl Transaction {
                 out.push(*role);
                 put_bytes(&mut out, hotkey);
                 put_u64(&mut out, *bond);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::SetWeightsCommit { subnet_id, commit, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 2); // inner: SetWeightsCommit
+                put_u32(&mut out, *subnet_id);
+                put_fixed(&mut out, commit);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::SetWeightsReveal { subnet_id, uids, weights, nonce, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 3); // inner: SetWeightsReveal
+                put_u32(&mut out, *subnet_id);
+                put_u32(&mut out, uids.len() as u32);
+                for u in uids { put_u32(&mut out, *u); }
+                put_u32(&mut out, weights.len() as u32);
+                for w in weights { put_u32(&mut out, *w); }
+                put_fixed(&mut out, nonce);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::NeuronClaim { gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 4); // inner: NeuronClaim
                 put_u64(&mut out, *gas_limit);
             }
         }
