@@ -103,6 +103,11 @@ pub enum IntelAction {
     SetWeightsReveal { subnet_id: u32, uids: Vec<u32>, weights: Vec<u32>, nonce: [u8; 32], gas_limit: u64 },
     /// Pay out the sender's accrued intelligence emission to a new BLOCK output.
     NeuronClaim { gas_limit: u64 },
+    /// Proof-of-validation (liveness): a validator acknowledges the current epoch's
+    /// in-node beacon (`beacon_ack` must equal it), proving it is live against fresh,
+    /// unpredictable randomness. Validators that reveal weights but skip this each epoch
+    /// are excluded from emission and have their bond slashed.
+    ValidationProof { subnet_id: u32, beacon_ack: [u8; 32], gas_limit: u64 },
 }
 
 impl IntelAction {
@@ -113,6 +118,7 @@ impl IntelAction {
             IntelAction::SetWeightsCommit { gas_limit, .. } => *gas_limit,
             IntelAction::SetWeightsReveal { gas_limit, .. } => *gas_limit,
             IntelAction::NeuronClaim { gas_limit, .. } => *gas_limit,
+            IntelAction::ValidationProof { gas_limit, .. } => *gas_limit,
         }
     }
     /// BLOCK moved from inputs into locked state (the neuron bond). Weight/claim actions
@@ -414,6 +420,13 @@ impl Transaction {
             Some(ContractAction::Intel(IntelAction::NeuronClaim { gas_limit })) => {
                 put_u32(&mut out, 10);
                 put_u32(&mut out, 4); // inner: NeuronClaim
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::ValidationProof { subnet_id, beacon_ack, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 5); // inner: ValidationProof
+                put_u32(&mut out, *subnet_id);
+                put_fixed(&mut out, beacon_ack);
                 put_u64(&mut out, *gas_limit);
             }
         }

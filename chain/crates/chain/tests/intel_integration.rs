@@ -137,11 +137,19 @@ fn emission_epoch_distributes_and_claims() {
     step(&mut chain, ContractAction::Intel(IntelAction::SetWeightsReveal { subnet_id: 0, uids: uids.clone(), weights: weights.clone(), nonce, gas_limit: GAS }), 0); // h6
     assert!(chain.intel.revealed.contains_key(&(0, 1)), "validator uid1 revealed");
 
-    tip(&mut chain, &[]); // h7
+    // h7: proof-of-validation — ack the CURRENT epoch beacon (set at the h4 boundary). A
+    // validator that skips this is excluded from emission AND gets its bond slashed.
+    let ack = chain.intel.last_epoch_seed;
+    step(&mut chain, ContractAction::Intel(IntelAction::ValidationProof { subnet_id: 0, beacon_ack: ack, gas_limit: GAS }), 0); // h7
+    assert!(chain.intel.pov.contains(&(0, 1)), "validator proved liveness against the beacon");
+
     tip(&mut chain, &[]); // h8 -> EPOCH BOUNDARY: EmissionEpoch distributes the pool
 
     let credited = chain.intel.emission_ledger.get(&f.address()).copied().unwrap_or(0);
     assert!(credited > 0, "emission distributed to the neuron owner at the epoch boundary");
+    // the validator proved liveness, so its 10-BLOCK bond was NOT slashed
+    let v_bond = chain.intel.neurons.iter().find(|n| n.role == 1).unwrap().bond;
+    assert_eq!(v_bond, 10 * COIN, "live validator keeps its full bond");
     assert!(chain.intel.pool < 10 * COIN, "pool drained by distribution (dust may remain)");
     assert!(chain.intel.revealed.is_empty(), "epoch cleared the revealed weights");
 
@@ -156,4 +164,45 @@ fn emission_epoch_distributes_and_claims() {
     // Replay determinism: the whole emission/claim history rebuilds identically.
     let rebuilt = Chain::from_blocks({ let mut q = ChainParams::regtest(); q.intel_alpha_bps = 2_000; q.intel_epoch_len = 4; q }, chain.blocks.clone()).unwrap();
     assert_eq!(rebuilt.intel, chain.intel, "intel emission state is deterministic on replay");
+}
+
+#[test]
+fn absent_validator_is_slashed_and_earns_nothing() {
+    let mut p = ChainParams::regtest();
+    p.intel_alpha_bps = 2_000;
+    p.intel_epoch_len = 4;
+    let mut chain = Chain::new(p);
+    let f = Keypair::generate();
+    let fee = COIN / 50;
+    let tip = |chain: &mut Chain, txs: &[Transaction]| {
+        let (b, _) = mine_block(chain, f.address(), txs).unwrap();
+        chain.connect_block(b).unwrap();
+    };
+    let step = |chain: &mut Chain, action: ContractAction, bond: u64| {
+        let tx = spend(chain, &f, action, bond, fee);
+        let (b, _) = mine_block(chain, f.address(), &[tx]).unwrap();
+        chain.connect_block(b).unwrap();
+    };
+    tip(&mut chain, &[]); // h0
+    step(&mut chain, ContractAction::Intel(IntelAction::SubnetRegister { schema: vec![], tier: 0, gas_limit: GAS }), 0); // h1
+    step(&mut chain, ContractAction::Intel(IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: b"m".to_vec(), bond: COIN, gas_limit: GAS }), COIN); // h2 miner
+    step(&mut chain, ContractAction::Intel(IntelAction::NeuronRegister { subnet_id: 0, role: 1, hotkey: b"v".to_vec(), bond: 10 * COIN, gas_limit: GAS }), 10 * COIN); // h3 validator
+    let nonce = [9u8; 32];
+    let uids = vec![0u32];
+    let weights = vec![1_000_000u32];
+    let commit = blockle_chain::intel::weights_commit(&uids, &weights, &nonce);
+    step(&mut chain, ContractAction::Intel(IntelAction::SetWeightsCommit { subnet_id: 0, commit, gas_limit: GAS }), 0); // h5
+    step(&mut chain, ContractAction::Intel(IntelAction::SetWeightsReveal { subnet_id: 0, uids, weights, nonce, gas_limit: GAS }), 0); // h6
+    // NO ValidationProof submitted this epoch.
+    tip(&mut chain, &[]); // h6
+    tip(&mut chain, &[]); // h7
+    tip(&mut chain, &[]); // h8 boundary -> emission runs over the reveal + (no) PoV
+
+    assert_eq!(
+        chain.intel.emission_ledger.get(&f.address()).copied().unwrap_or(0),
+        0,
+        "no PoV => no active validator => nothing distributes"
+    );
+    let v_bond = chain.intel.neurons.iter().find(|n| n.role == 1).unwrap().bond;
+    assert_eq!(v_bond, 10 * COIN - (10 * COIN * 500 / 10_000), "absent validator slashed 5%");
 }

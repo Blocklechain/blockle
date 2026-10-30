@@ -56,8 +56,11 @@ pub struct IntelState {
     pub revealed: HashMap<(u32, u32), (Vec<u32>, Vec<u32>)>,
     /// EMA bonds carried across epochs: (subnet_id, validator_uid) -> per-miner bond (fixed-point).
     pub bonds: HashMap<(u32, u32), Vec<u128>>,
-    /// Last epoch's in-node beacon seed (transparency; proof-of-validation uses it in 2b-ii).
+    /// In-node beacon seed of the CURRENT epoch (set at each boundary). Validators must
+    /// acknowledge it via ValidationProof to count as live.
     pub last_epoch_seed: [u8; 32],
+    /// Validators (subnet_id, uid) that submitted a valid ValidationProof this epoch.
+    pub pov: std::collections::HashSet<(u32, u32)>,
 }
 
 impl IntelState {
@@ -169,6 +172,16 @@ pub fn apply_intel_action(
                 _ => Vec::new(),
             }
         }
+        IntelAction::ValidationProof { subnet_id, beacon_ack, .. } => {
+            // Live only if the validator acknowledges the CURRENT epoch's beacon (a
+            // copier can't, because the beacon is fresh + unpredictable).
+            if beacon_ack == &intel.last_epoch_seed {
+                if let Some(uid) = intel.validator_uid(*subnet_id, &sender) {
+                    intel.pov.insert((*subnet_id, uid));
+                }
+            }
+            Vec::new()
+        }
     }
 }
 
@@ -197,16 +210,33 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
     if eligible.is_empty() {
         return;
     }
-    let per_subnet = intel.pool / eligible.len() as u64; // equal split; remainder carries
-    if per_subnet == 0 {
-        return;
-    }
     let miner_frac = ic::SCALE / 2; // 50/50 miners/validators
     let kappa = ic::SCALE / 2;
     let lam: u128 = 900_000; // 0.9
-    let mut distributed: u64 = 0;
+    const SLASH_BPS: u64 = 500; // 5% bond slash for revealed-but-absent (no PoV) validators
 
-    for sid in eligible {
+    // Stake-weighted split across subnets (weight = total neuron bond). Demand-weighting
+    // by x402 revenue (§6) needs the off-chain oracle and lands in a later pass.
+    let sweights: Vec<(u32, u128)> = eligible
+        .iter()
+        .map(|&sid| {
+            let w: u128 =
+                intel.neurons.iter().filter(|n| n.subnet_id == sid).map(|n| n.bond as u128).sum();
+            (sid, w.max(1))
+        })
+        .collect();
+    let total_w: u128 = sweights.iter().map(|(_, w)| *w).sum::<u128>().max(1);
+    let pool_u = intel.pool as u128;
+
+    let mut distributed: u64 = 0;
+    let mut slashed_total: u64 = 0;
+    let mut to_slash: Vec<(u32, u32)> = Vec::new(); // (subnet, validator uid) revealed but no PoV
+
+    for (sid, w_s) in sweights {
+        let per_subnet = (pool_u * w_s / total_w) as u64;
+        if per_subnet == 0 {
+            continue;
+        }
         // miners (role 0) in uid order -> columns
         let mut miners: Vec<(u32, [u8; 32])> = intel
             .neurons
@@ -219,7 +249,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         let col_of: HashMap<u32, usize> =
             miners.iter().enumerate().map(|(k, (u, _))| (*u, k)).collect();
 
-        // validators that revealed this epoch -> rows
+        // validators that revealed -> rows; active iff they ALSO proved liveness (PoV).
         let mut vals: Vec<(u32, [u8; 32], u128)> = Vec::new();
         for n in intel.neurons.iter().filter(|n| n.subnet_id == sid && n.role == 1) {
             if intel.revealed.contains_key(&(sid, n.uid)) {
@@ -233,6 +263,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         let mut w: Vec<Vec<u128>> = Vec::with_capacity(vals.len());
         let mut s: Vec<u128> = Vec::with_capacity(vals.len());
         let mut bonds_prev: Vec<Vec<u128>> = Vec::with_capacity(vals.len());
+        let mut active: Vec<bool> = Vec::with_capacity(vals.len());
         for (v_uid, _owner, stake) in &vals {
             let mut row = vec![0u128; nm];
             if let Some((uids, weights)) = intel.revealed.get(&(sid, *v_uid)) {
@@ -247,8 +278,12 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
             let mut bp = intel.bonds.get(&(sid, *v_uid)).cloned().unwrap_or_default();
             bp.resize(nm, 0);
             bonds_prev.push(bp);
+            let live = intel.pov.contains(&(sid, *v_uid));
+            active.push(live);
+            if !live {
+                to_slash.push((sid, *v_uid)); // revealed but skipped proof-of-validation
+            }
         }
-        let active = vec![true; vals.len()]; // revealed == active in 2b-i (PoV slashing in 2b-ii)
 
         let (miner_em, val_em, new_bonds) =
             ic::emission_epoch(&w, &s, &active, &bonds_prev, per_subnet as u128, miner_frac, kappa, lam);
@@ -270,10 +305,24 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         }
     }
 
-    intel.pool = intel.pool.saturating_sub(distributed);
-    // reset per-epoch weight state
+    // Slash revealed-but-absent validators; the slashed bond is recycled into the pool.
+    for (sid, v_uid) in to_slash {
+        if let Some(n) = intel
+            .neurons
+            .iter_mut()
+            .find(|n| n.subnet_id == sid && n.uid == v_uid && n.role == 1)
+        {
+            let cut = (n.bond as u128 * SLASH_BPS as u128 / 10_000) as u64;
+            n.bond = n.bond.saturating_sub(cut);
+            slashed_total = slashed_total.saturating_add(cut);
+        }
+    }
+
+    intel.pool = intel.pool.saturating_sub(distributed).saturating_add(slashed_total);
+    // reset per-epoch state
     intel.commits.clear();
     intel.revealed.clear();
+    intel.pov.clear();
 }
 
 #[cfg(test)]
