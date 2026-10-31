@@ -5,15 +5,19 @@
 // free/identity-gated endpoints (/health, /models, /chat, /v1/chat/completions via API key) are
 // omitted so the crawler never probes them. The runtime 402 is x402 v2 (see src/x402.js).
 "use strict";
+const { CATALOG } = require("./models");
 
 function buildOpenApi(cfg) {
+  const prices = CATALOG.map((e) => e.priceUsd);
+  const minP = String(Math.min(...prices)), maxP = String(Math.max(...prices));
+  const modelEnum = CATALOG.map((e) => e.model);
+  const tierEnum = CATALOG.map((e) => e.tier);
   const base = (cfg.publicBase || "https://blockle.org/api/inference").replace(/\/+$/, "");
   // Serve the origin as the `servers` url and the FULL path as the operation key, so x402scan
   // matches the submitted resource URL (/api/inference/infer) no matter how it combines them.
   let origin = base, prefix = "";
   try { const u = new URL(base); origin = u.origin; prefix = u.pathname.replace(/\/+$/, ""); } catch (_) {}
   const inferPath = prefix + "/infer";
-  const price = String(cfg.priceUsd != null ? cfg.priceUsd : 0.02);
   const r402 = { description: "Payment Required — returns an x402 v2 PaymentRequirements challenge (pay USDC on Base, then retry with the X-PAYMENT header)." };
   const guidance =
     "Blockle Intelligence inference over x402. POST /infer with no payment to receive a 402 challenge " +
@@ -35,11 +39,11 @@ function buildOpenApi(cfg) {
       [inferPath]: {
         post: {
           operationId: "infer",
-          summary: "Run AI inference (pay $" + price + " USDC over x402).",
-          description: "Returns a model completion for `prompt`. Call without payment to receive the x402 402 challenge.",
+          summary: "Run AI inference — price varies by model ($" + minP + "–$" + maxP + " USDC over x402).",
+          description: "Returns a model completion for `prompt`. Pick a model with `model` (or `tier`) — bigger models cost more; the 402 you get back quotes the exact price for your chosen model. Omit it for the cheapest tier. Call without payment to receive the x402 402 challenge. GET /api/inference/models lists every model + its price.",
           tags: ["x402", "inference"],
           security: [],
-          "x-payment-info": { price: { mode: "fixed", currency: "USD", amount: price }, protocols: [{ x402: {} }] },
+          "x-payment-info": { price: { mode: "dynamic", currency: "USD", min: minP, max: maxP }, protocols: [{ x402: {} }] },
           requestBody: {
             required: true,
             content: {
@@ -49,11 +53,13 @@ function buildOpenApi(cfg) {
                   required: ["prompt"],
                   properties: {
                     prompt: { type: "string", description: "The prompt / user message.", example: "Explain the Blockle Intelligence subnet in one sentence." },
+                    model: { type: "string", description: "Model to use (bigger = pricier). See GET /api/inference/models.", enum: modelEnum, example: modelEnum[2] },
+                    tier: { type: "string", description: "Alternative to `model`: the hardware/price tier.", enum: tierEnum },
                     temperature: { type: "number", description: "Sampling temperature (optional).", minimum: 0, maximum: 2, example: 0.7 },
                     max_tokens: { type: "integer", description: "Max tokens to generate (optional).", minimum: 1, example: 512 },
                   },
                 },
-                example: { prompt: "Explain the Blockle Intelligence subnet in one sentence.", temperature: 0.7, max_tokens: 512 },
+                example: { prompt: "Explain the Blockle Intelligence subnet in one sentence.", model: modelEnum[2], temperature: 0.7, max_tokens: 512 },
               },
             },
           },

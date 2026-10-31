@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { buildRequirements, buildChallengeV2, verifyAndSettle } = require("./x402");
 const { route } = require("./gateway");
-const { CATALOG } = require("./models");
+const { CATALOG, byModel, byTier, priceForTier, bootstrap } = require("./models");
 const { createQueue } = require("./jobqueue");
 const { buildOpenApi } = require("./openapi");
 
@@ -129,11 +129,35 @@ function assertNetworkAllowed() {
 }
 const paymentId = (xp) => crypto.createHash("sha256").update(String(xp)).digest("hex").slice(0, 32);
 
+// A browser (WebGPU) miner serves the small tiers only.
+const smallTier = (tier) => tier === "cpu" || tier === "4gb";
+function tierAvailable(entry, miners) {
+  if (entry.tier === "cpu") return true;                        // our CPU bootstrap always serves cpu
+  if (miners.some((m) => m.tier === entry.tier)) return true;    // a live push miner for this tier
+  if (smallTier(entry.tier) && activeBrowser() > 0) return true; // browser WebGPU miners
+  return false;
+}
+// The price + model a request will be served at. Model chosen by body.model/body.tier; default
+// is the cheapest (cpu bootstrap). Price = that model's price — you only pay for what serves it.
+function resolveServing(body, miners) {
+  const entry = byModel(body && body.model) || byTier(body && body.tier) || bootstrap();
+  return { entry, available: tierAvailable(entry, miners), priceUsd: entry.priceUsd };
+}
+function availableModels(miners) {
+  return CATALOG.filter((e) => tierAvailable(e, miners)).map((e) => ({ model: e.model, tier: e.tier, params: e.params, priceUsd: e.priceUsd }));
+}
+
 async function handleInfer(req, res, body) {
   try { assertNetworkAllowed(); } catch (e) { return sendJson(res, 503, { error: e.message }); }
   const resource = `${CFG.publicBase}/infer`;
-  const amt = usdcMicro(CFG.priceUsd);
-  const description = "Inference routed to community GPU miners (Blockle Intelligence tier-2). Bootstrap fallback is a small hosted CPU model, labeled as such.";
+  const miners = await liveMiners();
+  const serving = resolveServing(body, miners);
+  if (!serving.available) {
+    return sendJson(res, 400, { error: "requested model is not available right now", requestedModel: serving.entry.model, requestedTier: serving.entry.tier, available: availableModels(miners) });
+  }
+  const priceUsd = serving.priceUsd;
+  const amt = usdcMicro(priceUsd);
+  const description = `Inference on ${serving.entry.model} (${serving.entry.params}, tier ${serving.entry.tier}) — Blockle Intelligence tier-2. $${priceUsd}/call.`;
   const xPayment = req.headers["x-payment"];
   if (!xPayment) {
     const ch = buildChallengeV2({ network: CFG.network, payTo: CFG.payTo, amountAtomic: amt, resource, method: "POST", description, serviceName: "Blockle Inference", maxTimeoutSeconds: CFG.maxTimeoutSeconds });
@@ -156,8 +180,8 @@ async function handleInfer(req, res, body) {
   }
   if (vs.responseHeader) res.setHeader("X-PAYMENT-RESPONSE", vs.responseHeader);
 
-  const out = await performInference(body, CFG.priceUsd);
-  if (!out) return sendJson(res, 503, { error: "no miner or bootstrap backend available" });
+  const out = await performInference(body, priceUsd, serving.entry);
+  if (!out) return sendJson(res, 503, { error: "no miner available for this model right now" });
   // x402 USDC path: the miner's share is now owed in USDC (treasury kept its skim).
   if (out.minerAddress) accrueUsdc(out.minerAddress, out.accounting.minerEarnsUsd);
   out.payer = vs.payer; out.txHash = vs.txHash;
@@ -166,28 +190,32 @@ async function handleInfer(req, res, body) {
 }
 
 // Produce an answer + credit the serving miner's demand (USD-equivalent). Shared by the x402
-// /infer path and the BLOCK-credit /chat path. priceUsd sizes the miner earning / fee split.
-// Prefers a live browser (WebGPU) miner, then push miners, then the labeled CPU bootstrap.
-async function performInference(body, priceUsd) {
-  const request = { prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens };
-  if (activeBrowser() > 0) {
+// /infer path and the BLOCK-credit /chat path. priceUsd sizes the miner earning / fee split;
+// `entry` is the resolved model/tier — we route ONLY to a miner for that tier (browser WebGPU
+// for small tiers; the CPU bootstrap only backs the cpu tier), so a buyer gets the model they
+// paid for rather than a silent downgrade.
+async function performInference(body, priceUsd, entry) {
+  const tier = (entry && entry.tier) || "cpu";
+  const request = { prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens, model: entry && entry.model };
+  if (smallTier(tier) && activeBrowser() > 0) {
     try {
       const br = await QUEUE.enqueue(request);
       if (br && typeof br.answer === "string" && br.answer.trim()) {
         const protocolFeeUsd = round6(priceUsd * CFG.feeBps / 10000);
         const minerEarnsUsd = round6(priceUsd - protocolFeeUsd);
         recordEarning(br.address, minerEarnsUsd);
-        return { answer: br.answer, servedBy: { kind: "browser", address: br.address }, minerAddress: br.address, model: "webgpu-miner", tier: 2,
+        return { answer: br.answer, servedBy: { kind: "browser", address: br.address }, minerAddress: br.address, model: (entry && entry.model) || "webgpu-miner", tier: 2,
           accounting: { priceUsd, protocolFeeUsd, minerEarnsUsd, netToTreasuryUsd: protocolFeeUsd } };
       }
     } catch (_) { /* fall through */ }
   }
-  const miners = await liveMiners();
-  const r = await route({ request, miners, priceUsd, feeBps: CFG.feeBps, call: callMiner, wholesale: { costUsd: 0, call: callBootstrap } });
+  const miners = (await liveMiners()).filter((m) => m.tier === tier); // only miners for THIS tier
+  const wholesale = tier === "cpu" ? { costUsd: 0, call: callBootstrap } : undefined; // bootstrap backs cpu only
+  const r = await route({ request, miners, priceUsd, feeBps: CFG.feeBps, call: callMiner, wholesale });
   if (!r.ok) return null;
   let minerAddress = null;
   if (r.servedBy.kind === "miner") { const m = miners.find((x) => x.uid === r.servedBy.uid); if (m) { recordEarning(m.address, r.accounting.minerEarnsUsd); minerAddress = m.address; } }
-  return { answer: r.answer, servedBy: r.servedBy, minerAddress, model: r.model || null, accounting: r.accounting, tier: 2,
+  return { answer: r.answer, servedBy: r.servedBy, minerAddress, model: r.model || (entry && entry.model) || null, accounting: r.accounting, tier: 2,
     note: r.servedBy.kind === "wholesale" ? "served by CPU bootstrap model (not competitive) — no GPU miners online yet" : undefined };
 }
 
@@ -246,17 +274,21 @@ async function paidInfer(req, res, body, openaiShape) {
   if (!id) return sendJson(res, 401, { error: "unknown or missing API key — create one in the wallet (Inference ▸ API key)" });
   if (!body.prompt && !(body.messages && body.messages.length)) return sendJson(res, 400, { error: "need {prompt} or {messages}" });
   const prompt = body.prompt || body.messages.map((m) => m.content).join("\n");
-  const price = CFG.chatPriceBlock;
-  if (creditOf(id) < price) return sendJson(res, 402, { error: "insufficient BLOCK credit", need: price / COIN, balanceBlock: creditOf(id) / COIN, priceBlock: price / COIN, depositAddr: CFG.depositAddr });
-  const out = await performInference({ prompt, temperature: body.temperature, max_tokens: body.max_tokens }, (price / COIN) * CFG.blockUsd);
-  if (!out) return sendJson(res, 503, { error: "no miner or bootstrap backend available (not charged)" });
-  setCredit(id, creditOf(id) - price); // debit only on success
+  // Price in BLOCK by the requested model (same per-model rate as x402, converted via blockUsd).
+  const miners = await liveMiners();
+  const serving = resolveServing(body, miners);
+  if (!serving.available) return sendJson(res, 400, { error: "requested model is not available right now", requestedModel: serving.entry.model, available: availableModels(miners) });
+  const priceBlock = Math.ceil((serving.priceUsd / CFG.blockUsd) * COIN); // base units
+  if (creditOf(id) < priceBlock) return sendJson(res, 402, { error: "insufficient BLOCK credit", need: priceBlock / COIN, balanceBlock: creditOf(id) / COIN, priceBlock: priceBlock / COIN, model: serving.entry.model, depositAddr: CFG.depositAddr });
+  const out = await performInference({ prompt, temperature: body.temperature, max_tokens: body.max_tokens }, serving.priceUsd, serving.entry);
+  if (!out) return sendJson(res, 503, { error: "no miner available for this model (not charged)" });
+  setCredit(id, creditOf(id) - priceBlock); // debit only on success
   if (openaiShape) {
-    return sendJson(res, 200, { id: "blkinf-" + keyId(txRand()).slice(0, 16), object: "chat.completion", model: out.model || "blockle-intelligence",
+    return sendJson(res, 200, { id: "blkinf-" + keyId(txRand()).slice(0, 16), object: "chat.completion", model: out.model || serving.entry.model,
       choices: [{ index: 0, message: { role: "assistant", content: out.answer }, finish_reason: "stop" }],
-      blockle: { paidBlock: price / COIN, balanceBlock: creditOf(id) / COIN, servedBy: out.servedBy } });
+      blockle: { paidBlock: priceBlock / COIN, balanceBlock: creditOf(id) / COIN, servedBy: out.servedBy } });
   }
-  return sendJson(res, 200, { answer: out.answer, servedBy: out.servedBy, model: out.model, note: out.note, paidBlock: price / COIN, balanceBlock: creditOf(id) / COIN });
+  return sendJson(res, 200, { answer: out.answer, servedBy: out.servedBy, model: out.model, note: out.note, paidBlock: priceBlock / COIN, balanceBlock: creditOf(id) / COIN });
 }
 function txRand() { return crypto.randomBytes(8).toString("hex"); }
 
@@ -281,9 +313,10 @@ const server = http.createServer((req, res) => {
       if (parts[0] === "models") return sendJson(res, 200, { note: "Recommended model per GPU class — anyone can mine, CPU to 80GB.", catalog: CATALOG });
       if (parts[0] === "quote") { // BLOCK-402: price a job in BLOCK so a contract can set max_fee
         const tierIdx = Math.max(0, Math.min(CATALOG.length - 1, Number(u.searchParams.get("tier") || 0)));
-        const priceUsd = CFG.priceUsd; // flat per-call for now; could scale by tier
+        const entry = CATALOG[tierIdx];
+        const priceUsd = entry.priceUsd; // per-model price
         const blockBase = Math.ceil((priceUsd / CFG.blockUsd) * COIN);
-        return sendJson(res, 200, { standard: "BLOCK-402", tier: CATALOG[tierIdx].tier, priceUsd, blockUsd: CFG.blockUsd, feeBlockBaseUnits: blockBase, feeBlock: blockBase / COIN, note: "Set the contract's max_fee ≥ feeBlockBaseUnits. On-chain escrow pays this in BLOCK." });
+        return sendJson(res, 200, { standard: "BLOCK-402", tier: entry.tier, model: entry.model, priceUsd, blockUsd: CFG.blockUsd, feeBlockBaseUnits: blockBase, feeBlock: blockBase / COIN, note: "Set the contract's max_fee ≥ feeBlockBaseUnits. On-chain escrow pays this in BLOCK." });
       }
       if (parts[0] === "result") { // BLOCK-402: full result text by requestId (chains hold only the hash)
         const rid = parts[1] || u.searchParams.get("requestId") || "";
