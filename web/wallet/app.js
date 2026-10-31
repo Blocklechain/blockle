@@ -321,6 +321,7 @@
     { id: 'buy', ic: 'buy', label: 'Buy USDB' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
     { id: 'bots', ic: 'bots', label: 'Bots' },
+    { id: 'inference', ic: 'agent', label: 'Inference' },
     { id: 'activity', ic: 'activity', label: 'Activity' },
     { id: 'pro', ic: 'pro', label: 'Pro' },
     { id: 'settings', ic: 'settings', label: 'Settings' },
@@ -493,6 +494,61 @@
 
   /* ================= VIEWS ================= */
   var VIEWS = {};
+
+  /* ---- Inference: mine the tier-2 subnet + watch earnings (Blockle Intelligence) ---- */
+  VIEWS.inference = function (v) {
+    var addr = S.address || (window.Wallet && Wallet.address) || '';
+    v.innerHTML =
+      '<div class="card"><div class="sechead"><h2>Inference mining</h2><span class="chip" id="inf-net">—</span></div>' +
+        '<p class="muted" style="margin:4px 0 0">Earn BLOCK + a share of real x402 revenue by serving AI inference on the Blockle Intelligence tier-2 subnet. Any hardware — CPU to 80GB GPU.</p></div>' +
+      '<div class="card"><div class="dim">Your earnings (this address)</div>' +
+        '<div class="spread" style="margin-top:6px"><div><div class="hero-bal num" id="inf-total">$0.00</div><div class="dim" style="font-size:12px">total earned</div></div>' +
+        '<div style="text-align:right"><div class="num" id="inf-epoch" style="font-size:20px">$0.00</div><div class="dim" style="font-size:12px">this epoch · <span id="inf-reqs">0</span> jobs</div></div></div>' +
+        '<div class="dim" id="inf-status" style="font-size:12px;margin-top:8px"></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Pick your model</h2></div>' +
+        '<p class="muted" style="margin:0 0 8px">One recommended model per GPU class — so everyone can participate.</p>' +
+        '<div id="inf-models" class="list"><div class="empty">Loading…</div></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Run a miner (one command)</h2></div>' +
+        '<p class="muted" style="margin:0 0 8px">Install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, pull your tier\'s model, then start the Blockle miner. It auto-detects your VRAM and picks the right model.</p>' +
+        '<pre id="inf-cmd" style="white-space:pre-wrap;word-break:break-all;background:var(--panel,#111);padding:10px;border-radius:8px;font-size:12px"></pre>' +
+        '<button class="btn sm ghost" id="inf-copy" style="margin-top:6px">Copy command</button></div>' +
+      '<div class="card"><div class="dim" style="font-size:12px">Registering as a miner locks a small BLOCK bond on-chain and is done with the <code>blockle intel register-neuron</code> CLI (bundled in the desktop wallet) or the <code>blockle-inference</code> daemon. One-tap in-wallet registration is coming with the next node release. Activation is at block 18888.</div></div>';
+
+    $('#inf-cmd').textContent =
+      'ollama pull qwen2.5:3b-instruct   # or your tier\'s model (see list above)\n' +
+      'MINER_UPSTREAM=http://127.0.0.1:11434/v1 \\\n' +
+      '  MINER_GATEWAY=https://blockle.org/api/inference \\\n' +
+      '  MINER_ADDRESS=' + (addr || '<your-block-address>') + ' \\\n' +
+      '  MINER_UID=<your-neuron-uid> MINER_PUBLIC_URL=http://<your-host>:8821 \\\n' +
+      '  node blockle-inference/src/index.js --role miner';
+    $('#inf-copy').onclick = function () { copy($('#inf-cmd').textContent); };
+
+    function j(p) { return fetch(p).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); }
+    j('/api/inference/health').then(function (h) {
+      var el = $('#inf-net'); if (!el) return;
+      el.textContent = h ? (h.mainnetOk ? 'live · mainnet' : h.network || 'live') : 'offline';
+      el.className = 'chip ' + (h ? 'good' : '');
+    });
+    j('/api/inference/models').then(function (m) {
+      var box = $('#inf-models'); if (!box) return;
+      if (!m || !m.catalog) { box.innerHTML = '<div class="empty">Model list unavailable.</div>'; return; }
+      box.innerHTML = m.catalog.map(function (t) {
+        return '<div class="li"><span class="ico">' + esc(t.params) + '</span>' +
+          '<span class="col" style="align-items:flex-start"><b>' + esc(t.model) + '</b>' +
+          '<span class="dim" style="font-size:12px">' + esc(t.label) + ' · ' + esc(t.quant) + ' · ctx ' + t.ctx + '</span></span></div>';
+      }).join('');
+    });
+    if (addr) j('/api/inference/earnings/' + encodeURIComponent(addr)).then(function (e) {
+      if (!e || !$('#inf-total')) return;
+      $('#inf-total').textContent = '$' + Number(e.totalUsd || 0).toFixed(2);
+      $('#inf-epoch').textContent = '$' + Number(e.epochUsd || 0).toFixed(2);
+      $('#inf-reqs').textContent = e.requests || 0;
+    });
+    if (addr) j('/api/explorer/intel/neuron/' + encodeURIComponent(addr)).then(function (n) {
+      var s = $('#inf-status'); if (!s) return;
+      s.textContent = (n && n.neurons && n.neurons.length) ? ('Registered: ' + n.neurons.length + ' neuron(s) on-chain.') : 'Not yet registered as a miner on this address.';
+    });
+  };
 
   /* ---- Trade (super-AMM: custodial shared-price BLOCK market) ---- */
   function ammApi(path, opts) {
