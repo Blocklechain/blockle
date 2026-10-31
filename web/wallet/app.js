@@ -627,7 +627,7 @@
         '</select></div>' +
         '<button class="btn primary" id="wg-toggle" style="width:100%" disabled>Checking WebGPU…</button>' +
         '<div class="dim" id="wg-status" style="font-size:12px;margin-top:8px"></div></div>' +
-      '<div class="card"><div class="dim" style="font-size:12px">Earning also requires registering your address as a miner on-chain (locks a small BLOCK bond) via the <code>blockle intel register-neuron</code> CLI (bundled in the desktop wallet) or the <code>blockle-inference</code> daemon — one-tap in-wallet registration is coming with the next node release. Activation is at block 18888.</div></div>';
+      '<div class="card"><div class="dim" style="font-size:12px">Earning also requires registering your address as a miner on-chain (locks a BLOCK bond) via the <code>blockle intel register-neuron</code> CLI (bundled in the desktop wallet) or the <code>blockle-inference</code> daemon — one-tap in-wallet registration is coming with the next node release. Activation is at block 18888. Your bond is recoverable: <code>blockle intel deregister-neuron</code> unbonds and refunds it from block 19000 (after a one-epoch cooldown).</div></div>';
 
     setupWebgpuServe(addr);
 

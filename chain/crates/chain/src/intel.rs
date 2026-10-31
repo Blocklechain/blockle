@@ -35,9 +35,12 @@ pub struct Neuron {
     pub role: u8,
     pub hotkey: Vec<u8>,
     pub owner: [u8; 32],
-    /// Locked BLOCK bond (recoverable via Unbond in a later increment).
+    /// Locked BLOCK bond (recoverable via NeuronDeregister once past the unbond height).
     pub bond: u64,
     pub registered_height: u64,
+    /// False once the owner has deregistered (unbonded). Retired neurons are kept in the
+    /// vector so their `uid` is never reused, but are excluded from emission/validation.
+    pub active: bool,
 }
 
 /// All Blockle Intelligence consensus state. Cloned into the connect_block scratch set
@@ -75,7 +78,7 @@ impl IntelState {
     fn validator_uid(&self, subnet_id: u32, owner: &[u8; 32]) -> Option<u32> {
         self.neurons
             .iter()
-            .find(|n| n.subnet_id == subnet_id && n.role == 1 && &n.owner == owner)
+            .find(|n| n.subnet_id == subnet_id && n.role == 1 && n.active && &n.owner == owner)
             .map(|n| n.uid)
     }
 }
@@ -105,6 +108,7 @@ pub fn apply_intel_action(
     action: &IntelAction,
     tx: &Transaction,
     height: u64,
+    unbond_cooldown: u64,
 ) -> Vec<([u8; 32], u64)> {
     // A contract action always has a transparent input (enforced in check_transaction).
     let sender = match tx.inputs.first() {
@@ -141,6 +145,7 @@ pub fn apply_intel_action(
                 owner: sender,
                 bond: *bond,
                 registered_height: height,
+                active: true,
             });
             Vec::new()
         }
@@ -170,6 +175,34 @@ pub fn apply_intel_action(
             match intel.emission_ledger.remove(&sender) {
                 Some(amt) if amt > 0 => vec![(sender, amt)],
                 _ => Vec::new(),
+            }
+        }
+        IntelAction::NeuronDeregister { subnet_id, uid, .. } => {
+            // Only the owner may unbond their own, still-active neuron, and only after a
+            // cooldown past registration (so a validator can't register, vote, and flee in
+            // one epoch). The neuron is retired (kept in the vector so its uid is never
+            // reused) and its remaining post-slash bond is refunded.
+            let refund = match intel.neurons.iter_mut().find(|n| {
+                n.subnet_id == *subnet_id && n.uid == *uid && n.owner == sender && n.active
+            }) {
+                Some(n) if height >= n.registered_height.saturating_add(unbond_cooldown) => {
+                    let r = n.bond;
+                    n.bond = 0;
+                    n.active = false;
+                    r
+                }
+                // Not owned/active, or still in cooldown: no-op (the fee is still paid).
+                _ => return Vec::new(),
+            };
+            // Scrub epoch-scoped state so a retired neuron can't linger in emission math.
+            intel.commits.remove(&(*subnet_id, *uid));
+            intel.revealed.remove(&(*subnet_id, *uid));
+            intel.pov.remove(&(*subnet_id, *uid));
+            intel.bonds.remove(&(*subnet_id, *uid));
+            if refund > 0 {
+                vec![(sender, refund)]
+            } else {
+                Vec::new()
             }
         }
         IntelAction::ValidationProof { subnet_id, beacon_ack, .. } => {
@@ -203,7 +236,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         .iter()
         .map(|s| s.id)
         .filter(|&sid| {
-            intel.neurons.iter().any(|n| n.subnet_id == sid && n.role == 0)
+            intel.neurons.iter().any(|n| n.subnet_id == sid && n.role == 0 && n.active)
                 && intel.revealed.keys().any(|(s, _)| *s == sid)
         })
         .collect();
@@ -221,7 +254,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         .iter()
         .map(|&sid| {
             let w: u128 =
-                intel.neurons.iter().filter(|n| n.subnet_id == sid).map(|n| n.bond as u128).sum();
+                intel.neurons.iter().filter(|n| n.subnet_id == sid && n.active).map(|n| n.bond as u128).sum();
             (sid, w.max(1))
         })
         .collect();
@@ -241,7 +274,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
         let mut miners: Vec<(u32, [u8; 32])> = intel
             .neurons
             .iter()
-            .filter(|n| n.subnet_id == sid && n.role == 0)
+            .filter(|n| n.subnet_id == sid && n.role == 0 && n.active)
             .map(|n| (n.uid, n.owner))
             .collect();
         miners.sort_by_key(|(u, _)| *u);
@@ -251,7 +284,7 @@ pub fn run_emission_epoch(intel: &mut IntelState, seed: [u8; 32], _height: u64) 
 
         // validators that revealed -> rows; active iff they ALSO proved liveness (PoV).
         let mut vals: Vec<(u32, [u8; 32], u128)> = Vec::new();
-        for n in intel.neurons.iter().filter(|n| n.subnet_id == sid && n.role == 1) {
+        for n in intel.neurons.iter().filter(|n| n.subnet_id == sid && n.role == 1 && n.active) {
             if intel.revealed.contains_key(&(sid, n.uid)) {
                 vals.push((n.uid, n.owner, n.bond as u128));
             }
@@ -360,6 +393,7 @@ mod tests {
             &IntelAction::SubnetRegister { schema: b"embeddings".to_vec(), tier: 0, gas_limit: 1000 },
             &tx,
             10,
+            0,
         );
         assert!(refund.is_empty());
         assert_eq!(st.subnets.len(), 1);
@@ -371,6 +405,7 @@ mod tests {
             &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: b"hk".to_vec(), bond: 5_000, gas_limit: 1000 },
             &tx,
             11,
+            0,
         );
         assert!(refund.is_empty(), "valid register should not refund");
         assert_eq!(st.neurons.len(), 1);
@@ -391,6 +426,7 @@ mod tests {
             &IntelAction::NeuronRegister { subnet_id: 7, role: 1, hotkey: b"x".to_vec(), bond: 9_000, gas_limit: 1000 },
             &tx,
             5,
+            0,
         );
         assert_eq!(refund, vec![(addr, 9_000)]);
         assert!(st.neurons.is_empty());
@@ -401,11 +437,51 @@ mod tests {
         let kp = Keypair::generate();
         let tx = tx_from(&kp);
         let mut st = IntelState::default();
-        apply_intel_action(&mut st, &IntelAction::SubnetRegister { schema: vec![], tier: 1, gas_limit: 1 }, &tx, 1);
+        apply_intel_action(&mut st, &IntelAction::SubnetRegister { schema: vec![], tier: 1, gas_limit: 1 }, &tx, 1, 0);
         for _ in 0..3 {
-            apply_intel_action(&mut st, &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: vec![1], bond: 1, gas_limit: 1 }, &tx, 1);
+            apply_intel_action(&mut st, &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: vec![1], bond: 1, gas_limit: 1 }, &tx, 1, 0);
         }
         let uids: Vec<u32> = st.neurons.iter().map(|n| n.uid).collect();
         assert_eq!(uids, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn deregister_refunds_bond_after_cooldown_and_preserves_uids() {
+        let kp = Keypair::generate();
+        let addr = blockle_core::keys::pubkey_to_address(&kp.public_bytes());
+        let tx = tx_from(&kp);
+        let mut st = IntelState::default();
+        let cooldown = 10u64;
+        apply_intel_action(&mut st, &IntelAction::SubnetRegister { schema: vec![], tier: 0, gas_limit: 1 }, &tx, 1, cooldown);
+        // Register two miners (uids 0, 1); registered at height 100.
+        apply_intel_action(&mut st, &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: vec![1], bond: 7_000, gas_limit: 1 }, &tx, 100, cooldown);
+        apply_intel_action(&mut st, &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: vec![2], bond: 3_000, gas_limit: 1 }, &tx, 100, cooldown);
+
+        // Too soon (within cooldown) -> no refund, neuron stays active.
+        let early = apply_intel_action(&mut st, &IntelAction::NeuronDeregister { subnet_id: 0, uid: 0, gas_limit: 1 }, &tx, 105, cooldown);
+        assert!(early.is_empty(), "deregister inside cooldown must be a no-op");
+        assert!(st.neurons[0].active);
+
+        // Past cooldown -> remaining bond refunded, neuron retired, uid retained.
+        let refund = apply_intel_action(&mut st, &IntelAction::NeuronDeregister { subnet_id: 0, uid: 0, gas_limit: 1 }, &tx, 110, cooldown);
+        assert_eq!(refund, vec![(addr, 7_000)]);
+        assert!(!st.neurons[0].active);
+        assert_eq!(st.neurons[0].bond, 0);
+
+        // A new registration must NOT reuse uid 0 (count includes the retired neuron).
+        apply_intel_action(&mut st, &IntelAction::NeuronRegister { subnet_id: 0, role: 0, hotkey: vec![3], bond: 1, gas_limit: 1 }, &tx, 120, cooldown);
+        let uids: Vec<u32> = st.neurons.iter().map(|n| n.uid).collect();
+        assert_eq!(uids, vec![0, 1, 2]);
+
+        // Double-deregister is a no-op (already retired).
+        let again = apply_intel_action(&mut st, &IntelAction::NeuronDeregister { subnet_id: 0, uid: 0, gas_limit: 1 }, &tx, 130, cooldown);
+        assert!(again.is_empty());
+
+        // Not the owner -> no-op even past cooldown.
+        let other = Keypair::generate();
+        let tx2 = tx_from(&other);
+        let foreign = apply_intel_action(&mut st, &IntelAction::NeuronDeregister { subnet_id: 0, uid: 1, gas_limit: 1 }, &tx2, 200, cooldown);
+        assert!(foreign.is_empty());
+        assert!(st.neurons[1].active, "a non-owner must not be able to deregister someone else's neuron");
     }
 }

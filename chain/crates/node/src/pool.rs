@@ -1009,9 +1009,9 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                 .subnets
                 .iter()
                 .map(|s| {
-                    let miners = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 0).count();
-                    let vals = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 1).count();
-                    let bond: u64 = it.neurons.iter().filter(|n| n.subnet_id == s.id).map(|n| n.bond).sum();
+                    let miners = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 0 && n.active).count();
+                    let vals = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.role == 1 && n.active).count();
+                    let bond: u64 = it.neurons.iter().filter(|n| n.subnet_id == s.id && n.active).map(|n| n.bond).sum();
                     json!({ "id": s.id, "tier": s.tier, "miners": miners, "validators": vals,
                             "total_bond": bond, "created_height": s.created_height })
                 })
@@ -1019,6 +1019,8 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
             ok(json!({
                 "active": chain.height().map(|h| h >= chain.params.intel_activation_height).unwrap_or(false),
                 "activation_height": chain.params.intel_activation_height,
+                "unbond_height": chain.params.intel_unbond_height,
+                "unbond_active": chain.height().map(|h| h >= chain.params.intel_unbond_height).unwrap_or(false),
                 "height": chain.height(),
                 "last_epoch_seed": hex::encode(it.last_epoch_seed),
                 "alpha_bps": chain.params.intel_alpha_bps,
@@ -1039,7 +1041,7 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                         .iter()
                         .filter(|n| n.subnet_id == id)
                         .map(|n| json!({ "uid": n.uid, "role": n.role, "owner": encode_address(&n.owner),
-                                         "bond": n.bond, "registered_height": n.registered_height }))
+                                         "bond": n.bond, "registered_height": n.registered_height, "active": n.active }))
                         .collect();
                     ok(json!({ "id": id, "tier": s.tier, "created_height": s.created_height, "neurons": neurons }))
                 }
@@ -1055,7 +1057,7 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                         .neurons
                         .iter()
                         .filter(|n| n.owner == addr)
-                        .map(|n| json!({ "subnet_id": n.subnet_id, "uid": n.uid, "role": n.role, "bond": n.bond }))
+                        .map(|n| json!({ "subnet_id": n.subnet_id, "uid": n.uid, "role": n.role, "bond": n.bond, "active": n.active }))
                         .collect();
                     let claimable = chain.intel.emission_ledger.get(&addr).copied().unwrap_or(0);
                     ok(json!({ "address": addr_s, "neurons": mine, "claimable_emission": claimable }))

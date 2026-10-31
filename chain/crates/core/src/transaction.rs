@@ -103,6 +103,12 @@ pub enum IntelAction {
     SetWeightsReveal { subnet_id: u32, uids: Vec<u32>, weights: Vec<u32>, nonce: [u8; 32], gas_limit: u64 },
     /// Pay out the sender's accrued intelligence emission to a new BLOCK output.
     NeuronClaim { gas_limit: u64 },
+    /// Deregister (unbond) a neuron the sender owns, identified by `(subnet_id, uid)`.
+    /// The remaining (post-slash) bond is refunded to the owner and the neuron is
+    /// retired. Height-gated separately (not active until the unbond height) and
+    /// subject to a one-epoch cooldown after registration so a validator cannot
+    /// register, vote, and flee within a single epoch.
+    NeuronDeregister { subnet_id: u32, uid: u32, gas_limit: u64 },
     /// Proof-of-validation (liveness): a validator acknowledges the current epoch's
     /// in-node beacon (`beacon_ack` must equal it), proving it is live against fresh,
     /// unpredictable randomness. Validators that reveal weights but skip this each epoch
@@ -119,6 +125,7 @@ impl IntelAction {
             IntelAction::SetWeightsReveal { gas_limit, .. } => *gas_limit,
             IntelAction::NeuronClaim { gas_limit, .. } => *gas_limit,
             IntelAction::ValidationProof { gas_limit, .. } => *gas_limit,
+            IntelAction::NeuronDeregister { gas_limit, .. } => *gas_limit,
         }
     }
     /// BLOCK moved from inputs into locked state (the neuron bond). Weight/claim actions
@@ -427,6 +434,13 @@ impl Transaction {
                 put_u32(&mut out, 5); // inner: ValidationProof
                 put_u32(&mut out, *subnet_id);
                 put_fixed(&mut out, beacon_ack);
+                put_u64(&mut out, *gas_limit);
+            }
+            Some(ContractAction::Intel(IntelAction::NeuronDeregister { subnet_id, uid, gas_limit })) => {
+                put_u32(&mut out, 10);
+                put_u32(&mut out, 6); // inner: NeuronDeregister
+                put_u32(&mut out, *subnet_id);
+                put_u32(&mut out, *uid);
                 put_u64(&mut out, *gas_limit);
             }
         }

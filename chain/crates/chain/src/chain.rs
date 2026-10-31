@@ -420,6 +420,15 @@ impl Chain {
                         "intelligence actions are not active until the activation height".into(),
                     ));
                 }
+                // Unbonding activates at its own, later height (backwards compatible —
+                // pre-unbond-height blocks reject the new action unchanged).
+                if matches!(a, blockle_core::transaction::IntelAction::NeuronDeregister { .. })
+                    && height < self.params.intel_unbond_height
+                {
+                    return Err(ChainError::ContractRules(
+                        "neuron deregistration is not active until the unbond height".into(),
+                    ));
+                }
                 if a.gas_limit() > self.params.block_gas_limit {
                     return Err(ChainError::ContractRules("gas limit too high".into()));
                 }
@@ -596,6 +605,7 @@ impl Chain {
         nullifiers: &mut HashSet<Hash32>,
         note_leaves: &mut Vec<Hash32>,
         intel: &mut crate::intel::IntelState,
+        unbond_cooldown: u64,
     ) -> Vec<([u8; 32], Vec<u8>)> {
         if let Some(bundle) = &tx.shielded {
             for spend in &bundle.spends {
@@ -642,7 +652,7 @@ impl Chain {
             }
             // Blockle Intelligence native action (height-gated in check_transaction).
             Some(ContractAction::Intel(a)) => {
-                (crate::intel::apply_intel_action(intel, a, tx, height), Vec::new())
+                (crate::intel::apply_intel_action(intel, a, tx, height, unbond_cooldown), Vec::new())
             }
             _ => {
                 let effects = contracts::apply_contract_action(tx, txid, height, contracts, storage);
@@ -813,7 +823,7 @@ impl Chain {
             let txid = tx.txid();
             let logs = Self::apply_tx_effects(
                 tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
-                &mut lview, &mut iview,
+                &mut lview, &mut iview, self.params.intel_epoch_len,
             );
             block_logs.extend(logs);
         }

@@ -339,6 +339,19 @@ enum IntelCmd {
         #[arg(long)]
         node: Option<String>,
     },
+    /// Deregister (unbond) one of your neurons and reclaim its remaining bond.
+    /// Active from the unbond height, and only after a one-epoch cooldown past
+    /// registration. Find your `subnet`/`uid` with `intel status`.
+    DeregisterNeuron {
+        #[arg(long)]
+        subnet: u32,
+        #[arg(long)]
+        uid: u32,
+        #[arg(long, default_value = "100000")]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
     /// Show your neurons, claimable emission, and the pool.
     Status,
 }
@@ -1136,6 +1149,12 @@ fn intel_cmd(datadir: &Path, params: ChainParams, cmd: IntelCmd) -> Result<()> {
             ContractAction::Intel(IntelAction::NeuronClaim { gas_limit: gas }),
             gas, node, "claiming intelligence emission",
         ),
+        IntelCmd::DeregisterNeuron { subnet, uid, gas, node } => send(
+            datadir,
+            ContractAction::Intel(IntelAction::NeuronDeregister { subnet_id: subnet, uid, gas_limit: gas }),
+            gas, node,
+            &format!("deregistering neuron (subnet {subnet} uid {uid}); remaining bond will be refunded"),
+        ),
         IntelCmd::Status => {
             let kp = load_wallet(datadir)?;
             let chain = storage::load_chain(datadir, params)?;
@@ -1146,8 +1165,9 @@ fn intel_cmd(datadir: &Path, params: ChainParams, cmd: IntelCmd) -> Result<()> {
             println!("subnets: {}   neurons(total): {}", chain.intel.subnets.len(), chain.intel.neurons.len());
             for n in chain.intel.neurons.iter().filter(|n| n.owner == me) {
                 println!(
-                    "  subnet {} uid {} [{}]  bond {}",
-                    n.subnet_id, n.uid, if n.role == 1 { "validator" } else { "miner" }, format_amount(n.bond)
+                    "  subnet {} uid {} [{}]  bond {}{}",
+                    n.subnet_id, n.uid, if n.role == 1 { "validator" } else { "miner" }, format_amount(n.bond),
+                    if n.active { "" } else { "  (retired)" }
                 );
             }
             Ok(())

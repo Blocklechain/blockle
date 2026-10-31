@@ -57,7 +57,7 @@ fn apply(tx: &Transaction, pools: &mut PoolState, contracts: &mut ContractMap, s
     let txid = tx.txid();
     Chain::apply_tx_effects(
         tx, &txid, 100, &mut utxos, contracts, storage, pools, &mut nullifiers, &mut note_leaves,
-        &mut intel,
+        &mut intel, 4,
     );
 }
 
@@ -111,7 +111,7 @@ fn launch_token_refunds_when_pool_exceeds_supply() {
     let txid = tx.txid();
     Chain::apply_tx_effects(
         &tx, &txid, 100, &mut utxos, &mut contracts, &mut storage, &mut pools,
-        &mut nullifiers, &mut note_leaves, &mut intel,
+        &mut nullifiers, &mut note_leaves, &mut intel, 4,
     );
 
     // the token still deployed + fully minted to alice (the mint succeeded)...

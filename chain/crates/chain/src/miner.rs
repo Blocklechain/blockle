@@ -60,7 +60,7 @@ pub fn build_template(
         let txid = tx.txid();
         Chain::apply_tx_effects(
             tx, &txid, height, &mut view, &mut cview, &mut sview, &mut pview, &mut nview,
-            &mut lview, &mut iview,
+            &mut lview, &mut iview, chain.params.intel_epoch_len,
         );
         gas_total += gas;
         fees = fees.checked_add(fee).ok_or(ChainError::ValueOutOfRange)?;

@@ -60,6 +60,11 @@ pub struct ChainParams {
     /// Blocks per emission epoch. At each boundary the accrued pool is distributed to
     /// neurons by the §5 consensus over the epoch's revealed weights.
     pub intel_epoch_len: u64,
+    /// Height at which `NeuronDeregister` (unbond) activates. Separate from
+    /// `intel_activation_height` so unbonding can be enabled after registration has
+    /// been live for a while. Below it, deregister txs are rejected. A deregister is
+    /// additionally subject to a one-epoch cooldown past the neuron's registration.
+    pub intel_unbond_height: u64,
 }
 
 impl ChainParams {
@@ -107,6 +112,9 @@ impl ChainParams {
             intel_activation_height: 18_888,
             intel_alpha_bps: 1_000, // 10% of subsidy → intelligence pool (when active)
             intel_epoch_len: 360,
+            // Unbonding opens ~112 blocks after intel activates, giving the registry a
+            // brief settling window before bonds can be withdrawn.
+            intel_unbond_height: 19_000,
         }
     }
 
@@ -131,6 +139,9 @@ impl ChainParams {
             intel_activation_height: 0,
             intel_alpha_bps: 0,
             intel_epoch_len: 4,
+            // Unbonding active from genesis in regtest (gated only by the per-neuron
+            // one-epoch cooldown, which here is 4 blocks).
+            intel_unbond_height: 0,
             ..Self::mainnet()
         }
     }
