@@ -1611,6 +1611,11 @@
       show('accounts');
       return;
     }
+    if (name === 'chat') {
+      if (window.ChatUI) return void ChatUI.enter();
+      show('chat');
+      return;
+    }
     if (name === 'agent') {
       if (window.AgentUI) return void AgentUI.enter();
       show('agent');
@@ -1690,6 +1695,7 @@
     if (window.AgentUI) AgentUI.init(BlockleUI);
     if (window.BotsUI) BotsUI.init(BlockleUI);
     if (window.WalletUI) WalletUI.init(BlockleUI);
+    if (window.ChatUI) ChatUI.init(BlockleUI);
     refreshNet();
     if (!(await Wallet.exists())) return route('welcome');
     enterSelected();

@@ -8,6 +8,7 @@ import 'exchange_screen.dart';
 import 'trade_screen.dart';
 import 'agent_screen.dart';
 import 'bots_screen.dart';
+import 'chat_screen.dart';
 import 'browser_tab.dart';
 import 'settings.dart';
 import 'wallet/wallet_screen.dart';
@@ -25,6 +26,7 @@ class HomeScreen extends StatelessWidget {
     BrowserTab(),
     SettingsScreen(),
     WalletScreen(),
+    ChatScreen(),
   ];
 
   @override
@@ -80,6 +82,10 @@ class HomeScreen extends StatelessWidget {
                 icon: Icon(Icons.diamond_outlined, color: Bk.muted),
                 selectedIcon: Icon(Icons.diamond, color: Bk.accent),
                 label: 'Portfolio'),
+            NavigationDestination(
+                icon: Icon(Icons.chat_bubble_outline, color: Bk.muted),
+                selectedIcon: Icon(Icons.chat_bubble, color: Bk.accent),
+                label: 'AI Chat'),
           ],
         ),
       ),

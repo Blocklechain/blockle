@@ -2594,4 +2594,13 @@ def build_tabs(block_wallet, datadir) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Trade panel unavailable ({e})", file=sys.stderr)
+    # AI Chat panel (ADDITIVE): ChatGPT/Claude-style chat on Blockle Intelligence,
+    # paid per message in BLOCK via a generatable API key. Guarded so a problem here
+    # never drops the other panels.
+    try:
+        from .qtchat import build_chat_tab
+        tabs.append(build_chat_tab(block_wallet, datadir))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: AI Chat panel unavailable ({e})", file=sys.stderr)
     return tabs

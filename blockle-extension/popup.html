@@ -126,7 +126,19 @@
         <div class="list" id="activity"><div class="empty">No transactions yet.</div></div>
         <nav class="tabbar">
           <button class="tab active" data-go="dashboard">Home</button>
-          <button class="tab" data-go="queue">Queue</button>
+          <button class="tab" data-go="chat">Chat</button>
+          <button class="tab" data-go="agent">Agent</button>
+          <button class="tab" data-go="bots">Bots</button>
+          <button class="tab" data-go="settings">Settings</button>
+        </nav>
+      </section>
+
+      <section class="screen" data-screen="chat" hidden>
+        <header class="bar"><button class="back" data-go="dashboard">‹</button><span>AI Chat</span></header>
+        <div class="pad"><div id="chat-root"></div></div>
+        <nav class="tabbar">
+          <button class="tab" data-go="dashboard">Home</button>
+          <button class="tab active" data-go="chat">Chat</button>
           <button class="tab" data-go="agent">Agent</button>
           <button class="tab" data-go="bots">Bots</button>
           <button class="tab" data-go="settings">Settings</button>
@@ -650,6 +662,7 @@
     <script src="walletconnect.js"></script>
     <script src="wc-relay.js"></script>
     <script src="wallet-ui.js"></script>
+    <script src="chat-ui.js"></script>
     <script src="particles.js"></script>
     <script src="popup.js"></script>
   </body>
