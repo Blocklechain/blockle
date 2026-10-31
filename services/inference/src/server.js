@@ -15,6 +15,7 @@ const { buildRequirements, buildChallengeV2, verifyAndSettle } = require("./x402
 const { route } = require("./gateway");
 const { CATALOG } = require("./models");
 const { createQueue } = require("./jobqueue");
+const { buildOpenApi } = require("./openapi");
 
 // Pull-based queue for BROWSER (WebGPU) miners — the web wallet serves directly from the tab.
 const QUEUE = createQueue({ jobTimeoutMs: 25000 });
@@ -261,7 +262,9 @@ function txRand() { return crypto.randomBytes(8).toString("hex"); }
 
 // ---- server -----------------------------------------------------------------
 const server = http.createServer((req, res) => {
-  if (req.method === "OPTIONS") { res.writeHead(204, { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-payment", "access-control-allow-methods": "GET,POST,OPTIONS" }); return res.end(); }
+  if (req.method === "OPTIONS") { res.writeHead(204, { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type, x-payment, authorization", "access-control-allow-methods": "GET,POST,OPTIONS" }); return res.end(); }
+  // Point crawlers/agents at the OpenAPI discovery doc from every response.
+  res.setHeader("Link", '</api/inference/openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json"');
   const u = new URL(req.url, "http://x");
   const parts = u.pathname.replace(/^\/api\/inference/, "").split("/").filter(Boolean);
   let b = ""; req.on("data", (c) => (b += c)); req.on("end", async () => {
@@ -333,8 +336,10 @@ const server = http.createServer((req, res) => {
         const payoutBase = loadJson(PAYADDR_FILE)[addr] || null;
         return sendJson(res, 200, { address: addr, owedUsdc: e.owed, paidUsdc: e.paid, payoutBase, asset: { symbol: "USDC", chain: "base", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" } });
       }
-      if (parts[0] === ".well-known" && parts[1] === "x402") {
-        return sendJson(res, 200, { x402Version: 2, name: "Blockle Inference", description: "Tier-2 inference subnet. Paid requests route to community GPU miners; a small hosted CPU model is the labeled bootstrap fallback. Emission is capped (subjective tier).", network: CFG.network, facilitator: CFG.facilitatorUrl, accepts: [{ resource: `${CFG.publicBase}/infer`, method: "POST", price: `$${CFG.priceUsd}`, description: "Inference. Response includes servedBy + model so you see exactly what produced it.", input: { prompt: "string", temperature: "optional", max_tokens: "optional" } }] });
+      // x402scan / agent discovery: OpenAPI 3.1 at both /openapi.json and /.well-known/x402.
+      if (parts[0] === "openapi.json" || (parts[0] === ".well-known" && parts[1] === "x402")) {
+        res.setHeader("Link", '</api/inference/openapi.json>; rel="service-desc"; type="application/vnd.oai.openapi+json"');
+        return sendJson(res, 200, buildOpenApi(CFG));
       }
       return sendJson(res, 404, { error: "not found", try: ["/api/inference/infer (x402 POST)", "/api/inference/miners", "/api/inference/earnings/<addr>", "/api/inference/health", "/api/inference/.well-known/x402"] });
     } catch (e) { return sendJson(res, 500, { error: e.message }); }
