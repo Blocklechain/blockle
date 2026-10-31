@@ -99,8 +99,12 @@ impl ChainParams {
             block_gas_limit: 10_000_000,
             max_contract_code: 24_576,
             max_contract_input: 8_192,
-            // Mainnet: disabled until the Phase-5 audit sets a real activation height.
-            intel_activation_height: u64::MAX,
+            // Mainnet activation of Blockle Intelligence (operator-approved 2026-10-31).
+            // From this height the coinbase α-split + intel consensus rules are enforced;
+            // every mainnet node/miner MUST run a binary with this value before height
+            // 18888 or it will fork off. Chosen ~1500 blocks (~10.5 days) ahead of the
+            // tip at approval (17374) to give node operators an upgrade window.
+            intel_activation_height: 18_888,
             intel_alpha_bps: 1_000, // 10% of subsidy → intelligence pool (when active)
             intel_epoch_len: 360,
         }
