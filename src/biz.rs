@@ -3129,9 +3129,9 @@ fn inject_upgrade_banner(html: Vec<u8>, path: &str) -> Vec<u8> {
          Please <b>update your wallet</b> to the latest version — and <b>back up your \
          <code>wallet.json</code></b> (Wallet &rsaquo; Backup / Export) before then."
     } else {
-        "<b>Consensus upgrade at block 18&#8203;888</b> (~10 days): Blockle Intelligence \
-         activates. <b>Node operators &amp; miners must upgrade before then</b> or you will \
-         fork off the network. Wallet users: update your wallet &amp; back up your \
+        "<b>Consensus upgrade at block 18&#8203;888</b><span id=\"blk-eta\"></span>: Blockle \
+         Intelligence activates. <b>Node operators &amp; miners must upgrade before then</b> or \
+         you will fork off the network. Wallet users: update your wallet &amp; back up your \
          <code>wallet.json</code>."
     };
     let banner = format!(
@@ -3144,7 +3144,7 @@ fn inject_upgrade_banner(html: Vec<u8>, path: &str) -> Vec<u8> {
 </div>
 <script>(function(){{var H=18888,bar=document.getElementById('blk-upg-bar');if(!bar)return;try{{if(localStorage.getItem('blk-intel-18888'))return;}}catch(e){{}}
 bar.style.display='block';document.body.style.paddingBottom='64px';
-fetch('/api/explorer/intel').then(function(r){{return r.json()}}).then(function(d){{if(!d)return;var act=d.active===true||((d.height||0)>=(d.activation_height||H));if(act){{bar.style.display='none';document.body.style.paddingBottom=''}}}}).catch(function(){{}});
+fetch('/api/explorer/intel').then(function(r){{return r.json()}}).then(function(d){{if(!d)return;var A=d.activation_height||H,h=d.height||0,act=d.active===true||h>=A;if(act){{bar.style.display='none';document.body.style.paddingBottom=''}}else{{var e=document.getElementById('blk-eta');if(e&&h>0){{e.textContent=' ('+(A-h).toLocaleString()+' blocks to go)'}}}}}}).catch(function(){{}});
 }})();</script>
 "#,
         msg = msg
