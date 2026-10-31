@@ -1,0 +1,29 @@
+// block402.bs — ILLUSTRATIVE minimal BLOCK-402 inference-request escrow.
+//
+// This shows the request -> escrow -> payout SHAPE within today's Blockle Script (u64-only
+// state/args, scalar log, no caller-based access control). It is NOT the production standard:
+// the real BLOCK-402 is a Rust consensus action with per-request mapping storage, a
+// fulfiller guard, result-hash commitment and expiry refunds — see docs/BLOCK-402-INFERENCE.md.
+//
+// fn 0: request(request_id, model) — attach value() = max_fee BLOCK; escrows it, logs the id+model
+// fn 1: fulfill(fee_used)          — pays fee_used BLOCK to the caller (fulfiller); rest stays refundable
+contract Block402 {
+    state pending_id: u64
+    state escrow: u64
+
+    fn request(request_id: u64, model: u64) -> u64 {
+        require(value() > 0)
+        pending_id = request_id
+        escrow = value()
+        log(request_id)
+        log(model)
+        return request_id
+    }
+
+    fn fulfill(fee_used: u64) -> u64 {
+        require(fee_used <= escrow)
+        send_caller(fee_used)
+        escrow = escrow - fee_used
+        return escrow
+    }
+}

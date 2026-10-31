@@ -32,7 +32,9 @@ const CFG = {
   dataDir: process.env.INFERENCE_DATA || path.join(__dirname, "..", "data"),
   maxTimeoutSeconds: 300,
   latencyBudgetMs: Number(process.env.INFERENCE_LAT_MS || 60000),
+  blockUsd: Number(process.env.INFERENCE_BLOCK_USD || 0.01), // operator BLOCK→USD rate for BLOCK-402 quotes
 };
+const COIN = 100000000; // BLOCK base units
 const usdcMicro = (usd) => String(Math.round(usd * 1e6));
 fs.mkdirSync(CFG.dataDir, { recursive: true });
 const MINERS_FILE = path.join(CFG.dataDir, "miners.json");     // uid -> {uid,address,url,ts}
@@ -161,6 +163,17 @@ const server = http.createServer((req, res) => {
       if (!parts.length || parts[0] === "health") return sendJson(res, 200, { ok: true, network: CFG.network, mainnetOk: CFG.mainnetOk, subnet: CFG.subnetId, priceUsd: CFG.priceUsd, feeBps: CFG.feeBps, miners: (await liveMiners()).length });
       if (parts[0] === "infer" && req.method === "POST") return handleInfer(req, res, body);
       if (parts[0] === "models") return sendJson(res, 200, { note: "Recommended model per GPU class — anyone can mine, CPU to 80GB.", catalog: CATALOG });
+      if (parts[0] === "quote") { // BLOCK-402: price a job in BLOCK so a contract can set max_fee
+        const tierIdx = Math.max(0, Math.min(CATALOG.length - 1, Number(u.searchParams.get("tier") || 0)));
+        const priceUsd = CFG.priceUsd; // flat per-call for now; could scale by tier
+        const blockBase = Math.ceil((priceUsd / CFG.blockUsd) * COIN);
+        return sendJson(res, 200, { standard: "BLOCK-402", tier: CATALOG[tierIdx].tier, priceUsd, blockUsd: CFG.blockUsd, feeBlockBaseUnits: blockBase, feeBlock: blockBase / COIN, note: "Set the contract's max_fee ≥ feeBlockBaseUnits. On-chain escrow pays this in BLOCK." });
+      }
+      if (parts[0] === "result") { // BLOCK-402: full result text by requestId (chains hold only the hash)
+        const rid = parts[1] || u.searchParams.get("requestId") || "";
+        const r = loadJson(path.join(CFG.dataDir, "oracle-results.json"))[rid];
+        return r ? sendJson(res, 200, { requestId: rid, ...r }) : sendJson(res, 404, { requestId: rid, status: "pending-or-unknown", note: "result appears here once the fulfiller completes the request" });
+      }
       if (parts[0] === "miners") return sendJson(res, 200, { miners: (await liveMiners()).map((m) => ({ uid: m.uid, address: m.address, epochUsd: m.revenueUsd })) });
       if (parts[0] === "earnings") { // /earnings/<address>  (read-only; what a miner watches)
         const addr = parts[1] || u.searchParams.get("address") || "";
