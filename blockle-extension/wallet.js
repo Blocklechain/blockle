@@ -22,6 +22,16 @@
     return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   }
 
+  // Deterministic HD seed BOUND to this wallet's BLOCK identity: a domain-separated SHA-256 of
+  // the BLOCK ML-DSA secret key. So every secp256k1 chain address (EVM / Base / BTC / LTC / DOGE)
+  // persists across sessions AND is reproducible from the BLOCK key alone — a seedless import of
+  // the BLOCK key regenerates the SAME multichain addresses, attached to the base Blockle address.
+  function seedFromBlock(secretHex) {
+    const C = (typeof BLKCrypto !== 'undefined' && BLKCrypto) || (typeof self !== 'undefined' && self.BLKCrypto) || (typeof window !== 'undefined' && window.BLKCrypto);
+    if (!C || !C.sha256 || !C.hexToBytes || !C.bytesToHex || !secretHex) return newSeedHex();
+    return C.bytesToHex(C.sha256(C.hexToBytes('626c6f636b6c652d68642d7631' + secretHex)));
+  }
+
   async function allWallets() {
     return (await Store.get('wallets')).wallets || [];
   }
@@ -106,7 +116,7 @@
     // Create a new wallet, seal under `password`, append, select, unlock.
     async create(password, label) {
       const kp = await Signer.keygen();
-      const seed = newSeedHex();
+      const seed = seedFromBlock(kp.secretKey); // HD seed bound to the BLOCK key (deterministic)
       const crypto_ = await Vault.seal(
         { secret: kp.secretKey, public: kp.publicKey, seed },
         password
@@ -138,11 +148,11 @@
       const { secret, public: pub } = pt;
       // Wallets created before the multi-chain seed existed get one minted now,
       // so the re-seal below persists it. BLOCK identity is untouched.
-      const seed = pt.seed || newSeedHex();
+      const seed = seedFromBlock(secret);
       // Transparent vault upgrade: re-seal legacy (v1 PBKDF2) blobs — or any
       // blob missing the HD seed — as the current v2 (scrypt) format. The user
       // never loses access and never has to re-enter anything.
-      if (Vault.needsUpgrade(rec.crypto) || !pt.seed) {
+      if (Vault.needsUpgrade(rec.crypto) || pt.seed !== seed) {
         try {
           rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed }, password);
           const list = await allWallets();
@@ -168,7 +178,7 @@
         await Session.clear('session');
         return false;
       }
-      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.seed || null, at: s.at };
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), at: s.at };
       return true;
     },
 

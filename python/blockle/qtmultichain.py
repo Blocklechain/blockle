@@ -498,9 +498,26 @@ class MultiChainController:
         self._build()
 
     def create(self, password: str, mnemonic: Optional[str] = None) -> str:
+        # Bind the multichain HD seed to the BLOCK identity: when no mnemonic is supplied, derive
+        # it deterministically from the BLOCK key so EVM / Base / BTC / LTC / DOGE / SOL addresses
+        # persist and are reproducible from the base Blockle address (same across devices/wallets).
+        if mnemonic is None:
+            mnemonic = self._block_derived_mnemonic()
         m = self.vault.create(password, mnemonic)
         self._build()
         return m
+
+    def _block_derived_mnemonic(self) -> str:
+        """A BIP39 mnemonic deterministically derived from the BLOCK secret (domain-separated
+        SHA-256), so the multichain wallet is attached to the base Blockle address. Falls back to a
+        random mnemonic only if the BLOCK key export is unavailable."""
+        import hashlib
+        try:
+            secret = self.block_wallet.export_keys()
+        except Exception:
+            return K.generate_mnemonic(128)
+        entropy = hashlib.sha256(b"blockle-hd-v1|" + str(secret).encode()).digest()[:16]
+        return K.entropy_to_mnemonic(entropy)
 
     def is_unlocked(self) -> bool:
         return self.vault.is_unlocked()
