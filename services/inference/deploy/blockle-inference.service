@@ -1,0 +1,29 @@
+[Unit]
+Description=Blockle Inference Gateway (tier-2 x402 inference marketplace, loopback :8822)
+After=network.target blockle-node.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/inference
+# Reuse the x402 seller SDK already installed for the beacon/x402-buy services.
+Environment=NODE_PATH=/opt/blockle/services/x402-buy/node_modules
+Environment=INFERENCE_PORT=8822
+Environment=INFERENCE_PUBLIC_BASE=https://blockle.org/api/inference
+# MAINNET USDC — enabled per operator sign-off (2026-10-31). Base mainnet + treasury payTo.
+Environment=INFERENCE_NETWORK=base
+Environment=INFERENCE_MAINNET_OK=1
+Environment=INFERENCE_PAYTO=0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c
+Environment=INFERENCE_FACILITATOR=https://x402.org/facilitator
+Environment=INFERENCE_FEE_BPS=2000
+Environment=INFERENCE_PRICE=0.02
+Environment=INFERENCE_SUBNET=0
+Environment=INFERENCE_EXPLORER=http://127.0.0.1:8445
+Environment=INFERENCE_OLLAMA=http://127.0.0.1:11434
+Environment=INFERENCE_MODEL=blockle-agent:latest
+Environment=INFERENCE_DATA=/var/lib/blockle-inference
+ExecStart=/usr/bin/node /opt/blockle/services/inference/src/server.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

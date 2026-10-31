@@ -1,0 +1,17 @@
+[Unit]
+Description=Register the Blockle Intelligence Tier-2 inference subnet at activation height 18888
+After=network.target blockle-node.service
+Wants=blockle-node.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /opt/blockle/services/inference/deploy/register-tier2.sh
+# The script loops internally until height >= 18888 (Type=oneshot stays "activating"
+# until it exits 0 after registering). RemainAfterExit marks it done.
+RemainAfterExit=yes
+TimeoutStartSec=0
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
