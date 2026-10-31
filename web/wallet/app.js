@@ -512,7 +512,19 @@
         '<p class="muted" style="margin:0 0 8px">Install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, pull your tier\'s model, then start the Blockle miner. It auto-detects your VRAM and picks the right model.</p>' +
         '<pre id="inf-cmd" style="white-space:pre-wrap;word-break:break-all;background:var(--panel,#111);padding:10px;border-radius:8px;font-size:12px"></pre>' +
         '<button class="btn sm ghost" id="inf-copy" style="margin-top:6px">Copy command</button></div>' +
-      '<div class="card"><div class="dim" style="font-size:12px">Registering as a miner locks a small BLOCK bond on-chain and is done with the <code>blockle intel register-neuron</code> CLI (bundled in the desktop wallet) or the <code>blockle-inference</code> daemon. One-tap in-wallet registration is coming with the next node release. Activation is at block 18888.</div></div>';
+      '<div class="card"><div class="sechead"><h2>Serve from this browser (WebGPU)</h2><span class="chip" id="wg-sup">checking…</span></div>' +
+        '<p class="muted" style="margin:0 0 8px">No install needed — run a small model right here on your GPU and earn as jobs come in. Experimental; needs a WebGPU browser (Chrome/Edge) and a one-time model download.</p>' +
+        '<div class="field"><label>Model (sized for the browser)</label><select id="wg-model">' +
+          '<option value="Qwen2.5-0.5B-Instruct-q4f16_1-MLC">Qwen2.5 0.5B — tiny, any GPU</option>' +
+          '<option value="Llama-3.2-1B-Instruct-q4f16_1-MLC" selected>Llama 3.2 1B — ~2GB</option>' +
+          '<option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC">Qwen2.5 1.5B — ~3GB</option>' +
+          '<option value="Qwen2.5-3B-Instruct-q4f16_1-MLC">Qwen2.5 3B — ~4GB</option>' +
+        '</select></div>' +
+        '<button class="btn primary" id="wg-toggle" style="width:100%" disabled>Checking WebGPU…</button>' +
+        '<div class="dim" id="wg-status" style="font-size:12px;margin-top:8px"></div></div>' +
+      '<div class="card"><div class="dim" style="font-size:12px">Earning also requires registering your address as a miner on-chain (locks a small BLOCK bond) via the <code>blockle intel register-neuron</code> CLI (bundled in the desktop wallet) or the <code>blockle-inference</code> daemon — one-tap in-wallet registration is coming with the next node release. Activation is at block 18888.</div></div>';
+
+    setupWebgpuServe(addr);
 
     $('#inf-cmd').textContent =
       'ollama pull qwen2.5:3b-instruct   # or your tier\'s model (see list above)\n' +
@@ -549,6 +561,58 @@
       s.textContent = (n && n.neurons && n.neurons.length) ? ('Registered: ' + n.neurons.length + ' neuron(s) on-chain.') : 'Not yet registered as a miner on this address.';
     });
   };
+
+  /* ---- WebGPU in-browser serving: mine inference right from the wallet tab ---- */
+  var WG = { serving: false, engine: null, model: null, served: 0 };
+  function wgSleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function setupWebgpuServe(addr) {
+    var sup = $('#wg-sup'), btn = $('#wg-toggle'), st = $('#wg-status');
+    if (!sup || !btn) return;
+    var hasGpu = !!(navigator.gpu);
+    sup.textContent = hasGpu ? 'available' : 'not supported';
+    sup.className = 'chip ' + (hasGpu ? 'good' : 'warn');
+    if (!hasGpu) { btn.textContent = 'WebGPU not available in this browser'; btn.disabled = true; st.textContent = 'Open the wallet in Chrome or Edge on a machine with a GPU to serve here.'; return; }
+    btn.disabled = false;
+    btn.textContent = WG.serving ? 'Stop serving' : 'Start serving';
+    if (WG.serving) st.textContent = 'Serving · ' + WG.served + ' jobs done';
+    btn.onclick = function () {
+      if (WG.serving) { WG.serving = false; btn.textContent = 'Start serving'; st.textContent = 'Stopped.'; return; }
+      if (!addr) { st.textContent = 'Unlock a wallet address first.'; return; }
+      startWebgpuServe(addr, $('#wg-model').value, btn, st);
+    };
+  }
+  async function startWebgpuServe(addr, model, btn, st) {
+    btn.disabled = true; st.textContent = 'Loading the WebGPU runtime…';
+    var webllm;
+    try { webllm = await import('https://esm.run/@mlc-ai/web-llm'); }
+    catch (e) { st.textContent = 'Could not load the WebGPU runtime (network/CSP blocked). ' + (e && e.message || ''); btn.disabled = false; return; }
+    try {
+      if (!WG.engine || WG.model !== model) {
+        st.textContent = 'Downloading model (one time, cached after)…';
+        WG.engine = await webllm.CreateMLCEngine(model, { initProgressCallback: function (p) { if ($('#wg-status')) $('#wg-status').textContent = (p && p.text) ? p.text : 'Loading model…'; } });
+        WG.model = model;
+      }
+    } catch (e) { st.textContent = 'Model load failed: ' + (e && e.message || ''); btn.disabled = false; return; }
+    WG.serving = true; btn.disabled = false; btn.textContent = 'Stop serving';
+    try { await fetch('/api/inference/jobs/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address: addr, tier: 'webgpu' }) }); } catch (_) {}
+    if ($('#wg-status')) $('#wg-status').textContent = 'Serving · waiting for jobs…';
+    (async function loop() {
+      while (WG.serving) {
+        var job = null;
+        try { var r = await fetch('/api/inference/jobs/next?address=' + encodeURIComponent(addr)); if (r.status === 200) { var jj = await r.json(); job = jj && jj.job; } }
+        catch (_) { await wgSleep(2000); continue; }
+        if (!job) continue; // 204 long-poll timeout → poll again
+        if ($('#wg-status')) $('#wg-status').textContent = 'Running a job…';
+        var answer = '';
+        try {
+          var out = await WG.engine.chat.completions.create({ messages: [{ role: 'user', content: String(job.prompt || '') }], temperature: job.temperature != null ? job.temperature : 0.7, max_tokens: job.max_tokens || 512 });
+          answer = (out && out.choices && out.choices[0] && out.choices[0].message) ? out.choices[0].message.content : '';
+        } catch (_) { answer = ''; }
+        try { await fetch('/api/inference/jobs/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jobId: job.jobId, address: addr, answer: answer }) }); } catch (_) {}
+        WG.served++; if ($('#wg-status')) $('#wg-status').textContent = 'Serving · ' + WG.served + ' jobs done';
+      }
+    })();
+  }
 
   /* ---- Trade (super-AMM: custodial shared-price BLOCK market) ---- */
   function ammApi(path, opts) {

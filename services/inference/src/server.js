@@ -14,6 +14,12 @@ const path = require("node:path");
 const { buildRequirements, buildChallengeV2, verifyAndSettle } = require("./x402");
 const { route } = require("./gateway");
 const { CATALOG } = require("./models");
+const { createQueue } = require("./jobqueue");
+
+// Pull-based queue for BROWSER (WebGPU) miners — the web wallet serves directly from the tab.
+const QUEUE = createQueue({ jobTimeoutMs: 25000 });
+const browserMiners = {}; // address -> { ts, tier }
+function activeBrowser() { const now = Date.now(); return Object.values(browserMiners).filter((m) => now - m.ts < 60000).length; }
 
 const CFG = {
   port: Number(process.env.INFERENCE_PORT || 8822),
@@ -130,6 +136,22 @@ async function handleInfer(req, res, body) {
   }
   if (vs.responseHeader) res.setHeader("X-PAYMENT-RESPONSE", vs.responseHeader);
 
+  // Prefer a BROWSER (WebGPU) miner if any are live: enqueue + await a pulled result.
+  if (activeBrowser() > 0) {
+    try {
+      const br = await QUEUE.enqueue({ prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens });
+      if (br && typeof br.answer === "string" && br.answer.trim()) {
+        const protocolFeeUsd = Math.round(CFG.priceUsd * CFG.feeBps / 10000 * 1e6) / 1e6;
+        const minerEarnsUsd = Math.round((CFG.priceUsd - protocolFeeUsd) * 1e6) / 1e6;
+        recordEarning(br.address, minerEarnsUsd);
+        const out = { answer: br.answer, servedBy: { kind: "browser", address: br.address }, model: "webgpu-miner", tier: 2,
+          accounting: { priceUsd: CFG.priceUsd, protocolFeeUsd, minerEarnsUsd, netToTreasuryUsd: protocolFeeUsd }, payer: vs.payer, txHash: vs.txHash };
+        results[pid] = out; saveJson(RESULTS_FILE, results);
+        return sendJson(res, 200, out);
+      }
+    } catch (_) { /* no browser answered in time → fall through to push miners / bootstrap */ }
+  }
+
   const miners = await liveMiners();
   const r = await route({
     request: { prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens },
@@ -174,7 +196,29 @@ const server = http.createServer((req, res) => {
         const r = loadJson(path.join(CFG.dataDir, "oracle-results.json"))[rid];
         return r ? sendJson(res, 200, { requestId: rid, ...r }) : sendJson(res, 404, { requestId: rid, status: "pending-or-unknown", note: "result appears here once the fulfiller completes the request" });
       }
-      if (parts[0] === "miners") return sendJson(res, 200, { miners: (await liveMiners()).map((m) => ({ uid: m.uid, address: m.address, epochUsd: m.revenueUsd })) });
+      if (parts[0] === "miners") return sendJson(res, 200, { miners: (await liveMiners()).map((m) => ({ uid: m.uid, address: m.address, epochUsd: m.revenueUsd })), browser: activeBrowser() });
+      // ---- browser (WebGPU) miner job protocol ----
+      if (parts[0] === "jobs" && parts[1] === "register" && req.method === "POST") {
+        if (!body.address) return sendJson(res, 400, { error: "need {address}" });
+        browserMiners[body.address] = { ts: Date.now(), tier: body.tier || "webgpu" };
+        return sendJson(res, 200, { ok: true, pollMs: 1000 });
+      }
+      if (parts[0] === "jobs" && parts[1] === "next") { // browser miner long-polls for a job
+        const address = u.searchParams.get("address") || "";
+        if (address) browserMiners[address] = { ts: Date.now(), tier: (browserMiners[address] || {}).tier || "webgpu" };
+        const c = QUEUE.claimNext();
+        if (c.job) return sendJson(res, 200, { job: { jobId: c.job.jobId, prompt: c.job.request.prompt, temperature: c.job.request.temperature, max_tokens: c.job.request.max_tokens } });
+        const t = setTimeout(() => { c.cancel(); if (!res.writableEnded) sendJson(res, 204, {}); }, 25000);
+        c.wait.then((job) => { clearTimeout(t); if (res.writableEnded) return;
+          if (job) sendJson(res, 200, { job: { jobId: job.jobId, prompt: job.request.prompt, temperature: job.request.temperature, max_tokens: job.request.max_tokens } });
+          else sendJson(res, 204, {}); });
+        return;
+      }
+      if (parts[0] === "jobs" && parts[1] === "result" && req.method === "POST") {
+        if (!body.jobId || !body.address || typeof body.answer !== "string") return sendJson(res, 400, { error: "need {jobId,address,answer}" });
+        browserMiners[body.address] = { ts: Date.now(), tier: (browserMiners[body.address] || {}).tier || "webgpu" };
+        return sendJson(res, 200, { ok: QUEUE.submitResult(body.jobId, body.address, body.answer) });
+      }
       if (parts[0] === "earnings") { // /earnings/<address>  (read-only; what a miner watches)
         const addr = parts[1] || u.searchParams.get("address") || "";
         const e = loadJson(REVENUE_FILE)[addr] || { epochUsd: 0, totalUsd: 0, requests: 0 };

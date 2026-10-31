@@ -68,6 +68,21 @@ async function selfTest() {
   ok(w[12] === 0, `offline+no-demand miner is zero (got ${w[12]})`);
   ok(vr.weights.reduce((s, x) => s + x, 0) === validator.SCALE, "weights sum to SCALE");
 
+  // 4) pull-based job queue (browser/WebGPU miners): enqueue → claim → result round-trips.
+  const { createQueue } = require("./jobqueue");
+  const q = createQueue({ jobTimeoutMs: 2000 });
+  const p = q.enqueue({ prompt: "hi" });               // a paid request waits for a browser miner
+  const claim = q.claimNext();                          // browser miner claims it
+  ok(claim.job && claim.job.request.prompt === "hi", "browser miner claims the pending job");
+  ok(q.submitResult(claim.job.jobId, "block1miner", "hello!"), "submitResult accepted");
+  const got = await p;
+  ok(got.answer === "hello!" && got.address === "block1miner", "enqueue resolves with the browser miner's answer");
+  // claim-before-enqueue (long-poll): waiter resolves when a job arrives
+  const c2 = q.claimNext(); ok(!!c2.wait, "empty queue returns a long-poll waiter");
+  const p2 = q.enqueue({ prompt: "yo" });
+  const j2 = await c2.wait; ok(j2 && j2.request.prompt === "yo", "waiter wakes when a job is enqueued");
+  q.submitResult(j2.jobId, "block1m2", "sup"); await p2;
+
   if (fails.length) { console.error("FAIL:\n - " + fails.join("\n - ")); process.exit(1); }
   console.log("PASS: gateway fee-split (miner + wholesale paths) + inference scoring all correct");
   console.log(`  routed: miner uid${r1.servedBy.uid} earns $${r1.accounting.minerEarnsUsd}, treasury $${r1.accounting.netToTreasuryUsd}; wholesale net $${r2.accounting.netToTreasuryUsd}`);
