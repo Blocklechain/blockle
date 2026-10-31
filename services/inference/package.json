@@ -1,0 +1,13 @@
+{
+  "name": "blockle-inference",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tier-2 inference subnet for Blockle Intelligence: gateway (x402, we own it) + GPU miner + demand/quality validator.",
+  "bin": { "blockle-inference": "src/index.js" },
+  "scripts": {
+    "self-test": "node src/index.js --self-test",
+    "test": "node src/index.js --self-test",
+    "miner": "node src/index.js --role miner"
+  },
+  "license": "MIT"
+}
