@@ -154,7 +154,10 @@
       // never loses access and never has to re-enter anything.
       if (Vault.needsUpgrade(rec.crypto) || pt.seed !== seed) {
         try {
-          rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed }, password);
+          // Non-destructive migration: keep any prior random seed as `legacySeed` so funds at the
+          // old (pre-migration) multichain addresses remain recoverable.
+          const legacySeed = (pt.seed && pt.seed !== seed) ? pt.seed : pt.legacySeed;
+          rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed, legacySeed }, password);
           const list = await allWallets();
           const i = list.findIndex((w) => w.id === rec.id);
           if (i >= 0) {
