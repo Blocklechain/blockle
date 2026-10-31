@@ -604,6 +604,12 @@
         '<div class="spread" style="margin-top:6px"><div><div class="hero-bal num" id="inf-total">$0.00</div><div class="dim" style="font-size:12px">total earned</div></div>' +
         '<div style="text-align:right"><div class="num" id="inf-epoch" style="font-size:20px">$0.00</div><div class="dim" style="font-size:12px">this epoch · <span id="inf-reqs">0</span> jobs</div></div></div>' +
         '<div class="dim" id="inf-status" style="font-size:12px;margin-top:8px"></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Get paid in USDC (Base)</h2><span class="chip" id="inf-usdc-chip">—</span></div>' +
+        '<p class="muted" style="margin:0 0 8px">Your miner earnings can be paid in <b>USDC on Base</b> (gasless — you never pay fees). Register this wallet\'s Base address to receive them.</p>' +
+        '<div class="spread"><div><div class="num" id="inf-owed">$0.00</div><div class="dim" style="font-size:12px">owed</div></div>' +
+        '<div style="text-align:right"><div class="num" id="inf-paid" style="font-size:18px">$0.00</div><div class="dim" style="font-size:12px">paid</div></div></div>' +
+        '<div class="dim" id="inf-base" style="font-size:12px;margin:8px 0;word-break:break-all"></div>' +
+        '<button class="btn sm primary" id="inf-usdc-reg" style="width:100%">Receive USDC to this wallet (Base)</button></div>' +
       '<div class="card"><div class="sechead"><h2>Pick your model</h2></div>' +
         '<p class="muted" style="margin:0 0 8px">One recommended model per GPU class — so everyone can participate.</p>' +
         '<div id="inf-models" class="list"><div class="empty">Loading…</div></div></div>' +
@@ -659,6 +665,27 @@
       var s = $('#inf-status'); if (!s) return;
       s.textContent = (n && n.neurons && n.neurons.length) ? ('Registered: ' + n.neurons.length + ' neuron(s) on-chain.') : 'Not yet registered as a miner on this address.';
     });
+    // USDC-on-Base payouts: show owed/paid + register this wallet's Base address (gasless).
+    if (addr && typeof chainAddress === 'function') {
+      chainAddress('base').then(function (base) {
+        if ($('#inf-base')) $('#inf-base').textContent = base ? ('Base address: ' + base) : 'No Base address in this wallet.';
+        var reg = $('#inf-usdc-reg'); if (!reg) return;
+        reg.onclick = function () {
+          if (!base) { toast('No Base address available', 'bad'); return; }
+          fetch('/api/inference/payout-address', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address: addr, payoutBase: base }) })
+            .then(function (r) { return r.json(); }).then(function (d) {
+              if (d && d.ok) { toast('USDC payouts set to your Base address', 'good'); var c = $('#inf-usdc-chip'); if (c) { c.textContent = 'registered'; c.className = 'chip good'; } }
+              else toast((d && d.error) || 'Could not register', 'bad');
+            }).catch(function () { toast('Could not register', 'bad'); });
+        };
+      }).catch(function () {});
+      j('/api/inference/owed/' + encodeURIComponent(addr)).then(function (o) {
+        if (!o || !$('#inf-owed')) return;
+        $('#inf-owed').textContent = '$' + Number(o.owedUsdc || 0).toFixed(2);
+        $('#inf-paid').textContent = '$' + Number(o.paidUsdc || 0).toFixed(2);
+        var c = $('#inf-usdc-chip'); if (c) { var r = !!o.payoutBase; c.textContent = r ? 'registered' : 'not set'; c.className = 'chip ' + (r ? 'good' : ''); }
+      });
+    }
   };
 
   /* ---- WebGPU in-browser serving: mine inference right from the wallet tab ---- */
