@@ -321,6 +321,7 @@
     { id: 'buy', ic: 'buy', label: 'Buy USDB' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
     { id: 'bots', ic: 'bots', label: 'Bots' },
+    { id: 'chat', ic: 'agent', label: 'AI Chat' },
     { id: 'inference', ic: 'agent', label: 'Inference' },
     { id: 'activity', ic: 'activity', label: 'Activity' },
     { id: 'pro', ic: 'pro', label: 'Pro' },
@@ -494,6 +495,104 @@
 
   /* ================= VIEWS ================= */
   var VIEWS = {};
+
+  /* ---- AI Chat: ChatGPT/Claude-style, paid per message in BLOCK via an API key ---- */
+  function infApi(p, opts) { return fetch('/api/inference' + p, opts).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }).catch(function () { return { ok: r.ok, status: r.status, j: {} }; }); }); }
+  function inferKey() { try { return localStorage.getItem('blk-infer-key') || ''; } catch (_) { return ''; } }
+  function setInferKey(k) { try { localStorage.setItem('blk-infer-key', k); } catch (_) {} }
+  async function ensureKey() {
+    var k = inferKey(); if (k) return k;
+    var r = await infApi('/keys/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address: S.address || '' }) });
+    if (r.ok && r.j.key) { setInferKey(r.j.key); return r.j.key; }
+    return '';
+  }
+  function keyHdr(k) { return { 'authorization': 'Bearer ' + k, 'content-type': 'application/json' }; }
+
+  var CHAT = { msgs: [] };
+  VIEWS.chat = function (v) {
+    v.innerHTML =
+      '<div class="card"><div class="spread"><div><div class="dim">AI Chat</div><div class="muted" style="font-size:13px">Powered by Blockle Intelligence — paid per message in BLOCK.</div></div>' +
+        '<div style="text-align:right"><div class="num" id="chat-bal">—</div><div class="dim" style="font-size:12px">BLOCK credit</div></div></div>' +
+        '<div class="row" style="gap:8px;margin-top:8px;align-items:center">' +
+          '<input id="chat-top" inputmode="decimal" placeholder="Add BLOCK (e.g. 5)" style="flex:1">' +
+          '<button class="btn sm primary" id="chat-add">Add credit</button></div>' +
+        '<div class="dim" id="chat-topmsg" style="font-size:12px;margin-top:6px"></div></div>' +
+      '<div class="card" style="padding:0"><div id="chat-thread" style="max-height:52vh;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px"></div>' +
+        '<div class="row" style="gap:8px;padding:12px;border-top:1px solid var(--line,#222)">' +
+          '<input id="chat-in" placeholder="Message Blockle Intelligence…" style="flex:1" autocomplete="off">' +
+          '<button class="btn primary" id="chat-send">Send</button></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Your API key</h2></div>' +
+        '<p class="muted" style="margin:0 0 8px">Use the same credit from code — OpenAI-compatible. Keep BLOCK in your wallet and it auto-tops-up.</p>' +
+        '<div class="row" style="gap:8px"><input id="chat-key" readonly style="flex:1;font-family:monospace;font-size:12px"><button class="btn sm ghost" id="chat-key-copy">Copy</button><button class="btn sm ghost" id="chat-key-new">New</button></div>' +
+        '<pre id="chat-curl" style="white-space:pre-wrap;word-break:break-all;background:var(--panel,#111);padding:10px;border-radius:8px;font-size:11px;margin-top:8px"></pre></div>';
+
+    function renderThread() {
+      $('#chat-thread').innerHTML = CHAT.msgs.map(function (m) {
+        var mine = m.role === 'user';
+        return '<div style="align-self:' + (mine ? 'flex-end' : 'flex-start') + ';max-width:84%;background:' + (mine ? 'var(--accent,#2b6cff)' : 'var(--panel,#1a1a1a)') + ';color:' + (mine ? '#fff' : 'inherit') + ';padding:9px 12px;border-radius:14px;font-size:14px;white-space:pre-wrap">' + esc(m.content) + '</div>';
+      }).join('') || '<div class="empty">Ask anything. First message may be slower while a miner warms up.</div>';
+      var t = $('#chat-thread'); t.scrollTop = t.scrollHeight;
+    }
+    renderThread();
+
+    function refreshBal() {
+      var k = inferKey(); if (!k) { $('#chat-bal').textContent = '0'; return; }
+      infApi('/credit', { headers: keyHdr(k) }).then(function (r) { if ($('#chat-bal')) $('#chat-bal').textContent = (r.j.balanceBlock != null ? r.j.balanceBlock : 0) + ''; });
+    }
+    ensureKey().then(function (k) {
+      if ($('#chat-key')) $('#chat-key').value = k || '(none)';
+      if ($('#chat-curl')) $('#chat-curl').textContent =
+        'curl https://blockle.org/api/inference/v1/chat/completions \\\n  -H "Authorization: Bearer ' + (k || '<your-key>') + '" \\\n  -H "content-type: application/json" \\\n  -d \'{"messages":[{"role":"user","content":"Hello"}]}\'';
+      refreshBal();
+    });
+
+    $('#chat-key-copy').onclick = function () { copy(inferKey()); };
+    $('#chat-key-new').onclick = function () {
+      infApi('/keys/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ address: S.address || '' }) }).then(function (r) {
+        if (r.ok && r.j.key) { setInferKey(r.j.key); $('#chat-key').value = r.j.key; toast('New key — fund it with Add credit', 'good'); refreshBal(); }
+      });
+    };
+
+    async function topUp() {
+      var amt = parseFloat($('#chat-top').value); if (!(amt > 0)) { $('#chat-topmsg').textContent = 'Enter a BLOCK amount.'; return; }
+      var k = await ensureKey(); if (!k) { $('#chat-topmsg').textContent = 'Could not create an API key.'; return; }
+      var cr = await infApi('/credit', { headers: keyHdr(k) }); var dep = cr.j.depositAddr;
+      if (!dep) { $('#chat-topmsg').textContent = 'Top-up unavailable right now.'; return; }
+      $('#chat-add').disabled = true; $('#chat-topmsg').textContent = 'Sending ' + amt + ' BLOCK…';
+      try {
+        var base = toBase(String(amt), 8);
+        var b = await Wiring.buildSend('block', { to: dep, amount: String(base) });
+        var rr = await Wiring.broadcast('block', b); var txid = (rr && (rr.txid || rr.hash)) || (b && b.txid) || '';
+        if (!txid) throw new Error('no txid');
+        $('#chat-topmsg').textContent = 'Confirming deposit…';
+        var attempt = function (n) {
+          infApi('/deposit', { method: 'POST', headers: keyHdr(k), body: JSON.stringify({ txid: txid }) }).then(function (d) {
+            if (d.ok) { $('#chat-topmsg').textContent = 'Credited ' + (d.j.creditedBlock || amt) + ' BLOCK.'; refreshBal(); }
+            else if (n > 0) { setTimeout(function () { attempt(n - 1); }, 6000); }
+            else { $('#chat-topmsg').textContent = 'Deposit sent (' + txid.slice(0, 10) + '…); credit will appear after a confirmation.'; }
+          });
+        };
+        attempt(10);
+      } catch (e) { $('#chat-topmsg').textContent = 'Top-up failed: ' + (e && e.message || ''); }
+      $('#chat-add').disabled = false;
+    }
+    $('#chat-add').onclick = topUp;
+
+    async function send() {
+      var inp = $('#chat-in'); var text = (inp.value || '').trim(); if (!text) return;
+      var k = await ensureKey(); if (!k) { toast('Could not create an API key', 'bad'); return; }
+      inp.value = ''; CHAT.msgs.push({ role: 'user', content: text }); renderThread();
+      CHAT.msgs.push({ role: 'assistant', content: '…' }); renderThread();
+      var r = await infApi('/chat', { method: 'POST', headers: keyHdr(k), body: JSON.stringify({ prompt: text }) });
+      CHAT.msgs.pop();
+      if (r.status === 402) { CHAT.msgs.push({ role: 'assistant', content: 'Out of BLOCK credit — add some above to continue.' }); renderThread(); refreshBal(); return; }
+      if (!r.ok) { CHAT.msgs.push({ role: 'assistant', content: 'Error: ' + ((r.j && r.j.error) || 'inference unavailable') }); renderThread(); return; }
+      CHAT.msgs.push({ role: 'assistant', content: r.j.answer || '(no answer)' }); renderThread();
+      if ($('#chat-bal')) $('#chat-bal').textContent = (r.j.balanceBlock != null ? r.j.balanceBlock : $('#chat-bal').textContent) + '';
+    }
+    $('#chat-send').onclick = send;
+    $('#chat-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+  };
 
   /* ---- Inference: mine the tier-2 subnet + watch earnings (Blockle Intelligence) ---- */
   VIEWS.inference = function (v) {

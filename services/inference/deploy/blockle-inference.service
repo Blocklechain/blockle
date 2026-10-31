@@ -21,6 +21,9 @@ Environment=INFERENCE_EXPLORER=http://127.0.0.1:8445
 Environment=INFERENCE_OLLAMA=http://127.0.0.1:11434
 Environment=INFERENCE_MODEL=blockle-agent:latest
 Environment=INFERENCE_DATA=/var/lib/blockle-inference
+# BLOCK-credit chat: price per message + the operator-controlled address users top up to.
+Environment=CHAT_PRICE_BLOCK=0.1
+Environment=CHAT_DEPOSIT_ADDR=block1y76d75ku575wkj7yek8746xj45gmd6p9s6gqwck6uuda58jaz8esw5scq0
 ExecStart=/usr/bin/node /opt/blockle/services/inference/src/server.js
 Restart=on-failure
 RestartSec=3

@@ -39,6 +39,8 @@ const CFG = {
   maxTimeoutSeconds: 300,
   latencyBudgetMs: Number(process.env.INFERENCE_LAT_MS || 60000),
   blockUsd: Number(process.env.INFERENCE_BLOCK_USD || 0.01), // operator BLOCK→USD rate for BLOCK-402 quotes
+  chatPriceBlock: Math.round(Number(process.env.CHAT_PRICE_BLOCK || 0.1) * 1e8), // BLOCK per chat message (base units)
+  depositAddr: process.env.CHAT_DEPOSIT_ADDR || "", // BLOCK address users top up credit to
 };
 const COIN = 100000000; // BLOCK base units
 const usdcMicro = (usd) => String(Math.round(usd * 1e6));
@@ -136,43 +138,106 @@ async function handleInfer(req, res, body) {
   }
   if (vs.responseHeader) res.setHeader("X-PAYMENT-RESPONSE", vs.responseHeader);
 
-  // Prefer a BROWSER (WebGPU) miner if any are live: enqueue + await a pulled result.
-  if (activeBrowser() > 0) {
-    try {
-      const br = await QUEUE.enqueue({ prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens });
-      if (br && typeof br.answer === "string" && br.answer.trim()) {
-        const protocolFeeUsd = Math.round(CFG.priceUsd * CFG.feeBps / 10000 * 1e6) / 1e6;
-        const minerEarnsUsd = Math.round((CFG.priceUsd - protocolFeeUsd) * 1e6) / 1e6;
-        recordEarning(br.address, minerEarnsUsd);
-        const out = { answer: br.answer, servedBy: { kind: "browser", address: br.address }, model: "webgpu-miner", tier: 2,
-          accounting: { priceUsd: CFG.priceUsd, protocolFeeUsd, minerEarnsUsd, netToTreasuryUsd: protocolFeeUsd }, payer: vs.payer, txHash: vs.txHash };
-        results[pid] = out; saveJson(RESULTS_FILE, results);
-        return sendJson(res, 200, out);
-      }
-    } catch (_) { /* no browser answered in time → fall through to push miners / bootstrap */ }
-  }
-
-  const miners = await liveMiners();
-  const r = await route({
-    request: { prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens },
-    miners, priceUsd: CFG.priceUsd, feeBps: CFG.feeBps, call: callMiner,
-    wholesale: { costUsd: 0, call: callBootstrap }, // CPU bootstrap: our marginal cost ≈ 0
-  });
-  if (!r.ok) return sendJson(res, 503, { error: "no miner or bootstrap backend available" });
-
-  // Credit the serving miner's epoch revenue (the validator's demand signal).
-  if (r.servedBy.kind === "miner") {
-    const m = miners.find((x) => x.uid === r.servedBy.uid);
-    if (m) recordEarning(m.address, r.accounting.minerEarnsUsd);
-  }
-  const out = {
-    answer: r.answer, servedBy: r.servedBy, model: r.model || null,
-    accounting: r.accounting, tier: 2, payer: vs.payer, txHash: vs.txHash,
-    note: r.servedBy.kind === "wholesale" ? "served by CPU bootstrap model (not competitive) — no GPU miners online yet" : undefined,
-  };
+  const out = await performInference(body, CFG.priceUsd);
+  if (!out) return sendJson(res, 503, { error: "no miner or bootstrap backend available" });
+  out.payer = vs.payer; out.txHash = vs.txHash;
   results[pid] = out; saveJson(RESULTS_FILE, results);
   return sendJson(res, 200, out);
 }
+
+// Produce an answer + credit the serving miner's demand (USD-equivalent). Shared by the x402
+// /infer path and the BLOCK-credit /chat path. priceUsd sizes the miner earning / fee split.
+// Prefers a live browser (WebGPU) miner, then push miners, then the labeled CPU bootstrap.
+async function performInference(body, priceUsd) {
+  const request = { prompt: body.prompt || "", temperature: body.temperature, max_tokens: body.max_tokens };
+  if (activeBrowser() > 0) {
+    try {
+      const br = await QUEUE.enqueue(request);
+      if (br && typeof br.answer === "string" && br.answer.trim()) {
+        const protocolFeeUsd = round6(priceUsd * CFG.feeBps / 10000);
+        const minerEarnsUsd = round6(priceUsd - protocolFeeUsd);
+        recordEarning(br.address, minerEarnsUsd);
+        return { answer: br.answer, servedBy: { kind: "browser", address: br.address }, model: "webgpu-miner", tier: 2,
+          accounting: { priceUsd, protocolFeeUsd, minerEarnsUsd, netToTreasuryUsd: protocolFeeUsd } };
+      }
+    } catch (_) { /* fall through */ }
+  }
+  const miners = await liveMiners();
+  const r = await route({ request, miners, priceUsd, feeBps: CFG.feeBps, call: callMiner, wholesale: { costUsd: 0, call: callBootstrap } });
+  if (!r.ok) return null;
+  if (r.servedBy.kind === "miner") { const m = miners.find((x) => x.uid === r.servedBy.uid); if (m) recordEarning(m.address, r.accounting.minerEarnsUsd); }
+  return { answer: r.answer, servedBy: r.servedBy, model: r.model || null, accounting: r.accounting, tier: 2,
+    note: r.servedBy.kind === "wholesale" ? "served by CPU bootstrap model (not competitive) — no GPU miners online yet" : undefined };
+}
+
+// ---- API keys + BLOCK credit (pay-per-call in native BLOCK) ------------------
+// A KEY is a bearer credential holding a BLOCK credit balance. Chat UI + the public API both
+// authenticate with it; spending requires the secret (claiming an address could never be
+// trusted server-side, so credit is keyed by the key, not the address). The wallet tops a key
+// up by sending BLOCK to the deposit address and calling /deposit — and auto-tops when low.
+const CREDITS_FILE = path.join(CFG.dataDir, "credits.json");   // keyId -> balance (BLOCK base units)
+const DEPOSITS_FILE = path.join(CFG.dataDir, "deposits.json"); // txid -> true (idempotency)
+const KEYS_FILE = path.join(CFG.dataDir, "keys.json");         // keyId -> {prefix,address,created,label}
+const keyId = (key) => crypto.createHash("sha256").update(String(key)).digest("hex");
+function creditOf(id) { return Number(loadJson(CREDITS_FILE)[id] || 0); }
+function setCredit(id, bal) { const c = loadJson(CREDITS_FILE); c[id] = Math.max(0, Math.round(bal)); saveJson(CREDITS_FILE, c); }
+function authKey(req, body) {
+  const h = req.headers["authorization"] || "";
+  const bearer = h.toLowerCase().startsWith("bearer ") ? h.slice(7).trim() : "";
+  const key = bearer || (body && body.key) || "";
+  if (!key) return null;
+  const id = keyId(key);
+  return loadJson(KEYS_FILE)[id] ? id : null;
+}
+
+function handleKeyCreate(res, body) {
+  const key = "blk-" + crypto.randomBytes(24).toString("hex");
+  const id = keyId(key);
+  const keys = loadJson(KEYS_FILE);
+  keys[id] = { prefix: key.slice(0, 12), address: String(body.address || ""), created: nowIso(), label: String(body.label || "") };
+  saveJson(KEYS_FILE, keys);
+  // The full key is returned ONCE; only its hash is stored. Fund it via /deposit.
+  return sendJson(res, 200, { key, prefix: keys[id].prefix, depositAddr: CFG.depositAddr, priceBlock: CFG.chatPriceBlock / COIN, balanceBlock: 0 });
+}
+function nowIso() { try { return new Date().toISOString(); } catch { return ""; } }
+
+// Verify a BLOCK deposit tx on-chain and credit the KEY (bearer — no sender check needed).
+async function handleDeposit(req, res, body) {
+  if (!CFG.depositAddr) return sendJson(res, 503, { error: "deposits not configured (CHAT_DEPOSIT_ADDR unset)" });
+  const id = authKey(req, body);
+  if (!id) return sendJson(res, 401, { error: "unknown or missing API key" });
+  const txid = String(body.txid || "");
+  if (!txid) return sendJson(res, 400, { error: "need {txid}" });
+  const seen = loadJson(DEPOSITS_FILE);
+  if (seen[txid]) return sendJson(res, 200, { ok: true, idempotent: true, balanceBlock: creditOf(id) / COIN });
+  const tx = await explorerGet(`/explorer/tx/${txid}`);
+  if (!tx || tx.error) return sendJson(res, 404, { error: "tx not found yet (wait for a confirmation)" });
+  const toUs = (tx.outputs || []).filter((o) => o.address === CFG.depositAddr).reduce((s, o) => s + Number(o.amount || 0), 0);
+  if (toUs <= 0) return sendJson(res, 400, { error: "tx has no output to the deposit address" });
+  seen[txid] = true; saveJson(DEPOSITS_FILE, seen);
+  setCredit(id, creditOf(id) + toUs);
+  return sendJson(res, 200, { ok: true, creditedBlock: toUs / COIN, balanceBlock: creditOf(id) / COIN });
+}
+
+// Shared paid-inference core for the chat UI and the OpenAI-compatible API.
+async function paidInfer(req, res, body, openaiShape) {
+  const id = authKey(req, body);
+  if (!id) return sendJson(res, 401, { error: "unknown or missing API key — create one in the wallet (Inference ▸ API key)" });
+  if (!body.prompt && !(body.messages && body.messages.length)) return sendJson(res, 400, { error: "need {prompt} or {messages}" });
+  const prompt = body.prompt || body.messages.map((m) => m.content).join("\n");
+  const price = CFG.chatPriceBlock;
+  if (creditOf(id) < price) return sendJson(res, 402, { error: "insufficient BLOCK credit", need: price / COIN, balanceBlock: creditOf(id) / COIN, priceBlock: price / COIN, depositAddr: CFG.depositAddr });
+  const out = await performInference({ prompt, temperature: body.temperature, max_tokens: body.max_tokens }, (price / COIN) * CFG.blockUsd);
+  if (!out) return sendJson(res, 503, { error: "no miner or bootstrap backend available (not charged)" });
+  setCredit(id, creditOf(id) - price); // debit only on success
+  if (openaiShape) {
+    return sendJson(res, 200, { id: "blkinf-" + keyId(txRand()).slice(0, 16), object: "chat.completion", model: out.model || "blockle-intelligence",
+      choices: [{ index: 0, message: { role: "assistant", content: out.answer }, finish_reason: "stop" }],
+      blockle: { paidBlock: price / COIN, balanceBlock: creditOf(id) / COIN, servedBy: out.servedBy } });
+  }
+  return sendJson(res, 200, { answer: out.answer, servedBy: out.servedBy, model: out.model, note: out.note, paidBlock: price / COIN, balanceBlock: creditOf(id) / COIN });
+}
+function txRand() { return crypto.randomBytes(8).toString("hex"); }
 
 // ---- server -----------------------------------------------------------------
 const server = http.createServer((req, res) => {
@@ -184,6 +249,12 @@ const server = http.createServer((req, res) => {
     try {
       if (!parts.length || parts[0] === "health") return sendJson(res, 200, { ok: true, network: CFG.network, mainnetOk: CFG.mainnetOk, subnet: CFG.subnetId, priceUsd: CFG.priceUsd, feeBps: CFG.feeBps, miners: (await liveMiners()).length });
       if (parts[0] === "infer" && req.method === "POST") return handleInfer(req, res, body);
+      // ---- API keys + BLOCK-credit chat/API (pay-per-call in native BLOCK) ----
+      if (parts[0] === "keys" && parts[1] === "create" && req.method === "POST") return handleKeyCreate(res, body);
+      if (parts[0] === "chat" && req.method === "POST") return paidInfer(req, res, body, false);
+      if (parts[0] === "v1" && parts[1] === "chat" && parts[2] === "completions" && req.method === "POST") return paidInfer(req, res, body, true);
+      if (parts[0] === "deposit" && req.method === "POST") return handleDeposit(req, res, body);
+      if (parts[0] === "credit") { const id = authKey(req, body); return sendJson(res, 200, { authed: !!id, balanceBlock: id ? creditOf(id) / COIN : 0, priceBlock: CFG.chatPriceBlock / COIN, depositAddr: CFG.depositAddr }); }
       if (parts[0] === "models") return sendJson(res, 200, { note: "Recommended model per GPU class — anyone can mine, CPU to 80GB.", catalog: CATALOG });
       if (parts[0] === "quote") { // BLOCK-402: price a job in BLOCK so a contract can set max_fee
         const tierIdx = Math.max(0, Math.min(CATALOG.length - 1, Number(u.searchParams.get("tier") || 0)));
