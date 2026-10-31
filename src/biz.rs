@@ -463,6 +463,13 @@ pub fn serve(cfg: BizConfig) -> Result<Arc<Mutex<Registry>>> {
                     let peer_ip = stream.peer_addr().ok().map(|a| a.ip());
                     let Ok(req) = http::read_request(&mut stream) else { return };
                     let (status, ctype, body) = route(&registry, &req, peer_ip);
+                    // Inject the block-18888 consensus-upgrade notice into every HTML page.
+                    let body = if status == "200 OK" && ctype.starts_with("text/html") {
+                        let path = req.path.split('?').next().unwrap_or("");
+                        inject_upgrade_banner(body, path)
+                    } else {
+                        body
+                    };
                     http::respond(&mut stream, status, ctype, &body);
                 });
             }
@@ -3102,6 +3109,48 @@ fn serve_web_file(name: &str, ct: &'static str) -> (&'static str, &'static str, 
         Ok(b) => ("200 OK", ct, b),
         Err(_) => ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec()),
     }
+}
+
+/// Append a dismissible bottom bar to every HTML page warning of the Blockle
+/// Intelligence consensus activation at block 18888. Wallet pages get a
+/// wallet-user message (update + back up wallet.json); all other pages get the
+/// node-operator/miner upgrade message. Self-removes once the chain passes 18888.
+fn inject_upgrade_banner(html: Vec<u8>, path: &str) -> Vec<u8> {
+    let s = match String::from_utf8(html) {
+        Ok(s) => s,
+        Err(e) => return e.into_bytes(), // not UTF-8 text; leave untouched
+    };
+    if !s.contains("</body>") {
+        return s.into_bytes();
+    }
+    let is_wallet = path == "/wallet" || path.starts_with("/wallet/");
+    let msg = if is_wallet {
+        "<b>Network upgrade at block 18&#8203;888.</b> Blockle Intelligence goes live. \
+         Please <b>update your wallet</b> to the latest version — and <b>back up your \
+         <code>wallet.json</code></b> (Wallet &rsaquo; Backup / Export) before then."
+    } else {
+        "<b>Consensus upgrade at block 18&#8203;888</b> (~10 days): Blockle Intelligence \
+         activates. <b>Node operators &amp; miners must upgrade before then</b> or you will \
+         fork off the network. Wallet users: update your wallet &amp; back up your \
+         <code>wallet.json</code>."
+    };
+    let banner = format!(
+        r#"<div id="blk-upg-bar" style="display:none;position:fixed;left:0;right:0;bottom:0;z-index:2147483000;background:#0b1220;color:#e7eefc;border-top:2px solid #f5a623;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 -6px 24px rgba(0,0,0,.35)">
+<div style="max-width:1080px;margin:0 auto;padding:11px 46px 11px 16px;display:flex;align-items:center;gap:10px">
+<span style="font-size:17px;flex:none">&#9888;&#65039;</span>
+<span style="flex:1">{msg} <a href="/intelligence" style="color:#8ec5ff;font-weight:600;white-space:nowrap">Details &rsaquo;</a></span>
+</div>
+<button onclick="try{{localStorage.setItem('blk-intel-18888','1')}}catch(e){{}};document.getElementById('blk-upg-bar').style.display='none'" aria-label="Dismiss" style="position:absolute;top:50%;right:12px;transform:translateY(-50%);background:transparent;border:0;color:#9fb0cc;font-size:22px;cursor:pointer;line-height:1">&times;</button>
+</div>
+<script>(function(){{var H=18888,bar=document.getElementById('blk-upg-bar');if(!bar)return;try{{if(localStorage.getItem('blk-intel-18888'))return;}}catch(e){{}}
+bar.style.display='block';document.body.style.paddingBottom='64px';
+fetch('/api/explorer/intel').then(function(r){{return r.json()}}).then(function(d){{if(!d)return;var act=d.active===true||((d.height||0)>=(d.activation_height||H));if(act){{bar.style.display='none';document.body.style.paddingBottom=''}}}}).catch(function(){{}});
+}})();</script>
+"#,
+        msg = msg
+    );
+    let out = s.replacen("</body>", &format!("{banner}</body>"), 1);
+    out.into_bytes()
 }
 
 /// Content-Type from a file extension — the web wallet SPA ships many asset types
