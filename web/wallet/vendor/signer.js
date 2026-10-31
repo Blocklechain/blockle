@@ -30,6 +30,31 @@
     return ready;
   }
 
+  // A BLOCK tx with too many inputs would exceed the 2MB block size (post-quantum signatures are
+  // ~13KB each), so it could never be mined. Count the fewest coins (largest-first) needed to
+  // cover amount+fee; if that's over the cap, throw a friendly, actionable error instead of
+  // building an unminable transaction. The node enforces the same limit on the wire.
+  var MAX_TX_INPUTS = 140;
+  function assertInputCap(utxos, amountBase, feeBase) {
+    try {
+      var need = BigInt(amountBase) + BigInt(feeBase);
+      var sorted = (utxos || []).slice().sort(function (x, y) {
+        var ax = BigInt((x && x.amount) || 0), ay = BigInt((y && y.amount) || 0);
+        return ax > ay ? -1 : ax < ay ? 1 : 0;
+      });
+      var got = 0n, count = 0;
+      for (var i = 0; i < sorted.length; i++) { got += BigInt(sorted[i].amount || 0); count++; if (got >= need) break; }
+      if (got >= need && count > MAX_TX_INPUTS) {
+        throw new Error('TOO_MANY_INPUTS');
+      }
+    } catch (e) {
+      if (e && e.message === 'TOO_MANY_INPUTS') {
+        throw new Error('You have too many small BLOCK coins to send this amount in one transaction — it would exceed the network block size. Consolidate your BLOCK first by sending it to yourself in smaller batches (about ' + MAX_TX_INPUTS + ' coins at a time).');
+      }
+      /* BigInt parse error etc. — let the wasm builder report it */
+    }
+  }
+
   const Signer = {
     available() {
       return typeof wb() === 'function';
@@ -57,6 +82,7 @@
     // amount/fee are base units (BigInt-safe). utxos = [{txid,vout,amount}].
     async buildTransfer(secretHex, publicHex, utxos, toAddr, amountBase, feeBase) {
       await init();
+      assertInputCap(utxos, amountBase, feeBase); // friendly error before building an oversized tx
       return JSON.parse(
         wb().build_transfer(
           secretHex,

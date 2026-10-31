@@ -43,6 +43,31 @@ abstract class BlockSignerBridge {
   Future<dynamic> submit(String raw);
 }
 
+// A BLOCK tx with too many inputs would exceed the 2MB block size (post-quantum signatures are
+// ~13KB each), so it could never be mined. Count the fewest coins (largest-first) needed to cover
+// amount+fee; over the cap → a friendly, actionable error. The node enforces the same on the wire.
+const int _maxTxInputs = 140;
+void _assertInputCap(List<dynamic> utxos, BigInt amount, BigInt fee) {
+  final need = amount + fee;
+  final amounts = utxos
+      .map((u) => BigInt.tryParse('${(u is Map ? u['amount'] : u)}') ?? BigInt.zero)
+      .toList()
+    ..sort((a, b) => b.compareTo(a));
+  var got = BigInt.zero;
+  var count = 0;
+  for (final a in amounts) {
+    got += a;
+    count++;
+    if (got >= need) break;
+  }
+  if (got >= need && count > _maxTxInputs) {
+    throw StateError(
+        'You have too many small BLOCK coins to send this amount in one transaction — it would '
+        'exceed the network block size. Consolidate your BLOCK first by sending it to yourself in '
+        'smaller batches (about $_maxTxInputs coins at a time).');
+  }
+}
+
 class BlockAdapter implements ChainAdapter {
   BlockAdapter(this._bridge, {this.explorer = 'https://blockle.org/tx/'});
 
@@ -135,6 +160,7 @@ class BlockAdapter implements ChainAdapter {
     if (!_bridge.isUnlocked()) throw StateError('locked');
     final utxos = await _bridge.utxos(_bridge.address);
     final fee = BigInt.parse(req.feeRate ?? '100000');
+    _assertInputCap(utxos, BigInt.parse(req.amount), fee); // friendly error before an oversized tx
     final built = await _bridge.buildTransfer(
         utxos, req.to, BigInt.parse(req.amount), fee);
     return BuiltTx(
