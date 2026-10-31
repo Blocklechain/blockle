@@ -41,8 +41,12 @@ async function main() {
   due.forEach((x) => console.log(`  ${x.blk.slice(0, 16)}… -> ${x.base}   $${x.owed} USDC`));
   if (!LIVE) { console.log("\nDRY RUN — set INFERENCE_PAYOUT_OK=1 + INFERENCE_PAYOUT_KEY to pay (0 gas; facilitator settles)."); return; }
 
-  const key = process.env.INFERENCE_PAYOUT_KEY;
-  if (!key) { console.error("INFERENCE_PAYOUT_KEY not set — refusing to pay."); process.exit(1); }
+  // Key from a file (preferred — never copied into env) or an env var. Trimmed; never logged.
+  let key = process.env.INFERENCE_PAYOUT_KEY || "";
+  if (!key && process.env.INFERENCE_PAYOUT_KEYFILE) {
+    try { key = fs.readFileSync(process.env.INFERENCE_PAYOUT_KEYFILE, "utf8").trim(); } catch (e) { console.error("cannot read INFERENCE_PAYOUT_KEYFILE:", e.message); process.exit(1); }
+  }
+  if (!key) { console.error("no payout key (set INFERENCE_PAYOUT_KEYFILE or INFERENCE_PAYOUT_KEY) — refusing to pay."); process.exit(1); }
   const { buildRequirements, verifyAndSettle } = require("./x402");
   const { createPaymentHeader } = require("x402/client");
   const { privateKeyToAccount } = require("viem/accounts");

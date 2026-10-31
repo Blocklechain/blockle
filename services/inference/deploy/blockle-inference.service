@@ -12,7 +12,7 @@ Environment=INFERENCE_PUBLIC_BASE=https://blockle.org/api/inference
 # MAINNET USDC — enabled per operator sign-off (2026-10-31). Base mainnet + treasury payTo.
 Environment=INFERENCE_NETWORK=base
 Environment=INFERENCE_MAINNET_OK=1
-Environment=INFERENCE_PAYTO=0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c
+Environment=INFERENCE_PAYTO=0xB7004c13A9F6d14DE2667E8fF1dA7819EDC74BC0
 Environment=INFERENCE_FACILITATOR=https://x402.org/facilitator
 Environment=INFERENCE_FEE_BPS=2000
 Environment=INFERENCE_PRICE=0.02
