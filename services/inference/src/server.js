@@ -13,6 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { buildRequirements, buildChallengeV2, verifyAndSettle } = require("./x402");
 const { route } = require("./gateway");
+const { CATALOG } = require("./models");
 
 const CFG = {
   port: Number(process.env.INFERENCE_PORT || 8822),
@@ -159,6 +160,7 @@ const server = http.createServer((req, res) => {
     try {
       if (!parts.length || parts[0] === "health") return sendJson(res, 200, { ok: true, network: CFG.network, mainnetOk: CFG.mainnetOk, subnet: CFG.subnetId, priceUsd: CFG.priceUsd, feeBps: CFG.feeBps, miners: (await liveMiners()).length });
       if (parts[0] === "infer" && req.method === "POST") return handleInfer(req, res, body);
+      if (parts[0] === "models") return sendJson(res, 200, { note: "Recommended model per GPU class — anyone can mine, CPU to 80GB.", catalog: CATALOG });
       if (parts[0] === "miners") return sendJson(res, 200, { miners: (await liveMiners()).map((m) => ({ uid: m.uid, address: m.address, epochUsd: m.revenueUsd })) });
       if (parts[0] === "earnings") { // /earnings/<address>  (read-only; what a miner watches)
         const addr = parts[1] || u.searchParams.get("address") || "";
@@ -167,7 +169,7 @@ const server = http.createServer((req, res) => {
       }
       if (parts[0] === "announce" && req.method === "POST") { // miner posts its serving URL
         if (!body.uid || !body.url || !body.address) return sendJson(res, 400, { error: "need {uid,address,url}" });
-        const m = loadJson(MINERS_FILE); m[String(body.uid)] = { uid: Number(body.uid), address: body.address, url: body.url, ts: Date.now() }; saveJson(MINERS_FILE, m);
+        const m = loadJson(MINERS_FILE); m[String(body.uid)] = { uid: Number(body.uid), address: body.address, url: body.url, tier: body.tier || null, model: body.model || null, ts: Date.now() }; saveJson(MINERS_FILE, m);
         return sendJson(res, 200, { ok: true, registered: m[String(body.uid)] });
       }
       if (parts[0] === ".well-known" && parts[1] === "x402") {

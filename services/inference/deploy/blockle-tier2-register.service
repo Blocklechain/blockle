@@ -4,12 +4,10 @@ After=network.target blockle-node.service
 Wants=blockle-node.service
 
 [Service]
-Type=oneshot
+# Type=simple so `systemctl start` returns immediately while the script loops in the
+# background until height >= 18888, registers once, writes its marker, and exits 0.
+Type=simple
 ExecStart=/usr/bin/env bash /opt/blockle/services/inference/deploy/register-tier2.sh
-# The script loops internally until height >= 18888 (Type=oneshot stays "activating"
-# until it exits 0 after registering). RemainAfterExit marks it done.
-RemainAfterExit=yes
-TimeoutStartSec=0
 Restart=on-failure
 RestartSec=30
 

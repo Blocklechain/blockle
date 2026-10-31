@@ -11,12 +11,29 @@
 // end-to-end locally without a model (the validator will score echoes as low quality).
 "use strict";
 const http = require("node:http");
+const { execSync } = require("node:child_process");
+const { pickTierByVramGB, byTier } = require("./models");
+
+// Detect GPU VRAM (GB) via nvidia-smi; 0 if none (CPU). Overridable with MINER_VRAM_GB.
+function detectVramGB() {
+  if (process.env.MINER_VRAM_GB) return Number(process.env.MINER_VRAM_GB) || 0;
+  try {
+    const out = execSync("nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits", { timeout: 4000 }).toString();
+    const mb = Math.max(...out.split("\n").map((l) => parseInt(l.trim(), 10)).filter(Number.isFinite));
+    return Number.isFinite(mb) ? Math.round(mb / 1024) : 0;
+  } catch { return 0; }
+}
+const VRAM_GB = detectVramGB();
+const TIER = process.env.MINER_TIER ? byTier(process.env.MINER_TIER) : pickTierByVramGB(VRAM_GB);
 
 const CFG = {
   port: Number(process.env.MINER_PORT || 8821),
   upstream: process.env.MINER_UPSTREAM || "",
-  model: process.env.MINER_MODEL || "dev-echo",
+  // Default the model to the recommended one for this hardware class (CPU→80GB).
+  model: process.env.MINER_MODEL || (TIER ? TIER.model : "dev-echo"),
   key: process.env.MINER_KEY || "",
+  vramGB: VRAM_GB,
+  tier: TIER ? TIER.tier : "cpu",
 };
 
 async function infer(prompt, opts = {}) {
@@ -43,7 +60,7 @@ async function infer(prompt, opts = {}) {
 function serve() {
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x");
-    if (u.pathname === "/health") { res.end(JSON.stringify({ ok: true, role: "inference-miner", model: CFG.model, hasModel: !!CFG.upstream })); return; }
+    if (u.pathname === "/health") { res.end(JSON.stringify({ ok: true, role: "inference-miner", model: CFG.model, tier: CFG.tier, vramGB: CFG.vramGB, hasModel: !!CFG.upstream })); return; }
     if (u.pathname === "/infer" && req.method === "POST") {
       let b = ""; req.on("data", (c) => (b += c)); req.on("end", async () => {
         try {
@@ -58,7 +75,19 @@ function serve() {
     }
     res.statusCode = 404; res.end("{}");
   });
-  srv.listen(CFG.port, () => console.log(`[inference:miner] model=${CFG.model} upstream=${CFG.upstream || "(dev-echo)"} on :${CFG.port}`));
+  srv.listen(CFG.port, () => console.log(`[inference:miner] tier=${CFG.tier} (${CFG.vramGB}GB) model=${CFG.model} upstream=${CFG.upstream || "(dev-echo)"} on :${CFG.port}`));
+  // One-command ease: auto-announce to the gateway so the operator needn't register the URL
+  // by hand. Needs MINER_GATEWAY + MINER_UID + MINER_ADDRESS + MINER_PUBLIC_URL.
+  const gw = process.env.MINER_GATEWAY, uid = process.env.MINER_UID, address = process.env.MINER_ADDRESS, url = process.env.MINER_PUBLIC_URL;
+  if (gw && uid && address && url) {
+    const announce = async () => {
+      try {
+        await fetch(`${gw.replace(/\/$/, "")}/announce`, { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ uid: Number(uid), address, url, tier: CFG.tier, model: CFG.model }) });
+      } catch (_) {}
+    };
+    announce(); setInterval(announce, 5 * 60 * 1000);
+  }
   return srv;
 }
 
