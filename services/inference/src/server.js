@@ -54,6 +54,8 @@ const crypto = require("node:crypto");
 function loadJson(f) { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return {}; } }
 function saveJson(f, o) { try { fs.writeFileSync(f, JSON.stringify(o)); } catch {} }
 function sendJson(res, code, obj) { const b = Buffer.from(JSON.stringify(obj)); res.writeHead(code, { "content-type": "application/json", "content-length": b.length, "access-control-allow-origin": "*" }); res.end(b); }
+// HTTP 204 MUST carry no body (a body corrupts nginx's upstream keepalive → 502 on the next req).
+function send204(res) { res.writeHead(204, { "access-control-allow-origin": "*" }); res.end(); }
 
 function httpReq(method, urlStr, body, timeoutMs = 60000, headers = {}) {
   return new Promise((resolve) => {
@@ -335,10 +337,10 @@ const server = http.createServer((req, res) => {
         if (address) browserMiners[address] = { ts: Date.now(), tier: (browserMiners[address] || {}).tier || "webgpu" };
         const c = QUEUE.claimNext();
         if (c.job) return sendJson(res, 200, { job: { jobId: c.job.jobId, prompt: c.job.request.prompt, temperature: c.job.request.temperature, max_tokens: c.job.request.max_tokens } });
-        const t = setTimeout(() => { c.cancel(); if (!res.writableEnded) sendJson(res, 204, {}); }, 25000);
+        const t = setTimeout(() => { c.cancel(); if (!res.writableEnded) send204(res); }, 25000);
         c.wait.then((job) => { clearTimeout(t); if (res.writableEnded) return;
           if (job) sendJson(res, 200, { job: { jobId: job.jobId, prompt: job.request.prompt, temperature: job.request.temperature, max_tokens: job.request.max_tokens } });
-          else sendJson(res, 204, {}); });
+          else send204(res); });
         return;
       }
       if (parts[0] === "jobs" && parts[1] === "result" && req.method === "POST") {
