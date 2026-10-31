@@ -9,7 +9,7 @@
 // Exposed as global `Wallet`.
 (function (global) {
   const AUTO_LOCK_MS = 30 * 60 * 1000;
-  let session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
+  let session = { id: null, address: null, pub: null, secret: null, seed: null, legacySeed: null, at: 0 };
 
   const rid = () => 'w' + Math.random().toString(36).slice(2, 10);
 
@@ -50,6 +50,7 @@
       pub: session.pub,
       secret: session.secret,
       seed: session.seed,
+      legacySeed: session.legacySeed,
       at: session.at,
     });
   }
@@ -64,6 +65,11 @@
     // secp256k1 HD root (hex) for EVM/BTC/LTC/DOGE derivation; null when locked.
     get seedHex() {
       return session.seed;
+    },
+    // Old random HD root preserved across the BLOCK-derived migration, for sweeping
+    // funds off the pre-migration addresses; null when absent or locked.
+    get legacySeedHex() {
+      return session.legacySeed || null;
     },
     get activeId() {
       return session.id;
@@ -168,7 +174,8 @@
           /* re-seal is best-effort; a failure must not block unlock */
         }
       }
-      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, at: Date.now() };
+      const legacySeed = (pt.seed && pt.seed !== seed) ? pt.seed : (pt.legacySeed || null);
+      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, legacySeed, at: Date.now() };
       await saveSession();
       return { address: rec.address };
     },
@@ -181,7 +188,7 @@
         await Session.clear('session');
         return false;
       }
-      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), at: s.at };
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), legacySeed: s.legacySeed || null, at: s.at };
       return true;
     },
 

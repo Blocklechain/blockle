@@ -1625,6 +1625,7 @@
       settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
       settingRow('Force update &amp; reload', 'Fetch the latest wallet code if something looks stale. Does NOT delete your keys.', '<button class="btn sm" id="set-update">Update</button>') +
       '</div></div>' +
+      legacyRecoverCard() +
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
       '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
     $('#set-export') && ($('#set-export').onclick = offerBackup);
@@ -1632,8 +1633,49 @@
     $('#set-lock') && ($('#set-lock').onclick = lock);
     $('#set-wc') && ($('#set-wc').onclick = wcSheet);
     $('#set-update') && ($('#set-update').onclick = forceUpdate);
+    $('#set-sweep') && ($('#set-sweep').onclick = sweepLegacyFunds);
   };
   function settingRow(title, sub, action) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(title) + '</b><span class="dim" style="font-size:12px">' + sub + '</span></span><span style="margin-left:auto">' + action + '</span></div>'; }
+  // Shown only when this wallet was migrated to the BLOCK-derived multichain seed
+  // and still carries the old random seed as `legacySeed`. Lets the user move any
+  // funds that landed on the OLD per-chain addresses over to the new ones.
+  function legacyRecoverCard() {
+    if (!(Wallet.legacySeedHex)) return '';
+    return '<div class="card" style="margin-top:14px"><div class="sechead"><h2>Recover legacy funds</h2></div>' +
+      '<p class="muted" style="font-size:13px">Your multichain addresses (Base, Ethereum, Bitcoin, etc.) are now derived from your BLOCK key so they stay attached to your account and persist across devices. If you received funds on the <b>old</b> addresses before this update, sweep them to your current addresses here. EVM/Base native balances are swept automatically; token and non-EVM balances are reported so you can move them manually.</p>' +
+      '<div class="wrap" style="margin-top:10px"><button class="btn" id="set-sweep">' + ic('refresh', 16) + ' Scan &amp; sweep legacy addresses</button></div>' +
+      '<div id="sweep-out" style="margin-top:12px"></div></div>';
+  }
+  async function sweepLegacyFunds() {
+    var btn = $('#set-sweep'), out = $('#sweep-out');
+    if (!btn || !out) return;
+    if (!Wallet.legacySeedHex) { out.innerHTML = '<p class="muted">No legacy seed on this wallet.</p>'; return; }
+    btn.disabled = true; btn.textContent = 'Scanning…';
+    out.innerHTML = '<p class="muted">Deriving old addresses and checking balances across chains…</p>';
+    try {
+      var r = await Wiring.sweepLegacy(Wallet.legacySeedHex);
+      var rows = (r && r.results) || [];
+      if (!rows.length) { out.innerHTML = '<p class="muted">No legacy chains enabled — nothing to scan.</p>'; return; }
+      var html = '<div class="list">';
+      var anySwept = false, anyHeld = false;
+      for (var i = 0; i < rows.length; i++) {
+        var x = rows[i];
+        var name = esc((x.chain || '').toUpperCase());
+        var detail, tag;
+        if (x.error) { detail = '<span class="dim" style="font-size:12px">' + esc(x.error) + '</span>'; tag = '<span class="pill warn">error</span>'; }
+        else if (x.swept) { anySwept = true; detail = '<span class="dim" style="font-size:12px">Swept ' + esc(x.balance) + ' → ' + esc(shortAddr(x.to)) + '</span>'; tag = '<a class="pill ok" href="#" onclick="return false">' + esc(shortAddr(x.txid || '')) + '</a>'; }
+        else if (x.balance && x.balance !== '0') { anyHeld = true; detail = '<span class="dim" style="font-size:12px">Holds ' + esc(x.balance) + ' at ' + esc(shortAddr(x.address)) + ' — move manually</span>'; tag = '<span class="pill">manual</span>'; }
+        else { detail = '<span class="dim" style="font-size:12px">Empty</span>'; tag = '<span class="pill">—</span>'; }
+        html += '<div class="li"><span class="col" style="align-items:flex-start"><b>' + name + '</b>' + detail + '</span><span style="margin-left:auto">' + tag + '</span></div>';
+      }
+      html += '</div>';
+      if (anySwept) html += '<p class="muted" style="font-size:12px;margin-top:8px">Swept transactions are broadcasting — balances update once confirmed.</p>';
+      if (anyHeld) html += '<p class="muted" style="font-size:12px;margin-top:8px">Tokens and non-EVM coins can\'t be auto-swept yet. Import the legacy seed into a dedicated wallet to move them, or contact support.</p>';
+      out.innerHTML = html;
+    } catch (e) {
+      out.innerHTML = '<p class="muted">Sweep failed: ' + esc(String((e && e.message) || e)) + '</p>';
+    } finally { btn.disabled = false; btn.innerHTML = ic('refresh', 16) + ' Scan &amp; sweep legacy addresses'; }
+  }
   // Hard-refresh the wallet CODE: unregister the service worker and drop every
   // cache, then reload fresh from the network. This touches ONLY cached code —
   // your encrypted keys live in IndexedDB and are left completely untouched, so

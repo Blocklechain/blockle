@@ -171,6 +171,25 @@ class MultiVault:
     def mnemonic(self) -> str:
         return self._require()["mnemonic"]
 
+    def migrate_mnemonic(self, new_mnemonic: str) -> bool:
+        """Non-destructively swap the HD mnemonic to `new_mnemonic` (BLOCK-derived), preserving the
+        old one as `legacyMnemonic` so funds at the pre-migration addresses remain recoverable.
+        Returns True if a change was made. Other vault data (endpoints/tokens/channels) is kept."""
+        p = self._require()
+        cur = p.get("mnemonic")
+        if not new_mnemonic or cur == new_mnemonic:
+            return False
+        if not K.validate_mnemonic(new_mnemonic):
+            return False
+        if cur and not p.get("legacyMnemonic"):
+            p["legacyMnemonic"] = cur
+        p["mnemonic"] = new_mnemonic
+        self._seal()
+        return True
+
+    def legacy_mnemonic(self) -> Optional[str]:
+        return self._require().get("legacyMnemonic")
+
     def endpoints(self) -> Dict[str, Any]:
         return self._require().get("endpoints") or {}
 
@@ -495,6 +514,15 @@ class MultiChainController:
     # ---- unlock everything from the sealed seed ----
     def unlock(self, password: str) -> None:
         self.vault.unlock(password)
+        # Safe migration: bind an existing (legacy random-seed) vault to the BLOCK identity, keeping
+        # the old mnemonic as `legacyMnemonic` so legacy-address funds stay recoverable. Only runs
+        # when the BLOCK key export is available (else the vault is left untouched).
+        bm = self._block_derived_mnemonic()
+        if bm:
+            try:
+                self.vault.migrate_mnemonic(bm)
+            except Exception:
+                pass
         self._build()
 
     def create(self, password: str, mnemonic: Optional[str] = None) -> str:
@@ -502,20 +530,22 @@ class MultiChainController:
         # it deterministically from the BLOCK key so EVM / Base / BTC / LTC / DOGE / SOL addresses
         # persist and are reproducible from the base Blockle address (same across devices/wallets).
         if mnemonic is None:
-            mnemonic = self._block_derived_mnemonic()
+            mnemonic = self._block_derived_mnemonic() or K.generate_mnemonic(128)
         m = self.vault.create(password, mnemonic)
         self._build()
         return m
 
-    def _block_derived_mnemonic(self) -> str:
+    def _block_derived_mnemonic(self) -> Optional[str]:
         """A BIP39 mnemonic deterministically derived from the BLOCK secret (domain-separated
-        SHA-256), so the multichain wallet is attached to the base Blockle address. Falls back to a
-        random mnemonic only if the BLOCK key export is unavailable."""
+        SHA-256), so the multichain wallet is attached to the base Blockle address. Returns None if
+        the BLOCK key export is unavailable (locked) — callers must NOT migrate to a random one."""
         import hashlib
         try:
             secret = self.block_wallet.export_keys()
         except Exception:
-            return K.generate_mnemonic(128)
+            return None
+        if not secret:
+            return None
         entropy = hashlib.sha256(b"blockle-hd-v1|" + str(secret).encode()).digest()[:16]
         return K.entropy_to_mnemonic(entropy)
 

@@ -733,10 +733,48 @@
     _registry = null; _accounts = null; _venues = null; _telemetry = null; _settings = null;
   }
 
+  // Recover funds stranded at the OLD (pre-BLOCK-migration) multichain addresses: sweep each
+  // chain's native balance from the legacy-seed account to the current (BLOCK-derived) address.
+  // Temporarily switches the registry's signing seed to the legacy one, then ALWAYS restores it.
+  // EVM chains sweep natively (max=whole balance minus gas); non-EVM/token balances are reported
+  // for manual recovery (they need chain-specific fee / gas handling).
+  async function sweepLegacy(legacySeedHex) {
+    const C = global.BLKCrypto;
+    if (!legacySeedHex || !Wallet.seedHex) return { results: [] };
+    const reg = await registry();
+    const legacy = { seed: C.hexToBytes(legacySeedHex) };
+    const current = { seed: C.hexToBytes(Wallet.seedHex) };
+    const chains = reg.enabled().filter((id) => id !== 'block');
+    const dest = {};
+    for (const id of chains) { try { dest[id] = (await reg.get(id).deriveAccount(current)).address; } catch (_) {} }
+    const results = [];
+    try {
+      reg.unlock(legacy); // sign with the legacy seed
+      for (const id of chains) {
+        if (!dest[id]) continue;
+        try {
+          const acct = await reg.get(id).deriveAccount(legacy);
+          if (acct.address === dest[id]) continue; // no distinct legacy address
+          const bals = await reg.get(id).getBalance(acct.address, []);
+          const nb = (bals && bals[0]) || {};
+          const bal = BigInt(nb.spendable || nb.confirmed || '0');
+          if (bal <= 0n) { results.push({ chain: id, address: acct.address, balance: '0', swept: false }); continue; }
+          const built = await reg.get(id).buildSend(acct, { to: dest[id], max: true, amount: bal.toString() });
+          const res = await reg.get(id).broadcast(built);
+          results.push({ chain: id, address: acct.address, to: dest[id], balance: bal.toString(), txid: (res && res.txid) || built.txid, swept: true });
+        } catch (e) { results.push({ chain: id, error: String((e && e.message) || e), swept: false }); }
+      }
+    } finally {
+      reg.unlock(current); // ALWAYS restore the live seed
+    }
+    return { results };
+  }
+
   global.Wiring = {
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
+    sweepLegacy,
     autoImportTokens,
     amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:

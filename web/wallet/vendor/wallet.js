@@ -9,7 +9,7 @@
 // Exposed as global `Wallet`.
 (function (global) {
   const AUTO_LOCK_MS = 30 * 60 * 1000;
-  let session = { id: null, address: null, pub: null, secret: null, seed: null, at: 0 };
+  let session = { id: null, address: null, pub: null, secret: null, seed: null, legacySeed: null, at: 0 };
 
   const rid = () => 'w' + Math.random().toString(36).slice(2, 10);
 
@@ -51,6 +51,7 @@
       pub: session.pub,
       secret: session.secret,
       seed: session.seed,
+      legacySeed: session.legacySeed,
       at: session.at,
     });
   }
@@ -65,6 +66,10 @@
     // secp256k1 HD root (hex) for EVM/BTC/LTC/DOGE derivation; null when locked.
     get seedHex() {
       return session.seed;
+    },
+    // The prior random HD seed (pre BLOCK-migration), for the legacy-funds sweep. Null if none.
+    get legacySeedHex() {
+      return session.legacySeed || null;
     },
     get activeId() {
       return session.id;
@@ -152,14 +157,14 @@
       // from the BLOCK identity alone. Legacy wallets that stored a random seed are migrated to the
       // BLOCK-derived one here and re-sealed below. BLOCK identity itself is untouched.
       const seed = seedFromBlock(secret);
+      // The prior (random) seed, if any — kept so funds at the old multichain addresses are
+      // recoverable via the "sweep legacy" flow.
+      const legacySeed = (pt.seed && pt.seed !== seed) ? pt.seed : pt.legacySeed;
       // Transparent vault upgrade: re-seal legacy (v1 PBKDF2) blobs, blobs missing the HD seed, or
       // blobs whose stored seed differs from the BLOCK-derived one (migration), as the current v2
       // (scrypt) format. The user never loses access and never has to re-enter anything.
       if (Vault.needsUpgrade(rec.crypto) || pt.seed !== seed) {
         try {
-          // Non-destructive migration: keep any prior random seed as `legacySeed` so funds at the
-          // old (pre-migration) multichain addresses remain recoverable.
-          const legacySeed = (pt.seed && pt.seed !== seed) ? pt.seed : pt.legacySeed;
           rec.crypto = await Vault.seal({ ...pt, secret, public: pub, seed, legacySeed }, password);
           const list = await allWallets();
           const i = list.findIndex((w) => w.id === rec.id);
@@ -171,7 +176,7 @@
           /* re-seal is best-effort; a failure must not block unlock */
         }
       }
-      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, at: Date.now() };
+      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, legacySeed, at: Date.now() };
       await saveSession();
       return { address: rec.address };
     },
@@ -186,7 +191,7 @@
       }
       // Re-derive the HD seed from the BLOCK key on resume too, so a session saved before this
       // migration still yields the deterministic, BLOCK-attached multichain addresses.
-      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), at: s.at };
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), legacySeed: s.legacySeed || null, at: s.at };
       return true;
     },
 

@@ -266,8 +266,17 @@
           to = req.asset.address; value = 0n; data = erc20TransferData(req.to, req.amount);
           gasLimit = gasLimit || '0x15f90'; // 90000
         } else {
-          to = req.to; value = BigInt(req.amount); data = '0x';
+          to = req.to; data = '0x';
           gasLimit = gasLimit || '0x5208';  // 21000
+          if (req.max) {
+            // Sweep: send the whole native balance minus the gas cost.
+            const bal = BigInt(await rpc('eth_getBalance', [account.address, 'latest']));
+            const feeCost = BigInt(gasLimit) * BigInt(maxFee);
+            value = bal > feeCost ? bal - feeCost : 0n;
+            if (value <= 0n) throw new Error('native balance too low to cover gas');
+          } else {
+            value = BigInt(req.amount);
+          }
         }
         const tx = {
           chainId, nonce: BigInt(nonce),
