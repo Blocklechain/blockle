@@ -8,6 +8,11 @@
 
 function buildOpenApi(cfg) {
   const base = (cfg.publicBase || "https://blockle.org/api/inference").replace(/\/+$/, "");
+  // Serve the origin as the `servers` url and the FULL path as the operation key, so x402scan
+  // matches the submitted resource URL (/api/inference/infer) no matter how it combines them.
+  let origin = base, prefix = "";
+  try { const u = new URL(base); origin = u.origin; prefix = u.pathname.replace(/\/+$/, ""); } catch (_) {}
+  const inferPath = prefix + "/infer";
   const price = String(cfg.priceUsd != null ? cfg.priceUsd : 0.02);
   const r402 = { description: "Payment Required — returns an x402 v2 PaymentRequirements challenge (pay USDC on Base, then retry with the X-PAYMENT header)." };
   const guidance =
@@ -25,9 +30,9 @@ function buildOpenApi(cfg) {
       "x-guidance": guidance,
       contact: { name: "Blockle", email: "alex@blockle.org", url: "https://blockle.org" },
     },
-    servers: [{ url: base }],
+    servers: [{ url: origin }],
     paths: {
-      "/infer": {
+      [inferPath]: {
         post: {
           operationId: "infer",
           summary: "Run AI inference (pay $" + price + " USDC over x402).",
