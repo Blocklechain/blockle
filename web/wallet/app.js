@@ -683,8 +683,8 @@
   async function startWebgpuServe(addr, model, btn, st) {
     btn.disabled = true; st.textContent = 'Loading the WebGPU runtime…';
     var webllm;
-    try { webllm = await import('https://esm.run/@mlc-ai/web-llm'); }
-    catch (e) { st.textContent = 'Could not load the WebGPU runtime (network/CSP blocked). ' + (e && e.message || ''); btn.disabled = false; return; }
+    try { webllm = await import('/wallet/vendor/web-llm.js'); } // vendored same-origin (CSP script-src 'self')
+    catch (e) { st.textContent = 'Could not load the WebGPU runtime. ' + (e && e.message || ''); btn.disabled = false; return; }
     try {
       if (!WG.engine || WG.model !== model) {
         st.textContent = 'Downloading model (one time, cached after)…';
