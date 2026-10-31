@@ -518,18 +518,18 @@
           '<button class="btn sm primary" id="chat-add">Add credit</button></div>' +
         '<div class="dim" id="chat-topmsg" style="font-size:12px;margin-top:6px"></div></div>' +
       '<div class="card" style="padding:0"><div id="chat-thread" style="max-height:52vh;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px"></div>' +
-        '<div class="row" style="gap:8px;padding:12px;border-top:1px solid var(--line,#222)">' +
+        '<div class="row" style="gap:8px;padding:12px;border-top:1px solid var(--line)">' +
           '<input id="chat-in" placeholder="Message Blockle Intelligence…" style="flex:1" autocomplete="off">' +
           '<button class="btn primary" id="chat-send">Send</button></div></div>' +
       '<div class="card"><div class="sechead"><h2>Your API key</h2></div>' +
         '<p class="muted" style="margin:0 0 8px">Use the same credit from code — OpenAI-compatible. Keep BLOCK in your wallet and it auto-tops-up.</p>' +
         '<div class="row" style="gap:8px"><input id="chat-key" readonly style="flex:1;font-family:monospace;font-size:12px"><button class="btn sm ghost" id="chat-key-copy">Copy</button><button class="btn sm ghost" id="chat-key-new">New</button></div>' +
-        '<pre id="chat-curl" style="white-space:pre-wrap;word-break:break-all;background:var(--panel,#111);padding:10px;border-radius:8px;font-size:11px;margin-top:8px"></pre></div>';
+        '<pre id="chat-curl" style="white-space:pre-wrap;word-break:break-all;background:var(--card2);color:var(--ink2);padding:10px;border-radius:8px;font-size:11px;margin-top:8px"></pre></div>';
 
     function renderThread() {
       $('#chat-thread').innerHTML = CHAT.msgs.map(function (m) {
         var mine = m.role === 'user';
-        return '<div style="align-self:' + (mine ? 'flex-end' : 'flex-start') + ';max-width:84%;background:' + (mine ? 'var(--accent,#2b6cff)' : 'var(--panel,#1a1a1a)') + ';color:' + (mine ? '#fff' : 'inherit') + ';padding:9px 12px;border-radius:14px;font-size:14px;white-space:pre-wrap">' + esc(m.content) + '</div>';
+        return '<div style="align-self:' + (mine ? 'flex-end' : 'flex-start') + ';max-width:84%;background:' + (mine ? 'var(--accent)' : 'var(--card2)') + ';color:' + (mine ? 'var(--accent-ink)' : 'var(--ink)') + ';border:1px solid var(--line);padding:9px 12px;border-radius:14px;font-size:14px;white-space:pre-wrap">' + esc(m.content) + '</div>';
       }).join('') || '<div class="empty">Ask anything. First message may be slower while a miner warms up.</div>';
       var t = $('#chat-thread'); t.scrollTop = t.scrollHeight;
     }
@@ -568,11 +568,11 @@
         var attempt = function (n) {
           infApi('/deposit', { method: 'POST', headers: keyHdr(k), body: JSON.stringify({ txid: txid }) }).then(function (d) {
             if (d.ok) { $('#chat-topmsg').textContent = 'Credited ' + (d.j.creditedBlock || amt) + ' BLOCK.'; refreshBal(); }
-            else if (n > 0) { setTimeout(function () { attempt(n - 1); }, 6000); }
+            else if (n > 0) { setTimeout(function () { attempt(n - 1); }, 8000); }
             else { $('#chat-topmsg').textContent = 'Deposit sent (' + txid.slice(0, 10) + '…); credit will appear after a confirmation.'; }
           });
         };
-        attempt(10);
+        attempt(24);
       } catch (e) { $('#chat-topmsg').textContent = 'Top-up failed: ' + (e && e.message || ''); }
       $('#chat-add').disabled = false;
     }
@@ -615,7 +615,7 @@
         '<div id="inf-models" class="list"><div class="empty">Loading…</div></div></div>' +
       '<div class="card"><div class="sechead"><h2>Run a miner (one command)</h2></div>' +
         '<p class="muted" style="margin:0 0 8px">Install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, pull your tier\'s model, then start the Blockle miner. It auto-detects your VRAM and picks the right model.</p>' +
-        '<pre id="inf-cmd" style="white-space:pre-wrap;word-break:break-all;background:var(--panel,#111);padding:10px;border-radius:8px;font-size:12px"></pre>' +
+        '<pre id="inf-cmd" style="white-space:pre-wrap;word-break:break-all;background:var(--card2);color:var(--ink2);padding:10px;border-radius:8px;font-size:12px"></pre>' +
         '<button class="btn sm ghost" id="inf-copy" style="margin-top:6px">Copy command</button></div>' +
       '<div class="card"><div class="sechead"><h2>Serve from this browser (WebGPU)</h2><span class="chip" id="wg-sup">checking…</span></div>' +
         '<p class="muted" style="margin:0 0 8px">No install needed — run a small model right here on your GPU and earn as jobs come in. Experimental; needs a WebGPU browser (Chrome/Edge) and a one-time model download.</p>' +

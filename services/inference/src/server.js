@@ -261,8 +261,12 @@ async function handleDeposit(req, res, body) {
   if (!txid) return sendJson(res, 400, { error: "need {txid}" });
   const seen = loadJson(DEPOSITS_FILE);
   if (seen[txid]) return sendJson(res, 200, { ok: true, idempotent: true, balanceBlock: creditOf(id) / COIN });
-  const tx = await explorerGet(`/explorer/tx/${txid}`);
-  if (!tx || tx.error) return sendJson(res, 404, { error: "tx not found yet (wait for a confirmation)" });
+  const resp = await explorerGet(`/explorer/tx/${txid}`);
+  const tx = resp && (resp.tx || resp);               // /explorer/tx wraps the tx under `tx`
+  if (!resp || resp.error || !tx || !tx.outputs) return sendJson(res, 404, { error: "tx not found yet (wait for a confirmation)" });
+  // Only real spends count — a coinbase pays the (pool) deposit address every block, so without
+  // this anyone could claim block rewards as free credit.
+  if (tx.kind === "coinbase" || !tx.inputs || tx.inputs.length === 0) return sendJson(res, 400, { error: "that transaction is not a valid deposit" });
   const toUs = (tx.outputs || []).filter((o) => o.address === CFG.depositAddr).reduce((s, o) => s + Number(o.amount || 0), 0);
   if (toUs <= 0) return sendJson(res, 400, { error: "tx has no output to the deposit address" });
   seen[txid] = true; saveJson(DEPOSITS_FILE, seen);
