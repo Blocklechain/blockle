@@ -104,6 +104,23 @@ function recordEarning(address, usd) {
 }
 function round6(x) { return Math.round((Number(x) || 0) * 1e6) / 1e6; }
 
+// ---- miner USDC payout ledger (Base) -----------------------------------------
+// The x402 USDC path pays the buyer's USDC to the treasury (payTo). The treasury keeps its
+// skim (feeBps); the miner's share is accrued here as USDC OWED and later disbursed to the
+// miner's registered Base address by the gated payout service (payout.js). BLOCK-credit chat
+// traffic is NOT accrued here (that settles in BLOCK).
+const OWED_FILE = path.join(CFG.dataDir, "owed-usdc.json");       // blockAddr -> { owed, paid } (USDC, 6dp)
+const PAYADDR_FILE = path.join(CFG.dataDir, "payout-addrs.json"); // blockAddr -> base (0x…) payout address
+function accrueUsdc(addr, usd) {
+  if (!addr || !(usd > 0)) return;
+  const o = loadJson(OWED_FILE); const e = o[addr] || { owed: 0, paid: 0 };
+  e.owed = round6(e.owed + usd); o[addr] = e; saveJson(OWED_FILE, o);
+}
+function setPayoutAddr(blockAddr, baseAddr) {
+  if (!blockAddr || !/^0x[0-9a-fA-F]{40}$/.test(String(baseAddr || ""))) return false;
+  const p = loadJson(PAYADDR_FILE); p[blockAddr] = baseAddr; saveJson(PAYADDR_FILE, p); return true;
+}
+
 // ---- x402 priced core (verify → settle → perform), mirrors the beacon --------
 function assertNetworkAllowed() {
   const mainnet = CFG.network === "base" || CFG.network === "eip155:8453";
@@ -140,6 +157,8 @@ async function handleInfer(req, res, body) {
 
   const out = await performInference(body, CFG.priceUsd);
   if (!out) return sendJson(res, 503, { error: "no miner or bootstrap backend available" });
+  // x402 USDC path: the miner's share is now owed in USDC (treasury kept its skim).
+  if (out.minerAddress) accrueUsdc(out.minerAddress, out.accounting.minerEarnsUsd);
   out.payer = vs.payer; out.txHash = vs.txHash;
   results[pid] = out; saveJson(RESULTS_FILE, results);
   return sendJson(res, 200, out);
@@ -157,7 +176,7 @@ async function performInference(body, priceUsd) {
         const protocolFeeUsd = round6(priceUsd * CFG.feeBps / 10000);
         const minerEarnsUsd = round6(priceUsd - protocolFeeUsd);
         recordEarning(br.address, minerEarnsUsd);
-        return { answer: br.answer, servedBy: { kind: "browser", address: br.address }, model: "webgpu-miner", tier: 2,
+        return { answer: br.answer, servedBy: { kind: "browser", address: br.address }, minerAddress: br.address, model: "webgpu-miner", tier: 2,
           accounting: { priceUsd, protocolFeeUsd, minerEarnsUsd, netToTreasuryUsd: protocolFeeUsd } };
       }
     } catch (_) { /* fall through */ }
@@ -165,8 +184,9 @@ async function performInference(body, priceUsd) {
   const miners = await liveMiners();
   const r = await route({ request, miners, priceUsd, feeBps: CFG.feeBps, call: callMiner, wholesale: { costUsd: 0, call: callBootstrap } });
   if (!r.ok) return null;
-  if (r.servedBy.kind === "miner") { const m = miners.find((x) => x.uid === r.servedBy.uid); if (m) recordEarning(m.address, r.accounting.minerEarnsUsd); }
-  return { answer: r.answer, servedBy: r.servedBy, model: r.model || null, accounting: r.accounting, tier: 2,
+  let minerAddress = null;
+  if (r.servedBy.kind === "miner") { const m = miners.find((x) => x.uid === r.servedBy.uid); if (m) { recordEarning(m.address, r.accounting.minerEarnsUsd); minerAddress = m.address; } }
+  return { answer: r.answer, servedBy: r.servedBy, minerAddress, model: r.model || null, accounting: r.accounting, tier: 2,
     note: r.servedBy.kind === "wholesale" ? "served by CPU bootstrap model (not competitive) — no GPU miners online yet" : undefined };
 }
 
@@ -298,7 +318,20 @@ const server = http.createServer((req, res) => {
       if (parts[0] === "announce" && req.method === "POST") { // miner posts its serving URL
         if (!body.uid || !body.url || !body.address) return sendJson(res, 400, { error: "need {uid,address,url}" });
         const m = loadJson(MINERS_FILE); m[String(body.uid)] = { uid: Number(body.uid), address: body.address, url: body.url, tier: body.tier || null, model: body.model || null, ts: Date.now() }; saveJson(MINERS_FILE, m);
+        if (body.payoutBase) setPayoutAddr(body.address, body.payoutBase); // Base USDC payout address
         return sendJson(res, 200, { ok: true, registered: m[String(body.uid)] });
+      }
+      // Register a miner's Base (USDC) payout address — where the gateway disburses owed USDC.
+      if (parts[0] === "payout-address" && req.method === "POST") {
+        if (!setPayoutAddr(body.address, body.payoutBase)) return sendJson(res, 400, { error: "need {address (BLOCK), payoutBase (0x… Base address)}" });
+        return sendJson(res, 200, { ok: true, address: body.address, payoutBase: body.payoutBase });
+      }
+      // What a miner is owed / has been paid in USDC (by BLOCK address).
+      if (parts[0] === "owed") {
+        const addr = parts[1] || u.searchParams.get("address") || "";
+        const e = loadJson(OWED_FILE)[addr] || { owed: 0, paid: 0 };
+        const payoutBase = loadJson(PAYADDR_FILE)[addr] || null;
+        return sendJson(res, 200, { address: addr, owedUsdc: e.owed, paidUsdc: e.paid, payoutBase, asset: { symbol: "USDC", chain: "base", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" } });
       }
       if (parts[0] === ".well-known" && parts[1] === "x402") {
         return sendJson(res, 200, { x402Version: 2, name: "Blockle Inference", description: "Tier-2 inference subnet. Paid requests route to community GPU miners; a small hosted CPU model is the labeled bootstrap fallback. Emission is capped (subjective tier).", network: CFG.network, facilitator: CFG.facilitatorUrl, accepts: [{ resource: `${CFG.publicBase}/infer`, method: "POST", price: `$${CFG.priceUsd}`, description: "Inference. Response includes servedBy + model so you see exactly what produced it.", input: { prompt: "string", temperature: "optional", max_tokens: "optional" } }] });
