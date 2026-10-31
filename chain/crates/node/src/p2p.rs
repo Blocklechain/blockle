@@ -804,6 +804,14 @@ impl Node {
         if st.mempool.iter().any(|t| t.txid() == txid) {
             return false;
         }
+        // Reject transactions too large to ever fit in a block (reserving room for the
+        // coinbase + header) — otherwise they sit in the mempool forever, unminable.
+        // Mempool policy only; block validity is separately bounded by max_block_size.
+        let max_tx = st.chain.params.max_block_size.saturating_sub(4096);
+        if tx.serialized_size() > max_tx {
+            println!("[mempool] rejected tx {}: {} bytes exceeds the {}-byte limit", display_hash(&txid), tx.serialized_size(), max_tx);
+            return false;
+        }
         // Reject double-spends against pending transactions (no unconfirmed
         // chaining in the prototype mempool).
         let pending: Vec<OutPoint> = st
