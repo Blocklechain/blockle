@@ -1675,7 +1675,7 @@
       '</div></div>' +
       legacyRecoverCard() +
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
-      '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
+      '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. Your Blockle identity and backup use post-quantum (ML-DSA) keys, and every other-chain account is derived from that post-quantum root — assets on Bitcoin, Ethereum and Solana stay secured by each network\'s own cryptography. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
     $('#set-export') && ($('#set-export').onclick = offerBackup);
     $('#set-theme') && ($('#set-theme').onclick = function () { var cur = document.documentElement.getAttribute('data-theme'); themeApply(cur === 'light' ? 'dark' : 'light'); });
     $('#set-lock') && ($('#set-lock').onclick = lock);

@@ -2206,9 +2206,25 @@ fn page_home() -> String {
     // lives at /network; every existing page is linked from the nav + footer.
     r##"<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Blockle — self-custody trading super-app</title>
-<meta name="description" content="A non-custodial multi-chain wallet, a cross-chain exchange, and AI trading bots that trade on your command — your keys, your desk.">
+<title>Blockle — Post-Quantum Multichain Crypto Wallet &amp; Self-Custody Trading</title>
+<meta name="description" content="Blockle is a non-custodial multichain crypto wallet with a post-quantum (ML-DSA) core. Hold Bitcoin, Ethereum, Solana, BLOCK and tokens from one seed, swap cross-chain non-custodially, and run AI trading bots on your command. Your keys, your desk.">
+<meta name="keywords" content="post-quantum wallet, multichain crypto wallet, non-custodial wallet, Bitcoin Ethereum Solana wallet, ML-DSA, quantum-resistant crypto, cross-chain exchange, AI trading bot, self-custody, BLOCK, Blockle">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<link rel="canonical" href="https://blockle.org/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Blockle">
+<meta property="og:title" content="Blockle — Post-Quantum Multichain Crypto Wallet">
+<meta property="og:description" content="A non-custodial multichain wallet with a post-quantum (ML-DSA) core — Bitcoin, Ethereum, Solana, BLOCK and tokens from one seed, cross-chain swaps, and AI trading bots. Your keys, your desk.">
+<meta property="og:url" content="https://blockle.org/">
+<meta property="og:image" content="https://blockle.org/logo.png">
+<meta property="og:image:alt" content="Blockle — post-quantum multichain wallet">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Blockle — Post-Quantum Multichain Crypto Wallet">
+<meta name="twitter:description" content="Non-custodial multichain wallet with a post-quantum (ML-DSA) core, cross-chain swaps, and AI trading bots. Your keys, your desk.">
+<meta name="twitter:image" content="https://blockle.org/logo.png">
 <link rel="icon" href="/favicon.ico">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://blockle.org/#org","name":"Blockle","url":"https://blockle.org/","logo":"https://blockle.org/logo.png","sameAs":["https://github.com/blocklechain/blockle","https://discord.gg/tx4MfyD9Vu","https://crates.io/crates/blockle"]},{"@type":"WebSite","@id":"https://blockle.org/#website","name":"Blockle","url":"https://blockle.org/","publisher":{"@id":"https://blockle.org/#org"},"potentialAction":{"@type":"SearchAction","target":{"@type":"EntryPoint","urlTemplate":"https://blockle.org/explorer/search?q={search_term_string}"},"query-input":"required name=search_term_string"}},{"@type":"SoftwareApplication","name":"Blockle Wallet","applicationCategory":"FinanceApplication","operatingSystem":"Web, Windows, macOS, Linux, Android, Chrome","description":"Non-custodial multichain crypto wallet with a post-quantum (ML-DSA) core. Holds Bitcoin, Ethereum and EVM chains, Solana, Litecoin, Dogecoin, BLOCK and tokens from a single seed, with cross-chain swaps and AI trading bots.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"isAccessibleForFree":true,"publisher":{"@id":"https://blockle.org/#org"}},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Is Blockle a post-quantum wallet?","acceptedAnswer":{"@type":"Answer","text":"Blockle's own layer-1 (BLOCK) is post-quantum end to end, using NIST ML-DSA-44 (FIPS-204) signatures, and every external-chain account is derived from that post-quantum root key, so your master key and backup are quantum-resistant. Assets on Bitcoin, Ethereum and Solana are still secured by those networks' own classical signatures (secp256k1/ed25519) until those chains adopt post-quantum signatures — no wallet can change that."}},{"@type":"Question","name":"Which chains does the Blockle wallet support?","acceptedAnswer":{"@type":"Answer","text":"One seed holds BLOCK and BLOCK-20 tokens plus Bitcoin, Ethereum and EVM networks, Solana, Litecoin and Dogecoin, with cross-chain swaps and NFTs."}},{"@type":"Question","name":"Is Blockle non-custodial?","acceptedAnswer":{"@type":"Answer","text":"Yes. Keys are generated and sealed on your device and never sent to any server. The wallet and the native AMM never take custody of your funds."}}]}</script>
 <style>
 :root{--ground:#0a0d14;--surface:#111725;--surface-2:#0e1420;--line:#1d2535;--text:#e8ebf2;--muted:#8b93a6;--faint:#5a6577;--accent:#4d8bff;--accent-soft:#2a4a8f;--accent-ink:#0a0d14;--gain:#2fc08a;--loss:#ff5d6a;--mono:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--maxw:1120px}
 @media(prefers-color-scheme:light){:root{--ground:#eef1f7;--surface:#fff;--surface-2:#f4f6fb;--line:#dde3ee;--text:#0b0f1a;--muted:#56617a;--faint:#8a93a6;--accent:#2f6bf0;--accent-soft:#c7d7fb;--accent-ink:#fff;--gain:#12a06b;--loss:#e5424f}}
@@ -2305,9 +2321,9 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <section class="hero" style="padding:0">
 <canvas id="candles" aria-hidden="true"></canvas><div class="hero-fade" aria-hidden="true"></div>
 <div class="wrap"><div>
-<span class="eyebrow">Self-custody trading super-app</span>
+<span class="eyebrow">Post-quantum &middot; self-custody trading super-app</span>
 <h1>Your keys.<br>Your bots.<br><span class="thin">Your trading desk.</span></h1>
-<p class="sub">A multi-chain wallet, a non-custodial exchange, and pro trading bots with an AI that trades on your command &mdash; without ever holding your coins.</p>
+<p class="sub">A post-quantum multichain wallet, a non-custodial exchange, and pro trading bots with an AI that trades on your command &mdash; without ever holding your coins.</p>
 <div class="hero-cta">
 <a class="btn btn-primary" href="/wallet" style="padding:13px 20px;font-size:15px">Open the Web Wallet &rarr;</a>
 <a class="btn" href="#download" style="background:transparent;border:1px solid var(--line)">Get the apps</a>
@@ -2321,7 +2337,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <div class="hs-sub">No account needed to use the wallet &mdash; <a href="/wallet">open it now</a>. Already have one? <a href="/account/login">Sign in</a></div>
 <div class="hs-msg" id="hs-msg" role="status"></div>
 </form>
-<p class="micro"><b>Non-custodial.</b> Your keys stay on your device &middot; <b>Multi-chain</b> BTC &middot; ETH &middot; SOL &middot; BLOCK &middot; and more</p>
+<p class="micro"><b>Non-custodial.</b> Your keys stay on your device &middot; <b>Post-quantum</b> ML-DSA core &middot; <b>Multi-chain</b> BTC &middot; ETH &middot; SOL &middot; BLOCK &middot; and more</p>
 </div>
 <div class="demo" aria-label="Conversational command bar demo">
 <div class="dhead"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="label">Blockle &middot; command</span></div>
@@ -2388,7 +2404,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <section id="safe"><div class="wrap"><span class="eyebrow">Why it's safe to let a bot &mdash; or an AI &mdash; trade</span>
 <div class="shead"><h2>The AI is the brain. It is never the hands.</h2><p>Bots and the agent can only <em>propose</em> a trade. Moving value always runs through one non-bypassable gate on your device.</p></div>
 <div class="trust">
-<div class="t"><h4>Your keys, your device</h4><p>Private keys are encrypted locally and never sent to our servers or any model. A lapsed subscription or a dead server never traps your funds.</p></div>
+<div class="t"><h4>Your keys, your device</h4><p>Private keys are encrypted locally and never sent to our servers or any model. A lapsed subscription or a dead server never traps your funds. Your wallet identity and backup use <b>post-quantum (ML-DSA)</b> keys, and every external-chain account is derived from that post-quantum root &mdash; assets on Bitcoin, Ethereum and Solana remain secured by each network&rsquo;s own cryptography.</p></div>
 <div class="t"><h4>One gate, always on</h4><p>Every send, swap and bot order passes a per-asset cap, a scam/approval check, and a confirm &mdash; a risky one forces an explicit tap. Nothing auto-signs silently.</p></div>
 <div class="t"><h4>A kill switch that means it</h4><p>One tap stops every bot, cancels open orders, and locks the vault. A hostile or confused model can't do anything your own tap couldn't.</p></div>
 </div></div></section>

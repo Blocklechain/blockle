@@ -6,7 +6,9 @@ Allow: /
 Disallow: /api/
 # Search is a redirect endpoint, not a landing page
 Disallow: /explorer/search
-# Retired page
+# Retired / paused products (notice pages — keep out of the index)
 Disallow: /buy
+Disallow: /usdb
+Disallow: /launch
 
 Sitemap: https://blockle.org/sitemap.xml
