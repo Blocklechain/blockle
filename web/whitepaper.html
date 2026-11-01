@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>BLOCK — A Post-Quantum Layer-1 Whitepaper</title>
+<style>
+  @page { size: letter; margin: 22mm 20mm 20mm 20mm; }
+  :root{ --ink:#14181f; --muted:#5b6472; --line:#d8dee7; --accent:#2f6bf0; --accent2:#0d7a5f; }
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+  body{font:11pt/1.55 Georgia,'Times New Roman',serif; color:var(--ink); margin:0}
+  h1,h2,h3,.mono,.eyebrow,.cover .sub,th{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif}
+  .mono{font-family:'SF Mono',Menlo,Consolas,monospace}
+  /* cover */
+  .cover{height:232mm; display:flex; flex-direction:column; justify-content:center; page-break-after:always}
+  .cover .mark{width:46px;height:46px;border-radius:12px;background:linear-gradient(135deg,var(--accent),#56c0a0);
+    display:flex;align-items:center;justify-content:center;color:#fff;font:700 24px/1 sans-serif;margin-bottom:28px}
+  .cover h1{font-size:34pt;line-height:1.08;letter-spacing:-.02em;margin:0 0 14px;max-width:16em}
+  .cover .sub{font-size:13pt;color:var(--muted);max-width:30em;margin:0 0 40px}
+  .cover .meta{font:9.5pt/1.7 -apple-system,Arial,sans-serif;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
+  .eyebrow{font-size:8.5pt;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h2{font-size:15pt;letter-spacing:-.01em;margin:26px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line)}
+  h3{font-size:11.5pt;margin:16px 0 4px}
+  p{margin:0 0 9px}
+  ul{margin:0 0 9px; padding-left:1.2em} li{margin:2px 0}
+  .lede{font-size:11.5pt;color:#2b3340}
+  code,.mono{font-size:9.5pt;background:#f1f4f9;border:1px solid var(--line);border-radius:4px;padding:.03em .3em}
+  table{border-collapse:collapse;width:100%;margin:8px 0 12px;font-size:10pt}
+  th{text-align:left;font-size:8.5pt;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border-bottom:1.5px solid var(--line);padding:5px 8px}
+  td{border-bottom:1px solid #e9edf3;padding:5px 8px;vertical-align:top}
+  td:first-child{white-space:nowrap;color:var(--accent2);font-family:'SF Mono',Menlo,monospace;font-size:9pt}
+  .note{border-left:3px solid var(--accent);background:#f5f8ff;padding:8px 12px;margin:10px 0;font-size:10pt;color:#2b3340}
+  .foot{margin-top:28px;border-top:1px solid var(--line);padding-top:10px;font-size:8.5pt;color:var(--muted)}
+  section{page-break-inside:avoid}
+</style></head>
+<body>
+
+<div class="cover">
+  <div class="mark">◆</div>
+  <div class="eyebrow">Blockle Protocol · Whitepaper</div>
+  <h1>BLOCK: a post-quantum, universally&nbsp;merge-mined Layer&nbsp;1</h1>
+  <p class="sub">A proof-of-work blockchain secured by NIST post-quantum signatures,
+  mined by every major ASIC algorithm at once, with native tokens, an on-chain AMM,
+  shielded transfers, and a verifiable inference market.</p>
+  <div class="meta">
+    AlienBeing LLC &nbsp;·&nbsp; blockle.org<br>
+    Protocol v1 &nbsp;·&nbsp; This document describes the live mainnet protocol. It is technical documentation, not an offer to sell or solicitation to buy any asset.
+  </div>
+</div>
+
+<section>
+<h2>1. Overview</h2>
+<p class="lede">Blockle is a layer-1 blockchain whose native coin is <b>BLOCK</b>. It is
+designed around two theses: that a chain settling value for decades must not rest on
+signatures a quantum computer can forge, and that proof-of-work security should draw on
+<i>all</i> of the world's mining hardware rather than a single algorithm's.</p>
+<p>Every account and transaction is authenticated with <b>ML-DSA-44 (FIPS&nbsp;204)</b>,
+NIST's standardized lattice signature scheme. Blocks are produced by a native
+proof-of-work and, equivalently, by merge-mining from any supported parent chain, so
+SHA-256, Scrypt, X11, Blake2b/Blake2s, Blake3, Eaglesong and kHeavyHash miners can all
+secure Blockle at no additional energy cost. On top of this base, Blockle provides a
+token standard (BLOCK-20), non-fungible tokens (BLOCK-721), a constant-product AMM built
+into consensus, optional shielded (zero-knowledge) transfers, and Blockle Intelligence —
+a market for AI inference settled in BLOCK.</p>
+</section>
+
+<section>
+<h2>2. Cryptographic foundation</h2>
+<table>
+<tr><th>Element</th><th>Construction</th></tr>
+<tr><td>Signatures</td><td>ML-DSA-44 (FIPS&nbsp;204), domain-separated with the context string <span class="mono">"BlklTxV1"</span></td></tr>
+<tr><td>Addresses</td><td><span class="mono">blake2b_256("BlklAddr", pubkey)</span>, encoded bech32m as <span class="mono">block1…</span></td></tr>
+<tr><td>Hashing</td><td>Blake2b-256 (personalized) for txids, sighashes and Merkle nodes</td></tr>
+<tr><td>Block hash</td><td>double-SHA-256 of the 140-byte header, compared little-endian</td></tr>
+<tr><td>Shielded field</td><td>GF(2<sup>128</sup>−45·2<sup>40</sup>+1); Rescue-Prime note hashing; STARK proofs</td></tr>
+</table>
+<p>Classical elliptic-curve signatures (secp256k1, ed25519) appear <i>only</i> at the
+edges, where Blockle interoperates with external chains through its multi-chain wallet.
+The Blockle consensus layer itself is post-quantum end to end.</p>
+</section>
+
+<section>
+<h2>3. Consensus and mining</h2>
+<p>Blockle targets a <b>600-second</b> block interval with per-block difficulty
+retargeting. The native proof-of-work is Equihash (200,9). The same header can instead
+carry an <b>auxiliary proof-of-work</b> (merge-mining): a miner on a parent chain commits
+Blockle's header hash into the parent coinbase and submits the parent's solved block as
+proof. Because the commitment is algorithm-agnostic, Blockle behaves as a
+<b>universal auxiliary chain</b> — a single pool can let SHA-256, Scrypt, X11, Blake2b,
+Blake2s, Blake3, Eaglesong or kHeavyHash hardware earn BLOCK while it mines its primary
+coin, with no extra electricity.</p>
+<p>This diversifies the cost of attacking the chain across every major hardware ecosystem
+rather than concentrating it in one, and it lets Blockle bootstrap security from the
+existing global hashrate.</p>
+</section>
+
+<section>
+<h2>4. The BLOCK coin and monetary policy</h2>
+<ul>
+<li><b>Divisibility.</b> 1 BLOCK = 100,000,000 base units.</li>
+<li><b>Issuance.</b> A Bitcoin-style schedule: the block subsidy halves every
+<b>210,000 blocks</b>, giving a hard-capped, disinflationary supply. No issuance is ever
+minted to pay fees, rewards, or ecosystem costs.</li>
+<li><b>Premine.</b> A fixed <b>210,000 BLOCK</b> allocation exists at genesis for
+development and ecosystem funding; it is an allocation, not a mining reward, and is
+disclosed rather than hidden in the schedule.</li>
+<li><b>Fees.</b> Transactions pay a fee in BLOCK; gas on contract actions is prepaid.</li>
+</ul>
+<div class="note">Because supply is capped, BLOCK used across the ecosystem — fees on the
+AMM, tips and rewards in social features, bonds in the inference market — moves
+<i>circulating</i> coin between participants. Nothing is minted to subsidize it.</div>
+</section>
+
+<section>
+<h2>5. Tokens, NFTs and the native AMM</h2>
+<p><b>BLOCK-20</b> is Blockle's fungible-token standard; <b>BLOCK-721</b> is its NFT
+standard. Both are first-class consensus objects, not smart-contract conventions.</p>
+<p>A <b>constant-product automated market maker</b> is built directly into consensus. Any
+BLOCK-20 token can seed a BLOCK-paired liquidity pool; swaps pay a <b>0.30%</b> fee to
+liquidity providers, and newly created positions carry a one-week LP lock. The AMM is
+fully <b>non-custodial</b>: trades are signed on the user's device and settle on-chain;
+Blockle never takes custody of trader funds or liquidity.</p>
+</section>
+
+<section>
+<h2>6. Shielded transfers</h2>
+<p>Blockle supports optional <b>hidden-amount</b> transfers. Value is committed inside
+zero-knowledge notes over a binary extension field, hashed with Rescue-Prime and proven
+with STARKs, so transferred amounts never appear on chain while remaining fully
+verifiable by every node. Users choose transparency per transaction.</p>
+</section>
+
+<section>
+<h2>7. Blockle Intelligence</h2>
+<p>Blockle Intelligence is a consensus-level market for AI inference, activated at a fixed
+block height. A fraction of each block's subsidy (configurable; currently 10%) is
+redirected from the proof-of-work coinbase into an <b>emission pool</b> — the total supply
+schedule is unchanged; this only re-targets part of each block's existing subsidy.</p>
+<p>Participants register as <b>neurons</b> in task markets (<b>subnets</b>): miners serve
+inference, validators score it through a commit–reveal weight scheme and must prove
+liveness each epoch against a fresh on-chain beacon. Each epoch the pool is distributed to
+miners and validators by on-chain consensus over the revealed scores. Registration locks a
+BLOCK <b>bond</b> (recoverable by deregistering after a cooldown), aligning incentives and
+deterring sybil behavior. Inference is also purchasable per call — in BLOCK via the
+BLOCK-402 scripting standard, or in stablecoins via the x402 rail.</p>
+</section>
+
+<section>
+<h2>8. Wallets and interoperability</h2>
+<p>Blockle ships a browser extension, a desktop (Qt) wallet and a mobile wallet, each
+holding BLOCK and BLOCK-20/721 assets under post-quantum keys. From the same seed the
+wallet deterministically derives addresses on external chains (Bitcoin, Ethereum and EVM
+networks, Solana, Litecoin, Dogecoin) for a single-seed multi-chain experience; those
+external keys use each chain's native (classical) cryptography and never touch Blockle
+consensus. A wrapped-BLOCK bridge to external chains is specified and gated behind the
+applicable licensing.</p>
+</section>
+
+<section>
+<h2>9. Security and honesty principles</h2>
+<ul>
+<li><b>Post-quantum by default</b> — no consensus signature relies on classical ECC.</li>
+<li><b>Height-activated upgrades</b> — protocol changes activate at published block
+heights, so every node upgrades in lockstep and old nodes fork off cleanly rather than
+silently diverging.</li>
+<li><b>Non-custodial where it counts</b> — the wallet and the native AMM never take
+custody; keys are generated and sealed on the user's device.</li>
+<li><b>No fabricated metrics</b> — displayed statistics come from live nodes; third-party
+or operator-reported figures are labeled as such.</li>
+</ul>
+</section>
+
+<div class="foot">
+© AlienBeing LLC. BLOCK and Blockle are products of AlienBeing LLC. This document is
+technical documentation describing the Blockle protocol as implemented. It is not
+investment advice and not an offer or solicitation. Protocol parameters cited (block time,
+halving interval, premine, AMM fee, intelligence α-split, activation heights) reflect the
+live mainnet configuration and may be changed only by published, height-activated consensus
+upgrades. blockle.org
+</div>
+
+</body></html>
