@@ -39,6 +39,13 @@ pub struct ChainParams {
     /// exempt — it is an allocation, not a mining reward.
     pub coinbase_maturity: u64,
     pub max_block_size: usize,
+    /// Larger block-size ceiling that takes effect at `block_size_v2_height`
+    /// (height-gated consensus change). Below that height the limit is
+    /// `max_block_size`; at/above it, this value. Lets high-input-count txs
+    /// (e.g. bonding many small coinbase coins) fit under post-quantum signatures.
+    pub max_block_size_v2: usize,
+    /// Height at which `max_block_size_v2` replaces `max_block_size`.
+    pub block_size_v2_height: u64,
     /// Max seconds a block timestamp may lead local time.
     pub max_future_drift: i64,
     pub coinbase_tag: Vec<u8>,
@@ -76,6 +83,16 @@ impl ChainParams {
     /// `pow_limit` starts generous so the chain can bootstrap on CPU; LWMA
     /// retargets every block, so real hashrate tightens difficulty within one
     /// window.
+    /// The block-size ceiling in force at `height` (height-gated: the v2 limit
+    /// applies at/above `block_size_v2_height`, the original below).
+    pub fn max_block_size_at(&self, height: u64) -> usize {
+        if height >= self.block_size_v2_height {
+            self.max_block_size_v2
+        } else {
+            self.max_block_size
+        }
+    }
+
     pub fn mainnet() -> Self {
         ChainParams {
             name: "blockle-main".into(),
@@ -98,6 +115,11 @@ impl ChainParams {
             premine: 210_000 * COIN,
             coinbase_maturity: 100,
             max_block_size: 2_000_000,
+            // Height-gated block-size bump: 2 MB -> 10 MB at block 19_000, so a bond
+            // (or any payment) consolidating hundreds of small coins fits in one tx
+            // despite ~13 KB post-quantum signatures.
+            max_block_size_v2: 10_000_000,
+            block_size_v2_height: 19_000,
             max_future_drift: 2 * 60 * 60,
             coinbase_tag: b"Blockle".to_vec(),
             gas_price: 10,

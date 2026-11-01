@@ -807,7 +807,10 @@ impl Node {
         // Reject transactions too large to ever fit in a block (reserving room for the
         // coinbase + header) — otherwise they sit in the mempool forever, unminable.
         // Mempool policy only; block validity is separately bounded by max_block_size.
-        let max_tx = st.chain.params.max_block_size.saturating_sub(4096);
+        // Size against the limit at the NEXT height (where this tx would be mined), so
+        // the ceiling tracks the height-gated block-size bump.
+        let next_height = st.chain.height().unwrap_or(0).saturating_add(1);
+        let max_tx = st.chain.params.max_block_size_at(next_height).saturating_sub(4096);
         if tx.serialized_size() > max_tx {
             println!("[mempool] rejected tx {}: {} bytes exceeds the {}-byte limit", display_hash(&txid), tx.serialized_size(), max_tx);
             return false;

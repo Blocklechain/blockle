@@ -780,7 +780,7 @@ impl Chain {
         }
 
         // -- Block body --
-        if block.serialized_size() > self.params.max_block_size {
+        if block.serialized_size() > self.params.max_block_size_at(height) {
             return Err(ChainError::BlockTooLarge);
         }
         if block.transactions.is_empty() || !block.transactions[0].is_coinbase() {

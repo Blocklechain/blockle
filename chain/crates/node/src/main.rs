@@ -955,9 +955,13 @@ fn build_funded_tx(
         .collect();
 
     // Cap inputs per tx so a many-coin payment can't build a transaction larger than a block
-    // can hold (post-quantum signatures are ~13KB each; 732 inputs = ~10MB ≫ the 2MB block).
-    // Over the cap → a clear error telling the user to consolidate in smaller batches.
-    const MAX_FUNDING_INPUTS: usize = 140;
+    // can hold (post-quantum signatures are ~13KB each). The cap scales with the block-size
+    // ceiling in force at the next height, so the height-gated bump (2MB -> 10MB at 19000)
+    // automatically allows larger consolidations/bonds. Over the cap → a clear error.
+    let next_height = chain.height().unwrap_or(0).saturating_add(1);
+    let block_cap = chain.params.max_block_size_at(next_height);
+    // ~13KB/input; reserve ~100KB for outputs/header/overhead.
+    let max_funding_inputs = (block_cap.saturating_sub(100_000) / 13_000).max(1);
     let mut selected = Vec::new();
     let mut total: u64 = 0;
     for (outpoint, entry) in chain.spendable_utxos(&kp.address()) {
@@ -969,10 +973,10 @@ fn build_funded_tx(
         if total >= needed {
             break;
         }
-        if selected.len() >= MAX_FUNDING_INPUTS {
+        if selected.len() >= max_funding_inputs {
             bail!(
                 "this payment needs more than {} coins as inputs — the transaction would exceed the {}-byte block limit. Consolidate your coins in smaller batches (each ≤ {} inputs) first.",
-                MAX_FUNDING_INPUTS, chain.params.max_block_size, MAX_FUNDING_INPUTS
+                max_funding_inputs, block_cap, max_funding_inputs
             );
         }
     }
