@@ -61,6 +61,11 @@
     return node;
   }
 
+  // The Associated Token Account program + the System program. Base58 here,
+  // decoded to 32-byte keys where needed.
+  const ASSOCIATED_TOKEN_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+  const SYSTEM_PROGRAM = '11111111111111111111111111111111';
+
   // ---- compact-u16 (shortvec) ----------------------------------------------
   function decodeShortVec(bytes, offset) {
     let len = 0, size = 0, b;
@@ -70,6 +75,146 @@
       size++;
     } while (b & 0x80);
     return { value: len >>> 0, size };
+  }
+  function encodeShortVec(n) {
+    const out = [];
+    let rem = n >>> 0;
+    for (;;) {
+      let elem = rem & 0x7f;
+      rem >>>= 7;
+      if (rem === 0) { out.push(elem); break; }
+      out.push(elem | 0x80);
+    }
+    return Uint8Array.from(out);
+  }
+  function u64le(nStr) {
+    const b = new Uint8Array(8);
+    let v = BigInt(nStr);
+    for (let i = 0; i < 8; i++) { b[i] = Number(v & 0xffn); v >>= 8n; }
+    return b;
+  }
+
+  // ---- program-derived addresses (for Associated Token Accounts) -----------
+  // A 32-byte value is "on curve" iff it decompresses to a valid ed25519 point.
+  // A PDA must be OFF the curve, so findProgramAddress searches bumps 255→0 for
+  // the first off-curve sha256(seeds ‖ bump ‖ programId ‖ "ProgramDerivedAddress").
+  function isOnCurve(bytes) {
+    // pointDecompress returns null (not throws) when the bytes aren't a valid
+    // compressed ed25519 point — i.e. the value is OFF the curve.
+    try { return ED.pointDecompress(bytes) !== null; } catch (_) { return false; }
+  }
+  const PDA_MARKER = C.utf8('ProgramDerivedAddress');
+  function findProgramAddress(seeds, programId) {
+    for (let bump = 255; bump >= 0; bump--) {
+      const h = C.sha256(C.concatBytes(...seeds, Uint8Array.of(bump), programId, PDA_MARKER));
+      if (!isOnCurve(h)) return { address: h, bump };
+    }
+    throw new Error('solana: no off-curve program address found');
+  }
+  // The ATA for (owner, mint) under the classic SPL Token program.
+  function associatedTokenAddress(ownerKey, mintKey) {
+    const token = C.base58decode(TOKEN_PROGRAM);
+    const ata = C.base58decode(ASSOCIATED_TOKEN_PROGRAM);
+    return findProgramAddress([ownerKey, token, mintKey], ata).address;
+  }
+
+  // ---- legacy message compilation ------------------------------------------
+  // Each instruction: { programId:Uint8Array(32), keys:[{pubkey:Uint8Array(32),
+  // isSigner, isWritable}], data:Uint8Array }. Returns the serialized legacy
+  // message bytes (fee payer forced to index 0, Solana's signer/writable order).
+  // Account ordering replicates @solana/web3.js legacy Transaction.compileMessage
+  // exactly: gather instruction keys (in order) then append deduped program ids
+  // (readonly, non-signer); cull duplicates merging flags; sort signer-first then
+  // writable-first then by base58 (localeCompare); force the fee payer to index 0.
+  const LOCALE_OPTS = {
+    localeMatcher: 'best fit', usage: 'sort', sensitivity: 'variant',
+    ignorePunctuation: false, numeric: false, caseFirst: 'lower',
+  };
+  function compileMessage(feePayer, instructions, recentBlockhash) {
+    const feeId = C.base58encode(feePayer);
+    const metas = []; // { id, key, isSigner, isWritable }
+    const programIds = []; const progKey = {};
+    for (const ix of instructions) {
+      for (const k of ix.keys) {
+        metas.push({ id: C.base58encode(k.pubkey), key: k.pubkey, isSigner: !!k.isSigner, isWritable: !!k.isWritable });
+      }
+      const pid = C.base58encode(ix.programId);
+      if (!programIds.includes(pid)) { programIds.push(pid); progKey[pid] = ix.programId; }
+    }
+    for (const pid of programIds) metas.push({ id: pid, key: progKey[pid], isSigner: false, isWritable: false });
+
+    const unique = []; const seen = new Map();
+    for (const m of metas) {
+      if (seen.has(m.id)) { const u = unique[seen.get(m.id)]; u.isWritable = u.isWritable || m.isWritable; u.isSigner = u.isSigner || m.isSigner; }
+      else { seen.set(m.id, unique.length); unique.push({ ...m }); }
+    }
+    unique.sort((x, y) => {
+      if (x.isSigner !== y.isSigner) return x.isSigner ? -1 : 1;
+      if (x.isWritable !== y.isWritable) return x.isWritable ? -1 : 1;
+      return x.id.localeCompare(y.id, 'en', LOCALE_OPTS);
+    });
+    const fi = unique.findIndex((m) => m.id === feeId);
+    if (fi > -1) { const pm = unique.splice(fi, 1)[0]; pm.isSigner = true; pm.isWritable = true; unique.unshift(pm); }
+    else unique.unshift({ id: feeId, key: feePayer, isSigner: true, isWritable: true });
+
+    const ordered = unique;
+    const numRequiredSignatures = ordered.filter((m) => m.isSigner).length;
+    const numReadonlySigned = ordered.filter((m) => m.isSigner && !m.isWritable).length;
+    const numReadonlyUnsigned = ordered.filter((m) => !m.isSigner && !m.isWritable).length;
+
+    const indexOf = new Map(ordered.map((m, i) => [m.id, i]));
+    const parts = [];
+    parts.push(Uint8Array.of(numRequiredSignatures, numReadonlySigned, numReadonlyUnsigned));
+    parts.push(encodeShortVec(ordered.length));
+    for (const m of ordered) parts.push(m.key);
+    parts.push(recentBlockhash);
+    parts.push(encodeShortVec(instructions.length));
+    for (const ix of instructions) {
+      parts.push(Uint8Array.of(indexOf.get(C.base58encode(ix.programId))));
+      parts.push(encodeShortVec(ix.keys.length));
+      parts.push(Uint8Array.from(ix.keys.map((k) => indexOf.get(C.base58encode(k.pubkey)))));
+      parts.push(encodeShortVec(ix.data.length));
+      parts.push(ix.data);
+    }
+    return C.concatBytes(...parts);
+  }
+
+  // SPL Token `TransferChecked` (tag 12): moves `amount` of `mint` from `source`
+  // to `dest`, validating decimals. For an NFT: amount=1, decimals=0.
+  function transferCheckedIx(source, mint, dest, owner, amountStr, decimals) {
+    const token = C.base58decode(TOKEN_PROGRAM);
+    const data = C.concatBytes(Uint8Array.of(12), u64le(amountStr), Uint8Array.of(decimals & 0xff));
+    return {
+      programId: token,
+      keys: [
+        { pubkey: source, isSigner: false, isWritable: true },
+        { pubkey: mint, isSigner: false, isWritable: false },
+        { pubkey: dest, isSigner: false, isWritable: true },
+        { pubkey: owner, isSigner: true, isWritable: false },
+      ],
+      data,
+    };
+  }
+  // Associated Token Account `CreateIdempotent` (tag 1): creates `ata` for
+  // (owner, mint) if it doesn't already exist; a no-op if it does. Payer signs.
+  function createAtaIdempotentIx(payer, ata, owner, mint) {
+    return {
+      programId: C.base58decode(ASSOCIATED_TOKEN_PROGRAM),
+      keys: [
+        { pubkey: payer, isSigner: true, isWritable: true },
+        { pubkey: ata, isSigner: false, isWritable: true },
+        { pubkey: owner, isSigner: false, isWritable: false },
+        { pubkey: mint, isSigner: false, isWritable: false },
+        { pubkey: C.base58decode(SYSTEM_PROGRAM), isSigner: false, isWritable: false },
+        { pubkey: C.base58decode(TOKEN_PROGRAM), isSigner: false, isWritable: false },
+      ],
+      data: Uint8Array.of(1),
+    };
+  }
+  // Wrap a compiled message as an unsigned serialized tx: shortvec(1) + a zeroed
+  // 64-byte signature slot + the message. `signTx` fills the slot later.
+  function unsignedTx(message) {
+    return C.concatBytes(encodeShortVec(1), new Uint8Array(64), message);
   }
 
   // Locate the signer slot for `pubkey` (32 bytes) inside a serialized tx, and
@@ -263,6 +408,63 @@
         return { chain: id, raw: toBase64(signed), txid: C.base58encode(sig) };
       },
 
+      // Build a real SPL/Metaplex token transfer (NFT = amount 1, decimals 0).
+      // Resolves our actual source token account, derives the destination ATA,
+      // adds an idempotent ATA-create when the recipient has none, compiles the
+      // legacy message with a fresh blockhash, and returns an UNSIGNED tx for
+      // security review. Sign + send with signTx() then broadcast() on confirm.
+      // req: { mint, to, amount='1', decimals=0, index? }
+      async buildNftTransfer(account, req) {
+        const owner = (account && account.address) || (rootSeed && C.base58encode(ED.publicKey(keyFor(0))));
+        if (!owner) throw new Error('solana: no account');
+        if (!req || !req.mint || !req.to) throw new Error('solana: mint and to are required');
+        const amount = String(req.amount || '1');
+        const decimals = Number(req.decimals || 0);
+        const ownerKey = C.base58decode(owner);
+        const destOwner = C.base58decode(req.to);
+        const mintKey = C.base58decode(req.mint);
+        if (mintKey.length !== 32 || destOwner.length !== 32) throw new Error('solana: bad mint/recipient');
+
+        // Our source token account: prefer the real on-chain account holding the
+        // mint (handles non-ATA holdings); fall back to the derived ATA.
+        let source = null;
+        try {
+          const res = await rpc('getTokenAccountsByOwner', [owner, { mint: req.mint }, { encoding: 'jsonParsed' }]);
+          for (const acc of ((res && res.value) || [])) {
+            const info = acc.account.data.parsed.info;
+            if (BigInt(info.tokenAmount.amount) >= BigInt(amount)) { source = C.base58decode(acc.pubkey); break; }
+          }
+        } catch (_) { /* fall through to derived ATA */ }
+        if (!source) source = associatedTokenAddress(ownerKey, mintKey);
+
+        // Destination ATA; create it (idempotent) if the recipient has none.
+        const destAta = associatedTokenAddress(destOwner, mintKey);
+        let destExists = false;
+        try {
+          const info = await rpc('getAccountInfo', [C.base58encode(destAta), { encoding: 'base64' }]);
+          destExists = !!(info && info.value);
+        } catch (_) { destExists = false; }
+
+        const ixs = [];
+        if (!destExists) ixs.push(createAtaIdempotentIx(ownerKey, destAta, destOwner, mintKey));
+        ixs.push(transferCheckedIx(source, mintKey, destAta, ownerKey, amount, decimals));
+
+        const bh = await rpc('getLatestBlockhash', [{ commitment: 'finalized' }]);
+        const blockhash = (bh && bh.value && bh.value.blockhash) || (bh && bh.blockhash);
+        if (!blockhash) throw new Error('solana: could not fetch a recent blockhash');
+
+        const message = compileMessage(ownerKey, ixs, C.base58decode(blockhash));
+        return {
+          chain: id, kind: 'nft-transfer', standard: 'spl',
+          raw: toBase64(unsignedTx(message)), needsSign: true,
+          summary: {
+            from: owner, to: req.to, mint: req.mint, amount, decimals,
+            source: C.base58encode(source), destination: C.base58encode(destAta),
+            createsRecipientAccount: !destExists, blockhash,
+          },
+        };
+      },
+
       async broadcast(tx) {
         const raw = tx.raw || tx;
         const txid = await rpc('sendTransaction', [raw, { encoding: 'base64' }]);
@@ -283,9 +485,11 @@
   const API = {
     createSolanaAdapter,
     deriveSlip10, masterKey, deriveChild,
-    decodeShortVec, locateSigner, signSerializedTx,
+    decodeShortVec, encodeShortVec, locateSigner, signSerializedTx,
+    isOnCurve, findProgramAddress, associatedTokenAddress,
+    compileMessage, transferCheckedIx, createAtaIdempotentIx, unsignedTx, u64le,
     fromBase64, toBase64, formatUnits,
-    DEFAULT_PATH, LAMPORTS, TOKEN_PROGRAM,
+    DEFAULT_PATH, LAMPORTS, TOKEN_PROGRAM, ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM,
   };
   global.SolanaAdapter = API;
   if (inNode) module.exports = API;

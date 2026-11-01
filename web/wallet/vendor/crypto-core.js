@@ -570,7 +570,12 @@
     }
     let str = '';
     for (let i = 0; i < zeros; i++) str += '1';
-    for (let i = digits.length - 1; i >= 0; i--) str += B58[digits[i]];
+    // When every byte is a leading zero the value is 0 — the digit array holds a
+    // spurious [0]; emit no extra character (else an all-zero key gets one '1' too
+    // many, e.g. the Solana System program "111…1").
+    if (zeros < b.length) {
+      for (let i = digits.length - 1; i >= 0; i--) str += B58[digits[i]];
+    }
     return str;
   }
   function base58decode(str) {
@@ -588,8 +593,12 @@
     }
     let zeros = 0;
     for (const ch of str) { if (ch === '1') zeros++; else break; }
-    const out = new Uint8Array(zeros + bytes.length);
-    for (let i = 0; i < bytes.length; i++) out[zeros + i] = bytes[bytes.length - 1 - i];
+    // When the value is zero (all-'1' input) `bytes` is a spurious [0]; drop it
+    // so the result is exactly `zeros` zero bytes, not one too many.
+    let n = bytes.length;
+    if (n === 1 && bytes[0] === 0) n = 0;
+    const out = new Uint8Array(zeros + n);
+    for (let i = 0; i < n; i++) out[zeros + i] = bytes[n - 1 - i];
     return out;
   }
   function base58checkEncode(payload) {
