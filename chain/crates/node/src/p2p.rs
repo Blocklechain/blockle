@@ -910,7 +910,7 @@ impl Node {
 pub fn push_tx_to_node(addr: &str, params: &ChainParams, tx: &Transaction) -> Result<()> {
     let mut stream =
         TcpStream::connect(addr).map_err(|e| anyhow!("cannot reach node at {addr}: {e}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
     write_message(
         &mut stream,
         &Message::Version {
@@ -922,12 +922,23 @@ pub fn push_tx_to_node(addr: &str, params: &ChainParams, tx: &Transaction) -> Re
             listen: None,
         },
     )?;
-    match read_message(&mut stream)? {
-        Message::Version { network, .. } if network == params.name => {}
-        Message::Version { network, .. } => {
-            return Err(anyhow!("node is on network {network:?}, expected {:?}", params.name))
+    // The node sends its Version first, but a mining node also gossips Tip/NewBlock/
+    // Ping/Inv to every connected peer, and those frames can reach a one-shot client
+    // before (or interleaved with) the handshake Version. Read until we see the peer's
+    // Version, skipping gossip, rather than treating the first non-Version frame as a
+    // hard failure (which made `--node` submits flaky against a busy pool node).
+    let mut handshook = false;
+    for _ in 0..32 {
+        match read_message(&mut stream)? {
+            Message::Version { network, .. } if network == params.name => { handshook = true; break; }
+            Message::Version { network, .. } => {
+                return Err(anyhow!("node is on network {network:?}, expected {:?}", params.name))
+            }
+            _ => continue, // gossip arriving before the handshake Version — keep reading
         }
-        _ => return Err(anyhow!("unexpected handshake reply")),
+    }
+    if !handshook {
+        return Err(anyhow!("no handshake Version from node after 32 frames"));
     }
     write_message(&mut stream, &Message::NewTx { tx: tx.clone() })?;
     Ok(())
