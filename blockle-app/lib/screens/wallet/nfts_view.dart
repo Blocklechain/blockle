@@ -9,6 +9,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../multichain/security.dart' as sec;
+import '../../multichain/nft.dart' as nft;
+import '../../multichain/chains/evm.dart' show EvmAdapter;
+import '../../multichain/chains/solana.dart' show SolanaAdapter;
+import '../../multichain/chains/chain_adapter.dart' show BroadcastResult;
 import '../../state/wallet_controller.dart';
 import '../bots/bots_tokens.dart';
 import 'security_sheet.dart';
@@ -109,28 +113,42 @@ class _NftsViewState extends State<NftsView> {
           AspectRatio(
             aspectRatio: 1,
             child: Stack(fit: StackFit.expand, children: [
-              Container(
-                decoration: BoxDecoration(
-                  gradient: metaOk
-                      ? LinearGradient(
-                          colors: [colorForSymbol(name), colorForSymbol(collection)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        )
-                      : null,
-                  color: metaOk ? null : t.elevated,
-                ),
-                alignment: Alignment.center,
-                child: metaOk
-                    ? Icon(it['chain'] == 'solana' ? Icons.hexagon_outlined : Icons.image,
-                        size: 34, color: Colors.white.withValues(alpha: 0.9))
-                    : Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text('$name\nmetadata unavailable',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 12, color: t.inkFaint)),
-                      ),
-              ),
+              Builder(builder: (_) {
+                final img = (it['image'] ?? it['imageUrl'] ?? '').toString();
+                final placeholder = Container(
+                  decoration: BoxDecoration(
+                    gradient: metaOk
+                        ? LinearGradient(
+                            colors: [colorForSymbol(name), colorForSymbol(collection)],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          )
+                        : null,
+                    color: metaOk ? null : t.elevated,
+                  ),
+                  alignment: Alignment.center,
+                  child: metaOk
+                      ? Icon(it['chain'] == 'solana' ? Icons.hexagon_outlined : Icons.image,
+                          size: 34, color: Colors.white.withValues(alpha: 0.9))
+                      : Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Text('$name\nmetadata unavailable',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(fontSize: 12, color: t.inkFaint)),
+                        ),
+                );
+                if (img.startsWith('http')) {
+                  // Render the actual NFT media; fall back to the gradient/icon
+                  // placeholder while loading or if the image can't be fetched.
+                  return Image.network(img,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      errorBuilder: (_, __, ___) => placeholder,
+                      loadingBuilder: (ctx, child, progress) =>
+                          progress == null ? child : placeholder);
+                }
+                return placeholder;
+              }),
               if (spam)
                 Positioned(
                   top: 8,
@@ -236,18 +254,66 @@ class _NftsViewState extends State<NftsView> {
       }
       final to = '${resolved['address']}';
       final source = '${resolved['source']}';
-      final accts = await wc.accountsList();
-      final from = accts.firstWhere((a) => a['chain'] == chain, orElse: () => const {})['address'];
-      final tx = sec.buildInspectTx(chain, {
-        'to': to,
-        'asset': {'chain': chain, 'kind': 'nft', 'address': it['contract']},
-        'data': null,
-        'amount': '1',
-      });
-      // For EVM NFT sends the real transfer calldata is built by nft.buildNftTransfer;
-      // here we at minimum run the pre-sign inspection on the RESOLVED recipient.
-      final insp = await sec.inspectTransaction(
-          {...tx, 'from': from}, wc.securityCtx(chain));
+      final mc = wc.mc;
+      final acct = await mc.accounts.accountFor(chain);
+      final from = acct.address;
+      final adapter = mc.registry.get(chain);
+
+      // Build the REAL transfer artifact per chain. The module never signs here;
+      // signing happens only after the security sheet is approved below.
+      late final Map<String, dynamic> inspectTx;
+      late final Future<BroadcastResult> Function() doSend;
+      if (chain == 'solana') {
+        final built = await (adapter as SolanaAdapter).buildNftTransfer(
+            acct, mint: '${it['contract']}', to: to, amount: '1', decimals: 0);
+        inspectTx = {
+          'to': to,
+          'from': from,
+          'asset': {'chain': chain, 'kind': 'nft', 'address': it['contract']},
+          'amount': '1',
+        };
+        doSend = () async {
+          final signed = await adapter.signTx(acct, built['raw']);
+          return adapter.broadcast(signed);
+        };
+      } else {
+        // EVM: real ERC-721/1155 safeTransferFrom calldata.
+        final std = '${it['standard'] ?? it['tokenType'] ?? 'erc721'}'
+                .toLowerCase()
+                .contains('1155')
+            ? 'erc1155'
+            : 'erc721';
+        final req = <String, dynamic>{
+          'chain': chain,
+          'standard': std,
+          'contract': it['contract'],
+          'tokenId': it['tokenId'],
+          'from': from,
+          'to': to,
+        };
+        if (std == 'erc1155') {
+          req['amount'] = '1';
+          req['ownedBalance'] = it['balance'] ?? it['amount'] ?? '1';
+        }
+        final b = nft.buildNftTransfer(req, nft.NftCtx(accounts: [
+          {'chain': chain, 'address': from}
+        ]));
+        inspectTx = {
+          'to': '${b['to']}',
+          'from': from,
+          'data': b['data'],
+          'asset': {'chain': chain, 'kind': 'nft', 'address': it['contract']},
+          'amount': '0',
+        };
+        doSend = () async {
+          final built = await (adapter as EvmAdapter).signArbitraryTx(
+              acct, {'to': b['to'], 'data': b['data'], 'value': '0'});
+          return adapter.broadcast(built);
+        };
+      }
+
+      final insp =
+          await sec.inspectTransaction(inspectTx, wc.securityCtx(chain));
       if (!mounted) return;
       final ok = await showSecuritySheet(
         context,
@@ -258,11 +324,15 @@ class _NftsViewState extends State<NftsView> {
             previewHeader: 'Send ${it['name'] ?? 'NFT'} on ${wc.chainLabel(chain)}'),
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(ok
-            ? 'Approved — the signed broadcast is the final integration step.'
-            : 'Cancelled — nothing was signed.'),
-      ));
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Cancelled — nothing was signed.')));
+        return;
+      }
+      final res = await doSend();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sent — ${shortAddr(res.txid)}')));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));

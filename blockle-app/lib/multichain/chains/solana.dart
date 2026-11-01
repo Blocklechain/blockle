@@ -26,6 +26,9 @@ const int _hardened = 0x80000000;
 
 /// The SPL Token program — owner-program filter for enumerating token accounts.
 const String splTokenProgram = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const String associatedTokenProgram =
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+const String systemProgram = '11111111111111111111111111111111';
 
 // ---- SNS (.sol) name service constants (Bonfida / SPL Name Service) ---------
 const String _snsHashPrefix = 'SPL Name Service';
@@ -162,6 +165,210 @@ Uint8List signSerializedTx(dynamic txInput, List<int> seedKey, List<int> pubkey)
   out.setRange(loc.sigAreaStart + loc.signerIndex * 64,
       loc.sigAreaStart + loc.signerIndex * 64 + 64, sig);
   return out;
+}
+
+// ---- Solana SPL/Metaplex transfer construction (mirrors chains/solana.js) ---
+Uint8List _encodeShortVec(int n) {
+  final out = <int>[];
+  var rem = n & 0xffffffff;
+  for (;;) {
+    var elem = rem & 0x7f;
+    rem >>= 7;
+    if (rem == 0) {
+      out.add(elem);
+      break;
+    }
+    out.add(elem | 0x80);
+  }
+  return Uint8List.fromList(out);
+}
+
+Uint8List _u64le(String nStr) {
+  final b = Uint8List(8);
+  var v = BigInt.parse(nStr);
+  final mask = BigInt.from(0xff);
+  for (var i = 0; i < 8; i++) {
+    b[i] = (v & mask).toInt();
+    v = v >> 8;
+  }
+  return b;
+}
+
+int _cmpBytes(List<int> a, List<int> b) {
+  final n = a.length < b.length ? a.length : b.length;
+  for (var i = 0; i < n; i++) {
+    if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return a.length - b.length;
+}
+
+bool _onCurve(List<int> bytes) => ed.isOnCurve(bytes);
+
+/// Solana's findProgramAddress: first bump (255→0) whose sha256 digest of
+/// `seeds ++ bump ++ programId ++ "ProgramDerivedAddress"` is OFF the ed25519
+/// curve (PDAs are off-curve). Top-level so it is callable without an adapter.
+Uint8List findProgramAddress(List<List<int>> seeds, List<int> programId) {
+  for (var bump = 255; bump >= 0; bump--) {
+    final buf = <int>[];
+    for (final s in seeds) {
+      buf.addAll(s);
+    }
+    buf.add(bump);
+    buf.addAll(programId);
+    buf.addAll(c.utf8Bytes(_pdaMarker));
+    final h = c.sha256(buf);
+    if (!_onCurve(h)) return h;
+  }
+  throw StateError('solana: no off-curve program address found');
+}
+
+/// The associated token account for (owner, mint) under the classic SPL Token
+/// program.
+Uint8List associatedTokenAddress(List<int> ownerKey, List<int> mintKey) {
+  return findProgramAddress(
+    [ownerKey, c.base58decode(splTokenProgram), mintKey],
+    c.base58decode(associatedTokenProgram),
+  );
+}
+
+/// An instruction: programId + metas + data.
+class SolIx {
+  SolIx(this.programId, this.keys, this.data);
+  final Uint8List programId;
+  final List<SolKey> keys;
+  final Uint8List data;
+}
+
+class SolKey {
+  SolKey(this.pubkey, this.isSigner, this.isWritable);
+  final Uint8List pubkey;
+  final bool isSigner;
+  final bool isWritable;
+}
+
+/// SPL Token `TransferChecked` (tag 12): amount of mint from source→dest.
+SolIx transferCheckedIx(List<int> source, List<int> mint, List<int> dest,
+    List<int> owner, String amount, int decimals) {
+  final data = Uint8List.fromList(
+      [12, ..._u64le(amount), decimals & 0xff]);
+  return SolIx(
+    c.base58decode(splTokenProgram),
+    [
+      SolKey(Uint8List.fromList(source), false, true),
+      SolKey(Uint8List.fromList(mint), false, false),
+      SolKey(Uint8List.fromList(dest), false, true),
+      SolKey(Uint8List.fromList(owner), true, false),
+    ],
+    data,
+  );
+}
+
+/// ATA `CreateIdempotent` (tag 1): creates `ata` for (owner, mint) if absent.
+SolIx createAtaIdempotentIx(
+    List<int> payer, List<int> ata, List<int> owner, List<int> mint) {
+  return SolIx(
+    c.base58decode(associatedTokenProgram),
+    [
+      SolKey(Uint8List.fromList(payer), true, true),
+      SolKey(Uint8List.fromList(ata), false, true),
+      SolKey(Uint8List.fromList(owner), false, false),
+      SolKey(Uint8List.fromList(mint), false, false),
+      SolKey(c.base58decode(systemProgram), false, false),
+      SolKey(c.base58decode(splTokenProgram), false, false),
+    ],
+    Uint8List.fromList([1]),
+  );
+}
+
+class _Meta {
+  _Meta(this.id, this.key, this.isSigner, this.isWritable);
+  final String id;
+  final Uint8List key;
+  bool isSigner;
+  bool isWritable;
+}
+
+/// Compile a legacy message. Fee payer first, then writable-signers,
+/// readonly-signers, writable-non-signers, readonly-non-signers; within each
+/// bucket sorted bytewise by raw pubkey (portable across implementations).
+Uint8List compileSolanaMessage(
+    List<int> feePayer, List<SolIx> instructions, List<int> recentBlockhash) {
+  final feeId = c.base58encode(feePayer);
+  final metas = <_Meta>[];
+  final programIds = <String>[];
+  final progKey = <String, Uint8List>{};
+  for (final ix in instructions) {
+    for (final k in ix.keys) {
+      metas.add(_Meta(c.base58encode(k.pubkey), k.pubkey, k.isSigner, k.isWritable));
+    }
+    final pid = c.base58encode(ix.programId);
+    if (!programIds.contains(pid)) {
+      programIds.add(pid);
+      progKey[pid] = ix.programId;
+    }
+  }
+  for (final pid in programIds) {
+    metas.add(_Meta(pid, progKey[pid]!, false, false));
+  }
+  // cull duplicates, merge flags (first occurrence wins position)
+  final unique = <_Meta>[];
+  final seen = <String, int>{};
+  for (final m in metas) {
+    final idx = seen[m.id];
+    if (idx != null) {
+      unique[idx].isWritable = unique[idx].isWritable || m.isWritable;
+      unique[idx].isSigner = unique[idx].isSigner || m.isSigner;
+    } else {
+      seen[m.id] = unique.length;
+      unique.add(_Meta(m.id, m.key, m.isSigner, m.isWritable));
+    }
+  }
+  unique.sort((x, y) {
+    if (x.isSigner != y.isSigner) return x.isSigner ? -1 : 1;
+    if (x.isWritable != y.isWritable) return x.isWritable ? -1 : 1;
+    return _cmpBytes(x.key, y.key);
+  });
+  final fi = unique.indexWhere((m) => m.id == feeId);
+  if (fi >= 0) {
+    final pm = unique.removeAt(fi);
+    pm.isSigner = true;
+    pm.isWritable = true;
+    unique.insert(0, pm);
+  } else {
+    unique.insert(0, _Meta(feeId, Uint8List.fromList(feePayer), true, true));
+  }
+  final numRequiredSignatures = unique.where((m) => m.isSigner).length;
+  final numReadonlySigned =
+      unique.where((m) => m.isSigner && !m.isWritable).length;
+  final numReadonlyUnsigned =
+      unique.where((m) => !m.isSigner && !m.isWritable).length;
+  final indexOf = <String, int>{};
+  for (var i = 0; i < unique.length; i++) {
+    indexOf[unique[i].id] = i;
+  }
+  final out = <int>[];
+  out.addAll([numRequiredSignatures, numReadonlySigned, numReadonlyUnsigned]);
+  out.addAll(_encodeShortVec(unique.length));
+  for (final m in unique) {
+    out.addAll(m.key);
+  }
+  out.addAll(recentBlockhash);
+  out.addAll(_encodeShortVec(instructions.length));
+  for (final ix in instructions) {
+    out.add(indexOf[c.base58encode(ix.programId)]!);
+    out.addAll(_encodeShortVec(ix.keys.length));
+    for (final k in ix.keys) {
+      out.add(indexOf[c.base58encode(k.pubkey)]!);
+    }
+    out.addAll(_encodeShortVec(ix.data.length));
+    out.addAll(ix.data);
+  }
+  return Uint8List.fromList(out);
+}
+
+/// Wrap a compiled message as an unsigned serialized tx (1 zeroed sig slot).
+Uint8List unsignedSolanaTx(List<int> message) {
+  return Uint8List.fromList([..._encodeShortVec(1), ...List<int>.filled(64, 0), ...message]);
 }
 
 class SolanaAdapter implements ChainAdapter {
@@ -397,6 +604,85 @@ class SolanaAdapter implements ChainAdapter {
       fee: '0',
       summary: const SendRequest(to: '', amount: '0'),
     );
+  }
+
+  /// Build a real SPL/Metaplex NFT transfer (amount 1, decimals 0 for an NFT).
+  /// Resolves our actual source token account, derives/creates the destination
+  /// ATA, fetches a fresh blockhash and returns an UNSIGNED serialized tx (base64)
+  /// + summary for the security sheet. Sign via signTx() then broadcast().
+  Future<Map<String, dynamic>> buildNftTransfer(DerivedAccount account,
+      {required String mint,
+      required String to,
+      String amount = '1',
+      int decimals = 0}) async {
+    final owner = account.address;
+    final ownerKey = c.base58decode(owner);
+    final destOwner = c.base58decode(to);
+    final mintKey = c.base58decode(mint);
+    if (mintKey.length != 32 || destOwner.length != 32) {
+      throw StateError('solana: bad mint/recipient');
+    }
+    List<int>? source;
+    try {
+      final res = await _rpc('getTokenAccountsByOwner', [
+        owner,
+        {'mint': mint},
+        {'encoding': 'jsonParsed'}
+      ]);
+      for (final acc in ((res is Map ? res['value'] : null) ?? const []) as List) {
+        final amt = BigInt.parse(
+            acc['account']['data']['parsed']['info']['tokenAmount']['amount']
+                .toString());
+        if (amt >= BigInt.parse(amount)) {
+          source = c.base58decode(acc['pubkey'].toString());
+          break;
+        }
+      }
+    } catch (_) {/* fall back to derived ATA */}
+    source ??= associatedTokenAddress(ownerKey, mintKey);
+    final destAta = associatedTokenAddress(destOwner, mintKey);
+    var destExists = false;
+    try {
+      final info = await _rpc('getAccountInfo', [
+        c.base58encode(destAta),
+        {'encoding': 'base64'}
+      ]);
+      destExists = info is Map && info['value'] != null;
+    } catch (_) {
+      destExists = false;
+    }
+    final ixs = <SolIx>[];
+    if (!destExists) {
+      ixs.add(createAtaIdempotentIx(ownerKey, destAta, destOwner, mintKey));
+    }
+    ixs.add(transferCheckedIx(source, mintKey, destAta, ownerKey, amount, decimals));
+    final bh = await _rpc('getLatestBlockhash', [
+      {'commitment': 'finalized'}
+    ]);
+    final blockhash = (bh is Map && bh['value'] is Map)
+        ? bh['value']['blockhash']
+        : (bh is Map ? bh['blockhash'] : null);
+    if (blockhash == null) throw StateError('solana: could not fetch a blockhash');
+    final msg =
+        compileSolanaMessage(ownerKey, ixs, c.base58decode(blockhash.toString()));
+    return {
+      'chain': 'solana',
+      'kind': 'nft-transfer',
+      'standard': 'spl',
+      'raw': base64.encode(unsignedSolanaTx(msg)),
+      'needsSign': true,
+      'summary': {
+        'from': owner,
+        'to': to,
+        'mint': mint,
+        'amount': amount,
+        'decimals': decimals,
+        'source': c.base58encode(source),
+        'destination': c.base58encode(destAta),
+        'createsRecipientAccount': !destExists,
+        'blockhash': blockhash,
+      },
+    };
   }
 
   @override
