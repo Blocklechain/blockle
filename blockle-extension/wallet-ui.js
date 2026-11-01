@@ -636,9 +636,11 @@
     var approvalByCollection = {};
     operatorApprovals.forEach(function (op) { approvalByCollection[String(op.collection).toLowerCase()] = op; });
 
-    var tiles = (res.items || []).map(function (n) {
+    var nftList = res.items || [];
+    curNfts = nftList;
+    var tiles = nftList.map(function (n, i) {
       var key = String(n.contract || '').toLowerCase();
-      return nftTileHtml(n, approvalByCollection[key]);
+      return nftTileHtml(n, approvalByCollection[key], i);
     });
 
     panel.innerHTML = '' +
@@ -658,21 +660,81 @@
       });
     });
     $$('.wnft[data-send]').forEach(function (el) {
-      el.addEventListener('click', function () { UI.toast('NFT send opens the security review first (not auto-signed).'); });
+      el.addEventListener('click', function () {
+        var n = curNfts[+el.getAttribute('data-send')];
+        if (n) sendNftFlow(n, el);
+      });
     });
+  }
+  var curNfts = [];
+  // Inline NFT send: ask for a recipient (MV3 blocks window.prompt), then build a
+  // REAL transfer — EVM safeTransferFrom calldata through the security gate + signer,
+  // or a Solana SPL TransferChecked via the Solana adapter — and broadcast.
+  function sendNftFlow(n, tileEl) {
+    if (tileEl.querySelector('.nft-send-form')) return;
+    var is1155 = n.standard === 'erc1155';
+    var form = document.createElement('div');
+    form.className = 'nft-send-form';
+    form.style.cssText = 'margin-top:6px;display:flex;flex-direction:column;gap:5px';
+    form.innerHTML =
+      '<input class="ns-to" placeholder="recipient address" autocomplete="off" spellcheck="false" style="width:100%;padding:6px;border-radius:7px;border:1px solid var(--line,#1e2838);background:var(--bg,#0b0e14);color:inherit;font-size:12px">' +
+      (is1155 ? '<input class="ns-amt" value="1" inputmode="numeric" style="width:100%;padding:6px;border-radius:7px;border:1px solid var(--line,#1e2838);background:var(--bg,#0b0e14);color:inherit;font-size:12px">' : '') +
+      '<button class="ns-go" style="padding:6px;border-radius:7px;border:0;background:var(--accent,#4d8bff);color:#fff;font-weight:600;cursor:pointer;font-size:12px">Review &amp; send</button>';
+    tileEl.appendChild(form);
+    form.querySelector('.ns-go').addEventListener('click', async function (e) {
+      e.stopPropagation();
+      var go = form.querySelector('.ns-go');
+      var to = (form.querySelector('.ns-to').value || '').trim();
+      if (!to) { UI.toast('Enter a recipient'); return; }
+      var amt = form.querySelector('.ns-amt') ? (form.querySelector('.ns-amt').value || '1').trim() : '1';
+      go.disabled = true; go.textContent = 'Sending…';
+      try {
+        await doNftSend(n, to, amt);
+        UI.toast('NFT sent');
+        enter();
+      } catch (err) { UI.toast((err && err.message) || String(err)); go.disabled = false; go.textContent = 'Review & send'; }
+    });
+  }
+  async function doNftSend(n, to, amt) {
+    var chain = n.chain;
+    var acct = engine.accounts.filter(function (a) { return a.chain === chain; })[0];
+    if (!acct) throw new Error('no account for ' + chain);
+    if (chain === 'solana') {
+      var reg = await Wiring.registry();
+      var ad = reg.get('solana');
+      var built = await ad.buildNftTransfer(acct, { mint: n.contract, to: to, amount: amt || '1', decimals: 0 });
+      var cleared = await openSecuritySheet(sheetConfigFor(
+        { chain: 'solana', warnings: [], summary: 'Transfer Solana NFT ' + labelOf(n) + ' → ' + to },
+        { title: 'Send NFT', previewHead: 'SPL TransferChecked (amount 1)' }));
+      if (!cleared) throw new Error('cancelled');
+      var signed = await ad.signTx(acct, { raw: built.raw });
+      await ad.broadcast(signed);
+      return;
+    }
+    // EVM
+    var Nft = global.WalletNft;
+    var t = Nft.buildNftTransfer(
+      { chain: chain, standard: n.standard, contract: n.contract, tokenId: n.tokenId, amount: amt, ownedBalance: n.balance != null ? n.balance : n.amount, from: acct.address, to: to },
+      { accounts: engine.accounts });
+    if (!t || !t.data) throw new Error('unsupported NFT standard');
+    var inspection = await engine.inspect(chain, { to: t.to, data: t.data, value: '0' });
+    var ok = await openSecuritySheet(sheetConfigFor(inspection, { title: 'Send NFT', previewHead: (n.standard === 'erc1155' ? 'safeTransferFrom(…, id, amount)' : 'safeTransferFrom(from, to, tokenId)') }));
+    if (!ok) throw new Error('cancelled');
+    await engine.send(chain, { to: t.to, data: t.data, amount: '0' });
   }
 
   // Exported pure: one NFT tile (spam flag / metadata-unavailable / operator badge).
-  function nftTileHtml(n, operatorApproval) {
+  function nftTileHtml(n, operatorApproval, idx) {
+    var si = (idx == null) ? 0 : idx;
     if (n.metadataOk === false) {
-      return '<div class="wnft" data-send="1"><div class="art"><div class="unav">' + esc(labelOf(n)) + '<br>metadata unavailable</div></div>' +
+      return '<div class="wnft" data-send="' + si + '"><div class="art"><div class="unav">' + esc(labelOf(n)) + '<br>metadata unavailable</div></div>' +
         '<div class="meta"><div class="nm">' + esc(labelOf(n)) + '</div><div class="col">metadata unavailable</div></div></div>';
     }
     var badge = '';
     if (n.spam) badge = '<span class="spam">SPAM?</span>';
     else if (operatorApproval) badge = '<span class="approval" title="Open operator approval — tap to revoke">APPROVAL</span>';
     var art = n.image ? '<img class="nft-img" src="' + esc(n.image) + '" alt="" loading="lazy">' : '<span class="nft-emoji">🖼️</span>';
-    var revokeAttr = operatorApproval ? ' data-revoke="' + esc(String(n.contract).toLowerCase()) + '" data-chain="' + esc(n.chain) + '"' : ' data-send="1"';
+    var revokeAttr = operatorApproval ? ' data-revoke="' + esc(String(n.contract).toLowerCase()) + '" data-chain="' + esc(n.chain) + '"' : ' data-send="' + si + '"';
     return '<div class="wnft"' + revokeAttr + '><div class="art">' + badge + art + '</div>' +
       '<div class="meta"><div class="nm">' + esc(labelOf(n)) + '</div><div class="col">' + esc(n.collection || n.chain) + '</div></div></div>';
   }

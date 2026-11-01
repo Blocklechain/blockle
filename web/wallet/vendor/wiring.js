@@ -23,6 +23,8 @@
   const Evm = inNode ? require('./chains/evm.js') : global.EvmAdapter;
   // Auto-detect + auto-import held tokens on every chain.
   const AutoImport = inNode ? require('./chains/autoimport.js') : global.TokenAutoImport;
+  // NFT transfer builder (EVM calldata; Solana routes through its adapter).
+  const Nft = inNode ? require('./nft.js') : global.WalletNft;
 
   // Default agent-fee treasury (mirrors exchange/treasury.json). Overridable via
   // settings.agentTreasury. No private key ever lives here — recipient only.
@@ -221,6 +223,38 @@
   async function broadcast(chain, built) {
     const reg = await registry();
     return reg.get(chain).broadcast(built);
+  }
+
+  // Send an NFT. Solana: the adapter builds a real SPL/Metaplex TransferChecked
+  // (creating the recipient's associated-token account when needed), signs, and
+  // broadcasts. EVM: nft.js produces the exact ERC-721/1155 safeTransferFrom
+  // calldata, which signArbitraryTx signs as a contract call. Returns {txid, summary}.
+  // req: { standard, contract(=mint on solana), tokenId?, amount?, decimals?, to, ownedBalance? }
+  async function sendNft(chain, req) {
+    const reg = await registry();
+    const adapter = reg.get(chain);
+    const acct = await accountFor(chain);
+    const from = acct.address;
+    if (chain === 'solana') {
+      const built = await adapter.buildNftTransfer(acct, {
+        mint: req.contract, to: req.to,
+        amount: req.amount != null ? String(req.amount) : '1',
+        decimals: req.decimals != null ? Number(req.decimals) : 0,
+      });
+      const signed = await adapter.signTx(acct, { raw: built.raw });
+      const res = await adapter.broadcast(signed);
+      return { txid: (res && res.txid) || signed.txid, summary: built.summary };
+    }
+    // EVM (erc721 / erc1155)
+    const t = Nft.buildNftTransfer(
+      { chain, standard: req.standard, contract: req.contract, tokenId: req.tokenId,
+        amount: req.amount, ownedBalance: req.ownedBalance, from, to: req.to },
+      { accounts: [{ chain, address: from }] },
+    );
+    if (!t || !t.data) throw new Error('sendNft: unsupported chain/standard ' + chain + '/' + req.standard);
+    const signed = await adapter.signArbitraryTx(acct, { to: t.to, data: t.data, value: '0' });
+    const res = await adapter.broadcast(signed);
+    return { txid: (res && res.txid) || signed.txid, summary: t.summary || ('NFT transfer to ' + req.to) };
   }
 
   async function listAssets() {
@@ -774,7 +808,7 @@
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
-    sweepLegacy,
+    sweepLegacy, sendNft,
     autoImportTokens,
     amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:

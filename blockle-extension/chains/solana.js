@@ -122,14 +122,17 @@
   // Each instruction: { programId:Uint8Array(32), keys:[{pubkey:Uint8Array(32),
   // isSigner, isWritable}], data:Uint8Array }. Returns the serialized legacy
   // message bytes (fee payer forced to index 0, Solana's signer/writable order).
-  // Account ordering replicates @solana/web3.js legacy Transaction.compileMessage
-  // exactly: gather instruction keys (in order) then append deduped program ids
-  // (readonly, non-signer); cull duplicates merging flags; sort signer-first then
-  // writable-first then by base58 (localeCompare); force the fee payer to index 0.
-  const LOCALE_OPTS = {
-    localeMatcher: 'best fit', usage: 'sort', sensitivity: 'variant',
-    ignorePunctuation: false, numeric: false, caseFirst: 'lower',
-  };
+  // Account ordering follows Solana's required buckets (fee payer first; then
+  // writable-signers, readonly-signers, writable-non-signers, readonly-non-signers),
+  // with a within-bucket tiebreak by raw 32-byte public key (bytewise). The
+  // within-bucket order is not consensus-constrained, so this produces a valid
+  // message; bytewise is chosen because it is identical across the JS, Python, Dart
+  // and Rust implementations (unlike web3.js's locale-dependent base58 sort).
+  function cmpBytes(a, b) {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; }
+    return a.length - b.length;
+  }
   function compileMessage(feePayer, instructions, recentBlockhash) {
     const feeId = C.base58encode(feePayer);
     const metas = []; // { id, key, isSigner, isWritable }
@@ -151,7 +154,7 @@
     unique.sort((x, y) => {
       if (x.isSigner !== y.isSigner) return x.isSigner ? -1 : 1;
       if (x.isWritable !== y.isWritable) return x.isWritable ? -1 : 1;
-      return x.id.localeCompare(y.id, 'en', LOCALE_OPTS);
+      return cmpBytes(x.key, y.key);
     });
     const fi = unique.findIndex((m) => m.id === feeId);
     if (fi > -1) { const pm = unique.splice(fi, 1)[0]; pm.isSigner = true; pm.isWritable = true; unique.unshift(pm); }

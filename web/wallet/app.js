@@ -1112,21 +1112,70 @@
   }
   function loadNfts() {
     var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading NFTs…</div>';
+    nftItems(S.chain).then(function (items) {
+      if (items == null) { body.innerHTML = '<div class="empty">NFT indexing isn\'t available for ' + esc(S.chain.toUpperCase()) + ' in the web wallet (no metadata provider configured).</div>'; return; }
+      if (!items.length) { body.innerHTML = '<div class="empty">No NFTs held on ' + esc(S.chain.toUpperCase()) + '.</div>'; return; }
+      S.nfts = items;
+      body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">' + items.map(function (n, i) {
+        var img = n.image || (n.media && n.media[0]) || '';
+        var label = n.name || (n.tokenId != null ? ('#' + n.tokenId) : shortAddr(n.contract));
+        var sendable = (S.chain === 'solana') || (n.standard === 'erc721' || n.standard === 'erc1155');
+        return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' +
+          (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display=\'none\'">' : ic('image', 26)) +
+          '</div><div style="padding:9px"><b style="font-size:13px">' + esc(label) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || shortAddr(n.contract || '')) + '</div>' +
+          (sendable ? '<button class="btn sm" style="margin-top:7px;width:100%" data-nft="' + i + '">' + ic('send', 13) + ' Send</button>' : '') +
+          '</div></div>';
+      }).join('') + '</div>';
+      $$('#a-body [data-nft]').forEach(function (b) { b.onclick = function () { sendNftSheet(S.nfts[+b.getAttribute('data-nft')]); }; });
+    }).catch(function () { body.innerHTML = '<div class="empty">Could not load NFTs.</div>'; });
+  }
+  // Enumerate NFTs for a chain. BLOCK-721 + EVM (if a provider key is set) come from
+  // the indexer; Solana NFTs are discovered keyless from the chain itself (SPL mints
+  // with 0 decimals and supply 1), so the web wallet can list + send them with no key.
+  async function nftItems(chain) {
+    if (chain === 'solana') {
+      try {
+        var reg = await Wiring.registry();
+        var acct = await Wiring.accountFor('solana');
+        var toks = await reg.get('solana').discoverTokens(acct.address);
+        return (toks || []).filter(function (t) { return Number(t.decimals) === 0 && String(t.balance) === '1'; })
+          .map(function (t) { return { chain: 'solana', standard: 'metaplex', contract: t.mint, name: shortAddr(t.mint), collection: 'Solana NFT', image: '' }; });
+      } catch (e) { return null; }
+    }
     try {
-      // blockApi must be a URL STRING base (the indexer does .replace on it); same-origin
-      // /api/explorer is proxied to the node. EVM/Solana need keys → honest-empty without them.
       var idx = WalletNftIndexer.createIndexer({ blockApi: '/api/explorer' });
-      chainAddress(S.chain).then(function (owner) {
-        return idx.getNFTsForOwner(S.chain, owner);
-      }).then(function (items) {
-        if (items == null) { body.innerHTML = '<div class="empty">NFT indexing isn\'t available for this network in the web wallet.</div>'; return; }
-        if (!items.length) { body.innerHTML = '<div class="empty">No NFTs held on ' + esc(S.chain.toUpperCase()) + '.</div>'; return; }
-        body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">' + items.map(function (n) {
-          var img = n.image || (n.media && n.media[0]) || '';
-          return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' + (img ? '<img src="' + esc(img) + '" alt="" style="width:100%;height:100%;object-fit:cover">' : '' + ic('image', 26) + '') + '</div><div style="padding:9px"><b style="font-size:13px">' + esc(n.name || ('#' + (n.tokenId || ''))) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || n.contract || '') + '</div></div></div>';
-        }).join('') + '</div>';
-      }).catch(function () { body.innerHTML = '<div class="empty">Could not load NFTs.</div>'; });
-    } catch (e) { body.innerHTML = '<div class="empty">NFT view unavailable.</div>'; }
+      var owner = await chainAddress(chain);
+      return await idx.getNFTsForOwner(chain, owner);
+    } catch (e) { return null; }
+  }
+  function sendNftSheet(n) {
+    if (!n) return;
+    var label = n.name || (n.tokenId != null ? ('#' + n.tokenId) : shortAddr(n.contract));
+    openSheet('<div class="spread"><h2>Send NFT</h2><button class="btn sm ghost" id="sn-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted" style="margin:8px 0">' + esc(label) + ' · ' + esc(S.chain.toUpperCase()) + '</p>' +
+      (n.standard === 'erc1155' ? '<div class="field"><label>Amount</label><input id="sn-amt" value="1" inputmode="numeric"></div>' : '') +
+      '<div class="field"><label>Recipient address</label><input id="sn-to" placeholder="' + esc(S.chain.toUpperCase()) + ' address"></div>' +
+      '<button class="btn primary wide" id="sn-go">' + ic('send', 15) + ' Review &amp; send</button>');
+    $('#sn-x').onclick = closeSheet;
+    $('#sn-go').onclick = async function () {
+      var to = ($('#sn-to').value || '').trim();
+      if (!to) { toast('Enter a recipient', 'bad'); return; }
+      var amt = $('#sn-amt') ? ($('#sn-amt').value || '1').trim() : '1';
+      var go = $('#sn-go'); go.disabled = true; go.textContent = 'Sending…';
+      try {
+        var ok = await confirmSheet({ title: 'Send NFT', subtitle: 'Transfer ' + label + ' on ' + S.chain.toUpperCase(),
+          lines: [['NFT', label], ['To', shortAddr(to)], ['Network', S.chain.toUpperCase()]].concat(n.standard === 'erc1155' ? [['Amount', amt]] : []),
+          okText: 'Sign & send' });
+        if (!ok) { go.disabled = false; go.innerHTML = ic('send', 15) + ' Review & send'; return; }
+        var r = await Wiring.sendNft(S.chain, { standard: n.standard, contract: n.contract, tokenId: n.tokenId, amount: amt, ownedBalance: n.balance, to: to });
+        closeSheet();
+        toast('NFT sent — ' + shortAddr(r.txid || ''), 'ok');
+        setTimeout(loadNfts, 1500);
+      } catch (e) {
+        toast('Send failed: ' + String((e && e.message) || e), 'bad');
+        go.disabled = false; go.innerHTML = ic('send', 15) + ' Review & send';
+      }
+    };
   }
   function importTokenSheet() {
     openSheet('<div class="spread"><h2>Import token</h2><button class="btn sm ghost" id="it-x">' + ic('close', 15) + '</button></div>' +

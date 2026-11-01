@@ -25,9 +25,9 @@ const G = {
   destAta: '13KoHDCDXebtaN59JpGpQCmhsk8u7qk9H9FFSCMyynLh',
   blockhash: 'J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf',
   msgWithCreate:
-    '010005088a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00986a9f842ff1b003c7af9c6107e715f22c1d10702647496098cc0bd6adddcaff09065c342ea325b694ca7e5e1774b889b59a9a1c010f48425d8c1b718090e300000000000000000000000000000000000000000000000000000000000000008139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3948c97258f4e2489f1bb3d1029148e0d830b5a1399daff1084048e7bd8dbe9f859ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f61802050600010406030701010704020601000a0c010000000000000000',
+    '010005088a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00986a9f842ff1b003c7af9c6107e715f22c1d10702647496098cc0bd6adddcaff09065c342ea325b694ca7e5e1774b889b59a9a1c010f48425d8c1b718090e3000000000000000000000000000000000000000000000000000000000000000006ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a98139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b3948c97258f4e2489f1bb3d1029148e0d830b5a1399daff1084048e7bd8dbe9f859ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f61802060600010507030401010404020701000a0c010000000000000000',
   msgNoCreate:
-    '010002058a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00986a9f842ff1b003c7af9c6107e715f22c1d10702647496098cc0bd6adddcaff09065c342ea325b694ca7e5e1774b889b59a9a1c010f48425d8c1b718090e3ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d106ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618010404020301000a0c010000000000000000',
+    '010002058a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00986a9f842ff1b003c7af9c6107e715f22c1d10702647496098cc0bd6adddcaff09065c342ea325b694ca7e5e1774b889b59a9a1c010f48425d8c1b718090e306ddf6e1d765a193d9cbe146ceeb79ac1cb485ed5f5b37913a8cf5857eff00a9ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618010304020401000a0c010000000000000000',
 };
 const hex = (u) => C.bytesToHex(u);
 
@@ -64,7 +64,7 @@ test('TransferChecked data = tag 12 ‖ amount(u64 LE) ‖ decimals', () => {
   assert.strictEqual(ix.keys[3].isSigner, true); // owner signs
 });
 
-test('compiled legacy message is byte-identical to @solana/web3.js (no create)', () => {
+test('compiled legacy message is byte-stable (portable bytewise order; web3.js-deserializable) — no create', () => {
   const ix = SOL.transferCheckedIx(
     C.base58decode(G.source), C.base58decode(G.mint), C.base58decode(G.destAta),
     C.base58decode(G.owner), '1', 0);
@@ -72,7 +72,7 @@ test('compiled legacy message is byte-identical to @solana/web3.js (no create)',
   assert.strictEqual(hex(msg), G.msgNoCreate);
 });
 
-test('compiled message is byte-identical with an idempotent ATA-create prepended', () => {
+test('compiled message is byte-stable with an idempotent ATA-create prepended', () => {
   const owner = C.base58decode(G.owner), mint = C.base58decode(G.mint);
   const create = SOL.createAtaIdempotentIx(owner, C.base58decode(G.destAta), C.base58decode(G.dest), mint);
   const xfer = SOL.transferCheckedIx(C.base58decode(G.source), mint, C.base58decode(G.destAta), owner, '1', 0);
