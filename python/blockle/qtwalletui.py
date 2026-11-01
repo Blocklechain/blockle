@@ -52,9 +52,9 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
-    QWidget,
+    QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
+    QVBoxLayout, QWidget,
 )
 
 from . import qtbots as _qb
@@ -924,6 +924,48 @@ class WalletController(QObject):
         fut.add_done_callback(_cb)
         return fut
 
+    # ---- NFT transfer: build (EVM calldata / Solana SPL) + inspect, then
+    #      sign + broadcast on confirm. The NFT module never signs. ----
+    async def nft_prepare(self, n: Dict[str, Any], to: str, amount=1) -> Dict[str, Any]:
+        accts = {a["chain"]: a["address"] for a in self.accounts_list()}
+        chain = n.get("chain")
+        frm = accts.get(chain)
+        if not frm:
+            raise RuntimeError("no wallet account for " + str(chain))
+        reg = getattr(self.ctrl, "registry", None)
+        if chain == "solana":
+            adapter = reg.get("solana")
+            acct = (getattr(self.ctrl, "accounts", {}) or {}).get("solana")
+            built = adapter.build_nft_transfer(acct, {
+                "mint": n.get("contract"), "to": to, "amount": str(amount), "decimals": 0})
+            s = built.get("summary", {})
+            insp = {"summary": "Transfer Solana NFT", "risk": "info",
+                    "lines": [["To", to], ["Mint", s.get("mint")], ["Amount", s.get("amount")]]
+                    + ([["Note", "creates recipient token account"]] if s.get("createsRecipientAccount") else [])}
+            return {"chain": chain, "built": built, "inspection": insp}
+        # EVM / ERC-721 / ERC-1155 — real safeTransferFrom calldata.
+        req = {"chain": chain, "standard": n.get("standard"), "contract": n.get("contract"),
+               "tokenId": n.get("tokenId"), "from": frm, "to": to, "amount": amount,
+               "ownedBalance": n.get("balance") or 1}
+        built = nft_mod.build_nft_transfer(req, {"accounts": [{"chain": c, "address": a} for c, a in accts.items()]})
+        insp = await security_mod.inspect_transaction(built.get("tx") or built, self.security_ctx())
+        return {"chain": chain, "built": built, "inspection": insp}
+
+    async def nft_execute(self, prepared: Dict[str, Any]) -> Dict[str, Any]:
+        chain = prepared["chain"]
+        built = prepared["built"]
+        reg = getattr(self.ctrl, "registry", None)
+        adapter = reg.get(chain)
+        acct = (getattr(self.ctrl, "accounts", {}) or {}).get(chain)
+        if chain == "solana":
+            signed = adapter.sign_tx(acct, {"raw": built["raw"]})
+            res = adapter.broadcast(signed)
+        else:
+            tx = built.get("tx") or built  # {to, data, value, ...}
+            signed = adapter.sign_arbitrary_tx(acct, tx)
+            res = adapter.broadcast(signed)
+        return {"txid": res.txid, "accepted": getattr(res, "accepted", True)}
+
 
 def _mk_async(fn):
     """Wrap a sync ctx callable as an async one (the engines ``await`` ctx fns)."""
@@ -1438,13 +1480,9 @@ class PortfolioPanel(_ScrollPanel):
         swap = QPushButton("⇄  Swap")
         swap.clicked.connect(lambda: QMessageBox.information(
             self, "Swap", "Swap routes through the Exchange tab's non-custodial swap."))
-        usdb = QPushButton("$  USDB")
-        usdb.setToolTip("Buy Blockle USD (USDB) with PayPal — delivered to this wallet")
-        usdb.clicked.connect(self._buy_usdb)
         send_row.addWidget(self.send_btn)
         send_row.addWidget(recv)
         send_row.addWidget(swap)
-        send_row.addWidget(usdb)
         send_row.addStretch(1)
         hl.addLayout(send_row)
         self.body.addWidget(self.hero)
@@ -1831,6 +1869,32 @@ class NftPanel(_ScrollPanel):
             art.setStyleSheet(f"background:{hue};border-top-left-radius:{RADIUS}px;"
                               f"border-top-right-radius:{RADIUS}px;font-size:30px;")
             art.setText("🖼")
+            # Load the resolved media (ipfs:// already normalised to a gateway by
+            # the NFT core). Async; the hue tile stands in until it arrives.
+            img_url = n.get("image") or n.get("metadataUri")
+            if img_url and str(img_url).startswith(("http://", "https://")):
+                async def _fetch(u=img_url):
+                    import asyncio
+                    import urllib.request
+
+                    def _get():
+                        rq = urllib.request.Request(u, headers={"User-Agent": "blockle-wallet"})
+                        with urllib.request.urlopen(rq, timeout=8) as r:
+                            return r.read()
+                    return await asyncio.get_event_loop().run_in_executor(None, _get)
+
+                def _set(data, label=art):
+                    try:
+                        from PySide6.QtGui import QPixmap
+                        pm = QPixmap()
+                        if data and pm.loadFromData(bytes(data)) and not pm.isNull():
+                            label.setText("")
+                            label.setPixmap(pm.scaled(label.width() or 220, 130,
+                                                      Qt.KeepAspectRatioByExpanding,
+                                                      Qt.SmoothTransformation))
+                    except Exception:
+                        pass
+                self.wc.run_async(_fetch(), on_done=_set, on_error=lambda e: None)
         cl.addWidget(art)
         badges = QHBoxLayout()
         badges.setContentsMargins(10, 0, 10, 0)
@@ -1872,21 +1936,19 @@ class NftPanel(_ScrollPanel):
         return card
 
     def _send_nft(self, n: Dict[str, Any]):
-        # build the transfer calldata, inspect it, then route through the gate.
+        # Ask for the recipient, build the real transfer (EVM calldata / Solana
+        # SPL), inspect it, then on confirm sign + broadcast through the adapter.
+        to, ok = QInputDialog.getText(self, "Send NFT",
+                                      f"Recipient address ({n.get('chain')}):")
+        to = (to or "").strip()
+        if not ok or not to:
+            return
         async def _flow():
-            accts = {a["chain"]: a["address"] for a in self.wc.accounts_list()}
-            frm = accts.get(n.get("chain"))
-            req = {"chain": n.get("chain"), "standard": n.get("standard"),
-                   "contract": n.get("contract"), "tokenId": n.get("tokenId"),
-                   "from": frm, "to": frm, "amount": 1,
-                   "ownedBalance": n.get("balance") or 1}
             try:
-                built = nft_mod.build_nft_transfer(req, {"accounts": accts})
+                prepared = await self.wc.nft_prepare(n, to, amount=1)
             except Exception as e:
                 return {"error": f"cannot build transfer: {e}"}
-            insp = await security_mod.inspect_transaction(
-                built.get("tx") or built, self.wc.security_ctx())
-            return {"inspection": insp}
+            return {"prepared": prepared}
         self.wc.run_async(_flow(), on_done=self._after_nft_build,
                           on_error=lambda e: QMessageBox.warning(self, "Send NFT", str(e)))
 
@@ -1894,8 +1956,19 @@ class NftPanel(_ScrollPanel):
         if out.get("error"):
             QMessageBox.warning(self, "Send NFT", out["error"])
             return
-        SecurityConfirmSheet(self.tok, out["inspection"], title="Review NFT transfer",
-                             parent=self).exec()
+        prepared = out["prepared"]
+        sheet = SecurityConfirmSheet(self.tok, prepared["inspection"],
+                                     title="Review NFT transfer", parent=self)
+        if sheet.exec() != QDialog.Accepted:
+            return
+
+        def _done(res):
+            txid = (res or {}).get("txid")
+            QMessageBox.information(self, "Send NFT",
+                                    f"Broadcast.\nTxid: {txid}" if txid else "Broadcast.")
+
+        self.wc.run_async(self.wc.nft_execute(prepared), on_done=_done,
+                          on_error=lambda e: QMessageBox.warning(self, "Send NFT", str(e)))
 
     def _revoke(self, n: Dict[str, Any]):
         # build approve(spender, 0) via the approval manager; inspect; gate.
