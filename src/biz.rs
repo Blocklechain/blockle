@@ -725,8 +725,16 @@ fn route(
         "/bridge/reserves" => ("200 OK", "text/html; charset=utf-8", page_bridge_reserves().into_bytes()),
         "/faucet" => serve_web_file("faucet.html", "text/html; charset=utf-8"),
         // Buy/redeem USDB (Blockle USD stablecoin) via the live PayPal rail.
-        "/usdb" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
-        "/launch" => serve_web_file("launch.html", "text/html; charset=utf-8"),
+        "/usdb" => ("200 OK", "text/html; charset=utf-8", page_sunset(
+            "USDB is paused",
+            "/usdb",
+            "USDB has been bookshelved until AlienBeing LLC has obtained the required state money transmitter licensing and FinCEN MSB registration. It is not currently available to buy, mint, or redeem.",
+        ).into_bytes()),
+        "/launch" => ("200 OK", "text/html; charset=utf-8", page_sunset(
+            "The launchpad has been discontinued",
+            "/launch",
+            "The Blockle token launchpad has been shut down and is no longer available. Tokens can no longer be launched or listed through Blockle.",
+        ).into_bytes()),
         "/market" => serve_web_file("market.html", "text/html; charset=utf-8"),
         "/intelligence" => serve_web_file("intelligence.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
@@ -886,7 +894,11 @@ fn route(
         // online). Being replaced by a non-custodial exchange at
         // exchange.blockle.org — BLOCK/ETH/SOL/USDC/USDT, wallet-to-wallet.
         // "Buy" now goes to the USDB on-ramp (buy a USD stablecoin with PayPal).
-        "/buy" => serve_web_file("usdb.html", "text/html; charset=utf-8"),
+        "/buy" => ("200 OK", "text/html; charset=utf-8", page_sunset(
+            "USDB is paused",
+            "/buy",
+            "USDB has been bookshelved until AlienBeing LLC has obtained the required state money transmitter licensing and FinCEN MSB registration. It is not currently available to buy, mint, or redeem.",
+        ).into_bytes()),
         "/api/buy/config" => ("200 OK", "application/json", buy_config().into_bytes()),
         "/api/buy/history" => ("200 OK", "application/json", buy_history().into_bytes()),
         // Sign a MoonPay buy-widget URL for production. The `url` query param is
@@ -1360,10 +1372,10 @@ footer{color:var(--muted);border-top:1px solid var(--border);margin-top:4rem;
 const PUBLIC_HOST: &str = "blockle.org";
 
 /// Honest, on-brand default description for routes that don't set their own.
-const DEFAULT_DESC: &str = "Blockle is a post-quantum (ML-DSA) layer-1: merge-mined by every major ASIC algorithm, with a native AMM DEX, BLOCK-20 tokens and a meme-token launchpad.";
+const DEFAULT_DESC: &str = "Blockle is a post-quantum (ML-DSA) layer-1: merge-mined by every major ASIC algorithm, with a native AMM DEX and BLOCK-20 tokens.";
 
 /// FAQPage structured data for /guide.
-const GUIDE_FAQ_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Blockle?","acceptedAnswer":{"@type":"Answer","text":"Blockle is a post-quantum layer-1 blockchain using ML-DSA-44 (FIPS-204) signatures and bech32m block1… addresses. Its native coin is BLOCK: 1 BLOCK = 100,000,000 base units, with 600-second blocks."}},{"@type":"Question","name":"How do I mine BLOCK?","acceptedAnswer":{"@type":"Answer","text":"BLOCK is merge-mined as a universal auxiliary chain. Point SHA-256, Scrypt, X11, Equihash, kHeavyHash, Eaglesong or other supported hardware at a Blockle pool and you earn BLOCK alongside the parent chain with no extra power."}},{"@type":"Question","name":"What is a BLOCK-20 token?","acceptedAnswer":{"@type":"Answer","text":"BLOCK-20 is Blockle's token standard. Tokens can be created on the launchpad and trade on the native in-consensus AMM DEX, a constant-product market with a 0.30% swap fee and a one-week LP lock."}},{"@type":"Question","name":"How does the Blockle DEX work?","acceptedAnswer":{"@type":"Answer","text":"The DEX is a native constant-product AMM built into consensus. Swaps pay a 0.30% fee to liquidity providers; new pools have a one-week LP lock. It is fully non-custodial."}},{"@type":"Question","name":"Which wallets can I use?","acceptedAnswer":{"@type":"Answer","text":"Blockle ships a Qt desktop wallet, a Flutter mobile wallet and a browser extension. All hold BLOCK and BLOCK-20 tokens with post-quantum ML-DSA keys."}}]}</script>"##;
+const GUIDE_FAQ_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is Blockle?","acceptedAnswer":{"@type":"Answer","text":"Blockle is a post-quantum layer-1 blockchain using ML-DSA-44 (FIPS-204) signatures and bech32m block1… addresses. Its native coin is BLOCK: 1 BLOCK = 100,000,000 base units, with 600-second blocks."}},{"@type":"Question","name":"How do I mine BLOCK?","acceptedAnswer":{"@type":"Answer","text":"BLOCK is merge-mined as a universal auxiliary chain. Point SHA-256, Scrypt, X11, Equihash, kHeavyHash, Eaglesong or other supported hardware at a Blockle pool and you earn BLOCK alongside the parent chain with no extra power."}},{"@type":"Question","name":"What is a BLOCK-20 token?","acceptedAnswer":{"@type":"Answer","text":"BLOCK-20 is Blockle's token standard. Tokens trade on the native in-consensus AMM DEX, a constant-product market with a 0.30% swap fee and a one-week LP lock."}},{"@type":"Question","name":"How does the Blockle DEX work?","acceptedAnswer":{"@type":"Answer","text":"The DEX is a native constant-product AMM built into consensus. Swaps pay a 0.30% fee to liquidity providers; new pools have a one-week LP lock. It is fully non-custodial."}},{"@type":"Question","name":"Which wallets can I use?","acceptedAnswer":{"@type":"Answer","text":"Blockle ships a Qt desktop wallet, a Flutter mobile wallet and a browser extension. All hold BLOCK and BLOCK-20 tokens with post-quantum ML-DSA keys."}}]}</script>"##;
 
 /// SoftwareApplication structured data for /wallet.
 const WALLET_SOFTWARE_JSONLD: &str = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Blockle Wallet","applicationCategory":"FinanceApplication","operatingSystem":"Windows, macOS, Linux, Android, iOS, Chrome","description":"Non-custodial wallet for the post-quantum Blockle layer-1 — hold BLOCK and BLOCK-20 tokens with ML-DSA keys. Available for Qt desktop, Flutter mobile and as a browser extension.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"isAccessibleForFree":true,"publisher":{"@type":"Organization","name":"Blockle"}}</script>"##;
@@ -1433,7 +1445,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
 </head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/usdb" style="background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a;padding:6px 14px;border-radius:8px;font-weight:800">Buy USDB</a><a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/mine">Mine</a>
+<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/mine">Mine</a>
 <span class="spacer"></span>
 <a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/status">Status</a><a href="/api">API</a><a href="/developers">Developers</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button></nav>
 {aads_top}
@@ -1441,7 +1453,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {aads_foot}
 <footer>
 <div style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;justify-content:center;margin-bottom:.6rem">
-<a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/launch">Launch</a> · <a href="/faucet">Faucet</a> · <a href="/buy">Buy</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
+<a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/faucet">Faucet</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
 </div>
 {domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
@@ -1664,6 +1676,22 @@ fn page_copilot() -> String {
     )
 }
 
+// A plain notice page for products that have been shut down or paused.
+fn page_sunset(title: &str, canonical: &str, body_html: &str) -> String {
+    page_shell_seo(
+        title,
+        "This Blockle product is not currently available.",
+        canonical,
+        "",
+        format!(
+            "<div class=\"hero\"><h1>{title}</h1><p class=\"sub\" style=\"font-size:1.05rem\">{body}</p>\
+             <p class=\"sub\" style=\"margin-top:1.2rem\"><a class=\"btn\" href=\"/\">&larr; Back to Blockle</a></p></div>",
+            title = title,
+            body = body_html,
+        ),
+    )
+}
+
 fn page_markets() -> String {
     let body = r##"<h1>Markets</h1>
 <p class="sub">Every BLOCK-20 token with a live liquidity pool on Blockle's native AMM DEX. Prices are in BLOCK; trade non-custodially from your own wallet. Looking for order-book or cross-chain trading? That's the <a href="https://exchange.blockle.org">Exchange</a>.</p>
@@ -1671,7 +1699,6 @@ fn page_markets() -> String {
   <div class="mkstat"><span class="k">Live markets</span><span class="v mono" id="mk-pools">&mdash;</span></div>
   <div class="mkstat"><span class="k">Pooled BLOCK</span><span class="v mono" id="mk-tvl">&mdash;</span></div>
   <div class="mkstat"><span class="k">Chain height</span><span class="v mono" id="mk-height">&mdash;</span></div>
-  <a class="mkcta" href="/launch">Launch a token &rarr;</a>
 </div>
 <div id="mk-body"><p class="mut" style="padding:30px 0">Loading markets&hellip;</p></div>
 <style>
@@ -1727,7 +1754,7 @@ fn page_markets() -> String {
     set('mk-height', (pl&&pl.height)?('#'+fmt(pl.height,0)):'—');
     var el=document.getElementById('mk-body');
     if(!rows.length){
-      el.innerHTML='<div class="mkempty"><h3>No live markets yet</h3><p>A market appears here the moment a BLOCK-20 token seeds a liquidity pool. Launch a token (one transaction &mdash; deploy, mint and pool together) and it shows up instantly.</p><a href="/launch">Launch the first market &rarr;</a></div>';
+      el.innerHTML='<div class="mkempty"><h3>No live markets yet</h3><p>A market appears here the moment a BLOCK-20 token seeds a liquidity pool on Blockle\'s native AMM.</p></div>';
       return;
     }
     rows.sort(function(a,b){return (b.blockWhole||0)-(a.blockWhole||0);});
@@ -2019,7 +2046,7 @@ fn page_tokenomics() -> String {
 </div>
 <p class="pp">The <b>210,000 BLOCK premine</b> is ~1% of the mining cap &mdash; a one-time genesis allocation for development, liquidity and ecosystem bootstrapping. Everything else is earned by miners across the merge-mining lanes.</p>
 <h2 class="sh">Why fixed supply matters here</h2>
-<p class="pp">Because the cap is hard, BLOCK used as "gold" across the ecosystem &mdash; tips, awards and boosts in <a href="/social" style="color:var(--accent)">Social</a>, fees on the <a href="/dex" style="color:var(--accent)">DEX</a>, in-game value in <a href="https://world.blockle.org" style="color:var(--accent)">WORLD</a> &mdash; moves <b>circulating</b> BLOCK between people. Nothing is minted to pay for it.</p>
+<p class="pp">Because the cap is hard, BLOCK used as "gold" across the ecosystem &mdash; tips, awards and boosts in <a href="/social" style="color:var(--accent)">Social</a> and fees on the <a href="/dex" style="color:var(--accent)">DEX</a> &mdash; moves <b>circulating</b> BLOCK between people. Nothing is minted to pay for it.</p>
 <p class="sub" style="margin-top:22px"><a href="/stats" style="color:var(--accent)">Live network stats &rarr;</a> &middot; <a href="/guide" style="color:var(--accent)">What is Blockle? &rarr;</a></p>
 <style>
 .tkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0 8px}
@@ -2065,16 +2092,14 @@ fn page_roadmap() -> String {
       <li><b>Universal merge-mining</b> &mdash; one aux chain mined across SHA-256d, Scrypt, X11, Equihash and more; live pools for the majors.</li>
       <li><b>Non-custodial wallets</b> &mdash; Qt desktop, Flutter mobile and a browser extension; one seed across BTC/ETH/SOL/BLOCK/LTC/DOGE.</li>
       <li><b>Cross-chain exchange</b> &mdash; non-custodial atomic swaps at exchange.blockle.org.</li>
-      <li><b>BLOCK-20 tokens + native AMM DEX</b> &mdash; constant-product, 0.30% fee, one-week LP lock, with a launchpad.</li>
+      <li><b>BLOCK-20 tokens + native AMM DEX</b> &mdash; constant-product, 0.30% fee, one-week LP lock.</li>
       <li><b>AI trading bots</b> &mdash; DCA / grid / SmartTrade / signal + autopilot, paper-first, behind one safety gate.</li>
       <li><b>Accounts + Social</b> &mdash; one post-quantum account; a contribution-gated social layer with BLOCK "gold" and agent members.</li>
-      <li><b>WORLD</b> &mdash; a live 3D multiplayer game on BLOCK, single sign-on with your Blockle account.</li>
       <li><b>Self-hosted AI agent</b> &mdash; keyless hosted agent gateway so the in-wallet bot needs no API key.</li>
     </ul>
   </div>
   <div class="rmphase wip"><div class="rmtag">In progress</div>
     <ul class="rml">
-      <li>WORLD as a full dApp &mdash; connect with the extension wallet, in-game items as BLOCK NFTs in your wallet.</li>
       <li>Every synced parent-chain node promoted to a live pool with BLOCK aux.</li>
       <li>Dogecoin full-indexed node + Esplora shim wired into the wallet.</li>
       <li>Self-hosted mail + deliverability (DNS/rDNS) for account email.</li>
@@ -2265,7 +2290,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="/usdb" style="background:linear-gradient(135deg,#5affb9,#139b6d);color:#06231a;padding:5px 12px;border-radius:8px;font-weight:800">Buy USDB</a><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launch</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
+<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
@@ -2392,8 +2417,8 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <!-- END AADS AD UNIT 2458805 -->
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
-<div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Copilot</a><a href="/buy">Buy BLOCK</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
-<div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/launch">Launchpad</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Copilot</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
@@ -2490,7 +2515,7 @@ fn page_network(reg: &Registry) -> String {
     );
     page_shell_seo(
         "Blockle network — post-quantum L1, merge-mined, native DEX",
-        "Post-quantum (ML-DSA) layer-1 merge-mined by every major ASIC algorithm, with a native AMM DEX, BLOCK-20 tokens and a meme launchpad.",
+        "Post-quantum (ML-DSA) layer-1 merge-mined by every major ASIC algorithm, with a native AMM DEX and BLOCK-20 tokens.",
         "/network", "", body)
 }
 
@@ -3901,7 +3926,7 @@ fn explorer_search_box() -> String {
 // by the existing /api/dex/pools + /api/dex/tokens endpoints (no new chain API).
 fn page_tokens() -> String {
     let body = r##"<h1>Tokens</h1>
-<p class="sub">Every BLOCK-20 token with a live market on Blockle, newest first. <a href="/launch">Launch a token →</a></p>
+<p class="sub">Every BLOCK-20 token with a live market on Blockle, newest first.</p>
 <div class="cards">
   <div class="card"><div class="v" id="tk-count">—</div><div class="k">Tokens with markets</div></div>
   <div class="card"><div class="v" id="tk-liq">—</div><div class="k">Total liquidity</div></div>
@@ -3943,7 +3968,7 @@ fn page_tokens() -> String {
     document.getElementById('tk-newest').textContent=newest.sym;
     document.getElementById('toktable').innerHTML=
       '<tr><th></th><th>token</th><th>price (BLOCK)</th><th>liquidity (BLOCK)</th><th>created</th><th>contract</th></tr>'+
-      (rows.join('')||'<tr><td colspan="6" class="sub">No tokens with live markets yet. <a href="/launch">Launch the first →</a></td></tr>');
+      (rows.join('')||'<tr><td colspan="6" class="sub">No tokens with live markets yet.</td></tr>');
   });
 })();
 </script>"##.to_string();
@@ -4061,7 +4086,7 @@ fn page_token(id: &str, info: &Value) -> String {
         None => (
             card("Price", "—".into()),
             card("Liquidity", "no market".into()),
-            r#"<p class="sub">No live AMM market for this token yet. <a href="/launch">Create a pool →</a></p>"#.to_string(),
+            r#"<p class="sub">No live AMM market for this token yet.</p>"#.to_string(),
         ),
     };
 

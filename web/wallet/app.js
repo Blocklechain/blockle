@@ -316,9 +316,7 @@
     { id: 'send', ic: 'send', label: 'Send' },
     { id: 'receive', ic: 'receive', label: 'Receive' },
     { id: 'swap', ic: 'swap', label: 'Swap' },
-    { id: 'trade', ic: 'buy', label: 'Trade' },
     { id: 'bridge', ic: 'bridge', label: 'Bridge' },
-    { id: 'buy', ic: 'buy', label: 'Buy USDB' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
     { id: 'bots', ic: 'bots', label: 'Bots' },
     { id: 'chat', ic: 'agent', label: 'AI Chat' },
@@ -327,7 +325,7 @@
     { id: 'pro', ic: 'pro', label: 'Pro' },
     { id: 'settings', ic: 'settings', label: 'Settings' },
   ];
-  var BOTNAV = ['portfolio', 'assets', 'trade', 'agent', 'bots'];
+  var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
 
   /* ---------------- dApp connect bridge (popup) ----------------
    * When this wallet is opened as a popup with ?connect=<dappOrigin>, a dApp
@@ -757,6 +755,8 @@
   function baseToWhole(baseStr, dec) { try { return Number(BigInt(baseStr)) / Math.pow(10, dec); } catch (_) { return Number(baseStr) / Math.pow(10, dec); } }
 
   VIEWS.trade = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>Trade discontinued</h2></div><p class="muted">The custodial shared-price BLOCK trading pool has been shut down. You can still swap BLOCK-20 tokens non-custodially from your own wallet on the <a href="#swap">Swap</a> tab.</p></div>';
+    return;
     S.amm = { side: 'buy', pairs: [], dec: {}, info: null };
     v.innerHTML =
       '<div class="card"><div class="spread"><div><div class="dim">BLOCK price</div><div class="hero-bal num" id="amm-price">—</div></div>' +
@@ -1042,8 +1042,6 @@
       acts.push('<a class="btn primary" href="#send" id="ai-send">' + ic('send', 15) + ' Send</a>');
       acts.push('<a class="btn" href="#receive" id="ai-recv">' + ic('receive', 15) + ' Receive</a>');
       if (!native) acts.push('<button class="btn" id="ai-swap">' + ic('swap', 15) + ' Swap</button>');
-      if (!native && (symbol === 'USDB' || (curated && curated.symbol === 'USDB'))) acts.push('<a class="btn" href="#buy">' + ic('buy', 15) + ' Buy / Redeem</a>');
-      if (!native && (symbol === 'WORLD' || (curated && curated.symbol === 'WORLD'))) acts.push('<a class="btn" href="/market" target="_blank">' + ic('external', 15) + ' Marketplace</a>');
       var explorerHref = native ? ('/explorer/address/' + encodeURIComponent(addr)) : ('/token/' + encodeURIComponent(cid));
       acts.push('<a class="btn ghost" href="' + explorerHref + '" target="_blank">' + ic('external', 15) + ' Explorer</a>');
 
@@ -1294,7 +1292,8 @@
   };
 
   VIEWS.buy = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>USDB · Blockle USD</h2><span class="pill">1:1 USD · fully reserved</span></div><div id="ub-body"><div class="empty">Loading…</div></div></div>';
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>USDB is paused</h2></div><p class="muted">Blockle USD (USDB) has been bookshelved until the required money transmitter licensing and FinCEN MSB registration are in place. It is not currently available to buy, mint, or redeem.</p></div>';
+    return;
     fetch('/api/usdb/info').then(function (r) { return r.json(); }).then(function (info) {
       var dec = (info && info.decimals) || 6;
       // numeric-coerce: never interpolate a raw string from the API into innerHTML
