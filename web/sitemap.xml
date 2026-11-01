@@ -2,6 +2,8 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://blockle.org/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
   <url><loc>https://blockle.org/wallet</loc><changefreq>weekly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://blockle.org/post-quantum</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://blockle.org/security</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
   <url><loc>https://blockle.org/copilot</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://blockle.org/dex</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
   <url><loc>https://blockle.org/markets</loc><changefreq>daily</changefreq><priority>0.7</priority></url>

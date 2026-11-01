@@ -783,6 +783,8 @@ fn route(
         "/markets" => ("200 OK", "text/html; charset=utf-8", page_markets().into_bytes()),
         "/tokenomics" => ("200 OK", "text/html; charset=utf-8", page_tokenomics().into_bytes()),
         "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
+        "/post-quantum" => ("200 OK", "text/html; charset=utf-8", page_post_quantum().into_bytes()),
+        "/security" => ("200 OK", "text/html; charset=utf-8", page_security().into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
@@ -1455,7 +1457,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <div style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;justify-content:center;margin-bottom:.6rem">
 <a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/faucet">Faucet</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
 </div>
-{domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+{domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/post-quantum">Post-quantum</a> · <a href="/security">Security</a> · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -2016,6 +2018,72 @@ fn page_bridge_reserves() -> String {
         "Bridge reserves",
         "Live reserve BLOCK, wrapped wBLOCK supply, and backing ratio for the custodial Blockle bridge.",
         "/bridge/reserves",
+        "",
+        body,
+    )
+}
+
+fn page_post_quantum() -> String {
+    let head = r##"<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What is a post-quantum wallet?","acceptedAnswer":{"@type":"Answer","text":"A post-quantum wallet authenticates with signature algorithms believed to resist attacks by large quantum computers. Blockle uses NIST ML-DSA-44 (FIPS-204), a standardized lattice signature, for its native layer-1 (BLOCK) — so your Blockle identity, keys and backup are quantum-resistant."}},{"@type":"Question","name":"Are my Bitcoin, Ethereum and Solana funds post-quantum in Blockle?","acceptedAnswer":{"@type":"Answer","text":"No wallet can make them so. Those assets are secured on-chain by each network's own classical signatures (secp256k1, ed25519), which are quantum-vulnerable until those chains adopt post-quantum signatures. In Blockle, every external-chain account is derived from your post-quantum root key, so your master key and backup are quantum-resistant and a compromise of one chain key can't be pivoted to the others — but the on-chain assets inherit each chain's cryptography."}},{"@type":"Question","name":"Why does post-quantum security matter now?","acceptedAnswer":{"@type":"Answer","text":"A chain that settles value for decades must not rest on signatures a future quantum computer could forge. Harvest-now-decrypt-later means exposed public keys can be recorded today and attacked later, so building the quantum-resistant root in from day one is the conservative choice."}}]}</script>"##;
+    let body = r##"<div class="hero"><span class="eyebrow">Post-quantum security</span>
+<h1>A <span class="grad">post-quantum</span> crypto wallet.</h1>
+<p class="lede">Blockle's layer-1 is authenticated with NIST's standardized post-quantum signature — ML-DSA-44 (FIPS-204) — and every chain in your multichain wallet is derived from that quantum-resistant root. Your keys, your device, no overclaim.</p>
+<div class="cta"><a class="btn primary" href="/wallet">Open the wallet</a><a class="btn" href="/whitepaper.pdf">Read the whitepaper</a></div></div>
+
+<h2>Why post-quantum</h2>
+<p class="sub">Today's blockchains sign with elliptic-curve cryptography (secp256k1, ed25519). A sufficiently large quantum computer running Shor's algorithm could recover private keys from exposed public keys — and public keys are exposed on nearly every chain the moment you transact. "Harvest now, decrypt later" means that risk is forward-dated: data recorded today can be attacked once the hardware exists. A chain meant to hold value for decades should not rest on that assumption.</p>
+
+<h2>How Blockle does it</h2>
+<div class="features">
+<div class="feature"><div class="fi">🔐</div><b>ML-DSA-44 (FIPS-204)</b><p>The native BLOCK layer-1 signs every transaction with NIST's standardized module-lattice signature — quantum-resistant end to end. Addresses are bech32m <span class="mono">block1…</span>.</p></div>
+<div class="feature"><div class="fi">🌱</div><b>Post-quantum root key</b><p>Your whole multichain wallet is derived from your ML-DSA key via a one-way (SHA-256) derivation, so your master secret and backup are quantum-resistant.</p></div>
+<div class="feature"><div class="fi">🧭</div><b>Isolated by design</b><p>Because each chain's key is one-way-derived from the root, a break of one classical chain key can't be pivoted to recover the root or your other chains.</p></div>
+<div class="feature"><div class="fi">🖥️</div><b>Keys on your device</b><p>Keys are generated and sealed locally and never sent to any server or model. Non-custodial, always.</p></div>
+</div>
+
+<h2>The honest part</h2>
+<div class="note">Blockle cannot make Bitcoin, Ethereum or Solana post-quantum — those assets are secured on-chain by each network's own classical signatures until those chains adopt post-quantum cryptography. What Blockle does is the one thing a wallet can: a post-quantum native chain, a post-quantum root key and backup, and post-quantum-derived accounts everywhere else. We won't claim more than that.</div>
+
+<h2>FAQ</h2>
+<h3>Is Blockle a post-quantum wallet?</h3>
+<p class="sub">Yes for its own chain (BLOCK, ML-DSA-44) and for your master key and backup. Assets on other chains stay secured by those chains' cryptography.</p>
+<h3>Which chains does the wallet hold?</h3>
+<p class="sub">One seed holds BLOCK and BLOCK-20 tokens plus Bitcoin, Ethereum and EVM networks, Solana, Litecoin and Dogecoin — with cross-chain swaps and NFTs.</p>
+<p class="sub" style="margin-top:22px"><a href="/security" style="color:var(--accent)">The full security model &rarr;</a> &middot; <a href="/wallet" style="color:var(--accent)">Open the wallet &rarr;</a></p>"##.to_string();
+    page_shell_seo(
+        "Post-Quantum Crypto Wallet (ML-DSA)",
+        "Blockle is a post-quantum crypto wallet: its layer-1 signs with NIST ML-DSA-44 (FIPS-204) and your whole multichain wallet is derived from that quantum-resistant root. Hold Bitcoin, Ethereum, Solana and BLOCK from one seed, non-custodially.",
+        "/post-quantum",
+        head,
+        body,
+    )
+}
+
+fn page_security() -> String {
+    let body = r##"<div class="hero"><span class="eyebrow">Security model</span>
+<h1>Security you can <span class="grad">verify</span>.</h1>
+<p class="lede">Non-custodial by construction, post-quantum at the root, open-source, and honest about its limits. Here is exactly how Blockle protects your assets — and what it does not claim.</p>
+<div class="cta"><a class="btn primary" href="/wallet">Open the wallet</a><a class="btn" href="/post-quantum">Post-quantum details</a></div></div>
+
+<h2>Self-custody, always</h2>
+<p class="sub">Private keys are generated and encrypted on your device and never sent to our servers or any AI model. A lapsed subscription or a dead server never traps your funds. The native AMM and the wallet never take custody of your coins — you sign every transaction yourself.</p>
+
+<h2>What protects you</h2>
+<div class="features">
+<div class="feature"><div class="fi">🔐</div><b>Post-quantum root</b><p>BLOCK is signed with ML-DSA-44 (FIPS-204); your master key and backup are quantum-resistant. <a href="/post-quantum" style="color:var(--accent)">Details →</a></p></div>
+<div class="feature"><div class="fi">🛡️</div><b>Transaction preview &amp; scam gate</b><p>Every send and dApp request is inspected and explained before you sign, with warnings for approvals, unknown spenders and suspicious targets.</p></div>
+<div class="feature"><div class="fi">✍️</div><b>One signer, one gate</b><p>The AI agent and bots can only propose — every state-changing action passes through a single, non-bypassable approval you control.</p></div>
+<div class="feature"><div class="fi">📖</div><b>Open source</b><p>The protocol and crates are public (crates.io + GitHub). Displayed stats come from live nodes; operator-reported figures are labeled as such — no fabricated metrics.</p></div>
+</div>
+
+<h2>What we don't claim</h2>
+<div class="note">Assets on Bitcoin, Ethereum and Solana are secured by those networks' own (classical) cryptography and are not post-quantum — no wallet can change that. A hot wallet in the browser is convenient but less isolated than the desktop or extension builds; for large balances, use those. We say what is true and label the rest.</div>
+
+<p class="sub" style="margin-top:22px"><a href="/post-quantum" style="color:var(--accent)">Post-quantum security &rarr;</a> &middot; <a href="https://github.com/blocklechain/blockle" style="color:var(--accent)">Source on GitHub &rarr;</a> &middot; <a href="/wallet" style="color:var(--accent)">Open the wallet &rarr;</a></p>"##.to_string();
+    page_shell_seo(
+        "Security &amp; Self-Custody",
+        "How Blockle secures your crypto: non-custodial on-device keys, a post-quantum (ML-DSA) root, transaction preview and scam-gate, a single approval gate for AI/bots, and open source — with an honest account of what it does not claim.",
+        "/security",
         "",
         body,
     )
