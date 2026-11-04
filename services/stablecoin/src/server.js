@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
-import * as mt from './rail.js'; // rail-agnostic: USDB_RAIL selects modern_treasury (default) | arival
+import * as mt from './modern_treasury.js';
 import * as plaid from './plaid.js';
 
 const require = createRequire(import.meta.url);
@@ -118,8 +118,8 @@ const server = http.createServer(async (req, res) => {
       const l = load(); const supply = await onchainSupply(); const k = loadIssuer();
       return j(res, 200, {
         asset: 'USDB', name: 'Blockle USD', peg: 'USD', decimals: DECIMALS, contract: CONTRACT || null,
-        rail: mt.name, mtEnv: mt.env(), mtConfigured: mt.configured(),
-        fee: { flatBps: FEE_BPS, pct: FEE_BPS / 100, appliesTo: 'both ramps', note: '3.7% on buy and redeem; USD moves via ' + mt.name + ' ACH' },
+        rail: 'modern_treasury', mtEnv: mt.env(), mtConfigured: mt.configured(),
+        fee: { flatBps: FEE_BPS, pct: FEE_BPS / 100, appliesTo: 'both ramps', note: '3.7% on buy and redeem; USD moves via Modern Treasury ACH' },
         exampleBuy100: buyQuote(100), exampleRedeem100: redeemQuote(100),
         perTxCapUsd: PER_TX_CAP_USD, dailyCapUsd: DAILY_CAP_USD,
         enabled: ENABLED, issuerReady: !!k, kyc: { configured: !!KYC_URL, requiredAtVolumeUsd: KYC_THRESHOLD_USD, requiredNow: l.volumeUsd >= KYC_THRESHOLD_USD && !KYC_URL },

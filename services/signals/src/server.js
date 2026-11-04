@@ -13,6 +13,7 @@
 // A report carries raw metrics + a hard SAFETY GATE (`safe`, `flags`) and a 0–100
 // `score` (higher = better buy). The bot rejects unsafe tokens and ranks the rest.
 import http from 'node:http';
+import * as Buzz from './buzz.js';
 
 const PORT = Number(process.env.SIGNALS_PORT || 8808 + 1); // 8809
 const BIZ = (process.env.SIGNALS_BIZ_URL || 'http://127.0.0.1:8900').replace(/\/+$/, '');
@@ -345,6 +346,71 @@ async function discover(mode = 'sniper', chain = null, limit = 12) {
   return { mode, chain: chain || 'all', generatedAt: now(), count: Math.min(out.length, limit), candidates: out.slice(0, limit) };
 }
 
+// --- BUZZ: online presence / traffic feed (buzz.js) ---------------------------
+// "Which tokens is the internet piling into right now?" — merges CoinGecko
+// search-trending, GeckoTerminal trending pools (unique buyers, volume pace),
+// DexScreener boosts/profiles and watchlist/sentiment counts, runs every
+// candidate through the SAME mode safety gate as /discover, and ranks by
+// `buzz.quick` (attention × velocity × exit feasibility; 0 when unsafe). The
+// Buzz Hunter bot (signal bot, rank=buzz) consumes it. READ-ONLY, cached.
+const BUZZ_CACHE_MS = Number(process.env.SIGNALS_BUZZ_CACHE_MS || 90_000);
+const COIN_CACHE_MS = 6 * 3600_000;   // CoinGecko platforms/watchlist change slowly
+const COIN_FAIL_MS = 10 * 60_000;     // back off on a 429/empty for 10 min
+function cachedFor(key, ms) { const v = cache.get(key); return v && now() - v.at < ms ? v.data : null; }
+let coinQueue = Promise.resolve();
+// One CoinGecko /coins/{id} lookup at a time, 350 ms apart (free tier ~30/min).
+function resolveCoin(id) {
+  const key = 'cg:coin:' + id;
+  const hit = cachedFor(key, COIN_CACHE_MS);
+  if (hit) return Promise.resolve(hit.v);
+  const miss = cachedFor(key + ':fail', COIN_FAIL_MS);
+  if (miss) return Promise.resolve(null);
+  const run = coinQueue.then(async () => {
+    const again = cachedFor(key, COIN_CACHE_MS); if (again) return again.v;
+    const j = await jget(`${COINGECKO}/coins/${encodeURIComponent(id)}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false`, { timeout: 9000 });
+    const v = Buzz.parseCoinGeckoCoin(j);
+    if (v) put(key, { v }); else put(key + ':fail', { v: null });
+    await new Promise((r) => setTimeout(r, 350));
+    return v;
+  });
+  coinQueue = run.catch(() => null);
+  return run;
+}
+async function buzzFeed(mode = 'high', chain = null, limit = 12) {
+  const key = `buzz:${mode}:${chain || 'all'}`;
+  const hit = cachedFor(key, BUZZ_CACHE_MS);
+  if (hit) return { ...hit, limit, candidates: hit.candidates.slice(0, limit) };
+  const chains = chain ? [chain] : Object.keys(CHAIN_OF);
+  const { candidates, counts } = await Buzz.gatherBuzz(jget, { resolveCoin, chains });
+  const mine = candidates.filter((c) => !chain || c.chain === chain).slice(0, 60);
+  // Safety-gate every candidate (bounded concurrency; report() is cached 60 s).
+  const rows = [];
+  const BATCH = 5;
+  for (let i = 0; i < mine.length; i += BATCH) {
+    const slice = mine.slice(i, i + BATCH);
+    const reps = await Promise.all(slice.map((c) => report(c.chain, c.token, mode).catch(() => null)));
+    slice.forEach((c, k) => {
+      const r = reps[k];
+      const buzz = Buzz.scoreCandidate(c, r);
+      const m = (r && r.metrics) || {};
+      rows.push({
+        chain: c.chain, token: c.token, mode,
+        symbol: c.symbol || m.symbol || null, name: c.name || m.name || null,
+        safe: r ? r.safe : false, score: r ? r.score : 0, hype: r ? r.hype : null, flags: r ? r.flags : ['no-report'],
+        buzz, sources: c.sources, signals: c.signals, metrics: r ? r.metrics : {},
+        hypeBasis: r ? r.hypeBasis : null, assessedAt: now(),
+      });
+    });
+  }
+  const safeRows = rows.filter((r) => r.safe).sort((a, b) => (b.buzz.quick - a.buzz.quick) || (b.buzz.attention - a.buzz.attention));
+  const rejected = rows.filter((r) => !r.safe).sort((a, b) => b.buzz.attention - a.buzz.attention).slice(0, 10)
+    .map((r) => ({ chain: r.chain, token: r.token, symbol: r.symbol, attention: r.buzz.attention, velocity: r.buzz.velocity, flags: r.flags }));
+  const out = { feed: 'buzz', mode, chain: chain || 'all', generatedAt: now(), sources: counts, basis: Buzz.BASIS,
+    count: safeRows.length, candidates: safeRows, rejected };
+  put(key, out);
+  return { ...out, limit, candidates: safeRows.slice(0, limit) };
+}
+
 // --- ARBITRAGE board: REAL current same-chain cross-DEX spreads -----------------
 // For a token, DexScreener lists every DEX pair with its current priceUsd. Buying on
 // the cheaper pool and selling on the dearer is a genuine, currently-observable
@@ -433,6 +499,182 @@ async function arbBoard(mode = 'medium', chain = null, limit = 12) {
   };
 }
 
+// =============================================================================
+// PRICE PROXY — /api/signals/prices?symbols=ETH,SOL&tokens=ethereum:0x..,solana:<mint>
+// One shared 60s cache in front of CoinGecko (natives/blue chips by symbol) and
+// DexScreener (any token by address) for every wallet, plus BLOCK/USD from the
+// native rail. The wallet's PriceFeed tries this first and falls back to the
+// providers directly. Symbol→CoinGecko-id and chain→DexScreener-id maps come
+// from the wallet's own token-lists module (single source of truth).
+// =============================================================================
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+const TOKEN_LISTS_PATH = process.env.SIGNALS_TOKEN_LISTS || '/opt/blockle/web/wallet/vendor/chains/token-lists.js';
+let TokenLists = null;
+try { TokenLists = createRequire(import.meta.url)(TOKEN_LISTS_PATH); } catch (e) { console.warn('[signals] token-lists unavailable:', e.message); }
+const COINGECKO = 'https://api.coingecko.com/api/v3';
+const STABLE1 = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'USDBC', 'PYUSD', 'FDUSD', 'TUSD', 'BUSD', 'USDE', 'USDC.E', 'USDT.E', 'DAI.E', 'CUSD']);
+
+async function coingeckoPrices(ids) {
+  const uniq = [...new Set(ids)].sort();
+  if (!uniq.length) return {};
+  const key = 'cg:' + uniq.join(',');
+  const hit = cached(key); if (hit) return hit;
+  const j = await jget(`${COINGECKO}/simple/price?ids=${encodeURIComponent(uniq.join(','))}&vs_currencies=usd&include_24hr_change=true`, { timeout: 9000 });
+  return put(key, j || {});
+}
+async function dexscreenerTokens(dsChain, addrs) {
+  const out = {};
+  for (let i = 0; i < addrs.length; i += 30) {
+    const slice = addrs.slice(i, i + 30);
+    const key = 'dst:' + dsChain + ':' + slice.map((a) => a.toLowerCase()).sort().join(',');
+    let best = cached(key);
+    if (!best) {
+      const j = await jget(`${DEXSCREENER}/tokens/v1/${dsChain}/${slice.join(',')}`, { timeout: 9000 });
+      best = {};
+      for (const p of (Array.isArray(j) ? j : [])) {
+        const base = p?.baseToken?.address?.toLowerCase();
+        if (!base || !slice.some((a) => a.toLowerCase() === base)) continue;
+        const liq = Number(p.liquidity?.usd) || 0, price = Number(p.priceUsd);
+        if (!(price > 0)) continue;
+        if (!best[base] || liq > best[base].liquidityUsd) {
+          best[base] = { priceUsd: price, liquidityUsd: liq, symbol: p.baseToken.symbol || null, name: p.baseToken.name || null, change24h: Number(p.priceChange?.h24) || 0, change1h: Number(p.priceChange?.h1) || 0, volume24hUsd: Number(p.volume?.h24) || 0, marketCapUsd: Number(p.marketCap) || null, logo: p.info?.imageUrl || null, dex: p.dexId || null };
+        }
+      }
+      put(key, best);
+    }
+    Object.assign(out, best);
+  }
+  return out;
+}
+async function blockUsdPrice() {
+  const hit = cached('block:usd'); if (hit != null) return hit;
+  let v = null;
+  const poolsR = await jget(`${BIZ}/api/dex/pools`);
+  const pools = (poolsR && poolsR.pools) || [];
+  const stable = pools.find((p) => STABLE1.has(String(p.symbol || '').toUpperCase()) && Number(p.blockReserve) > 0 && Number(p.tokenReserve) > 0);
+  if (stable) {
+    const dec = Number(stable.decimals ?? 6);
+    const blk = Number(stable.blockReserve) / 1e8, tok = Number(stable.tokenReserve) / 10 ** dec;
+    if (blk > 0 && tok > 0) v = tok / blk;
+  }
+  if (v == null) {
+    const hist = await jget(`${BIZ}/api/buy/history`);
+    const last = Array.isArray(hist) && hist.length ? hist[hist.length - 1] : null;
+    if (last && Number(last.price) > 0) v = Number(last.price);
+  }
+  return put('block:usd', v);
+}
+async function pricesProxy(symbolsCsv, tokensCsv) {
+  const symbols = String(symbolsCsv || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 60);
+  const tokens = String(tokensCsv || '').split(',').map((s) => s.trim()).filter((s) => s.includes(':')).slice(0, 90);
+  const prices = {}, change = {};
+  const cgOf = {};
+  for (const s of symbols) {
+    if (STABLE1.has(s)) { prices[s] = 1; continue; }
+    if (s === 'BLOCK' || s === 'WBLOCK') continue;
+    const id = TokenLists ? TokenLists.coingeckoId(s) : null;
+    if (id) cgOf[s] = id;
+  }
+  const byChain = {};
+  for (const t of tokens) { const i = t.indexOf(':'); const chain = t.slice(0, i).toLowerCase(), addr = t.slice(i + 1); const ds = TokenLists ? TokenLists.dexscreenerChain(chain) : DEX_CHAIN[chain]; if (ds && addr) (byChain[chain] = byChain[chain] || { ds, addrs: [] }).addrs.push(addr); }
+  const [cg, blockUsd, ...dsParts] = await Promise.all([
+    coingeckoPrices(Object.values(cgOf)),
+    (symbols.includes('BLOCK') || symbols.includes('WBLOCK')) ? blockUsdPrice().catch(() => null) : Promise.resolve(null),
+    ...Object.keys(byChain).map((chain) => dexscreenerTokens(byChain[chain].ds, byChain[chain].addrs).then((m) => [chain, m]).catch(() => [chain, {}])),
+  ]);
+  for (const s of Object.keys(cgOf)) { const r = cg[cgOf[s]]; if (r && Number(r.usd) > 0) { prices[s] = Number(r.usd); if (r.usd_24h_change != null) change[s] = Number(r.usd_24h_change); } }
+  if (blockUsd > 0) { if (symbols.includes('BLOCK')) prices.BLOCK = blockUsd; if (symbols.includes('WBLOCK')) prices.WBLOCK = blockUsd; }
+  const tokOut = {};
+  for (const [chain, m] of dsParts) for (const addr of byChain[chain].addrs) { const r = m[addr.toLowerCase()]; if (r) tokOut[chain + ':' + addr] = r; }
+  return { at: now(), prices, change, tokens: tokOut, blockUsd: blockUsd ?? null };
+}
+
+// =============================================================================
+// MOON — the Moonshot-style BLOCK-20 feed shared by the web + mobile wallets
+// (docs/MOONSHOT.md). One ranked list of every tradable BLOCK-20 token with
+// price (BLOCK + USD), liquidity, lock status, age, 1h/24h/7d change and a
+// sparkline from the 15-minute snapshot history. Cached 60s. Read-only.
+// =============================================================================
+const DEXHIST_FILE = process.env.SIGNALS_DEXHIST || '/var/lib/blockle-biz/dex-history.json';
+function readDexHistory() {
+  const hit = cached('moon:hist'); if (hit) return hit;
+  let h = {};
+  try { h = JSON.parse(fs.readFileSync(DEXHIST_FILE, 'utf8')) || {}; } catch { h = {}; }
+  return put('moon:hist', h);
+}
+function changeSince(series, secAgo, nowSec) {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  const last = series[series.length - 1];
+  const cutoff = nowSec - secAgo;
+  let ref = null;
+  for (const pt of series) { if (Number(pt.t) >= cutoff) { ref = pt; break; } }
+  if (!ref || ref === last) ref = series[0];
+  if (Number(series[series.length - 1].t) - Number(ref.t) < Math.min(secAgo, 600)) return null; // not enough span
+  const a = Number(ref.price), b = Number(last.price);
+  return a > 0 ? +(((b - a) / a) * 100).toFixed(2) : null;
+}
+function moonScore(t) {
+  const liq = Math.max(0, Number(t.liquidityBlock) || 0);
+  const liqScore = Math.min(40, Math.log10(1 + liq) * 10);
+  const c24 = Number(t.change24hPct) || 0, c1 = Number(t.change1hPct) || 0;
+  const momentum = Math.max(-20, Math.min(35, c24 * 0.5 + c1 * 1.5));
+  const age = Number(t.ageBlocks);
+  const fresh = Number.isFinite(age) ? Math.max(0, 15 - age / 48) : 0;
+  const lock = t.lpLocked ? 8 : 0;
+  const vol = Number(t.volume24hBlock) || 0;
+  const volScore = Math.min(12, Math.log10(1 + vol) * 4);
+  const penalty = (t.flags || []).some((f) => /honeypot|rug|scam|denylist/i.test(f)) ? -100 : 0;
+  return Math.round((liqScore + momentum + fresh + lock + volScore + penalty) * 100) / 100;
+}
+async function moonFeed() {
+  const hit = cached('moon:feed'); if (hit) return hit;
+  const [poolsR, tokensR, blockUsd] = await Promise.all([jget(`${BIZ}/api/dex/pools`), jget(`${BIZ}/api/dex/tokens`), blockUsdPrice().catch(() => null)]);
+  const pools = (poolsR && poolsR.pools) || [];
+  const height = Number(poolsR && poolsR.height) || 0;
+  const hist = readDexHistory();
+  const nowSec = Math.floor(now() / 1000);
+  const logos = tokensR && typeof tokensR === 'object' ? tokensR : {};
+  const tokens = [];
+  for (const p of pools) {
+    const id = String(p.token || '').toLowerCase();
+    if (!id) continue;
+    const dec = Number(p.decimals ?? 8);
+    const blk = Number(p.blockReserve) / 1e8, tok = Number(p.tokenReserve) / 10 ** dec;
+    if (!(blk > 0) || !(tok > 0)) continue;
+    const priceBlock = blk / tok;
+    const series = Array.isArray(hist[p.token]) ? hist[p.token] : (Array.isArray(hist[id]) ? hist[id] : []);
+    const spark = series.slice(-48).map((x) => Number(x.price)).filter(Number.isFinite);
+    const lockLeft = (Number(p.lockedUntil) || 0) - height;
+    const ageBlocks = p.createdHeight != null ? Math.max(0, height - Number(p.createdHeight)) : null;
+    const row = {
+      contract: p.token, poolId: p.poolId || null, symbol: p.symbol || null, name: p.name || null, decimals: dec,
+      logo: (logos[p.token] && logos[p.token].logo) || (logos[id] && logos[id].logo) || null,
+      priceBlock, priceUsd: blockUsd > 0 ? priceBlock * blockUsd : null,
+      blockReserve: String(p.blockReserve), tokenReserve: String(p.tokenReserve), poolFeeBps: p.poolFeeBps != null ? Number(p.poolFeeBps) : 30,
+      liquidityBlock: blk * 2, liquidityUsd: blockUsd > 0 ? blk * 2 * blockUsd : null,
+      lpLocked: lockLeft > 0, lockDaysLeft: lockLeft > 0 ? +((lockLeft * 600) / 86400).toFixed(2) : 0,
+      ageBlocks, createdHeight: p.createdHeight != null ? Number(p.createdHeight) : null,
+      change1hPct: changeSince(series, 3600, nowSec), change24hPct: changeSince(series, 86400, nowSec), change7dPct: changeSince(series, 7 * 86400, nowSec),
+      volume24hBlock: null, snapshots: series.length, spark, flags: lockLeft > 0 ? [] : ['lp-unlocked'],
+    };
+    row.score = moonScore(row);
+    tokens.push(row);
+  }
+  tokens.sort((a, b) => b.score - a.score || String(a.symbol).localeCompare(String(b.symbol)));
+  return put('moon:feed', { generatedAt: now(), height, blockUsd: blockUsd ?? null, count: tokens.length, tokens });
+}
+async function moonToken(id) {
+  const feed = await moonFeed();
+  const row = feed.tokens.find((t) => String(t.contract).toLowerCase() === String(id).toLowerCase());
+  if (!row) return null;
+  const hist = readDexHistory();
+  const series = Array.isArray(hist[row.contract]) ? hist[row.contract] : [];
+  let diligence = null;
+  try { diligence = await report('block', row.contract, 'high'); } catch { diligence = null; }
+  return { ...row, blockUsd: feed.blockUsd, history: series.slice(-500), diligence };
+}
+
 const SUPPORTED = ['block', 'solana', 'ethereum', 'bsc'];
 function j(res, code, obj) {
   res.writeHead(code, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type' });
@@ -444,8 +686,22 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const parts = url.pathname.replace(/^\/api\/signals\/?/, '').split('/').filter(Boolean);
   try {
-    if (parts[0] === 'health' || url.pathname === '/api/signals/health') return j(res, 200, { ok: true, chains: SUPPORTED, modes: Object.keys(MODES) });
+    if (parts[0] === 'health' || url.pathname === '/api/signals/health') return j(res, 200, { ok: true, chains: SUPPORTED, modes: Object.keys(MODES), feeds: ['discover', 'buzz', 'arb', 'moon', 'prices'] });
     if (parts[0] === 'config') return j(res, 200, { chains: SUPPORTED, modes: MODES, thresholds: CFG, defaultMode: DEFAULT_MODE });
+    // /api/signals/prices?symbols=ETH,SOL,BLOCK&tokens=solana:<mint>,base:0x.. — shared price cache
+    if (parts[0] === 'prices') return j(res, 200, await pricesProxy(url.searchParams.get('symbols'), url.searchParams.get('tokens')));
+    // /api/signals/moon/feed | /api/signals/moon/token/<contract> — the Moonshot-style BLOCK-20 feed
+    if (parts[0] === 'moon') {
+      if (parts[1] === 'token' && parts[2]) { const t = await moonToken(parts[2]); return t ? j(res, 200, t) : j(res, 404, { error: 'no pool for that token' }); }
+      const feed = await moonFeed();
+      const tab = (url.searchParams.get('tab') || 'trending').toLowerCase();
+      const lim = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 100));
+      let rows = feed.tokens.slice();
+      if (tab === 'new') rows.sort((a, b) => (a.ageBlocks ?? 1e12) - (b.ageBlocks ?? 1e12));
+      else if (tab === 'gainers') rows.sort((a, b) => (b.change24hPct ?? -1e9) - (a.change24hPct ?? -1e9));
+      else if (tab === 'liquid') rows.sort((a, b) => b.liquidityBlock - a.liquidityBlock);
+      return j(res, 200, { ...feed, tab, tokens: rows.slice(0, lim) });
+    }
     const mode = (url.searchParams.get('mode') || DEFAULT_MODE).toLowerCase();
     const useMode = MODES[mode] ? mode : DEFAULT_MODE;
     // /api/signals/discover?mode=sniper&chain=solana&limit=12 — new-launch / trending feed
@@ -453,7 +709,15 @@ const server = http.createServer(async (req, res) => {
       const dchain = (url.searchParams.get('chain') || '').toLowerCase();
       const lim = Math.max(1, Math.min(25, Number(url.searchParams.get('limit')) || 12));
       const m2 = parts[0] === 'new-launches' ? 'sniper' : useMode;
+      // rank=buzz: the online-presence feed in the discover row shape (Buzz Hunter bots)
+      if ((url.searchParams.get('rank') || '').toLowerCase() === 'buzz') return j(res, 200, await buzzFeed(useMode, CHAIN_OF[dchain] || null, lim));
       return j(res, 200, await discover(m2, CHAIN_OF[dchain] || null, lim));
+    }
+    // /api/signals/buzz?mode=high&chain=solana&limit=12 — online presence / traffic board
+    if (parts[0] === 'buzz') {
+      const dchain = (url.searchParams.get('chain') || '').toLowerCase();
+      const lim = Math.max(1, Math.min(40, Number(url.searchParams.get('limit')) || 12));
+      return j(res, 200, await buzzFeed(useMode, CHAIN_OF[dchain] || null, lim));
     }
     // /api/signals/arb?mode=&chain=&limit= — live cross-DEX spread board
     if (parts[0] === 'arb') {

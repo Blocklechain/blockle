@@ -137,34 +137,39 @@
   }
 
   // ---- coin selection (accumulative) --------------------------------------
-  function selectCoins(utxos, target, feeRate, net) {
+  function selectCoins(utxos, target, feeRate, net, vbytesOf) {
     const sorted = utxos.slice().sort((a, b) => Number(BigInt(b.value) - BigInt(a.value)));
     const chosen = [];
-    let sum = 0n;
-    const inVbytes = net.segwit ? 68 : 148; // approx per-input vsize
+    let sum = 0n, inVbytes = 0;
+    const defaultIn = net.segwit ? 68 : 148; // approx per-input vsize
     const base = 10 + 34;                   // header + one output
     for (const u of sorted) {
       chosen.push(u);
       sum += BigInt(u.value);
-      const vbytes = base + chosen.length * inVbytes + 34; // + change output
+      inVbytes += (vbytesOf ? vbytesOf(u) : defaultIn);
+      const vbytes = base + inVbytes + 34; // + change output
       const fee = BigInt(Math.ceil(vbytes * feeRate));
       if (sum >= BigInt(target) + fee) return { chosen, fee, sum };
     }
-    const vbytes = base + chosen.length * inVbytes;
+    const vbytes = base + inVbytes;
     const fee = BigInt(Math.ceil(vbytes * feeRate));
     if (sum >= BigInt(target) + fee) return { chosen, fee, sum };
     throw new Error('insufficient funds');
   }
 
   // ---- sign a full send ----------------------------------------------------
-  // account = {node(HD node w/ privateKey,publicKey), address}
-  // req = {to, amount(base), feeRate(sat/vB), utxos:[{txid,vout,value}]}
-  function buildAndSign(net, node, fromAddress, req) {
+  // keyOf: an HD node {privateKey, publicKey} (every input is the account's
+  //        own P2WPKH / P2PKH), or a resolver utxo -> {node, type} for imported
+  //        key sets where each input may be owned by a different key and script
+  //        type ('p2wpkh' | 'p2sh-p2wpkh' | 'p2pkh').
+  // req = {to, amount(base), feeRate(sat/vB), utxos:[{txid,vout,value,address?}]}
+  const IN_VBYTES = { p2wpkh: 68, 'p2sh-p2wpkh': 91, p2pkh: 148 };
+  function buildAndSign(net, keyOf, fromAddress, req) {
     const SIGHASH_ALL = 0x01;
-    const pub = node.publicKey;
-    const ownH160 = C.hash160(pub);
+    const defaultType = net.segwit ? 'p2wpkh' : 'p2pkh';
+    const resolve = typeof keyOf === 'function' ? keyOf : () => ({ node: keyOf, type: defaultType });
     const feeRate = Number(req.feeRate || 10);
-    const { chosen, fee } = selectCoins(req.utxos, BigInt(req.amount), feeRate, net);
+    const { chosen, fee } = selectCoins(req.utxos, BigInt(req.amount), feeRate, net, (u) => IN_VBYTES[(resolve(u) || {}).type] || IN_VBYTES[defaultType]);
     const inSum = chosen.reduce((a, u) => a + BigInt(u.value), 0n);
     const change = inSum - BigInt(req.amount) - fee;
 
@@ -174,26 +179,34 @@
     const inputs = chosen.map((u) => ({ txid: u.txid, vout: u.vout, value: BigInt(u.value), sequence: 0xffffffff }));
     const version = 1, locktime = 0;
     const signedInputs = [];
+    let hasWitness = false;
 
-    if (net.segwit) {
-      const scriptCode = p2pkhScript(ownH160); // BIP143 scriptCode for P2WPKH
-      chosen.forEach((u, i) => {
-        const sh = sighashSegwit(version, inputs, outputs, i, scriptCode, BigInt(u.value), 0xffffffff, locktime, SIGHASH_ALL);
-        const sig = S.sign(sh, node.privateKey);
+    chosen.forEach((u, i) => {
+      const k = resolve(u);
+      if (!k || !k.node || !k.node.privateKey) throw new Error('no key for input ' + u.txid + ':' + u.vout);
+      const type = k.type || defaultType;
+      const pub = k.node.publicKey;
+      const h160 = C.hash160(pub);
+      let sh, scriptSig, witness;
+      if (type === 'p2wpkh' || type === 'p2sh-p2wpkh') {
+        if (!net.segwit) throw new Error(net.id + ' has no segwit');
+        sh = sighashSegwit(version, inputs, outputs, i, p2pkhScript(h160), BigInt(u.value), 0xffffffff, locktime, SIGHASH_ALL);
+        const sig = S.sign(sh, k.node.privateKey);
         const sigPlusType = C.concatBytes(sig.der, Uint8Array.of(SIGHASH_ALL));
-        signedInputs.push({ txid: u.txid, vout: u.vout, sequence: 0xffffffff, scriptSig: new Uint8Array(0), witness: [sigPlusType, pub], _sh: sh, _sig: sig });
-      });
-    } else {
-      const subScript = p2pkhScript(ownH160);
-      chosen.forEach((u, i) => {
-        const sh = sighashLegacy(version, inputs, outputs, i, subScript, locktime, SIGHASH_ALL);
-        const sig = S.sign(sh, node.privateKey);
+        witness = [sigPlusType, pub];
+        // wrapped segwit spends push the P2WPKH redeem script in scriptSig
+        scriptSig = type === 'p2sh-p2wpkh' ? pushData(p2wpkhScript(h160)) : new Uint8Array(0);
+        hasWitness = true;
+        signedInputs.push({ txid: u.txid, vout: u.vout, sequence: 0xffffffff, scriptSig, witness, _sh: sh, _sig: sig });
+      } else {
+        sh = sighashLegacy(version, inputs, outputs, i, p2pkhScript(h160), locktime, SIGHASH_ALL);
+        const sig = S.sign(sh, k.node.privateKey);
         const sigPlusType = C.concatBytes(sig.der, Uint8Array.of(SIGHASH_ALL));
-        const scriptSig = C.concatBytes(pushData(sigPlusType), pushData(pub));
+        scriptSig = C.concatBytes(pushData(sigPlusType), pushData(pub));
         signedInputs.push({ txid: u.txid, vout: u.vout, sequence: 0xffffffff, scriptSig, witness: null, _sh: sh, _sig: sig });
-      });
-    }
-    const rawBytes = serializeTx(version, signedInputs, outputs, locktime, net.segwit);
+      }
+    });
+    const rawBytes = serializeTx(version, signedInputs, outputs, locktime, hasWitness);
     const txid = txidOf(version, signedInputs, outputs, locktime);
     return { raw: C.bytesToHex(rawBytes), txid, fee: fee.toString(), change: change.toString(), signedInputs, outputs, sighashes: signedInputs.map((s) => C.bytesToHex(s._sh)) };
   }
@@ -205,6 +218,49 @@
     const id = net.id;
     const native = { chain: id, kind: 'native', symbol: net.symbol, decimals: net.decimals };
     let rootSeed = null;
+    // Imported key set for this account (wallet.dat / WIF): every key with the
+    // address types it may own, plus the tracked addresses to poll and spend.
+    // { keys:[{node, compressed, types}], track:[{address, type, key}], primary, byAddress:Map }
+    let imported = null;
+    let watchAddr = null;
+    function buildImported(spec) {
+      if (!spec || !Array.isArray(spec.keys) || !spec.keys.length) return null;
+      const keys = spec.keys.map((k) => {
+        const priv = C.toBytes(k.priv);
+        return { node: { privateKey: priv, publicKey: S.publicKey(priv, k.compressed !== false) }, compressed: k.compressed !== false, types: k.types || [] };
+      });
+      let track = Array.isArray(spec.track) ? spec.track.slice() : [];
+      if (!track.length) {
+        // default: every address type of the first key
+        for (const a of addressesOf(keys[0])) track.push({ address: a.address, type: a.type, key: 0 });
+      }
+      const byAddress = new Map();
+      for (const t of track) if (keys[t.key]) byAddress.set(t.address, t);
+      return { keys, track, byAddress, primary: track[0].address };
+    }
+    function addressesOf(k) {
+      const out = [];
+      const pub = k.node.publicKey;
+      if (net.segwit && k.compressed) {
+        out.push({ type: 'p2wpkh', address: Addr.p2wpkh(pub, net.hrp) });
+        const redeem = p2wpkhScript(C.hash160(pub));
+        out.push({ type: 'p2sh-p2wpkh', address: C.base58checkEncode(C.concatBytes(Uint8Array.of(net.p2sh), C.hash160(redeem))) });
+      }
+      out.push({ type: 'p2pkh', address: Addr.p2pkh(pub, net.p2pkh) });
+      return out;
+    }
+    function resolveRoot(root) {
+      if (!root) return { seed: rootSeed, imported, watch: watchAddr };
+      if (root instanceof Uint8Array) return { seed: root, imported: null, watch: null };
+      return { seed: root.seed || null, imported: buildImported(root.keys && root.keys[id]), watch: (root.watch && root.watch[id]) || null };
+    }
+    // run `fn` over `items` with bounded concurrency
+    async function pmap(items, limit, fn) {
+      const out = new Array(items.length); let i = 0;
+      async function worker() { while (i < items.length) { const n = i++; out[n] = await fn(items[n], n); } }
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+      return out;
+    }
     const getEndpoint = opts.endpoint || (async () => opts.esplora || net.esplora);
 
     async function api(path, init) {
@@ -215,7 +271,8 @@
       return r;
     }
     function nodeFor(index) {
-      if (!rootSeed) throw new Error('locked');
+      if (imported) return imported.keys[0].node;
+      if (!rootSeed) throw new Error(watchAddr ? 'watch-only account: no key to sign with' : 'locked');
       return HD.derivePath(rootSeed, net.path + '/' + (index || 0));
     }
     function addressOf(node) {
@@ -224,14 +281,23 @@
 
     return {
       id, native, network: net,
-      unlock(root) { rootSeed = root && (root.seed || root); },
-      lock() { rootSeed = null; },
+      unlock(root) { const r = resolveRoot(root || {}); rootSeed = r.seed; imported = r.imported; watchAddr = r.watch; },
+      lock() { rootSeed = null; imported = null; watchAddr = null; },
 
       // BTC/LTC/DOGE are coin-only — there are no on-chain tokens to detect.
       async discoverTokens() { return []; },
 
       async deriveAccount(root, index) {
-        const seed = (root && (root.seed || root)) || rootSeed;
+        const r = resolveRoot(root);
+        if (r.imported) {
+          const k = r.imported.keys[r.imported.byAddress.get(r.imported.primary).key];
+          return {
+            chain: id, index: 0, address: r.imported.primary, addresses: r.imported.track.map((t) => t.address),
+            publicKey: C.bytesToHex(k.node.publicKey), scheme: 'secp256k1', path: null, imported: true,
+          };
+        }
+        if (r.watch) return { chain: id, index: 0, address: r.watch, publicKey: '', scheme: 'secp256k1', path: null, watchOnly: true };
+        const seed = r.seed;
         if (!seed) throw new Error('no root seed');
         const node = HD.derivePath(seed, net.path + '/' + (index || 0));
         return {
@@ -241,12 +307,25 @@
         };
       },
 
+      // The set of addresses `address` stands for: an imported key set's primary
+      // address aggregates every tracked address; anything else is itself.
+      addressSet(address) {
+        if (imported && address === imported.primary) return imported.track.map((t) => t.address);
+        return [address];
+      },
+
+      async addressBalance(address) {
+        const r = await api('/address/' + address);
+        const j = await r.json();
+        const cs = j.chain_stats || {};
+        return BigInt(cs.funded_txo_sum || 0) - BigInt(cs.spent_txo_sum || 0);
+      },
+
       async getBalance(address) {
         try {
-          const r = await api('/address/' + address);
-          const j = await r.json();
-          const cs = j.chain_stats || {};
-          const confirmed = (BigInt(cs.funded_txo_sum || 0) - BigInt(cs.spent_txo_sum || 0)).toString();
+          const set = this.addressSet(address);
+          const parts = await pmap(set, 6, (a) => this.addressBalance(a));
+          const confirmed = parts.reduce((s, v) => s + v, 0n).toString();
           return [{ asset: native, confirmed, spendable: confirmed, display: fmt(confirmed, net.decimals) }];
         } catch (e) {
           return [{ asset: native, confirmed: '0', display: '—', error: String(e.message || e) }];
@@ -254,17 +333,31 @@
       },
 
       async utxos(address) {
-        const r = await api('/address/' + address + '/utxo');
-        const j = await r.json();
-        return j.map((u) => ({ txid: u.txid, vout: u.vout, value: String(u.value) }));
+        const set = this.addressSet(address);
+        const lists = await pmap(set, 6, async (a) => {
+          const r = await api('/address/' + a + '/utxo');
+          const j = await r.json();
+          return j.map((u) => ({ txid: u.txid, vout: u.vout, value: String(u.value), address: a }));
+        });
+        return [].concat(...lists);
       },
 
       async buildSend(account, req) {
-        if (!rootSeed) throw new Error('locked');
-        const node = nodeFor(account.index);
-        const from = account.address || addressOf(node);
+        if (!rootSeed && !imported) throw new Error(watchAddr ? 'watch-only account' : 'locked');
+        let keyOf, from;
+        if (imported) {
+          from = account.address || imported.primary;
+          keyOf = (u) => {
+            const t = imported.byAddress.get(u.address || from);
+            return t ? { node: imported.keys[t.key].node, type: t.type } : null;
+          };
+        } else {
+          const node = nodeFor(account.index);
+          from = account.address || addressOf(node);
+          keyOf = node;
+        }
         const utxos = req.utxos || (await this.utxos(from));
-        const built = buildAndSign(net, node, from, { ...req, utxos });
+        const built = buildAndSign(net, keyOf, from, { ...req, utxos });
         return { chain: id, raw: built.raw, txid: built.txid, fee: built.fee, summary: req };
       },
 

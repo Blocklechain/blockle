@@ -20,8 +20,10 @@ export const config = {
   // Optional cookie Domain for cross-subdomain SSO (e.g. ".blockle.org" so the
   // session cookie reaches world.blockle.org). Empty = host-only (current behavior).
   cookieDomain: env.ACCOUNTS_COOKIE_DOMAIN || '',
-  sessionIdleMs: +(env.ACCOUNTS_SESSION_IDLE_MS || 15 * 60 * 1000),
-  sessionAbsoluteMs: +(env.ACCOUNTS_SESSION_ABS_MS || 7 * 24 * 60 * 60 * 1000),
+  // A signed-in wallet stays signed in: 30 days idle / 180 days absolute (logout,
+  // password change and device revoke still kill a session instantly).
+  sessionIdleMs: +(env.ACCOUNTS_SESSION_IDLE_MS || 30 * 24 * 60 * 60 * 1000),
+  sessionAbsoluteMs: +(env.ACCOUNTS_SESSION_ABS_MS || 180 * 24 * 60 * 60 * 1000),
 
   tokenTtlMs: +(env.ACCOUNTS_TOKEN_TTL_MS || 15 * 60 * 1000),
   backupMaxBytes: +(env.ACCOUNTS_BACKUP_MAX || 2 * 1024 * 1024),

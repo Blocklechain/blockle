@@ -1,12 +1,7 @@
-"""PyInstaller entry point for the Blockle desktop wallet.
-
-Launches the FULL multi-chain app (:func:`blockle.qtapp.main`) — the native
-BLOCK wallet PLUS the Accounts / Exchange / Agent / Bots / Wallet panels — not
-the legacy BLOCK-only :func:`blockle.qtwallet.main`.
-"""
+"""PyInstaller entry point for the Blockle Qt wallet."""
 import sys
 
-from blockle.qtapp import main
+from blockle.qtwallet import main
 
 if __name__ == "__main__":
     sys.exit(main())

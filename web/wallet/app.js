@@ -77,6 +77,8 @@
     link: '<path d="M9.5 14.5l5-5"/><path d="M8 11.5 6 13.5a3 3 0 0 0 4.2 4.2l2-2"/><path d="M16 12.5l2-2a3 3 0 0 0-4.2-4.2l-2 2"/>',
     key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8"/><path d="M16 7l2 2M14 9l2 2"/>',
     doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 12h6M9 15.5h6M9 8.5h2"/>',
+    moon: '<path d="M14.5 4.5c2.5-1 4 0 5 1s2 2.5 1 5c-1.3 3.4-5 6.5-8 7.5l-3.5-3.5c1-3 4.1-6.7 5.5-10z"/><circle cx="15" cy="9" r="1.4"/><path d="M8.5 13.5 5.5 13c.5-2 1.6-3.3 3.5-3.5M10.5 15.5l.5 3c2-.5 3.3-1.6 3.5-3.5"/><path d="M5 19l2.5-2.5"/>',
+    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
   };
   function ic(name, size) {
     var p = ICONS[name] || ICONS.close;
@@ -266,9 +268,14 @@
       }).catch(function (e) { err.textContent = 'Create failed: ' + (e.message || e); $('#c-go').disabled = false; $('#c-go').textContent = 'Create wallet'; });
     });
   }
-  function renderImport() {
+  function renderImport(tab) {
+    tab = tab || 'file';
+    var tabs = '<div class="row" style="gap:6px;margin:8px 0 10px;flex-wrap:wrap">' +
+      '<button class="btn sm' + (tab === 'file' ? '' : ' ghost') + '" id="i-tab-file">Blockle wallet file</button>' +
+      '<button class="btn sm' + (tab === 'chain' ? '' : ' ghost') + '" id="i-tab-chain">Private key · seed phrase · wallet.dat</button></div>';
+    if (tab === 'chain') return renderImportChain(tabs);
     gateShell(
-      '<div class="spread"><h3>Import a wallet</h3><a href="#" id="i-back" class="muted" style="font-size:13px">Back</a></div>' +
+      '<div class="spread"><h3>Import a wallet</h3><a href="#" id="i-back" class="muted" style="font-size:13px">Back</a></div>' + tabs +
       '<p class="muted" style="margin:8px 0 12px">Import your encrypted Blockle wallet file. It is decrypted on this device only.</p>' +
       '<div class="field"><label>Wallet file (.json)</label><input id="i-file" type="file" accept="application/json,.json"></div>' +
       '<div class="field"><label>File password</label><input id="i-fpw" type="password" placeholder="Password the file was exported with"></div>' +
@@ -277,6 +284,7 @@
       '<button id="i-go" class="btn primary wide">Import</button>'
     );
     $('#i-back').addEventListener('click', function (e) { e.preventDefault(); showGate(); });
+    $('#i-tab-chain').addEventListener('click', function () { renderImport('chain'); });
     $('#i-go').addEventListener('click', function () {
       var f = $('#i-file').files[0], err = $('#i-err');
       if (!f) return (err.textContent = 'Choose your wallet file.');
@@ -288,6 +296,34 @@
         }).catch(function (e) { err.textContent = 'Import failed: ' + (e.message || e); });
       };
       rd.readAsText(f);
+    });
+  }
+  // Chain-specific imports need an unlocked wallet (the key is sealed INTO its
+  // vault as a new account), so this gate step unlocks — or creates — the wallet
+  // first and then opens the import wizard.
+  function renderImportChain(tabs) {
+    Wallet.exists().then(function (has) {
+      gateShell(
+        '<div class="spread"><h3>Import a wallet</h3><a href="#" id="i-back" class="muted" style="font-size:13px">Back</a></div>' + tabs +
+        '<p class="muted" style="margin:8px 0 12px">Import a private key, recovery phrase, Ethereum keystore or Bitcoin/Litecoin/Dogecoin Core <b>wallet.dat</b> for a specific chain. It is added as a new account inside ' + (has ? 'your wallet' : 'a new wallet') + ' — existing accounts stay as they are.</p>' +
+        (has ? '<div class="field"><label>Wallet password</label><input id="ic-pw" type="password" autocomplete="current-password" placeholder="Unlock to add the account"></div>'
+             : '<div class="field"><label>New wallet password</label><input id="ic-pw" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div><div class="field"><label>Confirm</label><input id="ic-pw2" type="password" autocomplete="new-password"></div>') +
+        '<div id="ic-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+        '<button id="ic-go" class="btn primary wide">Continue</button>');
+      $('#i-back').addEventListener('click', function (e) { e.preventDefault(); showGate(); });
+      $('#i-tab-file').addEventListener('click', function () { renderImport('file'); });
+      var go = function () {
+        var pw = $('#ic-pw').value, err = $('#ic-err');
+        if (!pw) return (err.textContent = 'Enter a password.');
+        if (!has) { if (pw.length < 8) return (err.textContent = 'Password must be at least 8 characters.'); if (pw !== $('#ic-pw2').value) return (err.textContent = 'Passwords do not match.'); }
+        $('#ic-go').disabled = true; $('#ic-go').textContent = has ? 'Unlocking…' : 'Creating wallet…';
+        (has ? Wallet.unlock(pw) : Wallet.create(pw, 'Web Wallet')).then(function () {
+          enterApp(); setTimeout(function () { importAccountSheet({ password: pw }); }, 250);
+        }).catch(function () { err.textContent = has ? 'Wrong password or corrupt vault.' : 'Could not create the wallet.'; $('#ic-go').disabled = false; $('#ic-go').textContent = 'Continue'; });
+      };
+      $('#ic-go').addEventListener('click', go);
+      $('#ic-pw').addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+      setTimeout(function () { $('#ic-pw').focus(); }, 60);
     });
   }
   function offerBackup() {
@@ -316,6 +352,7 @@
     { id: 'send', ic: 'send', label: 'Send' },
     { id: 'receive', ic: 'receive', label: 'Receive' },
     { id: 'swap', ic: 'swap', label: 'Swap' },
+    { id: 'moon', ic: 'moon', label: 'Moon' },
     { id: 'bridge', ic: 'bridge', label: 'Bridge' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
     { id: 'bots', ic: 'bots', label: 'Bots' },
@@ -325,7 +362,24 @@
     { id: 'pro', ic: 'pro', label: 'Pro' },
     { id: 'settings', ic: 'settings', label: 'Settings' },
   ];
-  var BOTNAV = ['portfolio', 'assets', 'swap', 'agent', 'bots'];
+  var BOTNAV = ['portfolio', 'moon', 'bots', 'assets', 'agent'];
+
+  /* ---------------- sidebar drawer (portrait / narrow screens) ----------------
+   * On ≤860px the sidenav is an off-canvas drawer: the ☰ button in the top bar
+   * (and a swipe from the left edge) pops it out; the scrim, a nav tap, Escape
+   * or a route change closes it. On wide screens it is the normal sticky column. */
+  function navOpen() { var n = $('#sidenav'); if (!n) return; n.classList.add('open'); $('#navscrim').classList.add('open'); var b = $('#btn-menu'); if (b) b.setAttribute('aria-expanded', 'true'); }
+  function navClose() { var n = $('#sidenav'); if (!n) return; n.classList.remove('open'); $('#navscrim').classList.remove('open'); var b = $('#btn-menu'); if (b) b.setAttribute('aria-expanded', 'false'); }
+  function navToggle() { var n = $('#sidenav'); if (n && n.classList.contains('open')) navClose(); else navOpen(); }
+  (function wireDrawer() {
+    var b = $('#btn-menu'); if (b) b.addEventListener('click', navToggle);
+    var sc = $('#navscrim'); if (sc) sc.addEventListener('click', navClose);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') navClose(); });
+    // edge swipe: start within 24px of the left edge, drag right > 60px
+    var sx = null, sy = null;
+    document.addEventListener('touchstart', function (e) { var t = e.touches && e.touches[0]; if (!t) return; sx = t.clientX <= 24 ? t.clientX : null; sy = t.clientY; }, { passive: true });
+    document.addEventListener('touchend', function (e) { if (sx == null) return; var t = e.changedTouches && e.changedTouches[0]; if (t && t.clientX - sx > 60 && Math.abs(t.clientY - sy) < 80 && S.unlocked) navOpen(); sx = null; }, { passive: true });
+  })();
 
   /* ---------------- dApp connect bridge (popup) ----------------
    * When this wallet is opened as a popup with ?connect=<dappOrigin>, a dApp
@@ -395,6 +449,22 @@
     resetAutoLock();
     refreshChains();
     loadTier();
+    // AUTO-IMPORT every held token on every network: on unlock, then every 5 min
+    // while unlocked (and on chain switch / assets refresh — see runAutoImport).
+    runAutoImport('unlock');
+    clearInterval(_autoImportTimer);
+    _autoImportTimer = setInterval(function () { if (S.unlocked) runAutoImport('interval'); }, 5 * 60 * 1000);
+    // keep bots ticking the moment the tab comes back into view, and re-check the
+    // account session/plan so a sign-in or upgrade made elsewhere shows up here.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      if (S.botRunner && S.botRunner._schedulerTick) { try { S.botRunner._schedulerTick(); } catch (_) {} }
+      loadTier();
+    });
+    // keep the account session warm (the server extends it on every /me) and the
+    // plan badge current while the wallet is open.
+    clearInterval(_tierTimer);
+    _tierTimer = setInterval(function () { if (S.unlocked) loadTier(); }, 10 * 60 * 1000);
     $('#acctsel').onclick = openAccountSheet;
     // Deep-link from the DEX / token pages: /wallet?swap=<contract>&side=buy&amt=1
     // opens the swap view with the token, direction and amount prefilled.
@@ -414,13 +484,33 @@
     if (CONNECT.active) CONNECT.onEnter();
   }
   function buildNav() {
-    $('#sidenav').innerHTML = NAV.map(function (n) {
+    $('#sidenav').innerHTML = '<div class="drawerhead"><span class="brand"><img class="logo" src="' + BLOCKLE_MARK + '" alt=""> Wallet</span><button class="btn sm ghost" id="nav-close" aria-label="Close menu">' + ic('close', 15) + '</button></div>' + NAV.map(function (n) {
       return '<a class="navlink" href="#' + n.id + '" data-id="' + n.id + '"><span class="ic">' + ic(n.ic, 20) + '</span><span>' + n.label + '</span>' + (n.id === 'pro' ? '<span class="tag">' + ic('pro', 13) + '</span>' : '') + '</a>';
     }).join('');
+    $('#nav-close').addEventListener('click', navClose);
+    $$('#sidenav .navlink').forEach(function (a) { a.addEventListener('click', navClose); });
     $('#botnav').innerHTML = BOTNAV.map(function (id) {
       var n = NAV.filter(function (x) { return x.id === id; })[0];
       return '<a href="#' + id + '" data-id="' + id + '"><span>' + ic(n.ic, 21) + '</span><span>' + n.label + '</span></a>';
     }).join('');
+  }
+
+  /* ---------------- token auto-import ---------------- */
+  var _autoImportTimer = null, _autoImportLast = null, _tierTimer = null;
+  function runAutoImport(reason, opts) {
+    if (!S.unlocked || !window.Wiring || !Wiring.autoImportTokens) return Promise.resolve(null);
+    return Wiring.autoImportTokens(opts || {}).then(function (sum) {
+      _autoImportLast = { at: Date.now(), reason: reason, summary: sum };
+      if (!sum) return sum;
+      var imp = sum.imported || [], fl = sum.flagged || [];
+      if (imp.length) {
+        var syms = imp.slice(0, 4).map(function (t) { return (t.symbol || '?') + ' (' + String(t.chain || '').toUpperCase() + ')'; }).join(', ');
+        toast('✨ Auto-imported ' + imp.length + ' token' + (imp.length > 1 ? 's' : '') + ': ' + syms + (imp.length > 4 ? '…' : ''), 'good');
+        if ((location.hash || '') === '#assets') loadTokens(); else if ((location.hash || '#portfolio') === '#portfolio') loadPortfolio();
+      }
+      if (fl.length && reason === 'unlock') toast(fl.length + ' suspicious token' + (fl.length > 1 ? 's' : '') + ' hidden — review under Assets', 'bad');
+      return sum;
+    }).catch(function () { return null; });
   }
 
   /* ---------------- auto-lock ---------------- */
@@ -430,20 +520,46 @@
     try { Wallet.lock(); } catch (_) {}
     try { if (window.Wiring) Wiring.reset(); } catch (_) {}
     S.unlocked = false; S.agent = null; S.botRunner = null; S.agentConn = null;
-    clearTimeout(_lockTimer);
+    clearTimeout(_lockTimer); clearInterval(_autoImportTimer); clearInterval(_botsTimer); clearInterval(_tierTimer);
+    navClose();
     showGate();
   }
 
   /* ---------------- chains + account selector ---------------- */
   function refreshChains() {
-    if (!window.Wiring) return;
-    Wiring.registry().then(function (reg) {
-      try { S.chains = reg.enabled(); } catch (_) { S.chains = ['block']; }
+    if (!window.Wiring) return Promise.resolve();
+    return Wiring.accountChains().then(function (chains) {
+      S.chains = (chains && chains.length) ? chains : ['block'];
       if (S.chains.indexOf(S.chain) < 0) S.chain = S.chains[0] || 'block';
-      updateAcctLabel();
-    }).catch(function () {});
+      return Wiring.listAccounts();
+    }).then(function (list) {
+      S.accounts = list || [];
+      S.account = S.accounts.filter(function (a) { return a.active; })[0] || { id: 'main', label: 'Main' };
+      return chainAddress(S.chain);
+    }).then(function (a) { S.address = a; updateAcctLabel(); }).catch(function () { updateAcctLabel(); });
   }
-  function updateAcctLabel() { $('#acctsel-label').textContent = (S.chain || 'block').toUpperCase() + ' · ' + shortAddr(S.address); }
+  function updateAcctLabel() {
+    var acct = (S.account && S.account.id !== 'main') ? esc(S.account.label) + ' · ' : '';
+    $('#acctsel-label').innerHTML = acct + esc((S.chain || 'block').toUpperCase()) + ' · ' + esc(shortAddr(S.address));
+  }
+  // One-line description of an imported account for the switcher.
+  var FAM_SHORT = { evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', solana: 'SOL', block: 'BLOCK', all: 'all chains' };
+  function acctSub(a) {
+    if (a.id === 'main') return 'BLOCK identity + every chain (HD)';
+    var how = { key: 'Private key', mnemonic: 'Seed phrase', keystore: 'Keystore', walletdat: 'wallet.dat', watch: 'Watch-only' }[a.source] || 'Imported';
+    var chains = (a.chains && a.chains.length) ? a.chains.map(function (c) { return FAM_SHORT[c] || c.toUpperCase(); }).join(', ') : (FAM_SHORT[a.family] || '');
+    var addr = a.addresses && (a.addresses[a.family] || a.addresses.evm || a.addresses[Object.keys(a.addresses)[0]]);
+    return how + ' · ' + chains + (addr ? ' · ' + shortAddr(addr) : '');
+  }
+  function switchAccount(id) {
+    var target = (S.accounts || []).filter(function (a) { return a.id === id; })[0];
+    return Wiring.switchAccount(id).then(function () { return refreshChains(); }).then(function () {
+      closeSheet(); onRoute();
+      try { if (typeof loadPortfolio === 'function') loadPortfolio(true); } catch (_) {}
+      runAutoImport('switch');
+      toast('Switched to ' + (target ? target.label : 'account'), 'good');
+    }).catch(function (e) { toast('Switch failed: ' + (e.message || e), 'bad'); });
+  }
   function chainAddress(chain) {
     return Wiring.accounts().then(function (acc) { return acc.accountFor(chain); }).then(function (a) { return a.address; }).catch(function () { return S.address; });
   }
@@ -455,15 +571,272 @@
         '<span class="ico">' + esc(c.slice(0, 1).toUpperCase()) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(c.toUpperCase()) + '</b>' +
         '<span class="dim mono" id="ca-' + i + '">…</span></span>' + (c === S.chain ? '<span class="chip good" style="margin-left:auto">active</span>' : '') + '</button>';
     }).join('');
-    openSheet('<div class="spread"><h2>Network</h2><button class="btn sm ghost" id="as-x">' + ic('close', 15) + '</button></div><div class="list" style="margin-top:8px">' + rows + '</div>');
+    var accts = (S.accounts || [{ id: 'main', label: 'Main', active: true }]).map(function (a, i) {
+      return '<button class="li" data-acct="' + i + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">' +
+        '<span class="ico">' + (a.id === 'main' ? ic('wallet', 16) : a.source === 'watch' ? ic('user', 16) : ic('key', 15)) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(a.label) + '</b>' +
+        '<span class="dim" style="font-size:12px">' + esc(acctSub(a)) + '</span></span>' + (a.active ? '<span class="chip good" style="margin-left:auto">active</span>' : '<span class="dim" style="margin-left:auto;font-size:12px">switch</span>') + '</button>';
+    }).join('');
+    var manage = (S.account && S.account.id !== 'main') ? '<button class="btn sm ghost" id="as-manage">Manage</button>' : '';
+    openSheet('<div class="spread"><h2>Account</h2><button class="btn sm ghost" id="as-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="list" style="margin-top:8px">' + accts + '</div>' +
+      '<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap"><button class="btn sm" id="as-import">' + ic('plus', 15) + ' Import a wallet (key · seed · wallet.dat)</button><button class="btn sm ghost" id="as-export">' + ic('key', 14) + ' Export a private key</button>' + manage + '</div>' +
+      '<h3 style="margin:16px 0 4px">Network</h3><div class="list">' + rows + '</div>');
     $('#as-x').addEventListener('click', closeSheet);
-    S.chains.forEach(function (c, i) { chainAddress(c).then(function (a) { var e = $('#ca-' + i); if (e) e.textContent = shortAddr(a); }); });
-    $$('#sheet .li').forEach(function (b) {
+    $('#as-import').addEventListener('click', function () { importAccountSheet(); });
+    $('#as-export').addEventListener('click', function () { exportKeySheet(); });
+    if ($('#as-manage')) $('#as-manage').addEventListener('click', function () { manageAccountSheet(S.account); });
+    $$('#sheet [data-acct]').forEach(function (b) {
       b.addEventListener('click', function () {
-        S.chain = S.chains[Number(b.getAttribute('data-i'))] || S.chain;
-        chainAddress(S.chain).then(function (a) { S.address = a; updateAcctLabel(); closeSheet(); onRoute(); });
+        var a = (S.accounts || [])[Number(b.getAttribute('data-acct'))];
+        if (!a || a.active) return;
+        b.disabled = true; switchAccount(a.id);
       });
     });
+    S.chains.forEach(function (c, i) { chainAddress(c).then(function (a) { var e = $('#ca-' + i); if (e) e.textContent = shortAddr(a); }); });
+    $$('#sheet .li[data-i]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        S.chain = S.chains[Number(b.getAttribute('data-i'))] || S.chain;
+        chainAddress(S.chain).then(function (a) { S.address = a; updateAcctLabel(); closeSheet(); onRoute(); runAutoImport('switch', { chains: [S.chain] }); });
+      });
+    });
+  }
+
+  /* ---------------- chain-specific wallet import ---------------- */
+  // Import a private key / seed phrase / keystore / wallet.dat / watch address
+  // for ONE chain (or a seed phrase for every chain) as a NEW account inside
+  // this wallet. The existing accounts stay untouched; the BLOCK identity is
+  // shared. Everything is parsed and sealed on this device.
+  var IMPORT_CHAINS = [
+    { id: 'all', name: 'All chains', sub: 'Seed phrase → every network', icon: 'wallet' },
+    { id: 'evm', name: 'Ethereum & EVM', sub: 'ETH, Base, Arbitrum, Polygon, BNB…', icon: 'swap' },
+    { id: 'bitcoin', name: 'Bitcoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
+    { id: 'litecoin', name: 'Litecoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
+    { id: 'dogecoin', name: 'Dogecoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
+    { id: 'solana', name: 'Solana', sub: 'Phantom / solana-keygen key · seed', icon: 'moon' },
+    { id: 'block', name: 'BLOCK', sub: 'Blockle wallet file · desktop wallet.json', icon: 'shield' },
+  ];
+  var IMPORT_METHODS = {
+    key: { name: 'Private key', sub: 'Hex, WIF or base58 / JSON keypair' },
+    mnemonic: { name: 'Seed phrase', sub: '12–24 words (BIP39), optional passphrase' },
+    keystore: { name: 'Keystore JSON', sub: 'Ethereum UTC / JSON v3 file + its password' },
+    walletdat: { name: 'wallet.dat', sub: 'Bitcoin / Litecoin / Dogecoin Core file' },
+    watch: { name: 'Watch-only address', sub: 'Track balances, no key' },
+    file: { name: 'Blockle wallet file', sub: 'Encrypted export or desktop wallet.json' },
+  };
+  var FAM_CHAIN = { evm: 'ethereum', bitcoin: 'bitcoin', litecoin: 'litecoin', dogecoin: 'dogecoin', solana: 'solana' };
+  var FAM_UNITS = { evm: [18, 'ETH'], bitcoin: [8, 'BTC'], litecoin: [8, 'LTC'], dogecoin: [8, 'DOGE'], solana: [9, 'SOL'] };
+  function fmtBase(bal, fam) {
+    var u = FAM_UNITS[fam] || [0, '']; try {
+      var s = BigInt(bal || 0).toString().padStart(u[0] + 1, '0'); var i = s.slice(0, s.length - u[0]), f = s.slice(s.length - u[0]).replace(/0+$/, '');
+      return (f ? i + '.' + f.slice(0, 6) : i) + ' ' + u[1];
+    } catch (_) { return String(bal); }
+  }
+  function readFile(file, as) {
+    return new Promise(function (res, rej) {
+      var rd = new FileReader(); rd.onerror = function () { rej(new Error('could not read the file')); };
+      rd.onload = function () { res(as === 'bytes' ? new Uint8Array(rd.result) : rd.result); };
+      as === 'bytes' ? rd.readAsArrayBuffer(file) : rd.readAsText(file);
+    });
+  }
+  function importAccountSheet(opts) {
+    opts = opts || {};
+    var st = { family: opts.family || null, method: opts.method || null, pw: opts.password || '', label: '' };
+    if (!window.KeyImport) { toast('Import module not loaded — force update in Settings', 'bad'); return; }
+    var head = function (title, backStep) {
+      return '<div class="spread"><h2>' + esc(title) + '</h2><span class="row" style="gap:6px">' + (backStep ? '<button class="btn sm ghost" id="im-back">Back</button>' : '') + '<button class="btn sm ghost" id="im-x">' + ic('close', 15) + '</button></span></div>';
+    };
+    var wire = function (backFn) { $('#im-x').onclick = closeSheet; if ($('#im-back')) $('#im-back').onclick = backFn; };
+
+    function stepChain() {
+      openSheet(head('Import a wallet') +
+        '<p class="muted" style="margin:6px 0 10px">Pick the chain the key is for. It becomes a <b>new account</b> next to your existing ones — nothing is replaced.</p>' +
+        '<div class="list">' + IMPORT_CHAINS.map(function (c, i) {
+          return '<button class="li" data-ch="' + i + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer"><span class="ico">' + ic(c.icon, 16) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(c.name) + '</b><span class="dim" style="font-size:12px">' + esc(c.sub) + '</span></span><span class="dim" style="margin-left:auto">' + ic('chevron', 14) + '</span></button>';
+        }).join('') + '</div>');
+      wire();
+      $$('#sheet [data-ch]').forEach(function (b) { b.onclick = function () { st.family = IMPORT_CHAINS[Number(b.getAttribute('data-ch'))].id; stepMethod(); }; });
+    }
+    function stepMethod() {
+      var methods = KeyImport.METHODS[st.family] || ['key'];
+      if (methods.length === 1) { st.method = methods[0]; return stepInput(); }
+      var cname = (IMPORT_CHAINS.filter(function (c) { return c.id === st.family; })[0] || {}).name;
+      openSheet(head(cname + ' · how?', true) + '<div class="list">' + methods.map(function (m) {
+        var d = IMPORT_METHODS[m];
+        return '<button class="li" data-m="' + m + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer"><span class="ico">' + ic(m === 'watch' ? 'user' : m === 'walletdat' || m === 'keystore' || m === 'file' ? 'doc' : 'key', 15) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(d.name) + '</b><span class="dim" style="font-size:12px">' + esc(d.sub) + '</span></span></button>';
+      }).join('') + '</div>');
+      wire(stepChain);
+      $$('#sheet [data-m]').forEach(function (b) { b.onclick = function () { st.method = b.getAttribute('data-m'); stepInput(); }; });
+    }
+    function stepInput() {
+      var m = st.method, fam = st.family;
+      var fields = '';
+      var ph = { evm: '0x… 64 hex characters', bitcoin: 'WIF (5…, K… or L…) or 64-hex', litecoin: 'WIF (6… or T…) or 64-hex', dogecoin: 'WIF (6… or Q…) or 64-hex', solana: 'base58 secret key, [1,2,3…] JSON array, or hex' }[fam] || 'private key';
+      if (m === 'key') fields += '<div class="field"><label>Private key</label><textarea id="im-text" rows="3" placeholder="' + esc(ph) + '" autocomplete="off" spellcheck="false"></textarea></div>';
+      if (m === 'mnemonic') fields += '<div class="field"><label>Recovery phrase</label><textarea id="im-text" rows="3" placeholder="12 or 24 words separated by spaces" autocomplete="off" spellcheck="false"></textarea></div>' +
+        '<div class="field"><label>Passphrase (optional, BIP39 "25th word")</label><input id="im-pass" type="password" autocomplete="off" placeholder="Leave empty unless you set one"></div>' +
+        '<p class="dim" style="font-size:12px;margin:-4px 0 8px">Standard paths: EVM m/44\'/60\'/0\'/0/0 · BTC m/84\'/0\' (bc1…) · LTC m/84\'/2\' · DOGE m/44\'/3\' · SOL m/44\'/501\'/0\'/0\'. Same addresses as MetaMask, Sparrow/Electrum (bech32), Ledger Live and Phantom.</p>';
+      if (m === 'keystore') fields += '<div class="field"><label>Keystore file (UTC--… .json)</label><input id="im-file" type="file" accept=".json,application/json"></div><div class="field"><label>Keystore password</label><input id="im-fpw" type="password" autocomplete="off"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">Decrypting a geth-strength keystore can take up to a minute in the browser.</p>';
+      if (m === 'walletdat') fields += '<div class="field"><label>wallet.dat</label><input id="im-file" type="file"></div><div class="field"><label>Wallet passphrase (only if the Core wallet is encrypted)</label><input id="im-fpw" type="password" autocomplete="off" placeholder="Leave empty if it was never encrypted"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">Reads legacy (key/ckey) and descriptor wallets from Bitcoin, Litecoin and Dogecoin Core. Keys are extracted here, in your browser; the file is never uploaded.</p>';
+      if (m === 'watch') fields += '<div class="field"><label>Address to watch</label><input id="im-text" placeholder="' + esc({ evm: '0x…', bitcoin: 'bc1… / 1… / 3…', litecoin: 'ltc1… / L… / M…', dogecoin: 'D…', solana: 'base58 address', block: 'block1…' }[fam] || 'address') + '" autocomplete="off" spellcheck="false"></div>';
+      if (m === 'file') fields += '<div class="field"><label>Wallet file (.json)</label><input id="im-file" type="file" accept=".json,application/json"></div><div class="field"><label>File password (if the file is encrypted)</label><input id="im-fpw" type="password" autocomplete="off"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">A BLOCK wallet is a separate post-quantum identity, so it is added as a <b>new wallet</b> you unlock with the password below.</p>';
+      fields += '<div class="field"><label>Account name (optional)</label><input id="im-label" placeholder="e.g. Old Core wallet" maxlength="40"></div>';
+      fields += '<div class="field"><label>' + (m === 'file' ? 'Password for the new wallet in this browser' : 'Your wallet password') + '</label><input id="im-pw" type="password" autocomplete="current-password" placeholder="' + (m === 'file' ? 'Encrypts the imported wallet here' : 'Needed to seal the new account into your vault') + '" value="' + esc(st.pw) + '"></div>';
+      openSheet(head(IMPORT_METHODS[m].name + ' · ' + (IMPORT_CHAINS.filter(function (c) { return c.id === fam; })[0] || {}).name, true) + fields +
+        '<div id="im-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+        '<button class="btn primary wide" id="im-go">Continue</button>');
+      wire(stepMethod);
+      var go = function () {
+        var err = $('#im-err'); err.textContent = '';
+        st.label = ($('#im-label').value || '').trim(); st.pw = $('#im-pw').value || '';
+        var btn = $('#im-go'); btn.disabled = true; btn.textContent = 'Reading…';
+        var fail = function (e) { err.textContent = (e && e.message) || String(e); btn.disabled = false; btn.textContent = 'Continue'; };
+        try {
+          if (m === 'file') return importBlockFile($('#im-file').files[0], $('#im-fpw').value, st.pw, st.label).catch(fail);
+          if (fam === 'block' && m === 'watch') {
+            // a BLOCK address is its own identity → a watch-only WALLET record
+            var wspec = KeyImport.watchAccount('block', $('#im-text').value);
+            if (!st.pw || st.pw.length < 8) return fail(new Error('set a password of at least 8 characters for the watch-only wallet'));
+            return Wallet.importFile({ address: wspec.addresses.block }, '', st.pw, st.label || 'BLOCK · watch').then(function () {
+              toast('Watch-only BLOCK wallet added', 'good'); closeSheet(); Wiring.reset(); enterApp();
+            }).catch(fail);
+          }
+          if (!st.pw) return fail(new Error('enter your wallet password'));
+          if (m === 'key') return stepPreview(KeyImport.parsePrivateKey(fam, $('#im-text').value));
+          if (m === 'watch') return stepPreview(KeyImport.watchAccount(fam, $('#im-text').value));
+          if (m === 'mnemonic') return stepPreview(KeyImport.fromMnemonic($('#im-text').value, $('#im-pass').value, { family: fam }));
+          if (m === 'keystore') {
+            var kf = $('#im-file').files[0]; if (!kf) return fail(new Error('choose the keystore file'));
+            btn.textContent = 'Decrypting…';
+            return readFile(kf, 'text').then(function (txt) { return KeyImport.decryptKeystore(txt, $('#im-fpw').value); }).then(stepPreview).catch(fail);
+          }
+          if (m === 'walletdat') {
+            var wf = $('#im-file').files[0]; if (!wf) return fail(new Error('choose your wallet.dat'));
+            if (wf.size > 64 * 1024 * 1024) return fail(new Error('that file is too large to be a wallet.dat'));
+            btn.textContent = 'Scanning file…';
+            return readFile(wf, 'bytes').then(function (bytes) {
+              var parsed = KeyImport.parseWalletDat(bytes);
+              if (parsed.format === 'unknown') throw new Error(parsed.warnings[0] || 'no keys found in this file');
+              var guess = KeyImport.guessFamily(parsed);
+              if (guess && guess !== fam) throw new Error('this looks like a ' + (KeyImport.UTXO[guess] || {}).name + ' Core wallet — go back and pick ' + (KeyImport.UTXO[guess] || {}).name);
+              if (parsed.ckeys.length && !parsed.keys.length) { btn.textContent = 'Decrypting keys…'; return KeyImport.unlockWalletDat(parsed, $('#im-fpw').value); }
+              return parsed;
+            }).then(function (parsed) { return stepWalletDat(KeyImport.walletDatAccount(parsed, fam, {})); }).catch(fail);
+          }
+          fail(new Error('unsupported method'));
+        } catch (e) { fail(e); }
+      };
+      $('#im-go').onclick = go;
+      if ($('#im-text')) $('#im-text').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && m !== 'mnemonic') { e.preventDefault(); go(); } });
+      setTimeout(function () { var f = $('#im-text') || $('#im-file'); if (f) f.focus(); }, 60);
+    }
+    // BLOCK: a Blockle wallet file / desktop wallet.json becomes a new WALLET record.
+    function importBlockFile(file, filePw, newPw, label) {
+      if (!file) return Promise.reject(new Error('choose the wallet file'));
+      if (!newPw || newPw.length < 8) return Promise.reject(new Error('the new wallet password must be at least 8 characters'));
+      return readFile(file, 'text').then(function (txt) {
+        var obj; try { obj = JSON.parse(txt); } catch (_) { throw new Error('that file is not valid JSON'); }
+        return Wallet.importFile(obj, filePw, newPw, label || 'Imported BLOCK');
+      }).then(function (r) {
+        toast('BLOCK wallet imported' + (r.mode === 'watch-only' ? ' (watch-only)' : ''), 'good');
+        closeSheet(); Wiring.reset(); enterApp();
+      });
+    }
+    // Preview: the addresses this import controls, with live balances.
+    function stepPreview(spec) {
+      st.spec = spec;
+      var rows = spec.preview.map(function (p, i) {
+        return '<div class="li"><span class="ico">' + esc((FAM_SHORT[p.chain] || p.chain).slice(0, 1)) + '</span><span class="col" style="align-items:flex-start;min-width:0"><b>' + esc(p.label) + '</b><span class="dim mono" style="font-size:12px;word-break:break-all">' + esc(p.address) + '</span></span><span class="dim" id="im-bal-' + i + '" style="margin-left:auto;white-space:nowrap;font-size:12px">…</span></div>';
+      }).join('');
+      var note = spec.source === 'watch' ? 'Watch-only: you can see balances and activity but not send.' :
+        spec.source === 'mnemonic' ? 'Only the first address of each chain is imported. The seed is sealed in your vault; it never leaves this device.' :
+        (spec.warnings && spec.warnings.length ? spec.warnings.join(' · ') : 'The key is sealed in your vault under your wallet password; it never leaves this device.');
+      openSheet(head('Confirm import', true) +
+        '<p class="muted" style="margin:6px 0 8px">' + esc(note) + '</p><div class="list">' + rows + '</div>' +
+        (spec.source === 'walletdat' ? '<p class="dim" style="font-size:12px;margin-top:8px">' + esc(spec.funded || 0) + ' funded address' + (spec.funded === 1 ? '' : 'es') + ' · ' + esc(spec.stats.keys) + ' keys kept for later rescans.</p>' : '') +
+        '<div id="im-err" class="bad" style="min-height:18px;font-size:13px;margin-top:6px"></div>' +
+        '<button class="btn primary wide" id="im-go">Import as new account</button>');
+      wire(stepInput);
+      // live balances, best-effort
+      if (spec.source !== 'walletdat') spec.preview.forEach(function (p, i) {
+        var chain = FAM_CHAIN[p.chain]; if (!chain) return;
+        Wiring.scanAddresses(chain, [p.address]).then(function (r) { var el = $('#im-bal-' + i); if (el) el.textContent = r[0].error ? 'balance n/a' : fmtBase(r[0].balance, p.chain); }).catch(function () {});
+      });
+      else spec.preview.forEach(function (p, i) { var el = $('#im-bal-' + i); if (el) el.textContent = fmtBase(p.balance, p.chain); });
+      $('#im-go').onclick = function () {
+        var btn = $('#im-go'), err = $('#im-err'); btn.disabled = true; btn.textContent = 'Sealing…';
+        Wiring.addAccount(spec, st.pw, st.label).then(function (meta) {
+          return refreshChains().then(function () {
+            var want = spec.chains && spec.chains[0]; var chain = FAM_CHAIN[want] || want;
+            if (chain && S.chains.indexOf(chain) >= 0) S.chain = chain;
+            return chainAddress(S.chain);
+          }).then(function (a) {
+            S.address = a; updateAcctLabel(); closeSheet(); onRoute();
+            try { if (typeof loadPortfolio === 'function') loadPortfolio(true); } catch (_) {}
+            runAutoImport('import');
+            toast('Imported "' + meta.label + '" as a new account', 'good');
+          });
+        }).catch(function (e) {
+          var msg = (e && e.message) || String(e);
+          if (/wrong password/i.test(msg)) msg = 'Wrong wallet password.';
+          err.textContent = msg; btn.disabled = false; btn.textContent = 'Import as new account';
+        });
+      };
+    }
+    // wallet.dat: scan the candidate addresses for balances before deciding
+    // which ones the account tracks.
+    function stepWalletDat(acct) {
+      var fam = acct.family, chain = FAM_CHAIN[fam];
+      var cands = acct.candidates, batch = 300, done = 0, funded = [];
+      openSheet(head('Scanning wallet.dat', true) +
+        '<p class="muted" style="margin:6px 0 8px">' + esc(acct.stats.keys) + ' keys found (' + esc(acct.format) + ' wallet' + (acct.stats.descriptors ? ', ' + acct.stats.descriptors + ' descriptor' + (acct.stats.descriptors > 1 ? 's' : '') : '') + '). Checking ' + Math.min(batch, cands.length) + ' of ' + cands.length + ' addresses for funds…</p>' +
+        (acct.warnings.length ? '<p class="dim" style="font-size:12px">' + esc(acct.warnings.slice(0, 3).join(' · ')) + '</p>' : '') +
+        '<div id="im-prog" class="dim" style="font-size:12px">0 / ' + Math.min(batch, cands.length) + '</div><div id="im-found" class="list" style="margin-top:8px"></div>' +
+        '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn primary" id="im-go" disabled>Continue</button><button class="btn ghost" id="im-more" disabled>Scan next ' + batch + '</button></div>');
+      wire(stepInput);
+      var scanned = 0;
+      function scanBatch() {
+        var slice = cands.slice(scanned, scanned + batch); if (!slice.length) return Promise.resolve();
+        var start = scanned; scanned += slice.length;
+        $('#im-go').disabled = true; $('#im-more').disabled = true;
+        return Wiring.scanAddresses(chain, slice.map(function (c) { return c.address; }), { concurrency: 6, onProgress: function (n, total, r) {
+          var p = $('#im-prog'); if (p) p.textContent = (start + n) + ' / ' + scanned + (r && BigInt(r.balance || 0) > 0n ? ' · found funds' : '');
+          if (r && BigInt(r.balance || 0) > 0n) { funded.push(r); var f = $('#im-found'); if (f) f.insertAdjacentHTML('beforeend', '<div class="li"><span class="ico">$</span><span class="col" style="align-items:flex-start;min-width:0"><b>' + esc(fmtBase(r.balance, fam)) + '</b><span class="dim mono" style="font-size:12px;word-break:break-all">' + esc(r.address) + '</span></span></div>'); }
+        } }).then(function () {
+          var p = $('#im-prog'); if (p) p.textContent = scanned + ' / ' + cands.length + ' checked · ' + funded.length + ' funded';
+          if ($('#im-go')) $('#im-go').disabled = false;
+          if ($('#im-more')) $('#im-more').disabled = scanned >= cands.length;
+        });
+      }
+      $('#im-more').onclick = scanBatch;
+      $('#im-go').onclick = function () { stepPreview(KeyImport.finalizeWalletDat(acct, funded)); };
+      scanBatch();
+    }
+    if (st.family && st.method) stepInput(); else if (st.family) stepMethod(); else stepChain();
+  }
+  // Rename / remove the active imported account.
+  function manageAccountSheet(a) {
+    if (!a || a.id === 'main') return;
+    openSheet('<div class="spread"><h2>' + esc(a.label) + '</h2><button class="btn sm ghost" id="ma-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="dim" style="font-size:12px;margin:4px 0 10px">' + esc(acctSub(a)) + '</p>' +
+      '<div class="field"><label>Name</label><input id="ma-label" value="' + esc(a.label) + '" maxlength="40"></div>' +
+      '<button class="btn wide" id="ma-save">Save name</button>' +
+      '<h3 style="margin:16px 0 6px">Remove this account</h3><p class="dim" style="font-size:12px">Removes its key from this wallet. Make sure you still have the original key, phrase or file — this cannot be undone.</p>' +
+      '<div class="field"><label>Wallet password</label><input id="ma-pw" type="password" autocomplete="current-password"></div>' +
+      '<div id="ma-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button class="btn wide ghost" id="ma-rm" style="color:var(--bad)">Remove account</button>');
+    $('#ma-x').onclick = closeSheet;
+    $('#ma-save').onclick = function () {
+      Wallet.renameAccount(a.id, $('#ma-label').value).then(function () { return refreshChains(); }).then(function () { toast('Renamed', 'good'); closeSheet(); }).catch(function (e) { $('#ma-err').textContent = e.message || e; });
+    };
+    $('#ma-rm').onclick = function () {
+      var pw = $('#ma-pw').value; if (!pw) return ($('#ma-err').textContent = 'Enter your wallet password.');
+      if (!confirm('Remove "' + a.label + '" from this wallet?')) return;
+      $('#ma-rm').disabled = true;
+      Wiring.removeAccount(a.id, pw).then(function () { return refreshChains(); }).then(function () {
+        closeSheet(); onRoute(); try { if (typeof loadPortfolio === 'function') loadPortfolio(true); } catch (_) {}
+        toast('Account removed', 'good');
+      }).catch(function (e) { $('#ma-err').textContent = /wrong password/i.test(e.message || '') ? 'Wrong wallet password.' : (e.message || e); $('#ma-rm').disabled = false; });
+    };
   }
 
   /* ---------------- Pro / tier ---------------- */
@@ -477,7 +850,7 @@
       b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') : 'Free';
       b.onclick = function () { location.hash = '#pro'; };
       if (location.hash === '#pro' || location.hash === '#agent' || location.hash === '#bots') onRoute();
-    }).catch(function () { S.tier = 'free'; S.pro = false; });
+    }).catch(function () { /* offline / transient: keep the last known sign-in + plan */ });
   }
 
   /* ---------------- router ---------------- */
@@ -489,6 +862,7 @@
     $$('#botnav a').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-id') === id); });
     var v = $('#view'); v.style.animation = 'none'; void v.offsetWidth; v.style.animation = '';
     var fn = VIEWS[id]; if (fn) fn(v);
+    navClose();
   }
 
   /* ================= VIEWS ================= */
@@ -942,37 +1316,68 @@
       '<div class="stat"><div class="n num" id="pf-assets">—</div><div class="l">assets held</div></div>' +
       '<div class="stat"><div class="n">' + (S.pro ? '<span class="good">On</span>' : '<span class="dim">Off</span>') + '</div><div class="l">Pro analytics</div></div></div>' +
       '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">' + ic('send', 16) + ' Send</a><a class="btn" href="#receive">' + ic('receive', 16) + ' Receive</a><a class="btn" href="#swap">' + ic('swap', 16) + ' Swap</a><a class="btn" href="#agent">' + ic('agent', 16) + ' Ask the agent</a></div></div>' +
-      '<div class="card"><div class="sechead"><h2>Holdings</h2><a class="btn sm ghost" href="#assets">All assets</a></div><div id="pf-list" class="list"><div class="empty">Loading balances…</div></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Holdings</h2><div class="row" style="gap:6px"><button class="btn sm ghost" id="pf-refresh" title="Refresh">' + ic('refresh', 15) + '</button><a class="btn sm ghost" href="#assets">All assets</a></div></div>' +
+      '<div class="dim mono" id="pf-addr" style="font-size:11px;margin-bottom:8px;word-break:break-all"></div>' +
+      '<div id="pf-list" class="list"><div class="empty">Loading balances…</div></div><div id="pf-errs" class="dim" style="font-size:11px;margin-top:8px"></div></div>' +
       (S.pro ? '' : proNudge('Unlock allocation charts, P&L history and price alerts with Pro.'));
+    $('#pf-refresh').onclick = function () { loadPortfolio(true); };
     loadPortfolio();
   };
-  function loadPortfolio() {
-    Wiring.listAssets().then(function (list) {
-      var total = 0, assetCount = 0, chainsWith = 0, rowsHtml = '';
-      var jobs = [];
-      list.forEach(function (chainRow) {
-        if (!chainRow.balances) return; var had = false;
-        chainRow.balances.forEach(function (r) {
-          var dec = (r.asset && r.asset.decimals) || 0;
-          var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec);
-          if (!(amt > 0)) return; had = true; assetCount++;
-          var sym = (r.asset && (r.asset.symbol || r.asset.sym)) || chainRow.chain.toUpperCase();
-          var job = Promise.resolve(Wiring.estimateUsd ? Wiring.estimateUsd(r.asset || sym, amt) : null).catch(function () { return null; }).then(function (usd) {
-            var u = Number(usd); if (isFinite(u) && u > 0) total += u;
-            rowsHtml += assetRow(sym, chainRow.chain, amt, dec, isFinite(u) && u > 0 ? u : null, r.asset && r.asset.logoURI, assetId(r.asset), r.asset && r.asset.name);
-          });
-          jobs.push(job);
+  // PROGRESSIVE portfolio: BLOCK renders first and every other network is added
+  // the moment its balances arrive — one slow public RPC or price lookup can never
+  // blank the page. USD values fill in afterwards with a hard cap; networks that
+  // could not be reached are listed under the holdings instead of vanishing.
+  var _pfRun = 0;
+  function loadPortfolio(force) {
+    var run = ++_pfRun;
+    var rows = {}, usd = {}, errs = [], chainsWith = {}, assetCount = 0;
+    var addrEl = $('#pf-addr'); if (addrEl) addrEl.textContent = 'BLOCK address · ' + (Wallet.address || S.address || '—');
+    function paint() {
+      if (run !== _pfRun || !$('#pf-list')) return;
+      var html = '', total = 0, n = 0;
+      Object.keys(rows).forEach(function (chain) {
+        rows[chain].forEach(function (r) {
+          var u = usd[r.key]; if (isFinite(u) && u > 0) total += u;
+          html += assetRow(r.sym, chain, r.amt, r.dec, isFinite(u) && u > 0 ? u : null, r.logo, r.cid, r.name); n++;
         });
-        if (had) chainsWith++;
       });
-      Promise.all(jobs).then(function () {
-        if (!$('#pf-total')) return; // user navigated away before balances resolved
-        $('#pf-total').textContent = total > 0 ? fmtUsd(total) : '—';
-        $('#pf-chains').textContent = chainsWith; $('#pf-assets').textContent = assetCount;
-        $('#pf-list').innerHTML = rowsHtml || '<div class="empty">No balances yet. Receive BLOCK or a token to get started.</div>';
-        wireAssetRows($('#pf-list'));
+      $('#pf-total').textContent = total > 0 ? fmtUsd(total) : '—';
+      $('#pf-chains').textContent = Object.keys(chainsWith).length; $('#pf-assets').textContent = n;
+      $('#pf-list').innerHTML = html || '<div class="empty">' + (errs.length ? 'No balances loaded yet — see the networks below.' : 'No balances yet. Receive BLOCK or a token to get started.') + '</div>';
+      wireAssetRows($('#pf-list'));
+      var ee = $('#pf-errs'); if (ee) ee.textContent = errs.length ? 'Could not reach: ' + errs.join(', ') + ' — tap refresh to retry.' : '';
+    }
+    function priceRow(chain, r) {
+      var timeout = new Promise(function (res) { setTimeout(function () { res(null); }, 8000); });
+      Promise.race([Promise.resolve(Wiring.estimateUsdWhole ? Wiring.estimateUsdWhole(r.asset || r.sym, r.amt) : null).catch(function () { return null; }), timeout])
+        .then(function (u) { if (run !== _pfRun) return; var v = Number(u); if (isFinite(v) && v > 0) { usd[r.key] = v; paint(); } });
+    }
+    function loadChain(chain) {
+      var guard = new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, chain === 'block' ? 20000 : 12000); });
+      return Promise.race([Wiring.getHoldings(chain), guard]).then(function (bals) {
+        if (run !== _pfRun) return;
+        var list = [];
+        (bals || []).forEach(function (b) {
+          var dec = (b.asset && b.asset.decimals) || 0;
+          var amt = b.display != null ? numVal(b.display) : baseToNum(b.confirmed, dec);
+          if (!(amt > 0)) return;
+          var sym = (b.asset && (b.asset.symbol || b.asset.sym)) || chain.toUpperCase();
+          list.push({ key: chain + ':' + assetId(b.asset) + ':' + sym, sym: sym, amt: amt, dec: dec, asset: b.asset, logo: b.asset && b.asset.logoURI, cid: assetId(b.asset), name: b.asset && b.asset.name });
+        });
+        if (list.length) chainsWith[chain] = true;
+        rows[chain] = list; assetCount += list.length;
+        paint();
+        list.forEach(function (r) { priceRow(chain, r); });
+      }).catch(function (e) {
+        if (run !== _pfRun) return;
+        errs.push(chain.toUpperCase() + (e && e.message === 'timeout' ? ' (timeout)' : '')); paint();
       });
-    }).catch(function () { $('#pf-list').innerHTML = '<div class="empty">Could not load balances right now.</div>'; });
+    }
+    Wiring.registry().then(function (reg) {
+      var chains = reg.enabled();
+      // BLOCK first (it is the one users look for), then everything else in parallel.
+      loadChain('block').then(function () { chains.filter(function (c) { return c !== 'block'; }).forEach(loadChain); });
+    }).catch(function () { if ($('#pf-list')) $('#pf-list').innerHTML = '<div class="empty">Could not load balances right now.</div>'; });
   }
   function assetRow(sym, chain, amt, dec, usd, logo, cid, name) {
     if (!logo && String(sym).toUpperCase() === 'BLOCK') logo = BLOCKLE_MARK; // native BLOCK coin -> real logo
@@ -1035,7 +1440,7 @@
       // USD value (best-effort)
       var usdHtml = '';
       var usdP = Promise.resolve(null);
-      if (!native && bal > 0 && Wiring.estimateUsd) usdP = Promise.resolve(Wiring.estimateUsd({ symbol: symbol, decimals: dec, address: cid, stablecoin: !!(curated && curated.stablecoin) }, bal)).catch(function () { return null; });
+      if (!native && bal > 0 && Wiring.estimateUsdWhole) usdP = Promise.resolve(Wiring.estimateUsdWhole({ chain: chain, symbol: symbol, decimals: dec, address: cid, stablecoin: !!(curated && curated.stablecoin) }, bal)).catch(function () { return null; });
 
       // actions
       var acts = [];
@@ -1066,7 +1471,7 @@
       '<div class="row"><button class="btn sm" id="a-import">' + ic('plus', 15) + ' Import token</button><button class="btn sm ghost" id="a-refresh" title="Refresh">' + ic('refresh', 16) + '</button></div></div>' +
       '<div class="tabs"><div class="tab active" data-t="tokens">Tokens</div><div class="tab" data-t="nfts">NFTs</div></div>' +
       '<div id="a-body"><div class="empty">Loading…</div></div></div>';
-    $('#a-refresh').onclick = function () { VIEWS.assets(v); };
+    $('#a-refresh').onclick = function () { runAutoImport('refresh', { chains: [S.chain] }).then(function () { VIEWS.assets(v); }); };
     $('#a-import').onclick = importTokenSheet;
     $$('#view .tab').forEach(function (t) { t.onclick = function () { $$('#view .tab').forEach(function (x) { x.classList.remove('active'); }); t.classList.add('active'); t.getAttribute('data-t') === 'nfts' ? loadNfts() : loadTokens(); }; });
     loadTokens();
@@ -1108,7 +1513,21 @@
       }).join('');
       body.innerHTML = html || '<div class="empty">No tokens found on this network.</div>';
       wireAssetRows(body);
+      renderFlagged(body, chain);
     }).catch(function () { body.innerHTML = '<div class="empty">Could not load tokens.</div>'; });
+  }
+  // Tokens auto-detect found but REFUSED to import (denylist / scam flags / spam
+  // heuristics). Shown collapsed with a one-tap "import anyway" override.
+  function renderFlagged(body, chain) {
+    if (!Wiring.flaggedTokens) return;
+    Wiring.flaggedTokens(chain).then(function (list) {
+      if (!list || !list.length || !body.isConnected) return;
+      var box = elFrom('<details style="margin-top:12px"><summary class="dim" style="cursor:pointer;font-size:13px">' + list.length + ' hidden token' + (list.length > 1 ? 's' : '') + ' (flagged by auto-detect)</summary><div class="list" style="margin-top:8px">' +
+        list.map(function (t, i) { return '<div class="li"><span class="ico">' + esc(String(t.symbol || '?').slice(0, 1)) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(t.symbol || '?') + '</b><span class="dim" style="font-size:12px">' + esc(t.name || shortAddr(t.address || t.mint || '')) + ' · flagged: ' + esc(t.reason || 'suspicious') + '</span></span><button class="btn sm ghost" data-fl="' + i + '" style="margin-left:auto">Import anyway</button></div>'; }).join('') +
+        '</div><p class="dim" style="font-size:11px;margin-top:6px">Flagged tokens are usually airdrop spam or scams. Importing one only lists it — it never grants anyone access to your wallet.</p></details>');
+      body.appendChild(box);
+      $$('[data-fl]', box).forEach(function (b) { b.onclick = function () { var t = list[Number(b.getAttribute('data-fl'))]; Wiring.importFlagged(chain, t).then(function () { toast('Imported ' + (t.symbol || 'token'), 'good'); loadTokens(); }); }; });
+    }).catch(function () {});
   }
   function loadNfts() {
     var body = $('#a-body'); body.innerHTML = '<div class="empty">Loading NFTs…</div>';
@@ -1412,8 +1831,10 @@
 
   /* ---------------- AGENT ---------------- */
   VIEWS.agent = function (v) {
-    var quotaNote = S.pro ? 'Pro: signed hosted session, higher budget.' : 'Free: anonymous hosted brain (rate-limited). Upgrade to Pro for a signed session + larger budget.';
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('agent', 17) + ' Agent</h2><span class="pill" id="ag-conn">connecting…</span></div>' +
+    var lb = localLlm();
+    var quotaNote = lb && lb.enabled ? 'Local brain: ' + lb.model + ' at ' + lb.baseUrl + ' — private, free, nothing leaves your computer.' : (S.pro ? 'Pro: signed hosted session, higher budget.' : 'Free: anonymous hosted brain (rate-limited). Run a local LLM for unlimited, private use — tap Brain.');
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('agent', 17) + ' Agent</h2><div class="row" style="gap:6px"><span class="pill" id="ag-conn">connecting…</span><button class="btn sm ghost" id="ag-brain" title="Choose where the agent thinks">🧠 Brain</button></div></div>' +
+      (lb && lb.enabled ? '' : '<div style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.45">🧠 <b>Run the agent on your own computer.</b> Install a local LLM (Ollama or LM Studio), point the wallet at it, and the agent runs private, unlimited and free — no hosted quota. <a href="#" id="ag-brain-setup">Set up local brain</a></div>') +
       '<p class="muted" style="margin-bottom:10px">Ask in plain language — "send 5 BLOCK to alice.eth", "swap 20 BLOCK for WORLD", "what\'s my net worth?". Every value-moving step is gated by the same approval sheet. Nothing executes without your tap.</p>' +
       '<div id="ag-log" class="list" style="max-height:340px;overflow:auto;margin-bottom:10px"></div>' +
       '<div class="row" style="gap:8px"><input id="ag-in" placeholder="Ask or instruct the agent…"><button class="btn primary" id="ag-go">Run</button></div>' +
@@ -1421,7 +1842,8 @@
       (S.pro ? '' : proNudge('Pro raises the hosted-agent budget and unlocks live trading bots.'));
     var log = $('#ag-log');
     function add(role, text) { log.appendChild(elFrom('<div class="li"><span class="ico">' + (role === 'you' ? '' + ic('user', 17) + '' : role === 'err' ? '' + ic('warn', 18) + '' : '' + ic('agent', 17) + '') + '</span><div class="col" style="align-items:flex-start"><b style="font-size:12px" class="dim">' + role + '</b><span>' + esc(text) + '</span></div></div>')); log.scrollTop = log.scrollHeight; }
-    ensureAgent().then(function () { $('#ag-conn').textContent = S.agentConn && S.agentConn.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }).catch(function () { $('#ag-conn').textContent = 'offline'; });
+    $('#ag-brain').onclick = brainSheet; if ($('#ag-brain-setup')) $('#ag-brain-setup').onclick = function (e) { e.preventDefault(); brainSheet(); };
+    ensureAgent().then(function () { $('#ag-conn').textContent = agentConnLabel(); }).catch(function () { $('#ag-conn').textContent = 'offline'; });
     function run() {
       var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
       S._lastAgentText = null;
@@ -1445,6 +1867,65 @@
       return Promise.resolve(out);
     };
   }
+  // ---- LOCAL BRAIN: settings for an LLM server on the user's own machine ------
+  function localLlm() { try { var j = JSON.parse(localStorage.getItem('blk.localLlm') || 'null'); return j && typeof j === 'object' ? j : null; } catch (_) { return null; } }
+  function setLocalLlm(cfg) { try { if (cfg) localStorage.setItem('blk.localLlm', JSON.stringify(cfg)); else localStorage.removeItem('blk.localLlm'); } catch (_) {} }
+  function agentConnLabel() { var c = S.agentConn; if (!c) return 'offline'; return c.chain === 'local' ? 'local · ' + (c.model || 'llm') : c.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }
+  function resetAgentBrain() { S.agent = null; S.agentConn = null; if (S.botRunner) { /* the bots engine keeps its own policy/tools; the brain only serves the chat agent */ } }
+  function brainSheet() {
+    var P = (window.AgentProviders && AgentProviders.LOCAL_PRESETS) || {};
+    var cur = localLlm() || { enabled: false, preset: 'ollama', baseUrl: (P.ollama || {}).baseUrl || 'http://localhost:11434', model: (P.ollama || {}).model || '' };
+    var presetOpts = Object.keys(P).map(function (k) { return '<option value="' + k + '"' + (k === cur.preset ? ' selected' : '') + '>' + esc(P[k].label) + '</option>'; }).join('');
+    openSheet('<div class="spread"><h2>🧠 Where the agent thinks</h2><button class="btn sm ghost" id="br-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="field"><label>Brain</label><select id="br-mode"><option value="local"' + (cur.enabled ? ' selected' : '') + '>Local LLM on my computer — private, unlimited, free (recommended)</option><option value="hosted"' + (!cur.enabled ? ' selected' : '') + '>Blockle hosted brain — nothing to install, rate-limited</option></select></div>' +
+      '<div id="br-local">' +
+      '<div class="field"><label>Local server</label><select id="br-preset">' + presetOpts + '</select></div>' +
+      '<div class="field"><label>Base URL</label><input id="br-url" value="' + esc(cur.baseUrl || '') + '" placeholder="http://localhost:11434"></div>' +
+      '<div class="field"><label>Model</label><div class="row" style="gap:6px"><input id="br-model" value="' + esc(cur.model || '') + '" placeholder="llama3.1:8b" style="flex:1"><button class="btn sm" id="br-detect">Detect</button></div><select id="br-models" style="display:none;margin-top:6px"></select></div>' +
+      '<div id="br-setup" class="dim" style="font-size:12px;line-height:1.5;margin:4px 0 10px"></div>' +
+      '<div id="br-status" style="font-size:12px;margin-bottom:10px"></div>' +
+      '<div class="row" style="gap:8px"><button class="btn sm" id="br-test">Test connection</button></div>' +
+      '</div>' +
+      '<button class="btn primary wide" id="br-save" style="margin-top:12px">Save &amp; use</button>');
+    $('#br-x').onclick = closeSheet;
+    function preset() { return P[$('#br-preset').value] || P.custom || {}; }
+    function showSetup() {
+      var p = preset();
+      $('#br-setup').innerHTML = '<b>Set up ' + esc(p.label || 'a local server') + '</b>' + (p.site ? ' · <a href="' + esc(p.site) + '" target="_blank" rel="noopener">' + esc(p.site.replace(/^https?:\/\//, '')) + ' ↗</a>' : '') + '<ol style="margin:4px 0 0 18px;padding:0">' + (p.setup || []).map(function (s) { return '<li>' + esc(s).replace(/:\s{2}(.+)$/, ': <code>$1</code>') + '</li>'; }).join('') + '</ol>' +
+        '<div style="margin-top:4px">Your browser talks to <code>localhost</code> directly; keys, prompts and balances never leave this machine. Larger models think better: 8B is the floor for trading chat, 14B–70B if your GPU allows.</div>';
+    }
+    function syncMode() { $('#br-local').style.display = $('#br-mode').value === 'local' ? '' : 'none'; }
+    $('#br-mode').onchange = syncMode; syncMode();
+    $('#br-preset').onchange = function () { var p = preset(); $('#br-url').value = p.baseUrl || ''; if (p.model) $('#br-model').value = p.model; showSetup(); };
+    showSetup();
+    function mk() { return AgentProviders.create({ provider: 'local', baseUrl: ($('#br-url').value || '').trim().replace(/\/+$/, '').replace(/\/v1$/, ''), model: ($('#br-model').value || '').trim() || 'llama3.1:8b' }); }
+    function status(t, cls) { $('#br-status').innerHTML = '<span class="' + (cls || 'dim') + '">' + t + '</span>'; }
+    $('#br-detect').onclick = function () {
+      status('Looking for models at ' + esc($('#br-url').value) + '…');
+      mk().listModels().then(function (list) {
+        if (!list.length) { status('Server is up but has no models yet — pull one first (see setup).', 'bad'); return; }
+        var sel = $('#br-models'); sel.innerHTML = list.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join(''); sel.style.display = '';
+        if (list.indexOf($('#br-model').value) < 0) $('#br-model').value = list[0];
+        sel.onchange = function () { $('#br-model').value = sel.value; };
+        status('Found ' + list.length + ' model' + (list.length === 1 ? '' : 's') + '.', 'good');
+      }).catch(function (e) { status('Could not reach it: ' + esc(e.message || e) + '. Is the server running, and does it allow this site (CORS)?', 'bad'); });
+    };
+    $('#br-test').onclick = function () {
+      status('Asking ' + esc($('#br-model').value || 'the model') + ' to say hello…');
+      var t0 = Date.now();
+      mk().ping().then(function (txt) { status('✅ It answered in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's: “' + esc(txt.slice(0, 60)) + '”', 'good'); })
+        .catch(function (e) { status('❌ ' + esc(e.message || e), 'bad'); });
+    };
+    $('#br-save').onclick = function () {
+      if ($('#br-mode').value === 'hosted') { setLocalLlm(null); resetAgentBrain(); closeSheet(); toast('Using the Blockle hosted brain'); if (location.hash === '#agent') onRoute(); return; }
+      var url = ($('#br-url').value || '').trim().replace(/\/+$/, '').replace(/\/v1$/, ''), model = ($('#br-model').value || '').trim();
+      if (!/^https?:\/\//.test(url)) { toast('Enter the server URL (http://localhost:11434)', 'bad'); return; }
+      if (!model) { toast('Pick a model (tap Detect)', 'bad'); return; }
+      setLocalLlm({ enabled: true, preset: $('#br-preset').value, baseUrl: url, model: model });
+      resetAgentBrain(); closeSheet(); toast('🧠 Agent now thinks locally with ' + model, 'good');
+      if (location.hash === '#agent') onRoute();
+    };
+  }
   function ensureAgent() {
     if (S.agent && S.agent.router) return Promise.resolve(S.agent.router);
     if (!window.Wiring || !window.AgentCommand || !window.AgentProviders) return Promise.reject(new Error('agent modules missing'));
@@ -1453,12 +1934,20 @@
       ctx.prices = ctx.prices || makePrices();
       if (typeof ctx.network !== 'function') ctx.network = function () { return 'testnet'; };
       if (typeof ctx.now !== 'function') ctx.now = function () { return Date.now(); };
-      // keyless hosted brain: anonymous by default; Pro users get a signed session when an EVM signer is available
+      // BRAIN: a LOCAL LLM on the user's machine when configured (keyless, private,
+      // free, and nothing for Blockle's servers to do); else the keyless hosted
+      // brain — anonymous by default, a signed session for Pro with an EVM signer.
       var sessOpts = { gatewayUrl: GATEWAY, label: 'Blockle Web Wallet' };
       if (!S.pro) sessOpts.anon = true;
-      return AgentProviders.hostedSession(sessOpts).then(function (sess) {
+      var brain = localLlm();
+      var providerP = brain && brain.enabled
+        ? Promise.resolve({ chain: 'local', model: brain.model, baseUrl: brain.baseUrl })
+        : AgentProviders.hostedSession(sessOpts);
+      return providerP.then(function (sess) {
         S.agentConn = sess;
-        var provider = AgentProviders.create({ provider: 'hosted', gatewayUrl: sess.gatewayUrl, sessionToken: sess.sessionToken, model: 'blockle-agent', refresh: function () { return AgentProviders.hostedSession(sessOpts).then(function (s2) { S.agentConn = s2; return s2.sessionToken; }); } });
+        var provider = sess.chain === 'local'
+          ? AgentProviders.create({ provider: 'local', baseUrl: sess.baseUrl, model: sess.model })
+          : AgentProviders.create({ provider: 'hosted', gatewayUrl: sess.gatewayUrl, sessionToken: sess.sessionToken, model: 'blockle-agent', refresh: function () { return AgentProviders.hostedSession(sessOpts).then(function (s2) { S.agentConn = s2; return s2.sessionToken; }); } });
         var policy = AgentPolicy.create({ caps: { sessionUsd: isPro() ? 500 : 50 }, confirm: confirmSheet, onKill: function () { killAgent('killed'); } });
         var tools = AgentTools.build(ctx);
         policy.setAllowlist(tools.names());
@@ -1477,7 +1966,7 @@
       });
     });
   }
-  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsd(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
+  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsdWhole(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
   function agentEvent(ev) {
     if (!ev) return; var add = S._agentLog;
     if (ev.type === 'text' && ev.text && add) { S._lastAgentText = ev.text; add('agent', ev.text); }
@@ -1486,111 +1975,542 @@
     else if (ev.type === 'resolved' && add) add('agent', 'Resolved ' + (ev.name || '') + ' → ' + shortAddr(ev.address || ''));
     else if (ev.type === 'error' && add) add('err', ev.message || 'error');
   }
-  function killAgent(reason) { try { if (S.botRunner) S.botRunner.killAll && S.botRunner.killAll(reason); } catch (_) {} S.agent = null; S.botRunner = null; toast('Agent killed — keys locked', 'bad'); lock(); }
+  var _killing = false;
+  function killAgent(reason) {
+    if (_killing) return; _killing = true;
+    try { if (S.botRunner) S.botRunner.killAll && S.botRunner.killAll(reason); } catch (_) {}
+    S.agent = null; S.botRunner = null; toast('Kill switch — bots stopped, keys locked', 'bad'); lock();
+    setTimeout(function () { _killing = false; }, 1000);
+  }
 
   /* ---------------- BOTS ---------------- */
-  VIEWS.bots = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('bots', 18) + ' Bots</h2><div class="row"><button class="btn sm" id="bt-new">+ New bot</button><button class="btn sm ghost" id="bt-kill" title="Stop everything">Kill all</button></div></div>' +
-      '<div class="banner ' + (S.pro ? 'info' : 'warn') + '" style="margin-bottom:12px"><span>' + (S.pro ? '' + ic('lock', 16) + '' : '' + ic('lock', 16) + '') + '</span><div>' +
-      (S.pro ? 'Live trading unlocked. Bots run <b>fully auto within their allocation cap</b> — no per-order tap inside the cap — but every order still passes the session caps, allowlist, hash-chained audit, the 0.05% fee and the kill switch. Mainnet stays off until you enable it.' :
-        'Free plan: <b>paper trading + 1 bot</b>. Bots simulate fills and never move funds. Upgrade to Pro for live trading and more bots.') + '</div></div>' +
-      '<div id="bt-dash"></div><div id="bt-list" class="list"><div class="empty">Loading bots…</div></div>' +
-      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>' + ic('arena', 18) + ' Arena</b><span class="dim" style="font-size:12px">Practice strategies with play money — zero risk.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div></div>' +
-      (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Copilot Pro unlocks unlimited.'));
-    $('#bt-new').onclick = newBotSheet;
-    $('#bt-arena').onclick = openArena;
-    $('#bt-kill').onclick = function () { if (S.botRunner) { S.botRunner.killAll && S.botRunner.killAll('user'); toast('All bots stopped'); renderBotList(); } };
-    ensureBotRunner().then(renderBotList).catch(function () { $('#bt-list').innerHTML = '<div class="empty">Bots engine unavailable.</div>'; });
-  };
-  function ensureBotRunner() {
-    if (S.botRunner) return Promise.resolve(S.botRunner);
-    if (!window.AgentBotRunner) return Promise.reject(new Error('bot runner missing'));
-    return ensureAgent().then(function () {
-      var a = S.agent;
-      S.botRunner = AgentBotRunner.create({ policy: a.policy, tools: a.tools, audit: a.audit, ctx: a.ctx, pnl: a.pnl, discovery: a.ctx.discovery || null, mainnetEnabled: false, persist: Store, wallet: 'web', channel: 'web' });
-      return S.botRunner;
-    });
-  }
-  function renderBotList() {
-    var runner = S.botRunner, box = $('#bt-list'); if (!box) return;
-    var bots = []; try { bots = (runner.store && runner.store.all && runner.store.all()) || []; } catch (_) {}
-    try { var agg = runner.aggregate && runner.aggregate(); if (agg) $('#bt-dash').innerHTML = '<div class="statline" style="margin-bottom:12px"><div class="stat"><div class="n num">' + fmtUsd(agg.realizedUsd || 0) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num">' + (agg.activeDeals || 0) + '</div><div class="l">active deals</div></div><div class="stat"><div class="n num">' + fmtUsd(agg.allocationUsd || 0) + '</div><div class="l">allocation</div></div></div>'; } catch (_) {}
-    if (!bots.length) { box.innerHTML = '<div class="empty">No bots yet. Create one — it starts in paper mode.</div>'; return; }
-    box.innerHTML = bots.map(function (b) {
-      var live = b.mode === 'live';
-      return '<div class="li"><span class="ico">' + (b.type === 'grid' ? '' + ic('grid', 16) + '' : b.type === 'dca' ? '' + ic('dca', 16) + '' : '' + ic('smart', 16) + '') + '</span>' +
-        '<span class="col" style="align-items:flex-start"><b>' + esc(b.name || b.type) + '</b><span class="dim" style="font-size:12px">' + esc(b.type) +
-        (b.lane ? ' · ' + esc(((BOT_LANES[b.lane] || {}).name || b.lane)) : '') + (b.riskMode ? ' · ' + esc(b.riskMode) : '') +
-        (b.profitMode && b.profitMode !== 'off' ? ' · ' + esc(b.profitMode) : '') +
-        ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto') + ' · <span class="' + (live ? 'good' : '') + '">' + (live ? 'LIVE' : 'paper') + '</span>' +
-        (b.allocationUsd > 0 ? ' · $' + b.allocationUsd : '') + (b.enabled ? ' · running' : ' · paused') + '</span></span>' +
-        '<span class="row" style="margin-left:auto;gap:6px">' +
-        '<button class="btn sm ghost" data-act="toggle" data-id="' + esc(b.id) + '">' + (b.enabled ? 'Pause' : 'Start') + '</button>' +
-        (S.pro ? '<button class="btn sm" data-act="live" data-id="' + esc(b.id) + '">' + (live ? '' + ic('live', 15) + '' : 'Go live') + '</button>' : '') +
-        '<button class="btn sm ghost" data-act="rm" data-id="' + esc(b.id) + '">' + ic('close', 15) + '</button></span></div>';
-    }).join('');
-    $$('#bt-list [data-act]').forEach(function (btn) {
-      btn.onclick = function () {
-        var id = btn.getAttribute('data-id'), act = btn.getAttribute('data-act'), runner = S.botRunner;
-        if (act === 'toggle') { var b = (runner.store.all() || []).filter(function (x) { return x.id === id; })[0]; (b && b.enabled ? runner.pause(id) : runner.enablePaper(id)); setTimeout(renderBotList, 150); }
-        else if (act === 'rm') { runner.remove(id); setTimeout(renderBotList, 100); }
-        else if (act === 'live') { armLiveSheet(id); }
-      };
-    });
-  }
-  // Lane = the ONE chain + base asset a bot trades (never cross-chain).
-  var BOT_LANES = { solana: { base: 'SOL', name: 'Solana' }, ethereum: { base: 'ETH', name: 'Ethereum' }, bsc: { base: 'BNB', name: 'BSC' }, block: { base: 'BLOCK', name: 'BLOCK' } };
+  // The bots cockpit: a P&L hero, one-tap presets, a live trade ticker and per-bot
+  // cards with streaks + budget bars. Every number comes from the runner's own
+  // dashboard()/aggregate() — the UI never invents a price or a fill.
   var BOT_MODES = {
     safe: 'Safe — large-cap, established tokens only',
     medium: 'Medium — mid-cap, balanced',
     high: 'High — microcap, social-driven (risky)',
     sniper: 'Sniper — brand-new launches, maximum risk',
   };
+  // One-tap presets. Each starts IMMEDIATELY in paper mode with a sandbox budget
+  // and a max-loss rail, so the first tap already produces a live ticker.
+  var BOT_PRESETS = [
+    { key: 'auto', emoji: '🧠', name: 'Full Auto', blurb: 'Pick a chain. It rotates between Momentum, Buzz (what the internet is piling into), Sniper, Grid, Dip-buying and Autopilot to chase the most profit, re-weighting by market regime and live results.', type: 'auto', lane: 'solana', mode: 'high', budget: 500, risk: { maxLossPct: 30, paperSlippageBps: 30 }, pollSec: 20, config: { rebalanceSec: 900 } },
+    { key: 'sniper', emoji: '🎯', name: 'Sniper', blurb: 'Hunts brand-new launches that clear the rug gate. Max risk, max thrill.', type: 'signal', lane: 'solana', mode: 'sniper', budget: 250, risk: { maxLossPct: 35, paperSlippageBps: 60 }, pollSec: 15,
+      config: { source: 'discovery', maxConcurrent: 4, minScore: 0.55, onSignal: { type: 'smarttrade', config: { amountUsd: 40, takeProfits: [{ pct: 25, sharePct: 50 }, { pct: 60, sharePct: 50 }], stopLoss: { pct: 18, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 3 } } } } },
+    { key: 'buzz', emoji: '🔥', name: 'Buzz Hunter', blurb: 'Finds the coins the internet is piling into right now — search trends, trending pools, buyer traffic — and rides the spike with quick exits.', type: 'signal', lane: 'solana', mode: 'high', budget: 250, risk: { maxLossPct: 30, paperSlippageBps: 40 }, pollSec: 15,
+      config: { source: 'discovery', rank: 'buzz', maxConcurrent: 3, minScore: 0.45, onSignal: { type: 'smarttrade', config: { amountUsd: 40, takeProfits: [{ pct: 8, sharePct: 50 }, { pct: 20, sharePct: 50 }], stopLoss: { pct: 10, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 2 } } } } },
+    { key: 'surfer', emoji: '🌊', name: 'Momentum Surfer', blurb: 'Rides trending mid-caps with a trailing stop. Balanced risk.', type: 'signal', lane: 'solana', mode: 'high', budget: 300, risk: { maxLossPct: 25, paperSlippageBps: 30 }, pollSec: 20,
+      config: { source: 'discovery', maxConcurrent: 3, minScore: 0.5, onSignal: { type: 'dca', config: { baseOrderUsd: 40, safetyOrderUsd: 40, maxSafetyOrders: 2, safetyStepPct: 4, takeProfitPct: 8, trailingTpPct: 3, stopLossPct: 15, maxDealSec: 2 * 86400, candle: { enabled: true, sec: 120, minProfitPct: 2 } } } } },
+    { key: 'stacker', emoji: '🧱', name: 'Steady Stacker', blurb: 'Accumulates SOL on dips, banks +5%. Slow, steady, relentless.', type: 'dca', lane: 'solana', mode: 'safe', budget: 500, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 30, pair: 'SOL/USDC',
+      config: { baseOrderUsd: 25, safetyOrderUsd: 25, maxSafetyOrders: 5, safetyStepPct: 2, safetyVolumeScale: 1.3, takeProfitPct: 5, trailingTpPct: 1.5, startCondition: 'dip', dipPct: 1.5, candle: { enabled: true, sec: 300, minProfitPct: 1.5 } } },
+    { key: 'grid', emoji: '📈', name: 'Grid Scalper', blurb: 'A ±6% ladder around ETH. Buys every dip rung, sells every pop.', type: 'grid', lane: 'ethereum', mode: 'medium', budget: 400, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 20, pair: 'ETH/USDC',
+      config: { autoRangePct: 6, gridCount: 10, totalUsd: 400, stopLossPct: 12 } },
+    { key: 'autopilot', emoji: '🤖', name: 'Autopilot', blurb: 'Scans every pair it can see, trades only cost-positive edges.', type: 'scanner', lane: 'solana', mode: 'medium', budget: 300, risk: { maxLossPct: 25 }, pollSec: 60,
+      config: { minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 25, strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 } },
+  ];
+  var _botsTimer = null;
+  function botLanes() {
+    try { return (window.AgentBots && AgentBots.lanes) ? AgentBots.lanes() : []; } catch (_) { return []; }
+  }
+  function laneLabel(id) { var l = botLanes().filter(function (x) { return x.id === id; })[0]; return l ? l.name : (id || '—'); }
+  function laneBase(id) { var l = botLanes().filter(function (x) { return x.id === id; })[0]; return l ? l.base : 'USDC'; }
+  function pnlClass(v) { return v > 0 ? 'good' : v < 0 ? 'bad' : 'dim'; }
+  function fmtSigned(v) { var n = Number(v) || 0; return (n > 0 ? '+' : '') + fmtUsd(n); }
+  function agoShort(t) { if (!t) return '—'; var s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; }
+  function algoName(a) { return ({ momentum: 'Momentum', sniper: 'Sniper', grid: 'Grid', dip: 'Dip-buyer', scanner: 'Autopilot' })[a] || a; }
+  function regimeText(r) { return ({ 'trend-up': 'Trending up', 'trend-down': 'Trending down', ranging: 'Ranging', quiet: 'Quiet', warming: 'Reading the market…' })[r] || (r || '—'); }
+  function botEmoji(b) { var p = BOT_PRESETS.filter(function (x) { return x.key === b.preset; })[0]; if (p) return p.emoji; return { signal: '🎯', dca: '🧱', grid: '📈', smarttrade: '⚡', scanner: '🤖', momentum: '🌊', rebalance: '⚖️' }[b.type] || '🤖'; }
+
+  VIEWS.bots = function (v) {
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('bots', 18) + ' Bots</h2><div class="row" style="gap:6px"><button class="btn sm primary" id="bt-new">+ New bot</button><button class="btn sm ghost" id="bt-kill" title="Stop everything and lock keys">Kill all</button></div></div>' +
+      '<div id="bt-hero" class="statline" style="margin-bottom:10px"><div class="stat"><div class="n num" id="bt-real">—</div><div class="l">realized P&amp;L</div></div><div class="stat"><div class="n num" id="bt-unreal">—</div><div class="l">open P&amp;L</div></div><div class="stat"><div class="n num" id="bt-deals">—</div><div class="l">active deals</div></div><div class="stat"><div class="n num" id="bt-win">—</div><div class="l">win rate</div></div></div>' +
+      '<div class="row" style="gap:8px;font-size:12px" id="bt-engine"><span class="dim">Engine</span><span class="dim">—</span></div>' +
+      '<div class="dim" style="font-size:11px;margin-top:6px">Realized P&amp;L books when a deal closes; open P&amp;L is the live mark on what the bots hold. Smart candle exits bank winners on the first reversal.</div>' +
+      '<div id="bt-keepopen" style="display:none;background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>🔴 Live bots trade only while this page is open.</b> Your keys never leave this device, so closing or backgrounding this tab pauses live trading until you come back. Keep the wallet in front, or stop the live bots first.</div>' +
+      '<div id="bt-cloud" style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"></div></div>' +
+      '<div class="card"><div class="sechead"><h2>One-tap launch</h2><span class="dim" style="font-size:12px">starts in paper mode · play money</span></div>' +
+      '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">' + BOT_PRESETS.map(function (p) {
+        return '<button class="planbox" data-preset="' + esc(p.key) + '" style="text-align:left;cursor:pointer;gap:5px;padding:12px"><b style="font-size:15px">' + p.emoji + ' ' + esc(p.name) + '</b><span class="dim" style="font-size:12px;line-height:1.3">' + esc(p.blurb) + '</span><span class="dim" style="font-size:11px">any network · ' + esc(p.mode) + ' · $' + p.budget + ' paper</span></button>';
+      }).join('') + '</div></div>' +
+      '<div class="card"><div class="sechead"><h2>' + ic('activity', 16) + ' Live ticker</h2><span class="dim" style="font-size:12px" id="bt-ticker-n"></span></div><div id="bt-ticker" class="list ticker"><div class="empty">No trades yet — launch a bot and watch this fill up.</div></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Your bots</h2><span class="dim" style="font-size:12px" id="bt-count"></span></div><div id="bt-list" class="list"><div class="empty">Loading bots…</div></div>' +
+      '<div class="banner ' + (S.pro ? 'info' : 'warn') + '" style="margin-top:12px"><span>' + ic('lock', 16) + '</span><div>' +
+      (S.pro ? 'Live trading unlocked. Live bots run <b>fully auto within their budget</b> — every order still passes the session caps, allowlist, hash-chained audit, the 0.05% fee and the kill switch. Mainnet stays off until you enable it.' :
+        'Free plan: <b>paper trading + 1 bot</b>. Paper bots simulate fills at live prices and never move funds. Upgrade to Pro for live trading and more bots.') + '</div></div></div>' +
+      '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>' + ic('arena', 18) + ' Arena</b><span class="dim" style="font-size:12px">Backtest a strategy on play-money scenarios.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div>' +
+      (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Copilot Pro unlocks unlimited.'));
+    $('#bt-new').onclick = newBotSheet;
+    $('#bt-arena').onclick = openArena;
+    $('#bt-kill').onclick = stopAllSheet;
+    $$('#view [data-preset]').forEach(function (b) { b.onclick = function () { launchPreset(b.getAttribute('data-preset')); }; });
+    renderCloudCard();
+    ensureBotRunner().then(function () { renderBotList(); startBotsPolling(); return refreshCloud(); }).then(function () { _botListSig = ''; renderBotList(); }).catch(function (e) { $('#bt-list').innerHTML = '<div class="empty">Bots engine unavailable: ' + esc(e && e.message || e) + '</div>'; });
+  };
+  // STOP ALL (default): pause every bot + cancel open live orders; keys stay
+  // unlocked and bots can be restarted. "Stop & flatten" also closes every open
+  // position at market first. The agent KILL SWITCH (stop + lock keys) is the
+  // separate red option.
+  function stopAllSheet() {
+    var runner = S.botRunner; if (!runner) return;
+    var n = runner.store.all().length, open = 0;
+    try { open = runner.aggregate().activeDeals || 0; } catch (_) {}
+    openSheet('<div class="spread"><h2>Stop all bots</h2><button class="btn sm ghost" id="sa-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted" style="margin:6px 0 12px">' + n + ' bot' + (n === 1 ? '' : 's') + ' · ' + open + ' open position' + (open === 1 ? '' : 's') + '. Stopping pauses every bot and cancels open live orders; your keys stay unlocked and you can start them again.</p>' +
+      '<button class="btn primary wide" id="sa-stop">⏹ Stop all bots</button>' +
+      '<button class="btn wide" id="sa-flat" style="margin-top:8px">Stop &amp; flatten — close every open position at market</button>' +
+      '<button class="btn wide ghost" id="sa-kill" style="margin-top:8px;color:var(--bad)">Kill switch — stop everything and lock keys</button>');
+    $('#sa-x').onclick = closeSheet;
+    $('#sa-stop').onclick = function () { closeSheet(); runner.stopAll('user').then(function () { toast('⏹ All bots stopped', 'good'); renderBotList(); }); };
+    $('#sa-flat').onclick = function () {
+      closeSheet(); toast('Closing positions…');
+      var bots = runner.store.all();
+      (function next(i) {
+        if (i >= bots.length) { runner.stopAll('flatten').then(function () { toast('⏹ Stopped — all positions closed at market', 'good'); renderBotList(); }); return; }
+        runner.flatten(bots[i].id, 'stop-all').catch(function () {}).then(function () { next(i + 1); });
+      })(0);
+    };
+    $('#sa-kill').onclick = function () {
+      closeSheet();
+      confirmSheet({ title: 'Kill switch', subtitle: 'Stops every bot, cancels open live orders, and LOCKS your keys. You will need to unlock the wallet again.', lines: [['Bots', String(n)]], okText: 'Kill & lock', danger: true }).then(function (ok) {
+        if (ok && S.botRunner) S.botRunner.killAll('user');
+      });
+    };
+  }
+  // ---- CLOUD BOTS: PAPER bots that run on the server under your Blockle account,
+  // so they keep trading after this wallet is closed. Same engine, same presets;
+  // live bots stay on this device (the keys are here) and need the page open.
+  var CLOUD = '/api/bots';
+  function cloudReq(path, method, body) {
+    var h = { accept: 'application/json' }; if (body) h['content-type'] = 'application/json'; if (S.csrf) h['x-csrf-token'] = S.csrf;
+    return fetch(CLOUD + (path || ''), { method: method || 'GET', headers: h, credentials: 'include', body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) { var e = new Error(j.error || ('cloud bots: HTTP ' + r.status)); e.status = r.status; throw e; } return j; }); });
+  }
+  S.cloud = null;
+  function refreshCloud() {
+    if (!S.user) { S.cloud = null; return Promise.resolve(null); }
+    return cloudReq('').then(function (j) { S.cloud = j; S.cloud.at = Date.now(); return j; })
+      .catch(function (e) { S.cloud = { error: e.message, bots: [], aggregate: null, limits: null }; return null; });
+  }
+  function cloudBot(id) { return ((S.cloud && S.cloud.bots) || []).filter(function (b) { return b.id === id; })[0] || null; }
+  function cloudFail(e) { if (e && e.status === 402) { toast(e.message, 'bad'); location.hash = '#pro'; } else if (e && e.status === 401) { toast('Sign in to your Blockle account to use cloud bots', 'bad'); } else toast('Cloud: ' + ((e && e.message) || e), 'bad'); }
+  function moveToCloud() {
+    var runner = S.botRunner; if (!runner || !S.user) return;
+    var paper = runner.store.all().filter(function (b) { return b.mode !== 'live'; });
+    if (!paper.length) { toast('No paper bots on this device'); return; }
+    confirmSheet({ title: 'Move paper bots to the cloud?', subtitle: 'They keep their deal history and keep trading on the server after you close this wallet. Live bots stay on this device.', lines: [['Bots', String(paper.length)]], okText: 'Move to cloud' }).then(function (ok) {
+      if (!ok) return;
+      cloudReq('/import', 'POST', { bots: paper.map(function (b) { return b.toJSON(); }) }).then(function (j) {
+        var done = (j.imported || []);
+        return Promise.all(done.map(function (id) { return runner.remove(id).catch(function () {}); })).then(function () {
+          toast('☁ ' + done.length + ' bot' + (done.length === 1 ? '' : 's') + ' now running in the cloud' + ((j.skipped || []).length ? ' · ' + j.skipped.length + ' skipped' : ''), 'good');
+          return refreshCloud();
+        }).then(function () { _botListSig = ''; renderBotList(); });
+      }).catch(cloudFail);
+    });
+  }
+  // LIVE bots trade only while this page is open (keys live on this device):
+  // banner in the Bots tab, tab title, leave-page warning, and a nudge when the
+  // tab comes back from being hidden (browsers throttle background tabs).
+  function anyLiveRunning() { var r = S.botRunner; if (!r) return false; try { return r.store.all().some(function (b) { return b.mode === 'live' && b.enabled; }); } catch (_) { return false; } }
+  var _liveTitle = null, _hiddenAt = null;
+  function syncLiveNotice() {
+    var live = anyLiveRunning();
+    var el = $('#bt-keepopen'); if (el) el.style.display = live ? '' : 'none';
+    if (live && _liveTitle == null) { _liveTitle = document.title; document.title = '🔴 LIVE · keep open · ' + _liveTitle; }
+    if (!live && _liveTitle != null) { document.title = _liveTitle; _liveTitle = null; }
+  }
+  window.addEventListener('beforeunload', function (e) { if (anyLiveRunning()) { e.preventDefault(); e.returnValue = 'Live bots stop trading when this page closes.'; return e.returnValue; } });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') { _hiddenAt = anyLiveRunning() ? Date.now() : null; return; }
+    if (_hiddenAt && anyLiveRunning() && Date.now() - _hiddenAt > 45000) toast('🔴 Live bots were throttled while this tab was hidden — keep the wallet in front while they run.', 'bad');
+    _hiddenAt = null;
+  });
+  // What the wallet actually holds of a lane's trading currency (for the live sheet).
+  function laneAvailable(lane) {
+    var l = botLanes().filter(function (x) { return x.id === lane; })[0];
+    var chain = (l && l.chain) || lane, base = laneBase(lane);
+    var guard = new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, 12000); });
+    return Promise.race([Wiring.getHoldings(chain), guard]).then(function (bals) {
+      var row = (bals || []).filter(function (b) { var sym = b.asset && (b.asset.symbol || b.asset.sym); return sym && String(sym).toUpperCase() === String(base).toUpperCase(); })[0];
+      var dec = row && row.asset ? (row.asset.decimals || 0) : 0;
+      var amt = row ? (row.display != null ? numVal(row.display) : baseToNum(row.confirmed, dec)) : 0;
+      var native = (bals || []).filter(function (b) { return b.asset && b.asset.kind === 'native'; })[0];
+      var nativeAmt = native ? (native.display != null ? numVal(native.display) : baseToNum(native.confirmed, (native.asset.decimals || 0))) : null;
+      var pUsd = Promise.resolve(Wiring.estimateUsdWhole && amt > 0 ? Wiring.estimateUsdWhole(row.asset || base, amt) : null).catch(function () { return null; });
+      return Promise.race([pUsd, new Promise(function (res) { setTimeout(function () { res(null); }, 6000); })]).then(function (usd) {
+        return { chain: chain, base: base, amount: amt, usd: isFinite(Number(usd)) && Number(usd) > 0 ? Number(usd) : null, nativeSymbol: native && native.asset.symbol, nativeAmount: nativeAmt };
+      });
+    });
+  }
+  function startBotsPolling() {
+    clearInterval(_botsTimer);
+    var n = 0;
+    _botsTimer = setInterval(function () {
+      if (!S.unlocked || !$('#bt-list') || (location.hash || '#portfolio') !== '#bots') { clearInterval(_botsTimer); return; }
+      if (S.user && (++n % 3) === 0) { refreshCloud().then(function () { renderBotList(true); }); return; }
+      renderBotList(true);
+    }, 4000);
+  }
+  function ensureBotRunner() {
+    if (S.botRunner) return Promise.resolve(S.botRunner);
+    if (!window.AgentBotRunner) return Promise.reject(new Error('bot runner missing'));
+    return ensureAgent().then(function () {
+      var a = S.agent;
+      return Wiring.registry().then(function (reg) {
+        try { if (AgentBots.registerLanes) AgentBots.registerLanes(reg.networks ? reg.networks() : []); } catch (_) {}
+        var runner = AgentBotRunner.create({
+          policy: a.policy, tools: a.tools, audit: a.audit, ctx: a.ctx, pnl: a.pnl, discovery: a.ctx.discovery || null,
+          mainnetEnabled: false, persist: Store, wallet: 'web', channel: 'web',
+          onEvent: botEvent,
+        });
+        S.botRunner = runner;
+        // restore persisted bots + their deal state, then resume the ticker.
+        return runner.store.restore().then(function () {
+          if (runner.store.enabled().length) runner._restartScheduler();
+          return runner;
+        });
+      });
+    });
+  }
+  function botEvent(ev) {
+    if (!ev) return;
+    if (ev.type === 'bot_feed' && ev.kind === 'close') {
+      var r = Number(ev.realizedUsd) || 0;
+      toast((r >= 0 ? '💰 ' : '📉 ') + (ev.name || 'Bot') + ' closed ' + (ev.pair || '') + ' ' + fmtSigned(r) + (ev.paper ? ' (paper)' : ''), r >= 0 ? 'good' : 'bad');
+    } else if (ev.type === 'bot_paused' && ev.reason === 'max-loss') {
+      toast('🛑 Max-loss rail tripped — a bot paused itself', 'bad');
+    }
+  }
+  // The quote asset a preset trades against on a lane: the lane's own stable
+  // (USDB on BLOCK) or USDC elsewhere. Presets that trade the lane's base coin
+  // (Stacker / Grid) become BASE/QUOTE for whichever network is chosen.
+  function laneQuote(lane) { return lane === 'block' ? 'USDB' : 'USDC'; }
+  function presetPair(p, lane) { return p.pair ? laneBase(lane) + '/' + laneQuote(lane) : null; }
+  // Every preset opens the SAME network picker before it launches — one chain,
+  // one base asset per bot, chosen by the user, never assumed.
+  function launchPreset(key) {
+    var p = BOT_PRESETS.filter(function (x) { return x.key === key; })[0]; if (!p) return;
+    ensureBotRunner().then(function () {
+      var lanes = botLanes();
+      var opts = lanes.map(function (l) { return '<option value="' + esc(l.id) + '"' + (l.id === p.lane ? ' selected' : '') + '>' + esc(l.name) + ' · hold ' + esc(l.base) + '</option>'; }).join('');
+      openSheet('<div class="spread"><h2>' + p.emoji + ' ' + esc(p.name) + '</h2><button class="btn sm ghost" id="pl-x">' + ic('close', 15) + '</button></div>' +
+        '<p class="muted" style="margin:6px 0 10px;font-size:13px">' + esc(p.blurb) + '</p>' +
+        '<div class="field"><label>Network</label><select id="pl-lane">' + opts + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="pl-hint"></div></div>' +
+        '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Paper budget (USD)</label><input id="pl-budget" inputmode="decimal" value="' + p.budget + '"></div><div class="field" style="flex:1"><label>Risk mode</label><select id="pl-mode">' + Object.keys(BOT_MODES).map(function (m) { return '<option value="' + m + '"' + (m === p.mode ? ' selected' : '') + '>' + esc(BOT_MODES[m].split(' — ')[0]) + '</option>'; }).join('') + '</select></div></div>' +
+        whereField('pl-where') +
+        '<button class="btn primary wide" id="pl-go">🚀 Launch on <span id="pl-lane-name">' + esc(laneLabel(p.lane)) + '</span> (paper)</button>');
+      $('#pl-x').onclick = closeSheet;
+      function hint() {
+        var lane = $('#pl-lane').value, pair = presetPair(p, lane);
+        $('#pl-lane-name').textContent = laneLabel(lane);
+        $('#pl-hint').textContent = pair ? 'Trades ' + pair + ' on ' + laneLabel(lane) + '.' : 'Auto-finds ' + (p.mode === 'sniper' ? 'brand-new' : 'trending') + ' tokens on ' + laneLabel(lane) + ', quoted in ' + laneBase(lane) + '.';
+      }
+      $('#pl-lane').onchange = hint; hint();
+      $('#pl-go').onclick = function () {
+        var lane = $('#pl-lane').value, budget = Number($('#pl-budget').value), mode = $('#pl-mode').value;
+        if (!(budget > 0)) { toast('Set a paper budget (USD)', 'bad'); return; }
+        var where = ($('#pl-where') || {}).value || 'device';
+        closeSheet();
+        launchPresetOn(p, lane, budget, mode, where);
+      };
+    }).catch(function (e) { toast('Bots engine unavailable: ' + (e.message || e), 'bad'); });
+  }
+  // "Where it runs" — cloud (server, keeps going when the wallet is closed) when
+  // signed in, else this device (needs the page open).
+  function whereField(id) {
+    if (!S.user) return '<div class="dim" style="font-size:12px;margin:4px 0 10px">Runs on this device while the wallet is open. <a href="/account/login?next=/wallet%23bots">Sign in</a> to run bots in the cloud 24/7.</div>';
+    return '<div class="field"><label>Where it runs</label><select id="' + id + '"><option value="cloud">☁ Cloud — keeps trading after you close the wallet</option><option value="device">This device — only while this page is open</option></select></div>';
+  }
+  function launchCloud(spec, budget, label) {
+    return cloudReq('', 'POST', { spec: spec, allocationUsd: budget }).then(function () {
+      toast('☁ ' + label + ' is live in the cloud · $' + budget + ' paper', 'good');
+      return refreshCloud();
+    }).then(function () { _botListSig = ''; renderBotList(); }).catch(cloudFail);
+  }
+  function launchPresetOn(p, lane, budget, mode, where) {
+    ensureBotRunner().then(function (runner) {
+      var bots = runner.store.all();
+      var pair = presetPair(p, lane);
+      var cfg = JSON.parse(JSON.stringify(p.config));
+      if (p.type === 'grid') cfg.totalUsd = budget;
+      var spec = { name: p.emoji + ' ' + p.name + ' · ' + laneLabel(lane), type: p.type, lane: lane, riskMode: mode || p.mode, profitMode: 'take', preset: p.key,
+        universe: { pairs: pair ? [pair] : [] }, config: cfg, risk: p.risk, pollSec: p.pollSec, mode: 'paper', network: 'testnet' };
+      if (where === 'cloud' && S.user) { launchCloud(spec, budget, p.name + ' on ' + laneLabel(lane)); return; }
+      if (!isPro() && bots.length >= 1) { toast('Free plan allows 1 bot on this device — upgrade for more', 'bad'); location.hash = '#pro'; return; }
+      try {
+        var bot = runner.add(spec); bot.preset = p.key;
+        runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
+          toast('🚀 ' + p.name + ' is live on ' + laneLabel(lane) + ' · $' + budget + ' paper', 'good');
+          _botListSig = ''; renderBotList(); runner.tickNow(bot.id).then(function () { _botListSig = ''; renderBotList(); }).catch(function () {});
+        });
+      } catch (e) { toast('Launch failed: ' + (e.message || e), 'bad'); }
+    }).catch(function (e) { toast('Bots engine unavailable: ' + (e.message || e), 'bad'); });
+  }
+  function renderCloudCard() {
+    var el = $('#bt-cloud'); if (!el) return;
+    if (!S.user) { el.innerHTML = '☁ <b>Keep bots running after you close the wallet.</b> Sign in and your paper bots can run in the cloud around the clock. <a href="/account/login?next=/wallet%23bots">Sign in</a>'; return; }
+    var c = S.cloud;
+    if (!c) { el.innerHTML = '☁ <span class="dim">Checking cloud bots…</span>'; return; }
+    if (c.error) { el.innerHTML = '☁ <span class="bad">Cloud bots unavailable: ' + esc(c.error) + '</span>'; return; }
+    var n = (c.bots || []).length, running = (c.aggregate && c.aggregate.running) || 0, lim = c.limits || {};
+    var localPaper = S.botRunner ? S.botRunner.store.all().filter(function (b) { return b.mode !== 'live'; }).length : 0;
+    el.innerHTML = '☁ <b>' + (n ? running + ' of ' + n + ' cloud bot' + (n === 1 ? '' : 's') + ' running' : 'No cloud bots yet') + '</b> — cloud bots keep trading after you close this wallet. ' +
+      '<span class="dim">Plan allows ' + (lim.maxBots || '—') + '.</span>' +
+      (localPaper ? '<div style="margin-top:8px"><button class="btn sm" id="bt-tocloud">Move ' + localPaper + ' paper bot' + (localPaper === 1 ? '' : 's') + ' to the cloud</button></div>' : '');
+    if ($('#bt-tocloud')) $('#bt-tocloud').onclick = moveToCloud;
+  }
+  function cloudDone(msg) { return function () { if (msg) toast(msg, 'good'); return refreshCloud().then(function () { _botListSig = ''; renderBotList(); }); }; }
+  function cloudAct(act, id, btn) {
+    var cb = cloudBot(id); if (!cb) { btn.disabled = false; return; }
+    var fail = function (e) { btn.disabled = false; cloudFail(e); };
+    if (act === 'toggle') cloudReq('/' + encodeURIComponent(id) + '/' + (cb.enabled ? 'pause' : 'start'), 'POST', {}).then(cloudDone(cb.enabled ? '⏸ Cloud bot stopped' : '▶ Cloud bot started')).catch(fail);
+    else if (act === 'resume') cloudReq('/' + encodeURIComponent(id) + '/resume', 'POST', {}).then(cloudDone('Cloud bot resumed')).catch(fail);
+    else if (act === 'tick') cloudReq('/' + encodeURIComponent(id) + '/tick', 'POST', {}).then(function (j) { if (j.report && j.report.error) toast('Tick: ' + j.report.error, 'bad'); return cloudDone()(); }).catch(fail);
+    else if (act === 'flatten') confirmSheet({ title: 'Stop & flatten?', subtitle: 'Closes every open position of this cloud bot at the current market price and stops it.', lines: [['Bot', cb.name || id]], okText: 'Close & stop' }).then(function (ok) { if (!ok) { btn.disabled = false; return; } cloudReq('/' + encodeURIComponent(id) + '/flatten', 'POST', {}).then(function (j) { return cloudDone('⏹ Stopped — ' + ((j.closes || []).filter(function (x) { return !x.skipped; }).length) + ' position(s) closed')(); }).catch(fail); });
+    else if (act === 'rm') confirmSheet({ title: 'Remove cloud bot?', subtitle: 'Its deal history on the server is deleted.', lines: [['Bot', cb.name || id]], okText: 'Remove' }).then(function (ok) { if (!ok) { btn.disabled = false; return; } cloudReq('/' + encodeURIComponent(id) + '/remove', 'POST', {}).then(cloudDone('Cloud bot removed')).catch(fail); });
+    else if (act === 'detail') { btn.disabled = false; cloudDetailSheet(cb); }
+    else btn.disabled = false;
+  }
+  function cloudDetailSheet(cb) {
+    var d = cb.dashboard || {};
+    var deals = (d.activeDeals || []).map(function (x) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(x.pair) + '</b><span class="dim" style="font-size:11px">' + esc(x.type || '') + ' · in @ ' + (x.avgEntryUsd != null ? fmtUsd(x.avgEntryUsd) : '—') + ' · mark ' + (x.markUsd != null ? fmtUsd(x.markUsd) : '—') + '</span></span><span class="' + pnlClass(x.unrealizedUsd) + ' num">' + fmtSigned(x.unrealizedUsd) + (x.unrealizedPct != null ? ' (' + (x.unrealizedPct > 0 ? '+' : '') + Number(x.unrealizedPct).toFixed(1) + '%)' : '') + '</span></div>'; }).join('');
+    var feed = (d.feed || []).slice(0, 12).map(function (e) { return '<div class="li"><span class="col" style="align-items:flex-start"><span class="' + (e.kind === 'close' ? pnlClass(e.realizedUsd) : e.kind === 'halt' ? 'bad' : '') + '">' + esc(e.text || e.kind) + '</span><span class="dim" style="font-size:11px">' + agoShort(e.at) + '</span></span></div>'; }).join('');
+    openSheet('<div class="spread"><h2>' + botEmoji(cb) + ' ' + esc(cb.name || cb.id) + '</h2><button class="btn sm ghost" id="cd-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="dim" style="font-size:12px;margin:4px 0 10px">☁ Runs in the cloud under your Blockle account — keeps trading when this wallet is closed. ' + esc(cb.describe || '') + '</div>' +
+      '<div class="statline"><div class="stat"><div class="n num ' + pnlClass(d.realizedUsd) + '">' + fmtSigned(d.realizedUsd) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num ' + pnlClass(d.unrealizedUsd) + '">' + fmtSigned(d.unrealizedUsd) + '</div><div class="l">open P&amp;L</div></div><div class="stat"><div class="n num">' + (d.totalDeals || 0) + '</div><div class="l">deals</div></div><div class="stat"><div class="n num">' + (d.winRate == null ? '—' : Math.round(d.winRate * 100) + '%') + '</div><div class="l">wins</div></div></div>' +
+      '<div class="dim" style="font-size:12px;margin:8px 0">' + (d.status === 'running' ? '<span class="pulse"></span> running' : d.status === 'halted' ? '<span class="bad">halted · ' + esc(d.haltReason || '') + '</span>' : 'paused') + ' · budget ' + fmtUsd(d.committedUsd || 0) + ' / ' + fmtUsd(d.effectiveCapUsd || d.allocationUsd || 0) + ' deployed · last tick ' + agoShort(d.lastTickAt) + '</div>' +
+      (deals ? '<h3 style="font-size:13px;margin:8px 0 4px">Open positions</h3><div class="list">' + deals + '</div>' : '') +
+      (feed ? '<h3 style="font-size:13px;margin:8px 0 4px">Recent</h3><div class="list">' + feed + '</div>' : '') +
+      '<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" id="cd-tick">Tick now</button>' + (cb.enabled ? '<button class="btn sm ghost" id="cd-stop">⏸ Stop</button>' : '<button class="btn sm ghost" id="cd-start">▶ Start</button>') + ((d.activeDeals || []).length ? '<button class="btn sm ghost" id="cd-flat">⏹ Stop &amp; flatten</button>' : '') + '<button class="btn sm ghost" id="cd-export">Export template</button></div>');
+    $('#cd-x').onclick = closeSheet;
+    var fake = { disabled: false, getAttribute: function () { return '1'; } };
+    $('#cd-tick').onclick = function () { closeSheet(); cloudAct('tick', cb.id, fake); };
+    if ($('#cd-stop')) $('#cd-stop').onclick = function () { closeSheet(); cloudAct('toggle', cb.id, fake); };
+    if ($('#cd-start')) $('#cd-start').onclick = function () { closeSheet(); cloudAct('toggle', cb.id, fake); };
+    if ($('#cd-flat')) $('#cd-flat').onclick = function () { closeSheet(); cloudAct('flatten', cb.id, fake); };
+    $('#cd-export').onclick = function () { cloudReq('/' + encodeURIComponent(cb.id) + '/export').then(function (t) { var blob = new Blob([JSON.stringify(t, null, 2)], { type: 'application/json' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (cb.name || cb.id).replace(/[^A-Za-z0-9_-]+/g, '_') + '.bot.json'; a.click(); }).catch(cloudFail); };
+  }
+  var _botListSig = '';
+  function renderBotList(quiet) {
+    var runner = S.botRunner, box = $('#bt-list'); if (!runner || !box) return;
+    // a background refresh never yanks the list out from under a tap or a sheet
+    if (quiet && $('#scrim').classList.contains('open')) return;
+    syncLiveNotice(); renderCloudCard();
+    var agg = null; try { agg = runner.aggregate(); } catch (_) { agg = null; }
+    var ca = (S.cloud && S.cloud.aggregate) || null;
+    if (agg) {
+      var realV = (agg.realizedUsd || 0) + (ca ? (ca.realizedUsd || 0) : 0), unV = (agg.unrealizedUsd || 0) + (ca ? (ca.unrealizedUsd || 0) : 0);
+      var real = $('#bt-real'); if (real) { real.textContent = fmtSigned(realV); real.className = 'n num ' + pnlClass(realV); }
+      var un = $('#bt-unreal'); if (un) { un.textContent = fmtSigned(unV); un.className = 'n num ' + pnlClass(unV); }
+      if ($('#bt-deals')) $('#bt-deals').textContent = String((agg.activeDeals || 0) + (ca ? (ca.activeDeals || 0) : 0));
+      var wr = agg.winRate != null ? agg.winRate : (ca ? ca.winRate : null);
+      if ($('#bt-win')) $('#bt-win').textContent = wr == null ? '—' : Math.round(wr * 100) + '%';
+      if ($('#bt-engine')) $('#bt-engine').innerHTML = (agg.killed ? '<span class="chip bad">killed</span>' : (agg.running ? '<span class="pulse"></span><b>Engine live</b>' : (ca && ca.running ? '<span class="pulse"></span><b>Cloud live</b>' : '<span class="dim">Engine idle</span>'))) +
+        '<span class="dim">' + (agg.running || 0) + ' on this device' + (agg.live ? ' · ' + agg.live + ' LIVE' : '') + (ca ? ' · ' + (ca.running || 0) + ' in the cloud' : '') + ' · ' + fmtUsd((agg.allocationUsd || 0) + (ca ? (ca.allocationUsd || 0) : 0)) + ' allocated · ' + fmtUsd((agg.committedUsd || 0) + (ca ? (ca.committedUsd || 0) : 0)) + ' deployed</span>';
+      var tk = $('#bt-ticker');
+      if (tk) {
+        var feed = (agg.feed || []).concat(ca && ca.feed ? ca.feed.map(function (e) { return Object.assign({}, e, { name: '☁ ' + (e.name || '') }); }) : []).sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+        if ($('#bt-ticker-n')) $('#bt-ticker-n').textContent = feed.length ? feed.length + ' events' : '';
+        if (feed.length) tk.innerHTML = feed.slice(0, 25).map(function (e) {
+          var cls = e.kind === 'close' ? pnlClass(e.realizedUsd) : e.kind === 'buy' ? '' : e.kind === 'halt' ? 'bad' : e.kind === 'signal' ? 'good' : '';
+          return '<div class="li"><span class="col" style="align-items:flex-start"><span class="' + cls + '">' + esc(e.text || e.kind) + '</span><span class="dim" style="font-size:11px">' + esc(e.name || '') + ' · ' + agoShort(e.at) + '</span></span></div>';
+        }).join('');
+      }
+    }
+    var bots = runner.store.all();
+    var cloudBots = (S.cloud && S.cloud.bots) || [];
+    var total = bots.length + cloudBots.length;
+    if ($('#bt-count')) $('#bt-count').textContent = total ? total + (total === 1 ? ' bot' : ' bots') + (cloudBots.length ? ' · ' + cloudBots.length + ' ☁' : '') : '';
+    if (!total) { _botListSig = ''; box.innerHTML = '<div class="empty">No bots yet. Tap a preset above or create your own — it starts in paper mode.</div>'; return; }
+    var rows = ((agg && agg.bots) || bots.map(function (b) { return runner.dashboard(b.id); })).map(function (d) { return { d: d, b: runner.store.get(d.bot) || {}, cloud: false }; })
+      .concat(cloudBots.map(function (cb) { return { d: cb.dashboard || {}, b: cb, cloud: true }; }));
+    // only touch the DOM when something visible changed (status / money / deals)
+    var sig = rows.map(function (r) { var d = r.d; return [d.bot, r.cloud ? 'c' : 'l', d.status, d.mode, Math.round((d.realizedUsd || 0) * 100), Math.round((d.unrealizedUsd || 0) * 100), Math.round(d.committedUsd || 0), (d.activeDeals || []).length, d.totalDeals, d.streak, d.lastTickAt].join(':'); }).join('|');
+    if (quiet && sig === _botListSig) return;
+    _botListSig = sig;
+    box.innerHTML = rows.map(function (r) {
+      var d = r.d, b = r.b, cloud = r.cloud, dc = cloud ? ' data-cloud="1"' : '';
+      var live = d.mode === 'live';
+      var cap = d.effectiveCapUsd || d.allocationUsd || 0, dep = d.committedUsd || 0;
+      var pct = cap > 0 ? Math.min(100, Math.round(dep / cap * 100)) : 0;
+      var streak = d.streak || 0;
+      var status = d.status === 'running' ? '<span class="pulse"></span> running' : d.status === 'halted' ? '<span class="bad">⏸ halted · ' + esc(d.haltReason || '') + '</span>' : d.status === 'killed' ? '<span class="bad">killed</span>' : '<span class="dim">paused</span>';
+      return '<div class="li" style="align-items:flex-start;flex-wrap:wrap;gap:8px">' +
+        '<span class="ico" style="font-size:20px">' + botEmoji(b) + '</span>' +
+        '<span class="col" style="align-items:flex-start;flex:1;min-width:160px"><b>' + esc(d.name || b.name || d.type) + ' <span class="' + (live ? 'good' : 'dim') + '" style="font-size:11px">' + (cloud ? '☁ cloud · paper' : live ? 'LIVE · keep page open' : 'paper · this device') + '</span></b>' +
+        '<span class="dim" style="font-size:12px">' + esc(d.type) + (d.lane ? ' · ' + esc(laneLabel(d.lane)) : '') + (d.riskMode ? ' · ' + esc(d.riskMode) : '') + ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto-find') + '</span>' +
+        '<span style="font-size:12px">' + status + ' · <span class="' + pnlClass(d.realizedUsd) + ' num">' + fmtSigned(d.realizedUsd) + '</span>' + (d.unrealizedUsd ? ' · open <span class="' + pnlClass(d.unrealizedUsd) + ' num">' + fmtSigned(d.unrealizedUsd) + '</span>' : '') +
+        ' · ' + (d.totalDeals || 0) + ' deals' + (d.winRate != null ? ' · ' + Math.round(d.winRate * 100) + '% wins' : '') + (streak >= 2 ? ' · <span class="heat good">🔥 ' + streak + ' streak</span>' : streak <= -2 ? ' · <span class="heat bad">🧊 ' + (-streak) + ' cold</span>' : '') + '</span>' +
+        (d.auto ? '<span style="font-size:12px;width:100%">🧠 ' + esc(regimeText(d.auto.regime)) + (d.auto.lead ? ' · leading: <b>' + esc(algoName(d.auto.lead)) + '</b>' : '') + ' · ' + Object.keys(d.auto.weights || {}).sort(function (x, y) { return d.auto.weights[y] - d.auto.weights[x]; }).map(function (a) { return esc(algoName(a)) + ' ' + Math.round(d.auto.weights[a] * 100) + '%'; }).join(' · ') + '</span>' : '') +
+        (cap > 0 ? '<span class="dim" style="font-size:11px;width:100%">budget ' + fmtUsd(dep) + ' / ' + fmtUsd(cap) + ' deployed · ' + (d.activeDeals || []).length + ' open · last tick ' + agoShort(d.lastTickAt) + '</span><progress class="rangebar" max="100" value="' + pct + '"></progress>' : '') +
+        (d.lastError ? '<span class="bad" style="font-size:11px">' + esc(d.lastError.message) + '</span>' : '') + '</span>' +
+        '<span class="row" style="gap:6px;flex-wrap:wrap">' +
+        '<button class="btn sm" data-act="detail" data-id="' + esc(d.bot) + '"' + dc + '>Details</button>' +
+        (d.status === 'halted' ? '<button class="btn sm primary" data-act="resume" data-id="' + esc(d.bot) + '"' + dc + '>Resume</button>' : '<button class="btn sm ghost" data-act="toggle" data-id="' + esc(d.bot) + '"' + dc + '>' + (d.enabled ? '⏸ Stop' : '▶ Start') + '</button>') +
+        '<button class="btn sm ghost" data-act="tick" data-id="' + esc(d.bot) + '" title="Tick now"' + dc + '>' + ic('refresh', 14) + '</button>' +
+        ((d.activeDeals || []).length ? '<button class="btn sm ghost" data-act="flatten" data-id="' + esc(d.bot) + '" title="Close open positions and stop"' + dc + '>⏹ Flatten</button>' : '') +
+        (S.pro && !live && !cloud ? '<button class="btn sm" data-act="live" data-id="' + esc(d.bot) + '">Go live</button>' : '') +
+        '<button class="btn sm ghost" data-act="rm" data-id="' + esc(d.bot) + '" title="Remove"' + dc + '>' + ic('close', 14) + '</button></span></div>';
+    }).join('');
+    $$('#bt-list [data-act]').forEach(function (btn) {
+      btn.onclick = function () {
+        var id = btn.getAttribute('data-id'), act = btn.getAttribute('data-act');
+        btn.disabled = true;
+        if (btn.getAttribute('data-cloud')) { cloudAct(act, id, btn); return; }
+        if (act === 'toggle') {
+          var b = runner.store.get(id);
+          (b && b.enabled ? runner.pause(id) : runner.enablePaper(id)).then(function () { toast(b && b.enabled ? '▶ Bot started' : '⏸ Bot stopped'); _botListSig = ''; renderBotList(); })
+            .catch(function (e) { btn.disabled = false; toast('Failed: ' + (e.message || e), 'bad'); });
+        }
+        else if (act === 'tick') { runner.tickNow(id).then(function (r) { btn.disabled = false; _botListSig = ''; renderBotList(); if (r && r.error) toast('Tick: ' + r.error, 'bad'); }).catch(function (e) { btn.disabled = false; toast('Tick failed: ' + (e.message || e), 'bad'); }); }
+        else if (act === 'resume') { runner.resume(id).then(function () { toast('Bot resumed', 'good'); _botListSig = ''; renderBotList(); }); }
+        else if (act === 'rm') { confirmSheet({ title: 'Remove bot?', subtitle: 'Its deal history is deleted. Open live orders are cancelled best-effort.', lines: [['Bot', (runner.store.get(id) || {}).name || id]], okText: 'Remove' }).then(function (ok) { btn.disabled = false; if (ok) runner.remove(id).then(function () { toast('Bot removed'); _botListSig = ''; renderBotList(); }); }); }
+        else if (act === 'flatten') { confirmSheet({ title: 'Stop & flatten?', subtitle: 'Closes every open position of this bot at the current market price (paper simulates; live sells go through the gate), books the result, and stops the bot.', lines: [['Bot', (runner.store.get(id) || {}).name || id]], okText: 'Close & stop' }).then(function (ok) { btn.disabled = false; if (ok) runner.flatten(id, 'user').then(function (c) { toast('⏹ Stopped — ' + c.filter(function (x) { return !x.skipped; }).length + ' position(s) closed', 'good'); _botListSig = ''; renderBotList(); }).catch(function (e) { toast('Flatten failed: ' + (e.message || e), 'bad'); }); }); }
+        else if (act === 'live') { armLiveSheet(id); }
+        else if (act === 'detail') { botDetailSheet(id); }
+      };
+    });
+  }
+  function botDetailSheet(id) {
+    var runner = S.botRunner; if (!runner) return;
+    var d = runner.dashboard(id), b = runner.store.get(id); if (!d || !b) return;
+    var desc = ''; try { desc = b.describe(); } catch (_) {}
+    var open = (d.activeDeals || []).map(function (x) {
+      if (x.type === 'grid') return '<div class="kv"><span>' + esc(x.pair) + ' grid</span><span class="mono num">' + x.filledLevels + '/' + x.levels + ' rungs held</span></div>';
+      return '<div class="kv"><span>' + esc(x.pair) + ' <span class="dim">' + esc(x.status) + (x.safetyOrdersUsed ? ' · SO ' + x.safetyOrdersUsed : '') + '</span></span><span class="mono num ' + pnlClass(x.unrealizedUsd) + '">' + (x.unrealizedUsd != null ? fmtSigned(x.unrealizedUsd) + (x.unrealizedPct != null ? ' (' + (x.unrealizedPct >= 0 ? '+' : '') + x.unrealizedPct.toFixed(1) + '%)' : '') : 'entry ' + fmtUsd(x.avgEntryUsd)) + '</span></div>';
+    }).join('') || '<div class="empty">No open deals.</div>';
+    var closed = (d.closedDeals || []).map(function (c) { return '<div class="kv"><span>' + esc(c.type) + ' · ' + esc(c.reason || '') + ' <span class="dim">' + agoShort(c.closedAt) + '</span></span><span class="mono num ' + pnlClass(c.realizedUsd) + '">' + fmtSigned(c.realizedUsd) + '</span></div>'; }).join('') || '<div class="empty">No closed deals yet.</div>';
+    var feed = (d.feed || []).slice().reverse().map(function (e) { return '<div class="li"><span class="col" style="align-items:flex-start"><span>' + esc(e.text || e.kind) + '</span><span class="dim" style="font-size:11px">' + agoShort(e.at) + '</span></span></div>'; }).join('') || '<div class="empty">Quiet so far.</div>';
+    var autoHtml = d.auto ? '<h3 style="margin:8px 0 4px;font-size:14px">Algorithm rotation</h3><div class="list">' +
+      '<div class="kv"><span>Market regime</span><span class="mono">' + esc(regimeText(d.auto.regime)) + (d.auto.regimeInfo && d.auto.regimeInfo.ret != null ? ' · ' + (d.auto.regimeInfo.ret >= 0 ? '+' : '') + d.auto.regimeInfo.ret + '% over ' + d.auto.regimeInfo.n + ' samples' : '') + ' · ' + (d.auto.rebalances || 0) + ' rebalances</span></div>' +
+      (d.auto.children || []).slice().sort(function (x, y) { return (y.weight || 0) - (x.weight || 0); }).map(function (c) {
+        return '<div class="kv"><span>' + esc(c.name) + ' <span class="dim">' + (c.weight != null ? Math.round(c.weight * 100) + '% · $' + fmtAmt(c.allocationUsd, 0) : '') + '</span></span><span class="mono num ' + pnlClass((c.realizedUsd || 0) + (c.unrealizedUsd || 0)) + '">' + fmtSigned((c.realizedUsd || 0) + (c.unrealizedUsd || 0)) + ' <span class="dim">· ' + (c.activeDeals || 0) + ' open · ' + (c.totalDeals || 0) + ' deals' + (c.winRate != null ? ' · ' + Math.round(c.winRate * 100) + '%' : '') + '</span></span></div>';
+      }).join('') + '</div>' + (d.auto.series && d.auto.series.length > 2 ? '<div style="height:50px;margin:6px 0">' + sparkSvg(d.auto.series, 320, 50) + '</div>' : '') : '';
+    var scan = d.lastScan ? '<div class="kv"><span>Last scan</span><span class="mono num">' + (d.lastScan.candidates || []).length + ' candidates · ' + (d.lastScan.worthy || []).length + ' worthy</span></div>' : '';
+    openSheet('<div class="spread"><h2>' + botEmoji(b) + ' ' + esc(d.name) + '</h2><button class="btn sm ghost" id="bd-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted" style="margin:6px 0 10px;font-size:13px">' + esc(desc) + '</p>' +
+      '<div class="statline" style="margin-bottom:10px"><div class="stat"><div class="n num ' + pnlClass(d.realizedUsd) + '">' + fmtSigned(d.realizedUsd) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num ' + pnlClass(d.unrealizedUsd) + '">' + fmtSigned(d.unrealizedUsd) + '</div><div class="l">open</div></div><div class="stat"><div class="n num">' + (d.winRate != null ? Math.round(d.winRate * 100) + '%' : '—') + '</div><div class="l">' + (d.totalDeals || 0) + ' deals</div></div><div class="stat"><div class="n num">' + (d.bestStreak || 0) + '</div><div class="l">best streak</div></div></div>' +
+      '<div class="list" style="margin-bottom:10px">' +
+      '<div class="kv"><span>Status</span><span class="mono">' + esc(d.status) + (d.haltReason ? ' (' + esc(d.haltReason) + ')' : '') + ' · ' + esc(d.mode) + ' · every ' + d.pollSec + 's</span></div>' +
+      '<div class="kv"><span>Lane / mode</span><span class="mono">' + esc(laneLabel(d.lane)) + ' · ' + esc(d.riskMode || 'any') + ' · ' + esc(d.profitMode) + '</span></div>' +
+      '<div class="kv"><span>Budget</span><span class="mono num">' + fmtUsd(d.committedUsd) + ' / ' + fmtUsd(d.effectiveCapUsd) + (d.remainingUsd != null ? ' · ' + fmtUsd(d.remainingUsd) + ' left' : '') + '</span></div>' +
+      '<div class="kv"><span>Risk rails</span><span class="mono num">' + (d.risk && d.risk.maxLossPct ? 'max loss ' + d.risk.maxLossPct + '%' : 'no max-loss') + (d.risk && d.risk.paperSlippageBps ? ' · paper slip ' + d.risk.paperSlippageBps + 'bps' : '') + ' · max DD ' + fmtUsd(d.maxDrawdownUsd) + '</span></div>' + scan + '</div>' +
+      autoHtml +
+      '<h3 style="margin:8px 0 4px;font-size:14px">Open deals</h3><div class="list">' + open + '</div>' +
+      '<h3 style="margin:12px 0 4px;font-size:14px">Recent closes</h3><div class="list">' + closed + '</div>' +
+      '<h3 style="margin:12px 0 4px;font-size:14px">Ticker</h3><div class="list ticker">' + feed + '</div>' +
+      '<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" id="bd-tick">Tick now</button>' + (d.enabled ? '<button class="btn sm ghost" id="bd-stop">⏸ Stop</button>' : '') + ((d.activeDeals || []).length ? '<button class="btn sm ghost" id="bd-flatten">⏹ Stop &amp; flatten</button>' : '') + '<button class="btn sm ghost" id="bd-export">Export template</button>' + (d.status === 'halted' ? '<button class="btn sm primary" id="bd-resume">Resume</button>' : '') + '</div>');
+    $('#bd-x').onclick = closeSheet;
+    $('#bd-tick').onclick = function () { runner.tickNow(id).then(function () { closeSheet(); renderBotList(); botDetailSheet(id); }); };
+    $('#bd-export').onclick = function () {
+      try { var t = AgentBotTemplates.exportBot(b); var blob = new Blob([JSON.stringify(t, null, 2)], { type: 'application/json' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (b.name || 'bot').replace(/[^a-z0-9]+/gi, '-') + '.blockle-bot.json'; a.click(); toast('Template exported', 'good'); } catch (e) { toast('Export failed', 'bad'); }
+    };
+    if ($('#bd-resume')) $('#bd-resume').onclick = function () { runner.resume(id).then(function () { closeSheet(); _botListSig = ''; renderBotList(); }); };
+    if ($('#bd-stop')) $('#bd-stop').onclick = function () { runner.pause(id).then(function () { toast('⏸ Bot stopped'); closeSheet(); _botListSig = ''; renderBotList(); }); };
+    if ($('#bd-flatten')) $('#bd-flatten').onclick = function () { closeSheet(); runner.flatten(id, 'user').then(function (c) { toast('⏹ Stopped — ' + c.filter(function (x) { return !x.skipped; }).length + ' position(s) closed', 'good'); _botListSig = ''; renderBotList(); }).catch(function (e) { toast('Flatten failed: ' + (e.message || e), 'bad'); }); };
+  }
   function newBotSheet() {
+    var lanes = botLanes();
+    var laneOpts = lanes.map(function (l) { return '<option value="' + esc(l.id) + '"' + (l.id === 'solana' ? ' selected' : '') + '>' + esc(l.name) + ' · hold ' + esc(l.base) + '</option>'; }).join('');
     openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="scanner">Autopilot (scan &amp; trade the lane)</option><option value="signal">Signal (auto-find tokens)</option><option value="dca">DCA (dollar-cost average)</option><option value="grid">Grid</option><option value="smarttrade">Smart trade</option></select></div>' +
-      '<div class="field"><label>Lane — one chain, one base asset</label><select id="nb-lane"><option value="solana">Solana · hold SOL</option><option value="ethereum">Ethereum · hold ETH</option><option value="bsc">BSC · hold BNB</option><option value="block">BLOCK · hold BLOCK</option></select></div>' +
+      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="auto">🧠 Full Auto — pick a chain, it switches algorithms for max profit</option><option value="signal">🎯 Signal — auto-find tokens, trade each with a sub-strategy</option><option value="scanner">🤖 Autopilot — scan &amp; trade cost-positive edges</option><option value="dca">🧱 DCA — ladder into a token, bank the take-profit</option><option value="grid">📈 Grid — buy every dip rung, sell every pop</option><option value="smarttrade">⚡ Smart trade — one entry, staged take-profits, trailing stop</option></select></div>' +
+      '<div class="field"><label>Network — every strategy trades on exactly one chain</label><select id="nb-lane">' + laneOpts + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="nb-lane-hint"></div></div>' +
       '<div class="field"><label>Risk mode</label><select id="nb-mode"><option value="safe">Safe — large-cap only</option><option value="medium" selected>Medium — mid-cap, balanced</option><option value="high">High — microcap, social-driven</option><option value="sniper">Sniper — brand-new launches</option></select></div>' +
-      '<div class="field"><label>Profit handling</label><select id="nb-profit"><option value="take" selected>Take profit — skim gains to your balance</option><option value="compound">Compound — reinvest gains, grow the position</option></select><div class="hint" style="font-size:12px;color:var(--muted);margin-top:4px">Losses only ever draw down this bot\'s budget — never your wallet.</div></div>' +
-      '<div class="field" id="nb-pair-wrap" style="display:none"><label>Token pair (quoted in your base)</label><input id="nb-pair" value=""></div>' +
-      '<div class="field"><label>Paper budget (USD)</label><input id="nb-budget" inputmode="decimal" placeholder="1000"></div>' +
-      '<div class="field"><label>Name</label><input id="nb-name" placeholder="My autopilot bot"></div>' +
+      '<div class="field" id="nb-pair-wrap"><label>Token</label><div class="row" style="gap:6px"><input id="nb-pair" placeholder="SYMBOL/QUOTE" style="flex:1"><select id="nb-held" style="max-width:46%"><option value="">from your wallet…</option></select></div><div class="hint dim" style="font-size:12px;margin-top:4px">Pick a token you hold on this lane, or type a pair like <span class="mono">WIF/SOL</span>.</div></div>' +
+      '<div class="field"><label>Profit handling</label><select id="nb-profit"><option value="take" selected>Take profit — skim gains to your balance</option><option value="compound">Compound — reinvest gains, grow the position</option></select></div>' +
+      '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Paper budget (USD)</label><input id="nb-budget" inputmode="decimal" value="250"></div><div class="field" style="flex:1"><label>Max loss (% of budget)</label><input id="nb-maxloss" inputmode="decimal" value="25"></div></div>' +
+      '<div class="field"><label>Name</label><input id="nb-name" placeholder="My bot"></div>' + whereField('nb-where') +
+      '<details style="margin-bottom:10px"><summary class="dim" style="cursor:pointer;font-size:13px">Advanced</summary><div style="margin-top:8px">' +
+      '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Tick every (s)</label><input id="nb-poll" inputmode="numeric" value="20"></div><div class="field" style="flex:1"><label>Paper slippage (bps)</label><input id="nb-slip" inputmode="numeric" value="25"></div></div>' +
+      '<div id="nb-adv-dca"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Base order $</label><input id="nb-base" inputmode="decimal" value="30"></div><div class="field" style="flex:1"><label>Safety orders</label><input id="nb-so" inputmode="numeric" value="3"></div><div class="field" style="flex:1"><label>Step %</label><input id="nb-step" inputmode="decimal" value="3"></div></div>' +
+      '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Take profit %</label><input id="nb-tp" inputmode="decimal" value="6"></div><div class="field" style="flex:1"><label>Trailing %</label><input id="nb-trail" inputmode="decimal" value="2"></div><div class="field" style="flex:1"><label>Stop loss %</label><input id="nb-sl" inputmode="decimal" value="15"></div></div>' +
+      '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Start</label><select id="nb-start"><option value="asap">ASAP</option><option value="dip">On a dip</option></select></div><div class="field" style="flex:1"><label>Dip %</label><input id="nb-dip" inputmode="decimal" value="2"></div><div class="field" style="flex:1"><label>Time stop (h)</label><input id="nb-tstop" inputmode="numeric" value="48"></div></div></div>' +
+      '<div id="nb-candle-wrap"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Smart exit on candles</label><select id="nb-candle"><option value="on" selected>On — bank profit on a reversal</option><option value="off">Off — fixed take-profit only</option></select></div><div class="field" style="flex:1"><label>Candle</label><select id="nb-csec"><option value="60">1 min</option><option value="120" selected>2 min</option><option value="300">5 min</option><option value="900">15 min</option></select></div><div class="field" style="flex:1"><label>Arm above +%</label><input id="nb-cmin" inputmode="decimal" value="2"></div></div>' +
+      '<div class="hint dim" style="font-size:12px;margin:-6px 0 10px">Once a deal is up by the arm level, a red close below the last candle\'s low, a long upper wick, an EMA cross-down or giving back half the gain takes the profit — no waiting for a fixed target.</div></div>' +
+      '<div id="nb-adv-grid" style="display:none"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Range ± %</label><input id="nb-range" inputmode="decimal" value="6"></div><div class="field" style="flex:1"><label>Rungs</label><input id="nb-rungs" inputmode="numeric" value="10"></div><div class="field" style="flex:1"><label>Grid stop %</label><input id="nb-gsl" inputmode="decimal" value="12"></div></div></div>' +
+      '<div id="nb-adv-smart" style="display:none"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Entry $</label><input id="nb-amt" inputmode="decimal" value="50"></div><div class="field" style="flex:1"><label>TP1 % / share</label><input id="nb-tp1" value="20/50"></div><div class="field" style="flex:1"><label>TP2 % / share</label><input id="nb-tp2" value="50/50"></div><div class="field" style="flex:1"><label>Trail stop %</label><input id="nb-ssl" inputmode="decimal" value="15"></div></div></div>' +
+      '<div id="nb-adv-signal"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Max concurrent</label><input id="nb-conc" inputmode="numeric" value="3"></div><div class="field" style="flex:1"><label>Per-token $</label><input id="nb-per" inputmode="decimal" value="40"></div><div class="field" style="flex:1"><label>Min score</label><input id="nb-score" inputmode="decimal" value="50"></div></div>' +
+      '<div class="field" id="nb-rank-wrap"><label>Rank candidates by</label><select id="nb-rank"><option value="score">Safety-weighted score (default)</option><option value="buzz">🔥 Online buzz — search trends, trending pools, buyer traffic</option></select><div class="dim" style="font-size:12px;margin-top:4px" id="nb-rank-hint"></div></div></div>' +
+      '</div></details>' +
       '<div class="banner warn" id="nb-risk" style="display:none"><span>' + ic('warn', 18) + '</span><div id="nb-risk-t"></div></div>' +
-      '<div class="banner info"><span>' + ic('doc', 18) + '</span><div>Starts in <b>paper mode</b> (simulated) with the budget above. The bot trades <b>only this lane</b> with your base asset. Arm it live later' + (S.pro ? '' : ' once you upgrade to Pro') + '.</div></div>' +
-      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">Create &amp; start (paper)</button>');
+      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">🚀 Launch (paper)</button>');
     $('#nb-x').onclick = closeSheet;
+    function fillHeld() {
+      var lane = $('#nb-lane').value, sel = $('#nb-held'); if (!sel) return;
+      sel.innerHTML = '<option value="">from your wallet…</option>';
+      var l = lanes.filter(function (x) { return x.id === lane; })[0]; if (!l) return;
+      Wiring.getHoldings(l.chain).then(function (rows) {
+        (rows || []).forEach(function (r) {
+          var a = r.asset || {}; var sym = (a.symbol || '').toUpperCase(); if (!sym || a.kind === 'native' || sym === l.base) return;
+          var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, a.decimals || 0);
+          if (!(amt > 0)) return;
+          try { var pf = Wiring.prices && Wiring.prices(); if (pf) pf.remember(sym, Object.assign({ chain: l.chain }, a)); } catch (_) {}
+          var o = document.createElement('option'); o.value = sym + '/' + l.base; o.textContent = sym + ' · ' + fmtAmt(amt, 4); sel.appendChild(o);
+        });
+      }).catch(function () {});
+    }
     function syncUi() {
       var type = $('#nb-type').value, lane = $('#nb-lane').value, mode = $('#nb-mode').value;
-      var base = (BOT_LANES[lane] || {}).base || 'USDC';
-      // DCA/grid/smarttrade trade a user-named token; signal/scanner auto-discover.
+      var base = laneBase(lane);
+      $('#nb-lane-hint').textContent = ({ auto: 'Runs every algorithm on ' + laneLabel(lane) + ' and shifts budget to whichever is winning.', signal: 'Auto-finds tokens on ' + laneLabel(lane) + ', quoted in ' + base + '.', scanner: 'Scans every pair it can see on ' + laneLabel(lane) + '.', dca: 'Ladders into a ' + laneLabel(lane) + ' token.', grid: 'Runs the grid on a ' + laneLabel(lane) + ' token.', smarttrade: 'One managed position on ' + laneLabel(lane) + '.' })[type] || '';
+      $('#nb-pair').placeholder = 'SYMBOL/' + base;
       var needsPair = (type === 'dca' || type === 'grid' || type === 'smarttrade');
       $('#nb-pair-wrap').style.display = needsPair ? '' : 'none';
-      if (needsPair && !$('#nb-pair').value) $('#nb-pair').value = 'TOKEN/' + base;
+      if (needsPair && (!$('#nb-pair').value || /\/[A-Z]+$/.test($('#nb-pair').value))) $('#nb-pair').value = ($('#nb-pair').value.split('/')[0] || 'TOKEN') + '/' + base;
+      $('#nb-adv-dca').style.display = (type === 'dca' || type === 'signal') ? '' : 'none';
+      $('#nb-candle-wrap').style.display = (type === 'dca' || type === 'signal' || type === 'smarttrade') ? '' : 'none';
+      $('#nb-adv-grid').style.display = type === 'grid' ? '' : 'none';
+      $('#nb-adv-smart').style.display = type === 'smarttrade' ? '' : 'none';
+      $('#nb-adv-signal').style.display = (type === 'signal' || type === 'scanner') ? '' : 'none';
+      if ($('#nb-rank-wrap')) $('#nb-rank-wrap').style.display = type === 'signal' ? '' : 'none';
+      if ($('#nb-rank-hint')) $('#nb-rank-hint').textContent = ($('#nb-rank') && $('#nb-rank').value === 'buzz')
+        ? 'Ranks by attention × velocity × exit depth. Attention = CoinGecko search trending, GeckoTerminal trending pools & unique buyers, DexScreener boosts. Not Twitter/Telegram engagement. Same rug gate and risk preset still apply.'
+        : '';
+      if (type === 'auto') { $('#nb-adv-dca').style.display = 'none'; }
       var risky = (mode === 'high' || mode === 'sniper');
       $('#nb-risk').style.display = risky ? '' : 'none';
       if (risky) $('#nb-risk-t').innerHTML = mode === 'sniper'
-        ? 'Sniper trades <b>brand-new</b> microcaps the moment they clear the rug/liquidity gate. There is no track record for new tokens and <b>most go to zero</b> — risk only what you can lose.'
+        ? 'Sniper trades <b>brand-new</b> microcaps the moment they clear the rug/liquidity gate. Most go to zero — the max-loss rail is your seatbelt.'
         : 'High mode trades volatile microcaps driven by social hype. Higher upside, much higher risk of loss.';
     }
-    $('#nb-type').onchange = syncUi; $('#nb-lane').onchange = syncUi; $('#nb-mode').onchange = syncUi;
-    syncUi();
+    $('#nb-type').onchange = syncUi; $('#nb-lane').onchange = function () { syncUi(); fillHeld(); }; $('#nb-mode').onchange = syncUi; if ($('#nb-rank')) $('#nb-rank').onchange = syncUi;
+    $('#nb-held').onchange = function () { if ($('#nb-held').value) $('#nb-pair').value = $('#nb-held').value; };
+    syncUi(); fillHeld();
     $('#nb-go').onclick = function () {
       var type = $('#nb-type').value, lane = $('#nb-lane').value, mode = $('#nb-mode').value;
-      var profitMode = $('#nb-profit').value;
-      var base = (BOT_LANES[lane] || {}).base || 'USDC';
+      var base = laneBase(lane);
+      var num = function (id, d) { var n = Number(($(id) || {}).value); return isFinite(n) ? n : d; };
       var needsPair = (type === 'dca' || type === 'grid' || type === 'smarttrade');
-      var pair = needsPair ? (($('#nb-pair').value || ('TOKEN/' + base)).trim()) : (base + '/' + base);
-      var budget = Number($('#nb-budget').value);
-      var name = ($('#nb-name').value || '').trim() || (type.toUpperCase() + ' ' + (BOT_LANES[lane] || {}).name);
+      var pair = needsPair ? (($('#nb-pair').value || ('TOKEN/' + base)).trim().toUpperCase()) : null;
+      if (needsPair && (/^TOKEN\//.test(pair) || pair.indexOf('/') < 0)) { toast('Pick or type the token to trade', 'bad'); return; }
+      var budget = num('#nb-budget', 0);
       if (!(budget > 0)) { toast('Set a paper budget (USD)', 'bad'); return; }
+      var name = ($('#nb-name').value || '').trim() || ({ auto: '🧠 Full Auto', signal: '🎯 SIGNAL', scanner: '🤖 AUTOPILOT', dca: '🧱 DCA', grid: '📈 GRID', smarttrade: '⚡ SMART' }[type] + ' · ' + laneLabel(lane));
+      var candleCfg = { enabled: (($('#nb-candle') || {}).value || 'on') === 'on', sec: num('#nb-csec', 120), minProfitPct: num('#nb-cmin', 2) };
+      var dcaCfg = { baseOrderUsd: num('#nb-base', 30), safetyOrderUsd: num('#nb-base', 30), maxSafetyOrders: num('#nb-so', 3), safetyStepPct: num('#nb-step', 3), safetyVolumeScale: 1.2, takeProfitPct: num('#nb-tp', 6), trailingTpPct: num('#nb-trail', 2), stopLossPct: num('#nb-sl', 15), startCondition: ($('#nb-start') || {}).value || 'asap', dipPct: num('#nb-dip', 2), maxDealSec: Math.round(num('#nb-tstop', 48) * 3600), candle: candleCfg };
+      var tpOf = function (id, dPct, dShare) { var p = String(($(id) || {}).value || '').split('/'); return { pct: Number(p[0]) || dPct, sharePct: Number(p[1]) || dShare }; };
+      var config;
+      if (type === 'dca') config = dcaCfg;
+      else if (type === 'grid') config = { autoRangePct: num('#nb-range', 6), gridCount: num('#nb-rungs', 10), totalUsd: budget, stopLossPct: num('#nb-gsl', 12) };
+      else if (type === 'smarttrade') config = { amountUsd: num('#nb-amt', 50), takeProfits: [tpOf('#nb-tp1', 20, 50), tpOf('#nb-tp2', 50, 50)], stopLoss: { pct: num('#nb-ssl', 15), trailing: true }, candle: candleCfg };
+      else if (type === 'signal') config = Object.assign({ source: 'discovery', maxConcurrent: num('#nb-conc', 3), minScore: Math.max(0, Math.min(1, num('#nb-score', 50) / 100)), onSignal: { type: 'dca', config: Object.assign({}, dcaCfg, { baseOrderUsd: num('#nb-per', 40), safetyOrderUsd: num('#nb-per', 40) }) } }, (($('#nb-rank') || {}).value === 'buzz') ? { rank: 'buzz' } : {});
+      else if (type === 'auto') config = { rebalanceSec: 900 };
+      else config = { minProfitBps: 30, maxConcurrentPairs: num('#nb-conc', 3), perTradeUsd: num('#nb-per', 40), strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 };
+      var where = ($('#nb-where') || {}).value || 'device';
+      var spec = { name: name, type: type, lane: lane, riskMode: mode, profitMode: $('#nb-profit').value, universe: { pairs: pair ? [pair] : [] }, config: config,
+        risk: { maxLossPct: num('#nb-maxloss', 25), paperSlippageBps: num('#nb-slip', 25) }, pollSec: Math.max(5, num('#nb-poll', 20)), mode: 'paper', network: 'testnet' };
+      if (where === 'cloud' && S.user) { closeSheet(); launchCloud(spec, budget, name); return; }
       ensureBotRunner().then(function (runner) {
-        var bots = (runner.store.all && runner.store.all()) || [];
-        if (!isPro() && bots.length >= 1) { closeSheet(); toast('Free plan allows 1 bot — upgrade for more', 'bad'); location.hash = '#pro'; return; }
+        var bots = runner.store.all();
+        if (!isPro() && bots.length >= 1) { closeSheet(); toast('Free plan allows 1 bot on this device — upgrade for more', 'bad'); location.hash = '#pro'; return; }
         try {
-          var bot = runner.add({ name: name, type: type, lane: lane, riskMode: mode, profitMode: profitMode, universe: { pairs: needsPair ? [pair] : [] }, config: {}, mode: 'paper', network: 'testnet' });
+          var bot = runner.add(spec);
           runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
-            toast('Bot started (paper, $' + budget + ' on ' + (BOT_LANES[lane] || {}).name + ')', 'good');
+            toast('🚀 ' + name + ' launched · $' + budget + ' paper on ' + laneLabel(lane), 'good');
             closeSheet(); renderBotList();
+            runner.tickNow(bot.id).then(function () { renderBotList(); }).catch(function () {});
           }).catch(function (e) { toast('Start failed: ' + (e.message || e), 'bad'); closeSheet(); renderBotList(); });
         } catch (e) { toast('Create failed: ' + (e.message || e), 'bad'); }
       }).catch(function () { toast('Bots engine unavailable', 'bad'); });
@@ -1598,14 +2518,35 @@
   }
   function armLiveSheet(id) {
     if (!isPro()) { toast('Live trading is a Pro feature', 'bad'); location.hash = '#pro'; return; }
+    var bot = S.botRunner && S.botRunner.store.get(id); var lane = (bot && bot.lane) || 'block'; var base = laneBase(lane);
     openSheet('<div class="spread"><h2>Arm live trading</h2><button class="btn sm ghost" id="al-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="banner warn"><span>' + ic('warn', 18) + '</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
-      '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"></div>' +
+      '<div class="banner warn"><span>' + ic('warn', 18) + '</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch, the max-loss rail and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
+      '<div style="background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>🔴 Keep this page open.</b> A live bot trades only while the wallet is open on this device — your keys never leave it. Closing or backgrounding the tab pauses it.</div>' +
+      '<div id="al-avail" style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><span class="dim">Checking your ' + esc(base) + ' on ' + esc(laneLabel(lane)) + '…</span></div>' +
+      '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"><div class="hint dim" style="font-size:12px;margin-top:4px" id="al-hint"></div></div>' +
       '<button class="btn primary wide" id="al-go">Arm live</button>');
     $('#al-x').onclick = closeSheet;
+    var avail = null;
+    laneAvailable(lane).then(function (a) {
+      avail = a; var el = $('#al-avail'); if (!el) return;
+      var amtTxt = (a.amount || 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      el.innerHTML = '<b>Available to trade:</b> <span class="num">' + amtTxt + ' ' + esc(a.base) + '</span>' + (a.usd != null ? ' <span class="dim">(≈ ' + fmtUsd(a.usd) + ')</span>' : '') + ' on ' + esc(laneLabel(lane)) +
+        (a.nativeSymbol && String(a.nativeSymbol).toUpperCase() !== String(a.base).toUpperCase() ? '<div class="dim" style="font-size:12px">Gas: ' + (a.nativeAmount || 0).toLocaleString(undefined, { maximumFractionDigits: 6 }) + ' ' + esc(a.nativeSymbol) + '</div>' : '') +
+        (!(a.amount > 0) ? '<div class="bad" style="font-size:12px;margin-top:4px">You hold no ' + esc(a.base) + ' on ' + esc(laneLabel(lane)) + ' — the bot will have nothing to buy with. Receive some first.</div>' : '') +
+        (a.usd != null && a.usd > 0 ? '<div style="margin-top:6px"><button class="btn sm ghost" id="al-max">Use all ≈ ' + fmtUsd(a.usd) + '</button></div>' : '');
+      if ($('#al-max')) $('#al-max').onclick = function () { $('#al-alloc').value = String(Math.floor(a.usd * 100) / 100); hint(); };
+      hint();
+    }).catch(function (e) { var el = $('#al-avail'); if (el) el.innerHTML = '<span class="dim">Could not read your ' + esc(base) + ' balance on ' + esc(laneLabel(lane)) + ' (' + esc(e && e.message || e) + '). You can still set a cap.</span>'; });
+    function hint() {
+      var h = $('#al-hint'); if (!h) return; var alloc = Number($('#al-alloc').value);
+      if (!(alloc > 0) || !avail || avail.usd == null) { h.textContent = ''; return; }
+      h.innerHTML = alloc > avail.usd ? '<span class="bad">Cap is above what you hold (≈ ' + fmtUsd(avail.usd) + ' ' + esc(avail.base) + ') — the bot can only deploy what is there.</span>' : 'Up to ' + Math.round(alloc / avail.usd * 100) + '% of your ' + esc(avail.base) + ' on ' + esc(laneLabel(lane)) + '.';
+    }
+    $('#al-alloc').oninput = hint;
     $('#al-go').onclick = function () {
       var alloc = Number($('#al-alloc').value); if (!(alloc > 0)) { toast('Set an allocation cap', 'bad'); return; }
-      S.botRunner.armLive(id, { allocationUsd: alloc }).then(function () { toast('Bot armed live (within $' + alloc + ')', 'good'); closeSheet(); renderBotList(); }).catch(function (e) { toast('Arm failed: ' + (e.message || e), 'bad'); });
+      if (avail && !(avail.amount > 0)) { toast('No ' + avail.base + ' on ' + laneLabel(lane) + ' to trade with', 'bad'); return; }
+      S.botRunner.armLive(id, { allocationUsd: alloc }).then(function () { toast('🔴 Bot armed live (within $' + alloc + ') — keep this page open', 'good'); closeSheet(); _botListSig = ''; renderBotList(); }).catch(function (e) { toast('Arm failed: ' + (e.message || e), 'bad'); });
     };
   }
   function openArena() {
@@ -1619,6 +2560,148 @@
       if (!window.AgentArena) { $('#ar-out').textContent = 'Arena module not loaded.'; return; }
       $('#ar-out').textContent = 'Arena is ready — vectors load from the live scenario set. Use the bots tab to deploy a practiced strategy as a paper bot.';
     };
+  }
+
+  /* ---------------- MOON — tap-to-buy BLOCK-20 tokens (docs/MOONSHOT.md) ---------------- */
+  var MOON = { tab: 'trending', feed: null, positions: {}, blockBal: 0, blockUsd: null };
+  function sparkSvg(points, w, h) {
+    var ps = (points || []).map(Number).filter(isFinite); if (ps.length < 2) return '';
+    var lo = Math.min.apply(null, ps), hi = Math.max.apply(null, ps); if (hi === lo) { lo = lo * 0.98; hi = hi * 1.02 || 1; }
+    var up = ps[ps.length - 1] >= ps[0];
+    var d = ps.map(function (p, i) { return (i ? 'L' : 'M') + (i / (ps.length - 1) * w).toFixed(1) + ',' + (h - (p - lo) / (hi - lo) * (h - 4) - 2).toFixed(1); }).join('');
+    return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-hidden="true"><path d="' + d + '" fill="none" stroke="' + (up ? '#2ecc71' : '#ff6b6b') + '" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+  }
+  function pctChip(v) { if (v == null || !isFinite(Number(v))) return '<span class="dim">—</span>'; var n = Number(v); return '<span class="pct ' + (n >= 0 ? 'pos' : 'neg') + ' num">' + (n >= 0 ? '+' : '') + n.toFixed(Math.abs(n) >= 100 ? 0 : 1) + '%</span>'; }
+  function fmtPrice(u) { var n = Number(u); if (!isFinite(n) || n <= 0) return '—'; return '$' + (n >= 1 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : n >= 0.01 ? n.toFixed(4) : n.toPrecision(3)); }
+  function moonRefreshWallet() {
+    return Promise.all([
+      blockSpendableBase(Wallet.address).then(function (b) { MOON.blockBal = b / COIN; }).catch(function () {}),
+      Wiring.moon.positions().then(function (p) { MOON.positions = p || {}; }).catch(function () {}),
+    ]);
+  }
+  VIEWS.moon = function (v) {
+    v.innerHTML = '<div class="card"><div class="spread"><div><div class="dim">Your BLOCK</div><div class="hero-bal num" id="mn-bal">—</div><div class="dim" style="font-size:12px" id="mn-balusd"></div></div><div class="col" style="align-items:flex-end;gap:6px"><a class="btn primary sm" href="/buy" target="_blank">Get BLOCK</a><a class="btn sm ghost" href="#receive">Receive</a></div></div></div>' +
+      '<div class="card"><div class="sechead"><h2>🚀 Moon</h2><span class="dim" style="font-size:12px" id="mn-meta"></span></div>' +
+      '<div class="tabs" id="mn-tabs"><div class="tab" data-t="trending">Trending</div><div class="tab" data-t="new">New</div><div class="tab" data-t="gainers">Gainers</div><div class="tab" data-t="bags">My bags</div></div>' +
+      '<div id="mn-list" class="list"><div class="empty">Loading the feed…</div></div>' +
+      '<p class="dim" style="font-size:12px;margin-top:10px">Tap a token to buy with BLOCK in one step. Trades run on the native AMM, signed on your device. Microcaps can go to zero — never ape more than you can lose.</p></div>';
+    $$('#mn-tabs .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-t') === MOON.tab); t.onclick = function () { MOON.tab = t.getAttribute('data-t'); $$('#mn-tabs .tab').forEach(function (x) { x.classList.toggle('active', x === t); }); renderMoonList(); }; });
+    moonRefreshWallet().then(renderMoonHeader);
+    loadMoonFeed();
+  };
+  function renderMoonHeader() {
+    if (!$('#mn-bal')) return;
+    $('#mn-bal').textContent = fmtAmt(MOON.blockBal, 4) + ' BLOCK';
+    if (MOON.blockUsd > 0) $('#mn-balusd').textContent = '≈ ' + fmtUsd(MOON.blockBal * MOON.blockUsd) + ' · BLOCK ' + fmtPrice(MOON.blockUsd);
+  }
+  function loadMoonFeed() {
+    Wiring.moon.feed('trending').then(function (feed) {
+      MOON.feed = feed; MOON.blockUsd = feed.blockUsd || MOON.blockUsd;
+      if ($('#mn-meta')) $('#mn-meta').textContent = (feed.count || 0) + ' tokens · block ' + (feed.height || '—');
+      renderMoonHeader(); renderMoonList();
+    }).catch(function () { if ($('#mn-list')) $('#mn-list').innerHTML = '<div class="empty">Feed unavailable right now.</div>'; });
+  }
+  function renderMoonList() {
+    var box = $('#mn-list'); if (!box || !MOON.feed) return;
+    var rows = Moon.rank(MOON.feed.tokens || [], MOON.tab === 'bags' ? 'trending' : MOON.tab);
+    if (MOON.tab === 'bags') rows = rows.filter(function (t) { var p = MOON.positions[String(t.contract).toLowerCase()]; return p && Number(p.qty) > 0; });
+    if (!rows.length) { box.innerHTML = '<div class="empty">' + (MOON.tab === 'bags' ? 'No bags yet. Buy something from Trending to start one.' : 'No tokens with a live pool yet.') + '</div>'; return; }
+    box.innerHTML = rows.map(function (t) {
+      var pos = MOON.positions[String(t.contract).toLowerCase()];
+      var pnl = pos ? Moon.pnl(pos, t.priceBlock, MOON.blockUsd) : null;
+      var ico = t.logo ? '<img src="' + esc(t.logo) + '" alt="">' : '';
+      return '<div class="li moonrow" data-cid="' + esc(t.contract) + '"><span class="ico">' + esc(String(t.symbol || '?').slice(0, 1)) + ico + '</span>' +
+        '<span class="col" style="align-items:flex-start;min-width:0"><b>' + esc(t.symbol || '?') + ' <span class="dim" style="font-weight:500;font-size:12px">' + esc(t.name || '') + '</span></b>' +
+        '<span class="dim" style="font-size:12px">liq ' + fmtAmt(t.liquidityBlock, 0) + ' BLOCK' + (t.lpLocked ? ' · 🔒' : ' · unlocked') + (t.ageBlocks != null && t.ageBlocks < 144 ? ' · 🆕' : '') + (pnl && pnl.qty > 0 ? ' · bag ' + fmtAmt(pnl.qty, 2) + (pnl.unrealizedPct != null ? ' (' + Moon.fmtPct(pnl.unrealizedPct) + ')' : '') : '') + '</span></span>' +
+        '<span style="width:72px;flex:none">' + sparkSvg(t.spark, 72, 36) + '</span>' +
+        '<span class="col" style="align-items:flex-end;flex:none"><b class="num">' + fmtPrice(t.priceUsd) + '</b>' + pctChip(t.change24hPct) + '</span></div>';
+    }).join('');
+    $$('#mn-list .moonrow').forEach(function (r) { r.onclick = function () { moonTokenSheet(r.getAttribute('data-cid')); }; });
+  }
+  function moonTokenSheet(cid) {
+    var t = (MOON.feed && MOON.feed.tokens || []).filter(function (x) { return String(x.contract).toLowerCase() === String(cid).toLowerCase(); })[0];
+    if (!t) return;
+    var pool = { blockReserve: t.blockReserve, tokenReserve: t.tokenReserve, decimals: t.decimals, poolFeeBps: t.poolFeeBps };
+    var warns = Moon.warnings(t);
+    var state = { usd: 20, pct: 50, held: '0', side: 'buy' };
+    openSheet('<div class="spread"><h2>' + (t.logo ? '<img src="' + esc(t.logo) + '" alt="" style="width:26px;height:26px;border-radius:7px;vertical-align:middle;margin-right:6px">' : '') + esc(t.symbol || '?') + ' <span class="dim" style="font-size:13px;font-weight:500">' + esc(t.name || '') + '</span></h2><button class="btn sm ghost" id="mt-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="spread" style="margin:8px 0 4px"><div><div class="hero-bal num" style="font-size:30px">' + fmtPrice(t.priceUsd) + '</div><div class="dim" style="font-size:12px">' + fmtAmt(t.priceBlock, 8) + ' BLOCK</div></div><div class="col" style="align-items:flex-end;font-size:13px"><span>1h ' + pctChip(t.change1hPct) + '</span><span>24h ' + pctChip(t.change24hPct) + '</span><span>7d ' + pctChip(t.change7dPct) + '</span></div></div>' +
+      '<div style="height:70px;margin:6px 0">' + (sparkSvg(t.spark, 320, 70) || '<div class="dim" style="font-size:12px">Chart fills in as 15-minute snapshots record.</div>') + '</div>' +
+      '<div class="list" style="margin-bottom:10px"><div class="kv"><span class="muted">Liquidity</span><span class="mono num">' + fmtAmt(t.liquidityBlock, 1) + ' BLOCK' + (t.liquidityUsd ? ' ≈ ' + fmtUsd(t.liquidityUsd) : '') + '</span></div>' +
+      '<div class="kv"><span class="muted">LP lock</span><span class="mono">' + (t.lpLocked ? '🔒 ' + t.lockDaysLeft + 'd left' : 'unlocked') + '</span></div>' +
+      '<div class="kv"><span class="muted">Age</span><span class="mono num">' + (t.ageBlocks != null ? (t.ageBlocks < 144 ? Math.round(t.ageBlocks * 10 / 60) + 'h' : Math.round(t.ageBlocks / 144) + 'd') : '—') + '</span></div>' +
+      '<div class="kv"><span class="muted">Contract</span><button class="btn sm ghost" id="mt-copy">' + esc(shortAddr(t.contract)) + ' ' + ic('copy', 13) + '</button></div></div>' +
+      (warns.length ? '<div class="banner ' + (warns.some(function (w) { return w.code === 'danger'; }) ? 'danger' : 'warn') + '"><span>' + ic('warn', 18) + '</span><div>' + warns.map(function (w) { return esc(w.text); }).join('<br>') + '</div></div>' : '') +
+      '<div id="mt-pos" class="list" style="margin:10px 0"></div>' +
+      '<div class="tabs"><div class="tab active" data-s="buy">Buy</div><div class="tab" data-s="sell">Sell</div></div>' +
+      '<div id="mt-buy"><div class="row" style="gap:6px;margin-bottom:8px">' + Moon.PRESETS_USD.map(function (u) { return '<button class="btn sm preset' + (u === state.usd ? ' on' : '') + '" data-usd="' + u + '">$' + u + '</button>'; }).join('') + '</div>' +
+      '<div class="field"><label>Amount (USD)</label><input id="mt-usd" inputmode="decimal" value="' + state.usd + '"></div><div id="mt-q" class="muted" style="font-size:13px;min-height:36px"></div><button class="btn primary wide" id="mt-go">🚀 Buy ' + esc(t.symbol || '') + '</button></div>' +
+      '<div id="mt-sell" style="display:none"><div class="row" style="gap:6px;margin-bottom:8px">' + [25, 50, 75, 100].map(function (p) { return '<button class="btn sm preset' + (p === state.pct ? ' on' : '') + '" data-pct="' + p + '">' + p + '%</button>'; }).join('') + '</div>' +
+      '<input type="range" id="mt-range" class="rangebar" min="1" max="100" value="' + state.pct + '"><div id="mt-sq" class="muted" style="font-size:13px;min-height:36px"></div><button class="btn primary wide" id="mt-sgo">Sell</button></div>' +
+      '<p class="dim" style="font-size:11px;margin-top:10px">1% slippage · 0.3% pool fee · gas in BLOCK. Buys above 15% price impact are refused.</p>');
+    $('#mt-x').onclick = closeSheet;
+    $('#mt-copy').onclick = function () { copy(t.contract); };
+    function renderPos() {
+      Chain.token(t.contract, Wallet.address).then(function (info) {
+        var held = String((info && (info.holderBalance != null ? info.holderBalance : info.balance)) || '0');
+        state.held = held;
+        var pos = MOON.positions[String(t.contract).toLowerCase()];
+        var pnl = Moon.pnl(pos || { qty: '0', costBlock: '0', costUsd: 0, decimals: t.decimals }, t.priceBlock, MOON.blockUsd, held);
+        var box = $('#mt-pos'); if (!box) return;
+        if (!(pnl.qty > 0)) { box.innerHTML = ''; return; }
+        box.innerHTML = '<div class="kv"><span class="muted">Your bag</span><span class="mono num">' + fmtAmt(pnl.qty, 4) + ' ' + esc(t.symbol || '') + ' ≈ ' + fmtAmt(pnl.valueBlock, 4) + ' BLOCK' + (pnl.valueUsd != null ? ' / ' + fmtUsd(pnl.valueUsd) : '') + '</span></div>' +
+          (pnl.untracked ? '<div class="kv"><span class="muted">P&amp;L</span><span class="dim">bought outside Moon — no cost basis</span></div>' :
+            '<div class="kv"><span class="muted">P&amp;L</span><span class="mono num ' + pnlClass(pnl.unrealizedBlock) + '">' + (pnl.unrealizedUsd != null ? fmtSigned(pnl.unrealizedUsd) + ' · ' : '') + Moon.fmtPct(pnl.unrealizedPct) + '</span></div>');
+        sellQuote();
+      }).catch(function () {});
+    }
+    function buyQuote() {
+      var usd = Number($('#mt-usd').value); state.usd = usd;
+      var q = Moon.quoteBuyUsd(usd, MOON.blockUsd, pool), box = $('#mt-q'), go = $('#mt-go');
+      if (!q) { box.textContent = MOON.blockUsd > 0 ? 'Enter an amount.' : 'BLOCK price unavailable.'; go.disabled = true; return; }
+      state.q = q;
+      var short = q.blockIn > MOON.blockBal;
+      box.innerHTML = 'Pay <b class="num">' + fmtAmt(q.blockIn, 4) + ' BLOCK</b> → get ≈ <b class="num">' + fmtAmt(q.tokensOut, 2) + ' ' + esc(t.symbol || '') + '</b><br><span class="dim">min ' + fmtAmt(Number(q.minOut) / Math.pow(10, t.decimals), 2) + ' · impact ' + (q.impactPct != null ? q.impactPct.toFixed(2) + '%' : '—') + '</span>' +
+        (short ? '<br><span class="bad">You need ' + fmtAmt(q.blockIn - MOON.blockBal, 4) + ' more BLOCK.</span>' : '') + (q.tooBig ? '<br><span class="bad">Too big for this pool — lower the amount.</span>' : '');
+      go.disabled = short || q.tooBig;
+    }
+    function sellQuote() {
+      var pct = Number($('#mt-range').value); state.pct = pct;
+      var amt = Moon.fractionOf(state.held, pct);
+      var q = Moon.quoteSell(amt, MOON.blockUsd, pool), box = $('#mt-sq'), go = $('#mt-sgo');
+      if (!q) { box.textContent = BigInt(state.held || '0') > 0n ? 'Move the slider.' : 'Nothing to sell yet.'; go.disabled = true; return; }
+      state.sq = q;
+      box.innerHTML = 'Sell <b class="num">' + fmtAmt(q.tokensIn, 2) + ' ' + esc(t.symbol || '') + '</b> (' + pct + '%) → get ≈ <b class="num">' + fmtAmt(q.blockOut, 4) + ' BLOCK</b>' + (q.usdOut != null ? ' / ' + fmtUsd(q.usdOut) : '') + '<br><span class="dim">impact ' + (q.impactPct != null ? q.impactPct.toFixed(2) + '%' : '—') + '</span>' + (q.tooBig ? '<br><span class="bad">Too big for this pool — sell in pieces.</span>' : '');
+      go.disabled = q.tooBig;
+    }
+    $$('#mt-buy [data-usd]').forEach(function (b) { b.onclick = function () { $$('#mt-buy .preset').forEach(function (x) { x.classList.toggle('on', x === b); }); $('#mt-usd').value = b.getAttribute('data-usd'); buyQuote(); }; });
+    $$('#mt-sell [data-pct]').forEach(function (b) { b.onclick = function () { $$('#mt-sell .preset').forEach(function (x) { x.classList.toggle('on', x === b); }); $('#mt-range').value = b.getAttribute('data-pct'); sellQuote(); }; });
+    $('#mt-usd').oninput = buyQuote; $('#mt-range').oninput = sellQuote;
+    $$('#sheet .tab').forEach(function (tab) { tab.onclick = function () { $$('#sheet .tab').forEach(function (x) { x.classList.toggle('active', x === tab); }); var s = tab.getAttribute('data-s'); $('#mt-buy').style.display = s === 'buy' ? '' : 'none'; $('#mt-sell').style.display = s === 'sell' ? '' : 'none'; }; });
+    $('#mt-go').onclick = function () { moonExecute(t, state.q, 'buy'); };
+    $('#mt-sgo').onclick = function () { moonExecute(t, state.sq, 'sell'); };
+    buyQuote(); renderPos();
+  }
+  function moonExecute(t, q, side) {
+    if (!q) return;
+    (async function () {
+      var lines = side === 'buy'
+        ? [['Buy', '≈ ' + fmtAmt(q.tokensOut, 2) + ' ' + (t.symbol || '')], ['Pay', fmtAmt(q.blockIn, 4) + ' BLOCK' + (q.usdIn != null ? ' (' + fmtUsd(q.usdIn) + ')' : '')], ['Min received', fmtAmt(Number(q.minOut) / Math.pow(10, t.decimals), 2)], ['Price impact', (q.impactPct || 0).toFixed(2) + '%']]
+        : [['Sell', fmtAmt(q.tokensIn, 2) + ' ' + (t.symbol || '')], ['Receive', '≈ ' + fmtAmt(q.blockOut, 4) + ' BLOCK' + (q.usdOut != null ? ' (' + fmtUsd(q.usdOut) + ')' : '')], ['Min received', fmtAmt(Number(q.minOut) / COIN, 4) + ' BLOCK'], ['Price impact', (q.impactPct || 0).toFixed(2) + '%']];
+      var warns = Moon.warnings(t).map(function (w) { return w.text; });
+      var ok = await confirmSheet({ title: (side === 'buy' ? '🚀 Buy ' : 'Sell ') + (t.symbol || ''), subtitle: 'Native AMM swap, signed on this device.', lines: lines, warnings: warns, danger: warns.some(function (w) { return /do not buy/i.test(w); }), okText: side === 'buy' ? 'Buy now' : 'Sell now' });
+      if (!ok) { moonTokenSheet(t.contract); return; }
+      var prevChain = S.chain; S.chain = 'block';
+      try {
+        if (!(await ensureGas())) { S.chain = prevChain; moonTokenSheet(t.contract); return; }
+        toast('Signing…');
+        var r = await Wiring.moon.execute(q, t);
+        toast((side === 'buy' ? '🚀 Bought ' : '💸 Sold ') + (t.symbol || '') + ' · ' + shortAddr(String((r && r.txid) || '')), 'good');
+        setTimeout(function () { moonRefreshWallet().then(function () { renderMoonHeader(); renderMoonList(); }); }, 2500);
+        closeSheet();
+      } catch (e) { toast((side === 'buy' ? 'Buy' : 'Sell') + ' failed: ' + (e.message || e), 'bad'); moonTokenSheet(t.contract); }
+      finally { S.chain = prevChain; }
+    })();
   }
 
   /* ---------------- PRO ---------------- */
@@ -1662,12 +2745,124 @@
   };
   function featRow(label, f, p, cp) { return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + f + '</td><td class="c good">' + p + '</td><td class="c good">' + cp + '</td></tr>'; }
 
+  /* ---------------- EXPORT A PRIVATE KEY (chain-specific, gated) ----------------
+   * Reveals ONE chain's private key for the ACTIVE account. Gate: an explicit
+   * acknowledgement + a fresh wallet-password check (3 wrong attempts close the
+   * sheet). The key stays blurred until the user holds the reveal button, the
+   * sheet self-destructs after EXPORT_TTL seconds and the clipboard is wiped
+   * CLIP_TTL seconds after a copy. Nothing here logs, stores or sends the key. */
+  var EXPORT_CHAINS = [
+    { id: 'seed', name: 'Seed phrase', sub: 'Recovery words of this account (or its raw HD seed)' },
+    { id: 'evm', name: 'Ethereum & EVM', sub: 'One key for every EVM network (hex)' },
+    { id: 'bitcoin', name: 'Bitcoin', sub: 'WIF · Core import file' },
+    { id: 'litecoin', name: 'Litecoin', sub: 'WIF · Core import file' },
+    { id: 'dogecoin', name: 'Dogecoin', sub: 'WIF · Core import file' },
+    { id: 'solana', name: 'Solana', sub: 'base58 (Phantom) · JSON array' },
+    { id: 'block', name: 'BLOCK', sub: 'ML-DSA-44 secret key (hex)' },
+  ];
+  var EXPORT_TTL = 60, CLIP_TTL = 30;
+  function famOfChain(c) { return (c === 'bitcoin' || c === 'litecoin' || c === 'dogecoin' || c === 'solana' || c === 'block') ? c : 'evm'; }
+  function exportKeySheet() {
+    if (!S.unlocked) { toast('Unlock your wallet first', 'bad'); return; }
+    var acct = S.account || { id: 'main', label: 'Main' };
+    var fams = { block: true, seed: !(acct.source === 'watch' || acct.source === 'key' || acct.source === 'keystore' || acct.source === 'walletdat') };
+    (S.chains || []).forEach(function (c) { fams[famOfChain(c)] = true; });
+    var list = EXPORT_CHAINS.filter(function (c) { return fams[c.id] && !(acct.source === 'watch' && c.id !== 'block'); });
+    var tiles = list.map(function (c) {
+      return '<button class="li" data-ek="' + c.id + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer"><span class="ico">' + ic(c.id === 'block' ? 'shield' : c.id === 'seed' ? 'doc' : 'key', 15) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(c.name) + '</b><span class="dim" style="font-size:12px">' + esc(c.sub) + '</span></span></button>';
+    }).join('');
+    openSheet('<div class="spread"><h2>Export a private key</h2><button class="btn sm ghost" id="ek-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="dim" style="font-size:12px;margin:4px 0 10px">Account: <b>' + esc(acct.label || 'Main') + '</b>. Pick the chain whose key you want to reveal.' + (acct.source === 'watch' ? ' This is a watch-only account — it holds no keys.' : '') + '</p>' +
+      '<div class="list">' + tiles + '</div>');
+    $('#ek-x').onclick = closeSheet;
+    $$('#sheet [data-ek]').forEach(function (b) { b.addEventListener('click', function () { exportKeyGate(b.getAttribute('data-ek'), acct); }); });
+  }
+  function exportKeyGate(chainId, acct) {
+    var meta = EXPORT_CHAINS.filter(function (c) { return c.id === chainId; })[0] || { name: chainId };
+    var tries = 0;
+    openSheet('<div class="spread"><h2>' + esc(meta.name) + ' key</h2><button class="btn sm ghost" id="ek-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="banner danger" style="margin:8px 0 12px"><span>' + ic('shield', 18) + '</span><div><b>DANGER.</b> ' + (chainId === 'seed' ? 'This phrase gives full, irreversible control of EVERY chain in the <b>' + esc(acct.label || 'Main') + '</b> account.' : 'This key gives full, irreversible control of the ' + esc(meta.name) + ' funds in the <b>' + esc(acct.label || 'Main') + '</b> account.') + ' Anyone who sees it can take everything. Never type it into a website or chat — Blockle support will never ask for it.</div></div>' +
+      '<label class="row" style="gap:8px;align-items:flex-start;font-size:13px;cursor:pointer"><input type="checkbox" id="ek-ack" style="margin-top:3px"><span>I understand that anyone with this key controls these funds, and nobody is watching my screen.</span></label>' +
+      '<div class="field" style="margin-top:10px"><label>Wallet password</label><input id="ek-pw" type="password" autocomplete="current-password" placeholder="Re-enter to confirm it is you"></div>' +
+      '<div id="ek-err" class="bad" style="min-height:18px;font-size:13px"></div>' +
+      '<button class="btn wide primary" id="ek-go" disabled>Reveal for ' + EXPORT_TTL + ' seconds</button>');
+    $('#ek-x').onclick = closeSheet;
+    function arm() { $('#ek-go').disabled = !($('#ek-ack').checked && $('#ek-pw').value.length > 0); }
+    $('#ek-ack').onchange = arm; $('#ek-pw').oninput = arm;
+    $('#ek-pw').onkeydown = function (e) { if (e.key === 'Enter' && !$('#ek-go').disabled) $('#ek-go').click(); };
+    $('#ek-go').onclick = function () {
+      var pw = $('#ek-pw').value; $('#ek-pw').value = '';
+      $('#ek-go').disabled = true; $('#ek-err').textContent = '';
+      Wiring.exportKey(chainId, pw).then(function (k) { pw = null; exportKeyReveal(k, meta, acct); }).catch(function (e) {
+        pw = null;
+        var msg = (e && e.message) || String(e);
+        if (/wrong password/i.test(msg)) { tries++; if (tries >= 3) { closeSheet(); toast('Too many wrong passwords — export cancelled', 'bad'); return; } msg = 'Wrong password (' + (3 - tries) + ' attempt' + (3 - tries === 1 ? '' : 's') + ' left)'; }
+        $('#ek-err').textContent = msg; $('#ek-ack').checked = false; arm();
+      });
+    };
+  }
+  function exportKeyReveal(k, meta, acct) {
+    var showAlt = false, left = EXPORT_TTL, timer = null, clipTimer = null;
+    var secretBox = 'style="filter:blur(9px);user-select:none;-webkit-user-select:none;word-break:break-all;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px;line-height:1.5;transition:filter .15s;min-height:44px"';
+    openSheet('<div class="spread"><h2>' + esc(meta.name) + ' key</h2><span class="row" style="gap:8px"><span class="chip" id="ek-ttl">' + left + 's</span><button class="btn sm ghost" id="ek-x">' + ic('close', 15) + '</button></span></div>' +
+      '<p class="dim" style="font-size:12px;margin:4px 0 10px">' + esc(acct.label || 'Main') + (k.imported ? ' · imported' : (k.path ? ' · ' + esc(k.path) : '')) + (k.keyCount > 1 ? ' · ' + k.keyCount + ' keys (this is the primary one; the Core file has all of them)' : '') + '</p>' +
+      (k.note ? '<div class="banner info" style="margin:0 0 10px"><span>' + ic('shield', 16) + '</span><div style="font-size:12px">' + esc(k.note) + '</div></div>' : '') +
+      (k.address ? '<div class="field"><label>Address</label><div class="mono" style="font-size:12px;word-break:break-all">' + esc(k.address) + '</div></div>' : '') +
+      (k.passphrase ? '<p class="dim" style="font-size:12px;margin:0 0 8px">This phrase is protected by a passphrase you set at import — the words alone do not reproduce the account.</p>' : '') +
+      '<div class="field"><label id="ek-label">' + esc(k.label) + '</label><div id="ek-secret" class="mono" ' + secretBox + '>' + renderSecret(k, false) + '</div></div>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px"><button class="btn primary" id="ek-hold">Hold to reveal</button><button class="btn ghost" id="ek-copy">Copy (wiped in ' + CLIP_TTL + 's)</button>' +
+      (k.alt ? '<button class="btn ghost sm" id="ek-alt">Show ' + esc(k.alt.label) + '</button>' : '') +
+      (k.dump ? '<button class="btn ghost sm" id="ek-dl">Download Core import file' + (k.keyCount > 1 ? ' (' + k.keyCount + ' keys)' : '') + '</button>' : '') + '</div>' +
+      '<p class="dim" style="font-size:12px;margin-top:10px">The key is blurred until you hold the button, this sheet closes itself when the timer runs out, and the clipboard is cleared ' + CLIP_TTL + ' seconds after a copy. Write it somewhere private and offline.</p>');
+    var box = $('#ek-secret');
+    function current() { return showAlt && k.alt ? k.alt.secret : k.secret; }
+    function renderSecret(kk, alt) { return (!alt && kk.words) ? '<span style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px">' + kk.words.map(function (w, i) { return '<span style="display:flex;gap:6px;align-items:baseline"><span class="dim" style="font-size:11px;min-width:18px;text-align:right">' + (i + 1) + '</span>' + esc(w) + '</span>'; }).join('') + '</span>' : esc(alt && kk.alt ? kk.alt.secret : kk.secret); }
+    function wipe() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (box) { box.textContent = ''; box = null; }
+      k = { address: '', secret: '', keys: [] };
+    }
+    function reveal(on) { if (!box) return; box.style.filter = on ? 'none' : 'blur(9px)'; box.style.userSelect = on ? 'text' : 'none'; }
+    $('#ek-x').onclick = function () { wipe(); closeSheet(); };
+    var hold = $('#ek-hold');
+    ['pointerdown', 'touchstart'].forEach(function (ev) { hold.addEventListener(ev, function (e) { e.preventDefault(); reveal(true); }, { passive: false }); });
+    ['pointerup', 'pointerleave', 'pointercancel', 'touchend', 'touchcancel'].forEach(function (ev) { hold.addEventListener(ev, function () { reveal(false); }); });
+    window.addEventListener('blur', function onBlur() { reveal(false); if (!box) window.removeEventListener('blur', onBlur); });
+    $('#ek-copy').onclick = function () {
+      var v = current(); if (!v) return;
+      try {
+        navigator.clipboard.writeText(v).then(function () {
+          toast('Copied — clipboard clears in ' + CLIP_TTL + 's');
+          if (clipTimer) clearTimeout(clipTimer);
+          clipTimer = setTimeout(function () { try { navigator.clipboard.writeText(''); } catch (_) {} }, CLIP_TTL * 1000);
+        }).catch(function () { toast('Copy blocked by the browser', 'bad'); });
+      } catch (_) { toast('Copy blocked by the browser', 'bad'); }
+    };
+    if ($('#ek-alt')) $('#ek-alt').onclick = function () {
+      showAlt = !showAlt;
+      $('#ek-label').textContent = showAlt ? k.alt.label : k.label;
+      $('#ek-alt').textContent = 'Show ' + (showAlt ? k.label : k.alt.label);
+      if (box) box.innerHTML = renderSecret(k, showAlt);
+    };
+    if ($('#ek-dl')) $('#ek-dl').onclick = function () {
+      try { var blob = new Blob([k.dump], { type: 'text/plain' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = k.dumpFilename || (k.family + '-blockle-import.txt'); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000); toast('Core import file downloaded — keep it offline', 'good'); } catch (_) { toast('Download failed', 'bad'); }
+    };
+    timer = setInterval(function () {
+      // the sheet was replaced or closed some other way → wipe immediately
+      if (!document.body.contains(box) || !$('#scrim').classList.contains('open')) { wipe(); return; }
+      left--; var t = $('#ek-ttl'); if (t) t.textContent = left + 's';
+      if (left <= 0) { wipe(); closeSheet(); toast('Key hidden'); }
+    }, 1000);
+  }
+
   /* ---------------- SETTINGS ---------------- */
   VIEWS.settings = function (v) {
     v.innerHTML = '<div class="card"><div class="sechead"><h2>Settings</h2></div>' +
       '<div class="list">' +
       settingRow('Account', S.user ? esc(S.user.email || S.user.username || 'signed in') : 'Not signed in', S.user ? '' : '<a class="btn sm" href="/account/login?next=/wallet">Sign in</a>') +
-      settingRow('Export wallet file', 'Encrypted backup for another device', '<button class="btn sm" id="set-export">Export</button>') +
+      settingRow('Accounts &amp; imports', 'Switch accounts, or import a private key, seed phrase, keystore or wallet.dat for a chain', '<button class="btn sm" id="set-accts">Open</button>') +
+      settingRow('Export wallet file', 'Encrypted backup for another device (includes imported accounts)', '<button class="btn sm" id="set-export">Export</button>') +
+      settingRow('Export a private key', 'Reveal one chain\'s key for the active account — password-gated, blurred until held, auto-hides in ' + EXPORT_TTL + ' s', '<button class="btn sm" id="set-key">Reveal</button>') +
       settingRow('WalletConnect', 'Connect to a dApp by pasting a WC URI', '<button class="btn sm" id="set-wc">Connect</button>') +
       settingRow('Theme', 'Light / dark follows your system by default', '<button class="btn sm" id="set-theme">Toggle</button>') +
       settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
@@ -1677,6 +2872,8 @@
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
       '<div class="banner info" style="margin-top:14px"><span>' + ic('shield', 18) + '</span><div>This web wallet is non-custodial: keys are generated and sealed on your device and never sent to the server. Your Blockle identity and backup use post-quantum (ML-DSA) keys, and every other-chain account is derived from that post-quantum root — assets on Bitcoin, Ethereum and Solana stay secured by each network\'s own cryptography. It is a convenient hot wallet — for cold storage prefer the extension or desktop app.</div></div>';
     $('#set-export') && ($('#set-export').onclick = offerBackup);
+    $('#set-accts') && ($('#set-accts').onclick = openAccountSheet);
+    $('#set-key') && ($('#set-key').onclick = exportKeySheet);
     $('#set-theme') && ($('#set-theme').onclick = function () { var cur = document.documentElement.getAttribute('data-theme'); themeApply(cur === 'light' ? 'dark' : 'light'); });
     $('#set-lock') && ($('#set-lock').onclick = lock);
     $('#set-wc') && ($('#set-wc').onclick = wcSheet);

@@ -9,7 +9,22 @@
 // Exposed as global `Wallet`.
 (function (global) {
   const AUTO_LOCK_MS = 30 * 60 * 1000;
-  let session = { id: null, address: null, pub: null, secret: null, seed: null, legacySeed: null, at: 0 };
+  let session = { id: null, address: null, pub: null, secret: null, seed: null, legacySeed: null, accounts: null, activeAccount: 'main', at: 0 };
+  // Imported accounts live INSIDE the wallet's sealed vault as
+  //   pt.accounts = [{ id, seedHex?, keys?, watch?, chains }]
+  // (secret material) while the record carries their public metadata as
+  //   rec.accounts = [{ id, label, source, family, chains, addresses, createdAt }].
+  // 'main' is the wallet's own account (BLOCK identity + BLOCK-bound HD seed).
+  function activeKey(recId) { return 'activeAccount.' + recId; }
+  function metaOf(spec, label) {
+    const fam = spec.family === 'all' ? 'Multi-chain' : ({ evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', solana: 'SOL', block: 'BLOCK' }[spec.family] || String(spec.family || '').toUpperCase());
+    const how = { key: 'key', mnemonic: 'seed', keystore: 'keystore', walletdat: 'wallet.dat', watch: 'watch' }[spec.source] || 'import';
+    return {
+      label: (label && String(label).trim()) || (fam + ' · ' + how),
+      source: spec.source || 'key', family: spec.family || 'evm', chains: (spec.chains || []).slice(),
+      addresses: Object.assign({}, spec.addresses || {}), createdAt: Date.now(),
+    };
+  }
 
   const rid = () => 'w' + Math.random().toString(36).slice(2, 10);
 
@@ -52,6 +67,8 @@
       secret: session.secret,
       seed: session.seed,
       legacySeed: session.legacySeed,
+      accounts: session.accounts,
+      activeAccount: session.activeAccount,
       at: session.at,
     });
   }
@@ -73,6 +90,98 @@
     },
     get activeId() {
       return session.id;
+    },
+    // --- accounts inside this wallet ---------------------------------------
+    get activeAccountId() { return session.activeAccount || 'main'; },
+    // The active account's root for the Accounts layer (in-memory only):
+    //   { id, seedHex, keys, watch, chains }  — chains null = every chain.
+    activeRoot() {
+      if (!session.secret) return null;
+      const id = session.activeAccount || 'main';
+      const acc = id !== 'main' && (session.accounts || []).find((a) => a.id === id);
+      if (!acc) return { id: 'main', seedHex: session.seed, keys: null, watch: null, chains: null, mnemonic: null, passphrase: '' };
+      return { id: acc.id, seedHex: acc.seedHex || null, keys: acc.keys || null, watch: acc.watch || null, chains: acc.chains || null, mnemonic: acc.mnemonic || null, passphrase: acc.passphrase || '' };
+    },
+    // Re-check the wallet password against the sealed vault WITHOUT changing the
+    // session — the gate for revealing key material. Resolves true/false.
+    async verifyPassword(password) {
+      const rec = await selectedRec();
+      if (!rec || !rec.crypto) throw new Error('no wallet');
+      try { await Vault.open(rec.crypto, password); return true; } catch (_) { return false; }
+    },
+    // The BLOCK (ML-DSA-44) key of the unlocked wallet, behind the password
+    // re-check. Read-only: never logged, never persisted, never sent anywhere.
+    async exportBlockKey(password) {
+      if (!session.secret) throw new Error('locked');
+      if (!(await this.verifyPassword(password))) throw new Error('wrong password');
+      return { chain: 'block', family: 'block', format: 'ml-dsa', scheme: 'ml-dsa-44', label: 'ML-DSA-44 secret key (hex)', address: session.address, publicKey: session.pub, secret: session.secret, imported: false, keys: [{ address: session.address, type: 'block', secret: session.secret, path: null }] };
+    },
+    // Public list for the switcher: main first, then every import.
+    async listAccounts() {
+      const rec = await selectedRec();
+      const active = session.activeAccount || 'main';
+      const out = [{ id: 'main', label: 'Main', source: 'hd', family: 'all', chains: null, addresses: { block: rec ? rec.address : session.address }, active: active === 'main' }];
+      for (const m of ((rec && rec.accounts) || [])) out.push(Object.assign({}, m, { active: m.id === active }));
+      return out;
+    },
+    async setActiveAccount(id) {
+      const rec = await selectedRec();
+      if (!rec) throw new Error('no wallet');
+      const ok = id === 'main' || (rec.accounts || []).some((a) => a.id === id);
+      if (!ok) throw new Error('no such account');
+      await Store.set({ [activeKey(rec.id)]: id });
+      session.activeAccount = id;
+      if (session.secret) await saveSession();
+      return id;
+    },
+    // Add an imported account (spec from KeyImport: {source, family, chains,
+    // seedHex?, keys?, watch?, addresses}) to THIS wallet's vault. Needs the
+    // wallet password to re-seal; selects the new account.
+    async addAccount(spec, password, label) {
+      const rec = await selectedRec();
+      if (!rec || !rec.crypto) throw new Error('no wallet');
+      if (!spec || (!spec.seedHex && !spec.keys && !spec.watch)) throw new Error('nothing to import');
+      const pt = await Vault.open(rec.crypto, password);
+      const acc = { id: rid(), seedHex: spec.seedHex || null, keys: spec.keys || null, watch: spec.watch || null, chains: (spec.chains || []).slice(), mnemonic: spec.mnemonic || null, passphrase: spec.passphrase || '' };
+      pt.accounts = (pt.accounts || []).concat([acc]);
+      rec.crypto = await Vault.seal(pt, password);
+      const meta = Object.assign({ id: acc.id }, metaOf(spec, label));
+      rec.accounts = (rec.accounts || []).concat([meta]);
+      const list = await allWallets();
+      const i = list.findIndex((w) => w.id === rec.id);
+      if (i >= 0) { list[i] = rec; await saveWallets(list); }
+      if (session.id === rec.id && session.secret) session.accounts = pt.accounts;
+      await Store.set({ [activeKey(rec.id)]: acc.id });
+      session.activeAccount = acc.id;
+      if (session.secret) await saveSession();
+      return meta;
+    },
+    async renameAccount(id, label) {
+      const rec = await selectedRec();
+      if (!rec) throw new Error('no wallet');
+      const m = (rec.accounts || []).find((a) => a.id === id);
+      if (!m) throw new Error('no such account');
+      m.label = String(label || '').trim() || m.label;
+      const list = await allWallets();
+      const i = list.findIndex((w) => w.id === rec.id);
+      if (i >= 0) { list[i] = rec; await saveWallets(list); }
+      return m;
+    },
+    async removeAccount(id, password) {
+      const rec = await selectedRec();
+      if (!rec || !rec.crypto) throw new Error('no wallet');
+      if (id === 'main') throw new Error('the main account cannot be removed');
+      const pt = await Vault.open(rec.crypto, password);
+      pt.accounts = (pt.accounts || []).filter((a) => a.id !== id);
+      rec.crypto = await Vault.seal(pt, password);
+      rec.accounts = (rec.accounts || []).filter((a) => a.id !== id);
+      const list = await allWallets();
+      const i = list.findIndex((w) => w.id === rec.id);
+      if (i >= 0) { list[i] = rec; await saveWallets(list); }
+      if (session.id === rec.id && session.secret) session.accounts = pt.accounts;
+      if (session.activeAccount === id) { session.activeAccount = 'main'; await Store.set({ [activeKey(rec.id)]: 'main' }); }
+      if (session.secret) await saveSession();
+      return true;
     },
     isUnlocked() {
       return !!session.secret;
@@ -141,7 +250,7 @@
       list.push(rec);
       await saveWallets(list);
       await Store.set({ selectedId: rec.id });
-      session = { id: rec.id, address: kp.address, pub: kp.publicKey, secret: kp.secretKey, seed, at: Date.now() };
+      session = { id: rec.id, address: kp.address, pub: kp.publicKey, secret: kp.secretKey, seed, accounts: [], activeAccount: 'main', at: Date.now() };
       await saveSession();
       return { address: kp.address, id: rec.id };
     },
@@ -176,7 +285,10 @@
           /* re-seal is best-effort; a failure must not block unlock */
         }
       }
-      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, legacySeed, at: Date.now() };
+      let active = 'main';
+      try { active = (await Store.get(activeKey(rec.id)))[activeKey(rec.id)] || 'main'; } catch (_) {}
+      if (active !== 'main' && !(pt.accounts || []).some((a) => a.id === active)) active = 'main';
+      session = { id: rec.id, address: rec.address, pub: pub || rec.publicKey, secret, seed, legacySeed, accounts: pt.accounts || [], activeAccount: active, at: Date.now() };
       await saveSession();
       return { address: rec.address };
     },
@@ -191,14 +303,14 @@
       }
       // Re-derive the HD seed from the BLOCK key on resume too, so a session saved before this
       // migration still yields the deterministic, BLOCK-attached multichain addresses.
-      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), legacySeed: s.legacySeed || null, at: s.at };
+      session = { id: s.id, address: s.address, pub: s.pub, secret: s.secret, seed: s.secret ? seedFromBlock(s.secret) : (s.seed || null), legacySeed: s.legacySeed || null, accounts: s.accounts || [], activeAccount: s.activeAccount || 'main', at: s.at };
       return true;
     },
 
     async lock() {
       // Wipe ALL decrypted secret material from memory: the BLOCK ML-DSA secret
       // and the secp256k1 HD seed. (Public address/pubkey may remain for display.)
-      session = { id: session.id, address: session.address, pub: session.pub, secret: null, seed: null, at: 0 };
+      session = { id: session.id, address: session.address, pub: session.pub, secret: null, seed: null, accounts: null, activeAccount: session.activeAccount, at: 0 };
       await Session.clear('session');
     },
 
@@ -268,6 +380,7 @@
         v: 2, scheme: 'ML-DSA-44',
         address: session.address, public: session.pub, secret: session.secret, seed: session.seed,
         label: rec && rec.label,
+        accounts: session.accounts || [], accountsMeta: (rec && rec.accounts) || [],
       };
     },
 
@@ -276,12 +389,13 @@
     async restoreFromPayload(payload, newPassword, label) {
       if (!payload || !payload.secret || !payload.public) throw new Error('invalid backup payload');
       const crypto_ = await Vault.seal(
-        { secret: payload.secret, public: payload.public, seed: payload.seed || null }, newPassword);
+        { secret: payload.secret, public: payload.public, seed: payload.seed || null, accounts: payload.accounts || [] }, newPassword);
       const list = await allWallets();
       const rec = {
         id: rid(), label: label || payload.label || 'Restored wallet',
         format: 'blockle-wallet', version: 2, scheme: payload.scheme || 'ML-DSA-44',
         address: payload.address, publicKey: payload.public, crypto: crypto_,
+        accounts: payload.accountsMeta || [],
       };
       list.push(rec);
       await saveWallets(list);
@@ -307,9 +421,10 @@
     //   - Desktop wallet.json with no usable secret: imported watch-only.
     async importFile(obj, filePassword, newPassword, label) {
       const list = await allWallets();
-      const addRec = async (secret, pub, address, watchOnly) => {
+      const addRec = async (secret, pub, address, watchOnly, extra) => {
+        extra = extra || {};
         const seed = watchOnly ? null : newSeedHex();
-        const crypto_ = watchOnly ? null : await Vault.seal({ secret, public: pub, seed }, newPassword);
+        const crypto_ = watchOnly ? null : await Vault.seal({ secret, public: pub, seed, accounts: extra.accounts || [] }, newPassword);
         const rec = {
           id: rid(),
           label: label || (watchOnly ? 'Imported (watch)' : 'Imported ' + (list.length + 1)),
@@ -320,12 +435,13 @@
           publicKey: pub || '',
           crypto: crypto_,
           watchOnly: !!watchOnly,
+          accounts: extra.accountsMeta || [],
         };
         list.push(rec);
         await saveWallets(list);
         await Store.set({ selectedId: rec.id });
         if (!watchOnly) {
-          session = { id: rec.id, address, pub, secret, seed, at: Date.now() };
+          session = { id: rec.id, address, pub, secret, seed, accounts: extra.accounts || [], activeAccount: 'main', at: Date.now() };
           await saveSession();
         } else {
           session = { id: rec.id, address, pub: pub || '', secret: null, seed: null, at: 0 };
@@ -335,9 +451,10 @@
 
       // Our encrypted format → decrypt with the file password, re-seal with new.
       if (obj && obj.format === 'blockle-wallet' && obj.crypto) {
-        const { secret, public: pub } = await Vault.open(obj.crypto, filePassword);
+        const pt = await Vault.open(obj.crypto, filePassword);
+        const { secret, public: pub } = pt;
         const address = obj.address || (await Signer.addressFromPubkey(pub));
-        return addRec(secret, pub, address, false);
+        return addRec(secret, pub, address, false, { accounts: pt.accounts || [], accountsMeta: obj.accounts || [] });
       }
       // Raw ML-DSA key material (hex) → FULL wallet under the new password.
       // Covers the desktop wallet.json (secret_hex / public_hex) and generic

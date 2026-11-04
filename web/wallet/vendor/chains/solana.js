@@ -111,6 +111,27 @@
     }
     throw new Error('solana: no off-curve program address found');
   }
+  // Token-2022 (token extensions) program + the Metaplex Token Metadata program.
+  const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+  const METADATA_PROGRAM = 'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s';
+  // Parse the borsh-encoded Metaplex Metadata account: key u8 | update_authority
+  // 32 | mint 32 | name (u32 len + bytes) | symbol (u32 len + bytes) | uri (u32
+  // len + bytes). Strings are right-padded with NULs — trimmed here. Pure.
+  function parseMetaplexMetadata(bytes) {
+    try {
+      if (!bytes || bytes.length < 1 + 32 + 32 + 4) return null;
+      let o = 1 + 32 + 32;
+      const rd = () => {
+        if (o + 4 > bytes.length) throw new Error('short');
+        const len = bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24); o += 4;
+        if (len < 0 || o + len > bytes.length) throw new Error('short');
+        const s = new TextDecoder().decode(bytes.slice(o, o + len)).replace(/\u0000+$/g, '').trim(); o += len;
+        return s;
+      };
+      const name = rd(), symbol = rd(), uri = rd();
+      return { name: name || null, symbol: symbol || null, uri: uri || null };
+    } catch { return null; }
+  }
   // The ATA for (owner, mint) under the classic SPL Token program.
   function associatedTokenAddress(ownerKey, mintKey) {
     const token = C.base58decode(TOKEN_PROGRAM);
@@ -287,6 +308,14 @@
     const explorer = opts.explorer || 'https://solscan.io/tx/';
     const native = { chain: id, kind: 'native', symbol: opts.symbol || 'SOL', decimals: 9 };
     let rootSeed = null; // unlocked HD seed (Uint8Array), in-memory only
+    let importedKey = null; // imported 32-byte ed25519 seed for this account, or null
+    let watchAddr = null;   // watch-only address for this account, or null
+    function resolveRoot(root) {
+      if (!root) return { seed: rootSeed, key: importedKey, watch: watchAddr };
+      if (root instanceof Uint8Array) return { seed: root, key: null, watch: null };
+      const k = root.keys && root.keys.solana && root.keys.solana.priv;
+      return { seed: root.seed || null, key: k ? C.toBytes(k) : null, watch: (root.watch && root.watch.solana) || null };
+    }
     let getEndpoint = opts.endpoint || (async () => opts.rpcUrl);
 
     async function rpc(method, params) {
@@ -303,7 +332,8 @@
     }
 
     function keyFor(index) {
-      if (!rootSeed) throw new Error('locked');
+      if (importedKey) return importedKey;
+      if (!rootSeed) throw new Error(watchAddr ? 'watch-only account: no key to sign with' : 'locked');
       // index selects the final hardened account segment (…/0'/index')
       const p = (index || index === 0) ? pathWithIndex(index) : path;
       const node = deriveSlip10(rootSeed, p);
@@ -317,11 +347,17 @@
 
     return {
       id, native, scheme: 'ed25519', lamports: LAMPORTS,
-      unlock(root) { rootSeed = root && (root.seed || root); },
-      lock() { rootSeed = null; },
+      unlock(root) { const r = resolveRoot(root || {}); rootSeed = r.seed; importedKey = r.key; watchAddr = r.watch; },
+      lock() { rootSeed = null; importedKey = null; watchAddr = null; },
 
       async deriveAccount(root, index) {
-        const seed = (root && (root.seed || root)) || rootSeed;
+        const r = resolveRoot(root);
+        if (r.key) {
+          const pub = ED.publicKey(r.key);
+          return { chain: id, index: 0, address: C.base58encode(pub), publicKey: C.bytesToHex(pub), scheme: 'ed25519', path: null, imported: true };
+        }
+        if (r.watch) return { chain: id, index: 0, address: r.watch, publicKey: '', scheme: 'ed25519', path: null, watchOnly: true };
+        const seed = r.seed;
         if (!seed) throw new Error('no root seed');
         const node = deriveSlip10(seed, pathWithIndex(index || 0));
         const pub = ED.publicKey(node.key);
@@ -368,39 +404,67 @@
       // accounts for one mint are summed. The RPC does not carry symbol/name, so
       // those are left for the UI (mint-derived short label); decimals come from
       // the parsed tokenAmount. Best-effort: returns [] on failure.
+      // Enumerates BOTH the classic SPL Token program and Token-2022, then resolves
+      // symbol/name/logo-uri from the on-chain Metaplex metadata account (PDA
+      // ['metadata', program, mint]) in one getMultipleAccounts batch — keyless.
+      // Tokens with no metadata keep a mint-derived label (the host's price feed
+      // can still enrich them by mint).
       async discoverTokens(address) {
+        const byMint = new Map(); // mint -> { amount:BigInt, decimals, program }
+        for (const programId of [TOKEN_PROGRAM, TOKEN_2022_PROGRAM]) {
+          try {
+            const res = await rpc('getTokenAccountsByOwner', [address, { programId }, { encoding: 'jsonParsed' }]);
+            for (const acc of ((res && res.value) || [])) {
+              const info = acc && acc.account && acc.account.data && acc.account.data.parsed && acc.account.data.parsed.info;
+              if (!info || !info.mint || !info.tokenAmount) continue;
+              let amt; try { amt = BigInt(info.tokenAmount.amount); } catch { continue; }
+              const prev = byMint.get(info.mint);
+              if (prev) prev.amount += amt;
+              else byMint.set(info.mint, { amount: amt, decimals: Number(info.tokenAmount.decimals || 0), program: programId });
+            }
+          } catch { /* a program with no accounts / an RPC that rejects it: skip */ }
+        }
+        const mints = Array.from(byMint.keys()).filter((m) => byMint.get(m).amount > 0n);
+        if (!mints.length) return [];
+        // Metaplex metadata (best-effort, batched 100 at a time)
+        const meta = new Map();
         try {
-          const res = await rpc('getTokenAccountsByOwner',
-            [address, { programId: TOKEN_PROGRAM }, { encoding: 'jsonParsed' }]);
-          const byMint = new Map(); // mint -> { amount:BigInt, decimals }
-          for (const acc of ((res && res.value) || [])) {
-            const info = acc && acc.account && acc.account.data && acc.account.data.parsed
-              && acc.account.data.parsed.info;
-            if (!info || !info.mint || !info.tokenAmount) continue;
-            const mint = info.mint;
-            let amt; try { amt = BigInt(info.tokenAmount.amount); } catch { continue; }
-            const prev = byMint.get(mint);
-            if (prev) prev.amount += amt;
-            else byMint.set(mint, { amount: amt, decimals: Number(info.tokenAmount.decimals || 0) });
-          }
-          const out = [];
-          for (const [mint, v] of byMint) {
-            if (v.amount <= 0n) continue;
-            const value = v.amount.toString();
-            out.push({
-              chain: id, kind: 'spl', mint,
-              symbol: mint.slice(0, 4) + '…' + mint.slice(-4),
-              decimals: v.decimals, balance: value, display: formatUnits(value, v.decimals),
+          const metaProg = C.base58decode(METADATA_PROGRAM);
+          const pdas = mints.map((m) => { try { return C.base58encode(findProgramAddress([C.utf8('metadata'), metaProg, C.base58decode(m)], metaProg).address); } catch { return null; } });
+          for (let i = 0; i < pdas.length; i += 100) {
+            const slice = pdas.slice(i, i + 100);
+            const idx = slice.map((p, j) => p ? i + j : -1).filter((j) => j >= 0);
+            const keys = idx.map((j) => pdas[j]);
+            if (!keys.length) continue;
+            const res = await rpc('getMultipleAccounts', [keys, { encoding: 'base64' }]);
+            const vals = (res && res.value) || [];
+            vals.forEach((acc, k) => {
+              const data = acc && acc.data && acc.data[0];
+              if (!data) return;
+              const parsed = parseMetaplexMetadata(fromBase64(data));
+              if (parsed) meta.set(mints[idx[k]], parsed);
             });
           }
-          return out;
-        } catch { return []; }
+        } catch { /* no metadata — labels fall back to the mint */ }
+        const out = [];
+        for (const mint of mints) {
+          const v = byMint.get(mint);
+          const value = v.amount.toString();
+          const m = meta.get(mint) || {};
+          out.push({
+            chain: id, kind: 'spl', mint, program: v.program === TOKEN_2022_PROGRAM ? 'token-2022' : 'spl-token',
+            symbol: m.symbol || (mint.slice(0, 4) + '…' + mint.slice(-4)),
+            name: m.name || undefined, metadataUri: m.uri || undefined,
+            decimals: v.decimals, balance: value, display: formatUnits(value, v.decimals),
+          });
+        }
+        return out;
       },
 
       // Sign a serialized (Jupiter) transaction. `tx` is {raw|swapTransaction}
       // as base64 (or a Uint8Array). Returns { chain, raw(base64), txid }.
       async signTx(account, tx) {
-        if (!rootSeed) throw new Error('locked');
+        if (!rootSeed && !importedKey) throw new Error(watchAddr ? 'watch-only account' : 'locked');
         const seedKey = keyFor(account.index || 0);
         const pub = ED.publicKey(seedKey);
         const input = tx.raw || tx.swapTransaction || tx;
@@ -418,7 +482,7 @@
       // security review. Sign + send with signTx() then broadcast() on confirm.
       // req: { mint, to, amount='1', decimals=0, index? }
       async buildNftTransfer(account, req) {
-        const owner = (account && account.address) || (rootSeed && C.base58encode(ED.publicKey(keyFor(0))));
+        const owner = (account && account.address) || ((rootSeed || importedKey) && C.base58encode(ED.publicKey(keyFor(0))));
         if (!owner) throw new Error('solana: no account');
         if (!req || !req.mint || !req.to) throw new Error('solana: mint and to are required');
         const amount = String(req.amount || '1');
@@ -491,8 +555,8 @@
     decodeShortVec, encodeShortVec, locateSigner, signSerializedTx,
     isOnCurve, findProgramAddress, associatedTokenAddress,
     compileMessage, transferCheckedIx, createAtaIdempotentIx, unsignedTx, u64le,
-    fromBase64, toBase64, formatUnits,
-    DEFAULT_PATH, LAMPORTS, TOKEN_PROGRAM, ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM,
+    fromBase64, toBase64, formatUnits, parseMetaplexMetadata,
+    DEFAULT_PATH, LAMPORTS, TOKEN_PROGRAM, TOKEN_2022_PROGRAM, METADATA_PROGRAM, ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM,
   };
   global.SolanaAdapter = API;
   if (inNode) module.exports = API;

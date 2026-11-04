@@ -5,13 +5,18 @@
   "description": "BLOCK <-> wBLOCK custodial bridge — accounting core + replay-safe transfer state machine. CUSTODIAL / trusted-operator: wBLOCK (an SPL mint, 8dp) is backed by BLOCK held in the operator reserve wallet. NOT a trustless on-chain vault. All money/deploy paths are gated OFF / dry-run by default and require human authorization.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test test/",
     "start": "node src/server.js"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.95.0",
-    "@solana/spl-token": "^0.4.6"
+    "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
+    "@metaplex-foundation/umi": "^1.6.0",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.6.0",
+    "@solana/spl-token": "^0.4.6",
+    "@solana/web3.js": "^1.95.0"
   }
 }

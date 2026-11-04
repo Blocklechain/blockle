@@ -32,6 +32,8 @@
   const ED = inNode ? require('./ed25519.js') : global.Ed25519;
   const Utxo = inNode ? require('./chains/utxo.js') : global.UtxoAdapter;
   const Solana = inNode ? require('./chains/solana.js') : global.SolanaAdapter;
+  const S = inNode ? require('./secp256k1.js') : global.Secp256k1;
+  function keyImport() { return inNode ? require('./key-import.js') : global.KeyImport; }
 
   // The derivation paths MUST match the live adapters exactly (chains/evm.js,
   // chains/solana.js, chains/utxo.js) so an exported key controls the same
@@ -191,6 +193,123 @@
     return out;
   }
 
+  // ---- 2b. chain-specific export for the ACTIVE account ---------------------
+  // `root` is Wallet.activeRoot(): { id, seedHex, keys, watch, chains } — the
+  // wallet's own HD account (seedHex) or an import (keys / watch). Pure and
+  // network-free: the caller is responsible for the gate (password + confirm).
+  // Returns { chain, family, format, label, address, secret, path, imported,
+  //           keys:[{address,type,secret,path}], alt?, dump?, dumpFilename? }.
+  function familyOfChain(chainId) {
+    return Utxo.NETWORKS[chainId] ? chainId : (chainId === 'solana' || chainId === 'block') ? chainId : 'evm';
+  }
+  function importedDump(chainId, keys, time) {
+    time = time || '2024-01-01T00:00:00Z';
+    const lines = ['# Wallet dump created by Blockle (imported keys)', '# * Created on ' + time, '#'];
+    for (const k of keys) lines.push(k.secret + ' ' + time + ' label=blockle-' + chainId + ' # addr=' + k.address);
+    lines.push('');
+    return lines.join('\n');
+  }
+  function accountKey(chainId, root) {
+    const family = familyOfChain(chainId);
+    if (family === 'block') throw new Error('BLOCK keys are exported as the encrypted wallet file');
+    if (!root) throw new Error('locked');
+    if (root.watch && root.watch[family]) throw new Error('this is a watch-only account — it holds no private key');
+    const imp = root.keys && root.keys[family];
+    const out = { chain: chainId, family, imported: !!imp, index: imp ? null : 0 };
+    if (imp) {
+      if (family === 'evm') {
+        const priv = C.hexToBytes(String(imp.priv).replace(/^0x/i, ''));
+        out.format = 'hex'; out.label = 'Private key (hex)';
+        out.secret = '0x' + C.bytesToHex(priv);
+        out.address = Addr.evmAddress(S.publicKey(priv, true));
+        out.path = null;
+        out.keys = [{ address: out.address, type: 'evm', secret: out.secret, path: null }];
+      } else if (family === 'solana') {
+        const seed = C.hexToBytes(String(imp.priv).replace(/^0x/i, ''));
+        const pub = ED.publicKey(seed);
+        const secret = C.concatBytes(seed, pub);
+        out.format = 'base58'; out.label = 'Secret key (base58 · Phantom / Solflare)';
+        out.secret = C.base58encode(secret);
+        out.alt = { label: 'JSON array (solana-keygen)', secret: '[' + Array.from(secret).join(',') + ']' };
+        out.address = C.base58encode(pub);
+        out.path = null;
+        out.keys = [{ address: out.address, type: 'solana', secret: out.secret, path: null }];
+      } else {
+        const net = utxoNet(family);
+        const list = Array.isArray(imp.keys) ? imp.keys : [];
+        if (!list.length) throw new Error('this account holds no ' + net.symbol + ' key');
+        const KI = keyImport();
+        const keys = [];
+        for (const k of list) {
+          const priv = C.hexToBytes(String(k.priv).replace(/^0x/i, ''));
+          const compressed = k.compressed !== false;
+          const wif = Addr.toWIF(priv, net.wif, compressed);
+          const addrs = KI.utxoAddresses(family, priv, compressed);
+          for (const a of addrs) keys.push({ address: a.address, type: a.type, secret: wif, path: null, compressed });
+        }
+        const track = Array.isArray(imp.track) && imp.track.length ? imp.track : null;
+        const primary = track ? track[0].address : keys[0].address;
+        const pk = keys.find((k) => k.address === primary) || keys[0];
+        out.format = 'wif'; out.label = 'Private key (WIF' + (pk.compressed ? ', compressed' : ', uncompressed') + ')';
+        out.secret = pk.secret; out.address = pk.address; out.path = null;
+        out.keys = track ? track.map((t) => keys.find((k) => k.address === t.address) || keys[0]) : keys;
+        const uniq = []; const seen = new Set();
+        for (const k of keys) if (!seen.has(k.secret)) { seen.add(k.secret); uniq.push({ secret: k.secret, address: k.address }); }
+        out.keyCount = uniq.length;
+        out.dump = importedDump(family, uniq);
+        out.dumpFilename = coreDumpFilename(family);
+      }
+      return out;
+    }
+    if (!root.seedHex) throw new Error('this account has no ' + family.toUpperCase() + ' key');
+    const seed = toSeed(root.seedHex);
+    if (family === 'evm') {
+      const k = evmKey(seed, 0);
+      out.format = 'hex'; out.label = 'Private key (hex)'; out.secret = k.privateKey; out.address = k.address; out.path = k.path;
+      out.keys = [{ address: k.address, type: 'evm', secret: k.privateKey, path: k.path }];
+    } else if (family === 'solana') {
+      const k = solanaKey(seed, 0);
+      const bytes = C.base58decode(k.secretKey);
+      out.format = 'base58'; out.label = 'Secret key (base58 · Phantom / Solflare)'; out.secret = k.secretKey; out.address = k.address; out.path = k.path;
+      out.alt = { label: 'JSON array (solana-keygen)', secret: '[' + Array.from(bytes).join(',') + ']' };
+      out.keys = [{ address: k.address, type: 'solana', secret: k.secretKey, path: k.path }];
+    } else {
+      const k = utxoKey(family, seed, 0);
+      out.format = 'wif'; out.label = 'Private key (WIF, compressed)'; out.secret = k.wif; out.address = k.address; out.path = k.path;
+      out.keys = [{ address: k.address, type: Utxo.NETWORKS[family].segwit ? 'p2wpkh' : 'p2pkh', secret: k.wif, path: k.path }];
+      out.keyCount = 1;
+      out.dump = coreDump(family, seed, { index: 0 });
+      out.dumpFilename = coreDumpFilename(family);
+    }
+    return out;
+  }
+
+  // The account's seed phrase (BIP39 words kept at import time) or, when the
+  // account has none — the web wallet's own HD root is derived from the BLOCK
+  // identity, not from words — its raw BIP32 master seed (hex).
+  function accountSeed(root) {
+    if (!root) throw new Error('locked');
+    if (root.watch && Object.keys(root.watch).length && !root.seedHex) throw new Error('this is a watch-only account — it holds no seed');
+    if (root.mnemonic) {
+      const words = String(root.mnemonic).trim().split(/\s+/);
+      return {
+        chain: 'seed', family: 'seed', format: 'mnemonic', imported: root.id !== 'main',
+        label: 'Recovery phrase (' + words.length + ' words, BIP39)' + (root.passphrase ? ' + passphrase' : ''),
+        secret: words.join(' '), words, passphrase: !!root.passphrase, address: '',
+        alt: root.seedHex ? { label: 'HD seed (hex, BIP32 master seed)', secret: root.seedHex } : null,
+        keys: [],
+      };
+    }
+    if (!root.seedHex) throw new Error('this account has no seed — it was imported from a single private key');
+    return {
+      chain: 'seed', family: 'seed', format: 'seedhex', imported: root.id !== 'main',
+      label: 'HD seed (hex, BIP32 master seed)', secret: root.seedHex, words: null, passphrase: false, address: '', alt: null, keys: [],
+      note: root.id === 'main'
+        ? 'This wallet has no word phrase: its other-chain keys are derived from your post-quantum BLOCK identity. The encrypted wallet file (Settings → Export wallet file) is the full backup; this hex seed rebuilds the same EVM, Bitcoin, Litecoin, Dogecoin and Solana keys in tools that accept a raw BIP32 seed.'
+        : 'This account was imported before phrases were kept, so only its raw BIP32 seed is available. Re-import the phrase if you still have it.',
+    };
+  }
+
   // ---- THE SECURITY GATE ----------------------------------------------------
   // Blocks export unless the vault is unlocked AND the user passes an explicit
   // confirm that surfaces DANGER_WARNING. Fails closed (no confirm handler → no
@@ -231,7 +350,7 @@
     DANGER_WARNING, EVM_PATH, SOL_PATH,
     fromMnemonic, privateKeys, utxoKey, evmKey, solanaKey, blockKey,
     coreDump, coreDumpFilename, dumpLine, parseDump, solPathForIndex,
-    gate, exportSecrets,
+    gate, exportSecrets, accountKey, accountSeed, familyOfChain, importedDump,
   };
   global.WalletExport = API;
   if (inNode) module.exports = API;

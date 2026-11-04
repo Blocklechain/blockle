@@ -25,6 +25,10 @@
   const AutoImport = inNode ? require('./chains/autoimport.js') : global.TokenAutoImport;
   // NFT transfer builder (EVM calldata; Solana routes through its adapter).
   const Nft = inNode ? require('./nft.js') : global.WalletNft;
+  // Keyless multi-source USD price feed (stables / BLOCK / majors / any token by address).
+  const PriceFeedMod = inNode ? safeReq('./prices.js') : global.PriceFeed;
+  const Lists = inNode ? safeReq('./chains/token-lists.js') : global.TokenLists;
+  function safeReq(p) { try { return require(p); } catch (_) { return null; } }
 
   // Default agent-fee treasury (mirrors exchange/treasury.json). Overridable via
   // settings.agentTreasury. No private key ever lives here — recipient only.
@@ -65,6 +69,22 @@
   const INIT_CALLDATA = '00'; // BLOCK-20 init() selector (mints supply to deployer)
 
   let _registry = null, _accounts = null, _venues = null, _telemetry = null, _settings = null;
+  let _prices = null;
+
+  // The ONE price feed instance (survives reset(): prices are not settings-derived
+  // and its symbol→address memory is what lets bot pairs price by mint/contract).
+  function prices() {
+    if (_prices) return _prices;
+    if (!PriceFeedMod || typeof PriceFeedMod.create !== 'function') return null;
+    _prices = PriceFeedMod.create({ fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined, cacheMs: 20000 });
+    return _prices;
+  }
+  // Teach the feed every token the wallet knows (defaults + imports) so tickers
+  // resolve to on-chain ids. Cheap + idempotent; called after settings load.
+  function rememberTokens(tokensByChain) {
+    const pf = prices(); if (!pf) return;
+    for (const chain of Object.keys(tokensByChain || {})) for (const t of (tokensByChain[chain] || [])) { try { pf.remember(t.symbol, Object.assign({ chain }, t)); } catch (_) {} }
+  }
 
   async function settings() {
     if (_settings) return _settings;
@@ -106,9 +126,11 @@
   async function registry() {
     if (_registry) return _registry;
     const s = await settings();
+    const toks = mergedTokens(s.tokens);
+    rememberTokens(toks);
     _registry = ChainRegistry.createRegistry({
       endpoints: mergedEndpoints(s.endpoints),
-      tokens: mergedTokens(s.tokens),
+      tokens: toks,
       // Alchemy indexer config (read-only key) for ERC-20 auto-detection. Lives
       // under settings.chainEndpoints.alchemy ({ apiKey } shared, or per-network
       // override). Auto-detect stays OFF until a key is present.
@@ -164,6 +186,57 @@
 
   // ---- per-chain account helpers (used by the UI + the agent ctx) -----------
   async function accountFor(chain) { return (await accounts()).accountFor(chain); }
+  // Accounts inside the wallet (main + imports): list / switch / chains served.
+  async function listAccounts() { return Wallet.listAccounts ? Wallet.listAccounts() : [{ id: 'main', label: 'Main', active: true }]; }
+  async function switchAccount(id) { const acc = await accounts(); await acc.switchAccount(id); return acc.chains(); }
+  async function accountChains() { const acc = await accounts(); return acc.chains ? acc.chains() : (await registry()).enabled(); }
+  // Add an imported account (KeyImport spec) to the wallet vault and make it active.
+  // Chain-specific private-key export for the ACTIVE account, behind a fresh
+  // password check. Pure read of key material — nothing is logged or sent.
+  async function exportKey(chainId, password) {
+    if (!password) throw new Error('password required');
+    if (!(await Wallet.verifyPassword(password))) throw new Error('wrong password');
+    if (chainId === 'block') return Wallet.exportBlockKey(password);
+    const WX = inNode ? require('./wallet-export.js') : global.WalletExport;
+    if (!WX || !WX.accountKey) throw new Error('export module unavailable');
+    const root = Wallet.activeRoot && Wallet.activeRoot();
+    if (!root) throw new Error('locked');
+    return chainId === 'seed' ? WX.accountSeed(root) : WX.accountKey(chainId, root);
+  }
+  async function addAccount(spec, password, label) {
+    const meta = await Wallet.addAccount(spec, password, label);
+    const acc = await accounts();
+    await acc.switchAccount(meta.id);
+    return meta;
+  }
+  async function removeAccount(id, password) {
+    await Wallet.removeAccount(id, password);
+    const acc = await accounts();
+    await acc.switchAccount(Wallet.activeAccountId || 'main');
+  }
+  // Best-effort native balance of raw addresses on a chain (for import previews
+  // and wallet.dat scans). Returns [{address, balance(base units string), error?}].
+  async function scanAddresses(chain, addrs, opts) {
+    const reg = await registry();
+    const a = reg.get(chain);
+    const limit = (opts && opts.concurrency) || 6;
+    const out = new Array(addrs.length); let i = 0;
+    const onProgress = opts && opts.onProgress;
+    async function worker() {
+      while (i < addrs.length) {
+        const n = i++;
+        try {
+          let bal;
+          if (a.addressBalance) bal = (await a.addressBalance(addrs[n])).toString();
+          else { const rows = await a.getBalance(addrs[n], []); const nb = (rows && rows[0]) || {}; if (nb.error) throw new Error(nb.error); bal = String(nb.confirmed || '0'); }
+          out[n] = { address: addrs[n], balance: bal };
+        } catch (e) { out[n] = { address: addrs[n], balance: '0', error: String((e && e.message) || e) }; }
+        if (onProgress) { try { onProgress(n + 1, addrs.length, out[n]); } catch (_) {} }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, addrs.length) }, worker));
+    return out;
+  }
 
   async function getBalance(chain, tokens) {
     const acc = await accounts();
@@ -290,16 +363,35 @@
   // assets come from an optional settings.agent.priceUsd map (symbol -> price).
   // Returns null when unknown — the policy then rejects session-USD-capped actions
   // it cannot price (safety over convenience), which is the intended behavior.
-  async function estimateUsd(asset, amount) {
+  // `amount` is in BASE UNITS when `asset` is a string/symbol (legacy agent
+  // convention) and when the asset carries `decimals`; a WHOLE-coin amount can be
+  // passed with opts.whole=true (the UI does). Resolution order: operator
+  // override (settings.agent.priceUsd) → stablecoin → the live PriceFeed (BLOCK,
+  // BLOCK-20 pools, majors, any token by address). null when unknown — never a guess.
+  async function estimateUsd(asset, amount, opts) {
+    opts = opts || {};
     const s = await settings();
     const sym = (typeof asset === 'string' ? asset : (asset && asset.symbol) || '').toUpperCase();
-    const prices = (s.agent && s.agent.priceUsd) || {};
-    let unit = null, dec = 6;
-    if (STABLES[sym] != null) { unit = STABLES[sym]; dec = 6; }
-    else if (prices[sym] != null) { unit = Number(prices[sym]); dec = prices[sym + '_decimals'] != null ? Number(prices[sym + '_decimals']) : 8; }
+    const over = (s.agent && s.agent.priceUsd) || {};
+    const assetDec = (asset && typeof asset === 'object' && asset.decimals != null) ? Number(asset.decimals) : null;
+    let unit = null, dec = assetDec != null ? assetDec : 6;
+    if (over[sym] != null) { unit = Number(over[sym]); dec = over[sym + '_decimals'] != null ? Number(over[sym + '_decimals']) : (assetDec != null ? assetDec : 8); }
+    else if (STABLES[sym] != null || (asset && asset.stablecoin)) { unit = 1; }
+    else {
+      const pf = prices();
+      if (pf) { try { unit = await pf.priceOf(typeof asset === 'string' ? asset : Object.assign({}, asset)); } catch (_) { unit = null; } }
+      if (unit == null) return null;
+      if (assetDec == null && typeof asset === 'string') { const d = pf && pf.decimalsOf(sym); dec = d != null ? d : 8; }
+    }
     if (unit == null) return null;
-    try { return (Number(amount) / Math.pow(10, dec)) * unit; } catch { return null; }
+    try {
+      const n = Number(amount);
+      if (opts.whole) return n * unit;
+      return (n / Math.pow(10, dec)) * unit;
+    } catch { return null; }
   }
+  // Whole-coin convenience for the UI (amount already divided by decimals).
+  function estimateUsdWhole(asset, amountWhole) { return estimateUsd(asset, amountWhole, { whole: true }); }
 
   // ---- DEX EXECUTION: sign + broadcast what a venue built --------------------
   // The agent's `swap` tool picks a venue, the venue BUILDS a tx/intent (never the
@@ -669,23 +761,31 @@
       const mode = Bots && Bots.validateRiskMode ? (Bots.validateRiskMode(opts.mode) || 'medium') : (opts.mode || 'medium');
       const chain = lane && Bots ? Bots.laneChain(lane) : (opts.chain || '');
       const base = lane && Bots ? Bots.laneBase(lane) : (opts.base || 'USDC');
-      const qs = 'mode=' + encodeURIComponent(mode) + (chain ? '&chain=' + encodeURIComponent(chain) : '') + '&limit=15';
+      const sigChain = (lane && Bots && Bots.laneSignalsChain) ? Bots.laneSignalsChain(lane) : chain;
+      const rank = String(opts.rank || '').toLowerCase() === 'buzz' ? 'buzz' : null; // online-presence feed
+      const qs = 'mode=' + encodeURIComponent(mode) + (sigChain ? '&chain=' + encodeURIComponent(sigChain) : '') + '&limit=15' + (rank ? '&rank=buzz' : '');
       let j = null;
       try {
         const r = await fetch('/api/signals/discover?' + qs, { headers: { accept: 'application/json' } });
         if (r.ok) j = await r.json();
       } catch (_) { j = null; }
       const cands = (j && Array.isArray(j.candidates)) ? j.candidates : [];
+      const pf = prices();
       return cands.map((c) => {
         const m = c.metrics || {};
         const sym = (m.symbol || String(c.token).slice(0, 6)).toUpperCase();
         const quote = (base || 'USDC').toUpperCase();
+        // teach the price feed this ticker's on-chain id so the bot's pair prices by
+        // mint/contract (never by an ambiguous symbol). 'bsc' → the wallet's 'bnb'.
+        const regChain = c.chain === 'bsc' ? 'bnb' : c.chain;
+        if (pf && c.token) { try { pf.remember(sym, { chain: regChain, address: c.token, decimals: m.decimals, name: m.name }); } catch (_) {} }
         return {
           pair: sym + '/' + quote,
           token: c.token, chain: c.chain, symbol: sym, lane,
           approved: c.safe === true,
           score: Math.max(0, Math.min(1, (Number(c.score) || 0) / 100)), // discovery uses 0..1
           hype: c.hype,
+          buzz: c.buzz && typeof c.buzz === 'object' ? c.buzz : null, // { attention, velocity, quick, basis } when rank=buzz
           // enriched slots the discovery/scanner evaluators read:
           liquidityUsd: m.liquidityUsd, volume24hUsd: m.volume24hUsd,
           marketCapUsd: m.marketCapUsd, ageSec: m.ageSec,
@@ -701,8 +801,14 @@
   // The agent tool CTX: exactly the capabilities tools.js wires to. Value-moving
   // tools still go through the runner's cap -> confirm -> commit rails.
   function agentCtx() {
+    const pf = prices();
     return {
       discovery: _signalsDiscovery, // READ-ONLY lane/mode-aware candidate feed
+      // LIVE PRICES for the bot engine / strategies: { SYM: usd } for what is known,
+      // nothing for what is not (the runner then audits `skipped: price`).
+      prices: pf ? (symbols) => pf.prices(symbols) : undefined,
+      decimalsFor: pf ? (sym) => pf.decimalsOf(sym) : undefined,
+      priceFeed: pf,
       getAddress: async (chain) => (await accountFor(chain)).address,
       // Agent balance view = the auto-detect holdings (native + every held
       // token). An explicit `tokens` arg is still honored verbatim.
@@ -731,27 +837,115 @@
   // automatically. Honors the security denylist / spam / scam flags (flagged tokens
   // are MARKED into `flaggedTokens`, never auto-imported). Incremental + idempotent.
   // Call on unlock / account-switch / manual refresh. Best-effort (never throws).
-  async function autoImportTokens() {
-    try {
-      if (!AutoImport || typeof AutoImport.autoImport !== 'function') return null;
-      const reg = await registry();
-      const acc = await accounts();
-      const s = await settings();
-      const sec = (s.agent && s.agent.security) || {};
-      const summary = await AutoImport.autoImport({
-        registry: reg,
-        store: Store,
-        chains: reg.enabled(),
-        denylist: sec.denylist || [],
-        spamFilter: true,
-        addressFor: async (chain) => { try { return (await acc.accountFor(chain)).address; } catch (_) { return null; } },
-      });
-      // a change to the persisted token lists means the next registry must pick them
-      // up — drop the cache so getHoldings/portfolio reflect the new tokens.
-      if (summary && summary.changed) reset();
-      return summary;
-    } catch (_) { return null; }
+  let _autoImportInflight = null;
+  async function autoImportTokens(opts) {
+    if (_autoImportInflight) return _autoImportInflight; // coalesce concurrent callers
+    _autoImportInflight = (async () => {
+      try {
+        if (!AutoImport || typeof AutoImport.autoImport !== 'function') return null;
+        const reg = await registry();
+        const acc = await accounts();
+        const s = await settings();
+        const sec = (s.agent && s.agent.security) || {};
+        const pf = prices();
+        const summary = await AutoImport.autoImport({
+          registry: reg,
+          store: Store,
+          chains: (opts && opts.chains) || reg.enabled(),
+          denylist: sec.denylist || [],
+          spamFilter: true,
+          timeoutMs: (opts && opts.timeoutMs) || 20000,
+          onProgress: opts && opts.onProgress,
+          addressFor: async (chain) => { try { return (await acc.accountFor(chain)).address; } catch (_) { return null; } },
+          // tokens the user already imported on this chain are probed too (keyless nets)
+          knownTokens: (chain) => (s.tokens && s.tokens[chain]) || [],
+          // label address-only rows (Solana mints without metadata, unknown ERC-20s)
+          // from the price feed's metadata lookup; balances are never touched.
+          enrich: async (chain, rows) => {
+            if (!pf || chain === 'block') return rows;
+            const need = rows.filter((t) => !t.symbol || t.symbol === '?' || /…/.test(t.symbol) || !t.name);
+            if (!need.length) return rows;
+            const meta = await pf.tokenMeta(chain, need.map((t) => t.address || t.mint));
+            for (const t of need) {
+              const m = meta[String(t.address || t.mint).toLowerCase()];
+              if (!m) continue;
+              if ((!t.symbol || t.symbol === '?' || /…/.test(t.symbol)) && m.symbol) t.symbol = m.symbol;
+              if (!t.name && m.name) t.name = m.name;
+              if (!t.logo && m.logo) t.logo = m.logo;
+              if (t.decimals == null && m.decimals != null) t.decimals = m.decimals;
+            }
+            return rows;
+          },
+        });
+        // teach the price feed every held token (symbol → chain/address)
+        if (summary && pf) {
+          rememberTokens(summary.chainTokens || {});
+          for (const t of (summary.imported || [])) { try { pf.remember(t.symbol, t); } catch (_) {} }
+        }
+        // a change to the persisted token lists means the next registry must pick them
+        // up — drop the cache so getHoldings/portfolio reflect the new tokens.
+        if (summary && summary.changed) reset();
+        return summary;
+      } catch (_) { return null; }
+      finally { _autoImportInflight = null; }
+    })();
+    return _autoImportInflight;
   }
+
+  // Flagged (never auto-imported) tokens, per chain, for the Assets UI.
+  async function flaggedTokens(chain) {
+    try { const got = await Store.get(['flaggedTokens']); const all = (got && got.flaggedTokens) || {}; return chain ? (all[chain] || []) : all; } catch (_) { return chain ? [] : {}; }
+  }
+  // User override: import a flagged token anyway (moves it into the normal list).
+  async function importFlagged(chain, token) {
+    const got = await Store.get(['chainTokens', 'tokens', 'flaggedTokens']);
+    const ct = Object.assign({}, (got && got.chainTokens) || {});
+    const ft = Object.assign({}, (got && got.flaggedTokens) || {});
+    const idOf = (t) => String(t.address || t.mint || t.id || t.contract || '').toLowerCase();
+    ft[chain] = (ft[chain] || []).filter((t) => idOf(t) !== idOf(token));
+    let tokens = (got && got.tokens) || [];
+    if (chain === 'block') { const id = token.address || token.id || token.contract; if (id && !tokens.includes(id)) tokens = tokens.concat([id]); }
+    else { const list = (ct[chain] || []).slice(); if (!list.some((t) => idOf(t) === idOf(token))) list.push(Object.assign({}, token, { reason: undefined })); ct[chain] = list; }
+    await Store.set({ chainTokens: ct, tokens, flaggedTokens: ft });
+    reset();
+  }
+
+  // ---- MOON: Moonshot-style BLOCK-20 buy/sell flow (docs/MOONSHOT.md) ----------
+  // The feed + quotes come from the shared server endpoint and the pure Moon core;
+  // execution is the SAME native-AMM swap path the Swap tab uses (signed on-device).
+  const MOON_KEY = 'moonPositions';
+  const moon = {
+    async feed(tab) {
+      const r = await fetch('/api/signals/moon/feed?tab=' + encodeURIComponent(tab || 'trending'), { headers: { accept: 'application/json' } });
+      if (!r.ok) throw new Error('feed unavailable');
+      return r.json();
+    },
+    async token(contract) {
+      const r = await fetch('/api/signals/moon/token/' + encodeURIComponent(contract), { headers: { accept: 'application/json' } });
+      if (!r.ok) throw new Error('token unavailable');
+      return r.json();
+    },
+    async positions() { try { const g = await Store.get([MOON_KEY]); return (g && g[MOON_KEY]) || {}; } catch (_) { return {}; } },
+    async record(trade) {
+      const M = global.Moon; if (!M) return null;
+      const pos = M.applyTrade(await moon.positions(), trade);
+      try { await Store.set({ [MOON_KEY]: pos }); } catch (_) {}
+      return pos;
+    },
+    // Execute a Moon quote through the native AMM (buy: BLOCK→token, sell: token→BLOCK).
+    async execute(q, token) {
+      if (!q || !token) throw new Error('nothing to execute');
+      const r = await amm.swap({ token: token.contract, side: q.side, amountIn: q.amountIn, minOut: q.minOut });
+      const pf = prices();
+      let blockUsd = null; try { blockUsd = pf ? await pf.blockUsd() : null; } catch (_) {}
+      await moon.record({
+        contract: token.contract, symbol: token.symbol, decimals: token.decimals, side: q.side,
+        qty: q.side === 'buy' ? q.amountOut : q.amountIn, blockAmt: q.side === 'buy' ? q.amountIn : q.amountOut,
+        blockUsd, txid: r && r.txid, at: Date.now(),
+      });
+      return r;
+    },
+  };
 
   // Make sure venues + telemetry exist before building an agent ctx.
   async function ensureAgentDeps() {
@@ -807,9 +1001,10 @@
   global.Wiring = {
     DEFAULT_TREASURY,
     settings, registry, accounts, venues, telemetry,
-    accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
+    accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd, estimateUsdWhole,
+    listAccounts, switchAccount, accountChains, addAccount, removeAccount, scanAddresses, exportKey,
     sweepLegacy, sendNft,
-    autoImportTokens,
+    autoImportTokens, flaggedTokens, importFlagged, prices, rememberTokens, moon,
     amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:
     inspect, assertApproveSafe, listApprovals, buildRevoke, rememberRecipient, Security,

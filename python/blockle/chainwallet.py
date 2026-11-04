@@ -24,18 +24,6 @@ from ._binary import BinaryNotFound
 UNITS_PER_BLOCK = 100_000_000
 
 
-def _no_window() -> dict:
-    """Stop a console-subsystem child from opening its own window.
-
-    The Qt wallet is a windowed process. On Windows, ``blockle-chain`` is a
-    console program, so every spawn — the embedded node, and the
-    ``ui-snapshot`` poll every few seconds — otherwise allocates a console.
-    """
-    if os.name != "nt":
-        return {}
-    return {"creationflags": subprocess.CREATE_NO_WINDOW}
-
-
 def format_block(units: int) -> str:
     sign = "-" if units < 0 else ""
     units = abs(units)
@@ -47,9 +35,7 @@ def format_block(units: int) -> str:
 
 def _is_chain_binary(path: str) -> bool:
     try:
-        out = subprocess.run(
-            [path, "--help"], capture_output=True, text=True, timeout=10, **_no_window()
-        )
+        out = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return "equihash" in (out.stdout + out.stderr).lower()
@@ -143,9 +129,7 @@ class ChainWallet:
         env = os.environ.copy()
         if self.passphrase:
             env["BLOCKLE_WALLET_PASSPHRASE"] = self.passphrase
-        out = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env, **_no_window()
-        )
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         if out.returncode != 0:
             msg = (out.stderr.strip() or out.stdout.strip()).splitlines()
             raise WalletError(msg[-1] if msg else f"blockle-chain {args[0]} failed")
@@ -190,16 +174,6 @@ class ChainWallet:
 
     def send(self, to: str, amount: str, fee: str = "0.0001") -> dict:
         args = ["send", "--to", to, "--amount", amount, "--fee", fee]
-        if self.node:
-            args += ["--node", self.node]
-        return self._run_json(*args)
-
-    def send_token(self, contract: str, to: str, amount_base: int, gas: int = 200000) -> dict:
-        """Transfer a BLOCK-20 token. `amount_base` is in the token's base units
-        (scaled by its decimals); the CLI encodes the consensus transfer calldata.
-        Gas fee (gas * gas_price) is paid in BLOCK."""
-        args = ["contract", "token-transfer", contract,
-                "--to", to, "--amount-base", str(int(amount_base)), "--gas", str(int(gas))]
         if self.node:
             args += ["--node", self.node]
         return self._run_json(*args)
@@ -315,8 +289,7 @@ class NodeProcess:
         if self.mine:
             cmd.append("--mine")
         self.proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            **_no_window(),
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
         threading.Thread(target=self._pump, daemon=True).start()
 

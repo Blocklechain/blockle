@@ -115,24 +115,61 @@
   // config validation + defaults per bot type
   // ===========================================================================
 
-  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner'];
+  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner', 'auto'];
 
   // LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
   // single base asset and the bot only trades same-chain tokens quoted in it.
   // `lane` is the chain id; `base` is the held/quote asset for that lane.
+  // Every supported network is a lane. The built-in set covers what the wallet
+  // ships; `registerLanes(registry.networks())` adds custom networks at runtime
+  // so a user-added EVM chain is a lane too. `signalsChain` is the id the
+  // signals/discovery service uses when it differs (BNB Chain = 'bsc').
   const LANES = {
-    solana:   { chain: 'solana',   base: 'SOL' },
-    ethereum: { chain: 'ethereum', base: 'ETH' },
-    bsc:      { chain: 'bsc',      base: 'BNB' },
-    block:    { chain: 'block',    base: 'BLOCK' },
+    block:     { chain: 'block',     base: 'BLOCK', name: 'BLOCK' },
+    solana:    { chain: 'solana',    base: 'SOL',   name: 'Solana' },
+    ethereum:  { chain: 'ethereum',  base: 'ETH',   name: 'Ethereum' },
+    base:      { chain: 'base',      base: 'ETH',   name: 'Base' },
+    arbitrum:  { chain: 'arbitrum',  base: 'ETH',   name: 'Arbitrum' },
+    optimism:  { chain: 'optimism',  base: 'ETH',   name: 'Optimism' },
+    polygon:   { chain: 'polygon',   base: 'POL',   name: 'Polygon' },
+    bnb:       { chain: 'bnb',       base: 'BNB',   name: 'BNB Chain', signalsChain: 'bsc' },
+    avalanche: { chain: 'avalanche', base: 'AVAX',  name: 'Avalanche' },
+    linea:     { chain: 'linea',     base: 'ETH',   name: 'Linea' },
+    scroll:    { chain: 'scroll',    base: 'ETH',   name: 'Scroll' },
+    unichain:  { chain: 'unichain',  base: 'ETH',   name: 'Unichain' },
+    gnosis:    { chain: 'gnosis',    base: 'XDAI',  name: 'Gnosis' },
+    mantle:    { chain: 'mantle',    base: 'MNT',   name: 'Mantle' },
+    celo:      { chain: 'celo',      base: 'CELO',  name: 'Celo' },
+    cronos:    { chain: 'cronos',    base: 'CRO',   name: 'Cronos' },
+    sonic:     { chain: 'sonic',     base: 'S',     name: 'Sonic' },
+    berachain: { chain: 'berachain', base: 'BERA',  name: 'Berachain' },
+    opbnb:     { chain: 'opbnb',     base: 'BNB',   name: 'opBNB' },
+    sei:       { chain: 'sei',       base: 'SEI',   name: 'Sei' },
   };
+  const LANE_ALIASES = { bsc: 'bnb', binance: 'bnb', eth: 'ethereum', sol: 'solana', matic: 'polygon', avax: 'avalanche', arb: 'arbitrum', op: 'optimism' };
   function validateLane(v) {
     if (v == null || v === '') return null;                 // null = unconstrained (legacy bots)
-    const k = String(v).toLowerCase();
+    let k = String(v).toLowerCase();
+    if (LANE_ALIASES[k]) k = LANE_ALIASES[k];
     return LANES[k] ? k : null;
   }
   function laneBase(lane) { return LANES[lane] ? LANES[lane].base : null; }
   function laneChain(lane) { return LANES[lane] ? LANES[lane].chain : null; }
+  function laneSignalsChain(lane) { return LANES[lane] ? (LANES[lane].signalsChain || LANES[lane].chain) : null; }
+  function laneName(lane) { return LANES[lane] ? (LANES[lane].name || lane) : (lane || ''); }
+  // Add/refresh lanes from a registry.networks() listing ({id, symbol, name}).
+  // UTXO chains (no tokens to trade) are skipped. Never removes a built-in.
+  function registerLanes(networks) {
+    for (const n of (networks || [])) {
+      if (!n || !n.id) continue;
+      const id = String(n.id).toLowerCase();
+      if (id === 'bitcoin' || id === 'litecoin' || id === 'dogecoin') continue;
+      if (!LANES[id]) LANES[id] = { chain: id, base: String(n.symbol || id).toUpperCase(), name: n.name || id, custom: !!n.custom };
+      else if (n.name && !LANES[id].name) LANES[id].name = n.name;
+    }
+    return LANES;
+  }
+  function lanes() { return Object.keys(LANES).map((id) => Object.assign({ id }, LANES[id])); }
 
   // RISK MODES — presets that tune discovery/signals/scanner strictness. These are
   // passed to the signals API (mode=) and used to gate candidates. `sniper` targets
@@ -181,6 +218,10 @@
     if (src && typeof src.profitCurrency === 'string' && src.profitCurrency.trim()) {
       out.profitCurrency = src.profitCurrency.trim().toUpperCase();
     }
+    // CANDLE EXITS (candles.js): smart take-profit on closed-candle reversals.
+    // Disabled unless the bot opts in, so the deterministic fixtures are untouched.
+    const Candles = root.AgentCandles || (typeof require === 'function' ? (() => { try { return require('./candles.js'); } catch (_) { return null; } })() : null);
+    if (src && src.candle != null && Candles) out.candle = Candles.validate(src.candle);
     return out;
   }
 
@@ -199,16 +240,28 @@
       cooldownSec: Math.max(0, Math.trunc(Number(c.cooldownSec != null ? c.cooldownSec : 0))),
       startCondition: ['asap', 'signal', 'dip'].includes(c.startCondition) ? c.startCondition : 'asap',
       dipPct: Math.max(0, Number(c.dipPct != null ? c.dipPct : 0)),
+      // TIME STOP: close an open deal that has run longer than this (0 = off),
+      // so a bag never sits forever waiting for a take-profit that never comes.
+      maxDealSec: Math.max(0, Math.trunc(Number(c.maxDealSec != null ? c.maxDealSec : 0))),
     };
     return withProfitCurrency(c, out);
   }
   function validateGridConfig(c) {
     c = c || {};
-    if (c.lowerPrice == null || c.upperPrice == null) throw new Error('grid requires lowerPrice and upperPrice');
-    const lower = Number(c.lowerPrice), upper = Number(c.upperPrice);
-    if (!(lower > 0) || !(upper > lower)) throw new Error('grid requires 0 < lowerPrice < upperPrice');
+    // AUTO-RANGE: when lower/upper are omitted, `autoRangePct` (e.g. 10) builds
+    // the band ±pct around the FIRST mark the runner sees (resolved per pair at
+    // deal-open and frozen into the deal). Explicit bounds still win.
+    const autoRangePct = Math.max(0, Number(c.autoRangePct != null ? c.autoRangePct : 0));
+    // bounds count only when REAL (a re-validated auto-range config carries 0/0)
+    const hasBounds = Number(c.lowerPrice) > 0 && Number(c.upperPrice) > 0;
+    if (!hasBounds && !(autoRangePct > 0)) throw new Error('grid requires lowerPrice and upperPrice (or autoRangePct)');
+    let lower = 0, upper = 0;
+    if (hasBounds) {
+      lower = Number(c.lowerPrice); upper = Number(c.upperPrice);
+      if (!(lower > 0) || !(upper > lower)) throw new Error('grid requires 0 < lowerPrice < upperPrice');
+    }
     const out = {
-      lowerPrice: lower, upperPrice: upper,
+      lowerPrice: lower, upperPrice: upper, autoRangePct,
       gridCount: clampInt(c.gridCount != null ? c.gridCount : 6, 2, 50, 6),
       totalUsd: Math.max(0, Number(c.totalUsd != null ? c.totalUsd : 60)),
       takeProfitPct: Math.max(0, Number(c.takeProfitPct != null ? c.takeProfitPct : 0)),
@@ -240,6 +293,13 @@
       maxConcurrent: clampInt(c.maxConcurrent != null ? c.maxConcurrent : 3, 1, 50, 3),
       minScore: clampNum(c.minScore != null ? c.minScore : 0, 0, 1, 0),
       onSignal: { type: t, config: validateConfig(t, onSignal.config || {}) },
+      // rank: how discovery candidates are ordered into the concurrency slots.
+      //   'score' (default, omitted) — the safety-weighted signals score.
+      //   'buzz'  — the ONLINE-PRESENCE feed: tokens the internet is piling into
+      //             right now (search trending, trending pools, unique buyers,
+      //             promo boosts), ranked by buzz.quick = attention × velocity ×
+      //             exit feasibility. Same safety gate, same risk preset.
+      ...(String(c.rank || '').toLowerCase() === 'buzz' ? { rank: 'buzz' } : {}),
     };
   }
   function validateScheduledConfig(c) {
@@ -260,8 +320,33 @@
     if (c.strategies != null && !Array.isArray(c.strategies)) throw new Error('scanner strategies must be an array');
     return out;
   }
+  // FULL AUTO (bot-runner.js _tickAuto): the user picks ONLY a lane; the bot hosts
+  // one child per algorithm and re-weights their budgets every `rebalanceSec`
+  // from the detected market regime (trend / range / quiet) + each child's live
+  // performance. `algos` limits which algorithms may run.
+  // 'buzz' (added 2026-11) = the online-presence child: a signal bot ranked by the
+  // buzz feed (search trending / trending pools / buyer traffic) with quick exits.
+  const AUTO_ALGOS = ['momentum', 'buzz', 'sniper', 'grid', 'dip', 'scanner'];
+  const LEGACY_AUTO_ALGOS = ['momentum', 'sniper', 'grid', 'dip', 'scanner'];
+  function validateAutoConfig(c) {
+    c = c || {};
+    let algos = Array.isArray(c.algos) ? c.algos.filter((a) => AUTO_ALGOS.includes(a)) : AUTO_ALGOS.slice();
+    if (!algos.length) algos = AUTO_ALGOS.slice();
+    // Migration: a stored list that is exactly the pre-buzz default was never a
+    // user choice, so it picks up the buzz child too (an explicit subset is kept).
+    if (algos.length === LEGACY_AUTO_ALGOS.length && LEGACY_AUTO_ALGOS.every((a) => algos.includes(a))) algos = AUTO_ALGOS.slice();
+    const out = {
+      algos,
+      rebalanceSec: Math.max(60, Math.trunc(Number(c.rebalanceSec != null ? c.rebalanceSec : 900))),
+      minWeight: clampNum(c.minWeight != null ? c.minWeight : 0.05, 0, 0.5, 0.05),
+      regimeWindow: clampInt(c.regimeWindow != null ? c.regimeWindow : 48, 8, 400, 48),
+      quote: typeof c.quote === 'string' && c.quote.trim() ? c.quote.trim().toUpperCase() : null, // null = lane default
+    };
+    return withProfitCurrency(c, out);
+  }
   function validateConfig(type, c) {
     switch (type) {
+      case 'auto': return validateAutoConfig(c);
       case 'dca': return validateDcaConfig(c);
       case 'grid': return validateGridConfig(c);
       case 'smarttrade': return validateSmartTradeConfig(c);
@@ -605,6 +690,18 @@
       this.venuePrefs = spec.venuePrefs || null;
       this.config = validateConfig(spec.type, spec.config || {});
       this.allocationUsd = spec.allocationUsd != null ? Number(spec.allocationUsd) : 0;
+      // BOT-LEVEL RISK RAILS (all default OFF so legacy fixtures are byte-identical):
+      //   maxLossPct      — auto-PAUSE the bot once cumulative realized loss reaches
+      //                     this % of the budget (the "never blow the account" rail).
+      //   maxDailyDeals   — cap new deals per rolling 24h (0 = unlimited).
+      //   paperSlippageBps— paper fills are moved against you by this much so the
+      //                     sandbox is honest about spread + impact (0 = mark fills).
+      const risk = spec.risk && typeof spec.risk === 'object' ? spec.risk : {};
+      this.risk = {
+        maxLossPct: clampNum(risk.maxLossPct != null ? risk.maxLossPct : 0, 0, 100, 0),
+        maxDailyDeals: clampInt(risk.maxDailyDeals != null ? risk.maxDailyDeals : 0, 0, 10000, 0),
+        paperSlippageBps: clampInt(risk.paperSlippageBps != null ? risk.paperSlippageBps : 0, 0, 5000, 0),
+      };
       // SAFETY DEFAULTS (§5): paper + disabled + testnet.
       this.mode = spec.mode === 'live' ? 'live' : 'paper';
       this.enabled = spec.enabled === true ? true : false;
@@ -628,6 +725,12 @@
         inbox: [],          // signal bot local inbox
         cursor: 0,          // signal bot processed-count cursor
         lastTickAt: 0,
+        lastMarks: {},      // base symbol -> last USD mark seen (dashboard unrealized without a price call)
+        streak: 0,          // +n consecutive wins / -n consecutive losses (the "heat" meter)
+        bestStreak: 0,
+        feed: [],           // the last ~60 trade/skip events for the live ticker
+        haltReason: null,   // why the bot auto-paused (max-loss / …), null when running
+        dealOpens: [],      // timestamps of recent deal opens (maxDailyDeals rail)
       };
     }
 
@@ -653,6 +756,9 @@
           return 'Buys $' + c.amountUsd + ', takes profit in ' + c.takeProfits.length + ' step(s).';
         case 'signal':
           return 'Launches a ' + c.onSignal.type + ' bot per matching ' + c.source + ' signal.';
+        case 'auto':
+          return 'Full Auto on ' + laneName(this.lane) + ': rotates between ' + c.algos.map((a) => ({ momentum: 'Momentum', buzz: 'Buzz', sniper: 'Sniper', grid: 'Grid', dip: 'Dip-buyer', scanner: 'Autopilot' })[a] || a).join(', ') +
+            ' every ' + Math.round(c.rebalanceSec / 60) + ' min, weighting whichever algorithm fits the market regime and is actually making money.';
         case 'scanner':
           return 'Scans every discoverable pair, scores each for cost-positive profit, and auto-trades the worthy ones (score ≥ ' +
             (c.minProfitBps != null ? c.minProfitBps : 30) + 'bps, up to ' + (c.maxConcurrentPairs != null ? c.maxConcurrentPairs : 3) +
@@ -666,7 +772,7 @@
       return {
         id: this.id, name: this.name, type: this.type, universe: this.universe,
         lane: this.lane, riskMode: this.riskMode, profitMode: this.profitMode,
-        chainPrefs: this.chainPrefs, venuePrefs: this.venuePrefs, config: this.config,
+        chainPrefs: this.chainPrefs, venuePrefs: this.venuePrefs, config: this.config, risk: this.risk,
         allocationUsd: this.allocationUsd, mode: this.mode, enabled: this.enabled,
         network: this.network, pollSec: this.pollSec, cooldownSec: this.cooldownSec,
         createdAt: this.createdAt, wallet: this.wallet, channel: this.channel,
@@ -729,6 +835,7 @@
     get(id) { return this.bots.get(id) || null; }
     remove(id) { return this.bots.delete(id); }
     list() { return Array.from(this.bots.values()); }
+    all() { return this.list(); }
     enabled() { return this.list().filter((b) => b.enabled); }
 
     snapshot() {
@@ -762,9 +869,9 @@
     applyBps, scaledUsdUc, splitPair, decimalsFor, DEFAULT_DECIMALS,
     AGENT_FEE_BPS, agentFeeUc,
     // config
-    validateConfig, dcaBps,
+    validateConfig, dcaBps, AUTO_ALGOS,
     // lane + risk mode + profit mode
-    LANES, RISK_MODES, validateLane, validateRiskMode, laneBase, laneChain, riskPreset,
+    LANES, LANE_ALIASES, RISK_MODES, validateLane, validateRiskMode, laneBase, laneChain, laneSignalsChain, laneName, registerLanes, lanes, riskPreset,
     PROFIT_MODES, validateProfitMode,
     // deal engines (pure)
     newDcaDeal, dcaObserve, dcaStep, dcaApply,

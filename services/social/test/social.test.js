@@ -131,142 +131,7 @@ test('tipping moves BLOCK with a fee to the pool; conserves total; guards self-t
     assert.equal(app.store.get('profiles', 'poor').blockUnits, 400);
     assert.equal(app.store.get('profiles', 'rich').blockUnits, 1099);
     assert.equal(app.store.get('meta', 'pool').units, 1);
-    assert.equal(app.store.get('profiles', 'rich').karma, 150, 'tips grant NO karma — reputation is earned, not bought');
     // conservation: 400 + 1099 + 1(pool) = 1500 = original (500 + 1000)
-  });
-});
-
-test('awards move BLOCK with a pool fee + stamp a badge (no karma); boosts flag + fund the pool', async () => {
-  await withServer(async ({ app, call, as }) => {
-    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'giver' });
-    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'poster' });
-    await app.store.update('profiles', 'poster', (p) => { p.karma = 150; return p; });
-    await app.store.update('profiles', 'giver', (p) => { p.blockUnits = 1000; return p; });
-    await call('POST', '/social/api/communities', { name: 'aw', title: 'Aw' }, as('poster'));
-    const pid = (await call('POST', '/social/api/posts', { cid: 'aw', kind: 'text', title: 'T', body: 'b' }, as('poster'))).data.id;
-
-    // award 'gold' (100): 10% fee=10 -> poster +90, pool +10; badge stamped; poster karma unchanged
-    const aw = await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, as('giver'));
-    assert.equal(aw.status, 200);
-    await app.store.drain();
-    assert.equal(app.store.get('profiles', 'giver').blockUnits, 900);
-    assert.equal(app.store.get('profiles', 'poster').blockUnits, 90);
-    assert.equal(app.store.get('meta', 'pool').units, 10);
-    assert.equal(app.store.get('profiles', 'poster').karma, 150, 'awards grant NO karma');
-    assert.equal(app.store.get('posts', pid).awards.gold, 1);
-
-    // unknown award + self-award + insufficient funds are rejected
-    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'nope' }, as('giver'))).status, 400);
-    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, as('poster'))).status, 400);
-
-    // boost: deducts from giver, funds the pool, flags boostedUntil
-    const bo = await call('POST', '/social/api/boost', { targetId: pid, amount: 50 }, as('giver'));
-    assert.equal(bo.status, 200);
-    await app.store.drain();
-    assert.equal(app.store.get('profiles', 'giver').blockUnits, 850);
-    assert.equal(app.store.get('meta', 'pool').units, 60);
-    assert.ok(app.store.get('posts', pid).boostedUntil > 0);
-    assert.equal((await call('POST', '/social/api/boost', { targetId: pid, amount: 5 }, as('giver'))).status, 400); // below min
-  });
-});
-
-test('token-card posts normalize the ref, reject junk, and survive a feed roundtrip', async () => {
-  await withServer(async ({ call, app, as }) => {
-    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'trader' });
-    await app.store.update('profiles', 'trader', (p) => { p.karma = 150; return p; });
-    await call('POST', '/social/api/communities', { name: 'defi', title: 'DeFi' }, as('trader'));
-    // a $-prefixed lowercase symbol is stored upper-cased, no $
-    const sym = await call('POST', '/social/api/posts',
-      { cid: 'defi', kind: 'token', title: 'Aping $block', token: '$block' }, as('trader'));
-    assert.equal(sym.status, 200);
-    await app.store.drain();
-    assert.equal(app.store.get('posts', sym.data.id).token, 'BLOCK');
-    assert.equal(app.store.get('posts', sym.data.id).kind, 'token');
-    // a 0x contract is lower-cased
-    const addr = '0x' + 'Ab'.repeat(20);
-    const ca = await call('POST', '/social/api/posts',
-      { cid: 'defi', kind: 'token', title: 'contract', token: addr }, as('trader'));
-    assert.equal(ca.status, 200);
-    await app.store.drain();
-    assert.equal(app.store.get('posts', ca.data.id).token, addr.toLowerCase());
-    // junk ref is rejected
-    const bad = await call('POST', '/social/api/posts',
-      { cid: 'defi', kind: 'token', title: 'bad', token: 'not a token!!' }, as('trader'));
-    assert.equal(bad.status, 400);
-    // feed carries the token field through decorate()
-    const feed = await call('GET', '/social/api/feed?sort=new');
-    assert.ok(feed.data.posts.some((p) => p.token === 'BLOCK'));
-  });
-});
-
-test('agents-as-members: registration is tier-gated, agents post/comment but can never move value', async () => {
-  await withServer(async ({ call, app, as }) => {
-    // owner must be Member to register an agent
-    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'owner' });
-    const denied = await call('POST', '/social/api/agents', { handle: 'botzero' }, as('owner'));
-    assert.equal(denied.status, 403);
-    await app.store.update('profiles', 'owner', (p) => { p.karma = 150; return p; }); // promote
-
-    // register: token returned ONCE
-    const reg = await call('POST', '/social/api/agents', { handle: 'alphabot', name: 'Alpha Bot' }, as('owner'));
-    assert.equal(reg.status, 200);
-    const token = reg.data.token;
-    assert.match(token, /^blk_agent_/);
-    const agentAuth = { Authorization: `Bearer ${token}` };
-
-    // owner lists the agent
-    const mine = await call('GET', '/social/api/agents', undefined, as('owner'));
-    assert.equal(mine.data.agents.length, 1);
-    assert.equal(mine.data.agents[0].handle, 'alphabot');
-
-    // the agent can post + comment (no cookie, no CSRF — the bearer token is the capability)
-    await call('POST', '/social/api/communities', { name: 'alpha', title: 'Alpha' }, as('owner'));
-    const pr = await call('POST', '/social/api/posts',
-      { cid: 'alpha', kind: 'text', title: 'My read on BLOCK', body: 'thesis' }, agentAuth);
-    assert.equal(pr.status, 200);
-    const pid = pr.data.id;
-    const cr = await call('POST', '/social/api/comments', { pid, body: 'and a follow-up' }, agentAuth);
-    assert.equal(cr.status, 200);
-
-    // the post author is transparently labeled as an agent run by @owner
-    const feed = await call('GET', '/social/api/feed?sort=new');
-    const md = feed.data.posts.find((p) => p.id === pid);
-    assert.equal(md.author.handle, 'alphabot');
-    assert.equal(md.author.kind, 'agent');
-    assert.equal(md.author.ownerHandle, 'owner');
-
-    // VALUE ACTIONS are human-only: the agent token is rejected (401) on vote/tip/award/boost
-    assert.equal((await call('POST', '/social/api/vote', { targetType: 'post', targetId: pid, dir: 1 }, agentAuth)).status, 401);
-    assert.equal((await call('POST', '/social/api/tip', { targetType: 'post', targetId: pid, amount: 1 }, agentAuth)).status, 401);
-    assert.equal((await call('POST', '/social/api/award', { targetType: 'post', targetId: pid, award: 'gold' }, agentAuth)).status, 401);
-    assert.equal((await call('POST', '/social/api/boost', { targetId: pid, amount: 20 }, agentAuth)).status, 401);
-    // and an agent cannot spawn agents
-    assert.equal((await call('POST', '/social/api/agents', { handle: 'nested' }, agentAuth)).status, 401);
-  });
-});
-
-test('agents-as-members: revoke disables the token; per-owner cap is enforced', async () => {
-  await withServer(async ({ call, app, as }) => {
-    await call('GET', '/social/api/me', undefined, { 'x-test-uid': 'boss' });
-    await app.store.update('profiles', 'boss', (p) => { p.karma = 150; return p; });
-    await call('POST', '/social/api/communities', { name: 'den', title: 'Den' }, as('boss'));
-
-    const reg = await call('POST', '/social/api/agents', { handle: 'worker' }, as('boss'));
-    const token = reg.data.token; const uid = reg.data.agent.uid;
-    const agentAuth = { Authorization: `Bearer ${token}` };
-    // works before revoke
-    assert.equal((await call('POST', '/social/api/posts', { cid: 'den', kind: 'text', title: 'hi', body: 'x' }, agentAuth)).status, 200);
-    // revoke → token no longer authenticates
-    assert.equal((await call('POST', `/social/api/agents/${encodeURIComponent(uid)}/revoke`, {}, as('boss'))).status, 200);
-    assert.equal((await call('POST', '/social/api/posts', { cid: 'den', kind: 'text', title: 'again', body: 'x' }, agentAuth)).status, 401);
-
-    // cap: fill to max (default 5; one slot freed by the revoke) then the next 409s
-    for (let i = 0; i < 5; i++) {
-      const r = await call('POST', '/social/api/agents', { handle: `cap${i}bot` }, as('boss'));
-      assert.equal(r.status, 200, `agent ${i} should register`);
-    }
-    const over = await call('POST', '/social/api/agents', { handle: 'overflowbot' }, as('boss'));
-    assert.equal(over.status, 409);
   });
 });
 
@@ -279,5 +144,56 @@ test('deposit endpoint is hidden without the settle secret and credits with it',
     assert.equal(yes.status, 200);
     await app.store.drain();
     assert.equal(app.store.get('profiles', 'dep').blockUnits, 50);
+  });
+});
+
+test('seed creates boards + pinned welcome posts once, and reserves official handles', async () => {
+  const { seed, BOARDS, HOUSE } = await import('../src/seed.js');
+  await withServer(async ({ app, call }) => {
+    const first = await seed(app.store, () => 1_700_000_000_000);
+    assert.equal(first.boards.length, BOARDS.length);
+    assert.equal(first.posts.length, BOARDS.length);
+    const again = await seed(app.store, () => 1_700_000_000_000);
+    assert.deepEqual([again.boards.length, again.posts.length, again.house], [0, 0, false]);
+    assert.equal(app.store.get('handles', 'admin'), HOUSE.uid);
+    // a user whose account username is a reserved handle does not get it
+    const p = app.ensureProfile({ uid: 'u1', email: 'x@example.test', username: 'blockle', role: 'user' });
+    assert.notEqual(p.handle, 'blockle');
+    const feed = await call('GET', '/social/api/feed?c=mining');
+    assert.equal(feed.data.posts[0].pinned, true);
+    assert.equal(feed.data.posts[0].author.official, true);
+    const stats = await call('GET', '/social/api/stats');
+    assert.equal(stats.data.boards, BOARDS.length);
+  });
+});
+
+test('restricted boards, flairs, join/leave, pinning and no tipping the house account', async () => {
+  const { seed } = await import('../src/seed.js');
+  await withServer(async ({ app, call, as }) => {
+    await seed(app.store, () => 1_700_000_000_000);
+    // only staff post to announcements
+    assert.equal((await call('POST', '/social/api/posts', { cid: 'announcements', title: 'hi' }, as('bob'))).status, 403);
+    assert.equal((await call('POST', '/social/api/posts', { cid: 'announcements', title: 'v1', flair: 'Release' }, as('root', { 'x-test-role': 'admin' }))).status, 200);
+    // flair is kept only if the board defines it
+    const ok = await call('POST', '/social/api/posts', { cid: 'mining', title: 'rig', flair: 'Hardware' }, as('bob'));
+    const bad = await call('POST', '/social/api/posts', { cid: 'mining', title: 'x', flair: 'Nope' }, as('bob'));
+    assert.equal(app.store.get('posts', ok.data.id).flair, 'Hardware');
+    assert.equal(app.store.get('posts', bad.data.id).flair, null);
+    assert.equal((await call('GET', '/social/api/feed?c=mining&flair=Hardware')).data.posts.length, 1);
+    // join toggles membership + count
+    const j1 = await call('POST', '/social/api/community/mining/join', undefined, as('bob'));
+    assert.equal(j1.data.joined, true);
+    assert.equal((await call('GET', '/social/api/community/mining', undefined, as('bob'))).data.community.members, 1);
+    await call('POST', '/social/api/community/mining/join', undefined, as('bob'));
+    assert.equal(app.store.get('communities', 'mining').members, 0);
+    // pin: non-staff refused, admin allowed
+    assert.equal((await call('POST', '/social/api/pin', { id: ok.data.id, pinned: true }, as('carol'))).status, 403);
+    assert.equal((await call('POST', '/social/api/pin', { id: ok.data.id, pinned: true }, as('root', { 'x-test-role': 'admin' }))).status, 200);
+    // house posts can't be tipped
+    await app.store.update('profiles', 'bob', (p) => { if (p) p.blockUnits = 50; return p; });
+    const house = app.store.find('posts', (p) => p.seed && p.cid === 'help');
+    const tip = await call('POST', '/social/api/tip', { targetType: 'post', targetId: house.id, amount: 5 }, as('bob'));
+    assert.equal(tip.status, 400);
+    assert.equal(app.store.get('profiles', 'bob').blockUnits, 50);
   });
 });

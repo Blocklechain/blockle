@@ -106,6 +106,9 @@
     if (t.address) out.address = t.address;
     if (t.mint) out.mint = t.mint;
     if (t.name) out.name = t.name;
+    if (t.logo || t.logoURI) out.logoURI = t.logoURI || t.logo;
+    if (t.program) out.program = t.program;
+    out.autoImported = true; out.importedAt = Date.now();
     return out;
   }
 
@@ -142,15 +145,31 @@
 
     const summary = { imported: [], flagged: [], perChain: {} };
     let changed = false;
+    const timeoutMs = deps.timeoutMs || 20000;
+    const withTimeout = (p, ms) => Promise.race([Promise.resolve(p), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
-    for (const chain of chains) {
+    // Discovery runs for EVERY chain in PARALLEL (one slow RPC never stalls the
+    // rest); the persist step below stays sequential + deterministic.
+    const discoveredBy = await Promise.all(chains.map(async (chain) => {
       let address;
       try { address = deps.addressFor ? await deps.addressFor(chain) : null; } catch (_) { address = null; }
-      if (!address) { summary.perChain[chain] = { error: 'no-address' }; continue; }
-
+      if (!address) return { chain, error: 'no-address', discovered: [] };
       let discovered = [];
-      try { discovered = (await registry.discoverTokens(chain, address, { spamFilter: false })) || []; }
-      catch (_) { discovered = []; }
+      try { discovered = (await withTimeout(registry.discoverTokens(chain, address, { spamFilter: false, knownTokens: deps.knownTokens ? deps.knownTokens(chain) : undefined }), timeoutMs)) || []; }
+      catch (e) { return { chain, error: String((e && e.message) || e), discovered: [] }; }
+      // optional metadata enrichment (symbol/name/logo by address) for rows the
+      // adapter could only label by address — never changes balances.
+      if (typeof deps.enrich === 'function') {
+        try { discovered = (await withTimeout(deps.enrich(chain, discovered), 8000)) || discovered; } catch (_) {}
+      }
+      if (typeof deps.onProgress === 'function') { try { deps.onProgress({ chain, found: discovered.length }); } catch (_) {} }
+      return { chain, discovered };
+    }));
+
+    for (const row of discoveredBy) {
+      const chain = row.chain;
+      if (row.error) { summary.perChain[chain] = { error: row.error }; if (row.error === 'no-address') continue; }
+      const discovered = row.discovered || [];
 
       const existing = chain === 'block'
         ? blockIds.map((id) => ({ chain: 'block', id }))
@@ -179,11 +198,13 @@
           summary.flagged.push({ token: normalizeImport(token), reason });
         }
       }
-      summary.perChain[chain] = { imported: toImport.length, flagged: flagged.length, skipped: skipped.length };
+      summary.perChain[chain] = Object.assign({}, summary.perChain[chain] || {}, { imported: toImport.length, flagged: flagged.length, skipped: skipped.length });
     }
 
-    if (changed && store && typeof store.set === 'function') {
-      await store.set({ chainTokens, tokens: blockIds, flaggedTokens });
+    if (store && typeof store.set === 'function') {
+      const patch = { lastAutoImportAt: Date.now() };
+      if (changed) Object.assign(patch, { chainTokens, tokens: blockIds, flaggedTokens });
+      try { await store.set(patch); } catch (_) {}
     }
     summary.changed = changed;
     summary.chainTokens = chainTokens;

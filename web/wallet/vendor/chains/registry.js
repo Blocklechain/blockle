@@ -31,6 +31,25 @@
     polygon:   { chainId: 137,   symbol: 'POL',  explorer: 'https://polygonscan.com/tx/' },
     bnb:       { chainId: 56,    symbol: 'BNB',  explorer: 'https://bscscan.com/tx/' },
     avalanche: { chainId: 43114, symbol: 'AVAX', explorer: 'https://snowtrace.io/tx/' },
+    // Additional networks — same key, same adapter, keyless public RPCs.
+    linea:     { chainId: 59144, symbol: 'ETH',  explorer: 'https://lineascan.build/tx/' },
+    scroll:    { chainId: 534352, symbol: 'ETH', explorer: 'https://scrollscan.com/tx/' },
+    unichain:  { chainId: 130,   symbol: 'ETH',  explorer: 'https://uniscan.xyz/tx/' },
+    gnosis:    { chainId: 100,   symbol: 'XDAI', explorer: 'https://gnosisscan.io/tx/' },
+    mantle:    { chainId: 5000,  symbol: 'MNT',  explorer: 'https://mantlescan.xyz/tx/' },
+    celo:      { chainId: 42220, symbol: 'CELO', explorer: 'https://celoscan.io/tx/' },
+    cronos:    { chainId: 25,    symbol: 'CRO',  explorer: 'https://cronoscan.com/tx/' },
+    sonic:     { chainId: 146,   symbol: 'S',    explorer: 'https://sonicscan.org/tx/' },
+    berachain: { chainId: 80094, symbol: 'BERA', explorer: 'https://berascan.com/tx/' },
+    opbnb:     { chainId: 204,   symbol: 'BNB',  explorer: 'https://opbnbscan.com/tx/' },
+    sei:       { chainId: 1329,  symbol: 'SEI',  explorer: 'https://seitrace.com/tx/' },
+  };
+  function isEvm(id) { return !!EVM_CHAINS[id]; }
+  const NETWORK_NAMES = {
+    block: 'BLOCK', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', solana: 'Solana',
+    ethereum: 'Ethereum', base: 'Base', arbitrum: 'Arbitrum', optimism: 'Optimism', polygon: 'Polygon', bnb: 'BNB Chain',
+    avalanche: 'Avalanche', linea: 'Linea', scroll: 'Scroll', unichain: 'Unichain', gnosis: 'Gnosis', mantle: 'Mantle',
+    celo: 'Celo', cronos: 'Cronos', sonic: 'Sonic', berachain: 'Berachain', opbnb: 'opBNB', sei: 'Sei',
   };
 
   // Alchemy host templates (base URL, NO key) for the networks Alchemy's
@@ -43,6 +62,16 @@
     arbitrum: 'https://arb-mainnet.g.alchemy.com/v2/',
     optimism: 'https://opt-mainnet.g.alchemy.com/v2/',
     polygon:  'https://polygon-mainnet.g.alchemy.com/v2/',
+    linea:    'https://linea-mainnet.g.alchemy.com/v2/',
+    scroll:   'https://scroll-mainnet.g.alchemy.com/v2/',
+    unichain: 'https://unichain-mainnet.g.alchemy.com/v2/',
+    gnosis:   'https://gnosis-mainnet.g.alchemy.com/v2/',
+    mantle:   'https://mantle-mainnet.g.alchemy.com/v2/',
+    celo:     'https://celo-mainnet.g.alchemy.com/v2/',
+    sonic:    'https://sonic-mainnet.g.alchemy.com/v2/',
+    berachain: 'https://berachain-mainnet.g.alchemy.com/v2/',
+    opbnb:    'https://opbnb-mainnet.g.alchemy.com/v2/',
+    sei:      'https://sei-mainnet.g.alchemy.com/v2/',
   };
 
   // Default public endpoints — every one is overridable via config.
@@ -54,6 +83,17 @@
     polygon:   { rpcUrl: 'https://polygon-bor-rpc.publicnode.com', chainId: 137 },
     bnb:       { rpcUrl: 'https://bsc-rpc.publicnode.com', chainId: 56 },
     avalanche: { rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114 },
+    linea:     { rpcUrl: 'https://linea-rpc.publicnode.com', chainId: 59144 },
+    scroll:    { rpcUrl: 'https://scroll-rpc.publicnode.com', chainId: 534352 },
+    unichain:  { rpcUrl: 'https://unichain-rpc.publicnode.com', chainId: 130 },
+    gnosis:    { rpcUrl: 'https://gnosis-rpc.publicnode.com', chainId: 100 },
+    mantle:    { rpcUrl: 'https://mantle-rpc.publicnode.com', chainId: 5000 },
+    celo:      { rpcUrl: 'https://celo-rpc.publicnode.com', chainId: 42220 },
+    cronos:    { rpcUrl: 'https://cronos-evm-rpc.publicnode.com', chainId: 25 },
+    sonic:     { rpcUrl: 'https://sonic-rpc.publicnode.com', chainId: 146 },
+    berachain: { rpcUrl: 'https://berachain-rpc.publicnode.com', chainId: 80094 },
+    opbnb:     { rpcUrl: 'https://opbnb-rpc.publicnode.com', chainId: 204 },
+    sei:       { rpcUrl: 'https://sei-evm-rpc.publicnode.com', chainId: 1329 },
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
@@ -91,6 +131,46 @@
     avalanche: [
       { chain: 'avalanche', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E' },
       { chain: 'avalanche', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7' },
+    ],
+    linea: [
+      { chain: 'linea', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x176211869cA2b568f2A7D4EE941E073a821EE1ff' },
+      { chain: 'linea', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xA219439258ca9da29E9Cc4cE5596924745e12B93' },
+    ],
+    scroll: [
+      { chain: 'scroll', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4' },
+      { chain: 'scroll', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xf55BEC9cafDbE8730f096Aa55dad6D22d44099Df' },
+    ],
+    unichain: [
+      { chain: 'unichain', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x078D782b760474a361dDA0AF3839290b0EF57AD6' },
+    ],
+    gnosis: [
+      { chain: 'gnosis', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xDDAfbb505ad214D7b80b1f830fcCc89B60fb7A83' },
+      { chain: 'gnosis', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x4ECaBa5870353805a9F068101A40E0f32ed605C6' },
+    ],
+    mantle: [
+      { chain: 'mantle', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9' },
+      { chain: 'mantle', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE' },
+    ],
+    celo: [
+      { chain: 'celo', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xcebA9300f2b948710d2653dD7B07f33A8B32118C' },
+      { chain: 'celo', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e' },
+    ],
+    cronos: [
+      { chain: 'cronos', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xc21223249CA28397B4B6541dfFaEcC539BfF0c59' },
+      { chain: 'cronos', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x66e428c3f67a68878562e79A0234c1F83c208770' },
+    ],
+    sonic: [
+      { chain: 'sonic', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x29219dd400f2Bf60E5a23d13Be72B486D4038894' },
+    ],
+    berachain: [
+      { chain: 'berachain', kind: 'erc20', symbol: 'HONEY', decimals: 18, address: '0xFCBD14DC51f0A4d49d5E53C2E0950e0bC26d0Dce' },
+    ],
+    opbnb: [
+      { chain: 'opbnb', kind: 'erc20', symbol: 'USDT', decimals: 18, address: '0x9e5AAC1Ba1a2e6aEd6b32689DFcF62A509Ca96f3' },
+    ],
+    sei: [
+      { chain: 'sei', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x3894085Ef7Ff0f0aeDf52E2A2704928d1Ec074F1' },
+      { chain: 'sei', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1' },
     ],
   };
 
@@ -190,6 +270,17 @@
       },
       has(id) { return !!adapters[id]; },
       enabled() { return [...enabledSet].filter((id) => adapters[id]); },
+      // Every enabled network with its native symbol + display name — the lane
+      // list for bots, the network picker, the price feed's native map.
+      networks() {
+        return [...enabledSet].filter((id) => adapters[id]).map((id) => {
+          const a = adapters[id];
+          const custom = customMetaById[id];
+          const sym = (a && a.native && a.native.symbol) || (custom && custom.symbol) || id.toUpperCase();
+          const name = custom ? custom.name : (NETWORK_NAMES[id] || id.charAt(0).toUpperCase() + id.slice(1));
+          return { id, symbol: sym, name, evm: !!evmSpecs[id], chainId: evmSpecs[id] ? evmSpecs[id].chainId : undefined, custom: !!custom };
+        });
+      },
       endpoints(id) { return endpoints[id]; },
       tokensFor(id) { return tokens[id] || []; },
 
@@ -210,7 +301,10 @@
         const a = adapters[id];
         if (!a) return [];
         let found = [];
-        try { if (typeof a.discoverTokens === 'function') found = (await a.discoverTokens(address)) || []; } catch { found = []; }
+        // the adapter also probes every token the wallet already knows about on
+        // this chain (defaults + imports) so a keyless network still finds them.
+        const hint = { knownTokens: (tokens[id] || []).concat((opts && opts.knownTokens) || []) };
+        try { if (typeof a.discoverTokens === 'function') found = (await a.discoverTokens(address, hint)) || []; } catch { found = []; }
         if (!Discovery || !Discovery.mergeTokens) return (tokens[id] || []).concat(found);
         return Discovery.mergeTokens(tokens[id] || [], found, opts || {});
       },
@@ -222,6 +316,6 @@
     };
   }
 
-  global.ChainRegistry = { createRegistry, DEFAULT_ENDPOINTS, DEFAULT_TOKENS, EVM_CHAINS, ALCHEMY_HOSTS, resolveAlchemy };
+  global.ChainRegistry = { createRegistry, DEFAULT_ENDPOINTS, DEFAULT_TOKENS, EVM_CHAINS, ALCHEMY_HOSTS, NETWORK_NAMES, resolveAlchemy, isEvm };
   if (inNode) module.exports = global.ChainRegistry;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));

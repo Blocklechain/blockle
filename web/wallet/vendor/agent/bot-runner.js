@@ -47,10 +47,6 @@
       this.audit = deps.audit || null;
       this.ctx = deps.ctx || {};
       this.mainnetEnabled = deps.mainnetEnabled === true; // default false
-      // Live trading is a paid feature (Blockle Copilot tier or the free trial). Fail-closed:
-      // false until the host sets it from the account's effective entitlement. Paper/Arena are
-      // unaffected. Set via setLiveEntitled() whenever the account/subscription state changes.
-      this.liveEntitled = deps.liveEntitled === true;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.pnl = deps.pnl || null;              // post-commit realized-profit tracker (LIVE)
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
@@ -133,22 +129,11 @@
     get(id) { return this.store.get(id); }
     list() { return this.store.list(); }
 
-    // Host hook: reflect the account's effective entitlement (paid tier OR active free trial).
-    // `tier` is the server's entitledTier ('free' | 'copilot' | 'copilot_pro'); anything other
-    // than free/empty unlocks live arming. Does not touch already-armed bots.
-    setLiveEntitled(tier) { this.liveEntitled = !!tier && tier !== 'free'; return this.liveEntitled; }
-
     // Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
     async armLive(id, opts) {
       opts = opts || {};
       const bot = this.store.get(id);
       if (!bot) throw new Error('unknown bot: ' + id);
-      if (!this.liveEntitled) {
-        await this._audit({ type: 'bot_arm_refused', bot: id, reason: 'subscription required' });
-        const e = new Error('Live trading requires Blockle Copilot. Start your free trial or subscribe to go live.');
-        e.code = 'ENTITLEMENT_REQUIRED';
-        throw e;
-      }
       const alloc = opts.allocationUsd != null ? Number(opts.allocationUsd) : bot.allocationUsd;
       const sessionCap = this.policy.caps && this.policy.caps.sessionUsd;
       if (!(alloc > 0)) {
@@ -224,6 +209,83 @@
       return ok;
     }
 
+    // ---- STOP ALL: pause every bot + cancel open live orders, WITHOUT the kill
+    // switch (keys stay unlocked, the runner stays usable). The bots tab's
+    // "Stop all" — kill (below) is the agent-wide emergency switch that also locks.
+    async stopAll(reason) {
+      this._stopScheduler();
+      for (const bot of this.store.list()) {
+        if (!bot.enabled) continue;
+        bot.enabled = false;
+        if (bot.mode === 'live') { try { await this._cancelOpenOrders(bot); } catch (_) {} }
+        await this._audit({ type: 'bot_paused', bot: bot.id, reason: reason || 'stop-all' });
+        this._feed(bot, { kind: 'halt', text: '⏹ Stopped' + (reason ? ' (' + reason + ')' : '') });
+      }
+      await this.store.persist();
+      this.emit({ type: 'bot_stop_all', reason: reason || 'user' });
+    }
+
+    // ---- FLATTEN: close every OPEN deal of a bot at the current mark (paper
+    // simulates, live routes each sell through the ONE gate), book the results,
+    // and pause it — a real "stop", not a frozen position. Returns the closes.
+    async flatten(id, reason) {
+      const B = this.Bots;
+      const bot = typeof id === 'object' ? id : this.store.get(id);
+      if (!bot) throw new Error('unknown bot: ' + id);
+      const closes = [];
+      if (bot.type === 'auto') {
+        for (const c of this._autoChildren(bot)) { try { closes.push(...(await this.flatten(c, reason))); } catch (_) {} }
+        this._autoPersistChildren(bot);
+      } else {
+        const now = Number(this.ctx.now ? this.ctx.now() : Date.now());
+        const ctxMainnet = this._ctxMainnet();
+        const type = bot.type === 'signal' ? ((bot.config.onSignal && bot.config.onSignal.type) || 'dca') : bot.type;
+        const cfg = bot.type === 'signal' ? ((bot.config.onSignal && bot.config.onSignal.config) || {}) : bot.config;
+        const engine = B.ENGINES[type];
+        for (const pair of Object.keys(bot.state.byPair || {})) {
+          const ps = bot.state.byPair[pair];
+          const deal = ps && ps.deal;
+          if (!deal || deal.status === 'closed' || !engine) continue;
+          const [base, quote] = B.splitPair(pair);
+          const prices = await this._prices([base, quote]);
+          const markUc = this._unitUc(prices, base);
+          if (markUc == null) { closes.push({ pair, skipped: 'price' }); continue; }
+          const bd = this._decimals(base, cfg), quoteDec = this._decimals(quote, cfg), quoteUc = this._unitUc(prices, quote);
+          const m = { base, quote, bd, quoteDec, quoteUc };
+          const bcfg = engine.bcfg ? engine.bcfg(cfg) : cfg;
+          if (type === 'grid') {
+            // sell every held rung as a grid exit
+            let guard = 0;
+            while (guard++ < 200) {
+              const lv = (deal.levels || []).find((l) => l.heldQty > 0n);
+              if (!lv) break;
+              const order = { action: 'sell', side: 'sell', kind: 'grid_exit', exit: true, levelIndex: lv.i, qty: lv.heldQty, _levelPriceUc: markUc };
+              const fill = await this._executeOrder(bot, m, order, markUc, ctxMainnet);
+              if (!fill) break;
+              fill.bd = bd; this._engineApply(type, deal, bcfg, cfg, order, fill, now);
+              closes.push({ pair, qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper });
+            }
+            if (!(deal.levels || []).some((l) => l.heldQty > 0n)) { deal.status = 'closed'; deal.closedAt = now; deal.reason = 'manual'; }
+          } else {
+            const qty = deal.filledQty != null ? deal.filledQty : deal.remainingQty;
+            if (qty > 0n) {
+              const order = { action: 'sl', side: 'sell', kind: 'manual', qty };
+              const fill = await this._executeOrder(bot, m, order, markUc, ctxMainnet);
+              if (fill) { fill.bd = bd; this._engineApply(type, deal, bcfg, cfg, order, fill, now); closes.push({ pair, qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper }); }
+            } else { deal.status = 'closed'; deal.closedAt = now; deal.reason = 'manual'; }
+          }
+          if (deal.status === 'closed') this._bookClose(bot, ps, now, pair, markUc);
+        }
+      }
+      bot.enabled = false;
+      await this._audit({ type: 'bot_flatten', bot: bot.id, closes: closes.length, reason: reason || 'user' });
+      this._feed(bot, { kind: 'halt', text: '⏹ Stopped & flattened — ' + closes.filter((c) => !c.skipped).length + ' position(s) closed at market' });
+      await this.store.persist();
+      if (!this.store.enabled().length) this._stopScheduler();
+      this.emit({ type: 'bot_flattened', bot: bot.id, closes: closes.length });
+      return closes;
+    }
+
     // ---- KILL (§5): stop ALL bots, best-effort cancel open orders, lock vault --
     async killAll(reason) {
       this._killed = true;
@@ -242,6 +304,8 @@
 
     async _cancelOpenOrders(bot) {
       const B = this.Bots;
+      // a Full Auto parent holds no orders itself — cancel through its children
+      if (bot.type === 'auto') { for (const c of this._autoChildren(bot)) { try { await this._cancelOpenOrders(c); } catch (_) {} } return; }
       const tool = this.tools.get('cancel_order');
       if (!tool || !this.policy.isAllowed('cancel_order')) return;
       // Route cancels through the ONE shared value-moving dispatch (the SAME audited
@@ -299,17 +363,33 @@
 
       let report;
       try {
-        if (bot.type === 'rebalance' || bot.type === 'momentum') report = await this._tickScheduled(bot, now, opts);
+        if (bot.type === 'auto') report = await this._tickAuto(bot, now, opts);
+        else if (bot.type === 'rebalance' || bot.type === 'momentum') report = await this._tickScheduled(bot, now, opts);
         else if (bot.type === 'scanner') report = await this._tickScanner(bot, now, opts);
         else if (bot.type === 'signal') report = await this._tickSignal(bot, now, opts);
         else report = await this._tickDealBot(bot, bot.type, bot.config, bot.pairs(), now, opts);
+        bot.state.lastError = null;
       } catch (e) {
         if (e && e.halted) { this._killed = true; await this._audit({ type: 'bot_abort', bot: bot.id, reason: 'killed' }); return { bot: bot.id, killed: true }; }
         await this._audit({ type: 'bot_error', bot: bot.id, error: e.message });
+        bot.state.lastError = { at: now, message: String(e.message || e) };
         report = { bot: bot.id, error: e.message };
       }
+      bot.state.lastReport = { at: now, events: (report && report.events ? report.events.length : 0), error: report && report.error ? String(report.error) : null };
       await this.store.persist();
+      this.emit({ type: 'bot_tick', bot: bot.id, at: now, report });
       return report;
+    }
+
+    // Force a tick right now (UI "Tick now" button), ignoring the pollSec cadence.
+    async tickNow(id) { return this.tickBot(id, { forced: true }); }
+
+    // Push a human-readable event onto the bot's live ticker (bounded ring).
+    _feed(bot, ev) {
+      const f = bot.state.feed = bot.state.feed || [];
+      f.push(Object.assign({ at: Number(this.ctx.now ? this.ctx.now() : Date.now()) }, ev));
+      if (f.length > 60) f.splice(0, f.length - 60);
+      this.emit(Object.assign({ type: 'bot_feed', bot: bot.id, name: bot.name }, ev));
     }
 
     // ---- deal bots (dca / grid / smarttrade), also reused by signal-spawned ---
@@ -330,20 +410,82 @@
           events.push({ pair, skipped: 'price' });
           continue;
         }
-        const bd = B.decimalsFor(base, cfg.decimals);
-        const quoteDec = B.decimalsFor(quote, cfg.decimals);
+        // decimals: the host's asset map (discovery / holdings) beats the static table.
+        const bd = this._decimals(base, cfg);
+        const quoteDec = this._decimals(quote, cfg);
         const quoteUc = this._unitUc(prices, quote);
+        bot.state.lastMarks = bot.state.lastMarks || {};
+        bot.state.lastMarks[base] = B.ucToUsd(markUc);
 
         let ps = bot.state.byPair[pair] || (bot.state.byPair[pair] = { deal: null, lastCloseAt: 0 });
 
         // (re)open a deal if needed (dca/smarttrade). grid keeps one persistent deal.
         if (type === 'grid') {
-          if (!ps.deal) ps.deal = engine.newDeal(bot.id + ':' + pair, cfg, markUc, bd, now);
+          if (!ps.deal) {
+            // AUTO-RANGE: freeze a ±pct band around the first mark into this deal.
+            let gcfg = cfg;
+            if (!(cfg.lowerPrice > 0 && cfg.upperPrice > cfg.lowerPrice) && cfg.autoRangePct > 0) {
+              const mark = B.ucToUsd(markUc);
+              gcfg = Object.assign({}, cfg, { lowerPrice: mark * (1 - cfg.autoRangePct / 100), upperPrice: mark * (1 + cfg.autoRangePct / 100) });
+            }
+            ps.deal = engine.newDeal(bot.id + ':' + pair, gcfg, markUc, bd, now);
+            ps.deal.range = { lower: gcfg.lowerPrice, upper: gcfg.upperPrice };
+            this._feed(bot, { kind: 'open', pair, text: 'Grid armed ' + fmtUsdShort(gcfg.lowerPrice) + ' → ' + fmtUsdShort(gcfg.upperPrice) + ' (' + gcfg.gridCount + ' rungs)' });
+          }
         } else {
           if (!ps.deal || ps.deal.status === 'closed') {
-            if (!this._canStart(bot, ps, now)) { events.push({ pair, waiting: true }); continue; }
+            if (!this._canStart(bot, ps, now, markUc)) { events.push({ pair, waiting: true }); continue; }
             ps.deal = type === 'smarttrade' ? engine.newDeal(bot.id + ':' + pair + ':' + (bot.state.dealCount + 1), cfg, now)
               : engine.newDeal(bot.id + ':' + pair + ':' + (bot.state.dealCount + 1), now);
+            bot.state.dealOpens = (bot.state.dealOpens || []).filter((t) => now - t < 86400000).concat([now]);
+          }
+        }
+
+        // CANDLE EXITS (candles.js): fold this tick into the pair's candle series and,
+        // when the deal is in profit, bank it on a closed-candle reversal — long before
+        // a fixed take-profit would. Same sell path, same gate, same audit as any exit.
+        const cc = cfg.candle && cfg.candle.enabled ? cfg.candle : null;
+        if (cc) {
+          const Candles = this._candlesMod();
+          if (Candles) {
+            const u = Candles.update(ps.candles, B.ucToUsd(markUc), now, cc.sec, cc.maxCandles);
+            ps.candles = u.series;
+            if (ps.deal && ps.deal.status === 'open') {
+              const qty = ps.deal.filledQty != null ? ps.deal.filledQty : ps.deal.remainingQty;
+              const entryUc = ps.deal.avgEntryUc || 0n;
+              if (qty > 0n && entryUc > 0n) {
+                ps.candleState = ps.candleState || {};
+                const ev = Candles.evaluateExit(ps.candles, B.ucToUsd(entryUc), B.ucToUsd(markUc), cc, ps.candleState);
+                if (ev.exit) {
+                  const order = { action: 'tp', side: 'sell', kind: 'ctp', qty, candleReason: ev.reason };
+                  const fill = await this._executeOrder(bot, { base, quote, bd, quoteDec, quoteUc }, order, markUc, ctxMainnet);
+                  if (fill) {
+                    fill.bd = bd;
+                    this._engineApply(type, ps.deal, bcfg, cfg, order, fill, now);
+                    events.push({ pair, action: 'ctp', side: 'sell', qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper, candle: ev.reason });
+                    this._feed(bot, { kind: 'sell', pair, action: 'ctp', paper: !!fill.paper, priceUsd: B.ucToUsd(fill.priceUc), usd: B.ucToUsd(fill.proceedsUc || 0n),
+                      text: '📊 Banked ' + base + ' +' + ev.profitPct.toFixed(1) + '% — ' + Candles.label(ev.reason) + (fill.paper ? ' (paper)' : '') });
+                    if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now, pair, markUc); continue; }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // TIME STOP (dca/smarttrade): a deal older than maxDealSec is closed at
+        // the mark through the SAME gate as any sell — it is just another exit.
+        if (type !== 'grid' && cfg.maxDealSec > 0 && ps.deal.status === 'open' && (now - (ps.deal.openedAt || now)) >= cfg.maxDealSec * 1000) {
+          const qty = ps.deal.filledQty != null ? ps.deal.filledQty : ps.deal.remainingQty;
+          if (qty > 0n) {
+            const order = { action: 'sl', side: 'sell', kind: 'time', qty };
+            const fill = await this._executeOrder(bot, { base, quote, bd, quoteDec, quoteUc }, order, markUc, ctxMainnet);
+            if (fill) {
+              fill.bd = bd;
+              this._engineApply(type, ps.deal, bcfg, cfg, order, fill, now);
+              events.push({ pair, action: 'time', side: 'sell', qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper });
+              if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now, pair, markUc); continue; }
+            }
           }
         }
 
@@ -366,11 +508,29 @@
           // settled; the native quote when there is no route — never a false label).
           if (fill.side === 'sell' && fill.settledCurrency) { ev.settledCurrency = fill.settledCurrency; ev.realized = { currency: fill.settledCurrency }; }
           events.push(ev);
+          this._feed(bot, {
+            kind: order.side, pair, action: order.kind, paper: !!fill.paper, priceUsd: B.ucToUsd(fill.priceUc),
+            usd: B.ucToUsd(fill.side === 'buy' ? (fill.costUc || 0n) : (fill.proceedsUc || 0n)),
+            text: (order.side === 'buy' ? 'Bought ' : 'Sold ') + base + ' @ ' + fmtUsdShort(B.ucToUsd(fill.priceUc)) + ' · ' + labelFor(order.kind) + (fill.paper ? ' (paper)' : ''),
+          });
 
-          if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now); break; }
+          if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now, pair, markUc); break; }
         }
       }
       return { bot: bot.id, type, events, dashboard: this.dashboard(bot.id) };
+    }
+
+    _candlesMod() {
+      if (this._Candles === undefined) {
+        this._Candles = root.AgentCandles || (typeof require === 'function' ? (() => { try { return require('./candles.js'); } catch (_) { return null; } })() : null);
+      }
+      return this._Candles;
+    }
+    _decimals(sym, cfg) {
+      try {
+        if (this.ctx && typeof this.ctx.decimalsFor === 'function') { const d = this.ctx.decimalsFor(sym); if (d != null && Number.isFinite(Number(d))) return Number(d); }
+      } catch (_) {}
+      return this.Bots.decimalsFor(sym, cfg && cfg.decimals);
     }
 
     _engineStep(type, deal, bcfg, cfg, markUc) {
@@ -385,23 +545,42 @@
       if (type === 'smarttrade') return this.Bots.smartApply(deal, cfg, order, fill, now);
     }
 
-    _canStart(bot, ps, now) {
+    _canStart(bot, ps, now, markUc) {
+      // bot-level halt (max-loss rail tripped) — nothing new opens until the user resumes
+      if (bot.state.haltReason) return false;
       // cooldown since last close
       if (bot.cooldownSec > 0 && ps.lastCloseAt && (now - ps.lastCloseAt) < bot.cooldownSec * 1000) return false;
+      // daily deal cap (rolling 24h)
+      const cap = bot.risk && bot.risk.maxDailyDeals;
+      if (cap > 0) {
+        const opens = (bot.state.dealOpens || []).filter((t) => now - t < 86400000);
+        if (opens.length >= cap) return false;
+      }
       const sc = bot.config && bot.config.startCondition;
       if (sc === 'signal') return !!ps.signalArmed;   // a signal must have armed this pair
-      // 'asap' (and 'dip' once its trigger logic is wired) start immediately
-      return true;
+      if (sc === 'dip') {
+        // DIP ENTRY: track the high-water mark since the last close; open only once
+        // the mark has fallen dipPct below it. A 0 dipPct starts immediately.
+        const dip = Number(bot.config.dipPct) || 0;
+        if (!(dip > 0) || markUc == null) return true;
+        if (ps.refHighUc == null || markUc > ps.refHighUc) ps.refHighUc = markUc;
+        const trigger = this.Bots.applyBps(ps.refHighUc, -Math.round(dip * 100));
+        if (markUc <= trigger) { ps.refHighUc = null; return true; }
+        return false;
+      }
+      return true; // 'asap'
     }
 
     // Book a closed deal into the bot's dashboard stats + archive.
-    _bookClose(bot, ps, now) {
+    _bookClose(bot, ps, now, pair, markUc) {
+      const B = this.Bots;
       const deal = ps.deal;
       const r = deal.realizedUc || 0n;
       bot.state.realizedUc = (bot.state.realizedUc || 0n) + r;
       bot.state.dealCount = (bot.state.dealCount || 0) + 1;
-      if (r > 0n) bot.state.winCount = (bot.state.winCount || 0) + 1;
-      else if (r < 0n) bot.state.lossCount = (bot.state.lossCount || 0) + 1;
+      if (r > 0n) { bot.state.winCount = (bot.state.winCount || 0) + 1; bot.state.streak = (bot.state.streak || 0) > 0 ? bot.state.streak + 1 : 1; }
+      else if (r < 0n) { bot.state.lossCount = (bot.state.lossCount || 0) + 1; bot.state.streak = (bot.state.streak || 0) < 0 ? bot.state.streak - 1 : -1; }
+      if ((bot.state.streak || 0) > (bot.state.bestStreak || 0)) bot.state.bestStreak = bot.state.streak;
       // running peak-to-trough drawdown on cumulative realized
       bot.state._peakRealizedUc = bot.state._peakRealizedUc != null ? bot.state._peakRealizedUc : 0n;
       if (bot.state.realizedUc > bot.state._peakRealizedUc) bot.state._peakRealizedUc = bot.state.realizedUc;
@@ -412,6 +591,24 @@
       ps.lastCloseAt = now;
       ps.deal = null;
       ps.signalArmed = false;
+      ps.refHighUc = null;
+      ps.candleState = null;
+      const usd = B.ucToUsd(r);
+      this._feed(bot, { kind: 'close', pair: pair || null, realizedUsd: usd, reason: deal.reason || null, paper: bot.mode === 'paper',
+        text: (r >= 0n ? '✓ Closed ' : '✗ Closed ') + (pair || deal.type) + ' ' + (usd >= 0 ? '+' : '') + fmtUsdShort(usd) + ' · ' + labelFor(deal.reason) + ((bot.state.streak || 0) >= 3 ? ' · ' + bot.state.streak + ' win streak' : '') });
+      // MAX-LOSS RAIL: cumulative realized loss ≥ maxLossPct of the budget ⇒ auto-pause.
+      const pct = bot.risk && bot.risk.maxLossPct;
+      if (pct > 0 && bot.allocationUsd > 0 && bot.state.realizedUc < 0n) {
+        const limitUc = B.divRound(B.microUsd(bot.allocationUsd) * BigInt(Math.round(pct * 100)), 10000n);
+        if (-bot.state.realizedUc >= limitUc) {
+          bot.enabled = false;
+          bot.state.haltReason = 'max-loss';
+          this._audit({ type: 'bot_paused', bot: bot.id, reason: 'max-loss', realizedUsd: usd, maxLossPct: pct });
+          this._feed(bot, { kind: 'halt', text: 'Max-loss rail hit (' + pct + '% of budget) — bot paused. Review and restart when ready.' });
+          this.emit({ type: 'bot_paused', bot: bot.id, reason: 'max-loss' });
+          if (!this.store.enabled().length) this._stopScheduler();
+        }
+      }
     }
 
     // Effective deploy cap (micro-dollars). PROFIT MODE governs it:
@@ -444,7 +641,11 @@
       const toolName = bot.type === 'grid' ? 'place_order' : 'swap';
       // Grid orders are LIMIT orders at a specific ladder price; DCA/smarttrade fill
       // at the current mark. Use the level price for grid so size = qty*levelPrice.
-      const execPriceUc = (order._levelPriceUc != null) ? order._levelPriceUc : markUc;
+      // PAPER SLIPPAGE: market fills (not grid limits) are moved against the bot by
+      // risk.paperSlippageBps so the sandbox prices in spread + impact honestly.
+      let execPriceUc = (order._levelPriceUc != null) ? order._levelPriceUc : markUc;
+      const slipBps = (bot.mode === 'paper' && order._levelPriceUc == null && bot.risk && bot.risk.paperSlippageBps > 0) ? bot.risk.paperSlippageBps : 0;
+      if (slipBps > 0) execPriceUc = B.applyBps(execPriceUc, order.side === 'buy' ? slipBps : -slipBps);
 
       if (order.side === 'buy') {
         // DCA/smarttrade buys carry a USD size; GRID buys carry only a fixed base
@@ -536,6 +737,7 @@
       if (bot.mode === 'paper') {
         await this._audit({ type: 'bot_paper_fill', bot: bot.id, side: 'sell', kind: order.kind, pair: m.base + '/' + m.quote, qty: qty.toString(), priceUc: execPriceUc.toString(), proceedsUc: proceedsUc.toString() });
         const st = await this._settleToProfitCurrency(bot, { fromAsset: m.quote, amount: proceedsQuoteUnits, mainnet, remainingUc: null });
+        this._releaseCommitted(bot, proceedsUc);
         return { side: 'sell', qty, priceUc: execPriceUc, proceedsUc, paper: true, settledCurrency: st.currency };
       }
       const sellVenue = (toolName === 'place_order') ? null : await this._resolveVenue(bot, m.base, m.quote, B.ucToUsd(proceedsUc), null);
@@ -552,7 +754,19 @@
       // UNIFORM SETTLEMENT: realize proceeds into the profitCurrency (ONE extra
       // gated swap; skipped when already the profit currency or no route exists).
       const st = await this._settleToProfitCurrency(bot, { fromAsset: m.quote, amount: proceedsQuoteUnits, mainnet, remainingUc: envelope });
+      this._releaseCommitted(bot, proceedsUc);
       return { side: 'sell', qty: outQty, priceUc: execPriceUc, proceedsUc, txid: r.txid, orderId: r.result && r.result.orderId, settledCurrency: st.currency };
+    }
+
+    // The allocation ledger tracks capital CURRENTLY DEPLOYED, not lifetime
+    // volume: proceeds that come back on a sell free up budget for the next deal
+    // (floored at 0 so a profitable exit never "creates" budget beyond the cap —
+    // compounding is the explicit profitMode for that). Without this a budgeted
+    // bot would go silent after deploying its budget exactly once.
+    _releaseCommitted(bot, proceedsUc) {
+      const cur = bot.state.committedUc || 0n;
+      const p = proceedsUc || 0n;
+      bot.state.committedUc = p >= cur ? 0n : cur - p;
     }
 
     // The ONE gate call: temporarily set policy.autoApproveUnderUsd = remaining
@@ -694,6 +908,231 @@
       return this._settleToProfitCurrency(bot, { fromAsset, amount, mainnet: (it.mainnet || ctxMainnet), remainingUc });
     }
 
+    // ===========================================================================
+    // FULL AUTO — "pick a chain, it does the rest". The parent bot hosts one CHILD
+    // bot per algorithm (all on the parent's lane, mode and network) and acts as
+    // a portfolio manager: every `rebalanceSec` it (1) classifies the lane's
+    // market regime from the base coin's own price series, (2) scores each child
+    // by its recent + lifetime return, and (3) re-weights the children's budgets
+    // (regime prior × performance multiplier, floored at minWeight). A child whose
+    // weight collapses can still MANAGE and EXIT its open deals — it just cannot
+    // open new ones (its allocation sits at/below its committed spend), so the
+    // switch between algorithms is always an orderly hand-off, never a dump.
+    // Children never touch keys: every one of their orders goes through the SAME
+    // _executeOrder / _dispatchIntents gates as a standalone bot.
+    // ===========================================================================
+    _autoAlgoSpecs(bot) {
+      const B = this.Bots;
+      const base = B.laneBase(bot.lane) || 'USDC';
+      const quote = (bot.config && bot.config.quote) || (bot.lane === 'block' ? 'USDB' : 'USDC');
+      const pair = base + '/' + quote;
+      const risk = bot.riskMode || 'high';
+      const pc = bot.config && bot.config.profitCurrency;
+      const withPc = (c) => (pc ? Object.assign({}, c, { profitCurrency: pc }) : c);
+      return {
+        momentum: { name: '🌊 Momentum', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
+          config: { source: 'discovery', maxConcurrent: 3, minScore: 0.5, onSignal: { type: 'dca', config: withPc({ baseOrderUsd: 0, safetyOrderUsd: 0, maxSafetyOrders: 2, safetyStepPct: 4, takeProfitPct: 8, trailingTpPct: 3, stopLossPct: 15, maxDealSec: 2 * 86400, candle: { enabled: true, sec: 120, minProfitPct: 2 } }) } } },
+        // Buzz: what the internet is piling into right now (rank=buzz feed), quick exits.
+        buzz: { name: '🔥 Buzz', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
+          config: { source: 'discovery', rank: 'buzz', maxConcurrent: 3, minScore: 0.45, onSignal: { type: 'smarttrade', config: withPc({ amountUsd: 0, takeProfits: [{ pct: 8, sharePct: 50 }, { pct: 20, sharePct: 50 }], stopLoss: { pct: 10, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 2 } }) } } },
+        sniper: { name: '🎯 Sniper', type: 'signal', riskMode: 'sniper', universe: { pairs: [] },
+          config: { source: 'discovery', maxConcurrent: 3, minScore: 0.55, onSignal: { type: 'smarttrade', config: withPc({ amountUsd: 0, takeProfits: [{ pct: 25, sharePct: 50 }, { pct: 60, sharePct: 50 }], stopLoss: { pct: 18, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 3 } }) } } },
+        grid: { name: '📈 Grid', type: 'grid', riskMode: risk, universe: { pairs: [pair] },
+          config: withPc({ autoRangePct: 5, gridCount: 10, totalUsd: 0, stopLossPct: 12 }) },
+        dip: { name: '🧱 Dip-buyer', type: 'dca', riskMode: risk, universe: { pairs: [pair] },
+          config: withPc({ baseOrderUsd: 0, safetyOrderUsd: 0, maxSafetyOrders: 4, safetyStepPct: 2.5, safetyVolumeScale: 1.3, takeProfitPct: 5, trailingTpPct: 1.5, startCondition: 'dip', dipPct: 1.5, candle: { enabled: true, sec: 300, minProfitPct: 1.5 } }) },
+        scanner: { name: '🤖 Autopilot', type: 'scanner', riskMode: risk, universe: { pairs: [] },
+          config: withPc({ minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 0, strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 }) },
+      };
+    }
+    // Size a child's per-order amounts from its budget share (so a 20% child
+    // places 20%-sized orders, not full-size orders it can only afford once).
+    _autoSizeChild(child, algo, budgetUsd) {
+      const c = child.config;
+      const b = Math.max(0, budgetUsd);
+      if (algo === 'momentum') { const per = Math.max(1, b / 3); c.onSignal.config.baseOrderUsd = round2(per / 2); c.onSignal.config.safetyOrderUsd = round2(per / 4); }
+      else if (algo === 'sniper' || algo === 'buzz') { c.onSignal.config.amountUsd = round2(Math.max(1, b / 3)); }
+      else if (algo === 'grid') { c.totalUsd = round2(b); }
+      else if (algo === 'dip') { const per = Math.max(1, b / 5); c.baseOrderUsd = round2(per); c.safetyOrderUsd = round2(per); }
+      else if (algo === 'scanner') { c.perTradeUsd = round2(Math.max(1, b / 3)); }
+    }
+    _autoChildren(bot) {
+      if (bot._children) return bot._children;
+      const B = this.Bots;
+      const specs = this._autoAlgoSpecs(bot);
+      const saved = {};
+      for (const j of ((bot.state && bot.state.children) || [])) if (j && j.algo) saved[j.algo] = j;
+      const kids = [];
+      for (const algo of bot.config.algos) {
+        const spec = specs[algo]; if (!spec) continue;
+        let child;
+        if (saved[algo]) { child = B.Bot.fromJSON(Object.assign({}, saved[algo], { state: saved[algo].state })); }
+        else child = new B.Bot(Object.assign({ id: bot.id + ':' + algo, lane: bot.lane, profitMode: bot.profitMode, mode: bot.mode, network: bot.network, pollSec: bot.pollSec, risk: { paperSlippageBps: bot.risk && bot.risk.paperSlippageBps || 0 }, wallet: bot.wallet, channel: bot.channel }, spec));
+        child.algo = algo; child.parent = bot.id; child.enabled = true;
+        kids.push(child);
+      }
+      bot._children = kids;
+      return kids;
+    }
+    _autoPersistChildren(bot) {
+      if (!bot._children) return;
+      bot.state.children = bot._children.map((c) => Object.assign(c.toJSON(), { algo: c.algo, parent: bot.id }));
+    }
+    // Market regime from the lane base's own recent price series. Returns
+    // { regime: 'trend-up'|'trend-down'|'ranging'|'quiet'|'warming', ret, vol, strength }.
+    _autoRegime(bot) {
+      const cfg = bot.config;
+      const s = (bot.state.series || []).slice(-cfg.regimeWindow);
+      if (s.length < 8) return { regime: 'warming', n: s.length };
+      const ps = s.map((x) => Number(x.p)).filter((p) => p > 0);
+      const rets = []; for (let i = 1; i < ps.length; i++) rets.push(Math.log(ps[i] / ps[i - 1]));
+      const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+      const vol = Math.sqrt(rets.reduce((a, b) => a + (b - mean) * (b - mean), 0) / Math.max(1, rets.length - 1));
+      const ret = ps[ps.length - 1] / ps[0] - 1;
+      const strength = vol > 0 ? Math.abs(ret) / (vol * Math.sqrt(rets.length)) : (ret !== 0 ? 9 : 0);
+      let regime;
+      if (vol < 0.0005 && Math.abs(ret) < 0.003) regime = 'quiet';
+      else if (strength >= 1.2 && ret > 0.01) regime = 'trend-up';
+      else if (strength >= 1.2 && ret < -0.01) regime = 'trend-down';
+      else regime = 'ranging';
+      return { regime, ret: round4(ret * 100), vol: round4(vol * 100), strength: round4(strength), n: ps.length };
+    }
+    _autoPriors(regime) {
+      return ({
+        // Buzz rides cross-token attention, so it keeps a floor even when the lane
+        // base is quiet/ranging and leads with momentum in an up-trend.
+        'trend-up':   { momentum: 0.35, buzz: 0.20, sniper: 0.15, scanner: 0.10, grid: 0.08, dip: 0.12 },
+        'trend-down': { momentum: 0.10, buzz: 0.10, sniper: 0.05, scanner: 0.20, grid: 0.20, dip: 0.35 },
+        ranging:      { momentum: 0.10, buzz: 0.15, sniper: 0.10, scanner: 0.15, grid: 0.35, dip: 0.15 },
+        quiet:        { momentum: 0.15, buzz: 0.20, sniper: 0.10, scanner: 0.25, grid: 0.20, dip: 0.10 },
+        warming:      { momentum: 1 / 6, buzz: 1 / 6, sniper: 1 / 6, scanner: 1 / 6, grid: 1 / 6, dip: 1 / 6 },
+      })[regime] || { momentum: 1 / 6, buzz: 1 / 6, sniper: 1 / 6, scanner: 1 / 6, grid: 1 / 6, dip: 1 / 6 };
+    }
+    // Re-weight the children: prior(regime) × performance multiplier, floored.
+    _autoRebalance(bot, kids, now, reg) {
+      const B = this.Bots;
+      const cfg = bot.config;
+      const prior = this._autoPriors(reg.regime);
+      const budgetUsd = B.ucToUsd(this._effectiveCapUc(bot));
+      const scores = {};
+      let total = 0;
+      for (const c of kids) {
+        const d = this.dashboard(c);
+        const alloc = Math.max(1, c.allocationUsd || budgetUsd / kids.length);
+        const life = ((d.realizedUsd || 0) + (d.unrealizedUsd || 0)) / alloc;             // lifetime return on its share
+        const baseline = c.state._perfBaseUsd != null ? c.state._perfBaseUsd : 0;
+        const recent = ((d.realizedUsd || 0) + (d.unrealizedUsd || 0) - baseline) / alloc; // since last rebalance
+        const perf = 0.6 * recent + 0.4 * life;                                            // fraction, e.g. 0.05 = +5%
+        const mult = Math.max(0.3, Math.min(3, 1 + perf * 10));                            // +10% ⇒ 2×, −7% ⇒ 0.3×
+        const w = (prior[c.algo] || 0.2) * mult;
+        scores[c.algo] = { prior: prior[c.algo] || 0.2, perf: round4(perf * 100), mult: round4(mult), raw: w };
+        total += w;
+      }
+      const weights = {};
+      let floorSum = 0;
+      for (const c of kids) { const w = total > 0 ? scores[c.algo].raw / total : 1 / kids.length; weights[c.algo] = Math.max(cfg.minWeight, w); floorSum += weights[c.algo]; }
+      for (const a of Object.keys(weights)) weights[a] = round4(weights[a] / floorSum);
+      // 4-dp rounding can leave the shares a few bps off 1 (e.g. 6 × 0.1667); the
+      // residual goes to the largest share so the budget split is exact.
+      const residual = round4(1 - Object.values(weights).reduce((s, v) => s + v, 0));
+      if (residual !== 0 && Object.keys(weights).length) {
+        const top = Object.keys(weights).reduce((x, y) => (weights[x] >= weights[y] ? x : y));
+        weights[top] = round4(weights[top] + residual);
+      }
+      const prev = bot.state.auto && bot.state.auto.weights;
+      for (const c of kids) {
+        const share = round2(budgetUsd * weights[c.algo]);
+        c.allocationUsd = share;
+        this._autoSizeChild(c, c.algo, share);
+        const d = this.dashboard(c);
+        c.state._perfBaseUsd = (d.realizedUsd || 0) + (d.unrealizedUsd || 0);
+      }
+      const lead = kids.slice().sort((a, b) => weights[b.algo] - weights[a.algo])[0];
+      bot.state.auto = { at: now, regime: reg.regime, regimeInfo: reg, weights, scores, lead: lead ? lead.algo : null, rebalances: ((bot.state.auto && bot.state.auto.rebalances) || 0) + 1 };
+      const changed = !prev || Object.keys(weights).some((a) => Math.abs((prev[a] || 0) - weights[a]) >= 0.1) || (bot.state.auto.lastRegime && bot.state.auto.lastRegime !== reg.regime);
+      bot.state.auto.lastRegime = reg.regime;
+      this._audit({ type: 'auto_rebalance', bot: bot.id, regime: reg.regime, weights, scores });
+      if (changed) {
+        const order = kids.slice().sort((a, b) => weights[b.algo] - weights[a.algo]);
+        this._feed(bot, { kind: 'switch', regime: reg.regime, weights, text: '🔀 Market looks ' + regimeLabel(reg.regime) + ' → ' + order.map((c) => c.name.replace(/^\S+\s/, '') + ' ' + Math.round(weights[c.algo] * 100) + '%').join(' · ') });
+      }
+    }
+    async _tickAuto(bot, now, opts) {
+      const B = this.Bots;
+      const cfg = bot.config;
+      const kids = this._autoChildren(bot);
+      // 1) sample the lane base for the regime series (its OWN price, no synthetic data)
+      const base = B.laneBase(bot.lane) || 'USDC';
+      const prices = await this._prices([base]);
+      const markUc = this._unitUc(prices, base);
+      if (markUc != null) {
+        const s = bot.state.series = bot.state.series || [];
+        if (!s.length || now - s[s.length - 1].t >= Math.min(60000, bot.pollSec * 1000)) { s.push({ t: now, p: B.ucToUsd(markUc) }); if (s.length > 500) s.splice(0, s.length - 500); }
+        bot.state.lastMarks = bot.state.lastMarks || {}; bot.state.lastMarks[base] = B.ucToUsd(markUc);
+      }
+      // 2) rebalance when due, on the first tick, or when the regime flips
+      const reg = this._autoRegime(bot);
+      const a = bot.state.auto;
+      const due = !a || (now - (a.at || 0)) >= cfg.rebalanceSec * 1000 || (a.regime !== reg.regime && reg.regime !== 'warming');
+      if (due) this._autoRebalance(bot, kids, now, reg);
+      // 3) tick every child through the normal path (same gates, same audit)
+      const events = [];
+      for (const c of kids) {
+        c.mode = bot.mode; c.network = bot.network; c.enabled = true;
+        if (bot.risk && bot.risk.paperSlippageBps != null) c.risk.paperSlippageBps = bot.risk.paperSlippageBps;
+        const r = await this.tickBot(c, opts);
+        events.push({ algo: c.algo, events: (r && r.events) || [], error: r && r.error ? r.error : undefined });
+      }
+      // 4) parent-level max-loss rail across ALL children
+      const d = this.dashboard(bot);
+      const pct = bot.risk && bot.risk.maxLossPct;
+      if (pct > 0 && bot.allocationUsd > 0 && (d.realizedUsd || 0) < 0 && -(d.realizedUsd || 0) >= bot.allocationUsd * pct / 100) {
+        bot.enabled = false; bot.state.haltReason = 'max-loss';
+        await this._audit({ type: 'bot_paused', bot: bot.id, reason: 'max-loss', realizedUsd: d.realizedUsd, maxLossPct: pct });
+        this._feed(bot, { kind: 'halt', text: 'Max-loss rail hit (' + pct + '% of budget) — Full Auto paused. Review and restart when ready.' });
+        this.emit({ type: 'bot_paused', bot: bot.id, reason: 'max-loss' });
+      }
+      this._autoPersistChildren(bot);
+      return { bot: bot.id, type: 'auto', regime: reg.regime, weights: bot.state.auto && bot.state.auto.weights, events, dashboard: d };
+    }
+    // Parent view of a Full Auto bot: the children's numbers rolled up.
+    _autoDashboard(bot) {
+      const B = this.Bots;
+      const kids = this._autoChildren(bot);
+      const ds = kids.map((c) => this.dashboard(c));
+      let realized = 0, unrealized = 0, committed = 0, deals = 0, wins = 0, losses = 0, dd = 0;
+      const active = [], closed = [], feed = (bot.state.feed || []).slice();
+      ds.forEach((d, i) => {
+        realized += d.realizedUsd || 0; unrealized += d.unrealizedUsd || 0; committed += d.committedUsd || 0;
+        deals += d.totalDeals || 0; wins += d.winCount || 0; losses += d.lossCount || 0; dd += d.maxDrawdownUsd || 0;
+        for (const x of (d.activeDeals || [])) active.push(Object.assign({}, x, { algo: kids[i].algo, pair: x.pair + ' · ' + kids[i].name.replace(/^\S+\s/, '') }));
+        for (const x of (d.closedDeals || [])) closed.push(Object.assign({}, x, { algo: kids[i].algo }));
+        for (const e of (kids[i].state.feed || [])) feed.push(Object.assign({}, e, { algo: kids[i].algo }));
+      });
+      closed.sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+      feed.sort((a, b) => (b.at || 0) - (a.at || 0));
+      const streak = kids.length ? Math.max.apply(null, kids.map((c) => c.state.streak || 0)) : 0;
+      const bestStreak = kids.length ? Math.max.apply(null, kids.map((c) => c.state.bestStreak || 0)) : 0;
+      const cap = B.ucToUsd(this._effectiveCapUc(bot));
+      return {
+        bot: bot.id, name: bot.name, type: 'auto', mode: bot.mode, enabled: bot.enabled, network: bot.network,
+        status: this._killed ? 'killed' : (bot.state.haltReason ? 'halted' : (bot.enabled ? 'running' : 'paused')),
+        haltReason: bot.state.haltReason || null,
+        lastTickAt: bot.state.lastTickAt || 0, lastError: bot.state.lastError || null, pollSec: bot.pollSec,
+        streak, bestStreak, feed: feed.slice(0, 20), risk: bot.risk || null, lastScan: null,
+        closedDeals: closed.slice(0, 10),
+        allocationUsd: bot.allocationUsd, lane: bot.lane || null, riskMode: bot.riskMode || null, profitMode: bot.profitMode || 'off',
+        effectiveCapUsd: cap, committedUsd: committed, remainingUsd: (bot.mode === 'live' || bot.allocationUsd > 0) ? cap - committed : null,
+        activeDeals: active, safetyOrdersUsed: ds.reduce((a, d) => a + (d.safetyOrdersUsed || 0), 0),
+        realizedUsd: realized, unrealizedUsd: unrealized, totalDeals: deals, winCount: wins, lossCount: losses,
+        winRate: deals > 0 ? wins / deals : null, maxDrawdownUsd: dd,
+        auto: Object.assign({ regime: 'warming', weights: {}, lead: null }, bot.state.auto || {}, {
+          children: kids.map((c, i) => ({ algo: c.algo, name: c.name, weight: bot.state.auto && bot.state.auto.weights ? bot.state.auto.weights[c.algo] : null, allocationUsd: c.allocationUsd, realizedUsd: ds[i].realizedUsd, unrealizedUsd: ds[i].unrealizedUsd, activeDeals: (ds[i].activeDeals || []).length, totalDeals: ds[i].totalDeals, winRate: ds[i].winRate, perf: bot.state.auto && bot.state.auto.scores && bot.state.auto.scores[c.algo] ? bot.state.auto.scores[c.algo].perf : null })),
+          series: (bot.state.series || []).slice(-60).map((x) => x.p),
+        }),
+      };
+    }
+
     // ---- signal bot (§2.4) --------------------------------------------------
     async _tickSignal(bot, now, opts) {
       const B = this.Bots;
@@ -708,12 +1147,31 @@
         let cands = [];
         // Lane + risk-mode aware discovery: the feed returns only same-chain,
         // same-mode candidates that already cleared the safety gate.
-        try { cands = (await this.discovery.scan({ lane: bot.lane, mode: bot.riskMode })) || []; } catch (_) { cands = []; }
+        const byBuzz = cfg.rank === 'buzz';
+        try { cands = (await this.discovery.scan({ lane: bot.lane, mode: bot.riskMode, rank: byBuzz ? 'buzz' : undefined })) || []; } catch (_) { cands = []; }
         const laneChain = bot.lane && B.laneChain ? B.laneChain(bot.lane) : null;
+        const laneSig = bot.lane && B.laneSignalsChain ? B.laneSignalsChain(bot.lane) : laneChain;
+        const preset = bot.riskMode && B.riskPreset ? B.riskPreset(bot.riskMode) : null;
         for (const c of cands) {
-          if (laneChain && c.chain && c.chain !== laneChain) continue; // never cross-lane
-          if (c.approved === true && (c.score == null || c.score >= cfg.minScore) && c.pair) signals.push({ pair: c.pair, score: c.score, source: 'discovery' });
+          if (laneChain && c.chain && c.chain !== laneChain && c.chain !== laneSig) continue; // never cross-lane
+          if (!(c.approved === true && (c.score == null || c.score >= cfg.minScore) && c.pair)) continue;
+          // RISK-MODE double-check on the candidate's own metrics (the feed already
+          // gated them, but a stricter local preset must still win).
+          if (preset) {
+            if (c.honeypot === true) continue;
+            if (c.liquidityUsd != null && Number(c.liquidityUsd) < preset.minLiquidityUsd) continue;
+            if (!preset.allowNewLaunches && c.ageSec != null && Number(c.ageSec) < preset.minAgeSec) continue;
+            if (c.score != null && c.score * 100 < preset.minSignalScore) continue;
+          }
+          const bz = c.buzz && typeof c.buzz === 'object' ? c.buzz : null;
+          // Buzz rank: a candidate with NO buzz data (or quick 0 = unsafe/no traffic) is not a buzz signal.
+          if (byBuzz && !(bz && Number(bz.quick) > 0)) continue;
+          signals.push({ pair: c.pair, score: c.score, source: 'discovery', symbol: c.symbol, token: c.token, buzz: bz });
         }
+        // best first so the limited concurrency slots go to the strongest signals:
+        // buzz.quick for the online-presence rank, else the safety-weighted score.
+        const rk = (s) => byBuzz ? (Number(s.buzz && s.buzz.quick) || 0) : (Number(s.score) || 0);
+        signals.sort((a, b) => rk(b) - rk(a));
       }
       if (cfg.source === 'inbox' || cfg.source === 'both') {
         const inbox = bot.state.inbox || [];
@@ -731,7 +1189,10 @@
         if (bot.state.byPair[pair] && bot.state.byPair[pair].deal && bot.state.byPair[pair].deal.status !== 'closed') continue;
         if (!bot.state.byPair[pair]) bot.state.byPair[pair] = { deal: null, lastCloseAt: 0 };
         bot.state.byPair[pair].signalArmed = true;
-        await this._audit({ type: 'bot_signal', bot: bot.id, pair, source: sig.source, template: spawn.type });
+        await this._audit({ type: 'bot_signal', bot: bot.id, pair, source: sig.source, template: spawn.type, buzz: sig.buzz ? { attention: sig.buzz.attention, velocity: sig.buzz.velocity, quick: sig.buzz.quick } : undefined });
+        this._feed(bot, sig.buzz
+          ? { kind: 'signal', pair, score: sig.score, buzz: sig.buzz, text: '🔥 Buzz ' + pair + ' · attention ' + sig.buzz.attention + ' · velocity ' + sig.buzz.velocity + ' · quick ' + sig.buzz.quick + ' — arming ' + spawn.type }
+          : { kind: 'signal', pair, score: sig.score, text: '🎯 Signal ' + pair + (sig.score != null ? ' · score ' + Math.round(sig.score * 100) : '') + ' — arming ' + spawn.type });
         room -= 1;
       }
 
@@ -871,16 +1332,18 @@
       const B = this.Bots;
       const bot = typeof id === 'object' ? id : this.store.get(id);
       if (!bot) return null;
+      if (bot.type === 'auto') return this._autoDashboard(bot);
       const openDeals = [];
       let unrealizedUc = 0n;
       let safetyUsed = 0;
+      const marks = marksOverride || bot.state.lastMarks || {};
       for (const pair of Object.keys(bot.state.byPair || {})) {
         const ps = bot.state.byPair[pair];
         const deal = ps && ps.deal;
         if (!deal || deal.status === 'closed') continue;
         const [base] = B.splitPair(pair);
         let markUc = null;
-        if (marksOverride && marksOverride[base] != null) markUc = B.microUsd(marksOverride[base]);
+        if (marks && marks[base] != null) markUc = B.microUsd(marks[base]);
         if (deal.type === 'grid') {
           let uc = 0n;
           for (const lv of deal.levels) if (lv.heldQty > 0n && markUc != null) uc += B.valueOf(lv.heldQty, markUc, B.decimalsFor(base, bot.config.decimals)) - (lv._costUc || 0n);
@@ -896,8 +1359,10 @@
           openDeals.push({
             pair, type: deal.type, status: deal.status,
             avgEntryUsd: B.ucToUsd(deal.avgEntryUc), filledQty: (qty || 0n).toString(),
-            safetyOrdersUsed: deal.safetyOrdersUsed || 0,
+            costUsd: B.ucToUsd(cost || 0n), markUsd: markUc != null ? B.ucToUsd(markUc) : null,
+            safetyOrdersUsed: deal.safetyOrdersUsed || 0, openedAt: deal.openedAt || 0,
             unrealizedUsd: markUc != null ? B.ucToUsd(uc) : null,
+            unrealizedPct: (markUc != null && cost > 0n) ? Number(uc * 10000n / cost) / 100 : null,
           });
         }
       }
@@ -905,7 +1370,13 @@
       const wins = bot.state.winCount || 0;
       return {
         bot: bot.id, name: bot.name, type: bot.type, mode: bot.mode, enabled: bot.enabled, network: bot.network,
-        status: this._killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
+        status: this._killed ? 'killed' : (bot.state.haltReason ? 'halted' : (bot.enabled ? 'running' : 'paused')),
+        haltReason: bot.state.haltReason || null,
+        lastTickAt: bot.state.lastTickAt || 0, lastError: bot.state.lastError || null, pollSec: bot.pollSec,
+        streak: bot.state.streak || 0, bestStreak: bot.state.bestStreak || 0,
+        feed: (bot.state.feed || []).slice(-20),
+        risk: bot.risk || null, lastScan: bot.state.lastScan || null,
+        closedDeals: (bot.state.closedDeals || []).slice(-10).map((d) => ({ id: d.id, type: d.type, reason: d.reason, realizedUsd: B.ucToUsd(d.realizedUc || 0n), openedAt: d.openedAt, closedAt: d.closedAt, fills: (d.fills || []).length })).reverse(),
         allocationUsd: bot.allocationUsd,
         lane: bot.lane || null, riskMode: bot.riskMode || null, profitMode: bot.profitMode || 'off',
         // compounding effective cap (budget + realized profit); equals the budget for off/take
@@ -927,12 +1398,50 @@
     aggregate() {
       const B = this.Bots;
       let realizedUc = 0n; const rows = [];
+      let unrealized = 0, allocation = 0, committed = 0, activeDeals = 0, running = 0, live = 0, deals = 0, wins = 0;
+      const feed = [];
       for (const bot of this.store.list()) {
         realizedUc += bot.state.realizedUc || 0n;
-        rows.push(this.dashboard(bot.id));
+        const d = this.dashboard(bot.id);
+        rows.push(d);
+        unrealized += d.unrealizedUsd || 0; allocation += d.allocationUsd || 0; committed += d.committedUsd || 0;
+        activeDeals += (d.activeDeals || []).length; deals += d.totalDeals || 0; wins += d.winCount || 0;
+        if (d.status === 'running') running += 1;
+        if (bot.mode === 'live' && bot.enabled) live += 1;
+        for (const ev of (bot.state.feed || [])) feed.push(Object.assign({ bot: bot.id, name: bot.name }, ev));
       }
-      return { realizedUsd: B.ucToUsd(realizedUc), bots: rows, killed: this._killed };
+      feed.sort((a, b) => (b.at || 0) - (a.at || 0));
+      return {
+        realizedUsd: B.ucToUsd(realizedUc), unrealizedUsd: unrealized, allocationUsd: allocation, committedUsd: committed,
+        activeDeals, running, live, totalDeals: deals, winRate: deals > 0 ? wins / deals : null,
+        bots: rows, feed: feed.slice(0, 40), killed: this._killed, scheduler: this.schedulerRunning(),
+      };
     }
+
+    // Resume a bot the max-loss rail halted (the user explicitly accepts the risk).
+    async resume(id) {
+      const bot = this.store.get(id);
+      if (!bot) throw new Error('unknown bot: ' + id);
+      bot.state.haltReason = null;
+      bot.enabled = true;
+      await this._audit({ type: 'bot_resumed', bot: id });
+      await this.store.persist();
+      this._restartScheduler();
+      return bot;
+    }
+  }
+
+  function round2(n) { return Math.round(Number(n) * 100) / 100; }
+  function round4(n) { return Math.round(Number(n) * 10000) / 10000; }
+  function regimeLabel(r) { return ({ 'trend-up': 'TRENDING UP', 'trend-down': 'TRENDING DOWN', ranging: 'RANGING', quiet: 'QUIET', warming: 'still warming up' })[r] || r; }
+  function fmtUsdShort(v) {
+    const n = Number(v); if (!Number.isFinite(n)) return '—';
+    const a = Math.abs(n);
+    const s = a >= 1000 ? a.toFixed(0) : a >= 1 ? a.toFixed(2) : a >= 0.01 ? a.toFixed(4) : a.toExponential(2);
+    return (n < 0 ? '-$' : '$') + s;
+  }
+  function labelFor(kind) {
+    return ({ base: 'base order', safety: 'safety order', tp: 'take-profit', ctp: 'candle take-profit', sl: 'stop-loss', time: 'time stop', manual: 'stopped by you', grid: 'grid rung', grid_exit: 'grid exit', entry: 'entry', arm: 'trailing armed' })[kind] || (kind || '');
   }
 
   const AgentBotRunner = { create(deps) { return new BotRunner(deps); }, BotRunner };

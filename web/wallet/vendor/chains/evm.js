@@ -69,6 +69,28 @@
       + padded;                                     // bytes body (empty for 0x)
   }
 
+  // Decode an ABI-encoded `string` return (dynamic string OR a legacy bytes32
+  // symbol like MKR's). Returns '' when it cannot be decoded. Pure.
+  function decodeAbiString(hex) {
+    try {
+      const h = String(hex || '').replace(/^0x/, '');
+      if (!h || /^0*$/.test(h)) return '';
+      let bytes;
+      if (h.length === 64) { // bytes32
+        bytes = C.hexToBytes(h);
+      } else {
+        const off = Number(BigInt('0x' + h.slice(0, 64))) * 2;
+        const len = Number(BigInt('0x' + h.slice(off, off + 64)));
+        bytes = C.hexToBytes(h.slice(off + 64, off + 64 + len * 2));
+      }
+      let end = bytes.length; while (end > 0 && bytes[end - 1] === 0) end--;
+      const s = new TextDecoder().decode(bytes.slice(0, end)).replace(/[\u0000-\u001f]/g, '').trim();
+      return s.length > 64 ? s.slice(0, 64) : s;
+    } catch { return ''; }
+  }
+  function pruneUndef(o) { const out = {}; for (const k of Object.keys(o || {})) if (o[k] !== undefined) out[k] = o[k]; return out; }
+  function safeRequireLists() { try { return require('./token-lists.js'); } catch { return null; } }
+
   // RLP item from a BigInt-ish numeric field (minimal big-endian, 0 -> empty)
   function rlpNum(v) { return C.hexToBytes(bigToMinHex(v)); }
   function rlpAddr(a) { return a ? C.hexToBytes(a.replace(/^0x/, '')) : new Uint8Array(0); }
@@ -134,6 +156,16 @@
     const nativeDecimals = (opts.decimals != null && Number.isInteger(Number(opts.decimals))) ? Number(opts.decimals) : 18;
     const native = { chain: id, kind: 'native', symbol: opts.symbol || 'ETH', decimals: nativeDecimals };
     let rootSeed = null;        // unlocked HD seed (Uint8Array), in-memory only
+    let importedKey = null;     // imported secp256k1 private key (Uint8Array) for this account, or null
+    let watchAddr = null;       // watch-only address for this account, or null
+    // A root is either raw seed bytes, {seed} or the account root
+    // {seed, keys:{evm:{priv}}, watch:{evm}} handed over by the accounts layer.
+    function resolveRoot(root) {
+      if (!root) return { seed: rootSeed, key: importedKey, watch: watchAddr };
+      if (root instanceof Uint8Array) return { seed: root, key: null, watch: null };
+      const k = root.keys && root.keys.evm && root.keys.evm.priv;
+      return { seed: root.seed || null, key: k ? C.toBytes(k) : null, watch: (root.watch && root.watch.evm) || null };
+    }
     let getEndpoint = opts.endpoint || (async () => opts.rpcUrl);
     // Alchemy indexer endpoint for ERC-20 auto-detection. CONFIG — a read-only
     // indexer URL (key already embedded). null => auto-detect OFF (the registry
@@ -153,9 +185,39 @@
       return j.result;
     }
 
+    // JSON-RPC BATCH (one POST, many calls). Falls back to sequential single
+    // calls when the endpoint rejects batches. Returns results in call order,
+    // each { result } | { error }. Used by the keyless token probe.
+    async function rpcBatch(calls) {
+      const url = typeof getEndpoint === 'function' ? await getEndpoint() : getEndpoint;
+      if (!url) throw new Error(id + ': no RPC endpoint configured');
+      const body = calls.map((c, i) => ({ jsonrpc: '2.0', id: i + 1, method: c[0], params: c[1] }));
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await r.json();
+        if (Array.isArray(j)) {
+          const byId = new Map(j.map((x) => [x && x.id, x]));
+          return body.map((b) => byId.get(b.id) || { error: 'missing' });
+        }
+      } catch (_) { /* fall back to sequential */ }
+      const out = [];
+      for (const c of calls) { try { out.push({ result: await rpc(c[0], c[1]) }); } catch (e) { out.push({ error: String(e && e.message || e) }); } }
+      return out;
+    }
+
+    // Optional Blockscout-style token indexer (keyless): opts.indexer = url, or
+    // any alchemy/tokenIndexer URL that points at a */api/v2 Blockscout endpoint.
+    let getIndexer = opts.indexer || null;
+    async function indexerUrl() {
+      let u = typeof getIndexer === 'function' ? await getIndexer() : getIndexer;
+      if (!u) { const a = await alchemyUrl(); if (a && /blockscout|\/api\/v2\b/i.test(a)) u = a; }
+      return u || null;
+    }
+
     async function alchemyUrl() {
       if (!getAlchemy) return null;
       const u = typeof getAlchemy === 'function' ? await getAlchemy() : getAlchemy;
+      if (u && /blockscout|\/api\/v2\b/i.test(u)) return null; // that's an indexer, not Alchemy
       return u || null;
     }
     async function alchemyRpc(method, params) {
@@ -172,14 +234,15 @@
     }
 
     function deriveNode(index) {
-      if (!rootSeed) throw new Error('locked');
+      if (importedKey) return { privateKey: importedKey, publicKey: S.publicKey(importedKey, true) };
+      if (!rootSeed) throw new Error(watchAddr ? 'watch-only account: no key to sign with' : 'locked');
       return HD.derivePath(rootSeed, path + '/' + (index || 0));
     }
 
     return {
       id, native, chainId,
-      unlock(root) { rootSeed = root && (root.seed || root); },
-      lock() { rootSeed = null; },
+      unlock(root) { const r = resolveRoot(root || {}); rootSeed = r.seed; importedKey = r.key; watchAddr = r.watch; },
+      lock() { rootSeed = null; importedKey = null; watchAddr = null; },
 
       // Auto-detect every ERC-20 the address actually holds, via Alchemy's
       // enhanced API: alchemy_getTokenBalances enumerates non-zero balances,
@@ -188,35 +251,102 @@
       // isn't Alchemy-backed (BNB/Avalanche) — the registry's known default list
       // is then the source of truth. Never throws (best-effort): a failure
       // yields [] so the known list still renders.
-      async discoverTokens(address) {
+      // Token discovery runs EVERY source it has and merges by contract:
+      //   1) Alchemy getTokenBalances (when an indexer key is configured)
+      //   2) a Blockscout-style indexer (`indexer` opt or a *blockscout* URL)
+      //   3) KEYLESS: batched eth_call balanceOf over the well-known list for this
+      //      network (TokenLists) + any `knownTokens` the caller passes (imported
+      //      tokens, discovery candidates) — so the wallet finds held tokens on
+      //      every network with NO key at all.
+      // Anything with a positive balance that lacks metadata gets symbol/decimals/
+      // name read ON-CHAIN (batched). Only non-zero holdings are returned.
+      async discoverTokens(address, opts) {
+        opts = opts || {};
+        const found = new Map(); // addrLower -> row
+        const put = (row) => { if (!row || !row.address) return; const k = row.address.toLowerCase(); const prev = found.get(k); found.set(k, prev ? Object.assign({}, prev, pruneUndef(row)) : row); };
+        // 1) Alchemy
         try {
-          if (!(await alchemyUrl())) return [];
-          const res = await alchemyRpc('alchemy_getTokenBalances', [address, 'erc20']);
-          const balances = (res && res.tokenBalances) || [];
-          const out = [];
-          for (const tb of balances) {
-            const raw = tb && tb.tokenBalance;
-            if (!raw || /^0x0*$/i.test(raw) || tb.error) continue; // zero / errored
-            let bal;
-            try { bal = BigInt(raw); } catch { continue; }
-            if (bal <= 0n) continue;
-            let meta = {};
-            try { meta = (await alchemyRpc('alchemy_getTokenMetadata', [tb.contractAddress])) || {}; } catch { meta = {}; }
-            const decimals = meta.decimals != null ? Number(meta.decimals) : 18;
-            const v = bal.toString();
-            out.push({
-              chain: id, kind: 'erc20', address: tb.contractAddress,
-              symbol: meta.symbol || '?', decimals,
-              name: meta.name || undefined, logo: meta.logo || undefined,
-              balance: v, display: formatUnits(v, decimals),
+          if (await alchemyUrl()) {
+            const res = await alchemyRpc('alchemy_getTokenBalances', [address, 'erc20']);
+            for (const tb of ((res && res.tokenBalances) || [])) {
+              const raw = tb && tb.tokenBalance;
+              if (!raw || /^0x0*$/i.test(raw) || tb.error) continue;
+              let bal; try { bal = BigInt(raw); } catch { continue; }
+              if (bal <= 0n) continue;
+              let meta = {};
+              try { meta = (await alchemyRpc('alchemy_getTokenMetadata', [tb.contractAddress])) || {}; } catch { meta = {}; }
+              const decimals = meta.decimals != null ? Number(meta.decimals) : undefined;
+              put({ chain: id, kind: 'erc20', address: tb.contractAddress, symbol: meta.symbol || undefined, decimals, name: meta.name || undefined, logo: meta.logo || undefined, balance: bal.toString() });
+            }
+          }
+        } catch { /* fall through */ }
+        // 2) Blockscout-style indexer: GET <base>/addresses/<addr>/token-balances
+        try {
+          const ix = await indexerUrl();
+          if (ix) {
+            const r = await fetch(ix.replace(/\/+$/, '') + '/addresses/' + address + '/token-balances', { headers: { accept: 'application/json' } });
+            const j = r.ok ? await r.json() : null;
+            for (const row of (Array.isArray(j) ? j : (j && j.items) || [])) {
+              const t = row && row.token; if (!t || !t.address) continue;
+              if (t.type && !/ERC-20/i.test(t.type)) continue;
+              let bal; try { bal = BigInt(row.value || '0'); } catch { continue; }
+              if (bal <= 0n) continue;
+              put({ chain: id, kind: 'erc20', address: t.address, symbol: t.symbol || undefined, decimals: t.decimals != null ? Number(t.decimals) : undefined, name: t.name || undefined, logo: t.icon_url || undefined, balance: bal.toString() });
+            }
+          }
+        } catch { /* fall through */ }
+        // 3) keyless probe: well-known list + caller-known tokens, batched balanceOf.
+        try {
+          const Lists = inNode ? safeRequireLists() : global.TokenLists;
+          const probe = new Map();
+          for (const t of ((Lists && Lists.forChain(id)) || [])) probe.set(t.address.toLowerCase(), t);
+          for (const t of (opts.knownTokens || [])) if (t && t.address && /^0x[0-9a-fA-F]{40}$/.test(t.address)) probe.set(t.address.toLowerCase(), Object.assign({ chain: id, kind: 'erc20' }, t));
+          for (const k of found.keys()) probe.delete(k);
+          const cands = Array.from(probe.values());
+          for (let i = 0; i < cands.length; i += 40) {
+            const slice = cands.slice(i, i + 40);
+            const results = await rpcBatch(slice.map((t) => ['eth_call', [{ to: t.address, data: erc20BalanceOfData(address) }, 'latest']]));
+            slice.forEach((t, j) => {
+              const res = results[j];
+              if (!res || res.error || !res.result || !/^0x[0-9a-fA-F]*$/.test(res.result)) return;
+              let bal; try { bal = BigInt(res.result === '0x' ? '0x0' : res.result); } catch { return; }
+              if (bal <= 0n) return;
+              put({ chain: id, kind: 'erc20', address: t.address, symbol: t.symbol, decimals: t.decimals, name: t.name, balance: bal.toString() });
             });
           }
-          return out;
-        } catch { return []; }
+        } catch { /* best-effort */ }
+        // on-chain metadata for rows missing symbol/decimals (batched)
+        try {
+          const need = Array.from(found.values()).filter((r) => !r.symbol || r.decimals == null);
+          for (let i = 0; i < need.length; i += 20) {
+            const slice = need.slice(i, i + 20);
+            const calls = [];
+            for (const r of slice) calls.push(['eth_call', [{ to: r.address, data: '0x95d89b41' }, 'latest']], ['eth_call', [{ to: r.address, data: '0x313ce567' }, 'latest']], ['eth_call', [{ to: r.address, data: '0x06fdde03' }, 'latest']]);
+            const results = await rpcBatch(calls);
+            slice.forEach((r, j) => {
+              const sym = results[j * 3], dec = results[j * 3 + 1], nam = results[j * 3 + 2];
+              if (!r.symbol && sym && sym.result) r.symbol = decodeAbiString(sym.result) || undefined;
+              if (r.decimals == null && dec && dec.result && /^0x[0-9a-fA-F]+$/.test(dec.result)) { try { r.decimals = Number(BigInt(dec.result)); } catch {} }
+              if (!r.name && nam && nam.result) r.name = decodeAbiString(nam.result) || undefined;
+            });
+          }
+        } catch { /* best-effort */ }
+        const out = [];
+        for (const r of found.values()) {
+          const decimals = r.decimals != null && Number.isFinite(Number(r.decimals)) ? Number(r.decimals) : 18;
+          out.push(Object.assign({}, r, { symbol: r.symbol || '?', decimals, display: formatUnits(r.balance, decimals) }));
+        }
+        return out;
       },
 
       async deriveAccount(root, index) {
-        const seed = (root && (root.seed || root)) || rootSeed;
+        const r = resolveRoot(root);
+        if (r.key) {
+          const pub = S.publicKey(r.key, true);
+          return { chain: id, index: 0, address: Addr.evmAddress(pub), publicKey: C.bytesToHex(pub), scheme: 'secp256k1', path: null, imported: true };
+        }
+        if (r.watch) return { chain: id, index: 0, address: r.watch, publicKey: '', scheme: 'secp256k1', path: null, watchOnly: true };
+        const seed = r.seed;
         if (!seed) throw new Error('no root seed');
         const node = HD.derivePath(seed, path + '/' + (index || 0));
         const address = Addr.evmAddress(node.publicKey);
@@ -252,7 +382,7 @@
 
       // req: {asset, to, amount(base units), feeRate?(maxFeePerGas), maxPriorityFeePerGas?, gasLimit?}
       async buildSend(account, req) {
-        if (!rootSeed) throw new Error('locked');
+        if (!rootSeed && !importedKey) throw new Error(watchAddr ? 'watch-only account' : 'locked');
         const node = deriveNode(account.index);
         const nonce = await rpc('eth_getTransactionCount', [account.address, 'pending']);
         let maxFee = req.feeRate, maxPrio = req.maxPriorityFeePerGas, gasLimit = req.gasLimit;
@@ -295,7 +425,7 @@
       // req: {to, data, value?(base, dec/hex), gas?/gasLimit?, feeRate?(maxFeePerGas),
       //       maxPriorityFeePerGas?, nonce?}. Returns {chain, raw, txid, fee, summary}.
       async signArbitraryTx(account, req) {
-        if (!rootSeed) throw new Error('locked');
+        if (!rootSeed && !importedKey) throw new Error(watchAddr ? 'watch-only account' : 'locked');
         if (!req || !req.to) throw new Error('signArbitraryTx: missing to');
         const node = deriveNode(account.index);
         const nonce = (req.nonce != null)
@@ -378,7 +508,7 @@
     createEvmAdapter,
     erc20TransferData, erc20BalanceOfData, erc20ApproveData, erc20AllowanceData,
     erc721SafeTransferFromData, erc1155SafeTransferFromData,
-    signEip1559, signLegacy155, formatUnits, MAX_UINT256,
+    signEip1559, signLegacy155, formatUnits, MAX_UINT256, decodeAbiString,
   };
   global.EvmAdapter = API;
   if (inNode) module.exports = API;

@@ -12,21 +12,14 @@ Run with ``blockle-qt`` (``pip install blockle[qt]``).
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
-import os
-import shlex
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 try:
     from PySide6.QtCore import Qt, QThread, QTimer, Signal, QSettings
     from PySide6.QtGui import QFont, QGuiApplication, QIcon
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame, QGridLayout,
+        QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
         QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
         QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -71,133 +64,6 @@ QPlainTextEdit { font-family: Menlo, monospace; font-size: 11px; }
 QCheckBox { color: #b7bcc8; }
 """
 
-#: Public BLOCK-20 token API (metadata + per-holder balance).
-TOKEN_API = "https://blockle.org/api/token"
-#: Public site API base (DEX pools, buy-curve price history).
-API_BASE = "https://blockle.org/api"
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
-
-def _http_json(url: str, timeout: float = 10.0):
-    """GET `url` and parse JSON (raises on network/parse error)."""
-    req = urllib.request.Request(url, headers={"accept": "application/json", "user-agent": "blockle-qt"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
-
-
-def _bech32_data(addr: str) -> list[int] | None:
-    """Return the 5-bit data symbols of a bech32 string (checksum dropped),
-    or ``None`` if it does not look like bech32. The checksum is not verified
-    (the chain may use bech32 or bech32m); we only need the payload."""
-    if not addr or any(ord(c) < 33 or ord(c) > 126 for c in addr):
-        return None
-    if addr.lower() != addr and addr.upper() != addr:
-        return None  # mixed case
-    addr = addr.lower()
-    pos = addr.rfind("1")
-    if pos < 1 or pos + 7 > len(addr):
-        return None
-    data: list[int] = []
-    for c in addr[pos + 1:]:
-        d = _BECH32_CHARSET.find(c)
-        if d == -1:
-            return None
-        data.append(d)
-    return data[:-6]  # drop the 6-symbol checksum
-
-
-def _convertbits(data: list[int], frombits: int, tobits: int) -> list[int] | None:
-    """Convert between bit groups (BIP173), requiring exact, zero padding."""
-    acc = bits = 0
-    maxv = (1 << tobits) - 1
-    ret: list[int] = []
-    for value in data:
-        if value < 0 or (value >> frombits):
-            return None
-        acc = (acc << frombits) | value
-        bits += frombits
-        while bits >= tobits:
-            bits -= tobits
-            ret.append((acc >> bits) & maxv)
-    if bits >= frombits or ((acc << (tobits - bits)) & maxv):
-        return None  # excess or non-zero padding
-    return ret
-
-
-def _address_to_holder_hex(addr: str | None) -> str | None:
-    """Decode a ``block1…`` address to the 32-byte holder id in hex, or
-    ``None`` if it cannot be decoded to a 32-byte payload."""
-    if not addr:
-        return None
-    data = _bech32_data(addr)
-    if not data:
-        return None
-    decoded = _convertbits(data, 5, 8)
-    if not decoded:
-        return None
-    raw = bytes(decoded)
-    if len(raw) == 32:
-        return raw.hex()
-    if len(raw) == 33:  # leading version/witness byte
-        return raw[1:].hex()
-    return None
-
-
-def _format_token_amount(balance, decimals) -> str:
-    """Format a base-unit token balance by its decimals."""
-    if balance is None:
-        return "—"
-    try:
-        value = int(balance)
-    except (TypeError, ValueError):
-        return str(balance)
-    try:
-        d = int(decimals) if decimals is not None else 0
-    except (TypeError, ValueError):
-        d = 0
-    if d <= 0:
-        return str(value)
-    sign = "-" if value < 0 else ""
-    whole, frac = divmod(abs(value), 10 ** d)
-    frac_str = str(frac).zfill(d).rstrip("0")
-    return f"{sign}{whole}.{frac_str}" if frac_str else f"{sign}{whole}"
-
-
-def _fetch_token(contract_id: str, holder_hex: str | None = None, timeout: float = 15) -> dict:
-    """GET token metadata (+ balance when ``holder_hex`` is given) from the
-    public API. Handles both ``{"result": {...}}`` and a bare object."""
-    url = f"{TOKEN_API}/{contract_id}"
-    if holder_hex:
-        url += "?" + urllib.parse.urlencode({"holder": holder_hex})
-    req = urllib.request.Request(url, headers={"User-Agent": "blockle-qt"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    if isinstance(payload, dict) and "result" in payload:
-        payload = payload["result"]
-    if not isinstance(payload, dict):
-        raise ValueError("unexpected token API response")
-    return payload
-
-
-class TokenWorker(QThread):
-    """Fetches BLOCK-20 token metadata/balances off the UI thread."""
-
-    ready = Signal(list)  # list[tuple[contract_id, dict | None, str | None]]
-
-    def __init__(self, contract_ids: list[str], holder_hex: str | None):
-        super().__init__()
-        self.contract_ids = contract_ids
-        self.holder_hex = holder_hex
-
-    def run(self):  # noqa: D102
-        results = []
-        for cid in self.contract_ids:
-            try:
-                results.append((cid, _fetch_token(cid, self.holder_hex), None))
-            except Exception as e:  # pragma: no cover - surfaced in UI
-                results.append((cid, None, str(e)))
-        self.ready.emit(results)
-
 
 class SnapshotWorker(QThread):
     """Polls ``ui-snapshot`` off the UI thread."""
@@ -214,218 +80,6 @@ class SnapshotWorker(QThread):
             self.ready.emit(self.wallet.snapshot())
         except Exception as e:  # pragma: no cover - surfaced in UI
             self.failed.emit(str(e))
-
-
-#: Friendly built-ins (also fed to the input's autocomplete).
-BUILTIN_COMMANDS = [
-    "help", "clear", "balance", "address", "height", "info", "history",
-    "peers", "price", "pools", "tokeninfo", "snapshot", "send", "sign",
-    "verify", "mine", "scan", "backup",
-]
-
-CONSOLE_HELP = """Blockle console — type a command and press Enter (↑/↓ history, Tab to complete).
-
-Wallet & chain:
-  balance                   spendable / total / immature / shielded
-  address                   your transparent + shielded addresses
-  height                    current chain height
-  info                      network / name / height / mempool / tip
-  history [n]               recent transactions (default 10)
-  snapshot                  full wallet + chain state (pretty JSON)
-  send <to> <amount> [fee]  send BLOCK (fee defaults to 0.0001)
-  sign <message...>         sign a message with your key
-  verify <addr> <sig> <message...>   verify a signed message
-  scan                      rescan for shielded notes
-  backup <path>             write a wallet backup
-  mine [n]                  mine n blocks (regtest / new chains)
-
-Network & DEX:
-  peers                     connected peers (if in snapshot)
-  price                     latest BLOCK curve price
-  pools                     native AMM liquidity pools
-  tokeninfo <contract-id>   a BLOCK-20 token's metadata + your balance
-
-Console:
-  help [command]            this help, or a subcommand's flags
-  clear                     clear the console
-
-Anything else is passed straight to the blockle-chain CLI, so every node and
-wallet subcommand works here too — e.g. `getblockcount`, `getblockchaininfo`,
-`ui-snapshot`. Use `help <command>` for its flags."""
-
-
-# SECURITY: value-moving CLI verbs the debug console must NOT be able to
-# broadcast. The console is a pure (output-only) worker with no confirm sheet,
-# so it can never satisfy the confirm-gate (§A) — broadcast from here is blocked
-# outright. Fund movement goes through the Send tab (_do_send), which decodes +
-# routes through the shared SecurityConfirmSheet. A dev-only env flag re-enables
-# it for local testing; it is OFF in the shipping GUI.
-_CONSOLE_VALUE_MOVING = {
-    "send", "sendtoaddress", "sendmany", "sendfrom", "sendfromaccount",
-    "z_sendmany", "z_sendmanywithchangetoaddress", "sendrawtransaction",
-    "shield", "unshield", "z_shieldcoinbase", "signrawtransactionwithwallet",
-    "signrawtransactionwithkey", "walletpassphrase", "dumpprivkey", "dumpwallet",
-}
-
-
-def console_send_enabled() -> bool:
-    """Dev-only override (OFF by default). Broadcast from the console is blocked
-    in the shipping GUI; set BLOCKLE_CONSOLE_DEV_SEND=1 to re-enable it for local
-    development only."""
-    return os.environ.get("BLOCKLE_CONSOLE_DEV_SEND", "") in ("1", "true", "yes", "on")
-
-
-def run_console_command(wallet: "ChainWallet", line: str) -> tuple[str, bool]:
-    """Execute one console line → (output, is_error). Friendly wrappers map to
-    ChainWallet methods; everything else is a raw blockle-chain CLI call."""
-    try:
-        toks = shlex.split(line)
-    except ValueError as e:
-        return (f"parse error: {e}", True)
-    if not toks:
-        return ("", False)
-    cmd, args = toks[0].lower(), toks[1:]
-    # SECURITY GATE: refuse every value-moving verb (friendly `send` or a raw CLI
-    # send/sign verb) unless the dev flag is set. The console cannot show the
-    # shared confirm sheet, so an ungated broadcast here would violate §A.
-    if cmd in _CONSOLE_VALUE_MOVING and not console_send_enabled():
-        return ("blocked: value-moving commands are disabled in the console — "
-                "use the Send tab, which decodes the transfer and requires an "
-                "explicit security confirm before signing. (Set "
-                "BLOCKLE_CONSOLE_DEV_SEND=1 to re-enable for local dev only.)", True)
-    try:
-        if cmd == "clear":
-            return ("\x00clear", False)
-        if cmd == "help":
-            if args:
-                return (wallet._run(args[0], "--help").rstrip("\n"), False)
-            try:
-                cli = "\n\n— blockle-chain —\n" + wallet._run("--help").rstrip("\n")
-            except Exception:
-                cli = ""
-            return (CONSOLE_HELP + cli, False)
-        if cmd == "snapshot":
-            return (json.dumps(wallet.snapshot(), indent=2), False)
-        if cmd == "send":
-            if len(args) < 2:
-                return ("usage: send <to> <amount> [fee]", True)
-            fee = args[2] if len(args) > 2 else "0.0001"
-            return (json.dumps(wallet.send(args[0], args[1], fee), indent=2), False)
-        if cmd == "sign":
-            if not args:
-                return ("usage: sign <message>", True)
-            return (json.dumps(wallet.sign_message(" ".join(args)), indent=2), False)
-        if cmd == "verify":
-            if len(args) < 3:
-                return ("usage: verify <address> <signature> <message>", True)
-            ok = wallet.verify_message(args[0], args[1], " ".join(args[2:]))
-            return ("valid ✓" if ok else "INVALID ✗", not ok)
-        if cmd == "mine":
-            n = int(args[0]) if args else 1
-            return (wallet.mine(n).rstrip("\n"), False)
-        if cmd == "scan":
-            return (wallet.scan().rstrip("\n"), False)
-        if cmd == "backup":
-            if not args:
-                return ("usage: backup <path>", True)
-            return (json.dumps(wallet.backup(args[0]), indent=2), False)
-        if cmd == "height":
-            return (str(wallet.snapshot().get("chain", {}).get("height", "—")), False)
-        if cmd in ("balance", "bal"):
-            w = wallet.snapshot().get("wallet", {})
-            return ("\n".join([
-                f"spendable: {w.get('spendable_fmt', w.get('balance_fmt', '—'))} BLOCK",
-                f"total:     {w.get('balance_fmt', '—')} BLOCK",
-                f"immature:  {w.get('immature_fmt', '0')} BLOCK",
-                f"shielded:  {w.get('zbalance_fmt', '—')}",
-            ]), False)
-        if cmd == "address":
-            w = wallet.snapshot().get("wallet", {})
-            return (f"transparent: {w.get('address', '—')}\nshielded:    {w.get('zaddress', '—')}", False)
-        if cmd == "info":
-            c = wallet.snapshot().get("chain", {})
-            return (json.dumps({"network": wallet.network, "name": c.get("name"),
-                                "height": c.get("height"), "mempool": c.get("mempool"),
-                                "tip": c.get("tip")}, indent=2), False)
-        if cmd == "history":
-            n = int(args[0]) if args and args[0].isdigit() else 10
-            hist = wallet.snapshot().get("history", [])[:n]
-            return (json.dumps(hist, indent=2) if hist else "(no transactions yet)", False)
-        if cmd == "peers":
-            p = wallet.snapshot().get("chain", {}).get("peers")
-            return (json.dumps(p, indent=2) if p is not None
-                    else "(peer detail isn't in the snapshot — see the Node tab)", False)
-        if cmd == "price":
-            hist = _http_json(API_BASE + "/buy/history")
-            if not hist:
-                return ("no price yet — the reserve curve is unfunded", False)
-            return (f"BLOCK ≈ ${hist[-1].get('price')} ({len(hist)} snapshots)", False)
-        if cmd == "pools":
-            pools = _http_json(API_BASE + "/dex/pools").get("pools", [])
-            if not pools:
-                return ("no liquidity pools yet", False)
-            out = [f"{'SYMBOL':<8} {'PRICE(BLOCK)':>16} {'LIQ(BLOCK)':>12}  CONTRACT"]
-            for p in pools:
-                dec = p.get("decimals") or 0
-                br = (p.get("blockReserve", 0) or 0) / 1e8
-                tr = (p.get("tokenReserve", 0) or 0) / (10 ** dec)
-                price = (br / tr) if tr else 0
-                out.append(f"{(p.get('symbol') or '?'):<8} {price:>16.8f} {br * 2:>12.2f}  {(p.get('token') or '')[:16]}…")
-            return ("\n".join(out), False)
-        if cmd in ("tokeninfo", "token"):
-            if not args:
-                return ("usage: tokeninfo <contract-id>", True)
-            holder = _address_to_holder_hex(wallet.snapshot().get("wallet", {}).get("address"))
-            url = f"{TOKEN_API}/{args[0]}" + (f"?holder={holder}" if holder else "")
-            j = _http_json(url)
-            return (json.dumps(j.get("result", j), indent=2), False)
-        # raw CLI passthrough — every node/wallet subcommand
-        return (wallet._run(*toks).rstrip("\n"), False)
-    except Exception as e:
-        return (str(e), True)
-
-
-class ConsoleWorker(QThread):
-    """Runs one console command off the UI thread."""
-
-    done = Signal(str, bool)
-
-    def __init__(self, wallet: ChainWallet, line: str):
-        super().__init__()
-        self.wallet = wallet
-        self.line = line
-
-    def run(self):  # noqa: D102
-        text, is_err = run_console_command(self.wallet, self.line)
-        self.done.emit(text, is_err)
-
-
-class _ConsoleInput(QLineEdit):
-    """A command input with ↑/↓ history recall."""
-
-    def __init__(self):
-        super().__init__()
-        self._hist: list[str] = []
-        self._idx = 0
-
-    def add_history(self, line: str) -> None:
-        if not self._hist or self._hist[-1] != line:
-            self._hist.append(line)
-        self._idx = len(self._hist)
-
-    def keyPressEvent(self, e):  # noqa: D102, N802
-        comp = self.completer()
-        if comp and comp.popup().isVisible():
-            return super().keyPressEvent(e)  # let the completer handle ↑/↓/Enter
-        if e.key() == Qt.Key_Up and self._hist:
-            self._idx = max(0, self._idx - 1)
-            self.setText(self._hist[self._idx])
-            return
-        if e.key() == Qt.Key_Down and self._hist:
-            self._idx = min(len(self._hist), self._idx + 1)
-            self.setText(self._hist[self._idx] if self._idx < len(self._hist) else "")
-            return
-        super().keyPressEvent(e)
 
 
 def _copy_row(label: str, value: str) -> QWidget:
@@ -467,23 +121,8 @@ class WalletWindow(QMainWindow):
         tabs.addTab(self._send_tab(), "Send")
         tabs.addTab(self._receive_tab(), "Receive")
         tabs.addTab(self._shielded_tab(), "Shielded")
-        tabs.addTab(self._tokens_tab(), "Tokens")
         tabs.addTab(self._wallet_tab(), "Wallet")
         tabs.addTab(self._node_tab(), "Node")
-        tabs.addTab(self._console_tab(), "Console")
-
-        # Multi-chain / Exchange / AI-agent panels (ADDITIVE): reuse the BLOCK
-        # engine as the signer + BLOCK rail. Guarded so a missing multichain dep
-        # never breaks the core BLOCK wallet or the console.
-        self._mc_tabs = []
-        try:
-            from .qtmultichain import build_tabs as _mc_build_tabs
-            self._mc_tabs = _mc_build_tabs(wallet, wallet.datadir)
-            for widget, title in self._mc_tabs:
-                tabs.addTab(widget, title)
-        except Exception as e:  # pragma: no cover - optional feature
-            print(f"blockle-qt: multi-chain panels unavailable ({e})", file=sys.stderr)
-
         self.setCentralWidget(tabs)
 
         self.status_lbl = QLabel("starting…")
@@ -565,16 +204,6 @@ class WalletWindow(QMainWindow):
         self.zaddr_row = _copy_row("", "")
         v.addWidget(self.zaddr_row)
         lay.addWidget(box)
-
-        from . import moonpay
-        fund = QGroupBox("Fund with a card")
-        fv = QVBoxLayout(fund)
-        note = QLabel(moonpay.BLOCK_NOTE)
-        note.setWordWrap(True)
-        note.setObjectName("sub")
-        fv.addWidget(note)
-        lay.addWidget(fund)
-
         lay.addStretch(1)
         return w
 
@@ -602,203 +231,6 @@ class WalletWindow(QMainWindow):
             row.addWidget(b)
         lay.addLayout(row)
         return w
-
-    def _tokens_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-
-        box = QGroupBox("Import BLOCK-20 token")
-        row = QHBoxLayout(box)
-        self.token_input = QLineEdit()
-        self.token_input.setPlaceholderText("contract id (64 hex characters)")
-        self.token_input.setObjectName("mono")
-        self.token_input.returnPressed.connect(self._do_import_token)
-        import_btn = QPushButton("Import")
-        import_btn.setObjectName("primary")
-        import_btn.clicked.connect(self._do_import_token)
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._do_refresh_tokens)
-        row.addWidget(self.token_input, 1)
-        row.addWidget(import_btn)
-        row.addWidget(refresh_btn)
-        lay.addWidget(box)
-
-        lay.addWidget(QLabel("Imported BLOCK-20 tokens (balances for this wallet)"))
-        self.tokens_table = QTableWidget(0, 5)
-        self.tokens_table.setHorizontalHeaderLabels(
-            ["Symbol", "Name", "Decimals", "Balance", "Contract"])
-        self.tokens_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tokens_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.tokens_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.tokens_table.verticalHeader().hide()
-        self.tokens_table.cellClicked.connect(self._on_token_row_clicked)
-        lay.addWidget(self.tokens_table, 1)
-
-        send_box = QGroupBox("Send a BLOCK-20 token")
-        sform = QFormLayout(send_box)
-        self.tok_send_contract = QLineEdit()
-        self.tok_send_contract.setObjectName("mono")
-        self.tok_send_contract.setPlaceholderText("token contract id (or click a row above)")
-        self.tok_send_to = QLineEdit()
-        self.tok_send_to.setPlaceholderText("block1… recipient")
-        self.tok_send_amount = QLineEdit()
-        self.tok_send_amount.setPlaceholderText("amount")
-        self.tok_send_gas = QLineEdit("200000")
-        tok_send_btn = QPushButton("Send token")
-        tok_send_btn.setObjectName("primary")
-        tok_send_btn.clicked.connect(self._do_send_token)
-        sform.addRow("Token", self.tok_send_contract)
-        sform.addRow("To", self.tok_send_to)
-        sform.addRow("Amount", self.tok_send_amount)
-        sform.addRow("Gas limit", self.tok_send_gas)
-        sform.addRow("", tok_send_btn)
-        lay.addWidget(send_box)
-
-        self.token_worker: TokenWorker | None = None
-        self.token_data: dict[str, dict] = {}
-        self.token_ids: list[str] = self._tokens_load()
-        self._fill_tokens_table()
-        # Kick off an initial fetch once the event loop is running.
-        QTimer.singleShot(0, self._do_refresh_tokens)
-        return w
-
-    # ---------- BLOCK-20 tokens ----------
-
-    def _tokens_file(self) -> Path:
-        return Path(self.wallet.datadir) / "block20_tokens.json"
-
-    def _tokens_load(self) -> list[str]:
-        try:
-            data = json.loads(self._tokens_file().read_text())
-        except (OSError, ValueError):
-            return []
-        if isinstance(data, list):
-            return [str(c).strip().lower() for c in data if str(c).strip()]
-        return []
-
-    def _tokens_save(self):
-        try:
-            self._tokens_file().write_text(json.dumps(self.token_ids, indent=2))
-        except OSError as e:
-            QMessageBox.warning(self, "Blockle", f"Could not save token list: {e}")
-
-    def _token_holder_hex(self) -> str | None:
-        addr = (self.snap or {}).get("wallet", {}).get("address")
-        return _address_to_holder_hex(addr)
-
-    def _on_token_row_clicked(self, row: int, _col: int):
-        item = self.tokens_table.item(row, 4)  # Contract column
-        if item:
-            self.tok_send_contract.setText(item.text().strip())
-
-    def _do_send_token(self):
-        from .qtwalletui import to_base_units
-        contract = self.tok_send_contract.text().strip().lower()
-        to = self.tok_send_to.text().strip()
-        amount = self.tok_send_amount.text().strip()
-        gas_s = self.tok_send_gas.text().strip() or "200000"
-        if len(contract) != 64 or not all(c in "0123456789abcdef" for c in contract):
-            QMessageBox.warning(self, "Blockle", "Enter a valid 64-hex token contract id.")
-            return
-        if not to or not amount:
-            QMessageBox.warning(self, "Blockle", "Recipient and amount are required.")
-            return
-        info = self.token_data.get(contract) or {}
-        dec = int(info.get("decimals", 0) or 0)
-        try:
-            amount_base = to_base_units(amount, dec)
-            gas = int(gas_s)
-        except Exception as e:
-            QMessageBox.warning(self, "Blockle", f"Bad amount or gas: {e}")
-            return
-        # SECURITY GATE: same read-only inspect + confirm sheet as a BLOCK send,
-        # with the token asset so the preview shows the real token + amount.
-        try:
-            inspection = self._inspect_block_token_send(
-                contract, to, str(amount_base), dec, info.get("symbol") or "TOKEN")
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
-            return
-        if not self._confirm_security(inspection, "Review token send"):
-            return   # rejected / danger un-acknowledged -> abort WITHOUT signing
-        self.wallet.node = self.node.p2p_address if self.node.running else None
-        if self._guarded(lambda: self.wallet.send_token(contract, to, amount_base, gas),
-                         "Token transfer submitted."):
-            self.tok_send_to.clear()
-            self.tok_send_amount.clear()
-            QTimer.singleShot(1500, self._do_refresh_tokens)
-
-    def _inspect_block_token_send(self, contract: str, to: str, amount_base_str: str,
-                                  dec: int, symbol: str) -> dict:
-        from .multichain import security as security_mod
-        tx = {
-            "chain": "block", "to": to,
-            "amount": str(amount_base_str),
-            "fee": None,
-            "asset": {"chain": "block", "kind": "block20", "symbol": symbol,
-                      "decimals": dec, "address": contract},
-            "_recipient": to,
-        }
-        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
-
-    def _do_import_token(self):
-        cid = self.token_input.text().strip().lower()
-        if cid.startswith("0x"):
-            cid = cid[2:]
-        if len(cid) != 64 or any(c not in "0123456789abcdef" for c in cid):
-            QMessageBox.warning(self, "Blockle", "Enter a 64-character hex contract id.")
-            return
-        if cid in self.token_ids:
-            QMessageBox.information(self, "Blockle", "That token is already imported.")
-            return
-        try:
-            meta = _fetch_token(cid, self._token_holder_hex())
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not fetch token:\n{e}")
-            return
-        if not (meta.get("isToken") or meta.get("symbol") or meta.get("name")):
-            QMessageBox.critical(
-                self, "Blockle", "That contract id is not a BLOCK-20 token.")
-            return
-        self.token_ids.append(cid)
-        self.token_data[cid] = meta
-        self._tokens_save()
-        self.token_input.clear()
-        self._fill_tokens_table()
-
-    def _do_refresh_tokens(self):
-        if not self.token_ids:
-            self._fill_tokens_table()
-            return
-        if self.token_worker is not None and self.token_worker.isRunning():
-            return
-        self.token_worker = TokenWorker(list(self.token_ids), self._token_holder_hex())
-        self.token_worker.ready.connect(self._on_tokens_fetched)
-        self.token_worker.start()
-
-    def _on_tokens_fetched(self, results: list):
-        for cid, meta, _err in results:
-            if meta is not None:
-                self.token_data[cid] = meta
-        self._fill_tokens_table()
-
-    def _fill_tokens_table(self):
-        self.tokens_table.setRowCount(len(self.token_ids))
-        for r, cid in enumerate(self.token_ids):
-            meta = self.token_data.get(cid, {})
-            decimals = meta.get("decimals")
-            vals = [
-                meta.get("symbol") or "—",
-                meta.get("name") or "—",
-                str(decimals) if decimals is not None else "—",
-                _format_token_amount(meta.get("balance"), decimals),
-                f"{cid[:10]}…{cid[-6:]}",
-            ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
-                if c == 4:
-                    item.setToolTip(cid)
-                self.tokens_table.setItem(r, c, item)
 
     def _wallet_tab(self) -> QWidget:
         w = QWidget()
@@ -992,68 +424,6 @@ class WalletWindow(QMainWindow):
         else:
             QMessageBox.critical(self, "Blockle", "INVALID signature.")
 
-    def _console_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.addWidget(QLabel("Debug console — drive the node & wallet directly. Type "
-                             "<b>help</b> and press Enter."))
-        self.console_out = QPlainTextEdit()
-        self.console_out.setReadOnly(True)
-        mono = QFont("Menlo")
-        mono.setStyleHint(QFont.Monospace)
-        mono.setPointSize(11)
-        self.console_out.setFont(mono)
-        self.console_out.setStyleSheet(
-            "QPlainTextEdit { background: #0b0e16; color: #cdd6f4; border: 1px solid #23262e; "
-            "border-radius: 8px; padding: 10px; }")
-        self.console_out.setPlainText("Blockle console ready. Type `help` for commands.\n")
-        lay.addWidget(self.console_out, 1)
-        row = QHBoxLayout()
-        self.console_in = _ConsoleInput()
-        self.console_in.setFont(mono)
-        self.console_in.setPlaceholderText("help")
-        completer = QCompleter(BUILTIN_COMMANDS, self.console_in)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setCompletionMode(QCompleter.PopupCompletion)
-        self.console_in.setCompleter(completer)
-        run = QPushButton("Run")
-        run.setObjectName("primary")
-        row.addWidget(self.console_in, 1)
-        row.addWidget(run)
-        lay.addLayout(row)
-        self.console_in.returnPressed.connect(self._console_submit)
-        run.clicked.connect(self._console_submit)
-        self._console_worker = None
-        return w
-
-    def _console_append(self, text: str) -> None:
-        self.console_out.appendPlainText(text)
-        sb = self.console_out.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    def _console_submit(self) -> None:
-        line = self.console_in.text().strip()
-        if not line:
-            return
-        self.console_in.clear()
-        self.console_in.add_history(line)
-        self._console_append("» " + line)
-        if line.lower() == "clear":
-            self.console_out.clear()
-            return
-        self.console_in.setEnabled(False)
-        self._console_worker = ConsoleWorker(self.wallet, line)
-        self._console_worker.done.connect(self._console_done)
-        self._console_worker.start()
-
-    def _console_done(self, text: str, is_err: bool) -> None:
-        if text == "\x00clear":
-            self.console_out.clear()
-        elif text:
-            self._console_append(("error: " + text) if is_err else text)
-        self.console_in.setEnabled(True)
-        self.console_in.setFocus()
-
     def _node_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
@@ -1170,104 +540,21 @@ class WalletWindow(QMainWindow):
         self.refresh()
         return result
 
-    def _block_security_ctx(self) -> dict:
-        """ctx for the BLOCK pre-send inspection. Reuses the multi-chain
-        controller's shared security config (denylist / thresholds) when the
-        ADDITIVE panels are present, so a flagged BLOCK recipient is caught;
-        an empty config otherwise (``merge_config`` supplies defaults — never a
-        fabricated all-clear)."""
-        try:
-            for widget, _title in (self._mc_tabs or []):
-                ctrl = getattr(widget, "ctrl", None)
-                if ctrl is not None and hasattr(ctrl, "_security_config"):
-                    return {"config": ctrl._security_config()}
-        except Exception:
-            pass
-        return {"config": {}}
-
     def _do_send(self):
         to, amount = self.send_to.text().strip(), self.send_amount.text().strip()
         if not to or not amount:
             QMessageBox.warning(self, "Blockle", "Recipient and amount are required.")
             return
-        fee = self.send_fee.text().strip()
-        # SECURITY GATE: BEFORE the BLOCK signer sends, decode the transfer
-        # (security.inspect_transaction -> decode_block, read-only) and route it
-        # through the shared confirm sheet. A DANGER (e.g. a denylisted recipient)
-        # forces the explicit "I understand the risk" confirm; a reject aborts
-        # WITHOUT signing. A clean inspection simply shows no warnings — still run
-        # it, for a uniform decoded preview.
-        try:
-            inspection = self._inspect_block_send(to, amount, fee)
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
+        if QMessageBox.question(
+            self, "Confirm send",
+            f"Send {amount} BLOCK to\n{to}\n(fee {self.send_fee.text()})?",
+        ) != QMessageBox.Yes:
             return
-        if not self._confirm_block_send(inspection):
-            return   # rejected / danger un-acknowledged -> abort WITHOUT signing
         self.wallet.node = self.node.p2p_address if self.node.running else None
-        if self._guarded(lambda: self.wallet.send(to, amount, fee),
+        if self._guarded(lambda: self.wallet.send(to, amount, self.send_fee.text().strip()),
                          "Transaction submitted."):
             self.send_to.clear()
             self.send_amount.clear()
-
-    def _inspect_block_send(self, to: str, amount: str, fee: str) -> dict:
-        """Run the read-only BLOCK decode through the security suite. BLOCK uses
-        8 decimals; the human amount/fee are converted to EXACT base units so the
-        preview summary shows the real amount (never a misleading 0)."""
-        from .qtwalletui import to_base_units
-        from .multichain import security as security_mod
-        amount_base = to_base_units(amount, 8)
-        fee_base = to_base_units(fee, 8) if fee else None
-        tx = {
-            "chain": "block", "to": to,
-            "amount": str(amount_base),
-            "fee": None if fee_base is None else str(fee_base),
-            "asset": {"chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8},
-            "_recipient": to,
-        }
-        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
-
-    def _confirm_block_send(self, inspection: dict) -> bool:
-        """Show the shared security confirm sheet; returns True iff the user
-        accepted (a danger required the explicit extra confirm inside the sheet)."""
-        return self._confirm_security(inspection, "Review BLOCK send")
-
-    def _confirm_security(self, inspection: dict, title: str) -> bool:
-        """Show the shared security confirm sheet; returns True iff the user
-        accepted. A danger severity forces the explicit "I understand the risk"
-        confirm INSIDE the sheet (see qtwalletui.SecurityConfirmSheet) — this
-        helper never bypasses it. Runs on the GUI thread."""
-        from .qtwalletui import SecurityConfirmSheet, TOKENS_DARK
-        sheet = SecurityConfirmSheet(
-            TOKENS_DARK, inspection, title=title, parent=self)
-        return sheet.exec() == QDialog.Accepted
-
-    def _inspect_shielded(self, *, to: str, amount: str | None, fee: str | None,
-                          external: bool) -> dict:
-        """Read-only decode of a shielded operation through the security suite
-        (``security.inspect_transaction`` -> ``decode_block``), mirroring the
-        transparent BLOCK send gate. BLOCK uses 8 decimals; the human amount/fee
-        are converted to EXACT base units so the preview shows the real amount.
-
-        ``shield``/``unshield`` move value between the user's OWN pools, so there
-        is no external recipient — this is a decoded preview + confirm. ``zsend``
-        has an EXTERNAL, user-typed ``zblockpk`` recipient, so ``_recipient`` is
-        set and the full denylist / new-recipient warnings apply (a flagged
-        recipient decodes to DANGER and forces the explicit confirm)."""
-        from .qtwalletui import to_base_units
-        from .multichain import security as security_mod
-        amount_base = to_base_units(amount, 8) if amount else 0
-        fee_base = to_base_units(fee, 8) if fee else None
-        tx = {
-            "chain": "block", "to": to,
-            "amount": str(amount_base),
-            "fee": None if fee_base is None else str(fee_base),
-            "asset": {"chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8},
-        }
-        if external:
-            # externally-influenced recipient -> run the recipient-facing checks
-            tx["_recipient"] = to
-        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
 
     def _selected_note(self) -> int | None:
         rows = self.notes.selectionModel().selectedRows()
@@ -1278,38 +565,14 @@ class WalletWindow(QMainWindow):
 
     def _do_shield(self):
         amount, ok = QInputDialog.getText(self, "Shield", "Amount to move into the shielded pool:")
-        if not (ok and amount.strip()):
-            return
-        amount = amount.strip()
-        # SECURITY GATE: decode the move into the shielded pool (read-only) and
-        # route it through the shared confirm sheet BEFORE signing/broadcasting.
-        # No external recipient — own-pool move — so this is a decoded preview +
-        # confirm. A reject aborts WITHOUT calling wallet.shield.
-        try:
-            inspection = self._inspect_shielded(
-                to="(your shielded pool)", amount=amount, fee="0.0001", external=False)
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
-            return
-        if not self._confirm_security(inspection, "Review shield"):
-            return   # rejected -> nothing signed or broadcast
-        self.wallet.node = self.node.p2p_address if self.node.running else None
-        self._guarded(lambda: self.wallet.shield(amount), "Funds shielded.")
+        if ok and amount.strip():
+            self.wallet.node = self.node.p2p_address if self.node.running else None
+            self._guarded(lambda: self.wallet.shield(amount.strip()), "Funds shielded.")
 
     def _do_unshield(self):
         note = self._selected_note()
         if note is None:
             return
-        # SECURITY GATE: decode the unshield (whole note back to the user's own
-        # transparent address — no external recipient) and confirm BEFORE signing.
-        try:
-            inspection = self._inspect_shielded(
-                to="(your transparent address)", amount=None, fee="0.0001", external=False)
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
-            return
-        if not self._confirm_security(inspection, "Review unshield"):
-            return   # rejected -> nothing signed or broadcast
         self.wallet.node = self.node.p2p_address if self.node.running else None
         self._guarded(lambda: self.wallet.unshield(note), "Note unshielded to your address.")
 
@@ -1326,24 +589,9 @@ class WalletWindow(QMainWindow):
                                           "Amount (empty = whole note minus fee):")
         if not ok:
             return
-        to, amount = to.strip(), amount.strip()
-        # SECURITY GATE: a private send has an EXTERNAL, user-typed zblockpk
-        # recipient, so run the FULL inspection (denylist / new-recipient checks)
-        # with danger-forces-confirm BEFORE wallet.zsend signs/broadcasts. An
-        # empty recipient is an out-of-band voucher (no on-chain recipient yet).
-        has_recipient = bool(to)
-        try:
-            inspection = self._inspect_shielded(
-                to=to or "(out-of-band voucher)", amount=amount or None,
-                fee="0.0001", external=has_recipient)
-        except Exception as e:
-            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
-            return
-        if not self._confirm_security(inspection, "Review private send"):
-            return   # rejected / danger un-acknowledged -> nothing signed or broadcast
         self.wallet.node = self.node.p2p_address if self.node.running else None
         result = self._guarded(
-            lambda: self.wallet.zsend(note, amount or None, to or None),
+            lambda: self.wallet.zsend(note, amount.strip() or None, to.strip() or None),
             "Private transfer submitted — amounts are hidden on chain.")
         if result and result.get("voucher"):
             dlg = QMessageBox(self)
@@ -1391,18 +639,6 @@ class WalletWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802
         self.node.stop()
-        # tear down the multi-chain controller: lock the vault (wipe the seed +
-        # credentials from memory) and stop the agent loop.
-        for widget, _title in getattr(self, "_mc_tabs", []):
-            ctrl = getattr(widget, "ctrl", None)
-            if ctrl is not None:
-                try:
-                    ctrl.vault.lock()
-                except Exception:
-                    pass
-                if getattr(ctrl, "loop", None) is not None:
-                    ctrl.loop.stop()
-                break
         event.accept()
 
 

@@ -155,11 +155,29 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
 .banner.info{background:#1a2550;border:1px solid #2c3d78;color:#b9c6ff}
 .banner.danger{background:#3a1420;border:1px solid #7a2436;color:#ffb3b8}
 
-/* bottom nav (mobile) */
+/* bottom nav (mobile) + the pop-out sidebar drawer (portrait / narrow screens) */
 .botnav{display:none}
+#btn-menu{display:none}
+.navscrim{display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
+.navscrim.open{display:block}
+.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--good,#2ecc71);box-shadow:0 0 0 0 rgba(46,204,113,.6);animation:pulse 1.6s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.55)}70%{box-shadow:0 0 0 9px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
+.ticker{max-height:220px;overflow:auto;font-size:13px}
+.ticker .li{padding:8px 2px;animation:fade .3s ease}
+.heat{font-weight:800;letter-spacing:.02em}
+.spark{display:block;width:100%;height:46px}
+.pct.pos{color:var(--good,#2ecc71)}.pct.neg{color:var(--bad,#ff6b6b)}
+.preset{flex:1;min-width:64px;font-weight:700}
+.preset.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.moonrow{cursor:pointer}
+.moonrow:hover{background:var(--card2)}
+.rangebar{width:100%}
 @media(max-width:860px){
   .shell{grid-template-columns:1fr;padding:12px 12px 86px}
-  .sidenav{display:none}
+  #btn-menu{display:inline-flex}
+  .sidenav{display:flex;position:fixed;top:0;left:0;bottom:0;width:min(78vw,290px);z-index:50;background:var(--bg);border-right:1px solid var(--line);padding:14px 12px calc(14px + env(safe-area-inset-bottom));overflow-y:auto;transform:translateX(-104%);transition:transform .22s ease;box-shadow:0 0 40px rgba(0,0,0,.35)}
+  .sidenav.open{transform:none}
+  .sidenav .drawerhead{display:flex;align-items:center;justify-content:space-between;padding:4px 6px 12px;font-weight:750}
   .botnav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(12px);border-top:1px solid var(--line);justify-content:space-around;padding:7px 4px env(safe-area-inset-bottom)}
   .botnav a{display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--ink3);font-size:10px;font-weight:600;padding:5px 8px;border-radius:9px}
   .botnav a.active{color:var(--accent)}
@@ -182,6 +200,7 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
   <!-- authenticated shell (hidden until unlocked) -->
   <div id="authed" class="hide">
     <header class="topbar"><div class="inner">
+      <button id="btn-menu" class="btn sm ghost" title="Menu" aria-label="Open menu" aria-controls="sidenav" aria-expanded="false"><svg class="ic-svg" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
       <div class="brand"><img class="logo" src="blockle-mark.png" alt="Blockle"><span>Wallet</span></div>
       <button id="acctsel" class="selbtn" title="Account & network"><span id="acctsel-label">—</span> <svg class="ic-svg dim" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9.5l6 6 6-6"/></svg></button>
       <div style="flex:1"></div>
@@ -191,7 +210,8 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
     </div></header>
 
     <div class="shell">
-      <nav class="sidenav" id="sidenav"></nav>
+      <div id="navscrim" class="navscrim"></div>
+      <nav class="sidenav" id="sidenav" aria-label="Main navigation"></nav>
       <main class="main"><div id="view" class="view"></div></main>
     </div>
 
@@ -222,8 +242,12 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
 <script src="vendor/chains/solana.js"></script>
 <script src="vendor/chains/discovery.js"></script>
 <script src="vendor/chains/custom-networks.js"></script>
+<script src="vendor/chains/token-lists.js"></script>
 <script src="vendor/chains/registry.js"></script>
 <script src="vendor/chains/autoimport.js"></script>
+<script src="vendor/prices.js"></script>
+<script src="vendor/moon.js"></script>
+<script src="vendor/key-import.js"></script>
 <script src="vendor/accounts.js"></script>
 <script src="vendor/exchange-client.js"></script>
 <script src="vendor/agent/policy.js"></script>
@@ -239,6 +263,7 @@ label{font-size:12px;font-weight:700;color:var(--ink2);text-transform:uppercase;
 <script src="vendor/agent/strategies.js"></script>
 <script src="vendor/agent/scanner.js"></script>
 <script src="vendor/agent/strategy-runner.js"></script>
+<script src="vendor/agent/candles.js"></script>
 <script src="vendor/agent/bots.js"></script>
 <script src="vendor/agent/bot-templates.js"></script>
 <script src="vendor/agent/bot-runner.js"></script>
