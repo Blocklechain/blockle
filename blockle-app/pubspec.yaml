@@ -17,6 +17,9 @@ dependencies:
   qr_flutter: ^4.1.0
   file_picker: ^8.1.2
   share_plus: ^10.1.2
+  # In-app purchases: Apple StoreKit + Google Play Billing for the Copilot subscription.
+  # Receipts are verified server-side (accounts service /iap/*), which is the source of truth.
+  in_app_purchase: ^3.2.0
   # Multi-chain crypto (secp256k1/keccak/ripemd160/sha/hmac/scrypt). Pure Dart.
   pointycastle: ^3.9.1
 

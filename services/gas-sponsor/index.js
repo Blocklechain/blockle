@@ -97,6 +97,9 @@ async function tierFromCookie(cookie) {
     if (!r.ok) return "free";
     const j = await r.json();
     const sub = j && j.user && j.user.sub;
+    // Honor the server's effective tier, which folds in an active free trial (entitledTier);
+    // fall back to the legacy active+tier for older account-service builds.
+    if (sub && sub.entitledTier) return sub.entitledTier;
     return sub && sub.active ? (sub.tier || "free") : "free";
   } catch { return "free"; }
 }

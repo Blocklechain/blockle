@@ -67,6 +67,7 @@ function setup(opts) {
     policy, tools, audit, ctx: opts.ctx || mkCtx([100]), AgentRunner, Bots: AgentBots,
     mainnetEnabled: opts.mainnetEnabled === true, discovery: opts.discovery || null,
     timers: opts.timers, pollMs: opts.pollMs,
+    liveEntitled: opts.liveEntitled !== false, // entitled by default in tests; set false to exercise the gate
   });
   return { runner, policy, tools, audit };
 }
@@ -186,6 +187,22 @@ test('arm live: fails closed on a mainnet bot when mainnetEnabled=false', async 
   const { runner } = setup({ sessionUsd: 1000, mainnetEnabled: false });
   const bot = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] }, network: 'mainnet' });
   await assert.rejects(() => runner.armLive(bot.id, { allocationUsd: 50 }), /mainnet/);
+});
+
+test('arm live: fails closed without a subscription; setLiveEntitled unlocks it', async () => {
+  const { runner } = setup({ sessionUsd: 1000, liveEntitled: false });
+  const bot = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] } });
+  // free account: refused with the entitlement code, bot stays paper
+  await assert.rejects(() => runner.armLive(bot.id, { allocationUsd: 50 }),
+    (e) => e.code === 'ENTITLEMENT_REQUIRED');
+  assert.equal(bot.mode, 'paper');
+  assert.equal(bot.enabled, false);
+  // trial/paid entitlement flips the gate open
+  assert.equal(runner.setLiveEntitled('copilot'), true);
+  await runner.armLive(bot.id, { allocationUsd: 50 });
+  assert.equal(bot.mode, 'live');
+  // 'free' closes it again
+  assert.equal(runner.setLiveEntitled('free'), false);
 });
 
 // ===========================================================================

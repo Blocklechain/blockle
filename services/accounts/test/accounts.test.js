@@ -292,6 +292,68 @@ test('Copilot tiers: /plans lists configured tiers and the webhook maps plan_id 
   }, { config: { copilotPlanId: 'P-COPILOT', copilotProPlanId: 'P-COPILOT-PRO' } });
 });
 
+// ---- free trial ----------------------------------------------------------------------------
+test('trial: one-time 7-day Copilot grant, entitled while live, expires, not repeatable', async () => {
+  await withServer(async ({ app, call, clock }) => {
+    await call('POST', '/account/api/register', { email: 't@b.com', password: 'longenough1' });
+    const token = app.mailer.sent.find((m) => m.to === 't@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const csrf = (await call('POST', '/account/api/login', { email: 't@b.com', password: 'longenough1' })).data.csrf;
+
+    // before trial: free
+    let me = (await call('GET', '/account/api/me')).data.user;
+    assert.equal(me.sub.entitledTier, 'free');
+
+    // start trial → entitled at copilot, trial active
+    const start = await call('POST', '/account/api/trial/start', {}, { 'X-CSRF-Token': csrf });
+    assert.equal(start.status, 200);
+    assert.equal(start.data.sub.entitledTier, 'copilot');
+    assert.equal(start.data.sub.trialActive, true);
+
+    me = (await call('GET', '/account/api/me')).data.user;
+    assert.equal(me.sub.entitledTier, 'copilot', 'entitled during the trial window');
+
+    // a second start is refused (one trial per account, ever)
+    const again = await call('POST', '/account/api/trial/start', {}, { 'X-CSRF-Token': csrf });
+    assert.equal(again.status, 409);
+
+    // advance past the 7-day window → back to free
+    clock.t += 8 * 24 * 60 * 60 * 1000;
+    me = (await call('GET', '/account/api/me')).data.user;
+    assert.equal(me.sub.entitledTier, 'free', 'entitlement lapses when the trial ends');
+    assert.equal(me.sub.trialActive, false);
+  }, { config: { sessionIdleMs: 60 * 24 * 60 * 60 * 1000, sessionAbsoluteMs: 60 * 24 * 60 * 60 * 1000 } });
+});
+
+// ---- in-app purchase (Apple StoreKit / Google Play) ----------------------------------------
+test('IAP: a verified Apple transaction grants the mapped tier (stub gateway)', async () => {
+  await withServer(async ({ app, call }) => {
+    await call('POST', '/account/api/register', { email: 'iap@b.com', password: 'longenough1' });
+    const token = app.mailer.sent.find((m) => m.to === 'iap@b.com').text.match(/token=([^\s]+)/)[1];
+    await call('GET', '/account/api/verify?token=' + token);
+    const csrf = (await call('POST', '/account/api/login', { email: 'iap@b.com', password: 'longenough1' })).data.csrf;
+    const uid = app._internal.userByEmail('iap@b.com').id;
+
+    // stub verifyTransaction parses the JSON we pass as the "signed" transaction
+    const future = 1_700_000_000_000 + 30 * 24 * 60 * 60 * 1000;
+    const r = await call('POST', '/account/api/iap/apple/verify',
+      { signedTransactionInfo: JSON.stringify({ productId: 'org.blockle.copilotpro.monthly', expiresMs: future, originalTransactionId: 'OTX-1' }) },
+      { 'X-CSRF-Token': csrf });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.sub.entitledTier, 'copilot_pro');
+    await app.store.drain();
+    const s = app.store.get('users', uid).sub;
+    assert.equal(s.active, true);
+    assert.equal(s.tier, 'copilot_pro');
+    assert.equal(s.provider, 'apple');
+
+    // an unknown product is rejected (no entitlement change path)
+    const bad = await call('POST', '/account/api/iap/apple/verify',
+      { signedTransactionInfo: JSON.stringify({ productId: 'org.blockle.bogus' }) }, { 'X-CSRF-Token': csrf });
+    assert.equal(bad.status, 400);
+  }, { config: { iapEnv: 'stub', appleBundleId: 'org.blockle.app' } });
+});
+
 // ---- admin is hidden (404 to non-admins) ---------------------------------------------------
 test('admin endpoints 404 for non-admins, work for the seeded admin', async () => {
   await withServer(async ({ app, call }) => {

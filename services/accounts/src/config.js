@@ -57,6 +57,29 @@ export const config = {
   copilotProPlanId: env.PAYPAL_COPILOT_PRO_PLAN_ID || '',
   copilotProPrice: env.PAYPAL_COPILOT_PRO_PRICE || '49.00',
 
+  // Free trial for the Copilot tier: first live-bot activation grants this many days of
+  // Copilot entitlement, once per account, with no payment method required. 0 disables trials.
+  trialDays: +(env.ACCOUNTS_TRIAL_DAYS || 7),
+  trialTier: env.ACCOUNTS_TRIAL_TIER || 'copilot',
+
+  // In-app purchase (Apple StoreKit / Google Play). Same two tiers as PayPal; a store purchase
+  // lands in the same shared user.sub. iapEnv: live | stub (stub is dev/tests only, blocked in
+  // prod like the PayPal stub). Creds absent -> that platform's verification is DISABLED.
+  iapEnv: env.IAP_ENV || (bool(env.ACCOUNTS_PROD, false) ? 'live' : 'stub'),
+  // Apple: the app's bundle id + the App Store shared secret (symmetric; for verifyReceipt of
+  // auto-renewable subscriptions). Verification is remote (Apple's verifyReceipt), no local crypto.
+  appleBundleId: env.APPLE_BUNDLE_ID || '',
+  appleSharedSecret: env.APPLE_SHARED_SECRET || '',
+  appleCopilotProduct: env.APPLE_COPILOT_PRODUCT || 'org.blockle.copilot.monthly',
+  appleCopilotProProduct: env.APPLE_COPILOT_PRO_PRODUCT || 'org.blockle.copilotpro.monthly',
+  // Google: the app package + a Play Developer API service-account JSON (verbatim) + the RTDN
+  // shared token guarding the Pub/Sub push endpoint.
+  googlePackageName: env.GOOGLE_PACKAGE_NAME || '',
+  googleServiceAccountJson: env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
+  googleRtdnToken: env.GOOGLE_RTDN_TOKEN || '',
+  googleCopilotProduct: env.GOOGLE_COPILOT_PRODUCT || 'copilot_monthly',
+  googleCopilotProProduct: env.GOOGLE_COPILOT_PRO_PRODUCT || 'copilotpro_monthly',
+
   sessionSecret: env.ACCOUNTS_SESSION_SECRET || '',
 
   killed: bool(env.ACCOUNTS_KILL, false),

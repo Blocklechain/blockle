@@ -90,6 +90,10 @@ class BotRunner {
   final dynamic audit;
   final BotContext ctx;
   final bool mainnetEnabled;
+  /// Live trading is a paid feature (Blockle Copilot tier or the free trial). Fail-closed:
+  /// false until [setLiveEntitled] is called with the account's effective tier. Paper/Arena
+  /// are unaffected. Mutable because subscription state changes at runtime.
+  bool liveEntitled;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
   final b.BotStore store;
@@ -113,6 +117,7 @@ class BotRunner {
     this.audit,
     BotContext? ctx,
     this.mainnetEnabled = false,
+    this.liveEntitled = false,
     this.onEvent,
     this.pnl,
     b.BotStore? store,
@@ -217,10 +222,22 @@ class BotRunner {
     return existed;
   }
 
+  /// Host hook: reflect the account's effective entitlement (paid tier OR active free trial).
+  /// [tier] is the server's entitledTier ('free' | 'copilot' | 'copilot_pro'); anything other
+  /// than free/empty unlocks live arming. Does not touch already-armed bots.
+  bool setLiveEntitled(String? tier) {
+    liveEntitled = tier != null && tier.isNotEmpty && tier != 'free';
+    return liveEntitled;
+  }
+
   /// Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
   Future<b.Bot> armLive(String id, {num? allocationUsd}) async {
     final bot = store.get(id);
     if (bot == null) throw ArgumentError('unknown bot: $id');
+    if (!liveEntitled) {
+      await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'subscription required'});
+      throw StateError('Live trading requires Blockle Copilot. Start your free trial or subscribe to go live.');
+    }
     final alloc = allocationUsd != null ? allocationUsd.toDouble() : bot.allocationUsd;
     final sessionCap = policy.caps.sessionUsd;
     if (!(alloc > 0)) {

@@ -648,12 +648,12 @@ fn handle_request(
                 if let Some(c) = state.clients.lock().unwrap().get_mut(&client_id) {
                     c.rejected += 1;
                 }
+                // Dump the full reconstruction for the first 8 rejects per miner
+                // (was: just the first) so a firmware-specific header mismatch is
+                // actually captured in the journal for diagnosis.
                 let first = {
-                    let mut clients = state.clients.lock().unwrap();
-                    match clients.get_mut(&client_id) {
-                        Some(c) if !c.dumped => { c.dumped = true; true }
-                        _ => false,
-                    }
+                    let clients = state.clients.lock().unwrap();
+                    clients.get(&client_id).map(|c| c.rejected <= 8).unwrap_or(false)
                 };
                 if first {
                     let jobs = state.jobs.lock().unwrap();

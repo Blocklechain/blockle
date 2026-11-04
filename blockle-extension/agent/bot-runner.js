@@ -47,6 +47,10 @@
       this.audit = deps.audit || null;
       this.ctx = deps.ctx || {};
       this.mainnetEnabled = deps.mainnetEnabled === true; // default false
+      // Live trading is a paid feature (Blockle Copilot tier or the free trial). Fail-closed:
+      // false until the host sets it from the account's effective entitlement. Paper/Arena are
+      // unaffected. Set via setLiveEntitled() whenever the account/subscription state changes.
+      this.liveEntitled = deps.liveEntitled === true;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.pnl = deps.pnl || null;              // post-commit realized-profit tracker (LIVE)
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
@@ -129,11 +133,22 @@
     get(id) { return this.store.get(id); }
     list() { return this.store.list(); }
 
+    // Host hook: reflect the account's effective entitlement (paid tier OR active free trial).
+    // `tier` is the server's entitledTier ('free' | 'copilot' | 'copilot_pro'); anything other
+    // than free/empty unlocks live arming. Does not touch already-armed bots.
+    setLiveEntitled(tier) { this.liveEntitled = !!tier && tier !== 'free'; return this.liveEntitled; }
+
     // Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
     async armLive(id, opts) {
       opts = opts || {};
       const bot = this.store.get(id);
       if (!bot) throw new Error('unknown bot: ' + id);
+      if (!this.liveEntitled) {
+        await this._audit({ type: 'bot_arm_refused', bot: id, reason: 'subscription required' });
+        const e = new Error('Live trading requires Blockle Copilot. Start your free trial or subscribe to go live.');
+        e.code = 'ENTITLEMENT_REQUIRED';
+        throw e;
+      }
       const alloc = opts.allocationUsd != null ? Number(opts.allocationUsd) : bot.allocationUsd;
       const sessionCap = this.policy.caps && this.policy.caps.sessionUsd;
       if (!(alloc > 0)) {

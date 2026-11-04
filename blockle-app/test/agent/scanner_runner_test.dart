@@ -134,6 +134,7 @@ _Setup setup({
     audit: audit,
     ctx: ctx ?? mkCtx(),
     mainnetEnabled: mainnetEnabled,
+    liveEntitled: true,
     timerFactory: (d, cb) => _FakeTimer(),
   );
   return _Setup(runner, policy, ft.state, audit);

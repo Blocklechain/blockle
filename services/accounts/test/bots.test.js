@@ -62,6 +62,39 @@ test('signal bot buys momentum up and sells momentum down', () => {
   assert.ok(b.state.trades.length >= 2);
 });
 
+test('smart-trade trailing stop banks a gain on a reversal (not just a fixed stop)', () => {
+  // High take-profit so it never triggers; the trailing stop should exit IN PROFIT after a pullback.
+  const b = newBot({ id: 't', uid: 'u', type: 'smarttrade', pair: 'BLOCK/USD', params: { budget: 1000, takeProfitPct: 100, stopLossPct: 10 }, now: 1 });
+  step(b, 10);            // enter at 10
+  step(b, 15);            // runs to 15 (high-water)
+  const m = step(b, 13.4); // pulls back below 15*(1-10%)=13.5 → trailing stop
+  assert.equal(b.status, 'done');
+  assert.ok(m.pnl > 0, 'trailing stop exits in profit, not at a loss');
+  assert.equal(b.state.base, 0);
+});
+
+test('DCA take-profit banks the position when the portfolio is up', () => {
+  const b = newBot({ id: 'd', uid: 'u', type: 'dca', pair: 'BLOCK/USD', params: { budget: 300, buyAmount: 100, everyTicks: 1, takeProfitPct: 12, trailPct: 7 }, now: 1 });
+  step(b, 10);           // buy 100 → base 10, value 300
+  const m = step(b, 14); // tick 2 buys, then value up >12% → take-profit sells all
+  assert.ok(m.pnl > 0, 'realized a gain');
+  assert.equal(b.state.base, 0, 'position banked to cash');
+  assert.ok(b.state.trades.some((t) => t.reason === 'take-profit'));
+});
+
+test('grid breakdown stop liquidates and pauses buying below the band', () => {
+  const b = newBot({ id: 'g', uid: 'u', type: 'grid', pair: 'BLOCK/USD', params: { budget: 600, lower: 8, upper: 12, grids: 4, breakoutStopPct: 8 }, now: 1 });
+  for (const p of [10, 9, 8.2]) step(b, p); // accumulate some base inside the band
+  const before = b.state.trades.length;
+  step(b, 7);  // 7 < 8*(1-8%)=7.36 → breakdown: liquidate + halt
+  assert.equal(b.state.base, 0, 'liquidated on breakdown');
+  assert.ok(b.state.halted, 'buying paused');
+  step(b, 6.5); // still below band → NO new buy while halted
+  assert.equal(b.state.trades.filter((t) => t.side === 'buy').length,
+    b.state.trades.filter((t, i) => t.side === 'buy' && i < before).length,
+    'no buys while halted below the band');
+});
+
 test('grid trades within its band and botView has the right shape', () => {
   const b = newBot({ id: 'g', uid: 'u', type: 'grid', pair: 'BLOCK/USD', params: { budget: 600, lower: 8, upper: 12, grids: 4 }, now: 1 });
   for (const p of [10, 9, 8.5, 9.5, 11, 10]) step(b, p);

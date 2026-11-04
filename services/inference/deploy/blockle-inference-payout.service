@@ -1,0 +1,24 @@
+[Unit]
+Description=Blockle inference miner USDC payout (gasless x402; DRY-RUN until the treasury key is placed)
+After=network.target blockle-inference.service
+Wants=blockle-inference.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/blockle/services/inference
+# x402 client + viem come from the deps already installed for the x402/beacon services.
+Environment=NODE_PATH=/opt/blockle/services/x402-buy/node_modules
+Environment=INFERENCE_DATA=/var/lib/blockle-inference
+Environment=INFERENCE_NETWORK=base
+Environment=INFERENCE_FACILITATOR=https://x402.org/facilitator
+Environment=INFERENCE_PAYOUT_MIN_USD=1
+# GO-LIVE: the treasury Base private key + the enable flag live ONLY in this operator-placed
+# secret (chmod 600). The leading "-" makes it OPTIONAL — without it, every run is a DRY RUN
+# that moves no money. To enable real USDC payouts, create the file with:
+#   INFERENCE_PAYOUT_OK=1
+#   INFERENCE_PAYOUT_KEY=0x<treasury Base private key>
+ExecStart=/usr/bin/node /opt/blockle/services/inference/src/payout.js
+EnvironmentFile=-/opt/blockle/secrets/inference-payout.env
+
+[Install]
+WantedBy=multi-user.target

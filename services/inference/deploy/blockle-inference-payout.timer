@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Blockle inference miner USDC payout daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

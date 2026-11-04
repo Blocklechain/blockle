@@ -42,10 +42,33 @@ Future<Map<String, dynamic>?> me(String? origin, String token) async {
   return d['user'] as Map<String, dynamic>?;
 }
 
-/// Extract the Copilot subscription tier from a /me user object. 'free' when inactive.
+/// Extract the EFFECTIVE Copilot tier from a /me user object: the server's `entitledTier`
+/// (which folds in an active free trial), falling back to the legacy active+tier for older
+/// account-service builds. 'free' when neither applies.
 String tierOf(Map<String, dynamic>? user) {
   final sub = (user?['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final eff = sub['entitledTier'] as String?;
+  if (eff != null && eff.isNotEmpty) return eff;
   return (sub['active'] == true) ? (sub['tier'] as String? ?? 'free') : 'free';
+}
+
+/// Start the one-time 7-day Copilot free trial. Returns the updated `sub` (incl. entitledTier).
+Future<Map<String, dynamic>> startTrial(String? origin, String token) async {
+  final d = await _req(origin, 'POST', '/account/api/trial/start', token: token, body: const {});
+  return (d['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
+}
+
+/// Submit an Apple StoreKit receipt for server-side verification; returns the updated `sub`.
+Future<Map<String, dynamic>> verifyAppleIap(String? origin, String token, String receiptData) async {
+  final d = await _req(origin, 'POST', '/account/api/iap/apple/verify', token: token, body: {'receiptData': receiptData});
+  return (d['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
+}
+
+/// Submit a Google Play purchase for server-side verification; returns the updated `sub`.
+Future<Map<String, dynamic>> verifyGoogleIap(String? origin, String token, String productId, String purchaseToken) async {
+  final d = await _req(origin, 'POST', '/account/api/iap/google/verify', token: token,
+      body: {'productId': productId, 'purchaseToken': purchaseToken});
+  return (d['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
 }
 
 /// Encrypt [vault] with [passphrase] and upload. [meta] is non-secret.

@@ -148,6 +148,7 @@ _Setup setup({
     audit: audit,
     ctx: ctx ?? mkCtx([100]),
     mainnetEnabled: mainnetEnabled,
+    liveEntitled: true,
     discovery: discovery,
     timerFactory: sched.make,
   );
@@ -282,6 +283,19 @@ void main() {
     final bot = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'network': 'mainnet'});
     await expectLater(su.runner.armLive(bot.id, allocationUsd: 50),
         throwsA(predicate((e) => '$e'.contains('mainnet'))));
+  });
+
+  test('arm live: fails closed without a subscription; setLiveEntitled unlocks it', () async {
+    final su = setup(sessionUsd: 1000);
+    su.runner.setLiveEntitled('free'); // free account
+    final bot = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}});
+    await expectLater(su.runner.armLive(bot.id, allocationUsd: 50),
+        throwsA(predicate((e) => '$e'.contains('Blockle Copilot'))));
+    expect(bot.mode, 'paper');
+    // trial/paid entitlement flips the gate open
+    expect(su.runner.setLiveEntitled('copilot'), true);
+    await su.runner.armLive(bot.id, allocationUsd: 50);
+    expect(bot.mode, 'live');
   });
 
   test('mainnet gate: a live mainnet bot order does not fire when mainnetEnabled=false', () async {
@@ -494,6 +508,7 @@ void main() {
       policy: policy,
       tools: ft.registry,
       audit: audit,
+      liveEntitled: true,
       ctx: BotContext(
         now: () => 0,
         network: () => 'testnet',
@@ -663,6 +678,7 @@ void main() {
         policy: policy,
         tools: ft.registry,
         audit: audit,
+        liveEntitled: true,
         ctx: BotContext(
           now: () => 0,
           network: () => 'testnet',
@@ -694,7 +710,7 @@ void main() {
       final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
       final ft = fakeTools();
       policy.setAllowlist(ft.registry.names());
-      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]), liveEntitled: true);
       final bot = runner.add({
         'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
         'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},
@@ -720,7 +736,7 @@ void main() {
       final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
       final ft = fakeTools();
       policy.setAllowlist(ft.registry.names());
-      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]), liveEntitled: true);
       final bot = runner.add({
         'type': 'grid', 'universe': {'pairs': ['BLOCK/USDC']},
         'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},
@@ -742,7 +758,7 @@ void main() {
       final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit, confirm: (_) async => true);
       final ft = fakeTools();
       policy.setAllowlist(ft.registry.names());
-      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]), liveEntitled: true);
       final bot = runner.add({
         'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
         // ZZZ has no price and is not a stablecoin -> no route; the proceeds must
@@ -768,7 +784,7 @@ void main() {
       final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);
       final ft = fakeTools();
       policy.setAllowlist(ft.registry.names());
-      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]));
+      final runner = BotRunner(policy: policy, tools: ft.registry, audit: audit, ctx: gridCtx([1.00, 0.95, 1.05]), liveEntitled: true);
       final bot = runner.add({
         'type': 'grid', 'universe': {'pairs': ['BLOCK/USDT']},
         'config': {'lowerPrice': 0.9, 'upperPrice': 1.1, 'gridCount': 4, 'totalUsd': 40, 'profitCurrency': 'USDC'},

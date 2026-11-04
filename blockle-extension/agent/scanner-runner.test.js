@@ -69,6 +69,7 @@ function setup(opts) {
     policy, tools, audit, ctx: opts.ctx || mkCtx(), AgentRunner, Bots: AgentBots,
     Scanner: AgentScanner, Strategies: AgentStrategies,
     mainnetEnabled: opts.mainnetEnabled === true,
+    liveEntitled: opts.liveEntitled !== false, // entitled by default in tests; set false to exercise the gate
   });
   return { runner, policy, tools, audit };
 }

@@ -59,6 +59,9 @@ class BotsController extends ChangeNotifier {
   // Never trades, never auto-allowlists; approval + the gate still apply.
   final SignalsDiscovery _discovery = SignalsDiscovery();
   BotRunner? _runner;
+  // The account's effective Copilot tier (incl. active free trial); gates live arming.
+  // Fail-closed to 'free'. Updated via setLiveEntitled() when subscription state changes.
+  String _liveTier = 'free';
   final ar.ArenaProfile arena = ar.ArenaProfile();
   Map<String, dynamic>? _vectors;
 
@@ -149,6 +152,9 @@ class BotsController extends ChangeNotifier {
     // Cancel the outgoing runner's scheduler so a rebuild (e.g. a channel
     // connecting) never leaves an orphaned timer ticking the old instance.
     _runner?.stopScheduler();
+    // Keep the live-bot gate in sync with the account's effective Copilot tier (the agent
+    // tracks it, incl. an active free trial), so a rebuild never re-locks a paid user.
+    _liveTier = _mc.agent.copilotTier;
     final inst = _backingInstance();
     final Policy policy = inst?.policy ?? _fallbackPolicy;
     final ToolRegistry tools = inst?.tools ?? _fallbackTools;
@@ -169,6 +175,7 @@ class BotsController extends ChangeNotifier {
         discovery: _discovery,
       ),
       mainnetEnabled: false,
+      liveEntitled: _liveTier != 'free',
       onEvent: _onEvent,
       pnl: pnl,
       store: _store,
@@ -342,6 +349,17 @@ class BotsController extends ChangeNotifier {
     await _runner!.enablePaper(id, allocationUsd: allocationUsd);
     notifyListeners();
   }
+
+  /// Reflect the account's effective Copilot tier (incl. active free trial) into the live-bot
+  /// gate. Call whenever subscription state changes (sign-in, IAP purchase, trial start). A
+  /// tier other than 'free' unlocks live arming; 'free' re-locks it. Paper/Arena are unaffected.
+  void setLiveEntitled(String tier) {
+    _liveTier = tier;
+    _runner?.setLiveEntitled(tier);
+    notifyListeners();
+  }
+
+  bool get liveEntitled => _liveTier != 'free';
 
   /// Arm a bot LIVE through the engine's fail-closed gate (BotRunner.armLive):
   /// requires allocationUsd in (0, session cap] and, on mainnet, mainnetEnabled.

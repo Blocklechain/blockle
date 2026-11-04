@@ -11,6 +11,7 @@ import { Sessions } from './sessions.js';
 import { RateLimiter } from './ratelimit.js';
 import { makeMailer } from './email.js';
 import { makePaypal, entitlementFromEvent } from './paypal.js';
+import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -38,6 +39,8 @@ export function createApp(overrides = {}) {
   const sessions = new Sessions(store, cfg, now);
   const mailer = overrides.mailer || makeMailer(cfg);
   const paypal = overrides.paypal || makePaypal(cfg, overrides.paypalDeps);
+  const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
+  const googleStore = overrides.googleStore || makeGoogleStore(cfg, overrides.googleDeps);
   const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
   let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
   const loginIpRl = new RateLimiter({ windowMs: cfg.rateWindowMs, max: cfg.maxLoginPerIp, lockoutBaseMs: cfg.lockoutBaseMs, lockThreshold: 10 }, now);
@@ -117,10 +120,27 @@ export function createApp(overrides = {}) {
     const token = req.headers['x-csrf-token'];
     return sessions.checkCsrf(sess, token);
   }
+  // The single entitlement decision, folding a paid subscription AND a running free trial into
+  // one effective tier. `active` keeps its strict meaning (a paid, verified subscription); a
+  // trial grants `trialTier` until `trialEnd`. EVERY consumer (gas-sponsor, the clients' bot
+  // gate) must read `entitledTier`, never `active`+`tier` alone, or trials won't unlock anything.
+  const entitlement = (sub) => {
+    sub = sub || {};
+    const t = now();
+    const trialActive = !!sub.trialEnd && t < sub.trialEnd;
+    let tier = 'free';
+    if (sub.active && sub.tier && sub.tier !== 'free') tier = sub.tier;      // paid wins
+    else if (trialActive) tier = sub.trialTier || cfg.trialTier || 'copilot'; // else trial
+    return { entitledTier: tier, paid: !!(sub.active && sub.tier && sub.tier !== 'free'), trialActive, trialEnd: sub.trialEnd || null };
+  };
+  const subView = (sub) => {
+    const e = entitlement(sub);
+    return { ...(sub || { active: false }), entitledTier: e.entitledTier, trialActive: e.trialActive, trialEnd: e.trialEnd };
+  };
   const publicUser = (u) => u && ({
     id: u.id, email: u.email, username: u.username || null, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
     totpEnabled: !!u.totpEnabled, recoveryLeft: (u.recoveryHashes || []).length,
-    sub: u.sub || { active: false }, onboarded: !!u.onboarded,
+    sub: subView(u.sub), onboarded: !!u.onboarded,
   });
 
   // Best-effort read of the user's social profile (handle/karma/BLOCK) from the social store.
@@ -647,6 +667,109 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   });
 
+  // --- free trial ---------------------------------------------------------------------------
+  // Start the one-time 7-day Copilot trial (no payment method). Idempotent-ish: returns the
+  // live trial if one is already running; refuses a second trial once used, and is a no-op for
+  // a paid subscriber (they're already entitled). This is what the wallet calls the first time a
+  // user tries to arm a LIVE bot without entitlement.
+  on('POST', /^\/account\/api\/trial\/start$/, authed(async (req, res, { u }) => {
+    if (cfg.trialDays <= 0) return json(res, 403, { error: 'Trials are not available.' });
+    const cur = u.sub || {};
+    if (cur.active && cur.tier && cur.tier !== 'free')
+      return json(res, 200, { sub: subView(cur), already: 'subscribed' });
+    if (cur.trialStartedAt)
+      return json(res, 409, { error: 'Your free trial has already been used.', sub: subView(cur) });
+    const trialEnd = now() + cfg.trialDays * 24 * 60 * 60 * 1000;
+    let saved = null;
+    await store.update('users', u.id, (x) => {
+      if (!x) return x;
+      x.sub = { ...(x.sub || {}), active: !!(x.sub && x.sub.active), tier: (x.sub && x.sub.tier) || 'free',
+        trialTier: cfg.trialTier, trialStartedAt: now(), trialEnd };
+      saved = x.sub; return x;
+    });
+    return json(res, 200, { sub: subView(saved), trialDays: cfg.trialDays });
+  }));
+
+  // --- in-app purchase (Apple StoreKit / Google Play) ---------------------------------------
+  // A verified store purchase updates the SAME user.sub the PayPal webhook writes, so the whole
+  // app reads one entitlement regardless of where the user paid. Writes go through here only
+  // after cryptographic verification (Apple JWS) or an authenticated Play API lookup (Google).
+  // Store webhooks (Apple/Google) don't reliably carry our user id, so renewals/revocations are
+  // matched back to the user by the subId recorded at verify time (originalTransactionId / Play
+  // purchaseToken). Small-scale linear scan over the flat user store.
+  const findUserBySubId = (subId) => subId ? store.all('users').find((u) => u.sub && u.sub.subId === subId) || null : null;
+  const setStoreSub = (userId, { tier, active, subId, provider, expiresMs, productId }) =>
+    store.update('users', userId, (u) => {
+      if (!u) return u;
+      u.sub = {
+        ...(u.sub || {}),
+        active: !!active, tier: active ? tier : 'free', subId: subId || (u.sub && u.sub.subId) || null,
+        plan: tier === 'copilot_pro' ? 'Copilot Pro' : tier === 'copilot' ? 'Blockle Copilot' : (u.sub && u.sub.plan) || null,
+        provider: provider || 'store', productId: productId || (u.sub && u.sub.productId) || null,
+        expiresAt: expiresMs || null,
+      };
+      // A real paid subscription supersedes any leftover trial window.
+      if (active) u.sub.trialEnd = u.sub.trialEnd && u.sub.trialEnd > now() ? u.sub.trialEnd : u.sub.trialEnd;
+      return u;
+    });
+
+  on('POST', /^\/account\/api\/iap\/apple\/verify$/, authed(async (req, res, { u }) => {
+    if (appleStore.disabled) return json(res, 503, { error: 'Apple purchases are not configured.' });
+    const b = await readJson(req, 64 * 1024).catch(() => ({}));
+    const receipt = b && (b.receiptData || b.signedTransactionInfo || b.jws || b.transaction);
+    if (!receipt) return json(res, 400, { error: 'Missing receipt.' });
+    let txn; try { txn = await appleStore.verifyTransaction(receipt); } catch { return json(res, 400, { error: 'Could not verify that purchase.' }); }
+    const tier = productTier(cfg, txn.productId);
+    if (!tier) return json(res, 400, { error: 'Unknown product.' });
+    await setStoreSub(u.id, { tier, active: txn.active, subId: txn.originalTransactionId, provider: 'apple', expiresMs: txn.expiresMs, productId: txn.productId });
+    return json(res, 200, { sub: subView(store.get('users', u.id).sub) });
+  }));
+
+  on('POST', /^\/account\/api\/iap\/google\/verify$/, authed(async (req, res, { u }) => {
+    if (googleStore.disabled) return json(res, 503, { error: 'Google purchases are not configured.' });
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
+    if (!b || !b.purchaseToken || !b.productId) return json(res, 400, { error: 'Missing purchase token or product.' });
+    let r; try { r = await googleStore.verifyPurchase(b.productId, b.purchaseToken); } catch { return json(res, 400, { error: 'Could not verify that purchase.' }); }
+    const tier = productTier(cfg, r.productId || b.productId);
+    if (!tier) return json(res, 400, { error: 'Unknown product.' });
+    await setStoreSub(u.id, { tier, active: r.active, subId: b.purchaseToken, provider: 'google', expiresMs: r.expiresMs, productId: r.productId || b.productId });
+    return json(res, 200, { sub: subView(store.get('users', u.id).sub) });
+  }));
+
+  // Apple App Store Server Notifications V2 — a signed JWS; the custom_id/appAccountToken isn't
+  // always present, so we key renewals/revocations off the originalTransactionId recorded at
+  // verify time. notificationType REFUND/REVOKE/EXPIRED -> deactivate.
+  on('POST', /^\/account\/api\/iap\/apple\/webhook$/, async (req, res) => {
+    const raw = (await readBody(req, 512 * 1024)).toString('utf8');
+    let body; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad' }); }
+    let ent; try { ent = await appleStore.entitlementFromNotification(body.signedPayload); } catch { ent = null; }
+    if (!ent) return json(res, 200, { ok: true, ignored: true });
+    const tier = productTier(cfg, ent.productId);
+    const target = findUserBySubId(ent.originalTransactionId);
+    if (target && tier) {
+      const active = ent.active && !/REFUND|REVOKE|EXPIRED|GRACE_PERIOD_EXPIRED/i.test(ent.notificationType || '');
+      await setStoreSub(target.id, { tier, active, subId: ent.originalTransactionId, provider: 'apple', expiresMs: ent.expiresMs, productId: ent.productId });
+    }
+    return json(res, 200, { ok: true });
+  });
+
+  // Google Real-time Developer Notifications (Pub/Sub push). Guard the public push URL with a
+  // shared ?token= (Google lets you append a query string to the push endpoint). Re-verify via
+  // the API inside entitlementFromRtdn — never trust the push body alone.
+  on('POST', /^\/account\/api\/iap\/google\/webhook$/, async (req, res, url) => {
+    if (cfg.googleRtdnToken && (url.searchParams.get('token') || '') !== cfg.googleRtdnToken)
+      return json(res, 403, { error: 'forbidden' });
+    const raw = (await readBody(req, 512 * 1024)).toString('utf8');
+    let body; try { body = JSON.parse(raw); } catch { return json(res, 400, { error: 'bad' }); }
+    let ent; try { ent = await googleStore.entitlementFromRtdn(body); } catch { ent = null; }
+    if (ent) {
+      const tier = productTier(cfg, ent.productId);
+      const target = findUserBySubId(ent.purchaseToken);
+      if (target && tier) await setStoreSub(target.id, { tier, active: ent.active, subId: ent.purchaseToken, provider: 'google', expiresMs: ent.expiresMs, productId: ent.productId });
+    }
+    return json(res, 200, { ok: true });
+  });
+
   // --- support tickets ----------------------------------------------------------------------
   on('POST', /^\/account\/api\/tickets$/, async (req, res) => {
     if (!sameOrigin(req, cfg)) return json(res, 403, { error: 'origin' });
@@ -784,7 +907,15 @@ function sanitizeMeta(meta) {
 
 // Direct run.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const app = createApp();
+  // Wire the Google Play provider-auth token minter (RS256 JWT) from OUTSIDE src/ so the
+  // service code itself stays free of asymmetric crypto (post-quantum guard). Only when a
+  // service-account JSON is configured; otherwise Google IAP stays disabled (fails closed).
+  let googleDeps;
+  if (config.googleServiceAccountJson) {
+    const { makeGoogleAccessToken } = await import('../google-token.mjs');
+    googleDeps = { googleAccessToken: makeGoogleAccessToken(config) };
+  }
+  const app = createApp({ googleDeps });
   await app.ensureAdmin();
   app.server.listen(app.cfg.port, app.cfg.host, () =>
     console.log(`[accounts] listening on ${app.cfg.host}:${app.cfg.port} (prod=${app.cfg.prod}, mail=${app.cfg.mailTransport}, paypal=${app.paypal.stub ? 'stub' : app.cfg.paypalEnv})`));
