@@ -4,8 +4,14 @@
 // equity curve. Play-money simulation on past data — honest, never a guarantee.
 import { newBot, step, BOT_TYPES } from './bots.js';
 
-// Assets we have a price feed for (CoinGecko ids). BLOCK isn't listed there, so it isn't offered.
-const ASSETS = { sol: 'solana', btc: 'bitcoin', eth: 'ethereum', bnb: 'binancecoin', doge: 'dogecoin' };
+// Reference price feeds (CoinGecko ids) covering every supported chain's native asset. The paper
+// engine is chain-agnostic (it runs on any price series), and LIVE bots route per chain through
+// the wallet's venues — this map is just the backtest reference. BLOCK isn't on CoinGecko (its
+// 30-day history comes from the chain explorer), so it falls back to SOL for the reference curve.
+const ASSETS = {
+  sol: 'solana', btc: 'bitcoin', eth: 'ethereum', base: 'ethereum', bnb: 'binancecoin',
+  doge: 'dogecoin', ltc: 'litecoin', block: 'solana',
+};
 const CURVE_POINTS = 48;
 
 export function makeBacktester(deps = {}) {

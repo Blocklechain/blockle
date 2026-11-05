@@ -126,6 +126,10 @@ export function createApp(overrides = {}) {
   // one effective tier. `active` keeps its strict meaning (a paid, verified subscription); a
   // trial grants `trialTier` until `trialEnd`. EVERY consumer (gas-sponsor, the clients' bot
   // gate) must read `entitledTier`, never `active`+`tier` alone, or trials won't unlock anything.
+  // How many LIVE (real-money) bots a tier may run at once. Free gets 1, Copilot 3, Pro
+  // unlimited (-1). Paper/Arena bots are never capped. The clients enforce this cap in their
+  // armLive gate; the server exposes it so every wallet shows the same number.
+  const LIVE_BOT_LIMITS = { free: 1, copilot: 3, copilot_pro: -1 };
   const entitlement = (sub) => {
     sub = sub || {};
     const t = now();
@@ -133,11 +137,12 @@ export function createApp(overrides = {}) {
     let tier = 'free';
     if (sub.active && sub.tier && sub.tier !== 'free') tier = sub.tier;      // paid wins
     else if (trialActive) tier = sub.trialTier || cfg.trialTier || 'copilot'; // else trial
-    return { entitledTier: tier, paid: !!(sub.active && sub.tier && sub.tier !== 'free'), trialActive, trialEnd: sub.trialEnd || null };
+    const liveBotLimit = LIVE_BOT_LIMITS[tier] != null ? LIVE_BOT_LIMITS[tier] : 1;
+    return { entitledTier: tier, liveBotLimit, paid: !!(sub.active && sub.tier && sub.tier !== 'free'), trialActive, trialEnd: sub.trialEnd || null };
   };
   const subView = (sub) => {
     const e = entitlement(sub);
-    return { ...(sub || { active: false }), entitledTier: e.entitledTier, trialActive: e.trialActive, trialEnd: e.trialEnd };
+    return { ...(sub || { active: false }), entitledTier: e.entitledTier, liveBotLimit: e.liveBotLimit, trialActive: e.trialActive, trialEnd: e.trialEnd };
   };
   const publicUser = (u) => u && ({
     id: u.id, email: u.email, username: u.username || null, verified: u.verified, role: u.role, createdAt: u.createdAt || null,
