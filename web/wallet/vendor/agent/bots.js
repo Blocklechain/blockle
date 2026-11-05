@@ -115,7 +115,12 @@
   // config validation + defaults per bot type
   // ===========================================================================
 
-  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner', 'auto'];
+  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner', 'auto',
+    // Indicator / systematic planners (strategies.js) — run through the scheduled
+    // planner path (bot-runner _tickScheduled), same as rebalance/momentum.
+    'rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl'];
+  // Types whose config is carried straight through to the strategy planner.
+  const SCHEDULED_BOT_TYPES = ['rebalance', 'momentum', 'rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl'];
 
   // LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
   // single base asset and the bot only trades same-chain tokens quoted in it.
@@ -352,9 +357,9 @@
       case 'smarttrade': return validateSmartTradeConfig(c);
       case 'signal': return validateSignalConfig(c);
       case 'scanner': return validateScannerConfig(c);
-      case 'rebalance':
-      case 'momentum': return validateScheduledConfig(c);
-      default: throw new Error('unknown bot type: ' + type);
+      default:
+        if (SCHEDULED_BOT_TYPES.indexOf(type) >= 0) return validateScheduledConfig(c);
+        throw new Error('unknown bot type: ' + type);
     }
   }
 

@@ -149,12 +149,22 @@ class AgentService {
 
   // ---- Blockle Copilot account link (supplies the tier to the engine) ----
   String _copilotTier = 'free';
+  // Per-plan LIVE-bot cap from the account's sub.liveBotLimit (Free 1, Copilot 3,
+  // Pro -1 = unlimited). -1 until an account is linked (uncapped; live arming is
+  // separately gated by the tier entitlement, so free users are still blocked).
+  int _liveBotLimit = -1;
   String? _acctToken;
   String? _acctEmail;
   String _acctOrigin = bc.kDefaultOrigin;
 
   String get copilotTier => _copilotTier;
+  int get liveBotLimit => _liveBotLimit;
   String? get copilotEmail => _acctEmail;
+  /// The signed-in account bearer token (null when not linked) — for the gated
+  /// backtest / copy-bot endpoints.
+  String? get acctToken => _acctToken;
+  /// The account-service origin the linked account is on.
+  String get acctOrigin => _acctOrigin;
 
   /// Sign into the blockle.org account and cache the Copilot tier. Returns the tier.
   Future<String> connectCopilotAccount(String email, String password,
@@ -163,16 +173,20 @@ class AgentService {
     final token = await bc.login(_acctOrigin, email, password, totp: totp);
     _acctToken = token;
     _acctEmail = email;
-    _copilotTier = bc.tierOf(await bc.me(_acctOrigin, token));
+    final user = await bc.me(_acctOrigin, token);
+    _copilotTier = bc.tierOf(user);
+    _liveBotLimit = bc.liveBotLimitOf(user);
     return _copilotTier;
   }
 
-  /// Re-read the tier (e.g. after the user subscribes). Best-effort.
+  /// Re-read the tier + live-bot cap (e.g. after the user subscribes). Best-effort.
   Future<String> refreshCopilotTier() async {
     final token = _acctToken;
     if (token == null) return _copilotTier;
     try {
-      _copilotTier = bc.tierOf(await bc.me(_acctOrigin, token));
+      final user = await bc.me(_acctOrigin, token);
+      _copilotTier = bc.tierOf(user);
+      _liveBotLimit = bc.liveBotLimitOf(user);
     } catch (_) {}
     return _copilotTier;
   }
@@ -181,6 +195,7 @@ class AgentService {
     _acctToken = null;
     _acctEmail = null;
     _copilotTier = 'free';
+    _liveBotLimit = -1;
   }
 
   /// The active tier + what it unlocks, for the UI.

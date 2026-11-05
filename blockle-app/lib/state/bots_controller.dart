@@ -35,7 +35,9 @@ import '../agent/notify.dart';
 import '../agent/pnl.dart';
 import '../agent/policy.dart';
 import '../agent/signals_discovery.dart' show SignalsDiscovery;
+import '../agent/strategies.dart' show StrategyContext;
 import '../agent/tools.dart' show ToolRegistry;
+import '../multichain/backup_client.dart' as bc;
 import '../services/agent_service.dart' show SecureChannelStore;
 import '../services/exchange_client.dart' show ExchangeClient, ExchangeMarket;
 import 'multichain_controller.dart';
@@ -62,6 +64,10 @@ class BotsController extends ChangeNotifier {
   // The account's effective Copilot tier (incl. active free trial); gates live arming.
   // Fail-closed to 'free'. Updated via setLiveEntitled() when subscription state changes.
   String _liveTier = 'free';
+  // Per-plan LIVE-bot cap (Free 1, Copilot 3, Pro -1 = unlimited). -1 until an
+  // account is linked (live arming is separately gated by _liveTier). Mirrors the
+  // web wallet (app.js loadTier -> runner.setLiveBotLimit).
+  int _liveBotLimit = -1;
   final ar.ArenaProfile arena = ar.ArenaProfile();
   Map<String, dynamic>? _vectors;
 
@@ -155,6 +161,7 @@ class BotsController extends ChangeNotifier {
     // Keep the live-bot gate in sync with the account's effective Copilot tier (the agent
     // tracks it, incl. an active free trial), so a rebuild never re-locks a paid user.
     _liveTier = _mc.agent.copilotTier;
+    _liveBotLimit = _mc.agent.liveBotLimit;
     final inst = _backingInstance();
     final Policy policy = inst?.policy ?? _fallbackPolicy;
     final ToolRegistry tools = inst?.tools ?? _fallbackTools;
@@ -173,9 +180,24 @@ class BotsController extends ChangeNotifier {
         prices: _prices,
         // READ-ONLY lane/mode-aware candidate feed (signal bots + scanner).
         discovery: _discovery,
+        // The scheduled/indicator strategy planners (rsi/macd/… + rebalance/
+        // momentum) read market data through this READ-ONLY context. The runner
+        // feeds them a rolling price `history` from the SAME real marks; a non-
+        // stable quote is priced from here (never fabricated). getBalance is
+        // omitted (indicator exits then skip until a balance source is wired).
+        strategyCtx: StrategyContext(
+          now: () => DateTime.now().millisecondsSinceEpoch,
+          network: () => 'testnet',
+          prices: _prices,
+          policyRemaining: () {
+            final s = policy.caps.sessionUsd;
+            return {'sessionUsd': s};
+          },
+        ),
       ),
       mainnetEnabled: false,
       liveEntitled: _liveTier != 'free',
+      liveBotLimit: _liveBotLimit,
       onEvent: _onEvent,
       pnl: pnl,
       store: _store,
@@ -342,6 +364,37 @@ class BotsController extends ChangeNotifier {
     return created;
   }
 
+  /// Build a paper + disabled bot from a STRATEGY PLANNER (the 9 indicator
+  /// planners + rebalance/momentum) on a specific pair, seeded with the UI-edited
+  /// knobs. The strategy's own validateParams clamps every knob at tick time.
+  b.Bot createFromStrategy(
+    String type, {
+    required String pair,
+    String? name,
+    num allocationUsd = 0,
+    Map<String, dynamic>? knobs,
+    Map<String, dynamic>? configOverride,
+    String? lane,
+    String? riskMode,
+    String? profitMode,
+  }) {
+    final spec = tpl.fromStrategy(type, pair: pair, name: name, knobs: knobs);
+    if (configOverride != null) {
+      spec['config'] = {
+        ...(spec['config'] as Map).cast<String, dynamic>(),
+        ...configOverride,
+      };
+    }
+    spec['allocationUsd'] = allocationUsd;
+    if (lane != null) spec['lane'] = lane;
+    if (riskMode != null) spec['riskMode'] = riskMode;
+    if (profitMode != null) spec['profitMode'] = profitMode;
+    final created = _runner!.add(spec);
+    _persist();
+    notifyListeners();
+    return created;
+  }
+
   /// Arm a bot in PAPER mode (simulated fills; never broadcasts). Allocation is
   /// not required for paper; when an [allocationUsd] > 0 is given the paper run is
   /// a bounded sandbox the same size as the real one (the budget depletes).
@@ -356,10 +409,114 @@ class BotsController extends ChangeNotifier {
   void setLiveEntitled(String tier) {
     _liveTier = tier;
     _runner?.setLiveEntitled(tier);
+    // Keep the per-plan live-bot cap in sync with the latest account state.
+    _liveBotLimit = _mc.agent.liveBotLimit;
+    _runner?.setLiveBotLimit(_liveBotLimit);
     notifyListeners();
   }
 
   bool get liveEntitled => _liveTier != 'free';
+
+  /// The per-plan LIVE-bot cap in effect (Free 1, Copilot 3, Pro -1 = unlimited).
+  int get liveBotLimit => _liveBotLimit;
+
+  /// Push an explicit per-plan live-bot cap into the running engine (mirrors the
+  /// web wallet's setLiveBotLimit). -1 = unlimited.
+  void setLiveBotLimit(int n) {
+    _liveBotLimit = n;
+    _runner?.setLiveBotLimit(n);
+    notifyListeners();
+  }
+
+  // ---- strategy picker data (live planners only) ---------------------------
+
+  /// The live-eligible strategy planner names (the 5 originals + the 9 indicator
+  /// planners), in a stable display order. scalp/martingale are NOT live and are
+  /// absent from the registry, so they can never appear here.
+  List<String> get liveStrategyNames {
+    const order = [
+      'dca', 'grid', 'rebalance', 'momentum', 'arbitrage',
+      'rsi', 'macd', 'bollinger', 'breakout', 'emacross',
+      'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl',
+    ];
+    final have = _runner?.strategies.keys.toSet() ?? <String>{};
+    final out = [for (final n in order) if (have.contains(n)) n];
+    // Append any registered live strategy not in the explicit order (future-proof).
+    for (final n in have) {
+      if (!out.contains(n)) out.add(n);
+    }
+    return out;
+  }
+
+  /// The INDICATOR-PLANNER allow-list for the create-UI Strategy picker: the 9
+  /// single-market planners whose config is a map of simple numeric knobs (seeded
+  /// from .defaults). Mirrors the extension's plannerStrategies/isPlannerType gate.
+  /// DELIBERATELY EXCLUDES the deal-bots (dca/grid/arbitrage — they keep their own
+  /// template create-flow) and the MULTI-ASSET planners (rebalance's config is an
+  /// asset->weight map, momentum is SMA-based) — picking any of those from the knob
+  /// picker crashes or creates a bot that errors every tick. scalp/martingale are
+  /// paper-only and never registered, so they can never appear here either.
+  static const List<String> kPlannerStrategyNames = [
+    'rsi', 'macd', 'bollinger', 'breakout', 'emacross',
+    'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl',
+  ];
+
+  /// The indicator-planner names actually registered in the live engine, in the
+  /// stable [kPlannerStrategyNames] display order. This is the ONLY list the
+  /// Strategy picker may render.
+  List<String> get plannerNames {
+    final have = _runner?.strategies.keys.toSet() ?? <String>{};
+    return [for (final n in kPlannerStrategyNames) if (have.contains(n)) n];
+  }
+
+  /// Human help text for a strategy (its planner's describe()), or '' if unknown.
+  String strategyDescribe(String name) {
+    final s = _runner?.strategies[name];
+    try {
+      return s?.describe() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// The planner's default knob map (used to seed the create-UI inputs). Empty
+  /// when the strategy is not a live planner.
+  Map<String, dynamic> strategyDefaults(String name) {
+    final s = _runner?.strategies[name];
+    try {
+      return s != null ? Map<String, dynamic>.from(s.defaults) : <String, dynamic>{};
+    } catch (_) {
+      return <String, dynamic>{};
+    }
+  }
+
+  // ---- gated backtest + copy-config (account endpoints) --------------------
+
+  /// Quick-backtest a configured strategy on recent real prices via the account
+  /// service. Returns {pnlPct, trades, maxDrawdownPct, curve, ...}. Throws when no
+  /// account is linked or the service is unavailable.
+  Future<Map<String, dynamic>> backtest({
+    required String type,
+    required Map<String, dynamic> params,
+    required String asset,
+  }) async {
+    final token = _mc.agent.acctToken;
+    if (token == null) {
+      throw StateError('Link your blockle.org account to run a backtest.');
+    }
+    return bc.backtest(_mc.agent.acctOrigin, token,
+        type: type, params: params, asset: asset);
+  }
+
+  /// Fetch a cloned bot CONFIG (copy-trade) by another trader's bot id. Returns the
+  /// bot view {type, pair, params, ...} — CONFIG ONLY, never funds or live state.
+  Future<Map<String, dynamic>?> copyBotConfig(String fromBotId) async {
+    final token = _mc.agent.acctToken;
+    if (token == null) {
+      throw StateError('Link your blockle.org account to copy a bot.');
+    }
+    return bc.copyBot(_mc.agent.acctOrigin, token, fromBotId);
+  }
 
   /// Arm a bot LIVE through the engine's fail-closed gate (BotRunner.armLive):
   /// requires allocationUsd in (0, session cap] and, on mainnet, mainnetEnabled.

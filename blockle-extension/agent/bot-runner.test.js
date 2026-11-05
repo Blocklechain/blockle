@@ -206,6 +206,64 @@ test('arm live: fails closed without a subscription; setLiveEntitled unlocks it'
 });
 
 // ===========================================================================
+// PER-PLAN LIVE-BOT CAP (Free 1 / Copilot 3 / Pro unlimited) — mirrors the web wallet.
+// When arming a LIVE bot, count running live bots; refuse with code LIVE_LIMIT once the
+// plan's limit is reached. Unlimited (-1) and paper bots are never capped.
+// ===========================================================================
+test('live-bot cap: a second live arm is refused at the Free limit of 1 (code LIVE_LIMIT)', async () => {
+  const { runner } = setup({ sessionUsd: 1000 });
+  assert.equal(runner.setLiveBotLimit(1), 1);
+  const a = runner.add({ type: 'dca', universe: { pairs: ['BLOCK/USDC'] } });
+  const b = runner.add({ type: 'dca', universe: { pairs: ['SOL/USDC'] } });
+  await runner.armLive(a.id, { allocationUsd: 50 });        // first live bot: allowed
+  await assert.rejects(() => runner.armLive(b.id, { allocationUsd: 50 }), (e) => e.code === 'LIVE_LIMIT');
+  assert.equal(b.mode, 'paper', 'the capped bot stays paper');
+  assert.equal(b.enabled, false);
+});
+
+test('live-bot cap: Copilot allows 3; Pro (-1) is unlimited; re-arming an existing live bot is not double-counted', async () => {
+  const { runner } = setup({ sessionUsd: 1000 });
+  runner.setLiveBotLimit(3);
+  const bots = [0, 1, 2, 3].map((i) => runner.add({ type: 'dca', universe: { pairs: ['T' + i + '/USDC'] } }));
+  await runner.armLive(bots[0].id, { allocationUsd: 10 });
+  await runner.armLive(bots[1].id, { allocationUsd: 10 });
+  await runner.armLive(bots[2].id, { allocationUsd: 10 });   // 3rd live: allowed (limit 3)
+  await assert.rejects(() => runner.armLive(bots[3].id, { allocationUsd: 10 }), (e) => e.code === 'LIVE_LIMIT');
+  // re-arming an already-live bot excludes itself from the count (not blocked)
+  await runner.armLive(bots[0].id, { allocationUsd: 20 });
+  assert.equal(bots[0].allocationUsd, 20);
+  // Pro: unlimited
+  runner.setLiveBotLimit(-1);
+  await runner.armLive(bots[3].id, { allocationUsd: 10 });
+  assert.equal(bots[3].mode, 'live');
+});
+
+test('live-bot cap: default (-1) imposes no numeric cap (legacy behavior preserved)', async () => {
+  const { runner } = setup({ sessionUsd: 1000 });
+  const a = runner.add({ type: 'dca', universe: { pairs: ['A/USDC'] } });
+  const b = runner.add({ type: 'dca', universe: { pairs: ['B/USDC'] } });
+  await runner.armLive(a.id, { allocationUsd: 10 });
+  await runner.armLive(b.id, { allocationUsd: 10 }); // no cap set -> allowed
+  assert.equal(a.mode, 'live'); assert.equal(b.mode, 'live');
+});
+
+// ===========================================================================
+// SCHEDULED PLANNER ROUTING — the 9 ported indicator strategies create as valid Bot
+// types and tick through the shared _tickScheduled planner path (not the deal engine).
+// ===========================================================================
+test('indicator strategy bots: create as valid types and route through the scheduled planner', async () => {
+  const { runner } = setup({ sessionUsd: 1000 });
+  for (const type of ['rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl']) {
+    assert.ok(AgentBots.TYPES.includes(type), type + ' is a valid Bot type');
+    const bot = runner.add({ type, universe: { pairs: ['BLOCK/USDC'] }, config: { market: 'BLOCK/USDC', budgetUsd: 100, positionPct: 50 } });
+    bot.mode = 'paper'; bot.enabled = true;
+    const rep = await runner.tickBot(bot.id); // must not throw "no engine for <type>"
+    assert.equal(rep.bot, bot.id);
+    assert.ok(!/no engine/.test(rep.error || ''), type + ' routed to the planner, not the deal engine');
+  }
+});
+
+// ===========================================================================
 // mainnet gate: a live mainnet bot's order is refused when mainnetEnabled=false
 // ===========================================================================
 test('mainnet gate: a live mainnet bot order does not fire when mainnetEnabled=false', async () => {

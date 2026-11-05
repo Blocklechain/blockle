@@ -54,7 +54,35 @@
     return sub.active ? (sub.tier || 'free') : 'free';
   }
 
-  const api = { login, me, tierOf, backup, restore };
+  // The EFFECTIVE entitlement tier (folds in an active free trial). The server exposes
+  // sub.entitledTier; fall back to tierOf for older payloads. Use this (not tierOf) for
+  // the live-bot gate so trials unlock live arming, matching the web wallet's loadTier.
+  function entitledTierOf(user) {
+    const sub = (user && user.sub) || {};
+    return sub.entitledTier || tierOf(user);
+  }
+
+  // The per-plan LIVE-bot cap (Free 1, Copilot 3, Pro -1 = unlimited). Defaults to 1
+  // (Free) when the server did not supply one.
+  function liveBotLimitOf(user) {
+    const sub = (user && user.sub) || {};
+    return sub.liveBotLimit != null ? Number(sub.liveBotLimit) : 1;
+  }
+
+  // Quick backtest of a CONFIGURED strategy on recent real prices (the tune-and-test loop).
+  // body: { type, params, asset } -> { pnlPct, trades, maxDrawdownPct, curve }.
+  async function backtest(origin, token, body) {
+    return req(origin, 'POST', '/account/api/backtest', { token, body: body || {} });
+  }
+
+  // Copy-trade = clone another trader's bot CONFIG into a fresh paper bot (config only, never
+  // funds or live state). body: { fromBotId } (or an inline { type, pair, params }) -> { ok, bot }.
+  async function copyBot(origin, token, body) {
+    const b = (typeof body === 'string') ? { fromBotId: body } : (body || {});
+    return req(origin, 'POST', '/account/api/bots/copy', { token, body: b });
+  }
+
+  const api = { login, me, tierOf, entitledTierOf, liveBotLimitOf, backtest, copyBot, backup, restore };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.BLKBackupClient = api;
 })(typeof window !== 'undefined' ? window : globalThis);

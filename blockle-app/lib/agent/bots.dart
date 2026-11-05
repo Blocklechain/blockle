@@ -121,9 +121,27 @@ int decimalsFor(String sym, [Map<String, dynamic>? overrides]) {
 // config validation + defaults per bot type
 // ===========================================================================
 
+// The 9 indicator strategy planners registered as LIVE order-planners
+// (strategies.dart defaultStrategies). They run as SCHEDULED bots (the strategy
+// planner decides the single next action each tick) exactly like rebalance /
+// momentum. scalp + martingale are PAPER-only and are NOT live bot types.
+const List<String> kIndicatorTypes = [
+  'rsi', 'macd', 'bollinger', 'breakout', 'emacross',
+  'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl',
+];
+
 const List<String> kBotTypes = [
   'dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner',
+  ...kIndicatorTypes,
 ];
+
+/// Bot types that are driven by a strategy PLANNER each tick (BotRunner routes
+/// these to _tickScheduled, which calls strategies[type].plan). rebalance /
+/// momentum + the 9 indicator planners. Deal bots (dca/grid/smarttrade) and the
+/// signal/scanner autopilots are NOT scheduled-planner bots.
+const Set<String> kScheduledTypes = {
+  'rebalance', 'momentum', ...kIndicatorTypes,
+};
 
 // LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
 // single base asset and the bot only trades same-chain tokens quoted in it.
@@ -315,6 +333,12 @@ Map<String, dynamic> validateConfig(String type, Map<String, dynamic>? c) {
       out = _validateScannerConfig(c);
       break;
     default:
+      // The 9 indicator strategy planners carry their knobs verbatim (+ market);
+      // the planner's own validateParams clamps every value at tick time.
+      if (kIndicatorTypes.contains(type)) {
+        out = _validateScheduledConfig(c);
+        break;
+      }
       throw ArgumentError('unknown bot type: $type');
   }
   // PROFIT CURRENCY: the settlement/quote asset realized P&L settles INTO. It is

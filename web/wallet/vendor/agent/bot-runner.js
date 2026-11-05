@@ -36,6 +36,15 @@
 
   const STABLE_USD = { USDC: 1, USDT: 1, DAI: 1, USD: 1, USDBC: 1, PYUSD: 1 };
 
+  // Bot types that run through the shared scheduled planner path (_tickScheduled →
+  // registry.get(type).validateParams/plan) rather than the deal-bot engine. The
+  // pre-existing rebalance/momentum plus the 9 ported indicator/systematic planners
+  // (strategies.js). dca/grid/smarttrade keep their rich deal-bot state machines.
+  const SCHEDULED_TYPES = new Set([
+    'rebalance', 'momentum',
+    'rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl',
+  ]);
+
   class BotRunner {
     constructor(deps) {
       deps = deps || {};
@@ -380,7 +389,7 @@
       let report;
       try {
         if (bot.type === 'auto') report = await this._tickAuto(bot, now, opts);
-        else if (bot.type === 'rebalance' || bot.type === 'momentum') report = await this._tickScheduled(bot, now, opts);
+        else if (SCHEDULED_TYPES.has(bot.type)) report = await this._tickScheduled(bot, now, opts);
         else if (bot.type === 'scanner') report = await this._tickScanner(bot, now, opts);
         else if (bot.type === 'signal') report = await this._tickSignal(bot, now, opts);
         else report = await this._tickDealBot(bot, bot.type, bot.config, bot.pairs(), now, opts);

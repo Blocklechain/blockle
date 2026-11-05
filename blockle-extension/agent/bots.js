@@ -115,7 +115,15 @@
   // config validation + defaults per bot type
   // ===========================================================================
 
-  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'rebalance', 'momentum', 'scanner'];
+  // SCHEDULED_PLANNER_TYPES run through the shared strategy-planner path
+  // (bot-runner _tickScheduled → strategies.js registry.get(type).plan). The
+  // pre-existing rebalance/momentum plus the 9 ported indicator/systematic
+  // planners (commit 7d2e041). Their config is carried through verbatim and the
+  // planner's own validateParams pins values at plan time. scalp + martingale are
+  // intentionally absent — PAPER-only, never live.
+  const SCHEDULED_PLANNER_TYPES = ['rebalance', 'momentum',
+    'rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl'];
+  const TYPES = ['dca', 'grid', 'smarttrade', 'signal', 'scanner'].concat(SCHEDULED_PLANNER_TYPES);
 
   // LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
   // single base asset and the bot only trades same-chain tokens quoted in it.
@@ -267,9 +275,11 @@
       case 'smarttrade': return validateSmartTradeConfig(c);
       case 'signal': return validateSignalConfig(c);
       case 'scanner': return validateScannerConfig(c);
-      case 'rebalance':
-      case 'momentum': return validateScheduledConfig(c);
-      default: throw new Error('unknown bot type: ' + type);
+      default:
+        // rebalance / momentum + the 9 indicator/systematic planners all carry
+        // their params through to the strategy planner (validated at plan time).
+        if (SCHEDULED_PLANNER_TYPES.indexOf(type) !== -1) return validateScheduledConfig(c);
+        throw new Error('unknown bot type: ' + type);
     }
   }
 
@@ -756,7 +766,7 @@
   }
 
   const AgentBots = {
-    Bot, BotStore, ENGINES, TYPES,
+    Bot, BotStore, ENGINES, TYPES, SCHEDULED_PLANNER_TYPES,
     // money/qty helpers (exported for the shared-vector test + the runner)
     microUsd, ucToUsd, divRound, pow10, pctToBps, qtyForUsd, valueOf, avgEntryOf,
     applyBps, scaledUsdUc, splitPair, decimalsFor, DEFAULT_DECIMALS,

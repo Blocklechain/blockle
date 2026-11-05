@@ -51,6 +51,11 @@
       // false until the host sets it from the account's effective entitlement. Paper/Arena are
       // unaffected. Set via setLiveEntitled() whenever the account/subscription state changes.
       this.liveEntitled = deps.liveEntitled === true;
+      // Per-plan LIVE-bot cap (how many live bots may run at once): Free 1, Copilot 3,
+      // Pro -1 = unlimited. The host sets this from the account's sub.liveBotLimit via
+      // setLiveBotLimit(); default -1 preserves legacy behavior (no numeric cap). This
+      // is an ADDITIONAL gate on top of the boolean liveEntitled — both must pass.
+      this.liveBotLimit = (deps.liveBotLimit != null) ? Number(deps.liveBotLimit) : -1;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.pnl = deps.pnl || null;              // post-commit realized-profit tracker (LIVE)
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
@@ -138,6 +143,10 @@
     // than free/empty unlocks live arming. Does not touch already-armed bots.
     setLiveEntitled(tier) { this.liveEntitled = !!tier && tier !== 'free'; return this.liveEntitled; }
 
+    // Host hook: set the account's LIVE-bot cap. Accepts a number (-1 = unlimited) or the
+    // server's sub.liveBotLimit. Does not touch already-armed bots.
+    setLiveBotLimit(n) { this.liveBotLimit = (n == null) ? -1 : Number(n); return this.liveBotLimit; }
+
     // Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
     async armLive(id, opts) {
       opts = opts || {};
@@ -148,6 +157,17 @@
         const e = new Error('Live trading requires Blockle Copilot. Start your free trial or subscribe to go live.');
         e.code = 'ENTITLEMENT_REQUIRED';
         throw e;
+      }
+      // Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count other already-live
+      // bots; skip entirely when the limit is unlimited (-1). Mirrors the web wallet.
+      if (this.liveBotLimit >= 0) {
+        const liveNow = this.store.list().filter((b) => b.id !== id && b.mode === 'live' && b.enabled).length;
+        if (liveNow >= this.liveBotLimit) {
+          await this._audit({ type: 'bot_arm_refused', bot: id, reason: 'live bot limit reached', limit: this.liveBotLimit });
+          const e = new Error('Live-bot limit reached for your plan (' + this.liveBotLimit + '). Upgrade to run more.');
+          e.code = 'LIVE_LIMIT';
+          throw e;
+        }
       }
       const alloc = opts.allocationUsd != null ? Number(opts.allocationUsd) : bot.allocationUsd;
       const sessionCap = this.policy.caps && this.policy.caps.sessionUsd;
@@ -299,7 +319,7 @@
 
       let report;
       try {
-        if (bot.type === 'rebalance' || bot.type === 'momentum') report = await this._tickScheduled(bot, now, opts);
+        if ((this.Bots.SCHEDULED_PLANNER_TYPES || ['rebalance', 'momentum']).indexOf(bot.type) !== -1) report = await this._tickScheduled(bot, now, opts);
         else if (bot.type === 'scanner') report = await this._tickScanner(bot, now, opts);
         else if (bot.type === 'signal') report = await this._tickSignal(bot, now, opts);
         else report = await this._tickDealBot(bot, bot.type, bot.config, bot.pairs(), now, opts);

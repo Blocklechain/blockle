@@ -283,6 +283,7 @@ test('specFromCreate: AI mode builds the scan-&-trade autopilot settling into th
 
 test('specFromCreate: manual mode builds the chosen template on the picked pair', () => {
   const st = BotsUI._state();
+  st.create.strategy = null;
   st.create.pairMode = 'manual';
   st.create.tplKey = 'conservative_dca';
   st.create.pair = 'SOL/USDC';
@@ -290,5 +291,96 @@ test('specFromCreate: manual mode builds the chosen template on the picked pair'
   assert.equal(spec.type, 'dca');
   assert.deepEqual(spec.universe.pairs, ['SOL/USDC']);
   // reset to the shipped default so later/other suites see AI-chooses.
+  st.create.pairMode = 'ai';
+});
+
+// ---------------------------------------------------------------------------
+// LIVE INDICATOR-STRATEGY PICKER — lists EXACTLY the 9 single-market indicator
+// planners (numeric knobs) with describe() help. The multi-asset `rebalance`
+// (asset->weight map, not knobs) and SMA `momentum` are NOT offered here (they
+// error/confuse through this flow); deal-bots (dca/grid) keep their template
+// flow; scalp/martingale (PAPER-only) are NEVER offered.
+// ---------------------------------------------------------------------------
+test('strategyPickerHtml lists exactly the 9 indicator planners with describe() help', () => {
+  const html = BotsUI.strategyPickerHtml();
+  ['rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl']
+    .forEach((n) => assert.ok(new RegExp('data-strategy="' + n + '"').test(html), 'offers ' + n));
+  // multi-asset rebalance + SMA momentum are excluded from the picker
+  assert.ok(!/data-strategy="rebalance"/.test(html), 'multi-asset rebalance not offered in the picker');
+  assert.ok(!/data-strategy="momentum"/.test(html), 'SMA momentum not offered in the picker');
+  assert.ok(!/data-strategy="scalp"/.test(html), 'scalp is PAPER-only, never offered');
+  assert.ok(!/data-strategy="martingale"/.test(html), 'martingale is PAPER-only, never offered');
+  assert.ok(/data-strategy=""/.test(html), 'offers a reset back to the template flow');
+  // describe() help text is surfaced (RSI planner mentions the index / oversold)
+  assert.ok(/Relative Strength Index|oversold/i.test(html), 'describe() help text is shown');
+});
+
+test('plannerStrategies() returns only registry names that run through the scheduled planner', () => {
+  const names = BotsUI.plannerStrategies().map((s) => s.name);
+  assert.ok(names.includes('rsi') && names.includes('hodl'));
+  assert.ok(!names.includes('scalp') && !names.includes('martingale'));
+  // dca/grid stay on the template/deal-engine path, not this picker
+  assert.ok(!names.includes('dca') && !names.includes('grid'));
+});
+
+// ---------------------------------------------------------------------------
+// DATA-DRIVEN KNOBS — one numeric input per planner .defaults key (skipping
+// market/history/held/balances), seeded from the default.
+// ---------------------------------------------------------------------------
+test('applyStrategyDefaults seeds knobs from .defaults and forces the manual pair picker', () => {
+  const st = BotsUI._state();
+  assert.equal(BotsUI.applyStrategyDefaults('rsi'), true);
+  assert.equal(st.create.strategy, 'rsi');
+  assert.equal(st.create.pairMode, 'manual', 'indicator bots pick an explicit pair');
+  // RSI knobs seeded from .defaults; the plumbing keys are NOT knobs
+  assert.equal(st.create.knobs.period, 14);
+  assert.equal(st.create.knobs.oversold, 30);
+  assert.equal(st.create.knobs.overbought, 70);
+  assert.equal(st.create.knobs.budgetUsd, 1000);
+  assert.ok(!('market' in st.create.knobs) && !('history' in st.create.knobs) &&
+    !('held' in st.create.knobs) && !('balances' in st.create.knobs), 'plumbing keys are never knobs');
+});
+
+test('knobGridHtml renders one numeric input per knob seeded from the current value', () => {
+  BotsUI.applyStrategyDefaults('macd');
+  const st = BotsUI._state();
+  const html = BotsUI.knobGridHtml();
+  ['fast', 'slow', 'signalP', 'budgetUsd', 'positionPct'].forEach((k) => {
+    assert.ok(new RegExp('id="b-knob-' + k + '"').test(html), 'has an input for ' + k);
+  });
+  assert.ok(/type="number"/.test(html), 'knobs are numeric inputs');
+  assert.ok(new RegExp('value="' + st.create.knobs.fast + '"').test(html), 'seeded from the default');
+});
+
+test('specFromCreate (indicator strategy): a scheduled-planner bot on the picked pair, import-safe', () => {
+  const st = BotsUI._state();
+  BotsUI.applyStrategyDefaults('rsi');
+  st.create.pair = 'ETH/USDC';
+  st.create.knobs.period = 21;        // user edit flows through to the bot config
+  const spec = BotsUI.specFromCreate();
+  assert.equal(spec.type, 'rsi');
+  assert.deepEqual(spec.universe.pairs, ['ETH/USDC']);
+  assert.equal(spec.config.market, 'ETH/USDC', 'the market/pair is carried in the config');
+  assert.equal(spec.config.period, 21, 'the edited knob is the bot param');
+  // import-safe: paper + disabled + testnet + zero allocation (never auto-arm)
+  assert.equal(spec.mode, 'paper');
+  assert.equal(spec.enabled, false);
+  assert.equal(spec.network, 'testnet');
+  assert.equal(spec.allocationUsd, 0);
+  // a built spec is accepted by the engine Bot model (valid type + config)
+  const bot = new AgentBots.Bot(spec);
+  assert.equal(bot.type, 'rsi');
+});
+
+test('prefillFromCopiedConfig clones a bot CONFIG (type + pair + knobs), never funds/live state', () => {
+  const st = BotsUI._state();
+  const ok = BotsUI.prefillFromCopiedConfig({ type: 'bollinger', pair: 'SOL/USDC', params: { period: 30, k: 2.5, budget: 500 } });
+  assert.equal(ok, true);
+  assert.equal(st.create.strategy, 'bollinger');
+  assert.equal(st.create.pair, 'SOL/USDC');
+  assert.equal(st.create.knobs.period, 30, 'copied knob overlays the default');
+  assert.equal(st.create.knobs.budgetUsd, 500, 'server "budget" maps to budgetUsd');
+  // reset shared create state back to the shipped defaults for other suites
+  st.create.strategy = null;
   st.create.pairMode = 'ai';
 });

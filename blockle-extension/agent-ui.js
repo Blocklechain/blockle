@@ -635,6 +635,11 @@
       : { tier: copilotTier, maxChannels: copilotTier === 'copilot_pro' ? null : (copilotTier === 'free' ? 1 : 3), live: copilotTier !== 'free' };
   }
 
-  global.AgentUI = { init, enter, onUnlock, onResume, onLock, connectBlockleAccount, refreshTier, disconnectBlockleAccount, plan };
+  // Expose the signed-in Blockle account session (origin + bearer token + tier) so the
+  // Bots cockpit can reuse the SAME connection for /me (live-bot cap), /backtest and
+  // /bots/copy — without duplicating the login flow. Read-only snapshot.
+  function account() { return { origin: acctOrigin, token: acctToken, email: acctEmail, tier: copilotTier }; }
+
+  global.AgentUI = { init, enter, onUnlock, onResume, onLock, connectBlockleAccount, refreshTier, disconnectBlockleAccount, plan, account };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.AgentUI;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));

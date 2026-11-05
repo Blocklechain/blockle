@@ -50,12 +50,22 @@ class CreateView extends StatefulWidget {
     required this.controller,
     required this.onCreated,
     this.seed,
+    this.initialStrategy,
+    this.copyBotId,
   });
   final BotsController controller;
   final void Function(String botId, bool live) onCreated;
 
   /// Optional seed from the Arena "use this for real" on-ramp.
   final Map<String, dynamic>? seed;
+
+  /// Deep-link: `?strategy=<name>` from the home board "USE THIS STRATEGY" —
+  /// preselects that live strategy in the picker.
+  final String? initialStrategy;
+
+  /// Deep-link: `?copyBot=<id>` from the leaderboard/profile "Copy" — clones
+  /// another trader's bot CONFIG (strategy + knobs) via POST /account/api/bots/copy.
+  final String? copyBotId;
 
   @override
   State<CreateView> createState() => _CreateViewState();
@@ -120,7 +130,23 @@ class _CreateViewState extends State<CreateView> {
   // by realized profit (losses only draw down this bot's budget, never the wallet).
   String _profitMode = 'take';
 
-  bool get _aiPicksPairs => _pairMode != 'manual';
+  // STRATEGY MODE — the indicator-planner picker (the 9 single-market planners
+  // with numeric knobs; see BotsController.plannerNames). Active when _pairMode ==
+  // 'strategy'. The deal-bots (dca/grid/arbitrage) keep their template flow.
+  // A per-chain BASE/QUOTE pair + one numeric input per planner knob (seeded from
+  // the planner's .defaults) + a quick server backtest.
+  String _strategy = '';
+  final Map<String, TextEditingController> _knobCtls = {};
+  final _baseCtl = TextEditingController(text: 'SOL');
+  final _quoteCtl = TextEditingController(text: 'USDC');
+  Map<String, dynamic>? _btResult; // last backtest {pnlPct, maxDrawdownPct, curve}
+  bool _btBusy = false;
+
+  // Default keys that are NOT user knobs (market/feed/portfolio), never rendered.
+  static const Set<String> _knobSkip = {'market', 'history', 'held', 'balances'};
+
+  bool get _strategyMode => _pairMode == 'strategy';
+  bool get _aiPicksPairs => _pairMode == 'ai';
 
   @override
   void initState() {
@@ -129,6 +155,87 @@ class _CreateViewState extends State<CreateView> {
     // A seed from the Arena on-ramp is a concrete strategy on a pair -> manual.
     if (widget.seed != null) _pairMode = 'manual';
     _profitCurrency = _quoteOf(_normPair());
+    // Default strategy selection (first indicator planner). The picker only ever
+    // offers the 9 numeric-knob planners, so the default must come from that list.
+    final live = widget.controller.plannerNames;
+    _strategy = live.isNotEmpty ? live.first : 'rsi';
+    _rebuildKnobs(_strategy);
+    // DEEP-LINKS: ?strategy=<name> preselects a strategy; ?copyBot=<id> clones a
+    // trader's CONFIG. Both land in the strategy picker (config only, never funds).
+    final want = widget.initialStrategy?.trim().toLowerCase();
+    if (want != null && want.isNotEmpty && live.contains(want)) {
+      _pairMode = 'strategy';
+      _strategy = want;
+      _rebuildKnobs(want);
+    }
+    if (widget.copyBotId != null && widget.copyBotId!.trim().isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _applyCopyBot(widget.copyBotId!.trim()));
+    }
+  }
+
+  /// Rebuild the knob text controllers for [name] from its planner .defaults
+  /// (skipping market/history/held/balances). Disposes the previous set.
+  void _rebuildKnobs(String name) {
+    for (final c in _knobCtls.values) {
+      c.dispose();
+    }
+    _knobCtls.clear();
+    final defs = widget.controller.strategyDefaults(name);
+    for (final e in defs.entries) {
+      if (_knobSkip.contains(e.key)) continue;
+      if (e.value is! num) continue; // only numeric knobs get an input
+      _knobCtls[e.key] = TextEditingController(text: _fmtKnob(e.value as num));
+    }
+    _btResult = null;
+  }
+
+  static String _fmtKnob(num v) {
+    if (v == v.roundToDouble()) return v.toInt().toString();
+    return '$v';
+  }
+
+  /// Collect the edited knob values (parsed as num, falling back to the default).
+  Map<String, dynamic> _knobValues() {
+    final defs = widget.controller.strategyDefaults(_strategy);
+    final out = <String, dynamic>{};
+    for (final e in _knobCtls.entries) {
+      final parsed = num.tryParse(e.value.text.trim());
+      out[e.key] = parsed ?? defs[e.key];
+    }
+    return out;
+  }
+
+  /// Fetch a cloned bot CONFIG by id (copy-trade) and prefill the strategy + knobs
+  /// + pair. CONFIG ONLY — never funds or live state.
+  Future<void> _applyCopyBot(String botId) async {
+    try {
+      final cfg = await widget.controller.copyBotConfig(botId);
+      if (cfg == null || !mounted) return;
+      final type = '${cfg['type'] ?? ''}'.toLowerCase();
+      final live = widget.controller.plannerNames;
+      final params = (cfg['params'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final pair = '${cfg['pair'] ?? ''}';
+      setState(() {
+        if (live.contains(type)) {
+          _pairMode = 'strategy';
+          _strategy = type;
+          _rebuildKnobs(type);
+          // Overlay copied knob values onto the seeded defaults.
+          for (final e in _knobCtls.entries) {
+            final v = params[e.key];
+            if (v is num) e.value.text = _fmtKnob(v);
+          }
+        }
+        if (pair.contains('/')) {
+          final parts = pair.toUpperCase().split('/');
+          _baseCtl.text = parts[0].trim();
+          _quoteCtl.text = parts[1].trim();
+        }
+      });
+      _snack('Copied $type config from the shared bot — review + arm when ready.');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
+    }
   }
 
   /// Profit currency derived from a BASE/QUOTE pair's quote (manual mode).
@@ -151,12 +258,28 @@ class _CreateViewState extends State<CreateView> {
   void dispose() {
     _pair.dispose();
     _alloc.dispose();
+    _baseCtl.dispose();
+    _quoteCtl.dispose();
+    for (final c in _knobCtls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
   String get _baseSym {
+    if (_strategyMode) {
+      final b = _baseCtl.text.trim().toUpperCase();
+      return b.isNotEmpty ? b : 'SOL';
+    }
     final p = _pair.text.toUpperCase().split('/');
     return p.isNotEmpty ? p.first.trim() : 'SOL';
+  }
+
+  /// The strategy-mode BASE/QUOTE market (per selected chain), normalized.
+  String _stratPair() {
+    final b = _baseCtl.text.trim().toUpperCase();
+    final q = _quoteCtl.text.trim().toUpperCase();
+    return '${b.isNotEmpty ? b : 'SOL'}/${q.isNotEmpty ? q : 'USDC'}';
   }
 
   double get _price => _refPrice[_baseSym] ?? 100;
@@ -195,6 +318,19 @@ class _CreateViewState extends State<CreateView> {
   /// choose pairs") -> the scan-&-trade autopilot, realizing profit INTO the chosen
   /// profit currency (no pair). Manual mode -> the selected template on the pair.
   b.Bot _createBot(num alloc) {
+    if (_strategyMode) {
+      final pair = _stratPair();
+      return widget.controller.createFromStrategy(
+        _strategy,
+        pair: pair,
+        allocationUsd: alloc,
+        knobs: _knobValues(),
+        configOverride: {'profitCurrency': _quoteOf(pair)},
+        lane: _lane,
+        riskMode: _riskMode,
+        profitMode: _profitMode,
+      );
+    }
     if (_aiPicksPairs) {
       return widget.controller.createFromTemplate(
         'scan_and_trade',
@@ -218,11 +354,17 @@ class _CreateViewState extends State<CreateView> {
   }
 
   Future<void> _startPaper() async {
-    final bot = _createBot(_allocUsd);
-    // Pass the amount as the paper BUDGET so the sandbox is the same size as a
-    // live run would be (depletes as it spends). Omitted/0 -> unbounded paper.
-    await widget.controller.enablePaper(bot.id, allocationUsd: _allocUsd);
-    widget.onCreated(bot.id, false);
+    // Surface any createFromStrategy/validateConfig/enablePaper throw as a snack
+    // instead of crashing the create screen (mirrors _goLive's guard).
+    try {
+      final bot = _createBot(_allocUsd);
+      // Pass the amount as the paper BUDGET so the sandbox is the same size as a
+      // live run would be (depletes as it spends). Omitted/0 -> unbounded paper.
+      await widget.controller.enablePaper(bot.id, allocationUsd: _allocUsd);
+      widget.onCreated(bot.id, false);
+    } catch (e) {
+      _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
+    }
   }
 
   Future<void> _goLive() async {
@@ -258,7 +400,11 @@ class _CreateViewState extends State<CreateView> {
         tokens: t,
         child: _ReviewSheet(
           alloc: alloc,
-          pair: _aiPicksPairs ? 'AI-chosen pairs → $_profitCurrency' : _normPair(),
+          pair: _aiPicksPairs
+              ? 'AI-chosen pairs → $_profitCurrency'
+              : _strategyMode
+                  ? '${_strategy.toUpperCase()} · ${_stratPair()}'
+                  : _normPair(),
           channel: widget.controller.backingChannelLabel,
         ),
       ),
@@ -312,8 +458,10 @@ class _CreateViewState extends State<CreateView> {
           // STEP 1 — the strategy-template picker. In the default AI-chooses-pairs
           // mode the autopilot FORCES scan_and_trade and IGNORES the template, so
           // the picker has no effect and is hidden (switching to "I'll pick a pair"
-          // brings it back). Never show a control that does nothing.
-          if (!_aiPicksPairs) ...[
+          // brings it back). The Strategy mode has its OWN planner picker, so the
+          // DCA/grid template grid is only shown in manual mode. Never show a
+          // control that does nothing.
+          if (_pairMode == 'manual') ...[
             const Eyebrow('1 · Template'),
             const SizedBox(height: 9),
             GridView.count(
@@ -348,7 +496,13 @@ class _CreateViewState extends State<CreateView> {
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
               style: mono(t, size: 16),
-              decoration: _inputDec(t, prefix: '\$', suffix: _aiPicksPairs ? _profitCurrency : 'USDC'),
+              decoration: _inputDec(t,
+                  prefix: '\$',
+                  suffix: _aiPicksPairs
+                      ? _profitCurrency
+                      : _strategyMode
+                          ? _quoteOf(_stratPair())
+                          : 'USDC'),
             ),
           ),
           const SizedBox(height: 16),
@@ -358,7 +512,13 @@ class _CreateViewState extends State<CreateView> {
           const SizedBox(height: 16),
           if (_aiPicksPairs)
             _AutopilotNote(profitCurrency: _profitCurrency, alloc: _allocUsd)
-          else ...[
+          else if (_strategyMode) ...[
+            const Eyebrow('Knobs'),
+            const SizedBox(height: 10),
+            _knobGrid(t),
+            const SizedBox(height: 16),
+            _backtestRow(t),
+          ] else ...[
             _Preview(
               isDca: _isDca,
               base: _base,
@@ -410,10 +570,27 @@ class _CreateViewState extends State<CreateView> {
         border: Border.all(color: t.line),
       ),
       child: Row(children: [
-        _modeSeg(t, 'ai', '🤖 Let the AI choose pairs'),
-        _modeSeg(t, 'manual', "✎ I'll pick a pair"),
+        _modeSeg(t, 'ai', '🤖 AI picks'),
+        _modeSeg(t, 'manual', '✎ Pick a pair'),
+        _modeSeg(t, 'strategy', '📊 Strategy'),
       ]),
     );
+
+    if (_strategyMode) {
+      // STRATEGY MODE: a live-planner picker + a per-chain BASE/QUOTE pair. The
+      // numeric knobs + backtest render below (left pane); this section owns the
+      // picker + pair so bots run on every supported chain.
+      return _Field(
+        label: '2 · Strategy & market',
+        hint: 'a live planner on a pair',
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          modeToggle,
+          _strategyPicker(t),
+          const SizedBox(height: 12),
+          _pairFields(t),
+        ]),
+      );
+    }
 
     if (_aiPicksPairs) {
       // AI chooses pairs: NO manual pair picker — a profit-currency selector instead.
@@ -488,6 +665,7 @@ class _CreateViewState extends State<CreateView> {
           onTap: () => setState(() {
             _pairMode = mode;
             if (mode == 'manual') _profitCurrency = _quoteOf(_normPair());
+            if (mode == 'strategy') _seedPairFromLane();
           }),
           borderRadius: BorderRadius.circular(8),
           child: Container(
@@ -507,6 +685,188 @@ class _CreateViewState extends State<CreateView> {
         ),
       ),
     );
+  }
+
+  // Seed the strategy-mode BASE from the selected lane's held asset (quote stays
+  // USDC unless the user overrides it). "Any lane" leaves the current base.
+  void _seedPairFromLane() {
+    final base = b.laneBase(_lane);
+    if (base != null && base.isNotEmpty) _baseCtl.text = base;
+  }
+
+  // STRATEGY PICKER — the 9 single-market INDICATOR planners (rsi/macd/bollinger/
+  // breakout/emacross/momentum_roc/meanrev/rebalance_hold/hodl) as selectable
+  // tiles, each with its describe() help text. The deal-bots (dca/grid/arbitrage)
+  // keep their own template flow and the multi-asset planners (rebalance/momentum)
+  // are excluded — picking those here builds an invalid config that crashes or
+  // errors every tick. scalp/martingale are paper-only and never appear.
+  Widget _strategyPicker(BotTokens t) {
+    final names = widget.controller.plannerNames;
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 10,
+      mainAxisSpacing: 10,
+      childAspectRatio: 2.2,
+      children: [
+        for (final n in names)
+          _StrategyCard(
+            name: n,
+            blurb: widget.controller.strategyDescribe(n),
+            selected: n == _strategy,
+            onTap: () => setState(() {
+              _strategy = n;
+              _rebuildKnobs(n);
+            }),
+          ),
+      ],
+    );
+  }
+
+  // Per-chain BASE / QUOTE market picker (bots run on every supported chain). The
+  // base seeds from the selected lane; both are editable.
+  Widget _pairFields(BotTokens t) {
+    Widget fld(TextEditingController c, String label) => Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(label, style: TextStyle(fontSize: 11.5, color: t.inkMuted)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: c,
+              onChanged: (_) => setState(() => _btResult = null),
+              textCapitalization: TextCapitalization.characters,
+              style: mono(t, size: 15),
+              decoration: _inputDec(t),
+            ),
+          ]),
+        );
+    return Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+      fld(_baseCtl, 'Base (what to trade)'),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        child: Text('/', style: TextStyle(fontSize: 18, color: t.inkMuted)),
+      ),
+      fld(_quoteCtl, 'Quote (settles P&L)'),
+    ]);
+  }
+
+  // One numeric input per planner knob (seeded from .defaults; market/history/
+  // held/balances are never shown). Edited values become the bot's params.
+  Widget _knobGrid(BotTokens t) {
+    if (_knobCtls.isEmpty) {
+      return Text('This strategy has no tunable knobs — it buys once and holds.',
+          style: TextStyle(fontSize: 12, color: t.inkMuted));
+    }
+    return GridView.count(
+      crossAxisCount: 2,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisSpacing: 13,
+      mainAxisSpacing: 10,
+      childAspectRatio: 3.0,
+      children: [
+        for (final e in _knobCtls.entries)
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(_knobLabel(e.key),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11.5, color: t.inkMuted)),
+            const SizedBox(height: 5),
+            TextField(
+              controller: e.value,
+              onChanged: (_) => setState(() => _btResult = null),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+              style: mono(t, size: 15),
+              decoration: _inputDec(t),
+            ),
+          ]),
+      ],
+    );
+  }
+
+  // Humanize a knob key for its label.
+  static String _knobLabel(String key) {
+    switch (key) {
+      case 'budgetUsd':
+        return 'Budget (USD)';
+      case 'positionPct':
+        return 'Position %';
+      case 'oversold':
+        return 'Oversold';
+      case 'overbought':
+        return 'Overbought';
+      case 'signalP':
+        return 'Signal period';
+      case 'thresholdPct':
+        return 'Threshold %';
+      case 'bandPct':
+        return 'Band %';
+      case 'targetPct':
+        return 'Target %';
+      case 'driftPct':
+        return 'Drift %';
+      case 'stopPct':
+        return 'Stop %';
+      default:
+        return key[0].toUpperCase() + key.substring(1);
+    }
+  }
+
+  // "Backtest this config" — POST the configured strategy to the account service
+  // and show pnl% + a sparkline from the returned equity curve.
+  Future<void> _runBacktest() async {
+    setState(() {
+      _btBusy = true;
+      _btResult = null;
+    });
+    try {
+      final res = await widget.controller.backtest(
+        type: _strategy,
+        params: {..._knobValues(), 'market': _stratPair()},
+        asset: _baseSym,
+      );
+      if (mounted) setState(() => _btResult = res);
+    } catch (e) {
+      _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
+    } finally {
+      if (mounted) setState(() => _btBusy = false);
+    }
+  }
+
+  Widget _backtestRow(BotTokens t) {
+    final res = _btResult;
+    final curve = (res?['curve'] as List?)?.map((e) => (e as num).toDouble()).toList() ?? const <double>[];
+    final pnl = res != null ? (res['pnlPct'] as num?)?.toDouble() : null;
+    final dd = res != null ? (res['maxDrawdownPct'] as num?)?.toDouble() : null;
+    final trades = res != null ? (res['trades'] as num?)?.toInt() : null;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        BotButton(
+          label: _btBusy ? 'Backtesting…' : 'Backtest this config',
+          icon: Icons.insights_outlined,
+          onPressed: _btBusy ? null : _runBacktest,
+        ),
+        const SizedBox(width: 10),
+        if (pnl != null)
+          Text('${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)}%',
+              style: mono(t, size: 18,
+                  color: pnl >= 0 ? t.gain : t.loss, w: FontWeight.w700)),
+      ]),
+      if (res != null) ...[
+        const SizedBox(height: 10),
+        if (curve.length > 1)
+          _Sparkline(values: curve, color: (pnl ?? 0) >= 0 ? t.gain : t.loss, line: t.line),
+        const SizedBox(height: 8),
+        Text(
+          'Paper simulation on ~30 days of real $_baseSym prices'
+          '${trades != null ? ' · $trades trades' : ''}'
+          '${dd != null ? ' · max drawdown ${dd.toStringAsFixed(1)}%' : ''}. '
+          'Past results never guarantee future returns.',
+          style: TextStyle(fontSize: 11, color: t.inkFaint, height: 1.4),
+        ),
+      ],
+    ]);
   }
 
   // LANE + RISK-MODE selectors. Both optional: "Any lane" / "Default" keep the
@@ -550,7 +910,10 @@ class _CreateViewState extends State<CreateView> {
       hint: 'one chain, one risk profile',
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Expanded(child: dropdown(_lane, _laneChoices, (v) => _lane = v)),
+          Expanded(child: dropdown(_lane, _laneChoices, (v) {
+            _lane = v;
+            if (_strategyMode) _seedPairFromLane();
+          })),
           const SizedBox(width: 10),
           Expanded(child: dropdown(_riskMode, _riskChoices, (v) => _riskMode = v)),
         ]),
@@ -676,6 +1039,7 @@ class _CreateViewState extends State<CreateView> {
 
   Widget _ladderPane(BotTokens t) {
     if (_aiPicksPairs) return _autopilotPane(t);
+    if (_strategyMode) return _strategyPane(t);
     final p = _preview;
     return BotCard(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
@@ -765,6 +1129,57 @@ class _CreateViewState extends State<CreateView> {
               'P&L is denominated in $_profitCurrency and take-profit exits route their proceeds into it.'),
           point(Icons.verified_user, 'Paper + disabled + testnet by default',
               'Nothing goes live silently — live still passes the one gate, allocation cap, allowlist and audit.'),
+        ],
+      ),
+    );
+  }
+
+  // STRATEGY MODE right pane — the selected planner, its describe() help, the
+  // market it runs on, and the live knob values (mirrors the deal-preview pane).
+  Widget _strategyPane(BotTokens t) {
+    final knobs = _knobValues();
+    return BotCard(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Eyebrow('Strategy · live planner'),
+                const SizedBox(height: 4),
+                Text(_strategy.toUpperCase(),
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: t.ink)),
+              ],
+            ),
+            const Spacer(),
+            BotChip(_stratPair().replaceAll('/', ' / '), accent: true),
+          ]),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
+            decoration: BoxDecoration(
+              color: t.accentGhost,
+              borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+              border: Border.all(color: t.accentDim),
+            ),
+            child: Text(widget.controller.strategyDescribe(_strategy),
+                style: TextStyle(fontSize: 13.5, color: t.ink, height: 1.55)),
+          ),
+          const SizedBox(height: 14),
+          Divider(height: 1, color: t.lineSoft),
+          const SizedBox(height: 14),
+          Wrap(spacing: 18, runSpacing: 12, children: [
+            for (final e in knobs.entries)
+              _stat(t, _knobLabel(e.key), '${e.value}'),
+          ]),
+          const SizedBox(height: 14),
+          Text(
+            'Runs on the ${b.laneBase(_lane) != null ? b.laneChain(_lane) : 'selected'} chain. '
+            'Starts paper + disabled + testnet — nothing goes live until you review + arm it.',
+            style: TextStyle(fontSize: 11, color: t.inkFaint, height: 1.4),
+          ),
         ],
       ),
     );
@@ -1088,4 +1503,111 @@ class _ReviewSheet extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A selectable LIVE-strategy tile for the strategy picker (strategy mode). Shows
+/// the planner name + its describe() help text; mirrors _TplCard styling.
+class _StrategyCard extends StatelessWidget {
+  const _StrategyCard({
+    required this.name,
+    required this.blurb,
+    required this.selected,
+    required this.onTap,
+  });
+  final String name, blurb;
+  final bool selected;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) {
+    final t = BotTheme.of(context);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '$name strategy',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: selected ? t.accentGhost : t.elevated,
+            borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+            border: Border.all(color: selected ? t.accent : t.line),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(name.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w700, color: t.ink, letterSpacing: 0.3)),
+              const SizedBox(height: 4),
+              Expanded(
+                child: Text(blurb,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: t.inkMuted, height: 1.35)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A minimal equity-curve sparkline for the quick-backtest result. Pure
+/// CustomPainter (no external chart deps); the curve is a list of % values.
+class _Sparkline extends StatelessWidget {
+  const _Sparkline({required this.values, required this.color, required this.line});
+  final List<double> values;
+  final Color color, line;
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      width: double.infinity,
+      child: CustomPaint(painter: _SparklinePainter(values, color, line)),
+    );
+  }
+}
+
+class _SparklinePainter extends CustomPainter {
+  _SparklinePainter(this.values, this.color, this.line);
+  final List<double> values;
+  final Color color, line;
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (values.length < 2) return;
+    var lo = values.first, hi = values.first;
+    for (final v in values) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    final span = (hi - lo).abs() < 1e-9 ? 1.0 : (hi - lo);
+    double x(int i) => size.width * i / (values.length - 1);
+    double y(double v) => size.height - ((v - lo) / span) * size.height;
+
+    // zero baseline (break-even), when it falls within range
+    if (lo <= 0 && hi >= 0) {
+      final zy = y(0);
+      canvas.drawLine(Offset(0, zy), Offset(size.width, zy),
+          Paint()..color = line..strokeWidth = 1);
+    }
+    final path = Path()..moveTo(x(0), y(values[0]));
+    for (var i = 1; i < values.length; i++) {
+      path.lineTo(x(i), y(values[i]));
+    }
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..strokeJoin = StrokeJoin.round);
+  }
+
+  @override
+  bool shouldRepaint(_SparklinePainter old) => old.values != values || old.color != color;
 }

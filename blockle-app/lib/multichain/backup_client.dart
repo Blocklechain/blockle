@@ -52,6 +52,32 @@ String tierOf(Map<String, dynamic>? user) {
   return (sub['active'] == true) ? (sub['tier'] as String? ?? 'free') : 'free';
 }
 
+/// Extract the per-plan LIVE-bot cap from a /me user object: `sub.liveBotLimit`
+/// (Free 1, Copilot 3, Pro -1 = unlimited). Defaults to 1 (the Free cap) when the
+/// account service does not report one, mirroring the web wallet (app.js loadTier).
+int liveBotLimitOf(Map<String, dynamic>? user) {
+  final sub = (user?['sub'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final v = sub['liveBotLimit'];
+  if (v is num) return v.toInt();
+  return 1;
+}
+
+/// Quick backtest of a CONFIGURED strategy on recent real prices (the tune-and-test
+/// loop). Play-money simulation. Returns {pnlPct, trades, maxDrawdownPct, curve, ...}.
+Future<Map<String, dynamic>> backtest(String? origin, String token,
+    {required String type, required Map<String, dynamic> params, required String asset}) async {
+  return _req(origin, 'POST', '/account/api/backtest', token: token,
+      body: {'type': type, 'params': params, 'asset': asset});
+}
+
+/// Clone another trader's bot CONFIG into the signed-in account (copy-trade; config
+/// only, never funds/live state). Returns the created bot view {type, pair, params, ...}.
+Future<Map<String, dynamic>?> copyBot(String? origin, String token, String fromBotId) async {
+  final d = await _req(origin, 'POST', '/account/api/bots/copy', token: token,
+      body: {'fromBotId': fromBotId});
+  return (d['bot'] as Map?)?.cast<String, dynamic>();
+}
+
 /// Start the one-time 7-day Copilot free trial. Returns the updated `sub` (incl. entitledTier).
 Future<Map<String, dynamic>> startTrial(String? origin, String token) async {
   final d = await _req(origin, 'POST', '/account/api/trial/start', token: token, body: const {});

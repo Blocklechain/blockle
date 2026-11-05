@@ -59,7 +59,43 @@
     alloc: 500,
     base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0,
     type: 'dca',
+    // MANUAL INDICATOR STRATEGY (opt-in): when set to a live registry strategy name
+    // (rsi/macd/bollinger/…), the create flow renders a data-driven knob grid from the
+    // planner's .defaults and builds a scheduled-planner Bot on the picked pair (so the
+    // bot runs on EVERY supported chain). null => the template-gallery flow (unchanged).
+    strategy: null,
+    knobs: {},                   // edited per-strategy knob values (seeded from .defaults)
     markUsd: null,               // live mark for the pair base (display only)
+  };
+
+  // The signed-in Blockle account session, reused from AgentUI for /me (the live-bot
+  // cap), POST /account/api/backtest and POST /account/api/bots/copy. Plumbed in
+  // buildRunner()/refreshAccount(); null token => those account features stay dormant.
+  var acctOrigin = 'https://blockle.org';
+  var acctToken = null;
+  // A deep-link (?strategy / ?copyBot) captured at popup boot, applied on first enter().
+  var pendingDeepLink = null;
+  // The most recent quick-backtest result (for the create preview sparkline).
+  var backtestResult = null;
+  var backtestBusy = false;
+
+  // Keys in a planner's .defaults that are NOT user-editable numeric knobs.
+  var SKIP_KNOBS = { market: 1, pair: 1, history: 1, held: 1, balances: 1, venues: 1 };
+  // Documented clamp ranges per knob (min, max, step) — mirrors strategies.js
+  // validateParams. A knob with no entry falls back to a magnitude-based range.
+  var KNOB_RANGES = {
+    budgetUsd: [1, 1e9, 1], positionPct: [0, 100, 1],
+    period: [2, 200, 1], oversold: [1, 50, 1], overbought: [50, 99, 1],
+    fast: [1, 200, 1], slow: [1, 400, 1], signalP: [1, 200, 1],
+    k: [0.5, 5, 0.1], lookback: [2, 400, 1], stopPct: [0, 50, 0.5],
+    thresholdPct: [0, 100, 0.5], bandPct: [0, 50, 0.5], targetPct: [0, 100, 1], driftPct: [0, 50, 0.5],
+  };
+  // Human labels for the knobs (falls back to the raw key).
+  var KNOB_LABELS = {
+    budgetUsd: 'Budget (USD)', positionPct: 'Position size %', period: 'Period',
+    oversold: 'Oversold', overbought: 'Overbought', fast: 'Fast length', slow: 'Slow length',
+    signalP: 'Signal length', k: 'Band width (σ)', lookback: 'Lookback', stopPct: 'Stop-loss %',
+    thresholdPct: 'Threshold %', bandPct: 'Band %', targetPct: 'Target %', driftPct: 'Rebalance drift %',
   };
 
   // Profit-currency choices (settlement/quote assets). USDC is the default.
@@ -220,6 +256,10 @@
         AgentRunner: AgentRunner, Bots: AgentBots,
       });
       try { await runner.store.restore(); } catch (_) {}
+      // Plumb the account's effective entitlement + per-plan live-bot cap into the
+      // engine (Free 1 / Copilot 3 / Pro unlimited). Best-effort; failures leave the
+      // fail-closed defaults (not entitled, no numeric cap) intact.
+      try { await refreshAccount(); } catch (_) {}
     } catch (_) { runner = null; }
   }
 
@@ -269,6 +309,8 @@
       return;
     }
     if (!runner) await buildRunner();
+    await refreshAccount();        // keep the entitlement + live-bot cap fresh (throttled)
+    await applyPendingDeepLink();
     body.innerHTML = renderShell();
     wireShell();
     await renderActiveTab();
@@ -342,12 +384,162 @@
     return pts;
   }
 
+  // ===========================================================================
+  // LIVE STRATEGY REGISTRY (indicator / systematic planners) — the data-driven
+  // create path. Only registry strategies that run through the shared scheduled
+  // planner are offered (so scalp/martingale — PAPER-only — can never be armed).
+  // ===========================================================================
+  function strategiesDep() { return dep('AgentStrategies', './strategies.js'); }
+  function registry() { var S = strategiesDep(); return S && S.createRegistry ? S.createRegistry() : null; }
+  function plannerTypeSet() {
+    var B = runner && runner.Bots ? runner.Bots : dep('AgentBots', './bots.js');
+    return (B && B.SCHEDULED_PLANNER_TYPES) || ['rebalance', 'momentum', 'rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl'];
+  }
+  function isPlannerType(name) { return plannerTypeSet().indexOf(name) !== -1; }
+  // The indicator/systematic strategies offered in the create-flow Strategy picker:
+  // the 9 single-market planners that take simple numeric knobs. 'momentum' (SMA,
+  // superseded by momentum_roc) and the MULTI-ASSET 'rebalance' (its config is an
+  // asset->weight targets map, not numeric knobs — picking it builds an empty config
+  // that errors every tick on missing targets) stay valid runner types but are NOT
+  // pickable here. Deal-bots (dca/grid/arbitrage) keep their separate template flow;
+  // scalp/martingale stay PAPER-only, never listed.
+  var PICKER_STRATEGIES = ['rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl'];
+  function isPickerStrategy(name) { return PICKER_STRATEGIES.indexOf(name) !== -1; }
+  // The live strategies offered in the manual picker: every registry strategy on the
+  // picker allow-list (the 9 numeric-knob planners), in registry order.
+  function plannerStrategies() {
+    var reg = registry(); if (!reg) return [];
+    return reg.all.filter(function (s) { return isPickerStrategy(s.name); });
+  }
+  // The editable numeric knobs for a planner = its .defaults keys minus the
+  // market/history/held/balances (and pair/venues) plumbing keys, numeric only.
+  function knobKeys(strat) {
+    var d = (strat && strat.defaults) || {};
+    return Object.keys(d).filter(function (k) { return !SKIP_KNOBS[k] && typeof d[k] === 'number'; });
+  }
+  function knobRange(key, def) {
+    if (KNOB_RANGES[key]) return KNOB_RANGES[key];
+    var v = Math.abs(Number(def) || 0);
+    if (v > 0 && v < 10) return [0, Math.max(10, v * 10), 0.1];
+    return [0, Math.max(100, v * 10 || 100), 1];
+  }
+  function strategyTitle(name) {
+    var reg = registry(); var s = reg && reg.get(name);
+    var pretty = String(name || '').replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    return pretty;
+  }
+  // Select a live strategy: seed create.knobs from its .defaults and force the manual
+  // pair picker (indicator bots trade one explicit market, on any chain).
+  function applyStrategyDefaults(name) {
+    var reg = registry(); var s = reg && reg.get(name);
+    if (!s || !isPickerStrategy(name)) return false;
+    create.strategy = name;
+    create.pairMode = 'manual';
+    var d = s.defaults || {};
+    create.knobs = {};
+    knobKeys(s).forEach(function (k) { create.knobs[k] = Number(d[k]); });
+    backtestResult = null;
+    return true;
+  }
+  function clearStrategy() { create.strategy = null; create.knobs = {}; backtestResult = null; }
+
+  // Prefill the create flow from a COPIED bot config (POST /account/api/bots/copy
+  // returns a botView: { type, pair, params }). CONFIG ONLY — never funds/live state.
+  function prefillFromCopiedConfig(view) {
+    if (!view || !view.type) return false;
+    if (!isPickerStrategy(view.type)) return false; // only the 9 numeric-knob planners
+    if (!applyStrategyDefaults(view.type)) return false;
+    if (view.pair) create.pair = String(view.pair).toUpperCase();
+    var p = view.params || {};
+    var aliases = { budget: 'budgetUsd', budgetUsd: 'budgetUsd' };
+    Object.keys(create.knobs).forEach(function (k) {
+      var src = (p[k] != null) ? p[k] : (p[aliases[k]] != null ? p[aliases[k]] : null);
+      if (src == null) { Object.keys(aliases).forEach(function (a) { if (aliases[a] === k && p[a] != null) src = p[a]; }); }
+      if (src != null && isFinite(Number(src))) create.knobs[k] = Number(src);
+    });
+    return true;
+  }
+
+  // ===========================================================================
+  // ACCOUNT session (reused from AgentUI) — the live-bot cap + backtest + copy.
+  // ===========================================================================
+  function backupClient() { return dep('BLKBackupClient', '../backup-client.js'); }
+  function syncAccountFromAgent() {
+    try {
+      var A = global.AgentUI;
+      if (A && typeof A.account === 'function') {
+        var a = A.account() || {};
+        if (a.origin) acctOrigin = a.origin;
+        acctToken = a.token || null;
+      }
+    } catch (_) {}
+  }
+  var _acctRefreshedAt = 0;
+  // Pull /me and push the account's effective entitlement + live-bot cap into the
+  // engine (Free 1 / Copilot 3 / Pro -1). Mirrors the web wallet loadTier cadence
+  // (throttled so tab switches don't spam /me; `force` bypasses the throttle).
+  async function refreshAccount(force) {
+    syncAccountFromAgent();
+    if (!runner || !acctToken) return;
+    var nowMs = Date.now();
+    if (!force && _acctRefreshedAt && (nowMs - _acctRefreshedAt) < 60000) return;
+    _acctRefreshedAt = nowMs;
+    var client = backupClient();
+    if (!client || !client.me) return;
+    try {
+      var user = await client.me(acctOrigin, acctToken);
+      if (!user) return;
+      if (client.entitledTierOf && runner.setLiveEntitled) runner.setLiveEntitled(client.entitledTierOf(user));
+      if (client.liveBotLimitOf && runner.setLiveBotLimit) runner.setLiveBotLimit(client.liveBotLimitOf(user));
+    } catch (_) {}
+  }
+
+  // Apply a captured deep-link (?strategy=<name> preselect / ?copyBot=<id> config clone)
+  // once, on first enter() after the runner exists. Compliant: copy clones CONFIG ONLY.
+  async function applyPendingDeepLink() {
+    var dl = pendingDeepLink; if (!dl) return;
+    pendingDeepLink = null;
+    try {
+      if (dl.strategy && applyStrategyDefaults(dl.strategy)) {
+        activeTab = 'create';
+      } else if (dl.copyBot) {
+        await refreshAccount();
+        var client = backupClient();
+        if (!acctToken) { if (UI && UI.toast) UI.toast('Sign in to copy a bot'); return; }
+        if (!client || !client.copyBot) return;
+        var res = await client.copyBot(acctOrigin, acctToken, { fromBotId: dl.copyBot });
+        if (res && res.bot && prefillFromCopiedConfig(res.bot)) {
+          activeTab = 'create';
+        } else if (UI && UI.toast) {
+          // A deal-bot / multi-asset template (dca, grid, rebalance, momentum, …) has no
+          // numeric-knob create form here — only the 9 indicator strategies can be copied.
+          UI.toast('Only indicator strategies can be copied here');
+        }
+      }
+    } catch (_) {}
+  }
+
   // Build a Bot SPEC from the create-flow state via the engine's template.
   // AI mode ("Let the AI choose pairs") -> the scan-&-trade autopilot, realizing
   // profit INTO the chosen profit currency. Manual mode -> the selected template
   // on the chosen pair.
   function specFromCreate() {
     var T = dep('AgentBotTemplates', './bot-templates.js');
+    // MANUAL INDICATOR STRATEGY: a scheduled-planner Bot on the picked pair, with the
+    // edited knobs fed through as the bot config (market + knobs). Import-safe defaults
+    // (paper + disabled + testnet + zero allocation) so it can never auto-arm.
+    if (create.strategy && isPlannerType(create.strategy)) {
+      var pair = String(create.pair || 'BLOCK/USDC').toUpperCase();
+      var cfg = Object.assign({}, create.knobs, { market: pair, profitCurrency: quoteOf(pair) });
+      return {
+        name: strategyTitle(create.strategy) + ' · ' + pair,
+        type: create.strategy,
+        universe: { pairs: [pair] },
+        config: cfg,
+        lane: create.lane, riskMode: create.riskMode, profitMode: create.profitMode,
+        allocationUsd: 0, mode: 'paper', enabled: false, network: 'testnet',
+      };
+    }
     if (create.pairMode !== 'manual') {
       var sc = T.fromTemplate('scan_and_trade', {});
       // The settlement/quote currency is the user's chosen profitCurrency (the lane
@@ -558,6 +750,13 @@
   // EITHER the profit-currency selector (AI chooses pairs; the manual pair picker is
   // HIDDEN) OR the manual pair picker ("I'll pick a pair"). Defaults to AI.
   function pairSelectHtml() {
+    // Indicator-strategy mode trades ONE explicit pair; specFromCreate ignores
+    // pairMode here, so the AI/manual toggle is suppressed — rendering it would be a
+    // no-op that could still flip to "AI" and hide the pair picker. Just the pair input.
+    if (create.strategy) {
+      return '<div class="bfield" id="b-pair-field"><label>2 · Pair <span class="fhint">the indicator strategy trades this one pair</span></label>' +
+        '<div class="bcontrol"><input id="b-pair" value="' + esc(create.pair) + '" aria-label="Trading pair"><span class="bsuffix">BASE/QUOTE</span></div></div>';
+    }
     var ai = create.pairMode !== 'manual';
     var modeToggle =
       '<div class="bpairmode bseg" role="group" aria-label="Pair selection mode">' +
@@ -584,6 +783,103 @@
     try { return dep('AgentBots', './bots.js').splitPair(String(pair))[1].toUpperCase(); } catch (_) { return create.profitCurrency || 'USDC'; }
   }
 
+  // Exported-pure: the LIVE indicator/systematic STRATEGY picker. Lists every live
+  // registry planner (describe() as help text) plus a "use a template instead" reset.
+  // Only scheduled-planner strategies are offered, so scalp/martingale (PAPER-only) can
+  // never be live-armed here. Selecting one switches the create flow to the data-driven
+  // knob grid on an explicit pair (works on every supported chain).
+  function strategyPickerHtml() {
+    var list = plannerStrategies();
+    var none = '<button class="btpl" data-strategy="" aria-pressed="' + (!create.strategy) + '">' +
+      '<span class="btpl-nm"><span class="btpl-ic">▦</span>Use a template instead</span>' +
+      '<span class="btpl-ds">Start from a DCA / grid / scanner preset above.</span></button>';
+    var cards = list.map(function (s) {
+      var help = ''; try { help = s.describe(); } catch (_) {}
+      return '<button class="btpl" data-strategy="' + esc(s.name) + '" aria-pressed="' + (create.strategy === s.name) + '">' +
+        '<span class="btpl-nm"><span class="btpl-ic">📊</span>' + esc(strategyTitle(s.name)) + '</span>' +
+        '<span class="btpl-ds">' + esc(help) + '</span></button>';
+    }).join('');
+    return '<details class="bstrat"' + (create.strategy ? ' open' : '') + '>' +
+      '<summary><span class="beyebrow">Or · Indicator strategy</span> <span class="fhint">RSI, MACD, Bollinger, breakout…</span></summary>' +
+      '<div class="btpl-grid" id="b-strat-grid">' + none + cards + '</div></details>';
+  }
+
+  // Exported-pure: a data-driven numeric knob input per planner .defaults key
+  // (skipping market/history/held/balances), seeded from the current create.knobs.
+  function knobGridHtml() {
+    if (!create.strategy) return '';
+    var reg = registry(); var s = reg && reg.get(create.strategy);
+    if (!s) return '';
+    var fields = knobKeys(s).map(function (k) {
+      var r = knobRange(k, (s.defaults || {})[k]);
+      var val = (create.knobs[k] != null) ? create.knobs[k] : (s.defaults || {})[k];
+      var label = KNOB_LABELS[k] || k;
+      return '<div class="bfield"><label>' + esc(label) + ' <span class="fhint">' + esc(k) + '</span></label>' +
+        '<div class="bcontrol"><input id="b-knob-' + esc(k) + '" class="num" type="number" inputmode="decimal"' +
+        ' min="' + r[0] + '" max="' + r[1] + '" step="' + r[2] + '" value="' + esc(val) + '"' +
+        ' aria-label="' + esc(label) + '"></div></div>';
+    }).join('');
+    var help = ''; try { help = s.describe(); } catch (_) {}
+    return '<div class="bfield" id="b-knobs"><span class="beyebrow">Strategy knobs · ' + esc(strategyTitle(create.strategy)) + '</span>' +
+      '<div class="bhint" style="margin:4px 0 8px">' + esc(help) + '</div>' + fields + '</div>';
+  }
+
+  // The inner body of the quick-backtest card (re-rendered in place after a run).
+  function backtestBodyHtml() {
+    var r = backtestResult;
+    if (backtestBusy) return '<div class="bhint">Backtesting on recent real prices…</div>';
+    if (!r) return '<div class="bhint">Run a quick backtest of this exact config on recent real prices.</div>';
+    if (r.error) return '<div class="berr">' + esc(r.error) + '</div>';
+    var pnl = Number(r.pnlPct) || 0;
+    return '<div class="bscore"><div><div class="beyebrow">Backtest P&amp;L</div><div class="bv num ' + cls(pnl) + '" id="b-bt-pnl">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '%</div></div>' +
+      '<div><div class="beyebrow">Trades</div><div class="bv num">' + (Number(r.trades) || 0) + '</div></div>' +
+      '<div><div class="beyebrow">Max DD</div><div class="bv num">' + (r.maxDrawdownPct != null ? ('−' + Math.abs(Number(r.maxDrawdownPct)).toFixed(2) + '%') : '—') + '</div></div></div>' +
+      '<div class="bspark" style="height:44px;margin-top:8px"><canvas id="b-bt-spark"></canvas></div>';
+  }
+
+  // The quick-backtest result card: a "Backtest this config" button + pnl% / trades /
+  // max drawdown tiles + a curve sparkline. POSTs the CURRENT strategy+knobs.
+  function backtestResultHtml() {
+    if (!create.strategy) return '';
+    return '<div class="bfield" id="b-bt-field"><button class="bbtn ghost" id="b-backtest"' + (backtestBusy ? ' disabled' : '') + '>📈 Backtest this config</button>' +
+      '<div id="b-bt-out" style="margin-top:8px">' + backtestBodyHtml() + '</div></div>';
+  }
+
+  // Map a client planner name to the server backtest's BOT_TYPES where they differ.
+  var BACKTEST_TYPE_MAP = { momentum_roc: 'momentum', rebalance_hold: 'rebalance' };
+
+  // POST /account/api/backtest { type, params, asset } -> { pnlPct, trades, maxDrawdownPct,
+  // curve } for the CURRENTLY configured strategy + knobs; render pnl% + a curve sparkline.
+  async function runBacktest() {
+    if (!create.strategy) return;
+    syncAccountFromAgent();
+    var client = backupClient();
+    if (!client || !client.backtest) { backtestResult = { error: 'Backtest is unavailable (no account client).' }; return renderBacktestOut(); }
+    if (!acctToken) { backtestResult = { error: 'Connect your Blockle account on the Agent tab to run a backtest.' }; return renderBacktestOut(); }
+    var base = 'sol';
+    try { base = String((runner && runner.Bots ? runner.Bots.splitPair(create.pair)[0] : create.pair.split('/')[0]) || 'sol').toLowerCase(); } catch (_) {}
+    var type = BACKTEST_TYPE_MAP[create.strategy] || create.strategy;
+    var params = Object.assign({}, create.knobs);
+    if (create.knobs.budgetUsd != null) params.budget = create.knobs.budgetUsd; // server param alias
+    backtestBusy = true; backtestResult = null; renderBacktestOut();
+    try {
+      var res = await client.backtest(acctOrigin, acctToken, { type: type, params: params, asset: base });
+      backtestResult = res || { error: 'No backtest result.' };
+    } catch (e) { backtestResult = { error: (e && e.message) || 'Backtest failed.' }; }
+    backtestBusy = false;
+    renderBacktestOut();
+  }
+
+  // Re-render the backtest output in place (no full tab re-render) + draw the curve spark.
+  function renderBacktestOut() {
+    var btn = $('#b-backtest'); if (btn) btn.disabled = !!backtestBusy;
+    var out = $('#b-bt-out'); if (out) out.innerHTML = backtestBodyHtml();
+    var r = backtestResult;
+    if (r && !r.error && Array.isArray(r.curve) && r.curve.length > 1) {
+      drawSpark($('#b-bt-spark'), r.curve.map(Number), (Number(r.pnlPct) || 0) >= 0);
+    }
+  }
+
   async function renderCreate(panel) {
     var T = dep('AgentBotTemplates', './bot-templates.js');
     var tpls = T.list();
@@ -598,6 +894,7 @@
       '<div class="bpane card">' +
         '<h3>Create a bot</h3><p class="bhint">Pick a starting point, choose a pair, set one amount. Tune the rest under Advanced.</p>' +
         '<span class="beyebrow">1 · Template</span><div class="btpl-grid">' + cards + '</div>' +
+        strategyPickerHtml() +
         '<div class="bfield"><label>Lane <span class="fhint">one chain · one base asset</span></label>' +
           '<select id="b-lane" class="bselect" aria-label="Lane">' +
             '<option value="solana"' + (create.lane === 'solana' ? ' selected' : '') + '>Solana · hold SOL</option>' +
@@ -620,10 +917,13 @@
           '</select>' +
           '<div class="bhint" style="margin-top:4px">Losses only draw down this bot&rsquo;s budget — never your wallet.</div></div>' +
         pairSelectHtml() +
+        knobGridHtml() +
+        backtestResultHtml() +
         '<div class="bfield"><label>3 · Amount to allocate <span class="fhint">the bot\'s hard cap</span></label>' +
           '<div class="bcontrol"><span class="bcur">$</span><input id="b-alloc" class="num" value="' + esc(create.alloc) + '" inputmode="decimal" aria-label="Allocation in US dollars"><span class="bsuffix">USD</span></div></div>' +
         '<div class="bpreview" id="b-preview"></div>' +
-        '<button class="badv-toggle" id="b-adv-toggle" aria-expanded="false">Advanced — safety orders, take-profit, trailing <span class="chev">▾</span></button>' +
+        (create.strategy ? '' :
+        ('<button class="badv-toggle" id="b-adv-toggle" aria-expanded="false">Advanced — safety orders, take-profit, trailing <span class="chev">▾</span></button>' +
         '<div class="badv" id="b-adv" hidden>' +
           miniRange('base', 'Base order', '$' + create.base, 25, 300, 25, create.base) +
           miniRange('tp', 'Take-profit', create.tp.toFixed(1) + '%', 0.5, 8, 0.5, create.tp) +
@@ -631,11 +931,14 @@
           miniRange('step', 'Price step', create.step.toFixed(1) + '%', 0.5, 6, 0.5, create.step) +
           miniRange('vol', 'Volume scale', create.vol.toFixed(1) + '×', 1, 2.5, 0.1, create.vol) +
           miniRange('tr', 'Trailing', create.tr.toFixed(1) + '%', 0, 3, 0.2, create.tr) +
-        '</div>' +
+        '</div>')) +
         '<div class="bactions"><button class="bbtn primary" id="b-start-paper">▶ Start in paper</button>' +
           '<button class="bbtn ghost" id="b-go-live">⚡ Go live…</button></div>' +
       '</div>' +
-      '<div class="bpane card">' +
+      // The DCA deal-ladder preview is DCA-specific; for an indicator strategy the
+      // quick-backtest card carries the visualization instead.
+      (create.strategy ? '' :
+      ('<div class="bpane card">' +
         '<div class="bladder-head"><div><span class="beyebrow">Deal preview</span><h3 id="b-ladder-title">' + esc(create.pair) + '</h3></div>' +
           '<span class="bchip type" id="b-ladder-type">DCA</span></div>' +
         '<div class="bladder"><canvas id="b-ladder"></canvas></div>' +
@@ -646,7 +949,7 @@
           '<div><div class="beyebrow">Avg entry</div><div class="bv num" id="b-s-avg">—</div></div>' +
           '<div><div class="beyebrow">Covers a dip</div><div class="bv num" id="b-s-dip">—</div></div></div>' +
         '<div class="bmark-note num" id="b-mark-note"></div>' +
-      '</div>';
+      '</div>'));
 
     wireCreate();
     // fetch a live mark for the pair base (DISPLAY ONLY — the engine gets its own
@@ -661,13 +964,38 @@
   }
 
   function wireCreate() {
-    $$('.btpl').forEach(function (b) {
+    // Template cards (data-key) — picking one clears any manual indicator strategy.
+    $$('.btpl[data-key]').forEach(function (b) {
       b.addEventListener('click', function () {
+        clearStrategy();
         create.tplKey = b.getAttribute('data-key');
         applyTemplateDefaults(create.tplKey);
         enter();
       });
     });
+    // Indicator-strategy cards (data-strategy) — select a live planner (or "" to reset
+    // back to the template flow). Switches to the data-driven knob grid on a manual pair.
+    $$('.btpl[data-strategy]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var name = b.getAttribute('data-strategy');
+        if (name) { applyStrategyDefaults(name); }
+        else { clearStrategy(); }
+        enter();
+      });
+    });
+    // Per-strategy numeric knob inputs (data-driven from the planner .defaults).
+    if (create.strategy) {
+      var reg = registry(); var s = reg && reg.get(create.strategy);
+      knobKeys(s).forEach(function (k) {
+        var el = $('#b-knob-' + k);
+        if (el) el.addEventListener('input', function () {
+          var n = parseFloat(el.value);
+          if (isFinite(n)) create.knobs[k] = n;
+          backtestResult = null;
+        });
+      });
+      var bt = $('#b-backtest'); if (bt) bt.addEventListener('click', runBacktest);
+    }
     // pair-selection mode: AI chooses (default) vs manual pair picker.
     $$('[data-pairmode]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -759,6 +1087,18 @@
   }
 
   function renderCreatePreview() {
+    // INDICATOR STRATEGY mode: a plain-language summary of the picked planner on the
+    // chosen pair (no DCA ladder). The quick-backtest card is the visualization.
+    if (create.strategy) {
+      var sB = runner && runner.Bots;
+      var sBase = create.pair; try { sBase = sB.splitPair(create.pair)[0]; } catch (_) {}
+      var reg = registry(); var s = reg && reg.get(create.strategy); var help = '';
+      try { help = s.describe(); } catch (_) {}
+      var pvS = $('#b-preview');
+      if (pvS) pvS.innerHTML = '<b>' + esc(strategyTitle(create.strategy)) + '</b> on <b>' + esc(create.pair) +
+        '</b>. ' + esc(help) + ' Trades <b>' + esc(sBase) + '</b> within a hard cap of <b>' + plain(create.alloc) + '</b>. Paper + disabled by default.';
+      return;
+    }
     var T = dep('AgentBotTemplates', './bot-templates.js');
     var vset = { base: '$' + create.base, tp: create.tp.toFixed(1) + '%', so: String(create.so), step: create.step.toFixed(1) + '%', vol: create.vol.toFixed(1) + '×', tr: create.tr.toFixed(1) + '%' };
     Object.keys(vset).forEach(function (k) { var el = $('#b-v-' + k); if (el) el.textContent = vset[k]; });
@@ -826,6 +1166,15 @@
     var warn = '';
     if (!(alloc > 0)) warn = 'Set an allocation greater than $0 to go live (fail-closed).';
     else if (!(alloc <= SESSION_CAP_USD)) warn = 'Allocation exceeds the session cap of ' + plain(SESSION_CAP_USD) + '.';
+    else {
+      // Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count running live
+      // bots; block with an upsell when the plan's limit is already reached.
+      var lim = runner ? runner.liveBotLimit : -1;
+      if (lim != null && lim >= 0) {
+        var liveNow = runner ? runner.list().filter(function (b) { return b.mode === 'live' && b.enabled; }).length : 0;
+        if (liveNow >= lim) warn = 'Live-bot limit reached for your plan (' + lim + ' live ' + (lim === 1 ? 'bot' : 'bots') + '). Upgrade to Copilot or Pro on the Agent tab to run more.';
+      }
+    }
     var lines = reviewSheetText({ allocationUsd: alloc, network: net });
     sheet.innerHTML = '' +
       '<div class="bsheet-backdrop" id="b-sheet-x"></div>' +
@@ -1286,6 +1635,19 @@
     pairSelectHtml: pairSelectHtml,
     specFromCreate: specFromCreate,
     money: money,
+    // live indicator-strategy picker + data-driven knobs + deep-links (pure helpers)
+    strategyPickerHtml: strategyPickerHtml,
+    knobGridHtml: knobGridHtml,
+    plannerStrategies: plannerStrategies,
+    knobKeys: knobKeys,
+    applyStrategyDefaults: applyStrategyDefaults,
+    prefillFromCopiedConfig: prefillFromCopiedConfig,
+    // Capture a deep-link (?strategy=<name> / ?copyBot=<id>) to apply on the next enter().
+    applyDeepLink: function (dl) {
+      if (!dl) return;
+      pendingDeepLink = { strategy: dl.strategy || null, copyBot: dl.copyBot || null };
+      if (dl.strategy) activeTab = 'create';
+    },
     _setRunner: function (r) { runner = r; },
     _state: function () { return { activeTab: activeTab, modeFilter: modeFilter, create: create }; },
   };

@@ -31,6 +31,13 @@ class _BotsScreenState extends State<BotsScreen> {
   int _shownNotifs = 0;
   bool _didInit = false;
 
+  // DEEP-LINKS (?strategy=<name> / ?copyBot=<id>): captured once from the launch
+  // URL (Flutter web; harmless on mobile where Uri.base is the app scheme). When
+  // present the screen opens on CREATE and hands them to the CreateView, which
+  // preselects the strategy / clones the shared CONFIG. Consumed once.
+  String? _deepStrategy;
+  String? _deepCopyBot;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -40,6 +47,16 @@ class _BotsScreenState extends State<BotsScreen> {
       final c = context.read<BotsController>();
       if (!c.ready) c.init();
       _shownNotifs = c.notifications.length;
+      try {
+        final q = Uri.base.queryParameters;
+        final s = q['strategy']?.trim();
+        final cp = q['copyBot']?.trim();
+        if ((s != null && s.isNotEmpty) || (cp != null && cp.isNotEmpty)) {
+          _deepStrategy = (s != null && s.isNotEmpty) ? s : null;
+          _deepCopyBot = (cp != null && cp.isNotEmpty) ? cp : null;
+          _tab = 1; // open CREATE
+        }
+      } catch (_) {}
     }
   }
 
@@ -108,6 +125,8 @@ class _BotsScreenState extends State<BotsScreen> {
       case 1:
         return CreateView(
           controller: c,
+          initialStrategy: _deepStrategy,
+          copyBotId: _deepCopyBot,
           onCreated: (id, live) {
             setState(() {
               _filter = live ? BotFilter.live : BotFilter.paper;

@@ -946,12 +946,19 @@
     try { if (window.AgentUI) await AgentUI.onUnlock(pw); } catch {}
     try { if (window.BotsUI) await BotsUI.onUnlock(pw); } catch {}
     try { if (window.WalletUI) await WalletUI.onUnlock(pw); } catch {}
+    maybeRouteBotsDeepLink();
   }
   async function afterResume() {
     try { if (window.Wiring) Wiring.reset(); } catch {}
     try { if (window.AgentUI) await AgentUI.onResume(); } catch {}
     try { if (window.BotsUI) await BotsUI.onResume(); } catch {}
     try { if (window.WalletUI) await WalletUI.onResume(); } catch {}
+    maybeRouteBotsDeepLink();
+  }
+  // Once the wallet is open, a pending Bots deep-link (?strategy / ?copyBot) lands the
+  // user on the Bots tab, where BotsUI applies the preselect / config-clone.
+  function maybeRouteBotsDeepLink() {
+    if (window.__botsDeepLink && window.BotsUI) { window.__botsDeepLink = false; try { route('bots'); } catch {} }
   }
   async function doLock() {
     await Wallet.lock();
@@ -1909,6 +1916,16 @@
   if (params.get('view') === 'approve' && params.get('req')) {
     initApprove(params.get('req'));
   } else {
+    // Bots deep-links: ?strategy=<name> (home board "USE THIS STRATEGY") preselects a
+    // live strategy in the create UI; ?copyBot=<id> (leaderboard/profile "Copy") clones
+    // another trader's bot CONFIG (config only). Captured here, applied once the wallet
+    // is unlocked (afterUnlock/afterResume route to the Bots tab).
+    const dlStrategy = params.get('strategy');
+    const dlCopyBot = params.get('copyBot');
+    if ((dlStrategy || dlCopyBot) && window.BotsUI && typeof BotsUI.applyDeepLink === 'function') {
+      try { BotsUI.applyDeepLink({ strategy: dlStrategy, copyBot: dlCopyBot }); } catch {}
+      window.__botsDeepLink = true;
+    }
     initNormal();
   }
 })();

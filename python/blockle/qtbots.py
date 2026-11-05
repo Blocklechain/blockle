@@ -54,6 +54,7 @@ from .agent import arena as arena_mod
 from .agent import bot_templates as templates_mod
 from .agent import bots as bots_mod
 from .agent import notify as notify_mod
+from .agent import strategies as strategies_mod
 
 
 # =========================================================================== #
@@ -604,6 +605,10 @@ def resolve_market_mark(sym: str, markets: Any, get_book, get_trades) -> Optiona
 #: Signals service base — the cross-chain discovery feed powering lane/mode bots.
 _SIGNALS_DISCOVER_URL = "https://blockle.org/api/signals/discover"
 
+#: Per-plan LIVE-bot cap by Copilot tier (mirrors the accounts service
+#: LIVE_BOT_LIMITS: Free 1 / Copilot 3 / Pro -1 = unlimited).
+_LIVE_BOT_LIMITS = {"free": 1, "copilot": 3, "copilot_pro": -1, "pro": -1}
+
 
 class SignalsDiscovery:
     """READ-ONLY, lane/mode-aware candidate feed powered by the cross-chain signals
@@ -704,6 +709,12 @@ class BotsController(QObject):
         if callback is not None:
             callback(arg)
 
+    def account_token(self) -> Optional[str]:
+        """The connected blockle.org account's bearer token (``ctrl._acct_token``),
+        or None when not signed in. Used to authorize the backtest / copy POSTs."""
+        tok = getattr(self.ctrl, "_acct_token", None)
+        return str(tok) if tok else None
+
     # ---- lifecycle ----------------------------------------------------------
     def is_unlocked(self) -> bool:
         try:
@@ -763,6 +774,18 @@ class BotsController(QObject):
                     pass
         return out
 
+    def _live_bot_limit(self) -> int:
+        """Per-plan LIVE-bot cap from the connected blockle.org account's Copilot
+        tier (Free 1 / Copilot 3 / Pro -1 = unlimited). Non-blocking: reads the
+        tier cached at connect time. Desktop with NO account session -> -1
+        (unlimited), preserving the legacy behavior. Mirrors the web wallet's
+        setLiveBotLimit(sub.liveBotLimit)."""
+        ctrl = self.ctrl
+        if not getattr(ctrl, "_acct_token", None):
+            return -1  # not signed in -> unlimited (no subscription to enforce)
+        tier = str(getattr(ctrl, "copilot_tier", "free") or "free").lower()
+        return _LIVE_BOT_LIMITS.get(tier, 1)
+
     def session_cap(self) -> Optional[float]:
         if self.runner is not None:
             caps = self.runner.policy.caps
@@ -783,6 +806,11 @@ class BotsController(QObject):
         if not self.is_unlocked():
             raise RuntimeError("Unlock the multi-chain vault first (Accounts tab) to manage bots.")
         if self.runner is not None:
+            # Refresh the per-plan live-bot cap in case the account tier changed.
+            try:
+                self.runner.set_live_bot_limit(self._live_bot_limit())
+            except Exception:
+                pass
             return self.runner
         ctrl = self.ctrl
         audit = agentpkg.audit.create({"store": ctrl._store})
@@ -829,6 +857,9 @@ class BotsController(QObject):
             "policy": policy, "tools": tools, "audit": audit, "ctx": bots_ctx,
             "pnl": pnl, "wallet": wallet_id, "channel": "bots",
             "persist": ctrl._store, "mainnetEnabled": False,
+            # Per-plan LIVE-bot cap from the connected account tier (-1 = unlimited
+            # when no account session; enforced in BotRunner.arm_live).
+            "liveBotLimit": self._live_bot_limit(),
             "onEvent": self._emit,
         })
         try:
@@ -1375,15 +1406,72 @@ _PROFIT_OPTIONS = [
     ("Compound (reinvest)", "compound"),
 ]
 
+# ---- STRATEGY PICKER + per-knob render (indicator/systematic planners) -------
+# The REAL live registry (14 planners: arbitrage/dca/grid/rebalance/momentum +
+# the 9 indicator planners). scalp/martingale are intentionally absent (PAPER-only)
+# so they can never be offered as a live bot. The combo's first row keeps the
+# existing template-first flow; picking a named strategy switches to a single-
+# market planner with defaults-driven numeric knobs.
+_STRATEGY_NONE = "__template__"
+#: Knob = every ``.defaults`` key EXCEPT these engine-managed/context keys.
+_STRATEGY_KNOB_SKIP = {"market", "history", "held", "balances"}
+
+#: The ONLY strategies offered in the manual Strategy picker — the 9 single-market
+#: indicator/systematic planners that take simple numeric ``.defaults`` knobs.
+#: This mirrors the extension's plannerStrategies/isPlannerType allow-list
+#: (``agent/bots-ui.js``). DELIBERATELY excludes the deal-bots (arbitrage/dca/grid,
+#: which keep their own template create-flow), the MULTI-ASSET ``rebalance`` planner
+#: (its config is an asset->weight map, not numeric knobs) and ``momentum`` (SMA):
+#: offering those would crash or build a non-functional bot that errors every tick.
+#: scalp/martingale stay PAPER-only (absent from the live registry entirely).
+_PLANNER_STRATEGIES = (
+    "rsi", "macd", "bollinger", "breakout", "emacross",
+    "momentum_roc", "meanrev", "rebalance_hold", "hodl",
+)
+
+
+def _is_planner_strategy(name) -> bool:
+    """True iff ``name`` is one of the 9 numeric-knob planners offered in the
+    Strategy picker (mirrors the extension's ``isPlannerType`` allow-list)."""
+    return name in _PLANNER_STRATEGIES
+
+#: Server endpoints (fixed hosts, same origin as SignalsDiscovery).
+_BACKTEST_URL = "https://blockle.org/account/api/backtest"
+_BOT_COPY_URL = "https://blockle.org/account/api/bots/copy"
+_ACCOUNT_ME_URL = "https://blockle.org/account/api/me"
+
+
+def _lane_default_market(lane: Optional[str]) -> str:
+    """A sensible BASE/QUOTE market seed for a lane (every supported chain). The
+    base is the lane's native asset; USDC is the universal quote. Marks resolve
+    from the live book/price map regardless of chain, so any valid pair works."""
+    base = bots_mod.lane_base(lane) or "SOL"
+    return str(base).upper() + "/USDC"
+
 
 class CreatePanel(QWidget):
-    created = Signal()  # a bot was added -> cockpit refresh
+    created = Signal()           # a bot was added -> cockpit refresh
+    _bt_ok = Signal(object)      # backtest result (GUI-thread marshalled)
+    _bt_err = Signal(object)     # backtest error message
+    _copy_done = Signal(object)  # copyBot cloned config (GUI-thread marshalled)
+    _copy_err = Signal(object)   # copyBot error message
 
-    def __init__(self, bc: BotsController, tokens: Dict[str, str]):
+    def __init__(self, bc: BotsController, tokens: Dict[str, str],
+                 preselect_strategy: Optional[str] = None, copy_bot_id: Optional[str] = None):
         super().__init__()
         self.bc = bc
         self.tok = tokens
         self.sel_template = _TPL_ORDER[0]
+        # STRATEGY PICKER — None (_STRATEGY_NONE) keeps the template-first flow;
+        # a named registry strategy switches to a single-market planner whose
+        # numeric knobs are rendered from the planner's ``.defaults``.
+        self.strategy = _STRATEGY_NONE
+        self._registry = strategies_mod.default_registry()
+        self._knobs: Dict[str, QLineEdit] = {}       # knob key -> numeric input
+        # Deep-link intents (desktop: threaded in via argparse, else None). A
+        # ?copyBot id clones another trader's CONFIG ONLY via the server.
+        self._preselect_strategy = preselect_strategy
+        self._copy_bot_id = copy_bot_id
         self.price = 142.80  # reference mark for the preview ladder
         # PAIR SELECTION MODE — defaults to "ai" ("Let the AI choose pairs": the
         # scanner/autopilot scans + picks worthy pairs). "manual" ("I'll pick a
@@ -1435,6 +1523,38 @@ class CreatePanel(QWidget):
             self.tpl_group.addButton(b)
             tgrid.addWidget(b, i // 2, i % 2)
         lv.addLayout(tgrid)
+
+        # ---- STRATEGY picker (the 9 single-market indicator planners ONLY) ----
+        # First item keeps the template-first flow; a named strategy switches to a
+        # single-market planner with defaults-driven numeric knobs. Only the 9
+        # numeric-knob planners (_PLANNER_STRATEGIES) are listed — mirroring the
+        # extension's plannerStrategies allow-list. The deal-bots (arbitrage/dca/
+        # grid) keep their template create-flow; the MULTI-ASSET rebalance planner
+        # and momentum(SMA) are excluded (they'd crash or error every tick).
+        # scalp/martingale are PAPER-only and never appear (absent from the registry).
+        lv.addWidget(self._field_label("Strategy", "advanced — pick a specific trading strategy"))
+        self.strat_cur = QComboBox()
+        self.strat_cur.addItem("Template preset (DCA / Grid)", _STRATEGY_NONE)
+        describe = self._registry.describe()
+        for name in self._registry.names():
+            if not _is_planner_strategy(name):
+                continue
+            self.strat_cur.addItem(name, name)
+            self.strat_cur.setItemData(self.strat_cur.count() - 1, describe.get(name, ""), Qt.ToolTipRole)
+        self.strat_cur.currentIndexChanged.connect(self._strategy_changed)
+        lv.addWidget(self.strat_cur)
+        self.strat_help = QLabel("")
+        self.strat_help.setObjectName("sub")
+        self.strat_help.setWordWrap(True)
+        self.strat_help.setVisible(False)
+        lv.addWidget(self.strat_help)
+        # Dynamic knob grid — rebuilt from the chosen planner's ``.defaults``.
+        self.knob_box = QWidget()
+        self.knob_grid = QGridLayout(self.knob_box)
+        self.knob_grid.setContentsMargins(0, 8, 0, 0)
+        self.knob_grid.setSpacing(10)
+        self.knob_box.setVisible(False)
+        lv.addWidget(self.knob_box)
 
         lv.addSpacing(6)
         # 2 · Pairs — a mode toggle (AI chooses pairs [default] vs manual picker).
@@ -1516,7 +1636,8 @@ class CreatePanel(QWidget):
         self.pair_in.textChanged.connect(self._pair_changed)
         self.pair_in.setVisible(False)
 
-        lv.addWidget(self._field_label("3 · Amount to allocate", "the bot's hard cap"))
+        self.alloc_label = self._field_label("3 · Amount to allocate", "the bot's hard cap")
+        lv.addWidget(self.alloc_label)
         self.alloc_in = QLineEdit("500")
         lv.addWidget(self.alloc_in)
         self.alloc_in.textChanged.connect(self._render)
@@ -1568,6 +1689,21 @@ class CreatePanel(QWidget):
             self._sliders[key] = {"slider": sl, "val": val, "div": div, "fmt": fmt}
         self.adv_box.setVisible(False)
         lv.addWidget(self.adv_box)
+
+        # ---- Backtest this config (server /account/api/backtest) ----
+        bt_row = QHBoxLayout()
+        self.backtest_btn = QPushButton("↻  Backtest this config")
+        self.backtest_btn.setCursor(Qt.PointingHandCursor)
+        self.backtest_btn.clicked.connect(self._run_backtest)
+        bt_row.addWidget(self.backtest_btn)
+        self.backtest_result = QLabel("")
+        self.backtest_result.setObjectName("mono")
+        self.backtest_result.setWordWrap(True)
+        bt_row.addWidget(self.backtest_result, 1)
+        lv.addLayout(bt_row)
+        self.backtest_spark = Sparkline(tokens, mini=True)
+        self.backtest_spark.setVisible(False)
+        lv.addWidget(self.backtest_spark)
 
         actions = QHBoxLayout()
         self.paper_btn = QPushButton("▶  Start in paper")
@@ -1630,7 +1766,16 @@ class CreatePanel(QWidget):
         rv.addLayout(stats)
         outer.addWidget(right, 1)
 
+        # Backtest / copyBot results arrive off the GUI thread -> queued signals.
+        self._bt_ok.connect(self._on_backtest_ok)
+        self._bt_err.connect(self._on_backtest_err)
+        self._copy_done.connect(self._on_copy_done)
+        self._copy_err.connect(self._on_copy_err)
+
         self._pick_template(self.sel_template)
+        # Apply any deep-link intent (desktop: argparse-threaded preselect/copy).
+        # Absent args -> a graceful no-op.
+        self._apply_deeplinks()
 
     # ---- helpers ----
     def _field_label_text(self, label, hint):
@@ -1644,6 +1789,7 @@ class CreatePanel(QWidget):
     def set_tokens(self, tokens):
         self.tok = tokens
         self.ladder.set_tokens(tokens)
+        self.backtest_spark.set_tokens(tokens)
 
     # ---- pair-selection mode: AI chooses (default) vs manual pair picker ----
     def _quote_of(self, pair):
@@ -1678,6 +1824,11 @@ class CreatePanel(QWidget):
         i = self.lane_cur.currentIndex()
         if 0 <= i < len(_LANE_OPTIONS):
             self.lane = _LANE_OPTIONS[i][1]
+        # For a strategy, reseed the market to the new lane's native base so bots
+        # work on every supported chain out of the box.
+        if self._strategy_active():
+            self.pair_in.setText(_lane_default_market(self.lane))
+            self._render()
 
     def _risk_changed(self, idx=None):
         i = self.risk_cur.currentIndex()
@@ -1698,6 +1849,255 @@ class CreatePanel(QWidget):
         if self.pair_mode == "manual":
             self.profit_currency = self._quote_of(self.pair_in.text())
         self._render()
+
+    # ---- STRATEGY picker + per-knob render ----------------------------------
+    def _strategy_active(self) -> bool:
+        # Only the 9 numeric-knob planners drive the strategy create path. A
+        # non-planner type (deal-bot / multi-asset rebalance / momentum) never
+        # routes here — it would build a config the engine can't tick. This is the
+        # single choke point _make_spec/_backtest_payload/_go_live all gate on.
+        return _is_planner_strategy(self.strategy)
+
+    def _strategy_changed(self, _idx=None):
+        data = self.strat_cur.currentData()
+        self.strategy = data or _STRATEGY_NONE
+        self._update_strategy_ui()
+
+    @staticmethod
+    def _fmt_knob(v) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, bool):
+            return "1" if v else "0"
+        try:
+            f = float(v)
+            return str(int(f)) if f == int(f) else ("%g" % f)
+        except (TypeError, ValueError):
+            return str(v)
+
+    def _rebuild_knobs(self, name):
+        """Render ONE numeric input per planner ``.defaults`` key (skipping the
+        engine-managed market/history/held/balances), seeded from the default."""
+        while self.knob_grid.count():
+            it = self.knob_grid.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        self._knobs = {}
+        planner = self._registry.get(name)
+        if not planner:
+            return
+        defaults = dict(getattr(planner, "defaults", {}) or {})
+        keys = [k for k in defaults.keys() if k not in _STRATEGY_KNOB_SKIP]
+        for i, key in enumerate(keys):
+            cell = QVBoxLayout()
+            lab = QLabel(key)
+            lab.setStyleSheet(f"color:{self.tok['ink_muted']}; font-size:11px;")
+            cell.addWidget(lab)
+            ed = QLineEdit(self._fmt_knob(defaults.get(key)))
+            ed.textChanged.connect(lambda _t=None: self._render())
+            cell.addWidget(ed)
+            cw = QWidget()
+            cw.setLayout(cell)
+            self.knob_grid.addWidget(cw, i // 2, i % 2)
+            self._knobs[key] = ed
+
+    def _knob_values(self) -> Dict[str, Any]:
+        """The edited knob values as numbers (ints stay ints). Blank/invalid are
+        dropped so the planner's own default/clamp applies."""
+        out: Dict[str, Any] = {}
+        for key, ed in self._knobs.items():
+            t = (ed.text() or "").strip()
+            if t == "":
+                continue
+            try:
+                f = float(t)
+            except ValueError:
+                continue
+            out[key] = int(f) if f == int(f) else f
+        return out
+
+    def _update_strategy_ui(self):
+        active = self._strategy_active()
+        if active:
+            planner = self._registry.get(self.strategy)
+            self.strat_help.setText(planner.describe() if planner else "")
+            self.strat_help.setVisible(True)
+            self._rebuild_knobs(self.strategy)
+            self.knob_box.setVisible(True)
+            # A named strategy trades ONE market -> force the manual market picker,
+            # hide the AI-scanner toggle + the DCA ladder/advanced drawer.
+            self.ai_mode_btn.setVisible(False)
+            self.manual_mode_btn.setVisible(False)
+            self._set_pair_mode("manual")
+            if not (self.pair_in.text() or "").strip():
+                self.pair_in.setText(_lane_default_market(self.lane))
+            self.pair_in.setVisible(True)
+            self.pair_field_label.setText(self._field_label_text(
+                "2 · Market", "base/quote this strategy trades (works on every chain)"))
+            # budgetUsd knob IS the allocation -> hide the separate amount field.
+            has_budget = "budgetUsd" in self._knobs
+            self.alloc_label.setVisible(not has_budget)
+            self.alloc_in.setVisible(not has_budget)
+            self.adv_toggle.setVisible(False)
+            self.adv_box.setVisible(False)
+        else:
+            self.strat_help.setVisible(False)
+            self.knob_box.setVisible(False)
+            self.ai_mode_btn.setVisible(True)
+            self.manual_mode_btn.setVisible(True)
+            self.alloc_label.setVisible(True)
+            self.alloc_in.setVisible(True)
+            self.adv_toggle.setVisible(True)
+            self._set_pair_mode("ai")  # restore the default AI-scanner flow
+        self._render()
+
+    def _market_text(self) -> str:
+        m = (self.pair_in.text() or "").strip()
+        return m if m else _lane_default_market(self.lane)
+
+    # ---- deep-links (desktop: argparse-threaded; absent -> graceful no-op) ----
+    def _apply_deeplinks(self):
+        strat = self._preselect_strategy
+        if strat and _is_planner_strategy(str(strat)):
+            idx = self.strat_cur.findData(str(strat))
+            if idx >= 0:
+                self.strat_cur.setCurrentIndex(idx)  # fires _strategy_changed
+        if self._copy_bot_id:
+            self._fetch_copy_config(str(self._copy_bot_id))
+
+    def _fetch_copy_config(self, bot_id: str):
+        """Clone another trader's bot CONFIG ONLY (compliant — never funds/live
+        state) via POST /account/api/bots/copy, then prefill strategy + knobs."""
+        import threading
+
+        def work():
+            try:
+                res = self._http_post_json(_BOT_COPY_URL, {"fromBotId": bot_id},
+                                           token=self.bc.account_token())
+                self._copy_done.emit(res)
+            except Exception as e:  # noqa: BLE001 — surfaced in UI, graceful
+                self._copy_err.emit(str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_copy_done(self, res):
+        bot = res.get("bot") if isinstance(res, dict) else None
+        if not isinstance(bot, dict):
+            self._on_copy_err("no config returned")
+            return
+        type_ = bot.get("type")
+        # Only the 9 numeric-knob planners route into the strategy create path
+        # (mirrors the JS prefillFromCopiedConfig isPlannerType guard). A copied
+        # deal-bot / multi-asset / scalp / martingale config has no knob form here,
+        # so bail gracefully instead of half-prefilling a non-functional bot.
+        if not (type_ and _is_planner_strategy(str(type_))):
+            QMessageBox.information(self, "Copy unavailable",
+                                    "That trader runs a " + str(type_ or "deal") + " bot, which "
+                                    "uses its own template setup — it can't be copied into the "
+                                    "Strategy builder. Create it from the template gallery instead.")
+            return
+        idx = self.strat_cur.findData(str(type_))
+        if idx >= 0:
+            self.strat_cur.setCurrentIndex(idx)  # rebuilds knobs for this strategy
+        pair = bot.get("pair")
+        if pair:
+            self.pair_in.setText(str(pair))
+        params = bot.get("params") or {}
+        if isinstance(params, dict):
+            for key, ed in self._knobs.items():
+                if params.get(key) is not None:
+                    ed.setText(self._fmt_knob(params.get(key)))
+        self._render()
+        QMessageBox.information(self, "Copied config",
+                                "Prefilled this trader's strategy + settings (config only — "
+                                "no funds, no live state). Review, then start it under your own "
+                                "keys + gate.")
+
+    def _on_copy_err(self, e):
+        QMessageBox.information(self, "Copy unavailable",
+                               "Could not fetch that bot's config (" + str(e) + "). "
+                               "Sign in to your blockle.org account to copy a trader's config.")
+
+    # ---- quick backtest (POST /account/api/backtest) ------------------------
+    @staticmethod
+    def _http_post_json(url: str, payload: Dict[str, Any],
+                        token: Optional[str] = None) -> Dict[str, Any]:
+        data = json.dumps(payload).encode()
+        headers = {"content-type": "application/json",
+                   "accept": "application/json",
+                   "user-agent": "blockle-qt"}
+        # Both /account/api/backtest and /account/api/bots/copy are AUTHED — the
+        # connected account's bearer token (or the server 401s). Added when signed in.
+        if token:
+            headers["Authorization"] = "Bearer " + str(token)
+        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 (fixed host)
+            return json.loads(r.read().decode())
+
+    def _backtest_payload(self) -> Dict[str, Any]:
+        if self._strategy_active():
+            mkt = self._market_text()
+            params = dict(self._knob_values())
+            params["market"] = mkt
+            asset = bots_mod.split_pair(mkt)[0] if "/" in mkt else mkt
+            return {"type": self.strategy, "params": params, "asset": asset}
+        t = templates_mod.TEMPLATES[self.sel_template]
+        type_ = t["type"]
+        pair = (self.pair_in.text().strip() or "SOL/USDC") if self.pair_mode == "manual" \
+            else _lane_default_market(self.lane)
+        asset = bots_mod.split_pair(pair)[0] if "/" in pair else pair
+        params = self._config() if type_ == "dca" else dict(t["config"])
+        return {"type": type_, "params": params, "asset": asset}
+
+    def _run_backtest(self):
+        import threading
+        payload = self._backtest_payload()
+        token = self.bc.account_token()  # read on the GUI thread, used in the worker
+        self.backtest_btn.setEnabled(False)
+        self.backtest_result.setText("Backtesting…")
+
+        def work():
+            try:
+                res = self._http_post_json(_BACKTEST_URL, payload, token=token)
+                self._bt_ok.emit(res)
+            except Exception as e:  # noqa: BLE001 — surfaced in UI, graceful
+                self._bt_err.emit(str(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_backtest_ok(self, res):
+        self.backtest_btn.setEnabled(True)
+        if not isinstance(res, dict) or res.get("error"):
+            msg = res.get("error") if isinstance(res, dict) else "unavailable"
+            self.backtest_result.setText("Backtest unavailable: " + str(msg))
+            self.backtest_spark.setVisible(False)
+            return
+        pnl = res.get("pnlPct")
+        parts = []
+        if pnl is not None:
+            parts.append("PnL %+.1f%%" % float(pnl))
+        if res.get("trades") is not None:
+            parts.append("%d trades" % int(res["trades"]))
+        if res.get("maxDrawdownPct") is not None:
+            parts.append("max DD %.1f%%" % float(res["maxDrawdownPct"]))
+        self.backtest_result.setText("   ·   ".join(parts) if parts else "No result.")
+        curve = res.get("curve")
+        if isinstance(curve, list) and len(curve) >= 2:
+            try:
+                self.backtest_spark.set_data([float(x) for x in curve],
+                                             up=(pnl is None or float(pnl) >= 0))
+                self.backtest_spark.setVisible(True)
+            except (TypeError, ValueError):
+                self.backtest_spark.setVisible(False)
+        else:
+            self.backtest_spark.setVisible(False)
+
+    def _on_backtest_err(self, e):
+        self.backtest_btn.setEnabled(True)
+        self.backtest_result.setText("Backtest failed: " + str(e) +
+                                     " (sign in to your account to backtest).")
+        self.backtest_spark.setVisible(False)
 
     def _pick_template(self, key):
         self.sel_template = key
@@ -1751,6 +2151,12 @@ class CreatePanel(QWidget):
         }
 
     def _alloc(self):
+        # For an indicator strategy the budgetUsd knob IS the allocation cap.
+        if self._strategy_active() and "budgetUsd" in self._knobs:
+            try:
+                return max(0.0, float(self._knobs["budgetUsd"].text()))
+            except (ValueError, KeyError):
+                return 0.0
         try:
             return max(0.0, float(self.alloc_in.text()))
         except ValueError:
@@ -1761,6 +2167,21 @@ class CreatePanel(QWidget):
         return bots_mod.split_pair(pair)[0] if "/" in pair else pair
 
     def _render(self):
+        if self._strategy_active():
+            # A single-market indicator/systematic planner: no DCA ladder preview;
+            # show the engine's plain-language describe() for the chosen market.
+            planner = self._registry.get(self.strategy)
+            mkt = self._market_text()
+            self.ladder_title.setText(mkt)
+            self.ladder_type.setText(str(self.strategy).upper())
+            self.ladder.set_deal([], 0, 0, 0, 0, 0)
+            self.s_max.value_label.setText(plain_money(self._alloc()))
+            self.s_avg.value_label.setText("—")
+            self.s_dip.value_label.setText("—")
+            self.preview.setText((planner.describe() if planner else "")
+                                 + f"  Trades {mkt}, capped at {plain_money(self._alloc())}. "
+                                   "Paper + disabled by default.")
+            return
         if self.pair_mode != "manual":
             # AI chooses pairs: the autopilot scans & picks — no pair, no ladder.
             self.ladder_title.setText("Autopilot · scans every pair")
@@ -1810,6 +2231,24 @@ class CreatePanel(QWidget):
 
     # ---- actions: build a REAL bot via the runner (never a mock) ----
     def _make_spec(self, mode):
+        # STRATEGY mode -> a single-market indicator/systematic planner bot. Its
+        # config carries the market + edited knobs; the engine routes it through the
+        # shared scheduled-planner path. Profit settles into the market's quote.
+        if self._strategy_active():
+            mkt = self._market_text()
+            cfg = {"market": mkt}
+            cfg.update(self._knob_values())
+            return {
+                "name": f"{str(self.strategy).upper()} · {mkt}",
+                "type": self.strategy,
+                "universe": {"pairs": [mkt]},
+                "config": cfg, "allocationUsd": self._alloc(),
+                "profitCurrency": self._quote_of(mkt),
+                "lane": self.lane, "riskMode": self.risk_mode,
+                "profitMode": self.profit_mode,
+                "mode": "paper", "enabled": False, "network": "testnet",
+                "strategy": self.strategy,
+            }
         # AI mode ("Let the AI choose pairs") -> the scan-&-trade autopilot,
         # realizing profit INTO the chosen profit currency (no pair to pick).
         if self.pair_mode != "manual":
@@ -1868,7 +2307,10 @@ class CreatePanel(QWidget):
             QMessageBox.information(self, "Unlock needed", str(e))
             return
         alloc = self._alloc()
-        if self.pair_mode != "manual":
+        if self._strategy_active():
+            pair = self._market_text()
+            arm_name = f"{str(self.strategy).upper()} · {pair}"
+        elif self.pair_mode != "manual":
             pair = "Autopilot · " + (self.profit_currency or "USDC")
             arm_name = templates_mod.TEMPLATES["scan_and_trade"]["name"]
         else:
@@ -2758,7 +3200,8 @@ class ArenaPanel(QWidget):
 # Arena tab set, all sharing ONE BotsController (= ONE real BotRunner).         #
 # =========================================================================== #
 class BotsPanel(QWidget):
-    def __init__(self, ctrl: Any, theme: str = "dark"):
+    def __init__(self, ctrl: Any, theme: str = "dark",
+                 preselect_strategy: Optional[str] = None, copy_bot_id: Optional[str] = None):
         super().__init__()
         self.setObjectName("botsRoot")
         self.ctrl = ctrl
@@ -2797,7 +3240,8 @@ class BotsPanel(QWidget):
         from PySide6.QtWidgets import QTabWidget
         self.tabs = QTabWidget()
         self.cockpit = CockpitPanel(self.bc, self.tok)
-        self.create = CreatePanel(self.bc, self.tok)
+        self.create = CreatePanel(self.bc, self.tok,
+                                  preselect_strategy=preselect_strategy, copy_bot_id=copy_bot_id)
         self.detail = DetailPanel(self.bc, self.tok)
         self.arena = ArenaPanel(self.bc, self.tok)
         self.tabs.addTab(self.cockpit, "Cockpit")
@@ -2815,6 +3259,10 @@ class BotsPanel(QWidget):
 
         self.setStyleSheet(build_qss(self.tok))
         self.cockpit.refresh()
+
+        # Deep-link landing: open the Create tab when a strategy/copy intent arrived.
+        if preselect_strategy or copy_bot_id:
+            self.tabs.setCurrentWidget(self.create)
 
         # a gentle periodic cockpit refresh (reads real dashboards; no trading)
         self._timer = QTimer(self)
@@ -2861,7 +3309,13 @@ class BotsPanel(QWidget):
                           on_error=lambda e: QMessageBox.warning(self, "Kill all", str(e)))
 
 
-def build_bots_tab(ctrl: Any, theme: str = "dark"):
+def build_bots_tab(ctrl: Any, theme: str = "dark",
+                   preselect_strategy: Optional[str] = None, copy_bot_id: Optional[str] = None):
     """Return ``(BotsPanel, "Bots")`` for the wallet's tab bar, sharing the given
-    :class:`~blockle.qtmultichain.MultiChainController`."""
-    return BotsPanel(ctrl, theme=theme), "Bots"
+    :class:`~blockle.qtmultichain.MultiChainController`.
+
+    ``preselect_strategy`` / ``copy_bot_id`` are the desktop equivalents of the web
+    ``?strategy=`` / ``?copyBot=`` deep-links (threaded from the CLI); both default
+    to ``None`` -> no deep-link behavior."""
+    return BotsPanel(ctrl, theme=theme,
+                     preselect_strategy=preselect_strategy, copy_bot_id=copy_bot_id), "Bots"

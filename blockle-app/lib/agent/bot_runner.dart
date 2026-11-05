@@ -94,6 +94,10 @@ class BotRunner {
   /// false until [setLiveEntitled] is called with the account's effective tier. Paper/Arena
   /// are unaffected. Mutable because subscription state changes at runtime.
   bool liveEntitled;
+  /// Per-plan LIVE-bot cap (Free 1, Copilot 3, Pro -1 = unlimited). The host sets
+  /// it from the account's sub.liveBotLimit; -1 preserves legacy (uncapped)
+  /// behavior. Counted at arm time against OTHER already-live+enabled bots.
+  int liveBotLimit;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
   final b.BotStore store;
@@ -118,6 +122,7 @@ class BotRunner {
     BotContext? ctx,
     this.mainnetEnabled = false,
     this.liveEntitled = false,
+    this.liveBotLimit = -1,
     this.onEvent,
     this.pnl,
     b.BotStore? store,
@@ -230,6 +235,13 @@ class BotRunner {
     return liveEntitled;
   }
 
+  /// Host hook: reflect the account's per-plan LIVE-bot cap (sub.liveBotLimit).
+  /// null -> -1 (uncapped). Does not touch already-armed bots.
+  int setLiveBotLimit(int? n) {
+    liveBotLimit = n ?? -1;
+    return liveBotLimit;
+  }
+
   /// Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
   Future<b.Bot> armLive(String id, {num? allocationUsd}) async {
     final bot = store.get(id);
@@ -256,6 +268,17 @@ class BotRunner {
     if (bot.network == 'mainnet' && !mainnetEnabled) {
       await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'mainnet disabled'});
       throw StateError('cannot arm live on mainnet: set mainnetEnabled=true (operator sign-off)');
+    }
+    // Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count OTHER
+    // already-live+enabled bots; -1 = uncapped. Mirrors the web runner.
+    if (liveBotLimit >= 0) {
+      final liveNow =
+          store.list().where((x) => x.id != id && x.mode == 'live' && x.enabled).length;
+      if (liveNow >= liveBotLimit) {
+        await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'live bot limit reached', 'limit': liveBotLimit});
+        throw StateError(
+            'Live-bot limit reached for your plan ($liveBotLimit). Upgrade to Blockle Copilot Pro to run more.');
+      }
     }
     bot.allocationUsd = alloc;
     bot.mode = 'live';
@@ -404,7 +427,7 @@ class BotRunner {
 
     Map<String, dynamic> report;
     try {
-      if (bot.type == 'rebalance' || bot.type == 'momentum') {
+      if (b.kScheduledTypes.contains(bot.type)) {
         report = await _tickScheduled(bot, now);
       } else if (bot.type == 'scanner') {
         report = await _tickScanner(bot, now);
@@ -1031,16 +1054,71 @@ class BotRunner {
     return bot;
   }
 
-  // ---- scheduled bots (rebalance / momentum) reuse the strategy planners ----
+  // ---- scheduled bots (rebalance / momentum + the 9 indicator planners) ------
+  // All route through the strategy PLANNER each tick. The indicator + momentum
+  // planners decide on a rolling price `history`; the runner maintains a per-bot
+  // price RING here from the SAME real marks the deal bots use (ctx.prices) and
+  // feeds it in as `history` (oldest -> newest) unless the config already carries
+  // one. No synthetic prices: a tick with no mark simply does not extend the ring.
   Future<Map<String, dynamic>> _tickScheduled(b.Bot bot, int now) async {
     final strat = strategies[bot.type];
     final sctx = ctx.strategyCtx;
     if (strat == null) return {'bot': bot.id, 'error': 'no strategy ${bot.type}'};
     if (sctx == null) return {'bot': bot.id, 'error': 'no strategy ctx for ${bot.type}'};
-    final params = strat.validateParams({...bot.config});
+    final cfg = {...bot.config};
+    final market = _scheduledMarket(bot);
+    if (market != null) {
+      cfg['market'] = market;
+      final ring = await _extendPriceRing(bot, market);
+      // Only seed history from the ring when the config does not supply its own
+      // (preserves explicit-history callers + the deterministic fixtures exactly).
+      if (ring.isNotEmpty && (cfg['history'] == null ||
+          (cfg['history'] is List && (cfg['history'] as List).isEmpty))) {
+        cfg['history'] = ring;
+      }
+    }
+    final Map<String, dynamic> params;
+    try {
+      params = strat.validateParams(cfg);
+    } catch (e) {
+      await _audit({'type': 'bot_error', 'bot': bot.id, 'error': '$e'});
+      return {'bot': bot.id, 'type': bot.type, 'error': '$e'};
+    }
     final intents = await strat.plan(sctx, params);
     final events = await _dispatchIntents(bot, intents);
     return {'bot': bot.id, 'type': bot.type, 'events': events};
+  }
+
+  // The market a scheduled bot trades: its config `market` (indicator bots) or its
+  // first universe pair (rebalance/momentum), normalized BASE/QUOTE, else null.
+  String? _scheduledMarket(b.Bot bot) {
+    final m = bot.config['market'];
+    if (m is String && m.trim().isNotEmpty) return m.trim().toUpperCase();
+    final ps = bot.pairs();
+    if (ps.isNotEmpty && ps.first.contains('/')) return ps.first.toUpperCase();
+    return null;
+  }
+
+  // Append the current base mark to the bot's rolling price ring (capped) and
+  // return it oldest -> newest. Persisted in bot.state so indicators warm up
+  // across ticks. A missing mark leaves the ring unchanged (no synthetic price).
+  static const int _priceRingCap = 512;
+  Future<List<num>> _extendPriceRing(b.Bot bot, String market) async {
+    final base = b.splitPair(market)[0];
+    final prices = await _prices([base, b.splitPair(market)[1]]);
+    final markUc = _unitUc(prices, base);
+    final ring = (bot.state['priceRing'] as List?)?.cast<num>() ?? <num>[];
+    if (markUc != null) {
+      final usd = b.ucToUsd(markUc);
+      if (usd != null && usd > 0) {
+        ring.add(usd);
+        if (ring.length > _priceRingCap) {
+          ring.removeRange(0, ring.length - _priceRingCap);
+        }
+        bot.state['priceRing'] = ring;
+      }
+    }
+    return List<num>.from(ring);
   }
 
   // The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:

@@ -118,6 +118,27 @@ Map<String, dynamic> fromTemplate(String key, {String? pair, String? name}) {
   };
 }
 
+/// Build a Bot spec for a STRATEGY PLANNER (the 9 indicator planners + rebalance/
+/// momentum). [type] is the planner name; [pair] is the BASE/QUOTE market the
+/// planner trades; [knobs] are the planner's numeric defaults as edited in the
+/// create-UI. The market is pinned into the config (indicator planners require it)
+/// and the pair also seeds the universe. ALWAYS paper + disabled + testnet.
+Map<String, dynamic> fromStrategy(String type, {required String pair, String? name, Map<String, dynamic>? knobs}) {
+  if (!kBotTypes.contains(type)) throw ArgumentError('unknown strategy: $type');
+  final market = pair.toUpperCase();
+  return {
+    'name': name ?? '$type bot',
+    'type': type,
+    'universe': {'pairs': [market]},
+    'config': {...?knobs, 'market': market},
+    'allocationUsd': 0,
+    'mode': 'paper',
+    'enabled': false,
+    'network': 'testnet',
+    'strategy': type,
+  };
+}
+
 /// Export a bot's config as a portable template JSON (NO state, NO keys, NO
 /// allocation/mode/enabled — a template is a recipe, not a running bot).
 Map<String, dynamic> exportBot(Bot bot) => {
