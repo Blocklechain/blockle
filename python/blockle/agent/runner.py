@@ -31,6 +31,7 @@ import json
 from typing import Any, Dict, Optional
 
 from ..multichain._util import maybe_await
+from . import rag as _rag
 
 DEFAULT_SYSTEM = (
     "You are the in-wallet assistant for a Blockle multi-chain wallet. You can "
@@ -212,6 +213,19 @@ class Runner:
         on_event = deps.get("onEvent")
         self.on_event = on_event if callable(on_event) else None
 
+        # ---- client-side RAG grounding (offline, deterministic) --------------
+        # The base system prompt is grounded per-turn with (a) the bundled Blockle
+        # corpus and (b) an optional live snapshot of the user's own wallet state.
+        # It ONLY augments the prompt — it grants no tools and never touches the
+        # allowlist or the signing gate. Default-on with the bundled corpus;
+        # disable with rag=False. ``ragLive`` is an optional callable returning the
+        # live snapshot dict (from existing wallet state; no new network calls).
+        self._rag_enabled = deps.get("rag", True) is not False
+        rc = deps.get("ragCorpus")
+        self._rag_corpus = rc if rc is not None else _rag.CORPUS
+        rl = deps.get("ragLive")
+        self._rag_live = rl if callable(rl) else None
+
         self.messages = []
         self._aborted = False
 
@@ -223,6 +237,21 @@ class Runner:
                 self.on_event(ev)
             except Exception:
                 pass
+
+    def _grounded_system(self, query: Any) -> str:
+        """Prepend the offline RAG grounding block (corpus + live snapshot) to the
+        base system prompt. Read-only reference text only — it grants no tools and
+        cannot touch the allowlist or the signing gate. Never raises outward."""
+        if not self._rag_enabled:
+            return self.system
+        live = None
+        if self._rag_live is not None:
+            try:
+                live = self._rag_live()
+            except Exception:  # noqa: BLE001 — a bad live snapshot must not break a turn
+                live = None
+        return _rag.ground_system(self.system, query,
+                                  {"corpus": self._rag_corpus, "live": live})
 
     async def kill(self, reason: Any = None) -> None:
         self._aborted = True
@@ -294,6 +323,9 @@ class Runner:
         self.messages.append({"role": "user", "text": prompt})
 
         last_text = None
+        # Ground ONCE per user prompt (the grounding is a function of the query +
+        # bundled corpus + a live snapshot) and reuse it across the tool-loop turns.
+        grounded_system = self._grounded_system(prompt)
         try:
             for _turn in range(self.max_turns):
                 self.policy.assert_live()
@@ -301,7 +333,7 @@ class Runner:
                     return {"text": last_text, "stopped": True, "reason": "aborted"}
 
                 resp = await maybe_await(self.provider.turn({
-                    "system": self.system,
+                    "system": grounded_system,
                     "messages": self.messages,
                     "tools": self.tools.schemas(),
                 }))

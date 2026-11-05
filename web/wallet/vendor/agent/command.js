@@ -108,9 +108,28 @@
       if (!this.AgentRunner || typeof this.AgentRunner.dispatchValueMoving !== 'function') {
         throw new Error('command router requires AgentRunner (runner.js)');
       }
+
+      // OFFLINE CLIENT RAG (optional, read-only). Grounds the conversational
+      // assistant with bundled Blockle facts + a live wallet snapshot. It only
+      // augments the system prompt — it adds NO tools and cannot touch the
+      // allowlist or the signing gate. `ragLive()` returns the live snapshot from
+      // EXISTING wallet state (no network). Absent -> grounding is a no-op.
+      this.rag = deps.rag || dep('AgentRAG', './rag.js');
+      this.ragCorpus = deps.ragCorpus || null; // null -> rag.js uses its bundled corpus
+      this.ragLive = typeof deps.ragLive === 'function' ? deps.ragLive : null;
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
+
+    // Prepend the grounding block (bundled facts + live snapshot) to a base system
+    // prompt. Pure client-side, never throws into the turn. The CLASSIFY prompt is
+    // deliberately NOT grounded (it stays a bare one-word router).
+    _ground(base, query) {
+      if (!this.rag || typeof this.rag.groundSystem !== 'function') return base;
+      let live = null;
+      if (this.ragLive) { try { live = this.ragLive(); } catch (_) { live = null; } }
+      try { return this.rag.groundSystem(base, query, { corpus: this.ragCorpus || undefined, live: live }); } catch (_) { return base; }
+    }
 
     // ---- entry point --------------------------------------------------------
     async run(text, opts) {
@@ -158,11 +177,12 @@
       const messages = [{ role: 'user', text }];
       const steps = [];
       let lastText;
+      const system = this._ground(opts.system || ACTION_SYSTEM, text);
 
       for (let turn = 0; turn < this.maxTurns; turn++) {
         this.policy.assertLive();
         const resp = await this.provider.turn({
-          system: opts.system || ACTION_SYSTEM,
+          system,
           messages,
           tools: this.tools.schemas(),
         });
@@ -298,7 +318,7 @@
         tools,
         policy: this.policy,
         audit: this.audit,
-        system: opts.system || QUERY_SYSTEM,
+        system: this._ground(opts.system || QUERY_SYSTEM, text),
         maxTurns: this.maxTurns,
         readOnly: true, // enforce read-only BY CAPABILITY — value tools stripped
         onEvent: (ev) => this.emit(ev),

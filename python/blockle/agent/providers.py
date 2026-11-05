@@ -188,7 +188,12 @@ class OpenAIProvider:
 
     async def turn(self, req: Dict[str, Any]) -> Dict[str, Any]:
         body = self._build_body(req.get("system"), req.get("messages") or [], req.get("tools") or [])
-        headers = {"content-type": "application/json", "authorization": "Bearer " + self.api_key}
+        headers = {"content-type": "application/json"}
+        # Omit the Authorization header when there is no key — a LOCAL (Ollama /
+        # LM Studio) server is keyless and some reject a bare "Bearer " value.
+        # BYO-key providers always carry a key, so this never drops a real key.
+        if self.api_key:
+            headers["authorization"] = "Bearer " + self.api_key
         headers.update(self.extra_headers)
         j = await self._request({"method": "POST", "url": self.base_url + "/v1/chat/completions",
                                  "headers": headers, "body": body})
@@ -382,14 +387,91 @@ class CopilotProvider(OpenAIProvider):
         super().__init__(merged)
 
 
+# ---- LOCAL LLM (Ollama / LM Studio / any OpenAI-compatible server on the
+# user's OWN machine). Keyless: nothing leaves the device, nothing is billed,
+# and it takes the load off Blockle's hosted brain. The wallet appends
+# /v1/chat/completions (and /v1/models to list what is installed). This is the
+# recommended private default for the conversational smart-trading assistant.
+LOCAL_PRESETS = {
+    "ollama": {
+        "label": "Ollama", "baseUrl": "http://localhost:11434",
+        "model": "qwen2.5:3b-instruct", "site": "https://ollama.com/download",
+        "setup": [
+            "Install Ollama from ollama.com/download",
+            "Pull a model:  ollama pull qwen2.5:3b-instruct  (or llama3.2 / a larger 8B+ model)",
+            "Start it:  ollama serve  (the desktop wallet reaches http://localhost:11434 directly)",
+            "Point the wallet Brain at http://localhost:11434",
+        ],
+    },
+    "lmstudio": {
+        "label": "LM Studio", "baseUrl": "http://localhost:1234",
+        "model": "", "site": "https://lmstudio.ai",
+        "setup": [
+            "Install LM Studio from lmstudio.ai and download a chat model",
+            "Open the Developer tab → Start Server (port 1234)",
+            "Point the wallet Brain at http://localhost:1234",
+        ],
+    },
+    "custom": {
+        "label": "Custom (OpenAI-compatible)", "baseUrl": "http://localhost:8080",
+        "model": "", "site": "",
+        "setup": [
+            "Any server that speaks /v1/chat/completions works (llama.cpp server, vLLM, LocalAI, Jan…)",
+            "Point the wallet Brain at its base URL",
+        ],
+    },
+}
+
+
+class LocalProvider(OpenAIProvider):
+    """A local OpenAI-compatible server (Ollama / LM Studio / llama.cpp / vLLM).
+
+    Keyless — it tolerates a missing ``apiKey`` (localhost is the user's own
+    machine, so no key leaves the device). Reuses the OpenAI Chat Completions
+    adapter; :meth:`OpenAIProvider.turn` already omits the Authorization header
+    when the key is empty.
+    """
+
+    def __init__(self, opts: Optional[Dict[str, Any]] = None):
+        opts = opts or {}
+        merged = dict(opts)
+        merged["name"] = "local"
+        merged["apiKey"] = opts.get("apiKey") or ""  # keyless — tolerate a missing key
+        merged["baseUrl"] = opts.get("baseUrl") or LOCAL_PRESETS["ollama"]["baseUrl"]
+        merged["model"] = opts.get("model") or LOCAL_PRESETS["ollama"]["model"]
+        super().__init__(merged)
+        self.local = True
+
+    async def list_models(self) -> List[str]:
+        """What the local server has installed — a list of model ids."""
+        headers = {}
+        if self.api_key:
+            headers["authorization"] = "Bearer " + self.api_key
+        j = await self._request({"method": "GET", "url": self.base_url + "/v1/models",
+                                 "headers": headers}) or {}
+        if isinstance(j, list):
+            lst = j
+        else:
+            lst = j.get("data") or j.get("models") or []
+        out = []
+        for m in lst:
+            name = m if isinstance(m, str) else (m.get("id") or m.get("name") or "")
+            if name:
+                out.append(name)
+        return out
+
+
 def create(opts: Optional[Dict[str, Any]] = None):
     opts = opts or {}
     provider = opts.get("provider")
     # The HOSTED provider is keyless: it needs a gatewayUrl + sessionToken, NOT
-    # an apiKey. Every other (BYO-key) provider still requires an apiKey from the
+    # an apiKey. The LOCAL provider is keyless too (a server on the user's own
+    # machine). Every other (BYO-key) provider still requires an apiKey from the
     # vault. This is the ONLY place a provider is instantiated.
     if provider == "hosted":
         return HostedProvider(opts)
+    if provider == "local":
+        return LocalProvider(opts)
     if not opts.get("apiKey"):
         raise ValueError("provider requires an apiKey (from the vault)")
     if provider == "claude":

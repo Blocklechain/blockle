@@ -56,15 +56,20 @@ def tier_limits(tier):
 # "How do I get credentials" guidance shown in the UI for each provider, so a
 # user can connect a channel without leaving the wallet to hunt for docs.
 PROVIDER_GUIDES = {
-    "hosted": {
-        "label": "Blockle hosted agent (no key)",
-        "provider": "hosted",
-        "needs": [],  # keyless — a session token, not an apiKey
-        "defaultModel": "",
-        "url": "",
-        "how": ("Keyless. Blockle runs the model for you via the hosted agent gateway — no API "
-                "key to create or paste. Your seed never leaves this device; only the chat turns "
-                "and a short-lived session token are sent to the gateway."),
+    # LOCAL FIRST — the recommended private default: the model runs on the user's
+    # OWN machine, so nothing leaves the device and there is no quota or key.
+    "local": {
+        "label": "Local LLM (Ollama / LM Studio) — private, no key",
+        "provider": "local",
+        "needs": ["baseUrl", "model"],  # NO apiKey — keyless, on your own machine
+        "keyless": True,
+        "defaultModel": "qwen2.5:3b-instruct",
+        "defaultBaseUrl": "http://localhost:11434",
+        "url": "https://ollama.com/download",
+        "how": ("Run the model on your OWN computer so nothing leaves the device and there is no "
+                "quota or key. Install Ollama (ollama.com), run \"ollama pull qwen2.5:3b-instruct\", "
+                "then point the wallet at http://localhost:11434. LM Studio works too "
+                "(http://localhost:1234, enable CORS). This is the recommended private default."),
     },
     "claude": {
         "label": "Claude (Anthropic)",
@@ -106,6 +111,21 @@ PROVIDER_GUIDES = {
                 "— your wallet appends /chat/completions), the exact model name, and the API key. "
                 "Everything is stored encrypted in your vault and sent only to the base URL you "
                 "provide."),
+    },
+    # HOSTED LAST — an EXPLICIT, optional fallback (not the default). Keyless, but
+    # your chat turns transit Blockle's server; prefer Local or a BYO key.
+    "hosted": {
+        "label": "Blockle hosted agent (optional — runs on our server)",
+        "provider": "hosted",
+        "needs": [],  # keyless — a session token, not an apiKey
+        "keyless": True,
+        "defaultModel": "",
+        "url": "",
+        "how": ("Optional, not the default. Blockle runs the model for you via the hosted agent "
+                "gateway so you can try the assistant with nothing installed — no API key to create "
+                "or paste. Your seed never leaves this device; only the chat turns and a short-lived "
+                "session token are sent to the gateway. Prefer a Local or BYO provider for privacy "
+                "and no quota."),
     },
 }
 
@@ -378,15 +398,20 @@ class ChannelManager:
         if self.resolve_credential:
             cred = await maybe_await(self.resolve_credential(meta.get("credRef"), meta))
         provider = meta.get("provider") or (cred or {}).get("provider")
-        # HOSTED is keyless: it needs a gatewayUrl + sessionToken (the wallet never
-        # holds the upstream LLM key). Every other provider still needs an apiKey.
+        # HOSTED and LOCAL are keyless. HOSTED needs a gatewayUrl + sessionToken
+        # (the wallet never holds the upstream LLM key); LOCAL needs only a baseUrl
+        # (a server on the user's own machine, so no key leaves the device). Every
+        # other provider still needs an apiKey from the vault.
         if provider == "hosted":
             if not cred or not cred.get("gatewayUrl") or not cred.get("sessionToken"):
                 raise ValueError('cannot start "' + meta["label"]
                                  + '": no hosted session available (connect the Blockle hosted agent)')
+        elif provider == "local":
+            pass  # keyless — LocalProvider defaults the baseUrl/model if unset
         elif not cred or not cred.get("apiKey"):
             raise ValueError('cannot start "' + meta["label"]
                              + '": no LLM credential available (unlock the wallet and connect this channel)')
+        cred = cred or {}  # LOCAL may resolve to no stored cred — LocalProvider self-defaults
         credential = {
             "provider": provider,
             "apiKey": cred.get("apiKey"),
@@ -437,6 +462,12 @@ class ChannelManager:
             "requireConfirm": None if meta.get("readOnly") else True,
             "autoApproveUnderUsd": config.get("autoApproveUnderUsd"),
             "fetchImpl": self.fetch_impl,
+            # Offline client-side RAG grounding for the channel's NL runner. The
+            # bundled corpus is default-on in the runner; ``ragLive`` (optional,
+            # wired by the host from EXISTING wallet state) adds a live snapshot.
+            "rag": config.get("rag", self.defaults.get("rag")),
+            "ragCorpus": config.get("ragCorpus") or self.defaults.get("ragCorpus"),
+            "ragLive": config.get("ragLive") or self.defaults.get("ragLive"),
         })
         ch.killed = False
         meta["enabled"] = True

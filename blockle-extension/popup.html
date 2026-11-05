@@ -617,6 +617,11 @@
     <script src="agent/notify.js"></script>
     <script src="agent/pnl.js"></script>
     <script src="agent/index.js"></script>
+    <!-- Client-side RAG: offline retriever (rag.js) + bundled-corpus loader
+         (rag-load.js). Grounds the conversational assistant with Blockle facts +
+         a live wallet snapshot. Read-only: grants no tools, never signs. -->
+    <script src="agent/rag.js"></script>
+    <script src="agent/rag-load.js"></script>
     <script src="agent/command.js"></script>
     <!-- Bots platform engine (docs/BLOCKLE-BOTS.md): deal engine + gated runner + arena -->
     <script src="agent/discovery.js"></script>

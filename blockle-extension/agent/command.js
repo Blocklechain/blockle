@@ -108,6 +108,29 @@
       if (!this.AgentRunner || typeof this.AgentRunner.dispatchValueMoving !== 'function') {
         throw new Error('command router requires AgentRunner (runner.js)');
       }
+
+      // Client-side RAG (agent/rag.js): grounds the conversational layer with the
+      // bundled Blockle corpus + a live wallet snapshot. Optional — absent, the
+      // base system prompts are used verbatim. Grounding is READ-ONLY reference
+      // text prepended to the system prompt; it grants NO tools and can never
+      // bypass the signing gate. We ground the system HERE (runAction/runQuery) and
+      // create the query runner WITHOUT a rag so it is never double-grounded.
+      this.rag = deps.rag || dep('AgentRAG', './rag.js') || null;
+      this.liveContext = typeof deps.liveContext === 'function' ? deps.liveContext : null;
+    }
+
+    // Best-effort live snapshot from EXISTING wallet state (no new network call).
+    _live() {
+      if (!this.liveContext) return undefined;
+      try { return this.liveContext(); } catch (_) { return undefined; }
+    }
+
+    // Wrap a base system prompt with the RAG grounding block keyed to `text`.
+    // Never throws; degrades to the base prompt when RAG is unavailable.
+    _ground(base, text) {
+      if (!this.rag || typeof this.rag.groundSystem !== 'function') return base;
+      try { return this.rag.groundSystem(base, text, { live: this._live() }); }
+      catch (_) { return base; }
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
@@ -159,10 +182,13 @@
       const steps = [];
       let lastText;
 
+      // Ground the ACTION system prompt once against the user's instruction.
+      const system = this._ground(opts.system || ACTION_SYSTEM, text);
+
       for (let turn = 0; turn < this.maxTurns; turn++) {
         this.policy.assertLive();
         const resp = await this.provider.turn({
-          system: opts.system || ACTION_SYSTEM,
+          system,
           messages,
           tools: this.tools.schemas(),
         });
@@ -298,7 +324,9 @@
         tools,
         policy: this.policy,
         audit: this.audit,
-        system: opts.system || QUERY_SYSTEM,
+        // Ground the QUERY system HERE; the runner is created WITHOUT a rag so it
+        // does not re-ground (no double grounding).
+        system: this._ground(opts.system || QUERY_SYSTEM, text),
         maxTurns: this.maxTurns,
         readOnly: true, // enforce read-only BY CAPABILITY — value tools stripped
         onEvent: (ev) => this.emit(ev),

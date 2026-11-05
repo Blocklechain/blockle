@@ -31,6 +31,13 @@
     throw new Error('agent dependency not loaded: ' + name);
   }
 
+  // OPTIONAL dependency: never throws if absent (RAG grounding simply stays off).
+  function optDep(name, rel) {
+    if (root[name]) return root[name];
+    if (typeof require === 'function') { try { return require(rel); } catch (_) {} }
+    return null;
+  }
+
   const Agent = {
     start(opts) {
       opts = opts || {};
@@ -38,13 +45,16 @@
       if (!cred.provider) {
         throw new Error('AI agent is not configured — enable it and add an LLM credential first');
       }
-      // HOSTED mode is keyless: it needs a gatewayUrl + sessionToken instead of an
-      // apiKey (the wallet never holds the upstream LLM key). Every other provider
-      // still requires an apiKey from the unlocked vault.
+      // KEYLESS modes: HOSTED needs a gatewayUrl + sessionToken (the wallet never
+      // holds the upstream LLM key); LOCAL needs only a baseUrl (a server on the
+      // user's OWN machine — nothing leaves the device). Every other (BYO-key)
+      // provider still requires an apiKey from the unlocked vault.
       if (cred.provider === 'hosted') {
         if (!cred.gatewayUrl || !cred.sessionToken) {
           throw new Error('hosted agent is not configured — connect "Use Blockle hosted agent" first');
         }
+      } else if (cred.provider === 'local') {
+        // keyless local server — no apiKey required.
       } else if (!cred.apiKey) {
         throw new Error('AI agent is not configured — enable it and add an LLM credential first');
       }
@@ -95,6 +105,12 @@
 
       const tools = AgentTools.build(opts.ctx || {});
 
+      // Client-side RAG grounding (agent/rag.js) for this channel's NL turns —
+      // ON by default, opt-out via `rag:false`. It only augments the system prompt
+      // with read-only facts + a live snapshot; it grants NO tools and cannot touch
+      // the signing gate. `liveContext()` pulls EXISTING wallet state (no network).
+      const rag = opts.rag === false ? null : (opts.rag || optDep('AgentRAG', './rag.js'));
+
       const runner = AgentRunner.create({
         provider,
         tools,
@@ -107,6 +123,8 @@
         onEvent: opts.onEvent,
         pnl,                              // post-commit realized-profit hook
         channel: opts.channel,
+        rag,                              // per-turn grounding (opt-in on the runner)
+        liveContext: opts.liveContext,    // () -> { chain, pair, balances, bots, signals }
       });
 
       return {

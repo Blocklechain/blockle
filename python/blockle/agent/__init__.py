@@ -24,11 +24,11 @@ from __future__ import annotations
 
 from . import (arena, audit, bot_runner, bot_templates, bots, channels,
                command, command_ui, discovery, index, notify, pnl, policy,
-               providers, runner, tools)
+               providers, rag, runner, tools)
 from .index import Agent, start
 
 __all__ = [
     "policy", "audit", "providers", "tools", "runner", "channels", "command",
     "command_ui", "index", "discovery", "pnl", "notify", "bots", "bot_runner",
-    "bot_templates", "arena", "Agent", "start",
+    "bot_templates", "arena", "rag", "Agent", "start",
 ]

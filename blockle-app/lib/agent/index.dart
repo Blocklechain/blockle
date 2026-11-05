@@ -56,6 +56,13 @@ class AgentCredential {
 
   /// True for the keyless Blockle-hosted provider.
   bool get isHosted => provider == 'hosted';
+
+  /// True for the keyless LOCAL provider (Ollama / LM Studio / OpenAI-compatible
+  /// server on the user's own machine) — no apiKey, carries a [baseUrl].
+  bool get isLocal => provider == 'local';
+
+  /// True for any provider that carries NO upstream LLM key (hosted or local).
+  bool get isKeyless => isHosted || isLocal;
 }
 
 /// The assembled, running agent. Mirrors the object `Agent.start` returns.
@@ -109,6 +116,7 @@ AgentInstance startAgent({
   void Function(Map<String, dynamic> ledger)? onPnlChange,
   String? walletId,
   String? channelId,
+  Map<String, dynamic>? Function()? liveContext,
 }) {
   final cred = credential;
   if (cred == null) {
@@ -123,6 +131,12 @@ AgentInstance startAgent({
     if ((cred.gatewayUrl ?? '').isEmpty || (cred.sessionToken ?? '').isEmpty) {
       throw StateError(
           'hosted agent is not configured — connect "Use Blockle hosted agent" first');
+    }
+  } else if (cred.isLocal) {
+    // LOCAL (keyless) needs a base URL to the user's own server — no apiKey.
+    if ((cred.baseUrl ?? '').isEmpty) {
+      throw StateError(
+          'local LLM is not configured — set a base URL (e.g. http://localhost:11434) first');
     }
   } else if ((cred.apiKey ?? '').isEmpty) {
     throw StateError(
@@ -182,6 +196,9 @@ AgentInstance startAgent({
     pnl: pnl,
     pnlWallet: walletId,
     pnlChannel: channelId,
+    // CLIENT-SIDE RAG: optional read-only live snapshot for prompt grounding of
+    // this channel's persistent-agent turns (offline; no new tools/gate).
+    liveContext: liveContext,
   );
 
   return AgentInstance(runner, policy, audit, tools,

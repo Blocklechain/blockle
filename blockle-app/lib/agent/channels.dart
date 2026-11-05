@@ -27,6 +27,15 @@ const Map<String, dynamic> defaultChannelCaps = {'sessionUsd': 100, 'perAsset': 
 
 /// "How do I get credentials" guidance shown in the UI for each provider.
 const Map<String, Map<String, dynamic>> providerGuides = {
+  'local': {
+    'label': 'Local LLM (Ollama / LM Studio)',
+    'provider': 'local',
+    'needs': ['baseUrl', 'model'],
+    'defaultModel': 'qwen2.5:3b-instruct',
+    'url': 'https://ollama.com/download',
+    'how':
+        'Run the model on your OWN computer — nothing leaves the device, no API key, no quota. Install Ollama, run: ollama pull qwen2.5:3b-instruct, then point the wallet at http://localhost:11434. LM Studio (http://localhost:1234) works too.',
+  },
   'claude': {
     'label': 'Claude (Anthropic)',
     'provider': 'claude',
@@ -370,16 +379,24 @@ class ChannelManager {
 
     AgentCredential? cred;
     if (resolveCredential != null) cred = await resolveCredential!(meta['credRef'] as String?, meta);
-    // HOSTED mode is keyless — it needs a gatewayUrl + sessionToken instead of an
-    // apiKey. Every other provider still requires an apiKey. Mirrors channels.js.
-    final isHosted = ((meta['provider'] as String?) ?? cred?.provider) == 'hosted';
-    if (cred == null || (!isHosted && (cred.apiKey ?? '').isEmpty)) {
+    // HOSTED and LOCAL are KEYLESS — hosted needs a gatewayUrl + sessionToken,
+    // local needs a baseUrl to the user's own server. Every other (BYO-key)
+    // provider still requires an apiKey. Mirrors channels.js.
+    final providerName = (meta['provider'] as String?) ?? cred?.provider;
+    final isHosted = providerName == 'hosted';
+    final isLocal = providerName == 'local';
+    final keyless = isHosted || isLocal;
+    if (cred == null || (!keyless && (cred.apiKey ?? '').isEmpty)) {
       throw StateError(
           'cannot start "${meta['label']}": no LLM credential available (unlock the wallet and connect this channel)');
     }
     if (isHosted && ((cred.gatewayUrl ?? '').isEmpty || (cred.sessionToken ?? '').isEmpty)) {
       throw StateError(
           'cannot start "${meta['label']}": hosted connection is missing its gateway session (reconnect)');
+    }
+    if (isLocal && ((meta['baseUrl'] as String?) ?? cred.baseUrl ?? '').isEmpty) {
+      throw StateError(
+          'cannot start "${meta['label']}": local LLM is missing its base URL (reconnect)');
     }
     final resolvedCred = cred;
     final credential = isHosted
@@ -394,12 +411,18 @@ class ChannelManager {
                 ? () => hostedRefresh!(meta['credRef'] as String?, resolvedCred, meta)
                 : null,
           )
-        : AgentCredential(
-            provider: (meta['provider'] as String?) ?? resolvedCred.provider,
-            apiKey: resolvedCred.apiKey,
-            model: (meta['model'] as String?) ?? resolvedCred.model,
-            baseUrl: (meta['baseUrl'] as String?) ?? resolvedCred.baseUrl,
-          );
+        : isLocal
+            ? AgentCredential(
+                provider: 'local',
+                model: (meta['model'] as String?) ?? resolvedCred.model,
+                baseUrl: (meta['baseUrl'] as String?) ?? resolvedCred.baseUrl,
+              )
+            : AgentCredential(
+                provider: providerName ?? resolvedCred.provider,
+                apiKey: resolvedCred.apiKey,
+                model: (meta['model'] as String?) ?? resolvedCred.model,
+                baseUrl: (meta['baseUrl'] as String?) ?? resolvedCred.baseUrl,
+              );
 
     Future<void> onKillLocal(String? reason) async {
       if (onChannelKill != null) {

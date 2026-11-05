@@ -38,6 +38,7 @@ import 'dart:convert';
 import 'pnl.dart' show PnlHook;
 import 'policy.dart';
 import 'providers.dart' show LlmProvider;
+import 'rag.dart' show groundSystem;
 import 'runner.dart' show Runner, DispatchOutcome, dispatchValueMoving;
 import 'tools.dart' show Tool, ToolRegistry;
 
@@ -124,6 +125,13 @@ class CommandRouter {
   /// The real read-only query engines.
   final CommandEngines engines;
 
+  /// OPTIONAL client-side RAG live snapshot source. Pulls a READ-ONLY view of the
+  /// user's own wallet state (chain/pair, balances, open bots, recent signals)
+  /// from EXISTING state — no new network calls. Its output only augments the
+  /// system prompt via [groundSystem]; it grants NO tools and can never touch the
+  /// allowlist or the signing gate. Null => corpus-only grounding (still offline).
+  final Map<String, dynamic>? Function()? liveContext;
+
   /// Injected clock (ms) — never fabricated. Defaults to the wall clock.
   final int Function() now;
 
@@ -140,6 +148,7 @@ class CommandRouter {
     String? defaultChain,
     this.resolveNameFn,
     CommandEngines? engines,
+    this.liveContext,
     int Function()? now,
   })  : pnlWallet = pnlWallet ?? 'default',
         pnlChannel = pnlChannel ?? 'default',
@@ -153,6 +162,16 @@ class CommandRouter {
       try {
         onEvent!(ev);
       } catch (_) {}
+    }
+  }
+
+  /// Safe read of the optional RAG live snapshot (never throws into the loop).
+  Map<String, dynamic>? _live() {
+    if (liveContext == null) return null;
+    try {
+      return liveContext!();
+    } catch (_) {
+      return null;
     }
   }
 
@@ -218,6 +237,11 @@ class CommandRouter {
     // the full catalog is allowed here; every value move is still gated.
     policy.setAllowlist(tools.names());
 
+    // CLIENT-SIDE RAG: ground the action system prompt with the bundled Blockle
+    // corpus (ragCorpus) + a read-only live snapshot of the user's own state.
+    // Read-only reference text ONLY — it never grants tools or touches the gate.
+    final grounded = groundSystem(system ?? actionSystem, text, live: _live());
+
     final messages = <Map<String, dynamic>>[
       {'role': 'user', 'text': text}
     ];
@@ -227,7 +251,7 @@ class CommandRouter {
     for (var turn = 0; turn < maxTurns; turn++) {
       policy.assertLive();
       final resp = await provider.turn(
-        system: system ?? actionSystem,
+        system: grounded,
         messages: messages,
         tools: tools.schemas(),
       );
@@ -389,6 +413,9 @@ class CommandRouter {
       system: system ?? querySystem,
       maxTurns: maxTurns,
       onEvent: emit,
+      // CLIENT-SIDE RAG: the read-only Runner grounds the query turn with the
+      // bundled corpus + the same live snapshot (offline, prompt-only).
+      liveContext: liveContext,
     );
     final r = await runner.run(text);
     return CommandResult(

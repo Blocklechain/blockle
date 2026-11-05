@@ -265,7 +265,9 @@ class OpenAIProvider implements LlmProvider {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'authorization': 'Bearer $apiKey',
+        // A LOCAL (Ollama / LM Studio) server needs no key — omit the header when
+        // the apiKey is empty so the keyless LocalProvider works unchanged.
+        if (apiKey.isNotEmpty) 'authorization': 'Bearer $apiKey',
         ...extraHeaders,
       },
       body: jsonEncode(body),
@@ -311,6 +313,123 @@ class CopilotProvider extends OpenAIProvider {
             ...?extraHeaders,
           },
         );
+}
+
+/// LOCAL LLM presets — a server on the USER'S OWN MACHINE (Ollama / LM Studio /
+/// any OpenAI-compatible endpoint). Keyless: nothing leaves the device, nothing
+/// is billed, and it removes all reliance on Blockle's hosted brain. Mirrors
+/// web/wallet/vendor/agent/providers.js:LOCAL_PRESETS (ollama default model
+/// bumped to qwen2.5:3b-instruct per the local-first goal).
+const Map<String, Map<String, dynamic>> localPresets = {
+  'ollama': {
+    'label': 'Ollama',
+    'baseUrl': 'http://localhost:11434',
+    'model': 'qwen2.5:3b-instruct',
+    'site': 'https://ollama.com/download',
+    'setup': [
+      'Install Ollama from ollama.com/download',
+      'Pull a model:  ollama pull qwen2.5:3b-instruct',
+      'Start it (the app or: ollama serve) — it listens on http://localhost:11434',
+      'Point the wallet Brain at http://localhost:11434 (no API key needed)',
+    ],
+  },
+  'lmstudio': {
+    'label': 'LM Studio',
+    'baseUrl': 'http://localhost:1234',
+    'model': '',
+    'site': 'https://lmstudio.ai',
+    'setup': [
+      'Install LM Studio from lmstudio.ai and download a chat model',
+      'Open the Developer tab → Start Server (port 1234)',
+      'Point the wallet Brain at http://localhost:1234',
+    ],
+  },
+  'custom': {
+    'label': 'Custom (OpenAI-compatible)',
+    'baseUrl': 'http://localhost:8080',
+    'model': '',
+    'site': '',
+    'setup': [
+      'Any server that speaks /v1/chat/completions works (llama.cpp server, vLLM, LocalAI, Jan…)',
+      'Point the wallet Brain at its base URL',
+    ],
+  },
+};
+
+/// LOCAL LLM provider — an OpenAI-compatible server on the user's own machine.
+/// KEYLESS: it reuses [OpenAIProvider.turn] (which now omits the Authorization
+/// header when the apiKey is empty) and the wallet appends
+/// `/v1/chat/completions`. Adds [listModels] (what the server has installed) and
+/// [ping] (one tiny round-trip to verify the connection). Mirrors
+/// web/wallet/vendor/agent/providers.js:LocalProvider.
+class LocalProvider extends OpenAIProvider {
+  final bool local = true;
+
+  LocalProvider({
+    required super.fetch,
+    String? apiKey,
+    String? model,
+    String? baseUrl,
+    int? maxTokens,
+  }) : super(
+          name: 'local',
+          apiKey: apiKey ?? '',
+          baseUrl: baseUrl ?? localPresets['ollama']!['baseUrl'] as String,
+          model: (model == null || model.isEmpty)
+              ? localPresets['ollama']!['model'] as String
+              : model,
+          maxTokens: maxTokens,
+        );
+
+  /// The models the local server has installed — a list of model ids.
+  Future<List<String>> listModels() async {
+    final r = await fetch(
+      '$baseUrl/v1/models',
+      method: 'GET',
+      headers: {
+        if (apiKey.isNotEmpty) 'authorization': 'Bearer $apiKey',
+      },
+      body: '',
+    );
+    if (!r.ok) {
+      throw StateError('local LLM ${r.status} at $baseUrl/v1/models');
+    }
+    final j = jsonDecode(r.body);
+    final list = j is List ? j : (j is Map ? (j['data'] ?? j['models'] ?? const []) : const []);
+    final out = <String>[];
+    for (final m in (list as List? ?? const [])) {
+      final id = m is String ? m : (m is Map ? '${m['id'] ?? m['name'] ?? ''}' : '');
+      if (id.isNotEmpty) out.add(id);
+    }
+    return out;
+  }
+
+  /// One tiny round-trip; resolves to the reply text or throws with the reason.
+  Future<String> ping() async {
+    final r = await fetch(
+      '$baseUrl/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        if (apiKey.isNotEmpty) 'authorization': 'Bearer $apiKey',
+      },
+      body: jsonEncode({
+        'model': model,
+        'messages': [
+          {'role': 'user', 'content': 'Reply with the single word: ready'}
+        ],
+        'max_tokens': 8,
+        'temperature': 0,
+      }),
+    );
+    if (!r.ok) {
+      throw StateError('local LLM ${r.status}: ${_clip(r.body)}');
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    final choices = j['choices'] as List? ?? const [];
+    final msg = (choices.isNotEmpty ? choices[0]['message'] : null) as Map? ?? {};
+    return '${msg['content'] ?? ''}'.trim();
+  }
 }
 
 String _clip(String s) => s.length > 500 ? s.substring(0, 500) : s;
@@ -651,6 +770,17 @@ LlmProvider createProvider({
       fetch: fetch,
       model: model,
       refresh: refresh,
+    );
+  }
+  // LOCAL (Ollama / LM Studio / any OpenAI-compatible server on the user's own
+  // machine) is KEYLESS — no apiKey leaves the device. Mirrors the web factory.
+  if (provider == 'local') {
+    return LocalProvider(
+      fetch: fetch,
+      apiKey: apiKey,
+      model: model,
+      baseUrl: baseUrl,
+      maxTokens: maxTokens,
     );
   }
   if (apiKey == null || apiKey.isEmpty) {

@@ -176,6 +176,15 @@
       this.pnl = deps.pnl || null;          // realized-profit tracker (post-commit)
       this.channel = deps.channel || null;  // ledger key component
 
+      // OPT-IN client-side RAG grounding (agent/rag.js). When a rag module is
+      // supplied, each turn's system prompt is augmented with a READ-ONLY grounding
+      // block (bundled Blockle facts + a live wallet snapshot). It is opt-in so the
+      // command router's query loop — which grounds its OWN system before creating
+      // this runner — is never double-grounded. Grounding grants NO tools and can
+      // never touch the allowlist or the one signing gate.
+      this.rag = deps.rag || null;
+      this.liveContext = typeof deps.liveContext === 'function' ? deps.liveContext : null;
+
       this.messages = [];
       this._aborted = false;
 
@@ -192,6 +201,21 @@
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
+
+    // Best-effort live snapshot from EXISTING wallet state (no new network call).
+    // Any failure degrades to no live block — grounding still injects the corpus.
+    _live() {
+      if (!this.liveContext) return undefined;
+      try { return this.liveContext(); } catch (_) { return undefined; }
+    }
+
+    // The system prompt for one turn: the base system, optionally wrapped with the
+    // RAG grounding block keyed to THIS prompt. Never throws into the loop.
+    _groundedSystem(prompt) {
+      if (!this.rag || typeof this.rag.groundSystem !== 'function') return this.system;
+      try { return this.rag.groundSystem(this.system, prompt, { live: this._live() }); }
+      catch (_) { return this.system; }
+    }
 
     // Kill switch: abort the loop + revoke session + lock the vault.
     async kill(reason) {
@@ -250,7 +274,7 @@
           }
 
           const resp = await this.provider.turn({
-            system: this.system,
+            system: this._groundedSystem(prompt),
             messages: this.messages,
             tools: this.tools.schemas(),
           });

@@ -111,6 +111,8 @@
       onChannelKill: (id) => { pushLog(id, 'channel killed'); },
       onEvent: (id, ev) => onChannelEvent(id, ev),
       ctxFor: () => Wiring.agentCtx(),                    // incl. venues + 0.05% fee
+      // Live wallet snapshot for client-side RAG grounding (read-only; no network).
+      liveContextFor: () => Wiring.agentLiveSnapshot(),
       fetchImpl: typeof fetch !== 'undefined' ? fetch.bind(global) : undefined,
       // Copilot subscription gate: the engine reads the live tier here.
       entitlement: () => copilotTier,
@@ -281,24 +283,30 @@
   function renderConnectForm() {
     const opts = Object.keys(GUIDES).map((k) => `<option value="${k}">${esc(GUIDES[k].label)}</option>`).join('');
     const defaultGw = (global.AgentProviders && global.AgentProviders.DEFAULT_GATEWAY_URL) || 'https://agent.blockle.org';
+    // LOCAL-FIRST: the recommended default is a model on the user's OWN machine
+    // (private, keyless, no quota). BYO-key providers come next. Blockle's hosted
+    // agent is demoted to an EXPLICIT, clearly-labelled optional choice at the
+    // bottom — it is never the silent default.
     return `<div id="agent-connect" hidden class="agent-card">
-      <div class="section-h" style="padding-top:0">Connect provider</div>
-      <div class="agent-card" style="margin:0 0 10px;border:1px solid var(--accent,#6366f1)">
-        <b>Use Blockle's hosted agent — no API key needed</b>
-        <div class="notice" style="margin:6px 0">You sign a one-time challenge with your wallet (proves your address, not a spend). Blockle runs the model for you. In hosted mode your agent conversation (which can include balances the agent is shown) transits Blockle's server and the model provider. No private keys or seeds are ever sent. Every trade is still gated on THIS device. <a id="ach-adv" href="#" class="btn link" style="padding:0">Gateway…</a></div>
-        <label class="field" id="ach-gw-field" hidden><span>Gateway URL</span><input type="text" id="ach-gw" class="mono" value="${esc(defaultGw)}" /></label>
-        <div class="err" id="ach-err"></div>
-        <button class="btn primary" id="ac-hosted" style="width:100%">Use Blockle hosted agent</button>
-      </div>
+      <div class="section-h" style="padding-top:0">Connect a brain</div>
+      <div class="notice" style="margin:0 0 8px">Pick where the assistant's model runs. <b>Recommended: Local LLM</b> — it runs on your own computer, so nothing leaves the device and there is no key or quota. The deterministic trading strategies never use any model; the model is only for the chat/command assistant, and it can never move funds.</div>
       <label class="field"><span>Provider</span>
         <select id="ac-provider" class="mono">${opts}</select></label>
       <div class="notice" id="ac-guide"></div>
+      <div class="notice" id="ac-setup" hidden style="white-space:pre-line"></div>
       <a id="ac-link" href="#" target="_blank" rel="noopener" class="btn link" style="padding:4px 0">Get an API key ↗</a>
-      <label class="field"><span>API key</span><input type="password" id="ac-key" placeholder="sk-…" class="mono" /></label>
+      <label class="field" id="ac-key-field"><span>API key</span><input type="password" id="ac-key" placeholder="sk-…" class="mono" /></label>
       <label class="field" id="ac-model-field"><span>Model</span><input type="text" id="ac-model" class="mono" /></label>
       <label class="field" id="ac-baseurl-field" hidden><span>Base URL (OpenAI-compatible)</span><input type="text" id="ac-baseurl" class="mono" placeholder="https://host/v1" /></label>
       <div class="err" id="ac-err"></div>
       <div class="row-btns"><button class="btn ghost" id="ac-cancel">Cancel</button><button class="btn primary" id="ac-save">Connect</button></div>
+      <div class="section-h" style="padding-left:0;margin-top:10px">Or use Blockle's hosted agent (optional)</div>
+      <div class="agent-card" style="margin:0">
+        <div class="notice" style="margin:0 0 6px">Only if you don't want to run or connect a model yourself. You sign a one-time challenge with your wallet (proves your address, not a spend) and Blockle runs the model for you. In hosted mode your agent conversation (which can include balances the agent is shown) transits Blockle's server and the model provider — no keys or seeds are ever sent, and every trade is still gated on THIS device. <a id="ach-adv" href="#" class="btn link" style="padding:0">Gateway…</a></div>
+        <label class="field" id="ach-gw-field" hidden><span>Gateway URL</span><input type="text" id="ach-gw" class="mono" value="${esc(defaultGw)}" /></label>
+        <div class="err" id="ach-err"></div>
+        <button class="btn ghost" id="ac-hosted" style="width:100%">Use Blockle hosted agent instead</button>
+      </div>
     </div>`;
   }
 
@@ -453,26 +461,52 @@
   function fillGuide() {
     const k = $('#ac-provider').value;
     const g = GUIDES[k] || {};
+    const keyless = !!g.keyless || (g.needs && !g.needs.includes('apiKey'));
     $('#ac-guide').textContent = g.how || '';
     const link = $('#ac-link');
-    if (g.url) { link.href = g.url; link.hidden = false; } else { link.hidden = true; }
+    if (g.url) { link.href = g.url; link.hidden = false; link.textContent = keyless ? 'Open the installer ↗' : 'Get an API key ↗'; } else { link.hidden = true; }
     $('#ac-model').value = g.defaultModel || '';
-    $('#ac-baseurl-field').hidden = !(g.needs && g.needs.includes('baseUrl'));
+    // KEYLESS (local): hide the API key field entirely, prefill the base URL, and
+    // show the step-by-step setup hint. BYO-key providers keep the key field.
+    const keyField = $('#ac-key-field'); if (keyField) keyField.hidden = keyless;
+    const needsBaseUrl = keyless || (g.needs && g.needs.includes('baseUrl'));
+    $('#ac-baseurl-field').hidden = !needsBaseUrl;
+    const baseInput = $('#ac-baseurl');
+    if (baseInput && needsBaseUrl) {
+      baseInput.value = g.defaultBaseUrl || '';
+      baseInput.placeholder = g.defaultBaseUrl || (keyless ? 'http://localhost:11434' : 'https://host/v1');
+    }
+    const setup = $('#ac-setup');
+    if (setup) {
+      if (keyless && Array.isArray(g.setup) && g.setup.length) {
+        setup.textContent = 'Setup:\n' + g.setup.map((s, i) => (i + 1) + '. ' + s).join('\n');
+        setup.hidden = false;
+      } else { setup.hidden = true; setup.textContent = ''; }
+    }
   }
 
   async function connectProvider() {
     const err = $('#ac-err'); err.textContent = '';
     const k = $('#ac-provider').value;
     const g = GUIDES[k] || {};
+    const keyless = !!g.keyless || (g.needs && !g.needs.includes('apiKey'));
     const apiKey = $('#ac-key').value.trim();
     const model = $('#ac-model').value.trim();
     const baseUrl = $('#ac-baseurl').value.trim();
-    if (!apiKey) return (err.textContent = 'Paste an API key.');
+    // KEYLESS LOCAL: no API key — just a base URL (localhost) + model. Nothing
+    // leaves the device. BYO-key providers still require a key.
+    if (!keyless && !apiKey) return (err.textContent = 'Paste an API key.');
     if (g.needs && g.needs.includes('baseUrl') && !baseUrl) return (err.textContent = 'A base URL is required for this provider.');
     if (g.needs && g.needs.includes('model') && !model) return (err.textContent = 'A model name is required for this provider.');
     try {
-      await AgentStore.add({ provider: g.provider || k, apiKey, model: model || null, baseUrl: baseUrl || null, label: g.label || k });
-      UI.toast('Provider connected');
+      await AgentStore.add({
+        provider: g.provider || k,
+        apiKey: keyless ? null : apiKey,
+        model: model || g.defaultModel || null,
+        baseUrl: baseUrl || g.defaultBaseUrl || null,
+        label: g.label || k,
+      });
+      UI.toast(keyless ? 'Local LLM connected' : 'Provider connected');
       enter();
     } catch (e) { err.textContent = e.message || String(e); }
   }

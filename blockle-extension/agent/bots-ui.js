@@ -1656,6 +1656,18 @@
     },
     _setRunner: function (r) { runner = r; },
     _state: function () { return { activeTab: activeTab, modeFilter: modeFilter, create: create }; },
+    // READ-ONLY snapshot of open bots for the client-side RAG live context
+    // ({ strategy, market, budget } per enabled bot). Best-effort: returns [] when
+    // the bots cockpit runner is not mounted. Never triggers a network call.
+    snapshotBots: function () {
+      try {
+        if (!runner || typeof runner.list !== 'function') return [];
+        return runner.list().filter(function (b) { return b && b.enabled; }).map(function (b) {
+          var pairs = (b.universe && Array.isArray(b.universe.pairs)) ? b.universe.pairs : [];
+          return { strategy: b.type || 'bot', market: pairs[0] || null, budget: b.allocationUsd || 0, mode: b.mode };
+        });
+      } catch (_) { return []; }
+    },
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.BotsUI;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));

@@ -43,6 +43,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from ..multichain._util import maybe_await, member
+from . import rag as _rag
 from . import runner as _runner
 
 DAY_MS = 86400000
@@ -154,11 +155,37 @@ class CommandRouter:
         now = deps.get("now")
         self._now = now if callable(now) else None
 
+        # ---- client-side RAG grounding (offline, deterministic) --------------
+        # Grounds the ACTION path directly and threads the corpus + live snapshot
+        # into the read-only QUERY sub-runner (which grounds per-turn). The CLASSIFY
+        # router is NEVER grounded — it stays a bare one-word intent classifier.
+        # Grounding augments the system prompt ONLY: no new tools, no change to the
+        # allowlist or the signing gate. Default-on with the bundled corpus.
+        self._rag_enabled = deps.get("rag", True) is not False
+        rc = deps.get("ragCorpus")
+        self._rag_corpus = rc if rc is not None else _rag.CORPUS
+        rl = deps.get("ragLive")
+        self._rag_live = rl if callable(rl) else None
+
         # the ONE gate (runner module) — UNCHANGED. dispatch_prepared is the single
         # commit path shared with the NL Runner + StrategyRunner.
         self.runner_mod = deps.get("runnerModule") or _runner
         if not callable(getattr(self.runner_mod, "dispatch_prepared", None)):
             raise ValueError("command router requires the runner's dispatch_prepared gate")
+
+    def _rag_opts(self) -> Dict[str, Any]:
+        live = None
+        if self._rag_live is not None:
+            try:
+                live = self._rag_live()
+            except Exception:  # noqa: BLE001 — a bad live snapshot must not break a turn
+                live = None
+        return {"corpus": self._rag_corpus, "live": live}
+
+    def _ground(self, base_system: Any, query: Any) -> Any:
+        if not self._rag_enabled:
+            return base_system
+        return _rag.ground_system(base_system, query, self._rag_opts())
 
     # ---- helpers -------------------------------------------------------------
     def now_ms(self) -> int:
@@ -226,10 +253,15 @@ class CommandRouter:
         steps: List[Dict[str, Any]] = []
         last_text = None
 
+        # Ground the ACTION system prompt ONCE (query + bundled corpus + live
+        # snapshot) and reuse it across the tool-loop turns. Read-only reference
+        # text only — it never grants a tool or weakens the per-step gate.
+        grounded_system = self._ground(opts.get("system") or ACTION_SYSTEM, text)
+
         for _turn in range(self.max_turns):
             self.policy.assert_live()
             resp = await maybe_await(self.provider.turn({
-                "system": opts.get("system") or ACTION_SYSTEM,
+                "system": grounded_system,
                 "messages": messages,
                 "tools": self.tools.schemas(),
             }))
@@ -388,6 +420,11 @@ class CommandRouter:
             "audit": self.audit,
             "system": opts.get("system") or QUERY_SYSTEM,
             "maxTurns": self.max_turns,
+            # Let the read-only sub-runner ground QUERY_SYSTEM per-turn with the
+            # SAME corpus + live snapshot (avoids double-grounding here).
+            "rag": self._rag_enabled,
+            "ragCorpus": self._rag_corpus,
+            "ragLive": self._rag_live,
             # enforce read-only BY CAPABILITY: only the offered (non-value-moving)
             # tool names + engine tools are on the allowlist, so a proposed
             # send/swap is rejected by the allowlist before any commit path.

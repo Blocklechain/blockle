@@ -176,6 +176,17 @@
       this.pnl = deps.pnl || null;          // realized-profit tracker (post-commit)
       this.channel = deps.channel || null;  // ledger key component
 
+      // OFFLINE CLIENT RAG (optional, read-only). When wired, each turn's system
+      // prompt is grounded with bundled Blockle facts + a live wallet snapshot.
+      // It only augments the prompt — it adds NO tools and cannot touch the
+      // allowlist or the signing gate. Absent -> grounding is a no-op.
+      // Opt-in ONLY when rag deps are explicitly passed, so a runner created by the
+      // command router (which already grounds the system itself) never double-grounds.
+      this._ragOn = !!(deps.rag || deps.ragLive || deps.ragCorpus);
+      this.rag = deps.rag || (root.AgentRAG || (typeof require === 'function' ? (function () { try { return require('./rag.js'); } catch (_) { return null; } })() : null));
+      this.ragCorpus = deps.ragCorpus || null; // null -> rag.js uses its bundled corpus
+      this.ragLive = typeof deps.ragLive === 'function' ? deps.ragLive : null;
+
       this.messages = [];
       this._aborted = false;
 
@@ -192,6 +203,15 @@
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
+
+    // Prepend the grounding block (bundled facts + live snapshot) to this.system.
+    // Pure client-side, never throws into the loop. No-op without a rag module.
+    _ground(query) {
+      if (!this._ragOn || !this.rag || typeof this.rag.groundSystem !== 'function') return this.system;
+      let live = null;
+      if (this.ragLive) { try { live = this.ragLive(); } catch (_) { live = null; } }
+      try { return this.rag.groundSystem(this.system, query, { corpus: this.ragCorpus || undefined, live: live }); } catch (_) { return this.system; }
+    }
 
     // Kill switch: abort the loop + revoke session + lock the vault.
     async kill(reason) {
@@ -241,6 +261,10 @@
       this.emit({ type: 'prompt', text: prompt });
       this.messages.push({ role: 'user', text: prompt });
 
+      // Ground the system prompt once per instruction (bundled facts + a live
+      // snapshot taken now). Read-only; grants no tools and cannot bypass the gate.
+      const system = this._ground(prompt);
+
       let lastText;
       try {
         for (let turn = 0; turn < this.maxTurns; turn++) {
@@ -250,7 +274,7 @@
           }
 
           const resp = await this.provider.turn({
-            system: this.system,
+            system,
             messages: this.messages,
             tools: this.tools.schemas(),
           });

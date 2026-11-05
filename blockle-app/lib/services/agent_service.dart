@@ -267,6 +267,7 @@ class AgentService {
     CommandEngines? engines,
     int? maxTurns,
     String? defaultChain,
+    Map<String, dynamic>? Function()? liveContext,
   }) {
     Channel? ch = channelId != null ? manager.get(channelId) : null;
     ch ??= _firstRunning();
@@ -283,6 +284,8 @@ class AgentService {
       onEvent: onEvent,
       resolveNameFn: resolveName,
       engines: engines,
+      // CLIENT-SIDE RAG: offline prompt-grounding live snapshot (read-only).
+      liveContext: liveContext,
       maxTurns: maxTurns,
       defaultChain: defaultChain ?? (ch.meta['accountId'] as String?),
     );
@@ -316,6 +319,17 @@ class AgentService {
         gatewayUrl: gatewayUrl,
         sessionToken: sessionToken,
         expiresAt: (agent['expiresAt'] as num?)?.toInt(),
+        model: (meta['model'] as String?) ?? agent['model'] as String?,
+      );
+    }
+    // LOCAL (keyless) record: resolve the baseUrl + model to the user's own
+    // server (Ollama / LM Studio). No apiKey leaves the device.
+    if (provider == 'local') {
+      final baseUrl = (meta['baseUrl'] as String?) ?? (agent['baseUrl'] as String?) ?? '';
+      if (baseUrl.isEmpty) return null;
+      return AgentCredential(
+        provider: 'local',
+        baseUrl: baseUrl,
         model: (meta['model'] as String?) ?? agent['model'] as String?,
       );
     }

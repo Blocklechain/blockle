@@ -1866,7 +1866,7 @@
     var log = $('#ag-log');
     function add(role, text) { log.appendChild(elFrom('<div class="li"><span class="ico">' + (role === 'you' ? '' + ic('user', 17) + '' : role === 'err' ? '' + ic('warn', 18) + '' : '' + ic('agent', 17) + '') + '</span><div class="col" style="align-items:flex-start"><b style="font-size:12px" class="dim">' + role + '</b><span>' + esc(text) + '</span></div></div>')); log.scrollTop = log.scrollHeight; }
     $('#ag-brain').onclick = brainSheet; if ($('#ag-brain-setup')) $('#ag-brain-setup').onclick = function (e) { e.preventDefault(); brainSheet(); };
-    ensureAgent().then(function () { $('#ag-conn').textContent = agentConnLabel(); }).catch(function () { $('#ag-conn').textContent = 'offline'; });
+    ensureAgent().then(function () { $('#ag-conn').textContent = agentConnLabel(); }).catch(function (e) { if (e && e.brainUnconfigured) { var p = $('#ag-conn'); p.innerHTML = '<a href="#" id="ag-conn-setup">set up brain</a>'; var s = $('#ag-conn-setup'); if (s) s.onclick = function (ev) { ev.preventDefault(); brainSheet(); }; } else { $('#ag-conn').textContent = 'offline'; } });
     function run() {
       var text = ($('#ag-in').value || '').trim(); if (!text) return; $('#ag-in').value = ''; add('you', text);
       S._lastAgentText = null;
@@ -1878,7 +1878,7 @@
       }).then(function (res) {
         // Query answers come back as the resolved value; show it if no 'text' event already did.
         if (res && res.text && res.text !== S._lastAgentText) add('agent', res.text);
-      }).catch(function (e) { add('err', e.message || String(e)); }).then(function () { var p = $('#ag-pending'); if (p) p.remove(); });
+      }).catch(function (e) { if (e && e.brainUnconfigured) { add('agent', e.message || 'Set up the agent brain first.'); brainSheet(); } else { add('err', e.message || String(e)); } }).then(function () { var p = $('#ag-pending'); if (p) p.remove(); });
     }
     S._agentLog = add;
     $('#ag-go').onclick = run; $('#ag-in').addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
@@ -1893,14 +1893,43 @@
   // ---- LOCAL BRAIN: settings for an LLM server on the user's own machine ------
   function localLlm() { try { var j = JSON.parse(localStorage.getItem('blk.localLlm') || 'null'); return j && typeof j === 'object' ? j : null; } catch (_) { return null; } }
   function setLocalLlm(cfg) { try { if (cfg) localStorage.setItem('blk.localLlm', JSON.stringify(cfg)); else localStorage.removeItem('blk.localLlm'); } catch (_) {} }
+  // Which brain the user has CONFIGURED: 'local' (an LLM on their machine), 'hosted'
+  // (an explicit, labelled opt-in to Blockle's gateway), or null = not set up yet.
+  // There is NO silent hosted fallback — an unconfigured brain shows the setup sheet.
+  function brainMode() { var b = localLlm(); if (b && b.enabled) return 'local'; if (b && b.mode === 'hosted') return 'hosted'; return null; }
+  // Read-only LIVE snapshot for the client RAG, built from EXISTING wallet state
+  // only (no network call): selected chain, cached balances, open bots. It merely
+  // grounds the chat prompt — it grants no tools and cannot touch the signing gate.
+  function agentRagLive() {
+    var live = { chain: S.chain || null };
+    try {
+      var bals = Array.isArray(S._ragAssets) ? S._ragAssets.slice(0, 5) : [];
+      if (bals.length) live.balances = bals;
+    } catch (_) {}
+    try {
+      if (S.botRunner && S.botRunner.store) {
+        var bots = S.botRunner.store.all().slice(0, 4).map(function (b) {
+          var mkt = (b.universe && b.universe.pairs && b.universe.pairs[0]) || null;
+          var budget = (b.config && (b.config.budgetUsd != null ? b.config.budgetUsd : b.config.allocationUsd)) || null;
+          return { strategy: b.type || b.name || 'bot', market: mkt, budget: budget };
+        });
+        if (bots.length) live.bots = bots;
+      }
+    } catch (_) {}
+    return live;
+  }
   function agentConnLabel() { var c = S.agentConn; if (!c) return 'offline'; return c.chain === 'local' ? 'local · ' + (c.model || 'llm') : c.chain === 'anon' ? 'hosted · anon' : 'hosted · signed'; }
   function resetAgentBrain() { S.agent = null; S.agentConn = null; if (S.botRunner) { /* the bots engine keeps its own policy/tools; the brain only serves the chat agent */ } }
   function brainSheet() {
     var P = (window.AgentProviders && AgentProviders.LOCAL_PRESETS) || {};
-    var cur = localLlm() || { enabled: false, preset: 'ollama', baseUrl: (P.ollama || {}).baseUrl || 'http://localhost:11434', model: (P.ollama || {}).model || '' };
+    var saved = localLlm();
+    var cur = saved || { enabled: false, preset: 'ollama', baseUrl: (P.ollama || {}).baseUrl || 'http://localhost:11434', model: (P.ollama || {}).model || '' };
+    // Local is the DEFAULT/recommended selection; the sheet only pre-selects hosted
+    // when the user previously opted into it explicitly. Unconfigured -> local.
+    var hostedChosen = !!(saved && !saved.enabled && saved.mode === 'hosted');
     var presetOpts = Object.keys(P).map(function (k) { return '<option value="' + k + '"' + (k === cur.preset ? ' selected' : '') + '>' + esc(P[k].label) + '</option>'; }).join('');
     openSheet('<div class="spread"><h2>' + mi('brain', 17) + ' Where the agent thinks</h2><button class="btn sm ghost" id="br-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="field"><label>Brain</label><select id="br-mode"><option value="local"' + (cur.enabled ? ' selected' : '') + '>Local LLM on my computer — private, unlimited, free (recommended)</option><option value="hosted"' + (!cur.enabled ? ' selected' : '') + '>Blockle hosted brain — nothing to install, rate-limited</option></select></div>' +
+      '<div class="field"><label>Brain</label><select id="br-mode"><option value="local"' + (!hostedChosen ? ' selected' : '') + '>Local LLM on my computer — private, unlimited, free (recommended)</option><option value="hosted"' + (hostedChosen ? ' selected' : '') + '>Blockle hosted brain — optional, nothing to install, rate-limited</option></select></div>' +
       '<div id="br-local">' +
       '<div class="field"><label>Local server</label><select id="br-preset">' + presetOpts + '</select></div>' +
       '<div class="field"><label>Base URL</label><input id="br-url" value="' + esc(cur.baseUrl || '') + '" placeholder="http://localhost:11434"></div>' +
@@ -1940,7 +1969,7 @@
         .catch(function (e) { status(mi('x', 14) + ' ' + esc(e.message || e), 'bad'); });
     };
     $('#br-save').onclick = function () {
-      if ($('#br-mode').value === 'hosted') { setLocalLlm(null); resetAgentBrain(); closeSheet(); toast('Using the Blockle hosted brain'); if (location.hash === '#agent') onRoute(); return; }
+      if ($('#br-mode').value === 'hosted') { setLocalLlm({ enabled: false, mode: 'hosted' }); resetAgentBrain(); closeSheet(); toast('Using the Blockle hosted brain (optional)'); if (location.hash === '#agent') onRoute(); return; }
       var url = ($('#br-url').value || '').trim().replace(/\/+$/, '').replace(/\/v1$/, ''), model = ($('#br-model').value || '').trim();
       if (!/^https?:\/\//.test(url)) { toast('Enter the server URL (http://localhost:11434)', 'bad'); return; }
       if (!model) { toast('Pick a model (tap Detect)', 'bad'); return; }
@@ -1957,13 +1986,21 @@
       ctx.prices = ctx.prices || makePrices();
       if (typeof ctx.network !== 'function') ctx.network = function () { return 'testnet'; };
       if (typeof ctx.now !== 'function') ctx.now = function () { return Date.now(); };
-      // BRAIN: a LOCAL LLM on the user's machine when configured (keyless, private,
-      // free, and nothing for Blockle's servers to do); else the keyless hosted
-      // brain — anonymous by default, a signed session for Pro with an EVM signer.
+      // BRAIN: the agent uses a USER-CONFIGURED provider — a LOCAL LLM on the
+      // user's own machine (keyless, private, free; recommended), or the Blockle
+      // hosted gateway ONLY when the user explicitly opted into it. There is NO
+      // silent hosted fallback: if nothing is configured we reject with
+      // `brainUnconfigured` so the caller shows the setup sheet instead.
+      var mode = brainMode();
+      if (!mode) {
+        return Promise.reject(Object.assign(
+          new Error('Choose where the agent thinks — a local LLM on your computer (recommended) or the Blockle hosted brain.'),
+          { brainUnconfigured: true }));
+      }
       var sessOpts = { gatewayUrl: GATEWAY, label: 'Blockle Web Wallet' };
       if (!S.pro) sessOpts.anon = true;
       var brain = localLlm();
-      var providerP = brain && brain.enabled
+      var providerP = mode === 'local'
         ? Promise.resolve({ chain: 'local', model: brain.model, baseUrl: brain.baseUrl })
         : AgentProviders.hostedSession(sessOpts);
       return providerP.then(function (sess) {
@@ -1982,6 +2019,9 @@
           engines: { netWorth: function () { return agentNetWorth(); }, botsPnl: function () { return Promise.resolve({ realizedUsd: 0 }); } },
           resolveName: function (name, chain) { try { return WalletAddressBook.resolveName(name, chain, {}); } catch (_) { return Promise.resolve(null); } },
           addressBook: (window.WalletAddressBook || null),
+          // OFFLINE CLIENT RAG: bundled Blockle facts (AgentRAGCorpus global) + a
+          // live wallet snapshot, grounding the chat only. Read-only, no new tools.
+          rag: (window.AgentRAG || null), ragLive: agentRagLive,
           onEvent: function (ev) { agentEvent(ev); },
         });
         S.agent = { router: router, provider: provider, policy: policy, tools: tools, ctx: ctx, audit: audit, pnl: pnl };
@@ -1989,7 +2029,7 @@
       });
     });
   }
-  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) jobs.push(Promise.resolve(Wiring.estimateUsdWhole(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); }); }); return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
+  function agentNetWorth() { return Wiring.listAssets().then(function (list) { var total = 0, jobs = [], bals = []; list.forEach(function (c) { (c.balances || []).forEach(function (r) { var dec = (r.asset && r.asset.decimals) || 0; var amt = r.display != null ? numVal(r.display) : baseToNum(r.confirmed, dec); if (amt > 0) { bals.push({ symbol: (r.asset && (r.asset.symbol || r.asset.ticker)) || '?', amount: amt }); jobs.push(Promise.resolve(Wiring.estimateUsdWhole(r.asset, amt)).then(function (u) { if (isFinite(Number(u))) total += Number(u); }).catch(function () {})); } }); }); try { S._ragAssets = bals.slice(0, 8); } catch (_) {} return Promise.all(jobs).then(function () { return { usd: total }; }); }); }
   function agentEvent(ev) {
     if (!ev) return; var add = S._agentLog;
     if (ev.type === 'text' && ev.text && add) { S._lastAgentText = ev.text; add('agent', ev.text); }

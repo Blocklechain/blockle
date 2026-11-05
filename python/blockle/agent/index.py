@@ -85,12 +85,15 @@ def start(opts: Optional[Dict[str, Any]] = None) -> AgentHandle:
     cred = opts.get("credential") or {}
     if not cred.get("provider"):
         raise ValueError("AI agent is not configured — enable it and add an LLM credential first")
-    # HOSTED mode is keyless: it needs a gatewayUrl + sessionToken instead of an
-    # apiKey (the wallet never holds the upstream LLM key). Every other provider
-    # still requires an apiKey from the unlocked vault.
+    # HOSTED and LOCAL modes are keyless. HOSTED needs a gatewayUrl + sessionToken
+    # instead of an apiKey (the wallet never holds the upstream LLM key). LOCAL is
+    # a server on the user's own machine (keyless — nothing leaves the device).
+    # Every other provider still requires an apiKey from the unlocked vault.
     if cred.get("provider") == "hosted":
         if not cred.get("gatewayUrl") or not cred.get("sessionToken"):
             raise ValueError('hosted agent is not configured — connect "Use Blockle hosted agent" first')
+    elif cred.get("provider") == "local":
+        pass  # keyless — the local provider self-defaults baseUrl/model if unset
     elif not cred.get("apiKey"):
         raise ValueError("AI agent is not configured — enable it and add an LLM credential first")
 
@@ -144,6 +147,12 @@ def start(opts: Optional[Dict[str, Any]] = None) -> AgentHandle:
         "maxTurns": opts.get("maxTurns"),
         "allowlist": opts.get("allowlist"),
         "onEvent": opts.get("onEvent"),
+        # Offline client-side RAG grounding (default-on with the bundled corpus).
+        # ``ragLive`` is an optional callable returning a live wallet snapshot from
+        # EXISTING state (no new network). Grounding augments the prompt only.
+        "rag": opts.get("rag"),
+        "ragCorpus": opts.get("ragCorpus"),
+        "ragLive": opts.get("ragLive"),
     })
 
     # §7 discovery -> StrategyRunner wiring. Discovery is built ONLY when the

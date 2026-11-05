@@ -49,6 +49,22 @@
   // user can connect a channel without leaving the wallet to hunt for docs.
   // `provider` maps the human label to the internal AgentProviders key.
   const PROVIDER_GUIDES = {
+    local: {
+      label: 'Local LLM (Ollama / LM Studio) — private, no key',
+      provider: 'local',
+      needs: ['baseUrl', 'model'],           // NO apiKey — keyless, on your own machine
+      keyless: true,
+      defaultModel: 'qwen2.5:3b-instruct',
+      defaultBaseUrl: 'http://localhost:11434',
+      url: 'https://ollama.com/download',
+      how: 'Run the model on your OWN computer so nothing leaves the device and there is no quota or key. Install Ollama (ollama.com), run "ollama pull qwen2.5:3b-instruct", then point the wallet at http://localhost:11434. LM Studio works too (http://localhost:1234, enable CORS). This is the recommended private default.',
+      setup: [
+        'Install Ollama from ollama.com/download',
+        'Pull a model:  ollama pull qwen2.5:3b-instruct  (or llama3.2 / a larger 8B+ model)',
+        'Allow the wallet origin and start it:  OLLAMA_ORIGINS="chrome-extension://*" ollama serve',
+        'Point the wallet at http://localhost:11434 (LM Studio users: http://localhost:1234, enable CORS)',
+      ],
+    },
     claude: {
       label: 'Claude (Anthropic)',
       provider: 'claude',
@@ -237,6 +253,9 @@
       this.onChannelKill = typeof opts.onChannelKill === 'function' ? opts.onChannelKill : null;
       this.onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : null;      // (id, ev) => ...
       this.ctxFor = typeof opts.ctxFor === 'function' ? opts.ctxFor : null;         // (channelMeta) -> adapters/ctx
+      // (channelMeta) -> live wallet snapshot for client-side RAG grounding
+      // ({ chain, pair, balances, bots, signals }) from EXISTING state (no network).
+      this.liveContextFor = typeof opts.liveContextFor === 'function' ? opts.liveContextFor : null;
       this.defaults = opts.defaults || {};
       this.fetchImpl = opts.fetchImpl;
       // Copilot tier source: a function returning the tier (so the host can update it live
@@ -361,29 +380,42 @@
       // Resolve the credential from the vault via the host. Never persisted here.
       let cred = null;
       if (this.resolveCredential) cred = await this.resolveCredential(meta.credRef, meta);
-      const isHosted = (meta.provider || (cred && cred.provider)) === 'hosted';
-      if (!cred || (!cred.apiKey && !isHosted)) {
+      const kind = (meta.provider || (cred && cred.provider));
+      const isHosted = kind === 'hosted';
+      const isLocal = kind === 'local';
+      // HOSTED (gateway session) and LOCAL (a server on the user's own machine) are
+      // keyless; every other (BYO-key) provider still needs an apiKey from the vault.
+      if (!cred || (!cred.apiKey && !isHosted && !isLocal)) {
         throw new Error('cannot start "' + meta.label + '": no LLM credential available (unlock the wallet and connect this channel)');
       }
       if (isHosted && (!cred.gatewayUrl || !cred.sessionToken)) {
         throw new Error('cannot start "' + meta.label + '": hosted connection is missing its gateway session (reconnect)');
       }
-      const credential = isHosted
-        ? {
-            provider: 'hosted',
-            gatewayUrl: cred.gatewayUrl,
-            sessionToken: cred.sessionToken,
-            expiresAt: cred.expiresAt,
-            model: meta.model || cred.model,
-            // transparent re-sign on 401/expiry, wired by the host if available
-            refresh: this.hostedRefresh ? () => this.hostedRefresh(meta.credRef, cred, meta) : undefined,
-          }
-        : {
-            provider: meta.provider || cred.provider,
-            apiKey: cred.apiKey,
-            model: meta.model || cred.model,
-            baseUrl: meta.baseUrl || cred.baseUrl,
-          };
+      let credential;
+      if (isHosted) {
+        credential = {
+          provider: 'hosted',
+          gatewayUrl: cred.gatewayUrl,
+          sessionToken: cred.sessionToken,
+          expiresAt: cred.expiresAt,
+          model: meta.model || cred.model,
+          // transparent re-sign on 401/expiry, wired by the host if available
+          refresh: this.hostedRefresh ? () => this.hostedRefresh(meta.credRef, cred, meta) : undefined,
+        };
+      } else if (isLocal) {
+        credential = {
+          provider: 'local',                    // keyless OpenAI-compatible local server
+          model: meta.model || cred.model,
+          baseUrl: meta.baseUrl || cred.baseUrl,
+        };
+      } else {
+        credential = {
+          provider: meta.provider || cred.provider,
+          apiKey: cred.apiKey,
+          model: meta.model || cred.model,
+          baseUrl: meta.baseUrl || cred.baseUrl,
+        };
+      }
 
       // Per-channel kill wiring: wipe the live cred, run the per-channel hook,
       // and (for the terminal/global case) the host-wide hook is run by killAll.
@@ -408,6 +440,8 @@
         confirm: this.confirm,
         onKill,
         ctx: this.ctxFor ? this.ctxFor(meta) : (this.defaults.ctx || {}),
+        // per-channel live snapshot for RAG grounding (read-only; no network)
+        liveContext: this.liveContextFor ? () => this.liveContextFor(meta) : this.defaults.liveContext,
         store: namespacedStore(this.store, id), // isolated audit persistence
         onEvent,
         model: credential.model,

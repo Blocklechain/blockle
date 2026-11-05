@@ -18,6 +18,7 @@ import 'package:provider/provider.dart';
 
 import '../agent/channels.dart' show providerGuides;
 import '../agent/command.dart' show CommandEngines, CommandRouter;
+import '../agent/providers.dart' show localPresets;
 import '../agent/runner.dart' show RunResult;
 import '../state/app_state.dart';
 import '../state/bots_controller.dart';
@@ -300,10 +301,42 @@ class _AgentScreenState extends State<AgentScreen> {
       }
     }
 
+    // CLIENT-SIDE RAG live snapshot — a READ-ONLY view of the user's own state
+    // (open bots + their strategy/market/budget, plus the active chain) gathered
+    // from EXISTING in-memory controllers (no new network calls). It only
+    // augments the assistant's system prompt; it grants no tools and cannot touch
+    // the signing gate. Built lazily so it reflects state at command time.
+    Map<String, dynamic>? liveContext() {
+      try {
+        final list = bots.bots();
+        final botRows = <Map<String, dynamic>>[];
+        for (final b in list.take(4)) {
+          final pairs = (b.universe['pairs'] as List? ?? const []);
+          String? market;
+          if (pairs.isNotEmpty) {
+            final p = pairs.first;
+            market = p is Map ? '${p['base'] ?? p['symbol'] ?? p['pair'] ?? ''}' : '$p';
+            if (market.isEmpty) market = null;
+          }
+          botRows.add({
+            'strategy': b.type,
+            if (market != null) 'market': market,
+            'budget': b.allocationUsd,
+          });
+        }
+        final snap = <String, dynamic>{};
+        if (botRows.isNotEmpty) snap['bots'] = botRows;
+        return snap.isEmpty ? null : snap;
+      } catch (_) {
+        return null;
+      }
+    }
+
     return c.agent.buildCommandRouter(
       onEvent: onEvent,
       engines: engines,
       resolveName: resolveName,
+      liveContext: liveContext,
     );
   }
 
@@ -399,20 +432,78 @@ class _AgentScreenState extends State<AgentScreen> {
         ),
       );
     }
+    // LOCAL-FIRST: your own brain is the recommended default; BYO keys next; the
+    // Blockle hosted gateway is a clearly-labelled OPTIONAL fallback at the
+    // bottom (nothing silently connects it). None of this affects signing — the
+    // one gate is independent of the LLM.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Connect an AI provider',
+        const Text('Set up your AI brain',
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-        const SizedBox(height: 8),
-        _hostedTile(c),
         const SizedBox(height: 4),
+        const Text(
+            'Pick where the smart-trading assistant runs. Run it on your own '
+            'computer (recommended — private, free, no quota) or bring your own '
+            'API key. The model never signs or moves funds.',
+            style: TextStyle(color: Bk.muted, fontSize: 12)),
+        const SizedBox(height: 10),
+        _localTile(c),
+        const SizedBox(height: 8),
         const Text('— or bring your own key —',
             style: TextStyle(color: Bk.muted, fontSize: 11)),
         const SizedBox(height: 4),
         for (final entry in providerGuides.entries)
-          _providerTile(c, entry.key, entry.value),
+          if (entry.key != 'local') _providerTile(c, entry.key, entry.value),
+        const SizedBox(height: 8),
+        const Text('— optional: no install, runs on Blockle servers —',
+            style: TextStyle(color: Bk.muted, fontSize: 11)),
+        const SizedBox(height: 4),
+        _hostedTile(c),
       ],
+    );
+  }
+
+  /// The LOCAL (Ollama / LM Studio) brain — keyless, runs on the user's own
+  /// machine. Recommended default: nothing leaves the device, no API key, no
+  /// quota, and it removes all reliance on Blockle's hosted brain.
+  Widget _localTile(MultichainController c) {
+    return Card(
+      color: Bk.good.withValues(alpha: 0.08),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.computer, size: 18, color: Bk.good),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text('Run the agent on your own computer (recommended)',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+                'Install Ollama, run:  ollama pull qwen2.5:3b-instruct, then point '
+                'the wallet at http://localhost:11434. Keyless — nothing leaves '
+                'your device.',
+                style: TextStyle(color: Bk.muted, fontSize: 11)),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: () => _connectLocalDialog(c),
+                style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 38), backgroundColor: Bk.good),
+                child: const Text('Connect local LLM'),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -430,8 +521,8 @@ class _AgentScreenState extends State<AgentScreen> {
             const Text("Use Blockle's hosted agent — no API key needed",
                 style: TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
-            Text(MultichainController.hostedPrivacyDisclosure,
-                style: const TextStyle(color: Bk.muted, fontSize: 11)),
+            const Text(MultichainController.hostedPrivacyDisclosure,
+                style: TextStyle(color: Bk.muted, fontSize: 11)),
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
@@ -577,8 +668,8 @@ class _AgentScreenState extends State<AgentScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // one-line hosted-mode PRIVACY DISCLOSURE
-              Text(MultichainController.hostedPrivacyDisclosure,
-                  style: const TextStyle(color: Bk.muted, fontSize: 12)),
+              const Text(MultichainController.hostedPrivacyDisclosure,
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
               const SizedBox(height: 12),
               TextField(
                 controller: gateway,
@@ -614,6 +705,111 @@ class _AgentScreenState extends State<AgentScreen> {
       );
       _refresh();
       _snack('Blockle hosted agent connected');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  /// KEYLESS LOCAL connect: pick a preset (Ollama / LM Studio / custom
+  /// OpenAI-compatible), confirm the base URL + model, and seal {provider:local,
+  /// baseUrl, model} into the vault. No API key is entered or stored — the server
+  /// runs on the user's own machine, so nothing leaves the device. This is the
+  /// local-first default that removes reliance on Blockle's hosted brain.
+  Future<void> _connectLocalDialog(MultichainController c) async {
+    var preset = 'ollama';
+    final p0 = localPresets[preset]!;
+    final baseUrl =
+        TextEditingController(text: '${p0['baseUrl'] ?? ''}');
+    final model = TextEditingController(text: '${p0['model'] ?? ''}');
+    final pw = TextEditingController();
+
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: Bk.surface,
+          title: const Text('Connect local LLM'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                    'Run the model on your own computer — keyless, private, free, '
+                    'no quota. Nothing leaves your device.',
+                    style: TextStyle(color: Bk.muted, fontSize: 12)),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: preset,
+                  decoration: const InputDecoration(labelText: 'Server'),
+                  items: [
+                    for (final e in localPresets.entries)
+                      DropdownMenuItem(
+                          value: e.key, child: Text('${e.value['label']}')),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    final pr = localPresets[v]!;
+                    setLocal(() {
+                      preset = v;
+                      baseUrl.text = '${pr['baseUrl'] ?? ''}';
+                      model.text = '${pr['model'] ?? ''}';
+                    });
+                  },
+                ),
+                const SizedBox(height: 10),
+                // the preset's setup steps (install / pull / start)
+                for (final step
+                    in (localPresets[preset]!['setup'] as List? ?? const []))
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('• $step',
+                        style: const TextStyle(color: Bk.muted, fontSize: 11)),
+                  ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: baseUrl,
+                  decoration: const InputDecoration(
+                      labelText: 'Base URL',
+                      hintText: 'http://localhost:11434'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: model,
+                  decoration: const InputDecoration(
+                      labelText: 'Model', hintText: 'qwen2.5:3b-instruct'),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: pw,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Vault password (to save the connection)'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Bk.good),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Connect')),
+          ],
+        ),
+      ),
+    );
+    if (res != true) return;
+    try {
+      await c.connectLocalAgent(
+        baseUrl: baseUrl.text.trim().isEmpty ? null : baseUrl.text.trim(),
+        model: model.text.trim().isEmpty ? null : model.text.trim(),
+        password: pw.text,
+      );
+      _refresh();
+      _snack('Local LLM connected');
     } catch (e) {
       _snack(e.toString().replaceFirst('Exception: ', ''));
     }

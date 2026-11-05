@@ -22,6 +22,7 @@ import 'dart:convert';
 import 'pnl.dart' show PnlHook, TradeFill;
 import 'policy.dart';
 import 'providers.dart' show LlmProvider;
+import 'rag.dart' show groundSystem;
 import 'tools.dart' show ToolRegistry, PreparedAction;
 
 const String defaultSystem =
@@ -62,6 +63,13 @@ class Runner {
   final String pnlWallet;
   final String pnlChannel;
 
+  /// OPTIONAL client-side RAG live snapshot source (read-only view of the user's
+  /// own wallet state — chain/pair, balances, bots, signals — from EXISTING
+  /// state, no new network). When set, every turn's system prompt is grounded
+  /// with the bundled Blockle corpus + this snapshot via [groundSystem]. It only
+  /// augments the prompt: NO new tools, never touches the allowlist or the gate.
+  final Map<String, dynamic>? Function()? liveContext;
+
   final List<Map<String, dynamic>> messages = [];
   bool _aborted = false;
 
@@ -77,6 +85,7 @@ class Runner {
     this.pnl,
     String? pnlWallet,
     String? pnlChannel,
+    this.liveContext,
   })  : system = system ?? defaultSystem,
         pnlWallet = pnlWallet ?? 'default',
         pnlChannel = pnlChannel ?? 'default',
@@ -161,6 +170,22 @@ class Runner {
     emit({'type': 'prompt', 'text': prompt});
     messages.add({'role': 'user', 'text': prompt});
 
+    // CLIENT-SIDE RAG: ground this run's system prompt with the bundled Blockle
+    // corpus + a read-only live snapshot (offline; prompt augmentation only, no
+    // new tools/allowlist). Grounded once per run against the user's prompt and
+    // reused across the loop's turns. No live source => base system unchanged
+    // (the groundSystem corpus default still adds relevant knowledge facts).
+    Map<String, dynamic>? live;
+    if (liveContext != null) {
+      try {
+        live = liveContext!();
+      } catch (_) {
+        live = null;
+      }
+    }
+    final groundedSystem =
+        (liveContext != null) ? groundSystem(system, prompt, live: live) : system;
+
     String? lastText;
     try {
       for (var turn = 0; turn < maxTurns; turn++) {
@@ -170,7 +195,7 @@ class Runner {
         }
 
         final resp = await provider.turn(
-          system: system,
+          system: groundedSystem,
           messages: messages,
           tools: tools.schemas(),
         );

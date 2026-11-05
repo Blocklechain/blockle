@@ -159,12 +159,14 @@
           },
         }));
       }
+      // Keyless local servers (Ollama / LM Studio) need NO Authorization header —
+      // omit it entirely when there is no apiKey (sending "Bearer " trips some
+      // servers). BYO-key providers always send it.
+      const headers = Object.assign({ 'content-type': 'application/json' }, this.extraHeaders);
+      if (this.apiKey) headers.authorization = 'Bearer ' + this.apiKey;
       const r = await this.fetch(this.baseUrl + '/v1/chat/completions', {
         method: 'POST',
-        headers: Object.assign(
-          { 'content-type': 'application/json', authorization: 'Bearer ' + this.apiKey },
-          this.extraHeaders
-        ),
+        headers,
         body: JSON.stringify(body),
       });
       if (!r.ok) {
@@ -370,13 +372,60 @@
     }
   }
 
+  // ---- LOCAL LLM (Ollama / LM Studio / any OpenAI-compatible server on the
+  // user's own machine). Keyless: nothing leaves the device, nothing is billed,
+  // and it takes the load off Blockle's hosted brain. The wallet appends
+  // /v1/chat/completions (and /v1/models to list what is installed). This is the
+  // recommended private default for the conversational smart-trading assistant.
+  const LOCAL_PRESETS = {
+    ollama: { label: 'Ollama', baseUrl: 'http://localhost:11434', model: 'qwen2.5:3b-instruct', site: 'https://ollama.com/download',
+      setup: ['Install Ollama from ollama.com/download', 'Pull a model:  ollama pull qwen2.5:3b-instruct  (or llama3.2 / a larger 8B+ model)', 'Allow the wallet origin and start it:  OLLAMA_ORIGINS="chrome-extension://*" ollama serve', '(Ollama app users: set OLLAMA_ORIGINS in the app settings / launchctl, then restart it)', 'Point the wallet Brain at http://localhost:11434'] },
+    lmstudio: { label: 'LM Studio', baseUrl: 'http://localhost:1234', model: '', site: 'https://lmstudio.ai',
+      setup: ['Install LM Studio from lmstudio.ai and download a chat model', 'Open the Developer tab → Start Server (port 1234)', 'Turn on "Enable CORS" in the server settings so the wallet can reach it'] },
+    custom: { label: 'Custom (OpenAI-compatible)', baseUrl: 'http://localhost:8080', model: '', site: '',
+      setup: ['Any server that speaks /v1/chat/completions works (llama.cpp server, vLLM, LocalAI, Jan…)', 'It must allow cross-origin requests from the wallet'] },
+  };
+  class LocalProvider extends OpenAIProvider {
+    constructor(opts) {
+      opts = opts || {};
+      super(Object.assign({}, opts, {
+        name: 'local',
+        apiKey: opts.apiKey || '',             // keyless — tolerate a missing key
+        baseUrl: opts.baseUrl || LOCAL_PRESETS.ollama.baseUrl,
+        model: opts.model || LOCAL_PRESETS.ollama.model,
+      }));
+      this.local = true;
+    }
+    // what the local server has installed — [id, …]
+    async listModels() {
+      const r = await this.fetch(this.baseUrl + '/v1/models', { method: 'GET', headers: this.apiKey ? { authorization: 'Bearer ' + this.apiKey } : {} });
+      if (!r.ok) throw new Error('local LLM ' + r.status + ' at ' + this.baseUrl + '/v1/models');
+      const j = await r.json();
+      const list = Array.isArray(j) ? j : (j && (j.data || j.models)) || [];
+      return list.map((m) => (typeof m === 'string' ? m : (m.id || m.name || ''))).filter(Boolean);
+    }
+    // one tiny round-trip; resolves to the reply text or throws with the reason
+    async ping() {
+      const r = await this.fetch(this.baseUrl + '/v1/chat/completions', {
+        method: 'POST',
+        headers: Object.assign({ 'content-type': 'application/json' }, this.apiKey ? { authorization: 'Bearer ' + this.apiKey } : {}),
+        body: JSON.stringify({ model: this.model, messages: [{ role: 'user', content: 'Reply with the single word: ready' }], max_tokens: 8, temperature: 0 }),
+      });
+      if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('local LLM ' + r.status + ': ' + t.slice(0, 200)); }
+      const j = await r.json();
+      return ((j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '').trim();
+    }
+  }
+
   const AgentProviders = {
     create(opts) {
       opts = opts || {};
       // The HOSTED provider is keyless: it needs a gatewayUrl + sessionToken, NOT
-      // an apiKey. Every other (BYO-key) provider still requires an apiKey from the
+      // an apiKey. The LOCAL provider is keyless too (a server on the user's own
+      // machine). Every other (BYO-key) provider still requires an apiKey from the
       // vault. This is the ONLY place a provider is instantiated.
       if (opts.provider === 'hosted') return new HostedProvider(opts);
+      if (opts.provider === 'local') return new LocalProvider(opts);
       if (!opts.apiKey) throw new Error('provider requires an apiKey (from the vault)');
       switch (opts.provider) {
         case 'claude': return new ClaudeProvider(opts);
@@ -392,6 +441,8 @@
     OpenAIProvider,
     CopilotProvider,
     HostedProvider,
+    LocalProvider,
+    LOCAL_PRESETS,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = AgentProviders;

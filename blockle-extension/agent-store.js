@@ -93,6 +93,19 @@
           label: cred.label || 'Blockle hosted agent',
           createdAt: Date.now(),
         };
+      } else if (cred.provider === 'local') {
+        // LOCAL LLM (Ollama / LM Studio / any OpenAI-compatible server on the
+        // user's own machine). KEYLESS: no apiKey is entered or stored — nothing
+        // leaves the device. Only the base URL + model are kept.
+        rec = {
+          credRef,
+          provider: 'local',
+          apiKey: null,
+          model: cred.model || null,
+          baseUrl: cred.baseUrl || null,
+          label: cred.label || 'Local LLM',
+          createdAt: Date.now(),
+        };
       } else {
         if (!cred.apiKey) throw new Error('a provider and API key are required');
         rec = {
@@ -174,6 +187,10 @@
       if (!c) return null;
       if (c.provider === 'hosted') {
         return { provider: 'hosted', gatewayUrl: c.gatewayUrl, sessionToken: c.sessionToken, expiresAt: c.expiresAt, model: c.model, address: c.address, chain: c.chain, publicKey: c.publicKey };
+      }
+      if (c.provider === 'local') {
+        // KEYLESS: a server on the user's own machine — no apiKey to resolve.
+        return { provider: 'local', model: c.model, baseUrl: c.baseUrl };
       }
       return { provider: c.provider, apiKey: c.apiKey, model: c.model, baseUrl: c.baseUrl };
     },
