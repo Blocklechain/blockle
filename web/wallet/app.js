@@ -560,7 +560,7 @@
     $('#acctsel-label').innerHTML = acct + esc((S.chain || 'block').toUpperCase()) + ' · ' + esc(shortAddr(S.address));
   }
   // One-line description of an imported account for the switcher.
-  var FAM_SHORT = { evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', solana: 'SOL', block: 'BLOCK', all: 'all chains' };
+  var FAM_SHORT = { evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', bitcoincash: 'BCH', solana: 'SOL', block: 'BLOCK', all: 'all chains' };
   function acctSub(a) {
     if (a.id === 'main') return 'BLOCK identity + every chain (HD)';
     var how = { key: 'Private key', mnemonic: 'Seed phrase', keystore: 'Keystore', walletdat: 'wallet.dat', watch: 'Watch-only' }[a.source] || 'Imported';
@@ -629,6 +629,7 @@
     { id: 'bitcoin', name: 'Bitcoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
     { id: 'litecoin', name: 'Litecoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
     { id: 'dogecoin', name: 'Dogecoin', sub: 'WIF key · seed · wallet.dat', icon: 'assets' },
+    { id: 'bitcoincash', name: 'Bitcoin Cash', sub: 'WIF key · seed · CashAddr', icon: 'assets' },
     { id: 'solana', name: 'Solana', sub: 'Phantom / solana-keygen key · seed', icon: 'moon' },
     { id: 'block', name: 'BLOCK', sub: 'Blockle wallet file · desktop wallet.json', icon: 'shield' },
   ];
@@ -640,8 +641,8 @@
     watch: { name: 'Watch-only address', sub: 'Track balances, no key' },
     file: { name: 'Blockle wallet file', sub: 'Encrypted export or desktop wallet.json' },
   };
-  var FAM_CHAIN = { evm: 'ethereum', bitcoin: 'bitcoin', litecoin: 'litecoin', dogecoin: 'dogecoin', solana: 'solana' };
-  var FAM_UNITS = { evm: [18, 'ETH'], bitcoin: [8, 'BTC'], litecoin: [8, 'LTC'], dogecoin: [8, 'DOGE'], solana: [9, 'SOL'] };
+  var FAM_CHAIN = { evm: 'ethereum', bitcoin: 'bitcoin', litecoin: 'litecoin', dogecoin: 'dogecoin', bitcoincash: 'bitcoincash', solana: 'solana' };
+  var FAM_UNITS = { evm: [18, 'ETH'], bitcoin: [8, 'BTC'], litecoin: [8, 'LTC'], dogecoin: [8, 'DOGE'], bitcoincash: [8, 'BCH'], solana: [9, 'SOL'] };
   function fmtBase(bal, fam) {
     var u = FAM_UNITS[fam] || [0, '']; try {
       var s = BigInt(bal || 0).toString().padStart(u[0] + 1, '0'); var i = s.slice(0, s.length - u[0]), f = s.slice(s.length - u[0]).replace(/0+$/, '');
@@ -687,14 +688,14 @@
     function stepInput() {
       var m = st.method, fam = st.family;
       var fields = '';
-      var ph = { evm: '0x… 64 hex characters', bitcoin: 'WIF (5…, K… or L…) or 64-hex', litecoin: 'WIF (6… or T…) or 64-hex', dogecoin: 'WIF (6… or Q…) or 64-hex', solana: 'base58 secret key, [1,2,3…] JSON array, or hex' }[fam] || 'private key';
+      var ph = { evm: '0x… 64 hex characters', bitcoin: 'WIF (5…, K… or L…) or 64-hex', litecoin: 'WIF (6… or T…) or 64-hex', dogecoin: 'WIF (6… or Q…) or 64-hex', bitcoincash: 'WIF (5…, K… or L…) or 64-hex', solana: 'base58 secret key, [1,2,3…] JSON array, or hex' }[fam] || 'private key';
       if (m === 'key') fields += '<div class="field"><label>Private key</label><textarea id="im-text" rows="3" placeholder="' + esc(ph) + '" autocomplete="off" spellcheck="false"></textarea></div>';
       if (m === 'mnemonic') fields += '<div class="field"><label>Recovery phrase</label><textarea id="im-text" rows="3" placeholder="12 or 24 words separated by spaces" autocomplete="off" spellcheck="false"></textarea></div>' +
         '<div class="field"><label>Passphrase (optional, BIP39 "25th word")</label><input id="im-pass" type="password" autocomplete="off" placeholder="Leave empty unless you set one"></div>' +
         '<p class="dim" style="font-size:12px;margin:-4px 0 8px">Standard paths: EVM m/44\'/60\'/0\'/0/0 · BTC m/84\'/0\' (bc1…) · LTC m/84\'/2\' · DOGE m/44\'/3\' · SOL m/44\'/501\'/0\'/0\'. Same addresses as MetaMask, Sparrow/Electrum (bech32), Ledger Live and Phantom.</p>';
       if (m === 'keystore') fields += '<div class="field"><label>Keystore file (UTC--… .json)</label><input id="im-file" type="file" accept=".json,application/json"></div><div class="field"><label>Keystore password</label><input id="im-fpw" type="password" autocomplete="off"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">Decrypting a geth-strength keystore can take up to a minute in the browser.</p>';
       if (m === 'walletdat') fields += '<div class="field"><label>wallet.dat</label><input id="im-file" type="file"></div><div class="field"><label>Wallet passphrase (only if the Core wallet is encrypted)</label><input id="im-fpw" type="password" autocomplete="off" placeholder="Leave empty if it was never encrypted"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">Reads legacy (key/ckey) and descriptor wallets from Bitcoin, Litecoin and Dogecoin Core. Keys are extracted here, in your browser; the file is never uploaded.</p>';
-      if (m === 'watch') fields += '<div class="field"><label>Address to watch</label><input id="im-text" placeholder="' + esc({ evm: '0x…', bitcoin: 'bc1… / 1… / 3…', litecoin: 'ltc1… / L… / M…', dogecoin: 'D…', solana: 'base58 address', block: 'block1…' }[fam] || 'address') + '" autocomplete="off" spellcheck="false"></div>';
+      if (m === 'watch') fields += '<div class="field"><label>Address to watch</label><input id="im-text" placeholder="' + esc({ evm: '0x…', bitcoin: 'bc1… / 1… / 3…', litecoin: 'ltc1… / L… / M…', dogecoin: 'D…', bitcoincash: 'bitcoincash:q… / 1…', solana: 'base58 address', block: 'block1…' }[fam] || 'address') + '" autocomplete="off" spellcheck="false"></div>';
       if (m === 'file') fields += '<div class="field"><label>Wallet file (.json)</label><input id="im-file" type="file" accept=".json,application/json"></div><div class="field"><label>File password (if the file is encrypted)</label><input id="im-fpw" type="password" autocomplete="off"></div><p class="dim" style="font-size:12px;margin:-4px 0 8px">A BLOCK wallet is a separate post-quantum identity, so it is added as a <b>new wallet</b> you unlock with the password below.</p>';
       fields += '<div class="field"><label>Account name (optional)</label><input id="im-label" placeholder="e.g. Old Core wallet" maxlength="40"></div>';
       fields += '<div class="field"><label>' + (m === 'file' ? 'Password for the new wallet in this browser' : 'Your wallet password') + '</label><input id="im-pw" type="password" autocomplete="current-password" placeholder="' + (m === 'file' ? 'Encrypts the imported wallet here' : 'Needed to seal the new account into your vault') + '" value="' + esc(st.pw) + '"></div>';
@@ -2943,11 +2944,12 @@
     { id: 'bitcoin', name: 'Bitcoin', sub: 'WIF · Core import file' },
     { id: 'litecoin', name: 'Litecoin', sub: 'WIF · Core import file' },
     { id: 'dogecoin', name: 'Dogecoin', sub: 'WIF · Core import file' },
+    { id: 'bitcoincash', name: 'Bitcoin Cash', sub: 'WIF · CashAddr' },
     { id: 'solana', name: 'Solana', sub: 'base58 (Phantom) · JSON array' },
     { id: 'block', name: 'BLOCK', sub: 'ML-DSA-44 secret key (hex)' },
   ];
   var EXPORT_TTL = 60, CLIP_TTL = 30;
-  function famOfChain(c) { return (c === 'bitcoin' || c === 'litecoin' || c === 'dogecoin' || c === 'solana' || c === 'block') ? c : 'evm'; }
+  function famOfChain(c) { return (c === 'bitcoin' || c === 'litecoin' || c === 'dogecoin' || c === 'bitcoincash' || c === 'solana' || c === 'block') ? c : 'evm'; }
   function exportKeySheet() {
     if (!S.unlocked) { toast('Unlock your wallet first', 'bad'); return; }
     var acct = S.account || { id: 'main', label: 'Main' };

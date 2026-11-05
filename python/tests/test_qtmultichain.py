@@ -114,6 +114,9 @@ class MultiChainControllerTest(unittest.TestCase):
         self.assertTrue(ctrl.accounts["ethereum"].address.startswith("0x"))
         self.assertEqual(ctrl.accounts["ethereum"].scheme, "secp256k1")
         self.assertTrue(ctrl.accounts["bitcoin"].address.startswith("bc1"))
+        # Bitcoin Cash derives a CashAddr off the same seed (coin type 145).
+        self.assertTrue(ctrl.accounts["bitcoincash"].address.startswith("bitcoincash:q"))
+        self.assertEqual(ctrl.accounts["bitcoincash"].scheme, "secp256k1")
         # BLOCK is the engine identity (post-quantum)
         self.assertEqual(ctrl.accounts["block"].address, "block1stub")
         ctx = ctrl._ctx()

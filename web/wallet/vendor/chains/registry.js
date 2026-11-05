@@ -47,7 +47,7 @@
   };
   function isEvm(id) { return !!EVM_CHAINS[id]; }
   const NETWORK_NAMES = {
-    block: 'BLOCK', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', solana: 'Solana',
+    block: 'BLOCK', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana',
     ethereum: 'Ethereum', base: 'Base', arbitrum: 'Arbitrum', optimism: 'Optimism', polygon: 'Polygon', bnb: 'BNB Chain',
     avalanche: 'Avalanche', linea: 'Linea', scroll: 'Scroll', unichain: 'Unichain', gnosis: 'Gnosis', mantle: 'Mantle',
     celo: 'Celo', cronos: 'Cronos', sonic: 'Sonic', berachain: 'Berachain', opbnb: 'opBNB', sei: 'Sei',
@@ -100,6 +100,7 @@
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
+    bitcoincash: { esplora: 'https://bch.imaginary.cash/api' }, // BCH Fulcrum/Esplora-style REST (operator-overridable)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
     solana:    { rpcUrl: 'https://solana-rpc.publicnode.com' },
   };
@@ -204,7 +205,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'solana'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -248,7 +249,7 @@
       // Avoid colliding with an existing adapter id (built-in EVM slug, or a
       // UTXO/BLOCK id) when the chainId is genuinely new.
       let id = net.id;
-      if (evmSpecs[id] || id === 'bitcoin' || id === 'litecoin' || id === 'dogecoin' || id === 'block') id = id + '-' + net.chainId;
+      if (evmSpecs[id] || id === 'bitcoin' || id === 'litecoin' || id === 'dogecoin' || id === 'bitcoincash' || id === 'block') id = id + '-' + net.chainId;
       evmSpecs[id] = {
         id, chainId: net.chainId, symbol: net.nativeSymbol,
         rpcUrl: net.rpcUrl, explorer: net.explorerUrl || '',
@@ -264,6 +265,7 @@
     adapters.bitcoin  = Utxo.createUtxoAdapter('bitcoin',  { esplora: endpoints.bitcoin.esplora, endpoint: endpoints.bitcoin.endpoint });
     adapters.litecoin = Utxo.createUtxoAdapter('litecoin', { esplora: endpoints.litecoin.esplora, endpoint: endpoints.litecoin.endpoint });
     adapters.dogecoin = Utxo.createUtxoAdapter('dogecoin', { esplora: endpoints.dogecoin.esplora, endpoint: endpoints.dogecoin.endpoint });
+    adapters.bitcoincash = Utxo.createUtxoAdapter('bitcoincash', { esplora: endpoints.bitcoincash.esplora, endpoint: endpoints.bitcoincash.endpoint });
     // Solana (SOL + SPL auto-detect) — ed25519/SLIP-0010, mainnet RPC is config.
     if (Solana && Solana.createSolanaAdapter) {
       const sep = endpoints.solana || {};

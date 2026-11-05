@@ -128,6 +128,111 @@ String bech32Encode(String hrp, List<int> bytes) {
   return sb.toString();
 }
 
+// ---- CashAddr (Bitcoin Cash) -----------------------------------------------
+// NOT bech32: a DIFFERENT 40-bit BCH polymod. Self-contained codec; reuses only
+// the shared base32 `_charset` + `convertBits` above. BigInt is used for the
+// 40-bit polymod so it is correct on both the Dart VM and dart2js (web).
+final List<BigInt> _cashGen = [
+  BigInt.parse('98f2bc8e61', radix: 16),
+  BigInt.parse('79b76d99e2', radix: 16),
+  BigInt.parse('f33e5fb3c4', radix: 16),
+  BigInt.parse('ae2eabe2a8', radix: 16),
+  BigInt.parse('1e4f43e470', radix: 16),
+];
+final BigInt _cash35 = BigInt.parse('07ffffffff', radix: 16);
+
+BigInt _cashPolymod(List<int> values) {
+  var c0 = BigInt.one;
+  for (final v in values) {
+    final b = c0 >> 35;
+    c0 = ((c0 & _cash35) << 5) ^ BigInt.from(v);
+    for (var i = 0; i < 5; i++) {
+      if (((b >> i) & BigInt.one) != BigInt.zero) c0 ^= _cashGen[i];
+    }
+  }
+  return c0 ^ BigInt.one;
+}
+
+List<int> _cashPrefixExpand(String prefix) {
+  final ret = <int>[];
+  for (var i = 0; i < prefix.length; i++) {
+    ret.add(prefix.codeUnitAt(i) & 0x1f);
+  }
+  ret.add(0);
+  return ret;
+}
+
+/// Encode a CashAddr. `type`: 0 = P2PKH, 1 = P2SH. A 160-bit hash => sizeBits 0.
+String cashAddrEncode(String prefix, int type, List<int> hash) {
+  final h = c.toBytes(hash);
+  final versionByte = (type << 3) | 0;
+  final payload5 = [versionByte, ...h];
+  final data = convertBits(payload5, 8, 5, true)!;
+  final checksumInput = [..._cashPrefixExpand(prefix), ...data, 0, 0, 0, 0, 0, 0, 0, 0];
+  final mod = _cashPolymod(checksumInput);
+  final checksum = <int>[];
+  for (var i = 0; i < 8; i++) {
+    checksum.add(((mod >> (5 * (7 - i))) & BigInt.from(0x1f)).toInt());
+  }
+  final sb = StringBuffer('$prefix:');
+  for (final d in [...data, ...checksum]) {
+    sb.write(_charset[d]);
+  }
+  return sb.toString();
+}
+
+/// Cheap heuristic: does this string look like a CashAddr (prefixed or bare)?
+bool looksLikeCashAddr(String address) {
+  if (address.isEmpty) return false;
+  if (address.contains(':')) return true; // prefixed form, e.g. bitcoincash:q...
+  // bare form: a 160-bit CashAddr is exactly 42 base32 chars (34 payload + 8 cksum)
+  if (address.length != 42) return false;
+  final low = address.toLowerCase();
+  for (final ch in low.split('')) {
+    if (!_charset.contains(ch)) return false;
+  }
+  return true;
+}
+
+class CashAddrDecoded {
+  CashAddrDecoded(this.prefix, this.type, this.hash);
+  final String prefix;
+  final int type;
+  final Uint8List hash;
+}
+
+CashAddrDecoded cashAddrDecode(String address, [String expectPrefix = 'bitcoincash']) {
+  String prefix, body;
+  if (address.contains(':')) {
+    final p = address.split(':');
+    prefix = p[0].toLowerCase();
+    body = p[1].toLowerCase();
+  } else {
+    prefix = expectPrefix;
+    body = address.toLowerCase();
+  }
+  final values = <int>[];
+  for (final ch in body.split('')) {
+    final d = _charset.indexOf(ch);
+    if (d < 0) throw const FormatException('bad cashaddr char');
+    values.add(d);
+  }
+  if (_cashPolymod([..._cashPrefixExpand(prefix), ...values]) != BigInt.zero) {
+    throw const FormatException('bad cashaddr checksum');
+  }
+  final payload = convertBits(values.sublist(0, values.length - 8), 5, 8, false);
+  if (payload == null) throw const FormatException('bad cashaddr payload');
+  final versionByte = payload[0];
+  final type = versionByte >> 3;
+  return CashAddrDecoded(prefix, type, Uint8List.fromList(payload.sublist(1)));
+}
+
+/// Derive a CashAddr P2PKH from a compressed pubkey.
+String cashAddrP2pkh(List<int> pubKeyBytes, [String prefix = 'bitcoincash']) {
+  final h160 = c.hash160(c.toBytes(pubKeyBytes));
+  return cashAddrEncode(prefix, 0, h160);
+}
+
 // ---- EVM (EIP-55 checksum) -------------------------------------------------
 String evmAddress(List<int> pubKeyBytes) {
   var pub = c.toBytes(pubKeyBytes);

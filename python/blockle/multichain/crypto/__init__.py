@@ -16,7 +16,8 @@ The submodules mirror the audited browser-extension modules
 
 from __future__ import annotations
 
-from . import _core, address, bech32, bip32, bip39, ed25519, secp256k1, slip10
+from . import (_core, address, bech32, bip32, bip39, cashaddr, ed25519,
+               secp256k1, slip10)
 
 # ---- _core (hashing / encoding) ----
 to_bytes = _core.to_bytes
@@ -67,9 +68,13 @@ p2wpkh = address.p2wpkh
 p2pkh = address.p2pkh
 to_wif = address.to_wif
 from_wif = address.from_wif
+cash_addr_encode = cashaddr.cash_addr_encode
+cash_addr_decode = cashaddr.cash_addr_decode
+cash_addr_p2pkh = cashaddr.cash_addr_p2pkh
+looks_like_cashaddr = cashaddr.looks_like_cashaddr
 
 __all__ = [
-    "_core", "address", "bech32", "bip32", "bip39", "ed25519", "secp256k1", "slip10",
+    "_core", "address", "bech32", "cashaddr", "bip32", "bip39", "ed25519", "secp256k1", "slip10",
     "to_bytes", "hex_to_bytes", "bytes_to_hex", "concat_bytes", "utf8",
     "sha256", "sha512", "ripemd160", "keccak256", "hash256", "hash160",
     "hmac_sha256", "hmac_sha512", "pbkdf2_sha512",
@@ -82,4 +87,5 @@ __all__ = [
     "HDNode", "master_from_seed", "derive_child", "derive_path", "parse_path",
     "serialize", "HARDENED",
     "evm_address", "to_checksum_address", "p2wpkh", "p2pkh", "to_wif", "from_wif",
+    "cash_addr_encode", "cash_addr_decode", "cash_addr_p2pkh", "looks_like_cashaddr",
 ]

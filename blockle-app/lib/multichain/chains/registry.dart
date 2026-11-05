@@ -75,6 +75,8 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Blockle-hosted Esplora shim for Dogecoin (operator-overridable, like the
   // other chains). The UTXO adapter is unchanged — just the endpoint config.
   'dogecoin': EndpointCfg(esplora: 'https://doge-esplora.blockle.org'),
+  // Bitcoin Cash Fulcrum/Esplora-compatible REST (operator-overridable).
+  'bitcoincash': EndpointCfg(esplora: 'https://bch.imaginary.cash/api'),
   'solana': EndpointCfg(rpcUrl: 'https://api.mainnet-beta.solana.com'),
 };
 
@@ -274,6 +276,7 @@ class ChainRegistry {
             'bitcoin',
             'litecoin',
             'dogecoin',
+            'bitcoincash',
             'solana'
           ]),
       'block', // BLOCK is always enabled
@@ -368,6 +371,10 @@ class ChainRegistry {
         esplora: ep['dogecoin']?.esplora,
         httpGet: getFor(ep['dogecoin']?.esplora),
         httpPost: postFor(ep['dogecoin']?.esplora));
+    adapters['bitcoincash'] = UtxoAdapter('bitcoincash',
+        esplora: ep['bitcoincash']?.esplora,
+        httpGet: getFor(ep['bitcoincash']?.esplora),
+        httpPost: postFor(ep['bitcoincash']?.esplora));
     adapters['solana'] = SolanaAdapter(
       rpcUrl: ep['solana']?.rpcUrl,
       rpc: rpcFor(ep['solana']?.rpcUrl),

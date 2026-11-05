@@ -61,6 +61,7 @@ def test_currency_map_natives():
     assert M.currency_code("bitcoin") == "btc"
     assert M.currency_code("litecoin") == "ltc"
     assert M.currency_code("dogecoin") == "doge"
+    assert M.currency_code("bitcoincash") == "bch"
     assert M.currency_code("solana") == "sol"
     assert M.currency_code("base") == "eth_base"
     assert M.currency_code("polygon") == "pol_polygon"

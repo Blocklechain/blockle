@@ -54,6 +54,7 @@ const List<String> kDisplayChains = [
   'bitcoin',
   'litecoin',
   'dogecoin',
+  'bitcoincash',
   'solana',
 ];
 
@@ -93,6 +94,7 @@ const Map<String, String> kChainLabels = {
   'bitcoin': 'Bitcoin',
   'litecoin': 'Litecoin',
   'dogecoin': 'Dogecoin',
+  'bitcoincash': 'Bitcoin Cash',
   'solana': 'Solana',
 };
 
@@ -109,6 +111,7 @@ const Map<String, String> kChainTickers = {
   'bitcoin': 'BTC',
   'litecoin': 'LTC',
   'dogecoin': 'DOGE',
+  'bitcoincash': 'BCH',
   'solana': 'SOL',
 };
 

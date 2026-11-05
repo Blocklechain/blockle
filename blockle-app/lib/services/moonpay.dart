@@ -76,6 +76,7 @@ const Map<String, String> kMoonPayNativeCodes = {
   'bitcoin': 'btc',
   'litecoin': 'ltc',
   'dogecoin': 'doge',
+  'bitcoincash': 'bch',
   'solana': 'sol',
   // 'block' intentionally absent — BLOCK is not on MoonPay.
 };

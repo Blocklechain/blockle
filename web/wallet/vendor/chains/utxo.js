@@ -22,6 +22,10 @@
     bitcoin:  { id: 'bitcoin',  symbol: 'BTC', decimals: 8, hrp: 'bc',  p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: true,  path: "m/84'/0'/0'/0",  explorer: 'https://mempool.space/tx/',           esplora: 'https://blockstream.info/api' },
     litecoin: { id: 'litecoin', symbol: 'LTC', decimals: 8, hrp: 'ltc', p2pkh: 0x30, p2sh: 0x32, wif: 0xb0, segwit: true,  path: "m/84'/2'/0'/0",  explorer: 'https://blockchair.com/litecoin/transaction/', esplora: 'https://litecoinspace.org/api' },
     dogecoin: { id: 'dogecoin', symbol: 'DOGE', decimals: 8, hrp: null, p2pkh: 0x1e, p2sh: 0x16, wif: 0x9e, segwit: false, path: "m/44'/3'/0'/0",  explorer: 'https://blockchair.com/dogecoin/transaction/',  esplora: 'https://doge-esplora.blockle.org' },
+    // Bitcoin Cash: secp256k1 UTXO, NOT segwit — signs with BIP143 preimage +
+    // SIGHASH_FORKID (0x41). `forkId` selects that branch; `cashaddr` selects
+    // CashAddr receive/display. coin type 145, P2PKH only.
+    bitcoincash: { id: 'bitcoincash', symbol: 'BCH', decimals: 8, hrp: null, p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: false, forkId: true, cashaddr: 'bitcoincash', path: "m/44'/145'/0'/0", explorer: 'https://blockchair.com/bitcoin-cash/transaction/', esplora: 'https://bch.imaginary.cash/api' },
   };
 
   // ---- little-endian + varint helpers -------------------------------------
@@ -52,6 +56,14 @@
 
   // Address -> scriptPubKey (for building outputs to arbitrary recipients)
   function addressToScript(addr, net) {
+    // CashAddr (BCH): accept 'bitcoincash:q...' and bare 'q...'. Legacy base58
+    // BCH destinations still fall through to the base58 branch below.
+    if (net.cashaddr && (addr.startsWith(net.cashaddr + ':') || Addr.looksLikeCashAddr(addr))) {
+      const { type, hash } = Addr.cashAddrDecode(addr, net.cashaddr);
+      if (type === 0) return p2pkhScript(hash);
+      if (type === 1) return C.concatBytes(Uint8Array.of(0xa9, 0x14), hash, Uint8Array.of(0x87)); // P2SH
+      throw new Error('unsupported cashaddr type');
+    }
     if (net.segwit && net.hrp && addr.toLowerCase().startsWith(net.hrp + '1')) {
       const { version, program } = Addr.segwitDecode(net.hrp, addr);
       if (version === 0 && program.length === 20) return p2wpkhScript(program);
@@ -163,10 +175,11 @@
   //        key sets where each input may be owned by a different key and script
   //        type ('p2wpkh' | 'p2sh-p2wpkh' | 'p2pkh').
   // req = {to, amount(base), feeRate(sat/vB), utxos:[{txid,vout,value,address?}]}
-  const IN_VBYTES = { p2wpkh: 68, 'p2sh-p2wpkh': 91, p2pkh: 148 };
+  const IN_VBYTES = { p2wpkh: 68, 'p2sh-p2wpkh': 91, p2pkh: 148, 'p2pkh-forkid': 148 };
   function buildAndSign(net, keyOf, fromAddress, req) {
     const SIGHASH_ALL = 0x01;
-    const defaultType = net.segwit ? 'p2wpkh' : 'p2pkh';
+    const FORKID_ALL = 0x41; // SIGHASH_ALL | SIGHASH_FORKID (forkID 0)
+    const defaultType = net.forkId ? 'p2pkh-forkid' : (net.segwit ? 'p2wpkh' : 'p2pkh');
     const resolve = typeof keyOf === 'function' ? keyOf : () => ({ node: keyOf, type: defaultType });
     const feeRate = Number(req.feeRate || 10);
     const { chosen, fee } = selectCoins(req.utxos, BigInt(req.amount), feeRate, net, (u) => IN_VBYTES[(resolve(u) || {}).type] || IN_VBYTES[defaultType]);
@@ -188,7 +201,16 @@
       const pub = k.node.publicKey;
       const h160 = C.hash160(pub);
       let sh, scriptSig, witness;
-      if (type === 'p2wpkh' || type === 'p2sh-p2wpkh') {
+      if (type === 'p2pkh-forkid') {
+        // BCH: BIP143 preimage (reuse sighashSegwit) with hashType 0x41 and a
+        // legacy P2PKH scriptSig; NO witness, NO segwit marker. MUST win over
+        // the plain-legacy branch below (segwit is false for BCH).
+        sh = sighashSegwit(version, inputs, outputs, i, p2pkhScript(h160), BigInt(u.value), 0xffffffff, locktime, FORKID_ALL);
+        const sig = S.sign(sh, k.node.privateKey);
+        const sigPlusType = C.concatBytes(sig.der, Uint8Array.of(FORKID_ALL));
+        scriptSig = C.concatBytes(pushData(sigPlusType), pushData(pub));
+        signedInputs.push({ txid: u.txid, vout: u.vout, sequence: 0xffffffff, scriptSig, witness: null, _sh: sh, _sig: sig });
+      } else if (type === 'p2wpkh' || type === 'p2sh-p2wpkh') {
         if (!net.segwit) throw new Error(net.id + ' has no segwit');
         sh = sighashSegwit(version, inputs, outputs, i, p2pkhScript(h160), BigInt(u.value), 0xffffffff, locktime, SIGHASH_ALL);
         const sig = S.sign(sh, k.node.privateKey);
@@ -241,6 +263,14 @@
     function addressesOf(k) {
       const out = [];
       const pub = k.node.publicKey;
+      // BCH: CashAddr P2PKH is the PRIMARY (display/receive); legacy base58 P2PKH
+      // is tracked as an alt so imported keys + legacy-only indexers still resolve.
+      // Both are the same key under the FORKID signing type.
+      if (net.cashaddr) {
+        out.push({ type: 'p2pkh-forkid', address: Addr.cashAddrP2pkh(pub, net.cashaddr) });
+        out.push({ type: 'p2pkh-forkid', address: Addr.p2pkh(pub, net.p2pkh) });
+        return out;
+      }
       if (net.segwit && k.compressed) {
         out.push({ type: 'p2wpkh', address: Addr.p2wpkh(pub, net.hrp) });
         const redeem = p2wpkhScript(C.hash160(pub));
@@ -276,6 +306,7 @@
       return HD.derivePath(rootSeed, net.path + '/' + (index || 0));
     }
     function addressOf(node) {
+      if (net.cashaddr) return Addr.cashAddrP2pkh(node.publicKey, net.cashaddr);
       return net.segwit ? Addr.p2wpkh(node.publicKey, net.hrp) : Addr.p2pkh(node.publicKey, net.p2pkh);
     }
 

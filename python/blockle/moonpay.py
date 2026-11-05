@@ -98,6 +98,7 @@ NATIVE_CURRENCY_CODES: Dict[str, Optional[str]] = {
     "bitcoin": "btc",
     "litecoin": "ltc",
     "dogecoin": "doge",
+    "bitcoincash": "bch",
     "solana": "sol",
 }
 

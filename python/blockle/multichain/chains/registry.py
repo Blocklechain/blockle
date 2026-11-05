@@ -41,6 +41,7 @@ DEFAULT_ENDPOINTS = {
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
+    "bitcoincash": {"esplora": "https://bch.imaginary.cash/api"},  # Fulcrum/Esplora-compatible REST (operator-overridable)
 }
 
 
@@ -103,7 +104,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "bitcoin", "litecoin", "dogecoin"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -202,6 +203,9 @@ class ChainRegistry:
         a["dogecoin"] = create_utxo_adapter("dogecoin", esplora=endpoints["dogecoin"].get("esplora"),
                                             http_get=endpoints["dogecoin"].get("http_get"),
                                             http_post=endpoints["dogecoin"].get("http_post"))
+        a["bitcoincash"] = create_utxo_adapter("bitcoincash", esplora=endpoints["bitcoincash"].get("esplora"),
+                                               http_get=endpoints["bitcoincash"].get("http_get"),
+                                               http_post=endpoints["bitcoincash"].get("http_post"))
         block_cfg = config.get("block") or {}
         wallet = block_cfg.get("wallet")
         if create_block_adapter and wallet is not None:

@@ -60,12 +60,13 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "solana"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
     "bnb": "BNB Chain", "avalanche": "Avalanche C-Chain", "hyperevm": "HyperEVM",
     "bitcoin": "Bitcoin", "litecoin": "Litecoin", "dogecoin": "Dogecoin",
+    "bitcoincash": "Bitcoin Cash",
     "solana": "Solana",
 }
 #: Only BLOCK signs post-quantum (ML-DSA-44). Every other chain is ECDSA/ed25519
@@ -75,6 +76,7 @@ CHAIN_SCHEME = {
     "block": "ML-DSA-44 (post-quantum)",
     **{c: "secp256k1" for c in EVM_CHAINS},
     "bitcoin": "secp256k1", "litecoin": "secp256k1", "dogecoin": "secp256k1",
+    "bitcoincash": "secp256k1",
     "solana": "ed25519",
 }
 
@@ -1551,7 +1553,7 @@ class EndpointsDialog(QDialog):
         self.fields: Dict[str, QLineEdit] = {}
         form = QFormLayout()
         eps = ctrl.vault.endpoints() if ctrl.is_unlocked() else {}
-        for cid in ["ethereum", "base", "solana", "bitcoin", "litecoin", "dogecoin"]:
+        for cid in ["ethereum", "base", "solana", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]:
             f = QLineEdit()
             cur = (eps.get(cid) or {})
             f.setText(cur.get("rpcUrl") or cur.get("esplora") or "")
@@ -1568,7 +1570,7 @@ class EndpointsDialog(QDialog):
             val = f.text().strip()
             if not val:
                 continue
-            key = "esplora" if cid in ("bitcoin", "litecoin", "dogecoin") else "rpcUrl"
+            key = "esplora" if cid in ("bitcoin", "litecoin", "dogecoin", "bitcoincash") else "rpcUrl"
             self.ctrl.vault.set_endpoint(cid, {key: val})
         self.accept()
 

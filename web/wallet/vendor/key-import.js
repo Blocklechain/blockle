@@ -36,10 +36,11 @@
     bitcoin:  { id: 'bitcoin',  symbol: 'BTC',  name: 'Bitcoin',  hrp: 'bc',  p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: true,  path: "m/84'/0'/0'/0/0" },
     litecoin: { id: 'litecoin', symbol: 'LTC',  name: 'Litecoin', hrp: 'ltc', p2pkh: 0x30, p2sh: 0x32, wif: 0xb0, segwit: true,  path: "m/84'/2'/0'/0/0" },
     dogecoin: { id: 'dogecoin', symbol: 'DOGE', name: 'Dogecoin', hrp: null,  p2pkh: 0x1e, p2sh: 0x16, wif: 0x9e, segwit: false, path: "m/44'/3'/0'/0/0" },
+    bitcoincash: { id: 'bitcoincash', symbol: 'BCH', name: 'Bitcoin Cash', hrp: null, p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: false, forkId: true, cashaddr: 'bitcoincash', path: "m/44'/145'/0'/0/0" },
   };
   const PATHS = { evm: "m/44'/60'/0'/0/0", solana: "m/44'/501'/0'/0'" };
-  const FAMILIES = ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'solana'];
-  const FAMILY_LABEL = { evm: 'Ethereum & every EVM network', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', solana: 'Solana', block: 'BLOCK' };
+  const FAMILIES = ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'];
+  const FAMILY_LABEL = { evm: 'Ethereum & every EVM network', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana', block: 'BLOCK' };
   const TYPE_LABEL = { p2wpkh: 'native segwit', 'p2sh-p2wpkh': 'wrapped segwit', p2pkh: 'legacy' };
   // Which import methods make sense per family.
   const METHODS = {
@@ -47,6 +48,7 @@
     bitcoin:  ['key', 'mnemonic', 'walletdat', 'watch'],
     litecoin: ['key', 'mnemonic', 'walletdat', 'watch'],
     dogecoin: ['key', 'mnemonic', 'walletdat', 'watch'],
+    bitcoincash: ['key', 'mnemonic', 'watch'],
     solana:   ['key', 'mnemonic', 'watch'],
     block:    ['file', 'watch'],
     all:      ['mnemonic'],
@@ -69,6 +71,13 @@
     const net = UTXO[family]; if (!net) throw new Error('not a UTXO chain: ' + family);
     const pub = S.publicKey(C.toBytes(priv), compressed !== false);
     const out = [];
+    // BCH: CashAddr P2PKH is primary; legacy base58 P2PKH is a tracked alt. Both
+    // sign via the FORKID branch (type 'p2pkh-forkid').
+    if (net.cashaddr) {
+      out.push({ type: 'p2pkh-forkid', address: Addr.cashAddrP2pkh(pub, net.cashaddr) });
+      out.push({ type: 'p2pkh-forkid', address: Addr.p2pkh(pub, net.p2pkh) });
+      return out;
+    }
     if (net.segwit && compressed !== false) {
       out.push({ type: 'p2wpkh', address: Addr.p2wpkh(pub, net.hrp) });
       out.push({ type: 'p2sh-p2wpkh', address: p2shP2wpkh(pub, net.p2sh) });
@@ -81,6 +90,10 @@
   function utxoFamilyOfAddress(addr) {
     const a = String(addr || '').trim();
     if (!a) return null;
+    // CashAddr (prefixed or bare) -> bitcoincash.
+    if (a.toLowerCase().startsWith('bitcoincash:') || (Addr.looksLikeCashAddr && Addr.looksLikeCashAddr(a) && !/^[13]/.test(a))) {
+      try { Addr.cashAddrDecode(a, 'bitcoincash'); return 'bitcoincash'; } catch (_) {}
+    }
     for (const f of Object.keys(UTXO)) {
       const net = UTXO[f];
       if (net.hrp && a.toLowerCase().startsWith(net.hrp + '1')) { try { Addr.segwitDecode(net.hrp, a); return f; } catch (_) {} }
@@ -107,7 +120,7 @@
     }
     const words = t.toLowerCase().split(/\s+/);
     if ([12, 15, 18, 21, 24].includes(words.length)) return { kind: 'mnemonic', families: FAMILIES.slice(), valid: HD.validateMnemonic(words.join(' ')) };
-    if (isHex(t, 64)) return { kind: 'hex', families: ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'solana'] };
+    if (isHex(t, 64)) return { kind: 'hex', families: ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'] };
     if (isHex(t, 128)) return { kind: 'hex', families: ['solana'] };
     try {
       const d = C.base58checkDecode(t);

@@ -73,6 +73,7 @@
     return net;
   }
   function utxoAddress(net, node) {
+    if (net.cashaddr) return Addr.cashAddrP2pkh(node.publicKey, net.cashaddr);
     return net.segwit ? Addr.p2wpkh(node.publicKey, net.hrp) : Addr.p2pkh(node.publicKey, net.p2pkh);
   }
   function utxoKey(chainId, seed, index) {
@@ -138,6 +139,7 @@
       bitcoin: utxoKey('bitcoin', s, index),
       litecoin: utxoKey('litecoin', s, index),
       dogecoin: utxoKey('dogecoin', s, index),
+      bitcoincash: utxoKey('bitcoincash', s, index),
       evm: evmKey(s, index),
       solana: solanaKey(s, index),
     };

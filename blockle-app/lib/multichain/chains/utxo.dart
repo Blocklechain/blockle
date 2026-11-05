@@ -33,6 +33,8 @@ class UtxoNetwork {
     required this.path,
     required this.explorer,
     required this.esplora,
+    this.forkId = false,
+    this.cashaddr,
   });
 
   final String id;
@@ -46,6 +48,14 @@ class UtxoNetwork {
   final String path;
   final String explorer;
   final String? esplora;
+
+  /// Bitcoin Cash uses BIP143 (segwit-style) preimage + SIGHASH_FORKID (0x41)
+  /// while NOT being segwit — this flag selects that dedicated signing branch.
+  final bool forkId;
+
+  /// CashAddr prefix (e.g. 'bitcoincash'); when set, receive + display use
+  /// CashAddr and `addressToScript` accepts CashAddr destinations.
+  final String? cashaddr;
 }
 
 const Map<String, UtxoNetwork> networks = {
@@ -87,6 +97,23 @@ const Map<String, UtxoNetwork> networks = {
     path: "m/44'/3'/0'/0",
     explorer: 'https://blockchair.com/dogecoin/transaction/',
     esplora: null,
+  ),
+  // Bitcoin Cash — BIP44 P2PKH (coin type 145), CashAddr display, BIP143+FORKID
+  // sighash (0x41). NOT segwit; `forkId` selects the BCH signing branch.
+  'bitcoincash': UtxoNetwork(
+    id: 'bitcoincash',
+    symbol: 'BCH',
+    decimals: 8,
+    hrp: null,
+    p2pkh: 0x00,
+    p2sh: 0x05,
+    wif: 0x80,
+    segwit: false,
+    forkId: true,
+    cashaddr: 'bitcoincash',
+    path: "m/44'/145'/0'/0",
+    explorer: 'https://blockchair.com/bitcoin-cash/transaction/',
+    esplora: 'https://bch.imaginary.cash/api',
   ),
 };
 
@@ -165,6 +192,21 @@ Uint8List p2pkhScript(List<int> h160) => c.concatBytes([
 
 /// Address -> scriptPubKey (for building outputs to arbitrary recipients).
 Uint8List addressToScript(String address, UtxoNetwork net) {
+  // CashAddr (BCH): accept both 'bitcoincash:q...' and bare 'q...'. Legacy
+  // base58 destinations still fall through to the base58 branch below.
+  if (net.cashaddr != null &&
+      (address.startsWith('${net.cashaddr}:') || addr.looksLikeCashAddr(address))) {
+    final dec = addr.cashAddrDecode(address, net.cashaddr!);
+    if (dec.type == 0) return p2pkhScript(dec.hash);
+    if (dec.type == 1) {
+      return c.concatBytes([
+        Uint8List.fromList([0xa9, 0x14]),
+        dec.hash,
+        Uint8List.fromList([0x87]),
+      ]); // P2SH
+    }
+    throw const FormatException('unsupported cashaddr type');
+  }
   if (net.segwit &&
       net.hrp != null &&
       address.toLowerCase().startsWith('${net.hrp}1')) {
@@ -401,7 +443,26 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
   const version = 1, locktime = 0;
   final signedInputs = <SignedUtxoInput>[];
 
-  if (net.segwit) {
+  if (net.forkId) {
+    // Bitcoin Cash: BIP143 preimage (like segwit) but hashType = SIGHASH_ALL |
+    // SIGHASH_FORKID = 0x41 (forkID 0 folds into the 4-byte nHashType word), a
+    // P2PKH-style scriptSig, NO witness and NO segwit marker on serialize.
+    const forkIdAll = 0x41;
+    final scriptCode = p2pkhScript(ownH160);
+    for (var i = 0; i < sel.chosen.length; i++) {
+      final u = sel.chosen[i];
+      final sh = sighashSegwit(version, inputs, outputs, i, scriptCode,
+          BigInt.parse(u['value'].toString()), 0xffffffff, locktime, forkIdAll);
+      final sig = s.sign(sh, node.privateKey!);
+      final sigPlusType = c.concatBytes([
+        sig.der,
+        Uint8List.fromList([forkIdAll]),
+      ]);
+      final scriptSig = c.concatBytes([pushData(sigPlusType), pushData(pub)]);
+      signedInputs.add(SignedUtxoInput(u['txid'] as String, u['vout'] as int,
+          0xffffffff, scriptSig, null, sh, sig));
+    }
+  } else if (net.segwit) {
     final scriptCode = p2pkhScript(ownH160); // BIP143 scriptCode for P2WPKH
     for (var i = 0; i < sel.chosen.length; i++) {
       final u = sel.chosen[i];
@@ -497,9 +558,11 @@ class UtxoAdapter implements ChainAdapter {
     return hd.derivePath(_rootSeed, '${net.path}/$index');
   }
 
-  String _addressOf(hd.HdNode node) => net.segwit
-      ? addr.p2wpkh(node.publicKey, net.hrp!)
-      : addr.p2pkh(node.publicKey, net.p2pkh);
+  String _addressOf(hd.HdNode node) => net.cashaddr != null
+      ? addr.cashAddrP2pkh(node.publicKey, net.cashaddr!)
+      : net.segwit
+          ? addr.p2wpkh(node.publicKey, net.hrp!)
+          : addr.p2pkh(node.publicKey, net.p2pkh);
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {

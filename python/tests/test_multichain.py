@@ -277,6 +277,71 @@ def test_utxo_insufficient_funds_raises():
             "utxos": [{"txid": "a" * 64, "vout": 0, "value": "100000"}]})
 
 
+# ---- Bitcoin Cash (CashAddr + BIP143 FORKID 0x41) -------------------------
+# THE GATE: the expected values come from the SHARED cross-wallet fixture
+# docs/bch-vectors.json, produced by an INDEPENDENT reference (coincurve /
+# libsecp256k1 + a from-spec CashAddr codec cross-checked against the published
+# legacy<->cashaddr pairs). All 4 ports MUST reproduce them byte-for-byte.
+def _bch_fixture():
+    import json
+    import os
+    p = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "bch-vectors.json")
+    with open(p) as f:
+        return json.load(f)
+
+
+def test_bch_cashaddr_spec_vectors_and_roundtrip():
+    fx = _bch_fixture()
+    for legacy, cash in fx["cashAddrSpecVectors"]:
+        h160 = K.base58check_decode(legacy)[1:]
+        assert K.cash_addr_encode("bitcoincash", 0, h160) == cash
+        dec = K.cash_addr_decode(cash)
+        assert dec["hash"] == h160 and dec["type"] == 0
+
+
+def test_bch_derive_cashaddr_and_legacy():
+    fx = _bch_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx["passphrase"])
+    net = U.NETWORKS["bitcoincash"]
+    node = K.derive_path(seed, net["path"] + "/0")
+    exp = fx["expected"]
+    assert K.cash_addr_p2pkh(node.public_key, "bitcoincash") == exp["cashAddress"]
+    assert K.p2pkh(node.public_key, net["p2pkh"]) == exp["legacyAddress"]
+    assert node.public_key.hex() == exp["pubkeyHex"]
+    # CashAddr decode round-trips to the same hash160 as the legacy form.
+    assert K.cash_addr_decode(exp["cashAddress"])["hash"] == K.hash160(node.public_key)
+
+
+def test_bch_address_to_script_cashaddr_and_legacy_equal():
+    fx = _bch_fixture()
+    net = U.NETWORKS["bitcoincash"]
+    assert U.address_to_script(fx["tx"]["to"], net) == \
+        U.address_to_script(fx["tx"]["toLegacyEquivalent"], net)
+
+
+def test_bch_build_and_sign_golden():
+    fx = _bch_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx["passphrase"])
+    net = U.NETWORKS["bitcoincash"]
+    node = K.derive_path(seed, net["path"] + "/0")
+    frm = K.cash_addr_p2pkh(node.public_key, "bitcoincash")
+    tx = fx["tx"]
+    built = U.build_and_sign(net, node, frm, {
+        "to": tx["to"], "amount": tx["amount"], "feeRate": tx["feeRate"],
+        "utxos": [{"txid": u["txid"], "vout": u["vout"], "value": u["value"]}
+                  for u in tx["utxos"]]})
+    e = tx["expected"]
+    assert built["raw"] == e["signedRawTxHex"]          # byte-identical
+    assert built["txid"] == e["txid"]
+    assert built["fee"] == e["fee"]
+    assert built["sighashes"][0] == e["forkidSighash0"]  # FORKID sighash input 0
+    assert built["raw"][8:12] != "0001"                  # NO segwit marker
+    # sig recovers to owner pubkey over the 0x41 sighash
+    for si in built["signedInputs"]:
+        rec = S.recover(si["_sh"], si["_sig"].r, si["_sig"].s, si["_sig"].recovery, True)
+        assert rec == node.public_key
+
+
 # ---- ed25519 (RFC 8032 Section 7.1) ---------------------------------------
 def test_ed25519_rfc8032():
     sk1 = hx("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
@@ -357,6 +422,9 @@ def test_registry_derivation():
     assert eth.address == "0x9858EfFD232B4033E47d90003D41EC34EcaEda94"
     btc = reg.get("bitcoin").derive_account({"seed": seed})
     assert btc.address == "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
+    bch = reg.get("bitcoincash").derive_account({"seed": seed})
+    assert bch.address == "bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6"
+    assert "bitcoincash" in reg.enabled()
     sol = reg.get("solana").derive_account({"seed": seed})
     assert sol.scheme == "ed25519"
     assert "ethereum" in reg.enabled() and "bitcoin" in reg.enabled()

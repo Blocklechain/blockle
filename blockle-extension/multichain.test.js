@@ -134,6 +134,61 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
   throws('insufficient funds throws', () => U.buildAndSign(net, node, from, { to: from, amount: '999999999', feeRate: 10, utxos: [{ txid: 'a'.repeat(64), vout: 0, value: '100000' }] }));
 }
 
+// ---- Bitcoin Cash (BCH): CashAddr + BIP143+FORKID (0x41) GOLDEN VECTOR ------
+// docs/bch-vectors.json — the cross-wallet gate. CashAddr is NOT bech32 (own
+// 40-bit polymod); signing reuses the BIP143 preimage but with hashType 0x41
+// (SIGHASH_ALL|SIGHASH_FORKID) and legacy P2PKH scriptSig / NO witness.
+{
+  // (a) CashAddr codec vs the published CashAddr spec vectors (legacy -> cash).
+  const cashVectors = [
+    ['1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu', 'bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a'],
+    ['1KXrWXciRDZUpQwQmuM1DbwsKDLYAYsVLR', 'bitcoincash:qr95sy3j9xwd2ap32xkykttr4cvcu7as4y0qverfuy'],
+    ['16w1D5WRVKJuZUsSRzdLp9w3YGcgoxDXb', 'bitcoincash:qqq3728yw0y47sqn6l2na30mcw6zm78dzqre909m2r'],
+  ];
+  for (const [legacy, cash] of cashVectors) {
+    const h160 = C.base58checkDecode(legacy).slice(1);
+    eq('cashaddr encode ' + legacy, A.cashAddrEncode('bitcoincash', 0, h160), cash);
+    const d = A.cashAddrDecode(cash);
+    eq('cashaddr decode roundtrip ' + legacy, h(d.hash), h(h160));
+    ok('cashaddr decode type p2pkh ' + legacy, d.type === 0);
+    eq('cashaddr bare decode ' + legacy, h(A.cashAddrDecode(cash.split(':')[1]).hash), h(h160));
+    ok('looksLikeCashAddr true ' + legacy, A.looksLikeCashAddr(cash) && A.looksLikeCashAddr(cash.split(':')[1]));
+    ok('legacy not detected as cashaddr ' + legacy, !A.looksLikeCashAddr(legacy));
+  }
+
+  const seed = HD.mnemonicToSeed(ABANDON, '');
+  const bnet = U.NETWORKS.bitcoincash;
+  const bnode = HD.derivePath(seed, bnet.path + '/0');
+  const bpub = bnode.publicKey;
+  // (1) address derivation
+  eq('bch network forkId flag', String(bnet.forkId), 'true');
+  ok('bch is NOT segwit', bnet.segwit === false);
+  eq('bch pubkey', h(bpub), '02bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217');
+  eq('bch legacy address', A.p2pkh(bpub, bnet.p2pkh), '1mW6fDEMjKrDHvLvoEsaeLxSCzZBf3Bfg');
+  const bcash = A.cashAddrP2pkh(bpub, bnet.cashaddr);
+  eq('bch cashaddr', bcash, 'bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6');
+  eq('bch cashaddr decode == hash160(pub)', h(A.cashAddrDecode(bcash).hash), h(C.hash160(bpub)));
+
+  // (7) addressToScript accepts BOTH CashAddr and legacy, same scriptPubKey
+  const to = 'bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a';
+  eq('bch cashaddr recipient script == legacy recipient script',
+    h(U.addressToScript(to, bnet)), h(U.addressToScript('1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu', bnet)));
+
+  // (2)(3)(4)(5)(6) build, sign, assert byte-identical golden + FORKID sighash
+  const built = U.buildAndSign(bnet, bnode, bcash, {
+    to, amount: '120000', feeRate: 5,
+    utxos: [{ txid: 'a'.repeat(64), vout: 0, value: '100000' }, { txid: 'b'.repeat(64), vout: 1, value: '50000' }],
+  });
+  eq('bch FORKID sighash input0', built.sighashes[0], '876731cd34024074ce64cd6d6c9324f7158c4ae7ce48d367d322560432f94fa2');
+  eq('bch signed raw tx hex (byte-identical)', built.raw,
+    '0100000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006a473044022045fe408740f38fb99760e24cb1655cba521cc06bc3017ad3b46dc844ae6bd56102205776349c08f4c615fdfb89960baf14c6c1c1fb6daaae46c7a8ab471cdc6a993c412102bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217ffffffffbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010000006a473044022020ce30ef15c54e6723cfa453d4ef80a07453fdbd9340af575638f50f4c8ceb1d02203c1b7392f2706268714d26f79460914d79202e29f4b210314cb42274b3abf3db412102bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217ffffffff02c0d40100000000001976a91476a04053bda0a88bda5177b86a15c3b29f55987388ace26d0000000000001976a914086a977c7dad32a56996af2ce90a727238d4899888ac00000000');
+  eq('bch txid', built.txid, '660810784f5f726d09132f220004bf3c1416b188cedd0ed030a8fedcfff37ad5');
+  eq('bch fee', built.fee, '1870');
+  ok('bch no segwit marker', built.raw.slice(8, 12) !== '0001');
+  ok('bch hashtype 0x41 present in scriptSig', built.raw.includes('c6a993c41'));
+  ok('bch sigs recover to owner', built.signedInputs.every((si) => h(S.recover(si._sh, si._sig.r, si._sig.s, si._sig.recovery, true)) === h(bpub)));
+}
+
 // ---- registry derivation (no network) -------------------------------------
 {
   const reg = REG.createRegistry({});
@@ -146,6 +201,12 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry eth addr', eth.address, '0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
     const btc = await reg.get('bitcoin').deriveAccount({ seed });
     eq('registry btc addr', btc.address, 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu');
+    ok('registry has bitcoincash adapter', reg.has('bitcoincash'));
+    ok('registry enables bitcoincash', reg.enabled().includes('bitcoincash'));
+    eq('registry bch default esplora', reg.endpoints('bitcoincash').esplora, 'https://bch.imaginary.cash/api');
+    const bch = await reg.get('bitcoincash').deriveAccount({ seed });
+    eq('registry bch addr (cashaddr)', bch.address, 'bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6');
+    eq('registry bch path', bch.path, "m/44'/145'/0'/0/0");
     ok('registry enables block+evm+utxo', reg.enabled().includes('ethereum') && reg.enabled().includes('bitcoin'));
     ok('registry usdc token present', reg.tokensFor('ethereum').some((t) => t.symbol === 'USDC'));
     // Solana adapter is REGISTERED (ed25519/SLIP-0010 m/44'/501'/0'/0'), enabled

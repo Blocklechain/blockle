@@ -25,6 +25,9 @@ NETWORKS = {
     "bitcoin":  {"id": "bitcoin",  "symbol": "BTC",  "decimals": 8, "hrp": "bc",  "p2pkh": 0x00, "p2sh": 0x05, "wif": 0x80, "segwit": True,  "path": "m/84'/0'/0'/0", "explorer": "https://mempool.space/tx/",                    "esplora": "https://blockstream.info/api"},
     "litecoin": {"id": "litecoin", "symbol": "LTC",  "decimals": 8, "hrp": "ltc", "p2pkh": 0x30, "p2sh": 0x32, "wif": 0xB0, "segwit": True,  "path": "m/84'/2'/0'/0", "explorer": "https://blockchair.com/litecoin/transaction/", "esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"id": "dogecoin", "symbol": "DOGE", "decimals": 8, "hrp": None,  "p2pkh": 0x1E, "p2sh": 0x16, "wif": 0x9E, "segwit": False, "path": "m/44'/3'/0'/0", "explorer": "https://blockchair.com/dogecoin/transaction/", "esplora": None},
+    # Bitcoin Cash — BIP44 P2PKH (coin type 145), CashAddr display, BIP143+FORKID
+    # sighash (0x41). NOT segwit; ``forkId`` selects the BCH signing branch.
+    "bitcoincash": {"id": "bitcoincash", "symbol": "BCH", "decimals": 8, "hrp": None, "p2pkh": 0x00, "p2sh": 0x05, "wif": 0x80, "segwit": False, "forkId": True, "cashaddr": "bitcoincash", "path": "m/44'/145'/0'/0", "explorer": "https://blockchair.com/bitcoin-cash/transaction/", "esplora": "https://bch.imaginary.cash/api"},
 }
 
 
@@ -70,6 +73,16 @@ def p2pkh_script(h160) -> bytes:
 
 
 def address_to_script(addr: str, net: dict) -> bytes:
+    # CashAddr (BCH): accept both 'bitcoincash:q...' and bare 'q...'. Legacy
+    # base58 destinations still fall through to the base58 branch below.
+    cash = net.get("cashaddr")
+    if cash and (addr.startswith(cash + ":") or K.looks_like_cashaddr(addr)):
+        dec = K.cash_addr_decode(addr, cash)
+        if dec["type"] == 0:
+            return p2pkh_script(dec["hash"])
+        if dec["type"] == 1:
+            return b"\xa9\x14" + dec["hash"] + b"\x87"  # P2SH
+        raise ValueError("unsupported cashaddr type")
     if net["segwit"] and net["hrp"] and addr.lower().startswith(net["hrp"] + "1"):
         dec = K.bech32.segwit_decode(net["hrp"], addr)
         version, program = dec["version"], dec["program"]
@@ -192,7 +205,20 @@ def build_and_sign(net, node, from_address, req):
     version, locktime = 1, 0
     signed_inputs = []
 
-    if net["segwit"]:
+    if net.get("forkId"):
+        # Bitcoin Cash: BIP143 preimage (like segwit) but hashType = SIGHASH_ALL |
+        # SIGHASH_FORKID = 0x41 (forkID 0 folds into the 4-byte nHashType word), a
+        # P2PKH-style scriptSig, NO witness and NO segwit marker on serialize.
+        FORKID_ALL = 0x41
+        script_code = p2pkh_script(own_h160)
+        for i, u in enumerate(chosen):
+            sh = sighash_segwit(version, inputs, outputs, i, script_code, int(u["value"]), 0xFFFFFFFF, locktime, FORKID_ALL)
+            sig = S.sign(sh, node.private_key)
+            sig_plus = sig.der + bytes([FORKID_ALL])
+            script_sig = push_data(sig_plus) + push_data(pub)
+            signed_inputs.append({"txid": u["txid"], "vout": u["vout"], "sequence": 0xFFFFFFFF,
+                                  "scriptSig": script_sig, "witness": None, "_sh": sh, "_sig": sig})
+    elif net["segwit"]:
         script_code = p2pkh_script(own_h160)  # BIP143 scriptCode for P2WPKH
         for i, u in enumerate(chosen):
             sh = sighash_segwit(version, inputs, outputs, i, script_code, int(u["value"]), 0xFFFFFFFF, locktime, SIGHASH_ALL)
@@ -253,6 +279,8 @@ class UtxoAdapter:
         return K.derive_path(self._root, f"{self.network['path']}/{index or 0}")
 
     def _address_of(self, node):
+        if self.network.get("cashaddr"):
+            return K.cash_addr_p2pkh(node.public_key, self.network["cashaddr"])
         if self.network["segwit"]:
             return K.p2wpkh(node.public_key, self.network["hrp"])
         return K.p2pkh(node.public_key, self.network["p2pkh"])

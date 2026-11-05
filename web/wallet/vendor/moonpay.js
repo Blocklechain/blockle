@@ -61,6 +61,7 @@
     bitcoin:   { native: 'btc',        tokens: {} },
     litecoin:  { native: 'ltc',        tokens: {} },
     dogecoin:  { native: 'doge',       tokens: {} },
+    bitcoincash: { native: 'bch',      tokens: {} },
     solana:    { native: 'sol',        tokens: { USDC: 'usdc_sol',     USDT: 'usdt_sol' } },
     // block: absent on purpose (not on MoonPay).
   };

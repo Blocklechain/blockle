@@ -1,0 +1,32 @@
+{
+  "_comment": "BCH (Bitcoin Cash) FORKID golden vector — THE cross-port gate. Every wallet (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce these byte-identical values. CashAddr is independently validated against the 3 published cashaddr.md spec vectors (publishedCashAddrVectors). The signed tx reuses the proven BIP143 sighash with hashType 0x41 (SIGHASH_ALL|SIGHASH_FORKID); legacy P2PKH scriptSig, NO witness, NO segwit marker. Deterministic RFC6979 signatures make it reproducible in all four languages. Values generated from the canonical extension engine (blockle-extension) and asserted in blockle-extension/multichain.test.js.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "path": "m/44'/145'/0'/0/0",
+  "owner": {
+    "pubkeyHex": "02bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217",
+    "hash160": "086a977c7dad32a56996af2ce90a727238d48998",
+    "legacyAddress": "1mW6fDEMjKrDHvLvoEsaeLxSCzZBf3Bfg",
+    "cashAddress": "bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6"
+  },
+  "publishedCashAddrVectors": [
+    ["1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu", "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"],
+    ["1KXrWXciRDZUpQwQmuM1DbwsKDLYAYsVLR", "bitcoincash:qr95sy3j9xwd2ap32xkykttr4cvcu7as4y0qverfuy"],
+    ["16w1D5WRVKJuZUsSRzdLp9w3YGcgoxDXb", "bitcoincash:qqq3728yw0y47sqn6l2na30mcw6zm78dzqre909m2r"]
+  ],
+  "tx": {
+    "to": "bitcoincash:qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a",
+    "toLegacy": "1BpEi6DfDAUFd7GtittLSdBeYJvcoaVggu",
+    "amount": "120000",
+    "feeRate": 5,
+    "utxos": [
+      { "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "vout": 0, "value": "100000" },
+      { "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "vout": 1, "value": "50000" }
+    ],
+    "expected": {
+      "forkidSighash": "876731cd34024074ce64cd6d6c9324f7158c4ae7ce48d367d322560432f94fa2",
+      "signedRawTxHex": "0100000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa000000006a473044022045fe408740f38fb99760e24cb1655cba521cc06bc3017ad3b46dc844ae6bd56102205776349c08f4c615fdfb89960baf14c6c1c1fb6daaae46c7a8ab471cdc6a993c412102bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217ffffffffbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb010000006a473044022020ce30ef15c54e6723cfa453d4ef80a07453fdbd9340af575638f50f4c8ceb1d02203c1b7392f2706268714d26f79460914d79202e29f4b210314cb42274b3abf3db412102bbe7dbcdf8b2261530a867df7180b17a90b482f74f2736b8a30d3f756e42e217ffffffff02c0d40100000000001976a91476a04053bda0a88bda5177b86a15c3b29f55987388ace26d0000000000001976a914086a977c7dad32a56996af2ce90a727238d4899888ac00000000",
+      "txid": "660810784f5f726d09132f220004bf3c1416b188cedd0ed030a8fedcfff37ad5",
+      "fee": "1870"
+    }
+  }
+}

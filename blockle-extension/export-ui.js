@@ -71,6 +71,7 @@
     if (k.bitcoin) rows.push(secretRow('Bitcoin WIF', k.bitcoin.wif, k.bitcoin.address));
     if (k.litecoin) rows.push(secretRow('Litecoin WIF', k.litecoin.wif, k.litecoin.address));
     if (k.dogecoin) rows.push(secretRow('Dogecoin WIF', k.dogecoin.wif, k.dogecoin.address));
+    if (k.bitcoincash) rows.push(secretRow('Bitcoin Cash WIF', k.bitcoincash.wif, k.bitcoincash.address));
     if (k.evm) rows.push(secretRow('EVM private key', k.evm.privateKey, k.evm.address));
     if (k.solana) rows.push(secretRow('Solana secret key', k.solana.secretKey, k.solana.address));
     if (res.block) rows.push(secretRow('BLOCK (ML-DSA) secret key', res.block.secretKey, res.block.address));

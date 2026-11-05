@@ -82,6 +82,81 @@
     return { version: witver, program: Uint8Array.from(program) };
   }
 
+  // ---- CashAddr (Bitcoin Cash) --------------------------------------------
+  // NOT bech32: a DIFFERENT 40-bit BCH polymod (own generator, 5 rounds over
+  // 64-bit state). Reuses the shared base32 CHARSET + convertBits only.
+  const CASH_GEN = [0x98f2bc8e61n, 0x79b76d99e2n, 0xf33e5fb3c4n, 0xae2eabe2a8n, 0x1e4f43e470n];
+  function cashPolymod(values) {
+    let chk = 1n;
+    for (const v of values) {
+      const top = chk >> 35n;
+      chk = ((chk & 0x07ffffffffn) << 5n) ^ BigInt(v);
+      for (let i = 0; i < 5; i++) if ((top >> BigInt(i)) & 1n) chk ^= CASH_GEN[i];
+    }
+    return chk ^ 1n;
+  }
+  function cashPrefixExpand(prefix) {
+    const ret = [];
+    for (let i = 0; i < prefix.length; i++) ret.push(prefix.charCodeAt(i) & 0x1f);
+    ret.push(0);
+    return ret;
+  }
+  const CASH_SIZEBITS = { 20: 0, 24: 1, 28: 2, 32: 3, 40: 4, 48: 5, 56: 6, 64: 7 };
+  const CASH_SIZELEN = { 0: 20, 1: 24, 2: 28, 3: 32, 4: 40, 5: 48, 6: 56, 7: 64 };
+  // type: 0 = P2PKH, 1 = P2SH. hash: 20-byte hash160 (or other allowed length).
+  function cashAddrEncode(prefix, type, hash) {
+    const h = C.toBytes(hash);
+    const sizeBits = CASH_SIZEBITS[h.length];
+    if (sizeBits == null) throw new Error('cashaddr: bad hash length');
+    const versionByte = (type << 3) | sizeBits;
+    const payload8 = C.concatBytes(Uint8Array.of(versionByte), h);
+    const payload5 = convertBits(Array.from(payload8), 8, 5, true);
+    const values = cashPrefixExpand(prefix).concat(payload5).concat([0, 0, 0, 0, 0, 0, 0, 0]);
+    const mod = cashPolymod(values);
+    const checksum = [];
+    for (let i = 0; i < 8; i++) checksum.push(Number((mod >> (5n * BigInt(7 - i))) & 0x1fn));
+    const combined = payload5.concat(checksum);
+    let ret = prefix + ':';
+    for (const d of combined) ret += CHARSET[d];
+    return ret;
+  }
+  // Accepts both 'bitcoincash:q...' and bare 'q...'. Returns {type, hash, prefix}.
+  function cashAddrDecode(addr, defaultPrefix) {
+    const s = String(addr).toLowerCase();
+    let prefix, body;
+    const colon = s.indexOf(':');
+    if (colon >= 0) { prefix = s.slice(0, colon); body = s.slice(colon + 1); }
+    else { prefix = defaultPrefix || 'bitcoincash'; body = s; }
+    const data = [];
+    for (const ch of body) {
+      const d = CHARSET.indexOf(ch);
+      if (d < 0) throw new Error('cashaddr: bad char');
+      data.push(d);
+    }
+    if (cashPolymod(cashPrefixExpand(prefix).concat(data)) !== 0n) throw new Error('cashaddr: bad checksum');
+    const payload5 = data.slice(0, data.length - 8);
+    const payload8 = convertBits(payload5, 5, 8, false);
+    if (!payload8) throw new Error('cashaddr: bad payload');
+    const versionByte = payload8[0];
+    if (versionByte & 0x80) throw new Error('cashaddr: reserved version bit');
+    const type = (versionByte >> 3) & 0x1f;
+    const expectLen = CASH_SIZELEN[versionByte & 0x07];
+    const hash = Uint8Array.from(payload8.slice(1));
+    if (expectLen != null && hash.length !== expectLen) throw new Error('cashaddr: length mismatch');
+    return { type, hash, prefix };
+  }
+  function cashAddrP2pkh(pubKeyBytes, prefix) {
+    const pub = C.toBytes(pubKeyBytes);
+    return cashAddrEncode(prefix || 'bitcoincash', 0, C.hash160(pub));
+  }
+  // Heuristic for a bare CashAddr (no prefix): all-charset, starts q (P2PKH) or
+  // p (P2SH), length 42 (20-byte-hash payload). Prefixed forms carry the ':'.
+  function looksLikeCashAddr(addr) {
+    const s = String(addr).toLowerCase();
+    if (s.indexOf(':') >= 0) return /^[a-z0-9]+:[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+$/.test(s);
+    return /^[qp][qpzry9x8gf2tvdw0s3jn54khce6mua7l]{41}$/.test(s);
+  }
+
   // ---- EVM (EIP-55 checksum) ----------------------------------------------
   function evmAddress(pubKeyBytes) {
     // pubKeyBytes: 33 (compressed) or 65 (uncompressed, 0x04|X|Y)
@@ -129,6 +204,7 @@
 
   const API = {
     segwitEncode, segwitDecode, convertBits,
+    cashAddrEncode, cashAddrDecode, cashAddrP2pkh, looksLikeCashAddr, cashPolymod,
     evmAddress, toChecksumAddress,
     p2wpkh, p2pkh, toWIF, fromWIF,
   };
