@@ -59,12 +59,12 @@ from .multichain.chains import create_registry
 # --------------------------------------------------------------------------
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
-EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"]
+EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
 CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "solana"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
-    "bnb": "BNB Chain", "avalanche": "Avalanche C-Chain",
+    "bnb": "BNB Chain", "avalanche": "Avalanche C-Chain", "hyperevm": "HyperEVM",
     "bitcoin": "Bitcoin", "litecoin": "Litecoin", "dogecoin": "Dogecoin",
     "solana": "Solana",
 }
@@ -2062,18 +2062,30 @@ class AgentTab(QWidget):
         self._update_plan_label()
 
         top = QHBoxLayout()
-        self.hosted_btn = QPushButton("Use Blockle hosted agent (no key)")
-        self.hosted_btn.setObjectName("primary")
-        self.hosted_btn.setToolTip("Keyless — Blockle runs the model for you. No API key, no seed ever leaves this device.")
-        self.hosted_btn.clicked.connect(self._connect_hosted)
+        # LOCAL FIRST — the recommended private default: the model runs on the
+        # user's OWN machine, keyless, nothing leaves the device.
+        self.local_btn = QPushButton("Connect local LLM (no key)")
+        self.local_btn.setObjectName("primary")
+        self.local_btn.setToolTip("Private & free — run Ollama / LM Studio on your own machine. "
+                                  "No API key, no quota, nothing leaves this device. Recommended.")
+        self.local_btn.clicked.connect(self._connect_local)
         self.connect_btn = QPushButton("Connect your own key…")
+        self.connect_btn.setToolTip("Bring your own key: Claude, ChatGPT, Copilot, or any "
+                                    "OpenAI-compatible endpoint. The key is sealed in your vault.")
         self.connect_btn.clicked.connect(self._connect_provider)
+        # HOSTED demoted to an explicit, clearly-labelled OPTIONAL fallback (not
+        # the default). Keyless, but your chat turns transit Blockle's server.
+        self.hosted_btn = QPushButton("Use Blockle hosted agent (optional)")
+        self.hosted_btn.setToolTip("Optional, not the default — Blockle runs the model on our "
+                                   "server so you can try it with nothing installed. Your chat turns "
+                                   "transit the gateway; prefer Local or a BYO key for privacy.")
+        self.hosted_btn.clicked.connect(self._connect_hosted)
         self.new_ch_btn = QPushButton("New channel…")
         self.new_ch_btn.clicked.connect(self._new_channel)
         self.kill_btn = QPushButton("KILL ALL")
         self.kill_btn.setStyleSheet("QPushButton{background:#7a1f1f;color:white;border:none}")
         self.kill_btn.clicked.connect(self._kill_all)
-        for b in (self.hosted_btn, self.connect_btn, self.new_ch_btn):
+        for b in (self.local_btn, self.connect_btn, self.hosted_btn, self.new_ch_btn):
             top.addWidget(b)
         top.addStretch(1)
         top.addWidget(self.kill_btn)
@@ -2192,6 +2204,35 @@ class AgentTab(QWidget):
         self._pending_base = cred["baseUrl"]
         QMessageBox.information(self, "Agent",
                                 f"{guide['label']} connected and sealed in the vault. "
+                                "Create a channel to use it.")
+
+    def _connect_local(self):
+        """Connect a LOCAL LLM (Ollama / LM Studio / any OpenAI-compatible server
+        on the user's OWN machine). Keyless — nothing leaves the device and there
+        is no quota or key. This is the recommended private default."""
+        try:
+            self._ensure_mgr()
+        except Exception as e:
+            QMessageBox.warning(self, "Agent", str(e))
+            return
+        dlg = LocalDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        base = dlg.base_url()
+        model = dlg.model()
+        if not base:
+            QMessageBox.warning(self, "Agent", "Enter the local server base URL (e.g. http://localhost:11434).")
+            return
+        ref = "cred:local:" + format(int(time.time()), "x")
+        # KEYLESS — no apiKey is stored or sent; localhost is the user's own machine.
+        cred = {"provider": "local", "baseUrl": base, "model": model or None}
+        self.ctrl.vault.set_credential(ref, cred)
+        self._pending_cred_ref = ref
+        self._pending_provider = "local"
+        self._pending_model = cred["model"]
+        self._pending_base = base
+        QMessageBox.information(self, "Agent",
+                                "Local LLM connected (no key — runs on your machine). "
                                 "Create a channel to use it.")
 
     # ---- Blockle Copilot plan ----
@@ -2482,7 +2523,36 @@ class AgentTab(QWidget):
             "resolveName": resolve_name,
             "engines": self._command_engines(),
             "onEvent": self._on_command_event,
+            # Offline RAG grounding: the bundled corpus (default) + a live snapshot
+            # of THIS wallet's state, gathered from existing in-memory data (no new
+            # network call). Augments the prompt only — grants no tools.
+            "ragLive": self._rag_live_snapshot,
         })
+
+    def _rag_live_snapshot(self):
+        """A READ-ONLY live snapshot for RAG grounding, built ONLY from existing
+        in-memory state (no new network calls): the selected chain, the running
+        agent channels (as open bots), and per-channel caps as a rough budget.
+        Returns a dict the retriever formats into the grounding block, or None."""
+        try:
+            live = {"chain": getattr(self, "_default_chain", None) or "ethereum"}
+            bots = []
+            if self.mgr is not None:
+                for ch in self.mgr.channels.values():
+                    if not ch.running:
+                        continue
+                    cfg = ch.meta.get("config") or {}
+                    caps = ch.meta.get("caps") or {}
+                    bots.append({
+                        "strategy": cfg.get("strategy") or ch.meta.get("label") or "agent",
+                        "market": cfg.get("market") or cfg.get("pair"),
+                        "budget": caps.get("sessionUsd"),
+                    })
+            if bots:
+                live["bots"] = bots
+            return live
+        except Exception:  # noqa: BLE001 — a bad snapshot must never break a turn
+            return None
 
     def _router_ctx(self):
         """A name-resolution ctx (local address book + any ENS/SNS resolvers the
@@ -2548,9 +2618,14 @@ class ProviderDialog(QDialog):
         self.resize(560, 360)
         lay = QVBoxLayout(self)
         self.picker = QComboBox()
-        self._keys = list(agentpkg.channels.PROVIDER_GUIDES.keys())
+        # BYO-KEY providers only. The keyless providers (local, hosted) have their
+        # own dedicated buttons — local is the recommended default, hosted is the
+        # explicit optional fallback — so they are not offered in this key sheet.
+        guides = agentpkg.channels.PROVIDER_GUIDES
+        self._keys = [k for k, g in guides.items()
+                      if not g.get("keyless") and "apiKey" in (g.get("needs") or [])]
         for k in self._keys:
-            self.picker.addItem(agentpkg.channels.PROVIDER_GUIDES[k]["label"], k)
+            self.picker.addItem(guides[k]["label"], k)
         self.picker.currentIndexChanged.connect(self._reload)
         lay.addWidget(self.picker)
 
@@ -2595,6 +2670,71 @@ class ProviderDialog(QDialog):
 
     def base_url(self):
         return self.base_f.text().strip()
+
+
+class LocalDialog(QDialog):
+    """Connect a LOCAL LLM (Ollama / LM Studio / any OpenAI-compatible server on
+    the user's OWN machine). Keyless — no API key field; nothing leaves the
+    device. A preset picker fills the base URL + model and shows the setup steps."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Connect a local LLM (private, no key)")
+        self.resize(560, 420)
+        lay = QVBoxLayout(self)
+
+        from .agent import providers as _prov
+        self._presets = _prov.LOCAL_PRESETS
+
+        intro = QLabel("Run the model on your OWN computer — nothing leaves this device, no quota, "
+                       "no key. Pick your local server; the wallet talks to it over "
+                       "/v1/chat/completions.")
+        intro.setWordWrap(True)
+        intro.setObjectName("sub")
+        lay.addWidget(intro)
+
+        self.picker = QComboBox()
+        self._keys = list(self._presets.keys())  # ollama, lmstudio, custom
+        for k in self._keys:
+            self.picker.addItem(self._presets[k]["label"], k)
+        self.picker.currentIndexChanged.connect(self._reload)
+        lay.addWidget(self.picker)
+
+        self.setup = QLabel()
+        self.setup.setWordWrap(True)
+        self.setup.setObjectName("sub")
+        self.setup.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.setup.setOpenExternalLinks(True)
+        lay.addWidget(self.setup)
+
+        form = QFormLayout()
+        self.base_f = QLineEdit()
+        self.model_f = QLineEdit()
+        self.model_f.setPlaceholderText("leave blank to use the server's default")
+        form.addRow("Base URL", self.base_f)
+        form.addRow("Model", self.model_f)
+        lay.addLayout(form)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._reload()
+
+    def _reload(self):
+        p = self._presets[self.picker.currentData()]
+        steps = "\n".join("• " + s for s in (p.get("setup") or []))
+        site = p.get("site")
+        link = f'<br><a href="{site}">{site}</a>' if site else ""
+        self.setup.setText(steps + link)
+        self.base_f.setText(p.get("baseUrl") or "")
+        self.model_f.setText(p.get("model") or "")
+
+    def base_url(self):
+        return self.base_f.text().strip()
+
+    def model(self):
+        return self.model_f.text().strip()
 
 
 # --------------------------------------------------------------------------

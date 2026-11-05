@@ -32,6 +32,7 @@ EVM_NETWORKS = {
     "polygon":   {"chainId": 137,   "symbol": "POL",  "explorer": "https://polygonscan.com/tx/",         "rpcUrl": "https://polygon-bor-rpc.publicnode.com"},
     "bnb":       {"chainId": 56,    "symbol": "BNB",  "explorer": "https://bscscan.com/tx/",             "rpcUrl": "https://bsc-rpc.publicnode.com"},
     "avalanche": {"chainId": 43114, "symbol": "AVAX", "explorer": "https://snowtrace.io/tx/",            "rpcUrl": "https://avalanche-c-chain-rpc.publicnode.com"},
+    "hyperevm":  {"chainId": 999,   "symbol": "HYPE", "explorer": "https://hyperevmscan.io/tx/",          "rpcUrl": "https://rpc.hyperliquid.xyz/evm"},
 }
 
 DEFAULT_ENDPOINTS = {
@@ -54,9 +55,13 @@ DEFAULT_TOKENS = {
     "ethereum": [
         _erc20("ethereum", "USDC", 6, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
         _erc20("ethereum", "USDT", 6, "0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+        _erc20("ethereum", "XAUT", 6, "0x68749665FF8D2d112Fa859AA293F07A622782F38"),   # Tether Gold
+        _erc20("ethereum", "LINK", 18, "0x514910771AF9Ca656af840dff83E8264EcF986CA"),
+        _erc20("ethereum", "POL", 18, "0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6"),    # migrated MATIC->POL
     ],
     "base": [
         _erc20("base", "USDC", 6, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),
+        _erc20("base", "USDT", 6, "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"),
     ],
     "arbitrum": [
         _erc20("arbitrum", "USDC", 6, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"),
@@ -77,6 +82,13 @@ DEFAULT_TOKENS = {
     "avalanche": [
         _erc20("avalanche", "USDC", 6, "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"),
         _erc20("avalanche", "USDT", 6, "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7"),
+    ],
+    # Solana SPL known-list. ``address`` carries the mint (the Solana adapter
+    # reads ``t.address`` as the mint in getTokenAccountsByOwner). XO Cash SPL
+    # has no verified mint, so it is intentionally omitted (never invented).
+    "solana": [
+        AssetRef(chain="solana", kind="spl", symbol="USDT", decimals=6,
+                 address="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"),
     ],
     # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
     # its AMM pool; USDB has no pool, so this list is the only way a held USDB

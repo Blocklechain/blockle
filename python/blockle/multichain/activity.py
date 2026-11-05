@@ -29,7 +29,7 @@ from . import security as Security
 from ._util import maybe_await, member
 from .chains import evm as EVM
 
-EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"}
+EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"}
 UTXO_CHAINS = {"bitcoin", "litecoin", "dogecoin"}
 
 # security-decoder kind -> Activity kind (docs §2). Never fabricates a meaning

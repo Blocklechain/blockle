@@ -432,7 +432,7 @@ def chain_id_hex(caip2):
 # map a CAIP-2 eip155 chain to the security suite's chain name (best-effort).
 EIP155_NAME = {
     "1": "ethereum", "8453": "base", "42161": "arbitrum", "10": "optimism",
-    "137": "polygon", "56": "bnb", "43114": "avalanche",
+    "137": "polygon", "56": "bnb", "43114": "avalanche", "999": "hyperevm",
 }
 
 

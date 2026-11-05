@@ -31,6 +31,7 @@
     polygon:   { chainId: 137,   symbol: 'POL',  explorer: 'https://polygonscan.com/tx/' },
     bnb:       { chainId: 56,    symbol: 'BNB',  explorer: 'https://bscscan.com/tx/' },
     avalanche: { chainId: 43114, symbol: 'AVAX', explorer: 'https://snowtrace.io/tx/' },
+    hyperevm:  { chainId: 999,   symbol: 'HYPE', explorer: 'https://hyperevmscan.io/tx/' },
   };
 
   // Alchemy host templates (base URL, NO key) for the networks Alchemy's
@@ -54,6 +55,7 @@
     polygon:   { rpcUrl: 'https://polygon-bor-rpc.publicnode.com', chainId: 137 },
     bnb:       { rpcUrl: 'https://bsc-rpc.publicnode.com', chainId: 56 },
     avalanche: { rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114 },
+    hyperevm:  { rpcUrl: 'https://rpc.hyperliquid.xyz/evm', chainId: 999 },
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
@@ -68,9 +70,13 @@
     ethereum: [
       { chain: 'ethereum', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' },
       { chain: 'ethereum', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'XAUT', decimals: 6, address: '0x68749665FF8D2d112Fa859AA293F07A622782F38' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'LINK', decimals: 18, address: '0x514910771AF9Ca656af840dff83E8264EcF986CA' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'POL', decimals: 18, address: '0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6' },
     ],
     base: [
       { chain: 'base', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
+      { chain: 'base', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2' },
     ],
     arbitrum: [
       { chain: 'arbitrum', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' },
@@ -91,6 +97,9 @@
     avalanche: [
       { chain: 'avalanche', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E' },
       { chain: 'avalanche', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7' },
+    ],
+    solana: [
+      { chain: 'solana', kind: 'spl', symbol: 'USDT', decimals: 6, mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
     ],
   };
 

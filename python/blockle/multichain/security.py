@@ -44,7 +44,7 @@ MAX_UINT256 = (1 << 256) - 1
 # flagging a real, sized allowance. Operator-overridable via config.
 DEFAULT_UNLIMITED_THRESHOLD = 1 << 255
 
-EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"}
+EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"}
 UTXO_CHAINS = {"bitcoin", "litecoin", "dogecoin"}
 
 SEV_RANK = {"none": 0, "info": 1, "warn": 2, "danger": 3}

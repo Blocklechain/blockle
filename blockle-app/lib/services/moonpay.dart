@@ -70,6 +70,9 @@ const Map<String, String> kMoonPayNativeCodes = {
   'polygon': 'pol_polygon',
   'bnb': 'bnb_bsc',
   'avalanche': 'avax_cchain',
+  // HyperEVM native. MoonPay may not list HYPE yet — code is config-overridable;
+  // verify against MoonPay's live currency list before shipping a pk_live_ key.
+  'hyperevm': 'hype',
   'bitcoin': 'btc',
   'litecoin': 'ltc',
   'dogecoin': 'doge',
@@ -83,12 +86,23 @@ const Map<String, String> kMoonPayNativeCodes = {
 const Map<String, String> kMoonPayTokenCodes = {
   'ethereum:USDC': 'usdc',
   'ethereum:USDT': 'usdt',
+  'ethereum:XAUT': 'xaut',
+  'ethereum:LINK': 'link',
+  'ethereum:POL': 'pol',
   'base:USDC': 'usdc_base',
+  'base:USDT': 'usdt',
   'arbitrum:USDC': 'usdc_arbitrum',
+  'arbitrum:USDT': 'usdt_arbitrum',
   'optimism:USDC': 'usdc_optimism',
+  'optimism:USDT': 'usdt',
   'polygon:USDC': 'usdc_polygon',
   'polygon:USDT': 'usdt_polygon',
+  'bnb:USDC': 'usdc_bsc',
+  'bnb:USDT': 'usdt_bsc',
+  'avalanche:USDC': 'usdc_cchain',
+  'avalanche:USDT': 'usdt',
   'solana:USDC': 'usdc_sol',
+  'solana:USDT': 'usdt_sol',
 };
 
 /// Resolve the MoonPay currencyCode for an asset on [chain].

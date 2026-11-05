@@ -195,7 +195,7 @@
   // which goes buildSend -> broadcast (the EXISTING signer) only after the shared
   // security sheet clears. No mock data; an unconfigured indexer surfaces an
   // audited "unavailable" note from the engine, never a fabricated empty result.
-  var EVM_CHAINS = { ethereum: 1, base: 8453, arbitrum: 42161, optimism: 10, polygon: 137, bnb: 56, avalanche: 43114 };
+  var EVM_CHAINS = { ethereum: 1, base: 8453, arbitrum: 42161, optimism: 10, polygon: 137, bnb: 56, avalanche: 43114, hyperevm: 999 };
 
   async function ensureEngine() {
     if (engine) return engine;

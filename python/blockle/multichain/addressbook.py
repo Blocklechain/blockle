@@ -41,7 +41,7 @@ _BECH32_UTXO_RE = re.compile(r"^(bc1|ltc1)[0-9a-z]{20,}$", re.IGNORECASE)
 _BASE58_UTXO_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{25,40}$")
 _HEX_RE = re.compile(r"^0x[0-9a-fA-F]+$")
 
-EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"}
+EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"}
 
 
 # ---- address shape checks (plausibility only; never a guess) ---------------

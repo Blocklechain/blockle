@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from .chains import evm as EVM
 from . import security as Security
 
-EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche"}
+EVM_CHAINS = {"ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"}
 EVM_STANDARDS = {"erc721", "erc1155"}
 DEFAULT_GATEWAY = "https://ipfs.io/ipfs/"
 

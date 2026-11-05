@@ -49,13 +49,14 @@
   // code. An asset with no entry here has NO button (we don't guess). BLOCK is
   // intentionally absent — it is not listed on MoonPay.
   const DEFAULT_MAP = {
-    ethereum:  { native: 'eth',          tokens: { USDC: 'usdc',          USDT: 'usdt' } },
+    ethereum:  { native: 'eth',          tokens: { USDC: 'usdc',          USDT: 'usdt', XAUT: 'xaut', LINK: 'link', POL: 'pol' } },
     base:      { native: 'eth_base',     tokens: { USDC: 'usdc_base',     USDT: 'usdt' } },
     arbitrum:  { native: 'eth_arbitrum', tokens: { USDC: 'usdc_arbitrum', USDT: 'usdt_arbitrum' } },
     optimism:  { native: 'eth_optimism', tokens: { USDC: 'usdc_optimism', USDT: 'usdt' } },
     polygon:   { native: 'pol_polygon',  tokens: { USDC: 'usdc_polygon',  USDT: 'usdt_polygon' } },
     bnb:       { native: 'bnb_bsc',      tokens: { USDC: 'usdc_bsc',      USDT: 'usdt_bsc' } },
     avalanche: { native: 'avax_cchain',  tokens: { USDC: 'usdc_cchain',   USDT: 'usdt' } },
+    hyperevm:  { native: 'hype',         tokens: {} },
     bitcoin:   { native: 'btc',          tokens: {} },
     litecoin:  { native: 'ltc',          tokens: {} },
     dogecoin:  { native: 'doge',         tokens: {} },
@@ -67,7 +68,7 @@
   // {chain, symbol} can be classified native-vs-token without an explicit flag.
   const NATIVE_SYMBOLS = {
     ethereum: 'ETH', base: 'ETH', arbitrum: 'ETH', optimism: 'ETH',
-    polygon: 'POL', bnb: 'BNB', avalanche: 'AVAX',
+    polygon: 'POL', bnb: 'BNB', avalanche: 'AVAX', hyperevm: 'HYPE',
     bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', solana: 'SOL',
   };
 

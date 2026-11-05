@@ -128,7 +128,7 @@ void main() {
           CustomNetwork(
             id: 'custom-foo',
             name: 'Foo',
-            chainId: 999,
+            chainId: 424242, // genuinely unused (999 is now built-in HyperEVM)
             rpcUrl: 'https://rpc.foo.example',
             nativeSymbol: 'FOO',
             decimals: 9,
@@ -140,7 +140,7 @@ void main() {
       expect(reg.enabled(), contains('custom-foo'));
 
       final adapter = reg.get('custom-foo') as e.EvmAdapter;
-      expect(adapter.chainId, 999);
+      expect(adapter.chainId, 424242);
       expect(adapter.symbol, 'FOO');
       expect(adapter.decimals, 9);
       expect(adapter.native.symbol, 'FOO');
@@ -205,7 +205,7 @@ void main() {
           CustomNetwork(
               id: 'custom-foo',
               name: 'Foo',
-              chainId: 999,
+              chainId: 424242, // genuinely unused (999 is now built-in HyperEVM)
               rpcUrl: 'https://rpc.foo.example'),
         ],
         tokens: const {

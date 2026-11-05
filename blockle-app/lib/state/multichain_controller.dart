@@ -24,6 +24,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../agent/channels.dart' show providerGuides;
+import '../agent/providers.dart' show localPresets;
 import '../multichain/accounts.dart';
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart';
@@ -49,6 +50,7 @@ const List<String> kDisplayChains = [
   'polygon',
   'bnb',
   'avalanche',
+  'hyperevm',
   'bitcoin',
   'litecoin',
   'dogecoin',
@@ -65,6 +67,7 @@ const Set<String> kEvmChains = {
   'polygon',
   'bnb',
   'avalanche',
+  'hyperevm',
 };
 
 /// EVM chains Alchemy's getTokenBalances enhanced API covers — the ones where
@@ -86,6 +89,7 @@ const Map<String, String> kChainLabels = {
   'polygon': 'Polygon',
   'bnb': 'BNB Chain',
   'avalanche': 'Avalanche C-Chain',
+  'hyperevm': 'HyperEVM',
   'bitcoin': 'Bitcoin',
   'litecoin': 'Litecoin',
   'dogecoin': 'Dogecoin',
@@ -101,6 +105,7 @@ const Map<String, String> kChainTickers = {
   'polygon': 'POL',
   'bnb': 'BNB',
   'avalanche': 'AVAX',
+  'hyperevm': 'HYPE',
   'bitcoin': 'BTC',
   'litecoin': 'LTC',
   'dogecoin': 'DOGE',
@@ -528,6 +533,10 @@ class MultichainController extends ChangeNotifier {
       return (a['gatewayUrl'] as String?)?.isNotEmpty == true &&
           (a['sessionToken'] as String?)?.isNotEmpty == true;
     }
+    // LOCAL (keyless): connected when a base URL to the user's own server is set.
+    if (a['provider'] == 'local') {
+      return (a['baseUrl'] as String?)?.isNotEmpty == true;
+    }
     return (a['apiKey'] as String?)?.isNotEmpty == true;
   }
 
@@ -566,6 +575,37 @@ class MultichainController extends ChangeNotifier {
       if (model != null && model.isNotEmpty) 'model': model,
       if (baseUrl != null && baseUrl.isNotEmpty) 'baseUrl': baseUrl,
       'label': provider,
+    };
+    await vault.reseal(password);
+    await _resumeAgent();
+    notifyListeners();
+  }
+
+  /// Connect a KEYLESS LOCAL LLM: store {provider:'local', baseUrl, model} in the
+  /// unlocked vault and re-seal — NO apiKey (the server runs on the user's own
+  /// machine, so nothing leaves the device). This is the local-first default that
+  /// removes all reliance on Blockle's hosted brain. Requires the vault password
+  /// to persist. [baseUrl] defaults to Ollama (http://localhost:11434).
+  Future<void> connectLocalAgent({
+    String? baseUrl,
+    String? model,
+    required String password,
+  }) async {
+    if (!vault.isUnlocked) {
+      throw Exception('unlock the multi-chain vault first');
+    }
+    final pt = vault.plaintext!;
+    final url = (baseUrl == null || baseUrl.trim().isEmpty)
+        ? localPresets['ollama']!['baseUrl'] as String
+        : baseUrl.trim();
+    final mdl = (model == null || model.trim().isEmpty)
+        ? localPresets['ollama']!['model'] as String
+        : model.trim();
+    pt.agent = {
+      'provider': 'local',
+      'baseUrl': url,
+      'model': mdl,
+      'label': 'Local LLM',
     };
     await vault.reseal(password);
     await _resumeAgent();

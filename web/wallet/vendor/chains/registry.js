@@ -43,6 +43,7 @@
     berachain: { chainId: 80094, symbol: 'BERA', explorer: 'https://berascan.com/tx/' },
     opbnb:     { chainId: 204,   symbol: 'BNB',  explorer: 'https://opbnbscan.com/tx/' },
     sei:       { chainId: 1329,  symbol: 'SEI',  explorer: 'https://seitrace.com/tx/' },
+    hyperevm:  { chainId: 999,   symbol: 'HYPE', explorer: 'https://hyperevmscan.io/tx/' },
   };
   function isEvm(id) { return !!EVM_CHAINS[id]; }
   const NETWORK_NAMES = {
@@ -50,6 +51,7 @@
     ethereum: 'Ethereum', base: 'Base', arbitrum: 'Arbitrum', optimism: 'Optimism', polygon: 'Polygon', bnb: 'BNB Chain',
     avalanche: 'Avalanche', linea: 'Linea', scroll: 'Scroll', unichain: 'Unichain', gnosis: 'Gnosis', mantle: 'Mantle',
     celo: 'Celo', cronos: 'Cronos', sonic: 'Sonic', berachain: 'Berachain', opbnb: 'opBNB', sei: 'Sei',
+    hyperevm: 'HyperEVM',
   };
 
   // Alchemy host templates (base URL, NO key) for the networks Alchemy's
@@ -94,6 +96,7 @@
     berachain: { rpcUrl: 'https://berachain-rpc.publicnode.com', chainId: 80094 },
     opbnb:     { rpcUrl: 'https://opbnb-rpc.publicnode.com', chainId: 204 },
     sei:       { rpcUrl: 'https://sei-evm-rpc.publicnode.com', chainId: 1329 },
+    hyperevm:  { rpcUrl: 'https://rpc.hyperliquid.xyz/evm', chainId: 999 },
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
@@ -108,9 +111,13 @@
     ethereum: [
       { chain: 'ethereum', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' },
       { chain: 'ethereum', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'XAUT', decimals: 6, address: '0x68749665FF8D2d112Fa859AA293F07A622782F38' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'LINK', decimals: 18, address: '0x514910771AF9Ca656af840dff83E8264EcF986CA' },
+      { chain: 'ethereum', kind: 'erc20', symbol: 'POL', decimals: 18, address: '0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6' },
     ],
     base: [
       { chain: 'base', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' },
+      { chain: 'base', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2' },
     ],
     arbitrum: [
       { chain: 'arbitrum', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' },
@@ -171,6 +178,9 @@
     sei: [
       { chain: 'sei', kind: 'erc20', symbol: 'USDC', decimals: 6, address: '0x3894085Ef7Ff0f0aeDf52E2A2704928d1Ec074F1' },
       { chain: 'sei', kind: 'erc20', symbol: 'USDT', decimals: 6, address: '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1' },
+    ],
+    solana: [
+      { chain: 'solana', kind: 'spl', symbol: 'USDT', decimals: 6, mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
     ],
   };
 

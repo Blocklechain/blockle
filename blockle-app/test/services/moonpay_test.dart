@@ -66,6 +66,7 @@ void main() {
       expect(moonpayCurrencyCode('polygon'), 'pol_polygon');
       expect(moonpayCurrencyCode('bnb'), 'bnb_bsc');
       expect(moonpayCurrencyCode('avalanche'), 'avax_cchain');
+      expect(moonpayCurrencyCode('hyperevm'), 'hype');
     });
     test('kind null/empty/native all resolve to the native code', () {
       expect(moonpayCurrencyCode('ethereum', kind: null), 'eth');
@@ -91,6 +92,31 @@ void main() {
       expect(
           moonpayCurrencyCode('solana', kind: 'spl', symbol: 'USDC'),
           'usdc_sol');
+      // EVM-completion tranche: new ethereum tokens + USDT across chains.
+      expect(
+          moonpayCurrencyCode('ethereum', kind: 'erc20', symbol: 'XAUT'),
+          'xaut');
+      expect(
+          moonpayCurrencyCode('ethereum', kind: 'erc20', symbol: 'LINK'),
+          'link');
+      expect(
+          moonpayCurrencyCode('ethereum', kind: 'erc20', symbol: 'POL'),
+          'pol');
+      expect(
+          moonpayCurrencyCode('base', kind: 'erc20', symbol: 'USDT'),
+          'usdt');
+      expect(
+          moonpayCurrencyCode('arbitrum', kind: 'erc20', symbol: 'USDT'),
+          'usdt_arbitrum');
+      expect(
+          moonpayCurrencyCode('bnb', kind: 'erc20', symbol: 'USDT'),
+          'usdt_bsc');
+      expect(
+          moonpayCurrencyCode('avalanche', kind: 'erc20', symbol: 'USDC'),
+          'usdc_cchain');
+      expect(
+          moonpayCurrencyCode('solana', kind: 'spl', symbol: 'USDT'),
+          'usdt_sol');
     });
     test('unknown token → null (button hidden)', () {
       expect(

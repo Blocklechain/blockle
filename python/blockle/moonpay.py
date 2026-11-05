@@ -94,6 +94,7 @@ NATIVE_CURRENCY_CODES: Dict[str, Optional[str]] = {
     "polygon": "pol_polygon",   # Polygon native (POL / MATIC)
     "bnb": "bnb_bsc",
     "avalanche": "avax_cchain",
+    "hyperevm": "hype",     # HYPE — may not yet be listed on MoonPay (verify live)
     "bitcoin": "btc",
     "litecoin": "ltc",
     "dogecoin": "doge",
@@ -104,12 +105,21 @@ NATIVE_CURRENCY_CODES: Dict[str, Optional[str]] = {
 TOKEN_CURRENCY_CODES: Dict[Tuple[str, str], str] = {
     ("ethereum", "USDC"): "usdc",
     ("ethereum", "USDT"): "usdt",
+    ("ethereum", "XAUT"): "xaut",
+    ("ethereum", "LINK"): "link",
+    ("ethereum", "POL"): "pol",
     ("base", "USDC"): "usdc_base",
+    ("base", "USDT"): "usdt",
     ("arbitrum", "USDC"): "usdc_arbitrum",
     ("arbitrum", "USDT"): "usdt_arbitrum",
     ("optimism", "USDC"): "usdc_optimism",
+    ("optimism", "USDT"): "usdt",
     ("polygon", "USDC"): "usdc_polygon",
     ("polygon", "USDT"): "usdt_polygon",
+    ("bnb", "USDC"): "usdc_bsc",
+    ("bnb", "USDT"): "usdt_bsc",
+    ("avalanche", "USDC"): "usdc_cchain",
+    ("avalanche", "USDT"): "usdt",
     ("solana", "USDC"): "usdc_sol",
     ("solana", "USDT"): "usdt_sol",
 }

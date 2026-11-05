@@ -51,6 +51,8 @@ const List<EvmNet> evmNets = [
   EvmNet('polygon', 137, 'POL', 'https://polygonscan.com/tx/', alchemy: true),
   EvmNet('bnb', 56, 'BNB', 'https://bscscan.com/tx/'),
   EvmNet('avalanche', 43114, 'AVAX', 'https://snowtrace.io/tx/'),
+  // HyperEVM (Hyperliquid L1 EVM). Not on Alchemy → native + curated tokens.
+  EvmNet('hyperevm', 999, 'HYPE', 'https://hyperevmscan.io/tx/'),
 ];
 
 const Map<String, EndpointCfg> defaultEndpoints = {
@@ -66,6 +68,8 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   'bnb': EndpointCfg(rpcUrl: 'https://bsc-rpc.publicnode.com', chainId: 56),
   'avalanche': EndpointCfg(
       rpcUrl: 'https://avalanche-c-chain-rpc.publicnode.com', chainId: 43114),
+  'hyperevm':
+      EndpointCfg(rpcUrl: 'https://rpc.hyperliquid.xyz/evm', chainId: 999),
   'bitcoin': EndpointCfg(esplora: 'https://blockstream.info/api'),
   'litecoin': EndpointCfg(esplora: 'https://litecoinspace.org/api'),
   // Blockle-hosted Esplora shim for Dogecoin (operator-overridable, like the
@@ -89,6 +93,24 @@ final Map<String, List<AssetRef>> defaultTokens = {
         symbol: 'USDT',
         decimals: 6,
         address: '0xdAC17F958D2ee523a2206206994597C13D831ec7'),
+    AssetRef(
+        chain: 'ethereum',
+        kind: 'erc20',
+        symbol: 'XAUT',
+        decimals: 6,
+        address: '0x68749665FF8D2d112Fa859AA293F07A622782F38'),
+    AssetRef(
+        chain: 'ethereum',
+        kind: 'erc20',
+        symbol: 'LINK',
+        decimals: 18,
+        address: '0x514910771AF9Ca656af840dff83E8264EcF986CA'),
+    AssetRef(
+        chain: 'ethereum',
+        kind: 'erc20',
+        symbol: 'POL',
+        decimals: 18,
+        address: '0x455e53CBB86018Ac2B8092FdCd39d8444aFFC3F6'),
   ],
   'base': const [
     AssetRef(
@@ -97,6 +119,12 @@ final Map<String, List<AssetRef>> defaultTokens = {
         symbol: 'USDC',
         decimals: 6,
         address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
+    AssetRef(
+        chain: 'base',
+        kind: 'erc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: '0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2'),
   ],
   'arbitrum': const [
     AssetRef(
@@ -167,6 +195,16 @@ final Map<String, List<AssetRef>> defaultTokens = {
         symbol: 'USDT',
         decimals: 6,
         address: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7'),
+  ],
+  // Canonical USDT SPL on Solana. `address` carries the SPL mint (the Solana
+  // adapter reads AssetRef.address as the mint). Config-overridable.
+  'solana': const [
+    AssetRef(
+        chain: 'solana',
+        kind: 'spl',
+        symbol: 'USDT',
+        decimals: 6,
+        address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'),
   ],
   // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
   // auto-discovered); USDB has no pool, so listing it here is the only way a
