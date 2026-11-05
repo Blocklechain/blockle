@@ -12,6 +12,7 @@ import { RateLimiter } from './ratelimit.js';
 import { makeMailer } from './email.js';
 import { makePaypal, entitlementFromEvent } from './paypal.js';
 import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
+import { makeBacktester } from './backtest.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -40,6 +41,7 @@ export function createApp(overrides = {}) {
   const mailer = overrides.mailer || makeMailer(cfg);
   const paypal = overrides.paypal || makePaypal(cfg, overrides.paypalDeps);
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
+  const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const googleStore = overrides.googleStore || makeGoogleStore(cfg, overrides.googleDeps);
   const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
   let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
@@ -340,6 +342,30 @@ export function createApp(overrides = {}) {
     if (m[2] === 'delete') { await store.del('bots', m[1]); return json(res, 200, { ok: true }); }
     await store.update('bots', m[1], (x) => { if (x) x.status = m[2] === 'pause' ? 'paused' : 'running'; return x; });
     return json(res, 200, { ok: true });
+  }));
+
+  // Quick backtest of a CONFIGURED strategy on recent real prices (the wallet's tune-and-test
+  // loop). Play-money simulation, cached price feed — fast. { type, params, asset } -> result.
+  on('POST', /^\/account\/api\/backtest$/, authed(async (req, res) => {
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    if (!BOT_TYPES.includes(b.type)) return json(res, 400, { error: 'Unknown strategy.' });
+    try { return json(res, 200, await backtester.run({ type: b.type, params: b.params, asset: b.asset })); }
+    catch { return json(res, 503, { error: 'Backtest price feed is unavailable right now.' }); }
+  }));
+
+  // Copy-trade = clone another trader's bot CONFIG into your own account (compliant: your keys +
+  // your gate still apply; the clone lands as a fresh paper bot). Body: { fromBotId }.
+  on('POST', /^\/account\/api\/bots\/copy$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const src = b.fromBotId ? store.get('bots', b.fromBotId) : null;
+    const spec = src ? { type: src.type, pair: src.pair, params: src.params } : { type: b.type, pair: b.pair, params: b.params };
+    if (!BOT_TYPES.includes(spec.type)) return json(res, 400, { error: 'Unknown strategy.' });
+    if (store.all('bots').filter((x) => x.uid === u.id).length >= 25) return json(res, 400, { error: 'Bot limit reached (25).' });
+    const id = randomToken(8);
+    const bot = newBot({ id, uid: u.id, type: spec.type, pair: spec.pair, params: spec.params, now: now() });
+    if (src) bot.copiedFrom = src.uid;
+    await store.put('bots', id, bot);
+    return json(res, 200, { ok: true, bot: botView(bot, priceFor()) });
   }));
 
   // Background stepper: fetch the BLOCK price + advance every running paper bot. Best-effort —
