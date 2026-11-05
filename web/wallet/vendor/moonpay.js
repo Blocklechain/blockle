@@ -64,6 +64,7 @@
     bitcoincash: { native: 'bch',      tokens: {} },
     solana:    { native: 'sol',        tokens: { USDC: 'usdc_sol',     USDT: 'usdt_sol' } },
     tron:      { native: 'trx',        tokens: { USDT: 'usdt_tron' } },
+    ton:       { native: 'ton',        tokens: { USDT: 'usdt_ton' } },
     // block: absent on purpose (not on MoonPay).
   };
 

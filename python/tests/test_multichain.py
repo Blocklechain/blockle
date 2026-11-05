@@ -693,3 +693,136 @@ def test_vault_v1_pbkdf2_opens_and_needs_upgrade():
               "data": b64.b64encode(ct).decode()}
     assert V.open(sealed, "pw") == {"legacy": True}
     assert V.needs_upgrade(sealed)
+
+
+# ---- TON (native + USDT jetton) golden vector -----------------------------
+# test-vectors/ton-golden.json — the cross-port gate generated from the
+# canonical extension engine and cross-checked against @ton/ton + PyNaCl:
+# SLIP-0010 ed25519 (m/44'/607'/0') -> ed25519 pub -> v4R2 StateInit cell hash
+# -> bounceable base64url address, AND a CLIENT-BUILT signed external-message
+# BOC (native TON + a TEP-74 jetton transfer), byte-identical across all ports.
+from blockle.multichain.chains import ton as TON  # noqa: E402
+from blockle.multichain.chains import ton_cell as TC  # noqa: E402
+
+
+def _ton_fixture():
+    import json
+    import os
+    p = os.path.join(os.path.dirname(__file__), "..", "..", "test-vectors", "ton-golden.json")
+    with open(p) as f:
+        return json.load(f)
+
+
+def test_ton_crc_kats_and_empty_cell():
+    assert TC.crc16_ccitt(b"123456789").hex() == "31c3"
+    # crc32c is emitted little-endian; the logical value is 0xe3069283
+    le = TC.crc32c(b"123456789")
+    assert (le[3] << 24 | le[2] << 16 | le[1] << 8 | le[0]) == 0xE3069283
+    assert TC.begin_cell().end_cell().hash().hex() == \
+        "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7"
+
+
+def test_ton_derive_key_and_address():
+    fx = _ton_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    key = K.slip10.derive(seed, fx["path"]).key
+    pub = ED.public_key(key)
+    assert key.hex() == fx["key"]["ed25519Seed32Hex"]
+    assert pub.hex() == fx["key"]["publicKeyHex"]
+    v4 = fx["v4r2"]
+    assert TC.v4r2_code_cell().hash_hex() == v4["codeCellHashHex"]
+    assert TC.v4r2_data_cell(pub).hash_hex() == v4["dataCellHashHex"]
+    si = TC.v4r2_state_init(pub)
+    assert si.hash_hex() == v4["stateInitCellHashHex"]
+    assert TC.raw_address(0, si.hash()) == v4["rawAddress"]
+    assert TC.format_address(0, si.hash()) == v4["addressBounceable"]
+    assert TC.format_address(0, si.hash(), bounceable=False) == v4["addressNonBounceable"]
+    assert TC.format_address(0, si.hash(), test_only=True) == v4["addressTestnet"]
+
+
+def test_ton_address_codec_roundtrips_and_validation():
+    fx = _ton_fixture()
+    for raw, friendly in fx["addressSpecVectors"]:
+        pr = TC.parse_address(raw)
+        assert TC.format_address(pr["workchain"], pr["hash"]) == friendly
+        pf = TC.parse_address(friendly)
+        assert TC.raw_address(pf["workchain"], pf["hash"]) == raw
+        assert TC.is_ton_address(raw) and TC.is_ton_address(friendly)
+    assert not TC.is_ton_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+    assert not TC.is_ton_address("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+    assert not TC.is_ton_address("TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH")
+
+
+def test_ton_native_signed_external_message_byte_exact():
+    fx = _ton_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    key = K.slip10.derive(seed, fx["path"]).key
+    pub = ED.public_key(key)
+    tx = fx["tx"]
+    built = TON.build_native_external(
+        pub_key=pub, seed_key=key, dest=TC.parse_address(tx["dest"]),
+        amount=tx["amount"], seqno=tx["seqno"], comment=tx["comment"],
+        bounce=tx["bounce"], valid_until=tx["validUntil"])
+    assert built["internal_msg"].hash_hex() == tx["internalMsgCellHashHex"]
+    assert built["signing_cell"].hash_hex() == tx["signingCellHashHex"]
+    exp = tx["expected"]
+    assert built["signature"].hex() == exp["signatureHex"]
+    assert ED.verify(built["signing_cell"].hash(), built["signature"], pub)
+    assert built["boc"] == exp["externalMessageBocBase64"]
+    assert built["hash"] == exp["externalMessageBocHashHex"]
+
+
+def test_ton_jetton_transfer_signed_external_message_byte_exact():
+    fx = _ton_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    key = K.slip10.derive(seed, fx["path"]).key
+    pub = ED.public_key(key)
+    j = fx["jettonTx"]
+    assert TON.JETTON_TRANSFER_OP == 0x0F8A7EA5
+    built = TON.build_jetton_external(
+        pub_key=pub, seed_key=key,
+        jetton_wallet=TC.parse_address(j["ownerJettonWallet"]),
+        dest=TC.parse_address(j["dest"]), response=TC.parse_address(j["responseDest"]),
+        amount=j["amount"], seqno=j["seqno"], fwd_amount=j["fwdAmount"],
+        gas=j["attachTon"], valid_until=j["validUntil"])
+    assert built["jetton_body"].hash_hex() == j["jettonBodyCellHashHex"]
+    assert built["internal_msg"].hash_hex() == j["internalMsgCellHashHex"]
+    assert built["signing_cell"].hash_hex() == j["signingCellHashHex"]
+    exp = j["expected"]
+    assert built["signature"].hex() == exp["signatureHex"]
+    assert ED.verify(built["signing_cell"].hash(), built["signature"], pub)
+    assert built["boc"] == exp["externalMessageBocBase64"]
+
+
+def test_ton_registry_and_build_send_client_built():
+    fx = _ton_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    reg = create_registry({})
+    assert reg.has("ton")
+    assert "ton" in reg.enabled()
+    assert reg.endpoints("ton")["api"] == "https://toncenter.com/api/v2"
+    acct = reg.get("ton").derive_account({"seed": seed}, 0)
+    assert acct.scheme == "ed25519"
+    assert acct.address == fx["v4r2"]["addressBounceable"]
+    # generic client-built buildSend: inject a toncenter transport (seqno=0 only)
+    import json as _json
+
+    def post(path, body):
+        return _json.dumps({"ok": True, "result": {"stack": [["num", "0x0"]]}})
+
+    a = TON.create_ton_adapter(post=post)
+    a.unlock({"seed": seed})
+    acct2 = a.derive_account({"seed": seed}, 0)
+
+    class _Req:
+        to = fx["tx"]["dest"]
+        amount = fx["tx"]["amount"]
+        asset = None
+        memo = ""
+
+    built = a.build_send(acct2, _Req())
+    assert built.raw == fx["tx"]["expected"]["externalMessageBocBase64"]
+    assert built.txid == fx["tx"]["expected"]["externalMessageBocHashHex"]
+    assert built.extra["kind"] == "send"
+    assert built.extra["seqno"] == 0
+    assert a.explorer_tx("abc") == "https://tonviewer.com/transaction/abc"

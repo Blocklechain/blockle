@@ -79,6 +79,7 @@ const Map<String, String> kMoonPayNativeCodes = {
   'bitcoincash': 'bch',
   'solana': 'sol',
   'tron': 'trx',
+  'ton': 'ton',
   // 'block' intentionally absent — BLOCK is not on MoonPay.
 };
 
@@ -106,6 +107,7 @@ const Map<String, String> kMoonPayTokenCodes = {
   'solana:USDC': 'usdc_sol',
   'solana:USDT': 'usdt_sol',
   'tron:USDT': 'usdt_tron',
+  'ton:USDT': 'usdt_ton',
 };
 
 /// Resolve the MoonPay currencyCode for an asset on [chain].

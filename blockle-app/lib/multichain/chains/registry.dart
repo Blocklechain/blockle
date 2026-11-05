@@ -10,6 +10,7 @@ import 'chain_adapter.dart';
 import 'custom_network.dart';
 import 'evm.dart';
 import 'solana.dart';
+import 'ton.dart';
 import 'tron.dart';
 import 'utxo.dart';
 
@@ -93,6 +94,9 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // TronGrid REST base (operator-overridable). The Tron adapter reads `api`
   // (+ optional `apiKey`); no secret is hardcoded here.
   'tron': EndpointCfg(api: 'https://api.trongrid.io'),
+  // toncenter v2 base (operator-overridable). The TON adapter reads `api`
+  // (+ optional `apiKey` → X-API-Key); no secret is hardcoded here.
+  'ton': EndpointCfg(api: 'https://toncenter.com/api/v2'),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
@@ -233,6 +237,17 @@ final Map<String, List<AssetRef>> defaultTokens = {
         decimals: 6,
         address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'),
   ],
+  // Canonical USDT jetton on TON. `address` carries the jetton MASTER (the TON
+  // adapter reads AssetRef.address as the master, mirroring Solana's mint /
+  // Tron's contract). Config-overridable.
+  'ton': const [
+    AssetRef(
+        chain: 'ton',
+        kind: 'jetton',
+        symbol: 'USDT',
+        decimals: 6,
+        address: 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs'),
+  ],
   // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
   // auto-discovered); USDB has no pool, so listing it here is the only way a
   // held balance surfaces. Zero balances show as 0 (curated tokens aren't hidden).
@@ -303,7 +318,8 @@ class ChainRegistry {
             'dogecoin',
             'bitcoincash',
             'solana',
-            'tron'
+            'tron',
+            'ton'
           ]),
       'block', // BLOCK is always enabled
     };
@@ -412,6 +428,14 @@ class ChainRegistry {
       api: ep['tron']?.api,
       apiKey: ep['tron']?.apiKey,
       post: postFor(ep['tron']?.api),
+    );
+    // TON (account-model ed25519): own adapter + toncenter v2 jsonRPC transport.
+    // Reuses the injectable HttpPostFn builder (base = the toncenter `api` URL)
+    // exactly like Tron, so tests can swap in an offline poster.
+    adapters['ton'] = TonAdapter(
+      api: ep['ton']?.api,
+      apiKey: ep['ton']?.apiKey,
+      post: postFor(ep['ton']?.api),
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 

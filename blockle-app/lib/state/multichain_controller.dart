@@ -57,6 +57,7 @@ const List<String> kDisplayChains = [
   'bitcoincash',
   'solana',
   'tron',
+  'ton',
 ];
 
 /// The EVM networks — all share one secp256k1 address (m/44'/60') + the same
@@ -98,6 +99,7 @@ const Map<String, String> kChainLabels = {
   'bitcoincash': 'Bitcoin Cash',
   'solana': 'Solana',
   'tron': 'Tron',
+  'ton': 'TON',
 };
 
 const Map<String, String> kChainTickers = {
@@ -116,6 +118,7 @@ const Map<String, String> kChainTickers = {
   'bitcoincash': 'BCH',
   'solana': 'SOL',
   'tron': 'TRX',
+  'ton': 'TON',
 };
 
 class MultichainController extends ChangeNotifier {

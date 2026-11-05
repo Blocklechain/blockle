@@ -60,7 +60,7 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
@@ -69,6 +69,7 @@ CHAIN_LABELS = {
     "bitcoincash": "Bitcoin Cash",
     "solana": "Solana",
     "tron": "Tron",
+    "ton": "TON",
 }
 #: Only BLOCK signs post-quantum (ML-DSA-44). Every other chain is ECDSA/ed25519
 #: — the vault hardens the stored key against theft, it is NOT a PQ signature.
@@ -80,6 +81,7 @@ CHAIN_SCHEME = {
     "bitcoincash": "secp256k1",
     "solana": "ed25519",
     "tron": "secp256k1",
+    "ton": "ed25519",
 }
 
 #: The treasury the non-bypassable 0.05% agent trade fee is routed to, per chain

@@ -46,6 +46,7 @@
     ltc:       disc('#345d9d', '#ffffff', 'Ł'),      // Ł
     bch:       disc('#0ac18e', '#ffffff', '₿'),      // Bitcoin Cash green
     tron:      disc('#ec0623', '#ffffff', 'T'),      // TRON red
+    ton:       disc('#0098ea', '#ffffff', 'T'),      // TON blue
     block:     disc('#4c8dff', '#ffffff', 'B'),           // Blockle brand accent
     bnb:       disc('#f3ba2f', '#1e2026', 'B'),
     base:      disc('#0052ff', '#ffffff', 'B'),
@@ -64,6 +65,7 @@
     litecoin: 'ltc', ltc: 'ltc',
     bitcoincash: 'bch', bch: 'bch',
     tron: 'tron', trx: 'tron',
+    ton: 'ton', toncoin: 'ton',
     block: 'block', blockle: 'block',
     bnb: 'bnb', bsc: 'bnb', binance: 'bnb',
     base: 'base',

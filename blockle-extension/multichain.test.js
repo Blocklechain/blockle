@@ -279,6 +279,18 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry tron path', trx.path, "m/44'/195'/0'/0/0");
     eq('registry tron addr', trx.address, 'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH');
     ok('registry tron addr is T-prefixed base58', /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(trx.address));
+    // TON adapter is REGISTERED (ed25519 SLIP-0010 m/44'/607'/0'), enabled by
+    // default, derives the v4R2 bounceable 'EQ…' address from the SAME HD seed,
+    // and its toncenter v2 endpoint defaults to the public mainnet host (no key).
+    ok('registry has ton adapter', reg.has('ton'));
+    ok('registry enables ton', reg.enabled().includes('ton'));
+    eq('registry ton default api', reg.endpoints('ton').api, 'https://toncenter.com/api/v2');
+    ok('registry ton usdt jetton present', reg.tokensFor('ton').some((t) => t.kind === 'jetton' && t.symbol === 'USDT' && t.master === 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs'));
+    const ton = await reg.get('ton').deriveAccount({ seed });
+    eq('registry ton scheme', ton.scheme, 'ed25519');
+    eq('registry ton path', ton.path, "m/44'/607'/0'");
+    eq('registry ton addr', ton.address, 'EQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-U9d');
+    ok('registry ton addr is EQ-prefixed base64url', /^EQ[A-Za-z0-9_-]{46}$/.test(ton.address));
     // A config override replaces the default RPC without touching the key path.
     const reg2 = REG.createRegistry({ endpoints: { solana: { rpcUrl: 'https://solana.example/rpc' } } });
     eq('registry solana rpc override', reg2.endpoints('solana').rpcUrl, 'https://solana.example/rpc');

@@ -53,6 +53,9 @@ CHAIN_ICONS = {
     "sol":       _sol_disc(),
     "doge":      _disc("#c2a633", "#ffffff", "Ð"),   # Ð
     "ltc":       _disc("#345d9d", "#ffffff", "Ł"),   # Ł
+    "bch":       _disc("#0ac18e", "#ffffff", "₿"),   # Bitcoin Cash green
+    "tron":      _disc("#ec0623", "#ffffff", "T"),   # TRON red
+    "ton":       _disc("#0098ea", "#ffffff", "T"),   # TON blue
     "block":     _disc("#4c8dff", "#ffffff", "B"),        # Blockle brand accent
     "bnb":       _disc("#f3ba2f", "#1e2026", "B"),
     "base":      _disc("#0052ff", "#ffffff", "B"),
@@ -67,8 +70,11 @@ CHAIN_ALIAS = {
     "bitcoin": "btc", "btc": "btc",
     "ethereum": "eth", "eth": "eth", "evm": "eth",
     "solana": "sol", "sol": "sol",
+    "tron": "tron", "trx": "tron",
+    "ton": "ton", "toncoin": "ton",
     "dogecoin": "doge", "doge": "doge",
     "litecoin": "ltc", "ltc": "ltc",
+    "bitcoincash": "bch", "bch": "bch",
     "block": "block", "blockle": "block",
     "bnb": "bnb", "bsc": "bnb", "binance": "bnb",
     "base": "base",

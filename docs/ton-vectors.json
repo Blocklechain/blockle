@@ -1,0 +1,119 @@
+{
+  "_comment": "TON golden vector — cross-wallet gate for SLIP-0010 ed25519 (m/44'/607'/0') -> ed25519 pub -> v4R2 StateInit cell hash -> bounceable base64url address, AND client-built signed external-message BOCs (native + jetton). Generated from the extension engine and cross-checked BYTE-IDENTICAL against @ton/core (WalletContractV4) for the key, the v4R2 code/data/StateInit cell hashes, the address, and the signed external message. Every port (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce every `expected` byte-identically before TON touches real funds. The jetton owner-jetton-wallet is normally derived on-chain via get_wallet_address on the master; here it is pinned as a fixed input (acct1's wallet address) so the transfer-body + BOC are reproducible offline.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "path": "m/44'/607'/0'",
+  "network": {
+    "id": "ton",
+    "symbol": "TON",
+    "decimals": 9,
+    "coinType": 607,
+    "subwalletId": 698983191,
+    "walletVersion": "v4R2",
+    "workchain": 0,
+    "jettonMasters": {
+      "USDT": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+    },
+    "endpoint": "https://toncenter.com/api/v2",
+    "explorerTx": "https://tonviewer.com/transaction/",
+    "moonpay": {
+      "native": "ton",
+      "USDT": "usdt_ton"
+    }
+  },
+  "crcKats": {
+    "crc16ccitt": [
+      [
+        "",
+        "0x0000"
+      ],
+      [
+        "123456789",
+        "0x31c3"
+      ]
+    ],
+    "crc32c": [
+      [
+        "",
+        "0x00000000"
+      ],
+      [
+        "123456789",
+        "0xe3069283"
+      ]
+    ]
+  },
+  "key": {
+    "ed25519Seed32Hex": "b477ef5ed17fb8a2b8faddd7a9835a227243a82c70b190c7af4896155aa7df9f",
+    "publicKeyHex": "7952e94118f34607c75e23258dd9220d66ccac5a3ee074125c25068e8107bfbf"
+  },
+  "v4r2": {
+    "codeBocBase64": "te6cckECFAEAAtQAART/APSkE/S88sgLAQIBIAIPAgFIAwYC5tAB0NMDIXGwkl8E4CLXScEgkl8E4ALTHyGCEHBsdWe9IoIQZHN0cr2wkl8F4AP6QDAg+kQByMoHy//J0O1E0IEBQNch9AQwXIEBCPQKb6Exs5JfB+AF0z/IJYIQcGx1Z7qSODDjDQOCEGRzdHK6kl8G4w0EBQB4AfoA9AQw+CdvIjBQCqEhvvLgUIIQcGx1Z4MesXCAGFAEywUmzxZY+gIZ9ADLaRfLH1Jgyz8gyYBA+wAGAIpQBIEBCPRZMO1E0IEBQNcgyAHPFvQAye1UAXKwjiOCEGRzdHKDHrFwgBhQBcsFUAPPFiP6AhPLassfyz/JgED7AJJfA+ICASAHDgIBIAgNAgFYCQoAPbKd+1E0IEBQNch9AQwAsjKB8v/ydABgQEI9ApvoTGACASALDAAZrc52omhAIGuQ64X/wAAZrx32omhAEGuQ64WPwAARuMl+1E0NcLH4AFm9JCtvaiaECAoGuQ+gIYRw1AgIR6STfSmRDOaQPp/5g3gSgBt4EBSJhxWfMYQE+PKDCNcYINMf0x/THwL4I7vyZO1E0NMf0x/T//QE0VFDuvKhUVG68qIF+QFUEGT5EPKj+AAkpMjLH1JAyx9SMMv/UhD0AMntVPgPAdMHIcAAn2xRkyDXSpbTB9QC+wDoMOAhwAHjACHAAuMAAcADkTDjDQOkyMsfEssfy/8QERITAG7SB/oA1NQi+QAFyMoHFcv/ydB3dIAYyMsFywIizxZQBfoCFMtrEszMyXP7AMhAFIEBCPRR8qcCAHCBAQjXGPoA0z/IVCBHgQEI9FHyp4IQbm90ZXB0gBjIywXLAlAGzxZQBPoCFMtqEssfyz/Jc/sAAgBsgQEI1xj6ANM/MFIkgQEI9Fnyp4IQZHN0cnB0gBjIywXLAlAFzxZQA/oCE8tqyx8Syz/Jc/sAAAr0AMntVAj45Sg=",
+    "codeCellHashHex": "feb5ff6820e2ff0d9483e7e0d62c817d846789fb4ae580c878866d959dabd5c0",
+    "dataCellHashHex": "3682518914842b5a4496552643bde7b4735cee9218a87216849dc7bb3428bb4b",
+    "stateInitCellHashHex": "335996ba9cce6625ebfdd7019ced50927c1a08b1846a289a55efc37c01d77df9",
+    "rawAddress": "0:335996ba9cce6625ebfdd7019ced50927c1a08b1846a289a55efc37c01d77df9",
+    "addressBounceable": "EQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-U9d",
+    "addressNonBounceable": "UQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-RKY",
+    "addressTestnet": "kQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-fTX"
+  },
+  "addressSpecVectors": [
+    [
+      "0:335996ba9cce6625ebfdd7019ced50927c1a08b1846a289a55efc37c01d77df9",
+      "EQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-U9d"
+    ],
+    [
+      "0:d526e7094fdeaf1a1fdb626ddee6ecde9dab224cec00f68ad41d08b284db0a98",
+      "EQDVJucJT96vGh_bYm3e5uzenasiTOwA9orUHQiyhNsKmEcK"
+    ],
+    [
+      "0:43da3de754aa2773516082f9ade96e7381769d9e64e5e37b29513e0129e4dc4b",
+      "EQBD2j3nVKonc1Fggvmt6W5zgXadnmTl43spUT4BKeTcS910"
+    ]
+  ],
+  "tx": {
+    "kind": "native",
+    "seqno": 0,
+    "validUntil": 4294967295,
+    "sendMode": 3,
+    "dest": "EQDVJucJT96vGh_bYm3e5uzenasiTOwA9orUHQiyhNsKmEcK",
+    "amount": "1000000000",
+    "bounce": true,
+    "comment": "",
+    "intMsgCellHashHex": "22a3baedb97a42f7c6fb9d1fada29d5eb1d487ee63ec468ae166d32c0c53ca96",
+    "internalMsgCellHashHex": "22a3baedb97a42f7c6fb9d1fada29d5eb1d487ee63ec468ae166d32c0c53ca96",
+    "signingCellHashHex": "82d3e16a42b731b534ea39ddde329b13fb30873d202fdde16398fa44b06852d8",
+    "expected": {
+      "signatureHex": "36df861cac343e1c3c9358125df470cea717c3245a159dd5bee1cb20e249faf58f52c751c82c367bc260dcb462acb87b3dc987038d78444e5c6675eb0e75550a",
+      "verifies": true,
+      "externalMessageBocBase64": "te6cckECFwEAA7AAA+OIAGazLXU5nMxL1/uuAznaoST4NBFjCNRRNKvfhvgDrvvyEYbb8MOVhofDh5JrAku+jhnU4vhki0KzurfcOWQcST9esepY6jkFhs94TBuWjFWXD2e5MOBxrwiJy4zOvWHOqqFFNTRi/////+AAAAAAAHABFRYBFP8A9KQT9LzyyAsCAgEgAxACAUgEBwLm0AHQ0wMhcbCSXwTgItdJwSCSXwTgAtMfIYIQcGx1Z70ighBkc3RyvbCSXwXgA/pAMCD6RAHIygfL/8nQ7UTQgQFA1yH0BDBcgQEI9ApvoTGzkl8H4AXTP8glghBwbHVnupI4MOMNA4IQZHN0crqSXwbjDQUGAHgB+gD0BDD4J28iMFAKoSG+8uBQghBwbHVngx6xcIAYUATLBSbPFlj6Ahn0AMtpF8sfUmDLPyDJgED7AAYAilAEgQEI9Fkw7UTQgQFA1yDIAc8W9ADJ7VQBcrCOI4IQZHN0coMesXCAGFAFywVQA88WI/oCE8tqyx/LP8mAQPsAkl8D4gIBIAgPAgEgCQ4CAVgKCwA9sp37UTQgQFA1yH0BDACyMoHy//J0AGBAQj0Cm+hMYAIBIAwNABmtznaiaEAga5Drhf/AABmvHfaiaEAQa5DrhY/AABG4yX7UTQ1wsfgAWb0kK29qJoQICga5D6AhhHDUCAhHpJN9KZEM5pA+n/mDeBKAG3gQFImHFZ8xhAT48oMI1xgg0x/TH9MfAvgju/Jk7UTQ0x/TH9P/9ATRUUO68qFRUbryogX5AVQQZPkQ8qP4ACSkyMsfUkDLH1Iwy/9SEPQAye1U+A8B0wchwACfbFGTINdKltMH1AL7AOgw4CHAAeMAIcAC4wABwAORMOMNA6TIyx8Syx/L/xESExQAbtIH+gDU1CL5AAXIygcVy//J0Hd0gBjIywXLAiLPFlAF+gIUy2sSzMzJc/sAyEAUgQEI9FHypwIAcIEBCNcY+gDTP8hUIEeBAQj0UfKnghBub3RlcHSAGMjLBcsCUAbPFlAE+gIUy2oSyx/LP8lz+wACAGyBAQjXGPoA0z8wUiSBAQj0WfKnghBkc3RycHSAGMjLBcsCUAXPFlAD+gITy2rLHxLLP8lz+wAACvQAye1UAFEAAAAAKamjF3lS6UEY80YHx14jJY3ZIg1mzKxaPuB0ElwlBo6BB7+/QABwYgBqk3OEp+9XjQ/tsTbvc3ZvTtWRJnYAe0VqDoRZQm2FTCHc1lAAAAAAAAAAAAAAAAAAAAAAAACR4k6e",
+      "externalMessageBocHashHex": "933475a7c09d90f1f8081ddc93fb6d0ecd858da49aa3ac6eb65327b7e43c2738"
+    }
+  },
+  "jettonTx": {
+    "kind": "jetton",
+    "seqno": 1,
+    "validUntil": 4294967295,
+    "sendMode": 3,
+    "jettonMaster": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+    "ownerJettonWallet": "EQDVJucJT96vGh_bYm3e5uzenasiTOwA9orUHQiyhNsKmEcK",
+    "dest": "EQBD2j3nVKonc1Fggvmt6W5zgXadnmTl43spUT4BKeTcS910",
+    "amount": "1000000",
+    "fwdAmount": "1",
+    "gasAmount": "100000000",
+    "attachTon": "100000000",
+    "responseDest": "EQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-U9d",
+    "op": "0x0f8a7ea5",
+    "jettonBodyCellHashHex": "eca06833815e808e6afd1dbc0382596009a173ae18d92dbf504f0875427abdec",
+    "transferBodyCellHashHex": "eca06833815e808e6afd1dbc0382596009a173ae18d92dbf504f0875427abdec",
+    "intMsgCellHashHex": "2b1fe3275052e17fb417fe082a8a7f94236a7ef51261f3d7817036578d8d7cf5",
+    "internalMsgCellHashHex": "2b1fe3275052e17fb417fe082a8a7f94236a7ef51261f3d7817036578d8d7cf5",
+    "signingCellHashHex": "00c6ac0181aa5d96a23c869e160af769336bbe643e2eda593124c22d1e94966a",
+    "expected": {
+      "signatureHex": "c28c020bbc16f6b9bda9ad5d8162232c0a2aad4d3b94d11fac4c31633b01459cf58261092d0791c85353cd72cece58b0de2877195d230baa2a9d39992809460f",
+      "verifies": true,
+      "externalMessageBocBase64": "te6cckECAwEAAQEAAeGIAGazLXU5nMxL1/uuAznaoST4NBFjCNRRNKvfhvgDrvvyBhRgEF3gt7XN7U1q7AsRGWBRVWpp3KaI/WJhixnYCiznrBMISWg8jkKanmuWdnLFhvFDuMrpGF1RVOnMyUBKMHlNTRi/////+AAAAAgAHAEBaGIAapNzhKfvV40P7bE273N2b07VkSZ2AHtFag6EWUJthUwgL68IAAAAAAAAAAAAAAAAAAECAKgPin6lAAAAAAAAAAAw9CQIAIe0e86pVE7mosEF81vS3OcC7Ts8ycvG9lKifAJTybiXAAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9+QgKEf2bA",
+      "externalMessageBocHashHex": "67aa07ea07e43f58f63f97a7221a5ab0d9abcf5639979a94db5a96a1c84cf9df"
+    }
+  }
+}

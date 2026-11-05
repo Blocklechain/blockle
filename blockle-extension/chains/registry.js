@@ -18,6 +18,8 @@
   const Solana = inNode ? require('./solana.js') : global.SolanaAdapter;
   // Tron (secp256k1, m/44'/195'); TRX + TRC-20 via TronGrid REST. Pure JS.
   const Tron = inNode ? require('./tron.js') : global.TronAdapter;
+  // TON (ed25519, SLIP-0010 m/44'/607'); native + jetton via toncenter. Pure JS.
+  const Ton = inNode ? require('./ton.js') : global.TonAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -66,6 +68,8 @@
     solana:    { rpcUrl: 'https://solana-rpc.publicnode.com' },
     // Tron mainnet TronGrid REST — public default, config-overridable. API key optional.
     tron:      { api: 'https://api.trongrid.io' },
+    // TON mainnet toncenter v2 jsonRPC — public default, config-overridable. API key optional.
+    ton:       { api: 'https://toncenter.com/api/v2' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -109,6 +113,9 @@
     tron: [
       { chain: 'tron', kind: 'trc20', symbol: 'USDT', decimals: 6, address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
     ],
+    ton: [
+      { chain: 'ton', kind: 'jetton', symbol: 'USDT', decimals: 6, master: 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs' },
+    ],
   };
 
   // Resolve the Alchemy indexer URL for a network: a per-network override
@@ -131,7 +138,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -201,6 +208,11 @@
     if (Tron && Tron.createTronAdapter) {
       const tep = endpoints.tron || {};
       adapters.tron = Tron.createTronAdapter({ api: tep.api, apiKey: tep.apiKey, endpoint: tep.endpoint });
+    }
+    // TON (native + jetton auto via known list) — ed25519 SLIP-0010 m/44'/607', toncenter v2 is config.
+    if (Ton && Ton.createTonAdapter) {
+      const tep = endpoints.ton || {};
+      adapters.ton = Ton.createTonAdapter({ api: tep.api, apiKey: tep.apiKey, endpoint: tep.endpoint });
     }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});

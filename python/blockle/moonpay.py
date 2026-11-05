@@ -101,6 +101,7 @@ NATIVE_CURRENCY_CODES: Dict[str, Optional[str]] = {
     "bitcoincash": "bch",
     "solana": "sol",
     "tron": "trx",
+    "ton": "ton",
 }
 
 #: Token overlays, keyed by (chain, SYMBOL-UPPER) -> MoonPay code.
@@ -125,6 +126,7 @@ TOKEN_CURRENCY_CODES: Dict[Tuple[str, str], str] = {
     ("solana", "USDC"): "usdc_sol",
     ("solana", "USDT"): "usdt_sol",
     ("tron", "USDT"): "usdt_tron",
+    ("ton", "USDT"): "usdt_ton",
 }
 
 

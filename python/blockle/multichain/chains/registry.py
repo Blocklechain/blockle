@@ -15,6 +15,7 @@ from .discovery import merge_balances
 from .evm import create_evm_adapter
 from .solana import create_solana_adapter
 from .tron import create_tron_adapter
+from .ton import create_ton_adapter
 from .utxo import create_utxo_adapter
 
 try:  # BLOCK wrapper needs a ChainWallet; optional when none is wired in.
@@ -40,6 +41,7 @@ DEFAULT_ENDPOINTS = {
     **{cid: {"rpcUrl": n["rpcUrl"], "chainId": n["chainId"]} for cid, n in EVM_NETWORKS.items()},
     "solana":   {"rpcUrl": "https://api.mainnet-beta.solana.com"},
     "tron":     {"api": "https://api.trongrid.io"},  # TronGrid REST (operator-overridable; API key optional)
+    "ton":      {"api": "https://toncenter.com/api/v2"},  # toncenter v2 jsonRPC (operator-overridable; API key optional)
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
@@ -98,6 +100,11 @@ DEFAULT_TOKENS = {
         AssetRef(chain="tron", kind="trc20", symbol="USDT", decimals=6,
                  address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"),
     ],
+    # TON jetton known-list. ``address`` carries the jetton MASTER contract.
+    "ton": [
+        AssetRef(chain="ton", kind="jetton", symbol="USDT", decimals=6,
+                 address="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"),
+    ],
     # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
     # its AMM pool; USDB has no pool, so this list is the only way a held USDB
     # balance surfaces. Curated tokens are never hidden (zero shows as 0).
@@ -111,7 +118,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -205,6 +212,9 @@ class ChainRegistry:
                                         apiKey=endpoints["tron"].get("apiKey"),
                                         rpc=endpoints["tron"].get("rpc"),
                                         post=endpoints["tron"].get("post"))
+        a["ton"] = create_ton_adapter(api=endpoints["ton"].get("api"),
+                                      apiKey=endpoints["ton"].get("apiKey"),
+                                      post=endpoints["ton"].get("post"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
                                            http_get=endpoints["bitcoin"].get("http_get"),
                                            http_post=endpoints["bitcoin"].get("http_post"))
