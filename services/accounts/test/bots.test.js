@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import { newBot, step, botView, mark, BOT_TYPES } from '../src/bots.js';
 
 test('bot types + param sanitization', () => {
-  assert.deepEqual(BOT_TYPES, ['dca', 'grid', 'smarttrade', 'signal']);
+  // the four core strategies lead the list; indicator/systematic strategies follow
+  assert.deepEqual(BOT_TYPES.slice(0, 4), ['dca', 'grid', 'smarttrade', 'signal']);
+  assert.ok(BOT_TYPES.length >= 15, 'expanded strategy roster');
+  for (const t of ['rsi', 'macd', 'bollinger', 'breakout', 'emacross', 'momentum', 'meanrev', 'rebalance', 'scalp', 'hodl', 'martingale']) {
+    assert.ok(BOT_TYPES.includes(t), `has ${t}`);
+    // every type sanitizes to params with a budget and runs one tick without throwing
+    const nb = newBot({ id: t, uid: 'u', type: t, pair: 'X/USD', params: {}, now: 1 });
+    assert.ok(nb.params.budget >= 1);
+    assert.ok(Number.isFinite(step(nb, 100).pnlPct));
+  }
   const b = newBot({ id: 'b1', uid: 'u', type: 'dca', pair: 'BLOCK/USD', params: { budget: -5, buyAmount: 1e12, everyTicks: 0 }, now: 1 });
   assert.equal(b.params.budget >= 1, true);
   assert.equal(b.params.everyTicks >= 1, true);
