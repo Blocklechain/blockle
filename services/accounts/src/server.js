@@ -373,6 +373,51 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, bot: botView(bot, priceFor()) });
   }));
 
+  // Read every social profile once (uid -> {handle,karma}) for the leaderboard join.
+  function allProfiles() {
+    try { return JSON.parse(fs.readFileSync(path.join(cfg.socialDataDir, 'profiles.json'), 'utf8')); } catch { return {}; }
+  }
+  // PUBLIC top-trader leaderboard — ranks accounts by their best PAPER bot P&L (play money, so a
+  // public board is safe and can't be faked into real-return claims). Only traders with a public
+  // @handle appear (public by default once you pick a handle). Honest: these are paper results.
+  on('GET', /^\/account\/api\/leaderboard$/, (req, res) => {
+    const profiles = allProfiles();
+    const byUid = new Map();
+    for (const bot of store.all('bots')) {
+      const prof = profiles[bot.uid]; if (!prof || !prof.handle) continue; // public identity only
+      const v = botView(bot, priceFor());
+      let e = byUid.get(bot.uid);
+      if (!e) { e = { uid: bot.uid, handle: prof.handle, karma: prof.karma || 0, bots: [] }; byUid.set(bot.uid, e); }
+      e.bots.push({ id: bot.id, type: bot.type, pair: bot.pair, pnlPct: v.pnlPct, trades: v.trades, status: bot.status });
+    }
+    const traders = [...byUid.values()].map((t) => {
+      const best = t.bots.reduce((a, b) => (b.pnlPct > a.pnlPct ? b : a), t.bots[0]);
+      const avg = t.bots.reduce((s, b) => s + b.pnlPct, 0) / t.bots.length;
+      const user = store.all('users').find((x) => x.id === t.uid);
+      const tier = user ? entitlement(user.sub).entitledTier : 'free';
+      return { handle: t.handle, karma: t.karma, tier, botCount: t.bots.length,
+        bestPnlPct: Math.round(best.pnlPct * 100) / 100, avgPnlPct: Math.round(avg * 100) / 100,
+        bestStrategy: best.type, bots: t.bots.sort((a, b) => b.pnlPct - a.pnlPct).slice(0, 5) };
+    }).sort((a, b) => b.bestPnlPct - a.bestPnlPct).slice(0, 50);
+    return json(res, 200, { traders, metric: 'paper P&L (play money)', generatedAt: now() });
+  });
+
+  // PUBLIC trader profile by @handle — their public bots + paper P&L, for the /u/:handle page and
+  // the copy-trade flow (bot ids feed POST /account/api/bots/copy).
+  on('GET', /^\/account\/api\/trader\/([a-z0-9_]{3,20})$/, (req, res, url, m) => {
+    const handle = m[1];
+    const profiles = allProfiles();
+    const uid = Object.keys(profiles).find((k) => (profiles[k].handle || '').toLowerCase() === handle.toLowerCase());
+    if (!uid) return json(res, 404, { error: 'No such trader.' });
+    const prof = profiles[uid];
+    const bots = store.all('bots').filter((b) => b.uid === uid).map((b) => {
+      const v = botView(b, priceFor());
+      return { id: b.id, type: b.type, pair: b.pair, pnlPct: v.pnlPct, trades: v.trades, status: b.status, params: b.params };
+    }).sort((a, b) => b.pnlPct - a.pnlPct);
+    const user = store.all('users').find((x) => x.id === uid);
+    return json(res, 200, { handle: prof.handle, karma: prof.karma || 0, tier: user ? entitlement(user.sub).entitledTier : 'free', bots });
+  });
+
   // Background stepper: fetch the BLOCK price + advance every running paper bot. Best-effort —
   // if no price is available, bots simply hold. Started only in the live run (not in tests).
   async function stepAllBots() {

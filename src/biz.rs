@@ -785,6 +785,7 @@ fn route(
         "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
         "/post-quantum" => ("200 OK", "text/html; charset=utf-8", page_post_quantum().into_bytes()),
         "/security" => ("200 OK", "text/html; charset=utf-8", page_security().into_bytes()),
+        "/traders" => ("200 OK", "text/html; charset=utf-8", page_traders().into_bytes()),
         "/logo.png" => ("200 OK", "image/png", LOGO_PNG.to_vec()),
         "/logo-mark.png" => ("200 OK", "image/png", LOGO_MARK_PNG.to_vec()),
         "/favicon.png" | "/favicon.ico" => ("200 OK", "image/png", FAVICON_PNG.to_vec()),
@@ -888,6 +889,7 @@ fn route(
         "/studio.js" => serve_web_file("studio.js", "application/javascript; charset=utf-8"),
         "/trade-demo.js" => serve_web_file("trade-demo.js", "application/javascript; charset=utf-8"),
         "/backtest-demo.js" => serve_web_file("backtest-demo.js", "application/javascript; charset=utf-8"),
+        "/traders.js" => serve_web_file("traders.js", "application/javascript; charset=utf-8"),
         // Agent-facing docs: SDK + MCP install, the buy→launch→pool→trade→sell
         // loop, base-unit + fee conventions, and the mainnet legal-review notice.
         "/agents" => serve_web_file("agents.html", "text/html; charset=utf-8"),
@@ -1458,7 +1460,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <div style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;justify-content:center;margin-bottom:.6rem">
 <a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/faucet">Faucet</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
 </div>
-{domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/post-quantum">Post-quantum</a> · <a href="/security">Security</a> · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
+{domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/post-quantum">Post-quantum</a> · <a href="/security">Security</a> · <a href="/traders">Top Traders</a> · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
 (function(){{
   var p=location.pathname;
@@ -2086,6 +2088,40 @@ fn page_security() -> String {
         "How Blockle secures your crypto: non-custodial on-device keys, a post-quantum (ML-DSA) root, transaction preview and scam-gate, a single approval gate for AI/bots, and open source — with an honest account of what it does not claim.",
         "/security",
         "",
+        body,
+    )
+}
+
+fn page_traders() -> String {
+    let head = r##"<style>
+#traders{max-width:720px;margin:0 auto}
+#traders .thead h2{margin:0 0 4px}#traders .thead p{color:var(--faint);font-size:14px;margin:0 0 18px}
+#traders .back{color:var(--accent);font-size:13px;text-decoration:none;display:inline-block;margin-bottom:10px}
+#traders .tlist{display:flex;flex-direction:column;gap:8px}
+#traders .trow{display:grid;grid-template-columns:30px 1fr auto;align-items:center;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;text-decoration:none;color:inherit;transition:border-color .15s}
+#traders .trow:hover{border-color:var(--accent)}
+#traders .rk{font-family:var(--mono);color:var(--faint);text-align:center}
+#traders .who{font-weight:600}#traders .who small,#traders .bnm small{display:block;font-weight:400;color:var(--faint);font-size:11px;font-family:var(--mono)}
+#traders .ret{font-family:var(--mono);font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+#traders .ret small{display:block;font-weight:400;font-size:10.5px;color:var(--faint)}
+#traders .up{color:var(--gain)}#traders .down{color:var(--loss)}
+#traders .brow{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:12px;padding:11px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+#traders .bnm{font-weight:600}
+#traders .copy{border:1px solid var(--accent);color:var(--accent);font-size:12px;font-weight:600;padding:6px 13px;border-radius:999px;text-decoration:none}
+#traders .copy:hover{background:var(--accent);color:#fff}
+#traders .empty,#traders .tload{color:var(--faint);text-align:center;padding:30px 0}
+</style>"##;
+    let body = r##"<div class="hero" style="padding-bottom:10px"><span class="eyebrow">Social trading</span>
+<h1>Top <span class="grad">traders</span>.</h1>
+<p class="lede">The best bot strategies on Blockle, ranked by real paper P&amp;L — play money, so it's an honest public board, not a claim of real returns. Found one you like? <b>Copy its config</b> into your own wallet in one click; your keys and safety gate still apply.</p></div>
+<div id="traders" data-api="/account/api" data-wallet="/wallet"></div>
+<p class="disclaim" style="max-width:720px;margin:20px auto 0">Rankings are paper-trading (play-money) results on a shared simulator — not real-money performance, not a forecast, not investment advice. Copying a strategy copies its configuration only; you sign every trade yourself.</p>
+<script src="/traders.js?v=20261104a"></script>"##.to_string();
+    page_shell_seo(
+        "Top Traders — Social Trading Leaderboard",
+        "The top Blockle bot strategies ranked by real paper-trading P&amp;L (play money). Browse trader profiles and copy any strategy's config into your own non-custodial wallet in one click.",
+        "/traders",
+        head,
         body,
     )
 }
