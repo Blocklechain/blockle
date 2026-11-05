@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 
 import '../../agent/bots.dart' as b;
 import '../../state/bots_controller.dart';
+import '../../ui/app_icons.dart';
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
 import 'charts.dart';
@@ -570,9 +571,9 @@ class _CreateViewState extends State<CreateView> {
         border: Border.all(color: t.line),
       ),
       child: Row(children: [
-        _modeSeg(t, 'ai', '🤖 AI picks'),
-        _modeSeg(t, 'manual', '✎ Pick a pair'),
-        _modeSeg(t, 'strategy', '📊 Strategy'),
+        _modeSeg(t, 'ai', 'bot', 'AI picks'),
+        _modeSeg(t, 'manual', 'edit', 'Pick a pair'),
+        _modeSeg(t, 'strategy', 'bars', 'Strategy'),
       ]),
     );
 
@@ -655,7 +656,7 @@ class _CreateViewState extends State<CreateView> {
     );
   }
 
-  Widget _modeSeg(BotTokens t, String mode, String label) {
+  Widget _modeSeg(BotTokens t, String mode, String iconName, String label) {
     final on = _pairMode == mode;
     return Expanded(
       child: Semantics(
@@ -676,11 +677,17 @@ class _CreateViewState extends State<CreateView> {
               borderRadius: BorderRadius.circular(8),
               border: Border.all(color: on ? t.accent : Colors.transparent),
             ),
-            child: Text(label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                    fontSize: 12, fontWeight: FontWeight.w600, color: on ? t.ink : t.inkMuted)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              AppIcons.icon(iconName, size: 15, color: on ? t.ink : t.inkMuted),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w600, color: on ? t.ink : t.inkMuted)),
+              ),
+            ]),
           ),
         ),
       ),

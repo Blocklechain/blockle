@@ -670,6 +670,31 @@
     };
   }
 
+  // LIVE SNAPSHOT for the client-side RAG grounding layer (agent/rag.js). This is
+  // a READ-ONLY, best-effort view assembled from EXISTING in-memory wallet state —
+  // it makes NO new network call and swallows every error. It only feeds reference
+  // text into the agent's system prompt; it grants no tools and cannot touch the
+  // signing gate. Returns { chain?, pair?, balances?, bots?, signals? } (fields are
+  // omitted when the state is not cheaply available).
+  function agentLiveSnapshot() {
+    const snap = {};
+    try {
+      // Open bots (strategy/market/budget), if the bots cockpit is mounted.
+      if (global.BotsUI && typeof global.BotsUI.snapshotBots === 'function') {
+        const bots = global.BotsUI.snapshotBots();
+        if (Array.isArray(bots) && bots.length) snap.bots = bots;
+      }
+    } catch (_) {}
+    try {
+      // Coarse network hint (mainnet/testnet) from the cached settings — never a
+      // fetch. Omitted entirely if settings are not yet loaded.
+      if (_settings && _settings.agent) {
+        snap.chain = _settings.agent.mainnetEnabled ? 'mainnet' : 'testnet';
+      }
+    } catch (_) {}
+    return snap;
+  }
+
   // AUTO-DETECT + AUTO-IMPORT held tokens on EVERY enabled chain + custom network.
   // Runs per-chain discovery and persists any NEWLY-found token with a real positive
   // balance into `chainTokens` (BLOCK-20 ids into `tokens`) — the SAME lists a manual
@@ -718,6 +743,7 @@
     settings, registry, accounts, venues, telemetry,
     accountFor, getBalance, getHoldings, buildSend, broadcast, listAssets, explorerTx, estimateUsd,
     autoImportTokens,
+    agentLiveSnapshot,
     amm, launchToken, executeSwap, sendFee, payX402Usdc,
     // wallet security suite:
     inspect, assertApproveSafe, listApprovals, buildRevoke, rememberRecipient, Security,
