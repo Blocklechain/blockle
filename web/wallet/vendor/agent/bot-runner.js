@@ -489,7 +489,7 @@
                     this._engineApply(type, ps.deal, bcfg, cfg, order, fill, now);
                     events.push({ pair, action: 'ctp', side: 'sell', qty: fill.qty.toString(), priceUc: fill.priceUc.toString(), paper: !!fill.paper, candle: ev.reason });
                     this._feed(bot, { kind: 'sell', pair, action: 'ctp', paper: !!fill.paper, priceUsd: B.ucToUsd(fill.priceUc), usd: B.ucToUsd(fill.proceedsUc || 0n),
-                      text: '📊 Banked ' + base + ' +' + ev.profitPct.toFixed(1) + '% — ' + Candles.label(ev.reason) + (fill.paper ? ' (paper)' : '') });
+                      text: 'Banked ' + base + ' +' + ev.profitPct.toFixed(1) + '% — ' + Candles.label(ev.reason) + (fill.paper ? ' (paper)' : '') });
                     if (ps.deal.status === 'closed') { this._bookClose(bot, ps, now, pair, markUc); continue; }
                   }
                 }
@@ -620,7 +620,7 @@
       ps.candleState = null;
       const usd = B.ucToUsd(r);
       this._feed(bot, { kind: 'close', pair: pair || null, realizedUsd: usd, reason: deal.reason || null, paper: bot.mode === 'paper',
-        text: (r >= 0n ? '✓ Closed ' : '✗ Closed ') + (pair || deal.type) + ' ' + (usd >= 0 ? '+' : '') + fmtUsdShort(usd) + ' · ' + labelFor(deal.reason) + ((bot.state.streak || 0) >= 3 ? ' · ' + bot.state.streak + ' win streak' : '') });
+        text: 'Closed ' + (pair || deal.type) + ' ' + (usd >= 0 ? '+' : '') + fmtUsdShort(usd) + ' · ' + labelFor(deal.reason) + ((bot.state.streak || 0) >= 3 ? ' · ' + bot.state.streak + ' win streak' : '') });
       // MAX-LOSS RAIL: cumulative realized loss ≥ maxLossPct of the budget ⇒ auto-pause.
       const pct = bot.risk && bot.risk.maxLossPct;
       if (pct > 0 && bot.allocationUsd > 0 && bot.state.realizedUc < 0n) {
@@ -955,18 +955,18 @@
       const pc = bot.config && bot.config.profitCurrency;
       const withPc = (c) => (pc ? Object.assign({}, c, { profitCurrency: pc }) : c);
       return {
-        momentum: { name: '🌊 Momentum', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
+        momentum: { name: 'Momentum', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
           config: { source: 'discovery', maxConcurrent: 3, minScore: 0.5, onSignal: { type: 'dca', config: withPc({ baseOrderUsd: 0, safetyOrderUsd: 0, maxSafetyOrders: 2, safetyStepPct: 4, takeProfitPct: 8, trailingTpPct: 3, stopLossPct: 15, maxDealSec: 2 * 86400, candle: { enabled: true, sec: 120, minProfitPct: 2 } }) } } },
         // Buzz: what the internet is piling into right now (rank=buzz feed), quick exits.
-        buzz: { name: '🔥 Buzz', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
+        buzz: { name: 'Buzz', type: 'signal', riskMode: risk === 'sniper' ? 'high' : risk, universe: { pairs: [] },
           config: { source: 'discovery', rank: 'buzz', maxConcurrent: 3, minScore: 0.45, onSignal: { type: 'smarttrade', config: withPc({ amountUsd: 0, takeProfits: [{ pct: 8, sharePct: 50 }, { pct: 20, sharePct: 50 }], stopLoss: { pct: 10, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 2 } }) } } },
-        sniper: { name: '🎯 Sniper', type: 'signal', riskMode: 'sniper', universe: { pairs: [] },
+        sniper: { name: 'Sniper', type: 'signal', riskMode: 'sniper', universe: { pairs: [] },
           config: { source: 'discovery', maxConcurrent: 3, minScore: 0.55, onSignal: { type: 'smarttrade', config: withPc({ amountUsd: 0, takeProfits: [{ pct: 25, sharePct: 50 }, { pct: 60, sharePct: 50 }], stopLoss: { pct: 18, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 3 } }) } } },
-        grid: { name: '📈 Grid', type: 'grid', riskMode: risk, universe: { pairs: [pair] },
+        grid: { name: 'Grid', type: 'grid', riskMode: risk, universe: { pairs: [pair] },
           config: withPc({ autoRangePct: 5, gridCount: 10, totalUsd: 0, stopLossPct: 12 }) },
-        dip: { name: '🧱 Dip-buyer', type: 'dca', riskMode: risk, universe: { pairs: [pair] },
+        dip: { name: 'Dip-buyer', type: 'dca', riskMode: risk, universe: { pairs: [pair] },
           config: withPc({ baseOrderUsd: 0, safetyOrderUsd: 0, maxSafetyOrders: 4, safetyStepPct: 2.5, safetyVolumeScale: 1.3, takeProfitPct: 5, trailingTpPct: 1.5, startCondition: 'dip', dipPct: 1.5, candle: { enabled: true, sec: 300, minProfitPct: 1.5 } }) },
-        scanner: { name: '🤖 Autopilot', type: 'scanner', riskMode: risk, universe: { pairs: [] },
+        scanner: { name: 'Autopilot', type: 'scanner', riskMode: risk, universe: { pairs: [] },
           config: withPc({ minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 0, strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 }) },
       };
     }
@@ -1079,7 +1079,7 @@
       this._audit({ type: 'auto_rebalance', bot: bot.id, regime: reg.regime, weights, scores });
       if (changed) {
         const order = kids.slice().sort((a, b) => weights[b.algo] - weights[a.algo]);
-        this._feed(bot, { kind: 'switch', regime: reg.regime, weights, text: '🔀 Market looks ' + regimeLabel(reg.regime) + ' → ' + order.map((c) => c.name.replace(/^\S+\s/, '') + ' ' + Math.round(weights[c.algo] * 100) + '%').join(' · ') });
+        this._feed(bot, { kind: 'switch', regime: reg.regime, weights, text: 'Market looks ' + regimeLabel(reg.regime) + ' → ' + order.map((c) => c.name + ' ' + Math.round(weights[c.algo] * 100) + '%').join(' · ') });
       }
     }
     async _tickAuto(bot, now, opts) {
@@ -1216,8 +1216,8 @@
         bot.state.byPair[pair].signalArmed = true;
         await this._audit({ type: 'bot_signal', bot: bot.id, pair, source: sig.source, template: spawn.type, buzz: sig.buzz ? { attention: sig.buzz.attention, velocity: sig.buzz.velocity, quick: sig.buzz.quick } : undefined });
         this._feed(bot, sig.buzz
-          ? { kind: 'signal', pair, score: sig.score, buzz: sig.buzz, text: '🔥 Buzz ' + pair + ' · attention ' + sig.buzz.attention + ' · velocity ' + sig.buzz.velocity + ' · quick ' + sig.buzz.quick + ' — arming ' + spawn.type }
-          : { kind: 'signal', pair, score: sig.score, text: '🎯 Signal ' + pair + (sig.score != null ? ' · score ' + Math.round(sig.score * 100) : '') + ' — arming ' + spawn.type });
+          ? { kind: 'signal', pair, score: sig.score, buzz: sig.buzz, text: 'Buzz ' + pair + ' · attention ' + sig.buzz.attention + ' · velocity ' + sig.buzz.velocity + ' · quick ' + sig.buzz.quick + ' — arming ' + spawn.type }
+          : { kind: 'signal', pair, score: sig.score, text: 'Signal ' + pair + (sig.score != null ? ' · score ' + Math.round(sig.score * 100) : '') + ' — arming ' + spawn.type });
         room -= 1;
       }
 

@@ -5,6 +5,8 @@
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  // Custom SVG icon set (icons.js) loaded before this script; '' if unavailable.
+  const icon = (typeof window !== 'undefined' && window.icon) ? window.icon : function () { return ''; };
   const logos = {};
 
   function show(name) {
@@ -422,7 +424,7 @@
         (w) =>
           `<div class="w-item ${w.active ? 'active' : ''}" data-switch="${w.id}">
              <div class="wl"><b>${w.label}${w.watchOnly ? ' · watch' : ''}</b><small>${shortAddr(w.address)}</small></div>
-             ${w.active ? '<span class="w-check">✓</span>' : `<button class="mini-btn" data-remove="${w.id}">Remove</button>`}
+             ${w.active ? `<span class="w-check">${icon('check')}</span>` : `<button class="mini-btn" data-remove="${w.id}">Remove</button>`}
            </div>`
       )
       .join('');
@@ -1558,7 +1560,7 @@
         if (it.status === 'awaiting_deposit') el.textContent = 'Waiting for your deposit…';
         else if (it.status === 'funded') el.textContent = 'Deposit detected — executing…';
         else if (it.status === 'executed' || it.status === 'paid') el.textContent = 'Paying out…';
-        else if (it.status === 'settled') { el.innerHTML = `<b style="color:#4ADE80">✓ Done</b> — received ${ammWhole(it.executedOutBase || it.quote.outBase, outDec).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${it.payoutAsset}`; clearInterval(ammPollTimer); tradeLoad(); }
+        else if (it.status === 'settled') { el.innerHTML = `<b style="color:#4ADE80">${icon('check')} Done</b> — received ${ammWhole(it.executedOutBase || it.quote.outBase, outDec).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${it.payoutAsset}`; clearInterval(ammPollTimer); tradeLoad(); }
         else if (it.status === 'refund') { el.innerHTML = '<b style="color:#f87171">Refunded</b> — ' + (it.error || 'price moved / no liquidity'); clearInterval(ammPollTimer); }
         else if (it.status === 'expired') { el.textContent = 'Order expired — no deposit received.'; clearInterval(ammPollTimer); }
       } catch (_) {}

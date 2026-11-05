@@ -31,6 +31,12 @@
 (function (global) {
   'use strict';
 
+  // Custom SVG icon set (icons.js). Browser: the global loaded before this file;
+  // node tests: require it directly. Returns '' for unknown names (never throws).
+  var icon = (global && global.BlockleIcons && global.BlockleIcons.icon)
+    ? global.BlockleIcons.icon
+    : (function () { try { return require('./icons.js').icon; } catch (_) { return function () { return ''; }; } })();
+
   var UI = null;                 // BlockleUI (show/toast/route/$/$$)
   var engine = null;             // the real-engine seam (built on unlock; injected in tests)
   var activeTab = 'portfolio';
@@ -606,7 +612,7 @@
     var dir = it.direction;
     var sign = dir === 'in' ? 'pos' : dir === 'out' ? 'neg' : '';
     var lead = it.summary || (it.kind + (it.counterparty ? ' · ' + shortAddr(it.counterparty) : ''));
-    var flag = it.flagged ? '<span class="wflag">⚑ flagged</span>' : '';
+    var flag = it.flagged ? '<span class="wflag">' + icon('flag') + ' flagged</span>' : '';
     var sev = it.severity && it.severity !== 'none' ? '<span class="wsev ' + esc(it.severity) + '">' + esc(it.severity) + '</span>' : '';
     var meta = esc(it.chain) + ' · ' + esc(it.kind) + (it.counterparty ? ' · ' + esc(shortAddr(it.counterparty)) : '');
     var val = it.amountBase != null ? (dir === 'out' ? '−' : dir === 'in' ? '+' : '') + esc(fmtAmount(it.amountBase, it.asset && it.asset.decimals)) + ' ' + esc((it.asset && it.asset.symbol) || '') : '';
@@ -614,7 +620,7 @@
       '<div class="wa-main"><div class="lead">' + esc(lead) + ' ' + sev + ' ' + flag + '</div><div class="meta">' + meta + '</div></div>' +
       '<div class="val ' + sign + ' num">' + val + '</div></div>';
   }
-  function dirIcon(dir) { return dir === 'in' ? '↓' : dir === 'out' ? '↑' : dir === 'self' ? '⟳' : '⚙'; }
+  function dirIcon(dir) { return dir === 'in' ? '↓' : dir === 'out' ? '↑' : dir === 'self' ? '⟳' : icon('gear'); }
 
   // ===========================================================================
   // NFTS — WalletNft.nfts() + operator-approval badge -> revoke via the gate
@@ -733,7 +739,7 @@
     var badge = '';
     if (n.spam) badge = '<span class="spam">SPAM?</span>';
     else if (operatorApproval) badge = '<span class="approval" title="Open operator approval — tap to revoke">APPROVAL</span>';
-    var art = n.image ? '<img class="nft-img" src="' + esc(n.image) + '" alt="" loading="lazy">' : '<span class="nft-emoji">🖼️</span>';
+    var art = n.image ? '<img class="nft-img" src="' + esc(n.image) + '" alt="" loading="lazy">' : '<span class="nft-emoji">' + icon('image') + '</span>';
     var revokeAttr = operatorApproval ? ' data-revoke="' + esc(String(n.contract).toLowerCase()) + '" data-chain="' + esc(n.chain) + '"' : ' data-send="' + si + '"';
     return '<div class="wnft"' + revokeAttr + '><div class="art">' + badge + art + '</div>' +
       '<div class="meta"><div class="nm">' + esc(labelOf(n)) + '</div><div class="col">' + esc(n.collection || n.chain) + '</div></div></div>';
@@ -784,10 +790,10 @@
     var dapp = s.dapp || {};
     var methods = [];
     Object.keys(s.namespaces || {}).forEach(function (k) { (s.namespaces[k].methods || []).forEach(function (m) { if (methods.indexOf(m) < 0) methods.push(m); }); });
-    return '<div class="wses"><span class="logo">🔗</span><div class="wses-main"><div class="nm">' + esc(dapp.name || 'Unknown dApp') + '</div>' +
+    return '<div class="wses"><span class="logo">' + icon('link') + '</span><div class="wses-main"><div class="nm">' + esc(dapp.name || 'Unknown dApp') + '</div>' +
       '<div class="url">' + esc(dapp.url || '') + '</div>' +
       '<div class="scope">' + methods.slice(0, 6).map(function (m) { return '<span class="mchip">' + esc(m) + '</span>'; }).join('') + '</div></div>' +
-      '<button class="wiconbtn" title="Disconnect" data-disconnect="' + esc(s.topic) + '">✕</button></div>';
+      '<button class="wiconbtn" title="Disconnect" data-disconnect="' + esc(s.topic) + '">' + icon('x') + '</button></div>';
   }
 
   async function connectPasted() {
@@ -954,7 +960,7 @@
   function resolvedLineHtml(res) {
     var label = res.name || res.label || (res.source === 'raw' ? 'address' : '');
     var via = res.source === 'ens' ? 'ENS' : res.source === 'sns' ? 'SNS' : res.source === 'book' ? 'saved contact' : 'address';
-    return '<div class="wresolved">✓ ' + (label ? esc(label) + ' resolves to ' : '') +
+    return '<div class="wresolved">' + icon('check') + ' ' + (label ? esc(label) + ' resolves to ' : '') +
       '<span class="num">' + esc(shortAddr(res.address)) + '</span> <span class="mchip">' + via + '</span></div>';
   }
 

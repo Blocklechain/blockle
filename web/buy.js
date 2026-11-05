@@ -209,7 +209,7 @@
           '<div class="act"><button class="cancel" id="sclose">Close</button></div>';
       } else {
         $('sellSheet').innerHTML =
-          '<div class="result ok"><div class="big">Sent ✓ $' + fmt(resp.usdcOut, 2) + ' USDC</div>' +
+          '<div class="result ok"><div class="big">Sent <svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M8 12.2l2.6 2.6 5.4-5.6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg> $' + fmt(resp.usdcOut, 2) + ' USDC</div>' +
           '<p class="step">Paid to your Base wallet. Transaction:</p>' +
           '<a href="' + resp.explorer + '" target="_blank" rel="noopener">' + resp.txHash + '</a></div>' +
           '<div class="act"><button class="go" id="sclose">Done</button></div>';

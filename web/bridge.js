@@ -11,6 +11,7 @@
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
+  var __BLIC={"construction":["0 0 24 24","<rect x=\"3.5\" y=\"8.5\" width=\"17\" height=\"6\" rx=\"0.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M5 14.5L9.5 8.5M11 14.5L15.5 8.5M17 14.5l3-3.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M6 14.5v5M18 14.5v5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"stop":["0 0 24 24","<path d=\"M8.4 3h7.2L21 8.4v7.2L15.6 21H8.4L3 15.6V8.4z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/><path d=\"M9 12h6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function blIco(n){var e=__BLIC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   var COIN = 100000000; // both BLOCK and wBLOCK use 8 decimals
 
   // ---- config pulled from the bridge API (honest defaults until live) -------
@@ -305,13 +306,13 @@
     var b = $('banner');
     if (!cfg.live) {
       b.className = 'banner off';
-      b.innerHTML = '<span>🚧</span><div><b>Bridge not yet live.</b> You can connect wallets and review how it works, but transfers are disabled until the bridge service is online. Figures below are omitted until then.</div>';
+      b.innerHTML = '<span>' + blIco('construction') + '</span><div><b>Bridge not yet live.</b> You can connect wallets and review how it works, but transfers are disabled until the bridge service is online. Figures below are omitted until then.</div>';
     } else if (cfg.paused) {
       b.className = 'banner warn';
-      b.innerHTML = '<span>⏸</span><div><b>Bridge paused.</b> The operator has temporarily paused new transfers. In-flight transfers continue to process.</div>';
+      b.innerHTML = '<span>' + blIco('stop') + '</span><div><b>Bridge paused.</b> The operator has temporarily paused new transfers. In-flight transfers continue to process.</div>';
     } else {
       b.className = 'banner live';
-      b.innerHTML = '<span>✓</span><div><b>Bridge is live.</b> Custodial, trusted-operator design — wBLOCK is backed by BLOCK held in the operator reserve. Confirm the direction and destination carefully; transfers are irreversible.</div>';
+      b.innerHTML = '<span>' + blIco('check') + '</span><div><b>Bridge is live.</b> Custodial, trusted-operator design — wBLOCK is backed by BLOCK held in the operator reserve. Confirm the direction and destination carefully; transfers are irreversible.</div>';
     }
   }
 

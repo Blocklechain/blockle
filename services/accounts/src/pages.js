@@ -98,7 +98,7 @@ function shell(page, title, bodyHtml, cfg) {
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${title} · Blockle</title><style>${CSS}</style></head>
 <body data-page="${page}" data-plan="${cfg.planName}" data-price="${cfg.planPrice}" data-ccy="${cfg.planCurrency}">
-<button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
+<button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M20 14.2A8.3 8.3 0 119.8 4 6.5 6.5 0 0020 14.2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg></button>
 <div class="wrap">${bodyHtml}</div>
 <script src="/account/app.js"></script></body></html>`;
 }

@@ -3,6 +3,7 @@
 // no wallet), and deploy to mainnet through the Blockle Wallet extension.
 (function () {
   const $ = (id) => document.getElementById(id);
+  var __BLIC={"x":["0 0 24 24","<path d=\"M6 6l12 12M18 6L6 18\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function blIco(n){var e=__BLIC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   const hex = (bytes) => bytes.map((b) => b.toString(16).padStart(2, '0')).join('');
 
   const EXAMPLES = {
@@ -248,7 +249,7 @@ supply: 1000000`,
 
   function setStatus(msg, isErr) {
     const el = $('compile-status');
-    el.textContent = (isErr ? '✗ ' : '✓ ') + msg;
+    el.innerHTML = (isErr ? blIco('x') : blIco('check')) + ' ' + String(msg).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; });
     el.className = 'cstat ' + (isErr ? 'bad' : 'ok');
   }
 
@@ -268,7 +269,7 @@ supply: 1000000`,
     try {
       await window.blockle.connect();
       const res = await window.blockle.deployContract(bytecode, gas);
-      el.innerHTML = `<span class="good">Deployed ✓</span><br>contract id: <span class="mono">${res.contractId}</span><br>txid: <span class="mono">${res.txid}</span>`;
+      el.innerHTML = `<span class="good">Deployed ${blIco('check')}</span><br>contract id: <span class="mono">${res.contractId}</span><br>txid: <span class="mono">${res.txid}</span>`;
     } catch (e) {
       const msg = (e && e.message) || e;
       el.innerHTML = /Unsupported|not found/.test(msg)

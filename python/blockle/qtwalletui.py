@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import qtbots as _qb
+from .icons import apply_button_icon, icon_html, svg_label
 from .multichain import activity as activity_mod
 from .multichain import addressbook as book_mod
 from .multichain import logos as logos_mod
@@ -1105,7 +1106,7 @@ class SecurityConfirmSheet(QDialog):
         bl.setContentsMargins(13, 11, 15, 12)
         bl.setSpacing(3)
         code = _field(w, "code") or sev
-        t = QLabel("⚠  " + str(code))
+        t = QLabel(icon_html("warning", color=color) + "  " + str(code))
         t.setStyleSheet(f"color:{color};font-weight:800;font-size:13px;")
         bl.addWidget(t)
         msg = _field(w, "message")
@@ -1126,7 +1127,7 @@ class SecurityConfirmSheet(QDialog):
                 str(_field(s, "reason") or _field(s, "code")) for s in skipped[:3])
             parts.append(f"{len(skipped)} skipped ({reasons})")
         line = " · ".join(parts) + ". Nothing here claims this is safe."
-        lab = QLabel("✓ " + line)
+        lab = QLabel(icon_html("check") + " " + line)
         lab.setObjectName("checks")
         lab.setWordWrap(True)
         return lab
@@ -1263,12 +1264,12 @@ class SendSheet(QDialog):
         name = resolved.get("name") or resolved.get("label") or self.to.text().strip()
         addr = resolved["address"]
         self.resolved_lbl.setText(
-            f"✓  {name} resolves to  {shorten(addr)}   ({str(src).upper()})")
+            icon_html("check") + f"  {name} resolves to  {shorten(addr)}   ({str(src).upper()})")
         self.resolved_box.setVisible(True)
         # open the shared security confirm sheet on the RESOLVED address
         sheet = SecurityConfirmSheet(
             self.tok, out["inspection"], title="Review send",
-            resolved=f"✓ {name} → {shorten(addr)} (source: {src}) — confirm it's right.",
+            resolved=icon_html("check") + f" {name} → {shorten(addr)} (source: {src}) — confirm it's right.",
             parent=self)
         if sheet.exec() == QDialog.Accepted:
             # The security gate cleared (a DANGER required the explicit confirm
@@ -1352,7 +1353,7 @@ class ProposalReviewSheet(QDialog):
             box.setObjectName(name)
             bl = QVBoxLayout(box)
             bl.setContentsMargins(13, 10, 15, 11)
-            t = QLabel("⚠  " + str(_field(w, "code")))
+            t = QLabel(icon_html("warning", color=color) + "  " + str(_field(w, "code")))
             t.setStyleSheet(f"color:{color};font-weight:800;")
             bl.addWidget(t)
             m = _field(w, "message")
@@ -1720,7 +1721,7 @@ class ActivityPanel(_ScrollPanel):
         rl.setSpacing(13)
         kind = str(a.get("kind") or "contract")
         glyph = {"transfer": "↕", "token-transfer": "↕", "swap": "⇄",
-                 "approval": "✓", "nft": "🖼"}.get(kind, "•")
+                 "approval": icon_html("check"), "nft": icon_html("image")}.get(kind, "•")
         ic = QLabel(glyph)
         ic.setFixedSize(34, 34)
         ic.setAlignment(Qt.AlignCenter)
@@ -1736,7 +1737,7 @@ class ActivityPanel(_ScrollPanel):
         lead_row.addWidget(lead)
         if a.get("flagged"):
             codes = a.get("warnings") or []
-            flag = QLabel("⚠ " + (str(codes[0]) if codes else "flagged counterparty"))
+            flag = QLabel(icon_html("warning") + " " + (str(codes[0]) if codes else "flagged counterparty"))
             flag.setObjectName("flag")
             lead_row.addWidget(flag)
         lead_row.addStretch(1)
@@ -1779,7 +1780,7 @@ class NftPanel(_ScrollPanel):
         self.grid.setSpacing(14)
         self.body.addWidget(self.grid_host)
         self.note = QLabel(
-            "🛡  Suspected-spam collections are flagged, not hidden. An open operator "
+            icon_html("shield") + "  Suspected-spam collections are flagged, not hidden. An open operator "
             "approval is shown with a revoke action.")
         self.note.setObjectName("faint")
         self.note.setWordWrap(True)
@@ -1868,7 +1869,7 @@ class NftPanel(_ScrollPanel):
             hue = _chain_hue(tok, idx)
             art.setStyleSheet(f"background:{hue};border-top-left-radius:{RADIUS}px;"
                               f"border-top-right-radius:{RADIUS}px;font-size:30px;")
-            art.setText("🖼")
+            art.setText(icon_html("image", 28))
             # Load the resolved media (ipfs:// already normalised to a gateway by
             # the NFT core). Async; the hue tile stands in until it arrives.
             img_url = n.get("image") or n.get("metadataUri")
@@ -2059,7 +2060,7 @@ class ConnectPanel(_ScrollPanel):
         rl = QHBoxLayout(row)
         rl.setContentsMargins(18, 15, 18, 15)
         rl.setSpacing(13)
-        logo = QLabel("🔗")
+        logo = QLabel(icon_html("link", 17))
         logo.setFixedSize(38, 38)
         logo.setAlignment(Qt.AlignCenter)
         logo.setStyleSheet(f"background:{tok['elevated']};border:1px solid {tok['line']};"
@@ -2086,7 +2087,8 @@ class ConnectPanel(_ScrollPanel):
             flow.addStretch(1)
             col.addLayout(flow)
         rl.addLayout(col, 1)
-        disc = QPushButton("✕")
+        disc = QPushButton()
+        apply_button_icon(disc, "x", 14)
         disc.setObjectName("ghostIcon")
         disc.clicked.connect(lambda: self._disconnect(s.get("topic")))
         rl.addWidget(disc)
@@ -2402,7 +2404,8 @@ class MiningPanel(QWidget):
         if cmd:
             from PySide6.QtWidgets import QApplication
             QApplication.clipboard().setText(" ".join(cmd))
-            self.copy_btn.setText("Copied ✓")
+            self.copy_btn.setText("Copied")
+            apply_button_icon(self.copy_btn, "check", 14)
 
     def _start(self):
         cmd = self._build_cmd()
@@ -2451,7 +2454,8 @@ class WalletPanel(QWidget):
         self.acct_chip = QLabel("locked")
         self.acct_chip.setObjectName("mchip")
         header.addWidget(self.acct_chip)
-        self.theme_btn = QPushButton("☾" if self.theme == "dark" else "☀")
+        self.theme_btn = QPushButton()
+        apply_button_icon(self.theme_btn, "moon" if self.theme == "dark" else "sun")
         self.theme_btn.setObjectName("ghostIcon")
         self.theme_btn.setToolTip("Toggle light / dark theme")
         self.theme_btn.clicked.connect(self._toggle_theme)
@@ -2496,7 +2500,7 @@ class WalletPanel(QWidget):
     def _toggle_theme(self):
         self.theme = "light" if self.theme == "dark" else "dark"
         self.tok = TOKENS_DARK if self.theme == "dark" else TOKENS_LIGHT
-        self.theme_btn.setText("☾" if self.theme == "dark" else "☀")
+        apply_button_icon(self.theme_btn, "moon" if self.theme == "dark" else "sun")
         for p in (self.portfolio, self.activity, self.nfts, self.mining, self.connect, self.book):
             p.set_tokens(self.tok)
         self.setStyleSheet(build_qss(self.tok))

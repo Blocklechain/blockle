@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
 import '../theme.dart';
+import '../ui/app_icons.dart';
 import 'wallet/send_gate.dart';
 
 class SendScreen extends StatefulWidget {
@@ -184,7 +185,11 @@ class _SendScreenState extends State<SendScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Sent ✓', style: TextStyle(color: Bk.good, fontWeight: FontWeight.w700)),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Text('Sent', style: TextStyle(color: Bk.good, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 6),
+                    AppIcons.icon('check', size: 15, color: Bk.good),
+                  ]),
                   const SizedBox(height: 4),
                   Text(_ok!, style: kMono.copyWith(fontSize: 11)),
                 ],

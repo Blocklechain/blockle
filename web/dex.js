@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   var pools = [], logos = {}, sort = 'lp', q = '';
+  var __BLIC={"award":["0 0 24 24","<path d=\"M12 3.3l2.5 5.1 5.6.8-4.05 3.95.96 5.6L12 16.1l-5.07 2.65.96-5.6L3.84 9.2l5.6-.8z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"lock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 018 0v3.1\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"unlock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 017.7-1.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function blIco(n){var e=__BLIC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   var BLOCK_SECS = 600;
   var $ = function (id) { return document.getElementById(id); };
 
@@ -76,12 +77,12 @@
       var avatar = logo
         ? '<span class="logo"><img src="' + logo + '" alt="" onerror="this.parentNode.textContent=\'' + sym.slice(0, 2).toUpperCase() + '\'"></span>'
         : '<span class="logo">' + sym.slice(0, 2).toUpperCase() + '</span>';
-      var featBadge = FEAT.has(p.token) ? '<span style="margin-left:8px;font-size:10.5px;font-weight:700;color:#05231a;background:linear-gradient(135deg,#5affb9,#37E0C8);padding:2px 7px;border-radius:999px;vertical-align:middle">★ Featured</span>' : '';
+      var featBadge = FEAT.has(p.token) ? '<span style="margin-left:8px;font-size:10.5px;font-weight:700;color:#05231a;background:linear-gradient(135deg,#5affb9,#37E0C8);padding:2px 7px;border-radius:999px;vertical-align:middle">' + blIco('award') + ' Featured</span>' : '';
       return '<div class="card">' +
         '<a class="chead" href="/token/' + p.token + '" style="color:inherit;text-decoration:none">' + avatar +
           '<div><div class="csym">' + sym + featBadge + '</div><div class="cname">' + (p.name || 'BLOCK-20 token') + '</div></div>' +
           '<span style="margin-left:auto" class="lock ' + (locked ? 'locked' : 'open') + '">' +
-            (locked ? '🔒 ' + dur(lockBlocks) : '🔓 unlocked') + '</span>' +
+            (locked ? blIco('lock') + ' ' + dur(lockBlocks) : blIco('unlock') + ' unlocked') + '</span>' +
         '</a>' +
         '<div class="crow"><span class="k">Price</span><span class="v">' + (pr != null ? fmt(pr, 8) + ' BLOCK' : '—') + '</span></div>' +
         '<div class="crow"><span class="k">Liquidity</span><span class="v">' + fmt(tvlBlock(p), 2) + ' BLOCK</span></div>' +
@@ -173,7 +174,7 @@
         minOut = BigInt(Math.floor(amountOut(raw, r.tok, r.block) * (1 - SLIP) * COIN)).toString();
       }
       var res = await window.blockle.swap(tPool.token, tSide, amountIn, minOut, 200000);
-      $('tradeSheet').innerHTML = '<h3>Swap submitted ✓</h3><div class="qrow"><span>Transaction</span></div>' +
+      $('tradeSheet').innerHTML = '<h3>Swap submitted ' + blIco('check') + '</h3><div class="qrow"><span>Transaction</span></div>' +
         '<div class="caddr">' + ((res && res.txid) || '') + '</div>' +
         '<div class="act"><button class="go" id="t-done">Done</button></div>';
       $('t-done').onclick = function () { closeTrade(); load(); };

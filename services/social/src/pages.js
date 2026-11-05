@@ -74,7 +74,7 @@ export function renderShell(cfg) {
   <a class="brand" href="${cfg.basePath}">◆ <b>Blockle</b> Social</a>
   <nav><a href="${cfg.basePath}">Home</a><a href="${cfg.basePath}/communities">Communities</a><a href="${cfg.basePath}/agents">Agents</a><a href="${cfg.basePath}/submit">Submit</a></nav>
   <span class="spacer"></span>
-  <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">☾</button>
+  <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M20 14.2A8.3 8.3 0 119.8 4 6.5 6.5 0 0020 14.2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg></button>
   <span id="who"></span>
 </div></div>
 <div class="wrap" id="app"><p class="muted">Loading…</p></div>

@@ -17,6 +17,7 @@
 import 'package:flutter/material.dart';
 
 import '../../multichain/security.dart' as sec;
+import '../../ui/app_icons.dart';
 import '../bots/bots_tokens.dart';
 
 /// A single warning row for the sheet (code + severity + human message).
@@ -33,7 +34,7 @@ class SecuritySheetConfig {
   final String title;
   final String? dappName;
   final String? dappUrl;
-  final String? dappIcon; // emoji / short glyph
+  final String? dappIcon; // AppIcons icon name (or emoji / short glyph)
   final String? resolvedName; // e.g. "vitalik.eth"
   final String? resolvedAddress; // the address it resolved to (shown for confirm)
   final String previewHeader;
@@ -206,7 +207,7 @@ class _SecuritySheet extends StatelessWidget {
                 const SizedBox(height: 10),
                 Row(children: [
                   if (cfg.dappIcon != null) ...[
-                    Text(cfg.dappIcon!, style: const TextStyle(fontSize: 16)),
+                    AppIcons.glyph(cfg.dappIcon!, size: 16, color: t.inkMuted),
                     const SizedBox(width: 8),
                   ],
                   Flexible(

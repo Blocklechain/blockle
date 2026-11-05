@@ -84,7 +84,7 @@
     fetch('/api/faucet/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({address:addr})})
       .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
       .then(function(res){
-        if(res.ok&&res.j.ok){ msg.className='msg ok'; msg.innerHTML='Sent '+res.j.amount+' BLOCK ✓ — tx '+res.j.txid.slice(0,20)+'… (confirms in a block). <a href="/explorer">Explorer</a>'; }
+        if(res.ok&&res.j.ok){ msg.className='msg ok'; msg.innerHTML='Sent '+res.j.amount+' BLOCK <svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M8 12.2l2.6 2.6 5.4-5.6" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg> — tx '+res.j.txid.slice(0,20)+'… (confirms in a block). <a href="/explorer">Explorer</a>'; }
         else { msg.className='msg bad'; msg.textContent=(res.j && res.j.error)||'request failed'; }
         load();
       })

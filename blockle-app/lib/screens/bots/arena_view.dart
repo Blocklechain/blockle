@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import '../../agent/arena.dart' as a;
 import '../../agent/bots.dart' as b;
 import '../../state/bots_controller.dart';
+import '../../ui/app_icons.dart';
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
 import 'charts.dart';
@@ -21,15 +22,15 @@ const Map<int, String> _levelNames = {
   1: 'Rookie', 2: 'Apprentice', 3: 'Trader', 4: 'Tactician', 5: 'Strategist',
 };
 
-const Map<String, String> _scenEmoji = {
-  'bull': '📈', 'crab': '🦀', 'bear': '📉', 'crash': '💥', 'pump': '🚀',
+const Map<String, String> _scenIcon = {
+  'bull': 'chart-up', 'crab': 'crab', 'bear': 'chart-down', 'crash': 'boom', 'pump': 'launch',
 };
 const Map<String, String> _scenName = {
   'bull': 'Bull', 'crab': 'Crab', 'bear': 'Bear', 'crash': 'Flash-crash', 'pump': 'Pump & fade',
 };
-const Map<String, String> _badgeEmoji = {
-  'first_run': '🎓', 'green_run': '🔥', 'high_score': '🎯',
-  'diamond_hands': '🛡️', 'all_scenarios': '🌍', 'veteran': '💎',
+const Map<String, String> _badgeIcon = {
+  'first_run': 'learn', 'green_run': 'fire', 'high_score': 'target',
+  'diamond_hands': 'shield', 'all_scenarios': 'globe', 'veteran': 'gem',
 };
 
 // The Arena strategy the sandbox runs (a Conservative DCA on SOL by default).
@@ -260,7 +261,7 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
             border: Border.all(color: t.accentDim),
           ),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            const Text('🪙', style: TextStyle(fontSize: 28)),
+            AppIcons.icon('coin', size: 28, color: t.warn),
             const SizedBox(width: 12),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('PLAY BALANCE',
@@ -539,9 +540,13 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: on ? t.accent : t.line),
           ),
-          child: Text('${_scenEmoji[s]} ${_scenName[s]}',
-              style: TextStyle(
-                  fontSize: 12.5, fontWeight: FontWeight.w600, color: on ? t.ink : t.inkMuted)),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            AppIcons.icon(_scenIcon[s] ?? 'bars', size: 15, color: on ? t.ink : t.inkMuted),
+            const SizedBox(width: 6),
+            Text('${_scenName[s]}',
+                style: TextStyle(
+                    fontSize: 12.5, fontWeight: FontWeight.w600, color: on ? t.ink : t.inkMuted)),
+          ]),
         ),
       ),
     );
@@ -562,7 +567,9 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Text('🎯 Mission',
+            AppIcons.icon('target', size: 17, color: t.ink),
+            const SizedBox(width: 6),
+            Text('Mission',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: t.ink)),
             const Spacer(),
             BotChip('+${mission.rewardXp} XP', accent: missionDone),
@@ -571,7 +578,11 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
           Text(mission.desc, style: TextStyle(fontSize: 13, color: t.inkMuted, height: 1.5)),
           const SizedBox(height: 4),
           if (missionDone)
-            Text('✓ completed', style: TextStyle(fontSize: 12, color: t.gain, fontWeight: FontWeight.w600)),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              AppIcons.icon('check', size: 14, color: t.gain),
+              const SizedBox(width: 5),
+              Text('completed', style: TextStyle(fontSize: 12, color: t.gain, fontWeight: FontWeight.w600)),
+            ]),
           const SizedBox(height: 12),
           BotButton(label: 'Design your strategy →', expand: true, onPressed: widget.onDesign),
           const SizedBox(height: 20),
@@ -620,7 +631,7 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
   }
 
   Widget _badge(BotTokens t, a.Badge badge, bool earned) {
-    final emoji = _badgeEmoji[badge.id] ?? '🏅';
+    final iconName = _badgeIcon[badge.id] ?? 'award';
     return Tooltip(
       message: earned ? '${badge.name}: ${badge.desc}' : 'Locked — ${badge.desc}',
       child: Opacity(
@@ -634,7 +645,7 @@ class _ArenaViewState extends State<ArenaView> with SingleTickerProviderStateMix
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: t.line),
           ),
-          child: Text(emoji, style: const TextStyle(fontSize: 20)),
+          child: AppIcons.icon(iconName, size: 22, color: t.ink),
         ),
       ),
     );

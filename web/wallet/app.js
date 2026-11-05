@@ -15,8 +15,8 @@
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
   function elFrom(html) { var t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
-  function toast(msg, kind) {
-    var t = elFrom('<div class="toast ' + (kind || '') + '">' + esc(msg) + '</div>');
+  function toast(msg, kind, iconName) {
+    var t = elFrom('<div class="toast ' + (kind || '') + '">' + (iconName ? mi(iconName, 15) + ' ' : '') + esc(msg) + '</div>');
     $('#toasts').appendChild(t);
     setTimeout(function () { t.style.opacity = '0'; t.style.transition = '.3s'; setTimeout(function () { t.remove(); }, 300); }, 2600);
   }
@@ -83,6 +83,13 @@
   function ic(name, size) {
     var p = ICONS[name] || ICONS.close;
     return '<svg class="ic-svg" viewBox="0 0 24 24" width="' + (size || 18) + '" height="' + (size || 18) + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + p + '</svg>';
+  }
+  // Custom-glyph icon from the shared master set (vendor/icons.js) — these replace the
+  // former inline emoji. Returns an inline <svg> STRING, so only drop it into raw-HTML
+  // positions (never an escaped text node, <option>, or document.title). Falls back to ''
+  // if the module is missing so a load race can never throw mid-render.
+  function mi(name, size) {
+    try { return (window.BlockleIcons && window.BlockleIcons.icon) ? window.BlockleIcons.icon(name, { size: size || 16 }) : ''; } catch (_) { return ''; }
   }
 
   /* ---------------- modal sheet ---------------- */
@@ -365,7 +372,7 @@
   var BOTNAV = ['portfolio', 'moon', 'bots', 'assets', 'agent'];
 
   /* ---------------- sidebar drawer (portrait / narrow screens) ----------------
-   * On ≤860px the sidenav is an off-canvas drawer: the ☰ button in the top bar
+   * On ≤860px the sidenav is an off-canvas drawer: the menu button in the top bar
    * (and a swipe from the left edge) pops it out; the scrim, a nav tap, Escape
    * or a route change closes it. On wide screens it is the normal sticky column. */
   function navOpen() { var n = $('#sidenav'); if (!n) return; n.classList.add('open'); $('#navscrim').classList.add('open'); var b = $('#btn-menu'); if (b) b.setAttribute('aria-expanded', 'true'); }
@@ -515,7 +522,7 @@
       var imp = sum.imported || [], fl = sum.flagged || [];
       if (imp.length) {
         var syms = imp.slice(0, 4).map(function (t) { return (t.symbol || '?') + ' (' + String(t.chain || '').toUpperCase() + ')'; }).join(', ');
-        toast('✨ Auto-imported ' + imp.length + ' token' + (imp.length > 1 ? 's' : '') + ': ' + syms + (imp.length > 4 ? '…' : ''), 'good');
+        toast('Auto-imported ' + imp.length + ' token' + (imp.length > 1 ? 's' : '') + ': ' + syms + (imp.length > 4 ? '…' : ''), 'good', 'sparkle');
         if ((location.hash || '') === '#assets') loadTokens(); else if ((location.hash || '#portfolio') === '#portfolio') loadPortfolio();
       }
       if (fl.length && reason === 'unlock') toast(fl.length + ' suspicious token' + (fl.length > 1 ? 's' : '') + ' hidden — review under Assets', 'bad');
@@ -1298,11 +1305,11 @@
           if (!r.ok) return; var it = r.j; var el = $('#dp-status'); if (!el) { stopPoll(); return; }
           var outDec = S.amm.dec[it.payoutAsset] || 8;
           if (it.status === 'awaiting_deposit') { el.innerHTML = '<span class="dim">Waiting for your deposit…</span>'; }
-          else if (it.status === 'funded') { el.innerHTML = '<span class="num">●</span> Deposit detected — executing…'; }
-          else if (it.status === 'executed' || it.status === 'paid') { el.innerHTML = '<span class="num">●</span> Paying out…'; }
+          else if (it.status === 'funded') { el.innerHTML = '<span class="num">' + mi('dot', 13) + '</span> Deposit detected — executing…'; }
+          else if (it.status === 'executed' || it.status === 'paid') { el.innerHTML = '<span class="num">' + mi('dot', 13) + '</span> Paying out…'; }
           else if (it.status === 'settled') {
             var got = baseToWhole(it.executedOutBase || it.quote.outBase, outDec);
-            el.innerHTML = '<b class="good">✓ Done</b> — received ' + fmtAmt(got, 6) + ' ' + esc(it.payoutAsset) + (it.payoutTxid ? '<br><span class="dim" style="font-size:11px">tx ' + esc(String(it.payoutTxid).slice(0, 18)) + '…</span>' : '');
+            el.innerHTML = '<b class="good">' + mi('check', 14) + ' Done</b> — received ' + fmtAmt(got, 6) + ' ' + esc(it.payoutAsset) + (it.payoutTxid ? '<br><span class="dim" style="font-size:11px">tx ' + esc(String(it.payoutTxid).slice(0, 18)) + '…</span>' : '');
             stopPoll(); $('#amm-amt').value = ''; load();
           } else if (it.status === 'refund') { el.innerHTML = '<b class="bad">Refunded</b> — ' + esc(it.error || 'price moved or no liquidity') + '. Your deposit is being returned.'; stopPoll(); }
           else if (it.status === 'expired') { el.innerHTML = '<span class="dim">Order expired — no deposit received. Close and try again.</span>'; stopPoll(); }
@@ -1849,8 +1856,8 @@
   VIEWS.agent = function (v) {
     var lb = localLlm();
     var quotaNote = lb && lb.enabled ? 'Local brain: ' + lb.model + ' at ' + lb.baseUrl + ' — private, free, nothing leaves your computer.' : (S.pro ? 'Pro: signed hosted session, higher budget.' : 'Free: anonymous hosted brain (rate-limited). Run a local LLM for unlimited, private use — tap Brain.');
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('agent', 17) + ' Agent</h2><div class="row" style="gap:6px"><span class="pill" id="ag-conn">connecting…</span><button class="btn sm ghost" id="ag-brain" title="Choose where the agent thinks">🧠 Brain</button></div></div>' +
-      (lb && lb.enabled ? '' : '<div style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.45">🧠 <b>Run the agent on your own computer.</b> Install a local LLM (Ollama or LM Studio), point the wallet at it, and the agent runs private, unlimited and free — no hosted quota. <a href="#" id="ag-brain-setup">Set up local brain</a></div>') +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('agent', 17) + ' Agent</h2><div class="row" style="gap:6px"><span class="pill" id="ag-conn">connecting…</span><button class="btn sm ghost" id="ag-brain" title="Choose where the agent thinks">' + mi('brain', 15) + ' Brain</button></div></div>' +
+      (lb && lb.enabled ? '' : '<div style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.45">' + mi('brain', 15) + ' <b>Run the agent on your own computer.</b> Install a local LLM (Ollama or LM Studio), point the wallet at it, and the agent runs private, unlimited and free — no hosted quota. <a href="#" id="ag-brain-setup">Set up local brain</a></div>') +
       '<p class="muted" style="margin-bottom:10px">Ask in plain language — "send 5 BLOCK to alice.eth", "swap 20 BLOCK for WORLD", "what\'s my net worth?". Every value-moving step is gated by the same approval sheet. Nothing executes without your tap.</p>' +
       '<div id="ag-log" class="list" style="max-height:340px;overflow:auto;margin-bottom:10px"></div>' +
       '<div class="row" style="gap:8px"><input id="ag-in" placeholder="Ask or instruct the agent…"><button class="btn primary" id="ag-go">Run</button></div>' +
@@ -1892,7 +1899,7 @@
     var P = (window.AgentProviders && AgentProviders.LOCAL_PRESETS) || {};
     var cur = localLlm() || { enabled: false, preset: 'ollama', baseUrl: (P.ollama || {}).baseUrl || 'http://localhost:11434', model: (P.ollama || {}).model || '' };
     var presetOpts = Object.keys(P).map(function (k) { return '<option value="' + k + '"' + (k === cur.preset ? ' selected' : '') + '>' + esc(P[k].label) + '</option>'; }).join('');
-    openSheet('<div class="spread"><h2>🧠 Where the agent thinks</h2><button class="btn sm ghost" id="br-x">' + ic('close', 15) + '</button></div>' +
+    openSheet('<div class="spread"><h2>' + mi('brain', 17) + ' Where the agent thinks</h2><button class="btn sm ghost" id="br-x">' + ic('close', 15) + '</button></div>' +
       '<div class="field"><label>Brain</label><select id="br-mode"><option value="local"' + (cur.enabled ? ' selected' : '') + '>Local LLM on my computer — private, unlimited, free (recommended)</option><option value="hosted"' + (!cur.enabled ? ' selected' : '') + '>Blockle hosted brain — nothing to install, rate-limited</option></select></div>' +
       '<div id="br-local">' +
       '<div class="field"><label>Local server</label><select id="br-preset">' + presetOpts + '</select></div>' +
@@ -1929,8 +1936,8 @@
     $('#br-test').onclick = function () {
       status('Asking ' + esc($('#br-model').value || 'the model') + ' to say hello…');
       var t0 = Date.now();
-      mk().ping().then(function (txt) { status('✅ It answered in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's: “' + esc(txt.slice(0, 60)) + '”', 'good'); })
-        .catch(function (e) { status('❌ ' + esc(e.message || e), 'bad'); });
+      mk().ping().then(function (txt) { status(mi('check-circle', 14) + ' It answered in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's: “' + esc(txt.slice(0, 60)) + '”', 'good'); })
+        .catch(function (e) { status(mi('x', 14) + ' ' + esc(e.message || e), 'bad'); });
     };
     $('#br-save').onclick = function () {
       if ($('#br-mode').value === 'hosted') { setLocalLlm(null); resetAgentBrain(); closeSheet(); toast('Using the Blockle hosted brain'); if (location.hash === '#agent') onRoute(); return; }
@@ -1938,7 +1945,7 @@
       if (!/^https?:\/\//.test(url)) { toast('Enter the server URL (http://localhost:11434)', 'bad'); return; }
       if (!model) { toast('Pick a model (tap Detect)', 'bad'); return; }
       setLocalLlm({ enabled: true, preset: $('#br-preset').value, baseUrl: url, model: model });
-      resetAgentBrain(); closeSheet(); toast('🧠 Agent now thinks locally with ' + model, 'good');
+      resetAgentBrain(); closeSheet(); toast('Agent now thinks locally with ' + model, 'good', 'brain');
       if (location.hash === '#agent') onRoute();
     };
   }
@@ -2012,18 +2019,18 @@
   // One-tap presets. Each starts IMMEDIATELY in paper mode with a sandbox budget
   // and a max-loss rail, so the first tap already produces a live ticker.
   var BOT_PRESETS = [
-    { key: 'auto', emoji: '🧠', name: 'Full Auto', blurb: 'Pick a chain. It rotates between Momentum, Buzz (what the internet is piling into), Sniper, Grid, Dip-buying and Autopilot to chase the most profit, re-weighting by market regime and live results.', type: 'auto', lane: 'solana', mode: 'high', budget: 500, risk: { maxLossPct: 30, paperSlippageBps: 30 }, pollSec: 20, config: { rebalanceSec: 900 } },
-    { key: 'sniper', emoji: '🎯', name: 'Sniper', blurb: 'Hunts brand-new launches that clear the rug gate. Max risk, max thrill.', type: 'signal', lane: 'solana', mode: 'sniper', budget: 250, risk: { maxLossPct: 35, paperSlippageBps: 60 }, pollSec: 15,
+    { key: 'auto', icon: 'brain', name: 'Full Auto', blurb: 'Pick a chain. It rotates between Momentum, Buzz (what the internet is piling into), Sniper, Grid, Dip-buying and Autopilot to chase the most profit, re-weighting by market regime and live results.', type: 'auto', lane: 'solana', mode: 'high', budget: 500, risk: { maxLossPct: 30, paperSlippageBps: 30 }, pollSec: 20, config: { rebalanceSec: 900 } },
+    { key: 'sniper', icon: 'target', name: 'Sniper', blurb: 'Hunts brand-new launches that clear the rug gate. Max risk, max thrill.', type: 'signal', lane: 'solana', mode: 'sniper', budget: 250, risk: { maxLossPct: 35, paperSlippageBps: 60 }, pollSec: 15,
       config: { source: 'discovery', maxConcurrent: 4, minScore: 0.55, onSignal: { type: 'smarttrade', config: { amountUsd: 40, takeProfits: [{ pct: 25, sharePct: 50 }, { pct: 60, sharePct: 50 }], stopLoss: { pct: 18, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 3 } } } } },
-    { key: 'buzz', emoji: '🔥', name: 'Buzz Hunter', blurb: 'Finds the coins the internet is piling into right now — search trends, trending pools, buyer traffic — and rides the spike with quick exits.', type: 'signal', lane: 'solana', mode: 'high', budget: 250, risk: { maxLossPct: 30, paperSlippageBps: 40 }, pollSec: 15,
+    { key: 'buzz', icon: 'fire', name: 'Buzz Hunter', blurb: 'Finds the coins the internet is piling into right now — search trends, trending pools, buyer traffic — and rides the spike with quick exits.', type: 'signal', lane: 'solana', mode: 'high', budget: 250, risk: { maxLossPct: 30, paperSlippageBps: 40 }, pollSec: 15,
       config: { source: 'discovery', rank: 'buzz', maxConcurrent: 3, minScore: 0.45, onSignal: { type: 'smarttrade', config: { amountUsd: 40, takeProfits: [{ pct: 8, sharePct: 50 }, { pct: 20, sharePct: 50 }], stopLoss: { pct: 10, trailing: true }, candle: { enabled: true, sec: 60, minProfitPct: 2 } } } } },
-    { key: 'surfer', emoji: '🌊', name: 'Momentum Surfer', blurb: 'Rides trending mid-caps with a trailing stop. Balanced risk.', type: 'signal', lane: 'solana', mode: 'high', budget: 300, risk: { maxLossPct: 25, paperSlippageBps: 30 }, pollSec: 20,
+    { key: 'surfer', icon: 'wave', name: 'Momentum Surfer', blurb: 'Rides trending mid-caps with a trailing stop. Balanced risk.', type: 'signal', lane: 'solana', mode: 'high', budget: 300, risk: { maxLossPct: 25, paperSlippageBps: 30 }, pollSec: 20,
       config: { source: 'discovery', maxConcurrent: 3, minScore: 0.5, onSignal: { type: 'dca', config: { baseOrderUsd: 40, safetyOrderUsd: 40, maxSafetyOrders: 2, safetyStepPct: 4, takeProfitPct: 8, trailingTpPct: 3, stopLossPct: 15, maxDealSec: 2 * 86400, candle: { enabled: true, sec: 120, minProfitPct: 2 } } } } },
-    { key: 'stacker', emoji: '🧱', name: 'Steady Stacker', blurb: 'Accumulates SOL on dips, banks +5%. Slow, steady, relentless.', type: 'dca', lane: 'solana', mode: 'safe', budget: 500, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 30, pair: 'SOL/USDC',
+    { key: 'stacker', icon: 'block', name: 'Steady Stacker', blurb: 'Accumulates SOL on dips, banks +5%. Slow, steady, relentless.', type: 'dca', lane: 'solana', mode: 'safe', budget: 500, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 30, pair: 'SOL/USDC',
       config: { baseOrderUsd: 25, safetyOrderUsd: 25, maxSafetyOrders: 5, safetyStepPct: 2, safetyVolumeScale: 1.3, takeProfitPct: 5, trailingTpPct: 1.5, startCondition: 'dip', dipPct: 1.5, candle: { enabled: true, sec: 300, minProfitPct: 1.5 } } },
-    { key: 'grid', emoji: '📈', name: 'Grid Scalper', blurb: 'A ±6% ladder around ETH. Buys every dip rung, sells every pop.', type: 'grid', lane: 'ethereum', mode: 'medium', budget: 400, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 20, pair: 'ETH/USDC',
+    { key: 'grid', icon: 'chart-up', name: 'Grid Scalper', blurb: 'A ±6% ladder around ETH. Buys every dip rung, sells every pop.', type: 'grid', lane: 'ethereum', mode: 'medium', budget: 400, risk: { maxLossPct: 20, paperSlippageBps: 10 }, pollSec: 20, pair: 'ETH/USDC',
       config: { autoRangePct: 6, gridCount: 10, totalUsd: 400, stopLossPct: 12 } },
-    { key: 'autopilot', emoji: '🤖', name: 'Autopilot', blurb: 'Scans every pair it can see, trades only cost-positive edges.', type: 'scanner', lane: 'solana', mode: 'medium', budget: 300, risk: { maxLossPct: 25 }, pollSec: 60,
+    { key: 'autopilot', icon: 'bot', name: 'Autopilot', blurb: 'Scans every pair it can see, trades only cost-positive edges.', type: 'scanner', lane: 'solana', mode: 'medium', budget: 300, risk: { maxLossPct: 25 }, pollSec: 60,
       config: { minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 25, strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 } },
   ];
   var _botsTimer = null;
@@ -2037,7 +2044,8 @@
   function agoShort(t) { if (!t) return '—'; var s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; }
   function algoName(a) { return ({ momentum: 'Momentum', sniper: 'Sniper', grid: 'Grid', dip: 'Dip-buyer', scanner: 'Autopilot' })[a] || a; }
   function regimeText(r) { return ({ 'trend-up': 'Trending up', 'trend-down': 'Trending down', ranging: 'Ranging', quiet: 'Quiet', warming: 'Reading the market…' })[r] || (r || '—'); }
-  function botEmoji(b) { var p = BOT_PRESETS.filter(function (x) { return x.key === b.preset; })[0]; if (p) return p.emoji; return { signal: '🎯', dca: '🧱', grid: '📈', smarttrade: '⚡', scanner: '🤖', momentum: '🌊', rebalance: '⚖️' }[b.type] || '🤖'; }
+  // Icon name for a bot (preset icon, else by deal-bot type). Rendered via mi() in raw-HTML headings.
+  function botIcon(b) { var p = BOT_PRESETS.filter(function (x) { return x.key === b.preset; })[0]; if (p) return p.icon; return { signal: 'target', dca: 'block', grid: 'chart-up', smarttrade: 'bolt', scanner: 'bot', momentum: 'wave', rebalance: 'scales' }[b.type] || 'bot'; }
 
   /* ---------------- live indicator / systematic strategies (registry planners) ----------------
      The create-UI strategy picker lists these alongside the deal-bot types, with a generic
@@ -2063,7 +2071,6 @@
   // skipped every tick.
   function regKnobKeys(s) { var skip = { market: 1, history: 1, held: 1, balances: 1, budgetUsd: 1 }; return Object.keys((s && s.defaults) || {}).filter(function (k) { return !skip[k]; }); }
   function regDescribe(name) { var s = regStrategy(name); try { return s ? s.describe() : ''; } catch (_) { return ''; } }
-  function regEmoji(name) { return ({ rsi: '📉', macd: '〽️', bollinger: '🎚️', breakout: '🚀', emacross: '⚡', momentum_roc: '🏃', meanrev: '↩️', rebalance_hold: '⚖️', hodl: '💎' })[name] || '📊'; }
   function regLabel(name) { return String(name).replace(/_/g, ' ').toUpperCase(); }
   var KNOB_LABEL = { budgetUsd: 'Budget (USD)', positionPct: 'Position size %', period: 'Period', oversold: 'Oversold ≤', overbought: 'Overbought ≥', fast: 'Fast', slow: 'Slow', signalP: 'Signal period', k: 'Band width (σ)', lookback: 'Lookback', thresholdPct: 'Threshold %', bandPct: 'Band %', targetPct: 'Target %', driftPct: 'Drift %' };
   function knobLabel(k) { return KNOB_LABEL[k] || k; }
@@ -2081,11 +2088,11 @@
       '<div id="bt-hero" class="statline" style="margin-bottom:10px"><div class="stat"><div class="n num" id="bt-real">—</div><div class="l">realized P&amp;L</div></div><div class="stat"><div class="n num" id="bt-unreal">—</div><div class="l">open P&amp;L</div></div><div class="stat"><div class="n num" id="bt-deals">—</div><div class="l">active deals</div></div><div class="stat"><div class="n num" id="bt-win">—</div><div class="l">win rate</div></div></div>' +
       '<div class="row" style="gap:8px;font-size:12px" id="bt-engine"><span class="dim">Engine</span><span class="dim">—</span></div>' +
       '<div class="dim" style="font-size:11px;margin-top:6px">Realized P&amp;L books when a deal closes; open P&amp;L is the live mark on what the bots hold. Smart candle exits bank winners on the first reversal.</div>' +
-      '<div id="bt-keepopen" style="display:none;background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>🔴 Live bots trade only while this page is open.</b> Your keys never leave this device, so closing or backgrounding this tab pauses live trading until you come back. Keep the wallet in front, or stop the live bots first.</div>' +
+      '<div id="bt-keepopen" style="display:none;background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>' + mi('live', 14) + ' Live bots trade only while this page is open.</b> Your keys never leave this device, so closing or backgrounding this tab pauses live trading until you come back. Keep the wallet in front, or stop the live bots first.</div>' +
       '<div id="bt-cloud" style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"></div></div>' +
       '<div class="card"><div class="sechead"><h2>One-tap launch</h2><span class="dim" style="font-size:12px">starts in paper mode · play money</span></div>' +
       '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">' + BOT_PRESETS.map(function (p) {
-        return '<button class="planbox" data-preset="' + esc(p.key) + '" style="text-align:left;cursor:pointer;gap:5px;padding:12px"><b style="font-size:15px">' + p.emoji + ' ' + esc(p.name) + '</b><span class="dim" style="font-size:12px;line-height:1.3">' + esc(p.blurb) + '</span><span class="dim" style="font-size:11px">any network · ' + esc(p.mode) + ' · $' + p.budget + ' paper</span></button>';
+        return '<button class="planbox" data-preset="' + esc(p.key) + '" style="text-align:left;cursor:pointer;gap:5px;padding:12px"><b style="font-size:15px">' + mi(p.icon, 16) + ' ' + esc(p.name) + '</b><span class="dim" style="font-size:12px;line-height:1.3">' + esc(p.blurb) + '</span><span class="dim" style="font-size:11px">any network · ' + esc(p.mode) + ' · $' + p.budget + ' paper</span></button>';
       }).join('') + '</div></div>' +
       '<div class="card"><div class="sechead"><h2>' + ic('activity', 16) + ' Live ticker</h2><span class="dim" style="font-size:12px" id="bt-ticker-n"></span></div><div id="bt-ticker" class="list ticker"><div class="empty">No trades yet — launch a bot and watch this fill up.</div></div></div>' +
       '<div class="card"><div class="sechead"><h2>Your bots</h2><span class="dim" style="font-size:12px" id="bt-count"></span></div><div id="bt-list" class="list"><div class="empty">Loading bots…</div></div>' +
@@ -2172,7 +2179,7 @@
       cloudReq('/import', 'POST', { bots: paper.map(function (b) { return b.toJSON(); }) }).then(function (j) {
         var done = (j.imported || []);
         return Promise.all(done.map(function (id) { return runner.remove(id).catch(function () {}); })).then(function () {
-          toast('☁ ' + done.length + ' bot' + (done.length === 1 ? '' : 's') + ' now running in the cloud' + ((j.skipped || []).length ? ' · ' + j.skipped.length + ' skipped' : ''), 'good');
+          toast(done.length + ' bot' + (done.length === 1 ? '' : 's') + ' now running in the cloud' + ((j.skipped || []).length ? ' · ' + j.skipped.length + ' skipped' : ''), 'good', 'cloud');
           return refreshCloud();
         }).then(function () { _botListSig = ''; renderBotList(); });
       }).catch(cloudFail);
@@ -2186,13 +2193,13 @@
   function syncLiveNotice() {
     var live = anyLiveRunning();
     var el = $('#bt-keepopen'); if (el) el.style.display = live ? '' : 'none';
-    if (live && _liveTitle == null) { _liveTitle = document.title; document.title = '🔴 LIVE · keep open · ' + _liveTitle; }
+    if (live && _liveTitle == null) { _liveTitle = document.title; document.title = 'LIVE · keep open · ' + _liveTitle; }
     if (!live && _liveTitle != null) { document.title = _liveTitle; _liveTitle = null; }
   }
   window.addEventListener('beforeunload', function (e) { if (anyLiveRunning()) { e.preventDefault(); e.returnValue = 'Live bots stop trading when this page closes.'; return e.returnValue; } });
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') { _hiddenAt = anyLiveRunning() ? Date.now() : null; return; }
-    if (_hiddenAt && anyLiveRunning() && Date.now() - _hiddenAt > 45000) toast('🔴 Live bots were throttled while this tab was hidden — keep the wallet in front while they run.', 'bad');
+    if (_hiddenAt && anyLiveRunning() && Date.now() - _hiddenAt > 45000) toast('Live bots were throttled while this tab was hidden — keep the wallet in front while they run.', 'bad', 'live');
     _hiddenAt = null;
   });
   // What the wallet actually holds of a lane's trading currency (for the live sheet).
@@ -2247,9 +2254,9 @@
     if (!ev) return;
     if (ev.type === 'bot_feed' && ev.kind === 'close') {
       var r = Number(ev.realizedUsd) || 0;
-      toast((r >= 0 ? '💰 ' : '📉 ') + (ev.name || 'Bot') + ' closed ' + (ev.pair || '') + ' ' + fmtSigned(r) + (ev.paper ? ' (paper)' : ''), r >= 0 ? 'good' : 'bad');
+      toast((ev.name || 'Bot') + ' closed ' + (ev.pair || '') + ' ' + fmtSigned(r) + (ev.paper ? ' (paper)' : ''), r >= 0 ? 'good' : 'bad', r >= 0 ? 'money-bag' : 'chart-down');
     } else if (ev.type === 'bot_paused' && ev.reason === 'max-loss') {
-      toast('🛑 Max-loss rail tripped — a bot paused itself', 'bad');
+      toast('Max-loss rail tripped — a bot paused itself', 'bad', 'stop');
     }
   }
   // The quote asset a preset trades against on a lane: the lane's own stable
@@ -2264,12 +2271,12 @@
     ensureBotRunner().then(function () {
       var lanes = botLanes();
       var opts = lanes.map(function (l) { return '<option value="' + esc(l.id) + '"' + (l.id === p.lane ? ' selected' : '') + '>' + esc(l.name) + ' · hold ' + esc(l.base) + '</option>'; }).join('');
-      openSheet('<div class="spread"><h2>' + p.emoji + ' ' + esc(p.name) + '</h2><button class="btn sm ghost" id="pl-x">' + ic('close', 15) + '</button></div>' +
+      openSheet('<div class="spread"><h2>' + mi(p.icon, 18) + ' ' + esc(p.name) + '</h2><button class="btn sm ghost" id="pl-x">' + ic('close', 15) + '</button></div>' +
         '<p class="muted" style="margin:6px 0 10px;font-size:13px">' + esc(p.blurb) + '</p>' +
         '<div class="field"><label>Network</label><select id="pl-lane">' + opts + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="pl-hint"></div></div>' +
         '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Paper budget (USD)</label><input id="pl-budget" inputmode="decimal" value="' + p.budget + '"></div><div class="field" style="flex:1"><label>Risk mode</label><select id="pl-mode">' + Object.keys(BOT_MODES).map(function (m) { return '<option value="' + m + '"' + (m === p.mode ? ' selected' : '') + '>' + esc(BOT_MODES[m].split(' — ')[0]) + '</option>'; }).join('') + '</select></div></div>' +
         whereField('pl-where') +
-        '<button class="btn primary wide" id="pl-go">🚀 Launch on <span id="pl-lane-name">' + esc(laneLabel(p.lane)) + '</span> (paper)</button>');
+        '<button class="btn primary wide" id="pl-go">' + mi('launch', 15) + ' Launch on <span id="pl-lane-name">' + esc(laneLabel(p.lane)) + '</span> (paper)</button>');
       $('#pl-x').onclick = closeSheet;
       function hint() {
         var lane = $('#pl-lane').value, pair = presetPair(p, lane);
@@ -2290,11 +2297,11 @@
   // signed in, else this device (needs the page open).
   function whereField(id) {
     if (!S.user) return '<div class="dim" style="font-size:12px;margin:4px 0 10px">Runs on this device while the wallet is open. <a href="/account/login?next=/wallet%23bots">Sign in</a> to run bots in the cloud 24/7.</div>';
-    return '<div class="field"><label>Where it runs</label><select id="' + id + '"><option value="cloud">☁ Cloud — keeps trading after you close the wallet</option><option value="device">This device — only while this page is open</option></select></div>';
+    return '<div class="field"><label>Where it runs</label><select id="' + id + '"><option value="cloud">Cloud — keeps trading after you close the wallet</option><option value="device">This device — only while this page is open</option></select></div>';
   }
   function launchCloud(spec, budget, label) {
     return cloudReq('', 'POST', { spec: spec, allocationUsd: budget }).then(function () {
-      toast('☁ ' + label + ' is live in the cloud · $' + budget + ' paper', 'good');
+      toast(label + ' is live in the cloud · $' + budget + ' paper', 'good', 'cloud');
       return refreshCloud();
     }).then(function () { _botListSig = ''; renderBotList(); }).catch(cloudFail);
   }
@@ -2304,14 +2311,14 @@
       var pair = presetPair(p, lane);
       var cfg = JSON.parse(JSON.stringify(p.config));
       if (p.type === 'grid') cfg.totalUsd = budget;
-      var spec = { name: p.emoji + ' ' + p.name + ' · ' + laneLabel(lane), type: p.type, lane: lane, riskMode: mode || p.mode, profitMode: 'take', preset: p.key,
+      var spec = { name: p.name + ' · ' + laneLabel(lane), type: p.type, lane: lane, riskMode: mode || p.mode, profitMode: 'take', preset: p.key,
         universe: { pairs: pair ? [pair] : [] }, config: cfg, risk: p.risk, pollSec: p.pollSec, mode: 'paper', network: 'testnet' };
       if (where === 'cloud' && S.user) { launchCloud(spec, budget, p.name + ' on ' + laneLabel(lane)); return; }
       if (!isPro() && bots.length >= 1) { toast('Free plan allows 1 bot on this device — upgrade for more', 'bad'); location.hash = '#pro'; return; }
       try {
         var bot = runner.add(spec); bot.preset = p.key;
         runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
-          toast('🚀 ' + p.name + ' is live on ' + laneLabel(lane) + ' · $' + budget + ' paper', 'good');
+          toast(p.name + ' is live on ' + laneLabel(lane) + ' · $' + budget + ' paper', 'good', 'launch');
           _botListSig = ''; renderBotList(); runner.tickNow(bot.id).then(function () { _botListSig = ''; renderBotList(); }).catch(function () {});
         });
       } catch (e) { toast('Launch failed: ' + (e.message || e), 'bad'); }
@@ -2319,13 +2326,13 @@
   }
   function renderCloudCard() {
     var el = $('#bt-cloud'); if (!el) return;
-    if (!S.user) { el.innerHTML = '☁ <b>Keep bots running after you close the wallet.</b> Sign in and your paper bots can run in the cloud around the clock. <a href="/account/login?next=/wallet%23bots">Sign in</a>'; return; }
+    if (!S.user) { el.innerHTML = mi('cloud', 14) + ' <b>Keep bots running after you close the wallet.</b> Sign in and your paper bots can run in the cloud around the clock. <a href="/account/login?next=/wallet%23bots">Sign in</a>'; return; }
     var c = S.cloud;
-    if (!c) { el.innerHTML = '☁ <span class="dim">Checking cloud bots…</span>'; return; }
-    if (c.error) { el.innerHTML = '☁ <span class="bad">Cloud bots unavailable: ' + esc(c.error) + '</span>'; return; }
+    if (!c) { el.innerHTML = mi('cloud', 14) + ' <span class="dim">Checking cloud bots…</span>'; return; }
+    if (c.error) { el.innerHTML = mi('cloud', 14) + ' <span class="bad">Cloud bots unavailable: ' + esc(c.error) + '</span>'; return; }
     var n = (c.bots || []).length, running = (c.aggregate && c.aggregate.running) || 0, lim = c.limits || {};
     var localPaper = S.botRunner ? S.botRunner.store.all().filter(function (b) { return b.mode !== 'live'; }).length : 0;
-    el.innerHTML = '☁ <b>' + (n ? running + ' of ' + n + ' cloud bot' + (n === 1 ? '' : 's') + ' running' : 'No cloud bots yet') + '</b> — cloud bots keep trading after you close this wallet. ' +
+    el.innerHTML = mi('cloud', 14) + ' <b>' + (n ? running + ' of ' + n + ' cloud bot' + (n === 1 ? '' : 's') + ' running' : 'No cloud bots yet') + '</b> — cloud bots keep trading after you close this wallet. ' +
       '<span class="dim">Plan allows ' + (lim.maxBots || '—') + '.</span>' +
       (localPaper ? '<div style="margin-top:8px"><button class="btn sm" id="bt-tocloud">Move ' + localPaper + ' paper bot' + (localPaper === 1 ? '' : 's') + ' to the cloud</button></div>' : '');
     if ($('#bt-tocloud')) $('#bt-tocloud').onclick = moveToCloud;
@@ -2346,8 +2353,8 @@
     var d = cb.dashboard || {};
     var deals = (d.activeDeals || []).map(function (x) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(x.pair) + '</b><span class="dim" style="font-size:11px">' + esc(x.type || '') + ' · in @ ' + (x.avgEntryUsd != null ? fmtUsd(x.avgEntryUsd) : '—') + ' · mark ' + (x.markUsd != null ? fmtUsd(x.markUsd) : '—') + '</span></span><span class="' + pnlClass(x.unrealizedUsd) + ' num">' + fmtSigned(x.unrealizedUsd) + (x.unrealizedPct != null ? ' (' + (x.unrealizedPct > 0 ? '+' : '') + Number(x.unrealizedPct).toFixed(1) + '%)' : '') + '</span></div>'; }).join('');
     var feed = (d.feed || []).slice(0, 12).map(function (e) { return '<div class="li"><span class="col" style="align-items:flex-start"><span class="' + (e.kind === 'close' ? pnlClass(e.realizedUsd) : e.kind === 'halt' ? 'bad' : '') + '">' + esc(e.text || e.kind) + '</span><span class="dim" style="font-size:11px">' + agoShort(e.at) + '</span></span></div>'; }).join('');
-    openSheet('<div class="spread"><h2>' + botEmoji(cb) + ' ' + esc(cb.name || cb.id) + '</h2><button class="btn sm ghost" id="cd-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="dim" style="font-size:12px;margin:4px 0 10px">☁ Runs in the cloud under your Blockle account — keeps trading when this wallet is closed. ' + esc(cb.describe || '') + '</div>' +
+    openSheet('<div class="spread"><h2>' + mi(botIcon(cb), 18) + ' ' + esc(cb.name || cb.id) + '</h2><button class="btn sm ghost" id="cd-x">' + ic('close', 15) + '</button></div>' +
+      '<div class="dim" style="font-size:12px;margin:4px 0 10px">' + mi('cloud', 13) + ' Runs in the cloud under your Blockle account — keeps trading when this wallet is closed. ' + esc(cb.describe || '') + '</div>' +
       '<div class="statline"><div class="stat"><div class="n num ' + pnlClass(d.realizedUsd) + '">' + fmtSigned(d.realizedUsd) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num ' + pnlClass(d.unrealizedUsd) + '">' + fmtSigned(d.unrealizedUsd) + '</div><div class="l">open P&amp;L</div></div><div class="stat"><div class="n num">' + (d.totalDeals || 0) + '</div><div class="l">deals</div></div><div class="stat"><div class="n num">' + (d.winRate == null ? '—' : Math.round(d.winRate * 100) + '%') + '</div><div class="l">wins</div></div></div>' +
       '<div class="dim" style="font-size:12px;margin:8px 0">' + (d.status === 'running' ? '<span class="pulse"></span> running' : d.status === 'halted' ? '<span class="bad">halted · ' + esc(d.haltReason || '') + '</span>' : 'paused') + ' · budget ' + fmtUsd(d.committedUsd || 0) + ' / ' + fmtUsd(d.effectiveCapUsd || d.allocationUsd || 0) + ' deployed · last tick ' + agoShort(d.lastTickAt) + '</div>' +
       (deals ? '<h3 style="font-size:13px;margin:8px 0 4px">Open positions</h3><div class="list">' + deals + '</div>' : '') +
@@ -2380,7 +2387,7 @@
         '<span class="dim">' + (agg.running || 0) + ' on this device' + (agg.live ? ' · ' + agg.live + ' LIVE' : '') + (ca ? ' · ' + (ca.running || 0) + ' in the cloud' : '') + ' · ' + fmtUsd((agg.allocationUsd || 0) + (ca ? (ca.allocationUsd || 0) : 0)) + ' allocated · ' + fmtUsd((agg.committedUsd || 0) + (ca ? (ca.committedUsd || 0) : 0)) + ' deployed</span>';
       var tk = $('#bt-ticker');
       if (tk) {
-        var feed = (agg.feed || []).concat(ca && ca.feed ? ca.feed.map(function (e) { return Object.assign({}, e, { name: '☁ ' + (e.name || '') }); }) : []).sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+        var feed = (agg.feed || []).concat(ca && ca.feed ? ca.feed.map(function (e) { return Object.assign({}, e, { name: 'cloud · ' + (e.name || '') }); }) : []).sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
         if ($('#bt-ticker-n')) $('#bt-ticker-n').textContent = feed.length ? feed.length + ' events' : '';
         if (feed.length) tk.innerHTML = feed.slice(0, 25).map(function (e) {
           var cls = e.kind === 'close' ? pnlClass(e.realizedUsd) : e.kind === 'buy' ? '' : e.kind === 'halt' ? 'bad' : e.kind === 'signal' ? 'good' : '';
@@ -2391,7 +2398,7 @@
     var bots = runner.store.all();
     var cloudBots = (S.cloud && S.cloud.bots) || [];
     var total = bots.length + cloudBots.length;
-    if ($('#bt-count')) $('#bt-count').textContent = total ? total + (total === 1 ? ' bot' : ' bots') + (cloudBots.length ? ' · ' + cloudBots.length + ' ☁' : '') : '';
+    if ($('#bt-count')) $('#bt-count').textContent = total ? total + (total === 1 ? ' bot' : ' bots') + (cloudBots.length ? ' · ' + cloudBots.length + ' cloud' : '') : '';
     if (!total) { _botListSig = ''; box.innerHTML = '<div class="empty">No bots yet. Tap a preset above or create your own — it starts in paper mode.</div>'; return; }
     var rows = ((agg && agg.bots) || bots.map(function (b) { return runner.dashboard(b.id); })).map(function (d) { return { d: d, b: runner.store.get(d.bot) || {}, cloud: false }; })
       .concat(cloudBots.map(function (cb) { return { d: cb.dashboard || {}, b: cb, cloud: true }; }));
@@ -2407,12 +2414,12 @@
       var streak = d.streak || 0;
       var status = d.status === 'running' ? '<span class="pulse"></span> running' : d.status === 'halted' ? '<span class="bad">⏸ halted · ' + esc(d.haltReason || '') + '</span>' : d.status === 'killed' ? '<span class="bad">killed</span>' : '<span class="dim">paused</span>';
       return '<div class="li" style="align-items:flex-start;flex-wrap:wrap;gap:8px">' +
-        '<span class="ico" style="font-size:20px">' + botEmoji(b) + '</span>' +
-        '<span class="col" style="align-items:flex-start;flex:1;min-width:160px"><b>' + esc(d.name || b.name || d.type) + ' <span class="' + (live ? 'good' : 'dim') + '" style="font-size:11px">' + (cloud ? '☁ cloud · paper' : live ? 'LIVE · keep page open' : 'paper · this device') + '</span></b>' +
+        '<span class="ico">' + mi(botIcon(b), 20) + '</span>' +
+        '<span class="col" style="align-items:flex-start;flex:1;min-width:160px"><b>' + esc(d.name || b.name || d.type) + ' <span class="' + (live ? 'good' : 'dim') + '" style="font-size:11px">' + (cloud ? mi('cloud', 12) + ' cloud · paper' : live ? 'LIVE · keep page open' : 'paper · this device') + '</span></b>' +
         '<span class="dim" style="font-size:12px">' + esc(d.type) + (d.lane ? ' · ' + esc(laneLabel(d.lane)) : '') + (d.riskMode ? ' · ' + esc(d.riskMode) : '') + ' · ' + esc((b.universe && b.universe.pairs && b.universe.pairs[0]) || 'auto-find') + '</span>' +
         '<span style="font-size:12px">' + status + ' · <span class="' + pnlClass(d.realizedUsd) + ' num">' + fmtSigned(d.realizedUsd) + '</span>' + (d.unrealizedUsd ? ' · open <span class="' + pnlClass(d.unrealizedUsd) + ' num">' + fmtSigned(d.unrealizedUsd) + '</span>' : '') +
-        ' · ' + (d.totalDeals || 0) + ' deals' + (d.winRate != null ? ' · ' + Math.round(d.winRate * 100) + '% wins' : '') + (streak >= 2 ? ' · <span class="heat good">🔥 ' + streak + ' streak</span>' : streak <= -2 ? ' · <span class="heat bad">🧊 ' + (-streak) + ' cold</span>' : '') + '</span>' +
-        (d.auto ? '<span style="font-size:12px;width:100%">🧠 ' + esc(regimeText(d.auto.regime)) + (d.auto.lead ? ' · leading: <b>' + esc(algoName(d.auto.lead)) + '</b>' : '') + ' · ' + Object.keys(d.auto.weights || {}).sort(function (x, y) { return d.auto.weights[y] - d.auto.weights[x]; }).map(function (a) { return esc(algoName(a)) + ' ' + Math.round(d.auto.weights[a] * 100) + '%'; }).join(' · ') + '</span>' : '') +
+        ' · ' + (d.totalDeals || 0) + ' deals' + (d.winRate != null ? ' · ' + Math.round(d.winRate * 100) + '% wins' : '') + (streak >= 2 ? ' · <span class="heat good">' + mi('fire', 13) + ' ' + streak + ' streak</span>' : streak <= -2 ? ' · <span class="heat bad">' + mi('cube', 13) + ' ' + (-streak) + ' cold</span>' : '') + '</span>' +
+        (d.auto ? '<span style="font-size:12px;width:100%">' + mi('brain', 13) + ' ' + esc(regimeText(d.auto.regime)) + (d.auto.lead ? ' · leading: <b>' + esc(algoName(d.auto.lead)) + '</b>' : '') + ' · ' + Object.keys(d.auto.weights || {}).sort(function (x, y) { return d.auto.weights[y] - d.auto.weights[x]; }).map(function (a) { return esc(algoName(a)) + ' ' + Math.round(d.auto.weights[a] * 100) + '%'; }).join(' · ') + '</span>' : '') +
         (cap > 0 ? '<span class="dim" style="font-size:11px;width:100%">budget ' + fmtUsd(dep) + ' / ' + fmtUsd(cap) + ' deployed · ' + (d.activeDeals || []).length + ' open · last tick ' + agoShort(d.lastTickAt) + '</span><progress class="rangebar" max="100" value="' + pct + '"></progress>' : '') +
         (d.lastError ? '<span class="bad" style="font-size:11px">' + esc(d.lastError.message) + '</span>' : '') + '</span>' +
         '<span class="row" style="gap:6px;flex-wrap:wrap">' +
@@ -2458,7 +2465,7 @@
         return '<div class="kv"><span>' + esc(c.name) + ' <span class="dim">' + (c.weight != null ? Math.round(c.weight * 100) + '% · $' + fmtAmt(c.allocationUsd, 0) : '') + '</span></span><span class="mono num ' + pnlClass((c.realizedUsd || 0) + (c.unrealizedUsd || 0)) + '">' + fmtSigned((c.realizedUsd || 0) + (c.unrealizedUsd || 0)) + ' <span class="dim">· ' + (c.activeDeals || 0) + ' open · ' + (c.totalDeals || 0) + ' deals' + (c.winRate != null ? ' · ' + Math.round(c.winRate * 100) + '%' : '') + '</span></span></div>';
       }).join('') + '</div>' + (d.auto.series && d.auto.series.length > 2 ? '<div style="height:50px;margin:6px 0">' + sparkSvg(d.auto.series, 320, 50) + '</div>' : '') : '';
     var scan = d.lastScan ? '<div class="kv"><span>Last scan</span><span class="mono num">' + (d.lastScan.candidates || []).length + ' candidates · ' + (d.lastScan.worthy || []).length + ' worthy</span></div>' : '';
-    openSheet('<div class="spread"><h2>' + botEmoji(b) + ' ' + esc(d.name) + '</h2><button class="btn sm ghost" id="bd-x">' + ic('close', 15) + '</button></div>' +
+    openSheet('<div class="spread"><h2>' + mi(botIcon(b), 18) + ' ' + esc(d.name) + '</h2><button class="btn sm ghost" id="bd-x">' + ic('close', 15) + '</button></div>' +
       '<p class="muted" style="margin:6px 0 10px;font-size:13px">' + esc(desc) + '</p>' +
       '<div class="statline" style="margin-bottom:10px"><div class="stat"><div class="n num ' + pnlClass(d.realizedUsd) + '">' + fmtSigned(d.realizedUsd) + '</div><div class="l">realized</div></div><div class="stat"><div class="n num ' + pnlClass(d.unrealizedUsd) + '">' + fmtSigned(d.unrealizedUsd) + '</div><div class="l">open</div></div><div class="stat"><div class="n num">' + (d.winRate != null ? Math.round(d.winRate * 100) + '%' : '—') + '</div><div class="l">' + (d.totalDeals || 0) + ' deals</div></div><div class="stat"><div class="n num">' + (d.bestStreak || 0) + '</div><div class="l">best streak</div></div></div>' +
       '<div class="list" style="margin-bottom:10px">' +
@@ -2483,10 +2490,10 @@
   function newBotSheet(prefill) {
     var lanes = botLanes();
     var laneOpts = lanes.map(function (l) { return '<option value="' + esc(l.id) + '"' + (l.id === 'solana' ? ' selected' : '') + '>' + esc(l.name) + ' · hold ' + esc(l.base) + '</option>'; }).join('');
-    var regOpts = regStrategies().map(function (s) { return '<option value="' + esc(s.name) + '">' + regEmoji(s.name) + ' ' + esc(regLabel(s.name)) + '</option>'; }).join('');
-    var regGroup = regOpts ? '<optgroup label="📊 Indicator &amp; systematic — any chain">' + regOpts + '</optgroup>' : '';
+    var regOpts = regStrategies().map(function (s) { return '<option value="' + esc(s.name) + '">' + esc(regLabel(s.name)) + '</option>'; }).join('');
+    var regGroup = regOpts ? '<optgroup label="Indicator &amp; systematic — any chain">' + regOpts + '</optgroup>' : '';
     openSheet('<div class="spread"><h2>New bot</h2><button class="btn sm ghost" id="nb-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="auto">🧠 Full Auto — pick a chain, it switches algorithms for max profit</option><option value="signal">🎯 Signal — auto-find tokens, trade each with a sub-strategy</option><option value="scanner">🤖 Autopilot — scan &amp; trade cost-positive edges</option><option value="dca">🧱 DCA — ladder into a token, bank the take-profit</option><option value="grid">📈 Grid — buy every dip rung, sell every pop</option><option value="smarttrade">⚡ Smart trade — one entry, staged take-profits, trailing stop</option>' + regGroup + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="nb-strat-help"></div></div>' +
+      '<div class="field"><label>Strategy</label><select id="nb-type"><option value="auto">Full Auto — pick a chain, it switches algorithms for max profit</option><option value="signal">Signal — auto-find tokens, trade each with a sub-strategy</option><option value="scanner">Autopilot — scan &amp; trade cost-positive edges</option><option value="dca">DCA — ladder into a token, bank the take-profit</option><option value="grid">Grid — buy every dip rung, sell every pop</option><option value="smarttrade">Smart trade — one entry, staged take-profits, trailing stop</option>' + regGroup + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="nb-strat-help"></div></div>' +
       '<div class="field"><label>Network — every strategy trades on exactly one chain</label><select id="nb-lane">' + laneOpts + '</select><div class="hint dim" style="font-size:12px;margin-top:4px" id="nb-lane-hint"></div></div>' +
       '<div class="field"><label>Risk mode</label><select id="nb-mode"><option value="safe">Safe — large-cap only</option><option value="medium" selected>Medium — mid-cap, balanced</option><option value="high">High — microcap, social-driven</option><option value="sniper">Sniper — brand-new launches</option></select></div>' +
       '<div class="field" id="nb-pair-wrap"><label>Token</label><div class="row" style="gap:6px"><input id="nb-pair" placeholder="SYMBOL/QUOTE" style="flex:1"><select id="nb-held" style="max-width:46%"><option value="">from your wallet…</option></select></div><div class="hint dim" style="font-size:12px;margin-top:4px">Pick a token you hold on this lane, or type a pair like <span class="mono">WIF/SOL</span>.</div></div>' +
@@ -2504,11 +2511,11 @@
       '<div id="nb-adv-grid" style="display:none"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Range ± %</label><input id="nb-range" inputmode="decimal" value="6"></div><div class="field" style="flex:1"><label>Rungs</label><input id="nb-rungs" inputmode="numeric" value="10"></div><div class="field" style="flex:1"><label>Grid stop %</label><input id="nb-gsl" inputmode="decimal" value="12"></div></div></div>' +
       '<div id="nb-adv-smart" style="display:none"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Entry $</label><input id="nb-amt" inputmode="decimal" value="50"></div><div class="field" style="flex:1"><label>TP1 % / share</label><input id="nb-tp1" value="20/50"></div><div class="field" style="flex:1"><label>TP2 % / share</label><input id="nb-tp2" value="50/50"></div><div class="field" style="flex:1"><label>Trail stop %</label><input id="nb-ssl" inputmode="decimal" value="15"></div></div></div>' +
       '<div id="nb-adv-signal"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Max concurrent</label><input id="nb-conc" inputmode="numeric" value="3"></div><div class="field" style="flex:1"><label>Per-token $</label><input id="nb-per" inputmode="decimal" value="40"></div><div class="field" style="flex:1"><label>Min score</label><input id="nb-score" inputmode="decimal" value="50"></div></div>' +
-      '<div class="field" id="nb-rank-wrap"><label>Rank candidates by</label><select id="nb-rank"><option value="score">Safety-weighted score (default)</option><option value="buzz">🔥 Online buzz — search trends, trending pools, buyer traffic</option></select><div class="dim" style="font-size:12px;margin-top:4px" id="nb-rank-hint"></div></div></div>' +
+      '<div class="field" id="nb-rank-wrap"><label>Rank candidates by</label><select id="nb-rank"><option value="score">Safety-weighted score (default)</option><option value="buzz">Online buzz — search trends, trending pools, buyer traffic</option></select><div class="dim" style="font-size:12px;margin-top:4px" id="nb-rank-hint"></div></div></div>' +
       '</div></details>' +
       '<div class="banner warn" id="nb-risk" style="display:none"><span>' + ic('warn', 18) + '</span><div id="nb-risk-t"></div></div>' +
-      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">🚀 Launch (paper)</button>' +
-      '<button class="btn wide" id="nb-backtest" style="margin-top:8px;display:none">📊 Backtest this config</button>' +
+      '<button class="btn primary wide" id="nb-go" style="margin-top:12px">' + mi('launch', 15) + ' Launch (paper)</button>' +
+      '<button class="btn wide" id="nb-backtest" style="margin-top:8px;display:none">' + mi('bars', 15) + ' Backtest this config</button>' +
       '<div id="nb-bt-out" class="muted" style="margin-top:10px;font-size:13px"></div>');
     $('#nb-x').onclick = closeSheet;
     var _renderedStrat = null;
@@ -2622,7 +2629,7 @@
       if (needsPair && (/^TOKEN\//.test(pair) || pair.indexOf('/') < 0)) { toast('Pick or type the token to trade', 'bad'); return; }
       var budget = num('#nb-budget', 0);
       if (!(budget > 0)) { toast('Set a paper budget (USD)', 'bad'); return; }
-      var typeName = { auto: '🧠 Full Auto', signal: '🎯 SIGNAL', scanner: '🤖 AUTOPILOT', dca: '🧱 DCA', grid: '📈 GRID', smarttrade: '⚡ SMART' }[type] || (regEmoji(type) + ' ' + regLabel(type));
+      var typeName = { auto: 'Full Auto', signal: 'SIGNAL', scanner: 'AUTOPILOT', dca: 'DCA', grid: 'GRID', smarttrade: 'SMART' }[type] || regLabel(type);
       var name = ($('#nb-name').value || '').trim() || (typeName + ' · ' + laneLabel(lane));
       var candleCfg = { enabled: (($('#nb-candle') || {}).value || 'on') === 'on', sec: num('#nb-csec', 120), minProfitPct: num('#nb-cmin', 2) };
       var dcaCfg = { baseOrderUsd: num('#nb-base', 30), safetyOrderUsd: num('#nb-base', 30), maxSafetyOrders: num('#nb-so', 3), safetyStepPct: num('#nb-step', 3), safetyVolumeScale: 1.2, takeProfitPct: num('#nb-tp', 6), trailingTpPct: num('#nb-trail', 2), stopLossPct: num('#nb-sl', 15), startCondition: ($('#nb-start') || {}).value || 'asap', dipPct: num('#nb-dip', 2), maxDealSec: Math.round(num('#nb-tstop', 48) * 3600), candle: candleCfg };
@@ -2645,7 +2652,7 @@
         try {
           var bot = runner.add(spec);
           runner.enablePaper(bot.id, { allocationUsd: budget }).then(function () {
-            toast('🚀 ' + name + ' launched · $' + budget + ' paper on ' + laneLabel(lane), 'good');
+            toast(name + ' launched · $' + budget + ' paper on ' + laneLabel(lane), 'good', 'launch');
             closeSheet(); renderBotList();
             runner.tickNow(bot.id).then(function () { renderBotList(); }).catch(function () {});
           }).catch(function (e) { toast('Start failed: ' + (e.message || e), 'bad'); closeSheet(); renderBotList(); });
@@ -2660,7 +2667,7 @@
     var bot = S.botRunner && S.botRunner.store.get(id); var lane = (bot && bot.lane) || 'block'; var base = laneBase(lane);
     openSheet('<div class="spread"><h2>Arm live trading</h2><button class="btn sm ghost" id="al-x">' + ic('close', 15) + '</button></div>' +
       '<div class="banner warn"><span>' + ic('warn', 18) + '</span><div>Live bots trade real funds <b>within the allocation cap</b> with no per-order tap. They still obey session caps, the allowlist, the kill switch, the max-loss rail and the 0.05% fee. Mainnet stays off; this runs on testnet until you enable mainnet in settings.</div></div>' +
-      '<div style="background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>🔴 Keep this page open.</b> A live bot trades only while the wallet is open on this device — your keys never leave it. Closing or backgrounding the tab pauses it.</div>' +
+      '<div style="background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>' + mi('live', 14) + ' Keep this page open.</b> A live bot trades only while the wallet is open on this device — your keys never leave it. Closing or backgrounding the tab pauses it.</div>' +
       '<div id="al-avail" style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><span class="dim">Checking your ' + esc(base) + ' on ' + esc(laneLabel(lane)) + '…</span></div>' +
       '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"><div class="hint dim" style="font-size:12px;margin-top:4px" id="al-hint"></div></div>' +
       '<button class="btn primary wide" id="al-go">Arm live</button>');
@@ -2685,7 +2692,7 @@
     $('#al-go').onclick = function () {
       var alloc = Number($('#al-alloc').value); if (!(alloc > 0)) { toast('Set an allocation cap', 'bad'); return; }
       if (avail && !(avail.amount > 0)) { toast('No ' + avail.base + ' on ' + laneLabel(lane) + ' to trade with', 'bad'); return; }
-      S.botRunner.armLive(id, { allocationUsd: alloc }).then(function () { toast('🔴 Bot armed live (within $' + alloc + ') — keep this page open', 'good'); closeSheet(); _botListSig = ''; renderBotList(); }).catch(function (e) { toast('Arm failed: ' + (e.message || e), 'bad'); });
+      S.botRunner.armLive(id, { allocationUsd: alloc }).then(function () { toast('Bot armed live (within $' + alloc + ') — keep this page open', 'good', 'live'); closeSheet(); _botListSig = ''; renderBotList(); }).catch(function (e) { toast('Arm failed: ' + (e.message || e), 'bad'); });
     };
   }
   function openArena() {
@@ -2720,7 +2727,7 @@
   }
   VIEWS.moon = function (v) {
     v.innerHTML = '<div class="card"><div class="spread"><div><div class="dim">Your BLOCK</div><div class="hero-bal num" id="mn-bal">—</div><div class="dim" style="font-size:12px" id="mn-balusd"></div></div><div class="col" style="align-items:flex-end;gap:6px"><a class="btn primary sm" href="/buy" target="_blank">Get BLOCK</a><a class="btn sm ghost" href="#receive">Receive</a></div></div></div>' +
-      '<div class="card"><div class="sechead"><h2>🚀 Moon</h2><span class="dim" style="font-size:12px" id="mn-meta"></span></div>' +
+      '<div class="card"><div class="sechead"><h2>' + mi('launch', 17) + ' Moon</h2><span class="dim" style="font-size:12px" id="mn-meta"></span></div>' +
       '<div class="tabs" id="mn-tabs"><div class="tab" data-t="trending">Trending</div><div class="tab" data-t="new">New</div><div class="tab" data-t="gainers">Gainers</div><div class="tab" data-t="bags">My bags</div></div>' +
       '<div id="mn-list" class="list"><div class="empty">Loading the feed…</div></div>' +
       '<p class="dim" style="font-size:12px;margin-top:10px">Tap a token to buy with BLOCK in one step. Trades run on the native AMM, signed on your device. Microcaps can go to zero — never ape more than you can lose.</p></div>';
@@ -2751,7 +2758,7 @@
       var ico = t.logo ? '<img src="' + esc(t.logo) + '" alt="">' : '';
       return '<div class="li moonrow" data-cid="' + esc(t.contract) + '"><span class="ico">' + esc(String(t.symbol || '?').slice(0, 1)) + ico + '</span>' +
         '<span class="col" style="align-items:flex-start;min-width:0"><b>' + esc(t.symbol || '?') + ' <span class="dim" style="font-weight:500;font-size:12px">' + esc(t.name || '') + '</span></b>' +
-        '<span class="dim" style="font-size:12px">liq ' + fmtAmt(t.liquidityBlock, 0) + ' BLOCK' + (t.lpLocked ? ' · 🔒' : ' · unlocked') + (t.ageBlocks != null && t.ageBlocks < 144 ? ' · 🆕' : '') + (pnl && pnl.qty > 0 ? ' · bag ' + fmtAmt(pnl.qty, 2) + (pnl.unrealizedPct != null ? ' (' + Moon.fmtPct(pnl.unrealizedPct) + ')' : '') : '') + '</span></span>' +
+        '<span class="dim" style="font-size:12px">liq ' + fmtAmt(t.liquidityBlock, 0) + ' BLOCK' + (t.lpLocked ? ' · ' + mi('lock', 12) : ' · unlocked') + (t.ageBlocks != null && t.ageBlocks < 144 ? ' · ' + mi('seed', 12) + ' new' : '') + (pnl && pnl.qty > 0 ? ' · bag ' + fmtAmt(pnl.qty, 2) + (pnl.unrealizedPct != null ? ' (' + Moon.fmtPct(pnl.unrealizedPct) + ')' : '') : '') + '</span></span>' +
         '<span style="width:72px;flex:none">' + sparkSvg(t.spark, 72, 36) + '</span>' +
         '<span class="col" style="align-items:flex-end;flex:none"><b class="num">' + fmtPrice(t.priceUsd) + '</b>' + pctChip(t.change24hPct) + '</span></div>';
     }).join('');
@@ -2767,14 +2774,14 @@
       '<div class="spread" style="margin:8px 0 4px"><div><div class="hero-bal num" style="font-size:30px">' + fmtPrice(t.priceUsd) + '</div><div class="dim" style="font-size:12px">' + fmtAmt(t.priceBlock, 8) + ' BLOCK</div></div><div class="col" style="align-items:flex-end;font-size:13px"><span>1h ' + pctChip(t.change1hPct) + '</span><span>24h ' + pctChip(t.change24hPct) + '</span><span>7d ' + pctChip(t.change7dPct) + '</span></div></div>' +
       '<div style="height:70px;margin:6px 0">' + (sparkSvg(t.spark, 320, 70) || '<div class="dim" style="font-size:12px">Chart fills in as 15-minute snapshots record.</div>') + '</div>' +
       '<div class="list" style="margin-bottom:10px"><div class="kv"><span class="muted">Liquidity</span><span class="mono num">' + fmtAmt(t.liquidityBlock, 1) + ' BLOCK' + (t.liquidityUsd ? ' ≈ ' + fmtUsd(t.liquidityUsd) : '') + '</span></div>' +
-      '<div class="kv"><span class="muted">LP lock</span><span class="mono">' + (t.lpLocked ? '🔒 ' + t.lockDaysLeft + 'd left' : 'unlocked') + '</span></div>' +
+      '<div class="kv"><span class="muted">LP lock</span><span class="mono">' + (t.lpLocked ? mi('lock', 13) + ' ' + t.lockDaysLeft + 'd left' : 'unlocked') + '</span></div>' +
       '<div class="kv"><span class="muted">Age</span><span class="mono num">' + (t.ageBlocks != null ? (t.ageBlocks < 144 ? Math.round(t.ageBlocks * 10 / 60) + 'h' : Math.round(t.ageBlocks / 144) + 'd') : '—') + '</span></div>' +
       '<div class="kv"><span class="muted">Contract</span><button class="btn sm ghost" id="mt-copy">' + esc(shortAddr(t.contract)) + ' ' + ic('copy', 13) + '</button></div></div>' +
       (warns.length ? '<div class="banner ' + (warns.some(function (w) { return w.code === 'danger'; }) ? 'danger' : 'warn') + '"><span>' + ic('warn', 18) + '</span><div>' + warns.map(function (w) { return esc(w.text); }).join('<br>') + '</div></div>' : '') +
       '<div id="mt-pos" class="list" style="margin:10px 0"></div>' +
       '<div class="tabs"><div class="tab active" data-s="buy">Buy</div><div class="tab" data-s="sell">Sell</div></div>' +
       '<div id="mt-buy"><div class="row" style="gap:6px;margin-bottom:8px">' + Moon.PRESETS_USD.map(function (u) { return '<button class="btn sm preset' + (u === state.usd ? ' on' : '') + '" data-usd="' + u + '">$' + u + '</button>'; }).join('') + '</div>' +
-      '<div class="field"><label>Amount (USD)</label><input id="mt-usd" inputmode="decimal" value="' + state.usd + '"></div><div id="mt-q" class="muted" style="font-size:13px;min-height:36px"></div><button class="btn primary wide" id="mt-go">🚀 Buy ' + esc(t.symbol || '') + '</button></div>' +
+      '<div class="field"><label>Amount (USD)</label><input id="mt-usd" inputmode="decimal" value="' + state.usd + '"></div><div id="mt-q" class="muted" style="font-size:13px;min-height:36px"></div><button class="btn primary wide" id="mt-go">' + mi('launch', 15) + ' Buy ' + esc(t.symbol || '') + '</button></div>' +
       '<div id="mt-sell" style="display:none"><div class="row" style="gap:6px;margin-bottom:8px">' + [25, 50, 75, 100].map(function (p) { return '<button class="btn sm preset' + (p === state.pct ? ' on' : '') + '" data-pct="' + p + '">' + p + '%</button>'; }).join('') + '</div>' +
       '<input type="range" id="mt-range" class="rangebar" min="1" max="100" value="' + state.pct + '"><div id="mt-sq" class="muted" style="font-size:13px;min-height:36px"></div><button class="btn primary wide" id="mt-sgo">Sell</button></div>' +
       '<p class="dim" style="font-size:11px;margin-top:10px">1% slippage · 0.3% pool fee · gas in BLOCK. Buys above 15% price impact are refused.</p>');
@@ -2828,14 +2835,14 @@
         ? [['Buy', '≈ ' + fmtAmt(q.tokensOut, 2) + ' ' + (t.symbol || '')], ['Pay', fmtAmt(q.blockIn, 4) + ' BLOCK' + (q.usdIn != null ? ' (' + fmtUsd(q.usdIn) + ')' : '')], ['Min received', fmtAmt(Number(q.minOut) / Math.pow(10, t.decimals), 2)], ['Price impact', (q.impactPct || 0).toFixed(2) + '%']]
         : [['Sell', fmtAmt(q.tokensIn, 2) + ' ' + (t.symbol || '')], ['Receive', '≈ ' + fmtAmt(q.blockOut, 4) + ' BLOCK' + (q.usdOut != null ? ' (' + fmtUsd(q.usdOut) + ')' : '')], ['Min received', fmtAmt(Number(q.minOut) / COIN, 4) + ' BLOCK'], ['Price impact', (q.impactPct || 0).toFixed(2) + '%']];
       var warns = Moon.warnings(t).map(function (w) { return w.text; });
-      var ok = await confirmSheet({ title: (side === 'buy' ? '🚀 Buy ' : 'Sell ') + (t.symbol || ''), subtitle: 'Native AMM swap, signed on this device.', lines: lines, warnings: warns, danger: warns.some(function (w) { return /do not buy/i.test(w); }), okText: side === 'buy' ? 'Buy now' : 'Sell now' });
+      var ok = await confirmSheet({ title: (side === 'buy' ? 'Buy ' : 'Sell ') + (t.symbol || ''), subtitle: 'Native AMM swap, signed on this device.', lines: lines, warnings: warns, danger: warns.some(function (w) { return /do not buy/i.test(w); }), okText: side === 'buy' ? 'Buy now' : 'Sell now' });
       if (!ok) { moonTokenSheet(t.contract); return; }
       var prevChain = S.chain; S.chain = 'block';
       try {
         if (!(await ensureGas())) { S.chain = prevChain; moonTokenSheet(t.contract); return; }
         toast('Signing…');
         var r = await Wiring.moon.execute(q, t);
-        toast((side === 'buy' ? '🚀 Bought ' : '💸 Sold ') + (t.symbol || '') + ' · ' + shortAddr(String((r && r.txid) || '')), 'good');
+        toast((side === 'buy' ? 'Bought ' : 'Sold ') + (t.symbol || '') + ' · ' + shortAddr(String((r && r.txid) || '')), 'good', side === 'buy' ? 'launch' : 'money-bag');
         setTimeout(function () { moonRefreshWallet().then(function () { renderMoonHeader(); renderMoonList(); }); }, 2500);
         closeSheet();
       } catch (e) { toast((side === 'buy' ? 'Buy' : 'Sell') + ' failed: ' + (e.message || e), 'bad'); moonTokenSheet(t.contract); }
@@ -2882,7 +2889,7 @@
       });
     }).catch(function () { $('#pro-plans').innerHTML = '<div class="card"><span class="muted">Plan info unavailable right now.</span></div>'; });
   };
-  function featRow(label, f, p, cp) { return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + f + '</td><td class="c good">' + p + '</td><td class="c good">' + cp + '</td></tr>'; }
+  function featRow(label, f, p, cp) { var cell = function (x) { return x === '✓' ? mi('check', 14) : x; }; return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + cell(f) + '</td><td class="c good">' + cell(p) + '</td><td class="c good">' + cell(cp) + '</td></tr>'; }
 
   /* ---------------- EXPORT A PRIVATE KEY (chain-specific, gated) ----------------
    * Reveals ONE chain's private key for the ACTIVE account. Gate: an explicit

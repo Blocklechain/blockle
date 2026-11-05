@@ -268,7 +268,7 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
             title: 'Signature request',
             dappName: req.origin,
             dappUrl: req.origin,
-            dappIcon: '🌐',
+            dappIcon: 'network',
           ),
         );
         if (!ok) {
@@ -299,7 +299,7 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
             title: 'Deploy contract',
             dappName: req.origin,
             dappUrl: req.origin,
-            dappIcon: '🌐',
+            dappIcon: 'network',
             previewHeader: 'Deploy contract · $bytes bytes · gas ${req.gas ?? '200000'}',
           ),
         );

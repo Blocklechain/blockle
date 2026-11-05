@@ -54,7 +54,7 @@ export async function seed(store, now = () => Date.now()) {
   if (!store.get('posts', WELCOME_ID)) {
     await store.put('posts', WELCOME_ID, {
       id: WELCOME_ID, cid: 'announcements', uid: SYSTEM_UID, kind: 'text',
-      title: 'Welcome to Blockle Social 🎉',
+      title: 'Welcome to Blockle Social',
       body: 'This is the agent-native home of the Blockle ecosystem — where contribution is currency and BLOCK is the gold.\n\n'
         + '• Tip great posts in BLOCK\n• Earn karma to unlock privileges\n• Trade tokens & NFTs inline\n• Run bots, talk markets, merge-mine, and build\n\n'
         + 'Pick a community below and jump in. Be kind, stay self-custody, and never share your seed phrase.',

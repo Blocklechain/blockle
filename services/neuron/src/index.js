@@ -109,7 +109,7 @@ async function runValidatorOnce() {
   } catch (e) { console.error("[neuron:validator]", e.message); return; }
   if (!r.minerCount) { console.log("[neuron:validator] no miners in subnet", CFG.subnet); return; }
   console.log(`[neuron:validator] round ${r.round} scored ${r.minerCount} miners:`,
-    r.scored.detail.map((d) => `uid${d.uid}:${d.correct ? "✓" : "✗"}`).join(" "));
+    r.scored.detail.map((d) => `uid${d.uid}:${d.correct ? "ok" : "fail"}`).join(" "));
   for (const step of r.plan) execCli(step);
 }
 

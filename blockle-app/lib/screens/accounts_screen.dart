@@ -20,6 +20,7 @@ import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
 import '../state/wallet_controller.dart';
 import '../theme.dart';
+import '../ui/app_icons.dart';
 import '../widgets/chain_icon.dart';
 import 'wallet/security_sheet.dart';
 
@@ -877,9 +878,13 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Broadcast ✓',
-                      style: TextStyle(
-                          color: Bk.good, fontWeight: FontWeight.w700)),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Text('Broadcast',
+                        style: TextStyle(
+                            color: Bk.good, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 6),
+                    AppIcons.icon('check', size: 15, color: Bk.good),
+                  ]),
                   const SizedBox(height: 4),
                   Text(_okTxid!, style: kMono.copyWith(fontSize: 11)),
                 ],

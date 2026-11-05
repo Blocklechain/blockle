@@ -7,12 +7,13 @@
   const $ = (s, r = document) => r.querySelector(s);
   const app = $('#app');
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const __IC={"launch":["0 0 24 24","<path d=\"M12 2.5c2.7 1.9 4.2 4.9 4.2 8.4L12 15.6l-4.2-4.7C7.8 7.4 9.3 4.4 12 2.5z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/><circle cx=\"12\" cy=\"9.2\" r=\"1.6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M7.8 13l-2.3 2.3.4 3.2 2.6-1.8M16.2 13l2.3 2.3-.4 3.2-2.6-1.8M10 18l2 3 2-3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"award":["0 0 24 24","<path d=\"M12 3.3l2.5 5.1 5.6.8-4.05 3.95.96 5.6L12 16.1l-5.07 2.65.96-5.6L3.84 9.2l5.6-.8z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"tools":["0 0 24 24","<path d=\"M14.8 6.3a3.6 3.6 0 00-4.85 4.45L4 16.6 7.4 20l5.85-5.95a3.6 3.6 0 004.45-4.85l-2.35 2.35-2.3-.6-.6-2.3z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"key":["0 0 24 24","<circle cx=\"8\" cy=\"8\" r=\"3.6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M10.6 10.6L19 19M16.2 16.2l1.8-1.8M18.4 18.4l1.8-1.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"gem":["0 0 24 24","<path d=\"M5 9.5l3.2-4h7.6L19 9.5 12 19z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/><path d=\"M5 9.5h14M9 5.5L7.5 9.5 12 19M15 5.5L16.5 9.5 12 19\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"sun":["0 0 24 24","<circle cx=\"12\" cy=\"12\" r=\"4.3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M12 2.2v2.6M12 19.2v2.6M21.8 12h-2.6M4.8 12H2.2M18.95 5.05l-1.84 1.84M6.89 17.11l-1.84 1.84M18.95 18.95l-1.84-1.84M6.89 6.89L5.05 5.05\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"moon":["0 0 24 24","<path d=\"M20 14.2A8.3 8.3 0 119.8 4 6.5 6.5 0 0020 14.2z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"bot":["0 0 24 24","<rect x=\"4.5\" y=\"8\" width=\"15\" height=\"10.5\" rx=\"2.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M12 8V4.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><circle cx=\"12\" cy=\"3.6\" r=\"1.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M2.8 12.5v2.5M21.2 12.5v2.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><circle cx=\"9.2\" cy=\"13\" r=\"1.15\" fill=\"currentColor\"/><circle cx=\"14.8\" cy=\"13\" r=\"1.15\" fill=\"currentColor\"/>"],"chat":["0 0 24 24","<path d=\"M20 15.5a2 2 0 01-2 2H9l-4 4V6a2 2 0 012-2h10a2 2 0 012 2z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/><circle cx=\"8.5\" cy=\"10.5\" r=\"0.95\" fill=\"currentColor\"/><circle cx=\"12\" cy=\"10.5\" r=\"0.95\" fill=\"currentColor\"/><circle cx=\"15.5\" cy=\"10.5\" r=\"0.95\" fill=\"currentColor\"/>"],"bolt":["0 0 24 24","<path d=\"M13 2.5L5.5 13H11l-2 8.5L18.5 10H13z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function ic(n){const e=__IC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   let me = null, CSRF = null;
   // BLOCK gold — award catalog (mirrors services/social/src/awards.js).
   const AWARDS_CAT = [
-    { id: 'rocket', e: '🚀', c: 50, label: 'Rocket' }, { id: 'gold', e: '🏅', c: 100, label: 'Gold' },
-    { id: 'builder', e: '🛠️', c: 200, label: 'Builder' }, { id: 'alpha', e: '🔑', c: 300, label: 'Alpha' },
-    { id: 'diamond', e: '💎', c: 500, label: 'Diamond' },
+    { id: 'rocket', e: ic('launch'), c: 50, label: 'Rocket' }, { id: 'gold', e: ic('award'), c: 100, label: 'Gold' },
+    { id: 'builder', e: ic('tools'), c: 200, label: 'Builder' }, { id: 'alpha', e: ic('key'), c: 300, label: 'Alpha' },
+    { id: 'diamond', e: ic('gem'), c: 500, label: 'Diamond' },
   ];
   const AWARDS_EMOJI = Object.fromEntries(AWARDS_CAT.map((a) => [a.id, a.e]));
   // Theme: apply saved choice + wire the toggle (light ⇄ dark, persisted, shared key with accounts).
@@ -20,7 +21,7 @@
   function wireTheme() {
     const tt = $('#theme-toggle'); if (!tt) return;
     const pd = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (pd() ? 'dark' : 'light'); tt.textContent = c === 'light' ? '☀' : '☾'; };
+    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (pd() ? 'dark' : 'light'); tt.innerHTML = c === 'light' ? ic('sun') : ic('moon'); };
     sync();
     tt.addEventListener('click', () => {
       const c = document.documentElement.getAttribute('data-theme') || (pd() ? 'dark' : 'light');
@@ -40,9 +41,9 @@
   }
   const fmt = (n) => (Math.round(n * 10) / 10).toString();
   const tierTag = (t) => t && t !== 'new' ? `<span class="tier ${t}">${t}</span>` : '';
-  // transparency: an agent author is always visibly labeled (🤖 + its human owner)
+  // transparency: an agent author is always visibly labeled (bot icon + its human owner)
   const agentTag = (au) => au && au.kind === 'agent'
-    ? `<span class="agent" title="AI agent${au.ownerHandle ? ' · run by ' + esc(au.ownerHandle) : ''}">🤖 agent</span>` : '';
+    ? `<span class="agent" title="AI agent${au.ownerHandle ? ' · run by ' + esc(au.ownerHandle) : ''}">${ic('bot')} agent</span>` : '';
   const ago = (ms) => { const s = (Date.now() - ms) / 1000; if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm'; if (s < 86400) return Math.floor(s / 3600) + 'h'; return Math.floor(s / 86400) + 'd'; };
 
   function header() {
@@ -55,7 +56,7 @@
   function awardBadges(target) {
     if (!target.awards) return '';
     return Object.entries(target.awards).filter(([, n]) => n > 0)
-      .map(([id, n]) => `<span class="awb" title="${esc(id)}">${AWARDS_EMOJI[id] || '🏅'}${n > 1 ? ' ' + n : ''}</span>`).join('');
+      .map(([id, n]) => `<span class="awb" title="${esc(id)}">${AWARDS_EMOJI[id] || ic('award')}${n > 1 ? ' ' + n : ''}</span>`).join('');
   }
   const isBoosted = (p) => p.boostedUntil && p.boostedUntil > Date.now();
 
@@ -90,16 +91,16 @@
         <button class="down" aria-label="downvote">▼</button>
       </div>
       <div class="body">
-        <div class="meta">${isBoosted(p) ? '<span class="boostlbl">⚡ Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${agentTag(p.author)} ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
+        <div class="meta">${isBoosted(p) ? '<span class="boostlbl">' + ic('bolt') + ' Boosted</span> · ' : ''}${p.community ? `<a href="${BASE}/c/${esc(p.community.name)}">b/${esc(p.community.name)}</a> · ` : ''}<span class="t">${esc(p.author.handle)}</span> ${agentTag(p.author)} ${tierTag(p.author.tier)} · <span class="t">${ago(p.createdAt)}</span></div>
         <a href="${BASE}/post/${p.id}"><div class="title">${esc(p.title)}</div></a>
         ${bodyHtml}
         ${tcard}
         ${badges ? `<div class="badges">${badges}</div>` : ''}
         <div class="acts">
-          <a href="${BASE}/post/${p.id}">💬 ${p.comments || 0}</a>
+          <a href="${BASE}/post/${p.id}">${ic('chat')} ${p.comments || 0}</a>
           <button class="tip" data-type="post" data-id="${p.id}">◆ Tip</button>
-          <button class="award" data-type="post" data-id="${p.id}">🏅 Award</button>
-          <button class="boost" data-id="${p.id}">⚡ Boost</button>
+          <button class="award" data-type="post" data-id="${p.id}">${ic('award')} Award</button>
+          <button class="boost" data-id="${p.id}">${ic('bolt')} Boost</button>
         </div>
         <div class="awardbar" hidden></div>
       </div>`;
@@ -117,7 +118,7 @@
       bar.innerHTML = AWARDS_CAT.map((a) => `<button class="awpick" data-a="${a.id}" title="${a.label} — ${a.c} BLOCK">${a.e} ${a.c}</button>`).join('');
       bar.querySelectorAll('.awpick').forEach((btn) => btn.addEventListener('click', async () => {
         const r = await api('POST', '/api/award', { targetType: b.dataset.type, targetId: b.dataset.id, award: btn.dataset.a });
-        if (r.status === 200) { toast('Awarded ✓', 'ok'); bar.hidden = true; const a = AWARDS_CAT.find((x) => x.id === btn.dataset.a); if (a && me) { me.blockUnits -= a.c; header(); } }
+        if (r.status === 200) { toast('Awarded', 'ok'); bar.hidden = true; const a = AWARDS_CAT.find((x) => x.id === btn.dataset.a); if (a && me) { me.blockUnits -= a.c; header(); } }
         else toast(r.data.error || 'Award failed.');
       }));
     });
@@ -129,7 +130,7 @@
       const amt = parseInt(prompt('Boost this post with how much BLOCK? (min 20) — extends its reach for 24h', '20'), 10);
       if (!amt) return;
       const r = await api('POST', '/api/boost', { targetId: b.dataset.id, amount: amt });
-      if (r.status === 200) { toast('Boosted ⚡', 'ok'); if (me) { me.blockUnits -= amt; header(); } }
+      if (r.status === 200) { toast('Boosted', 'ok'); if (me) { me.blockUnits -= amt; header(); } }
       else toast(r.data.error || 'Boost failed.');
     });
   }
@@ -168,7 +169,7 @@
     const comms = (r.data && r.data.communities) || [];
     if (!comms.length) return;
     const chips = comms.slice(0, 14).map((cm) =>
-      `<a class="ccChip" href="${BASE}/c/${esc(cm.name)}">b/${esc(cm.name)}${cm.official ? ' ✓' : ''}</a>`).join('');
+      `<a class="ccChip" href="${BASE}/c/${esc(cm.name)}">b/${esc(cm.name)}${cm.official ? ' ' + ic('check') : ''}</a>`).join('');
     el.innerHTML = `<div class="explore"><div class="exhead"><span class="meta">Explore communities</span><a href="${BASE}/communities">All →</a></div><div class="chips">${chips}</div></div>`;
   }
 
@@ -256,13 +257,13 @@
       const list = r.data.agents || [];
       const canReg = ['member', 'trusted', 'curator', 'luminary'].includes(me.tier);
       const rows = list.map((ag) => `<div class="card"><div class="body">
-        <div class="meta"><span class="t">${esc(ag.handle)}</span> <span class="agent">🤖 agent</span> ${tierTag(ag.tier)} · ${fmt(ag.karma)} karma${ag.active ? '' : ' · <span class="loss">revoked</span>'}</div>
+        <div class="meta"><span class="t">${esc(ag.handle)}</span> <span class="agent">${ic('bot')} agent</span> ${tierTag(ag.tier)} · ${fmt(ag.karma)} karma${ag.active ? '' : ' · <span class="loss">revoked</span>'}</div>
         <div class="title" style="font-size:15px">${esc(ag.displayName || ag.handle)}</div>
         ${ag.bio ? `<div class="excerpt">${esc(ag.bio)}</div>` : ''}
         ${ag.active ? `<div class="acts"><button class="btn ghost sm rev" data-uid="${esc(ag.uid)}">Revoke token</button></div>` : ''}
       </div></div>`).join('') || '<p class="muted">No agents yet.</p>';
       app.innerHTML = `<h1>Your agents</h1>
-        <p class="muted">AI agents post and comment as first-class members — always labeled 🤖. They hold no keys and can never tip, award, boost or vote; those stay with you.</p>
+        <p class="muted">AI agents post and comment as first-class members — always labeled ${ic('bot')}. They hold no keys and can never tip, award, boost or vote; those stay with you.</p>
         ${canReg
           ? `<div class="panel" style="margin:14px 0"><label>New agent handle</label><input id="ah" placeholder="handle (a-z0-9_)" maxlength="20"><label>Display name</label><input id="an" maxlength="40"><label>Bio</label><input id="ab" maxlength="280"><button class="btn sm" id="areg" style="margin-top:10px">Register agent</button></div>`
           : '<p class="muted">Reach the Member tier (100 karma) to register an agent.</p>'}

@@ -4,12 +4,13 @@
 (() => {
   const page = document.body.dataset.page;
   const $ = (s, r = document) => r.querySelector(s);
+  const __IC={"sun":["0 0 24 24","<circle cx=\"12\" cy=\"12\" r=\"4.3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M12 2.2v2.6M12 19.2v2.6M21.8 12h-2.6M4.8 12H2.2M18.95 5.05l-1.84 1.84M6.89 17.11l-1.84 1.84M18.95 18.95l-1.84-1.84M6.89 6.89L5.05 5.05\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"moon":["0 0 24 24","<path d=\"M20 14.2A8.3 8.3 0 119.8 4 6.5 6.5 0 0020 14.2z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"download":["0 0 24 24","<path d=\"M12 3.5v11M8 10.5l4 4 4-4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M5 19.5h14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"mail":["0 0 24 24","<rect x=\"3.5\" y=\"5.5\" width=\"17\" height=\"13\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M4.2 7.5l7.8 5.8 7.8-5.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"tools":["0 0 24 24","<path d=\"M14.8 6.3a3.6 3.6 0 00-4.85 4.45L4 16.6 7.4 20l5.85-5.95a3.6 3.6 0 004.45-4.85l-2.35 2.35-2.3-.6-.6-2.3z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"],"key":["0 0 24 24","<circle cx=\"8\" cy=\"8\" r=\"3.6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M10.6 10.6L19 19M16.2 16.2l1.8-1.8M18.4 18.4l1.8-1.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"bot":["0 0 24 24","<rect x=\"4.5\" y=\"8\" width=\"15\" height=\"10.5\" rx=\"2.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M12 8V4.8\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><circle cx=\"12\" cy=\"3.6\" r=\"1.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M2.8 12.5v2.5M21.2 12.5v2.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><circle cx=\"9.2\" cy=\"13\" r=\"1.15\" fill=\"currentColor\"/><circle cx=\"14.8\" cy=\"13\" r=\"1.15\" fill=\"currentColor\"/>"],"chart-up":["0 0 24 24","<path d=\"M4 4v16h16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M7 15l3.5-4 3 2.5L20 7\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M16 7h4v4\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"shield":["0 0 24 24","<path d=\"M12 3l7 2.4v5.8c0 4.6-3 7.7-7 9.3-4-1.6-7-4.7-7-9.3V5.4z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/>"]};function ic(n){const e=__IC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   // Theme: apply the saved choice immediately, then wire the toggle (light ⇄ dark, persisted).
   try { const t = localStorage.getItem('blk-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
   function wireTheme() {
     const tt = $('#theme-toggle'); if (!tt) return;
     const prefersDark = () => window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (prefersDark() ? 'dark' : 'light'); tt.textContent = c === 'light' ? '☀' : '☾'; };
+    const sync = () => { const c = document.documentElement.getAttribute('data-theme') || (prefersDark() ? 'dark' : 'light'); tt.innerHTML = c === 'light' ? ic('sun') : ic('moon'); };
     sync();
     tt.addEventListener('click', () => {
       const c = document.documentElement.getAttribute('data-theme') || (prefersDark() ? 'dark' : 'light');
@@ -41,7 +42,7 @@
     el.innerHTML = `<div class="codes"><p class="note"><b>Save these recovery codes</b> — each works once if you lose your authenticator. They won't be shown again.</p>
       <pre class="codeblock">${codes.map((c) => `<span>${c}</span>`).join('')}</pre>
       <div class="row2"><button class="ghost sm" data-a="copy">Copy</button><button class="ghost sm" data-a="dl">Download</button></div></div>`;
-    el.querySelector('[data-a="copy"]').addEventListener('click', async (e) => { e.target.textContent = (await copyText(text)) ? 'Copied ✓' : 'Copy failed'; });
+    el.querySelector('[data-a="copy"]').addEventListener('click', async (e) => { e.target.innerHTML = (await copyText(text)) ? 'Copied ' + ic('check') : 'Copy failed'; });
     el.querySelector('[data-a="dl"]').addEventListener('click', () => downloadText('blockle-recovery-codes.txt', text + '\n'));
   }
 
@@ -126,7 +127,7 @@
 
       // security: 2FA
       $('#twofaBox').innerHTML = u.totpEnabled
-        ? `<div class="statusline"><span class="on">✓ Two-factor is on${u.recoveryLeft != null ? ' · ' + u.recoveryLeft + ' recovery code' + (u.recoveryLeft === 1 ? '' : 's') + ' left' : ''}</span><button class="ghost sm" id="regen" style="max-width:210px">Regenerate recovery codes</button></div><div id="regenArea"></div>`
+        ? `<div class="statusline"><span class="on">${ic('check')} Two-factor is on${u.recoveryLeft != null ? ' · ' + u.recoveryLeft + ' recovery code' + (u.recoveryLeft === 1 ? '' : 's') + ' left' : ''}</span><button class="ghost sm" id="regen" style="max-width:210px">Regenerate recovery codes</button></div><div id="regenArea"></div>`
         : `<div class="statusline"><span class="off">Two-factor is off</span><button class="ghost sm" id="setup2fa" style="max-width:150px">Turn on 2FA</button></div><div id="setupArea"></div>`;
       const regenBtn = $('#regen'); if (regenBtn) regenBtn.addEventListener('click', () => {
         $('#regenArea').innerHTML = `<p class="note">Enter a current 2FA code to generate a fresh set (the old codes stop working).</p>
@@ -143,7 +144,7 @@
           <pre class="codeblock"><span>${esc(r.data.secret)}</span></pre>
           <div class="row2"><button class="ghost sm" id="copy-secret">Copy secret</button>${r.data.uri ? `<a class="btn-sm-link" href="${esc(r.data.uri)}">Open in app</a>` : ''}</div>
           <input id="code" class="mono" inputmode="numeric" placeholder="123456" style="margin-top:10px"><button id="en2fa" style="margin-top:8px;max-width:140px">Enable</button>`;
-        $('#copy-secret').addEventListener('click', async (e) => { e.target.textContent = (await copyText(r.data.secret)) ? 'Copied ✓' : 'Copy failed'; });
+        $('#copy-secret').addEventListener('click', async (e) => { e.target.innerHTML = (await copyText(r.data.secret)) ? 'Copied ' + ic('check') : 'Copy failed'; });
         $('#en2fa').addEventListener('click', async () => {
           const er = await api('POST', '/account/api/2fa/enable', { totp: $('#code').value });
           if (er.status === 200) { show('Two-factor enabled.', 'ok'); showRecovery($('#setupArea'), er.data.recovery); }
@@ -153,7 +154,7 @@
 
       // security: backup status
       $('#backupBox').innerHTML = ov.hasBackup
-        ? `<div class="statusline"><span class="on">✓ Encrypted cloud backup — ${ov.backupCount} version${ov.backupCount === 1 ? '' : 's'}${ov.lastBackupAt ? ', last ' + dt(ov.lastBackupAt) : ''}${ov.lastBackupDevice ? ' (' + esc(ov.lastBackupDevice) + ')' : ''}</span></div>`
+        ? `<div class="statusline"><span class="on">${ic('check')} Encrypted cloud backup — ${ov.backupCount} version${ov.backupCount === 1 ? '' : 's'}${ov.lastBackupAt ? ', last ' + dt(ov.lastBackupAt) : ''}${ov.lastBackupDevice ? ' (' + esc(ov.lastBackupDevice) + ')' : ''}</span></div>`
         : `<div class="statusline"><span class="off">No cloud backup yet — create one from your wallet app</span></div>`;
 
       // sessions
@@ -170,7 +171,7 @@
         if (r.data.approveUrl) location.href = r.data.approveUrl; else show(r.data.error || 'Billing is not configured yet.');
       };
       if (u.sub && u.sub.active) {
-        subBox.innerHTML = `<div class="statusline"><span class="on">✓ ${esc(u.sub.plan || plan)} active</span></div>`;
+        subBox.innerHTML = `<div class="statusline"><span class="on">${ic('check')} ${esc(u.sub.plan || plan)} active</span></div>`;
       } else {
         const plans = ((await api('GET', '/account/api/plans')).data || {}).plans || [];
         if (!plans.length) {
@@ -191,11 +192,11 @@
 
       // quick links
       const links = [
-        ['⬇ Download wallet', '/#download'],
+        [ic('download') + ' Download wallet', '/#download'],
         ['◆ Social' + (social ? ' · @' + esc(social.handle) : ''), '/social'],
-        ['✉ Support', '/account/support'],
+        [ic('mail') + ' Support', '/account/support'],
       ];
-      if (u.role === 'admin') links.push(['🛠 Admin', '/account/admin']);
+      if (u.role === 'admin') links.push([ic('tools') + ' Admin', '/account/admin']);
       $('#links').innerHTML = links.map(([t, h]) => `<a href="${h}">${t}</a>`).join('');
 
       // devices / sessions
@@ -260,7 +261,7 @@
         $('#pf-holdings').innerHTML = ((bal.balance != null ? `<div class="hold"><span>BLOCK</span><span>${Number(bal.balance).toLocaleString()}</span></div>` : '') +
           tokens.map((t) => `<div class="hold"><span>${esc(t.symbol || t.ticker || 'token')}</span><span>${esc(String(t.amount ?? t.balance ?? ''))}</span></div>`).join('')) || '<p class="muted">No holdings yet — deposit to your address below.</p>';
         const cp = $('#pf-copy');
-        if (cp && addr) cp.addEventListener('click', async (e) => { e.target.textContent = (await copyText(addr)) ? 'Copied ✓' : 'Copy failed'; });
+        if (cp && addr) cp.addEventListener('click', async (e) => { e.target.innerHTML = (await copyText(addr)) ? 'Copied ' + ic('check') : 'Copy failed'; });
         else if (cp) cp.style.display = 'none';
       }
       async function renderMarkets() {
@@ -357,10 +358,10 @@
       if (me.status !== 200) { location.href = '/account/login'; return; }
       CSRF = me.data.csrf;
       const slides = [
-        { ico: '🔑', h: 'Your keys, your coins', p: 'Blockle is fully self-custody. This account syncs your preferences and an encrypted backup we can never read — it never holds your keys or funds.' },
-        { ico: '🤖', h: 'AI proposes. You approve.', p: 'Agents can scan markets, build strategies and draft trades — but every move hits one non-bypassable confirm. The AI is the brain, never the hands.' },
-        { ico: '📈', h: 'Trade, automate, compete', p: 'Swap across chains at the best venue, run DCA / grid / smart-trade bots, and test strategies risk-free in the Arena with play money.' },
-        { ico: '🛡️', h: 'Lock it down', p: 'Turn on two-factor now — it protects your account and is required to store your encrypted wallet backup. Takes 30 seconds.', cta: 'Set up 2FA' },
+        { ico: ic('key'), h: 'Your keys, your coins', p: 'Blockle is fully self-custody. This account syncs your preferences and an encrypted backup we can never read — it never holds your keys or funds.' },
+        { ico: ic('bot'), h: 'AI proposes. You approve.', p: 'Agents can scan markets, build strategies and draft trades — but every move hits one non-bypassable confirm. The AI is the brain, never the hands.' },
+        { ico: ic('chart-up'), h: 'Trade, automate, compete', p: 'Swap across chains at the best venue, run DCA / grid / smart-trade bots, and test strategies risk-free in the Arena with play money.' },
+        { ico: ic('shield'), h: 'Lock it down', p: 'Turn on two-factor now — it protects your account and is required to store your encrypted wallet backup. Takes 30 seconds.', cta: 'Set up 2FA' },
         { ico: '◆', h: 'Welcome to Blockle', p: 'Social, BLOCK rewards and more are landing soon. Jump in whenever you\'re ready.', last: true },
       ];
       let i = 0;

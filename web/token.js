@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   var id = (location.pathname.split('/')[2] || '').toLowerCase();
+  var __BLIC={"lock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 018 0v3.1\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"unlock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 017.7-1.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function blIco(n){var e=__BLIC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   var COIN = 100000000, SWAP_FEE = 0.003, SLIP = 0.01, BLOCK_SECS = 600;
   var pool = null, meta = null, logo = null, tSide = 'buy';
   var $ = function (x) { return document.getElementById(x); };
@@ -82,7 +83,7 @@
         '<div class="card"><div class="hero">' + avatar +
           '<div><div class="hname">' + name + '</div><div class="hsym">$' + sym + '</div>' +
           '<div class="price"><span class="v" id="price">' + (p != null ? fmt(p, 8) : '—') + '</span><span class="u">BLOCK</span><span class="chg" id="chg"></span></div>' +
-          '<span class="badge ' + (locked ? 'locked' : 'unlocked') + '">' + (locked ? '🔒 LP locked · ' + dur(lockBlocks) + ' left' : '🔓 LP unlocked') + '</span>' +
+          '<span class="badge ' + (locked ? 'locked' : 'unlocked') + '">' + (locked ? blIco('lock') + ' LP locked · ' + dur(lockBlocks) + ' left' : blIco('unlock') + ' LP unlocked') + '</span>' +
           '</div></div></div>' +
         '<div class="card"><canvas id="chart" width="600" height="200"></canvas><p class="note" id="chartnote">Loading price history…</p></div>' +
         '<div class="card"><div class="stats">' +
@@ -163,7 +164,7 @@
         minOut = BigInt(Math.floor(amountOut(raw, tr, br) * (1 - SLIP) * COIN)).toString();
       }
       var res = await window.blockle.swap(id, tSide, amountIn, minOut, 200000);
-      btn.textContent = 'Submitted ✓';
+      btn.innerHTML = 'Submitted ' + blIco('check');
       setTimeout(function () { btn.disabled = false; syncSide(); load(); }, 1500);
     } catch (e) {
       btn.disabled = false; syncSide();

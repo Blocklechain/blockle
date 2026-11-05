@@ -102,10 +102,10 @@
     <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="bfee">—</span></div>
     <div class="stat"><span class="k">Total debited from your bank</span><span class="v" id="btot">—</span></div>
     <label class="fld" for="baddr">Deliver USDB to your Blockle wallet</label>
-<button class="plaid" id="bwallet" type="button" style="margin-bottom:8px">🔌 Connect Blockle wallet</button>
+<button class="plaid" id="bwallet" type="button" style="margin-bottom:8px"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M9 3.5v4.5M15 3.5v4.5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M6.8 8h10.4v2.2a5.2 5.2 0 01-10.4 0z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="M12 15.5v5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg> Connect Blockle wallet</button>
     <input class="t" id="baddr" placeholder="block1…" spellcheck="false" autocomplete="off">
     <label class="fld">Your bank</label>
-    <button class="plaid" id="bplaid" type="button">🔗 Connect bank with Plaid</button>
+    <button class="plaid" id="bplaid" type="button"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M9.5 14.5l5-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M8.3 12.2l-2 2a3.6 3.6 0 005.1 5.1l2-2M15.7 11.8l2-2a3.6 3.6 0 00-5.1-5.1l-2 2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg> Connect bank with Plaid</button>
     <div class="connected" id="bconn" style="display:none"></div>
     <button class="cta" id="buyBtn">Buy USDB</button>
     <div class="msg" id="buyMsg"></div>
@@ -120,14 +120,14 @@
     <div class="break"></div>
     <div class="stat"><span class="k">Fee (3.7%)</span><span class="v" id="rfee">—</span></div>
     <label class="fld">Your bank (receives the payout)</label>
-    <button class="plaid" id="rplaid" type="button">🔗 Connect bank with Plaid</button>
+    <button class="plaid" id="rplaid" type="button"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M9.5 14.5l5-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M8.3 12.2l-2 2a3.6 3.6 0 005.1 5.1l2-2M15.7 11.8l2-2a3.6 3.6 0 00-5.1-5.1l-2 2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg> Connect bank with Plaid</button>
     <div class="connected" id="rconn" style="display:none"></div>
     <button class="cta" id="redeemBtn" style="background:linear-gradient(135deg,#9A9AB5,#5a6475);color:#fff">Prepare redemption</button>
     <div class="msg" id="redeemMsg"></div>
     <div class="note">Redemption is signed in your <b>Blockle wallet</b>: it burns your USDB on-chain (no custody) and the USD is ACH-credited to your bank. This page prepares the request; approve the burn in your wallet to complete it.</div>
   </div>
 
-  <div class="rail">⛓ on-chain mint/burn · <b>Modern Treasury</b> ACH rails · fully reserved</div>
+  <div class="rail"><svg class="bl-ico" viewBox="0 0 24 24" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none"><path d="M9.5 14.5l5-5" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/><path d="M8.3 12.2l-2 2a3.6 3.6 0 005.1 5.1l2-2M15.7 11.8l2-2a3.6 3.6 0 00-5.1-5.1l-2 2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg> on-chain mint/burn · <b>Modern Treasury</b> ACH rails · fully reserved</div>
 
   <div class="card" id="statusCard">
     <div class="stat"><span class="k">Supply (on-chain)</span><span class="v" id="sSupply">…</span></div>
@@ -146,6 +146,7 @@
 <script>
 const API='/api/usdb';
 const $=id=>document.getElementById(id);
+var __IC={"plug":["0 0 24 24","<path d=\"M9 3.5v4.5M15 3.5v4.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M6.8 8h10.4v2.2a5.2 5.2 0 01-10.4 0z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linejoin=\"round\"/><path d=\"M12 15.5v5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"link":["0 0 24 24","<path d=\"M9.5 14.5l5-5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M8.3 12.2l-2 2a3.6 3.6 0 005.1 5.1l2-2M15.7 11.8l2-2a3.6 3.6 0 00-5.1-5.1l-2 2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"],"check-circle":["0 0 24 24","<circle cx=\"12\" cy=\"12\" r=\"8.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 12.2l2.6 2.6 5.4-5.6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function ic(n){var e=__IC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
 const fmt=n=>'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 let qt=null;
 function debounce(fn){clearTimeout(qt);qt=setTimeout(fn,180);}
@@ -183,8 +184,8 @@ const ext={buy:null,redeem:null};
 async function plaidConnect(which){
   const btn=which==='buy'?$('bplaid'):$('rplaid');
   const conn=which==='buy'?$('bconn'):$('rconn');
-  btn.disabled=true;const label=btn.textContent;btn.textContent='Opening Plaid…';
-  function fail(msg){conn.style.display='flex';conn.style.color='var(--bad)';conn.textContent=msg;btn.disabled=false;btn.textContent=label;}
+  btn.disabled=true;const label=btn.innerHTML;btn.textContent='Opening Plaid…';
+  function fail(msg){conn.style.display='flex';conn.style.color='var(--bad)';conn.textContent=msg;btn.disabled=false;btn.innerHTML=label;}
   try{
     const lt=await (await fetch(API+'/plaid/link-token',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).json();
     if(lt.error||!lt.linkToken) throw new Error(lt.error||'no link token');
@@ -199,12 +200,12 @@ async function plaidConnect(which){
           if(c.error||!c.externalAccountId) throw new Error(c.error||'connect failed');
           ext[which]=c.externalAccountId;
           conn.style.display='flex';conn.style.color='var(--good)';
-          conn.innerHTML='✓ '+inst+' '+(acct.mask?'••'+acct.mask:'')+' connected <span class="chg">change</span>';
-          conn.querySelector('.chg').addEventListener('click',()=>{ext[which]=null;conn.style.display='none';btn.style.display='flex';btn.disabled=false;btn.textContent=label;});
+          conn.innerHTML=ic('check')+' '+inst+' '+(acct.mask?'••'+acct.mask:'')+' connected <span class="chg">change</span>';
+          conn.querySelector('.chg').addEventListener('click',()=>{ext[which]=null;conn.style.display='none';btn.style.display='flex';btn.disabled=false;btn.innerHTML=label;});
           btn.style.display='none';
         }catch(e){ fail('Connect failed: '+e.message); }
       },
-      onExit:()=>{ if(!ext[which]){btn.disabled=false;btn.textContent=label;} }
+      onExit:()=>{ if(!ext[which]){btn.disabled=false;btn.innerHTML=label;} }
     });
     handler.open();
   }catch(e){ fail(e.message); }
@@ -214,14 +215,14 @@ $('rplaid').addEventListener('click',()=>plaidConnect('redeem'));
 
 // Connect a Blockle wallet (browser extension) to auto-fill the delivery address.
 $('bwallet').addEventListener('click',async()=>{
-  const b=$('bwallet');const orig='🔌 Connect Blockle wallet';
-  if(!window.blockle){b.textContent='Blockle extension not found — paste an address below';setTimeout(()=>b.textContent=orig,3000);return;}
+  const b=$('bwallet');const orig=ic('plug')+' Connect Blockle wallet';
+  if(!window.blockle){b.textContent='Blockle extension not found — paste an address below';setTimeout(()=>b.innerHTML=orig,3000);return;}
   b.disabled=true;b.textContent='Connecting…';
   try{
     const acct=await window.blockle.connect();
     const addr=(typeof acct==='string'?acct:(acct&&(acct.address||(Array.isArray(acct)&&acct[0]))))||window.blockle.selectedAddress;
-    if(addr){$('baddr').value=addr;b.textContent='✓ '+addr.slice(0,10)+'…'+addr.slice(-5);}else{b.textContent=orig;}
-  }catch(e){b.textContent=orig;}finally{b.disabled=false;}
+    if(addr){$('baddr').value=addr;b.innerHTML=ic('check')+' '+addr.slice(0,10)+'…'+addr.slice(-5);}else{b.innerHTML=orig;}
+  }catch(e){b.innerHTML=orig;}finally{b.disabled=false;}
 });
 
 $('buyBtn').addEventListener('click',async()=>{
@@ -252,7 +253,7 @@ $('buyBtn').addEventListener('click',async()=>{
       $('usub').textContent='tx '+String(j.txid).slice(0,14)+'… · confirming ('+Math.round((Date.now()-t0)/1000)+'s)';
     }
     const el=$('uload');el.className='usdb-load done';
-    if(confirmed){el.querySelector('.sp').textContent='✓';$('ulb').innerHTML='Confirmed — <b>'+j.amountUsdb+' test USDB</b> delivered to your wallet';$('usub').innerHTML='balance '+finalBal+' USDB · tx '+String(j.txid).slice(0,18)+'…';}
+    if(confirmed){el.querySelector('.sp').innerHTML=ic('check');$('ulb').innerHTML='Confirmed — <b>'+j.amountUsdb+' test USDB</b> delivered to your wallet';$('usub').innerHTML='balance '+finalBal+' USDB · tx '+String(j.txid).slice(0,18)+'…';}
     else{el.querySelector('.sp').textContent='↻';$('ulb').innerHTML='Submitted — <b>'+j.amountUsdb+' test USDB</b> on the way';$('usub').textContent='tx '+String(j.txid).slice(0,18)+'… · still confirming';}
   }catch(e){m.className='msg bad';m.textContent=e.message||String(e);}
   finally{btn.disabled=false;btn.textContent='Buy USDB';}
@@ -268,7 +269,7 @@ $('redeemBtn').addEventListener('click',async()=>{
     const r=await fetch(API+'/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amountUsd:usd,externalAccountId:ext.redeem})});
     const j=await r.json();if(j.error)throw new Error(j.error);
     if(j.dryRun){m.className='msg';m.innerHTML='Demo quote: redeeming '+usd+' USDB pays <b>'+fmt(j.payoutUsd)+'</b> to your bank (fee '+fmt(j.feeUsd)+'). Issuance is not enabled in this demo.';}
-    else{m.className='msg ok';m.innerHTML='✅ Redemption prepared. Open your <b>Blockle wallet → USDB → Redeem</b> and approve the burn; $'+j.estPayoutUsd+' will be ACH-credited to your bank.';}
+    else{m.className='msg ok';m.innerHTML=ic('check-circle')+' Redemption prepared. Open your <b>Blockle wallet → USDB → Redeem</b> and approve the burn; $'+j.estPayoutUsd+' will be ACH-credited to your bank.';}
   }catch(e){m.className='msg bad';m.textContent=e.message||String(e);}
   finally{btn.disabled=false;btn.textContent='Prepare redemption';}
 });

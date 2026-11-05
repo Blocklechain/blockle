@@ -18,7 +18,7 @@
 // ===========================================================================
 //
 // Pieces (all money base-unit/BigInt-exact, micro-dollar integer basis):
-//   • PlayBalance    — a virtual, labeled grant (default 🪙10,000 PLAY) that can
+//   • PlayBalance    — a virtual, labeled grant (default 10,000 PLAY) that can
 //                      never become real (convertToReal throws).
 //   • scenario feed  — canonical price paths LOADED from docs/arena-vectors.json
 //                      (bull/crab/bear/crash/pump); never regenerated for the
@@ -53,7 +53,7 @@
   // Everything in the Arena is PLAY money. These labels appear everywhere a
   // balance or PnL is shown. They are not a currency with any real value.
   var PLAY_LABEL = 'PLAY';
-  var PLAY_SYMBOL = '🪙';
+  var PLAY_SYMBOL = '◆';
   var DEFAULT_GRANT = 10000; // play dollars
   var SIMULATION_ONLY = true; // structural marker; Arena can never go live
 

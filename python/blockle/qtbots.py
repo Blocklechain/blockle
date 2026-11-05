@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import agent as agentpkg
+from .icons import apply_button_icon, icon_html, svg_label
 from .agent import arena as arena_mod
 from .agent import bot_templates as templates_mod
 from .agent import bots as bots_mod
@@ -1047,7 +1048,7 @@ class BotCard(QFrame):
                 if shown >= 4:
                     break
                 shown += 1
-                mark = "✓" if c.get("traded") else "·"
+                mark = "●" if c.get("traded") else "·"
                 line = QLabel(f"{mark} {c.get('pair')}  {c.get('strategy') or '—'}  "
                               f"{round(float(c.get('score') or 0), 2)}bps  "
                               f"{'traded' if c.get('traded') else c.get('reason')}")
@@ -1563,8 +1564,10 @@ class CreatePanel(QWidget):
         self.pair_mode_group = QButtonGroup(self)
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
-        self.ai_mode_btn = QPushButton("🤖 Let the AI choose pairs")
-        self.manual_mode_btn = QPushButton("✎ I'll pick a pair")
+        self.ai_mode_btn = QPushButton("Let the AI choose pairs")
+        apply_button_icon(self.ai_mode_btn, "bot")
+        self.manual_mode_btn = QPushButton("I'll pick a pair")
+        apply_button_icon(self.manual_mode_btn, "edit")
         for b, mode in ((self.ai_mode_btn, "ai"), (self.manual_mode_btn, "manual")):
             b.setObjectName("seg")
             b.setCheckable(True)
@@ -1709,7 +1712,8 @@ class CreatePanel(QWidget):
         self.paper_btn = QPushButton("▶  Start in paper")
         self.paper_btn.setObjectName("primary")
         self.paper_btn.clicked.connect(self._start_paper)
-        self.live_btn = QPushButton("⚡ Go live…")
+        self.live_btn = QPushButton("Go live…")
+        apply_button_icon(self.live_btn, "bolt")
         self.live_btn.clicked.connect(self._go_live)
         actions.addWidget(self.paper_btn, 1)
         actions.addWidget(self.live_btn)
@@ -2532,7 +2536,7 @@ class DetailPanel(QWidget):
         w = QWidget()
         row = QHBoxLayout(w)
         row.setContentsMargins(0, 6, 0, 6)
-        ring = QLabel({"done": "✓", "active": "●", "pending": "▲"}.get(st["state"], "•"))
+        ring = QLabel({"done": "●", "active": "●", "pending": "▲"}.get(st["state"], "•"))
         color = {"done": self.tok["gain"], "active": self.tok["accent"],
                  "pending": self.tok["ink_faint"]}.get(st["state"], self.tok["ink_faint"])
         ring.setStyleSheet(f"color:{color}; font-weight:800; font-size:14px;")
@@ -2652,8 +2656,9 @@ class DetailPanel(QWidget):
 # NEVER touches a key, vault, gate or broadcast. Everything is driven by the    #
 # real :class:`~blockle.agent.arena.ArenaProfile` over the shared fixture.      #
 # =========================================================================== #
-_SCEN_LABELS = [("bull", "📈 Bull"), ("crab", "🦀 Crab"), ("bear", "📉 Bear"),
-                ("crash", "💥 Flash-crash"), ("pump", "🚀 Pump & fade")]
+_SCEN_LABELS = [("bull", "chart-up", "Bull"), ("crab", "crab", "Crab"),
+                ("bear", "chart-down", "Bear"), ("crash", "boom", "Flash-crash"),
+                ("pump", "launch", "Pump & fade")]
 
 
 class ArenaPanel(QWidget):
@@ -2688,8 +2693,7 @@ class ArenaPanel(QWidget):
         bal = _hline_card()
         bl = QHBoxLayout(bal)
         bl.setContentsMargins(16, 12, 18, 12)
-        coin = QLabel("🪙")
-        coin.setStyleSheet("font-size:26px;")
+        coin = svg_label("coin", 24)
         bl.addWidget(coin)
         bv = QVBoxLayout()
         bv.setSpacing(1)
@@ -2778,8 +2782,9 @@ class ArenaPanel(QWidget):
         scen.setContentsMargins(0, 0, 0, 0)
         scen.setSpacing(6)
         self.scen_group = QButtonGroup(self)
-        for key, label in _SCEN_LABELS:
+        for key, icon, label in _SCEN_LABELS:
             b = QPushButton(label)
+            apply_button_icon(b, icon)
             b.setObjectName("scen")
             b.setCheckable(True)
             b.setChecked(key == "bull")
@@ -2814,7 +2819,8 @@ class ArenaPanel(QWidget):
         foot.addStretch(1)
         sv.addLayout(foot)
 
-        disc = QLabel("⚠ " + self.bc.vectors.get("disclaimer", "Simulation with play funds — not "
+        disc = QLabel(icon_html("warning") + " " + self.bc.vectors.get(
+                      "disclaimer", "Simulation with play funds — not "
                       "financial advice. Simulated performance does not predict real results."))
         disc.setObjectName("disclaim")
         disc.setWordWrap(True)
@@ -2827,7 +2833,7 @@ class ArenaPanel(QWidget):
         mv.setContentsMargins(18, 16, 18, 16)
         mv.setSpacing(8)
         mh = QHBoxLayout()
-        mt = QLabel("🎯 Mission")
+        mt = QLabel(icon_html("target") + " Mission")
         mt.setStyleSheet("font-size:14px; font-weight:800;")
         mh.addWidget(mt)
         mh.addStretch(1)
@@ -2860,7 +2866,8 @@ class ArenaPanel(QWidget):
         lb_note.setObjectName("disclaim")
         mv.addWidget(lb_note)
 
-        self.use_real = QPushButton("✓  Use this strategy for real (starts in paper)")
+        self.use_real = QPushButton("Use this strategy for real (starts in paper)")
+        apply_button_icon(self.use_real, "check")
         self.use_real.setObjectName("primary")
         self.use_real.clicked.connect(self._use_for_real)
         mv.addWidget(self.use_real)
@@ -3112,20 +3119,20 @@ class ArenaPanel(QWidget):
         if mission:
             self.mission_reward.setText(f"+{mission['rewardXp']} XP")
             done = mission["id"] in profile.missions_completed
-            self.mission_goal.setText(("✓ " if done else "") + mission["desc"])
+            self.mission_goal.setText((icon_html("check") + " " if done else "") + mission["desc"])
 
         # badges
         while self.badges_row.count():
             it = self.badges_row.takeAt(0)
             if it.widget():
                 it.widget().deleteLater()
-        icons = {"first_run": "🎓", "green_run": "💚", "high_score": "🎯",
-                 "diamond_hands": "🛡️", "all_scenarios": "🌍", "veteran": "💎"}
+        badge_icons = {"first_run": "learn", "green_run": "heart", "high_score": "target",
+                       "diamond_hands": "shield", "all_scenarios": "globe", "veteran": "gem"}
         for b in arena_mod.BADGES:
             earned = b["id"] in profile.badges
-            lb = QLabel(icons.get(b["id"], "🏅"))
+            lb = svg_label(badge_icons.get(b["id"], "award"), 22,
+                           None if earned else "#555555")
             lb.setToolTip(f"{b['name']} — {b['desc']}" + ("" if earned else "  (locked)"))
-            lb.setStyleSheet("font-size:22px;" + ("" if earned else "color:#555;"))
             if not earned:
                 lb.setEnabled(False)
             self.badges_row.addWidget(lb)
@@ -3223,7 +3230,8 @@ class BotsPanel(QWidget):
         header.addWidget(dexpill)
         header.addStretch(1)
 
-        theme_btn = QPushButton("☾" if self.theme == "dark" else "☀")
+        theme_btn = QPushButton()
+        apply_button_icon(theme_btn, "moon" if self.theme == "dark" else "sun")
         theme_btn.setFixedWidth(40)
         theme_btn.setToolTip("Toggle light / dark theme")
         theme_btn.clicked.connect(self._toggle_theme)
@@ -3247,7 +3255,7 @@ class BotsPanel(QWidget):
         self.tabs.addTab(self.cockpit, "Cockpit")
         self.tabs.addTab(self.create, "Create a bot")
         self.tabs.addTab(self.detail, "Bot detail")
-        self.tabs.addTab(self.arena, "Arena ⬤ PLAY")
+        self.tabs.addTab(self.arena, "Arena · PLAY")
         root.addWidget(self.tabs, 1)
 
         # wiring between surfaces
@@ -3274,7 +3282,7 @@ class BotsPanel(QWidget):
     def _toggle_theme(self):
         self.theme = "light" if self.theme == "dark" else "dark"
         self.tok = TOKENS_DARK if self.theme == "dark" else TOKENS_LIGHT
-        self.theme_btn.setText("☾" if self.theme == "dark" else "☀")
+        apply_button_icon(self.theme_btn, "moon" if self.theme == "dark" else "sun")
         for p in (self.cockpit, self.create, self.detail, self.arena):
             p.set_tokens(self.tok)
         self.setStyleSheet(build_qss(self.tok))

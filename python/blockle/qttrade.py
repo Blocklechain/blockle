@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
+from .icons import icon_html
+
 AMM = "https://blockle.org/api/amm"
 CHAIN_OF = {"SOL": "solana", "ETH": "ethereum", "BTC": "bitcoin", "LTC": "litecoin", "DOGE": "dogecoin"}
 
@@ -314,7 +316,7 @@ class TradeTab(QWidget):
             self.status.setText("Paying out…")
         elif st == "settled":
             got = _whole(it.get("executedOutBase") or (it.get("quote") or {}).get("outBase", 0), out_dec)
-            self.status.setText("✓ Done — received %.6f %s" % (got, it.get("payoutAsset")))
+            self.status.setText(icon_html("check") + " Done — received %.6f %s" % (got, it.get("payoutAsset")))
             self._poll.stop()
             self.intent_id = None
             self.amt.clear()

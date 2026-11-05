@@ -32,6 +32,12 @@
 (function (global) {
   'use strict';
 
+  // Custom SVG icon set (icons.js). Browser: global loaded before this file;
+  // node tests: require it directly. Returns '' for unknown names (never throws).
+  var icon = (global && global.BlockleIcons && global.BlockleIcons.icon)
+    ? global.BlockleIcons.icon
+    : (function () { try { return require('../icons.js').icon; } catch (_) { return function () { return ''; }; } })();
+
   var UI = null;                 // BlockleUI (show/toast/route/$/$$)
   var runner = null;             // AgentBotRunner instance (built on unlock)
   var activeTab = 'cockpit';
@@ -700,7 +706,7 @@
         var c = cands[i];
         var worthy = c.reason === 'worthy';
         var tag = worthy ? 'traded' : esc(String(c.reason));
-        var ring = worthy ? '✓' : '○';
+        var ring = worthy ? icon('check') : '○';
         rows += '<li class="bstep' + (worthy ? ' done' : '') + '"><span class="bring">' + ring + '</span>' +
           '<div><div class="blead num">' + esc(String(c.pair || '—')) + ' <span class="bchip">' + esc(String(c.strategy || '—')) + '</span></div>' +
           '<div class="bmeta num">score ' + esc(fmtBps(c.score)) + 'bps · edge ' + esc(fmtBps(c.edgeBps)) + 'bps · <b>' + tag + '</b></div></div></li>';
@@ -730,12 +736,12 @@
   // CREATE
   // ===========================================================================
   var TPL_META = {
-    conservative_dca: { icon: '🛡', ty: 'DCA' },
-    aggressive_dca: { icon: '⚡', ty: 'DCA' },
+    conservative_dca: { icon: icon('shield'), ty: 'DCA' },
+    aggressive_dca: { icon: icon('bolt'), ty: 'DCA' },
     wide_grid: { icon: '▦', ty: 'Grid' },
-    scalp_grid: { icon: '⚡', ty: 'Grid' },
+    scalp_grid: { icon: icon('bolt'), ty: 'Grid' },
     block_accumulator: { icon: '◆', ty: 'DCA' },
-    scan_and_trade: { icon: '🛰', ty: 'Scanner' },
+    scan_and_trade: { icon: icon('satellite'), ty: 'Scanner' },
   };
 
   // The profit-currency <option> list, with the current selection marked.
@@ -760,8 +766,8 @@
     var ai = create.pairMode !== 'manual';
     var modeToggle =
       '<div class="bpairmode bseg" role="group" aria-label="Pair selection mode">' +
-        '<button type="button" data-pairmode="ai" aria-pressed="' + ai + '">🤖 Let the AI choose pairs</button>' +
-        '<button type="button" data-pairmode="manual" aria-pressed="' + (!ai) + '">✎ I\'ll pick a pair</button>' +
+        '<button type="button" data-pairmode="ai" aria-pressed="' + ai + '">' + icon('bot') + ' Let the AI choose pairs</button>' +
+        '<button type="button" data-pairmode="manual" aria-pressed="' + (!ai) + '">' + icon('edit') + ' I\'ll pick a pair</button>' +
       '</div>';
     if (ai) {
       // AI chooses pairs: NO manual pair picker — a profit-currency selector instead.
@@ -796,7 +802,7 @@
     var cards = list.map(function (s) {
       var help = ''; try { help = s.describe(); } catch (_) {}
       return '<button class="btpl" data-strategy="' + esc(s.name) + '" aria-pressed="' + (create.strategy === s.name) + '">' +
-        '<span class="btpl-nm"><span class="btpl-ic">📊</span>' + esc(strategyTitle(s.name)) + '</span>' +
+        '<span class="btpl-nm"><span class="btpl-ic">' + icon('bars') + '</span>' + esc(strategyTitle(s.name)) + '</span>' +
         '<span class="btpl-ds">' + esc(help) + '</span></button>';
     }).join('');
     return '<details class="bstrat"' + (create.strategy ? ' open' : '') + '>' +
@@ -841,7 +847,7 @@
   // max drawdown tiles + a curve sparkline. POSTs the CURRENT strategy+knobs.
   function backtestResultHtml() {
     if (!create.strategy) return '';
-    return '<div class="bfield" id="b-bt-field"><button class="bbtn ghost" id="b-backtest"' + (backtestBusy ? ' disabled' : '') + '>📈 Backtest this config</button>' +
+    return '<div class="bfield" id="b-bt-field"><button class="bbtn ghost" id="b-backtest"' + (backtestBusy ? ' disabled' : '') + '>' + icon('chart-up') + ' Backtest this config</button>' +
       '<div id="b-bt-out" style="margin-top:8px">' + backtestBodyHtml() + '</div></div>';
   }
 
@@ -933,7 +939,7 @@
           miniRange('tr', 'Trailing', create.tr.toFixed(1) + '%', 0, 3, 0.2, create.tr) +
         '</div>')) +
         '<div class="bactions"><button class="bbtn primary" id="b-start-paper">▶ Start in paper</button>' +
-          '<button class="bbtn ghost" id="b-go-live">⚡ Go live…</button></div>' +
+          '<button class="bbtn ghost" id="b-go-live">' + icon('bolt') + ' Go live…</button></div>' +
       '</div>' +
       // The DCA deal-ladder preview is DCA-specific; for an indicator strategy the
       // quick-backtest card carries the visualization instead.
@@ -1278,7 +1284,7 @@
       var f = fills[i];
       var price = B ? B.ucToUsd(typeof f.priceUc === 'bigint' ? f.priceUc : BigInt(f.priceUc || 0)) : 0;
       var label = f.kind === 'base' ? 'Base order filled' : f.kind === 'safety' ? 'Safety order filled' : f.kind === 'tp' ? 'Take-profit sold' : f.kind === 'sl' ? 'Stop-loss sold' : (f.side + ' ' + f.kind);
-      items.push('<li class="bstep done"><span class="bring">✓</span><div><div class="blead">' + esc(label) + '</div><div class="bmeta num">@ $' + Number(price).toFixed(4) + (f.paper ? ' · paper' : '') + '</div></div></li>');
+      items.push('<li class="bstep done"><span class="bring">' + icon('check') + '</span><div><div class="blead">' + esc(label) + '</div><div class="bmeta num">@ $' + Number(price).toFixed(4) + (f.paper ? ' · paper' : '') + '</div></div></li>');
     }
     // the next armed step
     if (deal.status !== 'closed') {
@@ -1332,7 +1338,7 @@
 
     panel.innerHTML = '' +
       '<div class="barena-top">' +
-        '<div class="bplaybal"><span class="bcoin">🪙</span><div><div class="bplay-t">Play balance</div><div class="bv num" id="b-playbal">' + balUsd.toLocaleString(undefined, { maximumFractionDigits: 0 }) + '</div></div></div>' +
+        '<div class="bplaybal"><span class="bcoin">' + icon('coin') + '</span><div><div class="bplay-t">Play balance</div><div class="bv num" id="b-playbal">' + balUsd.toLocaleString(undefined, { maximumFractionDigits: 0 }) + '</div></div></div>' +
         '<div class="blvl"><div class="blvl-row"><b>Lv ' + lvl.level + '</b><span class="num">' + lvl.xp + ' XP' + (lvl.nextLevel ? ' · ' + xpToNext + ' to Lv ' + lvl.nextLevel : '') + '</span></div>' +
           '<div class="bbar"><span style="width:' + xpPct + '%"></span></div></div>' +
       '</div>' +
@@ -1342,7 +1348,7 @@
         '<div style="margin-top:16px"><span class="beyebrow">Badges</span><div class="bbadges">' + badgesHtml(A) + '</div></div>' +
         '<div style="margin-top:16px"><span class="beyebrow">Leaderboard · local</span>' + leaderboardHtml() + '</div>' +
         '<div class="bdisclaim" style="margin-top:8px">Global leaderboard &amp; shareable runs — coming later.</div>' +
-        '<button class="bbtn primary" id="b-use-real" style="width:100%;justify-content:center;margin-top:14px">✓ Use this strategy for real (starts in paper)</button>' +
+        '<button class="bbtn primary" id="b-use-real" style="width:100%;justify-content:center;margin-top:14px">' + icon('check') + ' Use this strategy for real (starts in paper)</button>' +
       '</div>';
 
     // mode toggle (Live market vs Demo scenario) — stop any live poll on switch.
@@ -1391,12 +1397,12 @@
         '<div class="bladder-head"><div><span class="beyebrow">Demo scenario · fixed fixture, seeded &amp; replayable</span><h3>Your strategy · ' + esc(create.pair) + '</h3></div><span class="bchip type" id="b-sim-state">Ready</span></div>' +
         arenaModeToggleHtml() +
         '<div class="bscen" role="group" aria-label="Market scenario">' +
-          scenBtn('bull', '📈 Bull') + scenBtn('crab', '🦀 Crab') + scenBtn('bear', '📉 Bear') + scenBtn('crash', '💥 Flash-crash') + scenBtn('pump', '🚀 Pump') +
+          scenBtn('bull', icon('chart-up') + ' Bull') + scenBtn('crab', icon('crab') + ' Crab') + scenBtn('bear', icon('chart-down') + ' Bear') + scenBtn('crash', icon('boom') + ' Flash-crash') + scenBtn('pump', icon('launch') + ' Pump') +
         '</div>' +
         '<div class="bsimwrap"><canvas id="b-sim"></canvas></div>' +
         '<div class="bsim-foot"><button class="bbtn primary" id="b-run">▶ Run simulation</button>' +
           scoreTilesHtml() + '</div>' +
-        '<div class="bdisclaim">⚠ ' + esc(A.DISCLAIMER) + '</div>' +
+        '<div class="bdisclaim">' + icon('warning') + ' ' + esc(A.DISCLAIMER) + '</div>' +
       '</div>';
     }
     // LIVE MARKET (play money) — real marks, no scenario picker.
@@ -1407,7 +1413,7 @@
       '<div class="bsimwrap"><canvas id="b-sim"></canvas></div>' +
       '<div class="bsim-foot"><button class="bbtn ghost" id="b-live-reset">↻ Reset play run</button>' +
         scoreTilesHtml() + '</div>' +
-      '<div class="bdisclaim">⚠ ' + esc(A.DISCLAIMER) + '</div>' +
+      '<div class="bdisclaim">' + icon('warning') + ' ' + esc(A.DISCLAIMER) + '</div>' +
     '</div>';
   }
   function scoreTilesHtml() {
@@ -1465,7 +1471,7 @@
     var m = null;
     for (var i = 0; i < A.MISSIONS.length; i++) { if (!done.has(A.MISSIONS[i].id)) { m = A.MISSIONS[i]; break; } }
     if (!m) m = A.MISSIONS[0];
-    return '<h3 style="display:flex;align-items:center;gap:8px">🎯 Mission <span class="bchip" style="margin-left:auto">+' + m.rewardXp + ' XP</span></h3>' +
+    return '<h3 style="display:flex;align-items:center;gap:8px">' + icon('target') + ' Mission <span class="bchip" style="margin-left:auto">+' + m.rewardXp + ' XP</span></h3>' +
       '<div class="bhint" style="margin:7px 0 10px">' + esc(m.desc) + '</div>' +
       '<button class="bbtn ghost" id="b-mission-create" style="width:100%;justify-content:center">Design your strategy →</button>';
   }
@@ -1473,7 +1479,7 @@
     var have = arena.profile.badges;
     return A.BADGES.map(function (bd) {
       var earned = have.has(bd.id);
-      var ic = { first_run: '🎓', green_run: '🟢', high_score: '🎯', diamond_hands: '💎', all_scenarios: '🌍', veteran: '🎖' }[bd.id] || '🏅';
+      var ic = { first_run: icon('learn'), green_run: icon('online'), high_score: icon('target'), diamond_hands: icon('gem'), all_scenarios: icon('globe'), veteran: icon('award') }[bd.id] || icon('award');
       return '<div class="bbadge2' + (earned ? '' : ' locked') + '" title="' + esc(bd.name + ' — ' + bd.desc) + '">' + ic + '</div>';
     }).join('');
   }

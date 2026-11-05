@@ -248,6 +248,149 @@ class PanelFlowTest(unittest.TestCase):
         self.assertTrue(ok.confirm_btn.isEnabled())
         ctrl.loop and ctrl.loop.stop()
 
+    def test_strategy_picker_lists_only_the_nine_planners(self):
+        """The create panel's strategy combo offers ONLY the 9 single-market
+        numeric-knob indicator planners (mirroring the extension's plannerStrategies
+        allow-list). It NEVER offers the deal-bots (arbitrage/dca/grid — they keep
+        their own template flow), the MULTI-ASSET rebalance planner or momentum(SMA)
+        (selecting those crashes or builds a non-functional bot), nor the PAPER-only
+        scalp/martingale."""
+        from blockle.agent import strategies as strat_mod
+        from blockle import qtbots as qb
+        panel, ctrl = self._bots_panel()
+        cp = panel.create
+        data = [cp.strat_cur.itemData(i) for i in range(cp.strat_cur.count())]
+        names = strat_mod.default_registry().names()
+        # the 9 planners are present (and really live in the registry)
+        for n in ("rsi", "macd", "bollinger", "breakout", "emacross",
+                  "momentum_roc", "meanrev", "rebalance_hold", "hodl"):
+            self.assertIn(n, names)
+            self.assertIn(n, data)
+        # the allow-list constant mirrors exactly the 9 offered in the picker
+        self.assertEqual(sorted(qb._PLANNER_STRATEGIES),
+                         sorted(("rsi", "macd", "bollinger", "breakout", "emacross",
+                                 "momentum_roc", "meanrev", "rebalance_hold", "hodl")))
+        strategy_data = [d for d in data if d != qb._STRATEGY_NONE]
+        self.assertEqual(sorted(strategy_data), sorted(qb._PLANNER_STRATEGIES))
+        # the first row keeps the template-first flow
+        self.assertEqual(data[0], qb._STRATEGY_NONE)
+        # never the excluded types
+        for n in ("arbitrage", "dca", "grid", "rebalance", "momentum",
+                  "scalp", "martingale"):
+            self.assertNotIn(n, strategy_data)
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_strategy_knobs_render_from_defaults_and_make_spec(self):
+        """Picking an indicator strategy renders ONE numeric knob per planner
+        default (skipping market/history/held/balances) seeded from the default,
+        and _make_spec builds a planner spec consumed by the real runner."""
+        panel, ctrl = self._bots_panel()
+        cp = panel.create
+        idx = cp.strat_cur.findData("rsi")
+        self.assertGreaterEqual(idx, 0)
+        cp.strat_cur.setCurrentIndex(idx)  # fires _strategy_changed
+        # knobs = rsi.defaults minus the engine-managed keys
+        self.assertEqual(set(cp._knobs.keys()),
+                         {"period", "oversold", "overbought", "budgetUsd", "positionPct"})
+        self.assertEqual(cp._knobs["period"].text(), "14")      # seeded from default
+        self.assertEqual(cp._knobs["overbought"].text(), "70")
+        cp._knobs["period"].setText("21")
+        cp._knobs["budgetUsd"].setText("750")
+        spec = cp._make_spec("paper")
+        self.assertEqual(spec["type"], "rsi")
+        self.assertEqual(spec["config"]["market"], cp._market_text())
+        self.assertEqual(spec["config"]["period"], 21)          # edited knob flows through
+        self.assertEqual(spec["allocationUsd"], 750)            # budgetUsd IS the allocation
+        # the real runner accepts + persists it
+        ctrl.create("pw")
+        runner = panel.bc.ensure_runner()
+        bot = runner.add(spec)
+        self.assertEqual(bot.type, "rsi")
+        self.assertEqual(bot.config["period"], 21)
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_strategy_market_follows_lane_every_chain(self):
+        """A strategy's market reseeds to the selected lane's native base, so bots
+        run on every supported chain (SOL/ETH/BNB/BLOCK vs USDC)."""
+        panel, ctrl = self._bots_panel()
+        cp = panel.create
+        cp.strat_cur.setCurrentIndex(cp.strat_cur.findData("macd"))
+        for lane_idx, expected in ((0, "SOL/USDC"), (1, "ETH/USDC"),
+                                   (2, "BNB/USDC"), (3, "BLOCK/USDC")):
+            cp.lane_cur.setCurrentIndex(lane_idx)
+            self.assertEqual(cp._market_text(), expected)
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_indicator_bot_ticks_without_no_engine_error(self):
+        """An indicator-strategy bot routes through the scheduled-planner path (not
+        the deal engine), so a tick never returns the 'no engine' error."""
+        panel, ctrl = self._bots_panel()
+        ctrl.create("pw")
+        runner = panel.bc.ensure_runner()
+        bot = runner.add({"name": "R", "type": "rsi",
+                          "universe": {"pairs": ["SOL/USDC"]},
+                          "config": {"market": "SOL/USDC", "budgetUsd": 100},
+                          "allocationUsd": 100, "mode": "paper", "enabled": True,
+                          "network": "testnet"})
+        report = panel.bc.loop.submit(runner.tick_bot(bot.id)).result(timeout=5)
+        self.assertNotIn("no engine", str(report.get("error") or ""))
+        self.assertEqual(report.get("type", "rsi"), "rsi")
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_live_bot_cap_blocks_second_arm_with_upsell(self):
+        """With liveBotLimit=1, arming a SECOND live bot is refused with an upsell
+        message (mirrors the web wallet's per-plan cap)."""
+        panel, ctrl = self._bots_panel()
+        ctrl.create("pw")
+        runner = panel.bc.ensure_runner()
+        runner.set_live_bot_limit(1)
+        mk = lambda nm: runner.add({"name": nm, "type": "dca",
+                                    "universe": {"pairs": ["SOL/USDC"]},
+                                    "config": {"baseOrderUsd": 20}, "allocationUsd": 100,
+                                    "mode": "paper", "enabled": False, "network": "testnet"})
+        a, b = mk("A"), mk("B")
+        panel.bc.loop.submit(runner.arm_live(a.id, {"allocationUsd": 100})).result(timeout=5)
+        with self.assertRaises(ValueError) as cm:
+            panel.bc.loop.submit(runner.arm_live(b.id, {"allocationUsd": 100})).result(timeout=5)
+        self.assertIn("Live-bot limit reached", str(cm.exception))
+        # unlimited (-1) lets the second arm through
+        runner.set_live_bot_limit(-1)
+        panel.bc.loop.submit(runner.arm_live(b.id, {"allocationUsd": 100})).result(timeout=5)
+        self.assertEqual(len([x for x in runner.list() if x.mode == "live" and x.enabled]), 2)
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_backtest_payload_shapes(self):
+        """_backtest_payload builds {type, params, asset} for both a template bot
+        and an indicator strategy (the body POSTed to /account/api/backtest)."""
+        panel, ctrl = self._bots_panel()
+        cp = panel.create
+        # template (dca) default
+        p = cp._backtest_payload()
+        self.assertIn(p["type"], ("dca", "grid"))
+        self.assertIn("asset", p)
+        self.assertIsInstance(p["params"], dict)
+        # indicator strategy
+        cp.strat_cur.setCurrentIndex(cp.strat_cur.findData("bollinger"))
+        cp.pair_in.setText("ETH/USDC")
+        p2 = cp._backtest_payload()
+        self.assertEqual(p2["type"], "bollinger")
+        self.assertEqual(p2["asset"], "ETH")
+        self.assertEqual(p2["params"]["market"], "ETH/USDC")
+        ctrl.loop and ctrl.loop.stop()
+
+    def test_deeplink_preselects_strategy(self):
+        """A desktop deep-link (preselect_strategy) lands on the Create tab with the
+        strategy chosen + its knobs rendered — the web ?strategy= equivalent."""
+        from blockle.qtmultichain import MultiChainController
+        from blockle.qtbots import BotsPanel
+        ctrl = MultiChainController(self.wallet, self.datadir)
+        panel = BotsPanel(ctrl, preselect_strategy="emacross")
+        self.assertIs(panel.tabs.currentWidget(), panel.create)
+        self.assertEqual(panel.create.strategy, "emacross")
+        self.assertEqual(set(panel.create._knobs.keys()),
+                         {"fast", "slow", "budgetUsd", "positionPct"})
+        ctrl.loop and ctrl.loop.stop()
+
     def test_kill_all_wired_to_runner(self):
         panel, ctrl = self._bots_panel()
         ctrl.create("pw")

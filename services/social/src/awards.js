@@ -3,12 +3,14 @@
 // (always labeled). A small platform fee routes to the rewards pool. Awards do NOT grant karma —
 // reputation is earned, not bought (see docs/SOCIAL.md §2).
 
+// `icon` is a Blockle icon-set name (see web/icons.js / the per-surface icon modules), rendered as
+// an inline line-art SVG by every client — no pictographic emoji anywhere in the UI.
 export const AWARDS = [
-  { id: 'rocket',  label: 'Rocket',  emoji: '🚀', cost: 50 },
-  { id: 'gold',    label: 'Gold',    emoji: '🏅', cost: 100 },
-  { id: 'builder', label: 'Builder', emoji: '🛠️', cost: 200 },
-  { id: 'alpha',   label: 'Alpha',   emoji: '🔑', cost: 300 },
-  { id: 'diamond', label: 'Diamond', emoji: '💎', cost: 500 },
+  { id: 'rocket',  label: 'Rocket',  icon: 'launch', cost: 50 },
+  { id: 'gold',    label: 'Gold',    icon: 'award',  cost: 100 },
+  { id: 'builder', label: 'Builder', icon: 'tools',  cost: 200 },
+  { id: 'alpha',   label: 'Alpha',   icon: 'key',    cost: 300 },
+  { id: 'diamond', label: 'Diamond', icon: 'gem',    cost: 500 },
 ];
 
 export const AWARD_BY_ID = Object.fromEntries(AWARDS.map((a) => [a.id, a]));

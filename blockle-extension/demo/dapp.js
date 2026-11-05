@@ -30,7 +30,7 @@
         setStatus(accts[0]);
         out({ connected: accts });
       } catch (e) {
-        out('✗ ' + e.message);
+        out('error: ' + e.message);
       }
     };
     $('disconnect').onclick = async () => {
@@ -53,10 +53,10 @@
           address: sig.address,
           publicKey: sig.publicKey.slice(0, 48) + '… (' + sig.publicKey.length / 2 + ' bytes)',
           signature: sig.signature.slice(0, 48) + '… (' + sig.signature.length / 2 + ' bytes)',
-          note: '✓ ' + sig.scheme + ' signature received',
+          note: sig.scheme + ' signature received',
         });
       } catch (e) {
-        out('✗ ' + e.message);
+        out('error: ' + e.message);
       }
     };
   }

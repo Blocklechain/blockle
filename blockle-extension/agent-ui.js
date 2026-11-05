@@ -193,9 +193,9 @@
     if (ev.type === 'text') pushLog(id, 'agent: ' + (ev.text || '').slice(0, 300));
     else if (ev.type === 'tool_call') pushLog(id, '→ ' + ev.name + '(' + shortArgs(ev.args) + ')');
     else if (ev.type === 'prepared') pushLog(id, 'prepared: ' + summarize(ev.summary));
-    else if (ev.type === 'declined') pushLog(id, '✗ declined: ' + ev.name);
-    else if (ev.type === 'executed') { pushLog(id, '✓ executed ' + ev.name + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : '')); emitTelemetry(id, ev); }
-    else if (ev.type === 'fee') { const f = ev.fee || {}; pushLog(id, '  ⬩ agent fee ' + (f.amount || '') + ' ' + (f.asset || '') + ' → treasury' + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : (f.error ? ' · FAILED: ' + f.error : ''))); }
+    else if (ev.type === 'declined') pushLog(id, 'declined: ' + ev.name);
+    else if (ev.type === 'executed') { pushLog(id, 'executed ' + ev.name + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : '')); emitTelemetry(id, ev); }
+    else if (ev.type === 'fee') { const f = ev.fee || {}; pushLog(id, '  · agent fee ' + (f.amount || '') + ' ' + (f.asset || '') + ' → treasury' + (ev.txid ? ' · ' + String(ev.txid).slice(0, 12) + '…' : (f.error ? ' · FAILED: ' + f.error : ''))); }
     else if (ev.type === 'tool_error') pushLog(id, '! error ' + ev.name + ': ' + ev.error);
     else if (ev.type === 'killed') pushLog(id, 'killed: ' + (ev.reason || ''));
     if (expanded === id) renderLog(id);

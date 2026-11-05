@@ -29,6 +29,7 @@ except ImportError:  # pragma: no cover
     sys.exit(1)
 
 from .chainwallet import ChainWallet, NodeProcess, WalletError, format_block
+from .icons import apply_button_icon
 
 ACCENT = "#3987e5"
 STYLE = """
@@ -94,8 +95,14 @@ def _copy_row(label: str, value: str) -> QWidget:
 
     def do_copy():
         QGuiApplication.clipboard().setText(field.text())
-        btn.setText("Copied ✓")
-        QTimer.singleShot(1200, lambda: btn.setText("Copy"))
+        btn.setText("Copied")
+        apply_button_icon(btn, "check", 14)
+
+        def _reset():
+            btn.setText("Copy")
+            btn.setIcon(QIcon())
+
+        QTimer.singleShot(1200, _reset)
 
     btn.clicked.connect(do_copy)
     lay.addWidget(QLabel(label))

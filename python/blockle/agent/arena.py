@@ -18,7 +18,7 @@ HARD SAFETY RULE (non-negotiable, structural):
 ===========================================================================
 
 Pieces (all money base-unit/int-exact, micro-dollar integer basis):
-  * :class:`PlayBalance`  — a virtual, labeled grant (default 🪙10,000 PLAY) that
+  * :class:`PlayBalance`  — a virtual, labeled grant (default 10,000 PLAY) that
                             can never become real (``convert_to_real`` raises).
   * scenario feed         — canonical price paths LOADED from
                             docs/arena-vectors.json (bull/crab/bear/crash/pump).
@@ -56,7 +56,7 @@ DISCLAIMER = (
 # Everything in the Arena is PLAY money. These labels appear everywhere a balance
 # or PnL is shown. They are not a currency with any real value.
 PLAY_LABEL = "PLAY"
-PLAY_SYMBOL = "🪙"
+PLAY_SYMBOL = "◆"
 DEFAULT_GRANT = 10000  # play dollars
 SIMULATION_ONLY = True  # structural marker; Arena can never go live
 
