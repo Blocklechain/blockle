@@ -47,6 +47,9 @@
       this.audit = deps.audit || null;
       this.ctx = deps.ctx || {};
       this.mainnetEnabled = deps.mainnetEnabled === true; // default false
+      // Max LIVE bots at once, by plan (Free 1 / Copilot 3 / Pro unlimited). -1 = unlimited.
+      // The host sets this from the account's sub.liveBotLimit; default -1 preserves behavior.
+      this.liveBotLimit = (deps.liveBotLimit != null) ? deps.liveBotLimit : -1;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.pnl = deps.pnl || null;              // post-commit realized-profit tracker (LIVE)
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
@@ -129,6 +132,10 @@
     get(id) { return this.store.get(id); }
     list() { return this.store.list(); }
 
+    // Host hook: set the account's LIVE-bot cap. Accepts a number (-1 = unlimited) or the
+    // server's sub.liveBotLimit. Does not touch already-armed bots.
+    setLiveBotLimit(n) { this.liveBotLimit = (n == null) ? -1 : Number(n); return this.liveBotLimit; }
+
     // Arm a bot LIVE (§5). Fail-closed: requires a finite allocationUsd in (0, sessionCap].
     async armLive(id, opts) {
       opts = opts || {};
@@ -151,6 +158,15 @@
       if (bot.network === 'mainnet' && !this.mainnetEnabled) {
         await this._audit({ type: 'bot_arm_refused', bot: id, reason: 'mainnet disabled' });
         throw new Error('cannot arm live on mainnet: set mainnetEnabled=true (operator sign-off)');
+      }
+      // Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count other already-live bots.
+      if (this.liveBotLimit >= 0) {
+        var liveNow = this.store.list().filter(function (b) { return b.id !== id && b.mode === 'live' && b.enabled; }).length;
+        if (liveNow >= this.liveBotLimit) {
+          await this._audit({ type: 'bot_arm_refused', bot: id, reason: 'live bot limit reached', limit: this.liveBotLimit });
+          var e = new Error('Live-bot limit reached for your plan (' + this.liveBotLimit + '). Upgrade to run more.');
+          e.code = 'LIVE_LIMIT'; throw e;
+        }
       }
       bot.allocationUsd = alloc;
       bot.mode = 'live';

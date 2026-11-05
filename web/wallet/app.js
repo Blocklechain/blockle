@@ -842,9 +842,15 @@
   /* ---------------- Pro / tier ---------------- */
   function loadTier() {
     fetch(ACCOUNTS + '/me', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
-      if (j && j.user) { S.user = j.user; S.csrf = j.csrf || S.csrf; var sub = j.user.sub; S.tier = (sub && sub.active) ? (sub.tier || 'free') : 'free'; }
-      else { S.user = null; S.tier = 'free'; S.csrf = null; }
+      if (j && j.user) {
+        S.user = j.user; S.csrf = j.csrf || S.csrf; var sub = j.user.sub;
+        // Honor the server's effective tier (folds in an active free trial) + live-bot cap.
+        S.tier = (sub && sub.entitledTier) ? sub.entitledTier : ((sub && sub.active) ? (sub.tier || 'free') : 'free');
+        S.liveBotLimit = (sub && sub.liveBotLimit != null) ? sub.liveBotLimit : 1; // Free gets 1 live bot
+      } else { S.user = null; S.tier = 'free'; S.liveBotLimit = 1; S.csrf = null; }
       S.pro = isPro();
+      // Push the plan's live-bot cap into the running bots engine (Free 1 / Copilot 3 / Pro ∞).
+      if (S.botRunner && S.botRunner.setLiveBotLimit) { try { S.botRunner.setLiveBotLimit(S.liveBotLimit); } catch (_) {} }
       var b = $('#tierbadge');
       b.className = 'chip' + (S.pro ? ' pro' : '');
       b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') : 'Free';
@@ -2166,6 +2172,7 @@
           onEvent: botEvent,
         });
         S.botRunner = runner;
+        try { runner.setLiveBotLimit(S.liveBotLimit != null ? S.liveBotLimit : 1); } catch (_) {} // per-plan live cap
         // restore persisted bots + their deal state, then resume the ticker.
         return runner.store.restore().then(function () {
           if (runner.store.enabled().length) runner._restartScheduler();
