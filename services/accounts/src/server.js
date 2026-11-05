@@ -13,6 +13,7 @@ import { makeMailer } from './email.js';
 import { makePaypal, entitlementFromEvent } from './paypal.js';
 import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
+import { makeMoonpay } from './moonpay.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -42,6 +43,7 @@ export function createApp(overrides = {}) {
   const paypal = overrides.paypal || makePaypal(cfg, overrides.paypalDeps);
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
+  const moonpay = overrides.moonpay || makeMoonpay(process.env);
   const googleStore = overrides.googleStore || makeGoogleStore(cfg, overrides.googleDeps);
   const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
   let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
@@ -356,6 +358,46 @@ export function createApp(overrides = {}) {
     if (!BOT_TYPES.includes(b.type)) return json(res, 400, { error: 'Unknown strategy.' });
     try { return json(res, 200, await backtester.run({ type: b.type, params: b.params, asset: b.asset })); }
     catch { return json(res, 503, { error: 'Backtest price feed is unavailable right now.' }); }
+  }));
+
+  // --- MoonPay (fiat on/off-ramp + swap + commerce) -----------------------------------------
+  // Public config: the PUBLISHABLE key + commerce public key + feature flags only — never a
+  // secret. Clients fetch this to configure the widget. No auth (wallets are non-custodial and
+  // may have no account); CORS-open so every wallet (extension/app/desktop) can read it.
+  on('GET', /^\/account\/api\/moonpay\/config$/, (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    return json(res, 200, moonpay.publicConfig());
+  });
+  // Sign a buy/sell widget URL with the secret key (the secret NEVER leaves the server). The
+  // module refuses to sign anything that isn't a MoonPay URL carrying our publishable key, so an
+  // open endpoint can only ever mint the signature a user needs to ramp into their own wallet.
+  // Rate-limited per IP. CORS-open for the native/extension wallets.
+  on('POST', /^\/account\/api\/moonpay\/sign$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('mpsign:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    try { return json(res, 200, moonpay.signUrl(String(b.url || ''))); }
+    catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
+  });
+  // MoonPay transaction webhook: verify the HMAC signature with the webhook key, then record the
+  // event. MoonPay calls this; no session. We only trust a verified payload.
+  on('POST', /^\/account\/api\/moonpay\/webhook$/, async (req, res) => {
+    const raw = await readBody(req, 256 * 1024).catch(() => '');
+    const v = moonpay.verifyWebhook(raw, req.headers['moonpay-signature-v2'] || req.headers['moonpay-signature'] || '');
+    if (!v.ok) return json(res, 400, { error: 'invalid signature', reason: v.reason });
+    let evt = null; try { evt = JSON.parse(raw); } catch {}
+    const key = (evt && evt.data && evt.data.id) || (now() + ':' + Math.random().toString(36).slice(2, 8));
+    try { await store.put('moonpay_events', String(key), { at: now(), type: evt && evt.type, data: evt && evt.data }); } catch {}
+    return json(res, 200, { ok: true });
+  });
+  // Authenticated proxy for the Trade (swap) API — gated to logged-in users so our trade key
+  // can't be abused anonymously. Body: { method, path, query, body }.
+  on('POST', /^\/account\/api\/moonpay\/swap$/, authed(async (req, res) => {
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
+    const method = b.method === 'POST' ? 'POST' : 'GET';
+    if (typeof b.path !== 'string' || !b.path.startsWith('/')) return json(res, 400, { error: 'bad path' });
+    try { const r = await moonpay.apiRequest(method, b.path, { query: b.query || {}, body: b.body || null }); return json(res, r.status, r.body); }
+    catch (e) { return json(res, 400, { error: String(e.message || 'swap failed') }); }
   }));
 
   // Copy-trade = clone another trader's bot CONFIG into your own account (compliant: your keys +
