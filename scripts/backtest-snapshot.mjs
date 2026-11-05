@@ -1,33 +1,29 @@
-// Writes a cached multi-REGIME paper-backtest for the home-page "best algorithm" demo.
-// Runs the REAL bot simulator (services/accounts/src/bots.js — the same engine the wallet's
-// paper bots use) for each strategy (DCA / grid / SmartTrade / signal) across three REAL market
-// regimes — a bull run, a bear run, and a choppy range — auto-extracted from a year of real
-// daily prices, so each strategy's genuine edge (and weakness) is visible honestly.
+// Writes a cached paper-BACKTEST of EVERY strategy over the last month, ranked most-profitable
+// first, for the home-page "which strategy made the most money" board with one-click USE THIS
+// STRATEGY. Runs the REAL bot simulator (services/accounts/src/bots.js — the same engine the
+// wallet's paper bots use) on REAL historical hourly prices, identical budget + default params.
 //
-// HONEST by design: real historical prices, identical budget + default params, no cherry-picked
-// parameters. The regimes are the actual best up-run / worst down-run / quietest stretch in the
-// data, labeled with their real dates + the asset's real move. A simulation on past data, NOT a
-// live account and NOT a guarantee. Output → /opt/blockle/web/backtest.json, via a systemd timer.
+// HONEST: a paper backtest on real past prices, NOT a live account and NOT a guarantee. Output
+// → /opt/blockle/web/backtest.json, refreshed by a systemd timer. Keeps the last good file if
+// the price feed is unavailable.
 import fs from 'node:fs';
 import { newBot, step, BOT_TYPES, BOT_LABELS } from '../services/accounts/src/bots.js';
 
 const OUT = process.env.BACKTEST_OUT || '/opt/blockle/web/backtest.json';
-const ASSET = process.env.BACKTEST_ASSET || 'bitcoin';   // CoinGecko id (long, liquid history)
-const SYMBOL = process.env.BACKTEST_SYMBOL || 'BTC';
+const ASSET = process.env.BACKTEST_ASSET || 'solana';   // CoinGecko id
+const SYMBOL = process.env.BACKTEST_SYMBOL || 'SOL';
 const BUDGET = Number(process.env.BACKTEST_BUDGET || 1000);
-const WIN = Number(process.env.BACKTEST_WINDOW_DAYS || 45); // regime window length (days)
-const CURVE_POINTS = 48;
+const CURVE_POINTS = 40;
 
-// A year of real daily prices: [[tsMs, price], ...]. 90<days<=365 => daily granularity.
-async function fetchDaily() {
-  const url = `https://api.coingecko.com/api/v3/coins/${ASSET}/market_chart?vs_currency=usd&days=365&interval=daily`;
+// Real 30-day hourly prices (keyless). 1<days<=90 => hourly granularity.
+async function fetchPrices() {
+  const url = `https://api.coingecko.com/api/v3/coins/${ASSET}/market_chart?vs_currency=usd&days=30`;
   for (let a = 0; a < 3; a++) {
     try {
       const r = await fetch(url, { headers: { accept: 'application/json' } });
       if (r.ok) {
-        const j = await r.json();
-        const rows = (j.prices || []).filter((p) => Number.isFinite(p[1]) && p[1] > 0);
-        if (rows.length > WIN + 10) return rows;
+        const prices = ((await r.json()).prices || []).map((p) => Number(p[1])).filter((n) => Number.isFinite(n) && n > 0);
+        if (prices.length > 48) return prices;
       }
     } catch {}
     await new Promise((res) => setTimeout(res, 3000));
@@ -35,81 +31,44 @@ async function fetchDaily() {
   return null;
 }
 
-// Find the real bull (max up-move), bear (min move) and chop (quietest, near-flat) windows.
-function detectRegimes(rows) {
-  const price = rows.map((r) => r[1]);
-  const N = price.length;
-  let bull = { i: 0, move: -1e9 }, bear = { i: 0, move: 1e9 }, chop = { i: 0, vol: 1e9, move: 0 };
-  for (let i = 0; i + WIN < N; i++) {
-    const move = (price[i + WIN] - price[i]) / price[i];
-    const rs = [];
-    for (let k = i + 1; k <= i + WIN; k++) rs.push((price[k] - price[k - 1]) / price[k - 1]);
-    const mean = rs.reduce((x, y) => x + y, 0) / rs.length;
-    const vol = Math.sqrt(rs.reduce((x, y) => x + (y - mean) ** 2, 0) / rs.length);
-    if (move > bull.move) bull = { i, move, vol };
-    if (move < bear.move) bear = { i, move, vol };
-    if (Math.abs(move) < 0.12 && vol < chop.vol) chop = { i, move, vol };
-  }
-  if (chop.vol === 1e9) chop = { i: Math.max(0, N - WIN - 1), move: 0 }; // fallback
-  return { bull, bear, chop };
-}
-
+// Default params per strategy (the engine's own defaults; grid band from the window's range).
 function paramsFor(type, series) {
-  if (type === 'grid') { const lo = Math.min(...series), hi = Math.max(...series); return { budget: BUDGET, lower: lo, upper: hi, grids: 6 }; }
-  if (type === 'dca') return { budget: BUDGET, buyAmount: 50, everyTicks: 3 };
-  if (type === 'smarttrade') return { budget: BUDGET, takeProfitPct: 10, stopLossPct: 5 };
-  if (type === 'signal') return { budget: BUDGET, thresholdPct: 1 };
-  return { budget: BUDGET };
+  if (type === 'grid') return { lower: Math.min(...series), upper: Math.max(...series) };
+  return {};
 }
 
 function runStrategy(type, series) {
   const bot = newBot({ id: type, uid: 'demo', type, pair: `${SYMBOL}/USD`, params: paramsFor(type, series), now: 0 });
   const values = [];
   for (const price of series) values.push(step(bot, price).value);
-  const curve = [];
   const n = values.length;
+  const curve = [];
+  let peak = -Infinity, maxDd = 0;
+  for (const v of values) { if (v > peak) peak = v; const dd = (peak - v) / peak * 100; if (dd > maxDd) maxDd = dd; }
   for (let i = 0; i < CURVE_POINTS; i++) {
     const idx = Math.min(n - 1, Math.round((i / (CURVE_POINTS - 1)) * (n - 1)));
     curve.push(Math.round(((values[idx] - BUDGET) / BUDGET) * 10000) / 100);
   }
-  return { type, label: BOT_LABELS[type], pnlPct: curve[curve.length - 1], trades: bot.state.trades.length, curve };
-}
-
-const fmtDate = (ms) => new Date(ms).toISOString().slice(0, 10);
-
-function buildRegime(rows, det) {
-  const slice = rows.slice(det.i, det.i + WIN + 1);
-  const series = slice.map((r) => r[1]);
-  const strategies = BOT_TYPES.map((t) => runStrategy(t, series)).sort((a, b) => b.pnlPct - a.pnlPct);
-  const assetMovePct = Math.round(((series[series.length - 1] - series[0]) / series[0]) * 10000) / 100;
   return {
-    winner: strategies[0].type, assetMovePct,
-    from: fmtDate(slice[0][0]), to: fmtDate(slice[slice.length - 1][0]),
-    strategies,
+    type, label: BOT_LABELS[type] || type, pnlPct: curve[curve.length - 1], trades: bot.state.trades.length,
+    maxDrawdownPct: Math.round(maxDd * 100) / 100, curve, params: bot.params,
   };
 }
 
 async function main() {
-  const rows = await fetchDaily();
-  if (!rows) { console.error('price feed unavailable; keeping last backtest.json'); process.exit(0); }
-  const det = detectRegimes(rows);
-  const regimes = {
-    bull: buildRegime(rows, det.bull),
-    chop: buildRegime(rows, det.chop),
-    bear: buildRegime(rows, det.bear),
-  };
-  for (const k of ['bull', 'chop', 'bear']) {
-    const r = regimes[k];
-    console.error(`${k.padEnd(4)} ${r.from}..${r.to} ${SYMBOL}=${r.assetMovePct}%  winner=${r.winner} (${r.strategies[0].pnlPct}%)`);
-  }
+  const prices = await fetchPrices();
+  if (!prices) { console.error('price feed unavailable; keeping last backtest.json'); process.exit(0); }
+  const assetMovePct = Math.round(((prices[prices.length - 1] - prices[0]) / prices[0]) * 10000) / 100;
+  const strategies = BOT_TYPES.map((t) => runStrategy(t, prices)).sort((a, b) => b.pnlPct - a.pnlPct);
+  for (const s of strategies) console.error(`${s.type.padEnd(11)} pnl=${String(s.pnlPct).padStart(7)}%  dd=${s.maxDrawdownPct}%  trades=${s.trades}`);
   const out = {
-    generatedAt: new Date().toISOString(),
-    asset: ASSET, symbol: SYMBOL, budget: BUDGET, windowDays: WIN,
-    source: `paper backtest of each bot strategy on real ${SYMBOL}/USD daily prices across three real market regimes, identical budget + default params`,
-    regimes,
+    generatedAt: new Date().toISOString(), asset: ASSET, symbol: SYMBOL, budget: BUDGET,
+    windowLabel: '30 days', assetMovePct,
+    source: `paper backtest of every strategy on real ${SYMBOL}/USD hourly prices over 30 days, identical $${BUDGET} budget + default params`,
+    strategies,
   };
   fs.writeFileSync(OUT, JSON.stringify(out));
-  console.error(`wrote ${OUT}`);
+  console.error(`wrote ${OUT} (${strategies.length} strategies, winner ${strategies[0].type} ${strategies[0].pnlPct}%)`);
 }
 
 main();
