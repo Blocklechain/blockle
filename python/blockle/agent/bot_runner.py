@@ -41,6 +41,18 @@ from .runner import dispatch_prepared
 
 STABLE_USD = {"USDC": 1, "USDT": 1, "DAI": 1, "USD": 1, "USDBC": 1, "PYUSD": 1}
 
+# Bot types routed through the generic scheduled-strategy path
+# (``default_registry().get(type).plan`` -> the gated ``_dispatch_intents``). The two
+# original scheduled strategies PLUS the 9 indicator planners ported as LIVE bots
+# (rsi/macd/bollinger/breakout/emacross/momentum_roc/meanrev/rebalance_hold/hodl).
+# dca/grid/smarttrade stay on the deal-engine path; scalp/martingale are PAPER-only
+# (absent from the live registry) and never reach here. Mirrors the JS runner.
+_SCHEDULED_TYPES = {
+    "rebalance", "momentum",
+    "rsi", "macd", "bollinger", "breakout", "emacross",
+    "momentum_roc", "meanrev", "rebalance_hold", "hodl",
+}
+
 
 def _call_scan(scan, opts):
     """Invoke a discovery ``scan`` the way the JS reference does (``scan({lane,mode})``)
@@ -69,6 +81,10 @@ class BotRunner:
         self.audit = deps.get("audit")
         self.ctx = deps.get("ctx") or {}
         self.mainnet_enabled = deps.get("mainnetEnabled") is True  # default False
+        # Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro -1 = unlimited). -1
+        # preserves legacy behavior. The host sets it from the account's
+        # sub.liveBotLimit via :meth:`set_live_bot_limit`.
+        self.live_bot_limit = deps.get("liveBotLimit") if deps.get("liveBotLimit") is not None else -1
         on_event = deps.get("onEvent")
         self.on_event = on_event if callable(on_event) else None
         self.pnl = deps.get("pnl")                   # post-commit realized-profit tracker (LIVE)
@@ -110,6 +126,12 @@ class BotRunner:
                 pass
 
     # ---- bot lifecycle ------------------------------------------------------
+    def set_live_bot_limit(self, n: Any) -> int:
+        """Set the per-plan LIVE-bot cap from the account's ``sub.liveBotLimit``
+        (Free 1 / Copilot 3 / Pro -1 = unlimited). Does not touch armed bots."""
+        self.live_bot_limit = -1 if n is None else int(n)
+        return self.live_bot_limit
+
     def add(self, spec: Any) -> Any:
         return self.store.add(spec)
 
@@ -141,6 +163,16 @@ class BotRunner:
         if bot.network == "mainnet" and not self.mainnet_enabled:
             await self._audit({"type": "bot_arm_refused", "bot": id_, "reason": "mainnet disabled"})
             raise ValueError("cannot arm live on mainnet: set mainnetEnabled=true (operator sign-off)")
+        # Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count OTHER
+        # already-live+enabled bots; -1 means unlimited. Mirrors bot-runner.js.
+        if self.live_bot_limit is not None and self.live_bot_limit >= 0:
+            live_now = len([b for b in self.store.list()
+                            if b.id != id_ and b.mode == "live" and b.enabled])
+            if live_now >= self.live_bot_limit:
+                await self._audit({"type": "bot_arm_refused", "bot": id_,
+                                   "reason": "live bot limit reached", "limit": self.live_bot_limit})
+                raise ValueError("Live-bot limit reached for your plan (" +
+                                 str(self.live_bot_limit) + "). Upgrade to run more.")
         bot.allocation_usd = alloc
         bot.mode = "live"
         bot.enabled = True
@@ -367,7 +399,7 @@ class BotRunner:
         bot.state["lastTickAt"] = now
 
         try:
-            if bot.type in ("rebalance", "momentum"):
+            if bot.type in _SCHEDULED_TYPES:
                 report = await self._tick_scheduled(bot, now, opts)
             elif bot.type == "scanner":
                 report = await self._tick_scanner(bot, now, opts)

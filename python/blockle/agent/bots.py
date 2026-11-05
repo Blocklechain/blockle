@@ -145,7 +145,17 @@ def decimals_for(sym: Any, overrides: Optional[Dict[str, Any]] = None) -> int:
 # config validation + defaults per bot type                                   #
 # =========================================================================== #
 
-TYPES = ["dca", "grid", "smarttrade", "signal", "rebalance", "momentum", "scanner"]
+# SCHEDULED_PLANNER_TYPES run through the shared strategy-planner path
+# (default_registry().get(type).plan -> the gated _dispatch_intents in the runner),
+# NOT the deal-engine state machines. The two original scheduled strategies PLUS
+# the 9 indicator planners ported as LIVE bots. scalp/martingale are PAPER-only and
+# intentionally absent. Mirrors blockle-extension/agent/bots.js.
+SCHEDULED_PLANNER_TYPES = [
+    "rebalance", "momentum",
+    "rsi", "macd", "bollinger", "breakout", "emacross",
+    "momentum_roc", "meanrev", "rebalance_hold", "hodl",
+]
+TYPES = ["dca", "grid", "smarttrade", "signal", "scanner"] + SCHEDULED_PLANNER_TYPES
 
 
 # LANES — a bot trades ONE lane at a time (never cross-chain). The user holds a
@@ -342,7 +352,7 @@ def validate_config(type_: str, c: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return validate_signal_config(c)
     if type_ == "scanner":
         return validate_scanner_config(c)
-    if type_ in ("rebalance", "momentum"):
+    if type_ in SCHEDULED_PLANNER_TYPES:
         return validate_scheduled_config(c)
     raise ValueError("unknown bot type: " + str(type_))
 

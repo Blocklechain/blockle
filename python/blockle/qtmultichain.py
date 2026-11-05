@@ -2602,10 +2602,14 @@ class ProviderDialog(QDialog):
 # --------------------------------------------------------------------------
 
 
-def build_tabs(block_wallet, datadir) -> List:
+def build_tabs(block_wallet, datadir, bot_strategy=None, copy_bot=None) -> List:
     """Return ``[(widget, title), …]`` for the multi-chain / exchange / agent
     panels, sharing one :class:`MultiChainController`. Raises only if PySide6 or
-    the multichain deps are unavailable (the caller guards the import)."""
+    the multichain deps are unavailable (the caller guards the import).
+
+    ``bot_strategy`` / ``copy_bot`` are the optional desktop deep-links (the
+    equivalents of the web ``?strategy=`` / ``?copyBot=``) threaded into the Bots
+    create panel; both default to ``None`` -> no deep-link behavior."""
     ctrl = MultiChainController(block_wallet, Path(datadir))
     tabs = [
         (AccountsTab(ctrl), "Accounts"),
@@ -2617,7 +2621,7 @@ def build_tabs(block_wallet, datadir) -> List:
     # so a problem here never drops the Accounts / Exchange / Agent panels.
     try:
         from .qtbots import build_bots_tab
-        tabs.append(build_bots_tab(ctrl))
+        tabs.append(build_bots_tab(ctrl, preselect_strategy=bot_strategy, copy_bot_id=copy_bot))
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Bots panel unavailable ({e})", file=sys.stderr)

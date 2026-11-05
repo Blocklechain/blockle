@@ -14,9 +14,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/agent/audit.dart';
 import 'package:blockle_app/agent/bot_runner.dart';
 import 'package:blockle_app/agent/bot_templates.dart';
+import 'package:blockle_app/agent/bots.dart' show kBotTypes, kScheduledTypes;
 import 'package:blockle_app/agent/discovery.dart' show Candidate;
 import 'package:blockle_app/agent/policy.dart';
-import 'package:blockle_app/agent/strategies.dart' show Strategy, StrategyContext, StrategyIntent;
+import 'package:blockle_app/agent/strategies.dart' show Strategy, StrategyContext, StrategyIntent, defaultStrategies;
 import 'package:blockle_app/agent/tools.dart';
 
 // ---------------------------------------------------------------------------
@@ -801,6 +802,81 @@ void main() {
           reason: 'the settlement is paper-recorded (not broadcast)');
       final ps = (bot.state['byPair'] as Map)['BLOCK/USDT'] as Map;
       expect(ps['realizedCurrency'], 'USDC', reason: 'paper still reports the settled currency');
+    });
+  });
+
+  // ---- per-plan LIVE-bot cap (mirrors the web runner) ----------------------
+  group('live-bot cap (sub.liveBotLimit)', () {
+    test('arming a second live bot is refused when liveBotLimit=1 (audited), Pro (-1) is unlimited', () async {
+      final su = setup(ctx: mkCtx([100]));
+      su.runner.setLiveBotLimit(1);
+      final a = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'baseOrderUsd': 10, 'maxSafetyOrders': 0, 'takeProfitPct': 5},
+      });
+      final b = su.runner.add({
+        'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+        'config': {'baseOrderUsd': 10, 'maxSafetyOrders': 0, 'takeProfitPct': 5},
+      });
+      await su.runner.armLive(a.id, allocationUsd: 50);
+      await expectLater(su.runner.armLive(b.id, allocationUsd: 50),
+          throwsA(predicate((e) => '$e'.contains('Live-bot limit reached'))));
+      expect(su.audit.list().any((e) => e['type'] == 'bot_arm_refused' && e['reason'] == 'live bot limit reached'), isTrue);
+
+      // Unlimited (Pro) lifts the cap — the second bot arms.
+      su.runner.setLiveBotLimit(-1);
+      await su.runner.armLive(b.id, allocationUsd: 50);
+      expect(su.runner.get(b.id)!.mode, 'live');
+    });
+  });
+
+  // ---- indicator strategy planners as SCHEDULED bots -----------------------
+  group('indicator strategy planners (scheduled)', () {
+    test('a hodl paper bot routes to the planner and records a paper buy (never broadcasts)', () async {
+      final audit = Audit();
+      final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);
+      final ft = fakeTools();
+      policy.setAllowlist(ft.registry.names());
+      final runner = BotRunner(
+        policy: policy,
+        tools: ft.registry,
+        audit: audit,
+        liveEntitled: true,
+        ctx: BotContext(
+          now: () => 0,
+          network: () => 'testnet',
+          prices: (_) async => {'SOL': 100, 'USDC': 1},
+          strategyCtx: StrategyContext(
+            now: () => 0,
+            network: () => 'testnet',
+            prices: (_) async => {'SOL': 100, 'USDC': 1},
+            policyRemaining: () => {'sessionUsd': 1000},
+          ),
+        ),
+        strategies: defaultStrategies(),
+      );
+      final bot = runner.add({
+        'type': 'hodl', 'universe': {'pairs': ['SOL/USDC']},
+        'config': {'budgetUsd': 100, 'market': 'SOL/USDC'},
+      });
+      bot.mode = 'paper';
+      bot.enabled = true;
+
+      final rep = await runner.tickBot(bot.id);
+
+      expect(ft.state.commits, 0, reason: 'PAPER never broadcasts');
+      expect(rep['type'], 'hodl', reason: 'routed to the scheduled planner, not the deal engine');
+      final ev = (rep['events'] as List).cast<Map<String, dynamic>>();
+      expect(ev.any((e) => e['paper'] == true && '${e['tag']}'.startsWith('hodl:')), isTrue,
+          reason: 'the hodl planner produced a paper buy intent');
+    });
+
+    test('kBotTypes + kScheduledTypes include the 9 indicator planners', () {
+      for (final n in ['rsi', 'macd', 'bollinger', 'breakout', 'emacross',
+        'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl']) {
+        expect(kBotTypes.contains(n), isTrue, reason: '$n is a live bot type');
+        expect(kScheduledTypes.contains(n), isTrue, reason: '$n routes to the scheduled planner');
+      }
     });
   });
 }
