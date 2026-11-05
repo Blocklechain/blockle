@@ -1064,6 +1064,707 @@ class MomentumStrategy extends Strategy {
   }
 }
 
+// ===========================================================================
+// 3.6 indicator planners (ported from the paper bot engine in
+//     services/accounts/src/bots.js step(), and 1:1 with the JS live planners in
+//     blockle-extension/agent/strategies.js). These are PURE + STATELESS: every
+//     indicator is recomputed from `history` (oldest->newest) each tick, and any
+//     cross-state (prev relation for macd/emacross) is DERIVED from the window —
+//     exactly as momentum recomputes golden/death from history[n-2]/history[n-1].
+//     The StrategyRunner host persists the per-strategy price ring and supplies it
+//     as the `history` param. These reproduce the AUTHORITATIVE server decisions
+//     in bots.js step() so "USE THIS STRATEGY" behaves like its ranked backtest:
+//       - BUY size = posUsd = budgetUsd*positionPct/100 (the server's posUsd),
+//         CLAMPED to the remaining session budget (the LIVE risk bound).
+//       - SELL = FULL liquidation of the held base (server sellAll), clamped so it
+//         never exceeds what is held.
+//       - QUOTE price: stable peg, else the live ctx.prices price; a non-stable
+//         quote with no price REFUSES (no fabricated $1).
+//     scalp + martingale are DROPPED here (per-position-state strategies a
+//     stateless planner cannot safely reproduce) — PAPER-only in bots.js.
+// ===========================================================================
+
+// ---- deterministic indicators (ported VERBATIM from bots.js; null until warm) --
+double? _smaH(List<double> h, int n) {
+  if (h.length < n) return null;
+  var t = 0.0;
+  for (var i = h.length - n; i < h.length; i++) {
+    t += h[i];
+  }
+  return t / n;
+}
+
+double? _stdevH(List<double> h, int n) {
+  final m = _smaH(h, n);
+  if (m == null) return null;
+  var t = 0.0;
+  for (var i = h.length - n; i < h.length; i++) {
+    final d = h[i] - m;
+    t += d * d;
+  }
+  return math.sqrt(t / n);
+}
+
+double? _emaH(List<double> h, int n) {
+  if (h.length < n) return null;
+  final k = 2 / (n + 1);
+  var e = h[0];
+  for (var i = 1; i < h.length; i++) {
+    e = h[i] * k + e * (1 - k);
+  }
+  return e;
+}
+
+({double macd, double signal})? _macdH(List<double> h, int fast, int slow, int signalP) {
+  if (h.length < slow + signalP) return null;
+  final kf = 2 / (fast + 1), ks = 2 / (slow + 1), kg = 2 / (signalP + 1);
+  var ef = h[0], es = h[0];
+  double? sig;
+  for (var i = 1; i < h.length; i++) {
+    ef = h[i] * kf + ef * (1 - kf);
+    es = h[i] * ks + es * (1 - ks);
+    final m = ef - es;
+    sig = sig == null ? m : m * kg + sig * (1 - kg);
+  }
+  return (macd: ef - es, signal: sig ?? (ef - es));
+}
+
+double? _rsiH(List<double> h, int n) {
+  if (h.length < n + 1) return null;
+  var up = 0.0, dn = 0.0;
+  for (var i = h.length - n; i < h.length; i++) {
+    final d = h[i] - h[i - 1];
+    if (d >= 0) {
+      up += d;
+    } else {
+      dn -= d;
+    }
+  }
+  if (dn == 0) return 100;
+  final rs = (up / n) / (dn / n);
+  return 100 - 100 / (1 + rs);
+}
+
+double? _donHighH(List<double> h, int n) {
+  if (h.length < n + 1) return null;
+  return h.sublist(h.length - 1 - n, h.length - 1).reduce(math.max);
+}
+
+double? _donLowH(List<double> h, int n) {
+  if (h.length < n + 1) return null;
+  return h.sublist(h.length - 1 - n, h.length - 1).reduce(math.min);
+}
+
+double? _rocH(List<double> h, int n) {
+  if (h.length < n + 1) return null;
+  final prev = h[h.length - 1 - n];
+  return (h[h.length - 1] - prev) / prev * 100;
+}
+
+// Convert the `history` param (oldest->newest) into doubles.
+List<double> _histOf(Map<String, dynamic> params) =>
+    ((params['history'] as List?) ?? const []).map((e) => _numOf(e).toDouble()).toList();
+
+// Shared param validation for the single-market indicator planners. FIX-1:
+// sizing is posUsd = budgetUsd * positionPct/100 (the ranked-backtest convention
+// in services/accounts/src/bots.js, NOT a bounded tradeUsd slice). budgetUsd is
+// the bot's USD allocation; clamped [1, 1e9]. positionPct clamped to (0, 100].
+Map<String, dynamic> _validateMarket(
+    Map<String, dynamic> defaults, String name, Map<String, dynamic>? params) {
+  final p = {...defaults, ...?params};
+  if (p['market'] == null || '${p['market']}'.isEmpty) {
+    throw ArgumentError('$name: `market` is required (e.g. "BLOCK/USDC")');
+  }
+  p['market'] = '${p['market']}'.toUpperCase();
+  _splitPair(p['market'] as String);
+  p['budgetUsd'] = math.max(1, math.min(1e9, _numParam(p['budgetUsd'], 1000)));
+  var pp = _numParam(p['positionPct'], 100);
+  if (!(pp > 0)) pp = 100; // clamp to (0, 100]
+  p['positionPct'] = math.min(100, pp);
+  p['mainnet'] = p['mainnet'] == true;
+  return p;
+}
+
+// FIX-4: resolve the USD price of a quote asset. Stable quotes use their peg (1);
+// a NON-stable quote MUST come from ctx.prices — returns null when no positive
+// price is available, so callers REFUSE rather than fabricate $1.
+Future<double?> _quoteUsdOf(StrategyContext ctx, String quote) async {
+  if (_isStable(quote)) return 1.0;
+  final px = ctx.prices != null ? await ctx.prices!([quote]) : <String, num>{};
+  final v = px[quote] ?? px[quote.toUpperCase()];
+  return (v != null && v > 0) ? v.toDouble() : null;
+}
+
+// FIX-2: the LIVE risk bound. The remaining session allocation caps exposure — a
+// full-size posUsd buy is safe BY CONSTRUCTION because it is clamped to this.
+// Falls back to the bot's own budget when the host exposes no session remaining.
+num _remainingUsd(StrategyContext ctx, num budgetUsd) {
+  final rem = ctx.policyRemaining?.call();
+  final s = (rem != null && rem['sessionUsd'] != null)
+      ? _numOf(rem['sessionUsd'])
+      : null;
+  return s ?? budgetUsd;
+}
+
+// Read the held base-unit balance for [base] from the context (0 when none / no
+// balance source). Mirrors the momentum death-cross held reader.
+Future<BigInt> _heldBaseAmount(StrategyContext ctx, String base) async {
+  if (ctx.getBalance == null) return BigInt.zero;
+  final rows = await ctx.getBalance!('*');
+  for (final r in rows) {
+    final asset = r['asset'] is Map ? r['asset'] as Map : {'symbol': r['asset']};
+    if ('${asset['symbol']}'.toUpperCase() == base) {
+      return BigInt.parse('${r['confirmed'] ?? '0'}');
+    }
+  }
+  return BigInt.zero;
+}
+
+// Build a BUY (quote->base) intent sized at posUsd = budgetUsd * positionPct/100
+// (FIX-1, the ranked-backtest convention), CLAMPED to the remaining session
+// budget (FIX-2, the LIVE risk bound). Never fabricates a quote price (FIX-4).
+Future<List<StrategyIntent>> _indicatorBuy(
+    StrategyContext ctx, Map<String, dynamic> params, String name, String reason) async {
+  final market = params['market'] as String;
+  final parts = _splitPair(market);
+  final base = parts[0], quote = parts[1];
+  final quoteUsd = await _quoteUsdOf(ctx, quote);
+  if (quoteUsd == null) {
+    ctx.skip('$name:$market', 'no reliable quote price for $quote');
+    return const [];
+  }
+  final qd = _decOf(quote, 6);
+  final budgetUsd = params['budgetUsd'] as num;
+  final positionPct = params['positionPct'] as num;
+  num usd = budgetUsd * positionPct / 100; // posUsd
+  final remain = _remainingUsd(ctx, budgetUsd);
+  if (usd > remain) usd = remain; // LIVE risk bound
+  if (!(usd > 0)) {
+    ctx.skip('$name:$market', 'no remaining budget');
+    return const [];
+  }
+  final amount = _usdToBase(usd, quoteUsd, qd);
+  if (amount <= BigInt.zero) {
+    ctx.skip('$name:$market', 'buy size rounds to zero');
+    return const [];
+  }
+  return [
+    StrategyIntent(
+      tool: 'swap',
+      args: {'from': quote, 'to': base, 'amount': amount.toString(), 'venue': 'blockle'},
+      rationale: reason,
+      estUsd: (usd * 100).round() / 100,
+      strategy: name,
+      tag: '$name:$market:buy',
+      mainnet: (params['mainnet'] == true) || _ctxNetworkMainnet(ctx),
+    ),
+  ];
+}
+
+// Build a SELL (base->quote) intent that FULLY LIQUIDATES the held base (FIX-3:
+// sellAll, clamped to held — an indicator exit dumps the ENTIRE position, never a
+// tradeUsd slice). Never fabricates a quote price (FIX-4).
+Future<List<StrategyIntent>> _indicatorSell(StrategyContext ctx,
+    Map<String, dynamic> params, String name, double price, String reason) async {
+  final market = params['market'] as String;
+  final parts = _splitPair(market);
+  final base = parts[0], quote = parts[1];
+  if (!(price > 0)) {
+    ctx.skip('$name:$market', 'non-positive latest price');
+    return const [];
+  }
+  final quoteUsd = await _quoteUsdOf(ctx, quote);
+  if (quoteUsd == null) {
+    ctx.skip('$name:$market', 'no reliable quote price for $quote');
+    return const [];
+  }
+  final baseUsd = price * quoteUsd;
+  final bd = _decOf(base, 8);
+  final held = await _heldBaseAmount(ctx, base);
+  if (held <= BigInt.zero) {
+    ctx.skip('$name:$market', '$reason but nothing held to sell');
+    return const [];
+  }
+  final sellBase = held; // full liquidation (clamped to held)
+  final estUsd = double.parse(sellBase.toString()) / math.pow(10, bd) * baseUsd;
+  return [
+    StrategyIntent(
+      tool: 'swap',
+      args: {'from': base, 'to': quote, 'amount': sellBase.toString(), 'venue': 'blockle'},
+      rationale: reason,
+      estUsd: estUsd,
+      strategy: name,
+      tag: '$name:$market:sell',
+      mainnet: (params['mainnet'] == true) || _ctxNetworkMainnet(ctx),
+    ),
+  ];
+}
+
+// --- rsi: buy oversold, sell overbought ------------------------------------
+class RsiStrategy extends Strategy {
+  @override
+  String get name => 'rsi';
+  @override
+  String describe() =>
+      'RSI: buy when the Relative Strength Index is oversold, sell held when it is overbought.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'period': 14, 'oversold': 30, 'overbought': 70, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['period'] = _clampInt(p['period'], 2, 200, 14);
+    p['oversold'] = math.max(1, math.min(50, _numParam(p['oversold'], 30)));
+    p['overbought'] = math.max(50, math.min(99, _numParam(p['overbought'], 70)));
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final r = _rsiH(h, params['period'] as int);
+    if (r == null) {
+      ctx.skip('rsi:${params['market']}', 'warming up (need > period prices)');
+      return const [];
+    }
+    final price = h.last;
+    if (r <= (params['oversold'] as num)) {
+      return _indicatorBuy(ctx, params, 'rsi',
+          'rsi oversold (${r.toStringAsFixed(1)} <= ${params['oversold']}) — buy');
+    }
+    if (r >= (params['overbought'] as num)) {
+      return _indicatorSell(ctx, params, 'rsi', price,
+          'rsi overbought (${r.toStringAsFixed(1)} >= ${params['overbought']})');
+    }
+    ctx.skip('rsi:${params['market']}', 'rsi neutral (${r.toStringAsFixed(1)})');
+    return const [];
+  }
+}
+
+// --- macd: trade the signal-line crossover ---------------------------------
+class MacdStrategy extends Strategy {
+  @override
+  String get name => 'macd';
+  @override
+  String describe() =>
+      'MACD: buy when the MACD line crosses above its signal line, sell held on a cross below.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'fast': 12, 'slow': 26, 'signalP': 9, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['fast'] = _clampInt(p['fast'], 2, 100, 12);
+    p['slow'] = _clampInt(p['slow'], 3, 300, 26);
+    p['signalP'] = _clampInt(p['signalP'], 1, 100, 9);
+    if ((p['fast'] as int) >= (p['slow'] as int)) {
+      throw ArgumentError('macd needs fast < slow');
+    }
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final fast = params['fast'] as int, slow = params['slow'] as int, signalP = params['signalP'] as int;
+    final curr = _macdH(h, fast, slow, signalP);
+    if (curr == null) {
+      ctx.skip('macd:${params['market']}', 'warming up (need >= slow+signalP prices)');
+      return const [];
+    }
+    final prev = _macdH(h.sublist(0, h.length - 1), fast, slow, signalP);
+    final relCurr = curr.macd > curr.signal ? 1 : -1;
+    final relPrev = prev == null ? 0 : (prev.macd > prev.signal ? 1 : -1);
+    final price = h.last;
+    if (relCurr == 1 && relPrev <= 0) {
+      return _indicatorBuy(ctx, params, 'macd', 'macd crossed above signal — buy');
+    }
+    if (relCurr == -1 && relPrev >= 0) {
+      return _indicatorSell(ctx, params, 'macd', price, 'macd crossed below signal — sell held');
+    }
+    ctx.skip('macd:${params['market']}', 'no macd cross');
+    return const [];
+  }
+}
+
+// --- bollinger: fade the bands ---------------------------------------------
+class BollingerStrategy extends Strategy {
+  @override
+  String get name => 'bollinger';
+  @override
+  String describe() =>
+      'Bollinger Bands: buy when price pierces the lower band, sell held when it pierces the upper band.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'period': 20, 'k': 2, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['period'] = _clampInt(p['period'], 2, 200, 20);
+    p['k'] = math.max(0.5, math.min(5, _numParam(p['k'], 2)));
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final period = params['period'] as int;
+    final k = params['k'] as num;
+    final m = _smaH(h, period), sd = _stdevH(h, period);
+    if (m == null || sd == null) {
+      ctx.skip('bollinger:${params['market']}', 'warming up (need >= period prices)');
+      return const [];
+    }
+    final price = h.last;
+    if (price <= m - k * sd) {
+      return _indicatorBuy(ctx, params, 'bollinger', 'bollinger lower-band pierce — buy');
+    }
+    if (price >= m + k * sd) {
+      return _indicatorSell(ctx, params, 'bollinger', price, 'bollinger upper-band pierce — sell held');
+    }
+    ctx.skip('bollinger:${params['market']}', 'bollinger inside the bands');
+    return const [];
+  }
+}
+
+// --- breakout: ride new range highs (Donchian) -----------------------------
+class BreakoutStrategy extends Strategy {
+  @override
+  String get name => 'breakout';
+  @override
+  String describe() =>
+      'Donchian breakout: buy a new range high, sell held when price breaks the trailing range low.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'lookback': 20, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['lookback'] = _clampInt(p['lookback'], 2, 300, 20);
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final lookback = params['lookback'] as int;
+    final hi = _donHighH(h, lookback), lo = _donLowH(h, lookback);
+    if (hi == null) {
+      ctx.skip('breakout:${params['market']}', 'warming up (need > lookback prices)');
+      return const [];
+    }
+    final price = h.last;
+    if (price > hi) {
+      return _indicatorBuy(ctx, params, 'breakout',
+          'breakout above ${_fmtD(hi)} — buy');
+    }
+    if (lo != null && price < lo) {
+      return _indicatorSell(ctx, params, 'breakout', price, 'breakdown below ${_fmtD(lo)} — sell held');
+    }
+    ctx.skip('breakout:${params['market']}', 'inside the Donchian range');
+    return const [];
+  }
+}
+
+// --- emacross: fast/slow EMA trend follow ----------------------------------
+class EmaCrossStrategy extends Strategy {
+  @override
+  String get name => 'emacross';
+  @override
+  String describe() =>
+      'EMA cross: buy when the fast EMA crosses above the slow EMA, sell held on a cross below.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'fast': 10, 'slow': 30, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['fast'] = _clampInt(p['fast'], 2, 200, 10);
+    p['slow'] = _clampInt(p['slow'], 3, 400, 30);
+    if ((p['fast'] as int) >= (p['slow'] as int)) {
+      throw ArgumentError('emacross needs fast < slow');
+    }
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final fast = params['fast'] as int, slow = params['slow'] as int;
+    final f = _emaH(h, fast), sl = _emaH(h, slow);
+    if (f == null || sl == null) {
+      ctx.skip('emacross:${params['market']}', 'warming up (need >= slow prices)');
+      return const [];
+    }
+    final hp = h.sublist(0, h.length - 1);
+    final fp = _emaH(hp, fast), slp = _emaH(hp, slow);
+    final relCurr = f > sl ? 1 : -1;
+    final relPrev = (fp == null || slp == null) ? 0 : (fp > slp ? 1 : -1);
+    final price = h.last;
+    if (relCurr == 1 && relPrev <= 0) {
+      return _indicatorBuy(ctx, params, 'emacross',
+          'EMA$fast crossed above EMA$slow — buy');
+    }
+    if (relCurr == -1 && relPrev >= 0) {
+      return _indicatorSell(ctx, params, 'emacross', price,
+          'EMA$fast crossed below EMA$slow — sell held');
+    }
+    ctx.skip('emacross:${params['market']}', 'no EMA cross');
+    return const [];
+  }
+}
+
+// --- momentum_roc: follow rate-of-change -----------------------------------
+class MomentumRocStrategy extends Strategy {
+  @override
+  String get name => 'momentum_roc';
+  @override
+  String describe() =>
+      'Rate-of-change momentum: buy when ROC over the lookback clears the threshold, sell held when ROC turns negative.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'lookback': 10, 'thresholdPct': 3, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['lookback'] = _clampInt(p['lookback'], 2, 300, 10);
+    p['thresholdPct'] = math.max(0, math.min(100, _numParam(p['thresholdPct'], 3)));
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final r = _rocH(h, params['lookback'] as int);
+    if (r == null) {
+      ctx.skip('momentum_roc:${params['market']}', 'warming up (need > lookback prices)');
+      return const [];
+    }
+    final price = h.last;
+    if (r >= (params['thresholdPct'] as num)) {
+      return _indicatorBuy(ctx, params, 'momentum_roc',
+          'ROC ${r.toStringAsFixed(2)}% >= ${params['thresholdPct']}% — buy');
+    }
+    if (r < 0) {
+      return _indicatorSell(ctx, params, 'momentum_roc', price,
+          'ROC turned negative (${r.toStringAsFixed(2)}%) — sell held');
+    }
+    ctx.skip('momentum_roc:${params['market']}', 'ROC below threshold (${r.toStringAsFixed(2)}%)');
+    return const [];
+  }
+}
+
+// --- meanrev: buy below / sell above the moving average ---------------------
+class MeanRevStrategy extends Strategy {
+  @override
+  String get name => 'meanrev';
+  @override
+  String describe() =>
+      'Mean reversion: buy when price is a band below the moving average, sell held when it is a band above.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'period': 20, 'bandPct': 5, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['period'] = _clampInt(p['period'], 2, 300, 20);
+    p['bandPct'] = math.max(0.1, math.min(100, _numParam(p['bandPct'], 5)));
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final h = _histOf(params);
+    final m = _smaH(h, params['period'] as int);
+    if (m == null) {
+      ctx.skip('meanrev:${params['market']}', 'warming up (need >= period prices)');
+      return const [];
+    }
+    final price = h.last;
+    final bandPct = params['bandPct'] as num;
+    if (price <= m * (1 - bandPct / 100)) {
+      return _indicatorBuy(ctx, params, 'meanrev', 'price $bandPct% below the mean — buy');
+    }
+    if (price >= m * (1 + bandPct / 100)) {
+      return _indicatorSell(ctx, params, 'meanrev', price, 'price $bandPct% above the mean — sell held');
+    }
+    ctx.skip('meanrev:${params['market']}', 'within the mean-reversion band');
+    return const [];
+  }
+}
+
+// --- rebalance_hold: keep targetPct of VALUE in the asset -------------------
+class RebalanceHoldStrategy extends Strategy {
+  @override
+  String get name => 'rebalance_hold';
+  @override
+  String describe() =>
+      'Single-asset rebalance: hold a target % of portfolio value in the asset; trade the drift back toward target.';
+  @override
+  Map<String, dynamic> get defaults =>
+      {'targetPct': 50, 'driftPct': 10, 'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) {
+    final p = _validateMarket(defaults, name, params);
+    p['targetPct'] = math.max(1, math.min(99, _numParam(p['targetPct'], 50)));
+    p['driftPct'] = math.max(1, math.min(100, _numParam(p['driftPct'], 10)));
+    return p;
+  }
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final market = params['market'] as String;
+    final parts = _splitPair(market);
+    final base = parts[0], quote = parts[1];
+    final h = _histOf(params);
+    if (h.isEmpty || !(h.last > 0)) {
+      ctx.skip('rebalance_hold:$market', 'warming up (need a price)');
+      return const [];
+    }
+    final price = h.last;
+    final bd = _decOf(base, 8), qd = _decOf(quote, 6);
+    // FIX-4: never fabricate $1 — a non-stable quote must be priced from ctx.prices.
+    final quoteUsd = await _quoteUsdOf(ctx, quote);
+    if (quoteUsd == null) {
+      ctx.skip('rebalance_hold:$market', 'no reliable quote price for $quote');
+      return const [];
+    }
+    final effQ = quoteUsd;
+    final baseUsd = price * effQ;
+
+    BigInt heldBase = BigInt.zero, heldQuote = BigInt.zero;
+    if (ctx.getBalance != null) {
+      final rows = await ctx.getBalance!('*');
+      for (final r in rows) {
+        final asset = r['asset'] is Map ? r['asset'] as Map : {'symbol': r['asset']};
+        final sym = '${asset['symbol']}'.toUpperCase();
+        if (sym == base) heldBase = BigInt.parse('${r['confirmed'] ?? '0'}');
+        if (sym == quote) heldQuote = BigInt.parse('${r['confirmed'] ?? '0'}');
+      }
+    }
+    final baseVal = double.parse(heldBase.toString()) / math.pow(10, bd) * baseUsd;
+    final quoteVal = double.parse(heldQuote.toString()) / math.pow(10, qd) * effQ;
+    final value = baseVal + quoteVal;
+    if (!(value > 0)) {
+      ctx.skip('rebalance_hold:$market', 'portfolio value is zero');
+      return const [];
+    }
+    final target = (params['targetPct'] as num) / 100;
+    final held = baseVal / value;
+    if ((held - target).abs() * 100 < (params['driftPct'] as num)) {
+      ctx.skip('rebalance_hold:$market', 'allocation within drift band');
+      return const [];
+    }
+    final wantUsd = value * target;
+    final mainnet = (params['mainnet'] == true) || _ctxNetworkMainnet(ctx);
+    if (wantUsd > baseVal) {
+      var buyUsd = wantUsd - baseVal;
+      // FIX-2: clamp the drift buy to the remaining session budget (LIVE risk bound).
+      final remain = _remainingUsd(ctx, params['budgetUsd'] as num);
+      if (buyUsd > remain) buyUsd = remain.toDouble();
+      if (!(buyUsd > 0)) {
+        ctx.skip('rebalance_hold:$market', 'no remaining budget');
+        return const [];
+      }
+      final wantQuote = _usdToBase(buyUsd, effQ, qd);
+      final spendQuote = wantQuote < heldQuote ? wantQuote : heldQuote;
+      if (spendQuote <= BigInt.zero) {
+        ctx.skip('rebalance_hold:$market', 'buy size rounds to zero / no quote held');
+        return const [];
+      }
+      final estUsd = double.parse(spendQuote.toString()) / math.pow(10, qd) * effQ;
+      return [
+        StrategyIntent(
+          tool: 'swap',
+          args: {'from': quote, 'to': base, 'amount': spendQuote.toString(), 'venue': 'blockle'},
+          rationale:
+              'rebalance_hold BUY $base (${(held * 100).toStringAsFixed(1)}% vs ${params['targetPct']}% target)',
+          estUsd: estUsd,
+          strategy: name,
+          tag: 'rebalance_hold:$market:buy',
+          mainnet: mainnet,
+        ),
+      ];
+    }
+    final sellUsd = baseVal - wantUsd;
+    final wantBase = _usdToBase(sellUsd, baseUsd, bd);
+    final sellBase = wantBase < heldBase ? wantBase : heldBase;
+    if (sellBase <= BigInt.zero) {
+      ctx.skip('rebalance_hold:$market', 'sell size rounds to zero');
+      return const [];
+    }
+    final estUsd = double.parse(sellBase.toString()) / math.pow(10, bd) * baseUsd;
+    return [
+      StrategyIntent(
+        tool: 'swap',
+        args: {'from': base, 'to': quote, 'amount': sellBase.toString(), 'venue': 'blockle'},
+        rationale:
+            'rebalance_hold SELL $base (${(held * 100).toStringAsFixed(1)}% vs ${params['targetPct']}% target)',
+        estUsd: estUsd,
+        strategy: name,
+        tag: 'rebalance_hold:$market:sell',
+        mainnet: mainnet,
+      ),
+    ];
+  }
+}
+
+// NOTE: `scalp` and `martingale` are DROPPED FROM LIVE (1:1 with the JS live
+// registry). They depend on per-position state (avgCost / lastBuyPrice with a
+// ratchet) that a stateless price-history planner cannot faithfully or safely
+// reproduce — an adversarial review found the live approximations oversized/
+// unbounded real exposure. They remain PAPER strategies in
+// services/accounts/src/bots.js (the ranked backtest engine); creating a live
+// bot of type scalp/martingale is cleanly rejected as an unknown live strategy.
+
+// --- hodl: buy once and hold (benchmark) ------------------------------------
+class HodlStrategy extends Strategy {
+  @override
+  String get name => 'hodl';
+  @override
+  String describe() =>
+      'HODL: buy the asset once when nothing is held, then hold forever (never sells).';
+  @override
+  Map<String, dynamic> get defaults => {'budgetUsd': 1000, 'positionPct': 100};
+
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) =>
+      _validateMarket(defaults, name, params);
+
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    final market = params['market'] as String;
+    final base = _splitPair(market)[0];
+    final heldBase = await _heldBaseAmount(ctx, base);
+    if (heldBase > BigInt.zero) {
+      ctx.skip('hodl:$market', 'already holding');
+      return const [];
+    }
+    // server hodl buys ALL cash (ignores positionPct) — pin to the full allocation.
+    return _indicatorBuy(ctx, {...params, 'positionPct': 100}, 'hodl',
+        'hodl entry — buy the allocation of $base');
+  }
+}
+
+// (scalp + martingale live planners removed — see the note above hodl. PAPER-only.)
+
+// Trimmed decimal string (float noise + trailing zeros) for rationale text.
+String _fmtD(double x) {
+  var s = x.toStringAsFixed(12);
+  if (s.contains('.')) {
+    s = s.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  }
+  return s;
+}
+
 // Per-symbol default decimals when a snapshot/holding does not carry them.
 int _decOf(String sym, int dflt) {
   switch (sym.toUpperCase()) {
@@ -1094,6 +1795,19 @@ Map<String, Strategy> defaultStrategies() {
     GridStrategy(),
     RebalanceStrategy(),
     MomentumStrategy(),
+    // 9 indicator planners (1:1 with blockle-extension/agent/strategies.js),
+    // translated from the paper bot engine in services/accounts/src/bots.js.
+    // scalp + martingale are DROPPED from live (per-position state a stateless
+    // planner cannot safely reproduce); they remain PAPER-only in bots.js.
+    RsiStrategy(),
+    MacdStrategy(),
+    BollingerStrategy(),
+    BreakoutStrategy(),
+    EmaCrossStrategy(),
+    MomentumRocStrategy(),
+    MeanRevStrategy(),
+    RebalanceHoldStrategy(),
+    HodlStrategy(),
   ];
   return {for (final s in list) s.name: s};
 }

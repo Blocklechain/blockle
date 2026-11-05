@@ -134,5 +134,1214 @@
       "prices": { "USDC": 1, "BLOCK": 1 },
       "expect": { "intents": [] }
     }
+  },
+  "rsi": {
+    "oversold_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          2,
+          1.95,
+          1.9,
+          1.85,
+          1.8,
+          1.75,
+          1.7,
+          1.65,
+          1.6,
+          1.55,
+          1.5,
+          1.45,
+          1.4,
+          1.35,
+          1.3,
+          1.25
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "oversold_buys_clamped": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          2,
+          1.95,
+          1.9,
+          1.85,
+          1.8,
+          1.75,
+          1.7,
+          1.65,
+          1.6,
+          1.55,
+          1.5,
+          1.45,
+          1.4,
+          1.35,
+          1.3,
+          1.25
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "sessionUsd": 5,
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "5000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "overbought_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          0.5,
+          0.55,
+          0.6,
+          0.65,
+          0.7,
+          0.75,
+          0.8,
+          0.85,
+          0.9,
+          0.95,
+          1,
+          1.05,
+          1.1,
+          1.15,
+          1.2,
+          1.25
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "nonstable_quote_buys": {
+      "params": {
+        "market": "BLOCK/ETH",
+        "budgetUsd": 20,
+        "history": [
+          2,
+          1.95,
+          1.9,
+          1.85,
+          1.8,
+          1.75,
+          1.7,
+          1.65,
+          1.6,
+          1.55,
+          1.5,
+          1.45,
+          1.4,
+          1.35,
+          1.3,
+          1.25
+        ]
+      },
+      "prices": {
+        "ETH": 2000,
+        "BLOCK": 1
+      },
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "ETH",
+            "to": "BLOCK",
+            "amount": "10000000000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "warming_up_quiet": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          2,
+          1.95,
+          1.9,
+          1.85,
+          1.8,
+          1.75,
+          1.7,
+          1.65,
+          1.6,
+          1.55
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [],
+        "skipped": "warming up (need > period prices)"
+      }
+    }
+  },
+  "macd": {
+    "cross_up_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          3,
+          2.97,
+          2.94,
+          2.91,
+          2.88,
+          2.85,
+          2.82,
+          2.79,
+          2.76,
+          2.73,
+          2.7,
+          2.67,
+          2.64,
+          2.61,
+          2.58,
+          2.55,
+          2.52,
+          2.49,
+          2.46,
+          2.43,
+          2.4,
+          2.37,
+          2.34,
+          2.31,
+          2.28,
+          2.25,
+          2.22,
+          2.19,
+          2.16,
+          2.13,
+          2.1,
+          2.07,
+          2.04,
+          2.01,
+          1.98,
+          1.95,
+          1.92,
+          1.89,
+          1.86,
+          1.83,
+          1.8,
+          1.77,
+          1.74,
+          1.71,
+          1.68,
+          1.68,
+          1.74
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "cross_down_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1.03,
+          1.06,
+          1.09,
+          1.12,
+          1.15,
+          1.18,
+          1.21,
+          1.24,
+          1.27,
+          1.3,
+          1.33,
+          1.36,
+          1.39,
+          1.42,
+          1.45,
+          1.48,
+          1.51,
+          1.54,
+          1.57,
+          1.6,
+          1.63,
+          1.66,
+          1.69,
+          1.72,
+          1.75,
+          1.78,
+          1.81,
+          1.84,
+          1.87,
+          1.9,
+          1.93,
+          1.96,
+          1.99,
+          2.02,
+          2.05,
+          2.08,
+          2.11,
+          2.14,
+          2.17,
+          2.2,
+          2.23,
+          2.26,
+          2.29,
+          2.32,
+          2.32,
+          2.26
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "bollinger": {
+    "lower_band_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.8
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "upper_band_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1.2
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "breakout": {
+    "new_high_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1.1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "range_break_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.9
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "emacross": {
+    "cross_up_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          3,
+          2.95,
+          2.9,
+          2.85,
+          2.8,
+          2.75,
+          2.7,
+          2.65,
+          2.6,
+          2.55,
+          2.5,
+          2.45,
+          2.4,
+          2.35,
+          2.3,
+          2.25,
+          2.2,
+          2.15,
+          2.1,
+          2.05,
+          2,
+          1.95,
+          1.9,
+          1.85,
+          1.8,
+          1.75,
+          1.7,
+          1.65,
+          1.6,
+          1.55,
+          1.5,
+          1.45,
+          1.4,
+          1.35,
+          1.3,
+          1.25,
+          1.2,
+          1.15,
+          1.1,
+          1.05,
+          1.15,
+          1.25,
+          1.35,
+          1.45,
+          1.55,
+          1.65,
+          1.75,
+          1.85,
+          1.95,
+          2.05
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "cross_down_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1.03,
+          1.06,
+          1.09,
+          1.12,
+          1.15,
+          1.18,
+          1.21,
+          1.24,
+          1.27,
+          1.3,
+          1.33,
+          1.36,
+          1.39,
+          1.42,
+          1.45,
+          1.48,
+          1.51,
+          1.54,
+          1.57,
+          1.6,
+          1.63,
+          1.66,
+          1.69,
+          1.72,
+          1.75,
+          1.78,
+          1.81,
+          1.84,
+          1.87,
+          1.9,
+          1.93,
+          1.96,
+          1.99,
+          2.02,
+          2.05,
+          2.08,
+          2.11,
+          2.14,
+          2.17,
+          2.17,
+          2.07,
+          1.97,
+          1.87,
+          1.77,
+          1.67,
+          1.57,
+          1.47,
+          1.37
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "momentum_roc": {
+    "strong_roc_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1.02,
+          1.04,
+          1.06,
+          1.08,
+          1.1,
+          1.12,
+          1.14,
+          1.16,
+          1.18,
+          1.2
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "negative_roc_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          2,
+          1.98,
+          1.96,
+          1.94,
+          1.92,
+          1.9,
+          1.88,
+          1.86,
+          1.84,
+          1.82,
+          1.8
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "meanrev": {
+    "below_mean_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0.9
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "above_mean_sells_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1.1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "100000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    }
+  },
+  "rebalance_hold": {
+    "overweight_sells": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "7000000000"
+        },
+        {
+          "asset": {
+            "symbol": "USDC",
+            "decimals": 6,
+            "chain": "base"
+          },
+          "confirmed": "30000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "BLOCK",
+            "to": "USDC",
+            "amount": "2000000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "underweight_buys": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "2000000000"
+        },
+        {
+          "asset": {
+            "symbol": "USDC",
+            "decimals": 6,
+            "chain": "base"
+          },
+          "confirmed": "80000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "30000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "underweight_buys_clamped": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 1000,
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "sessionUsd": 10,
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "2000000000"
+        },
+        {
+          "asset": {
+            "symbol": "USDC",
+            "decimals": 6,
+            "chain": "base"
+          },
+          "confirmed": "80000000"
+        }
+      ],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "10000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "in_band_no_trade": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "5000000000"
+        },
+        {
+          "asset": {
+            "symbol": "USDC",
+            "decimals": 6,
+            "chain": "base"
+          },
+          "confirmed": "50000000"
+        }
+      ],
+      "expect": {
+        "intents": [],
+        "skipped": "allocation within drift band"
+      }
+    }
+  },
+  "hodl": {
+    "buys_when_flat": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [],
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "20000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "buys_when_flat_clamped": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [],
+      "sessionUsd": 5,
+      "expect": {
+        "intents": [
+          {
+            "tool": "swap",
+            "from": "USDC",
+            "to": "BLOCK",
+            "amount": "5000000",
+            "venue": "blockle"
+          }
+        ]
+      }
+    },
+    "holds_when_held": {
+      "params": {
+        "market": "BLOCK/USDC",
+        "budgetUsd": 20,
+        "history": [
+          1
+        ]
+      },
+      "prices": {
+        "USDC": 1,
+        "BLOCK": 1
+      },
+      "balances": [
+        {
+          "asset": {
+            "symbol": "BLOCK",
+            "decimals": 8,
+            "chain": "block"
+          },
+          "confirmed": "100000000000"
+        }
+      ],
+      "expect": {
+        "intents": [],
+        "skipped": "already holding"
+      }
+    }
   }
 }

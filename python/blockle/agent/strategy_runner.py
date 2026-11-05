@@ -30,7 +30,44 @@ from ..multichain._util import maybe_await, member
 from . import strategies as _strategies
 from .policy import AgentHalted, CapExceeded
 from .runner import dispatch_prepared
+from .strategies import STABLE_USD, _num
 from .strategies import _is_mainnet as _ctx_is_mainnet
+
+
+def _pair_of(p: Dict[str, Any]):
+    """Resolve a strategy's market -> (BASE, QUOTE, 'BASE/QUOTE') or ``None``.
+
+    Covers the single-market planners (``market`` / ``pair``) and the dca-style
+    (``asset`` + ``quote``). Returns ``None`` for the strategies that have no
+    single market (rebalance), so their price ring stays inert."""
+    s = p.get("market") or p.get("pair")
+    if not s and p.get("asset"):
+        s = str(p["asset"]) + "/" + str(p.get("quote") or "USDC")
+    if not s:
+        return None
+    parts = str(s).upper().split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return parts[0], parts[1], parts[0] + "/" + parts[1]
+
+
+def _book_mid(book: Any):
+    """Book mid (quote-per-base) from a ``{mid}`` or ``{bids,asks}`` book; ``None``
+    if neither is resolvable."""
+    if not book:
+        return None
+    mid = member(book, "mid")
+    if mid is not None:
+        return _num(mid, 0) or None
+    bids = member(book, "bids") or []
+    asks = member(book, "asks") or []
+    bb = bids[0] if bids else None
+    ba = asks[0] if asks else None
+    bid = _num(member(bb, "price") if bb is not None else None, float("nan"))
+    ask = _num(member(ba, "price") if ba is not None else None, float("nan"))
+    if bid == bid and ask == ask:  # not NaN
+        return (bid + ask) / 2
+    return None
 
 
 class StrategyRunner:
@@ -57,6 +94,58 @@ class StrategyRunner:
         self.use_discovery = deps.get("useDiscovery") is True
         self.auto_consider_unapproved = deps.get("autoConsiderUnapproved") is True  # default off
         self.channel = deps.get("channel")
+        # Per-strategy price ring (last ``history_cap`` prices, oldest->newest),
+        # persisted across ticks and supplied to plan() as ``p["history"]`` so the
+        # stateless indicator planners (rsi/macd/bollinger/breakout/emacross/
+        # momentum_roc/meanrev/rebalance_hold/hodl) get their
+        # window and derive any cross-state from it. The ring is the ONLY host-held
+        # state; planners stay pure + stateless. Identical to the JS/Dart hosts.
+        hc = deps.get("historyCap")
+        self.history_cap = max(2, int(hc)) if hc is not None else 400
+        rings = deps.get("priceRings")
+        self.price_rings: Dict[str, List[float]] = rings if isinstance(rings, dict) else {}
+
+    async def _record_price(self, strategy_name: str, p: Dict[str, Any]):
+        """Observe the current market price for this strategy's market, push it onto
+        the persisted per-strategy ring (oldest->newest, capped at ``history_cap``),
+        and return a snapshot. The price is the book mid (quote-per-base) when
+        available, else derived from ``ctx.prices`` as ``prices[base]/prices[quote]``
+        — the same quote-per-base unit the fixtures use. Returns ``None`` (and
+        records nothing) when no market or price resolves, so the non-history
+        strategies (dca/arbitrage/rebalance) stay inert."""
+        pr = _pair_of(p)
+        if pr is None:
+            return None
+        base, quote, mkt = pr
+        key = strategy_name + "|" + mkt
+        ring = self.price_rings.get(key)
+        if ring is None:
+            ring = []
+            self.price_rings[key] = ring
+        price = None
+        gb = member(self.ctx, "getBook")
+        if callable(gb):
+            try:
+                price = _book_mid(await maybe_await(gb(mkt)))
+            except Exception:
+                price = None
+        if not (price and price > 0):
+            pf = member(self.ctx, "prices")
+            if callable(pf):
+                try:
+                    px = await maybe_await(pf([base, quote])) or {}
+                    b = _num(member(px, base), 0)
+                    qraw = member(px, quote)
+                    q = _num(qraw if qraw is not None else STABLE_USD.get(str(quote).upper()), 0)
+                    if b > 0 and q > 0:
+                        price = b / q
+                except Exception:
+                    price = None
+        if price and price > 0:
+            ring.append(price)
+            if len(ring) > self.history_cap:
+                del ring[0]
+        return list(ring) if ring else None
 
     async def candidates(self, opts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """READ-ONLY candidate universe passthrough (§7 Wiring). Returns the ranked
@@ -108,6 +197,17 @@ class StrategyRunner:
         if not strat:
             raise ValueError("unknown strategy: " + str(strategy_name))
         params = strat.validate_params(params or {})
+
+        # Persist + supply the per-strategy price ring as p["history"]
+        # (oldest->newest). If the caller already supplied an explicit history
+        # (a backtest or the shared fixture), respect it and do NOT touch the
+        # ring; otherwise observe the current price, push it onto the ring, and
+        # hand plan() a snapshot. Identical wiring in the JS + Dart hosts.
+        if params.get("history") is None:
+            hist = await self._record_price(strategy_name, params)
+            if hist:
+                params["history"] = hist
+
         intents = await maybe_await(strat.plan(self.ctx, params))
         intents = intents or []
 

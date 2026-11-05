@@ -329,3 +329,77 @@ def test_unknown_strategy_raises():
     runner, policy, audit, rec = _make_runner([], caps={"sessionUsd": 1000}, confirm=lambda s: True)
     with pytest.raises(ValueError):
         run(runner.tick("nope", {}))
+
+
+# --------------------------------------------------------------------------- #
+# price-history ring: the host persists a per-strategy price ring and supplies #
+# it to plan() as p["history"] (oldest->newest), so the stateless indicator    #
+# planners get their window. Mirrors the JS strategy-runner tests.             #
+# --------------------------------------------------------------------------- #
+
+class _ProbeStrategy:
+    """Records the p["history"] it was handed each tick; emits no Intents."""
+
+    name = "probe"
+
+    def __init__(self, seen):
+        self._seen = seen
+
+    def describe(self):
+        return "probe"
+
+    def validate_params(self, params=None):
+        p = {"market": "BLOCK/USDC", "history": None}
+        p.update(params or {})
+        return p
+
+    async def plan(self, ctx, params):
+        self._seen.append(list(params.get("history") or []))
+        return []
+
+
+def _probe_runner(ctx, rings=None, history_cap=None):
+    audit = audit_mod.create({})
+    policy = policy_mod.create({"caps": {"sessionUsd": 1000}, "audit": audit})
+    seen = []
+    registry = strat_mod.Registry({"probe": _ProbeStrategy(seen)})
+    deps = {"tools": _FakeTools(), "policy": policy, "audit": audit, "ctx": ctx,
+            "registry": registry}
+    if rings is not None:
+        deps["priceRings"] = rings
+    if history_cap is not None:
+        deps["historyCap"] = history_cap
+    return sr_mod.create(deps), seen
+
+
+class _FakeTools:
+    def names(self):
+        return []
+
+    def get(self, name):
+        return None
+
+
+def test_history_ring_persists_prices_across_ticks_capped():
+    px = {"v": 10.0}
+    ctx = {"prices": lambda syms: {"BLOCK": px["v"], "USDC": 1}}
+    runner, seen = _probe_runner(ctx, history_cap=3)
+
+    run(runner.tick("probe", {"market": "BLOCK/USDC"}))          # ring: [10]
+    px["v"] = 11.0; run(runner.tick("probe", {"market": "BLOCK/USDC"}))  # [10,11]
+    px["v"] = 12.0; run(runner.tick("probe", {"market": "BLOCK/USDC"}))  # [10,11,12]
+    px["v"] = 13.0; run(runner.tick("probe", {"market": "BLOCK/USDC"}))  # capped [11,12,13]
+
+    assert seen[0] == [10.0]
+    assert seen[1] == [10.0, 11.0]
+    assert seen[2] == [10.0, 11.0, 12.0]
+    assert seen[3] == [11.0, 12.0, 13.0]  # capped at historyCap=3, oldest dropped
+
+
+def test_history_ring_respects_explicit_history_and_leaves_ring_untouched():
+    ctx = {"prices": lambda syms: {"BLOCK": 10.0, "USDC": 1}}
+    rings = {}
+    runner, seen = _probe_runner(ctx, rings=rings)
+    run(runner.tick("probe", {"market": "BLOCK/USDC", "history": [1, 2, 3]}))
+    assert seen[0] == [1, 2, 3]       # caller-supplied history used verbatim
+    assert len(rings) == 0            # the ring was not touched

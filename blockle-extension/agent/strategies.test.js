@@ -282,12 +282,88 @@ test('momentum: death cross with nothing held emits nothing', async () => {
 });
 
 // ===========================================================================
+// indicator planners (rsi/macd/bollinger/breakout/emacross/momentum_roc/meanrev/
+// rebalance_hold/hodl) — the 9 LIVE keepers ported from the paper bot engine
+// (services/accounts/src/bots.js step()). scalp + martingale are DROPPED from live
+// (per-position-state they cannot safely reproduce) and stay PAPER-only. Each case
+// in the shared fixture pins the exact Intent (byte-identical amounts across
+// JS/Dart/Python). History lives in params (oldest->newest); planners are pure.
+// ===========================================================================
+function assertCase(name, caseName) {
+  const vec = VEC[name][caseName];
+  test('indicator ' + name + ': ' + caseName, async () => {
+    const intents = await S[name].plan(ctxFor(vec), S[name].validateParams(paramsOf(vec)));
+    const exp = vec.expect.intents;
+    assert.equal(intents.length, exp.length, 'intent count for ' + name + '.' + caseName);
+    if (vec.expect.skipped) assert.ok(intents.skipped, 'records a skip reason');
+    for (let i = 0; i < exp.length; i++) {
+      assert.equal(intents[i].tool, exp[i].tool);
+      assert.equal(intents[i].args.from, exp[i].from);
+      assert.equal(intents[i].args.to, exp[i].to);
+      assert.equal(intents[i].args.amount, exp[i].amount);
+      assert.equal(intents[i].args.venue, exp[i].venue);
+    }
+  });
+}
+// New-semantics cases (posUsd buy at budgetUsd*positionPct/100, clamped to the
+// remaining session budget; full-held sellAll; no fabricated $1 quote). Each
+// strategy exercises (a) a full-posUsd BUY, (c) a full-held SELL; rsi additionally
+// covers (b) a BUY clamped by a small policyRemaining.sessionUsd, (d) a non-stable
+// quote priced from ctx.prices, and (e) warming-up; rebalance_hold + hodl carry
+// their own clamped-buy cases. scalp + martingale are DROPPED from live.
+const INDICATOR_CASES = {
+  rsi: ['oversold_buys', 'oversold_buys_clamped', 'overbought_sells_held', 'nonstable_quote_buys', 'warming_up_quiet'],
+  macd: ['cross_up_buys', 'cross_down_sells_held'],
+  bollinger: ['lower_band_buys', 'upper_band_sells_held'],
+  breakout: ['new_high_buys', 'range_break_sells_held'],
+  emacross: ['cross_up_buys', 'cross_down_sells_held'],
+  momentum_roc: ['strong_roc_buys', 'negative_roc_sells_held'],
+  meanrev: ['below_mean_buys', 'above_mean_sells_held'],
+  rebalance_hold: ['overweight_sells', 'underweight_buys', 'underweight_buys_clamped', 'in_band_no_trade'],
+  hodl: ['buys_when_flat', 'buys_when_flat_clamped', 'holds_when_held'],
+};
+for (const [name, cases] of Object.entries(INDICATOR_CASES)) for (const c of cases) assertCase(name, c);
+
+// a few explicit invariants beyond the fixture table
+test('indicator: validateParams requires a market', () => {
+  assert.throws(() => S.rsi.validateParams({}), /requires a market/);
+  assert.throws(() => S.macd.validateParams({ market: 'A/B', fast: 30, slow: 10 }), /fast < slow/);
+  assert.throws(() => S.emacross.validateParams({ market: 'A/B', fast: 50, slow: 10 }), /fast < slow/);
+});
+test('indicator: a cross planner derives prev-relation from the window (stateless, no cross => no trade)', async () => {
+  // a pure down-trend never crosses up: macd stays below its signal -> no intent
+  const hist = []; for (let i = 0; i < 50; i++) hist.push(+(3 - i * 0.03).toFixed(6));
+  const flat = await S.macd.plan(ctxFor({ prices: { USDC: 1, BLOCK: 1 } }), S.macd.validateParams({ market: 'BLOCK/USDC', history: hist }));
+  assert.equal(flat.length, 0);
+});
+test('indicator: a SELL never exceeds the held base (clamp)', async () => {
+  // overbought rsi but only a crumb held -> sells the crumb, not tradeUsd worth
+  const hist = []; for (let i = 0; i < 16; i++) hist.push(+(0.5 + i * 0.05).toFixed(6));
+  const tiny = [{ asset: { symbol: 'BLOCK', decimals: 8, chain: 'block' }, confirmed: '7' }];
+  const out = await S.rsi.plan(ctxFor({ prices: { USDC: 1, BLOCK: 1 }, balances: tiny }),
+    S.rsi.validateParams({ market: 'BLOCK/USDC', history: hist, balances: tiny }));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].args.amount, '7', 'sells only what is held');
+});
+
+// ===========================================================================
 // registry
 // ===========================================================================
-test('registry: exposes exactly the five named strategies', () => {
+test('registry: exposes the five core + nine indicator strategies (scalp + martingale dropped from live)', () => {
   const reg = S.createRegistry();
-  assert.deepEqual(reg.names().sort(), ['arbitrage', 'dca', 'grid', 'momentum', 'rebalance']);
+  assert.deepEqual(reg.names().sort(), [
+    'arbitrage', 'bollinger', 'breakout', 'dca', 'emacross', 'grid', 'hodl', 'macd',
+    'meanrev', 'momentum', 'momentum_roc', 'rebalance', 'rebalance_hold', 'rsi',
+  ]);
+  // scalp + martingale remain PAPER-only (bots.js); a live bot of those types is
+  // cleanly rejected as an unknown strategy.
+  assert.equal(reg.get('scalp'), null);
+  assert.equal(reg.get('martingale'), null);
+  assert.equal(reg.has('scalp'), false);
+  assert.equal(reg.has('martingale'), false);
   assert.equal(reg.get('arbitrage').name, 'arbitrage');
+  assert.equal(reg.get('rsi').name, 'rsi');
   assert.equal(reg.get('nope'), null);
   assert.equal(typeof reg.get('dca').describe(), 'string');
+  for (const n of reg.names()) assert.equal(typeof reg.get(n).describe(), 'string');
 });

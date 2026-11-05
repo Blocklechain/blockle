@@ -278,6 +278,88 @@ void main() {
     });
   });
 
+  // ----- the 11 indicator planners (ported from the JS live planners), checked
+  // byte-for-byte against the SAME shared fixture cases. --------------------
+  Future<List<StrategyIntent>> runCase(String strat, Map<String, dynamic> c) {
+    final s = defaultStrategies()[strat]!;
+    final bals = (c['balances'] as List?)
+        ?.cast<Map>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
+    final sessionUsd = c['sessionUsd'];
+    final ctx = StrategyContext(
+      now: () => 0,
+      prices: (_) => _pricesFrom(c['prices'] as Map?),
+      getBalance: bals == null ? null : (_, [__]) async => bals,
+      policyRemaining:
+          sessionUsd == null ? null : () => {'sessionUsd': sessionUsd},
+    );
+    return s.plan(ctx, s.validateParams(c['params'] as Map<String, dynamic>));
+  }
+
+  void fixtureCase(String strat, String name) {
+    test('$strat / $name matches the shared vector', () async {
+      final c = caseOf(strat, name);
+      final got = await runCase(strat, c);
+      final exp = ((c['expect'] as Map)['intents'] as List).cast<Map>();
+      expect(got.length, exp.length, reason: '$strat/$name intent count');
+      for (var i = 0; i < got.length; i++) {
+        expect(got[i].tool, exp[i]['tool'], reason: '$strat/$name tool');
+        expect(got[i].args['from'], exp[i]['from'], reason: '$strat/$name from');
+        expect(got[i].args['to'], exp[i]['to'], reason: '$strat/$name to');
+        expect(got[i].args['amount'], exp[i]['amount'], reason: '$strat/$name amount');
+        if (exp[i]['venue'] != null) {
+          expect(got[i].args['venue'], exp[i]['venue'], reason: '$strat/$name venue');
+        }
+      }
+    });
+  }
+
+  group('indicator planners (shared vectors)', () {
+    const cases = <String, List<String>>{
+      'rsi': [
+        'oversold_buys',
+        'oversold_buys_clamped',
+        'overbought_sells_held',
+        'nonstable_quote_buys',
+        'warming_up_quiet',
+      ],
+      'macd': ['cross_up_buys', 'cross_down_sells_held'],
+      'bollinger': ['lower_band_buys', 'upper_band_sells_held'],
+      'breakout': ['new_high_buys', 'range_break_sells_held'],
+      'emacross': ['cross_up_buys', 'cross_down_sells_held'],
+      'momentum_roc': ['strong_roc_buys', 'negative_roc_sells_held'],
+      'meanrev': ['below_mean_buys', 'above_mean_sells_held'],
+      'rebalance_hold': [
+        'overweight_sells',
+        'underweight_buys',
+        'underweight_buys_clamped',
+        'in_band_no_trade',
+      ],
+      'hodl': ['buys_when_flat', 'buys_when_flat_clamped', 'holds_when_held'],
+    };
+    cases.forEach((strat, names) {
+      for (final n in names) {
+        fixtureCase(strat, n);
+      }
+    });
+
+    test('all 14 live strategies are registered (scalp + martingale dropped)', () {
+      final names = defaultStrategies().keys.toList();
+      expect(
+        names,
+        containsAll(<String>[
+          'arbitrage', 'dca', 'grid', 'rebalance', 'momentum',
+          'rsi', 'macd', 'bollinger', 'breakout', 'emacross',
+          'momentum_roc', 'meanrev', 'rebalance_hold', 'hodl',
+        ]),
+      );
+      // scalp + martingale are intentionally absent from the LIVE registry.
+      expect(names, isNot(contains('scalp')));
+      expect(names, isNot(contains('martingale')));
+    });
+  });
+
   group('param validation', () {
     test('arbitrage requires a pair', () {
       expect(() => ArbitrageStrategy().validateParams({}), throwsArgumentError);

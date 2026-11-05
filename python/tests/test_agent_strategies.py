@@ -35,6 +35,9 @@ def build_ctx(case):
         pr = case["prices"]
         ctx["prices"] = lambda syms, pr=pr: {s: pr.get(s) for s in syms}
     ctx["mainnet"] = case.get("mainnet", False)
+    if "sessionUsd" in case:
+        # the LIVE risk bound: policyRemaining().sessionUsd caps the posUsd buy.
+        ctx["policyRemaining"] = lambda su=case["sessionUsd"]: {"sessionUsd": su}
     if "now" in case:
         ctx["now"] = lambda n=case["now"]: n
     if "venues" in case:
@@ -324,8 +327,18 @@ def test_validate_params_fills_defaults_and_rejects_bad_input():
         S.Grid().validate_params({"market": "nopair"})  # bad market
 
 
-def test_registry_lists_all_five():
-    assert set(S.default_registry().names()) == {"arbitrage", "dca", "grid", "rebalance", "momentum"}
+def test_registry_lists_all_strategies():
+    # 5 core + 9 indicator keepers. scalp + martingale are DROPPED from LIVE
+    # (per-position-state they cannot safely reproduce); they stay PAPER-only in
+    # services/accounts/src/bots.js, so a live bot of those types is rejected here.
+    assert set(S.default_registry().names()) == {
+        "arbitrage", "dca", "grid", "rebalance", "momentum",
+        "rsi", "macd", "bollinger", "breakout", "emacross", "momentum_roc",
+        "meanrev", "rebalance_hold", "hodl",
+    }
+    reg = S.default_registry()
+    assert reg.get("scalp") is None
+    assert reg.get("martingale") is None
 
 
 # --------------------------------------------------------------------------- #

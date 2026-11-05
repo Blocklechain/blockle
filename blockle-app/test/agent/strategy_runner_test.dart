@@ -51,6 +51,26 @@ class _FixedStrategy extends Strategy {
 
 StrategyContext _noCtx() => StrategyContext(now: () => 0);
 
+/// Captures the `history` param plan() received each tick — used to prove the
+/// host price-ring is persisted and supplied identically to the JS/Python hosts.
+class _HistoryCaptureStrategy extends Strategy {
+  final List<List> captured;
+  _HistoryCaptureStrategy(this.captured);
+  @override
+  String get name => 'cap';
+  @override
+  String describe() => 'captures the history param';
+  @override
+  Map<String, dynamic> get defaults => {};
+  @override
+  Map<String, dynamic> validateParams(Map<String, dynamic>? params) => {...?params};
+  @override
+  Future<List<StrategyIntent>> plan(StrategyContext ctx, Map<String, dynamic> params) async {
+    captured.add(List.from((params['history'] as List?) ?? const []));
+    return const [];
+  }
+}
+
 StrategyIntent _send(String amount, {String tag = 'fixed:send', bool mainnet = false}) =>
     StrategyIntent(
       tool: 'send',
@@ -428,6 +448,48 @@ void main() {
       expect(outcome.declined, isTrue);
       expect(executed, 0);
       expect(policy.spentByAsset['BLOCK'], isNull);
+    });
+  });
+
+  group('price ring (history) wiring', () {
+    test('persists a per-strategy price ring and supplies it as history', () async {
+      final captured = <List>[];
+      var tick = 0;
+      final ctx = StrategyContext(
+        now: () => 0,
+        prices: (_) async {
+          tick++;
+          return {'BLOCK': tick.toDouble(), 'USDC': 1};
+        },
+      );
+      final sr = StrategyRunner(
+        tools: buildTools(const AgentContext()),
+        policy: Policy.create(),
+        ctx: ctx,
+        strategies: {'cap': _HistoryCaptureStrategy(captured)},
+      );
+      await sr.tick('cap', {'market': 'BLOCK/USDC'});
+      await sr.tick('cap', {'market': 'BLOCK/USDC'});
+      await sr.tick('cap', {'market': 'BLOCK/USDC'});
+      expect(captured.length, 3);
+      expect(captured.last, [1, 2, 3]); // ring persisted + grew across ticks
+    });
+
+    test('respects an explicit history and does not touch the ring', () async {
+      final captured = <List>[];
+      final ctx = StrategyContext(
+        now: () => 0,
+        prices: (_) async => {'BLOCK': 9, 'USDC': 1},
+      );
+      final sr = StrategyRunner(
+        tools: buildTools(const AgentContext()),
+        policy: Policy.create(),
+        ctx: ctx,
+        strategies: {'cap': _HistoryCaptureStrategy(captured)},
+      );
+      await sr.tick('cap', {'market': 'BLOCK/USDC', 'history': [5, 6, 7]});
+      expect(captured.last, [5, 6, 7]);
+      expect(sr.priceRings.isEmpty, isTrue); // explicit history left the ring alone
     });
   });
 

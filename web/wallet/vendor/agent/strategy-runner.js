@@ -56,12 +56,48 @@
       this.discovery = deps.discovery || null;
       this.useDiscovery = deps.useDiscovery === true;
       this.autoConsiderUnapproved = deps.autoConsiderUnapproved === true; // default off
+      // Per-strategy price ring (last `historyCap` prices, oldest->newest), persisted
+      // across ticks and supplied to plan() as p.history so the stateless indicator
+      // planners (rsi/macd/bollinger/breakout/emacross/momentum_roc/meanrev/...)
+      // can compute their indicators + derive cross-state each tick.
+      // The ring is the ONLY host-held state; planners stay pure + stateless.
+      this.historyCap = deps.historyCap != null ? Math.max(2, deps.historyCap | 0) : 400;
+      this.priceRings = deps.priceRings instanceof Map ? deps.priceRings : new Map();
       // the ONE shared value-moving routine (no second broadcast path)
       this.dispatchValueMoving = (deps.AgentRunner || dep('AgentRunner', './runner.js')).dispatchValueMoving;
     }
 
     emit(ev) { if (this.onEvent) { try { this.onEvent(ev); } catch (_) {} } }
     async _audit(rec) { if (this.audit) { try { return await this.audit.record(rec); } catch (_) {} } }
+
+    // Observe the current market price for this strategy's market, push it onto the
+    // persisted per-strategy ring (oldest->newest, capped at historyCap), and return
+    // a snapshot. The price is the book mid (quote-per-base) when available, else
+    // derived from ctx.prices as prices[base]/prices[quote] — the same quote-per-base
+    // unit the fixtures use. Returns null (and records nothing) when no market or no
+    // price can be resolved, so non-history strategies (dca/arbitrage/...) are inert.
+    async _recordPrice(strategyName, p) {
+      const pr = pairOf(p);
+      if (!pr) return null;
+      const [base, quote, mkt] = pr;
+      const key = strategyName + '|' + mkt;
+      let ring = this.priceRings.get(key);
+      if (!ring) { ring = []; this.priceRings.set(key, ring); }
+      let price = NaN;
+      try { if (typeof this.ctx.getBook === 'function') price = midOf(await this.ctx.getBook(mkt)); } catch (_) {}
+      if (!(price > 0)) {
+        try {
+          if (typeof this.ctx.prices === 'function') {
+            const px = (await this.ctx.prices([base, quote])) || {};
+            const b = Number(px[base]);
+            const q = Number(px[quote] != null ? px[quote] : (STABLE_USD[quote] != null ? STABLE_USD[quote] : NaN));
+            if (b > 0 && q > 0) price = b / q;
+          }
+        } catch (_) {}
+      }
+      if (price > 0) { ring.push(price); if (ring.length > this.historyCap) ring.shift(); }
+      return ring.length ? ring.slice() : null;
+    }
 
     list() { return this.registry.names(); }
     describe(name) { const s = this.registry.get(name); return s ? s.describe() : null; }
@@ -89,6 +125,15 @@
       const strat = this.registry.get(strategyName);
       if (!strat) throw new Error('unknown strategy: ' + strategyName);
       const p = strat.validateParams(params || {});
+
+      // Persist + supply the per-strategy price ring as p.history (oldest->newest).
+      // If the caller already supplied an explicit history (e.g. a backtest or the
+      // shared fixture), respect it and do NOT touch the ring; otherwise observe the
+      // current market price, push it onto the ring, and hand plan() a snapshot.
+      if (p.history == null) {
+        const hist = await this._recordPrice(strategyName, p);
+        if (hist && hist.length) p.history = hist;
+      }
 
       const intents = await strat.plan(this.ctx, p);
       const skipped = intents && intents.skipped;
@@ -194,6 +239,28 @@
       }
       return results;
     }
+  }
+
+  const STABLE_USD = { USDC: 1, USDT: 1, DAI: 1, USD: 1 };
+
+  // Resolve a strategy's market from its params -> [BASE, QUOTE, 'BASE/QUOTE'] or null.
+  // Covers the single-market planners (market / pair) and dca-style (asset + quote).
+  function pairOf(p) {
+    const s = p.market || p.pair || (p.asset ? (String(p.asset) + '/' + String(p.quote || 'USDC')) : null);
+    if (!s) return null;
+    const parts = String(s).toUpperCase().split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    return [parts[0], parts[1], parts[0] + '/' + parts[1]];
+  }
+  // Book mid (quote-per-base) from a {mid} or {bids:[...],asks:[...]} book; NaN if none.
+  function midOf(book) {
+    if (!book) return NaN;
+    if (book.mid != null) return Number(book.mid);
+    const bb = book.bids && book.bids[0], ba = book.asks && book.asks[0];
+    const bid = bb ? Number(bb.price != null ? bb.price : bb[0]) : NaN;
+    const ask = ba ? Number(ba.price != null ? ba.price : ba[0]) : NaN;
+    if (isFinite(bid) && isFinite(ask)) return (bid + ask) / 2;
+    return NaN;
   }
 
   // The audit holds the plan/why; keep the (already non-secret) Intent but drop

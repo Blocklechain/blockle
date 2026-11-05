@@ -67,6 +67,15 @@ class StrategyRunner {
   /// produce a `blocked` audit note — never a trade.
   final bool autoConsiderUnapproved;
 
+  /// Per-strategy price ring (last [historyCap] prices, oldest->newest), persisted
+  /// across ticks and supplied to plan() as the `history` param so the stateless
+  /// indicator planners (rsi/macd/bollinger/breakout/emacross/momentum_roc/meanrev/
+  /// rebalance_hold/scalp/hodl/martingale) can compute their indicators + derive
+  /// cross-state each tick. This ring is the ONLY host-held state; planners stay
+  /// pure + stateless. Identical to the JS StrategyRunner ring (strategy-runner.js).
+  final int historyCap;
+  final Map<String, List<num>> priceRings;
+
   StrategyRunner({
     required this.tools,
     required this.policy,
@@ -81,9 +90,13 @@ class StrategyRunner {
     this.discovery,
     this.useDiscovery = false,
     this.autoConsiderUnapproved = false,
+    int historyCap = 400,
+    Map<String, List<num>>? priceRings,
   })  : registry = strategies ?? defaultStrategies(),
         pnlWallet = pnlWallet ?? 'default',
-        pnlChannel = pnlChannel ?? 'default';
+        pnlChannel = pnlChannel ?? 'default',
+        historyCap = historyCap < 2 ? 2 : historyCap,
+        priceRings = priceRings ?? <String, List<num>>{};
 
   List<String> strategyNames() => registry.keys.toList();
 
@@ -136,6 +149,16 @@ class StrategyRunner {
     final strat = registry[strategyName];
     if (strat == null) throw ArgumentError('unknown strategy: $strategyName');
     final p = strat.validateParams(params);
+
+    // Persist + supply the per-strategy price ring as the `history` param
+    // (oldest->newest). If the caller already supplied an explicit history (a
+    // backtest or the shared fixture), respect it and do NOT touch the ring;
+    // otherwise observe the current market price, push it onto the ring, and hand
+    // plan() a snapshot. Identical to the JS StrategyRunner (strategy-runner.js).
+    if (p['history'] == null) {
+      final hist = await _recordPrice(strategyName, p);
+      if (hist != null && hist.isNotEmpty) p['history'] = hist;
+    }
 
     final intents = await strat.plan(_wrapCtxForAudit(), p);
 
@@ -265,6 +288,40 @@ class StrategyRunner {
     return StrategyTickResult(records);
   }
 
+  /// Observe the current market price for this strategy's market, push it onto the
+  /// persisted per-strategy ring (oldest->newest, capped at [historyCap]), and
+  /// return a snapshot. The price is the book mid (quote-per-base) when available,
+  /// else prices[base]/prices[quote] — the same quote-per-base unit the fixtures
+  /// use. Returns null (recording nothing) when no market or no price resolves, so
+  /// the non-history strategies (dca/arbitrage/...) stay inert. Mirrors JS
+  /// StrategyRunner._recordPrice.
+  Future<List<num>?> _recordPrice(String strategyName, Map<String, dynamic> p) async {
+    final pr = _pairOf(p);
+    if (pr == null) return null;
+    final base = pr[0], quote = pr[1], mkt = pr[2];
+    final key = '$strategyName|$mkt';
+    final ring = priceRings.putIfAbsent(key, () => <num>[]);
+    double price = double.nan;
+    try {
+      if (ctx.getBook != null) price = _midOf(await ctx.getBook!(mkt));
+    } catch (_) {}
+    if (!(price > 0)) {
+      try {
+        if (ctx.prices != null) {
+          final px = await ctx.prices!([base, quote]);
+          final b = (px[base] ?? double.nan).toDouble();
+          final q = (px[quote] ?? (_stableUsd(quote) ?? double.nan)).toDouble();
+          if (b > 0 && q > 0) price = b / q;
+        }
+      } catch (_) {}
+    }
+    if (price > 0) {
+      ring.add(price);
+      if (ring.length > historyCap) ring.removeAt(0);
+    }
+    return ring.isNotEmpty ? List<num>.from(ring) : null;
+  }
+
   /// CHAIN-LEVEL mainnet backstop (FIX-3): true when the run's resolved network is
   /// mainnet, regardless of any venue descriptor or caller param. Fail-safe.
   bool _networkMainnet() {
@@ -301,4 +358,36 @@ class StrategyRunner {
       },
     );
   }
+}
+
+const Map<String, double> _kStableUsd = {'USDC': 1, 'USDT': 1, 'DAI': 1, 'USD': 1};
+double? _stableUsd(String sym) => _kStableUsd[sym.toUpperCase()];
+
+/// Resolve a strategy's market from its params -> [BASE, QUOTE, 'BASE/QUOTE'] or
+/// null. Covers the single-market planners (market/pair) and dca (asset + quote).
+List<String>? _pairOf(Map<String, dynamic> p) {
+  final s = p['market'] ??
+      p['pair'] ??
+      (p['asset'] != null ? '${p['asset']}/${p['quote'] ?? 'USDC'}' : null);
+  if (s == null) return null;
+  final parts = '$s'.toUpperCase().split('/');
+  if (parts.length != 2 || parts[0].isEmpty || parts[1].isEmpty) return null;
+  return [parts[0], parts[1], '${parts[0]}/${parts[1]}'];
+}
+
+/// Book mid (quote-per-base) from a {mid} or {bids,asks} book; NaN if none.
+double _midOf(Map<String, dynamic>? book) {
+  if (book == null) return double.nan;
+  if (book['mid'] != null) return double.tryParse('${book['mid']}') ?? double.nan;
+  double best(dynamic side) {
+    if (side is! List || side.isEmpty) return double.nan;
+    final lvl = side.first;
+    if (lvl is Map) return double.tryParse('${lvl['price']}') ?? double.nan;
+    if (lvl is List && lvl.isNotEmpty) return double.tryParse('${lvl[0]}') ?? double.nan;
+    return double.nan;
+  }
+
+  final bid = best(book['bids']), ask = best(book['asks']);
+  if (!bid.isNaN && !ask.isNaN) return (bid + ask) / 2;
+  return double.nan;
 }

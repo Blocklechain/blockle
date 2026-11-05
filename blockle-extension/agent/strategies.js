@@ -477,7 +477,11 @@
       const price = history[n - 1];
       if (!(price > 0)) return emptyPlan('non-positive latest price');
       const bd = decimalsFor(base, p), qd = decimalsFor(quote, p);
-      const quoteUsd = STABLE_USD[quote] != null ? STABLE_USD[quote] : num((await call1(ctx.prices, [quote]) || {})[quote], 1);
+      // FIX-4: NO fabricated $1. Stable quotes use their peg; a non-stable quote
+      // MUST be priced from ctx.prices — if it has no positive price, refuse rather
+      // than default to 1 (which would mis-size every non-stable-quote pair).
+      const quoteUsd = STABLE_USD[quote] != null ? STABLE_USD[quote] : num((await call1(ctx.prices, [quote]) || {})[quote], NaN);
+      if (!(quoteUsd > 0)) return emptyPlan('no reliable quote price for ' + quote);
       const baseUsd = price * quoteUsd;
       const mainnet = mainnetOf(ctx);
 
@@ -523,10 +527,388 @@
   };
 
   // ===========================================================================
+  // 3.6 indicator planners (ported from the paper bot engine in
+  //     services/accounts/src/bots.js step()). These are PURE + STATELESS: every
+  //     indicator is recomputed from p.history (oldest->newest) each tick, and any
+  //     cross-state (prev relation for macd/emacross) is DERIVED from the window —
+  //     exactly as momentum recomputes golden/death from history[n-2]/history[n-1].
+  //     The StrategyRunner host persists the per-strategy price ring and supplies
+  //     it as p.history. These 9 reproduce the AUTHORITATIVE server decisions in
+  //     bots.js step() so "USE THIS STRATEGY" behaves like its ranked backtest:
+  //       - BUY size = posUsd = budgetUsd*positionPct/100 (the server's posUsd),
+  //         CLAMPED to the remaining session budget (the LIVE risk bound). Never a
+  //         bounded tradeUsd slice (that diverged from the ranked backtest).
+  //       - SELL = FULL liquidation of the held base (server sellAll), clamped so
+  //         it never exceeds what is held.
+  //       - QUOTE price: stable peg, else the live ctx.prices price; a non-stable
+  //         quote with no price REFUSES (no fabricated $1).
+  //     scalp + martingale are DROPPED here (per-position-state strategies that a
+  //     stateless planner cannot safely reproduce) — they stay PAPER-only in bots.js.
+  // ===========================================================================
+
+  // ---- deterministic indicators (ported VERBATIM from bots.js; null until warm) --
+  function smaH(h, n) { if (h.length < n) return null; let t = 0; for (let i = h.length - n; i < h.length; i++) t += h[i]; return t / n; }
+  function stdevH(h, n) { const m = smaH(h, n); if (m == null) return null; let t = 0; for (let i = h.length - n; i < h.length; i++) t += (h[i] - m) ** 2; return Math.sqrt(t / n); }
+  function emaH(h, n) { if (h.length < n) return null; const k = 2 / (n + 1); let e = h[0]; for (let i = 1; i < h.length; i++) e = h[i] * k + e * (1 - k); return e; }
+  function macdH(h, fast, slow, signalP) {
+    if (h.length < slow + signalP) return null;
+    const kf = 2 / (fast + 1), ks = 2 / (slow + 1), kg = 2 / (signalP + 1);
+    let ef = h[0], es = h[0], sig = null;
+    for (let i = 1; i < h.length; i++) { ef = h[i] * kf + ef * (1 - kf); es = h[i] * ks + es * (1 - ks); const m = ef - es; sig = sig == null ? m : m * kg + sig * (1 - kg); }
+    return { macd: ef - es, signal: sig };
+  }
+  function rsiH(h, n) {
+    if (h.length < n + 1) return null;
+    let up = 0, dn = 0;
+    for (let i = h.length - n; i < h.length; i++) { const d = h[i] - h[i - 1]; if (d >= 0) up += d; else dn -= d; }
+    if (dn === 0) return 100;
+    const rs = (up / n) / (dn / n);
+    return 100 - 100 / (1 + rs);
+  }
+  function donHighH(h, n) { return h.length < n + 1 ? null : Math.max.apply(null, h.slice(h.length - 1 - n, h.length - 1)); }
+  function donLowH(h, n) { return h.length < n + 1 ? null : Math.min.apply(null, h.slice(h.length - 1 - n, h.length - 1)); }
+  function rocH(h, n) { return h.length < n + 1 ? null : (h[h.length - 1] - h[h.length - 1 - n]) / h[h.length - 1 - n] * 100; }
+
+  // FIX-4: resolve the USD price of a quote asset. Stable quotes use their peg; a
+  // NON-stable quote MUST come from ctx.prices — returns null if no positive price
+  // is available (callers then refuse rather than fabricate $1).
+  async function quoteUsdOf(ctx, quote) {
+    if (STABLE_USD[quote] != null) return STABLE_USD[quote];
+    const px = (await call1(ctx.prices, [quote])) || {};
+    const v = Number(px[quote]);
+    return v > 0 ? v : null;
+  }
+  // FIX-2: the LIVE risk bound. The remaining session allocation caps exposure —
+  // a full-size posUsd buy is safe BY CONSTRUCTION because it is clamped to this.
+  // Falls back to the bot's own budget when the host exposes no session remaining.
+  async function remainingUsd(ctx, budgetUsd) {
+    const rem = await call0(ctx.policyRemaining);
+    const s = rem && rem.sessionUsd != null ? Number(rem.sessionUsd) : null;
+    return s != null ? s : budgetUsd;
+  }
+
+  // Shared param validation for the single-market indicator planners. FIX-1:
+  // sizing is posUsd = budgetUsd * positionPct/100 (the ranked-backtest convention,
+  // NOT a bounded tradeUsd slice). budgetUsd is the bot's USD allocation.
+  function validateMarketParams(self, params) {
+    const p = Object.assign({}, self.defaults, params || {});
+    if (!p.market) throw new Error(self.name + ' requires a market');
+    splitPair(p.market);
+    p.budgetUsd = Math.max(1, Math.min(1e9, num(p.budgetUsd, 1000)));
+    let pp = num(p.positionPct, 100);
+    if (!(pp > 0)) pp = 100;                 // clamp to (0, 100]
+    p.positionPct = Math.min(100, pp);
+    return p;
+  }
+  // Build a BUY (quote->base) intent sized at posUsd = budgetUsd*positionPct/100,
+  // CLAMPED to the remaining session budget (FIX-1 + FIX-2). Never fabricates a
+  // quote price (FIX-4).
+  async function indicatorBuy(ctx, p, name, price, reason) {
+    const [base, quote] = splitPair(p.market);
+    const quoteUsd = await quoteUsdOf(ctx, quote);
+    if (quoteUsd == null) return emptyPlan('no reliable quote price for ' + quote);
+    const qd = decimalsFor(quote, p);
+    let usd = p.budgetUsd * p.positionPct / 100;              // posUsd
+    const remain = await remainingUsd(ctx, p.budgetUsd);
+    usd = Math.min(usd, remain);                             // LIVE risk bound
+    if (!(usd > 0)) return emptyPlan('no remaining budget');
+    const amount = usdToBase(usd, qd, quoteUsd).toString();
+    if (amount === '0') return emptyPlan('buy size rounds to zero');
+    return [intent({
+      tool: 'swap', args: { from: quote, to: base, amount, venue: 'blockle' },
+      rationale: reason, estUsd: Math.round(usd * 100) / 100, strategy: name, tag: name + ':' + p.market + ':buy', mainnet: mainnetOf(ctx),
+    })];
+  }
+  // Build a SELL (base->quote) intent that FULLY LIQUIDATES the held base (FIX-3:
+  // sellAll, clamped to held — an indicator exit dumps the ENTIRE position, never a
+  // tradeUsd slice). Never fabricates a quote price (FIX-4).
+  async function indicatorSell(ctx, p, name, price, reason) {
+    const [base, quote] = splitPair(p.market);
+    if (!(price > 0)) return emptyPlan('non-positive latest price');
+    const quoteUsd = await quoteUsdOf(ctx, quote);
+    if (quoteUsd == null) return emptyPlan('no reliable quote price for ' + quote);
+    const bd = decimalsFor(base, p);
+    const baseUsd = price * quoteUsd;
+    let heldBase = 0n;
+    if (p.held != null) heldBase = BigInt(String(p.held));
+    else { const port = await portfolio(ctx, p); if (port) heldBase = port.held[base] || 0n; }
+    if (heldBase <= 0n) return emptyPlan(reason + ' but nothing held to sell');
+    const sellBase = heldBase;                                // full liquidation (clamped to held)
+    const sellUsd = (Number(sellBase) / pow10(bd)) * baseUsd;
+    return [intent({
+      tool: 'swap', args: { from: base, to: quote, amount: sellBase.toString(), venue: 'blockle' },
+      rationale: reason, estUsd: Math.round(sellUsd * 100) / 100, strategy: name, tag: name + ':' + p.market + ':sell', mainnet: mainnetOf(ctx),
+    })];
+  }
+
+  // --- rsi: buy oversold, sell overbought ------------------------------------
+  const rsi = {
+    name: 'rsi',
+    describe() { return 'RSI: buy when the Relative Strength Index is oversold, sell held when it is overbought.'; },
+    defaults: { market: null, period: 14, oversold: 30, overbought: 70, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.period = clampInt(p.period, 2, 200, 14);
+      p.oversold = Math.max(1, Math.min(50, num(p.oversold, 30)));
+      p.overbought = Math.max(50, Math.min(99, num(p.overbought, 70)));
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const r = rsiH(history, p.period);
+      if (r == null) return emptyPlan('warming up (need > period prices)');
+      const price = history[history.length - 1];
+      if (r <= p.oversold) return indicatorBuy(ctx, p, 'rsi', price, 'rsi oversold (' + r.toFixed(1) + ' <= ' + p.oversold + ') — buy');
+      if (r >= p.overbought) return indicatorSell(ctx, p, 'rsi', price, 'rsi overbought (' + r.toFixed(1) + ' >= ' + p.overbought + ')');
+      return emptyPlan('rsi neutral (' + r.toFixed(1) + ')');
+    },
+  };
+
+  // --- macd: trade the signal-line crossover ---------------------------------
+  const macd = {
+    name: 'macd',
+    describe() { return 'MACD: buy when the MACD line crosses above its signal line, sell held on a cross below.'; },
+    defaults: { market: null, fast: 12, slow: 26, signalP: 9, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.fast = clampInt(p.fast, 2, 100, 12);
+      p.slow = clampInt(p.slow, 3, 300, 26);
+      p.signalP = clampInt(p.signalP, 1, 100, 9);
+      if (p.fast >= p.slow) throw new Error('macd needs fast < slow');
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const curr = macdH(history, p.fast, p.slow, p.signalP);
+      if (curr == null) return emptyPlan('warming up (need >= slow+signalP prices)');
+      const prev = macdH(history.slice(0, -1), p.fast, p.slow, p.signalP);
+      const relCurr = curr.macd > curr.signal ? 1 : -1;
+      const relPrev = prev == null ? 0 : (prev.macd > prev.signal ? 1 : -1);
+      const price = history[history.length - 1];
+      if (relCurr === 1 && relPrev <= 0) return indicatorBuy(ctx, p, 'macd', price, 'macd crossed above signal — buy');
+      if (relCurr === -1 && relPrev >= 0) return indicatorSell(ctx, p, 'macd', price, 'macd crossed below signal — sell held');
+      return emptyPlan('no macd cross');
+    },
+  };
+
+  // --- bollinger: fade the bands ---------------------------------------------
+  const bollinger = {
+    name: 'bollinger',
+    describe() { return 'Bollinger Bands: buy when price pierces the lower band, sell held when it pierces the upper band.'; },
+    defaults: { market: null, period: 20, k: 2, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.period = clampInt(p.period, 2, 200, 20);
+      p.k = Math.max(0.5, Math.min(5, num(p.k, 2)));
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const m = smaH(history, p.period), sd = stdevH(history, p.period);
+      if (m == null || sd == null) return emptyPlan('warming up (need >= period prices)');
+      const price = history[history.length - 1];
+      if (price <= m - p.k * sd) return indicatorBuy(ctx, p, 'bollinger', price, 'bollinger lower-band pierce — buy');
+      if (price >= m + p.k * sd) return indicatorSell(ctx, p, 'bollinger', price, 'bollinger upper-band pierce — sell held');
+      return emptyPlan('bollinger inside the bands');
+    },
+  };
+
+  // --- breakout: ride new range highs (Donchian) -----------------------------
+  // NOTE: the paper engine also exits on an avgCost stop; that is position state
+  // not derivable from price history, so the live planner exits ONLY on the
+  // Donchian range break (price below the trailing low). Stateless.
+  const breakout = {
+    name: 'breakout',
+    describe() { return 'Donchian breakout: buy a new range high, sell held when price breaks the trailing range low.'; },
+    defaults: { market: null, lookback: 20, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.lookback = clampInt(p.lookback, 2, 300, 20);
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const hi = donHighH(history, p.lookback), lo = donLowH(history, p.lookback);
+      if (hi == null) return emptyPlan('warming up (need > lookback prices)');
+      const price = history[history.length - 1];
+      if (price > hi) return indicatorBuy(ctx, p, 'breakout', price, 'breakout above ' + fmtNum(hi) + ' — buy');
+      if (lo != null && price < lo) return indicatorSell(ctx, p, 'breakout', price, 'breakdown below ' + fmtNum(lo) + ' — sell held');
+      return emptyPlan('inside the Donchian range');
+    },
+  };
+
+  // --- emacross: fast/slow EMA trend follow ----------------------------------
+  const emacross = {
+    name: 'emacross',
+    describe() { return 'EMA cross: buy when the fast EMA crosses above the slow EMA, sell held on a cross below.'; },
+    defaults: { market: null, fast: 10, slow: 30, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.fast = clampInt(p.fast, 2, 200, 10);
+      p.slow = clampInt(p.slow, 3, 400, 30);
+      if (p.fast >= p.slow) throw new Error('emacross needs fast < slow');
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const f = emaH(history, p.fast), sl = emaH(history, p.slow);
+      if (f == null || sl == null) return emptyPlan('warming up (need >= slow prices)');
+      const hp = history.slice(0, -1);
+      const fp = emaH(hp, p.fast), slp = emaH(hp, p.slow);
+      const relCurr = f > sl ? 1 : -1;
+      const relPrev = (fp == null || slp == null) ? 0 : (fp > slp ? 1 : -1);
+      const price = history[history.length - 1];
+      if (relCurr === 1 && relPrev <= 0) return indicatorBuy(ctx, p, 'emacross', price, 'EMA' + p.fast + ' crossed above EMA' + p.slow + ' — buy');
+      if (relCurr === -1 && relPrev >= 0) return indicatorSell(ctx, p, 'emacross', price, 'EMA' + p.fast + ' crossed below EMA' + p.slow + ' — sell held');
+      return emptyPlan('no EMA cross');
+    },
+  };
+
+  // --- momentum_roc: follow rate-of-change -----------------------------------
+  // The paper engine's `momentum` bot (rate-of-change). Named momentum_roc here to
+  // avoid colliding with the existing SMA-crossover `momentum` planner above.
+  const momentum_roc = {
+    name: 'momentum_roc',
+    describe() { return 'Rate-of-change momentum: buy when ROC over the lookback clears the threshold, sell held when ROC turns negative.'; },
+    defaults: { market: null, lookback: 10, thresholdPct: 3, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.lookback = clampInt(p.lookback, 2, 300, 10);
+      p.thresholdPct = Math.max(0, Math.min(100, num(p.thresholdPct, 3)));
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const r = rocH(history, p.lookback);
+      if (r == null) return emptyPlan('warming up (need > lookback prices)');
+      const price = history[history.length - 1];
+      if (r >= p.thresholdPct) return indicatorBuy(ctx, p, 'momentum_roc', price, 'ROC ' + r.toFixed(2) + '% >= ' + p.thresholdPct + '% — buy');
+      if (r < 0) return indicatorSell(ctx, p, 'momentum_roc', price, 'ROC turned negative (' + r.toFixed(2) + '%) — sell held');
+      return emptyPlan('ROC below threshold (' + r.toFixed(2) + '%)');
+    },
+  };
+
+  // --- meanrev: buy below / sell above the moving average ---------------------
+  const meanrev = {
+    name: 'meanrev',
+    describe() { return 'Mean reversion: buy when price is a band below the moving average, sell held when it is a band above.'; },
+    defaults: { market: null, period: 20, bandPct: 5, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.period = clampInt(p.period, 2, 300, 20);
+      p.bandPct = Math.max(0.1, Math.min(100, num(p.bandPct, 5)));
+      return p;
+    },
+    async plan(ctx, p) {
+      const history = (p.history || []).map(Number);
+      const m = smaH(history, p.period);
+      if (m == null) return emptyPlan('warming up (need >= period prices)');
+      const price = history[history.length - 1];
+      if (price <= m * (1 - p.bandPct / 100)) return indicatorBuy(ctx, p, 'meanrev', price, 'price ' + p.bandPct + '% below the mean — buy');
+      if (price >= m * (1 + p.bandPct / 100)) return indicatorSell(ctx, p, 'meanrev', price, 'price ' + p.bandPct + '% above the mean — sell held');
+      return emptyPlan('within the mean-reversion band');
+    },
+  };
+
+  // --- rebalance_hold: keep targetPct of VALUE in the asset -------------------
+  // The paper engine's single-asset `rebalance` (vs the multi-asset `rebalance`
+  // planner above). Needs both base + quote balances; sizes by the drift gap.
+  const rebalance_hold = {
+    name: 'rebalance_hold',
+    describe() { return 'Single-asset rebalance: hold a target % of portfolio value in the asset; trade the drift back toward target.'; },
+    defaults: { market: null, targetPct: 50, driftPct: 10, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) {
+      const p = validateMarketParams(this, params);
+      p.targetPct = Math.max(1, Math.min(99, num(p.targetPct, 50)));
+      p.driftPct = Math.max(1, Math.min(100, num(p.driftPct, 10)));
+      return p;
+    },
+    async plan(ctx, p) {
+      const [base, quote] = splitPair(p.market);
+      const history = (p.history || []).map(Number);
+      const price = history[history.length - 1];
+      if (!(price > 0)) return emptyPlan('warming up (need a price)');
+      const bd = decimalsFor(base, p), qd = decimalsFor(quote, p);
+      // FIX-4: never fabricate $1 — a non-stable quote must be priced from ctx.prices.
+      const quoteUsd = await quoteUsdOf(ctx, quote);
+      if (quoteUsd == null) return emptyPlan('no reliable quote price for ' + quote);
+      const baseUsd = price * quoteUsd;
+      const port = await portfolio(ctx, p);
+      if (!port) return emptyPlan('no balances available');
+      const heldBase = port.held[base] || 0n, heldQuote = port.held[quote] || 0n;
+      const baseVal = (Number(heldBase) / pow10(bd)) * baseUsd;
+      const quoteVal = (Number(heldQuote) / pow10(qd)) * quoteUsd;
+      const value = baseVal + quoteVal;
+      if (!(value > 0)) return emptyPlan('portfolio value is zero');
+      const target = p.targetPct / 100;
+      const held = baseVal / value;
+      if (Math.abs(held - target) * 100 < p.driftPct) return emptyPlan('allocation within drift band');
+      const wantUsd = value * target;
+      const mainnet = mainnetOf(ctx);
+      if (wantUsd > baseVal) {
+        let buyUsd = wantUsd - baseVal;
+        // FIX-2: clamp the drift buy to the remaining session budget (LIVE risk bound).
+        const remain = await remainingUsd(ctx, p.budgetUsd);
+        buyUsd = Math.min(buyUsd, remain);
+        if (!(buyUsd > 0)) return emptyPlan('no remaining budget');
+        const wantQuote = usdToBase(buyUsd, qd, quoteUsd);
+        const spendQuote = wantQuote < heldQuote ? wantQuote : heldQuote;
+        if (spendQuote <= 0n) return emptyPlan('buy size rounds to zero / no quote held');
+        const estUsd = Math.round((Number(spendQuote) / pow10(qd)) * quoteUsd * 100) / 100;
+        return [intent({
+          tool: 'swap', args: { from: quote, to: base, amount: spendQuote.toString(), venue: 'blockle' },
+          rationale: 'rebalance_hold BUY ' + base + ' (' + (held * 100).toFixed(1) + '% vs ' + p.targetPct + '% target) ~$' + estUsd,
+          estUsd, strategy: 'rebalance_hold', tag: 'rebalance_hold:' + p.market + ':buy', mainnet,
+        })];
+      }
+      const sellUsd = baseVal - wantUsd;
+      const wantBase = usdToBase(sellUsd, bd, baseUsd);
+      const sellBase = wantBase < heldBase ? wantBase : heldBase;
+      if (sellBase <= 0n) return emptyPlan('sell size rounds to zero');
+      const estUsd = Math.round((Number(sellBase) / pow10(bd)) * baseUsd * 100) / 100;
+      return [intent({
+        tool: 'swap', args: { from: base, to: quote, amount: sellBase.toString(), venue: 'blockle' },
+        rationale: 'rebalance_hold SELL ' + base + ' (' + (held * 100).toFixed(1) + '% vs ' + p.targetPct + '% target) ~$' + estUsd,
+        estUsd, strategy: 'rebalance_hold', tag: 'rebalance_hold:' + p.market + ':sell', mainnet,
+      })];
+    },
+  };
+
+  // NOTE: `scalp` and `martingale` are DROPPED FROM LIVE. They depend on per-position
+  // state (avgCost / lastBuyPrice with a ratchet) that a stateless price-history
+  // planner cannot faithfully or safely reproduce — an adversarial review found the
+  // live approximations oversized/unbounded real exposure. They remain available as
+  // PAPER strategies in services/accounts/src/bots.js (the ranked backtest engine),
+  // but are intentionally absent from the live registry below: creating a live bot
+  // of type scalp/martingale is cleanly rejected as an unknown live strategy.
+
+  // --- hodl: buy once and hold (benchmark) ------------------------------------
+  const hodl = {
+    name: 'hodl',
+    describe() { return 'HODL: buy the asset once when nothing is held, then hold forever (never sells).'; },
+    defaults: { market: null, budgetUsd: 1000, positionPct: 100, history: null, held: null, balances: null },
+    validateParams(params) { return validateMarketParams(this, params); },
+    async plan(ctx, p) {
+      const [base] = splitPair(p.market);
+      let heldBase = 0n;
+      if (p.held != null) heldBase = BigInt(String(p.held));
+      else { const port = await portfolio(ctx, p); if (port) heldBase = port.held[base] || 0n; }
+      if (heldBase > 0n) return emptyPlan('already holding');
+      const history = (p.history || []).map(Number);
+      const price = history.length ? history[history.length - 1] : 0;
+      // server hodl buys ALL cash (ignores positionPct) — pin to the full allocation.
+      return indicatorBuy(ctx, Object.assign({}, p, { positionPct: 100 }), 'hodl', price, 'hodl entry — buy the allocation of ' + base);
+    },
+  };
+
+  // (scalp + martingale live planners removed — see the note above. PAPER-only.)
+
+  // ===========================================================================
   // registry
   // ===========================================================================
   function createRegistry() {
-    const list = [arbitrage, dca, grid, rebalance, momentum];
+    const list = [arbitrage, dca, grid, rebalance, momentum,
+      rsi, macd, bollinger, breakout, emacross, momentum_roc, meanrev, rebalance_hold, hodl];
     const byName = new Map(list.map((s) => [s.name, s]));
     return {
       all: list.slice(),
@@ -539,8 +921,10 @@
   const AgentStrategies = {
     createRegistry,
     arbitrage, dca, grid, rebalance, momentum,
+    rsi, macd, bollinger, breakout, emacross, momentum_roc, meanrev, rebalance_hold, hodl,
     AGENT_FEE_BPS, DEFAULT_DECIMALS,
     splitPair, decimalsFor, usdToBase, baseToQuote, toScaled, bookMid, occupied, fmtNum,
+    smaH, stdevH, emaH, macdH, rsiH, donHighH, donLowH, rocH,
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = AgentStrategies;

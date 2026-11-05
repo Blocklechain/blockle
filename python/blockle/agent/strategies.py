@@ -34,6 +34,7 @@ BOTH when either leg's tool is not allowlisted (never a single-leg arb).
 
 from __future__ import annotations
 
+import math
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,10 @@ DEFAULT_DECIMALS = {
     "BLOCK": 8, "BTC": 8, "LTC": 8, "DOGE": 8,
     "ETH": 18, "WETH": 18, "SOL": 9,
 }
+
+# Stable assets pinned to $1 — so an indicator planner can size a trade without a
+# live quote for the quote leg (matches the JS AgentStrategies STABLE_USD map).
+STABLE_USD = {"USDC": 1.0, "USDT": 1.0, "DAI": 1.0, "USD": 1.0}
 
 
 # --------------------------------------------------------------------------- #
@@ -225,6 +230,138 @@ def _session_remaining_usd(ctx: Any) -> Optional[float]:
         return None
     su = member(rem, "sessionUsd")
     return None if su is None else float(su)
+
+
+async def _quote_usd_of(ctx: Any, quote: str) -> Optional[float]:
+    """FIX-4: resolve the USD price of a quote asset. Stable quotes use their peg;
+    a NON-stable quote MUST come from ``ctx.prices`` — returns ``None`` when no
+    positive price is available so the caller REFUSES rather than fabricating $1
+    (the old ``_num(..., 1)`` fallback mis-sized every non-stable-quote pair)."""
+    q = str(quote).upper()
+    if q in STABLE_USD:
+        return STABLE_USD[q]
+    prices = await _prices(ctx, [quote])
+    v = _num(member(prices, quote), 0)
+    return v if v > 0 else None
+
+
+async def _remaining_usd(ctx: Any, budget_usd: float) -> float:
+    """FIX-2: the LIVE risk bound. The remaining session allocation caps exposure —
+    a full-size ``posUsd`` buy is safe BY CONSTRUCTION because it is clamped to
+    this. Falls back to the bot's own budget when the host exposes no session
+    remaining (``policyRemaining().sessionUsd`` absent/None)."""
+    fn = member(ctx, "policyRemaining")
+    if callable(fn):
+        try:
+            rem = await maybe_await(fn())
+        except Exception:
+            rem = None
+        su = member(rem, "sessionUsd")
+        if su is not None:
+            try:
+                return float(su)
+            except (TypeError, ValueError):
+                pass
+    return float(budget_usd)
+
+
+def _clamp_int(v: Any, lo: int, hi: int, dflt: int) -> int:
+    """``clampInt`` parity: truncate toward zero, fall back to ``dflt``, clamp."""
+    try:
+        n = math.trunc(float(v))
+    except (TypeError, ValueError):
+        n = dflt
+    return max(lo, min(hi, n))
+
+
+def _clamp_num(v: Any, lo: float, hi: float, dflt: float) -> float:
+    return max(lo, min(hi, _num(v, dflt)))
+
+
+# --------------------------------------------------------------------------- #
+# deterministic indicators — ported VERBATIM from the paper bot engine        #
+# (services/accounts/src/bots.js). Float math (JS Number) so the buy/sell      #
+# DECISIONS are byte-identical; sizing then uses the exact Decimal helpers.    #
+# Each returns ``None`` until it has enough history ("warming up").            #
+# --------------------------------------------------------------------------- #
+
+def _h_floats(history: Any) -> List[float]:
+    return [float(x) for x in (history or [])]
+
+
+def _sma_h(h: List[float], n: int):
+    if len(h) < n:
+        return None
+    return sum(h[len(h) - n:]) / n
+
+
+def _stdev_h(h: List[float], n: int):
+    m = _sma_h(h, n)
+    if m is None:
+        return None
+    t = 0.0
+    for i in range(len(h) - n, len(h)):
+        t += (h[i] - m) ** 2
+    return math.sqrt(t / n)
+
+
+def _ema_h(h: List[float], n: int):
+    if len(h) < n:
+        return None
+    k = 2 / (n + 1)
+    e = h[0]
+    for i in range(1, len(h)):
+        e = h[i] * k + e * (1 - k)
+    return e
+
+
+def _macd_h(h: List[float], fast: int, slow: int, signal_p: int):
+    if len(h) < slow + signal_p:
+        return None
+    kf, ks, kg = 2 / (fast + 1), 2 / (slow + 1), 2 / (signal_p + 1)
+    ef = es = h[0]
+    sig = None
+    for i in range(1, len(h)):
+        ef = h[i] * kf + ef * (1 - kf)
+        es = h[i] * ks + es * (1 - ks)
+        m = ef - es
+        sig = m if sig is None else m * kg + sig * (1 - kg)
+    return {"macd": ef - es, "signal": sig}
+
+
+def _rsi_h(h: List[float], n: int):
+    if len(h) < n + 1:
+        return None
+    up = dn = 0.0
+    for i in range(len(h) - n, len(h)):
+        d = h[i] - h[i - 1]
+        if d >= 0:
+            up += d
+        else:
+            dn -= d
+    if dn == 0:
+        return 100
+    rs = (up / n) / (dn / n)
+    return 100 - 100 / (1 + rs)
+
+
+def _don_high_h(h: List[float], n: int):
+    if len(h) < n + 1:
+        return None
+    return max(h[len(h) - 1 - n: len(h) - 1])
+
+
+def _don_low_h(h: List[float], n: int):
+    if len(h) < n + 1:
+        return None
+    return min(h[len(h) - 1 - n: len(h) - 1])
+
+
+def _roc_h(h: List[float], n: int):
+    if len(h) < n + 1:
+        return None
+    base = h[len(h) - 1 - n]
+    return (h[-1] - base) / base * 100
 
 
 # --------------------------------------------------------------------------- #
@@ -776,6 +913,424 @@ class Momentum(Strategy):
 
 
 # --------------------------------------------------------------------------- #
+# 3.6 indicator planners (ported from the paper bot engine step() in           #
+# services/accounts/src/bots.js — the AUTHORITATIVE oracle the public backtest  #
+# + leaderboard rank on). These are PURE + STATELESS: each recomputes its       #
+# indicator from ``p["history"]`` (oldest->newest) every tick and derives any   #
+# cross-state (macd/emacross prev relation) from the window — never stashing    #
+# mutable state. The StrategyRunner host persists the per-strategy price ring   #
+# and supplies it as ``p["history"]``. These 9 reproduce the server step()      #
+# decisions so "USE THIS STRATEGY" behaves like its ranked backtest:            #
+#   - BUY size = posUsd = budgetUsd*positionPct/100 (the server's posUsd),       #
+#     CLAMPED to the remaining session budget (the LIVE risk bound). NEVER a     #
+#     bounded tradeUsd slice (that diverged from the ranked backtest).           #
+#   - SELL = FULL liquidation of the held base (server sellAll), clamped so it   #
+#     never exceeds what is held.                                                #
+#   - QUOTE price: stable peg, else the live ctx.prices price; a non-stable      #
+#     quote with no price REFUSES (no fabricated $1).                            #
+# scalp + martingale are DROPPED here (per-position-state strategies a           #
+# stateless planner cannot safely reproduce) — they stay PAPER-only in bots.js. #
+# --------------------------------------------------------------------------- #
+
+class _MarketIndicator(Strategy):
+    """Base for the single-market indicator planners (shared sizing + param
+    coercion). Subclasses set ``defaults`` + ``describe`` + ``plan``.
+
+    FIX-1: sizing is ``posUsd = budgetUsd * positionPct/100`` (the ranked-backtest
+    convention), NOT a bounded ``tradeUsd`` slice. ``budgetUsd`` is the bot's USD
+    allocation."""
+
+    defaults: Dict[str, Any] = {"market": None, "budgetUsd": 1000, "positionPct": 100,
+                                "history": None, "held": None, "balances": None}
+
+    def _validate_market(self, params=None):
+        p = dict(self.defaults)
+        p.update(params or {})
+        if not p.get("market"):
+            raise ValueError(self.name + " requires a market")
+        _split_pair(p["market"])
+        # FIX-1: posUsd sizing — budgetUsd is the bot's USD allocation, clamp [1,1e9].
+        p["budgetUsd"] = max(1.0, min(1e9, _num(p.get("budgetUsd"), 1000)))
+        pp = _num(p.get("positionPct"), 100)
+        if not (pp > 0):
+            pp = 100.0
+        p["positionPct"] = min(100.0, pp)             # clamp to (0, 100]
+        if p.get("history") is not None and not isinstance(p["history"], (list, tuple)):
+            raise ValueError("history must be a list of prices")
+        return p
+
+    def validate_params(self, params=None):
+        return self._validate_market(params)
+
+    async def _held_base(self, ctx, p, base) -> int:
+        held = p.get("held")
+        if held is not None:
+            try:
+                return int(str(held))
+            except (TypeError, ValueError):
+                return 0
+        gb = member(ctx, "getBalance")
+        raw = await maybe_await(gb(None, [base])) if callable(gb) else None
+        norm = _norm_balances(raw)
+        rec = norm.get(base)
+        return int(rec["amount"]) if rec else 0
+
+    async def _buy(self, ctx, p, reason):
+        """BUY (quote->base) sized at posUsd = budgetUsd*positionPct/100, CLAMPED to
+        the remaining session budget (FIX-1 + FIX-2). Never fabricates a quote
+        price (FIX-4)."""
+        base, quote = _split_pair(p["market"])
+        quote_usd = await _quote_usd_of(ctx, quote)
+        if quote_usd is None:
+            return []                                 # no reliable quote price
+        usd = p["budgetUsd"] * p["positionPct"] / 100              # posUsd
+        remain = await _remaining_usd(ctx, p["budgetUsd"])
+        usd = min(usd, remain)                                     # LIVE risk bound
+        if not (usd > 0):
+            return []                                 # no remaining budget
+        amount = _usd_to_base(usd, quote_usd, _decimals(ctx, quote))
+        if amount is None or amount <= 0:
+            return []
+        est = round(usd * 100) / 100
+        args = {"from": quote, "to": base, "amount": str(amount), "venue": "blockle"}
+        return [self._intent("swap", args, reason, est,
+                             self.name + ":" + p["market"] + ":buy", _is_mainnet(ctx))]
+
+    async def _sell(self, ctx, p, price, reason):
+        """SELL (base->quote) that FULLY LIQUIDATES the held base (FIX-3: sellAll,
+        clamped to held — an indicator exit dumps the ENTIRE position, never a
+        tradeUsd slice). Never fabricates a quote price (FIX-4)."""
+        base, quote = _split_pair(p["market"])
+        if not (price > 0):
+            return []
+        quote_usd = await _quote_usd_of(ctx, quote)
+        if quote_usd is None:
+            return []
+        bd = _decimals(ctx, base)
+        base_usd = _dec(price) * _dec(quote_usd)
+        held_base = await self._held_base(ctx, p, base)
+        if held_base <= 0:
+            return []                                 # nothing held to sell
+        sell_base = held_base                         # full liquidation (clamped to held)
+        sell_usd = float((_dec(sell_base) / (Decimal(10) ** bd)) * base_usd)
+        est = round(sell_usd * 100) / 100
+        args = {"from": base, "to": quote, "amount": str(sell_base), "venue": "blockle"}
+        return [self._intent("swap", args, reason, est,
+                             self.name + ":" + p["market"] + ":sell", _is_mainnet(ctx))]
+
+
+class Rsi(_MarketIndicator):
+    name = "rsi"
+    defaults = {"market": None, "period": 14, "oversold": 30, "overbought": 70,
+                "budgetUsd": 1000, "positionPct": 100, "history": None,
+                "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "RSI: buy when the Relative Strength Index is oversold, sell held when overbought."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["period"] = _clamp_int(p.get("period"), 2, 200, 14)
+        p["oversold"] = max(1.0, min(50.0, _num(p.get("oversold"), 30)))
+        p["overbought"] = max(50.0, min(99.0, _num(p.get("overbought"), 70)))
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        r = _rsi_h(h, p["period"])
+        if r is None:
+            return []
+        price = h[-1]
+        if r <= p["oversold"]:
+            return await self._buy(ctx, p, "rsi oversold (%.1f) — buy" % r)
+        if r >= p["overbought"]:
+            return await self._sell(ctx, p, price, "rsi overbought (%.1f) — sell held" % r)
+        return []
+
+
+class Macd(_MarketIndicator):
+    name = "macd"
+    defaults = {"market": None, "fast": 12, "slow": 26, "signalP": 9,
+                "budgetUsd": 1000, "positionPct": 100, "history": None,
+                "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "MACD: buy when the MACD line crosses above its signal line, sell held on a cross below."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["fast"] = _clamp_int(p.get("fast"), 2, 100, 12)
+        p["slow"] = _clamp_int(p.get("slow"), 3, 300, 26)
+        p["signalP"] = _clamp_int(p.get("signalP"), 1, 100, 9)
+        if p["fast"] >= p["slow"]:
+            raise ValueError("macd needs fast < slow")
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        curr = _macd_h(h, p["fast"], p["slow"], p["signalP"])
+        if curr is None:
+            return []
+        prev = _macd_h(h[:-1], p["fast"], p["slow"], p["signalP"])
+        rel_curr = 1 if curr["macd"] > curr["signal"] else -1
+        rel_prev = 0 if prev is None else (1 if prev["macd"] > prev["signal"] else -1)
+        price = h[-1]
+        if rel_curr == 1 and rel_prev <= 0:
+            return await self._buy(ctx, p, "macd crossed above signal — buy")
+        if rel_curr == -1 and rel_prev >= 0:
+            return await self._sell(ctx, p, price, "macd crossed below signal — sell held")
+        return []
+
+
+class Bollinger(_MarketIndicator):
+    name = "bollinger"
+    defaults = {"market": None, "period": 20, "k": 2, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "Bollinger Bands: buy a lower-band pierce, sell held on an upper-band pierce."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["period"] = _clamp_int(p.get("period"), 2, 200, 20)
+        p["k"] = max(0.5, min(5.0, _num(p.get("k"), 2)))
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        m = _sma_h(h, p["period"])
+        sd = _stdev_h(h, p["period"])
+        if m is None or sd is None:
+            return []
+        price = h[-1]
+        if price <= m - p["k"] * sd:
+            return await self._buy(ctx, p, "bollinger lower-band pierce — buy")
+        if price >= m + p["k"] * sd:
+            return await self._sell(ctx, p, price, "bollinger upper-band pierce — sell held")
+        return []
+
+
+class Breakout(_MarketIndicator):
+    name = "breakout"
+    defaults = {"market": None, "lookback": 20, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "Donchian breakout: buy a new range high, sell held when price breaks the trailing low."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["lookback"] = _clamp_int(p.get("lookback"), 2, 300, 20)
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        hi = _don_high_h(h, p["lookback"])
+        lo = _don_low_h(h, p["lookback"])
+        if hi is None:
+            return []
+        price = h[-1]
+        if price > hi:
+            return await self._buy(ctx, p, "breakout above %s — buy" % _price_str(_dec(hi)))
+        if lo is not None and price < lo:
+            return await self._sell(ctx, p, price, "breakdown below %s — sell held" % _price_str(_dec(lo)))
+        return []
+
+
+class EmaCross(_MarketIndicator):
+    name = "emacross"
+    defaults = {"market": None, "fast": 10, "slow": 30, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "EMA cross: buy when the fast EMA crosses above the slow EMA, sell held on a cross below."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["fast"] = _clamp_int(p.get("fast"), 2, 200, 10)
+        p["slow"] = _clamp_int(p.get("slow"), 3, 400, 30)
+        if p["fast"] >= p["slow"]:
+            raise ValueError("emacross needs fast < slow")
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        f = _ema_h(h, p["fast"])
+        sl = _ema_h(h, p["slow"])
+        if f is None or sl is None:
+            return []
+        hp = h[:-1]
+        fp = _ema_h(hp, p["fast"])
+        slp = _ema_h(hp, p["slow"])
+        rel_curr = 1 if f > sl else -1
+        rel_prev = 0 if (fp is None or slp is None) else (1 if fp > slp else -1)
+        price = h[-1]
+        if rel_curr == 1 and rel_prev <= 0:
+            return await self._buy(ctx, p, "EMA%d crossed above EMA%d — buy" % (p["fast"], p["slow"]))
+        if rel_curr == -1 and rel_prev >= 0:
+            return await self._sell(ctx, p, price, "EMA%d crossed below EMA%d — sell held" % (p["fast"], p["slow"]))
+        return []
+
+
+class MomentumRoc(_MarketIndicator):
+    name = "momentum_roc"
+    defaults = {"market": None, "lookback": 10, "thresholdPct": 3, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "Rate-of-change momentum: buy when ROC clears the threshold, sell held when ROC turns negative."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["lookback"] = _clamp_int(p.get("lookback"), 2, 300, 10)
+        p["thresholdPct"] = max(0.0, min(100.0, _num(p.get("thresholdPct"), 3)))
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        r = _roc_h(h, p["lookback"])
+        if r is None:
+            return []
+        price = h[-1]
+        if r >= p["thresholdPct"]:
+            return await self._buy(ctx, p, "ROC %.2f%% — buy" % r)
+        if r < 0:
+            return await self._sell(ctx, p, price, "ROC turned negative (%.2f%%) — sell held" % r)
+        return []
+
+
+class MeanRev(_MarketIndicator):
+    name = "meanrev"
+    defaults = {"market": None, "period": 20, "bandPct": 5, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "Mean reversion: buy a band below the moving average, sell held a band above it."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["period"] = _clamp_int(p.get("period"), 2, 300, 20)
+        p["bandPct"] = max(0.1, min(100.0, _num(p.get("bandPct"), 5)))
+        return p
+
+    async def plan(self, ctx, p):
+        h = _h_floats(p.get("history"))
+        m = _sma_h(h, p["period"])
+        if m is None:
+            return []
+        price = h[-1]
+        if price <= m * (1 - p["bandPct"] / 100):
+            return await self._buy(ctx, p, "price %s%% below the mean — buy" % p["bandPct"])
+        if price >= m * (1 + p["bandPct"] / 100):
+            return await self._sell(ctx, p, price, "price %s%% above the mean — sell held" % p["bandPct"])
+        return []
+
+
+class RebalanceHold(_MarketIndicator):
+    name = "rebalance_hold"
+    defaults = {"market": None, "targetPct": 50, "driftPct": 10, "budgetUsd": 1000,
+                "positionPct": 100, "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "Single-asset rebalance: hold a target % of portfolio value in the asset; trade the drift back."
+
+    def validate_params(self, params=None):
+        p = self._validate_market(params)
+        p["targetPct"] = max(1.0, min(99.0, _num(p.get("targetPct"), 50)))
+        p["driftPct"] = max(1.0, min(100.0, _num(p.get("driftPct"), 10)))
+        return p
+
+    async def plan(self, ctx, p):
+        base, quote = _split_pair(p["market"])
+        h = _h_floats(p.get("history"))
+        price = h[-1] if h else 0.0
+        if not (price > 0):
+            return []
+        bd, qd = _decimals(ctx, base), _decimals(ctx, quote)
+        # FIX-4: never fabricate $1 — a non-stable quote must be priced from ctx.prices.
+        quote_usd = await _quote_usd_of(ctx, quote)
+        if quote_usd is None:
+            return []
+        base_usd = _dec(price) * _dec(quote_usd)
+        gb = member(ctx, "getBalance")
+        raw = await maybe_await(gb(None, [base, quote])) if callable(gb) else None
+        norm = _norm_balances(raw)
+        if not norm:
+            return []
+        held_base = int(norm.get(base, {}).get("amount", 0) or 0)
+        held_quote = int(norm.get(quote, {}).get("amount", 0) or 0)
+        base_val = float((_dec(held_base) / (Decimal(10) ** bd)) * base_usd)
+        quote_val = float((_dec(held_quote) / (Decimal(10) ** qd)) * _dec(quote_usd))
+        value = base_val + quote_val
+        if not (value > 0):
+            return []
+        target = p["targetPct"] / 100
+        held_frac = base_val / value
+        if abs(held_frac - target) * 100 < p["driftPct"]:
+            return []
+        want_usd = value * target
+        mainnet = _is_mainnet(ctx)
+        if want_usd > base_val:
+            buy_usd = want_usd - base_val
+            # FIX-2: clamp the drift buy to the remaining session budget (LIVE risk bound).
+            remain = await _remaining_usd(ctx, p["budgetUsd"])
+            buy_usd = min(buy_usd, remain)
+            if not (buy_usd > 0):
+                return []
+            want_quote = _usd_to_base(buy_usd, quote_usd, qd)
+            spend_quote = min(want_quote or 0, held_quote)
+            if spend_quote <= 0:
+                return []
+            est = round(float((_dec(spend_quote) / (Decimal(10) ** qd)) * _dec(quote_usd)) * 100) / 100
+            args = {"from": quote, "to": base, "amount": str(spend_quote), "venue": "blockle"}
+            return [self._intent("swap", args,
+                                 "rebalance_hold BUY %s (%.1f%% vs %s%% target) ~$%s"
+                                 % (base, held_frac * 100, p["targetPct"], est),
+                                 est, "rebalance_hold:" + p["market"] + ":buy", mainnet)]
+        sell_usd = base_val - want_usd
+        want_base = _usd_to_base(sell_usd, base_usd, bd)
+        sell_base = min(want_base or 0, held_base)
+        if sell_base <= 0:
+            return []
+        est = round(float((_dec(sell_base) / (Decimal(10) ** bd)) * base_usd) * 100) / 100
+        args = {"from": base, "to": quote, "amount": str(sell_base), "venue": "blockle"}
+        return [self._intent("swap", args,
+                             "rebalance_hold SELL %s (%.1f%% vs %s%% target) ~$%s"
+                             % (base, held_frac * 100, p["targetPct"], est),
+                             est, "rebalance_hold:" + p["market"] + ":sell", mainnet)]
+
+
+# NOTE: `scalp` and `martingale` are DROPPED FROM LIVE. They depend on per-position
+# state (avgCost / lastBuyPrice with a ratchet) that a stateless price-history
+# planner cannot faithfully or safely reproduce — an adversarial review found the
+# live approximations oversized/unbounded real exposure. They remain available as
+# PAPER strategies in services/accounts/src/bots.js (the ranked backtest engine),
+# but are intentionally absent from the live registry below: creating a live bot of
+# type scalp/martingale is cleanly rejected as an unknown live strategy.
+
+
+class Hodl(_MarketIndicator):
+    name = "hodl"
+    defaults = {"market": None, "budgetUsd": 1000, "positionPct": 100,
+                "history": None, "held": None, "balances": None}
+
+    def describe(self) -> str:
+        return "HODL: buy the asset once when nothing is held, then hold forever (never sells)."
+
+    async def plan(self, ctx, p):
+        base, _quote = _split_pair(p["market"])
+        held_base = await self._held_base(ctx, p, base)
+        if held_base > 0:
+            return []
+        # server hodl buys ALL cash (ignores positionPct) — pin to the full allocation.
+        return await self._buy(ctx, {**p, "positionPct": 100},
+                               "hodl entry — buy the allocation of %s" % base)
+
+
+# (scalp + martingale live planners removed — see the note above. PAPER-only.)
+
+
+# --------------------------------------------------------------------------- #
 # registry                                                                    #
 # --------------------------------------------------------------------------- #
 
@@ -800,4 +1355,17 @@ def default_registry() -> Registry:
         "grid": Grid(),
         "rebalance": Rebalance(),
         "momentum": Momentum(),
+        # 9 indicator planners ported from the paper bot engine (bots.js step()).
+        # scalp + martingale are DROPPED from LIVE (per-position-state they cannot
+        # safely reproduce) and remain PAPER-only in bots.js — a live bot of those
+        # types is cleanly rejected here as an unknown strategy.
+        "rsi": Rsi(),
+        "macd": Macd(),
+        "bollinger": Bollinger(),
+        "breakout": Breakout(),
+        "emacross": EmaCross(),
+        "momentum_roc": MomentumRoc(),
+        "meanrev": MeanRev(),
+        "rebalance_hold": RebalanceHold(),
+        "hodl": Hodl(),
     })

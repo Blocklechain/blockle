@@ -252,6 +252,58 @@ test('arbitrage pairing: if ONE leg\'s tool is not allowlisted, BOTH legs are dr
 });
 
 // ===========================================================================
+// price-history ring: the runner persists a per-strategy price ring and supplies
+// it to plan() as p.history (oldest->newest), so stateless indicator planners get
+// their window. The ring grows each tick and is capped at historyCap.
+// ===========================================================================
+test('history ring: the runner persists prices across ticks and passes them as p.history', async () => {
+  const seen = [];
+  const registry = {
+    names: () => ['probe'], has: (n) => n === 'probe',
+    get: (n) => (n === 'probe' ? {
+      name: 'probe', describe: () => 'probe', validateParams: (p) => Object.assign({ market: 'BLOCK/USDC', history: null }, p),
+      plan: async (_ctx, p) => { seen.push((p.history || []).slice()); return []; },
+    } : null),
+  };
+  const policy = AgentPolicy.create({ caps: { sessionUsd: 1000 }, confirm: async () => true });
+  const tools = fakeTools();
+  let px = 10;
+  const ctx = { now: () => 0, network: () => 'testnet', async prices() { return { BLOCK: px, USDC: 1 }; } };
+  const runner = AgentStrategyRunner.create({ tools, policy, audit: AgentAudit.create({}), ctx, AgentRunner, registry, historyCap: 3 });
+  policy.setAllowlist(tools.names());
+
+  await runner.tick('probe', { market: 'BLOCK/USDC' });           // ring: [10]
+  px = 11; await runner.tick('probe', { market: 'BLOCK/USDC' });  // ring: [10,11]
+  px = 12; await runner.tick('probe', { market: 'BLOCK/USDC' });  // ring: [10,11,12]
+  px = 13; await runner.tick('probe', { market: 'BLOCK/USDC' });  // ring capped: [11,12,13]
+
+  assert.deepEqual(seen[0], [10]);
+  assert.deepEqual(seen[1], [10, 11]);
+  assert.deepEqual(seen[2], [10, 11, 12]);
+  assert.deepEqual(seen[3], [11, 12, 13], 'ring is capped at historyCap=3, oldest dropped');
+});
+
+test('history ring: an explicitly-supplied history is respected and the ring is left untouched', async () => {
+  const seen = [];
+  const registry = {
+    names: () => ['probe'], has: (n) => n === 'probe',
+    get: (n) => (n === 'probe' ? {
+      name: 'probe', describe: () => 'probe', validateParams: (p) => Object.assign({ market: 'BLOCK/USDC', history: null }, p),
+      plan: async (_ctx, p) => { seen.push((p.history || []).slice()); return []; },
+    } : null),
+  };
+  const policy = AgentPolicy.create({ caps: { sessionUsd: 1000 }, confirm: async () => true });
+  const tools = fakeTools();
+  const ctx = { now: () => 0, network: () => 'testnet', async prices() { return { BLOCK: 99, USDC: 1 }; } };
+  const rings = new Map();
+  const runner = AgentStrategyRunner.create({ tools, policy, audit: AgentAudit.create({}), ctx, AgentRunner, registry, priceRings: rings });
+  policy.setAllowlist(tools.names());
+  await runner.tick('probe', { market: 'BLOCK/USDC', history: [1, 2, 3] });
+  assert.deepEqual(seen[0], [1, 2, 3], 'caller-supplied history used verbatim');
+  assert.equal(rings.size, 0, 'the ring was not touched when history was supplied');
+});
+
+// ===========================================================================
 // end-to-end: a real arbitrage plan proposes a balanced pair (no dispatch)
 // ===========================================================================
 test('e2e: real arbitrage strategy proposes a balanced 2-leg pair in propose mode', async () => {
