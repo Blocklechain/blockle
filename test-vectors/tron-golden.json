@@ -1,0 +1,45 @@
+{
+  "_comment": "Tron (TRX + USDT-TRC20) golden vector — THE cross-port gate. Every wallet (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce these byte-identical values. Address = base58check(0x41 || keccak256(uncompressedPub[1:])[-20:]); independently validated against bip_utils' TRON derivation and a standalone Python base58check. txID = sha256(raw_data_hex). The 65-byte [r||s||v] signature (v = recovery, NO +27) signs ONLY the node-returned, locally-reverified txID; deterministic RFC6979 makes it reproducible in all four languages and it RECOVERS to the owner pubkey. Generated from the canonical extension engine and asserted in blockle-extension/multichain.test.js + the Flutter/Qt/web ports.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "path": "m/44'/195'/0'/0/0",
+  "owner": {
+    "privKeyHex": "b5a4cea271ff424d7c31dc12a3e43e401df7a40d7412a15750f3f0b6b5449a28",
+    "pubkeyHexUncompressed": "04ff21f8e64d3a3c0198edfbb7afdc79be959432e92e2f8a1984bb436a414b8edcec0345aad0c1bf7da04fd036dd7f9f617e30669224283d950fab9dd84831dc83",
+    "addressHex": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+    "base58Address": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+  },
+  "publishedAddressVectors": [
+    ["41c8599111f29c1e1e061265b4af93ea1f274ad78a", "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"],
+    ["41e552f6487585c2b58bc2c9bb4492bc1f17132cd0", "TWsm8HtU2A5eEzoT8ev8yaoFjHsXLLrckb"]
+  ],
+  "usdtContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+  "tx": {
+    "kind": "native",
+    "to": "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+    "amount": "1000000",
+    "rawDataHex": "0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d",
+    "ownerAddressHex": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+    "toAddressHex": "415cd0fb0ab3ce40f3051414c604b27756e69e43db",
+    "expected": {
+      "txID": "2d576151d9f4703b8fefdcaac0bb88510269fda67ba31ee78bd7a692f74191a2",
+      "signatureHex": "6edd2aea57ae0ff2b2dd39075f38fe601c760d346a06e02d3fd5caa1e248f2f01b3e086afbe027876a6183cefd2a1e98a94f61c8e1fe6871d1034e9875c0398d01"
+    }
+  },
+  "trc20Tx": {
+    "kind": "trc20",
+    "contract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "to": "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+    "amount": "1000000",
+    "functionSelector": "transfer(address,uint256)",
+    "parameterHex": "0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240",
+    "rawDataHex": "0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c2244a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240",
+    "ownerAddressHex": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+    "contractAddressHex": "41a614f803b6fd780986a42c78ec9c7f77e6ded13c",
+    "callValue": 0,
+    "dataHex": "a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240",
+    "expected": {
+      "txID": "592fe64f26e0df4a32ccf669a8f28b6a546b6da9d29a9b1fe828dda8cdaa2d64",
+      "signatureHex": "f0bc426f6a855a613c91de12945e9c842be774eabc5f3e086ee19dfade129c8042592adbb29f561b3057a567203d8cfb5e0305c2c04c908d743963d4b5f113ec01"
+    }
+  }
+}

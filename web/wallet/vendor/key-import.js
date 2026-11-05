@@ -38,9 +38,9 @@
     dogecoin: { id: 'dogecoin', symbol: 'DOGE', name: 'Dogecoin', hrp: null,  p2pkh: 0x1e, p2sh: 0x16, wif: 0x9e, segwit: false, path: "m/44'/3'/0'/0/0" },
     bitcoincash: { id: 'bitcoincash', symbol: 'BCH', name: 'Bitcoin Cash', hrp: null, p2pkh: 0x00, p2sh: 0x05, wif: 0x80, segwit: false, forkId: true, cashaddr: 'bitcoincash', path: "m/44'/145'/0'/0/0" },
   };
-  const PATHS = { evm: "m/44'/60'/0'/0/0", solana: "m/44'/501'/0'/0'" };
-  const FAMILIES = ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'];
-  const FAMILY_LABEL = { evm: 'Ethereum & every EVM network', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana', block: 'BLOCK' };
+  const PATHS = { evm: "m/44'/60'/0'/0/0", solana: "m/44'/501'/0'/0'", tron: "m/44'/195'/0'/0/0" };
+  const FAMILIES = ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron'];
+  const FAMILY_LABEL = { evm: 'Ethereum & every EVM network', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana', tron: 'Tron', block: 'BLOCK' };
   const TYPE_LABEL = { p2wpkh: 'native segwit', 'p2sh-p2wpkh': 'wrapped segwit', p2pkh: 'legacy' };
   // Which import methods make sense per family.
   const METHODS = {
@@ -50,11 +50,12 @@
     dogecoin: ['key', 'mnemonic', 'walletdat', 'watch'],
     bitcoincash: ['key', 'mnemonic', 'watch'],
     solana:   ['key', 'mnemonic', 'watch'],
+    tron:     ['key', 'mnemonic', 'watch'],
     block:    ['file', 'watch'],
     all:      ['mnemonic'],
   };
   // chain id -> key family (every EVM network shares one secp256k1 key)
-  function familyOf(chainId) { return (UTXO[chainId] || chainId === 'solana' || chainId === 'block') ? chainId : 'evm'; }
+  function familyOf(chainId) { return (UTXO[chainId] || chainId === 'solana' || chainId === 'tron' || chainId === 'block') ? chainId : 'evm'; }
 
   // ---- helpers --------------------------------------------------------------
   const hex = (b) => C.bytesToHex(b);
@@ -86,6 +87,7 @@
     return out;
   }
   function evmAddressOf(priv) { return Addr.evmAddress(S.publicKey(C.toBytes(priv), true)); }
+  function tronAddressOf(priv) { return Addr.tronAddress(S.publicKey(C.toBytes(priv), false)); }
   function solAddressOf(seed) { return C.base58encode(ED.publicKey(C.toBytes(seed))); }
   function utxoFamilyOfAddress(addr) {
     const a = String(addr || '').trim();
@@ -120,7 +122,7 @@
     }
     const words = t.toLowerCase().split(/\s+/);
     if ([12, 15, 18, 21, 24].includes(words.length)) return { kind: 'mnemonic', families: FAMILIES.slice(), valid: HD.validateMnemonic(words.join(' ')) };
-    if (isHex(t, 64)) return { kind: 'hex', families: ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'] };
+    if (isHex(t, 64)) return { kind: 'hex', families: ['evm', 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron'] };
     if (isHex(t, 128)) return { kind: 'hex', families: ['solana'] };
     try {
       const d = C.base58checkDecode(t);
@@ -128,6 +130,7 @@
     } catch (_) {}
     try { const d = C.base58decode(t); if (d.length === 64 || d.length === 32) return { kind: 'solana-b58', families: ['solana'] }; } catch (_) {}
     if (/^0x[0-9a-fA-F]{40}$/.test(t)) return { kind: 'address', families: ['evm'] };
+    if (Addr.isTronAddress && Addr.isTronAddress(t) && /^T/.test(t)) return { kind: 'address', families: ['tron'] };
     const uf = utxoFamilyOfAddress(t);
     if (uf) return { kind: 'address', families: [uf] };
     if (/^block1[0-9a-z]{20,}$/.test(t)) return { kind: 'address', families: ['block'] };
@@ -180,6 +183,13 @@
       const address = C.base58encode(pub);
       return { family, source: 'key', chains: ['solana'], keys: { solana: { priv: hex(seed) } }, addresses: { solana: address }, preview: [{ chain: 'solana', label: 'Solana', address }] };
     }
+    if (family === 'tron') {
+      if (!isHex(t, 64)) throw new Error('a Tron private key is 64 hex characters (optionally 0x-prefixed)');
+      const priv = C.hexToBytes(stripHex(t));
+      if (!validPriv(priv)) throw new Error('invalid secp256k1 private key');
+      const address = tronAddressOf(priv);
+      return { family, source: 'key', chains: ['tron'], keys: { tron: { priv: hex(priv) } }, addresses: { tron: address }, preview: [{ chain: 'tron', label: 'Tron', address }] };
+    }
     throw new Error('a raw private key cannot be imported for ' + family);
   }
 
@@ -213,6 +223,10 @@
         const node = Sol.deriveSlip10(seed, PATHS.solana);
         addresses.solana = solAddressOf(node.key);
         preview.push({ chain: 'solana', label: 'Solana', address: addresses.solana, path: PATHS.solana });
+      } else if (f === 'tron') {
+        const node = HD.derivePath(seed, PATHS.tron);
+        addresses.tron = Addr.tronAddress(node.publicKey);
+        preview.push({ chain: 'tron', label: 'Tron', address: addresses.tron, path: PATHS.tron });
       }
     }
     return { family: opts.family || 'all', source: 'mnemonic', chains: fams, seedHex: hex(seed), mnemonic: mn, passphrase: passphrase || '', addresses, preview };
@@ -266,6 +280,10 @@
       let d; try { d = C.base58decode(a); } catch (_) { d = null; }
       if (!d || d.length !== 32) throw new Error('not a Solana address');
       return { family, source: 'watch', chains: ['solana'], watch: { solana: a }, addresses: { solana: a }, preview: [{ chain: 'solana', label: 'Solana', address: a }] };
+    }
+    if (family === 'tron') {
+      if (!Addr.isTronAddress(a) || !/^T/.test(a)) throw new Error('not a Tron address');
+      return { family, source: 'watch', chains: ['tron'], watch: { tron: a }, addresses: { tron: a }, preview: [{ chain: 'tron', label: 'Tron', address: a }] };
     }
     if (family === 'block') {
       if (!/^block1[0-9a-z]{20,}$/.test(a)) throw new Error('not a BLOCK address');

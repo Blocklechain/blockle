@@ -63,6 +63,7 @@ def test_currency_map_natives():
     assert M.currency_code("dogecoin") == "doge"
     assert M.currency_code("bitcoincash") == "bch"
     assert M.currency_code("solana") == "sol"
+    assert M.currency_code("tron") == "trx"
     assert M.currency_code("base") == "eth_base"
     assert M.currency_code("polygon") == "pol_polygon"
     assert M.currency_code("bnb") == "bnb_bsc"
@@ -73,6 +74,7 @@ def test_currency_map_tokens():
     assert M.currency_code("ethereum", "USDC", native_symbol="ETH") == "usdc"
     assert M.currency_code("ethereum", "USDT", native_symbol="ETH") == "usdt"
     assert M.currency_code("solana", "USDC", native_symbol="SOL") == "usdc_sol"
+    assert M.currency_code("tron", "USDT", native_symbol="TRX") == "usdt_tron"
     assert M.currency_code("polygon", "USDC", native_symbol="POL") == "usdc_polygon"
 
 

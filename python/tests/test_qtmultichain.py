@@ -117,6 +117,12 @@ class MultiChainControllerTest(unittest.TestCase):
         # Bitcoin Cash derives a CashAddr off the same seed (coin type 145).
         self.assertTrue(ctrl.accounts["bitcoincash"].address.startswith("bitcoincash:q"))
         self.assertEqual(ctrl.accounts["bitcoincash"].scheme, "secp256k1")
+        # Tron derives a 'T…' base58check address off the same seed (coin type 195).
+        self.assertTrue(ctrl.accounts["tron"].address.startswith("T"))
+        self.assertEqual(len(ctrl.accounts["tron"].address), 34)
+        self.assertEqual(ctrl.accounts["tron"].scheme, "secp256k1")
+        self.assertEqual(ctrl._ctx()["explorerTx"]("tron", "abc"),
+                         "https://tronscan.org/#/transaction/abc")
         # BLOCK is the engine identity (post-quantum)
         self.assertEqual(ctrl.accounts["block"].address, "block1stub")
         ctx = ctrl._ctx()

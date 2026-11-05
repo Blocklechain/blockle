@@ -38,6 +38,7 @@
   // address the wallet shows.
   const EVM_PATH = "m/44'/60'/0'/0";       // chains/evm.js
   const SOL_PATH = "m/44'/501'/0'/0'";     // chains/solana.js (SLIP-0010, hardened)
+  const TRON_PATH = "m/44'/195'/0'/0";     // chains/tron.js (secp256k1)
 
   // Plain-language danger warning the confirm MUST surface before any export.
   const DANGER_WARNING =
@@ -116,6 +117,20 @@
     };
   }
 
+  // Tron: same secp256k1 HD node as EVM but coin-type 195; the raw private key
+  // (hex) imports into TronLink/tronweb, and the address is the 'T…' base58check.
+  function tronKey(seed, index) {
+    index = index || 0;
+    const path = TRON_PATH + '/' + index;
+    const node = HD.derivePath(toSeed(seed), path);
+    return {
+      chain: 'tron', index, path,
+      address: Addr.tronAddress(node.publicKey),
+      privateKey: C.bytesToHex(node.privateKey),
+      publicKey: C.bytesToHex(node.publicKey),
+    };
+  }
+
   // BLOCK is NOT HD-derived — its ML-DSA-44 keypair lives in the Wallet session.
   // Export it straight from the (unlocked) session object the popup passes in.
   // Not part of the shared vectors (not seed-derivable). Returns null when the
@@ -140,6 +155,7 @@
       bitcoincash: utxoKey('bitcoincash', s, index),
       evm: evmKey(s, index),
       solana: solanaKey(s, index),
+      tron: tronKey(s, index),
     };
   }
 
@@ -231,7 +247,7 @@
 
   const API = {
     DANGER_WARNING, EVM_PATH, SOL_PATH,
-    fromMnemonic, privateKeys, utxoKey, evmKey, solanaKey, blockKey,
+    fromMnemonic, privateKeys, utxoKey, evmKey, solanaKey, tronKey, blockKey,
     coreDump, coreDumpFilename, dumpLine, parseDump, solPathForIndex,
     gate, exportSecrets,
   };

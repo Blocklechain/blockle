@@ -16,6 +16,7 @@ from blockle.multichain import crypto as K
 from blockle.multichain import vault as V
 from blockle.multichain.chains import evm as E
 from blockle.multichain.chains import solana as SOL
+from blockle.multichain.chains import tron as TRON
 from blockle.multichain.chains import utxo as U
 from blockle.multichain.chains import create_registry
 from blockle.multichain.chains.chain_adapter import AssetRef
@@ -427,8 +428,233 @@ def test_registry_derivation():
     assert "bitcoincash" in reg.enabled()
     sol = reg.get("solana").derive_account({"seed": seed})
     assert sol.scheme == "ed25519"
+    trx = reg.get("tron").derive_account({"seed": seed})
+    assert trx.scheme == "secp256k1"
+    assert trx.path == "m/44'/195'/0'/0/0"
+    assert trx.address == "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+    assert "tron" in reg.enabled()
+    usdt = [t for t in reg.tokens_for("tron") if t.symbol == "USDT"]
+    assert usdt and usdt[0].kind == "trc20" and usdt[0].address == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
     assert "ethereum" in reg.enabled() and "bitcoin" in reg.enabled()
     assert any(t.symbol == "USDC" for t in reg.tokens_for("ethereum"))
+
+
+# ---- Tron (TRX + USDT-TRC20) golden vector --------------------------------
+# docs/tron-vectors.json — the cross-port gate: secp256k1 -> 0x41 -> base58check
+# address + local txID signing. Independently re-derived + re-verified here.
+def _tron_fixture():
+    import json
+    import os
+    p = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "tron-vectors.json")
+    with open(p) as f:
+        return json.load(f)
+
+
+def test_tron_address_codec_spec_vectors_both_ways():
+    fx = _tron_fixture()
+    for hex_addr, b58 in fx["addressSpecVectors"]:
+        assert K.tron_hex_to_base58(hex_addr) == b58
+        assert K.tron_address_to_hex(b58) == hex_addr
+        assert K.is_tron_address(b58)
+        assert K.is_tron_address(hex_addr)
+        assert K.is_tron_address("0x" + hex_addr)
+    assert not K.is_tron_address("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu")
+    assert not K.is_tron_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94")
+
+
+def test_tron_derive_address_matches_vector():
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    node = K.derive_path(seed, fx["path"])
+    exp = fx["expected"]
+    assert node.private_key.hex() == exp["privKeyHex"]
+    pub = S.public_key(node.private_key, False)
+    assert pub.hex() == exp["pubkeyHexUncompressed"]
+    assert K.keccak256(pub[1:])[-20:].hex() == exp["ethStyleHash20"]
+    assert K.tron_address(node.public_key) == exp["base58Address"]
+    # the keccak body equals the EVM address body; only prefix/encoding differ
+    assert K.keccak256(pub[1:])[-20:].hex() == K.evm_address(node.public_key)[2:].lower()
+
+
+@pytest.mark.parametrize("key", ["tx", "trc20Tx"])
+def test_tron_txid_guard_sign_verify_recover_golden(key):
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    node = K.derive_path(seed, fx["path"])
+    pub = S.public_key(node.private_key, False)
+    vec = fx[key]
+    # (1) txID == sha256(raw_data_hex), recomputed not trusted
+    txid = K.sha256(bytes.fromhex(vec["rawDataHex"])).hex()
+    assert txid == vec["expected"]["txID"]
+    assert TRON.verify_tx_id(vec["rawDataHex"], vec["expected"]["txID"]) == txid
+    # (2) a tampered raw_data_hex is REJECTED before signing (malicious-node guard)
+    with pytest.raises(ValueError):
+        TRON.verify_tx_id(vec["rawDataHex"], "00" * 32)
+    # (3) deterministic 65-byte [r||s||v] signature matches the golden value
+    sig65 = TRON.sign_tx_id(txid, node.private_key)
+    assert sig65.hex() == vec["expected"]["signatureHex"]
+    assert len(sig65) == 65 and sig65[64] in (0, 1)
+    # (4) the signature VERIFIES and RECOVERS to the owner pubkey (independent)
+    r = int.from_bytes(sig65[0:32], "big")
+    s = int.from_bytes(sig65[32:64], "big")
+    assert S.verify(bytes.fromhex(txid), {"r": r, "s": s}, pub)
+    assert S.recover(bytes.fromhex(txid), r, s, sig65[64], False).hex() == fx["expected"]["pubkeyHexUncompressed"]
+
+
+def test_tron_trc20_param_abi():
+    fx = _tron_fixture()
+    t = fx["trc20Tx"]
+    p = TRON.trc20_transfer_param(t["to"], t["amount"])
+    assert p == t["parameterHex"]
+    assert len(p) == 128  # two 32-byte words
+    assert p[24:64] == K.tron_address_to_hex(t["to"])[2:]
+
+
+def test_tron_adapter_sign_tx_reverifies_and_attaches_signature():
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    a = TRON.create_tron_adapter()
+    a.unlock({"seed": seed})
+    acct = a.derive_account({"seed": seed}, 0)
+    assert acct.address == fx["expected"]["base58Address"]
+    tx = fx["tx"]
+    unsigned = {"raw_data_hex": tx["rawDataHex"], "txID": tx["expected"]["txID"], "raw_data": {}}
+    built = a.sign_tx(acct, {"unsigned": unsigned, "raw_data_hex": unsigned["raw_data_hex"],
+                             "txID": unsigned["txID"]})
+    assert built.extra["signature"] == tx["expected"]["signatureHex"]
+    assert built.extra["signed"]["signature"] == [tx["expected"]["signatureHex"]]
+    # tampered payload must be rejected (malicious-node guard)
+    with pytest.raises(ValueError):
+        a.sign_tx(acct, {"unsigned": {"raw_data_hex": tx["rawDataHex"] + "00",
+                                      "txID": tx["expected"]["txID"]}})
+    assert a.explorer_tx(tx["expected"]["txID"]) == \
+        "https://tronscan.org/#/transaction/" + tx["expected"]["txID"]
+
+
+# ---- node-untrusted raw_data DECODE + INTENT ASSERT (fund-safety guard) ----
+# DEFECT 1: txID == sha256(raw_data_hex) is ALWAYS true and proves nothing about
+# WHO gets paid. The wallet must DECODE the node-returned raw_data protobuf and
+# assert it encodes exactly the requested transfer, else refuse to sign.
+_TRON_ATTACKER_HEX = "41e552f6487585c2b58bc2c9bb4492bc1f17132cd0"  # TWsm8… (not ours)
+
+
+def test_tron_decode_raw_data_recovers_declared_transfer():
+    fx = _tron_fixture()
+    nx = fx["tx"]
+    d = TRON.decode_raw_data(nx["rawDataHex"])
+    assert d["type"] == "TransferContract"
+    assert d["ownerAddress"] == fx["expected"]["addressHex"]
+    assert d["toAddress"] == K.tron_address_to_hex(nx["to"])
+    assert d["amount"] == int(nx["amount"])
+    t = fx["trc20Tx"]
+    dt = TRON.decode_raw_data(t["rawDataHex"])
+    assert dt["type"] == "TriggerSmartContract"
+    assert dt["ownerAddress"] == fx["expected"]["addressHex"]
+    assert dt["contractAddress"] == K.tron_address_to_hex(t["contract"])
+    assert dt["callValue"] == 0
+    assert dt["data"] == TRON.TRC20_TRANSFER_SELECTOR + t["parameterHex"]
+
+
+def test_tron_assert_transfer_accepts_correct_payload():
+    fx = _tron_fixture()
+    owner = fx["expected"]["base58Address"]
+    nx = fx["tx"]
+    # native: accepts, returns the decoded transfer
+    dec = TRON.assert_transfer(nx["rawDataHex"], owner=owner, to=nx["to"],
+                               amount=int(nx["amount"]))
+    assert dec["type"] == "TransferContract"
+    # TRC-20: accepts
+    t = fx["trc20Tx"]
+    TRON.assert_transfer(t["rawDataHex"], owner=owner, to=t["to"],
+                         amount=int(t["amount"]), contract=t["contract"])
+
+
+def test_tron_assert_transfer_rejects_tampered_native_payload():
+    fx = _tron_fixture()
+    owner = fx["expected"]["base58Address"]
+    nx = fx["tx"]
+    to_hex = K.tron_address_to_hex(nx["to"])  # 21-byte 0x41 form
+    # (a) recipient swapped to an attacker. The integrity check STILL passes
+    #     (txID == sha256 of the tampered bytes) — proving why it is worthless —
+    #     but the intent assertion catches it.
+    swapped = nx["rawDataHex"].replace(to_hex, _TRON_ATTACKER_HEX)
+    assert swapped != nx["rawDataHex"]
+    assert TRON.verify_tx_id(swapped, K.sha256(bytes.fromhex(swapped)).hex())  # integrity ok
+    with pytest.raises(ValueError):
+        TRON.assert_transfer(swapped, owner=owner, to=nx["to"], amount=int(nx["amount"]))
+    # (b) amount inflated (same varint byte-length: 1_000_000 -> 2_000_000 sun)
+    inflated = nx["rawDataHex"].replace("18c0843d", "1880897a")
+    assert TRON.decode_raw_data(inflated)["amount"] == 2000000
+    with pytest.raises(ValueError):
+        TRON.assert_transfer(inflated, owner=owner, to=nx["to"], amount=int(nx["amount"]))
+
+
+def test_tron_assert_transfer_rejects_tampered_trc20_data():
+    fx = _tron_fixture()
+    owner = fx["expected"]["base58Address"]
+    t = fx["trc20Tx"]
+    to_body = K.tron_address_to_hex(t["to"])[2:]  # 20-byte h160 inside the ABI data
+    attacker_body = _TRON_ATTACKER_HEX[2:]
+    tampered = t["rawDataHex"].replace(to_body, attacker_body)
+    assert tampered != t["rawDataHex"]
+    assert TRON.verify_tx_id(tampered, K.sha256(bytes.fromhex(tampered)).hex())  # integrity ok
+    with pytest.raises(ValueError):
+        TRON.assert_transfer(tampered, owner=owner, to=t["to"], amount=int(t["amount"]),
+                             contract=t["contract"])
+    # a wrong token contract is also rejected
+    with pytest.raises(ValueError):
+        TRON.assert_transfer(t["rawDataHex"], owner=owner, to=t["to"],
+                             amount=int(t["amount"]),
+                             contract="TWsm8HtU2A5eEzoT8ev8yaoFjHsXLLrckb")
+
+
+def _tron_stub_adapter(seed, post):
+    a = TRON.create_tron_adapter(post=post)
+    a.unlock({"seed": seed})
+    return a, a.derive_account({"seed": seed}, 0)
+
+
+def test_tron_build_send_signs_honest_node_payload_to_golden():
+    """End-to-end: an honest node payload is decoded, intent-asserted, built,
+    and signed to the golden signature."""
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    nx = fx["tx"]
+    seen = []
+
+    def post(path, body):
+        seen.append(path)
+        return {"raw_data_hex": nx["rawDataHex"], "txID": nx["expected"]["txID"],
+                "raw_data": {}}
+
+    a, acct = _tron_stub_adapter(seed, post)
+    built = a.build_send(acct, {"to": nx["to"], "amount": int(nx["amount"])})
+    assert seen == ["/wallet/createtransaction"]
+    assert built.extra["intent"]["to"] == nx["to"]
+    signed = a.sign_tx(acct, built)
+    assert signed.extra["signature"] == nx["expected"]["signatureHex"]
+
+
+def test_tron_build_send_rejects_malicious_node_payload_no_signature():
+    """A node that returns an integrity-consistent payload paying an ATTACKER is
+    rejected by build_send; no BuiltTx, no signature ever produced."""
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    nx = fx["tx"]
+    to_hex = K.tron_address_to_hex(nx["to"])
+    tampered = nx["rawDataHex"].replace(to_hex, _TRON_ATTACKER_HEX)
+    tampered_txid = K.sha256(bytes.fromhex(tampered)).hex()
+    signed_calls = []
+
+    def post(path, body):
+        if path == "/wallet/broadcasttransaction":
+            signed_calls.append(body)
+        return {"raw_data_hex": tampered, "txID": tampered_txid, "raw_data": {}}
+
+    a, acct = _tron_stub_adapter(seed, post)
+    with pytest.raises(ValueError):
+        a.build_send(acct, {"to": nx["to"], "amount": int(nx["amount"])})
+    assert signed_calls == []  # nothing was signed/broadcast
 
 
 # ---- vault (scrypt + AES-256-GCM v2) --------------------------------------

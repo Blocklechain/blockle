@@ -18,7 +18,9 @@ const HD = require('./hd.js');
 const A = require('./address.js');
 const E = require('./chains/evm.js');
 const U = require('./chains/utxo.js');
+const TRON = require('./chains/tron.js');
 const REG = require('./chains/registry.js');
+const TRONV = require('../docs/tron-vectors.json');
 
 const h = C.bytesToHex;
 const te = (s) => new TextEncoder().encode(s);
@@ -189,6 +191,51 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
   ok('bch sigs recover to owner', built.signedInputs.every((si) => h(S.recover(si._sh, si._sig.r, si._sig.s, si._sig.recovery, true)) === h(bpub)));
 }
 
+// ---- Tron (TRX + USDT-TRC20): secp256k1 -> 0x41 -> base58check + LOCAL txID
+// signing GOLDEN VECTOR — docs/tron-vectors.json. Tron reuses the EVM keccak
+// body but a 0x41 prefix + base58check; the client signs ONLY the node-returned
+// txID after recomputing txID == sha256(raw_data_hex) (malicious-node guard).
+{
+  const seed = HD.mnemonicToSeed(TRONV.mnemonic, TRONV.passphrase || '');
+  const tnode = HD.derivePath(seed, TRONV.path);
+  // (1) key + address derivation
+  eq('tron priv key', h(tnode.privateKey), TRONV.expected.privKeyHex);
+  const tpub = S.publicKey(tnode.privateKey, false);
+  eq('tron uncompressed pubkey', h(tpub), TRONV.expected.pubkeyHexUncompressed);
+  const thash20 = C.keccak256(tpub.slice(1)).slice(-20);
+  eq('tron keccak20 body', h(thash20), TRONV.expected.ethStyleHash20);
+  eq('tron address hex (0x41||hash20)', '41' + h(thash20), TRONV.expected.addressHex);
+  eq('tron base58 address', A.tronAddress(tnode.publicKey), TRONV.expected.base58Address);
+  // same keccak body as the EVM address — only prefix + encoding differ
+  eq('tron body == evm body', h(thash20), A.evmAddress(tnode.publicKey).slice(2).toLowerCase());
+
+  // (2) address codec both-ways + validation
+  for (const [hex, b58] of TRONV.addressSpecVectors) {
+    eq('tron hexToBase58 ' + b58, A.tronHexToBase58(hex), b58);
+    eq('tron addressToHex ' + b58, A.tronAddressToHex(b58), hex);
+    ok('tron isTronAddress base58 ' + b58, A.isTronAddress(b58));
+    ok('tron isTronAddress hex ' + b58, A.isTronAddress(hex) && A.isTronAddress('0x' + hex));
+  }
+  ok('tron rejects evm address', !A.isTronAddress('0x9858EfFD232B4033E47d90003D41EC34EcaEda94'));
+  ok('tron rejects btc address', !A.isTronAddress('bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu'));
+
+  // (3)(4)(5) native + trc20: recompute txID, sign, assert byte-identical, recover
+  for (const [label, vec] of [['native', TRONV.tx], ['trc20', TRONV.trc20Tx]]) {
+    const txId = h(C.sha256(C.hexToBytes(vec.rawDataHex)));
+    eq('tron ' + label + ' txID == sha256(raw_data_hex)', txId, vec.expected.txID);
+    eq('tron ' + label + ' verifyTxId ok', TRON.verifyTxId(vec.rawDataHex, vec.expected.txID), txId);
+    throws('tron ' + label + ' verifyTxId rejects tampered id', () => TRON.verifyTxId(vec.rawDataHex, '00'.repeat(32)));
+    const sig65 = TRON.signTxId(txId, tnode.privateKey);
+    eq('tron ' + label + ' sig 65B [r||s||v]', h(sig65), vec.expected.signatureHex);
+    ok('tron ' + label + ' sig length 65', sig65.length === 65);
+    const r = S.bytesToBig(sig65.slice(0, 32)), sv = S.bytesToBig(sig65.slice(32, 64)), v = sig65[64];
+    ok('tron ' + label + ' ECDSA verifies', S.verify(C.hexToBytes(txId), { r, s: sv }, tpub));
+    eq('tron ' + label + ' recovers to owner', h(S.recover(C.hexToBytes(txId), r, sv, v, false)), h(tpub));
+  }
+  // (6) TRC-20 ABI parameter = 32B to ++ 32B amount
+  eq('tron trc20 abi parameter', TRON.trc20TransferParam(TRONV.trc20Tx.to, TRONV.trc20Tx.amount), TRONV.trc20Tx.parameterHex);
+}
+
 // ---- registry derivation (no network) -------------------------------------
 {
   const reg = REG.createRegistry({});
@@ -220,6 +267,18 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry solana path', sol.path, "m/44'/501'/0'/0'");
     eq('registry solana addr', sol.address, 'HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk');
     ok('registry solana addr is base58 (no 0/O/I/l)', /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(sol.address));
+    // Tron adapter is REGISTERED (secp256k1 m/44'/195'/0'/0/0), enabled by
+    // default, derives a 'T…' base58check address from the SAME HD seed, and its
+    // TronGrid REST endpoint defaults to the public mainnet host (no key).
+    ok('registry has tron adapter', reg.has('tron'));
+    ok('registry enables tron', reg.enabled().includes('tron'));
+    eq('registry tron default api', reg.endpoints('tron').api, 'https://api.trongrid.io');
+    ok('registry tron usdt token present', reg.tokensFor('tron').some((t) => t.kind === 'trc20' && t.symbol === 'USDT' && t.address === 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'));
+    const trx = await reg.get('tron').deriveAccount({ seed });
+    eq('registry tron scheme', trx.scheme, 'secp256k1');
+    eq('registry tron path', trx.path, "m/44'/195'/0'/0/0");
+    eq('registry tron addr', trx.address, 'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH');
+    ok('registry tron addr is T-prefixed base58', /^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(trx.address));
     // A config override replaces the default RPC without touching the key path.
     const reg2 = REG.createRegistry({ endpoints: { solana: { rpcUrl: 'https://solana.example/rpc' } } });
     eq('registry solana rpc override', reg2.endpoints('solana').rpcUrl, 'https://solana.example/rpc');

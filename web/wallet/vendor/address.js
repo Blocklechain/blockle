@@ -176,6 +176,40 @@
     return out;
   }
 
+  // ---- Tron (base58check over 0x41 || keccak20) ---------------------------
+  // Tron reuses the SAME body as an EVM address — keccak256(uncompressedPub[1:])
+  // last 20 bytes — but prepends a 0x41 version byte and encodes the 21-byte
+  // payload with Bitcoin-style base58check (double-SHA256 4-byte checksum)
+  // instead of EIP-55 hex. The result is a 'T…' address.
+  function tronAddress(pubKeyBytes) {
+    let pub = C.toBytes(pubKeyBytes);
+    if (pub.length === 33) pub = S.encodePoint(S.decodePoint(pub), false); // -> 65B uncompressed
+    const body = pub.slice(1);            // drop 0x04
+    const hash = C.keccak256(body);
+    const payload = C.concatBytes(Uint8Array.of(0x41), hash.slice(-20)); // 21 bytes
+    return C.base58checkEncode(payload);
+  }
+  // 'T…' -> '41'+40-hex (21-byte hex, 0x41 prefix). Throws unless prefix is 0x41.
+  function tronAddressToHex(addr) {
+    const payload = C.base58checkDecode(String(addr));
+    if (payload.length !== 21 || payload[0] !== 0x41) throw new Error('not a tron address');
+    return C.bytesToHex(payload);
+  }
+  // '41…'(21B) or bare 20-byte hex (optionally 0x-prefixed) -> 'T…' base58.
+  function tronHexToBase58(hex) {
+    let b = C.hexToBytes(String(hex).replace(/^0x/i, ''));
+    if (b.length === 20) b = C.concatBytes(Uint8Array.of(0x41), b);
+    if (b.length !== 21 || b[0] !== 0x41) throw new Error('bad tron hex address');
+    return C.base58checkEncode(b);
+  }
+  function isTronAddress(addr) {
+    if (typeof addr !== 'string') return false;
+    if (/^(0x)?41[0-9a-fA-F]{40}$/.test(addr)) return true;           // hex form
+    if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return false;      // base58 shape
+    try { const p = C.base58checkDecode(addr); return p.length === 21 && p[0] === 0x41; }
+    catch { return false; }
+  }
+
   // ---- UTXO addresses ------------------------------------------------------
   // P2WPKH native segwit (BTC/LTC): hrp-dependent.
   function p2wpkh(pubKeyBytes, hrp) {
@@ -206,6 +240,7 @@
     segwitEncode, segwitDecode, convertBits,
     cashAddrEncode, cashAddrDecode, cashAddrP2pkh, looksLikeCashAddr, cashPolymod,
     evmAddress, toChecksumAddress,
+    tronAddress, tronAddressToHex, tronHexToBase58, isTronAddress,
     p2wpkh, p2pkh, toWIF, fromWIF,
   };
   global.Addr = API;

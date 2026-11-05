@@ -74,6 +74,7 @@
     if (k.bitcoincash) rows.push(secretRow('Bitcoin Cash WIF', k.bitcoincash.wif, k.bitcoincash.address));
     if (k.evm) rows.push(secretRow('EVM private key', k.evm.privateKey, k.evm.address));
     if (k.solana) rows.push(secretRow('Solana secret key', k.solana.secretKey, k.solana.address));
+    if (k.tron) rows.push(secretRow('Tron private key', k.tron.privateKey, k.tron.address));
     if (res.block) rows.push(secretRow('BLOCK (ML-DSA) secret key', res.block.secretKey, res.block.address));
     const dumps = res.dumps || {};
     const dumpBtns = ['bitcoin', 'litecoin', 'dogecoin'].filter(function (c) { return dumps[c]; }).map(function (c) {

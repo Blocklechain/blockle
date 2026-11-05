@@ -16,6 +16,8 @@
   const Custom = inNode ? require('./custom-networks.js') : global.CustomNetworks;
   // Solana (ed25519, SLIP-0010); pure JS, available in both node + browser.
   const Solana = inNode ? require('./solana.js') : global.SolanaAdapter;
+  // Tron (secp256k1, m/44'/195'); TRX + TRC-20 via TronGrid REST. Pure JS.
+  const Tron = inNode ? require('./tron.js') : global.TronAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -47,7 +49,7 @@
   };
   function isEvm(id) { return !!EVM_CHAINS[id]; }
   const NETWORK_NAMES = {
-    block: 'BLOCK', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana',
+    block: 'BLOCK', bitcoin: 'Bitcoin', litecoin: 'Litecoin', dogecoin: 'Dogecoin', bitcoincash: 'Bitcoin Cash', solana: 'Solana', tron: 'Tron',
     ethereum: 'Ethereum', base: 'Base', arbitrum: 'Arbitrum', optimism: 'Optimism', polygon: 'Polygon', bnb: 'BNB Chain',
     avalanche: 'Avalanche', linea: 'Linea', scroll: 'Scroll', unichain: 'Unichain', gnosis: 'Gnosis', mantle: 'Mantle',
     celo: 'Celo', cronos: 'Cronos', sonic: 'Sonic', berachain: 'Berachain', opbnb: 'opBNB', sei: 'Sei',
@@ -103,6 +105,8 @@
     bitcoincash: { esplora: 'https://bch.imaginary.cash/api' }, // BCH Fulcrum/Esplora-style REST (operator-overridable)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
     solana:    { rpcUrl: 'https://solana-rpc.publicnode.com' },
+    // Tron mainnet TronGrid REST — public default, config-overridable. API key optional.
+    tron:      { api: 'https://api.trongrid.io' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -183,6 +187,9 @@
     solana: [
       { chain: 'solana', kind: 'spl', symbol: 'USDT', decimals: 6, mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' },
     ],
+    tron: [
+      { chain: 'tron', kind: 'trc20', symbol: 'USDT', decimals: 6, address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' },
+    ],
   };
 
   // Resolve the Alchemy indexer URL for a network: a per-network override
@@ -205,7 +212,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -270,6 +277,11 @@
     if (Solana && Solana.createSolanaAdapter) {
       const sep = endpoints.solana || {};
       adapters.solana = Solana.createSolanaAdapter({ rpcUrl: sep.rpcUrl, endpoint: sep.endpoint });
+    }
+    // Tron (TRX + TRC-20 auto-detect) — secp256k1 m/44'/195', TronGrid REST is config.
+    if (Tron && Tron.createTronAdapter) {
+      const tep = endpoints.tron || {};
+      adapters.tron = Tron.createTronAdapter({ api: tep.api, apiKey: tep.apiKey, endpoint: tep.endpoint });
     }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});

@@ -3,7 +3,7 @@
  * cache-first under a versioned cache. An installed wallet therefore runs PINNED code,
  * not a fresh download per visit — the code-integrity guarantee from docs/WEB-WALLET.md.
  * Bumping CACHE invalidates everything and triggers the "update available" prompt. */
-var CACHE = 'blk-wallet-v51';
+var CACHE = 'blk-wallet-v52';
 var ASSETS = [
   "./",
   "wallet.html",
@@ -51,6 +51,7 @@ var ASSETS = [
   "vendor/chains/evm.js",
   "vendor/chains/registry.js",
   "vendor/chains/solana.js",
+  "vendor/chains/tron.js",
   "vendor/chains/utxo.js",
   "vendor/crypto-core.js",
   "vendor/ed25519.js",

@@ -35,6 +35,58 @@ def evm_address(pub_key_bytes) -> str:
     return to_checksum_address("0x" + h[-20:].hex())
 
 
+# ---- Tron (base58check over 0x41 || keccak20) ----------------------------
+# Tron reuses the SAME body as an EVM address — keccak256(uncompressedPub[1:])
+# last 20 bytes — but prepends a 0x41 version byte and encodes the 21-byte
+# payload with Bitcoin-style base58check (double-SHA256 4-byte checksum) instead
+# of EIP-55 hex. The result is a 'T…' address. Mirrors blockle-extension/
+# address.js (Addr.tronAddress / tronAddressToHex / tronHexToBase58 / isTronAddress).
+def tron_address(pub_key_bytes) -> str:
+    pub = C.to_bytes(pub_key_bytes)
+    if len(pub) == 33:
+        pub = S.encode_point(S.decode_point(pub), False)  # -> 65B uncompressed
+    body = pub[1:]  # drop 0x04
+    h = C.keccak256(body)
+    payload = bytes([0x41]) + h[-20:]  # 21 bytes
+    return C.base58check_encode(payload)
+
+
+def tron_address_to_hex(addr: str) -> str:
+    """'T…' -> '41'+40-hex (21-byte hex, 0x41 prefix). Raises unless prefix 0x41."""
+    payload = C.base58check_decode(str(addr))
+    if len(payload) != 21 or payload[0] != 0x41:
+        raise ValueError("not a tron address")
+    return payload.hex()
+
+
+def tron_hex_to_base58(hex_addr: str) -> str:
+    """'41…'(21B) or bare 20-byte hex (optionally 0x-prefixed) -> 'T…' base58."""
+    h = str(hex_addr)
+    if h.lower().startswith("0x"):
+        h = h[2:]
+    b = bytes.fromhex(h)
+    if len(b) == 20:
+        b = bytes([0x41]) + b
+    if len(b) != 21 or b[0] != 0x41:
+        raise ValueError("bad tron hex address")
+    return C.base58check_encode(b)
+
+
+def is_tron_address(addr) -> bool:
+    if not isinstance(addr, str):
+        return False
+    import re
+    if re.fullmatch(r"(0x)?41[0-9a-fA-F]{40}", addr):
+        return True
+    if not re.fullmatch(r"T[1-9A-HJ-NP-Za-km-z]{33}", addr):
+        return False
+    try:
+        p = C.base58check_decode(addr)
+        return len(p) == 21 and p[0] == 0x41
+    except Exception:
+        return False
+
+
 # ---- UTXO addresses ------------------------------------------------------
 def p2wpkh(pub_key_bytes, hrp: str) -> str:
     h160 = C.hash160(C.to_bytes(pub_key_bytes))  # pubkey MUST be compressed

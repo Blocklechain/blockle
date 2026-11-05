@@ -14,6 +14,7 @@ from .custom_networks import (explorer_tx_prefix, normalize_custom_networks)
 from .discovery import merge_balances
 from .evm import create_evm_adapter
 from .solana import create_solana_adapter
+from .tron import create_tron_adapter
 from .utxo import create_utxo_adapter
 
 try:  # BLOCK wrapper needs a ChainWallet; optional when none is wired in.
@@ -38,6 +39,7 @@ EVM_NETWORKS = {
 DEFAULT_ENDPOINTS = {
     **{cid: {"rpcUrl": n["rpcUrl"], "chainId": n["chainId"]} for cid, n in EVM_NETWORKS.items()},
     "solana":   {"rpcUrl": "https://api.mainnet-beta.solana.com"},
+    "tron":     {"api": "https://api.trongrid.io"},  # TronGrid REST (operator-overridable; API key optional)
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
@@ -91,6 +93,11 @@ DEFAULT_TOKENS = {
         AssetRef(chain="solana", kind="spl", symbol="USDT", decimals=6,
                  address="Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"),
     ],
+    # Tron TRC-20 known-list. ``address`` carries the contract 'T…' address.
+    "tron": [
+        AssetRef(chain="tron", kind="trc20", symbol="USDT", decimals=6,
+                 address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"),
+    ],
     # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
     # its AMM pool; USDB has no pool, so this list is the only way a held USDB
     # balance surfaces. Curated tokens are never hidden (zero shows as 0).
@@ -104,7 +111,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -194,6 +201,10 @@ class ChainRegistry:
 
         a["solana"] = create_solana_adapter(rpcUrl=endpoints["solana"].get("rpcUrl"),
                                             rpc=endpoints["solana"].get("rpc"))
+        a["tron"] = create_tron_adapter(api=endpoints["tron"].get("api"),
+                                        apiKey=endpoints["tron"].get("apiKey"),
+                                        rpc=endpoints["tron"].get("rpc"),
+                                        post=endpoints["tron"].get("post"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
                                            http_get=endpoints["bitcoin"].get("http_get"),
                                            http_post=endpoints["bitcoin"].get("http_post"))

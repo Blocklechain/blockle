@@ -1,0 +1,85 @@
+{
+  "_comment": "Tron (TRX + USDT-TRC20) golden vector — the cross-wallet gate for secp256k1→0x41→base58check address + LOCAL txID signing, and for the node-untrusted raw_data DECODE+ASSERT fund-safety guard. Generated from the BIP39 'abandon…about' seed at m/44'/195'/0'/0/0 and INDEPENDENTLY cross-checked: (a) the private key + 'T…' address match the published bip_utils TRON derivation AND a standalone Python base58check, (b) each txID == sha256(raw_data_hex) (recomputed with Python hashlib), (c) the 65-byte [r||s||v] signature VERIFIES against the owner pubkey and RECOVERS to it, (d) decoding each raw_data protobuf recovers EXACTLY the declared {owner, to, amount} (native) / {owner, contract, call_value=0, data} (TRC-20). All 4 wallet ports (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce every `expected` value byte-identically before Tron touches real funds.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "path": "m/44'/195'/0'/0/0",
+  "network": {
+    "id": "tron",
+    "symbol": "TRX",
+    "decimals": 6,
+    "coinType": 195,
+    "addrPrefix": "0x41",
+    "usdtContract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "usdtDecimals": 6,
+    "endpoint": "https://api.trongrid.io",
+    "explorerTx": "https://tronscan.org/#/transaction/",
+    "moonpay": {
+      "native": "trx",
+      "USDT": "usdt_tron"
+    }
+  },
+  "expected": {
+    "privKeyHex": "b5a4cea271ff424d7c31dc12a3e43e401df7a40d7412a15750f3f0b6b5449a28",
+    "pubkeyHexCompressed": "03ff21f8e64d3a3c0198edfbb7afdc79be959432e92e2f8a1984bb436a414b8edc",
+    "pubkeyHexUncompressed": "04ff21f8e64d3a3c0198edfbb7afdc79be959432e92e2f8a1984bb436a414b8edcec0345aad0c1bf7da04fd036dd7f9f617e30669224283d950fab9dd84831dc83",
+    "ethStyleHash20": "c8599111f29c1e1e061265b4af93ea1f274ad78a",
+    "addressHex": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+    "base58Address": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+  },
+  "addressSpecVectors": [
+    [
+      "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+      "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+    ],
+    [
+      "415cd0fb0ab3ce40f3051414c604b27756e69e43db",
+      "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC"
+    ],
+    [
+      "41e552f6487585c2b58bc2c9bb4492bc1f17132cd0",
+      "TWsm8HtU2A5eEzoT8ev8yaoFjHsXLLrckb"
+    ]
+  ],
+  "tx": {
+    "kind": "native",
+    "_note": "REGENERATED: the prior native vector was MALFORMED — its Contract length was 2 bytes short and the TransferContract encoded the ZERO address / 1000 TRX, not the declared {TJRyWwFs…, 1 TRX}. These bytes now encode EXACTLY owner=TUEZSdKs… -> to=TJRyWwFs… / amount=1000000 sun, and decode_raw_data recovers them.",
+    "owner": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+    "to": "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+    "amount": "1000000",
+    "rawDataHex": "0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d",
+    "decoded": {
+      "type": "TransferContract",
+      "ownerAddress": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+      "toAddress": "415cd0fb0ab3ce40f3051414c604b27756e69e43db",
+      "amount": 1000000
+    },
+    "expected": {
+      "txID": "2d576151d9f4703b8fefdcaac0bb88510269fda67ba31ee78bd7a692f74191a2",
+      "signatureHex": "6edd2aea57ae0ff2b2dd39075f38fe601c760d346a06e02d3fd5caa1e248f2f01b3e086afbe027876a6183cefd2a1e98a94f61c8e1fe6871d1034e9875c0398d01",
+      "verifies": true
+    }
+  },
+  "trc20Tx": {
+    "kind": "trc20",
+    "_note": "REGENERATED: the prior TRC-20 raw_data was also MALFORMED — its declared Contract/parameter/value lengths overran the message and the Any.value held the bare 64-byte ABI parameter instead of a TriggerSmartContract protobuf. These bytes now encode a real TriggerSmartContract {owner, contract, call_value=0, data=a9059cbb||pad32(to)||pad32(amount)} that decode_raw_data recovers.",
+    "owner": "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH",
+    "contract": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    "to": "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+    "amount": "1000000",
+    "functionSelector": "transfer(address,uint256)",
+    "parameterHex": "0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240",
+    "rawDataHex": "0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c2244a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240",
+    "decoded": {
+      "type": "TriggerSmartContract",
+      "ownerAddress": "41c8599111f29c1e1e061265b4af93ea1f274ad78a",
+      "contractAddress": "41a614f803b6fd780986a42c78ec9c7f77e6ded13c",
+      "callValue": 0,
+      "data": "a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240"
+    },
+    "expected": {
+      "txID": "592fe64f26e0df4a32ccf669a8f28b6a546b6da9d29a9b1fe828dda8cdaa2d64",
+      "signatureHex": "f0bc426f6a855a613c91de12945e9c842be774eabc5f3e086ee19dfade129c8042592adbb29f561b3057a567203d8cfb5e0305c2c04c908d743963d4b5f113ec01",
+      "verifies": true
+    }
+  }
+}

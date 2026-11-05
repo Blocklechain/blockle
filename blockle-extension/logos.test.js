@@ -11,7 +11,7 @@ const assert = require('node:assert');
 
 const Logos = require('./logos.js');
 
-const SUPPORTED = ['btc', 'eth', 'sol', 'doge', 'ltc', 'bch', 'block', 'bnb', 'base', 'polygon', 'arbitrum', 'optimism', 'avalanche'];
+const SUPPORTED = ['btc', 'eth', 'sol', 'doge', 'ltc', 'bch', 'tron', 'block', 'bnb', 'base', 'polygon', 'arbitrum', 'optimism', 'avalanche'];
 
 // A remote FETCH (src=/href=/url(...) to http(s)) — NOT the SVG xmlns namespace
 // URI, which is a required identifier, not a network request.

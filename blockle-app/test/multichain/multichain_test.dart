@@ -7,12 +7,14 @@
 //   • tx building: ERC-20 calldata, EIP-1559 (sender recovery), BIP143 segwit
 //     sighash (exact spec vector) + full UTXO build self-consistency
 //   • registry derivation (no network)
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:blockle_app/multichain/chains/chain_adapter.dart';
 import 'package:blockle_app/multichain/chains/evm.dart' as e;
 import 'package:blockle_app/multichain/chains/registry.dart';
 import 'package:blockle_app/multichain/chains/solana.dart' show splTokenProgram;
+import 'package:blockle_app/multichain/chains/tron.dart' as tr;
 import 'package:blockle_app/multichain/chains/utxo.dart' as u;
 import 'package:blockle_app/multichain/crypto/address.dart' as a;
 import 'package:blockle_app/multichain/crypto/crypto_core.dart' as c;
@@ -329,6 +331,171 @@ void main() {
               h(s.recover(si.sighash, si.sig.r, si.sig.s, si.sig.recovery, true)) ==
               h(node.publicKey)),
           isTrue);
+    });
+  });
+
+  // ---- Tron (secp256k1 → 0x41 → base58check + LOCAL txID signing) ---------
+  // THE GATE: these expected values were produced from the abandon seed and
+  // INDEPENDENTLY cross-checked against bip_utils' TRON derivation + a
+  // standalone Python base58check + a Python ECDSA verify (docs/tron-vectors.json
+  // / test-vectors/tron-golden.json). All 4 wallets must reproduce them
+  // byte-for-byte before Tron touches real funds.
+  group('Tron (0x41 base58check + txID signing)', () {
+    const goldenAddr = 'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH';
+    const goldenAddrHex = '41c8599111f29c1e1e061265b4af93ea1f274ad78a';
+    const goldenPriv =
+        'b5a4cea271ff424d7c31dc12a3e43e401df7a40d7412a15750f3f0b6b5449a28';
+    const goldenPubU =
+        '04ff21f8e64d3a3c0198edfbb7afdc79be959432e92e2f8a1984bb436a414b8edcec0345aad0c1bf7da04fd036dd7f9f617e30669224283d950fab9dd84831dc83';
+    // Regenerated correct golden (the prior native/TRC-20 raw_data were malformed
+    // — zero recipient / non-protobuf Any.value); these bytes now DECODE to the
+    // declared {to, amount} / {contract, call_value 0, data}. See tron_test.dart.
+    const nativeRaw =
+        '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d';
+    const nativeTxId =
+        '2d576151d9f4703b8fefdcaac0bb88510269fda67ba31ee78bd7a692f74191a2';
+    const nativeSig =
+        '6edd2aea57ae0ff2b2dd39075f38fe601c760d346a06e02d3fd5caa1e248f2f01b3e086afbe027876a6183cefd2a1e98a94f61c8e1fe6871d1034e9875c0398d01';
+    const trc20Param =
+        '0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240';
+    const trc20Raw =
+        '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5aae01081f12a9010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412740a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c2244a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240';
+    const trc20TxId =
+        '592fe64f26e0df4a32ccf669a8f28b6a546b6da9d29a9b1fe828dda8cdaa2d64';
+    const trc20Sig =
+        'f0bc426f6a855a613c91de12945e9c842be774eabc5f3e086ee19dfade129c8042592adbb29f561b3057a567203d8cfb5e0305c2c04c908d743963d4b5f113ec01';
+    const usdt = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+
+    test('address codec vs spec pairs (both ways) + validation', () {
+      for (final pair in const [
+        ['41c8599111f29c1e1e061265b4af93ea1f274ad78a',
+         'TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH'],
+        ['415cd0fb0ab3ce40f3051414c604b27756e69e43db',
+         'TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC'],
+        // published TronWeb reference vector
+        ['41e552f6487585c2b58bc2c9bb4492bc1f17132cd0',
+         'TWsm8HtU2A5eEzoT8ev8yaoFjHsXLLrckb'],
+      ]) {
+        expect(tr.hexToBase58(pair[0]), pair[1]);
+        expect(tr.addressToHex(pair[1]), pair[0]);
+        expect(tr.isTronAddress(pair[1]), isTrue);
+      }
+      // rejects a corrupted checksum / non-T strings
+      expect(tr.isTronAddress('TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdX'), isFalse);
+      expect(tr.isTronAddress('0xabc'), isFalse);
+    });
+
+    test('derive 0x41 base58check address from seed (golden)', () {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final node = hd.derivePath(seed, "m/44'/195'/0'/0/0");
+      expect(h(node.privateKey!), goldenPriv);
+      expect(h(s.publicKey(node.privateKey!, compressed: false)), goldenPubU);
+      expect(tr.tronAddressFromPub(node.publicKey), goldenAddr);
+      expect(tr.addressToHex(goldenAddr), goldenAddrHex);
+      expect(tr.hexToBase58(goldenAddrHex), goldenAddr);
+    });
+
+    test('txID == sha256(raw_data_hex) + 65B [r||s||v] sig verifies (native)',
+        () {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final priv = hd.derivePath(seed, "m/44'/195'/0'/0/0").privateKey!;
+      // txID recomputed locally from raw_data_hex (the malicious-node guard).
+      expect(tr.txIdFromRawData(nativeRaw), nativeTxId);
+      final sig = tr.signTxId(c.hexToBytes(nativeTxId), priv);
+      expect(h(sig), nativeSig); // deterministic RFC6979 → byte-identical
+      expect(sig.length, 65);
+      expect(sig[64], anyOf(0, 1)); // v = recovery, NO +27
+      // the sig verifies + recovers to the owner pubkey over the 32-byte txID
+      final r = s.bytesToBig(sig.sublist(0, 32));
+      final sv = s.bytesToBig(sig.sublist(32, 64));
+      final ecsig = s.EcdsaSignature(r, sv, sig[64]);
+      expect(s.verify(c.hexToBytes(nativeTxId),
+          ecsig, s.publicKey(priv, compressed: false)), isTrue);
+      expect(h(s.recover(c.hexToBytes(nativeTxId), r, sv, sig[64], false)),
+          goldenPubU);
+    });
+
+    test('TRC-20 transfer parameter + txID + sig (golden)', () {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final priv = hd.derivePath(seed, "m/44'/195'/0'/0/0").privateKey!;
+      expect(
+          tr.trc20TransferParameter('TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC',
+              '1000000'),
+          trc20Param);
+      expect(tr.txIdFromRawData(trc20Raw), trc20TxId);
+      expect(h(tr.signTxId(c.hexToBytes(trc20TxId), priv)), trc20Sig);
+    });
+
+    test('buildSend assembles (mock node) + signs the verified txID', () async {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final root = RootSecret(seed: seed);
+      String? seenPath;
+      final adapter = tr.TronAdapter(
+        api: 'https://api.trongrid.io',
+        post: (path, body) async {
+          seenPath = path;
+          if (path == '/wallet/createtransaction') {
+            return jsonEncode({'txID': nativeTxId, 'raw_data_hex': nativeRaw});
+          }
+          if (path == '/wallet/broadcasttransaction') {
+            return jsonEncode({'result': true, 'txid': nativeTxId});
+          }
+          return '{}';
+        },
+      );
+      adapter.unlock(root);
+      final acct = await adapter.deriveAccount(root);
+      expect(acct.address, goldenAddr);
+      final built = await adapter.buildSend(
+          acct,
+          const SendRequest(
+              to: 'TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC', amount: '1000000'));
+      expect(seenPath, '/wallet/createtransaction');
+      expect(built.txid, nativeTxId);
+      final signed = jsonDecode(built.raw) as Map<String, dynamic>;
+      expect((signed['signature'] as List).first, nativeSig);
+      final res = await adapter.broadcast(built);
+      expect(res.accepted, isTrue);
+      expect(res.txid, nativeTxId);
+      expect(adapter.explorerTx(nativeTxId),
+          'https://tronscan.org/#/transaction/$nativeTxId');
+    });
+
+    test('MALICIOUS-NODE GUARD: rejects a tx whose txID != sha256(raw)',
+        () async {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final root = RootSecret(seed: seed);
+      final adapter = tr.TronAdapter(
+        api: 'https://api.trongrid.io',
+        post: (path, body) async =>
+            // node lies: real raw, but a DIFFERENT (attacker) txID
+            jsonEncode({'txID': 'deadbeef' * 8, 'raw_data_hex': nativeRaw}),
+      );
+      adapter.unlock(root);
+      final acct = await adapter.deriveAccount(root);
+      expect(
+          () => adapter.buildSend(
+              acct,
+              const SendRequest(
+                  to: 'TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC', amount: '1000000')),
+          throwsA(isA<StateError>()));
+    });
+
+    test('registry wires Tron: enabled, endpoint, token, golden address',
+        () async {
+      final reg = ChainRegistry.create();
+      final root = RootSecret(seed: hd.mnemonicToSeed(abandon, ''));
+      reg.unlock(root);
+      expect(reg.has('tron'), isTrue);
+      expect(reg.enabled().contains('tron'), isTrue);
+      expect(reg.endpoints('tron')?.api, 'https://api.trongrid.io');
+      final t = reg.tokensFor('tron');
+      expect(t.any((x) => x.symbol == 'USDT' && x.address == usdt), isTrue);
+      final acct = await reg.get('tron').deriveAccount(root);
+      expect(acct.chain, 'tron');
+      expect(acct.scheme, 'secp256k1');
+      expect(acct.path, "m/44'/195'/0'/0/0");
+      expect(acct.address, goldenAddr);
     });
   });
 

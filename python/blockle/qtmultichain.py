@@ -60,7 +60,7 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
@@ -68,6 +68,7 @@ CHAIN_LABELS = {
     "bitcoin": "Bitcoin", "litecoin": "Litecoin", "dogecoin": "Dogecoin",
     "bitcoincash": "Bitcoin Cash",
     "solana": "Solana",
+    "tron": "Tron",
 }
 #: Only BLOCK signs post-quantum (ML-DSA-44). Every other chain is ECDSA/ed25519
 #: — the vault hardens the stored key against theft, it is NOT a PQ signature.
@@ -78,6 +79,7 @@ CHAIN_SCHEME = {
     "bitcoin": "secp256k1", "litecoin": "secp256k1", "dogecoin": "secp256k1",
     "bitcoincash": "secp256k1",
     "solana": "ed25519",
+    "tron": "secp256k1",
 }
 
 #: The treasury the non-bypassable 0.05% agent trade fee is routed to, per chain
@@ -88,6 +90,14 @@ DEFAULT_TREASURY = {
         "solana": "EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j",
         "ethereum": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
         "base": "0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c",
+        # NO "tron" entry on purpose: there is no real Blockle TRX treasury yet,
+        # and the only Tron address we could derive here is the public
+        # 'abandon…' test key (private key universally known — routing fees to
+        # it would be a fee-loss hole). venues.Treasury.address_for() FAILS
+        # CLOSED (raises) when a chain has no treasury, so a Tron agent-trade's
+        # 0.05% fee leg cannot settle until a REAL TRX treasury address is added
+        # here AND in exchange/treasury.json. TRX receive/send/balance are
+        # unaffected — only the agent auto-fee path is gated.
     },
 }
 
@@ -1553,10 +1563,10 @@ class EndpointsDialog(QDialog):
         self.fields: Dict[str, QLineEdit] = {}
         form = QFormLayout()
         eps = ctrl.vault.endpoints() if ctrl.is_unlocked() else {}
-        for cid in ["ethereum", "base", "solana", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]:
+        for cid in ["ethereum", "base", "solana", "tron", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]:
             f = QLineEdit()
             cur = (eps.get(cid) or {})
-            f.setText(cur.get("rpcUrl") or cur.get("esplora") or "")
+            f.setText(cur.get("rpcUrl") or cur.get("esplora") or cur.get("api") or "")
             self.fields[cid] = f
             form.addRow(CHAIN_LABELS.get(cid, cid), f)
         lay.addLayout(form)
@@ -1570,7 +1580,12 @@ class EndpointsDialog(QDialog):
             val = f.text().strip()
             if not val:
                 continue
-            key = "esplora" if cid in ("bitcoin", "litecoin", "dogecoin", "bitcoincash") else "rpcUrl"
+            if cid in ("bitcoin", "litecoin", "dogecoin", "bitcoincash"):
+                key = "esplora"
+            elif cid == "tron":
+                key = "api"
+            else:
+                key = "rpcUrl"
             self.ctrl.vault.set_endpoint(cid, {key: val})
         self.accept()
 

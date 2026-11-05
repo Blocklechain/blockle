@@ -64,6 +64,10 @@ HARDENED = bip32.HARDENED
 # ---- addresses ----
 evm_address = address.evm_address
 to_checksum_address = address.to_checksum_address
+tron_address = address.tron_address
+tron_address_to_hex = address.tron_address_to_hex
+tron_hex_to_base58 = address.tron_hex_to_base58
+is_tron_address = address.is_tron_address
 p2wpkh = address.p2wpkh
 p2pkh = address.p2pkh
 to_wif = address.to_wif
@@ -86,6 +90,8 @@ __all__ = [
     "validate_mnemonic", "mnemonic_to_seed",
     "HDNode", "master_from_seed", "derive_child", "derive_path", "parse_path",
     "serialize", "HARDENED",
-    "evm_address", "to_checksum_address", "p2wpkh", "p2pkh", "to_wif", "from_wif",
+    "evm_address", "to_checksum_address",
+    "tron_address", "tron_address_to_hex", "tron_hex_to_base58", "is_tron_address",
+    "p2wpkh", "p2pkh", "to_wif", "from_wif",
     "cash_addr_encode", "cash_addr_decode", "cash_addr_p2pkh", "looks_like_cashaddr",
 ]

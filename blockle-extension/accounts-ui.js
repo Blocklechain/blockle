@@ -24,6 +24,7 @@
     dogecoin:  { name: 'Dogecoin',    sym: 'DOGE',  pq: false },
     bitcoincash: { name: 'Bitcoin Cash', sym: 'BCH', pq: false },
     solana:    { name: 'Solana',      sym: 'SOL',   pq: false },
+    tron:      { name: 'Tron',        sym: 'TRX',   pq: false },
   };
   const EVM_CHAINS = new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bnb', 'avalanche']);
 

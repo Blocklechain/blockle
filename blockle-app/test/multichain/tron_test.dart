@@ -1,0 +1,245 @@
+// tron_test.dart — Tron (TRX + USDT-TRC20) adapter gate for the Flutter port.
+//
+// Mirrors blockle-extension/tron.test.js and adds the FUND-SAFETY decode gate:
+//   (1) golden vector (docs/tron-vectors.json): key/address re-derive, txID ==
+//       sha256(raw_data_hex), deterministic 65B [r||s||v] signature that VERIFIES
+//       and RECOVERS to the owner — the verified secp256k1 crypto, unchanged.
+//   (2) decodeTronRawData() recovers EXACTLY {owner,to,amount} / {owner,contract,
+//       call_value,data} from the signed bytes.
+//   (3) buildSend ACCEPTS a correct node payload (native + TRC-20) and signs it
+//       (native signature == golden), and REJECTS a tampered node payload
+//       (recipient swapped, amount inflated, or TRC-20 calldata altered) by
+//       throwing BEFORE any signature is produced.
+// No network: the TronGrid transport is injected.
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:blockle_app/multichain/chains/chain_adapter.dart';
+import 'package:blockle_app/multichain/chains/tron.dart' as tron;
+import 'package:blockle_app/multichain/crypto/crypto_core.dart' as c;
+import 'package:blockle_app/multichain/crypto/hd.dart' as hd;
+import 'package:blockle_app/multichain/crypto/secp256k1.dart' as s;
+import 'package:flutter_test/flutter_test.dart';
+
+String h(List<int> b) => c.bytesToHex(b);
+Uint8List hx(String s) => c.hexToBytes(s);
+const abandon =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+
+// USDT-TRC20 contract (TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t) + recipient of the
+// golden transfer (TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC, 1 TRX = 1_000_000 sun).
+const usdtContract = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
+const recipient = 'TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC';
+const attacker = 'TWsm8HtU2A5eEzoT8ev8yaoFjHsXLLrckb'; // 41e552f6…
+
+// Realistic node payloads (real Tron Transaction.raw protobuf) generated from
+// the golden seed. Each txID is sha256(rawDataHex) so the first guard passes and
+// the decode-assert is exercised in isolation.
+// native: TransferContract owner=TUEZ… to=TJRyWwFs… amount=1_000_000 (==golden).
+const nativeOkRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d';
+const nativeOkTxId =
+    '2d576151d9f4703b8fefdcaac0bb88510269fda67ba31ee78bd7a692f74191a2';
+// native tampered: recipient swapped to the attacker (same owner + amount).
+const nativeBadToRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541e552f6487585c2b58bc2c9bb4492bc1f17132cd018c0843d';
+const nativeBadToTxId =
+    '613215c19e7db810df8abe5e7052fc09bf8820ccdba681ca4cda4ad07e35aed4';
+// native tampered: amount inflated to 2 TRX (same owner + recipient).
+const nativeBadAmtRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db1880897a';
+const nativeBadAmtTxId =
+    '5387dc681cd418678ad7ea15826fce554d374e4fadafec4d621e015ba6c0bf2f';
+// TRC-20: TriggerSmartContract owner=TUEZ… contract=USDT call_value=0
+// data=a9059cbb||pad32(TJRyWwFs…)||pad32(1_000_000).
+const trc20OkRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5ab001081f12ab010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412760a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c18002244a9059cbb0000000000000000000000005cd0fb0ab3ce40f3051414c604b27756e69e43db00000000000000000000000000000000000000000000000000000000000f4240';
+const trc20OkTxId =
+    '9a71547f803af1cec37bd8a8b2db7bc06b470be415c352927bdb62ace0ba9122';
+// TRC-20 tampered: calldata recipient swapped to the attacker (selector + amount
+// unchanged) — the node tries to redirect the token transfer.
+const trc20BadDataRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5ab001081f12ab010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412760a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c18002244a9059cbb000000000000000000000000e552f6487585c2b58bc2c9bb4492bc1f17132cd000000000000000000000000000000000000000000000000000000000000f4240';
+const trc20BadDataTxId =
+    'b9faea6926c377a2b0eee56fff60c88d5e59b31dc0e05c8ad2b134f3747e25c6';
+
+Map<String, dynamic> _loadVectors() {
+  // Dart test cwd is the package root (blockle-app); the shared vector lives at
+  // the repo root. Prefer docs/, fall back to test-vectors/.
+  for (final p in ['../docs/tron-vectors.json', '../test-vectors/tron-golden.json']) {
+    final f = File(p);
+    if (f.existsSync()) return jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+  }
+  throw StateError('tron golden vector not found');
+}
+
+/// A TronAdapter whose node transport returns a fixed [raw]/[txId] for the next
+/// build, so we can drive buildSend with an honest OR a tampered node payload.
+tron.TronAdapter _adapterReturning(String raw, String txId) {
+  Future<String> post(String path, String body) async {
+    final tx = {'raw_data_hex': raw, 'txID': txId, 'raw_data': <String, dynamic>{}};
+    if (path.contains('triggersmartcontract')) {
+      return jsonEncode({'transaction': tx});
+    }
+    return jsonEncode(tx); // createtransaction
+  }
+
+  return tron.TronAdapter(post: post);
+}
+
+AssetRef get _usdt => const AssetRef(
+    chain: 'tron', kind: 'trc20', symbol: 'USDT', decimals: 6, address: usdtContract);
+
+void main() {
+  final V = _loadVectors();
+  final expected = (V['expected'] ?? V['owner']) as Map<String, dynamic>;
+  final seed = hd.mnemonicToSeed(V['mnemonic'] as String, '');
+  final node = hd.derivePath(seed, V['path'] as String);
+
+  group('golden vector (verified secp256k1 crypto — unchanged)', () {
+    test('key + address re-derive to the golden vector', () async {
+      expect(h(node.privateKey!), expected['privKeyHex']);
+      final a = tron.TronAdapter();
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      expect(acct.address, expected['base58Address']);
+      expect(acct.path, V['path']);
+      expect(acct.scheme, 'secp256k1');
+    });
+
+    test('native TRX: txID == sha256(raw_data_hex), 65B sig verifies + recovers',
+        () {
+      final tx = V['tx'] as Map<String, dynamic>;
+      final exp = tx['expected'] as Map<String, dynamic>;
+      final rawHex = tx['rawDataHex'] as String;
+      final txId = h(c.sha256(hx(rawHex)));
+      expect(txId, exp['txID']);
+      expect(tron.txIdFromRawData(rawHex), exp['txID']);
+      final sig = tron.signTxId(hx(txId), node.privateKey!);
+      expect(h(sig), exp['signatureHex']);
+      expect(sig.length, 65);
+      final pub = s.publicKey(node.privateKey!, compressed: false);
+      final r = s.bytesToBig(sig.sublist(0, 32));
+      final ss = s.bytesToBig(sig.sublist(32, 64));
+      final v = sig[64];
+      expect(s.verify(hx(txId), s.EcdsaSignature(r, ss, v), pub), isTrue);
+      expect(h(s.recover(hx(txId), r, ss, v, false)), h(pub));
+    });
+
+    test('TRC-20 USDT: txID == sha256(raw_data_hex), 65B sig verifies + recovers',
+        () {
+      final tx = V['trc20Tx'] as Map<String, dynamic>;
+      final exp = tx['expected'] as Map<String, dynamic>;
+      final rawHex = tx['rawDataHex'] as String;
+      final txId = h(c.sha256(hx(rawHex)));
+      expect(txId, exp['txID']);
+      final sig = tron.signTxId(hx(txId), node.privateKey!);
+      expect(h(sig), exp['signatureHex']);
+      final pub = s.publicKey(node.privateKey!, compressed: false);
+      final r = s.bytesToBig(sig.sublist(0, 32));
+      final ss = s.bytesToBig(sig.sublist(32, 64));
+      expect(s.verify(hx(txId), s.EcdsaSignature(r, ss, sig[64]), pub), isTrue);
+    });
+  });
+
+  group('decodeTronRawData recovers the transfer from the signed bytes', () {
+    test('native golden decodes to exactly {owner, to=TJRyWwFs…, amount=1 TRX}',
+        () {
+      final tx = V['tx'] as Map<String, dynamic>;
+      final d = tron.decodeTronRawData(tx['rawDataHex'] as String);
+      expect(d.type, tron.tronTransferContract);
+      expect(d.ownerHex, tron.addressToHex(expected['base58Address'] as String));
+      expect(d.toHex, tron.addressToHex(recipient));
+      expect(d.amount, BigInt.parse(tx['amount'] as String));
+      // self-consistency: the declared recipient/amount match the raw bytes.
+      expect(d.toHex, tron.addressToHex(tx['to'] as String));
+    });
+
+    test('realistic TRC-20 decodes to {owner, contract=USDT, call_value 0, data}',
+        () {
+      final d = tron.decodeTronRawData(trc20OkRaw);
+      expect(d.type, tron.tronTriggerSmartContract);
+      expect(d.ownerHex, tron.addressToHex(expected['base58Address'] as String));
+      expect(d.contractHex, tron.addressToHex(usdtContract));
+      expect(d.callValue, BigInt.zero);
+      expect(d.dataHex,
+          (tron.trc20TransferSelector + tron.trc20TransferParameter(recipient, '1000000'))
+              .toLowerCase());
+    });
+  });
+
+  group('buildSend fund-safety gate: ACCEPT correct node payload', () {
+    test('native: correct payload is signed (signature == golden)', () async {
+      final a = _adapterReturning(nativeOkRaw, nativeOkTxId);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      final built =
+          await a.buildSend(acct, const SendRequest(to: recipient, amount: '1000000'));
+      expect(built.txid, nativeOkTxId);
+      final signed = jsonDecode(built.raw) as Map<String, dynamic>;
+      expect((signed['signature'] as List).first,
+          (V['tx'] as Map)['expected']['signatureHex']);
+    });
+
+    test('TRC-20: correct payload is signed (65B signature)', () async {
+      final a = _adapterReturning(trc20OkRaw, trc20OkTxId);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      final built = await a.buildSend(
+          acct, SendRequest(to: recipient, amount: '1000000', asset: _usdt));
+      expect(built.txid, trc20OkTxId);
+      final signed = jsonDecode(built.raw) as Map<String, dynamic>;
+      final sigHex = (signed['signature'] as List).first as String;
+      expect(sigHex.length, 130); // 65 bytes
+    });
+  });
+
+  group('buildSend fund-safety gate: REJECT tampered node payload (no signature)',
+      () {
+    Future<void> expectRejected(tron.TronAdapter a, SendRequest req) async {
+      await expectLater(
+        () async => a.buildSend(await a.deriveAccount(RootSecret(seed: seed)), req),
+        throwsA(isA<StateError>()),
+      );
+    }
+
+    test('native: recipient swapped to attacker is REJECTED', () async {
+      final a = _adapterReturning(nativeBadToRaw, nativeBadToTxId);
+      a.unlock(RootSecret(seed: seed));
+      // the first guard still passes (txID == sha256), so this is the decode gate:
+      expect(tron.txIdFromRawData(nativeBadToRaw), nativeBadToTxId);
+      await expectRejected(a, const SendRequest(to: recipient, amount: '1000000'));
+    });
+
+    test('native: amount inflated is REJECTED', () async {
+      final a = _adapterReturning(nativeBadAmtRaw, nativeBadAmtTxId);
+      a.unlock(RootSecret(seed: seed));
+      expect(tron.txIdFromRawData(nativeBadAmtRaw), nativeBadAmtTxId);
+      await expectRejected(a, const SendRequest(to: recipient, amount: '1000000'));
+    });
+
+    test('TRC-20: calldata recipient altered is REJECTED', () async {
+      final a = _adapterReturning(trc20BadDataRaw, trc20BadDataTxId);
+      a.unlock(RootSecret(seed: seed));
+      expect(tron.txIdFromRawData(trc20BadDataRaw), trc20BadDataTxId);
+      await expectRejected(
+          a, SendRequest(to: recipient, amount: '1000000', asset: _usdt));
+    });
+
+    test('direct assert: swapped recipient throws "refusing to sign"', () {
+      expect(
+        () => tron.assertTronRawDataMatches(
+          rawDataHex: nativeBadToRaw,
+          isTrc20: false,
+          ownerAddr: expected['base58Address'] as String,
+          to: recipient,
+          amount: '1000000',
+        ),
+        throwsA(isA<StateError>()),
+      );
+      // the attacker address is what the tampered bytes actually encode
+      final d = tron.decodeTronRawData(nativeBadToRaw);
+      expect(d.toHex, tron.addressToHex(attacker));
+    });
+  });
+}

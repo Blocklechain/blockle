@@ -10,16 +10,28 @@ import 'chain_adapter.dart';
 import 'custom_network.dart';
 import 'evm.dart';
 import 'solana.dart';
+import 'tron.dart';
 import 'utxo.dart';
 
 export 'custom_network.dart';
 
 /// Per-chain endpoint configuration.
 class EndpointCfg {
-  const EndpointCfg({this.rpcUrl, this.esplora, this.chainId, this.alchemyUrl});
+  const EndpointCfg(
+      {this.rpcUrl,
+      this.esplora,
+      this.chainId,
+      this.alchemyUrl,
+      this.api,
+      this.apiKey});
   final String? rpcUrl;
   final String? esplora;
   final int? chainId;
+
+  /// TronGrid REST base (e.g. https://api.trongrid.io) + optional read-only API
+  /// key. CONFIG only; used solely by the Tron adapter. Never a secret here.
+  final String? api;
+  final String? apiKey;
 
   /// Alchemy indexer base URL *including* the read-only API key, used for EVM
   /// ERC-20 auto-detect. CONFIG only; null => auto-detect OFF (known-list
@@ -78,6 +90,9 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Bitcoin Cash Fulcrum/Esplora-compatible REST (operator-overridable).
   'bitcoincash': EndpointCfg(esplora: 'https://bch.imaginary.cash/api'),
   'solana': EndpointCfg(rpcUrl: 'https://api.mainnet-beta.solana.com'),
+  // TronGrid REST base (operator-overridable). The Tron adapter reads `api`
+  // (+ optional `apiKey`); no secret is hardcoded here.
+  'tron': EndpointCfg(api: 'https://api.trongrid.io'),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
@@ -208,6 +223,16 @@ final Map<String, List<AssetRef>> defaultTokens = {
         decimals: 6,
         address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'),
   ],
+  // Canonical USDT TRC-20 on Tron. `address` carries the TRC-20 contract (the
+  // Tron adapter reads AssetRef.address as the contract). Config-overridable.
+  'tron': const [
+    AssetRef(
+        chain: 'tron',
+        kind: 'trc20',
+        symbol: 'USDT',
+        decimals: 6,
+        address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'),
+  ],
   // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
   // auto-discovered); USDB has no pool, so listing it here is the only way a
   // held balance surfaces. Zero balances show as 0 (curated tokens aren't hidden).
@@ -277,7 +302,8 @@ class ChainRegistry {
             'litecoin',
             'dogecoin',
             'bitcoincash',
-            'solana'
+            'solana',
+            'tron'
           ]),
       'block', // BLOCK is always enabled
     };
@@ -378,6 +404,14 @@ class ChainRegistry {
     adapters['solana'] = SolanaAdapter(
       rpcUrl: ep['solana']?.rpcUrl,
       rpc: rpcFor(ep['solana']?.rpcUrl),
+    );
+    // Tron (account-model secp256k1): own adapter + TronGrid REST transport.
+    // Reuses the injectable HttpPostFn builder (base = the TronGrid `api` URL)
+    // exactly like the UTXO chains, so tests can swap in an offline poster.
+    adapters['tron'] = TronAdapter(
+      api: ep['tron']?.api,
+      apiKey: ep['tron']?.apiKey,
+      post: postFor(ep['tron']?.api),
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 

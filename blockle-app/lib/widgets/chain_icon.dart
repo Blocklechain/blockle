@@ -32,6 +32,7 @@ const Map<String, ChainBrand> kChainBrands = {
   'dogecoin': ChainBrand(Color(0xFFC2A633), 'Ð', fg: Color(0xFF3B2F0B)),
   'bitcoincash': ChainBrand(Color(0xFF0AC18E), '₿'),
   'solana': ChainBrand(Color(0xFF9945FF), 'S'),
+  'tron': ChainBrand(Color(0xFFEC0623), 'T'),
   'ethereum': ChainBrand(Color(0xFF627EEA), '⧫'), // ⧫ diamond
   'base': ChainBrand(Color(0xFF0052FF), 'B'),
   'arbitrum': ChainBrand(Color(0xFF28A0F0), 'A'),
