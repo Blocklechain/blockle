@@ -205,45 +205,85 @@ class _WalletTabState extends State<WalletTab> {
             ),
             const SizedBox(height: 18),
             Container(
-              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
-                gradient: const LinearGradient(colors: [Bk.surface, Bk.surface2]),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Bk.border),
+                borderRadius: BorderRadius.circular(Bk.rXl),
+                boxShadow: Bk.softShadow,
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Balance', style: TextStyle(color: Bk.muted, fontSize: 13)),
-                  const SizedBox(height: 6),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.baseline,
-                    textBaseline: TextBaseline.alphabetic,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(Bk.rXl),
+                child: Container(
+                  decoration: const BoxDecoration(gradient: Bk.gradient),
+                  child: Stack(
                     children: [
-                      Text(_loading ? '…' : '$balFmt',
-                          style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
-                      const SizedBox(width: 8),
-                      const Text('BLOCK', style: TextStyle(color: Bk.muted)),
+                      Positioned(right: -34, top: -34, child: _glow(130, 0x22FFFFFF)),
+                      Positioned(right: 36, bottom: -60, child: _glow(150, 0x16FFFFFF)),
+                      Padding(
+                        padding: const EdgeInsets.all(22),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Total balance',
+                                style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 8),
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.baseline,
+                              textBaseline: TextBaseline.alphabetic,
+                              children: [
+                                Flexible(
+                                  child: Text(_loading ? '…' : '$balFmt',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 40,
+                                          fontWeight: FontWeight.w900,
+                                          color: Colors.white,
+                                          letterSpacing: -1)),
+                                ),
+                                const SizedBox(width: 8),
+                                const Padding(
+                                  padding: EdgeInsets.only(bottom: 6),
+                                  child: Text('BLOCK',
+                                      style: TextStyle(
+                                          color: Colors.white70,
+                                          fontWeight: FontWeight.w700)),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            InkWell(
+                              onTap: () {
+                                Clipboard.setData(ClipboardData(text: addr));
+                                _snack('Address copied');
+                              },
+                              borderRadius: BorderRadius.circular(30),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                    color: const Color(0x26FFFFFF),
+                                    borderRadius: BorderRadius.circular(30)),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(_shortAddr(addr),
+                                        style: kMono.copyWith(
+                                            fontSize: 12, color: Colors.white)),
+                                    const SizedBox(width: 8),
+                                    const Icon(Icons.copy,
+                                        size: 14, color: Colors.white70),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  InkWell(
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: addr));
-                      _snack('Address copied');
-                    },
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(addr,
-                              style: kMono.copyWith(fontSize: 12, color: Bk.muted),
-                              overflow: TextOverflow.ellipsis),
-                        ),
-                        const Icon(Icons.copy, size: 15, color: Bk.muted),
-                      ],
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
             const SizedBox(height: 14),
@@ -366,6 +406,15 @@ class _WalletTabState extends State<WalletTab> {
       ),
     );
   }
+
+  Widget _glow(double size, int color) => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(shape: BoxShape.circle, color: Color(color)),
+      );
+
+  String _shortAddr(String a) =>
+      a.length <= 20 ? a : '${a.substring(0, 12)}…${a.substring(a.length - 6)}';
 
   Widget _nativeRow(String chain) {
     final mc = context.read<MultichainController>();
