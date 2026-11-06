@@ -173,7 +173,7 @@ def test_retriever_deterministic_top_k_for_a_sample_query():
     ids = [h["id"] for h in hits]
     # Byte-for-byte equal to the JS reference (same BM25-lite constants):
     assert ids == ["nl-commands", "backtest-flow", "paper-default",
-                   "bot-caps", "byo-key", "custody"]
+                   "bot-caps", "query-honesty", "custody"]
     # ordered by score desc, then id asc; scores are stable + non-negative.
     scores = [h["score"] for h in hits]
     assert scores == sorted(scores, reverse=True)

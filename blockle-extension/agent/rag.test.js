@@ -102,6 +102,23 @@ test('a query with no corpus hit returns [] (live-only, never padded)', () => {
   assert.deepEqual(AgentRAG.retrieve('zzzxqq nomatch gibberish'), []);
 });
 
+// The shared corpus carries the dApp-SECURITY chunks (#127) so the local AI can
+// screen a connect request. A dApp-connect/security query must surface them.
+test('dApp-security chunks are present and retrievable for a connect/security query', () => {
+  const ids = new Set(AgentRAG.CORPUS.map((c) => c.id));
+  for (const id of ['dapp-connect-screening', 'dapp-phishing', 'dapp-drainer',
+    'dapp-approval-abuse', 'dapp-malicious-signature', 'dapp-airdrop-seed-theft',
+    'dapp-protector-guidance']) {
+    assert.ok(ids.has(id), 'corpus has ' + id);
+  }
+  const hits = AgentRAG.retrieve('dApp connect security screening phishing drainer approval signature permit')
+    .map((c) => c.id);
+  // at least a few of the dApp-security chunks rank into the top-K for this query
+  const surfaced = hits.filter((id) => id.startsWith('dapp-'));
+  assert.ok(surfaced.length >= 3, 'dApp-security chunks surface: ' + JSON.stringify(hits));
+  assert.ok(hits.includes('custody'), 'custody safety floor still rides along');
+});
+
 // ---------------------------------------------------------------------------
 // 3b. groundSystem — prepends a read-only block carrying facts + live context
 // ---------------------------------------------------------------------------

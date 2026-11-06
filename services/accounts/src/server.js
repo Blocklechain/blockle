@@ -25,6 +25,7 @@ import {
 import { renderPage } from './pages.js';
 import { makeChain } from './chain.js';
 import { newBot, botView, step as botStep, BOT_TYPES } from './bots.js';
+import { CURATED_DAPPS, CURATED_DAPP_IDS } from './dapps.js';
 import { trafficReport } from './traffic.js';
 
 const SESSION_COOKIE = 'blk_sess';
@@ -574,6 +575,42 @@ export function createApp(overrides = {}) {
         bestStrategy: best.type, bots: t.bots.sort((a, b) => b.pnlPct - a.pnlPct).slice(0, 5) };
     }).sort((a, b) => b.bestPnlPct - a.bestPnlPct).slice(0, 50);
     return json(res, 200, { traders, metric: 'paper P&L (play money)', generatedAt: now() });
+  });
+
+  // --- Curated trusted-dApp directory (#129) ------------------------------------------------
+  // PUBLIC, CORS-open, no auth — the in-app browser homepage fetches + caches this on every
+  // wallet (extension/app/desktop), exactly like /moonpay/config and /leaderboard above. Only
+  // the vetted set in dapps.js is ever featured, so it is a safe default pairing with the
+  // connect-time security screening (#127). The order is the CURATED base rank until user opens
+  // accrue, then becomes user-popularity-driven: we overlay live per-dapp open counts (kept in
+  // the pseudonymous 'dapp_opens' collection — a per-id integer, no uid/PII) on the base and
+  // sort by the combined score, with the curated array order as a stable tiebreak.
+  on('GET', /^\/account\/api\/dapps$/, (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    const counts = {};
+    for (const [id, v] of store.entries('dapp_opens')) counts[id] = (v && Number(v.count)) || 0;
+    const ranked = CURATED_DAPPS
+      .map((d, i) => ({ dapp: d, order: i, opens: counts[d.id] || 0 }))
+      // Effective score = curated base rank + live opens. A dApp with real user traffic can rise
+      // above a higher-seeded one once it accrues enough opens; ties keep the curated order.
+      .sort((a, b) => (b.dapp.popularity + b.opens) - (a.dapp.popularity + a.opens) || a.order - b.order)
+      .map(({ dapp, opens }) => ({
+        id: dapp.id, name: dapp.name, url: dapp.url, chains: dapp.chains, icon: dapp.icon,
+        popularity: dapp.popularity + opens,
+      }));
+    return json(res, 200, ranked);
+  });
+  // Increment a dApp's pseudonymous open counter. CORS-open + per-IP rate-limited like
+  // /moonpay/sign — no auth, no body beyond { id }. The id MUST be in the curated seed, so the
+  // counter can never be seeded with arbitrary keys. Fire-and-forget from the client.
+  on('POST', /^\/account\/api\/dapps\/open$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('dappopen:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const id = String(b.id || '');
+    if (!CURATED_DAPP_IDS.has(id)) return json(res, 400, { error: 'unknown dapp' });
+    await store.update('dapp_opens', id, (x) => ({ count: ((x && Number(x.count)) || 0) + 1 }));
+    return json(res, 200, { ok: true });
   });
 
   // PUBLIC trader profile by @handle — their public bots + paper P&L, for the /u/:handle page and

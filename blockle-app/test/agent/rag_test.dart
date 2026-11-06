@@ -2,7 +2,7 @@
 // preset (CHANGE 1) + the no-silent-hosted-default guarantee (CHANGE 2).
 //
 // Proves:
-//   * the bundled corpus loads (30 chunks) and the offline BM25-lite retriever is
+//   * the bundled corpus loads (37 chunks incl. dApp-security) and the offline BM25-lite retriever is
 //     DETERMINISTIC: a sample query returns a stable top-K ordered by score desc
 //     then id asc, and the 'custody' safety fact is ALWAYS force-included.
 //   * groundSystem only PREPENDS read-only reference text — it never mutates the
@@ -37,10 +37,28 @@ ProviderResponse _ok(String body) => ProviderResponse(true, 200, body);
 
 void main() {
   group('RAG corpus + retriever', () {
-    test('bundled corpus loads with the 30 shared chunks incl. custody', () {
-      expect(ragCorpus.length, 30);
+    test('bundled corpus loads with the 37 shared chunks incl. custody', () {
+      expect(ragCorpus.length, 37);
       expect(ragCorpus.map((c) => c['id']), contains('custody'));
       expect(ragCorpus.map((c) => c['id']), contains('local-llm'));
+    });
+
+    test('dApp-security chunks are present and retrievable for a connect query', () {
+      final ids = ragCorpus.map((c) => c['id']).toSet();
+      for (final id in [
+        'dapp-connect-screening', 'dapp-phishing', 'dapp-drainer',
+        'dapp-approval-abuse', 'dapp-malicious-signature',
+        'dapp-airdrop-seed-theft', 'dapp-protector-guidance'
+      ]) {
+        expect(ids.contains(id), true, reason: 'corpus has $id');
+      }
+      final hits = retrieve(
+              'dApp connect security screening phishing drainer approval signature permit')
+          .map((c) => c['id'] as String)
+          .toList();
+      expect(hits.where((id) => id.startsWith('dapp-')).length >= 3, true,
+          reason: hits.toString());
+      expect(hits.contains(ragForceId), true);
     });
 
     test('retrieve is deterministic and ranks by score desc then id asc', () {

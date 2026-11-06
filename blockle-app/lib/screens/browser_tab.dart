@@ -3,17 +3,24 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart' hide AndroidOptions;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' show decodePersonalSign;
+import '../services/agent_service.dart' show AgentService, SiteScreening;
 import '../state/app_state.dart';
+import '../state/multichain_controller.dart';
 import '../services/open_url.dart';
 import '../theme.dart';
 import 'wallet/security_sheet.dart';
 
 const _home = 'https://blockle.org';
+
+/// Origin the curated dApp directory + open-counter are served from (#129).
+const _dappsBase = 'https://blockle.org';
 
 class BrowserTab extends StatefulWidget {
   const BrowserTab({super.key});
@@ -25,19 +32,111 @@ class _BrowserTabState extends State<BrowserTab> {
   InAppWebViewController? _ctrl;
   final _urlBar = TextEditingController(text: _home);
   String _origin = _home;
+  String? _title;
   bool _loading = true;
   String? _inpage;
   bool _canBack = false, _canFwd = false;
+
+  // Curated trusted-dApp homepage (#129): a Blockle-vetted directory shown in
+  // place of a blank URL page. `_atHome` is an explicit home state (toolbar home
+  // button ⇒ true; a tile tap / URL nav ⇒ false) layered over the live webview.
+  bool _atHome = true;
+  List<_Dapp> _dapps = const [];
+  bool _dappsLoading = true;
+  final _store = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+  static const _kDappsCache = 'bk_dapps_cache';
 
   @override
   void initState() {
     super.initState();
     _loadProvider();
+    _loadDapps();
   }
 
   Future<void> _loadProvider() async {
     final src = await rootBundle.loadString('assets/provider/inpage.js');
     if (mounted) setState(() => _inpage = src);
+  }
+
+  /// Load the curated directory: render the disk cache immediately (offline-ok),
+  /// then refresh from GET /account/api/dapps (popularity-ranked server-side) and
+  /// re-cache. Both steps are best-effort — a failure just keeps the last list.
+  Future<void> _loadDapps() async {
+    try {
+      final raw = await _store.read(key: _kDappsCache);
+      if (raw != null && raw.isNotEmpty) {
+        final list = _parseDapps(jsonDecode(raw));
+        if (list.isNotEmpty && mounted) setState(() => _dapps = list);
+      }
+    } catch (_) {}
+    try {
+      final r = await http.get(Uri.parse('$_dappsBase/account/api/dapps'));
+      if (r.statusCode >= 200 && r.statusCode < 300) {
+        final decoded = jsonDecode(r.body);
+        final list = _parseDapps(decoded);
+        if (list.isNotEmpty) {
+          await _store.write(key: _kDappsCache, value: r.body);
+          if (mounted) setState(() => _dapps = list);
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _dappsLoading = false);
+  }
+
+  List<_Dapp> _parseDapps(dynamic decoded) {
+    if (decoded is! List) return const [];
+    final out = <_Dapp>[];
+    for (final e in decoded) {
+      if (e is Map) out.add(_Dapp.fromJson(e));
+    }
+    return out;
+  }
+
+  /// Open a curated dApp: leave the home state, navigate, and fire the
+  /// pseudonymous open-counter bump (fire-and-forget) so the server can rank by
+  /// in-app popularity. No uid/PII is sent — just {id}.
+  void _openDapp(_Dapp d) {
+    setState(() => _atHome = false);
+    _go(d.url);
+    _bumpOpen(d.id);
+  }
+
+  void _bumpOpen(String id) {
+    http
+        .post(Uri.parse('$_dappsBase/account/api/dapps/open'),
+            headers: const {'content-type': 'application/json'},
+            body: jsonEncode({'id': id}))
+        .catchError((_) => http.Response('', 599));
+  }
+
+  /// Quick-scan (#127): run the READ-ONLY connect screening (rules gate + the
+  /// user's local on-device AI as protector) and show the combined result in the
+  /// shared security sheet WITHOUT connecting. No approval is acted on.
+  Future<void> _quickScan() async {
+    if (_atHome) return;
+    final agent = context.read<MultichainController>().agent;
+    final cfg = await buildSiteScreeningConfig(agent, _origin, _title, forConnect: false);
+    if (!mounted) return;
+    await showSecuritySheet(context, cfg);
+  }
+
+  /// Connect (#127): drive the existing injected-provider connect RPC. It routes
+  /// through AppState.handleRpc('blockle_connect') → onApproval → the approval
+  /// sheet, whose connect branch now runs the mandatory screening + the
+  /// non-bypassable security-sheet confirm BEFORE the site is recorded.
+  Future<void> _connect() async {
+    if (_atHome) return;
+    final res = await context.read<AppState>().handleRpc('blockle_connect', const [], _origin);
+    if (!mounted) return;
+    final err = res['error'];
+    final ok = res['result'] != null && err == null;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok
+          ? 'Connected to ${Uri.tryParse(_origin)?.host ?? _origin}'
+          : (err is Map ? '${err['message'] ?? 'Connection not established'}' : 'Connection not established')),
+    ));
   }
 
   void _wireAppState(AppState app) {
@@ -52,13 +151,14 @@ class _BrowserTabState extends State<BrowserTab> {
 
   Future<ApprovalResult> _approve(ApprovalRequest req) async {
     final app = context.read<AppState>();
+    final agent = context.read<MultichainController>().agent;
     final result = await showModalBottomSheet<ApprovalResult>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Bk.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _ApprovalSheet(req: req, app: app),
+      builder: (_) => _ApprovalSheet(req: req, app: app, agent: agent, title: _title),
     );
     return result ?? ApprovalResult(false);
   }
@@ -69,6 +169,7 @@ class _BrowserTabState extends State<BrowserTab> {
     if (!u.startsWith('http://') && !u.startsWith('https://')) {
       u = u.contains('.') && !u.contains(' ') ? 'https://$u' : 'https://blockle.org/explorer/search?q=${Uri.encodeComponent(u)}';
     }
+    if (_atHome) setState(() => _atHome = false);
     _ctrl?.loadUrl(urlRequest: URLRequest(url: WebUri(u)));
   }
 
@@ -127,18 +228,30 @@ class _BrowserTabState extends State<BrowserTab> {
                     ),
                   ),
                 ),
+                if (!_atHome) ...[
+                  IconButton(
+                      tooltip: 'Quick-scan this site for security',
+                      onPressed: _quickScan,
+                      icon: const Icon(Icons.security_outlined, size: 20)),
+                  IconButton(
+                      tooltip: 'Connect to this dApp',
+                      onPressed: _connect,
+                      icon: const Icon(Icons.link, size: 20)),
+                ],
                 IconButton(
                     onPressed: () => _ctrl?.reload(),
                     icon: const Icon(Icons.refresh, size: 20)),
                 IconButton(
-                    onPressed: () => _go(_home),
+                    tooltip: 'Trusted dApps',
+                    onPressed: () => setState(() => _atHome = true),
                     icon: const Icon(Icons.home_outlined, size: 20)),
               ],
             ),
           ),
-          if (_loading) const LinearProgressIndicator(minHeight: 2, color: Bk.accent, backgroundColor: Bk.surface2),
+          if (_loading && !_atHome) const LinearProgressIndicator(minHeight: 2, color: Bk.accent, backgroundColor: Bk.surface2),
           Expanded(
-            child: InAppWebView(
+            child: Stack(children: [
+            InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri(_home)),
               initialUserScripts: UnmodifiableListView([
                 UserScript(
@@ -172,12 +285,28 @@ class _BrowserTabState extends State<BrowserTab> {
                   _urlBar.text = url.toString();
                   _origin = '${url.scheme}://${url.host}${url.hasPort ? ':${url.port}' : ''}';
                 }
+                try {
+                  _title = await c.getTitle();
+                } catch (_) {}
                 if (mounted) setState(() => _loading = false);
               },
               onReceivedError: (c, req, err) {
                 if (mounted) setState(() => _loading = false);
               },
             ),
+            if (_atHome)
+              Positioned.fill(
+                child: _DappHome(
+                  dapps: _dapps,
+                  loading: _dappsLoading,
+                  onOpen: _openDapp,
+                  onRefresh: () {
+                    setState(() => _dappsLoading = true);
+                    _loadDapps();
+                  },
+                ),
+              ),
+          ]),
           ),
         ],
       ),
@@ -220,9 +349,11 @@ class _WebBrowserPlaceholder extends StatelessWidget {
 }
 
 class _ApprovalSheet extends StatefulWidget {
-  const _ApprovalSheet({required this.req, required this.app});
+  const _ApprovalSheet({required this.req, required this.app, required this.agent, this.title});
   final ApprovalRequest req;
   final AppState app;
+  final AgentService agent;
+  final String? title;
   @override
   State<_ApprovalSheet> createState() => _ApprovalSheetState();
 }
@@ -250,6 +381,23 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
           return;
         }
         await app.store.unlock(_pw.text);
+      }
+      // SECURITY GATE (#127): a dApp CONNECT is screened BEFORE the site is
+      // recorded. The screening = the rules scam/denylist + host heuristics PLUS
+      // the user's LOCAL on-device AI acting as a protector (never the hosted
+      // gateway). The combined verdict is shown in the SHARED security confirm
+      // sheet; any red flag is a DANGER that forces the explicit "I understand
+      // the risk" confirm. A reject aborts WITHOUT connecting — this is the
+      // non-bypassable gate, mirroring the sign/deploy pattern below.
+      if (req.type == 'connect') {
+        final cfg = await buildSiteScreeningConfig(
+            widget.agent, req.origin, widget.title, forConnect: true);
+        if (!mounted) return;
+        final ok = await showSecuritySheet(context, cfg);
+        if (!ok) {
+          if (mounted) Navigator.pop(context, ApprovalResult(false));
+          return;
+        }
       }
       dynamic payload;
       if (req.type == 'sign') {
@@ -399,5 +547,322 @@ class _ApprovalSheetState extends State<_ApprovalSheet> {
         ],
       ),
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Secure connect screening (#127): rules gate + local-AI protector → one sheet.
+// ---------------------------------------------------------------------------
+
+/// Build the combined connect/scan screening into a plain [SecuritySheetConfig]
+/// — the RULES verdict (scam/drainer denylist + lightweight host heuristics) PLUS
+/// the LOCAL on-device AI's assessment (via [AgentService.screenSite]; the hosted
+/// gateway is never used). Any red flag (denylist hit, punycode lookalike, or an
+/// AI-raised flag) is a DANGER severity, which makes [showSecuritySheet] swap in
+/// the explicit "I understand the risk" button — the non-bypassable confirm.
+Future<SecuritySheetConfig> buildSiteScreeningConfig(
+  AgentService agent,
+  String origin,
+  String? title, {
+  required bool forConnect,
+}) async {
+  const perms = <String>['your wallet address', 'request signatures & transactions'];
+  final SiteScreening screening =
+      await agent.screenSite(origin: origin, title: title, permissions: perms);
+  return composeScreeningConfig(
+    origin: origin,
+    rules: rulesScreenSite(origin),
+    screening: screening,
+    forConnect: forConnect,
+  );
+}
+
+/// Pure composition of the security-sheet config from the already-computed RULES
+/// warnings + the (possibly not-run) local-AI [screening]. Separated so it is
+/// deterministically unit-testable without a live [AgentService]/vault.
+SecuritySheetConfig composeScreeningConfig({
+  required String origin,
+  required List<SheetWarning> rules,
+  required SiteScreening screening,
+  required bool forConnect,
+}) {
+  final warnings = <SheetWarning>[...rules];
+  final rows = <MapEntry<String, String>>[];
+
+  if (screening.ran) {
+    for (final f in screening.redFlags) {
+      warnings.add(SheetWarning('danger', f));
+    }
+    rows.add(MapEntry('On-device AI',
+        screening.assessment.isEmpty ? 'reviewed (no issues stated)' : screening.assessment));
+    if (screening.risk == 'medium') {
+      warnings.add(const SheetWarning(
+          'warn', 'The on-device AI rated this site MEDIUM risk — review before connecting.'));
+    } else if (!warnings.any((w) => w.severity == 'danger' || w.severity == 'warn') &&
+        (screening.risk == 'low' || screening.risk.isEmpty)) {
+      warnings.add(const SheetWarning(
+          'info', 'On-device AI screening found no obvious red flags. Always verify the site yourself.'));
+    }
+  } else {
+    rows.add(const MapEntry('On-device AI', 'not run (rules-only)'));
+    if (screening.note != null) {
+      warnings.add(SheetWarning('info', screening.note!));
+    }
+  }
+
+  final danger = warnings.any((w) => w.severity == 'danger');
+  final host = Uri.tryParse(origin)?.host ?? origin;
+  return SecuritySheetConfig(
+    title: forConnect ? 'Connect to this dApp' : 'Security scan',
+    dappName: host,
+    dappUrl: origin,
+    dappIcon: 'network',
+    previewHeader: forConnect
+        ? 'Connecting shares your wallet address and lets this site request signatures.'
+        : 'Read-only security scan of this site — nothing is connected.',
+    rows: rows,
+    warnings: warnings,
+    checksLine: checksLineFor(screening.ran ? 2 : 1, const []),
+    approveLabel: forConnect
+        ? (danger ? 'I understand the risk — connect' : 'Connect')
+        : 'Done',
+  );
+}
+
+/// Rules-based (non-AI) screening of a SITE origin (#127). Reuses the wallet's
+/// scam/drainer denylist ([sec.defaultSecurityConfig]) and the lightweight host
+/// heuristics the RAG dApp-security chunks describe (punycode/lookalike domain,
+/// non-TLS, raw-IP host). Pure + synchronous; the AI assessment augments this,
+/// never replaces it.
+List<SheetWarning> rulesScreenSite(String origin) {
+  final out = <SheetWarning>[];
+  final uri = Uri.tryParse(origin);
+  final host = (uri?.host ?? '').toLowerCase();
+  final cfg = sec.mergeConfig(sec.defaultSecurityConfig());
+  if (host.isNotEmpty &&
+      (cfg.denylist.contains(host) || cfg.denylist.contains(origin.toLowerCase()))) {
+    out.add(const SheetWarning(
+        'danger', 'This site is on the wallet scam/drainer denylist. Do not connect.'));
+  }
+  if (uri != null) {
+    if (uri.scheme == 'http') {
+      out.add(const SheetWarning('warn',
+          'This site is not served over HTTPS — traffic is not encrypted. Legitimate dApps use HTTPS.'));
+    }
+    if (_isIpLiteral(host)) {
+      out.add(const SheetWarning('warn',
+          'The site is a raw IP address, not a domain name — unusual for a legitimate dApp.'));
+    }
+    if (host.contains('xn--')) {
+      out.add(const SheetWarning('danger',
+          'Punycode (internationalized) domain — this can be a lookalike of a well-known site. Verify carefully.'));
+    } else if (_looksLikeLookalike(host)) {
+      out.add(const SheetWarning('warn',
+          'This domain resembles a well-known brand. Confirm you are on the official site before connecting.'));
+    }
+  }
+  return out;
+}
+
+bool _isIpLiteral(String host) =>
+    RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host) || host.contains(':');
+
+const List<String> _knownBrands = [
+  'uniswap', 'pancakeswap', 'raydium', 'jupiter', 'aave', 'curve', 'lido',
+  'orca', 'stonfi', 'sunswap', 'metamask', 'opensea', 'phantom', 'blockle',
+];
+
+/// A domain is a lookalike when a known brand appears as a substring of the
+/// registrable label but the label is not exactly that brand (e.g.
+/// "myuniswap-airdrop", "uniswaps"). The exact brand label is explicitly safe.
+bool _looksLikeLookalike(String host) {
+  if (host.isEmpty) return false;
+  final labels = host.split('.');
+  final core = labels.length >= 2 ? labels[labels.length - 2] : host;
+  for (final b in _knownBrands) {
+    if (core == b) return false;
+    if (core.contains(b)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Curated trusted-dApp homepage (#129)
+// ---------------------------------------------------------------------------
+
+/// One entry in the Blockle-curated directory (GET /account/api/dapps).
+class _Dapp {
+  final String id, name, url, icon;
+  final List<String> chains;
+  final int popularity;
+  const _Dapp(this.id, this.name, this.url, this.icon, this.chains, this.popularity);
+  factory _Dapp.fromJson(Map j) => _Dapp(
+        '${j['id']}',
+        '${j['name']}',
+        '${j['url']}',
+        '${j['icon'] ?? ''}',
+        [for (final c in (j['chains'] as List? ?? const [])) '$c'],
+        (j['popularity'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// The in-app browser homepage: a Blockle-curated, popularity-ranked directory of
+/// TRUSTED dApps (server-maintained, fetched + cached). Tapping a tile navigates
+/// AND bumps the pseudonymous open-counter. A safe default pairing with the
+/// mandatory connect-time security screening (#127).
+class _DappHome extends StatelessWidget {
+  const _DappHome({
+    required this.dapps,
+    required this.loading,
+    required this.onOpen,
+    required this.onRefresh,
+  });
+  final List<_Dapp> dapps;
+  final bool loading;
+  final void Function(_Dapp) onOpen;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Bk.bg,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+        children: [
+          Row(children: [
+            const Icon(Icons.verified_user, size: 18, color: Bk.accent),
+            const SizedBox(width: 8),
+            const Expanded(
+              child: Text('Trusted dApps',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Bk.text)),
+            ),
+            IconButton(
+                tooltip: 'Refresh',
+                onPressed: onRefresh,
+                icon: const Icon(Icons.refresh, size: 18, color: Bk.muted)),
+          ]),
+          const SizedBox(height: 2),
+          const Text(
+            'A Blockle-vetted directory, ranked by in-app popularity. Every connection is '
+            'security-screened before it is allowed.',
+            style: TextStyle(fontSize: 12.5, color: Bk.muted, height: 1.4),
+          ),
+          const SizedBox(height: 16),
+          if (dapps.isEmpty && loading)
+            const Padding(
+              padding: EdgeInsets.only(top: 40),
+              child: Center(child: CircularProgressIndicator(color: Bk.accent)),
+            )
+          else if (dapps.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 30),
+              child: Column(children: [
+                const Icon(Icons.cloud_off, size: 36, color: Bk.muted),
+                const SizedBox(height: 10),
+                const Text('Could not load the dApp directory.',
+                    style: TextStyle(color: Bk.muted)),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Try again'),
+                ),
+              ]),
+            )
+          else
+            for (final d in dapps) ...[
+              _DappCard(dapp: d, onTap: () => onOpen(d)),
+              const SizedBox(height: 10),
+            ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DappCard extends StatelessWidget {
+  const _DappCard({required this.dapp, required this.onTap});
+  final _Dapp dapp;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Bk.surface,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(13),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Bk.border),
+          ),
+          child: Row(children: [
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Bk.surface2,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Text(dapp.icon.isEmpty ? '🌐' : dapp.icon,
+                  style: const TextStyle(fontSize: 22)),
+            ),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(dapp.name,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700, color: Bk.text)),
+                const SizedBox(height: 2),
+                Text(Uri.tryParse(dapp.url)?.host ?? dapp.url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11.5, color: Bk.muted)),
+                const SizedBox(height: 7),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final c in dapp.chains) _chainChip(c),
+                ]),
+              ]),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right, size: 20, color: Bk.muted),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _chainChip(String chain) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Bk.accent.withValues(alpha: 0.13),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Bk.accent.withValues(alpha: 0.3)),
+        ),
+        child: Text(_chainLabel(chain),
+            style: const TextStyle(fontSize: 10.5, color: Bk.accent2, fontWeight: FontWeight.w600)),
+      );
+
+  static String _chainLabel(String c) {
+    switch (c.toLowerCase()) {
+      case 'evm':
+        return 'EVM';
+      case 'bnb':
+        return 'BNB';
+      case 'ton':
+        return 'TON';
+      case 'tron':
+        return 'Tron';
+      case 'ethereum':
+        return 'Ethereum';
+      case 'solana':
+        return 'Solana';
+      default:
+        return c.isEmpty ? c : '${c[0].toUpperCase()}${c.substring(1)}';
+    }
   }
 }

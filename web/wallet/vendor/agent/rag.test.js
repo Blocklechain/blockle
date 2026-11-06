@@ -4,7 +4,7 @@
 // The RAG only builds a read-only grounding block prepended to the system prompt.
 // These tests assert the deterministic retriever contract that must be identical
 // across every wallet:
-//   1. the bundled corpus loads (30 shared chunks)
+//   1. the bundled corpus loads (37 shared chunks incl. dApp-security)
 //   2. a sample query returns a stable, deterministic top-K ranking
 //   3. the 'custody' safety fact ("the LLM never signs") is ALWAYS included
 //   4. a no-hit query returns [] (live-only; never padded)
@@ -17,12 +17,27 @@ const assert = require('node:assert');
 const AgentRAG = require('./rag.js');
 const CORPUS = require('./rag-corpus.json');
 
-test('bundled corpus loads with the shared 30 chunks and a custody fact', () => {
+test('bundled corpus loads with the shared 37 chunks and a custody fact', () => {
   assert.ok(Array.isArray(CORPUS));
-  assert.strictEqual(CORPUS.length, 30);
+  assert.strictEqual(CORPUS.length, 37);
   assert.ok(CORPUS.some((c) => c.id === 'custody'));
   // rag.js auto-loads the same corpus via require()
-  assert.strictEqual(AgentRAG.CORPUS.length, 30);
+  assert.strictEqual(AgentRAG.CORPUS.length, 37);
+});
+
+// dApp-security chunks (#127) ship in the SAME shared corpus; a connect/security
+// query must surface them so the local AI can screen the site.
+test('dApp-security chunks are retrievable for a connect/security query', () => {
+  const ids = new Set(CORPUS.map((c) => c.id));
+  for (const id of ['dapp-connect-screening', 'dapp-phishing', 'dapp-drainer',
+    'dapp-approval-abuse', 'dapp-malicious-signature', 'dapp-airdrop-seed-theft',
+    'dapp-protector-guidance']) {
+    assert.ok(ids.has(id), 'corpus has ' + id);
+  }
+  const hits = AgentRAG.retrieve('dApp connect security screening phishing drainer approval signature permit')
+    .map((c) => c.id);
+  assert.ok(hits.filter((id) => id.startsWith('dapp-')).length >= 3, JSON.stringify(hits));
+  assert.ok(hits.includes('custody'));
 });
 
 test('deterministic top-K for a sample query (grid / sideways market)', () => {
