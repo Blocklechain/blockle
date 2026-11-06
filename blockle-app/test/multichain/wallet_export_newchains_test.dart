@@ -4,6 +4,10 @@
 // for the canonical BIP39 "abandon…about" mnemonic at index 0.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/multichain/wallet_export.dart' as wx;
+import 'package:blockle_app/multichain/chains/ton.dart';
+import 'package:blockle_app/multichain/chains/cardano.dart';
+import 'package:blockle_app/multichain/chains/chain_adapter.dart';
+import 'package:blockle_app/multichain/crypto/hd.dart' as hd;
 
 const _mnemonic =
     'abandon abandon abandon abandon abandon abandon abandon abandon '
@@ -65,6 +69,28 @@ void main() {
     expect(k.address, 'tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL');
     // 'edsk…' 32-byte seed secret (independently computed from the vector seed).
     expect(k.secretKey, 'edsk4BBVKnpwdnJrx9PB4hLkXZHtceSdSZVTfKBXArhmZ3Jg87Lcxi');
+  });
+
+  // TON + Cardano have no cross-wallet golden vector yet, so verify correctness
+  // the fund-safe way: the exported key must re-derive the SAME address the live
+  // adapter signs with — i.e. the exported secret controls the shown address.
+  test('TON export controls the TON adapter address (m/44\'/607\'/0\')', () async {
+    final k = keys['ton']!;
+    final acct = await TonAdapter()
+        .deriveAccount(RootSecret(seed: wx.fromMnemonic(_mnemonic).seed));
+    expect(k.path, "m/44'/607'/0'");
+    expect(k.publicKey, acct.publicKey);
+    expect(k.address, acct.address);
+  });
+
+  test('Cardano export controls the Cardano adapter address (CIP-1852)', () async {
+    final k = wx.cardanoKey(_mnemonic);
+    final entropy = hd.mnemonicToEntropy(_mnemonic);
+    final acct = await CardanoAdapter().deriveAccount(RootSecret(entropy: entropy));
+    expect(k.path, "m/1852'/1815'/0'/0/0");
+    expect(k.publicKey, acct.publicKey);
+    expect(k.address, acct.address);
+    expect(k.secretKey!.length, 192); // 96-byte account xprv, hex
   });
 
   test('legacy chains unchanged (BTC WIF + EVM 0x-hex still present)', () {

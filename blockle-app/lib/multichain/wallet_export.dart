@@ -30,15 +30,19 @@
 // use, so an exported key controls the exact address the wallet shows.
 import 'dart:typed_data';
 
+import 'chains/cardano.dart' as cardano;
 import 'chains/solana.dart' as solana;
 import 'chains/stellar.dart' as stellar;
 import 'chains/stellar_xdr.dart' as sx;
 import 'chains/tezos.dart' as tezos;
 import 'chains/tezos_forge.dart' as tzf;
+import 'chains/ton.dart' as ton;
+import 'chains/ton_cell.dart' as tcell;
 import 'chains/tron.dart' as tron;
 import 'chains/utxo.dart' as utxo;
 import 'chains/xrpl_codec.dart' as xrp;
 import 'crypto/address.dart' as addr;
+import 'crypto/bip32_ed25519.dart' as b32;
 import 'crypto/crypto_core.dart' as c;
 import 'crypto/ed25519.dart' as ed;
 import 'crypto/hd.dart' as hd;
@@ -276,6 +280,52 @@ ChainKey tezosKey(dynamic seed, [int index = 0]) {
   );
 }
 
+// TON: ed25519 SLIP-0010, path m/44'/607'/0'. The portable secret is the 64-byte
+// ed25519 key (privateSeed||publicKey) hex; address is the v4R2 wallet (subwallet
+// 698983191) — exactly what the live TON adapter signs with.
+String tonPathForIndex(int index) => index == 0
+    ? ton.tonDefaultPath
+    : ton.tonDefaultPath.replaceFirst(RegExp(r"/0'$"), "/$index'");
+
+ChainKey tonKey(dynamic seed, [int index = 0]) {
+  final path = tonPathForIndex(index);
+  final key = ton.deriveSlip10Key(_toSeed(seed), path);
+  final pub = ed.publicKey(key);
+  final hash = tcell.v4r2StateInit(pub, subwallet: tcell.subwalletId).hash();
+  return ChainKey(
+    chain: 'ton',
+    index: index,
+    path: path,
+    address: tcell.formatAddress(0, hash),
+    secretKey: c.bytesToHex(c.concatBytes([key, pub])),
+    publicKey: c.bytesToHex(pub),
+    scheme: 'ed25519',
+  );
+}
+
+// Cardano: BIP32-Ed25519 (Icarus / CIP-1852), m/1852'/1815'/0'/0/<index>. Needs
+// the BIP39 ENTROPY (the 64-byte seed is insufficient), so this takes the
+// mnemonic. The portable secret is the ACCOUNT xprv (kL||kR||cc, 96 bytes) hex —
+// it can rebuild the addr1 base address (which embeds the stake credential).
+String cardanoPaymentPathForIndex(int index) =>
+    index == 0 ? cardano.cardanoPaymentPathTpl : "m/1852'/1815'/0'/0/$index";
+
+ChainKey cardanoKey(String mnemonic, [int index = 0]) {
+  final entropy = hd.mnemonicToEntropy(mnemonic);
+  final acct = b32.derivePath(entropy, "m/1852'/1815'/0'");
+  final pay = b32.derivePath(entropy, cardanoPaymentPathForIndex(index));
+  final stakePub = b32.derivePath(entropy, cardano.cardanoStakePath).a;
+  return ChainKey(
+    chain: 'cardano',
+    index: index,
+    path: cardanoPaymentPathForIndex(index),
+    address: cardano.baseAddress(pay.a, stakePub),
+    secretKey: c.bytesToHex(c.concatBytes([acct.kL, acct.kR, acct.cc])),
+    publicKey: c.bytesToHex(pay.a),
+    scheme: 'ed25519-bip32',
+  );
+}
+
 /// BLOCK is NOT HD-derived — its ML-DSA-44 keypair lives in the Wallet session.
 /// Export it straight from the (unlocked) session the caller passes in. Not part
 /// of the shared vectors (not seed-derivable). Returns null when the session has
@@ -313,6 +363,7 @@ Map<String, ChainKey> privateKeys(dynamic seed, [int index = 0]) {
     'xrp': xrpKey(s, index),
     'stellar': stellarKey(s, index),
     'tezos': tezosKey(s, index),
+    'ton': tonKey(s, index),
   };
 }
 
@@ -460,6 +511,12 @@ Future<ExportResult> exportSecrets({
   }
   Map<String, ChainKey>? keys;
   if (s != null) keys = privateKeys(s, index);
+  // Cardano needs the BIP39 entropy (the seed is insufficient), so it is derived
+  // from the mnemonic here rather than in privateKeys(seed).
+  if (mnemonic != null) {
+    keys ??= {};
+    keys['cardano'] = cardanoKey(mnemonic, index);
+  }
   final block = blockSession != null ? blockKey(blockSession) : null;
   Map<String, Map<String, String>>? dumps;
   if (coreDumps && s != null) {
