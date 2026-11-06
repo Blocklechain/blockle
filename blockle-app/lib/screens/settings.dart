@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/wallet.dart';
 import '../state/app_state.dart';
+import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'onboarding.dart';
 import 'wallet_export_screen.dart';
@@ -36,6 +37,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           const Text('Settings', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
           const SizedBox(height: 18),
+          _section('Blockle account'),
+          _accountTile(context.watch<MultichainController>()),
+          const SizedBox(height: 22),
           _section('Wallets'),
           ..._wallets.map((w) => _walletTile(app, w)),
           const SizedBox(height: 8),
@@ -129,6 +133,138 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _accountTile(MultichainController mc) {
+    final email = mc.agent.copilotEmail;
+    final tier = mc.agent.copilotTier;
+    if (email == null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(bottom: 10),
+            child: Text(
+              'Sign in to sync your plan (Blockle Alien / Pro), copy-trade configs, and encrypted backup.',
+              style: TextStyle(color: Bk.muted, fontSize: 13),
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: _accountSignIn,
+            icon: const Icon(Icons.login, size: 18),
+            label: const Text('Sign in to Blockle account'),
+          ),
+        ],
+      );
+    }
+    return Container(
+      decoration: BoxDecoration(
+        color: Bk.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Bk.border),
+      ),
+      child: ListTile(
+        leading: const Icon(Icons.verified_user_outlined, color: Bk.accent),
+        title: Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
+        subtitle: Text('Plan: ${tier[0].toUpperCase()}${tier.substring(1)}',
+            style: const TextStyle(color: Bk.muted, fontSize: 12)),
+        trailing: TextButton(
+          onPressed: () {
+            mc.agent.disconnectCopilotAccount();
+            setState(() {});
+          },
+          child: const Text('Sign out', style: TextStyle(color: Bk.bad)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _accountSignIn() async {
+    final email = TextEditingController();
+    final pw = TextEditingController();
+    final totp = TextEditingController();
+    final mc = context.read<MultichainController>();
+    bool busy = false;
+    String? err;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setLocal) => AlertDialog(
+          backgroundColor: Bk.surface,
+          title: const Text('Sign in to Blockle account'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: email,
+                autofocus: true,
+                keyboardType: TextInputType.emailAddress,
+                autofillHints: const [AutofillHints.username],
+                decoration: const InputDecoration(labelText: 'Email'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: pw,
+                obscureText: true,
+                autofillHints: const [AutofillHints.password],
+                decoration: const InputDecoration(labelText: 'Password'),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: totp,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                    labelText: '2FA code (if enabled)'),
+              ),
+              if (err != null) ...[
+                const SizedBox(height: 10),
+                Text(err!, style: const TextStyle(color: Bk.bad, fontSize: 12)),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: busy ? null : () => Navigator.pop(dctx),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setLocal(() {
+                        busy = true;
+                        err = null;
+                      });
+                      try {
+                        await mc.agent.connectCopilotAccount(
+                          email.text.trim(),
+                          pw.text,
+                          totp: totp.text.trim().isEmpty ? null : totp.text.trim(),
+                        );
+                        if (dctx.mounted) Navigator.pop(dctx);
+                        if (mounted) {
+                          setState(() {});
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Signed in to Blockle account')),
+                          );
+                        }
+                      } catch (e) {
+                        setLocal(() {
+                          busy = false;
+                          err = e.toString().replaceFirst('Exception: ', '');
+                        });
+                      }
+                    },
+              child: busy
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Sign in'),
+            ),
+          ],
+        ),
       ),
     );
   }

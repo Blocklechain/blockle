@@ -314,8 +314,11 @@ class DetailView extends StatelessWidget {
     final t = BotTheme.of(context);
     final unreal = (d['unrealizedUsd'] as num?);
     final realized = (d['realizedUsd'] as num?) ?? 0;
-    final totalDeals = (d['totalDeals'] as int?) ?? 0;
-    final wins = (d['winCount'] as int?) ?? 0;
+    // `as num?)?.toInt()` not `as int?`: a value that round-tripped through JSON
+    // can come back as a double (e.g. 3.0), and `3.0 as int?` THROWS — which
+    // blanked the whole detail page to a grey screen.
+    final totalDeals = (d['totalDeals'] as num?)?.toInt() ?? 0;
+    final wins = (d['winCount'] as num?)?.toInt() ?? 0;
     final winRate = totalDeals > 0 ? (wins / totalDeals * 100).round() : null;
     final committed = (d['committedUsd'] as num?) ?? 0;
     final cap = bot.allocationUsd;
@@ -562,7 +565,7 @@ class _Stepper extends StatelessWidget {
     // Active + pending steps for an open DCA deal.
     if (bot.type == 'dca' && deal['status'] != 'closed') {
       final cfg = bot.config;
-      final used = (deal['safetyOrdersUsed'] as int?) ?? 0;
+      final used = (deal['safetyOrdersUsed'] as num?)?.toInt() ?? 0;
       final maxSo = (cfg['maxSafetyOrders'] as num?)?.toInt() ?? 0;
       final tpArmed = deal['tpArmed'] == true;
       final nextTrig = b.ucToUsd(_big(deal['nextTriggerUc'])) ?? 0;

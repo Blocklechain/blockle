@@ -604,22 +604,57 @@ class _CreateViewState extends State<CreateView> {
     final t = BotTheme.of(context);
     final left = _leftPane(t);
     final right = _ladderPane(t);
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 36),
+    // The numeric keypad on iOS has no return key, so the amount fields couldn't
+    // be dismissed. Dragging the form now dismisses it, and a "Done" bar appears
+    // above the keyboard whenever a field is focused.
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+    return Stack(
       children: [
-        LayoutBuilder(builder: (ctx, c) {
-          if (c.maxWidth > 760) {
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(child: left),
-                const SizedBox(width: 16),
-                Expanded(child: right),
-              ],
-            );
-          }
-          return Column(children: [left, const SizedBox(height: 16), right]);
-        }),
+        ListView(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 36),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          children: [
+            LayoutBuilder(builder: (ctx, c) {
+              if (c.maxWidth > 760) {
+                return Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: left),
+                    const SizedBox(width: 16),
+                    Expanded(child: right),
+                  ],
+                );
+              }
+              return Column(children: [left, const SizedBox(height: 16), right]);
+            }),
+          ],
+        ),
+        if (keyboardOpen)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: Material(
+              color: t.elevated,
+              child: SafeArea(
+                top: false,
+                child: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    border: Border(top: BorderSide(color: t.line)),
+                  ),
+                  child: TextButton(
+                    onPressed: () =>
+                        FocusManager.instance.primaryFocus?.unfocus(),
+                    child: Text('Done',
+                        style: TextStyle(
+                            color: t.accent, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }

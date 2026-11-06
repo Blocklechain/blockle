@@ -173,6 +173,20 @@ class _BrowserTabState extends State<BrowserTab> {
     _ctrl?.loadUrl(urlRequest: URLRequest(url: WebUri(u)));
   }
 
+  /// A compact toolbar icon button with a tight hit box so several fit without
+  /// crowding the URL field (the old wide IconButtons truncated the bar).
+  Widget _navIcon(IconData icon, double size, VoidCallback? onTap) {
+    return IconButton(
+      onPressed: onTap,
+      icon: Icon(icon, size: size),
+      color: Bk.text,
+      disabledColor: Bk.muted.withValues(alpha: 0.4),
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      constraints: const BoxConstraints(minWidth: 34, minHeight: 40),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // The in-app dApp browser (InAppWebView) isn't supported on Flutter web;
@@ -196,15 +210,13 @@ class _BrowserTabState extends State<BrowserTab> {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+            padding: const EdgeInsets.fromLTRB(4, 6, 4, 6),
             child: Row(
               children: [
-                IconButton(
-                    onPressed: _canBack ? () => _ctrl?.goBack() : null,
-                    icon: const Icon(Icons.arrow_back_ios_new, size: 18)),
-                IconButton(
-                    onPressed: _canFwd ? () => _ctrl?.goForward() : null,
-                    icon: const Icon(Icons.arrow_forward_ios, size: 18)),
+                _navIcon(Icons.arrow_back_ios_new, 16,
+                    _canBack ? () => _ctrl?.goBack() : null),
+                _navIcon(Icons.arrow_forward_ios, 16,
+                    _canFwd ? () => _ctrl?.goForward() : null),
                 Expanded(
                   child: Container(
                     height: 40,
@@ -218,6 +230,8 @@ class _BrowserTabState extends State<BrowserTab> {
                         controller: _urlBar,
                         textInputAction: TextInputAction.go,
                         onSubmitted: _go,
+                        onTapOutside: (_) =>
+                            FocusManager.instance.primaryFocus?.unfocus(),
                         style: const TextStyle(fontSize: 13),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
@@ -228,23 +242,41 @@ class _BrowserTabState extends State<BrowserTab> {
                     ),
                   ),
                 ),
-                if (!_atHome) ...[
-                  IconButton(
-                      tooltip: 'Quick-scan this site for security',
-                      onPressed: _quickScan,
-                      icon: const Icon(Icons.security_outlined, size: 20)),
-                  IconButton(
-                      tooltip: 'Connect to this dApp',
-                      onPressed: _connect,
-                      icon: const Icon(Icons.link, size: 20)),
-                ],
-                IconButton(
-                    onPressed: () => _ctrl?.reload(),
-                    icon: const Icon(Icons.refresh, size: 20)),
-                IconButton(
-                    tooltip: 'Trusted dApps',
-                    onPressed: () => setState(() => _atHome = true),
-                    icon: const Icon(Icons.home_outlined, size: 20)),
+                _navIcon(Icons.refresh, 19, () => _ctrl?.reload()),
+                // Secondary actions live in an overflow menu so the bar never
+                // crowds/truncates on narrow phones.
+                PopupMenuButton<String>(
+                  tooltip: 'More',
+                  color: Bk.surface,
+                  icon: const Icon(Icons.more_vert, size: 20, color: Bk.muted),
+                  onSelected: (v) {
+                    switch (v) {
+                      case 'home':
+                        setState(() => _atHome = true);
+                        break;
+                      case 'scan':
+                        _quickScan();
+                        break;
+                      case 'connect':
+                        _connect();
+                        break;
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(
+                        value: 'home',
+                        child: _MenuRow(Icons.home_outlined, 'Trusted dApps')),
+                    if (!_atHome)
+                      const PopupMenuItem(
+                          value: 'scan',
+                          child: _MenuRow(
+                              Icons.security_outlined, 'Security scan')),
+                    if (!_atHome)
+                      const PopupMenuItem(
+                          value: 'connect',
+                          child: _MenuRow(Icons.link, 'Connect dApp')),
+                  ],
+                ),
               ],
             ),
           ),
@@ -864,5 +896,22 @@ class _DappCard extends StatelessWidget {
       default:
         return c.isEmpty ? c : '${c[0].toUpperCase()}${c.substring(1)}';
     }
+  }
+}
+
+/// A tiny icon+label row for the browser toolbar's overflow menu items.
+class _MenuRow extends StatelessWidget {
+  const _MenuRow(this.icon, this.label);
+  final IconData icon;
+  final String label;
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(icon, size: 18, color: Bk.muted),
+        const SizedBox(width: 12),
+        Text(label, style: const TextStyle(color: Bk.text)),
+      ],
+    );
   }
 }

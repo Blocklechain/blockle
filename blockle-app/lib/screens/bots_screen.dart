@@ -254,7 +254,11 @@ class _TopBar extends StatelessWidget {
         color: t.ground,
         border: Border(bottom: BorderSide(color: t.lineSoft)),
       ),
-      child: Row(children: [
+      // Horizontally scrollable so the trailing controls — especially Kill all —
+      // are always reachable and never truncated on a narrow phone.
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
         Container(
           width: 30,
           height: 30,
@@ -265,20 +269,13 @@ class _TopBar extends StatelessWidget {
           child: const Icon(Icons.hexagon_outlined, size: 17, color: Colors.white),
         ),
         const SizedBox(width: 11),
-        Expanded(
-          child: Row(children: [
-            Flexible(
-              child: Text('Blockle Bots',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: t.ink)),
-            ),
-            const SizedBox(width: 6),
-            Text('DEX',
-                style: TextStyle(fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.w600, color: t.inkFaint)),
-          ]),
-        ),
-        const SizedBox(width: 8),
+        Text('Blockle Bots',
+            maxLines: 1,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: t.ink)),
+        const SizedBox(width: 6),
+        Text('DEX',
+            style: TextStyle(fontSize: 11, letterSpacing: 1.2, fontWeight: FontWeight.w600, color: t.inkFaint)),
+        const SizedBox(width: 14),
         // The Paper/Live (+ All) trading-mode filter — matches the shared visual
         // contract (docs/design/bots/index.html), driving the cockpit grid.
         BotFilterSeg(filter: filter, onFilter: onFilter),
@@ -313,6 +310,7 @@ class _TopBar extends StatelessWidget {
           ),
         ),
       ]),
+      ),
     );
   }
 
