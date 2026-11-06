@@ -45,5 +45,11 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Blockle Wallet uses the camera to scan QR codes — wallet addresses, WalletConnect sessions, and dApp connections — and to take a profile photo.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Blockle Wallet needs access to your photos so you can import a QR code image (e.g. a wallet address) or choose a profile picture.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Blockle Wallet can save images such as your receive QR code to your photo library.</string>
 </dict>
 </plist>
