@@ -56,11 +56,18 @@ jobs:
           KID: ${{ secrets.ASC_KEY_ID }}
           ISS: ${{ secrets.ASC_ISSUER_ID }}
           BN: ${{ github.run_number }}
+          # Provider keys injected at build time (not committed); empty -> keyless.
+          TONCENTER_API_KEY: ${{ secrets.TONCENTER_API_KEY }}
+          BLOCKFROST_PROJECT_ID: ${{ secrets.BLOCKFROST_PROJECT_ID }}
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
-          # compile (unsigned) with a unique, monotonic build number for TestFlight
-          flutter build ios --release --no-codesign --build-number="$BN"
+          # compile (unsigned) with a unique, monotonic build number for TestFlight.
+          # --dart-define bakes the provider keys into Generated.xcconfig (DART_DEFINES),
+          # which the xcodebuild archive step below reads.
+          flutter build ios --release --no-codesign --build-number="$BN" \
+            --dart-define=TONCENTER_API_KEY="$TONCENTER_API_KEY" \
+            --dart-define=BLOCKFROST_PROJECT_ID="$BLOCKFROST_PROJECT_ID"
           # archive UNSIGNED — avoids automatic signing picking a development profile
           # (fresh team has no devices); distribution signing happens at export.
           xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \

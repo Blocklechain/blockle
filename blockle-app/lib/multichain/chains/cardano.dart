@@ -211,7 +211,20 @@ class CardanoAdapter implements ChainAdapter {
   String _koiosBase() =>
       (koios ?? cardanoDefaultKoios).replaceFirst(RegExp(r'/+$'), '');
 
+  String _blockfrostBase() =>
+      (blockfrostUrl ?? 'https://cardano-mainnet.blockfrost.io/api/v0')
+          .replaceFirst(RegExp(r'/+$'), '');
+
   Future<String> _httpGet(String path) async {
+    if (_useBlockfrost) {
+      final r = await http.get(Uri.parse('${_blockfrostBase()}$path'),
+          headers: {'accept': 'application/json', 'project_id': blockfrostProjectId!});
+      // 404 = an address Blockfrost has never seen (unfunded) -> empty set so
+      // the caller reads a ZERO balance. Real failures (429/5xx) still throw.
+      if (r.statusCode == 404) return '[]';
+      if (r.statusCode >= 400) throw StateError('cardano blockfrost ${r.statusCode}');
+      return r.body;
+    }
     if (_getOverride != null) return _getOverride(path);
     final r = await http.get(Uri.parse('${_koiosBase()}$path'),
         headers: {'accept': 'application/json'});
@@ -219,6 +232,18 @@ class CardanoAdapter implements ChainAdapter {
   }
 
   Future<String> _httpPost(String path, String body) async {
+    if (_useBlockfrost) {
+      final r = await http.post(Uri.parse('${_blockfrostBase()}$path'),
+          headers: {
+            'content-type': 'application/json',
+            'accept': 'application/json',
+            'project_id': blockfrostProjectId!,
+          },
+          body: body);
+      if (r.statusCode == 404) return '[]';
+      if (r.statusCode >= 400) throw StateError('cardano blockfrost ${r.statusCode}');
+      return r.body;
+    }
     if (_postOverride != null) return _postOverride(path, body);
     final r = await http.post(Uri.parse('${_koiosBase()}$path'),
         headers: {'content-type': 'application/json', 'accept': 'application/json'},

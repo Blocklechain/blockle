@@ -123,8 +123,12 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // (+ optional `apiKey`); no secret is hardcoded here.
   'tron': EndpointCfg(api: 'https://api.trongrid.io'),
   // toncenter v2 base (operator-overridable). The TON adapter reads `api`
-  // (+ optional `apiKey` → X-API-Key); no secret is hardcoded here.
-  'ton': EndpointCfg(api: 'https://toncenter.com/api/v2'),
+  // (+ optional `apiKey` → X-API-Key). The key is injected at build time via
+  // --dart-define=TONCENTER_API_KEY=… (a GitHub Actions secret), NOT committed;
+  // empty on local builds → keyless (rate-limited) fallback.
+  'ton': EndpointCfg(
+      api: 'https://toncenter.com/api/v2',
+      apiKey: String.fromEnvironment('TONCENTER_API_KEY')),
   // rippled JSON-RPC base (operator-overridable; fallback
   // https://s1.ripple.com:51234). The XRP adapter reads `rpcUrl`.
   'xrp': EndpointCfg(rpcUrl: 'https://xrplcluster.com'),
@@ -137,7 +141,12 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Cardano provider (operator-overridable). DEFAULT = KEYLESS Koios. Set
   // `blockfrostProjectId` to switch to Blockfrost. The adapter reads `koios` /
   // `blockfrost*`; no secret is hardcoded here.
-  'cardano': EndpointCfg(koios: 'https://api.koios.rest/api/v1'),
+  'cardano': EndpointCfg(
+      koios: 'https://api.koios.rest/api/v1',
+      blockfrostUrl: 'https://cardano-mainnet.blockfrost.io/api/v0',
+      // Injected at build via --dart-define=BLOCKFROST_PROJECT_ID=… (CI secret),
+      // NOT committed; empty on local builds → keyless Koios fallback.
+      blockfrostProjectId: String.fromEnvironment('BLOCKFROST_PROJECT_ID')),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
