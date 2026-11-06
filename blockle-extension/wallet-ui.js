@@ -483,6 +483,7 @@
             '<button class="wbtn primary" id="w-send">Send</button>' +
             '<button class="wbtn" id="w-recv">Receive</button>' +
             '<button class="wbtn" id="w-swap">Swap</button>' +
+            '<button class="wbtn" id="w-buy">Buy</button>' +
           '</div>' +
         '</div>' +
         '<div class="card wchains">' +
@@ -503,6 +504,9 @@
     var sd = $('#w-send'); if (sd) sd.addEventListener('click', openSendSheet);
     var rc = $('#w-recv'); if (rc) rc.addEventListener('click', function () { UI.route('receive'); });
     var sw = $('#w-swap'); if (sw) sw.addEventListener('click', function () { UI.route('swap'); });
+    // S1 home Buy entry — route to Accounts, where per-asset "Buy with card"
+    // (MoonPay on-ramp) + "Sell / Cash out" live. Keeps one place for the widget.
+    var by = $('#w-buy'); if (by) by.addEventListener('click', function () { UI.route('accounts'); });
     drawSpark($('#w-nw-spark'), spark.map(function (p) { return p.usd; }));
   }
 
@@ -595,7 +599,11 @@
     actItems = actItems.concat(out.items || []);
     actCursor = out.nextCursor || null;
 
+    var mpSection = '';
+    try { mpSection = await moonpaySectionHtml(); } catch (_) { mpSection = ''; }
+
     panel.innerHTML = '' +
+      mpSection +
       '<div class="wsec-head"><h3>Activity</h3><span class="wcount">all chains</span></div>' +
       (actItems.length ? '<div class="card wfeed">' + actItems.map(activityRowHtml).join('') + '</div>'
         : '<div class="card"><div class="wnote">No activity to show yet.</div></div>') +
@@ -621,6 +629,33 @@
       '<div class="val ' + sign + ' num">' + val + '</div></div>';
   }
   function dirIcon(dir) { return dir === 'in' ? '↓' : dir === 'out' ? '↑' : dir === 'self' ? '⟳' : icon('gear'); }
+
+  // S4 STATUS — the user's recent MoonPay card buys / sells / swaps. Two sources:
+  // redirect-callback params we persisted on widget return + an authed /v3/transactions
+  // poll when an accounts session is available (via AgentUI). Hidden when there are
+  // none. Never blocks the main activity feed (caller wraps this in try/catch).
+  async function moonpaySectionHtml() {
+    var mp = global.MoonPay;
+    if (!mp || !mp.status) return '';
+    var token = null;
+    try { var A = global.AgentUI; if (A && A.account) { var ac = A.account() || {}; token = ac.token || null; } } catch (_) {}
+    var txns = [];
+    try { txns = await mp.status({ token: token, limit: 10 }); } catch (_) { txns = []; }
+    if (!txns || !txns.length) return '';
+    var rows = txns.map(function (t) {
+      var when = t.at ? new Date(t.at).toLocaleDateString() : '';
+      var amt = t.amountUsd != null ? ('$' + Number(t.amountUsd).toFixed(2)) : '';
+      var typ = t.type || 'buy';
+      var ic = typ === 'sell' ? '↑' : typ === 'swap' ? '⟳' : '↓';
+      return '<div class="warow"><span class="waic">' + ic + '</span>' +
+        '<div class="wa-main"><div class="lead">MoonPay ' + esc(typ) + ' ' + esc(String(t.asset || '').toUpperCase()) +
+        (t.status ? ' <span class="wsev">' + esc(t.status) + '</span>' : '') + '</div>' +
+        '<div class="meta">' + esc(when) + '</div></div>' +
+        '<div class="val num">' + esc(amt) + '</div></div>';
+    }).join('');
+    return '<div class="wsec-head"><h3>MoonPay</h3><span class="wcount">card buys &amp; sells</span></div>' +
+      '<div class="card wfeed">' + rows + '</div>';
+  }
 
   // ===========================================================================
   // NFTS — WalletNft.nfts() + operator-approval badge -> revoke via the gate

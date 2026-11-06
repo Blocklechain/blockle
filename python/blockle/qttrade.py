@@ -16,11 +16,14 @@ import urllib.error
 import urllib.request
 from decimal import Decimal
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
+from . import moonpay
 from .icons import icon_html
 
 AMM = "https://blockle.org/api/amm"
@@ -79,6 +82,8 @@ class _Net(QObject):
 
 
 class TradeTab(QWidget):
+    _cfg_loaded = Signal()
+
     def __init__(self, ctrl):
         super().__init__()
         self.ctrl = ctrl
@@ -89,6 +94,7 @@ class TradeTab(QWidget):
         self.intent_id = None
         self.net = _Net()
         self.net.done.connect(self._on_net)
+        self._cfg_loaded.connect(self._refresh_card_btn)
         self._build()
         self._qtimer = QTimer(self)
         self._qtimer.setSingleShot(True)
@@ -142,6 +148,19 @@ class TradeTab(QWidget):
         self.go.clicked.connect(self.execute)
         v.addWidget(self.go)
 
+        # C5 GET BLOCK WITH A CARD: BLOCK isn't on MoonPay, so this is a guided
+        # 2-step — buy the selected quote coin (ETH/SOL/BTC/…) with a card via
+        # MoonPay, then come back and Buy BLOCK with it on this AMM. Hidden when
+        # /config reports buy is off.
+        self.card_btn = QPushButton("Get BLOCK with a card")
+        self.card_btn.setToolTip("Buy the quote coin with a card via MoonPay (step 1), "
+                                 "then buy BLOCK with it here (step 2).")
+        self.card_btn.clicked.connect(self._get_block_with_card)
+        v.addWidget(self.card_btn)
+        self._refresh_card_btn()
+        # pull the live MoonPay /config (key + feature flags) off the UI thread
+        threading.Thread(target=self._load_moonpay_cfg, daemon=True).start()
+
         self.status = QLabel("")
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(self.status.textInteractionFlags())
@@ -152,6 +171,58 @@ class TradeTab(QWidget):
         self.pairs_lbl.setStyleSheet("color:#aaa;font-size:12px")
         v.addWidget(self.pairs_lbl)
         v.addStretch(1)
+
+    # ---- C5: get BLOCK with a card ----
+    def _load_moonpay_cfg(self):
+        try:
+            moonpay.load_remote_config()
+        except Exception:
+            pass
+        self._cfg_loaded.emit()
+
+    def _refresh_card_btn(self):
+        try:
+            self.card_btn.setVisible(bool(moonpay.feature_enabled("buy")))
+        except Exception:
+            pass
+
+    def _get_block_with_card(self):
+        sym = self._cur_sym()
+        chain = CHAIN_OF.get(sym)
+        if not chain:
+            QMessageBox.information(self, "Get BLOCK with a card",
+                                    "Pick a quote coin (e.g. ETH or SOL) first.")
+            return
+        addr = self._addr(chain)
+        if not addr:
+            QMessageBox.information(self, "Get BLOCK with a card",
+                                    "Unlock the multi-chain vault (Accounts tab) first.")
+            return
+        usd, ok = QInputDialog.getInt(
+            self, "Get BLOCK with a card",
+            f"BLOCK is not sold directly by MoonPay.\n\nStep 1 — buy {sym} with a "
+            f"card (delivered to your {chain} address).\nStep 2 — come back and Buy "
+            f"BLOCK with that {sym} here.\n\nHow many USD of {sym} to buy?",
+            100, 20, 100000)
+        if not ok:
+            return
+        res = moonpay.top_up_shortfall(chain=chain, symbol=sym, native_symbol=sym,
+                                       wallet_address=addr, shortfall_usd=usd)
+        if not res.get("ok"):
+            QMessageBox.warning(self, "Get BLOCK with a card",
+                                res.get("reason") or f"{sym} is not available on MoonPay.")
+            return
+        url = res["url"]
+        try:
+            signed = moonpay.fetch_signed_url(url)
+            if signed:
+                url = signed
+        except Exception:
+            pass
+        QDesktopServices.openUrl(QUrl(url))
+        self.status.setText(
+            f"Opened MoonPay to buy ~${usd} of {sym}. When it lands in your wallet, "
+            f"select {sym} above and Buy BLOCK.")
 
     def _set_side(self, side):
         self.side = side

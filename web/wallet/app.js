@@ -148,7 +148,11 @@
     var addr = Wallet.address;
     return blockSpendableBase(addr).then(function (have) {
       if (have >= GAS_NEED_BASE) return true;
-      if (!isPro()) { toast('A little BLOCK is needed for gas — upgrade to Pro for sponsored gas', 'bad'); return false; }
+      // C3 GAS TOP-UP: BLOCK gas can't be bought directly (BLOCK isn't on MoonPay),
+      // so point the user at the card-funded Get-BLOCK flow (buy USDC -> swap to
+      // BLOCK) or Pro's sponsored gas. The nudge is non-blocking (we still return
+      // false) so it never clobbers an in-flight swap/token sheet.
+      if (!isPro()) { toast('A little BLOCK is needed for gas — get BLOCK with a card from the Moon tab, or upgrade to Pro for sponsored gas', 'bad'); return false; }
       toast('Sponsoring gas…');
       return fetch('/api/gas/sponsor', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ address: addr }) })
         .then(function (r) { return r.json(); })
@@ -168,6 +172,120 @@
           })();
         }).catch(function (e) { toast('Gas sponsorship failed: ' + (e.message || e), 'bad'); return false; });
     });
+  }
+
+  /* ---------------- MoonPay (fiat on/off-ramp + swap + commerce) ----------------
+   * The widget is a hosted URL we open in a NEW TAB (the CSP's frame-ancestors
+   * 'none' blocks iframing). We hold ONLY the publishable + commerce PUBLIC keys,
+   * both fetched from the live /config; every secret (signing, trade/commerce
+   * auth, webhook) stays server-side. buyUrl/sellUrl route through /sign; swap +
+   * commerce route through the authed server proxies. */
+  function bootMoonpay() {
+    if (!window.MoonPay) return;
+    // Source of truth: pull the live pk_live_* + commerce key + feature flags.
+    try { MoonPay.loadRemoteConfig(fetch).catch(function () {}); } catch (_) {}
+    // Capture a widget return: MoonPay appends transactionId/transactionStatus to
+    // our redirectURL. Persist it for the Transactions list, then clean the URL.
+    try {
+      var sp = new URLSearchParams(location.search);
+      if (sp.get('mpReturn') || sp.get('transactionId')) {
+        MoonPay.captureReturn(sp, { type: sp.get('mpReturn') || 'buy' });
+        var resume = sp.get('mpResume');
+        sp.delete('mpReturn'); sp.delete('mpResume'); sp.delete('transactionId'); sp.delete('transactionStatus');
+        var qs = sp.toString();
+        history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+        if (resume) { S._mpResume = resume; toast('Card payment started — it lands in your wallet shortly', 'good', 'buy'); }
+      }
+    } catch (_) {}
+  }
+  function mpFeatures() { try { return (window.MoonPay && MoonPay.features()) || { buy: true, sell: true, swap: false, commerce: false }; } catch (_) { return { buy: true, sell: true, swap: false, commerce: false }; } }
+  // A redirectURL back into the wallet so the on-return handler can log the txn
+  // (and optionally resume a flow, e.g. arming a bot after a C1 top-up).
+  function mpRedirect(type, resume) { return location.origin + location.pathname + '?mpReturn=' + encodeURIComponent(type || 'buy') + (resume ? '&mpResume=' + encodeURIComponent(resume) : '') + location.hash; }
+  function mpOpen(url) { try { window.open(url, '_blank', 'noopener'); } catch (_) { location.href = url; } }
+  // S1 — open the MoonPay BUY widget for an asset (card -> crypto to this wallet).
+  function moonpayBuy(chain, sym, native, amountUsd, resumeTag) {
+    if (!window.MoonPay) { toast('Buy is unavailable right now', 'bad'); return; }
+    chainAddress(chain).then(function (addr) {
+      return MoonPay.buyUrl({ chain: chain, symbol: native ? undefined : sym, native: !!native, walletAddress: addr, baseCurrencyAmount: amountUsd || undefined, redirectURL: mpRedirect('buy', resumeTag), fetchFn: fetch });
+    }).then(function (r) {
+      if (!r || !r.ok) { toast(esc(sym || chain) + ' can’t be bought with a card yet', 'bad'); return; }
+      toast('Opening MoonPay…', '', 'buy'); mpOpen(r.url);
+    }).catch(function (e) { toast('Buy failed: ' + (e.message || e), 'bad'); });
+  }
+  // S2 — open the MoonPay SELL widget (crypto -> fiat payout).
+  function moonpaySell(chain, sym, native, amountCrypto) {
+    if (!window.MoonPay) { toast('Cash out is unavailable right now', 'bad'); return; }
+    chainAddress(chain).then(function (addr) {
+      return MoonPay.sellUrl({ chain: chain, symbol: native ? undefined : sym, native: !!native, walletAddress: addr, baseCurrencyAmount: amountCrypto || undefined, redirectURL: mpRedirect('sell'), fetchFn: fetch });
+    }).then(function (r) {
+      if (!r || !r.ok) { toast(esc(sym || chain) + ' can’t be cashed out with MoonPay', 'bad'); return; }
+      toast('Opening MoonPay…', '', 'buy'); mpOpen(r.url);
+    }).catch(function (e) { toast('Cash out failed: ' + (e.message || e), 'bad'); });
+  }
+  function mpSupported(chain, sym, native) {
+    try { if (!window.MoonPay) return false; var map = MoonPay.effectiveMap({}); return MoonPay.isSupported(map, chain, native ? { native: true } : { symbol: sym }); } catch (_) { return false; }
+  }
+  // Home "Buy with card" entry: pick an asset on the active chain + amount, then BUY.
+  function moonpayBuySheet(presetChain) {
+    var feat = mpFeatures();
+    var chain = presetChain || S.chain || 'block';
+    // The chain's native + its mapped tokens that MoonPay lists.
+    var map = (window.MoonPay && MoonPay.effectiveMap({})) || {};
+    function optionsFor(c) {
+      var out = [];
+      var entry = map[c];
+      if (entry) {
+        if (entry.native) out.push({ v: c + '|native', label: c.toUpperCase() + ' (native)' });
+        Object.keys(entry.tokens || {}).forEach(function (t) { out.push({ v: c + '|' + t, label: t + ' · ' + c.toUpperCase() }); });
+      }
+      return out;
+    }
+    // Offer every supported chain so the Buy entry works from anywhere.
+    var chains = Object.keys(map);
+    var allOpts = chains.map(function (c) { return '<optgroup label="' + esc(c.toUpperCase()) + '">' + optionsFor(c).map(function (o) { return '<option value="' + esc(o.v) + '"' + (c === chain && o.v.indexOf('|native') > 0 ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</optgroup>'; }).join('');
+    openSheet('<div class="spread"><h2>' + ic('buy', 18) + ' Buy with card</h2><button class="btn sm ghost" id="mb-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted" style="margin:6px 0 10px;font-size:13px">Card or bank → crypto, delivered to your own wallet address. MoonPay runs KYC and is the merchant of record; Blockle never sees your card.</p>' +
+      '<div class="field"><label>Asset</label><select id="mb-asset">' + allOpts + '</select></div>' +
+      '<div class="field"><label>Amount (USD, optional)</label><input id="mb-amt" inputmode="decimal" placeholder="100"></div>' +
+      '<div class="banner warn" style="margin:4px 0 10px"><span>' + ic('warn', 16) + '</span><div style="font-size:12px">BLOCK isn’t listed on MoonPay — use <b>Get BLOCK with a card</b> (buy USDC, then swap to BLOCK on the native DEX) from the Moon tab.</div></div>' +
+      '<button class="btn primary wide" id="mb-go"' + (feat.buy ? '' : ' disabled') + '>' + ic('buy', 15) + ' Continue to MoonPay</button>');
+    $('#mb-x').onclick = closeSheet;
+    $('#mb-go').onclick = function () {
+      var val = ($('#mb-asset') || {}).value || ''; var parts = val.split('|');
+      var c = parts[0], token = parts[1]; var native = token === 'native';
+      var amt = Number(($('#mb-amt') || {}).value) || 0;
+      closeSheet();
+      moonpayBuy(c, native ? c.toUpperCase() : token, native, amt > 0 ? amt : 0);
+    };
+  }
+  // C5 — GET BLOCK WITH A CARD: MoonPay doesn't list BLOCK, so buy USDC via
+  // MoonPay then swap USDC->BLOCK on the native DEX. A guided 2-step wizard.
+  function getBlockWithCardFlow(presetUsd) {
+    var feat = mpFeatures();
+    // USDC is listed on Solana + several EVM chains; default to Solana.
+    var CHAINS = [['solana', 'Solana'], ['ethereum', 'Ethereum'], ['base', 'Base'], ['polygon', 'Polygon'], ['arbitrum', 'Arbitrum']];
+    var opts = CHAINS.filter(function (c) { return mpSupported(c[0], 'USDC', false); }).map(function (c) { return '<option value="' + esc(c[0]) + '">' + esc(c[1]) + '</option>'; }).join('');
+    openSheet('<div class="spread"><h2>' + ic('buy', 18) + ' Get BLOCK with a card</h2><button class="btn sm ghost" id="gb-x">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted" style="margin:6px 0 10px;font-size:13px">BLOCK isn’t sold directly by card. This two-step flow buys <b>USDC</b> with your card via MoonPay, then you swap USDC → BLOCK on the native DEX.</p>' +
+      '<ol class="dim" style="font-size:13px;margin:0 0 10px 18px;line-height:1.6"><li><b>Buy USDC</b> with your card (MoonPay, KYC, delivered to your wallet).</li><li><b>Swap USDC → BLOCK</b> on the Blockle DEX, signed on your device.</li></ol>' +
+      '<div class="field"><label>Chain to receive USDC</label><select id="gb-chain">' + opts + '</select></div>' +
+      '<div class="field"><label>Amount (USD)</label><input id="gb-amt" inputmode="decimal" value="' + (presetUsd || 50) + '"></div>' +
+      '<button class="btn primary wide" id="gb-step1"' + (feat.buy ? '' : ' disabled') + '>Step 1 · Buy USDC with card</button>' +
+      '<button class="btn wide" id="gb-step2" style="margin-top:8px">Step 2 · Swap USDC → BLOCK</button>');
+    $('#gb-x').onclick = closeSheet;
+    $('#gb-step1').onclick = function () {
+      var chain = ($('#gb-chain') || {}).value || 'solana';
+      var usd = Number(($('#gb-amt') || {}).value) || 50;
+      if (!window.MoonPay) { toast('Buy unavailable', 'bad'); return; }
+      chainAddress(chain).then(function (addr) {
+        return MoonPay.getBlockWithCard({ chain: chain, walletAddress: addr, usdAmount: usd, redirectURL: mpRedirect('buy'), fetchFn: fetch });
+      }).then(function (plan) {
+        if (!plan || !plan.ok || !plan.step1 || !plan.step1.url) { toast('Couldn’t start the USDC buy', 'bad'); return; }
+        toast('Opening MoonPay for USDC…', '', 'buy'); mpOpen(plan.step1.url);
+      }).catch(function (e) { toast('Buy failed: ' + (e.message || e), 'bad'); });
+    };
+    $('#gb-step2').onclick = function () { closeSheet(); location.hash = '#moon'; };
   }
 
   /* ---------------- boot ---------------- */
@@ -194,6 +312,7 @@
 
   function boot() {
     registerSW();
+    bootMoonpay();
     // One-time repair: an earlier build could persist a testnet `apiBase`, which makes
     // BLOCK + token balances read the testnet chain and show 0 for a mainnet address.
     // The web wallet has no legitimate testnet endpoint, so drop a stale testnet value.
@@ -1341,12 +1460,13 @@
       '<div class="statline"><div class="stat"><div class="n num" id="pf-chains">—</div><div class="l">networks</div></div>' +
       '<div class="stat"><div class="n num" id="pf-assets">—</div><div class="l">assets held</div></div>' +
       '<div class="stat"><div class="n">' + (S.pro ? '<span class="good">On</span>' : '<span class="dim">Off</span>') + '</div><div class="l">Pro analytics</div></div></div>' +
-      '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">' + ic('send', 16) + ' Send</a><a class="btn" href="#receive">' + ic('receive', 16) + ' Receive</a><a class="btn" href="#swap">' + ic('swap', 16) + ' Swap</a><a class="btn" href="#agent">' + ic('agent', 16) + ' Ask the agent</a></div></div>' +
+      '<div class="wrap" style="margin-top:14px"><a class="btn primary" href="#send">' + ic('send', 16) + ' Send</a><a class="btn" href="#receive">' + ic('receive', 16) + ' Receive</a><button class="btn" id="pf-buy">' + ic('buy', 16) + ' Buy</button><a class="btn" href="#swap">' + ic('swap', 16) + ' Swap</a><a class="btn" href="#agent">' + ic('agent', 16) + ' Ask the agent</a></div></div>' +
       '<div class="card"><div class="sechead"><h2>Holdings</h2><div class="row" style="gap:6px"><button class="btn sm ghost" id="pf-refresh" title="Refresh">' + ic('refresh', 15) + '</button><a class="btn sm ghost" href="#assets">All assets</a></div></div>' +
       '<div class="dim mono" id="pf-addr" style="font-size:11px;margin-bottom:8px;word-break:break-all"></div>' +
       '<div id="pf-list" class="list"><div class="empty">Loading balances…</div></div><div id="pf-errs" class="dim" style="font-size:11px;margin-top:8px"></div></div>' +
       (S.pro ? '' : proNudge('Unlock allocation charts, P&L history and price alerts with Pro.'));
     $('#pf-refresh').onclick = function () { loadPortfolio(true); };
+    if ($('#pf-buy')) $('#pf-buy').onclick = function () { moonpayBuySheet(S.chain); };
     loadPortfolio();
   };
   // PROGRESSIVE portfolio: BLOCK renders first and every other network is added
@@ -1472,11 +1592,22 @@
       var acts = [];
       acts.push('<a class="btn primary" href="#send" id="ai-send">' + ic('send', 15) + ' Send</a>');
       acts.push('<a class="btn" href="#receive" id="ai-recv">' + ic('receive', 15) + ' Receive</a>');
+      // S1/S2 — MoonPay BUY + SELL for assets MoonPay lists. BLOCK is deliberately
+      // absent, so for native BLOCK we offer the C5 "Get BLOCK with a card" guided
+      // flow (buy USDC, then swap to BLOCK on the native DEX) instead.
+      var feat = mpFeatures();
+      var mpBuyable = mpSupported(chain, symbol, native);
+      if (mpBuyable && feat.buy) acts.push('<button class="btn" id="ai-buy">' + ic('buy', 15) + ' Buy with card</button>');
+      if (mpBuyable && feat.sell) acts.push('<button class="btn" id="ai-sell">' + ic('receive', 15) + ' Cash out</button>');
+      if (!mpBuyable && chain === 'block' && native) acts.push('<button class="btn" id="ai-getblock">' + ic('buy', 15) + ' Get BLOCK with a card</button>');
       if (!native) acts.push('<button class="btn" id="ai-swap">' + ic('swap', 15) + ' Swap</button>');
       var explorerHref = native ? ('/explorer/address/' + encodeURIComponent(addr)) : ('/token/' + encodeURIComponent(cid));
       acts.push('<a class="btn ghost" href="' + explorerHref + '" target="_blank">' + ic('external', 15) + ' Explorer</a>');
 
       body.innerHTML = head + '<div class="list" style="margin:10px 0">' + rows + '</div><div id="ai-usd" class="dim" style="font-size:13px;min-height:16px"></div><div class="wrap" style="margin-top:12px">' + acts.join('') + '</div>';
+      if ($('#ai-buy')) $('#ai-buy').addEventListener('click', function () { closeSheet(); moonpayBuy(chain, symbol, native, 0); });
+      if ($('#ai-sell')) $('#ai-sell').addEventListener('click', function () { closeSheet(); moonpaySell(chain, symbol, native, (!native && bal > 0) ? bal : 0); });
+      if ($('#ai-getblock')) $('#ai-getblock').addEventListener('click', function () { closeSheet(); getBlockWithCardFlow(); });
       if ($('#ai-copy')) $('#ai-copy').addEventListener('click', function () { copy(cid); });
       if ($('#ai-swap')) $('#ai-swap').addEventListener('click', function () { S._swapPrefill = cid; closeSheet(); S.chain = chain; location.hash = '#swap'; });
       if ($('#ai-recv')) $('#ai-recv').addEventListener('click', function () { closeSheet(); S.chain = chain; });
@@ -1840,7 +1971,9 @@
 
   VIEWS.activity = function (v) {
     v.innerHTML = '<div class="card"><div class="sechead"><h2>Activity · ' + esc(S.chain.toUpperCase()) + '</h2><a class="btn sm ghost" href="/explorer/address/' + encodeURIComponent(S.address) + '" target="_blank">Explorer ↗</a></div>' +
-      '<div id="ac-body" class="list"><div class="empty">Loading activity…</div></div></div>';
+      '<div id="ac-body" class="list"><div class="empty">Loading activity…</div></div></div>' +
+      '<div class="card" id="ac-moonpay-card" style="display:none"><div class="sechead"><h2>' + ic('buy', 16) + ' MoonPay</h2><span class="dim" style="font-size:12px">card buys · cash-outs · swaps</span></div><div id="ac-moonpay" class="list"></div></div>';
+    renderMoonpayActivity();
     (async function () {
       try {
         var addr = await chainAddress(S.chain); var acct = null;
@@ -1854,6 +1987,23 @@
       } catch (e) { $('#ac-body').innerHTML = '<div class="empty">Could not load activity.</div>'; }
     })();
   };
+  // S4 STATUS — the user's recent MoonPay transactions: redirect-callback records
+  // captured on widget return, plus (when signed in) the authed /swap transactions
+  // poll. Shown as its own card under the on-chain activity.
+  function renderMoonpayActivity() {
+    if (!window.MoonPay) return;
+    MoonPay.status({ poll: !!S.user, limit: 15, fetchFn: fetch }).then(function (txns) {
+      var card = $('#ac-moonpay-card'), box = $('#ac-moonpay'); if (!card || !box) return;
+      if (!txns || !txns.length) { card.style.display = 'none'; return; }
+      card.style.display = '';
+      box.innerHTML = txns.map(function (t) {
+        var kind = t.type === 'sell' ? 'Cash out' : t.type === 'swap' ? 'Swap' : 'Buy';
+        var st = String(t.status || 'pending');
+        var cls = /complete|success/i.test(st) ? 'good' : /fail|cancel/i.test(st) ? 'bad' : 'dim';
+        return '<div class="li"><span class="ico">' + ic('buy', 16) + '</span><span class="col" style="align-items:flex-start"><b>' + esc(kind) + ' ' + esc(String(t.asset || '').toUpperCase()) + (t.amountUsd ? ' · ' + fmtUsd(t.amountUsd) : '') + '</b><span class="dim" style="font-size:12px">' + esc(st) + ' · ' + agoShort(t.at) + '</span></span></div>';
+      }).join('');
+    }).catch(function () {});
+  }
 
   /* ---------------- AGENT ---------------- */
   VIEWS.agent = function (v) {
@@ -2082,6 +2232,16 @@
   }
   function laneLabel(id) { var l = botLanes().filter(function (x) { return x.id === id; })[0]; return l ? l.name : (id || '—'); }
   function laneBase(id) { var l = botLanes().filter(function (x) { return x.id === id; })[0]; return l ? l.base : 'USDC'; }
+  function laneChain(id) { var l = botLanes().filter(function (x) { return x.id === id; })[0]; return (l && l.chain) || id; }
+  // Resolve a lane's trading currency to a MoonPay-buyable asset (for C1 top-ups).
+  // Returns { chain, symbol, native, buyable }. BLOCK-lane base (USDB) isn't on
+  // MoonPay -> not buyable (the UI routes to Get-BLOCK-with-a-card instead).
+  function mpAssetForLane(lane) {
+    var chain = laneChain(lane), base = String(laneBase(lane) || '').toUpperCase();
+    var nativeOk = mpSupported(chain, base, true);
+    var tokenOk = mpSupported(chain, base, false);
+    return { chain: chain, symbol: base, native: nativeOk && !tokenOk, buyable: nativeOk || tokenOk };
+  }
   function pnlClass(v) { return v > 0 ? 'good' : v < 0 ? 'bad' : 'dim'; }
   function fmtSigned(v) { var n = Number(v) || 0; return (n > 0 ? '+' : '') + fmtUsd(n); }
   function agoShort(t) { if (!t) return '—'; var s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; }
@@ -2520,11 +2680,21 @@
       '<h3 style="margin:8px 0 4px;font-size:14px">Open deals</h3><div class="list">' + open + '</div>' +
       '<h3 style="margin:12px 0 4px;font-size:14px">Recent closes</h3><div class="list">' + closed + '</div>' +
       '<h3 style="margin:12px 0 4px;font-size:14px">Ticker</h3><div class="list ticker">' + feed + '</div>' +
-      '<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" id="bd-tick">Tick now</button>' + (d.enabled ? '<button class="btn sm ghost" id="bd-stop">⏸ Stop</button>' : '') + ((d.activeDeals || []).length ? '<button class="btn sm ghost" id="bd-flatten">⏹ Stop &amp; flatten</button>' : '') + '<button class="btn sm ghost" id="bd-export">Export template</button>' + (d.status === 'halted' ? '<button class="btn sm primary" id="bd-resume">Resume</button>' : '') + '</div>');
+      '<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" id="bd-tick">Tick now</button>' + (d.enabled ? '<button class="btn sm ghost" id="bd-stop">⏸ Stop</button>' : '') + ((d.activeDeals || []).length ? '<button class="btn sm ghost" id="bd-flatten">⏹ Stop &amp; flatten</button>' : '') + '<button class="btn sm ghost" id="bd-export">Export template</button>' +
+      // C4 CASH-OUT GAINS: realized profit -> one-tap MoonPay sell of the lane's
+      // trading asset, pre-filled with the gain. Only when MoonPay lists the asset.
+      ((d.realizedUsd > 0 && mpAssetForLane(d.lane).buyable && mpFeatures().sell) ? '<button class="btn sm" id="bd-cashout">' + ic('buy', 14) + ' Cash out ' + fmtUsd(d.realizedUsd) + '</button>' : '') +
+      (d.status === 'halted' ? '<button class="btn sm primary" id="bd-resume">Resume</button>' : '') + '</div>');
     $('#bd-x').onclick = closeSheet;
     $('#bd-tick').onclick = function () { runner.tickNow(id).then(function () { closeSheet(); renderBotList(); botDetailSheet(id); }); };
     $('#bd-export').onclick = function () {
       try { var t = AgentBotTemplates.exportBot(b); var blob = new Blob([JSON.stringify(t, null, 2)], { type: 'application/json' }); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (b.name || 'bot').replace(/[^a-z0-9]+/gi, '-') + '.blockle-bot.json'; a.click(); toast('Template exported', 'good'); } catch (e) { toast('Export failed', 'bad'); }
+    };
+    if ($('#bd-cashout')) $('#bd-cashout').onclick = function () {
+      var mpa = mpAssetForLane(d.lane); closeSheet();
+      chainAddress(mpa.chain).then(function (addr) {
+        return MoonPay.cashOutGains({ chain: mpa.chain, symbol: mpa.native ? undefined : mpa.symbol, native: mpa.native, walletAddress: addr, gainAmount: d.realizedUsd, redirectURL: mpRedirect('sell'), fetchFn: fetch });
+      }).then(function (r) { if (!r || !r.ok) { toast('Cash out unavailable for ' + mpa.symbol, 'bad'); return; } toast('Opening MoonPay to cash out…', '', 'buy'); mpOpen(r.url); }).catch(function (e) { toast('Cash out failed: ' + (e.message || e), 'bad'); });
     };
     if ($('#bd-resume')) $('#bd-resume').onclick = function () { runner.resume(id).then(function () { closeSheet(); _botListSig = ''; renderBotList(); }); };
     if ($('#bd-stop')) $('#bd-stop').onclick = function () { runner.pause(id).then(function () { toast('⏸ Bot stopped'); closeSheet(); _botListSig = ''; renderBotList(); }); };
@@ -2549,6 +2719,8 @@
       '<div id="nb-adv-dca"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Base order $</label><input id="nb-base" inputmode="decimal" value="30"></div><div class="field" style="flex:1"><label>Safety orders</label><input id="nb-so" inputmode="numeric" value="3"></div><div class="field" style="flex:1"><label>Step %</label><input id="nb-step" inputmode="decimal" value="3"></div></div>' +
       '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Take profit %</label><input id="nb-tp" inputmode="decimal" value="6"></div><div class="field" style="flex:1"><label>Trailing %</label><input id="nb-trail" inputmode="decimal" value="2"></div><div class="field" style="flex:1"><label>Stop loss %</label><input id="nb-sl" inputmode="decimal" value="15"></div></div>' +
       '<div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Start</label><select id="nb-start"><option value="asap">ASAP</option><option value="dip">On a dip</option></select></div><div class="field" style="flex:1"><label>Dip %</label><input id="nb-dip" inputmode="decimal" value="2"></div><div class="field" style="flex:1"><label>Time stop (h)</label><input id="nb-tstop" inputmode="numeric" value="48"></div></div></div>' +
+      // C2 FIAT AUTO-DCA: a recurring card buy preset wired alongside the DCA bot.
+      '<div id="nb-dca-fiat" style="display:none;margin-bottom:10px"><div class="row" style="gap:8px;align-items:flex-end"><div class="field" style="flex:1"><label>Fund with a recurring card buy (USD/week)</label><input id="nb-fiat-weekly" inputmode="decimal" placeholder="25"></div><button class="btn sm" id="nb-fiat-go" style="margin-bottom:2px">' + ic('buy', 14) + ' Set up weekly buy</button></div><div class="hint dim" style="font-size:12px">Buys the lane’s asset by card every week (MoonPay) to feed this DCA bot. Opens in a new tab; card/KYC handled by MoonPay.</div></div>' +
       '<div id="nb-candle-wrap"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Smart exit on candles</label><select id="nb-candle"><option value="on" selected>On — bank profit on a reversal</option><option value="off">Off — fixed take-profit only</option></select></div><div class="field" style="flex:1"><label>Candle</label><select id="nb-csec"><option value="60">1 min</option><option value="120" selected>2 min</option><option value="300">5 min</option><option value="900">15 min</option></select></div><div class="field" style="flex:1"><label>Arm above +%</label><input id="nb-cmin" inputmode="decimal" value="2"></div></div>' +
       '<div class="hint dim" style="font-size:12px;margin:-6px 0 10px">Once a deal is up by the arm level, a red close below the last candle\'s low, a long upper wick, an EMA cross-down or giving back half the gain takes the profit — no waiting for a fixed target.</div></div>' +
       '<div id="nb-adv-grid" style="display:none"><div class="row" style="gap:8px"><div class="field" style="flex:1"><label>Range ± %</label><input id="nb-range" inputmode="decimal" value="6"></div><div class="field" style="flex:1"><label>Rungs</label><input id="nb-rungs" inputmode="numeric" value="10"></div><div class="field" style="flex:1"><label>Grid stop %</label><input id="nb-gsl" inputmode="decimal" value="12"></div></div></div>' +
@@ -2606,6 +2778,7 @@
       $('#nb-pair-wrap').style.display = needsPair ? '' : 'none';
       if (needsPair && (!$('#nb-pair').value || /\/[A-Z]+$/.test($('#nb-pair').value))) $('#nb-pair').value = ($('#nb-pair').value.split('/')[0] || 'TOKEN') + '/' + base;
       $('#nb-adv-dca').style.display = (type === 'dca' || type === 'signal') ? '' : 'none';
+      if ($('#nb-dca-fiat')) $('#nb-dca-fiat').style.display = (type === 'dca' && mpAssetForLane(lane).buyable && mpFeatures().buy) ? '' : 'none';
       $('#nb-candle-wrap').style.display = (type === 'dca' || type === 'signal' || type === 'smarttrade') ? '' : 'none';
       $('#nb-adv-grid').style.display = type === 'grid' ? '' : 'none';
       $('#nb-adv-smart').style.display = type === 'smarttrade' ? '' : 'none';
@@ -2623,6 +2796,17 @@
     }
     $('#nb-type').onchange = syncUi; $('#nb-lane').onchange = function () { syncUi(); fillHeld(); }; $('#nb-mode').onchange = syncUi; if ($('#nb-rank')) $('#nb-rank').onchange = syncUi;
     $('#nb-held').onchange = function () { if ($('#nb-held').value) $('#nb-pair').value = $('#nb-held').value; };
+    if ($('#nb-fiat-go')) $('#nb-fiat-go').onclick = function () {
+      var lane = $('#nb-lane').value, mpa = mpAssetForLane(lane);
+      var weekly = Number(($('#nb-fiat-weekly') || {}).value) || 25;
+      if (!mpa.buyable) { toast(mpa.symbol + ' can’t be bought by card', 'bad'); return; }
+      chainAddress(mpa.chain).then(function (addr) {
+        return MoonPay.recurringBuyPreset({ chain: mpa.chain, symbol: mpa.native ? undefined : mpa.symbol, native: mpa.native, walletAddress: addr, weeklyUsd: weekly, redirectURL: mpRedirect('buy'), fetchFn: fetch });
+      }).then(function (r) {
+        if (!r || !r.ok) { toast('Recurring buy unavailable', 'bad'); return; }
+        toast('Opening MoonPay — your weekly ' + mpa.symbol + ' buy funds this DCA bot', '', 'buy'); mpOpen(r.url);
+      }).catch(function (e) { toast('Recurring buy failed: ' + (e.message || e), 'bad'); });
+    };
     $('#nb-backtest').onclick = function () {
       var type = $('#nb-type').value; if (!isRegType(type)) return;
       var lane = $('#nb-lane').value, base = laneBase(lane);
@@ -2713,6 +2897,7 @@
       '<div style="background:rgba(255,99,99,.12);border:1px solid var(--bad);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><b>' + mi('live', 14) + ' Keep this page open.</b> A live bot trades only while the wallet is open on this device — your keys never leave it. Closing or backgrounding the tab pauses it.</div>' +
       '<div id="al-avail" style="background:var(--card2);border-radius:12px;padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.45"><span class="dim">Checking your ' + esc(base) + ' on ' + esc(laneLabel(lane)) + '…</span></div>' +
       '<div class="field" style="margin-top:12px"><label>Allocation cap (USD)</label><input id="al-alloc" inputmode="decimal" placeholder="50"><div class="hint dim" style="font-size:12px;margin-top:4px" id="al-hint"></div></div>' +
+      '<div id="al-topup" style="margin-bottom:10px"></div>' +
       '<button class="btn primary wide" id="al-go">Arm live</button>');
     $('#al-x').onclick = closeSheet;
     var avail = null;
@@ -2728,8 +2913,31 @@
     }).catch(function (e) { var el = $('#al-avail'); if (el) el.innerHTML = '<span class="dim">Could not read your ' + esc(base) + ' balance on ' + esc(laneLabel(lane)) + ' (' + esc(e && e.message || e) + '). You can still set a cap.</span>'; });
     function hint() {
       var h = $('#al-hint'); if (!h) return; var alloc = Number($('#al-alloc').value);
+      var tu = $('#al-topup'); if (tu) tu.innerHTML = '';
       if (!(alloc > 0) || !avail || avail.usd == null) { h.textContent = ''; return; }
-      h.innerHTML = alloc > avail.usd ? '<span class="bad">Cap is above what you hold (≈ ' + fmtUsd(avail.usd) + ' ' + esc(avail.base) + ') — the bot can only deploy what is there.</span>' : 'Up to ' + Math.round(alloc / avail.usd * 100) + '% of your ' + esc(avail.base) + ' on ' + esc(laneLabel(lane)) + '.';
+      var over = alloc > avail.usd;
+      h.innerHTML = over ? '<span class="bad">Cap is above what you hold (≈ ' + fmtUsd(avail.usd) + ' ' + esc(avail.base) + ') — the bot can only deploy what is there.</span>' : 'Up to ' + Math.round(alloc / avail.usd * 100) + '% of your ' + esc(avail.base) + ' on ' + esc(laneLabel(lane)) + '.';
+      // C1 FUND-A-BOT: if the cap exceeds holdings, offer a one-tap card top-up of
+      // exactly the shortfall; on return the user can arm the bot with funds in place.
+      if (over && tu) {
+        var shortfall = Math.ceil(alloc - avail.usd);
+        var asset = mpAssetForLane(lane);
+        var feat = mpFeatures();
+        if (asset.buyable && feat.buy) {
+          tu.innerHTML = '<button class="btn wide" id="al-topup-go">' + ic('buy', 15) + ' Top up $' + shortfall + ' ' + esc(asset.symbol) + ' with card</button>';
+          $('#al-topup-go').onclick = function () {
+            chainAddress(asset.chain).then(function (addr) {
+              return MoonPay.topUpShortfall({ chain: asset.chain, symbol: asset.native ? undefined : asset.symbol, native: asset.native, walletAddress: addr, shortfallUsd: shortfall, redirectURL: mpRedirect('buy', 'arm:' + id), fetchFn: fetch });
+            }).then(function (r) {
+              if (!r || !r.ok) { toast('Top-up unavailable for ' + asset.symbol, 'bad'); return; }
+              toast('Opening MoonPay — arm the bot once ' + asset.symbol + ' arrives', '', 'buy'); mpOpen(r.url);
+            }).catch(function (e) { toast('Top-up failed: ' + (e.message || e), 'bad'); });
+          };
+        } else if (lane === 'block') {
+          tu.innerHTML = '<button class="btn wide" id="al-topup-block">' + ic('buy', 15) + ' Get BLOCK/USDB with a card</button>';
+          $('#al-topup-block').onclick = function () { closeSheet(); getBlockWithCardFlow(Math.ceil(alloc - avail.usd)); };
+        }
+      }
     }
     $('#al-alloc').oninput = hint;
     $('#al-go').onclick = function () {
@@ -2769,12 +2977,13 @@
     ]);
   }
   VIEWS.moon = function (v) {
-    v.innerHTML = '<div class="card"><div class="spread"><div><div class="dim">Your BLOCK</div><div class="hero-bal num" id="mn-bal">—</div><div class="dim" style="font-size:12px" id="mn-balusd"></div></div><div class="col" style="align-items:flex-end;gap:6px"><a class="btn primary sm" href="/buy" target="_blank">Get BLOCK</a><a class="btn sm ghost" href="#receive">Receive</a></div></div></div>' +
+    v.innerHTML = '<div class="card"><div class="spread"><div><div class="dim">Your BLOCK</div><div class="hero-bal num" id="mn-bal">—</div><div class="dim" style="font-size:12px" id="mn-balusd"></div></div><div class="col" style="align-items:flex-end;gap:6px"><button class="btn primary sm" id="mn-getblock">Get BLOCK with a card</button><a class="btn sm ghost" href="#receive">Receive</a></div></div></div>' +
       '<div class="card"><div class="sechead"><h2>' + mi('launch', 17) + ' Moon</h2><span class="dim" style="font-size:12px" id="mn-meta"></span></div>' +
       '<div class="tabs" id="mn-tabs"><div class="tab" data-t="trending">Trending</div><div class="tab" data-t="new">New</div><div class="tab" data-t="gainers">Gainers</div><div class="tab" data-t="bags">My bags</div></div>' +
       '<div id="mn-list" class="list"><div class="empty">Loading the feed…</div></div>' +
       '<p class="dim" style="font-size:12px;margin-top:10px">Tap a token to buy with BLOCK in one step. Trades run on the native AMM, signed on your device. Microcaps can go to zero — never ape more than you can lose.</p></div>';
     $$('#mn-tabs .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-t') === MOON.tab); t.onclick = function () { MOON.tab = t.getAttribute('data-t'); $$('#mn-tabs .tab').forEach(function (x) { x.classList.toggle('active', x === t); }); renderMoonList(); }; });
+    if ($('#mn-getblock')) $('#mn-getblock').onclick = function () { getBlockWithCardFlow(); }; // C5
     moonRefreshWallet().then(renderMoonHeader);
     loadMoonFeed();
   };
@@ -2851,7 +3060,10 @@
       state.q = q;
       var short = q.blockIn > MOON.blockBal;
       box.innerHTML = 'Pay <b class="num">' + fmtAmt(q.blockIn, 4) + ' BLOCK</b> → get ≈ <b class="num">' + fmtAmt(q.tokensOut, 2) + ' ' + esc(t.symbol || '') + '</b><br><span class="dim">min ' + fmtAmt(Number(q.minOut) / Math.pow(10, t.decimals), 2) + ' · impact ' + (q.impactPct != null ? q.impactPct.toFixed(2) + '%' : '—') + '</span>' +
-        (short ? '<br><span class="bad">You need ' + fmtAmt(q.blockIn - MOON.blockBal, 4) + ' more BLOCK.</span>' : '') + (q.tooBig ? '<br><span class="bad">Too big for this pool — lower the amount.</span>' : '');
+        (short ? '<br><span class="bad">You need ' + fmtAmt(q.blockIn - MOON.blockBal, 4) + ' more BLOCK.</span> <button class="btn sm" id="mt-topup" style="margin-top:6px">' + ic('buy', 13) + ' Get BLOCK with a card</button>' : '') + (q.tooBig ? '<br><span class="bad">Too big for this pool — lower the amount.</span>' : '');
+      // C3/C6 — top-up & buy: if the wallet is short BLOCK for this buy, offer a
+      // one-tap card funding (buy USDC -> swap to BLOCK) pre-set to the shortfall.
+      if (short && $('#mt-topup')) $('#mt-topup').onclick = function () { var sfUsd = MOON.blockUsd > 0 ? Math.ceil((q.blockIn - MOON.blockBal) * MOON.blockUsd) : 50; getBlockWithCardFlow(sfUsd); };
       go.disabled = short || q.tooBig;
     }
     function sellQuote() {
@@ -2913,10 +3125,14 @@
       if (!S.user) { box.innerHTML = '<div class="card"><b>Sign in to upgrade</b><p class="muted" style="font-size:13px">Your Blockle account carries your plan across every wallet.</p><a class="btn primary wide" href="/account/login?next=/wallet%23pro">Sign in / create account</a></div>'; return; }
       var plans = (j && j.plans) || [];
       if (!plans.length) { box.innerHTML = '<div class="card"><b>Paid plans are coming soon.</b><p class="muted" style="font-size:13px">Billing isn\'t enabled on this deployment yet. Everything in Free works today.</p></div>'; return; }
+      // M1 — PRO IN CRYPTO: offered only when the live /config advertises commerce.
+      var payCrypto = mpFeatures().commerce && !!window.MoonPay;
       box.innerHTML = plans.map(function (p) {
         var feat = p.tier === 'copilot_pro';
         return '<div class="planbox ' + (feat ? 'feat' : '') + '"><b>' + esc(p.name) + '</b><div class="price">' + esc((p.ccy || '$') === 'USD' ? '$' + (p.price || '') : (p.price || '')) + '<span class="dim" style="font-size:14px;font-weight:500">/mo</span></div>' +
-          '<button class="btn primary wide" data-tier="' + esc(p.tier) + '">' + (S.tier === p.tier ? 'Current plan' : 'Choose ' + esc(p.name)) + '</button></div>';
+          '<button class="btn primary wide" data-tier="' + esc(p.tier) + '">' + (S.tier === p.tier ? 'Current plan' : 'Choose ' + esc(p.name)) + '</button>' +
+          ((payCrypto && S.tier !== p.tier) ? '<button class="btn ghost wide" style="margin-top:7px" data-crypto="' + esc(p.tier) + '" data-usd="' + esc(p.price || '') + '">' + ic('buy', 14) + ' Pay with crypto</button>' : '') +
+          '</div>';
       }).join('');
       $$('#pro-plans [data-tier]').forEach(function (b) {
         b.onclick = function () {
@@ -2930,9 +3146,43 @@
           }).catch(function () { toast('Checkout unavailable', 'bad'); });
         };
       });
+      // M1 — pay for Copilot / Copilot Pro in crypto via MoonPay Commerce. The entitlement flips
+      // ONLY when the server verifies MoonPay's webhook; here we just open the hosted checkout and
+      // poll /me so the UI updates once the grant lands. Never client-trusted.
+      $$('#pro-plans [data-crypto]').forEach(function (b) {
+        b.onclick = function () { payProWithCrypto(b.getAttribute('data-crypto'), Number(b.getAttribute('data-usd') || 0)); };
+      });
     }).catch(function () { $('#pro-plans').innerHTML = '<div class="card"><span class="muted">Plan info unavailable right now.</span></div>'; });
   };
   function featRow(label, f, p, cp) { var cell = function (x) { return x === '✓' ? mi('check', 14) : x; }; return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + cell(f) + '</td><td class="c good">' + cell(p) + '</td><td class="c good">' + cell(cp) + '</td></tr>'; }
+
+  // M1 — pay for Copilot / Copilot Pro in crypto via MoonPay Commerce. Creates a server checkout
+  // (product = the tier), opens the hosted crypto-checkout in a new tab, then polls the server for
+  // the grant. The entitlement is NEVER set here — only the verified MoonPay webhook flips the
+  // server-side sub, which loadTier() then reflects. We just poll status + refresh /me.
+  function payProWithCrypto(tier, usd) {
+    if (!window.MoonPay) { toast('Crypto checkout unavailable', 'bad'); return; }
+    if (!S.user) { location.href = '/account/login?next=/wallet%23pro'; return; }
+    if (!(usd > 0)) { toast('Price unavailable — try PayPal', 'bad'); return; }
+    toast('Starting crypto checkout…', '', 'buy');
+    MoonPay.commerceCheckout({ product: tier, amountUsd: usd, ccy: 'USD', fetchFn: fetch }).then(function (r) {
+      if (!r || !r.ok || !r.hostedUrl) {
+        if (r && r.status === 401) { toast('Sign in to pay with crypto', 'bad'); return; }
+        toast((r && r.body && r.body.error) || 'Could not start crypto checkout', 'bad'); return;
+      }
+      mpOpen(r.hostedUrl);
+      toast('Complete the payment in the MoonPay tab — your plan unlocks automatically.', 'good');
+      // Poll the server-verified grant (~5 min). Entitlement is server-side; we only refresh UI.
+      var tries = 0, id = r.checkoutId;
+      var poll = setInterval(function () {
+        tries++;
+        MoonPay.commerceStatus(id, fetch).then(function (s) {
+          if (s && s.body && s.body.granted) { clearInterval(poll); toast('Payment confirmed — ' + (tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') + ' unlocked.', 'good'); loadTier(); }
+        }).catch(function () {});
+        if (tries > 100) clearInterval(poll);
+      }, 3000);
+    }).catch(function () { toast('Crypto checkout unavailable', 'bad'); });
+  }
 
   /* ---------------- EXPORT A PRIVATE KEY (chain-specific, gated) ----------------
    * Reveals ONE chain's private key for the ACTIVE account. Gate: an explicit

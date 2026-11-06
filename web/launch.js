@@ -72,7 +72,14 @@
       $('preseedRow').style.display = 'none';
       fb.innerHTML = '<b>$' + fee + '</b> to launch (developer deploy &amp; listing service). You seed your own pool liquidity.';
     }
-    go.textContent = CFG.paymentsEnabled ? ('Pay $' + fee + ' & launch') : 'Launch (payments coming soon)';
+    go.textContent = CFG.paymentsEnabled ? ('Pay $' + fee + ' & launch') : (CFG.cryptoPayEnabled ? 'Pay with crypto & launch' : 'Launch (payments coming soon)');
+    if (!CFG.paymentsEnabled && CFG.cryptoPayEnabled) { go.onclick = function () { run(true); }; }
+    // M2 — show the "pay the fee in crypto" alternative when the launchpad advertises it.
+    var gc = $('goCrypto');
+    if (gc) {
+      gc.style.display = CFG.cryptoPayEnabled ? 'block' : 'none';
+      gc.textContent = 'Pay $' + fee + ' in crypto & launch';
+    }
     // promote add-on labels
     if (CFG.addonPrices) refreshPromotePrice();
   }
@@ -105,9 +112,39 @@
     throw new Error('payment timed out — if you paid, your fee is recorded; retry to continue');
   }
 
+  // ---- M2: pay the launch fee in CRYPTO (MoonPay Commerce) ----
+  // The grant is SERVER-VERIFIED: the accounts /moonpay/webhook records it, the launchpad
+  // settle endpoint confirms it server-to-server, then marks the order paid. The client never
+  // self-authorizes. Needs a signed-in Blockle account (the commerce endpoint is authed).
+  async function payOrderCrypto(payload, stepKey) {
+    if (!CFG || !CFG.cryptoPayEnabled) throw new Error('Crypto payment is not enabled yet.');
+    // 1. create a launch order (no PayPal) to get the fee + an id to settle against
+    var sr = await fetch('/api/launch/moonpay/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    var so = await sr.json().catch(function () { return {}; });
+    if (!sr.ok || !so.orderId) throw new Error(so.error || 'could not start the crypto payment');
+    // 2. create the MoonPay Commerce checkout against the accounts service (authed, same-origin)
+    var cr = await fetch('/account/api/moonpay/commerce', { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'include', body: JSON.stringify({ action: 'create', product: 'launch_fee', refId: so.orderId, amountUsd: so.usd, ccy: 'USD' }) });
+    var co = await cr.json().catch(function () { return {}; });
+    if (cr.status === 401) throw new Error('Sign in to your Blockle account to pay the fee in crypto.');
+    if (!cr.ok || !co.hostedUrl) throw new Error(co.error || 'could not open the crypto checkout');
+    var pop = window.open(co.hostedUrl, 'blockle_pay', 'width=460,height=720');
+    if (stepKey) setStep(stepKey, 'active', 'complete the $' + so.usd + ' crypto payment in the MoonPay window…');
+    // 3. poll the launchpad settle (which verifies the accounts grant) until it marks paid
+    var deadline = Date.now() + 15 * 60000;
+    while (Date.now() < deadline) {
+      await sleep(4000);
+      var pr = await fetch('/api/launch/moonpay/settle', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ orderId: so.orderId }) });
+      var pj = await pr.json().catch(function () { return {}; });
+      if (pr.ok && pj.ok) { try { pop && pop.close(); } catch (_) {} return Object.assign({ orderId: so.orderId }, pj); }
+      if (stepKey) setStep(stepKey, 'active', 'waiting for the crypto payment to confirm…');
+    }
+    throw new Error('crypto payment timed out — if you paid, your fee is recorded; retry to continue');
+  }
+
   // ---- launch ----
-  $('go').onclick = run;
-  async function run() {
+  $('go').onclick = function () { run(false); };
+  if ($('goCrypto')) $('goCrypto').onclick = function () { run(true); };
+  async function run(useCrypto) {
     var err = $('err'); err.textContent = '';
     var name = $('name').value.trim(), symbol = $('symbol').value.trim();
     var decimals = parseInt($('decimals').value, 10);
@@ -119,7 +156,7 @@
     if (!name || !symbol || !supply) { err.textContent = 'Name, symbol and supply are required.'; return; }
     if (BigInt(seedToken) > BigInt(supply)) { err.textContent = 'Seed tokens cannot exceed total supply.'; return; }
     if (typeof window.blockle === 'undefined') { err.textContent = 'Launching a token needs the Blockle wallet extension (the Web Wallet can’t deploy contracts yet). Install it, then retry.'; return; }
-    if (!CFG || !CFG.paymentsEnabled) { err.textContent = 'Payments are not enabled yet — launches are paused.'; return; }
+    if (!CFG || (!CFG.paymentsEnabled && !(useCrypto && CFG.cryptoPayEnabled))) { err.textContent = 'Payments are not enabled yet — launches are paused.'; return; }
     // If taking the free preseed, make sure it actually goes into the pool.
     if (wantPreseed && BigInt(seedBlock) < BigInt(CFG.preseedBlock)) { seedBlock = String(CFG.preseedBlock); }
 
@@ -133,9 +170,11 @@
       setStep('connect', 'done', addr || '');
       var preSig = addr ? await utxoSig(addr) : null;
 
-      // 2. pay the launch fee (service charge)
+      // 2. pay the launch fee (service charge) — PayPal or, if chosen, crypto via MoonPay Commerce.
       setStep('pay', 'active');
-      var pay = await payOrder({ tier: 'launch', address: addr, preseed: !!wantPreseed }, 'pay');
+      var pay = useCrypto
+        ? await payOrderCrypto({ address: addr, preseed: !!wantPreseed }, 'pay')
+        : await payOrder({ tier: 'launch', address: addr, preseed: !!wantPreseed }, 'pay');
       var orderId = pay.orderId;
       setStep('pay', 'done', 'paid $' + (CFG.feeUsd) + (pay.preseedTxid ? ' · +' + CFG.preseedBlock + ' BLOCK preseed sent' : (pay.preseedNote ? ' · ' + pay.preseedNote : '')));
 

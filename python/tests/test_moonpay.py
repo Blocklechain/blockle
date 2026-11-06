@@ -19,6 +19,15 @@ import pytest
 from blockle import moonpay as M
 
 
+@pytest.fixture(autouse=True)
+def _reset_remote_config():
+    """Keep the module-level /config cache from leaking between tests (a Qt tab
+    constructed in another suite can populate it from the live server)."""
+    M.set_remote_config(None)
+    yield
+    M.set_remote_config(None)
+
+
 # --------------------------------------------------------------------------
 # key prefix -> base host
 # --------------------------------------------------------------------------
@@ -366,3 +375,212 @@ def test_signer_url_from_env(monkeypatch):
     monkeypatch.setenv(M.SIGNER_URL_ENV, "https://sign.blockle.org/moonpay")
     assert M.signer_url() == "https://sign.blockle.org/moonpay"
     assert M.signer_url("https://explicit") == "https://explicit"
+
+
+# --------------------------------------------------------------------------
+# remote /config — the live source of truth
+# --------------------------------------------------------------------------
+
+def _live_cfg(**over):
+    cfg = {"enabled": True, "live": True, "publishableKey": "pk_live_REMOTE",
+           "commercePublicKey": "pk_commerce_pub",
+           "features": {"buy": True, "sell": True, "swap": True, "commerce": True}}
+    cfg.update(over)
+    return cfg
+
+
+def test_load_remote_config_caches_and_drives_api_key(monkeypatch):
+    monkeypatch.delenv(M.API_KEY_ENV, raising=False)
+    got = M.load_remote_config(lambda url, timeout: _live_cfg(),
+                               endpoint="https://x/config")
+    assert got["publishableKey"] == "pk_live_REMOTE"
+    assert M.remote_config()["commercePublicKey"] == "pk_commerce_pub"
+    # /config is now the source of truth for the publishable key + base host
+    assert M.api_key() == "pk_live_REMOTE"
+    assert M.base_url() == M.LIVE_BASE
+    assert M.commerce_public_key() == "pk_commerce_pub"
+    # explicit override still wins over the remote key
+    assert M.api_key("pk_test_x") == "pk_test_x"
+
+
+def test_load_remote_config_failure_keeps_fallback(monkeypatch):
+    monkeypatch.delenv(M.API_KEY_ENV, raising=False)
+
+    def _boom(url, timeout):
+        raise RuntimeError("no network")
+
+    assert M.load_remote_config(_boom) is None
+    assert M.remote_config() is None
+    assert M.api_key() == M.DEFAULT_API_KEY  # sandbox fallback intact
+
+
+def test_feature_enabled_permissive_until_config_then_honors_flags():
+    # no config loaded -> permissive so the sandbox affordance still shows
+    assert M.feature_enabled("buy") is True
+    assert M.feature_enabled("swap") is True
+    M.set_remote_config(_live_cfg(features={"buy": True, "sell": False,
+                                            "swap": False, "commerce": True}))
+    assert M.feature_enabled("buy") is True
+    assert M.feature_enabled("sell") is False
+    assert M.feature_enabled("swap") is False
+    assert M.feature_enabled("commerce") is True
+
+
+def test_signer_url_pins_sign_endpoint_only_when_live():
+    # sandbox config -> stays unsigned (no endpoint pinned)
+    M.set_remote_config(_live_cfg(live=False, publishableKey="pk_test_x"))
+    assert M.signer_url() is None
+    # live config -> the pinned /sign endpoint
+    M.set_remote_config(_live_cfg())
+    assert M.signer_url() == M.SIGN_ENDPOINT
+
+
+# --------------------------------------------------------------------------
+# swap / commerce authed proxies (via an injected transport — no network)
+# --------------------------------------------------------------------------
+
+def _capture():
+    calls = []
+
+    def transport(url, payload, bearer, timeout):
+        calls.append({"url": url, "payload": payload, "bearer": bearer})
+        return {"ok": True, "status": 200, "body": []}
+
+    return calls, transport
+
+
+def test_swap_posts_proxy_payload():
+    calls, t = _capture()
+    M.swap("POST", "/v3/trades", body={"quoteId": "q1"}, query={"a": 1},
+           bearer="tok", transport=t)
+    assert calls[0]["url"] == M.SWAP_ENDPOINT
+    assert calls[0]["bearer"] == "tok"
+    assert calls[0]["payload"] == {"method": "POST", "path": "/v3/trades",
+                                   "query": {"a": 1}, "body": {"quoteId": "q1"}}
+
+
+def test_swap_rejects_bad_path():
+    with pytest.raises(ValueError):
+        M.swap("GET", "v3/no-leading-slash")
+
+
+def test_swap_quote_and_execute_wrappers():
+    calls, t = _capture()
+    M.swap_quote(sell_asset="usdc", buy_asset="eth", amount=100,
+                 bearer="tok", transport=t)
+    M.swap_execute(quote_id="q9", bearer="tok", transport=t)
+    assert calls[0]["payload"]["path"] == "/v3/currencies/quote"
+    assert calls[0]["payload"]["query"]["baseCurrencyAmount"] == 100
+    assert calls[1]["payload"]["method"] == "POST"
+    assert calls[1]["payload"]["body"]["quoteId"] == "q9"
+
+
+def test_commerce_checkout_posts_create_payload():
+    calls, t = _capture()
+    M.commerce_checkout(product="copilot", ref_id="r1", amount_usd=12,
+                        bearer="tok", transport=t)
+    p = calls[0]["payload"]
+    assert calls[0]["url"] == M.COMMERCE_ENDPOINT
+    assert p == {"action": "create", "product": "copilot", "refId": "r1",
+                 "amountUsd": 12, "ccy": "usd"}
+
+
+def test_status_merges_local_and_poll_newest_first():
+    def transport(url, payload, bearer, timeout):
+        return {"ok": True, "status": 200, "body": [
+            {"id": "b", "type": "buy", "status": "completed",
+             "currencyCode": "eth", "baseCurrencyAmount": 50, "createdAt": 200},
+        ]}
+
+    local = [{"id": "a", "type": "sell", "status": "pending",
+              "asset": "usdc", "amountUsd": 10, "at": 100}]
+    rows = M.status(bearer="tok", local=local, transport=transport)
+    assert [r["id"] for r in rows] == ["b", "a"]  # newest (createdAt 200) first
+    assert rows[0]["asset"] == "eth" and rows[0]["amountUsd"] == 50
+
+
+def test_status_dedupes_by_id():
+    def transport(url, payload, bearer, timeout):
+        return {"ok": True, "status": 200,
+                "body": [{"id": "x", "status": "completed", "at": 5}]}
+
+    local = [{"id": "x", "status": "pending", "at": 9}]
+    rows = M.status(bearer="tok", local=local, transport=transport)
+    assert len(rows) == 1 and rows[0]["id"] == "x"
+
+
+def test_status_no_poll_without_bearer():
+    rows = M.status(local=[{"id": "a", "at": 1}])
+    assert [r["id"] for r in rows] == ["a"]
+
+
+# --------------------------------------------------------------------------
+# creative helpers (C1–C6)
+# --------------------------------------------------------------------------
+
+def test_top_up_shortfall_rounds_up_and_builds_buy_url():
+    r = M.top_up_shortfall(chain="solana", symbol="USDC", wallet_address="sol1",
+                           shortfall_usd=42.1, api_key="pk_test_k")
+    assert r["ok"] and r["code"] == "usdc_sol" and r["amountUsd"] == "43"
+    q = parse_qs(urlsplit(r["url"]).query)
+    assert q["currencyCode"] == ["usdc_sol"]
+    assert q["baseCurrencyAmount"] == ["43"]
+    assert q["walletAddress"] == ["sol1"]
+
+
+def test_top_up_shortfall_unsupported_asset():
+    r = M.top_up_shortfall(chain="ethereum", symbol="SHIB", native_symbol="ETH",
+                           wallet_address="0x", shortfall_usd=10)
+    assert r["ok"] is False and r["code"] is None
+
+
+def test_top_up_shortfall_rejects_nonpositive():
+    r = M.top_up_shortfall(chain="solana", symbol="USDC", wallet_address="s",
+                           shortfall_usd=0)
+    assert r["ok"] is False
+
+
+def test_recurring_buy_preset_url_and_bot_spec():
+    r = M.recurring_buy_preset(chain="ethereum", symbol="USDC",
+                               native_symbol="ETH", wallet_address="0xabc",
+                               weekly_usd=25, api_key="pk_test_k")
+    assert r["ok"] and r["code"] == "usdc"
+    q = parse_qs(urlsplit(r["url"]).query)
+    assert q["recurringIntervalDays"] == ["7"]
+    assert q["baseCurrencyAmount"] == ["25"]
+    assert r["botSpec"] == {"type": "dca", "allocationUsd": 25.0,
+                            "cadence": "weekly", "chain": "ethereum",
+                            "symbol": "USDC"}
+
+
+def test_cash_out_gains_builds_sell_url():
+    r = M.cash_out_gains(chain="base", symbol="USDC", native_symbol="ETH",
+                         wallet_address="0xabc", gain_amount="12.5",
+                         api_key="pk_test_k")
+    assert r["ok"] and r["code"] == "usdc_base" and r["amountUsd"] == "12.5"
+    assert r["url"].startswith(M.SELL_SANDBOX_BASE)
+    q = parse_qs(urlsplit(r["url"]).query)
+    assert q["baseCurrencyCode"] == ["usdc_base"]
+    assert q["baseCurrencyAmount"] == ["12.5"]
+
+
+def test_cash_out_gains_no_gains():
+    r = M.cash_out_gains(chain="base", symbol="USDC", native_symbol="ETH",
+                         wallet_address="0xabc", gain_amount=0)
+    assert r["ok"] is False
+
+
+def test_get_block_with_card_two_step_plan():
+    r = M.get_block_with_card(wallet_address="0xabc", usd_amount=100,
+                              chain="ethereum", api_key="pk_test_k")
+    assert r["ok"] is True
+    assert r["step1"]["code"] == "usdc" and r["step1"]["amountUsd"] == "100"
+    q = parse_qs(urlsplit(r["step1"]["url"]).query)
+    assert q["currencyCode"] == ["usdc"]
+    assert r["step2"]["from"] == "USDC" and r["step2"]["to"] == "BLOCK"
+    assert "dex" in r["step2"]["dexUrl"]
+
+
+def test_get_block_with_card_rejects_nonpositive():
+    r = M.get_block_with_card(wallet_address="0xabc", usd_amount=0)
+    assert r["ok"] is False

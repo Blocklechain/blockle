@@ -4,12 +4,18 @@
 // per-bot kill). Everything reads the real persisted deal state; controls call
 // only the BotRunner's gated lifecycle methods.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../../agent/bots.dart' as b;
 import '../../agent/notify.dart' show formatQty;
+import '../../services/moonpay.dart';
+import '../../services/open_url.dart';
 import '../../state/bots_controller.dart';
+import '../../state/multichain_controller.dart';
+import '../accounts_screen.dart' show MoonPaySellScreen;
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
 
@@ -407,6 +413,15 @@ class DetailView extends StatelessWidget {
           const Eyebrow('Performance'),
           const SizedBox(height: 12),
           ...tileRows,
+          // C4 — one-tap CASH OUT of realized gains to fiat (MoonPay sell),
+          // pre-filled with the realized amount. Shown only when in profit.
+          if (realized > 0) ...[
+            const SizedBox(height: 14),
+            _CashOutButton(
+              amountLabel: moneyUsd(realized, sign: false),
+              onTap: () => _cashOutGains(context, bot, realized),
+            ),
+          ],
           const SizedBox(height: 18),
           SafetyNote(
             icon: Icons.shield_outlined,
@@ -425,6 +440,76 @@ class DetailView extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+
+  /// C4 — cash out realized gains to fiat via a MoonPay SELL of the bot's
+  /// profit/quote currency (a USD stablecoin), pre-filled with [realized]. The
+  /// MoonPay widget lets the user adjust the amount/chain; this wallet never
+  /// sees card or banking details.
+  Future<void> _cashOutGains(BuildContext context, b.Bot bot, num realized) async {
+    final mc = context.read<MultichainController>();
+    // Profit settles into the bot's profit currency (falling back to the pair's
+    // quote), which is a USD stablecoin — so realized USD ≈ the crypto amount.
+    var symbol = 'USDC';
+    final pc = bot.config['profitCurrency'];
+    if (pc is String && pc.trim().isNotEmpty) {
+      symbol = pc.trim().toUpperCase();
+    } else {
+      try {
+        symbol = b.splitPair(bot.pairs().first)[1];
+      } catch (_) {}
+    }
+    final chain = _cashOutChain(bot);
+    final acct = await mc.addressFor(chain);
+    final url = await moonpayCashOutGains(
+      config: mc.moonpayConfig,
+      chain: chain,
+      kind: 'erc20',
+      symbol: symbol,
+      walletAddress: acct?.address,
+      gainAmount: realized,
+    );
+    if (!context.mounted) return;
+    if (url == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cashing out $symbol isn’t available yet.')));
+      return;
+    }
+    if (kIsWeb) {
+      openExternal(url);
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => MoonPaySellScreen(url: url, assetLabel: symbol)),
+    );
+  }
+
+  /// Map the bot's lane to a wallet chain id for the cash-out sell (lane ids
+  /// mostly match; 'bsc' is the wallet's 'bnb'). Defaults to Ethereum.
+  String _cashOutChain(b.Bot bot) {
+    const laneToChain = {'bsc': 'bnb'};
+    final lane = bot.lane;
+    if (lane != null && lane.isNotEmpty) return laneToChain[lane] ?? lane;
+    return 'ethereum';
+  }
+}
+
+/// C4 — the "Cash out gains" action rendered under the performance tiles.
+class _CashOutButton extends StatelessWidget {
+  const _CashOutButton({required this.amountLabel, required this.onTap});
+  final String amountLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return BotButton(
+      label: 'Cash out $amountLabel to fiat',
+      icon: Icons.account_balance_outlined,
+      onPressed: onTap,
+      expand: true,
     );
   }
 }

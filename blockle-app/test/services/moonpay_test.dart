@@ -460,6 +460,332 @@ void main() {
     });
   });
 
+  group('remote config (fromJson / fromServer)', () {
+    test('fromJson maps keys + features and PINS endpoints to the origin', () {
+      final cfg = MoonPayConfig.fromJson(const {
+        'enabled': true,
+        'live': true,
+        'publishableKey': 'pk_live_ABC',
+        'commercePublicKey': 'pk_commerce_PUB',
+        'features': {'buy': true, 'sell': false, 'swap': true, 'commerce': false},
+      });
+      expect(cfg.apiKey, 'pk_live_ABC');
+      expect(cfg.isLive, isTrue);
+      expect(cfg.base, 'https://buy.moonpay.com');
+      expect(cfg.commercePublicKey, 'pk_commerce_PUB');
+      expect(cfg.signerUrl, 'https://blockle.org/account/api/moonpay/sign');
+      expect(cfg.swapUrl, 'https://blockle.org/account/api/moonpay/swap');
+      expect(cfg.commerceUrl, 'https://blockle.org/account/api/moonpay/commerce');
+      expect(cfg.featureBuy, isTrue);
+      expect(cfg.featureSell, isFalse);
+      expect(cfg.featureSwap, isTrue);
+      expect(cfg.featureCommerce, isFalse);
+    });
+    test('features default ON unless explicitly false; missing pk → default', () {
+      final cfg = MoonPayConfig.fromJson(const {'commercePublicKey': 'x'});
+      expect(cfg.apiKey, kMoonPayDefaultApiKey);
+      expect(cfg.featureBuy, isTrue);
+      expect(cfg.featureSell, isTrue);
+      expect(cfg.featureSwap, isTrue);
+      expect(cfg.featureCommerce, isTrue);
+    });
+    test('fromJson honours a custom origin for the pinned endpoints', () {
+      final cfg = MoonPayConfig.fromJson(const {'publishableKey': 'pk_test_x'},
+          origin: 'https://staging.example');
+      expect(cfg.signerUrl, 'https://staging.example/account/api/moonpay/sign');
+      expect(cfg.swapUrl, 'https://staging.example/account/api/moonpay/swap');
+    });
+    test('fromServer GETs /config and parses it', () async {
+      HttpReq? seen;
+      final cfg = await MoonPayConfig.fromServer(
+        origin: 'https://blockle.org',
+        send: (req) async {
+          seen = req;
+          return const HttpReply(200,
+              '{"enabled":true,"publishableKey":"pk_live_Z","commercePublicKey":"c","features":{"buy":true}}');
+        },
+      );
+      expect(seen!.method, 'GET');
+      expect(seen!.url, 'https://blockle.org/account/api/moonpay/config');
+      expect(cfg.apiKey, 'pk_live_Z');
+      expect(cfg.signerUrl, 'https://blockle.org/account/api/moonpay/sign');
+    });
+    test('fromServer falls back to the sandbox default on error', () async {
+      final cfg = await MoonPayConfig.fromServer(
+        send: (req) async => const HttpReply(500, 'boom'),
+      );
+      expect(cfg.apiKey, kMoonPayDefaultApiKey);
+      expect(cfg.isLive, isFalse);
+    });
+    test('fromServer falls back when the sender throws', () async {
+      final cfg = await MoonPayConfig.fromServer(
+        send: (req) async => throw Exception('offline'),
+      );
+      expect(cfg.apiKey, kMoonPayDefaultApiKey);
+    });
+  });
+
+  group('swap proxy (authed Trade-API relay)', () {
+    const cfg = MoonPayConfig(
+        swapUrl: 'https://blockle.org/account/api/moonpay/swap');
+    test('relays {method,path,query,body} and sets the bearer', () async {
+      HttpReq? seen;
+      final out = await moonpaySwap(
+        'GET',
+        '/v3/currencies',
+        config: cfg,
+        query: const {'limit': '5'},
+        bearer: 'tok123',
+        send: (req) async {
+          seen = req;
+          return const HttpReply(200, '{"ok":true}');
+        },
+      );
+      expect(out['ok'], isTrue);
+      expect(seen!.method, 'POST');
+      expect(seen!.url, 'https://blockle.org/account/api/moonpay/swap');
+      expect(seen!.headers['Authorization'], 'Bearer tok123');
+      final body = jsonDecode(seen!.body!) as Map<String, dynamic>;
+      expect(body['method'], 'GET');
+      expect(body['path'], '/v3/currencies');
+      expect(body['query'], {'limit': '5'});
+    });
+    test('omits the Authorization header when no bearer', () async {
+      HttpReq? seen;
+      await moonpaySwap('GET', '/v3/x', config: cfg, send: (req) async {
+        seen = req;
+        return const HttpReply(200, '{}');
+      });
+      expect(seen!.headers.containsKey('Authorization'), isFalse);
+    });
+    test('throws MoonPayServerException on non-2xx', () async {
+      expect(
+        () => moonpaySwap('GET', '/v3/x',
+            config: cfg, send: (req) async => const HttpReply(401, 'nope')),
+        throwsA(isA<MoonPayServerException>()),
+      );
+    });
+    test('swapQuote shapes the quote query', () async {
+      HttpReq? seen;
+      await moonpaySwapQuote(
+        config: cfg,
+        sellAsset: 'usdc',
+        buyAsset: 'eth',
+        amount: 100,
+        send: (req) async {
+          seen = req;
+          return const HttpReply(200, '{}');
+        },
+      );
+      final body = jsonDecode(seen!.body!) as Map<String, dynamic>;
+      expect(body['path'], '/v3/quote');
+      expect((body['query'] as Map)['sellAsset'], 'usdc');
+      expect((body['query'] as Map)['buyAsset'], 'eth');
+      expect((body['query'] as Map)['baseCurrencyAmount'], '100');
+    });
+  });
+
+  group('status (S4)', () {
+    test('moonpayTxnFromRedirect parses the callback params', () {
+      final t = moonpayTxnFromRedirect(
+          Uri.parse('https://blockle.org/done?transactionId=tx1&transactionStatus=completed&currencyCode=eth'));
+      expect(t, isNotNull);
+      expect(t!.id, 'tx1');
+      expect(t.status, 'completed');
+      expect(t.asset, 'eth');
+      expect(t.type, 'buy');
+    });
+    test('no transaction id → null', () {
+      expect(moonpayTxnFromRedirect(Uri.parse('https://x/done?foo=bar')), isNull);
+    });
+    test('local-only when no bearer (no poll)', () async {
+      var called = false;
+      final out = await moonpayStatus(
+        config: const MoonPayConfig(),
+        local: [
+          MoonPayTxn(id: 'a', type: 'buy', status: 'pending', at: DateTime.utc(2024)),
+        ],
+        send: (req) async {
+          called = true;
+          return const HttpReply(200, '{}');
+        },
+      );
+      expect(called, isFalse); // no bearer → never polls
+      expect(out.length, 1);
+      expect(out.first.id, 'a');
+    });
+    test('merges the authed poll, de-dupes by id, newest first', () async {
+      final out = await moonpayStatus(
+        config: const MoonPayConfig(
+            swapUrl: 'https://blockle.org/account/api/moonpay/swap'),
+        bearer: 'tok',
+        local: [
+          MoonPayTxn(id: 'a', type: 'buy', status: 'pending', at: DateTime.utc(2024, 1, 1)),
+        ],
+        send: (req) async => HttpReply(200, jsonEncode({
+          'transactions': [
+            {'id': 'b', 'flow': 'sell', 'status': 'completed', 'createdAt': '2024-06-01T00:00:00Z'},
+            {'id': 'a', 'flow': 'buy', 'status': 'completed', 'createdAt': '2024-01-01T00:00:00Z'},
+          ]
+        })),
+      );
+      expect(out.map((t) => t.id).toList(), ['b', 'a']); // newest first
+      expect(out.firstWhere((t) => t.id == 'a').status, 'completed'); // poll won
+    });
+    test('a failed poll yields the local set', () async {
+      final out = await moonpayStatus(
+        config: const MoonPayConfig(
+            swapUrl: 'https://blockle.org/account/api/moonpay/swap'),
+        bearer: 'tok',
+        local: const [MoonPayTxn(id: 'a', type: 'buy', status: 'pending')],
+        send: (req) async => const HttpReply(500, 'boom'),
+      );
+      expect(out.single.id, 'a');
+    });
+  });
+
+  group('creative helpers', () {
+    test('topUpShortfall ceils the USD amount into a buy url', () async {
+      final url = await moonpayTopUpShortfall(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        walletAddress: '0xabc',
+        shortfallUsd: 12.1,
+      );
+      expect(url, isNotNull);
+      expect(Uri.parse(url!).queryParameters['baseCurrencyAmount'], '13');
+      expect(Uri.parse(url).queryParameters['currencyCode'], 'eth');
+    });
+    test('topUpShortfall → null for BLOCK', () async {
+      final url = await moonpayTopUpShortfall(
+        config: const MoonPayConfig(),
+        chain: 'block',
+        walletAddress: 'blk1',
+        shortfallUsd: 10,
+      );
+      expect(url, isNull);
+    });
+    test('recurringBuyPreset returns a weekly DCA spec + a recurring url', () async {
+      final p = await moonpayRecurringBuyPreset(
+        config: const MoonPayConfig(),
+        chain: 'solana',
+        walletAddress: 'soADDR',
+        weeklyUsd: 24.2,
+      );
+      expect(p.botSpec['type'], 'dca');
+      expect(p.botSpec['cadence'], 'weekly');
+      expect(p.botSpec['allocationUsd'], 25.0); // ceil
+      expect(p.url, isNotNull);
+      expect(p.url!.contains('recurringBuyFrequency=weekly'), isTrue);
+      expect(Uri.parse(p.url!).queryParameters['currencyCode'], 'sol');
+    });
+    test('recurringBuyPreset still yields a spec when the asset is unsupported',
+        () async {
+      final p = await moonpayRecurringBuyPreset(
+        config: const MoonPayConfig(),
+        chain: 'block',
+        walletAddress: 'blk1',
+        weeklyUsd: 10,
+      );
+      expect(p.url, isNull);
+      expect(p.botSpec['type'], 'dca');
+    });
+    test('cashOutGains builds a sell url pre-filled with the gain', () async {
+      final url = await moonpayCashOutGains(
+        config: const MoonPayConfig(),
+        chain: 'ethereum',
+        kind: 'erc20',
+        symbol: 'USDC',
+        walletAddress: '0xabc',
+        gainAmount: 5.5,
+      );
+      expect(url, isNotNull);
+      final u = Uri.parse(url!);
+      expect(u.host, 'sell-sandbox.moonpay.com');
+      expect(u.queryParameters['baseCurrencyCode'], 'usdc');
+      expect(u.queryParameters['baseCurrencyAmount'], '5.5');
+    });
+    test('getBlockWithCard step 1 buys USDC on the chosen chain', () async {
+      final plan = await moonpayGetBlockWithCard(
+        config: const MoonPayConfig(),
+        walletAddress: 'soADDR',
+        usdAmount: 49.5,
+        usdcChain: 'solana',
+      );
+      expect(plan.ok, isTrue);
+      expect(plan.usdcSymbol, 'USDC');
+      expect(plan.usdAmount, 50.0); // ceil
+      final u = Uri.parse(plan.step1BuyUrl!);
+      expect(u.queryParameters['currencyCode'], 'usdc_sol');
+      expect(u.queryParameters['walletAddress'], 'soADDR');
+    });
+    test('getBlockWithCard not-ok with no address', () async {
+      final plan = await moonpayGetBlockWithCard(
+        config: const MoonPayConfig(),
+        walletAddress: '',
+        usdAmount: 50,
+      );
+      expect(plan.ok, isFalse);
+      expect(plan.reason, isNotNull);
+    });
+  });
+
+  group('commerce checkout (M1–M4)', () {
+    const cfg = MoonPayConfig(
+        commerceUrl: 'https://blockle.org/account/api/moonpay/commerce');
+    test('create posts the product/refId/amount and returns the checkout', () async {
+      HttpReq? seen;
+      final out = await moonpayCommerceCheckout(
+        config: cfg,
+        product: 'copilot',
+        refId: 'sub_1',
+        amountUsd: 12,
+        bearer: 'tok',
+        send: (req) async {
+          seen = req;
+          return const HttpReply(
+              200, '{"checkoutId":"ck_1","hostedUrl":"https://commerce/x"}');
+        },
+      );
+      expect(out.checkoutId, 'ck_1');
+      expect(out.hostedUrl, 'https://commerce/x');
+      expect(seen!.url, 'https://blockle.org/account/api/moonpay/commerce');
+      expect(seen!.headers['Authorization'], 'Bearer tok');
+      final body = jsonDecode(seen!.body!) as Map<String, dynamic>;
+      expect(body['action'], 'create');
+      expect(body['product'], 'copilot');
+      expect(body['refId'], 'sub_1');
+    });
+    test('status posts action:status and returns the status string', () async {
+      HttpReq? seen;
+      final s = await moonpayCommerceStatus(
+        config: cfg,
+        checkoutId: 'ck_1',
+        bearer: 'tok',
+        send: (req) async {
+          seen = req;
+          return const HttpReply(200, '{"status":"completed"}');
+        },
+      );
+      expect(s, 'completed');
+      final body = jsonDecode(seen!.body!) as Map<String, dynamic>;
+      expect(body['action'], 'status');
+      expect(body['checkoutId'], 'ck_1');
+    });
+    test('throws on a non-2xx commerce response', () async {
+      expect(
+        () => moonpayCommerceCheckout(
+          config: cfg,
+          product: 'nft',
+          refId: 'r',
+          amountUsd: 1,
+          send: (req) async => const HttpReply(403, 'no'),
+        ),
+        throwsA(isA<MoonPayServerException>()),
+      );
+    });
+  });
+
   group('moonpaySellAmount (held-balance pre-fill trimming)', () {
     test('positive whole and decimal balances pass through', () {
       expect(moonpaySellAmount('5'), '5');

@@ -40,8 +40,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QPainter,
+                           QPainterPath, QPen, QPolygonF)
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFrame, QGridLayout,
@@ -50,6 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import agent as agentpkg
+from . import moonpay
 from .icons import apply_button_icon, icon_html, svg_label
 from .agent import arena as arena_mod
 from .agent import bot_templates as templates_mod
@@ -793,6 +795,77 @@ class BotsController(QObject):
             if isinstance(caps, dict) and caps.get("sessionUsd") is not None:
                 return float(caps["sessionUsd"])
         return self.session_cap_usd
+
+    # ---- MoonPay helpers (fund-a-bot / cash-out) ----------------------------
+    def moonpay_quote_target(self, pair: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Best-effort resolve a pair's QUOTE asset to a wallet chain MoonPay can
+        buy/sell: ``{chain, symbol, address, code, native_symbol}`` or ``None``.
+        Non-custodial: it only ever uses the user's OWN derived address for the
+        chain. Used by the fund-a-bot (C1) and cash-out (C4) hooks."""
+        try:
+            quote = bots_mod.split_pair(pair)[1] if pair else None
+        except Exception:
+            quote = None
+        if not quote:
+            return None
+        ctrl = self.ctrl
+        accts = getattr(ctrl, "accounts", {}) or {}
+        reg = getattr(ctrl, "registry", None)
+        for cid, acct in accts.items():
+            addr = getattr(acct, "address", None) if acct else None
+            if not addr:
+                continue
+            native_symbol = None
+            if reg is not None:
+                try:
+                    native_symbol = getattr(getattr(reg.get(cid), "native", None),
+                                            "symbol", None)
+                except Exception:
+                    native_symbol = None
+            code = moonpay.currency_code(cid, quote, native_symbol=native_symbol)
+            if code:
+                return {"chain": cid, "symbol": quote, "address": addr,
+                        "code": code, "native_symbol": native_symbol}
+        return None
+
+    def quote_held_usd(self, target: Dict[str, Any]) -> Optional[float]:
+        """Best-effort USD value of the held QUOTE balance for ``target`` (from
+        :meth:`moonpay_quote_target`). Stablecoins count 1:1; other assets use the
+        operator USD price map. Returns ``None`` when it cannot be determined
+        (caller then offers a top-up of the full allocation)."""
+        reg = getattr(self.ctrl, "registry", None)
+        if reg is None:
+            return None
+        sym = str(target.get("symbol") or "").upper()
+        try:
+            bals = reg.all_balances(target["chain"], target["address"])
+        except Exception:
+            return None
+        amount = None
+        for b in bals or []:
+            if getattr(b, "error", None):
+                continue
+            if str(getattr(b.asset, "symbol", "")).upper() == sym:
+                try:
+                    amount = float(getattr(b, "display", None))
+                except (TypeError, ValueError):
+                    amount = None
+                break
+        if amount is None:
+            return None
+        if sym in ("USDC", "USDT", "USDB", "DAI"):
+            return amount
+        price_map = {}
+        try:
+            price_map = {str(k).upper(): v for k, v in
+                         (self.ctrl.vault.price_usd_map() or {}).items()}
+        except Exception:
+            price_map = {}
+        px = price_map.get(sym)
+        try:
+            return amount * float(px) if px is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _emit(self, ev: Dict[str, Any]) -> None:
         # called on the AgentLoop thread -> queued signal to the UI thread.
@@ -2325,6 +2398,11 @@ class CreatePanel(QWidget):
                             network="testnet", mainnet_enabled=False)
         if dlg.exec() != QDialog.Accepted:
             return
+        # C1 FUND-A-BOT: if the pair's quote asset is MoonPay-buyable and the held
+        # balance looks short of the allocation, offer a one-tap card top-up of the
+        # shortfall before we arm. Non-blocking to arming: funding lands in the
+        # user's own wallet and the bot deploys within its cap as funds arrive.
+        self._offer_fund_bot(pair, alloc)
         spec = self._make_spec("live")
         bot = runner.add(spec)
 
@@ -2336,6 +2414,56 @@ class CreatePanel(QWidget):
         self.bc.run_async(runner.arm_live(bot.id, {"allocationUsd": alloc}),
                           on_done=lambda r: _done(r),
                           on_error=lambda e: QMessageBox.warning(self, "Go live refused", str(e)))
+
+    def _offer_fund_bot(self, pair, alloc):
+        """C1 — offer a MoonPay card top-up of the quote-asset shortfall. Silent
+        no-op unless buy is enabled AND the quote is MoonPay-buyable on a wallet
+        chain. Opens the (signed, in live mode) buy widget for exactly the
+        shortfall (rounded up), falling back to the full allocation when the held
+        balance cannot be read."""
+        if not moonpay.feature_enabled("buy"):
+            return
+        try:
+            target = self.bc.moonpay_quote_target(pair)
+        except Exception:
+            target = None
+        if not target:
+            return
+        held = self.bc.quote_held_usd(target)
+        shortfall = alloc if held is None else max(0.0, float(alloc) - float(held))
+        if shortfall <= 0:
+            return  # already funded
+        held_note = ("balance couldn't be read" if held is None
+                     else f"you hold about {plain_money(held)}")
+        if QMessageBox.question(
+            self, "Fund this bot with card",
+            f"This bot is allocated {plain_money(alloc)} in {target['symbol']} "
+            f"({held_note}).\n\nTop up about {plain_money(shortfall)} of "
+            f"{target['symbol']} with a card via MoonPay? It is delivered to your "
+            f"own {self.bc.ctrl.chain_label(target['chain'])} address — Blockle "
+            "never sees your card.",
+        ) != QMessageBox.Yes:
+            return
+        res = moonpay.top_up_shortfall(
+            chain=target["chain"], symbol=target["symbol"],
+            wallet_address=target["address"], shortfall_usd=shortfall,
+            native_symbol=target.get("native_symbol"))
+        if not res.get("ok"):
+            return
+        _open_moonpay_url(res["url"])
+
+
+def _open_moonpay_url(url):
+    """Sign (live mode, via /sign) then open a MoonPay widget URL in the browser.
+    Sandbox URLs open unsigned. Shared by the fund-a-bot (C1) and cash-out (C4)
+    bot hooks."""
+    try:
+        signed = moonpay.fetch_signed_url(url)
+        if signed:
+            url = signed
+    except Exception:
+        pass
+    QDesktopServices.openUrl(QUrl(url))
 
 
 # =========================================================================== #
@@ -2490,6 +2618,10 @@ class DetailPanel(QWidget):
         tw.setLayout(tiles)
         self.rv.addWidget(tw)
 
+        # C4 CASH-OUT GAINS: when realized profit is positive and its quote asset
+        # is MoonPay-sellable, offer a one-tap off-ramp of the gain to fiat.
+        self._maybe_cash_out(dash, realized)
+
         note = QLabel("Profit pop-ups are on. When a deal closes into a stablecoin in profit "
                       "you'll get a notification via the notify module.")
         note.setObjectName("note")
@@ -2572,6 +2704,45 @@ class DetailPanel(QWidget):
         v.setStyleSheet(f"font-size:21px; font-weight:800; font-family:{MONO};{color}")
         lay.addWidget(v)
         return f
+
+    def _maybe_cash_out(self, dash, realized):
+        """C4 — render a 'Cash out gains' button when realized > 0 and the quote
+        asset is sellable on MoonPay. Opens the off-ramp pre-filled with the gain."""
+        try:
+            gain = float(realized or 0)
+        except (TypeError, ValueError):
+            gain = 0.0
+        if gain <= 0 or not moonpay.feature_enabled("sell"):
+            return
+        try:
+            target = self.bc.moonpay_quote_target(_first_pair(dash))
+        except Exception:
+            target = None
+        if not target:
+            return
+        btn = QPushButton(f"Cash out {money(gain)} to your bank")
+        btn.setToolTip("Sell your realized gains for cash via MoonPay (off-ramp). "
+                       "Sent from your own wallet address; Blockle never sees your bank.")
+        btn.clicked.connect(lambda _=False, t=target, g=gain: self._cash_out(t, g))
+        self.rv.addWidget(btn)
+
+    def _cash_out(self, target, gain):
+        res = moonpay.cash_out_gains(
+            chain=target["chain"], symbol=target["symbol"],
+            wallet_address=target["address"], gain_amount=gain,
+            native_symbol=target.get("native_symbol"))
+        if not res.get("ok"):
+            QMessageBox.information(self, "Cash out", res.get("reason")
+                                    or "Nothing to cash out right now.")
+            return
+        if QMessageBox.question(
+            self, "Cash out gains",
+            f"Sell {res['amountUsd']} {target['symbol']} for cash via MoonPay?\n\n"
+            "MoonPay runs its own identity + payout flow and pays the cash to your "
+            "bank. You send from your own wallet address.",
+        ) != QMessageBox.Yes:
+            return
+        _open_moonpay_url(res["url"])
 
     # ---- control actions (all via the real runner) ----
     def _toggle_pause(self, bot_id, running, mode):

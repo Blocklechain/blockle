@@ -123,6 +123,13 @@
     if (opts.redirectURL) params.set('redirectURL', opts.redirectURL);
     if (opts.colorCode) params.set('colorCode', opts.colorCode);
     if (opts.theme) params.set('theme', opts.theme);
+    // Pass-through for extra widget params (e.g. recurring-buy flags). Additive.
+    if (opts.extraParams && typeof opts.extraParams === 'object') {
+      for (const k of Object.keys(opts.extraParams)) {
+        const v = opts.extraParams[k];
+        if (v != null && v !== '') params.set(k, String(v));
+      }
+    }
     return base + '?' + params.toString();
   }
 
@@ -192,7 +199,15 @@
       const Store = global.Store;
       if (Store && Store.get) saved = (await Store.get('moonpay')).moonpay || {};
     } catch {}
-    return Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    const cfg = Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    // Remote config (once loadRemoteConfig has run) is the source of truth for the
+    // live publishable key + pins the signing endpoint — UNLESS the user set an
+    // explicit override in Settings (saved.*), which always wins.
+    if (_remote && _remote.enabled) {
+      if (_remote.publishableKey && !(saved && saved.apiKey)) cfg.apiKey = _remote.publishableKey;
+      if (!(saved && saved.signingEndpoint)) cfg.signingEndpoint = SIGN_ENDPOINT;
+    }
+    return cfg;
   }
 
   async function saveConfig(patch) {
@@ -232,6 +247,7 @@
       baseCurrencyAmount: opts.baseCurrencyAmount,
       redirectURL: opts.redirectURL,
       theme: cfg.theme,
+      extraParams: opts.extraParams,
     });
     const url = await fetchSignedUrl(cfg.signingEndpoint, unsigned, opts.fetchFn);
     return { ok: true, url, code };
@@ -262,6 +278,323 @@
     return { ok: true, url, code };
   }
 
+  // ===========================================================================
+  // LIVE SERVER CONFIG (NET-NEW) — the accounts service is the source of truth.
+  //
+  // The hard-coded pk_test_* above is now only an OFFLINE FALLBACK. In production
+  // every client calls loadRemoteConfig() once on entry to pull the REAL
+  // pk_live_* publishable key + the commerce PUBLIC key + the feature flags from
+  // GET /account/api/moonpay/config (CORS-open, NO secrets). The signing / swap /
+  // commerce endpoints are PINNED to the accounts service — the secret key, the
+  // Trade-API key and the Commerce secret all stay server-side; a client only ever
+  // holds the two public keys. (SECURITY INVARIANT — see the header.)
+  // ===========================================================================
+  const SERVER_ORIGIN = 'https://blockle.org';
+  const CONFIG_ENDPOINT = SERVER_ORIGIN + '/account/api/moonpay/config';
+  const SIGN_ENDPOINT = SERVER_ORIGIN + '/account/api/moonpay/sign';
+  const SWAP_ENDPOINT = SERVER_ORIGIN + '/account/api/moonpay/swap';
+  const COMMERCE_ENDPOINT = SERVER_ORIGIN + '/account/api/moonpay/commerce';
+
+  // Cached remote config (null until loadRemoteConfig succeeds). Shape:
+  //   { enabled, live, publishableKey, commercePublicKey, features:{buy,sell,swap,commerce} }
+  let _remote = null;
+
+  function _fetch(fetchFn) {
+    return fetchFn || (typeof fetch !== 'undefined' ? fetch : null);
+  }
+
+  // Fetch + cache the server config. Best-effort: a missing server leaves _remote
+  // null and every client keeps working against the offline sandbox fallback.
+  async function loadRemoteConfig(fetchFn) {
+    const f = _fetch(fetchFn);
+    if (!f) return _remote;
+    try {
+      const res = await f(CONFIG_ENDPOINT, { method: 'GET' });
+      if (!res || !res.ok) return _remote;
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        _remote = {
+          enabled: !!data.enabled,
+          live: !!data.live,
+          publishableKey: String(data.publishableKey || ''),
+          commercePublicKey: String(data.commercePublicKey || ''),
+          features: Object.assign(
+            { buy: true, sell: true, swap: false, commerce: false },
+            data.features || {}
+          ),
+        };
+      }
+    } catch { /* keep the fallback */ }
+    return _remote;
+  }
+
+  function remoteConfig() { return _remote; }
+
+  // Is a MoonPay feature available? Before loadRemoteConfig runs we don't know, so
+  // we DEFAULT-ON (the sandbox fallback supports buy/sell) — once the server config
+  // is loaded the real flag gates the button (hide buy/sell/swap/commerce if off).
+  function feature(name) {
+    if (!_remote) return name === 'buy' || name === 'sell';
+    return !!(_remote.features && _remote.features[name]);
+  }
+
+  function commercePublicKey() { return _remote ? _remote.commercePublicKey : ''; }
+
+  // ===========================================================================
+  // SWAP (NET-NEW) — crypto<->crypto via the authed Trade-API proxy. The client
+  // NEVER holds the trade key; it POSTs { method, path, query, body } to the
+  // server's /moonpay/swap proxy, which injects the key. The endpoint is AUTHED,
+  // so the caller must pass a session { token } (bearer) or { credentials } cookie.
+  // Returns { ok, status, body }.
+  // ===========================================================================
+  async function swap(method, path, opts) {
+    opts = opts || {};
+    const f = _fetch(opts.fetchFn);
+    if (!f) return { ok: false, status: 0, body: null, reason: 'no-fetch' };
+    const headers = { 'content-type': 'application/json' };
+    if (opts.token) headers['authorization'] = 'Bearer ' + opts.token;
+    const init = {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        method: method === 'POST' ? 'POST' : 'GET',
+        path: String(path || ''),
+        query: opts.query || {},
+        body: opts.body || null,
+      }),
+    };
+    if (opts.credentials) init.credentials = opts.credentials;
+    try {
+      const res = await f(opts.endpoint || SWAP_ENDPOINT, init);
+      let body = null; try { body = await res.json(); } catch {}
+      return { ok: !!(res && res.ok), status: res ? res.status : 0, body };
+    } catch (e) {
+      return { ok: false, status: 0, body: null, reason: String(e && e.message || e) };
+    }
+  }
+
+  // Convenience: a Trade-API buy quote for sellAsset -> buyAsset of `amount`.
+  function swapQuote(opts) {
+    opts = opts || {};
+    return swap('GET', '/v3/currencies/' + encodeURIComponent(opts.sellAsset || '') + '/buy_quote', {
+      query: { quoteCurrencyCode: opts.buyAsset, baseCurrencyAmount: opts.amount },
+      token: opts.token, credentials: opts.credentials, fetchFn: opts.fetchFn, endpoint: opts.endpoint,
+    });
+  }
+
+  // Convenience: execute a trade from a prior quote.
+  function swapExecute(opts) {
+    opts = opts || {};
+    return swap('POST', '/v3/trades', {
+      body: opts.body || opts, token: opts.token, credentials: opts.credentials,
+      fetchFn: opts.fetchFn, endpoint: opts.endpoint,
+    });
+  }
+
+  // ===========================================================================
+  // STATUS (NET-NEW) — the user's recent MoonPay transactions + live state.
+  // Two tiers: (1) redirect-callback params we captured on widget return and
+  // persisted to Store (cheap, no auth); (2) an authed poll of /v3/transactions
+  // via the swap proxy (richer, needs a session). Returns a normalized list of
+  //   { id, type:'buy|sell|swap', status, asset, amountUsd, at }.
+  // ===========================================================================
+  const TXN_STORE_KEY = 'moonpay_txns';
+
+  async function recordedTxns() {
+    try {
+      const Store = global.Store;
+      if (Store && Store.get) {
+        const rec = (await Store.get(TXN_STORE_KEY))[TXN_STORE_KEY];
+        if (Array.isArray(rec)) return rec;
+      }
+    } catch {}
+    return [];
+  }
+
+  // Persist a transaction captured from a widget redirectURL callback. MoonPay
+  // appends params like transactionId / transactionStatus / baseCurrencyCode to the
+  // redirect — pass the full return URL (or a params object) and the kind of flow.
+  async function captureReturn(urlOrParams, type) {
+    let p = {};
+    try {
+      if (typeof urlOrParams === 'string') {
+        const qi = urlOrParams.indexOf('?');
+        const usp = new URLSearchParams(qi >= 0 ? urlOrParams.slice(qi + 1) : urlOrParams);
+        usp.forEach((v, k) => { p[k] = v; });
+      } else if (urlOrParams && typeof urlOrParams === 'object') {
+        p = urlOrParams;
+      }
+    } catch {}
+    const id = p.transactionId || p.transactionID || p.id || ('mp-' + Date.now());
+    const txn = {
+      id: String(id),
+      type: type || 'buy',
+      status: p.transactionStatus || p.status || 'pending',
+      asset: p.baseCurrencyCode || p.currencyCode || p.asset || '',
+      amountUsd: p.baseCurrencyAmount != null ? Number(p.baseCurrencyAmount) : null,
+      at: Date.now(),
+    };
+    try {
+      const Store = global.Store;
+      if (Store && Store.get && Store.set) {
+        const cur = await recordedTxns();
+        const next = [txn].concat(cur.filter((t) => t.id !== txn.id)).slice(0, 50);
+        await Store.set({ [TXN_STORE_KEY]: next });
+      }
+    } catch {}
+    return txn;
+  }
+
+  async function status(opts) {
+    opts = opts || {};
+    const out = (await recordedTxns()).slice();
+    if (opts.token || opts.credentials) {
+      try {
+        const r = await swap('GET', '/v3/transactions', {
+          query: { limit: opts.limit || 20 },
+          token: opts.token, credentials: opts.credentials, fetchFn: opts.fetchFn,
+        });
+        if (r && r.ok && Array.isArray(r.body)) {
+          r.body.forEach((t) => {
+            if (!t || !t.id) return;
+            if (out.some((o) => o.id === t.id)) return;
+            out.push({
+              id: String(t.id),
+              type: t.quoteCurrencyAmount != null && t.baseCurrencyId ? 'sell' : 'buy',
+              status: t.status || 'pending',
+              asset: (t.currency && t.currency.code) || t.currencyId || '',
+              amountUsd: t.baseCurrencyAmount != null ? Number(t.baseCurrencyAmount) : null,
+              at: t.createdAt ? Date.parse(t.createdAt) : Date.now(),
+            });
+          });
+        }
+      } catch {}
+    }
+    out.sort((a, b) => (b.at || 0) - (a.at || 0));
+    return out.slice(0, opts.limit || 20);
+  }
+
+  // ===========================================================================
+  // COMMERCE (NET-NEW) — crypto checkout for Pro / launch-fee / raid / NFT. The
+  // client holds only the commerce PUBLIC key; the commerce SECRET + the grant stay
+  // server-side. commerceCheckout POSTs to the authed /moonpay/commerce proxy; the
+  // entitlement flips ONLY via the server webhook grant after MoonPay verifies the
+  // payment (never client-trusted). Returns { ok, checkoutId, hostedUrl }.
+  // ===========================================================================
+  async function commerceCheckout(opts) {
+    opts = opts || {};
+    const f = _fetch(opts.fetchFn);
+    if (!f) return { ok: false, reason: 'no-fetch' };
+    const headers = { 'content-type': 'application/json' };
+    if (opts.token) headers['authorization'] = 'Bearer ' + opts.token;
+    const init = {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        action: opts.action || 'create',
+        product: opts.product,
+        refId: opts.refId,
+        amountUsd: opts.amountUsd,
+        ccy: opts.ccy || 'USD',
+      }),
+    };
+    if (opts.credentials) init.credentials = opts.credentials;
+    try {
+      const res = await f(opts.endpoint || COMMERCE_ENDPOINT, init);
+      let body = null; try { body = await res.json(); } catch {}
+      if (!res || !res.ok) return { ok: false, status: res ? res.status : 0, body };
+      return {
+        ok: true, status: res.status,
+        checkoutId: body && body.checkoutId,
+        hostedUrl: body && body.hostedUrl,
+        serverStatus: body && body.status,
+        body,
+      };
+    } catch (e) {
+      return { ok: false, reason: String(e && e.message || e) };
+    }
+  }
+
+  // ===========================================================================
+  // CREATIVE HELPERS (NET-NEW) — thin wrappers over buyUrl/sellUrl/swap so every
+  // UI hook is ONE call. They never sign a chain tx; they only build widget URLs
+  // (which route through /sign) or defer to the native /dex swap.
+  // ===========================================================================
+
+  // C1 FUND-A-BOT / C3 GAS TOP-UP / C6 BUY-THE-DIP — buy exactly the shortfall.
+  // Returns { ok, url, code, amountUsd, onReturn } so the caller can resume its
+  // flow (arm the bot / retry the send) once funding lands.
+  async function topUpShortfall(opts) {
+    opts = opts || {};
+    const amt = Math.max(1, Math.ceil(Number(opts.shortfallUsd) || 0));
+    const res = await buyUrl({
+      chain: opts.chain, symbol: opts.symbol,
+      native: opts.native != null ? opts.native : !opts.symbol,
+      walletAddress: opts.walletAddress, baseCurrencyAmount: amt,
+      redirectURL: opts.redirectURL, fetchFn: opts.fetchFn,
+    });
+    return {
+      ok: !!(res && res.ok), url: res && res.ok ? res.url : null,
+      code: res && res.code, amountUsd: amt,
+      reason: res && res.reason, onReturn: opts.onReturn || null,
+    };
+  }
+
+  // C4 CASH-OUT GAINS — sell exactly the realized gain to fiat.
+  async function cashOutGains(opts) {
+    opts = opts || {};
+    const res = await sellUrl({
+      chain: opts.chain, symbol: opts.symbol,
+      native: opts.native != null ? opts.native : !opts.symbol,
+      walletAddress: opts.walletAddress, baseCurrencyAmount: opts.gainAmount,
+      redirectURL: opts.redirectURL, fetchFn: opts.fetchFn,
+    });
+    return {
+      ok: !!(res && res.ok), url: res && res.ok ? res.url : null,
+      code: res && res.code, reason: res && res.reason,
+    };
+  }
+
+  // C2 FIAT AUTO-DCA — a recurring MoonPay buy preset + a matching DCA bot spec.
+  // Returns { ok, url, botSpec } — the caller opens `url` (the recurring buy) AND
+  // hands `botSpec` to the bot engine to co-create the weekly DCA bot.
+  async function recurringBuyPreset(opts) {
+    opts = opts || {};
+    const weekly = Math.max(1, Math.ceil(Number(opts.weeklyUsd) || 0));
+    const res = await buyUrl({
+      chain: opts.chain, symbol: opts.symbol,
+      native: opts.native != null ? opts.native : !opts.symbol,
+      walletAddress: opts.walletAddress, baseCurrencyAmount: weekly,
+      redirectURL: opts.redirectURL, fetchFn: opts.fetchFn,
+      // MoonPay recurring-buy params (widget-level): a weekly card buy.
+      extraParams: { recurringBuyEnabled: 'true', recurringBuyFrequency: 'weekly' },
+    });
+    return {
+      ok: !!(res && res.ok), url: res && res.ok ? res.url : null,
+      code: res && res.code, reason: res && res.reason,
+      botSpec: { type: 'dca', allocationUsd: weekly, cadence: 'weekly', symbol: opts.symbol || null, chain: opts.chain || null },
+    };
+  }
+
+  // C5 GET BLOCK WITH A CARD — BLOCK isn't on MoonPay, so this is a guided 2-step
+  // wizard: step1 BUY USDC via MoonPay onto the wallet's active EVM/SOL chain;
+  // step2 swap USDC->BLOCK on the native /dex. Returns the plan; the UI drives it.
+  async function getBlockWithCard(opts) {
+    opts = opts || {};
+    const usd = Math.max(1, Math.ceil(Number(opts.usdAmount) || 0));
+    const chain = opts.chain || 'solana';
+    const buy = await buyUrl({
+      chain, symbol: 'USDC', walletAddress: opts.walletAddress,
+      baseCurrencyAmount: usd, redirectURL: opts.redirectURL, fetchFn: opts.fetchFn,
+    });
+    return {
+      ok: !!(buy && buy.ok), reason: buy && buy.reason,
+      step: 1, totalSteps: 2,
+      step1: { kind: 'buy', url: buy && buy.ok ? buy.url : null, code: buy && buy.code, amountUsd: usd, chain, symbol: 'USDC' },
+      step2: { kind: 'dex-swap', from: 'USDC', to: 'BLOCK', dexUrl: opts.dexUrl || '#dex', note: 'After USDC arrives, swap USDC → BLOCK on the native DEX.' },
+    };
+  }
+
   const MoonPay = {
     DEFAULT_API_KEY,
     SANDBOX_BASE,
@@ -270,6 +603,11 @@
     SELL_LIVE_BASE,
     DEFAULT_MAP,
     CONFIG_DEFAULTS,
+    SERVER_ORIGIN,
+    CONFIG_ENDPOINT,
+    SIGN_ENDPOINT,
+    SWAP_ENDPOINT,
+    COMMERCE_ENDPOINT,
     baseFromKey,
     sellBaseFromKey,
     mergeMap,
@@ -283,6 +621,22 @@
     saveConfig,
     buyUrl,
     sellUrl,
+    // net-new
+    loadRemoteConfig,
+    remoteConfig,
+    feature,
+    commercePublicKey,
+    swap,
+    swapQuote,
+    swapExecute,
+    status,
+    captureReturn,
+    recordedTxns,
+    commerceCheckout,
+    topUpShortfall,
+    cashOutGains,
+    recurringBuyPreset,
+    getBlockWithCard,
   };
 
   global.MoonPay = MoonPay;

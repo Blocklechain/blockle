@@ -388,7 +388,139 @@ export function createApp(overrides = {}) {
     let evt = null; try { evt = JSON.parse(raw); } catch {}
     const key = (evt && evt.data && evt.data.id) || (now() + ':' + Math.random().toString(36).slice(2, 8));
     try { await store.put('moonpay_events', String(key), { at: now(), type: evt && evt.type, data: evt && evt.data }); } catch {}
+    // SERVER-VERIFIED GRANT: a verified Commerce "checkout completed" event is the ONLY thing that
+    // flips a paid entitlement — identical trust model to the PayPal webhook + IAP verify below.
+    // The client never confirms its own purchase; it only polls /commerce action:'status' for UI.
+    try { await applyCommerceGrant(evt); } catch (e) { /* never 500 a webhook on a grant hiccup */ }
     return json(res, 200, { ok: true });
+  });
+
+  // Apply a commerce grant from a VERIFIED webhook event. Copilot tiers flip the same user.sub the
+  // PayPal/IAP paths write (setStoreSub); launch/raid/nft record a replay-guarded, server-verified
+  // grant in `moonpay_grants` that the owning service (launchpad / raid / marketplace) claims — the
+  // grant is written ONLY here, never by a client. Idempotent (a second delivery is a no-op).
+  // SERVER-OWNED USD price for FIXED-price Commerce products. The client NEVER sets these —
+  // they mirror the canonical PayPal/IAP subscription prices (copilot / copilot_pro) and the
+  // launchpad promo launch fee. VARIABLE-price products (raid, nft) return null: the accounts
+  // service cannot know their price, so the OWNING service re-validates grant.amountUsd at
+  // claim time. This is the single server-side source of truth for the underpayment guard.
+  const MOONPAY_FIXED_PRICE = {
+    copilot: Number(cfg.moonpayPriceCopilot) || 0,
+    copilot_pro: Number(cfg.moonpayPriceCopilotPro) || 0,
+    launch_fee: Number(cfg.moonpayPriceLaunchFee) || 0,
+  };
+  function moonpayServerPrice(product) {
+    const p = MOONPAY_FIXED_PRICE[product];
+    return (p && p > 0) ? p : null; // null => variable-price product (owning service enforces)
+  }
+  const MOONPAY_PRICE_TOL = 0.01; // rounding tolerance (USD) for the paid >= price assertion
+
+  async function applyCommerceGrant(evt) {
+    if (!evt) return;
+    const data = evt.data || {};
+    const blob = (String(evt.type || '') + ' ' + String(data.status || '')).toLowerCase();
+    if (!/complet|paid|succeed/.test(blob)) return; // only a finished checkout grants
+    const checkoutId = data.id || data.checkoutId || null;
+    const rec = checkoutId ? store.get('moonpay_commerce', String(checkoutId)) : null;
+    const meta = (data.metadata && typeof data.metadata === 'object') ? data.metadata : {};
+    const product = meta.product || (rec && rec.product) || null;
+    const refId = meta.refId != null ? String(meta.refId) : (rec ? String(rec.refId || '') : '');
+    const userId = meta.userId || (rec && rec.userId) || null;
+    if (!product) return;
+    if (rec && rec.granted) return; // already applied — idempotent
+    // PAID amount, in USD: trust what the VERIFIED webhook reports was actually paid; fall
+    // back to the recorded checkout amount. For FIXED products the recorded amount is itself
+    // server-owned (set at create, client amount ignored), so it cannot be lowered by a client.
+    const paidUsd = Number(data.amount) > 0 ? Number(data.amount) : Number((rec && rec.amountUsd) || 0);
+    const serverPrice = moonpayServerPrice(product);
+    // UNDERPAYMENT GUARD (fixed-price products): a verified-but-underpaid checkout records the
+    // event but does NOT grant. The $1-for-Copilot-Pro attack lands here and is rejected.
+    if (serverPrice != null && !(paidUsd + MOONPAY_PRICE_TOL >= serverPrice)) {
+      if (rec && checkoutId) await store.update('moonpay_commerce', String(checkoutId), (x) => { if (x) { x.status = 'underpaid'; x.paidUsd = paidUsd; x.requiredUsd = serverPrice; } return x; });
+      if (product === 'launch_fee') {
+        // record for the owning service so it, too, sees the shortfall (never granted)
+        await store.put('moonpay_grants', product + ':' + refId, { product, refId, userId, checkoutId, amountUsd: paidUsd, requiredUsd: serverPrice, status: 'underpaid', at: now() });
+      }
+      return;
+    }
+    if (product === 'copilot' || product === 'copilot_pro') {
+      if (userId) await setStoreSub(userId, { tier: product, active: true, subId: 'mpc_' + (checkoutId || refId), provider: 'moonpay-commerce' });
+    } else if (product === 'launch_fee' || product === 'raid' || product === 'nft') {
+      // amountUsd = the server-verified PAID amount; requiredUsd = the server price (fixed) or
+      // the checkout amount the user was asked to pay (variable). The owning service compares
+      // amountUsd to ITS OWN server-side price before releasing goods.
+      await store.put('moonpay_grants', product + ':' + refId, {
+        product, refId, userId, checkoutId,
+        amountUsd: paidUsd || (rec && rec.amountUsd) || null,
+        requiredUsd: serverPrice != null ? serverPrice : ((rec && rec.requiredUsd) || (rec && rec.amountUsd) || null),
+        status: 'granted', at: now(),
+      });
+    }
+    if (rec && checkoutId) await store.update('moonpay_commerce', String(checkoutId), (x) => { if (x) { x.status = 'completed'; x.granted = true; x.grantedAt = now(); } return x; });
+  }
+
+  // MoonPay Commerce (crypto checkout) — AUTHED. Mirrors the /swap proxy but ALSO records a pending
+  // checkout keyed by its MoonPay id; the webhook above is what later flips the grant. The client
+  // only ever (a) creates a checkout + opens the hosted URL, or (b) polls its status for UI.
+  // Body: { action:'create'|'status', product, refId, amountUsd, ccy, checkoutId }.
+  on('POST', /^\/account\/api\/moonpay\/commerce$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
+    const PRODUCTS = ['copilot', 'copilot_pro', 'launch_fee', 'raid', 'nft'];
+    try {
+      if (b.action === 'status') {
+        // The client helper passes the id as either checkoutId or refId — accept both.
+        const checkoutId = String(b.checkoutId || b.refId || '');
+        if (!checkoutId) return json(res, 400, { error: 'missing checkoutId' });
+        const rec = store.get('moonpay_commerce', checkoutId);
+        if (!rec || rec.userId !== u.id) return json(res, 404, { error: 'unknown checkout' });
+        let remote = null;
+        try { const r = await moonpay.commerceStatus(checkoutId); remote = (r.body && (r.body.status || r.body.state)) || null; } catch {}
+        return json(res, 200, { status: rec.status, granted: !!rec.granted, product: rec.product, refId: rec.refId, remote });
+      }
+      const product = String(b.product || '');
+      if (!PRODUCTS.includes(product)) return json(res, 400, { error: 'unknown product' });
+      // SERVER OWNS the price for FIXED products (copilot / copilot_pro / launch_fee): the client
+      // amountUsd is IGNORED and the server price is used — this closes the underpayment hole
+      // (pay $1 for Copilot Pro). For VARIABLE products (raid, nft) the accounts service cannot
+      // know the price, so the client amount is used ONLY as the checkout amount and the owning
+      // service re-validates grant.amountUsd at claim time.
+      const serverPrice = moonpayServerPrice(product);
+      let amountUsd;
+      if (serverPrice != null) {
+        amountUsd = serverPrice;
+      } else {
+        amountUsd = Number(b.amountUsd || 0);
+        if (!(amountUsd > 0)) return json(res, 400, { error: 'bad amount' });
+      }
+      const refId = b.refId != null ? String(b.refId) : '';
+      const ccy = String(b.ccy || 'usd').toLowerCase();
+      const r = await moonpay.commerceCheckout({ amountUsd, currency: ccy, metadata: { userId: u.id, product, refId } });
+      const out = r.body || {};
+      const checkoutId = out.id || out.checkoutId || null;
+      const hostedUrl = out.hostedUrl || out.url || out.checkoutUrl || null;
+      if (!checkoutId) return json(res, r.status || 502, { error: 'commerce checkout failed' });
+      // requiredUsd records the amount the user was asked to pay (= server price for fixed
+      // products) so the webhook grant and any owning service can re-assert it.
+      await store.put('moonpay_commerce', String(checkoutId), { checkoutId: String(checkoutId), userId: u.id, product, refId, amountUsd, requiredUsd: amountUsd, ccy, status: 'pending', granted: false, at: now() });
+      return json(res, 200, { checkoutId, hostedUrl });
+    } catch (e) { return json(res, 400, { error: String(e.message || 'commerce failed') }); }
+  }));
+
+  // Read-only grant check for the OWNING services (launchpad / marketplace / raid). They call this
+  // server-to-server to confirm a launch_fee / nft / raid purchase was settled by the VERIFIED
+  // MoonPay webhook before releasing their own goods — the grant is written only by the webhook, so
+  // this never lets a client self-authorize. Returns only { granted } (+ amount/at) for a product+
+  // refId the caller already holds; CORS-open like /config, no secret exposed.
+  on('GET', /^\/account\/api\/moonpay\/grant$/, (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    const q = new URL(req.url, 'http://x').searchParams;
+    const product = String(q.get('product') || '');
+    const refId = String(q.get('refId') || '');
+    if (!['launch_fee', 'raid', 'nft', 'copilot', 'copilot_pro'].includes(product) || !refId) return json(res, 400, { error: 'bad product/refId' });
+    const g = store.get('moonpay_grants', product + ':' + refId);
+    // granted + the server-verified PAID amount (amountUsd) + what was required (requiredUsd) so
+    // the OWNING service can re-assert amountUsd >= its own price before releasing goods.
+    return json(res, 200, { granted: !!(g && g.status === 'granted'), amountUsd: (g && g.amountUsd) || null, requiredUsd: (g && g.requiredUsd) || null, status: (g && g.status) || null, at: (g && g.at) || null });
   });
   // Authenticated proxy for the Trade (swap) API — gated to logged-in users so our trade key
   // can't be abused anonymously. Body: { method, path, query, body }.

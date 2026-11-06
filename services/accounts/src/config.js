@@ -59,6 +59,16 @@ export const config = {
   copilotProPlanId: env.PAYPAL_COPILOT_PRO_PLAN_ID || '',
   copilotProPrice: env.PAYPAL_COPILOT_PRO_PRICE || '49.00',
 
+  // MoonPay Commerce server-owned USD prices for FIXED-price products. SINGLE SOURCE OF
+  // TRUTH: these default to the SAME canonical USD the PayPal/IAP path charges — the
+  // Copilot tier prices above (copilotPrice / copilotProPrice) and the launchpad promo
+  // launch fee ($5, matching services/launchpad LAUNCHPAD_FEE_PROMO_USD). The client's
+  // amountUsd is IGNORED for these products: the server sets the price at /commerce create
+  // and re-asserts paid >= price at grant time. Env-overridable but never client-settable.
+  moonpayPriceCopilot: env.MOONPAY_PRICE_COPILOT || env.PAYPAL_COPILOT_PRICE || '19.00',
+  moonpayPriceCopilotPro: env.MOONPAY_PRICE_COPILOT_PRO || env.PAYPAL_COPILOT_PRO_PRICE || '49.00',
+  moonpayPriceLaunchFee: env.MOONPAY_PRICE_LAUNCH_FEE || '5',
+
   // Free trial for the Copilot tier: first live-bot activation grants this many days of
   // Copilot entitlement, once per account, with no payment method required. 0 disables trials.
   trialDays: +(env.ACCOUNTS_TRIAL_DAYS || 7),

@@ -23,6 +23,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import * as paypal from './paypal.js';
 
@@ -34,6 +35,11 @@ const KEYPATH = process.env.LAUNCHPAD_KEYPAIR || '/opt/blockle/secrets/launch-bl
 const NODE = (process.env.LAUNCHPAD_NODE_URL || 'http://127.0.0.1:8445').replace(/\/+$/, '');
 const BIZ = (process.env.LAUNCHPAD_BIZ_URL || 'http://127.0.0.1:8900').replace(/\/+$/, '');
 const PUBLIC_BASE = (process.env.LAUNCHPAD_PUBLIC_BASE || 'https://blockle.org/launch').replace(/\/+$/, '');
+// Accounts service base — used to verify a MoonPay Commerce launch-fee grant server-to-server.
+// The grant is written ONLY by the accounts /moonpay/webhook (verified signature); we read it
+// read-only, so a crypto launch fee is as server-verified as a PayPal capture.
+const ACCOUNTS = (process.env.LAUNCHPAD_ACCOUNTS_URL || 'https://blockle.org').replace(/\/+$/, '');
+const COMMERCE_ENABLED = process.env.LAUNCHPAD_COMMERCE !== '0';
 
 const PROMO_CAP = Number(process.env.LAUNCHPAD_PROMO_CAP || 1000);     // launches that get the promo deal
 const PRESEED_BLOCK = Number(process.env.LAUNCHPAD_PRESEED_BLOCK || 50); // whole BLOCK preseeded per promo launch
@@ -106,6 +112,41 @@ async function sendBlock(addr, whole) {
 const isHex64 = (s) => typeof s === 'string' && /^[0-9a-f]{64}$/.test(s);
 const isAddr = (s) => typeof s === 'string' && /^block1[0-9a-z]{20,}$/.test(s);
 
+// Deliver the one-time promo BLOCK preseed for a paid launch order, honoring the per-address,
+// daily, phase and wallet-balance caps. Mutates `ord`/`s` (caller saves). Returns the txid or the
+// existing one. Shared by the PayPal capture + the MoonPay crypto settle so both paths are equal.
+async function deliverPreseed(s, ord) {
+  let preseedTxid = ord.preseedTxid || null;
+  if (ord.preseed && ord.phaseAtOrder === 'promo' && !preseedTxid && isAddr(ord.address)) {
+    if (s.day !== today()) { s.day = today(); s.dayPreseedBlock = 0; }
+    const got = s.preseedByAddr[ord.address] || 0;
+    const bal = await seedBalanceBase();
+    const canFund = bal != null && bal >= BigInt(PRESEED_BLOCK) * COIN + FEE_BASE;
+    if (got >= PRESEED_MAX_PER_ADDR) ord.preseedNote = 'preseed already claimed by this address';
+    else if (s.dayPreseedBlock + PRESEED_BLOCK > PRESEED_DAILY_CAP_BLOCK) ord.preseedNote = 'preseed daily cap reached — launch proceeds without it';
+    else if (!canFund) ord.preseedNote = 'preseed wallet unfunded — launch proceeds without it';
+    else {
+      preseedTxid = await sendBlock(ord.address, PRESEED_BLOCK);
+      ord.preseedTxid = preseedTxid;
+      s.preseedByAddr[ord.address] = got + 1;
+      s.dayPreseedBlock += PRESEED_BLOCK;
+    }
+  }
+  return preseedTxid;
+}
+
+// Server-to-server fetch of the server-verified MoonPay launch-fee grant (written ONLY by the
+// accounts webhook). Returns the grant object (or null) so the caller can re-assert both that it
+// was granted AND that the recorded PAID amount covers this order's required launch fee — a grant
+// alone is not enough (a client must not be able to underpay the crypto checkout and settle).
+async function moonpayGrant(orderId) {
+  try {
+    const r = await fetch(ACCOUNTS + '/account/api/moonpay/grant?product=launch_fee&refId=' + encodeURIComponent(orderId), { headers: { accept: 'application/json' } });
+    if (!r.ok) return null;
+    return await r.json().catch(() => null);
+  } catch { return null; }
+}
+
 function phaseOf(s) { return s.launchCount < PROMO_CAP ? 'promo' : 'standard'; }
 function feeOf(s) { return phaseOf(s) === 'promo' ? FEE_PROMO_USD : FEE_STD_USD; }
 
@@ -125,6 +166,7 @@ async function configJson() {
     lockWeeks: LOCK_WEEKS,
     addonPrices: ADDON_PRICES,
     paymentsEnabled: paypal.configured(),
+    cryptoPayEnabled: COMMERCE_ENABLED,
     paypalEnv: paypal.env(),
     seedWalletFunded: bal == null ? null : Number(bal / COIN),
   };
@@ -208,24 +250,51 @@ const server = http.createServer(async (req, res) => {
 
       // Launch tier: optionally deliver the one-time promo preseed now, to the
       // launching address, so the user can include it in their pool liquidity.
-      let preseedTxid = ord.preseedTxid || null;
-      if (ord.preseed && ord.phaseAtOrder === 'promo' && !preseedTxid && isAddr(ord.address)) {
-        if (s.day !== today()) { s.day = today(); s.dayPreseedBlock = 0; }
-        const got = s.preseedByAddr[ord.address] || 0;
-        const bal = await seedBalanceBase();
-        const canFund = bal != null && bal >= BigInt(PRESEED_BLOCK) * COIN + FEE_BASE;
-        if (got >= PRESEED_MAX_PER_ADDR) ord.preseedNote = 'preseed already claimed by this address';
-        else if (s.dayPreseedBlock + PRESEED_BLOCK > PRESEED_DAILY_CAP_BLOCK) ord.preseedNote = 'preseed daily cap reached — launch proceeds without it';
-        else if (!canFund) ord.preseedNote = 'preseed wallet unfunded — launch proceeds without it';
-        else {
-          preseedTxid = await sendBlock(ord.address, PRESEED_BLOCK);
-          ord.preseedTxid = preseedTxid;
-          s.preseedByAddr[ord.address] = got + 1;
-          s.dayPreseedBlock += PRESEED_BLOCK;
-        }
-      }
+      const preseedTxid = await deliverPreseed(s, ord);
       save(s);
       return j(res, 200, { ok: true, tier: 'launch', paid: ord.usd, preseedTxid, preseedNote: ord.preseedNote || null, nextStep: 'launch-then-register' });
+    }
+
+    // M2 — LAUNCHPAD FEE IN CRYPTO (MoonPay Commerce). Step 1: create a launch order WITHOUT
+    // PayPal and hand back its id as the Commerce refId. The client creates the Commerce checkout
+    // against the accounts service with { product:'launch_fee', refId:orderId, amountUsd:fee }.
+    if (req.method === 'POST' && p === '/api/launch/moonpay/start') {
+      if (!COMMERCE_ENABLED) return j(res, 503, { error: 'crypto launch fee is not enabled' });
+      const body = await readJson(req);
+      const s = load();
+      const usd = feeOf(s);
+      const address = String(body.address || '');
+      const preseed = !!body.preseed;
+      if (address && !isAddr(address)) return j(res, 400, { error: 'bad launch address' });
+      const orderId = 'mpc_' + crypto.randomBytes(16).toString('hex');
+      s.orders[orderId] = { tier: 'launch', usd, status: 'awaiting-crypto', provider: 'moonpay-commerce', created: Date.now(), address, preseed, phaseAtOrder: phaseOf(s), preseedBlock: preseed ? PRESEED_BLOCK : 0 };
+      save(s);
+      return j(res, 200, { orderId, usd, refId: orderId });
+    }
+
+    // Step 2: poll until the accounts webhook has recorded the server-verified grant for this
+    // order, then mark it paid (and deliver the promo preseed) — the SAME credit the PayPal
+    // capture writes. Idempotent; returns { pending:true } until the grant lands.
+    if (req.method === 'POST' && p === '/api/launch/moonpay/settle') {
+      const body = await readJson(req);
+      const orderId = String(body.orderId || '');
+      const s = load();
+      const ord = s.orders[orderId];
+      if (!ord || ord.tier !== 'launch') return j(res, 404, { error: 'unknown launch order' });
+      if (ord.status === 'used') return j(res, 200, { ok: true, status: 'used', tier: 'launch', preseedTxid: ord.preseedTxid || null });
+      if (ord.status !== 'paid') {
+        // SERVER-VERIFIED **and amount re-validated**: the accounts webhook must have granted
+        // this order AND the recorded PAID amount must cover THIS order's required launch fee
+        // (ord.usd). A client cannot underpay the MoonPay checkout and settle — the accounts
+        // service ignores the client price for launch_fee and records the real paid amount.
+        const g = await moonpayGrant(orderId);
+        const paid = Number((g && g.amountUsd) || 0);
+        if (!(g && g.granted && paid + 0.01 >= Number(ord.usd || 0))) return j(res, 200, { ok: false, pending: true });
+        ord.status = 'paid'; ord.paidAt = Date.now();
+      }
+      const preseedTxid = await deliverPreseed(s, ord);
+      save(s);
+      return j(res, 200, { ok: true, tier: 'launch', orderId, paid: ord.usd, preseedTxid, preseedNote: ord.preseedNote || null, nextStep: 'launch-then-register' });
     }
 
     // After the user signs & submits their on-chain LaunchToken, record the logo,
@@ -264,3 +333,7 @@ async function readJson(req) {
 }
 
 server.listen(PORT, '127.0.0.1', () => console.log(`[launchpad] on 127.0.0.1:${PORT} promoCap=${PROMO_CAP} preseed=${PRESEED_BLOCK} BLOCK fee=$${FEE_PROMO_USD}/$${FEE_STD_USD} paypal=${paypal.configured() ? paypal.env() : 'OFF'}`));
+
+// Exported for the test suite (node --test). The HTTP server listens on import; set
+// LAUNCHPAD_PORT=0 to bind an ephemeral port and read server.address().port.
+export { server };

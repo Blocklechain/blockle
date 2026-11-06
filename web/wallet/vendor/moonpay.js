@@ -123,6 +123,8 @@
     if (opts.redirectURL) params.set('redirectURL', opts.redirectURL);
     if (opts.colorCode) params.set('colorCode', opts.colorCode);
     if (opts.theme) params.set('theme', opts.theme);
+    // Optional extra MoonPay params (e.g. recurring-buy flags for C2). Never a secret.
+    if (opts.extraParams) for (const k in opts.extraParams) { const v = opts.extraParams[k]; if (v != null && v !== '') params.set(k, String(v)); }
     return base + '?' + params.toString();
   }
 
@@ -147,6 +149,7 @@
     if (opts.redirectURL) params.set('redirectURL', opts.redirectURL);
     if (opts.colorCode) params.set('colorCode', opts.colorCode);
     if (opts.theme) params.set('theme', opts.theme);
+    if (opts.extraParams) for (const k in opts.extraParams) { const v = opts.extraParams[k]; if (v != null && v !== '') params.set(k, String(v)); }
     return base + '?' + params.toString();
   }
 
@@ -176,15 +179,60 @@
     }
   }
 
+  // LIVE server endpoints (accounts service, CORS-open /config + /sign, authed
+  // /swap + /commerce). The web wallet is served from blockle.org so these are
+  // same-origin; absolute URLs keep the surface identical across every wallet.
+  const CONFIG_ENDPOINT = 'https://blockle.org/account/api/moonpay/config';
+  const SIGN_ENDPOINT = 'https://blockle.org/account/api/moonpay/sign';
+  const SWAP_ENDPOINT = 'https://blockle.org/account/api/moonpay/swap';
+  const COMMERCE_ENDPOINT = 'https://blockle.org/account/api/moonpay/commerce';
+
   // Persisted config (Store key 'moonpay'), merged over defaults. Reads are
   // best-effort: a missing Store or key yields the defaults.
   const CONFIG_DEFAULTS = {
     apiKey: DEFAULT_API_KEY,
-    signingEndpoint: '',     // e.g. https://blockle.org/api/moonpay/sign
+    signingEndpoint: '',     // e.g. https://blockle.org/account/api/moonpay/sign
     theme: 'dark',
     currencyCodes: null,     // per-chain override map (same shape as DEFAULT_MAP)
     baseCurrencyCode: 'usd',
+    commercePublicKey: '',
+    features: { buy: true, sell: true, swap: false, commerce: false },
+    live: false,
   };
+
+  // In-memory cache of the remote /config response. This is the SOURCE OF TRUTH
+  // for apiKey (replaces the pk_test default) + commercePublicKey + feature flags
+  // once loadRemoteConfig() has run. Holds ONLY public values — never a secret.
+  let _remote = null;
+
+  // NET-NEW: pull the live publishable key + commerce public key + feature flags
+  // from the accounts service and cache them. CORS-open, no auth. On any failure
+  // we keep whatever we had (offline fallback = the committed pk_test key).
+  async function loadRemoteConfig(fetchFn, endpoint) {
+    const f = fetchFn || (typeof fetch !== 'undefined' ? fetch : null);
+    if (!f) return _remote;
+    try {
+      const res = await f(endpoint || CONFIG_ENDPOINT, { credentials: 'omit' });
+      if (!res || !res.ok) return _remote;
+      const data = await res.json();
+      if (data && data.publishableKey) {
+        _remote = {
+          enabled: !!data.enabled,
+          live: !!data.live,
+          apiKey: data.publishableKey,
+          commercePublicKey: data.commercePublicKey || '',
+          features: Object.assign({ buy: true, sell: true, swap: false, commerce: false }, data.features || {}),
+        };
+      }
+    } catch {}
+    return _remote;
+  }
+
+  // The current feature flags (post-/config). Buttons gate on these; before the
+  // remote load, buy/sell default on (they work via /sign or the sandbox key).
+  function features() { return (_remote && _remote.features) || CONFIG_DEFAULTS.features; }
+  function commercePublicKey() { return (_remote && _remote.commercePublicKey) || ''; }
+  function remoteConfig() { return _remote; }
 
   async function loadConfig() {
     let saved = {};
@@ -192,7 +240,17 @@
       const Store = global.Store;
       if (Store && Store.get) saved = (await Store.get('moonpay')).moonpay || {};
     } catch {}
-    return Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    const cfg = Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    // Remote /config wins for the key + commerce key + flags; pin signingEndpoint
+    // to the live /sign route so buy/sell URLs are HMAC-signed server-side.
+    if (_remote && _remote.apiKey) {
+      cfg.apiKey = _remote.apiKey;
+      cfg.signingEndpoint = SIGN_ENDPOINT;
+      cfg.commercePublicKey = _remote.commercePublicKey;
+      cfg.features = _remote.features;
+      cfg.live = _remote.live;
+    }
+    return cfg;
   }
 
   async function saveConfig(patch) {
@@ -232,6 +290,7 @@
       baseCurrencyAmount: opts.baseCurrencyAmount,
       redirectURL: opts.redirectURL,
       theme: cfg.theme,
+      extraParams: opts.extraParams,
     });
     const url = await fetchSignedUrl(cfg.signingEndpoint, unsigned, opts.fetchFn);
     return { ok: true, url, code };
@@ -262,6 +321,147 @@
     return { ok: true, url, code };
   }
 
+  /* ---------------- S3 SWAP (crypto<->crypto via the Trade API) ----------------
+   * Thin authed proxy: POST {swapEndpoint} { method, path, query, body }. The
+   * trade key stays server-side; the browser only forwards the call with its
+   * accounts session cookie. Returns { ok, status, body }. */
+  async function swap(method, path, opts) {
+    opts = opts || {};
+    const f = opts.fetchFn || (typeof fetch !== 'undefined' ? fetch : null);
+    if (!f) throw new Error('moonpay swap: no fetch');
+    const res = await f(opts.endpoint || SWAP_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ method: method === 'POST' ? 'POST' : 'GET', path: path, query: opts.query || {}, body: opts.body || null }),
+    });
+    let body = null; try { body = await res.json(); } catch {}
+    return { ok: !!(res && res.ok), status: res ? res.status : 0, body: body };
+  }
+  // Convenience: a crypto->crypto quote. sell/buy are MoonPay currencyCodes.
+  function swapQuote(o) {
+    o = o || {};
+    return swap('GET', '/v3/currencies/' + encodeURIComponent(o.sellAsset) + '/buy_quote', {
+      query: { quoteCurrencyCode: o.buyAsset, baseCurrencyAmount: o.amount }, fetchFn: o.fetchFn,
+    });
+  }
+  // Convenience: execute a previously-quoted trade.
+  function swapExecute(o) {
+    o = o || {};
+    return swap('POST', '/v3/trades', { body: Object.assign({ quoteId: o.quoteId }, o.body || {}), fetchFn: o.fetchFn });
+  }
+
+  /* ---------------- S4 STATUS (recent MoonPay transactions) ----------------
+   * Two sources: (1) widget redirect-callback params captured on return and
+   * persisted to Store; (2) an authed /swap poll of /v3/transactions. Returns
+   * [{ id, type, status, asset, amountUsd, at }], newest first. */
+  const STATUS_KEY = 'moonpay_txns';
+  async function _localTxns() {
+    try { const Store = global.Store; if (Store && Store.get) return (await Store.get(STATUS_KEY))[STATUS_KEY] || []; } catch {}
+    return [];
+  }
+  // Capture a widget return: pass a URLSearchParams / query string / object of the
+  // redirectURL callback params and we persist a normalized txn record (dedup by id).
+  async function captureReturn(input, hint) {
+    let q = {};
+    try {
+      if (!input) q = {};
+      else if (typeof input === 'string') q = Object.fromEntries(new URLSearchParams(input.indexOf('?') >= 0 ? input.slice(input.indexOf('?')) : input));
+      else if (typeof URLSearchParams !== 'undefined' && input instanceof URLSearchParams) q = Object.fromEntries(input);
+      else q = input;
+    } catch { q = {}; }
+    const id = q.transactionId || q.id || q.transactionID || (hint && hint.id) || ('mp_' + Date.now());
+    const rec = {
+      id: String(id),
+      type: (hint && hint.type) || 'buy',
+      status: q.transactionStatus || q.status || 'pending',
+      asset: q.currencyCode || q.baseCurrencyCode || (hint && hint.asset) || '',
+      amountUsd: Number(q.baseCurrencyAmount || (hint && hint.amountUsd) || 0) || null,
+      at: Date.now(),
+    };
+    try {
+      const Store = global.Store;
+      if (Store && Store.set) {
+        const list = await _localTxns();
+        const next = [rec].concat(list.filter((x) => x.id !== rec.id)).slice(0, 50);
+        await Store.set({ [STATUS_KEY]: next });
+      }
+    } catch {}
+    return rec;
+  }
+  async function status(opts) {
+    opts = opts || {};
+    let out = await _localTxns();
+    // Richer source (best-effort, needs a session): the authed /swap transactions poll.
+    if (opts.poll) {
+      try {
+        const r = await swap('GET', '/v3/transactions', { query: { limit: opts.limit || 20 }, fetchFn: opts.fetchFn });
+        if (r.ok && Array.isArray(r.body)) {
+          const remote = r.body.map((t) => ({ id: String(t.id), type: t.type || 'swap', status: t.status, asset: t.currencyCode || t.baseCurrencyCode || '', amountUsd: Number(t.baseCurrencyAmount) || null, at: Date.parse(t.createdAt || '') || Date.now() }));
+          const seen = {}; out = remote.concat(out).filter((x) => (seen[x.id] ? false : (seen[x.id] = true)));
+        }
+      } catch {}
+    }
+    return out.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, opts.limit || 20);
+  }
+
+  /* ---------------- CREATIVE HELPERS (thin wrappers; one call per UI hook) ---- */
+  // C1/C3/C6 — buy exactly the shortfall (rounded up) so the caller can auto-continue.
+  async function topUpShortfall(o) {
+    o = o || {};
+    const amt = Math.max(1, Math.ceil(Number(o.shortfallUsd) || 0));
+    const r = await buyUrl({ chain: o.chain, symbol: o.symbol, native: o.native, walletAddress: o.walletAddress, baseCurrencyAmount: amt, redirectURL: o.redirectURL, fetchFn: o.fetchFn });
+    return Object.assign({ amountUsd: amt, onReturn: (cb) => captureReturn(cb, { type: 'buy', asset: o.symbol || o.chain, amountUsd: amt }) }, r);
+  }
+  // C2 — a recurring MoonPay buy preset + the matching DCA bot spec for the engine.
+  async function recurringBuyPreset(o) {
+    o = o || {};
+    const amt = Math.max(1, Math.ceil(Number(o.weeklyUsd) || 0));
+    const r = await buyUrl({ chain: o.chain, symbol: o.symbol, native: o.native, walletAddress: o.walletAddress, baseCurrencyAmount: amt, redirectURL: o.redirectURL, fetchFn: o.fetchFn, extraParams: { paymentMethod: 'credit_debit_card', recurring: 'weekly' } });
+    return Object.assign({ amountUsd: amt, botSpec: { type: 'dca', allocationUsd: amt, cadence: 'weekly' } }, r);
+  }
+  // C4 — sell exactly the realized gain to fiat.
+  async function cashOutGains(o) {
+    o = o || {};
+    const amt = Number(o.gainAmount) || 0;
+    return sellUrl({ chain: o.chain, symbol: o.symbol, native: o.native, walletAddress: o.walletAddress, baseCurrencyAmount: amt > 0 ? amt : undefined, redirectURL: o.redirectURL, fetchFn: o.fetchFn });
+  }
+  // C5 — MoonPay doesn't list BLOCK: BUY USDC, then SWAP USDC->BLOCK on the native
+  // /dex. Returns a 2-step guided plan; step2 is a dex deep-link the caller opens.
+  async function getBlockWithCard(o) {
+    o = o || {};
+    const chain = o.chain || 'solana';
+    const usd = Math.max(1, Math.ceil(Number(o.usdAmount) || 0));
+    const step1 = await buyUrl({ chain: chain, symbol: 'USDC', walletAddress: o.walletAddress, baseCurrencyAmount: usd, redirectURL: o.redirectURL, fetchFn: o.fetchFn });
+    return {
+      ok: step1.ok,
+      reason: step1.reason,
+      amountUsd: usd,
+      step1: step1,                                   // buy USDC via MoonPay
+      step2: { action: 'dex-swap', from: 'USDC', to: 'BLOCK', chain: chain, deeplink: '/dex?from=USDC&to=BLOCK' },
+    };
+  }
+
+  /* ---------------- COMMERCE (crypto checkout; grant is server-verified) ------
+   * POST {commerceEndpoint} { action:'create'|'status', product, refId, amountUsd,
+   * ccy }. The entitlement/grant flips ONLY in the server webhook — never here. */
+  async function commerceCheckout(o) {
+    o = o || {};
+    const f = o.fetchFn || (typeof fetch !== 'undefined' ? fetch : null);
+    if (!f) throw new Error('moonpay commerce: no fetch');
+    const res = await f(o.endpoint || COMMERCE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ action: o.action || 'create', product: o.product, refId: o.refId, amountUsd: o.amountUsd, ccy: o.ccy || 'USD' }),
+    });
+    let body = null; try { body = await res.json(); } catch {}
+    return { ok: !!(res && res.ok), status: res ? res.status : 0, checkoutId: body && body.checkoutId, hostedUrl: body && body.hostedUrl, body: body };
+  }
+  function commerceStatus(checkoutId, fetchFn) {
+    return commerceCheckout({ action: 'status', refId: checkoutId, fetchFn: fetchFn });
+  }
+
   const MoonPay = {
     DEFAULT_API_KEY,
     SANDBOX_BASE,
@@ -283,6 +483,26 @@
     saveConfig,
     buyUrl,
     sellUrl,
+    // NET-NEW: live config + swap + status + creative + commerce.
+    CONFIG_ENDPOINT,
+    SIGN_ENDPOINT,
+    SWAP_ENDPOINT,
+    COMMERCE_ENDPOINT,
+    loadRemoteConfig,
+    remoteConfig,
+    features,
+    commercePublicKey,
+    swap,
+    swapQuote,
+    swapExecute,
+    status,
+    captureReturn,
+    topUpShortfall,
+    recurringBuyPreset,
+    cashOutGains,
+    getBlockWithCard,
+    commerceCheckout,
+    commerceStatus,
   };
 
   global.MoonPay = MoonPay;

@@ -241,6 +241,9 @@
     }
     buildManager();
     if (!manager.list().length) { try { await manager.load(); } catch {} }
+    // Load the live MoonPay config so the "Pay with crypto" (Commerce) option can
+    // feature-gate correctly on the plan chip (M1).
+    try { if (global.MoonPay && MoonPay.loadRemoteConfig) await MoonPay.loadRemoteConfig(); } catch {}
     body.innerHTML = renderPlan() + renderConnections() + renderTelemetry() + renderChannels() + renderConnectForm() + renderNewChannelForm();
     wireBody();
   }
@@ -257,9 +260,15 @@
     const blurb = TIER_BLURB[copilotTier] || TIER_BLURB.free;
     const upsell = copilotTier === 'free'
       ? ` <a class="btn link" href="${esc(acctOrigin)}/copilot" target="_blank" rel="noopener" style="padding:0">Upgrade ↗</a>` : '';
+    // M1 PRO IN CRYPTO — pay for Copilot with crypto via MoonPay Commerce, beside
+    // PayPal/IAP. Only when free + commerce is enabled on the server. The grant is
+    // applied SERVER-SIDE by the webhook after payment — this button only opens the
+    // hosted checkout; entitlement flips on the next /me refresh, never client-side.
+    const crypto = (copilotTier === 'free' && global.MoonPay && MoonPay.feature && MoonPay.feature('commerce'))
+      ? ` <button class="mini-btn" id="agent-plan-crypto" title="Pay for Copilot with crypto (MoonPay)">Pay with crypto</button>` : '';
     return `<div class="row" style="align-items:center">
       <div class="l"><b>Plan: ${esc(blurb.split(' · ')[0])}</b><small>${esc(blurb.split(' · ')[1] || '')}${acctEmail ? ' · ' + esc(acctEmail) : ''}</small></div>
-      <div><button class="mini-btn" id="agent-plan-connect">${acctToken ? 'Reconnect' : 'Connect account'}</button>${upsell}</div>
+      <div><button class="mini-btn" id="agent-plan-connect">${acctToken ? 'Reconnect' : 'Connect account'}</button>${upsell}${crypto}</div>
     </div>
     <div id="agent-plan-form" hidden class="agent-card" style="margin:0 0 10px">
       <div class="section-h" style="padding-top:0">Connect Blockle account</div>
@@ -410,6 +419,24 @@
   function wireBody() {
     const planConn = $('#agent-plan-connect');
     if (planConn) planConn.addEventListener('click', () => { const f = $('#agent-plan-form'); if (f) f.hidden = !f.hidden; });
+    // M1: pay for Copilot with crypto via MoonPay Commerce. Requires an accounts
+    // session (the /commerce endpoint is authed). The server webhook applies the
+    // entitlement after payment; we only open the hosted checkout here.
+    const planCrypto = $('#agent-plan-crypto');
+    if (planCrypto) planCrypto.addEventListener('click', async () => {
+      if (!acctToken) { UI.toast('Connect your Blockle account first'); const f = $('#agent-plan-form'); if (f) f.hidden = false; return; }
+      planCrypto.disabled = true;
+      try {
+        const res = await MoonPay.commerceCheckout({ product: 'copilot', refId: 'copilot:' + Date.now(), amountUsd: 20, token: acctToken });
+        if (res && res.ok && res.hostedUrl) {
+          try { if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url: res.hostedUrl }); else global.open(res.hostedUrl, '_blank', 'noopener'); } catch (_) {}
+          UI.toast('Complete the crypto checkout — Copilot unlocks after payment is confirmed');
+        } else {
+          UI.toast((res && res.status === 401) ? 'Sign in again to pay with crypto' : 'Crypto checkout is unavailable right now');
+        }
+      } catch (e) { UI.toast('Could not start crypto checkout'); }
+      finally { planCrypto.disabled = false; }
+    });
     const plCancel = $('#pl-cancel');
     if (plCancel) plCancel.addEventListener('click', () => { const f = $('#agent-plan-form'); if (f) f.hidden = true; });
     const plSave = $('#pl-save');

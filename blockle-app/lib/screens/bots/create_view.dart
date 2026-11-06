@@ -8,12 +8,18 @@
 // allocation cap, that orders run auto within it with no further taps, the kill
 // switch, and the mainnet requirement, then a single confirm -> BotRunner.armLive.
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../../agent/bots.dart' as b;
+import '../../services/moonpay.dart';
+import '../../services/open_url.dart';
 import '../../state/bots_controller.dart';
+import '../../state/multichain_controller.dart';
 import '../../ui/app_icons.dart';
+import '../accounts_screen.dart' show MoonPayBuyScreen;
 import 'bots_tokens.dart';
 import 'bots_widgets.dart';
 import 'charts.dart';
@@ -378,6 +384,11 @@ class _CreateViewState extends State<CreateView> {
       _snack('Connect a value-moving agent channel (Agent tab) to arm a live bot.');
       return;
     }
+    // C1 FUND-A-BOT — if the live quote/settlement balance is below the hard
+    // allocation cap, offer a card top-up of exactly the shortfall before we
+    // arm. The arming gate itself is unchanged (this only funds the wallet).
+    await _maybeTopUpShortfall(alloc);
+    if (!mounted) return;
     final confirmed = await _showReviewSheet(alloc);
     if (confirmed != true) return;
     final bot = _createBot(alloc);
@@ -387,6 +398,175 @@ class _CreateViewState extends State<CreateView> {
     } catch (e) {
       _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
     }
+  }
+
+  /// The quote/settlement symbol this bot funds in (AI mode → profit currency;
+  /// otherwise the pair's quote).
+  String _fundingQuote() {
+    if (_aiPicksPairs) return _profitCurrency.toUpperCase();
+    if (_strategyMode) return _quoteOf(_stratPair());
+    return _quoteOf(_normPair());
+  }
+
+  /// Map the selected lane to a wallet chain id for a card top-up ('bsc' is the
+  /// wallet's 'bnb'; a null lane defaults to Ethereum for a stablecoin quote).
+  String _fundingChain() {
+    const laneToChain = {'bsc': 'bnb'};
+    final lane = _lane;
+    if (lane != null && lane.isNotEmpty) return laneToChain[lane] ?? lane;
+    return 'ethereum';
+  }
+
+  /// C1 — check the live quote balance vs the allocation and, when short, offer
+  /// a one-tap card top-up of the shortfall (BUY the quote stablecoin to the
+  /// lane's own address). Only the stablecoin quotes (USDC/USDT/DAI) are checked
+  /// 1:1 against USD; any other case just proceeds (never blocks arming).
+  Future<void> _maybeTopUpShortfall(double alloc) async {
+    const stables = {'USDC', 'USDT', 'DAI', 'USD'};
+    final quote = _fundingQuote();
+    if (!stables.contains(quote)) return; // can't value a non-stable quote 1:1
+    final mc = context.read<MultichainController>();
+    final chain = _fundingChain();
+    double held = 0;
+    try {
+      final bals = await mc.balancesFor(chain);
+      for (final bal in bals) {
+        if (bal.asset.symbol.toUpperCase() == quote && bal.error == null) {
+          held = double.tryParse(bal.display.replaceAll(',', '')) ?? 0;
+          break;
+        }
+      }
+    } catch (_) {
+      return; // balance unknown → don't block
+    }
+    final shortfall = alloc - held;
+    if (shortfall < 1) return; // funded enough
+    if (!mounted) return;
+    final acct = await mc.addressFor(chain);
+    final addr = acct?.address ?? '';
+    if (addr.isEmpty || !mc.moonpayConfig.featureBuy) return;
+    if (!mounted) return;
+    final topUp = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: BotTheme.of(context).surface,
+        title: const Text('Top up to fund this bot?'),
+        content: Text(
+          'Your $quote balance (\$${held.toStringAsFixed(2)}) is below the '
+          '\$${alloc.toStringAsFixed(2)} allocation. Buy the \$'
+          '${shortfall.ceil()} shortfall with a card now — it is delivered to '
+          'your own wallet, then arming continues.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx, false),
+              child: const Text('Skip')),
+          FilledButton(
+              onPressed: () => Navigator.pop(dctx, true),
+              child: Text('Top up \$${shortfall.ceil()}')),
+        ],
+      ),
+    );
+    if (topUp != true || !mounted) return;
+    final url = await moonpayTopUpShortfall(
+      config: mc.moonpayConfig,
+      chain: chain,
+      kind: 'erc20',
+      symbol: quote,
+      walletAddress: addr,
+      shortfallUsd: shortfall,
+    );
+    if (!mounted) return;
+    if (url == null) {
+      _snack('Topping up $quote with a card isn’t available on $chain.');
+      return;
+    }
+    if (kIsWeb) {
+      openExternal(url);
+    } else {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => MoonPayBuyScreen(url: url, assetLabel: quote)),
+      );
+    }
+    // On return we fall through to the review sheet → arm (auto-continue).
+  }
+
+  /// C2 FIAT AUTO-DCA — set up a recurring MoonPay card buy that funds this DCA
+  /// bot. Opens the MoonPay recurring-buy widget (buy $X of the base asset every
+  /// week) and pre-fills the bot's allocation to the matching weekly amount so
+  /// "invest $X every week" and the DCA strategy are created together.
+  Future<void> _setUpRecurringBuy() async {
+    final weekly = await _askWeeklyUsd();
+    if (weekly == null || !mounted) return;
+    final mc = context.read<MultichainController>();
+    final chain = _fundingChain();
+    final acct = await mc.addressFor(chain);
+    final addr = acct?.address ?? '';
+    if (!mounted) return;
+    final preset = await moonpayRecurringBuyPreset(
+      config: mc.moonpayConfig,
+      chain: chain,
+      kind: 'native',
+      symbol: _baseSym,
+      walletAddress: addr,
+      weeklyUsd: weekly,
+    );
+    if (!mounted) return;
+    // Mirror the preset's DCA spec into the create form: a weekly cadence bot
+    // whose allocation matches the recurring buy.
+    setState(() {
+      _alloc.text = (preset.botSpec['allocationUsd'] as num).toStringAsFixed(0);
+    });
+    if (preset.url == null) {
+      _snack('Recurring card buys for $_baseSym aren’t available on $chain — '
+          'the weekly DCA bot is still set up; start it below.');
+      return;
+    }
+    if (kIsWeb) {
+      openExternal(preset.url!);
+    } else {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) =>
+                MoonPayBuyScreen(url: preset.url!, assetLabel: _baseSym)),
+      );
+    }
+    if (!mounted) return;
+    _snack('Recurring buy set. Start the matching weekly DCA bot below.');
+  }
+
+  Future<double?> _askWeeklyUsd() async {
+    final seed = _allocUsd > 0 ? _allocUsd.toStringAsFixed(0) : '25';
+    final ctrl = TextEditingController(text: seed);
+    final t = BotTheme.of(context);
+    final v = await showDialog<double>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: t.surface,
+        title: const Text('Invest how much per week?'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+          decoration: const InputDecoration(prefixText: '\$ ', suffixText: '/ week'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
+            child: const Text('Set it up'),
+          ),
+        ],
+      ),
+    );
+    if (v == null || v <= 0) return null;
+    return v;
   }
 
   Future<bool?> _showReviewSheet(double alloc) {
@@ -537,6 +717,8 @@ class _CreateViewState extends State<CreateView> {
                 onTap: () => setState(() => _advanced = !_advanced),
               ),
               if (_advanced) _advancedDrawer(t),
+              const SizedBox(height: 10),
+              _RecurringBuyCard(onTap: _setUpRecurringBuy),
             ],
           ],
           const SizedBox(height: 18),
@@ -1383,6 +1565,45 @@ class _Preview extends StatelessWidget {
 
 /// The AI-mode summary block (replaces the DCA deal-preview text when the autopilot
 /// chooses pairs): what the autopilot does + where profit settles.
+/// C2 — the "Invest weekly with a card" affordance on the DCA create flow.
+class _RecurringBuyCard extends StatelessWidget {
+  const _RecurringBuyCard({required this.onTap});
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) {
+    final t = BotTheme.of(context);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: t.accentGhost,
+          borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+          border: Border.all(color: t.accentDim),
+        ),
+        child: Row(children: [
+          Icon(Icons.event_repeat_outlined, size: 18, color: t.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Invest every week with a card',
+                  style: TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                      color: t.ink)),
+              const SizedBox(height: 2),
+              Text('Sets up a recurring MoonPay buy funding this DCA bot.',
+                  style: TextStyle(fontSize: 12, color: t.inkMuted)),
+            ]),
+          ),
+          Icon(Icons.chevron_right, size: 18, color: t.inkMuted),
+        ]),
+      ),
+    );
+  }
+}
+
 class _AutopilotNote extends StatelessWidget {
   const _AutopilotNote({required this.profitCurrency, required this.alloc});
   final String profitCurrency;

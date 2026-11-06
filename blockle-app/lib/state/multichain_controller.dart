@@ -170,13 +170,52 @@ class MultichainController extends ChangeNotifier {
   String? _moonpayApiKey; // null -> use the built-in default (pk_test_…)
   String? _moonpaySignerUrl;
 
-  /// The effective MoonPay config (default publishable key unless overridden).
-  MoonPayConfig get moonpayConfig => MoonPayConfig(
-        apiKey: (_moonpayApiKey != null && _moonpayApiKey!.isNotEmpty)
-            ? _moonpayApiKey!
-            : kMoonPayDefaultApiKey,
-        signerUrl: _moonpaySignerUrl,
-      );
+  // The live /config snapshot (publishable + commerce PUBLIC keys + feature
+  // flags + authed proxy endpoints). Hydrated once at startup via
+  // [hydrateMoonpayFromServer]; null until then (offline → sandbox fallback).
+  MoonPayConfig? _moonpayRemote;
+
+  /// The effective MoonPay config. Precedence: the live /config snapshot (the
+  /// source of truth for the pk_live_ key + commerce key + feature flags), with
+  /// a user-set publishable-key override still winning for the key itself. Falls
+  /// back to the built-in sandbox default before /config has loaded.
+  MoonPayConfig get moonpayConfig {
+    final remote = _moonpayRemote;
+    if (remote != null) {
+      if (hasMoonpayApiKeyOverride) {
+        return remote.copyWith(
+          apiKey: _moonpayApiKey,
+          signerUrl: _moonpaySignerUrl ?? remote.signerUrl,
+        );
+      }
+      return remote;
+    }
+    return MoonPayConfig(
+      apiKey: (_moonpayApiKey != null && _moonpayApiKey!.isNotEmpty)
+          ? _moonpayApiKey!
+          : kMoonPayDefaultApiKey,
+      signerUrl: _moonpaySignerUrl,
+    );
+  }
+
+  /// The accounts session bearer for the AUTHED MoonPay proxies (swap/commerce).
+  /// Null when no blockle.org account is linked — callers gate those behind a
+  /// sign-in prompt (buy/sell via /sign need no account).
+  String? get moonpayBearer => agent.acctToken;
+
+  /// Load the live MoonPay /config (pk_live_ key + commerce key + feature flags)
+  /// and cache it as the source of truth. Fire-and-forget at startup; failures
+  /// leave the sandbox fallback in place. Notifies listeners on success so any
+  /// feature-gated buttons appear/hide once the real flags arrive.
+  Future<void> hydrateMoonpayFromServer() async {
+    try {
+      final cfg = await MoonPayConfig.fromServer();
+      _moonpayRemote = cfg;
+      notifyListeners();
+    } catch (_) {
+      // keep the fallback
+    }
+  }
 
   /// Whether the user has overridden the built-in publishable key.
   bool get hasMoonpayApiKeyOverride =>
@@ -216,6 +255,10 @@ class MultichainController extends ChangeNotifier {
     vaultExists = await vault.exists();
     ready = true;
     notifyListeners();
+    // Pull the live MoonPay /config (pk_live_ + commerce key + feature flags)
+    // in the background — the single highest-leverage change so buy/sell/swap/
+    // commerce point at production instead of the sandbox default.
+    hydrateMoonpayFromServer();
   }
 
   void _buildRegistryAndAccounts() {

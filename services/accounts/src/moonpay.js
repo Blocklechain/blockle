@@ -112,5 +112,24 @@ export function makeMoonpay(env = process.env) {
     return { status: r.status, body: out };
   }
 
-  return { enabled: !!pk, live, publicConfig, signUrl, verifyWebhook, apiRequest, commerceRequest };
+  // Create a MoonPay Commerce crypto-checkout. The commerce PUBLIC key is attached here
+  // (server-side) and the SECRET auth lives only inside commerceRequest — the client never
+  // carries either auth path, only a product + refId + amount. The caller (the authed route)
+  // injects the metadata { userId, product, refId } that the webhook later reads to grant.
+  async function commerceCheckout({ amountUsd, currency = 'usd', metadata = {} } = {}) {
+    if (!commercePk) throw new Error('moonpay commerce not configured');
+    return commerceRequest('POST', '/v1/commerce/checkout', {
+      body: { publicKey: commercePk, amount: amountUsd, currency, metadata },
+    });
+  }
+
+  function commerceStatus(checkoutId) {
+    return commerceRequest('GET', '/v1/commerce/checkout/' + encodeURIComponent(String(checkoutId || '')));
+  }
+
+  return {
+    enabled: !!pk, live, commercePublicKey: commercePk,
+    publicConfig, signUrl, verifyWebhook, apiRequest,
+    commerceRequest, commerceCheckout, commerceStatus,
+  };
 }

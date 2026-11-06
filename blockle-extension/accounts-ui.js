@@ -91,6 +91,11 @@
     let reg;
     try { reg = await Wiring.registry(); } catch (e) { box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
     refreshCustomMeta(reg);
+    // Pull the LIVE MoonPay config (pk_live_* + feature flags) from the accounts
+    // service ONCE so Buy/Sell use the production publishable key + server signing
+    // and so we can hide a button when the server has that feature off. Best-effort:
+    // offline, the module keeps its sandbox fallback.
+    try { if (global.MoonPay && MoonPay.loadRemoteConfig) await MoonPay.loadRemoteConfig(); } catch {}
     // Load the MoonPay currency map once (defaults + any user override) so the
     // per-asset "Buy with card" buttons can show/hide synchronously below.
     mpMap = null;
@@ -102,12 +107,13 @@
         ? `<button class="mini-btn mc-buy-btn" data-buy="${id}" title="Buy ${esc(m.sym)} with a card or bank via MoonPay">Buy</button>`
         : '';
       // Sell (off-ramp) mirrors Buy: same supported-asset set, hidden otherwise.
-      const sellNative = mpSupported(id, { native: true })
+      const sellNative = mpSellSupported(id, { native: true })
         ? `<button class="mini-btn mc-sell-btn" data-sell-mp="${id}" title="Sell ${esc(m.sym)} for cash to your bank via MoonPay">Sell</button>`
         : '';
-      // BLOCK isn't on MoonPay: steer the user to a supported asset first.
+      // BLOCK isn't on MoonPay (C5): offer a guided "Get BLOCK with a card" =
+      // buy USDC via MoonPay, then swap USDC->BLOCK on the native DEX.
       const note = id === 'block'
-        ? `<div class="mc-buy-note"><small class="muted">Not on MoonPay — buy or sell ETH/BTC/USDC with a card, then <a href="#" data-goto-exchange>swap to/from BLOCK</a>.</small></div>`
+        ? `<div class="mc-buy-note"><button class="mini-btn mc-getblock-btn" data-getblock="1" title="Buy USDC with a card, then swap to BLOCK on the DEX">Get BLOCK with a card</button><small class="muted" style="display:block;margin-top:4px">BLOCK isn't listed on MoonPay — this buys USDC with your card, then guides you to swap USDC → BLOCK on the native <a href="#" data-goto-exchange>DEX</a>.</small></div>`
         : '';
       return `<div class="mc-acct" data-chain="${id}">
         <div class="mc-head">
@@ -138,11 +144,47 @@
       b.addEventListener('click', () => doSell(b.getAttribute('data-sell-mp'), { native: true })));
     box.querySelectorAll('[data-goto-exchange]').forEach((b) =>
       b.addEventListener('click', (e) => { e.preventDefault(); UI.route('exchange'); }));
+    box.querySelectorAll('[data-getblock]').forEach((b) =>
+      b.addEventListener('click', () => doGetBlock()));
+  }
+
+  // C5 GET BLOCK WITH A CARD — guided 2-step wizard. MoonPay doesn't list BLOCK,
+  // so step 1 buys USDC (on the wallet's active EVM/SOL chain) with a card, and
+  // step 2 routes to the native DEX to swap USDC -> BLOCK. We open the funding
+  // widget, then land the user on the exchange swap for the second leg.
+  async function doGetBlock() {
+    if (!(global.MoonPay && MoonPay.getBlockWithCard)) { UI.toast('MoonPay unavailable'); return; }
+    // Prefer Solana (cheap USDC) then common EVM chains the user has an account on.
+    const order = ['solana', 'base', 'ethereum', 'polygon', 'arbitrum', 'optimism'];
+    let chain = null, address = null;
+    for (const id of order) {
+      if (!mpSupported(id, { symbol: 'USDC' })) continue;
+      try { const a = await Wiring.accountFor(id); if (a && a.address) { chain = id; address = a.address; break; } } catch {}
+    }
+    if (!chain) { UI.toast('Unlock your wallet first'); return; }
+    try {
+      const plan = await MoonPay.getBlockWithCard({ chain, walletAddress: address, usdAmount: 100 });
+      if (!plan || !plan.ok || !plan.step1 || !plan.step1.url) { UI.toast('Could not start the card buy'); return; }
+      UI.toast('Step 1 of 2 — buy USDC with your card, then swap to BLOCK');
+      openExternal(plan.step1.url);
+      // Step 2: land on the exchange so the USDC -> BLOCK swap is one tap away.
+      setTimeout(() => { try { UI.route('exchange'); } catch {} }, 400);
+    } catch (e) {
+      if (/locked|seed|unlock/i.test(String(e && e.message))) UI.toast('Unlock your wallet first');
+      else UI.toast('Could not open MoonPay');
+    }
   }
 
   // Is this asset buyable via MoonPay? `opts` = { native:true } or { symbol }.
+  // Also respects the server feature flag (buy) once the remote config is loaded.
   function mpSupported(chain, opts) {
-    return !!(global.MoonPay && mpMap && MoonPay.codeFor(mpMap, chain, opts));
+    if (!(global.MoonPay && mpMap && MoonPay.codeFor(mpMap, chain, opts))) return false;
+    return !MoonPay.feature || MoonPay.feature('buy');
+  }
+  // Sell gating mirrors buy but keys off the server's `sell` feature flag.
+  function mpSellSupported(chain, opts) {
+    if (!(global.MoonPay && mpMap && MoonPay.codeFor(mpMap, chain, opts))) return false;
+    return !MoonPay.feature || MoonPay.feature('sell');
   }
 
   // Resolve the user's receive address, build (and server-sign, if configured) a
@@ -221,7 +263,7 @@
         const buyTok = (isTokenRow && mpSupported(id, { symbol: sym }))
           ? `<button class="mini-btn mc-buy-tok" data-buy-tok="${id}" data-buy-sym="${esc(sym)}" title="Buy ${esc(sym)} with a card via MoonPay">Buy</button>`
           : '';
-        const sellTok = (isTokenRow && mpSupported(id, { symbol: sym }))
+        const sellTok = (isTokenRow && mpSellSupported(id, { symbol: sym }))
           ? `<button class="mini-btn mc-sell-tok" data-sell-tok="${id}" data-sell-sym="${esc(sym)}" title="Sell ${esc(sym)} for cash via MoonPay">Sell</button>`
           : '';
         return `<div class="mc-bal-row"${title}><span>${logo}${esc(sym)}</span><span class="mc-bal-right"><b class="mono">${esc(disp)}</b>${buyTok}${sellTok}</span></div>`;
@@ -310,9 +352,40 @@
       $('#mc-broadcast').hidden = false;
     } catch (e) {
       err.textContent = 'Could not build: ' + (e.message || e);
+      // C3 GAS TOP-UP: if the build failed for lack of funds/gas and the chain's
+      // native (gas) coin is on MoonPay, offer a one-tap minimal card buy of it.
+      offerGasTopUp(chain, String(e && e.message || e)).catch(() => {});
     } finally {
       btn.disabled = false; btn.textContent = 'Review';
     }
+  }
+
+  // C3: when a send can't be built because the native gas coin is short, inject a
+  // "Buy <native> with card" button beside the error. Best-effort + non-blocking.
+  async function offerGasTopUp(chain, errMsg) {
+    if (!/insufficient|not enough|no spendable|gas|fee/i.test(errMsg || '')) return;
+    if (!(global.MoonPay && MoonPay.topUpShortfall) || !mpSupported(chain, { native: true })) return;
+    const err = $('#mc-send-err');
+    if (!err) return;
+    let acct;
+    try { acct = await Wiring.accountFor(chain); } catch { return; }
+    if (!acct || !acct.address) return;
+    const m = metaFor(chain);
+    const btn = document.createElement('button');
+    btn.className = 'mini-btn';
+    btn.style.marginTop = '6px';
+    btn.textContent = 'Buy ' + (m.sym || 'gas') + ' with card';
+    btn.title = 'Top up the native coin you need for the network fee via MoonPay';
+    btn.addEventListener('click', async () => {
+      try {
+        const r = await MoonPay.topUpShortfall({ chain, native: true, walletAddress: acct.address, shortfallUsd: 20 });
+        if (!r || !r.ok || !r.url) { UI.toast('Card top-up unavailable for ' + (m.sym || 'this coin')); return; }
+        openExternal(r.url);
+        UI.toast('Buying ' + (m.sym || 'gas') + ' — retry the send once it lands');
+      } catch (_) { UI.toast('Could not open MoonPay'); }
+    });
+    err.appendChild(document.createElement('br'));
+    err.appendChild(btn);
   }
 
   async function doBroadcast() {

@@ -22,6 +22,7 @@ import '../state/wallet_controller.dart';
 import '../theme.dart';
 import '../ui/app_icons.dart';
 import '../widgets/chain_icon.dart';
+import 'swap.dart';
 import 'wallet/security_sheet.dart';
 
 class AccountsScreen extends StatefulWidget {
@@ -200,7 +201,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
               ),
             const SizedBox(height: 10),
             ...bals.map((b) => _balanceRow(c, chain, addr, b)),
-            if (isPq) _blockBuyNote(),
+            if (isPq) _blockBuyNote(c),
             const SizedBox(height: 6),
             Row(
               children: [
@@ -343,8 +344,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
-  /// BLOCK is not on MoonPay — show a short swap note instead of a Buy button.
-  Widget _blockBuyNote() {
+  /// BLOCK is not on MoonPay — C5 "Get BLOCK with a card": a guided 2-step flow
+  /// (BUY USDC via MoonPay, then auto-open the native /dex swap USDC→BLOCK).
+  Widget _blockBuyNote(MultichainController c) {
     return Container(
       margin: const EdgeInsets.only(top: 8),
       padding: const EdgeInsets.all(10),
@@ -352,13 +354,120 @@ class _AccountsScreenState extends State<AccountsScreen> {
         color: Bk.surface2,
         borderRadius: BorderRadius.circular(10),
       ),
-      child: const Text(
-        'BLOCK isn’t available to buy with a card. Buy a supported asset '
-        '(ETH, USDC, BTC…) with a card, then swap it to BLOCK on the '
-        'exchange or via the /buy curve.',
-        style: TextStyle(color: Bk.muted, fontSize: 11),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'BLOCK isn’t available to buy with a card. Get it in two steps: '
+            'buy USDC with a card, then swap USDC → BLOCK on the native DEX.',
+            style: TextStyle(color: Bk.muted, fontSize: 11),
+          ),
+          if (c.moonpayConfig.featureBuy) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: InkWell(
+                onTap: () => _getBlockWithCard(c),
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: Bk.accent.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.credit_card, size: 12, color: Bk.accent),
+                      SizedBox(width: 5),
+                      Text('Get BLOCK with a card',
+                          style: TextStyle(
+                              color: Bk.accent,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
+  }
+
+  /// C5 — buy USDC with a card (step 1), then auto-open the native DEX swap
+  /// (step 2) so the user ends up holding BLOCK. USDC is delivered to the
+  /// user's own Solana address (the native DEX's swap target).
+  Future<void> _getBlockWithCard(MultichainController c) async {
+    // The USDC lands on the user's Solana receive address — the swap target.
+    const usdcChain = 'solana';
+    final acct = _accts[usdcChain] ?? await c.addressFor(usdcChain);
+    final addr = acct?.address ?? '';
+    if (addr.isEmpty) {
+      _snack('Unlock your multi-chain vault to receive USDC first.');
+      return;
+    }
+    final amt = await _askUsdAmount();
+    if (amt == null) return;
+    final plan = await moonpayGetBlockWithCard(
+      config: c.moonpayConfig,
+      walletAddress: addr,
+      usdAmount: amt,
+      usdcChain: usdcChain,
+    );
+    if (!mounted) return;
+    if (!plan.ok || plan.step1BuyUrl == null) {
+      _snack(plan.reason ?? 'Couldn’t start the card purchase.');
+      return;
+    }
+    if (kIsWeb) {
+      openExternal(plan.step1BuyUrl!);
+    } else {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => MoonPayBuyScreen(
+                url: plan.step1BuyUrl!, assetLabel: 'USDC')),
+      );
+    }
+    if (!mounted) return;
+    // Step 2 — the native /dex swap USDC → BLOCK.
+    _snack('USDC on the way. Next: swap USDC → BLOCK on the DEX.');
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SwapScreen()),
+    );
+  }
+
+  /// Small USD-amount prompt for the guided card purchases.
+  Future<double?> _askUsdAmount() async {
+    final ctrl = TextEditingController(text: '50');
+    final v = await showDialog<double>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('Amount in USD'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(prefixText: '\$ '),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (v == null || v <= 0) return null;
+    return v;
   }
 
   /// Build the MoonPay widget URL for [asset] on [chain] and open it — the
@@ -785,6 +894,53 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     }
   }
 
+  /// Heuristic: does the send error read like a native-gas / insufficient-funds
+  /// shortfall (so we can offer a card top-up)? Conservative keyword match.
+  static bool _looksLikeGasShortfall(String err) {
+    final e = err.toLowerCase();
+    return e.contains('gas') ||
+        e.contains('insufficient') ||
+        e.contains('not enough') ||
+        e.contains('balance too low') ||
+        e.contains('fee');
+  }
+
+  /// C3 — buy a minimal amount of the chain's native gas token with a card and
+  /// deliver it to the user's own address, then they retry the send.
+  Future<void> _buyGasWithCard(MultichainController c) async {
+    final acct = await c.addressFor(widget.chain);
+    final addr = acct?.address ?? '';
+    if (!mounted) return;
+    if (addr.isEmpty) {
+      setState(() => _error = 'Unlock the vault to receive gas first.');
+      return;
+    }
+    // A small, practical minimum for a handful of transactions.
+    final url = await moonpayTopUpShortfall(
+      config: c.moonpayConfig,
+      chain: widget.chain,
+      kind: 'native',
+      walletAddress: addr,
+      shortfallUsd: 25,
+    );
+    if (!mounted) return;
+    if (url == null) {
+      setState(() => _error =
+          'Buying ${c.chainTicker(widget.chain)} with a card isn’t available.');
+      return;
+    }
+    if (kIsWeb) {
+      openExternal(url);
+      return;
+    }
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+          builder: (_) => MoonPayBuyScreen(
+              url: url, assetLabel: c.chainTicker(widget.chain))),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<MultichainController>();
@@ -884,6 +1040,20 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
           if (_error != null) ...[
             const SizedBox(height: 12),
             Text(_error!, style: const TextStyle(color: Bk.bad)),
+            // C3 GAS TOP-UP — when the send failed for lack of native gas and
+            // gas-sponsorship doesn't cover it, offer a one-tap minimal card BUY
+            // of the chain's native gas token (hidden for BLOCK / unsupported).
+            if (_looksLikeGasShortfall(_error!) &&
+                !moonpayIsBlock(widget.chain) &&
+                moonpayCurrencyCode(widget.chain) != null &&
+                c.moonpayConfig.featureBuy) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => _buyGasWithCard(c),
+                icon: const Icon(Icons.credit_card, size: 16),
+                label: Text('Buy ${c.chainTicker(widget.chain)} for gas'),
+              ),
+            ],
           ],
           if (_built != null) ...[
             const SizedBox(height: 16),

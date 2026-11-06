@@ -143,6 +143,129 @@ function ok(name, cond) { if (cond) pass++; else { fail++; console.log('FAIL ' +
   const sellUnknown = await MP.sellUrl({ chain: 'ethereum', symbol: 'WETH', walletAddress: '0xABC' });
   ok('sellUrl unknown token unsupported', sellUnknown.ok === false && sellUnknown.reason === 'unsupported');
 
+  // ---- loadRemoteConfig + feature gating (NET-NEW) -------------------------
+  {
+    // Before a remote load, buy/sell default-on, swap/commerce off.
+    // (fresh module state: _remote starts null)
+    ok('feature buy default-on', MP.feature('buy') === true);
+    ok('feature swap default-off', MP.feature('swap') === false);
+
+    const cfgBody = {
+      enabled: true, live: true,
+      publishableKey: 'pk_live_REMOTE', commercePublicKey: 'pk_commerce_PUB',
+      features: { buy: true, sell: false, swap: true, commerce: true },
+    };
+    const fakeCfg = async (url) => ({ ok: true, json: async () => cfgBody });
+    const r = await MP.loadRemoteConfig(fakeCfg);
+    ok('loadRemoteConfig returns config', r && r.publishableKey === 'pk_live_REMOTE');
+    ok('remoteConfig cached', MP.remoteConfig().commercePublicKey === 'pk_commerce_PUB');
+    ok('commercePublicKey exposed', MP.commercePublicKey() === 'pk_commerce_PUB');
+    ok('feature sell now off (from server)', MP.feature('sell') === false);
+    ok('feature swap now on (from server)', MP.feature('swap') === true);
+    ok('feature commerce now on', MP.feature('commerce') === true);
+
+    // With remote loaded, buyUrl uses the live pk + pins the sign endpoint.
+    const buy = await MP.buyUrl({ chain: 'ethereum', native: true, walletAddress: '0xABC', fetchFn: async () => ({ ok: false }) });
+    ok('buyUrl uses live pk from /config', buy.ok && buy.url.indexOf('apiKey=pk_live_REMOTE') >= 0);
+    ok('buyUrl hits LIVE host under live key', buy.url.indexOf(MP.LIVE_BASE) === 0);
+
+    // Non-ok /config leaves the cache intact.
+    const keep = await MP.loadRemoteConfig(async () => ({ ok: false, json: async () => ({}) }));
+    ok('non-ok /config keeps cache', keep && keep.publishableKey === 'pk_live_REMOTE');
+  }
+
+  // ---- swap proxy (NET-NEW) -------------------------------------------------
+  {
+    let seen = null;
+    const fakeSwap = async (url, init) => { seen = { url, init }; return { ok: true, status: 200, json: async () => ([{ id: 'tx1', status: 'completed' }]) }; };
+    const res = await MP.swap('GET', '/v3/transactions', { query: { limit: 5 }, token: 'TKN', fetchFn: fakeSwap });
+    ok('swap ok', res.ok && res.status === 200);
+    ok('swap posts to swap endpoint', seen.url === MP.SWAP_ENDPOINT);
+    ok('swap is a POST proxy', seen.init.method === 'POST');
+    ok('swap sends bearer token', seen.init.headers['authorization'] === 'Bearer TKN');
+    const sent = JSON.parse(seen.init.body);
+    ok('swap forwards method+path', sent.method === 'GET' && sent.path === '/v3/transactions');
+    ok('swap forwards query', sent.query.limit === 5);
+
+    const q = await MP.swapQuote({ sellAsset: 'usdc', buyAsset: 'eth', amount: 100, token: 'T', fetchFn: fakeSwap });
+    ok('swapQuote ok', q.ok);
+    const qs = JSON.parse(seen.init.body);
+    ok('swapQuote path', qs.path.indexOf('/v3/currencies/usdc/buy_quote') === 0);
+
+    // A thrown fetch -> graceful ok:false, never throws.
+    const thrown = await MP.swap('GET', '/x', { fetchFn: async () => { throw new Error('net'); } });
+    ok('swap throw graceful', thrown.ok === false && !!thrown.reason);
+  }
+
+  // ---- status (NET-NEW) -----------------------------------------------------
+  {
+    // Store absent -> empty recorded list; authed poll merges server rows.
+    const fakePoll = async () => ({ ok: true, status: 200, json: async () => ([{ id: 's1', status: 'completed', baseCurrencyAmount: 50, createdAt: '2026-01-01T00:00:00Z' }]) });
+    const list = await MP.status({ token: 'T', fetchFn: fakePoll });
+    ok('status returns server txns', Array.isArray(list) && list.some((t) => t.id === 's1'));
+    const s1 = list.find((t) => t.id === 's1');
+    ok('status normalizes amountUsd', s1 && s1.amountUsd === 50);
+    // No token -> no poll, just recorded (empty here).
+    const none = await MP.status({});
+    ok('status without session is a list', Array.isArray(none));
+  }
+
+  // ---- commerceCheckout (NET-NEW) -------------------------------------------
+  {
+    let seen = null;
+    const fakeCom = async (url, init) => { seen = { url, init }; return { ok: true, status: 200, json: async () => ({ checkoutId: 'co_1', hostedUrl: 'https://pay.moonpay.com/co_1' }) }; };
+    const res = await MP.commerceCheckout({ product: 'copilot', refId: 'u1', amountUsd: 20, token: 'TKN', fetchFn: fakeCom });
+    ok('commerce ok', res.ok && res.checkoutId === 'co_1');
+    ok('commerce hosted url', res.hostedUrl === 'https://pay.moonpay.com/co_1');
+    ok('commerce posts to commerce endpoint', seen.url === MP.COMMERCE_ENDPOINT);
+    ok('commerce sends bearer', seen.init.headers['authorization'] === 'Bearer TKN');
+    const body = JSON.parse(seen.init.body);
+    ok('commerce body action create', body.action === 'create' && body.product === 'copilot');
+    // Non-ok -> ok:false, never throws.
+    const bad = await MP.commerceCheckout({ product: 'copilot', fetchFn: async () => ({ ok: false, status: 401, json: async () => ({ error: 'auth' }) }) });
+    ok('commerce non-ok graceful', bad.ok === false && bad.status === 401);
+  }
+
+  // ---- creative helpers (NET-NEW) -------------------------------------------
+  {
+    const noSign = async () => ({ ok: false });
+    // topUpShortfall rounds UP to whole dollars and builds a buy url.
+    const top = await MP.topUpShortfall({ chain: 'solana', native: true, walletAddress: 'SoL1', shortfallUsd: 12.3, fetchFn: noSign });
+    ok('topUpShortfall ok', top.ok && !!top.url);
+    ok('topUpShortfall ceils amount', top.amountUsd === 13);
+    ok('topUpShortfall carries amount in url', top.url.indexOf('baseCurrencyAmount=13') >= 0);
+
+    // cashOutGains -> a sell url pre-filled with the gain.
+    const cash = await MP.cashOutGains({ chain: 'ethereum', native: true, walletAddress: '0xABC', gainAmount: 40, fetchFn: noSign });
+    ok('cashOutGains ok', cash.ok && !!cash.url);
+    ok('cashOutGains hits sell host', cash.url.indexOf(MP.SELL_SANDBOX_BASE) === 0 || cash.url.indexOf(MP.SELL_LIVE_BASE) === 0);
+    ok('cashOutGains carries amount', cash.url.indexOf('baseCurrencyAmount=40') >= 0);
+
+    // recurringBuyPreset -> url with recurring params + a weekly DCA bot spec.
+    const rec = await MP.recurringBuyPreset({ chain: 'solana', symbol: 'USDC', walletAddress: 'SoL1', weeklyUsd: 25, fetchFn: noSign });
+    ok('recurringBuyPreset ok', rec.ok && !!rec.url);
+    ok('recurringBuyPreset carries recurring flag', rec.url.indexOf('recurringBuyEnabled=true') >= 0);
+    ok('recurringBuyPreset weekly freq', rec.url.indexOf('recurringBuyFrequency=weekly') >= 0);
+    ok('recurringBuyPreset returns DCA spec', rec.botSpec && rec.botSpec.type === 'dca' && rec.botSpec.cadence === 'weekly' && rec.botSpec.allocationUsd === 25);
+
+    // getBlockWithCard -> 2-step plan: buy USDC then dex-swap to BLOCK.
+    const gb = await MP.getBlockWithCard({ chain: 'solana', walletAddress: 'SoL1', usdAmount: 50, fetchFn: noSign });
+    ok('getBlockWithCard ok', gb.ok && gb.totalSteps === 2);
+    ok('getBlockWithCard step1 buys USDC', gb.step1.kind === 'buy' && gb.step1.symbol === 'USDC' && gb.step1.amountUsd === 50);
+    ok('getBlockWithCard step1 code is usdc_sol', gb.step1.code === 'usdc_sol');
+    ok('getBlockWithCard step2 swaps to BLOCK', gb.step2.kind === 'dex-swap' && gb.step2.to === 'BLOCK');
+  }
+
+  // ---- captureReturn (NET-NEW, Store absent -> still returns a txn) ----------
+  {
+    const txn = await MP.captureReturn('https://x/return?transactionId=T9&transactionStatus=completed&baseCurrencyAmount=15&baseCurrencyCode=usdc', 'buy');
+    ok('captureReturn parses id', txn.id === 'T9');
+    ok('captureReturn parses status', txn.status === 'completed');
+    ok('captureReturn parses amount', txn.amountUsd === 15);
+    ok('captureReturn parses asset', txn.asset === 'usdc');
+    ok('captureReturn tags type', txn.type === 'buy');
+  }
+
   console.log(`moonpay.test.js: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

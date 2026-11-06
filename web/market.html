@@ -143,6 +143,35 @@
   function hdr(){return {'content-type':'application/json','x-world-token':tok};}
   async function api(path,opts){opts=opts||{};opts.headers=hdr();var r=await fetch(API+path,opts);var j=await r.json().catch(function(){return {};});if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j;}
 
+  // ---- M4: NFT checkout with card/crypto via MoonPay Commerce ----
+  // The accounts service hosts /account/api/moonpay/{config,commerce}. Commerce is authed +
+  // same-origin, so the "Buy with card" affordance only lights up when this page is served from
+  // the blockle.org origin AND the live config advertises commerce AND the listing carries a USD
+  // price. The grant is SERVER-VERIFIED: the NFT is released only after the accounts webhook marks
+  // moonpay_grants[nft:tokenId] granted — this page never self-authorizes the delivery.
+  var MP_COMMERCE=false;
+  try { fetch('/account/api/moonpay/config',{credentials:'omit'}).then(function(r){return r.ok?r.json():null;}).then(function(c){MP_COMMERCE=!!(c&&c.features&&c.features.commerce);try{loadListings();}catch(_){}}).catch(function(){}); } catch(_){ }
+  async function buyNftWithCard(tokenId,usd){
+    if(!MP_COMMERCE){toast('Card checkout unavailable',true);return;}
+    if(!(usd>0)){toast('This item has no card price',true);return;}
+    try{
+      var r=await fetch('/account/api/moonpay/commerce',{method:'POST',headers:{'content-type':'application/json'},credentials:'include',body:JSON.stringify({action:'create',product:'nft',refId:tokenId,amountUsd:usd,ccy:'USD'})});
+      if(r.status===401){toast('Sign in to your Blockle account to buy with a card',true);return;}
+      var o=await r.json().catch(function(){return {};});
+      if(!r.ok||!o.hostedUrl){toast(o.error||'Could not start checkout',true);return;}
+      window.open(o.hostedUrl,'_blank','noopener');
+      toast('Complete the payment in MoonPay — the NFT is delivered once it clears.');
+      // Poll the server-verified grant; delivery is server-side (never client-trusted).
+      var tries=0,id=o.checkoutId,poll=setInterval(function(){
+        tries++;
+        fetch('/account/api/moonpay/commerce',{method:'POST',headers:{'content-type':'application/json'},credentials:'include',body:JSON.stringify({action:'status',checkoutId:id})}).then(function(x){return x.json();}).then(function(s){
+          if(s&&s.granted){clearInterval(poll);toast('Payment confirmed — your NFT is being delivered.');loadListings();}
+        }).catch(function(){});
+        if(tries>100)clearInterval(poll);
+      },3000);
+    }catch(e){toast((e&&e.message)||'checkout failed',true);}
+  }
+
   // ---- auth ----
   $('#loginBtn').onclick=async function(){
     try{
@@ -216,9 +245,12 @@
         return '<div class="nft"><div class="art">'+emoji_(l.item)+'</div><div class="nm">'+esc(l.item)+'</div>'+
           '<div class="meta">seller: '+esc(l.seller||'—')+'</div>'+
           '<div class="price">'+l.priceWorld+' WORLD</div>'+
-          '<button class="sm buy" data-id="'+l.tokenId+'">Buy</button></div>';
+          '<button class="sm buy" data-id="'+l.tokenId+'">Buy</button>'+
+          ((MP_COMMERCE&&l.priceUsd>0)?('<button class="sm card" data-id="'+l.tokenId+'" data-usd="'+l.priceUsd+'" style="margin-top:6px">'+ic('coin')+' Buy with card</button>'):'')+
+          '</div>';
       }).join('');
       el.querySelectorAll('.buy').forEach(function(b){b.onclick=function(){buy(b.dataset.id);};});
+      el.querySelectorAll('.card').forEach(function(b){b.onclick=function(){buyNftWithCard(b.dataset.id,Number(b.dataset.usd||0));};});
     }catch(e){toast(e.message,true);}
   }
   async function buy(id){try{var r=await api('/market/buy',{method:'POST',body:JSON.stringify({tokenId:id})});toast('Bought '+r.item+' for '+r.priceWorld+' WORLD — delivering…');loadWallet();loadListings();}catch(e){toast(e.message,true);}}

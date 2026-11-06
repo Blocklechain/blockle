@@ -932,8 +932,14 @@ class AccountsTab(QWidget):
         self.networks_btn = QPushButton("Custom networks…")
         self.networks_btn.clicked.connect(self._edit_custom_networks)
         self.networks_btn.setEnabled(False)
+        # S4 STATUS: recent MoonPay (buy/sell/swap) transactions + live state.
+        self.moonpay_activity_btn = QPushButton("MoonPay activity…")
+        self.moonpay_activity_btn.setToolTip(
+            "Your recent MoonPay buy/sell/swap transactions and their live status.")
+        self.moonpay_activity_btn.clicked.connect(self._moonpay_activity)
         for b in (self.unlock_btn, self.refresh_btn, self.phrase_btn,
-                  self.export_btn, self.endpoints_btn, self.networks_btn):
+                  self.export_btn, self.endpoints_btn, self.networks_btn,
+                  self.moonpay_activity_btn):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
@@ -962,6 +968,70 @@ class AccountsTab(QWidget):
         note.setWordWrap(True)
         lay.addLayout(trow)
         lay.addWidget(note)
+
+        # Pull the live MoonPay /config (publishable key + commerce public key +
+        # feature flags) in the background so buy/sell resolve to the real pk_live_
+        # key + the /sign endpoint instead of the pk_test sandbox default. Fails
+        # soft: on no network it leaves the sandbox fallback in place.
+        self._load_moonpay_config()
+
+    # ---- MoonPay remote config ----
+    def _load_moonpay_config(self):
+        """Fetch /account/api/moonpay/config off the GUI thread and cache it in
+        the moonpay module (its api_key()/signer_url()/feature gating read it)."""
+        w = Worker(lambda: moonpay.load_remote_config())
+        w.done.connect(lambda _cfg: self._on_moonpay_config())
+        w.failed.connect(lambda _e: None)
+        self._workers.append(w)
+        w.start()
+
+    def _on_moonpay_config(self):
+        # Re-render the buy/sell cells so a feature the server turned OFF hides and
+        # the live host/key take effect, once the table already exists.
+        if self.ctrl.is_unlocked():
+            try:
+                self._fill_accounts()
+            except Exception:
+                pass
+
+    # ---- MoonPay transaction status (S4) ----
+    def _moonpay_activity(self):
+        """Show the user's recent MoonPay transactions + live status. Qt has no
+        widget-redirect capture, so this polls the authed Trade API via the
+        server /swap proxy (needs an accounts sign-in)."""
+        token = getattr(self.ctrl, "_acct_token", None)
+        if not token:
+            QMessageBox.information(
+                self, "MoonPay activity",
+                "Sign in to your blockle.org account (Agent / Exchange tab) to load "
+                "your MoonPay transaction history. Buys and sells you start always "
+                "open in MoonPay's own hosted flow regardless.")
+            return
+        self.moonpay_activity_btn.setEnabled(False)
+        w = Worker(lambda: moonpay.status(bearer=token, limit=25))
+        w.done.connect(self._show_moonpay_activity)
+        w.failed.connect(lambda e: (self.moonpay_activity_btn.setEnabled(True),
+                                    QMessageBox.warning(self, "MoonPay activity", str(e))))
+        self._workers.append(w)
+        w.start()
+
+    def _show_moonpay_activity(self, rows):
+        self.moonpay_activity_btn.setEnabled(True)
+        if not rows:
+            QMessageBox.information(self, "MoonPay activity",
+                                    "No MoonPay transactions yet.")
+            return
+        lines = []
+        for r in rows:
+            lines.append(
+                f"{(r.get('type') or '—').upper():5}  {r.get('status') or '—':12}  "
+                f"{(str(r.get('amountUsd')) if r.get('amountUsd') is not None else '—')} "
+                f"{r.get('asset') or ''}".rstrip())
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("MoonPay activity")
+        dlg.setText(f"{len(rows)} recent MoonPay transaction(s):")
+        dlg.setDetailedText("\n".join(lines))
+        dlg.exec()
 
     # ---- actions ----
     def _unlock(self):
@@ -1077,16 +1147,20 @@ class AccountsTab(QWidget):
         h = QHBoxLayout(cell)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(4)
-        buy_btn = QPushButton("Buy…")
-        buy_btn.setToolTip(f"Buy {syms} with a card or bank via MoonPay — "
-                           "delivered to your address on this chain.")
-        buy_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._buy(cid, addr))
-        sell_btn = QPushButton("Sell…")
-        sell_btn.setToolTip(f"Sell {syms} for cash to your bank via MoonPay — "
-                            "sent from your address on this chain.")
-        sell_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._sell_fiat(cid, addr))
-        h.addWidget(buy_btn)
-        h.addWidget(sell_btn)
+        # Feature gating: once /config is loaded, hide a button the server turned
+        # off. Before /config loads (sandbox fallback) both show.
+        if moonpay.feature_enabled("buy"):
+            buy_btn = QPushButton("Buy…")
+            buy_btn.setToolTip(f"Buy {syms} with a card or bank via MoonPay — "
+                               "delivered to your address on this chain.")
+            buy_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._buy(cid, addr))
+            h.addWidget(buy_btn)
+        if moonpay.feature_enabled("sell"):
+            sell_btn = QPushButton("Sell…")
+            sell_btn.setToolTip(f"Sell {syms} for cash to your bank via MoonPay — "
+                                "sent from your address on this chain.")
+            sell_btn.clicked.connect(lambda _=False, cid=cid, addr=addr: self._sell_fiat(cid, addr))
+            h.addWidget(sell_btn)
         return cell
 
     def _buy(self, cid, addr):
@@ -1837,7 +1911,14 @@ class ExchangeTab(QWidget):
         self.buy_btn.clicked.connect(self._buy)
         self.sell_btn = QPushButton("Sell BLOCK…")
         self.sell_btn.clicked.connect(self._sell)
-        for b in (self.place_btn, self.cancel_btn, self.buy_btn, self.sell_btn):
+        # S3 SWAP: crypto<->crypto, card-funded, via the authed MoonPay Trade API
+        # proxy (/account/api/moonpay/swap). Needs an accounts sign-in.
+        self.mp_swap_btn = QPushButton("Swap with card (MoonPay)…")
+        self.mp_swap_btn.setToolTip("Quote + execute a crypto↔crypto swap through "
+                                    "MoonPay's Trade API (needs a blockle.org sign-in).")
+        self.mp_swap_btn.clicked.connect(self._moonpay_swap)
+        for b in (self.place_btn, self.cancel_btn, self.buy_btn, self.sell_btn,
+                  self.mp_swap_btn):
             obtns.addWidget(b)
         f.addRow(obtns)
         lay.addWidget(box)
@@ -1866,6 +1947,74 @@ class ExchangeTab(QWidget):
             return "Unlock the vault to use the exchange."
         return f"Signed in as {ex.session_address()}" if ex.is_signed_in() else \
             "Signed out — sign in with your BLOCK key."
+
+    # ---- S3: MoonPay crypto<->crypto swap (card-funded, authed proxy) ----
+    def _moonpay_swap(self):
+        if not moonpay.feature_enabled("swap"):
+            QMessageBox.information(self, "Swap with card",
+                                    "Card-funded swap isn't enabled right now.")
+            return
+        token = getattr(self.ctrl, "_acct_token", None)
+        if not token:
+            QMessageBox.information(
+                self, "Swap with card",
+                "Sign in to your blockle.org account (Agent tab) first — the MoonPay "
+                "swap runs through an authenticated server proxy so the trade key "
+                "stays server-side.")
+            return
+        sell, ok = QInputDialog.getText(self, "Swap with card",
+                                        "Sell asset (MoonPay code, e.g. usdc):")
+        if not ok or not sell.strip():
+            return
+        buy, ok = QInputDialog.getText(self, "Swap with card",
+                                       "Buy asset (MoonPay code, e.g. eth):")
+        if not ok or not buy.strip():
+            return
+        amount, ok = QInputDialog.getDouble(self, "Swap with card",
+                                            f"Amount of {sell.strip()} to swap:", 10, 0, 1e9, 6)
+        if not ok or amount <= 0:
+            return
+        self.mp_swap_btn.setEnabled(False)
+        w = Worker(lambda: moonpay.swap_quote(sell_asset=sell.strip(),
+                                              buy_asset=buy.strip(), amount=amount,
+                                              bearer=token))
+        w.done.connect(lambda r: self._moonpay_swap_quoted(r, sell.strip(), buy.strip(), token))
+        w.failed.connect(lambda e: (self.mp_swap_btn.setEnabled(True),
+                                    QMessageBox.warning(self, "Swap with card", str(e))))
+        self._workers.append(w)
+        w.start()
+
+    def _moonpay_swap_quoted(self, res, sell, buy, token):
+        self.mp_swap_btn.setEnabled(True)
+        if not isinstance(res, dict) or not res.get("ok"):
+            QMessageBox.warning(self, "Swap with card",
+                                "Could not fetch a quote (sign-in, geofence, or the "
+                                "pair may be unavailable).")
+            return
+        body = res.get("body") or {}
+        quote_id = body.get("quoteId") or body.get("id") if isinstance(body, dict) else None
+        detail = json.dumps(body, indent=2)[:1500] if body else "(no quote body)"
+        box = QMessageBox(self)
+        box.setWindowTitle("Swap with card — quote")
+        box.setText(f"Swap {sell} → {buy}. Review the MoonPay quote, then confirm to "
+                    "execute (you'll complete payment/KYC in MoonPay's hosted flow).")
+        box.setDetailedText(detail)
+        box.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+        if not quote_id:
+            box.setStandardButtons(QMessageBox.Ok)  # nothing to execute
+            box.exec()
+            return
+        if box.exec() != QMessageBox.Ok:
+            return
+        w = Worker(lambda: moonpay.swap_execute(quote_id=quote_id, bearer=token))
+        w.done.connect(lambda r: QMessageBox.information(
+            self, "Swap with card",
+            "Swap submitted. Track it under MoonPay activity (Accounts tab)."
+            if isinstance(r, dict) and r.get("ok")
+            else "MoonPay did not accept the execute — check MoonPay activity."))
+        w.failed.connect(lambda e: QMessageBox.warning(self, "Swap with card", str(e)))
+        self._workers.append(w)
+        w.start()
 
     def _sign_in(self):
         self._run(lambda: self._ex().sign_in(), lambda r: None, "signing in…")
@@ -2492,6 +2641,66 @@ class AgentTab(QWidget):
         p = self.prompts.currentData()
         if p:
             self.cmd.setText(p)
+            # C6 BUY-THE-DIP: the dip preset gets a one-tap card-funded top-up so
+            # the user can put fresh money to work on the dip, pre-set to a chosen
+            # supported asset + amount. The agent strategy itself still runs gated.
+            if "buy the dip" in p.lower() and moonpay.feature_enabled("buy"):
+                self._buy_the_dip_card()
+
+    def _buy_the_dip_card(self):
+        """Offer a card-funded buy (MoonPay) pre-set for the dip. Gathers the
+        MoonPay-supported held assets across the unlocked accounts; opens the
+        signed buy widget for the chosen asset + USD amount."""
+        if not self.ctrl.is_unlocked():
+            return  # silent: dip strategy still arms via the agent; funding is optional
+        reg = self.ctrl.registry
+        cands = []  # (label, chain, symbol, addr)
+        for cid, acct in (self.ctrl.accounts or {}).items():
+            addr = getattr(acct, "address", None) if acct else None
+            if not addr:
+                continue
+            native_symbol = None
+            token_symbols = []
+            try:
+                native_symbol = getattr(getattr(reg.get(cid), "native", None), "symbol", None)
+                token_symbols = [getattr(t, "symbol", None) for t in reg.tokens_for(cid)]
+            except Exception:
+                pass
+            for sym, _code in moonpay.supported_assets(
+                    cid, native_symbol=native_symbol,
+                    token_symbols=[s for s in token_symbols if s]):
+                cands.append((f"{sym} · {self.ctrl.chain_label(cid)}", cid, sym, addr))
+        if not cands:
+            return
+        labels = [c[0] for c in cands]
+        choice, ok = QInputDialog.getItem(
+            self, "Buy the dip with a card",
+            "Put fresh money to work on the dip — buy which asset with a card?",
+            labels, 0, False)
+        if not ok:
+            return
+        _, cid, sym, addr = cands[labels.index(choice)]
+        usd, ok = QInputDialog.getInt(self, "Buy the dip with a card",
+                                      f"How many USD of {sym} to buy?", 100, 20, 100000)
+        if not ok:
+            return
+        native_symbol = None
+        try:
+            native_symbol = getattr(getattr(reg.get(cid), "native", None), "symbol", None)
+        except Exception:
+            pass
+        res = moonpay.top_up_shortfall(chain=cid, symbol=sym, native_symbol=native_symbol,
+                                       wallet_address=addr, shortfall_usd=usd)
+        if not res.get("ok"):
+            return
+        url = res["url"]
+        try:
+            signed = moonpay.fetch_signed_url(url)
+            if signed:
+                url = signed
+        except Exception:
+            pass
+        QDesktopServices.openUrl(QUrl(url))
 
     def _send_cmd(self):
         ch = self._current()

@@ -361,10 +361,10 @@
           <label class="field"><span>Alchemy API key</span><input type="password" id="ep-alchemy" class="mono" placeholder="(optional — enables ERC-20 auto-detect)" autocomplete="off" /></label>
           <p class="muted" style="margin:2px 0 0;font-size:11px">Read-only indexer key. Enables auto-detection of all ERC-20s you hold on Ethereum, Base, Arbitrum, Optimism and Polygon. Stored locally; never sent anywhere but Alchemy.</p>
 
-          <div class="section-h" style="padding-left:0">Buy with card (MoonPay)</div>
-          <label class="field"><span>MoonPay publishable key</span><input type="text" id="mp-apikey" class="mono" placeholder="pk_test_… or pk_live_…" autocomplete="off" /></label>
-          <label class="field"><span>URL signing endpoint <small class="muted">(optional)</small></span><input type="text" id="mp-signurl" class="mono" placeholder="https://blockle.org/api/moonpay/sign" autocomplete="off" /></label>
-          <p class="muted" style="margin:2px 0 0;font-size:11px">The publishable key (pk_test_ = sandbox, pk_live_ = production) is client-side and not a secret. It powers the "Buy" and "Sell" buttons on the Accounts screen, which open MoonPay's hosted card/bank (buy) or KYC/payout (sell) flow in a new tab. The MoonPay secret key is never stored here — production URL signing runs server-side at the signing endpoint.</p>
+          <div class="section-h" style="padding-left:0">Buy / sell / swap with card (MoonPay)</div>
+          <label class="field"><span>MoonPay publishable key <small class="muted">(override)</small></span><input type="text" id="mp-apikey" class="mono" placeholder="auto — pulled from blockle.org" autocomplete="off" /></label>
+          <label class="field"><span>URL signing endpoint <small class="muted">(override)</small></span><input type="text" id="mp-signurl" class="mono" placeholder="auto — blockle.org/account/api/moonpay/sign" autocomplete="off" /></label>
+          <p class="muted" style="margin:2px 0 0;font-size:11px">The live publishable key (pk_live_*), the commerce public key and the buy/sell/swap/commerce feature flags are fetched automatically from <span class="mono">blockle.org/account/api/moonpay/config</span> — no secret is ever stored in the extension. The "Buy"/"Sell" buttons (Accounts + the Buy entry on the Portfolio), the bot card-funding helpers, "Get BLOCK with a card" and "Pay with crypto" all route through the server for URL signing, the Trade-API swap proxy and Commerce checkout. The fields above are optional overrides (e.g. to force the sandbox key); leave blank to use the live server config.</p>
 
           <div class="section-h" style="padding-left:0;display:flex;align-items:center;justify-content:space-between">Custom networks
             <button class="mini-btn" id="cn-add">+ Add</button></div>

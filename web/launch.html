@@ -140,14 +140,15 @@
     </div>
     <div class="note" id="feebanner">Loading launch terms…</div>
     <button class="cta" id="go">Launch token</button>
+    <button class="cta" id="goCrypto" style="display:none;margin-top:8px;background:transparent;border:1px solid var(--line,#334)">Pay in crypto &amp; launch</button>
     <div class="err" id="err"></div>
-    <div class="note">The fee is a developer deploy &amp; listing service charge (paid via PayPal) — not a purchase of BLOCK or of your token. You deploy your own token and seed your own pool by signing in your wallet; LP locks for 1 week. Longer locks are coming in a chain upgrade.</div>
+    <div class="note">The fee is a developer deploy &amp; listing service charge (paid via PayPal or crypto) — not a purchase of BLOCK or of your token. You deploy your own token and seed your own pool by signing in your wallet; LP locks for 1 week. Longer locks are coming in a chain upgrade.</div>
   </div>
 
   <div class="card" id="progress" hidden>
     <ol class="steps" id="stepList">
       <li data-k="connect"><span class="dot">1</span><div class="lx">Connect wallet</div></li>
-      <li data-k="pay"><span class="dot">2</span><div class="lx">Pay the launch fee (PayPal) <small id="s-pay"></small></div></li>
+      <li data-k="pay"><span class="dot">2</span><div class="lx">Pay the launch fee (PayPal or crypto) <small id="s-pay"></small></div></li>
       <li data-k="launch"><span class="dot">3</span><div class="lx">Launch — deploy, mint &amp; seed pool in one transaction <small id="s-launch"></small></div></li>
       <li data-k="register"><span class="dot">4</span><div class="lx">Register logo &amp; listing <small id="s-register"></small></div></li>
       <li data-k="confirm"><span class="dot">5</span><div class="lx">Confirm the pool on the DEX <small id="s-confirm"></small></div></li>

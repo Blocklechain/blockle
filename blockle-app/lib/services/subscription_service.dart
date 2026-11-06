@@ -11,6 +11,7 @@ import 'dart:io' show Platform;
 import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../multichain/backup_client.dart' as bc;
+import 'moonpay.dart' as mp;
 
 /// Store product ids — must match App Store Connect / Play Console AND the accounts-service
 /// config (APPLE_COPILOT_PRODUCT etc.). Apple uses reverse-DNS ids; Google uses short ids.
@@ -87,6 +88,51 @@ class SubscriptionService {
     final tier = bc.tierOf({'sub': sub});
     onEntitlement(tier);
     return tier;
+  }
+
+  /// M1 PRO IN CRYPTO — pay for Copilot / Copilot Pro with CRYPTO via MoonPay
+  /// Commerce, alongside the store IAP (and web PayPal). Creates an AUTHED
+  /// commerce checkout server-side (the Commerce secret never leaves the
+  /// server) and returns its hosted-checkout URL for the caller to open.
+  ///
+  /// GRANT INTEGRITY: entitlement flips ONLY via the server webhook grant keyed
+  /// on the checkout metadata — never client-trusted. After the user pays, the
+  /// caller re-reads /me (e.g. via [onEntitlement] on the next refresh) to see
+  /// the new tier. Returns null + sets [lastError] on any failure / no account.
+  Future<String?> buyWithCrypto({bool pro = false}) async {
+    _lastError = null;
+    final token = tokenProvider();
+    if (token == null) {
+      _lastError = 'Link your blockle.org account first';
+      return null;
+    }
+    try {
+      final origin = _origin ?? mp.kMoonPayOrigin;
+      final cfg = await mp.MoonPayConfig.fromServer(origin: origin);
+      if (!cfg.featureCommerce) {
+        _lastError = 'Crypto checkout is unavailable right now';
+        return null;
+      }
+      final checkout = await mp.moonpayCommerceCheckout(
+        config: cfg,
+        product: pro ? 'copilot_pro' : 'copilot',
+        refId: 'sub_${DateTime.now().millisecondsSinceEpoch}',
+        // Display amount only — the SERVER is the source of truth for the price
+        // and applies the grant on webhook verification, not from this value.
+        amountUsd: pro ? 30 : 12,
+        bearer: token,
+        origin: origin,
+      );
+      final url = checkout.hostedUrl;
+      if (url == null || url.isEmpty) {
+        _lastError = 'Could not start crypto checkout';
+        return null;
+      }
+      return url;
+    } catch (e) {
+      _lastError = 'Crypto checkout failed: $e';
+      return null;
+    }
   }
 
   Future<void> _onPurchases(List<PurchaseDetails> purchases) async {

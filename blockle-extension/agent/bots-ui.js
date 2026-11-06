@@ -580,6 +580,55 @@
   }
 
   // ===========================================================================
+  // MoonPay card-funding helpers (C1 fund-a-bot, C2 auto-DCA, C4 cash-out gains,
+  // C6 buy-the-dip). All route through the shared MoonPay client -> /sign; none
+  // sign a chain tx. The bot GATE (review sheet -> Arm) stays the one approval.
+  // ===========================================================================
+  function MP() { return global.MoonPay; }
+  function Wiring() { return dep('Wiring', '../wiring.js'); }
+
+  // Open a MoonPay widget URL in a new tab (MV3 popup: window.open / tabs.create).
+  function mpOpen(url) {
+    if (!url) return;
+    try { if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) { chrome.tabs.create({ url: url }); return; } } catch (_) {}
+    try { global.open(url, '_blank', 'noopener'); } catch (_) {}
+  }
+
+  // Resolve a MoonPay-supported chain + the user's receive address for a quote
+  // symbol (e.g. USDC/USDT). Returns { chain, address } or null. Prefers cheap
+  // chains the user actually has an account on.
+  async function mpResolveQuote(symbol) {
+    var mp = MP(); var W = Wiring();
+    if (!mp || !W || !symbol) return null;
+    var sym = String(symbol).toUpperCase();
+    var map = null;
+    try { map = mp.effectiveMap(await mp.loadConfig()); } catch (_) { map = null; }
+    if (!map) return null;
+    var order = ['solana', 'base', 'ethereum', 'polygon', 'arbitrum', 'optimism', 'bnb', 'avalanche', 'tron'];
+    for (var i = 0; i < order.length; i++) {
+      var id = order[i];
+      if (!mp.codeFor(map, id, { symbol: sym })) continue;
+      try { var a = await W.accountFor(id); if (a && a.address) return { chain: id, address: a.address, symbol: sym }; } catch (_) {}
+    }
+    return null;
+  }
+
+  // Best-effort USD already held in the quote stablecoin on a chain (for shortfall
+  // math). Stablecoins are ~1:1, so the display amount is a fine USD proxy.
+  async function mpHeldUsd(chain, symbol) {
+    var W = Wiring();
+    if (!W) return 0;
+    try {
+      var rows = W.getHoldings ? await W.getHoldings(chain) : await W.getBalance(chain);
+      if (!Array.isArray(rows)) return 0;
+      var want = String(symbol).toUpperCase();
+      var row = rows.find(function (r) { return String((r.asset && r.asset.symbol) || '').toUpperCase() === want; });
+      var v = row ? parseFloat(row.display != null ? row.display : row.amount) : 0;
+      return isFinite(v) ? v : 0;
+    } catch (_) { return 0; }
+  }
+
+  // ===========================================================================
   // COCKPIT
   // ===========================================================================
   async function renderCockpit(panel) {
@@ -886,6 +935,41 @@
     }
   }
 
+  // C2 FIAT AUTO-DCA: a recurring card-buy preset shown in the DCA (template) flow.
+  // "Invest $X every week" sets up a recurring MoonPay buy of the pair's quote asset
+  // AND co-creates a matching weekly DCA paper bot. Hidden for indicator strategies
+  // (which have no deal-ladder) and when MoonPay is unavailable.
+  function recurringBuyRowHtml() {
+    if (create.strategy) return '';
+    if (!(MP() && MP().recurringBuyPreset)) return '';
+    var wk = Math.max(1, Math.round(Number(create.alloc) || 25));
+    return '<div class="bfield" id="b-recur-field">' +
+      '<label>Fund it automatically <span class="fhint">optional · card-funded DCA</span></label>' +
+      '<div class="bcontrol"><span class="bcur">$</span><input id="b-weekly" class="num" value="' + wk + '" inputmode="decimal" aria-label="Weekly card buy in US dollars"><span class="bsuffix">/ week</span></div>' +
+      '<button class="bbtn ghost" id="b-recur-btn" style="margin-top:8px">' + icon('card') + ' Invest weekly with a card</button>' +
+      '<div class="bhint" style="margin-top:4px">Sets up a recurring MoonPay card buy of the quote asset + a matching weekly DCA bot (starts in paper — arm it when ready).</div></div>';
+  }
+
+  async function doRecurringBuy() {
+    var mp = MP();
+    if (!mp || !mp.recurringBuyPreset) { UI.toast('MoonPay unavailable'); return; }
+    var wkEl = $('#b-weekly');
+    var weekly = wkEl ? parseFloat(wkEl.value) : Number(create.alloc);
+    if (!(weekly > 0)) { UI.toast('Enter a weekly amount greater than $0'); return; }
+    var quote = quoteOf(create.pair);
+    var resolved = await mpResolveQuote(quote);
+    if (!resolved) { UI.toast(quote + ' isn\'t available for a card buy on MoonPay'); return; }
+    // Co-create the matching weekly DCA paper bot FIRST (the popup may close when the
+    // widget tab opens). This runs through the normal gated startPaper path.
+    try { create.alloc = weekly; await startPaper(); }
+    catch (e) { UI.toast(e.message || String(e)); return; }
+    // Then open the recurring card-buy widget for the quote asset.
+    try {
+      var r = await mp.recurringBuyPreset({ chain: resolved.chain, symbol: resolved.symbol, walletAddress: resolved.address, weeklyUsd: weekly });
+      if (r && r.ok && r.url) mpOpen(r.url);
+    } catch (_) {}
+  }
+
   async function renderCreate(panel) {
     var T = dep('AgentBotTemplates', './bot-templates.js');
     var tpls = T.list();
@@ -927,6 +1011,7 @@
         backtestResultHtml() +
         '<div class="bfield"><label>3 · Amount to allocate <span class="fhint">the bot\'s hard cap</span></label>' +
           '<div class="bcontrol"><span class="bcur">$</span><input id="b-alloc" class="num" value="' + esc(create.alloc) + '" inputmode="decimal" aria-label="Allocation in US dollars"><span class="bsuffix">USD</span></div></div>' +
+        recurringBuyRowHtml() +
         '<div class="bpreview" id="b-preview"></div>' +
         (create.strategy ? '' :
         ('<button class="badv-toggle" id="b-adv-toggle" aria-expanded="false">Advanced — safety orders, take-profit, trailing <span class="chev">▾</span></button>' +
@@ -1049,6 +1134,7 @@
     });
     var sp = $('#b-start-paper'); if (sp) sp.addEventListener('click', startPaper);
     var gl = $('#b-go-live'); if (gl) gl.addEventListener('click', openReviewSheet);
+    var rc = $('#b-recur-btn'); if (rc) rc.addEventListener('click', doRecurringBuy); // C2 fiat auto-DCA
   }
 
   function applyTemplateDefaults(key) {
@@ -1188,6 +1274,7 @@
         '<div class="bsheet-h">Go live — review</div>' +
         '<p class="bhint">' + esc(spec.name) + ' · ' + esc(create.pair) + '</p>' +
         '<ul class="bsheet-list">' + lines.map(function (l) { return '<li>' + esc(l) + '</li>'; }).join('') + '</ul>' +
+        '<div id="b-fund-cta"></div>' +
         (warn ? '<div class="berr">' + esc(warn) + '</div>' : '') +
         '<div class="bactions"><button class="bbtn ghost" id="b-sheet-cancel">Cancel</button>' +
         '<button class="bbtn primary" id="b-sheet-confirm"' + (warn ? ' disabled' : '') + '>Arm live bot</button></div>' +
@@ -1195,6 +1282,11 @@
     var close = function () { sheet.innerHTML = ''; };
     var x = $('#b-sheet-x'); if (x) x.addEventListener('click', close);
     var c = $('#b-sheet-cancel'); if (c) c.addEventListener('click', close);
+    // C1 FUND-A-BOT: when the wallet's quote-asset balance is below the allocation,
+    // offer a one-tap card top-up for the shortfall (opens MoonPay in a new tab).
+    // The gate above is unchanged — funding just removes the "not enough balance"
+    // blocker; the user still taps Arm.
+    fundCtaInto(create.pair, alloc).catch(function () {});
     var ok = $('#b-sheet-confirm');
     if (ok && !warn) ok.addEventListener('click', async function () {
       ok.disabled = true;
@@ -1206,6 +1298,58 @@
         UI.toast('Live bot armed · ' + plain(alloc) + ' cap');
         activeTab = 'detail'; enter();
       } catch (e) { UI.toast(e.message || String(e)); ok.disabled = false; }
+    });
+  }
+
+  // C1: compute the quote-asset shortfall vs the allocation and, if positive,
+  // render a "Top up $X with card" button into #b-fund-cta. Best-effort and fully
+  // non-blocking — any failure leaves the review sheet exactly as it was.
+  async function fundCtaInto(pair, alloc) {
+    var slot = $('#b-fund-cta'); var mp = MP();
+    if (!slot || !mp || !mp.topUpShortfall || !(Number(alloc) > 0)) return;
+    var quote = quoteOf(pair);
+    var resolved = await mpResolveQuote(quote);
+    if (!resolved) return; // quote not on MoonPay (e.g. BLOCK) -> no card top-up
+    var held = await mpHeldUsd(resolved.chain, resolved.symbol);
+    var shortfall = Number(alloc) - held;
+    if (!(shortfall > 1)) return; // already funded (or trivially short)
+    slot.innerHTML = '<div class="bnote" style="margin-top:4px">' +
+      'Your ' + esc(resolved.symbol) + ' balance (' + plain(held) + ') is below this bot\'s ' + plain(Number(alloc)) + ' allocation. ' +
+      '<button class="blink" id="b-fund-btn">Top up ' + plain(Math.ceil(shortfall)) + ' with card</button></div>';
+    var btn = $('#b-fund-btn');
+    if (btn) btn.addEventListener('click', async function () {
+      try {
+        var r = await mp.topUpShortfall({ chain: resolved.chain, symbol: resolved.symbol, walletAddress: resolved.address, shortfallUsd: shortfall });
+        if (!r || !r.ok || !r.url) { UI.toast('Card top-up unavailable for ' + resolved.symbol); return; }
+        mpOpen(r.url);
+        UI.toast('Funding ' + plain(r.amountUsd) + ' ' + resolved.symbol + ' — come back and tap Arm when it lands');
+      } catch (e) { UI.toast(e.message || String(e)); }
+    });
+  }
+
+  // C4: render a "Cash out $realized" button into #b-cashout when the bot has
+  // realized profit in a MoonPay-supported quote asset. Opens the sell widget
+  // pre-filled with the gain. Non-blocking; silent when unsupported/zero.
+  async function cashoutCtaInto(bot, d) {
+    var slot = $('#b-cashout'); var mp = MP();
+    if (!slot || !mp || !mp.cashOutGains) return;
+    var realized = Number(d && d.realizedUsd) || 0;
+    if (!(realized > 1)) return;
+    var pair = (bot.pairs() && bot.pairs()[0]) || (bot.config && bot.config.market) || '';
+    var quote = quoteOf(pair);
+    var resolved = await mpResolveQuote(quote);
+    if (!resolved) return; // e.g. BLOCK quote -> not on MoonPay
+    slot.innerHTML = '<div class="bnote" style="margin-top:12px">' +
+      'Realized profit: <b>' + money(realized) + '</b> in ' + esc(resolved.symbol) + '. ' +
+      '<button class="blink" id="b-cashout-btn">Cash out ' + plain(realized) + ' to your bank</button></div>';
+    var btn = $('#b-cashout-btn');
+    if (btn) btn.addEventListener('click', async function () {
+      try {
+        var r = await mp.cashOutGains({ chain: resolved.chain, symbol: resolved.symbol, walletAddress: resolved.address, gainAmount: realized });
+        if (!r || !r.ok || !r.url) { UI.toast('Cash-out unavailable for ' + resolved.symbol); return; }
+        mpOpen(r.url);
+        UI.toast('Opening MoonPay cash-out for ' + plain(realized) + ' ' + resolved.symbol);
+      } catch (e) { UI.toast(e.message || String(e)); }
     });
   }
 
@@ -1248,8 +1392,13 @@
           '<div class="bpnl-tile"><div class="beyebrow">Allocation used</div><div class="bv num">' + plain(used) + '<span style="color:var(--b-ink-faint);font-size:13px"> / ' + plain(cap) + '</span></div><div class="bbar" style="margin-top:8px"><span style="width:' + pctUsed + '%"></span></div></div>' +
           '<div class="bpnl-tile"><div class="beyebrow">Win rate</div><div class="bv num">' + (d.winRate == null ? '—' : pct01(d.winRate)) + '</div><div class="bt">' + (d.winCount || 0) + ' of ' + (d.totalDeals || 0) + ' · max DD ' + (d.maxDrawdownUsd != null ? plain(Math.abs(d.maxDrawdownUsd)) : '—') + '</div></div>' +
         '</div>' +
+        '<div id="b-cashout"></div>' +
         '<div class="bnote" style="margin-top:14px"><b>Profit pop-ups are on.</b> When a deal closes into a stablecoin in profit you get a notification.</div>' +
       '</div>';
+
+    // C4 CASH-OUT GAINS: if this bot has realized profit, offer a one-tap SELL of
+    // the gain to fiat (MoonPay off-ramp), pre-filled with the realized amount.
+    cashoutCtaInto(bot, d).catch(function () {});
 
     var pause = $('#b-d-pause'); if (pause) pause.addEventListener('click', async function () { await runner.pause(bot.id); UI.toast('Paused'); enter(); });
     var resume = $('#b-d-resume'); if (resume) resume.addEventListener('click', async function () { await runner.enablePaper(bot.id); UI.toast('Resumed (paper)'); enter(); });
