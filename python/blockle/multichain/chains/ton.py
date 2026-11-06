@@ -53,6 +53,32 @@ def _default_ton_post(api, api_key):
     return post
 
 
+def _default_ton_get(api_key=None):
+    def get(url: str) -> str:
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode()
+
+    return get
+
+
+def _meta_field(known, field):
+    """Read symbol/decimals/name off a known-token row (AssetRef or dict)."""
+    if known is None:
+        return None
+    return getattr(known, field, None) if not isinstance(known, dict) else known.get(field)
+
+
+def _jetton_balance(master, symbol, decimals, amount, name=None):
+    ref = AssetRef(chain="ton", kind="jetton", symbol=symbol, decimals=int(decimals),
+                   address=str(master), name=name)
+    return Balance(asset=ref, confirmed=str(amount),
+                   display=format_units(str(amount), int(decimals)))
+
+
 # ---- deterministic client-built external messages (fund-safety core) --------
 def _v4_signing_cell(subwallet, valid_until, seqno, internal_msg):
     return (T.begin_cell()
@@ -152,7 +178,8 @@ def build_jetton_external(pub_key, seed_key, jetton_wallet, dest, response, amou
 
 class TonAdapter:
     def __init__(self, path=DEFAULT_PATH, explorer="https://tonviewer.com/transaction/",
-                 symbol="TON", api=None, apiKey=None, post=None, subwallet=T.SUBWALLET_ID, **_):
+                 symbol="TON", api=None, apiKey=None, post=None, get=None,
+                 jetton_index=None, subwallet=T.SUBWALLET_ID, **_):
         self.id = "ton"
         self.scheme = "ed25519"
         self.nano = NANO
@@ -164,6 +191,10 @@ class TonAdapter:
         self._api = api or DEFAULT_API
         self._api_key = apiKey
         self._post = post or _default_ton_post(self._api, apiKey)
+        # read-only jetton-index transport + endpoint (config-overridable, no
+        # secret). Default derives toncenter v3 /jetton/wallets from the v2 api.
+        self._get = get or _default_ton_get(apiKey)
+        self._jetton_index = jetton_index
 
     def unlock(self, root):
         self._root = as_seed(root)
@@ -269,9 +300,87 @@ class TonAdapter:
                 out.append(Balance(asset=t, confirmed="0", display="—", error=str(e)))
         return out
 
-    def discover_tokens(self, address: str):
-        # No cheap "all jettons" RPC on bare toncenter v2 — the known list is the source.
-        return []
+    def _jetton_index_url(self, address):
+        base = self._jetton_index
+        if not base:
+            api = str(self._api or DEFAULT_API).rstrip("/")
+            base = api.replace("/api/v2", "/api/v3") + "/jetton/wallets"
+        base = str(base)
+        if "{address}" in base:
+            return base.replace("{address}", address)
+        if "{addr}" in base:
+            return base.replace("{addr}", address)
+        sep = "&" if "?" in base else "?"
+        return base.rstrip("/") + sep + "owner_address=" + address
+
+    @staticmethod
+    def _map_jettons(j, known=None):
+        lookup = {}
+        for t in (known or []):
+            m = (getattr(t, "address", None) or getattr(t, "master", None)) if not isinstance(t, dict) \
+                else (t.get("address") or t.get("master"))
+            if m:
+                lookup[str(m)] = t
+        out = []
+        meta = (j or {}).get("metadata") or {}
+        wallets = (j or {}).get("jetton_wallets")
+        if isinstance(wallets, list):  # toncenter v3 shape
+            for w in wallets:
+                master = (w or {}).get("jetton") or (w or {}).get("jetton_master")
+                if not master:
+                    continue
+                try:
+                    amt = int((w or {}).get("balance"))
+                except Exception:
+                    continue
+                if amt <= 0:
+                    continue
+                ti = ((meta.get(master) or {}).get("token_info") or [{}])[0]
+                k = lookup.get(master)
+                symbol = ti.get("symbol") or (_meta_field(k, "symbol")) or (str(master)[:4] + "…" + str(master)[-4:])
+                dec = ti.get("decimals")
+                if dec is None:
+                    dec = _meta_field(k, "decimals")
+                decimals = int(dec) if dec is not None else 9
+                out.append(_jetton_balance(master, symbol, decimals, amt,
+                                           ti.get("name") or _meta_field(k, "name")))
+            return out
+        for b in ((j or {}).get("balances") or []):  # TON API (tonapi) shape
+            jet = (b or {}).get("jetton") or {}
+            master = jet.get("address") or (b or {}).get("jetton_address")
+            if not master:
+                continue
+            try:
+                amt = int((b or {}).get("balance"))
+            except Exception:
+                continue
+            if amt <= 0:
+                continue
+            k = lookup.get(master)
+            symbol = jet.get("symbol") or _meta_field(k, "symbol") or (str(master)[:4] + "…" + str(master)[-4:])
+            dec = jet.get("decimals")
+            if dec is None:
+                dec = _meta_field(k, "decimals")
+            decimals = int(dec) if dec is not None else 9
+            out.append(_jetton_balance(master, symbol, decimals, amt,
+                                       jet.get("name") or _meta_field(k, "name")))
+        return out
+
+    def discover_tokens(self, address: str, known=None):
+        """Auto-detect held jettons via a config-overridable index (toncenter v3
+        /api/v3/jetton/wallets or a TON API /v2/accounts/{addr}/jettons). Maps
+        each non-zero jetton -> {chain:'ton', kind:'jetton', address:master,
+        symbol, decimals, balance}. Read-only, best-effort — returns [] on any
+        failure or when no index is configured/derivable."""
+        try:
+            url = self._jetton_index_url(address)
+            if not url:
+                return []
+            raw = self._get(url)
+            j = json.loads(raw) if isinstance(raw, str) else raw
+            return self._map_jettons(j, known)
+        except Exception:
+            return []
 
     def build_send(self, account, req) -> BuiltTx:
         if self._root is None:

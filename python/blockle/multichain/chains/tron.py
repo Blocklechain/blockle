@@ -43,6 +43,13 @@ DEFAULT_API = "https://api.trongrid.io"
 DEFAULT_FEE_LIMIT = 100_000_000  # 100 TRX cap for a TRC-20 call
 TRC20_TRANSFER = "transfer(address,uint256)"
 TRC20_BALANCEOF = "balanceOf(address)"
+# Known TRC-20 metadata (symbol/decimals) for contracts the discovery indexer
+# returns only a balance for. Extended at call time by a ``known=`` list (the
+# registry passes the wallet's default + imported list). USDT is the canonical
+# mainnet stable; everything else falls back to short(contract)/6.
+KNOWN_TRC20 = {
+    "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t": {"symbol": "USDT", "decimals": 6},
+}
 
 
 def _pad32(hex_no0x) -> str:
@@ -263,9 +270,23 @@ def _default_tron_post(base: str, api_key=None, timeout: float = 30):
     return post
 
 
+def _default_tron_get(base: str, api_key=None, timeout: float = 30):
+    base = (base or DEFAULT_API).rstrip("/")
+
+    def get(path: str):
+        headers = {}
+        if api_key:
+            headers["TRON-PRO-API-KEY"] = api_key
+        req = urllib.request.Request(base + path, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+
+    return get
+
+
 class TronAdapter:
     def __init__(self, path=DEFAULT_PATH, explorer="https://tronscan.org/#/transaction/",
-                 symbol="TRX", api=None, apiKey=None, rpc=None, post=None, **_):
+                 symbol="TRX", api=None, apiKey=None, rpc=None, post=None, get=None, **_):
         self.id = "tron"
         self.scheme = "secp256k1"
         self.sun = SUN
@@ -277,6 +298,8 @@ class TronAdapter:
         self._api_key = apiKey
         # injectable REST poster (tests pass a stub; no network in unit tests)
         self._post = post or _default_tron_post(self._api, apiKey)
+        # injectable REST getter for the read-only TRC-20 discovery indexer.
+        self._get = get or _default_tron_get(self._api, apiKey)
 
     def unlock(self, root):
         self._root = as_seed(root)
@@ -326,6 +349,46 @@ class TronAdapter:
             except Exception as e:
                 out.append(Balance(asset=t, confirmed="0", display="—", error=str(e)))
         return out
+
+    def discover_tokens(self, address: str, known=None):
+        """Auto-detect held TRC-20 tokens via TronGrid GET
+        /v1/accounts/{address}/trc20 (a list of {contract: balance} maps).
+        symbol/decimals resolve from (1) the registry known list (known=),
+        (2) the built-in KNOWN_TRC20 map, else short(contract)/6. Read-only,
+        best-effort — returns [] on any failure."""
+        try:
+            lookup = dict(KNOWN_TRC20)
+            for t in (known or []):
+                addr = getattr(t, "address", None) if not isinstance(t, dict) else t.get("address")
+                if not addr:
+                    continue
+                sym = getattr(t, "symbol", None) if not isinstance(t, dict) else t.get("symbol")
+                dec = getattr(t, "decimals", None) if not isinstance(t, dict) else t.get("decimals")
+                lookup[str(addr)] = {"symbol": sym, "decimals": dec}
+            res = self._get("/v1/accounts/" + str(address) + "/trc20")
+            if isinstance(res, str):
+                res = json.loads(res)
+            rows = (res or {}).get("data") or []
+            out = []
+            for row in rows:
+                for contract, amt_raw in (row or {}).items():
+                    try:
+                        amt = int(amt_raw)
+                    except Exception:
+                        continue
+                    if amt <= 0:
+                        continue
+                    meta = lookup.get(contract) or {}
+                    symbol = meta.get("symbol") or (contract[:4] + "…" + contract[-4:])
+                    decimals = meta.get("decimals")
+                    decimals = int(decimals) if decimals is not None else 6
+                    ref = AssetRef(chain="tron", kind="trc20", symbol=symbol,
+                                   decimals=decimals, address=contract)
+                    out.append(Balance(asset=ref, confirmed=str(amt),
+                                       display=format_units(str(amt), decimals)))
+            return out
+        except Exception:
+            return []
 
     def build_send(self, account, req) -> BuiltTx:
         """Build an UNSIGNED transfer by having the NODE assemble it. The txID is

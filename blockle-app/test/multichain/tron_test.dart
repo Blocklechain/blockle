@@ -91,11 +91,72 @@ tron.TronAdapter _adapterReturning(String raw, String txId) {
 AssetRef get _usdt => const AssetRef(
     chain: 'tron', kind: 'trc20', symbol: 'USDT', decimals: 6, address: usdtContract);
 
+/// A TronAdapter whose GET transport returns a fixed [body] for the discovery
+/// call (/v1/accounts/{addr}/trc20), with an optional curated token list.
+tron.TronAdapter _discoverAdapter(String body,
+    {List<AssetRef> known = const []}) {
+  Future<String> get(String path) async => body;
+  return tron.TronAdapter(get: get, knownTokens: known);
+}
+
 void main() {
   final V = _loadVectors();
   final expected = (V['expected'] ?? V['owner']) as Map<String, dynamic>;
   final seed = hd.mnemonicToSeed(V['mnemonic'] as String, '');
   final node = hd.derivePath(seed, V['path'] as String);
+
+  group('discoverTokens: TRC-20 auto-detect over a mocked TronGrid indexer', () {
+    test('maps a held TRC-20 to a Balance; symbol/decimals from the known list',
+        () async {
+      final a = _discoverAdapter(
+          jsonEncode({
+            'data': [
+              {usdtContract: '5000000'}
+            ]
+          }),
+          known: [_usdt]);
+      final rows = await a.discoverTokens('TAddr');
+      expect(rows.length, 1);
+      final b = rows.first;
+      expect(b.asset.chain, 'tron');
+      expect(b.asset.kind, 'trc20');
+      expect(b.asset.symbol, 'USDT');
+      expect(b.asset.decimals, 6);
+      expect(b.asset.address, usdtContract);
+      expect(b.confirmed, '5000000');
+      expect(b.display, '5');
+    });
+
+    test('an unknown contract falls back to short-contract symbol + 6 decimals',
+        () async {
+      final a = _discoverAdapter(jsonEncode({
+        'data': [
+          {'TXXXXcontractYYYYZZZZ1234': '1000000'}
+        ]
+      }));
+      final rows = await a.discoverTokens('TAddr');
+      expect(rows.first.asset.symbol, 'TXXX…1234');
+      expect(rows.first.asset.decimals, 6);
+      expect(rows.first.confirmed, '1000000');
+    });
+
+    test('zero balances skipped; empty data => []; a network throw => []',
+        () async {
+      final zero = _discoverAdapter(
+          jsonEncode({
+            'data': [
+              {usdtContract: '0'}
+            ]
+          }),
+          known: [_usdt]);
+      expect(await zero.discoverTokens('T'), isEmpty);
+      expect(await _discoverAdapter(jsonEncode({'data': []})).discoverTokens('T'),
+          isEmpty);
+      final thrower =
+          tron.TronAdapter(get: (p) async => throw StateError('net'));
+      expect(await thrower.discoverTokens('T'), isEmpty);
+    });
+  });
 
   group('golden vector (verified secp256k1 crypto — unchanged)', () {
     test('key + address re-derive to the golden vector', () async {

@@ -118,9 +118,32 @@ class StellarAdapter:
             out.append(Balance(asset=self.native, confirmed="0", display="—", error=str(e)))
         return out
 
-    def discover_tokens(self, address: str):
-        # Issued assets (trustlines) optional/native-only to start.
-        return []
+    def discover_tokens(self, address: str, known=None):
+        """Auto-detect the issued assets (trustlines) this account holds. Reuses
+        the SAME Horizon /accounts/{G...} read get_balance uses: every non-native
+        balances[] entry -> {chain:'stellar', kind:'stellar-asset', symbol:code,
+        address:code+':'+issuer, decimals:7, balance:stroops}. Read-only,
+        best-effort — returns [] on any failure. Zero trustlines are skipped."""
+        try:
+            acct = self._account(address)
+            out = []
+            for b in (acct.get("balances") or []):
+                if b.get("asset_type") == "native":
+                    continue
+                code = b.get("asset_code")
+                issuer = b.get("asset_issuer")
+                if not code or not issuer:
+                    continue
+                stroops = int(round(float(b.get("balance", "0")) * STROOP))
+                if stroops <= 0:
+                    continue
+                ref = AssetRef(chain="stellar", kind="stellar-asset", symbol=code,
+                               decimals=7, address=code + ":" + issuer)
+                out.append(Balance(asset=ref, confirmed=str(stroops),
+                                   display=format_units(str(stroops), 7)))
+            return out
+        except Exception:
+            return []
 
     def _sequence_of(self, address):
         acct = self._account(address)

@@ -47,6 +47,54 @@ void main() {
   final recipient = V['recipient'] as Map<String, dynamic>;
   final tx = V['tx'] as Map<String, dynamic>;
 
+  group('discoverTokens: native-asset auto-detect over a mocked Koios UTXO read',
+      () {
+    // 56-hex policy id + asset_name 54455354 ("TEST") -> unit = policy+nameHex.
+    const policy = 'abababababababababababababababababababababababababababab';
+    const unit = '${policy}54455354';
+    cardano.CardanoAdapter adapter(String body) =>
+        cardano.CardanoAdapter(post: (p, b) async => body);
+
+    test('aggregated native assets map to native-asset Balances (display-only)',
+        () async {
+      final body = jsonEncode([
+        {
+          'tx_hash': 'aa',
+          'value': '2000000',
+          'asset_list': [
+            {'policy_id': policy, 'asset_name': '54455354', 'quantity': '4'}
+          ]
+        },
+        {
+          'tx_hash': 'bb',
+          'value': '3000000',
+          'asset_list': [
+            {'policy_id': policy, 'asset_name': '54455354', 'quantity': '3'}
+          ]
+        }
+      ]);
+      final rows = await adapter(body).discoverTokens('addr1xyz');
+      expect(rows.length, 1);
+      final b = rows.first;
+      expect(b.asset.chain, 'cardano');
+      expect(b.asset.kind, 'native-asset');
+      expect(b.asset.symbol, 'TEST'); // hex 54455354 decoded
+      expect(b.asset.decimals, 0);
+      expect(b.asset.address, unit);
+      expect(b.confirmed, '7'); // 4 + 3 aggregated
+    });
+
+    test('an ADA-only UTXO set yields []; a network throw => []', () async {
+      final body = jsonEncode([
+        {'tx_hash': 'aa', 'value': '2000000', 'asset_list': []}
+      ]);
+      expect(await adapter(body).discoverTokens('addr1'), isEmpty);
+      final thrower =
+          cardano.CardanoAdapter(post: (p, b) async => throw StateError('net'));
+      expect(await thrower.discoverTokens('addr1'), isEmpty);
+    });
+  });
+
   group('(a) blake2b KATs (cred 28B + txHash 32B)', () {
     test('empty + "abc" at 28 and 32 bytes', () {
       for (final kat in V['blake2bKats'] as List) {

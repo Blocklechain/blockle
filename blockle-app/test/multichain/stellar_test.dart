@@ -45,6 +45,57 @@ void main() {
   final seedKey = stellar.deriveSlip10Key(seedBytes, path);
   final pub = ed.publicKey(seedKey);
 
+  group('discoverTokens: trustline (issued-asset) auto-detect over mocked Horizon',
+      () {
+    stellar.StellarAdapter adapter(String body) =>
+        stellar.StellarAdapter(get: (p) async => body);
+
+    test('non-native trustlines map to stellar-asset Balances in stroops',
+        () async {
+      final body = jsonEncode({
+        'balances': [
+          {'asset_type': 'native', 'balance': '10.0000000'},
+          {
+            'asset_type': 'credit_alphanum4',
+            'asset_code': 'USDC',
+            'asset_issuer': 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM33SE2FUVWC3RUWX7VZITXS2TZDN',
+            'balance': '12.5000000'
+          }
+        ]
+      });
+      final rows = await adapter(body).discoverTokens('GOwner');
+      expect(rows.length, 1);
+      final b = rows.first;
+      expect(b.asset.chain, 'stellar');
+      expect(b.asset.kind, 'stellar-asset');
+      expect(b.asset.symbol, 'USDC');
+      expect(b.asset.decimals, 7);
+      expect(b.asset.address,
+          'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM33SE2FUVWC3RUWX7VZITXS2TZDN');
+      expect(b.confirmed, '125000000');
+      expect(b.display, '12.5');
+    });
+
+    test('native-only + a zero trustline yield []; a network throw => []',
+        () async {
+      final body = jsonEncode({
+        'balances': [
+          {'asset_type': 'native', 'balance': '10.0000000'},
+          {
+            'asset_type': 'credit_alphanum4',
+            'asset_code': 'ZERO',
+            'asset_issuer': 'GAZEROZEROZEROZEROZEROZEROZEROZEROZEROZEROZEROZEROZEE',
+            'balance': '0.0000000'
+          }
+        ]
+      });
+      expect(await adapter(body).discoverTokens('G'), isEmpty);
+      final thrower =
+          stellar.StellarAdapter(get: (p) async => throw StateError('net'));
+      expect(await thrower.discoverTokens('G'), isEmpty);
+    });
+  });
+
   group('(a) SLIP-0010 ed25519 derivation -> strkey address', () {
     test('seed key + public key match', () {
       expect(h(seedKey), exp['seedKeyHex']);

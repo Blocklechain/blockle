@@ -246,11 +246,12 @@ def test_registry_all_balances_alchemy_off_falls_back_to_known_list():
     reg.unlock({"seed": seed})
     addr = reg.get("ethereum").derive_account({"seed": seed}).address
     bals = reg.all_balances("ethereum", addr)
-    # native + the two known-list stablecoins, no discovered extras
+    # native + the known-list tokens (USDC/USDT + XAUT/LINK/POL added with the
+    # networks tranche), no discovered extras
     assert bals[0].asset.kind == "native" and bals[0].asset.symbol == "ETH"
     syms = {b.asset.symbol for b in bals}
-    assert syms == {"ETH", "USDC", "USDT"}
-    assert seen["eth_call"] == 2  # only the known list was read (discovery off)
+    assert syms == {"ETH", "USDC", "USDT", "XAUT", "LINK", "POL"}
+    assert seen["eth_call"] == 5  # one balanceOf per known-list token (discovery off)
 
 
 def test_registry_all_balances_merges_discovered():

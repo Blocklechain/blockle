@@ -179,6 +179,61 @@
       return j.result;
     }
 
+    // Resolve the config-overridable jetton index URL for `address`. opts.jettonIndex
+    // may be a function(address)->url or a string template ({address}); otherwise we
+    // derive toncenter v3 from the configured v2 api base. No secret.
+    async function jettonIndexUrl(address) {
+      if (typeof opts.jettonIndex === 'function') return await opts.jettonIndex(address);
+      if (opts.jettonIndex) return String(opts.jettonIndex).replace(/\{address\}|\{addr\}/g, encodeURIComponent(address));
+      let base = typeof getEndpoint === 'function' ? await getEndpoint() : getEndpoint;
+      base = String(base || DEFAULT_API).replace(/\/+$/, '');
+      const v3 = base.replace(/\/api\/v2$/, '/api/v3');
+      return v3 + '/jetton/wallets?owner_address=' + encodeURIComponent(address);
+    }
+    // Map either indexer shape to discovered jetton rows (keyed by master addr).
+    //  • TON API (tonapi.io): { balances:[{ balance, jetton:{address,symbol,decimals,name,image} }] }
+    //  • toncenter v3:        { jetton_wallets:[{ balance, jetton:<master> }], metadata:{<master>:{token_info:[{symbol,decimals,name,image}]}} }
+    function mapJettons(j) {
+      const out = [];
+      if (!j) return out;
+      if (Array.isArray(j.balances)) {
+        for (const b of j.balances) {
+          let amt; try { amt = BigInt(b.balance); } catch { continue; }
+          if (amt <= 0n) continue;
+          const jt = b.jetton || {};
+          const master = jt.address || b.jetton_master || b.jetton;
+          if (!master) continue;
+          const decimals = Number(jt.decimals != null ? jt.decimals : 9);
+          const o = { chain: id, kind: 'jetton', address: String(master),
+            symbol: jt.symbol || 'JETTON', decimals,
+            balance: amt.toString(), display: formatUnits(amt.toString(), decimals) };
+          if (jt.name) o.name = jt.name;
+          if (jt.image) o.logo = jt.image;
+          out.push(o);
+        }
+        return out;
+      }
+      if (Array.isArray(j.jetton_wallets)) {
+        const meta = j.metadata || {};
+        for (const w of j.jetton_wallets) {
+          let amt; try { amt = BigInt(w.balance); } catch { continue; }
+          if (amt <= 0n) continue;
+          const master = w.jetton || w.jetton_master;
+          if (!master) continue;
+          const info = (((meta[master] || {}).token_info) || [])[0] || {};
+          const decimals = Number(info.decimals != null ? info.decimals : 9);
+          const o = { chain: id, kind: 'jetton', address: String(master),
+            symbol: info.symbol || 'JETTON', decimals,
+            balance: amt.toString(), display: formatUnits(amt.toString(), decimals) };
+          if (info.name) o.name = info.name;
+          if (info.image) o.logo = info.image;
+          out.push(o);
+        }
+        return out;
+      }
+      return out;
+    }
+
     function pathWithIndex(index) { if (!index) return path; return path.replace(/\/0'$/, '/' + index + "'"); }
     function keyFor(index) {
       if (!rootSeed) throw new Error('locked');
@@ -264,9 +319,21 @@
         return out;
       },
 
-      // TON has no cheap "all jettons I hold" RPC on bare toncenter v2; the known
-      // list (registry DEFAULT_TOKENS) is the source. Best-effort no-op.
-      async discoverTokens() { return []; },
+      // Auto-detect jetton holdings via a config-overridable index endpoint
+      // (toncenter v3 /api/v3/jetton/wallets or TON API /v2/accounts/{addr}/jettons).
+      // Each non-zero jetton -> a discovered row keyed by the jetton master address.
+      // Read-only, best-effort, never throws.
+      async discoverTokens(address) {
+        try {
+          const url = await jettonIndexUrl(address);
+          if (!url) return [];
+          const headers = {};
+          if (apiKey) headers['X-API-Key'] = apiKey;
+          const r = await fetch(url, { headers });
+          const j = await r.json();
+          return mapJettons(j);
+        } catch { return []; }
+      },
 
       // CLIENT-BUILT signed external message (native or jetton). The signing cell
       // is assembled locally; only seqno (+ jetton-wallet addr) come from the node.

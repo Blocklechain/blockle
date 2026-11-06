@@ -136,7 +136,29 @@
         return out;
       },
 
-      async discoverTokens() { return []; },
+      // Non-native trustlines the account holds -> discovered stellar-asset rows.
+      // Reuses the SAME Horizon /accounts/{G...} read getBalance uses. Each row is
+      // keyed by code:issuer (unique dedupe id); balance is stroops (base unit).
+      // Read-only, best-effort, never throws.
+      async discoverTokens(address) {
+        try {
+          const acct = await accountOf(address);
+          const out = [];
+          for (const b of ((acct && acct.balances) || [])) {
+            if (!b || b.asset_type === 'native') continue;
+            if (!b.asset_code || !b.asset_issuer) continue;
+            const stroops = BigInt(Math.round(parseFloat(b.balance || '0') * STROOP));
+            if (stroops <= 0n) continue;
+            out.push({
+              chain: id, kind: 'stellar-asset',
+              address: b.asset_code + ':' + b.asset_issuer,
+              symbol: b.asset_code, decimals: 7,
+              balance: stroops.toString(), display: formatUnits(stroops.toString(), 7),
+            });
+          }
+          return out;
+        } catch { return []; }
+      },
 
       // CLIENT-BUILT + CLIENT-SIGNED envelope. sequence comes from Horizon.
       // req: { to, amount(stroops), asset?{kind:'stellar-asset',symbol,address:issuer}, index? }

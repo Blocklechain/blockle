@@ -256,9 +256,12 @@ class TonAdapter implements ChainAdapter {
     this.symbol = 'TON',
     this.api,
     this.apiKey,
+    this.jettonIndex,
     HttpPostFn? post,
+    HttpGetFn? get,
     this.subwallet = t.subwalletId,
-  }) : _postOverride = post {
+  })  : _postOverride = post,
+        _getOverride = get {
     native = AssetRef(chain: 'ton', kind: 'native', symbol: symbol, decimals: 9);
   }
 
@@ -267,7 +270,13 @@ class TonAdapter implements ChainAdapter {
   final String symbol;
   final String? api;
   final String? apiKey;
+
+  /// Config-overridable jetton-index REST base for discoverTokens (e.g. a TON API
+  /// host https://tonapi.io, or a toncenter v3 host). No secret. When null and no
+  /// GET transport is injected, discovery is a best-effort no-op (returns []).
+  final String? jettonIndex;
   final HttpPostFn? _postOverride;
+  final HttpGetFn? _getOverride;
   final int subwallet;
 
   @override
@@ -406,10 +415,120 @@ class TonAdapter implements ChainAdapter {
     return out;
   }
 
-  /// No cheap "all jettons" RPC on bare toncenter v2 — the known list is the
-  /// source. Best-effort no-op.
+  /// GET {jettonIndex}{path} → response body. Transport injectable (tests);
+  /// otherwise package:http with the optional X-API-Key header.
+  Future<String> _jettonGet(String apiPath) async {
+    if (_getOverride != null) return _getOverride(apiPath);
+    final base = jettonIndex;
+    if (base == null) throw StateError('ton: no jetton index configured');
+    final headers = {'accept': 'application/json'};
+    final key = apiKey;
+    if (key != null && key.isNotEmpty) headers['X-API-Key'] = key;
+    final r = await http.get(Uri.parse('$base$apiPath'), headers: headers);
+    return r.body;
+  }
+
+  /// Jetton auto-detect via a config jetton index. Parses BOTH common shapes
+  /// best-effort:
+  ///   • TON API  GET /v2/accounts/{addr}/jettons → { balances:[ { balance,
+  ///     jetton:{ address(master), symbol, decimals, name, image } } ] }.
+  ///   • toncenter v3 GET /api/v3/jetton/wallets?owner_address=… → { jetton_wallets:
+  ///     [ { balance, jetton:<master> } ], metadata:{ <master>:{ token_info:[{
+  ///     symbol, decimals, name } ] } } }.
+  /// Each non-zero jetton is mapped to a Balance keyed on its jetton-master
+  /// address (kind 'jetton'); the row flows unchanged through the shared
+  /// scam/honeypot auto-import gate. Best-effort — returns `[]` on any failure.
   @override
-  Future<List<Balance>> discoverTokens(String address) async => const [];
+  Future<List<Balance>> discoverTokens(String address) async {
+    try {
+      final body = await _jettonGet('/v2/accounts/$address/jettons');
+      final j = jsonDecode(body);
+      if (j is! Map) return const [];
+      final out = <Balance>[];
+      // Shape A — TON API: { balances:[ { balance, jetton:{…} } ] }.
+      final balances = j['balances'];
+      if (balances is List) {
+        for (final b in balances) {
+          if (b is! Map) continue;
+          final amt = BigInt.tryParse('${b['balance']}') ?? BigInt.zero;
+          if (amt <= BigInt.zero) continue;
+          final jm = b['jetton'];
+          if (jm is! Map) continue;
+          final master = '${jm['address'] ?? ''}';
+          if (master.isEmpty) continue;
+          final decimals = (num.tryParse('${jm['decimals'] ?? 9}') ?? 9).toInt();
+          out.add(_jettonBalance(
+              master: master,
+              symbol: '${jm['symbol'] ?? _shortMaster(master)}',
+              decimals: decimals,
+              name: jm['name']?.toString(),
+              logo: jm['image']?.toString(),
+              amt: amt));
+        }
+        return out;
+      }
+      // Shape B — toncenter v3: { jetton_wallets:[…], metadata:{…} }.
+      final wallets = j['jetton_wallets'];
+      final meta = (j['metadata'] is Map) ? j['metadata'] as Map : const {};
+      if (wallets is List) {
+        for (final w in wallets) {
+          if (w is! Map) continue;
+          final amt = BigInt.tryParse('${w['balance']}') ?? BigInt.zero;
+          if (amt <= BigInt.zero) continue;
+          final master = '${w['jetton'] ?? ''}';
+          if (master.isEmpty) continue;
+          var symbol = _shortMaster(master);
+          var decimals = 9;
+          String? name;
+          String? logo;
+          final info = (meta[master] is Map) ? (meta[master] as Map)['token_info'] : null;
+          if (info is List && info.isNotEmpty && info.first is Map) {
+            final ti = info.first as Map;
+            symbol = '${ti['symbol'] ?? symbol}';
+            decimals = (num.tryParse('${ti['decimals'] ?? 9}') ?? 9).toInt();
+            name = ti['name']?.toString();
+            logo = ti['image']?.toString();
+          }
+          out.add(_jettonBalance(
+              master: master,
+              symbol: symbol,
+              decimals: decimals,
+              name: name,
+              logo: logo,
+              amt: amt));
+        }
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  String _shortMaster(String m) =>
+      m.length <= 10 ? m : '${m.substring(0, 4)}…${m.substring(m.length - 4)}';
+
+  Balance _jettonBalance({
+    required String master,
+    required String symbol,
+    required int decimals,
+    required BigInt amt,
+    String? name,
+    String? logo,
+  }) {
+    final v = amt.toString();
+    return Balance(
+      asset: AssetRef(
+          chain: 'ton',
+          kind: 'jetton',
+          symbol: symbol,
+          decimals: decimals,
+          address: master,
+          name: name,
+          logo: logo),
+      confirmed: v,
+      display: formatUnits(v, decimals),
+    );
+  }
 
   /// CLIENT-BUILT signed external message (native or jetton). The signing cell
   /// is assembled locally; only seqno (+ jetton-wallet addr) come from the node.

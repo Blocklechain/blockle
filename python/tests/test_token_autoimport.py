@@ -42,6 +42,26 @@ def test_token_import_vector_solana_spl_is_imported():
 
 
 # ===========================================================================
+# NEW CHAINS: TRC-20 / jetton / stellar-asset / cardano native-asset rows route
+# through the SAME kind-agnostic gate. imported[]: 2=tron 3=ton 4=stellar 5=cardano.
+# ===========================================================================
+import pytest  # noqa: E402
+
+_NEW_CHAINS = [("tron", 2), ("ton", 3), ("stellar", 4), ("cardano", 5)]
+
+
+@pytest.mark.parametrize("chain,imp_idx", _NEW_CHAINS)
+def test_token_import_vector_new_chain_classifies_exactly(chain, imp_idx):
+    r = TokenAutoImport.filter_for_import(VEC["detected"][chain], [],
+                                          {"denylist": VEC["denylist"], "spamFilter": VEC["spamFilter"]})
+    assert [x["token"] for x in r["toImport"]] == [VEC["expect"]["imported"][imp_idx]]
+    assert [(f["token"]["symbol"], f["reason"]) for f in r["flagged"]] == \
+        [(f["symbol"], f["reason"]) for f in VEC["expect"]["flagged_by_chain"][chain]]
+    assert [(s["token"]["symbol"], s["reason"]) for s in r["skipped"]] == \
+        [(s["symbol"], s["reason"]) for s in VEC["expect"]["skipped_by_chain"][chain]]
+
+
+# ===========================================================================
 # NEVER FABRICATE: a token with no (or zero) detected balance is never imported
 # ===========================================================================
 def test_zero_or_no_balance_token_is_never_imported():

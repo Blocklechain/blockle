@@ -53,6 +53,77 @@ void main() {
   final keyBytes = ton.deriveSlip10Key(seed, path);
   final pub = ed.publicKey(keyBytes);
 
+  group('discoverTokens: jetton auto-detect over a mocked jetton index', () {
+    ton.TonAdapter adapter(String body) =>
+        ton.TonAdapter(jettonIndex: 'http://x', get: (p) async => body);
+
+    test('TON API shape {balances:[{balance,jetton:{…}}]} maps to Balances',
+        () async {
+      final body = jsonEncode({
+        'balances': [
+          {
+            'balance': '3000000',
+            'jetton': {
+              'address': 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs',
+              'symbol': 'USDT',
+              'decimals': 6,
+              'name': 'Tether USD'
+            }
+          }
+        ]
+      });
+      final rows = await adapter(body).discoverTokens('EQOwner');
+      expect(rows.length, 1);
+      final b = rows.first;
+      expect(b.asset.chain, 'ton');
+      expect(b.asset.kind, 'jetton');
+      expect(b.asset.address, 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs');
+      expect(b.asset.symbol, 'USDT');
+      expect(b.asset.decimals, 6);
+      expect(b.confirmed, '3000000');
+      expect(b.display, '3');
+    });
+
+    test('toncenter v3 shape {jetton_wallets, metadata} maps to Balances',
+        () async {
+      final body = jsonEncode({
+        'jetton_wallets': [
+          {'balance': '4200000', 'jetton': 'EQMaster000000000000000000000000000000AAA'}
+        ],
+        'metadata': {
+          'EQMaster000000000000000000000000000000AAA': {
+            'token_info': [
+              {'symbol': 'SCALE', 'decimals': 9, 'name': 'Scaleton'}
+            ]
+          }
+        }
+      });
+      final rows = await adapter(body).discoverTokens('EQOwner');
+      expect(rows.length, 1);
+      expect(rows.first.asset.symbol, 'SCALE');
+      expect(rows.first.asset.decimals, 9);
+      expect(rows.first.asset.address, 'EQMaster000000000000000000000000000000AAA');
+      expect(rows.first.confirmed, '4200000');
+    });
+
+    test('zero balances skipped; empty => []; a network throw => []', () async {
+      final zero = jsonEncode({
+        'balances': [
+          {
+            'balance': '0',
+            'jetton': {'address': 'EQZero', 'symbol': 'Z', 'decimals': 9}
+          }
+        ]
+      });
+      expect(await adapter(zero).discoverTokens('EQ'), isEmpty);
+      expect(await adapter(jsonEncode({'balances': []})).discoverTokens('EQ'),
+          isEmpty);
+      final thrower =
+          ton.TonAdapter(jettonIndex: 'http://x', get: (p) async => throw StateError('net'));
+      expect(await thrower.discoverTokens('EQ'), isEmpty);
+    });
+  });
+
   group('(a) SLIP-0010 ed25519 derivation', () {
     test('seed + public key match the golden vector', () {
       expect(h(keyBytes), key['ed25519Seed32Hex']);

@@ -266,9 +266,43 @@ class CardanoAdapter:
             out.append(Balance(asset=self.native, confirmed="0", display="—", error=str(e)))
         return out
 
-    def discover_tokens(self, address: str):
-        # CNT discovery surfaces via get_balance (display-only); no sendable list.
-        return []
+    def discover_tokens(self, address: str, known=None):
+        """Auto-detect held native-assets (CNTs) aggregated from the account's
+        UTXOs. Reuses the SAME provider read get_balance uses: each distinct unit
+        (policyId+assetNameHex) -> {chain:'cardano', kind:'native-asset',
+        address:unit, symbol:(utf8 name|short), decimals:0, balance:quantity}.
+        DISPLAY-ONLY in v1 (no send path). Read-only, best-effort — returns [] on
+        any failure. Zero quantities are skipped."""
+        try:
+            utxos = self._utxos(address)
+            assets = {}  # unit -> qty
+            for u in utxos:
+                for a in (u.get("asset_list") or []):
+                    unit = (a.get("policy_id", "") or "") + (a.get("asset_name", "") or "")
+                    if not unit:
+                        continue
+                    assets[unit] = assets.get(unit, 0) + int(a.get("quantity", 0) or 0)
+            out = []
+            for unit, qty in assets.items():
+                if qty <= 0:
+                    continue
+                name_hex = unit[56:]
+                sym = ""
+                if name_hex:
+                    try:
+                        dec = bytes.fromhex(name_hex).decode("ascii")
+                        if dec and all(32 <= ord(ch) < 127 for ch in dec):
+                            sym = dec
+                    except Exception:
+                        sym = ""
+                if not sym:
+                    sym = (unit[:6] + "…" + unit[-4:]) if len(unit) > 12 else (unit or "CNT")
+                ref = AssetRef(chain="cardano", kind="native-asset", symbol=sym,
+                               decimals=0, address=unit)
+                out.append(Balance(asset=ref, confirmed=str(qty), display=str(qty)))
+            return out
+        except Exception:
+            return []
 
     # ---- tip / params ----
     def _tip_slot(self):

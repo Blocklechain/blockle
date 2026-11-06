@@ -289,8 +289,9 @@ class ChainRegistry:
         if not a or not hasattr(a, "discover_tokens"):
             return []
         try:
-            # Solana can borrow symbol/decimals/logo from the known list.
-            if id == "solana":
+            # Solana + Tron + TON borrow symbol/decimals/logo from the known list
+            # (the indexer returns only balances / partial metadata).
+            if id in ("solana", "tron", "ton"):
                 return a.discover_tokens(address, known=self.tokens_for(id))
             return a.discover_tokens(address)
         except Exception:

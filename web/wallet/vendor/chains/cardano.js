@@ -161,6 +161,27 @@
     return f ? `${i}.${f}` : i;
   }
 
+  // Decode an asset-name hex to printable ASCII (a CNT's ticker), else null.
+  function hexToUtf8Printable(hex) {
+    const h = String(hex || '');
+    if (!h || h.length % 2) return null;
+    let s = '';
+    for (let i = 0; i < h.length; i += 2) {
+      const c = parseInt(h.slice(i, i + 2), 16);
+      if (!(c >= 0x20 && c <= 0x7e)) return null;
+      s += String.fromCharCode(c);
+    }
+    return s || null;
+  }
+  // A display symbol for a native-asset: the utf8 asset name if printable, else a
+  // shortened unit (policyId+assetNameHex).
+  function assetSymbol(assetNameHex, unit) {
+    const dec = hexToUtf8Printable(assetNameHex);
+    if (dec) return dec;
+    const u = String(unit || '');
+    return u.length > 12 ? u.slice(0, 6) + '…' + u.slice(-4) : u;
+  }
+
   // ---- tx build + sign (pure, offline) ------------------------------------
   // inputs:  [{ txHashHex, index }]
   // outputs: [{ address:'addr1…', coin:'lovelace' }]
@@ -316,9 +337,35 @@
         return out;
       },
 
-      // Native-asset discovery is folded into getBalance (display only). No
-      // separate token list in v1.
-      async discoverTokens() { return []; },
+      // Held native-assets (CNTs) aggregated from the account's UTXOs. Reuses the
+      // SAME provider read getBalance uses. DISPLAY-ONLY (decimals 0, displayOnly
+      // true) — no send path in v1. Keyed by unit (policyId+assetNameHex).
+      // Read-only, best-effort, never throws.
+      async discoverTokens(address) {
+        try {
+          const utxos = await fetchUtxos(address);
+          const assetMap = {}; // unit -> { quantity, policyId, assetName }
+          for (const u of utxos) {
+            for (const a of (u.assets || [])) {
+              const prev = assetMap[a.unit] || { quantity: 0n, policyId: a.policyId, assetName: a.assetName };
+              prev.quantity += BigInt(a.quantity || '0');
+              assetMap[a.unit] = prev;
+            }
+          }
+          const out = [];
+          for (const unit of Object.keys(assetMap)) {
+            const a = assetMap[unit];
+            if (a.quantity <= 0n) continue;
+            out.push({
+              chain: id, kind: 'native-asset', address: unit,
+              symbol: assetSymbol(a.assetName, unit), decimals: 0,
+              balance: a.quantity.toString(), display: a.quantity.toString(),
+              displayOnly: true,
+            });
+          }
+          return out;
+        } catch { return []; }
+      },
 
       // CLIENT-BUILT + CLIENT-SIGNED native ADA transfer. req: { to, amount
       // (lovelace), index? }. UTXOs + tip come from the provider (verifiable);

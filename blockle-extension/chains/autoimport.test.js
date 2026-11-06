@@ -37,6 +37,22 @@ test('token-import vector: solana SPL detected balance is imported', () => {
   assert.deepEqual(r.toImport.map((x) => x.token), [VEC.expect.imported[1]]);
 });
 
+// ---------------------------------------------------------------------------
+// NEW CHAINS: TRC-20 / jetton / stellar-asset / cardano native-asset rows route
+// through the SAME kind-agnostic gate. One real positive → imported; zero →
+// skipped; spam-named → flagged 'spam'; denylisted/honeypot/scam → flagged.
+// imported[]: [2]=tron [3]=ton [4]=stellar [5]=cardano.
+// ---------------------------------------------------------------------------
+const NEW_CHAINS = { tron: 2, ton: 3, stellar: 4, cardano: 5 };
+for (const [chain, impIdx] of Object.entries(NEW_CHAINS)) {
+  test(`token-import vector: ${chain} held-token row classifies exactly`, () => {
+    const r = TokenAutoImport.filterForImport(VEC.detected[chain], [], { denylist: VEC.denylist, spamFilter: VEC.spamFilter });
+    assert.deepEqual(r.toImport.map((x) => x.token), [VEC.expect.imported[impIdx]], `only the real positive-balance ${chain} token is imported`);
+    assert.deepEqual(r.flagged.map((f) => ({ symbol: f.token.symbol, reason: f.reason })), VEC.expect.flagged_by_chain[chain], `${chain}: spam + denylist/scam/honeypot are flagged, never imported`);
+    assert.deepEqual(r.skipped.map((s) => ({ symbol: s.token.symbol, reason: s.reason })), VEC.expect.skipped_by_chain[chain], `${chain}: the zero-balance row is skipped`);
+  });
+}
+
 // ===========================================================================
 // NEVER FABRICATE: a token with no (or zero) detected balance is never imported
 // ===========================================================================
@@ -127,6 +143,27 @@ test('orchestrator: a second run changes nothing (incremental + idempotent)', as
   const summary2 = await TokenAutoImport.autoImport({ registry, store, denylist: VEC.denylist, addressFor: async () => '0xMe' });
   assert.equal(summary2.changed, false, 're-run imports nothing new');
   assert.equal(JSON.stringify(store.data), snapshot, 'the persisted store is unchanged');
+});
+
+test('orchestrator: new-chain held tokens persist into chainTokens[chain]', async () => {
+  const store = fakeStore();
+  const registry = fakeRegistry({
+    tron: VEC.detected.tron, ton: VEC.detected.ton,
+    stellar: VEC.detected.stellar, cardano: VEC.detected.cardano,
+  });
+  const summary = await TokenAutoImport.autoImport({
+    registry, store, denylist: VEC.denylist, spamFilter: true, addressFor: async () => 'addr',
+  });
+  assert.deepEqual(store.data.chainTokens.tron, [VEC.expect.imported[2]]);
+  assert.deepEqual(store.data.chainTokens.ton, [VEC.expect.imported[3]]);
+  assert.deepEqual(store.data.chainTokens.stellar, [VEC.expect.imported[4]]);
+  assert.deepEqual(store.data.chainTokens.cardano, [VEC.expect.imported[5]]);
+  // each chain MARKS its spam + denylist/honeypot/scam rows, never imports them.
+  for (const chain of ['tron', 'ton', 'stellar', 'cardano']) {
+    assert.equal(store.data.flaggedTokens[chain].length, 2, chain + ' flags 2');
+  }
+  assert.equal(summary.imported.length, 4);
+  assert.equal(summary.changed, true);
 });
 
 test('orchestrator: a BLOCK-20 discovered token persists into the `tokens` id array', async () => {

@@ -102,6 +102,74 @@ void main() {
   });
 
   // =========================================================================
+  // NEW CHAINS: TRC-20 / jetton / stellar-asset / cardano native-asset rows run
+  // through the SAME chain-agnostic gate (keyed on (chain, address), balance>0,
+  // flags/denylist/spam). The imported index tracks expect.imported order
+  // (eth=0, sol=1, tron=2, ton=3, stellar=4, cardano=5).
+  // =========================================================================
+  final detected = (VEC['detected'] as Map).cast<String, dynamic>();
+  final flaggedByChain = (expect0['flagged_by_chain'] as Map).cast<String, dynamic>();
+  final skippedByChain = (expect0['skipped_by_chain'] as Map).cast<String, dynamic>();
+  const newChains = ['tron', 'ton', 'stellar', 'cardano'];
+  for (var i = 0; i < newChains.length; i++) {
+    final chain = newChains[i];
+    test('token-import vector: $chain held-token rows classify exactly', () {
+      final r = filterForImport(detected[chain] as List, const [],
+          denylist: _denylist(), spamFilter: VEC['spamFilter'] == true);
+      // one real positive-balance token is imported (normalized shape).
+      expect(r.toImport.map((x) => x['token']).toList(),
+          [(imported[2 + i] as Map).cast<String, dynamic>()]);
+      // the spam-named + honeypot/scam/denylisted rows are FLAGGED, not imported.
+      expect(
+          r.flagged
+              .map((f) => {
+                    'symbol': (f['token'] as Map)['symbol'],
+                    'reason': f['reason']
+                  })
+              .toList(),
+          [
+            for (final f in flaggedByChain[chain] as List)
+              {'symbol': (f as Map)['symbol'], 'reason': f['reason']}
+          ]);
+      // the zero-balance row is skipped (never fabricate).
+      expect(
+          r.skipped
+              .map((s) => {
+                    'symbol': (s['token'] as Map)['symbol'],
+                    'reason': s['reason']
+                  })
+              .toList(),
+          [
+            for (final s in skippedByChain[chain] as List)
+              {'symbol': (s as Map)['symbol'], 'reason': s['reason']}
+          ]);
+    });
+  }
+
+  test('orchestrator: the new chains persist held tokens into chainTokens', () async {
+    final store = FakeStore();
+    final registry = FakeRegistry({
+      for (final chain in newChains) chain: detected[chain] as List,
+    });
+    final summary = await autoImport(
+      registry: registry,
+      store: store,
+      denylist: _denylist(),
+      spamFilter: true,
+      addressFor: (_) async => 'addr',
+    );
+    for (var i = 0; i < newChains.length; i++) {
+      final chain = newChains[i];
+      expect((store.data['chainTokens'] as Map)[chain],
+          [(imported[2 + i] as Map).cast<String, dynamic>()]);
+      // each chain also flagged its spam + danger rows (2 per chain).
+      expect(((store.data['flaggedTokens'] as Map)[chain] as List).length, 2);
+    }
+    expect((summary['imported'] as List).length, newChains.length);
+    expect(summary['changed'], true);
+  });
+
+  // =========================================================================
   // NEVER FABRICATE: a token with no (or zero) detected balance is never imported
   // =========================================================================
   test('a zero-balance / no-balance token is never auto-imported (never fabricate)', () {

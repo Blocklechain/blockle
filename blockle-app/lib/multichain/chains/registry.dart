@@ -32,7 +32,8 @@ class EndpointCfg {
       this.horizon,
       this.koios,
       this.blockfrostUrl,
-      this.blockfrostProjectId});
+      this.blockfrostProjectId,
+      this.jettonIndex});
   final String? rpcUrl;
   final String? esplora;
   final int? chainId;
@@ -54,6 +55,12 @@ class EndpointCfg {
   /// key. CONFIG only; used solely by the Tron adapter. Never a secret here.
   final String? api;
   final String? apiKey;
+
+  /// Config-overridable jetton-index REST base for TON held-token auto-detect
+  /// (e.g. a TON API host, or a toncenter v3 host). CONFIG only, no secret; null
+  /// => jetton auto-detect OFF (curated-list fallback). Used only by the TON
+  /// adapter's discoverTokens.
+  final String? jettonIndex;
 
   /// Alchemy indexer base URL *including* the read-only API key, used for EVM
   /// ERC-20 auto-detect. CONFIG only; null => auto-detect OFF (known-list
@@ -471,6 +478,10 @@ class ChainRegistry {
       api: ep['tron']?.api,
       apiKey: ep['tron']?.apiKey,
       post: postFor(ep['tron']?.api),
+      // GET transport + curated list power TRC-20 auto-detect (symbol/decimals
+      // resolution; TronGrid's /trc20 map carries balances only).
+      get: getFor(ep['tron']?.api),
+      knownTokens: tk['tron'] ?? const [],
     );
     // TON (account-model ed25519): own adapter + toncenter v2 jsonRPC transport.
     // Reuses the injectable HttpPostFn builder (base = the toncenter `api` URL)
@@ -479,6 +490,10 @@ class ChainRegistry {
       api: ep['ton']?.api,
       apiKey: ep['ton']?.apiKey,
       post: postFor(ep['ton']?.api),
+      // Jetton auto-detect: config-overridable index base + GET transport. Null
+      // index => discovery is a no-op (curated-list fallback), no new secret.
+      jettonIndex: ep['ton']?.jettonIndex,
+      get: getFor(ep['ton']?.jettonIndex),
     );
     // XRP (account-model secp256k1): own adapter + rippled JSON-RPC transport.
     // Reuses the injectable HttpPostFn builder (base = the rippled `rpcUrl`),

@@ -245,8 +245,45 @@ class StellarAdapter implements ChainAdapter {
     return BigInt.parse(whole + frac).toString();
   }
 
+  /// Issued-asset (trustline) auto-detect. Reuses the SAME Horizon /accounts/{G…}
+  /// read getBalance uses; every non-native balance row is a trustline the account
+  /// holds. Each is mapped to a Balance (kind 'stellar-asset', 7 decimals) whose
+  /// `address` is the unique `code:issuer` id, with the balance converted to
+  /// stroops so the shared auto-import gate can parse it. Zero trustlines are
+  /// skipped. Best-effort — returns `[]` on any failure.
   @override
-  Future<List<Balance>> discoverTokens(String address) async => const [];
+  Future<List<Balance>> discoverTokens(String address) async {
+    try {
+      final res = await _horizonGetJson('/accounts/$address');
+      final balances = res['balances'];
+      if (balances is! List) return const [];
+      final out = <Balance>[];
+      for (final b in balances) {
+        if (b is! Map) continue;
+        final type = '${b['asset_type']}';
+        if (type == 'native') continue;
+        final code = '${b['asset_code'] ?? ''}';
+        final issuer = '${b['asset_issuer'] ?? ''}';
+        if (code.isEmpty || issuer.isEmpty) continue;
+        final stroops = _toStroops('${b['balance'] ?? '0'}');
+        if (isZeroBalance(stroops)) continue;
+        out.add(Balance(
+          asset: AssetRef(
+            chain: 'stellar',
+            kind: 'stellar-asset',
+            symbol: code,
+            decimals: 7,
+            address: '$code:$issuer',
+          ),
+          confirmed: stroops,
+          display: formatUnits(stroops, 7),
+        ));
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
 
   Future<BigInt> _sequenceOf(String address) async {
     final res = await _horizonGetJson('/accounts/$address');

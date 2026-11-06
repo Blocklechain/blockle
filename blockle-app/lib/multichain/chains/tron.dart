@@ -401,8 +401,11 @@ class TronAdapter implements ChainAdapter {
     this.api,
     this.apiKey,
     HttpPostFn? post,
+    HttpGetFn? get,
+    this.knownTokens = const [],
     int feeLimit = 15000000, // 15 TRX default TRC-20 fee cap (config-overridable)
   })  : _postOverride = post,
+        _getOverride = get,
         _feeLimit = feeLimit {
     native = AssetRef(chain: 'tron', kind: 'native', symbol: symbol, decimals: 6);
   }
@@ -416,7 +419,12 @@ class TronAdapter implements ChainAdapter {
 
   /// Optional TronGrid API key → `TRON-PRO-API-KEY` header (CONFIG, never logged).
   final String? apiKey;
+
+  /// The curated/known TRC-20 list, used by discoverTokens to resolve a detected
+  /// contract's symbol/decimals/name (TronGrid's /trc20 map carries balances only).
+  final List<AssetRef> knownTokens;
   final HttpPostFn? _postOverride;
+  final HttpGetFn? _getOverride;
   final int _feeLimit;
 
   @override
@@ -516,11 +524,72 @@ class TronAdapter implements ChainAdapter {
     return out;
   }
 
-  /// TRC-20 auto-detect via TronGrid's indexer (/v1/accounts/{addr}/trc20).
+  /// GET {base}{path} → response body. Transport injectable (tests); otherwise
+  /// package:http with the optional TRON-PRO-API-KEY header.
+  Future<String> _tronGet(String apiPath) async {
+    if (_getOverride != null) return _getOverride(apiPath);
+    final base = api;
+    if (base == null) throw StateError('tron: no TronGrid endpoint configured');
+    final headers = {'accept': 'application/json'};
+    final key = apiKey;
+    if (key != null && key.isNotEmpty) headers['TRON-PRO-API-KEY'] = key;
+    final r = await http.get(Uri.parse('$base$apiPath'), headers: headers);
+    return r.body;
+  }
+
+  AssetRef? _knownByAddress(String contract) {
+    final lc = contract.toLowerCase();
+    for (final t in knownTokens) {
+      if ((t.address ?? '').toLowerCase() == lc) return t;
+    }
+    return null;
+  }
+
+  String _shortContract(String contract) => contract.length <= 10
+      ? contract
+      : '${contract.substring(0, 4)}…${contract.substring(contract.length - 4)}';
+
+  /// TRC-20 auto-detect via TronGrid's indexer (GET /v1/accounts/{addr}/trc20),
+  /// which returns `{ data: [ { "<contract>": "<balanceStr>" }, … ] }`. Each
+  /// non-zero TRC-20 is mapped to a Balance; symbol/decimals/name are resolved
+  /// from [knownTokens] when the contract is curated, else a short-contract
+  /// symbol + 6 decimals fallback (TronGrid's map carries balances only). The
+  /// row flows unchanged through the shared scam/honeypot auto-import gate.
   /// Best-effort — returns `[]` on any failure or when unconfigured.
   @override
   Future<List<Balance>> discoverTokens(String address) async {
-    return const [];
+    try {
+      final body = await _tronGet('/v1/accounts/$address/trc20');
+      final j = jsonDecode(body);
+      final rows = (j is Map && j['data'] is List) ? j['data'] as List : const [];
+      final out = <Balance>[];
+      for (final row in rows) {
+        if (row is! Map) continue;
+        for (final entry in row.entries) {
+          final contract = entry.key.toString();
+          final amt = BigInt.tryParse(entry.value.toString()) ?? BigInt.zero;
+          if (amt <= BigInt.zero) continue; // dust/zero skipped — never fabricate
+          final known = _knownByAddress(contract);
+          final decimals = known?.decimals ?? 6;
+          final v = amt.toString();
+          out.add(Balance(
+            asset: AssetRef(
+              chain: 'tron',
+              kind: 'trc20',
+              symbol: known?.symbol ?? _shortContract(contract),
+              decimals: decimals,
+              address: contract,
+              name: known?.name,
+            ),
+            confirmed: v,
+            display: formatUnits(v, decimals),
+          ));
+        }
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
   }
 
   /// ASSEMBLE (node) + SIGN (local) a TRX / TRC-20 transfer. Returns a BuiltTx

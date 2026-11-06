@@ -44,6 +44,13 @@
   const DEFAULT_FEE_LIMIT = 100_000_000;      // 100 TRX cap for a TRC-20 call
   const TRC20_TRANSFER = 'transfer(address,uint256)';
   const TRC20_BALANCEOF = 'balanceOf(address)';
+  // Known TRC-20 metadata (symbol/decimals) for contracts the discovery indexer
+  // returns only a balance for. Extended at call time by opts.knownTokens (the
+  // vendor registry passes the wallet's default + imported list). USDT is the
+  // canonical mainnet stable; everything else falls back to short(contract)/6.
+  const KNOWN_TRC20 = {
+    'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t': { symbol: 'USDT', decimals: 6 },
+  };
   // Tron Contract.type enum values we recognize, + the ERC/TRC-20 transfer
   // selector (keccak256('transfer(address,uint256)')[:4]).
   const TRON_TRANSFER_CONTRACT = 1;
@@ -72,6 +79,20 @@
     const i = s.slice(0, s.length - decimals);
     let f = s.slice(s.length - decimals).replace(/0+$/, '');
     return f ? `${i}.${f}` : i;
+  }
+
+  // Best-effort TRC-20 metadata from TronGrid /v1/assets/{contract}. Returns
+  // { symbol, decimals, name } or null (never throws).
+  async function assetMeta(base, headers, contract) {
+    try {
+      const r = await fetch(base + '/v1/assets/' + contract, { headers: headers || {} });
+      const j = await r.json();
+      const d = (j && j.data && j.data[0]) || null;
+      const sym = d && (d.symbol || d.abbr);
+      if (!sym) return null;
+      const dec = d.decimals != null ? d.decimals : (d.precision != null ? d.precision : 6);
+      return { symbol: sym, decimals: Number(dec), name: d.name };
+    } catch { return null; }
   }
 
   // Recompute txID = sha256(raw_data_hex) and REQUIRE it to match the claimed id.
@@ -266,12 +287,17 @@
 
       // Auto-detect TRC-20 holdings via TronGrid's account API (best-effort;
       // returns [] on failure — the registry's known list is then the source).
-      async discoverTokens(address) {
+      async discoverTokens(address, opts) {
         try {
           let base = typeof getEndpoint === 'function' ? await getEndpoint() : getEndpoint;
           base = String(base || DEFAULT_API).replace(/\/+$/, '');
           const headers = {};
           if (apiKey) headers['TRON-PRO-API-KEY'] = apiKey;
+          const known = new Map();
+          for (const addr of Object.keys(KNOWN_TRC20)) known.set(addr, KNOWN_TRC20[addr]);
+          for (const t of ((opts && opts.knownTokens) || [])) {
+            if (t && t.address) known.set(String(t.address), t);
+          }
           const r = await fetch(base + '/v1/accounts/' + address + '/trc20', { headers });
           const j = await r.json();
           const rows = (j && j.data) || [];
@@ -280,11 +306,19 @@
             for (const contract of Object.keys(row || {})) {
               let amt; try { amt = BigInt(row[contract]); } catch { continue; }
               if (amt <= 0n) continue;
-              out.push({
-                chain: id, kind: 'trc20', address: contract,
-                symbol: contract.slice(0, 4) + '…' + contract.slice(-4),
-                decimals: 6, balance: amt.toString(), display: formatUnits(amt.toString(), 6),
-              });
+              let symbol, decimals, name;
+              const k = known.get(contract);
+              if (k) { symbol = k.symbol; decimals = k.decimals; name = k.name; }
+              else {
+                const meta = await assetMeta(base, headers, contract);
+                if (meta) { symbol = meta.symbol; decimals = meta.decimals; name = meta.name; }
+              }
+              if (symbol == null) symbol = contract.slice(0, 4) + '…' + contract.slice(-4);
+              if (decimals == null) decimals = 6;
+              const o = { chain: id, kind: 'trc20', address: contract,
+                symbol, decimals, balance: amt.toString(), display: formatUnits(amt.toString(), decimals) };
+              if (name) o.name = name;
+              out.push(o);
             }
           }
           return out;

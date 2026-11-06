@@ -358,8 +358,43 @@ class CardanoAdapter implements ChainAdapter {
     return 'CNT';
   }
 
+  /// Native-asset (CNT) auto-detect. Reuses the SAME UTXO read getBalance uses
+  /// and aggregates per-unit quantities (policyId+assetNameHex). Each non-zero
+  /// unit is mapped to a Balance (kind 'native-asset', 0 decimals, DISPLAY-ONLY —
+  /// CNT sending is a v2 follow-up) keyed on the unit; the row flows unchanged
+  /// through the shared auto-import gate. Best-effort — returns `[]` on any
+  /// failure.
   @override
-  Future<List<Balance>> discoverTokens(String address) async => const [];
+  Future<List<Balance>> discoverTokens(String address) async {
+    try {
+      final utxos = await _utxos(address);
+      final assets = <String, BigInt>{};
+      for (final u in utxos) {
+        for (final a in _assetListOf(u)) {
+          assets[a.$1] = (assets[a.$1] ?? BigInt.zero) + a.$2;
+        }
+      }
+      final out = <Balance>[];
+      assets.forEach((unit, qty) {
+        if (qty <= BigInt.zero) return;
+        out.add(Balance(
+          asset: AssetRef(
+            chain: 'cardano',
+            kind: 'native-asset',
+            symbol: _assetSymbol(unit),
+            decimals: 0,
+            address: unit,
+            name: 'Cardano native asset (display only)',
+          ),
+          confirmed: qty.toString(),
+          display: qty.toString(),
+        ));
+      });
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
 
   Future<int> _tipSlot() async {
     if (_useBlockfrost) {
