@@ -12,75 +12,261 @@ import 'browser_tab.dart';
 import 'settings.dart';
 import 'wallet/wallet_screen.dart';
 
+/// A single navigation destination (icon + label), the one source of truth for
+/// both the collapsible side menu and the minimal bottom bar.
+class _Dest {
+  const _Dest(this.icon, this.selectedIcon, this.label);
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+}
+
+/// Soft accent tint used to mark the active destination (≈15% accent).
+const Color _activeTint = Color(0x267C5CFF);
+
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  // IMPORTANT: order must stay in lock-step with AppState's indices
+  // (e.g. browserTabIndex == 5) so deep-links still land on the right page.
   static const _pages = [
-    WalletTab(),
-    AccountsScreen(),
-    ExchangeScreen(),
-    AgentScreen(),
-    BotsScreen(),
-    BrowserTab(),
-    SettingsScreen(),
-    WalletScreen(),
-    ChatScreen(),
+    WalletTab(), // 0
+    AccountsScreen(), // 1
+    ExchangeScreen(), // 2
+    AgentScreen(), // 3
+    BotsScreen(), // 4
+    BrowserTab(), // 5
+    SettingsScreen(), // 6
+    WalletScreen(), // 7  (Portfolio)
+    ChatScreen(), // 8
   ];
+
+  static const _dests = <_Dest>[
+    _Dest(Icons.account_balance_wallet_outlined, Icons.account_balance_wallet,
+        'Wallet'),
+    _Dest(Icons.layers_outlined, Icons.layers, 'Accounts'),
+    _Dest(Icons.candlestick_chart_outlined, Icons.candlestick_chart,
+        'Exchange'),
+    _Dest(Icons.smart_toy_outlined, Icons.smart_toy, 'Agent'),
+    _Dest(Icons.auto_graph_outlined, Icons.auto_graph, 'Bots'),
+    _Dest(Icons.public_outlined, Icons.public, 'Browser'),
+    _Dest(Icons.settings_outlined, Icons.settings, 'Settings'),
+    _Dest(Icons.diamond_outlined, Icons.diamond, 'Portfolio'),
+    _Dest(Icons.chat_bubble_outline, Icons.chat_bubble, 'AI Chat'),
+  ];
+
+  /// The few destinations that get an icon-only button on the bottom bar; the
+  /// full set always lives in the side menu.
+  static const _bottomPrimary = <int>[0, 2, 4, 5]; // Wallet, Exchange, Bots, Browser
 
   @override
   Widget build(BuildContext context) {
     final i = context.watch<AppState>().tabIndex;
     return Scaffold(
+      drawer: _SideMenu(current: i),
       body: IndexedStack(index: i, children: _pages),
-      bottomNavigationBar: NavigationBarTheme(
-        data: const NavigationBarThemeData(
-          backgroundColor: Bk.bg2,
-          indicatorColor: Color(0x2E7C5CFF),
-          labelTextStyle: WidgetStatePropertyAll(
-            TextStyle(fontSize: 12, color: Bk.muted),
+      bottomNavigationBar: _MinimalBottomBar(current: i),
+    );
+  }
+}
+
+/// The collapsible side menu: the complete destination list, the active one
+/// highlighted. Opens from the bottom bar's menu button or an edge swipe, and
+/// collapses away when a destination is picked or the header chevron is tapped.
+class _SideMenu extends StatelessWidget {
+  const _SideMenu({required this.current});
+  final int current;
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      backgroundColor: Bk.bg2,
+      width: 288,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.horizontal(right: Radius.circular(22)),
+      ),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 10, 14),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      gradient: Bk.gradient,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Text('B',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 22,
+                            color: Colors.white)),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text('Blockle Wallet',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w800, fontSize: 16)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left, color: Bk.muted),
+                    tooltip: 'Collapse menu',
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: Bk.border),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  for (int idx = 0; idx < HomeScreen._dests.length; idx++)
+                    _DrawerItem(
+                      dest: HomeScreen._dests[idx],
+                      active: idx == current,
+                      onTap: () {
+                        context.read<AppState>().setTab(idx);
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: Bk.border),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 14, 20, 12),
+              child: Text('Blockle · non-custodial',
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DrawerItem extends StatelessWidget {
+  const _DrawerItem(
+      {required this.dest, required this.active, required this.onTap});
+  final _Dest dest;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+      child: Material(
+        color: active ? _activeTint : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Icon(active ? dest.selectedIcon : dest.icon,
+                    size: 22, color: active ? Bk.accent : Bk.muted),
+                const SizedBox(width: 16),
+                Text(
+                  dest.label,
+                  style: TextStyle(
+                    color: active ? Bk.text : Bk.muted,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    fontSize: 15,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
-        child: NavigationBar(
-          selectedIndex: i,
-          onDestinationSelected: (n) => context.read<AppState>().setTab(n),
-          destinations: const [
-            NavigationDestination(
-                icon: Icon(Icons.account_balance_wallet_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.account_balance_wallet, color: Bk.accent),
-                label: 'Wallet'),
-            NavigationDestination(
-                icon: Icon(Icons.layers_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.layers, color: Bk.accent),
-                label: 'Accounts'),
-            NavigationDestination(
-                icon: Icon(Icons.candlestick_chart_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.candlestick_chart, color: Bk.accent),
-                label: 'Exchange'),
-            NavigationDestination(
-                icon: Icon(Icons.smart_toy_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.smart_toy, color: Bk.accent),
-                label: 'Agent'),
-            NavigationDestination(
-                icon: Icon(Icons.auto_graph_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.auto_graph, color: Bk.accent),
-                label: 'Bots'),
-            NavigationDestination(
-                icon: Icon(Icons.public_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.public, color: Bk.accent),
-                label: 'Browser'),
-            NavigationDestination(
-                icon: Icon(Icons.settings_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.settings, color: Bk.accent),
-                label: 'Settings'),
-            NavigationDestination(
-                icon: Icon(Icons.diamond_outlined, color: Bk.muted),
-                selectedIcon: Icon(Icons.diamond, color: Bk.accent),
-                label: 'Portfolio'),
-            NavigationDestination(
-                icon: Icon(Icons.chat_bubble_outline, color: Bk.muted),
-                selectedIcon: Icon(Icons.chat_bubble, color: Bk.accent),
-                label: 'AI Chat'),
-          ],
+      ),
+    );
+  }
+}
+
+/// A minimal, label-free bottom bar: the primary destinations as icons plus a
+/// menu button that opens the collapsible side menu for everything else.
+class _MinimalBottomBar extends StatelessWidget {
+  const _MinimalBottomBar({required this.current});
+  final int current;
+
+  @override
+  Widget build(BuildContext context) {
+    final onPrimary = HomeScreen._bottomPrimary.contains(current);
+    return Container(
+      decoration: const BoxDecoration(
+        color: Bk.bg2,
+        border: Border(top: BorderSide(color: Bk.border, width: 1)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 58,
+          child: Row(
+            children: [
+              for (final idx in HomeScreen._bottomPrimary)
+                _BarIcon(
+                  icon: current == idx
+                      ? HomeScreen._dests[idx].selectedIcon
+                      : HomeScreen._dests[idx].icon,
+                  active: current == idx,
+                  tooltip: HomeScreen._dests[idx].label,
+                  onTap: () => context.read<AppState>().setTab(idx),
+                ),
+              _BarIcon(
+                icon: Icons.menu,
+                // Light the menu up when the active page lives in the drawer.
+                active: !onPrimary,
+                tooltip: 'Menu',
+                onTap: () => Scaffold.of(context).openDrawer(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BarIcon extends StatelessWidget {
+  const _BarIcon(
+      {required this.icon,
+      required this.active,
+      required this.tooltip,
+      required this.onTap});
+  final IconData icon;
+  final bool active;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: InkResponse(
+        onTap: onTap,
+        radius: 32,
+        child: Center(
+          child: Tooltip(
+            message: tooltip,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                color: active ? _activeTint : Colors.transparent,
+                borderRadius: BorderRadius.circular(13),
+              ),
+              child: Icon(icon,
+                  size: 24, color: active ? Bk.accent : Bk.muted),
+            ),
+          ),
         ),
       ),
     );
