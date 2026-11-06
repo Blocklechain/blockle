@@ -365,7 +365,10 @@ class _ExchangeScreenState extends State<ExchangeScreen> {
           autofocus: true,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-              labelText: buy ? 'Amount (USDC)' : 'Amount (BLOCK)'),
+              labelText: buy ? 'Amount (BLOCK to buy)' : 'Amount (BLOCK to sell)',
+              helperText: buy
+                  ? 'Market buy on BLOCK/USDC — you pay USDC'
+                  : 'Market sell on BLOCK/USDC — you receive USDC'),
         ),
         actions: [
           TextButton(
