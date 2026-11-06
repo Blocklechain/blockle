@@ -19,10 +19,17 @@ concurrency:
 
 jobs:
   testflight:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 (iOS 26 SDK required by App Store Connect)
+        run: |
+          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
+          [ -n "$XC" ] && sudo xcode-select -s "$XC/Contents/Developer" || true
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i "iphoneos" || true
 
       - uses: subosito/flutter-action@v2
         with:
