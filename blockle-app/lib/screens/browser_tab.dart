@@ -8,6 +8,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../multichain/chains/evm.dart' show EvmAdapter;
 import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' show decodePersonalSign;
 import '../services/agent_service.dart' show AgentService, SiteScreening;
@@ -231,6 +232,122 @@ class _BrowserTabState extends State<BrowserTab> {
     return res ?? false;
   }
 
+  String _chainIdToName(String hexChainId) {
+    final s = hexChainId.startsWith('0x') ? hexChainId.substring(2) : hexChainId;
+    final id = int.tryParse(s, radix: 16) ?? 1;
+    switch (id) {
+      case 1:
+        return 'ethereum';
+      case 8453:
+        return 'base';
+      case 42161:
+        return 'arbitrum';
+      case 10:
+        return 'optimism';
+      case 137:
+        return 'polygon';
+      case 56:
+        return 'bnb';
+      case 43114:
+        return 'avalanche';
+      default:
+        return 'ethereum';
+    }
+  }
+
+  String _weiToEth(dynamic v) {
+    BigInt wei;
+    final s = '$v';
+    try {
+      wei = s.startsWith('0x')
+          ? BigInt.parse(s.substring(2), radix: 16)
+          : BigInt.parse(s.isEmpty ? '0' : s);
+    } catch (_) {
+      wei = BigInt.zero;
+    }
+    if (wei == BigInt.zero) return '0';
+    final unit = BigInt.from(10).pow(18);
+    final whole = wei ~/ unit;
+    final frac = (wei % unit)
+        .toString()
+        .padLeft(18, '0')
+        .substring(0, 6)
+        .replaceAll(RegExp(r'0+$'), '');
+    return frac.isEmpty ? '$whole' : '$whole.$frac';
+  }
+
+  /// Transaction confirm sheet — the non-bypassable gate before a dApp tx signs
+  /// and broadcasts. Shows chain, recipient, value and calldata so the user sees
+  /// exactly what they authorize.
+  Future<bool> _confirmEvmTx(String origin, String chain, Map tx) async {
+    final host = Uri.tryParse(origin)?.host ?? origin;
+    final to = '${tx['to'] ?? ''}';
+    final value = _weiToEth(tx['value'] ?? '0x0');
+    final data = '${tx['data'] ?? '0x'}';
+    final dataBytes = (data.startsWith('0x') ? data.length - 2 : data.length) ~/ 2;
+    Widget row(String k, String v, {bool mono = true}) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SizedBox(
+                width: 64,
+                child: Text(k,
+                    style: const TextStyle(color: Bk.muted, fontSize: 12))),
+            Expanded(
+                child: Text(v,
+                    style: mono
+                        ? kMono.copyWith(fontSize: 12)
+                        : const TextStyle(fontSize: 13))),
+          ]),
+        );
+    final res = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Icon(Icons.north_east, color: Bk.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text('Confirm transaction',
+                        style: Theme.of(context).textTheme.titleMedium)),
+              ]),
+              const SizedBox(height: 2),
+              Text(host, style: const TextStyle(color: Bk.muted, fontSize: 12)),
+              const SizedBox(height: 12),
+              row('Network', chain[0].toUpperCase() + chain.substring(1),
+                  mono: false),
+              row('To', to),
+              row('Value', '$value ETH', mono: false),
+              row('Data', dataBytes == 0 ? '(none)' : '$dataBytes bytes'),
+              const SizedBox(height: 8),
+              const Text(
+                  'This sends a transaction that can move funds or interact with a contract. Only confirm if you trust this site.',
+                  style: TextStyle(color: Bk.warn, fontSize: 12)),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(
+                    child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'))),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Confirm'))),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
+    return res ?? false;
+  }
+
   void _emitEvm(String event, dynamic data) {
     _ctrl?.evaluateJavascript(
         source:
@@ -311,10 +428,58 @@ class _BrowserTabState extends State<BrowserTab> {
       case 'eth_signTypedData':
       case 'eth_signTypedData_v3':
       case 'eth_signTypedData_v4':
+        {
+          final mc = context.read<MultichainController>();
+          if (!_evmConnected.contains(origin)) return err(4100, 'Connect first.');
+          final raw = params.length > 1 ? params[1] : (params.isNotEmpty ? params[0] : null);
+          Map<String, dynamic> td;
+          try {
+            td = raw is String
+                ? (jsonDecode(raw) as Map).cast<String, dynamic>()
+                : (raw as Map).cast<String, dynamic>();
+          } catch (_) {
+            return err(4200, 'Invalid typed-data payload.');
+          }
+          final dName = (td['domain'] is Map ? td['domain']['name'] : null) ?? 'this dApp';
+          final ok = await _confirmEvmSign(origin,
+              'EIP-712 typed-data signature for "$dName".\n\nThis is often a token-approval (e.g. Uniswap Permit2) or an order. No funds move from this signature alone — only from a transaction you also confirm.');
+          if (!ok) return err(4001, 'Signature request rejected.');
+          final sig = mc.accounts.evmSignTypedData(td);
+          if (sig == null) return err(4100, 'Unlock your EVM account first.');
+          return {'result': sig};
+        }
       case 'eth_sendTransaction':
-        return err(4200,
-            'Transaction & typed-data (Permit2) signing from the in-app browser '
-            'is landing in the next update. Connect + message signing work now.');
+        {
+          final mc = context.read<MultichainController>();
+          if (!_evmConnected.contains(origin)) return err(4100, 'Connect first.');
+          final chain = _chainIdToName(_evmChainId);
+          final adapter = mc.accounts.registry.adapters[chain];
+          if (adapter is! EvmAdapter) {
+            return err(4901, 'This EVM chain isn\'t supported in the wallet yet.');
+          }
+          final account = await mc.addressFor(chain);
+          if (account == null) return err(4100, 'Unlock your EVM account first.');
+          final tx = (params.isNotEmpty && params[0] is Map)
+              ? Map<String, dynamic>.from(params[0] as Map)
+              : <String, dynamic>{};
+          if (tx['to'] == null) return err(4200, 'Transaction is missing a recipient.');
+          final ok = await _confirmEvmTx(origin, chain, tx);
+          if (!ok) return err(4001, 'Transaction rejected.');
+          try {
+            final built = await adapter.signArbitraryTx(account, {
+              'to': tx['to'],
+              'data': tx['data'] ?? '0x',
+              'value': tx['value'] ?? 0,
+              if (tx['gas'] != null) 'gas': tx['gas'],
+              if (tx['gasLimit'] != null) 'gasLimit': tx['gasLimit'],
+            });
+            final res = await adapter.broadcast(built);
+            return {'result': res.txid};
+          } catch (e) {
+            return err(4200,
+                'Transaction failed: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
       default:
         return err(4200, 'Unsupported method: $method');
     }

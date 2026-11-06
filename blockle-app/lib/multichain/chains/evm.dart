@@ -99,6 +99,14 @@ String personalSign(String message, List<int> privBytes) {
   return '0x${_pad32(sig.r.toRadixString(16))}${_pad32(sig.s.toRadixString(16))}$v';
 }
 
+/// Sign a RAW 32-byte digest (e.g. the EIP-712 eth_signTypedData_v4 digest) with
+/// secp256k1 — NO EIP-191 prefix. Returns 0x + r(32)||s(32)||v(1), v = recovery+27.
+String signDigest(List<int> digest32, List<int> privBytes) {
+  final sig = s.sign(digest32, privBytes);
+  final v = (sig.recovery + 27).toRadixString(16).padLeft(2, '0');
+  return '0x${_pad32(sig.r.toRadixString(16))}${_pad32(sig.s.toRadixString(16))}$v';
+}
+
 // RLP leaf helpers (Uint8List leaves; see crypto_core.rlpEncode convention).
 Uint8List _rlpNum(dynamic v) => c.hexToBytes(_bigToMinHex(_big(v)));
 Uint8List _rlpAddr(String? a) =>

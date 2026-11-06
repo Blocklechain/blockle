@@ -20,6 +20,7 @@ import 'dart:typed_data';
 
 import 'chains/block.dart' show BlockSignerBridge;
 import 'chains/chain_adapter.dart';
+import 'chains/eip712.dart' show eip712Digest;
 import 'chains/evm.dart' as evm;
 import 'chains/registry.dart';
 import 'crypto/address.dart' as addr;
@@ -155,6 +156,18 @@ class Accounts {
       address: address,
       sign: (String challenge) async => evm.personalSign(challenge, priv),
     );
+  }
+
+  /// Sign an EIP-712 typed-data object (eth_signTypedData_v4 — e.g. Uniswap
+  /// Permit2) with the EVM key. Returns the 0x r||s||v signature, or null if
+  /// locked. The digest is computed per EIP-712; no funds move.
+  String? evmSignTypedData(Map<String, dynamic> typedData, {int index = 0}) {
+    final seed = _root?.seed;
+    if (seed == null) return null;
+    final node = hd.derivePath(seed, "m/44'/60'/0'/0/$index");
+    final priv = node.privateKey;
+    if (priv == null) return null;
+    return evm.signDigest(eip712Digest(typedData), priv);
   }
 
   /// Lock / kill FAN-OUT: wipe derived accounts + the HD root, lock every
