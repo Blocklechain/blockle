@@ -897,8 +897,8 @@ export function createApp(overrides = {}) {
   // its PayPal plan id is configured, so the catalog is empty until the live plans exist —
   // nothing to buy, no broken checkout. Order = how they're shown (entry tier first).
   const planCatalog = () => [
-    { tier: 'copilot', name: 'Blockle Copilot', price: cfg.copilotPrice, ccy: cfg.planCurrency, planId: cfg.copilotPlanId },
-    { tier: 'copilot_pro', name: 'Copilot Pro', price: cfg.copilotProPrice, ccy: cfg.planCurrency, planId: cfg.copilotProPlanId },
+    { tier: 'copilot', name: 'Blockle Alien', price: cfg.copilotPrice, ccy: cfg.planCurrency, planId: cfg.copilotPlanId },
+    { tier: 'copilot_pro', name: 'Blockle Alien Pro', price: cfg.copilotProPrice, ccy: cfg.planCurrency, planId: cfg.copilotProPlanId },
   ].filter((p) => p.planId);
   const planByTier = (tier) => planCatalog().find((p) => p.tier === tier) || null;
   const planByPlanId = (id) => planCatalog().find((p) => p.planId === id) || null;
@@ -991,7 +991,7 @@ export function createApp(overrides = {}) {
       u.sub = {
         ...(u.sub || {}),
         active: !!active, tier: active ? tier : 'free', subId: subId || (u.sub && u.sub.subId) || null,
-        plan: tier === 'copilot_pro' ? 'Copilot Pro' : tier === 'copilot' ? 'Blockle Copilot' : (u.sub && u.sub.plan) || null,
+        plan: tier === 'copilot_pro' ? 'Blockle Alien Pro' : tier === 'copilot' ? 'Blockle Alien' : (u.sub && u.sub.plan) || null,
         provider: provider || 'store', productId: productId || (u.sub && u.sub.productId) || null,
         expiresAt: expiresMs || null,
       };

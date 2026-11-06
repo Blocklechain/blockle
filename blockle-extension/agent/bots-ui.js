@@ -1264,7 +1264,7 @@
       var lim = runner ? runner.liveBotLimit : -1;
       if (lim != null && lim >= 0) {
         var liveNow = runner ? runner.list().filter(function (b) { return b.mode === 'live' && b.enabled; }).length : 0;
-        if (liveNow >= lim) warn = 'Live-bot limit reached for your plan (' + lim + ' live ' + (lim === 1 ? 'bot' : 'bots') + '). Upgrade to Copilot or Pro on the Agent tab to run more.';
+        if (liveNow >= lim) warn = 'Live-bot limit reached for your plan (' + lim + ' live ' + (lim === 1 ? 'bot' : 'bots') + '). Upgrade to Blockle Alien or Pro on the Agent tab to run more.';
       }
     }
     var lines = reviewSheetText({ allocationUsd: alloc, network: net });

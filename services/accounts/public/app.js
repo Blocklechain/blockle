@@ -121,7 +121,7 @@
       $('#stats').innerHTML =
         stat(social ? social.blockUnits : '—', 'BLOCK') +
         stat(social ? fmtk(social.karma) : '—', 'Karma') +
-        stat(u.sub && u.sub.active ? (u.sub.tier === 'copilot_pro' ? 'Copilot Pro' : u.sub.tier === 'copilot' ? 'Copilot' : 'Pro') : 'Free', 'Plan') +
+        stat(u.sub && u.sub.active ? (u.sub.tier === 'copilot_pro' ? 'Blockle Alien Pro' : u.sub.tier === 'copilot' ? 'Blockle Alien' : 'Pro') : 'Free', 'Plan') +
         stat(u.totpEnabled ? 'On' : 'Off', '2FA') +
         (u.createdAt ? stat(new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }), 'Member since') : '');
 

@@ -132,7 +132,7 @@ def test_tier_downgrade_blocks_starting_a_live_channel():
     mgr = channels_mod.create(base_opts(mem_store(), entitlement=lambda: ent["t"]))
     run(mgr.create({"id": "x", "walletId": "w", "provider": "claude", "credRef": "main", "caps": {"sessionUsd": 10}}))
     ent["t"] = "free"  # subscription lapses before the agent is armed
-    with pytest.raises(ValueError, match="Copilot"):
+    with pytest.raises(ValueError, match="Alien"):
         run(mgr.start("x"))
 
 

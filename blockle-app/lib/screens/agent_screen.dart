@@ -60,8 +60,8 @@ class _AgentScreenState extends State<AgentScreen> {
   static const Map<String, String> _tierBlurb = {
     'free': 'Free · paper-only, 1 agent',
     'pro': 'Blockle Pro · live, up to 3 agents',
-    'copilot': 'Copilot · live, up to 3 agents',
-    'copilot_pro': 'Copilot Pro · live, unlimited agents',
+    'copilot': 'Blockle Alien · live, up to 3 agents',
+    'copilot_pro': 'Blockle Alien Pro · live, unlimited agents',
   };
 
   // Blockle Copilot plan banner — shows the active tier and links the account that supplies it.

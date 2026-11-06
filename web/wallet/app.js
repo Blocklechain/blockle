@@ -1006,7 +1006,7 @@
       if (S.botRunner && S.botRunner.setLiveBotLimit) { try { S.botRunner.setLiveBotLimit(S.liveBotLimit); } catch (_) {} }
       var b = $('#tierbadge');
       b.className = 'chip' + (S.pro ? ' pro' : '');
-      b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') : 'Free';
+      b.textContent = S.pro ? (S.tier === 'copilot_pro' ? 'Blockle Alien Pro' : 'Blockle Alien') : 'Free';
       b.onclick = function () { location.hash = '#pro'; };
       if (location.hash === '#pro' || location.hash === '#agent' || location.hash === '#bots') onRoute();
     }).catch(function () { /* offline / transient: keep the last known sign-in + plan */ });
@@ -1647,7 +1647,7 @@
     }).catch(function () { body.innerHTML = '<div class="empty">Could not load asset details.</div>'; });
   }
   function proNudge(msg) {
-    return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">' + ic('pro', 16) + '</span><div class="col" style="align-items:flex-start"><b>Blockle Pro</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
+    return '<div class="card" style="border-color:var(--violet)"><div class="row"><span style="font-size:22px">' + ic('pro', 16) + '</span><div class="col" style="align-items:flex-start"><b>Blockle Alien</b><span class="muted" style="font-size:13px">' + esc(msg) + '</span></div><a class="btn primary" href="#pro" style="margin-left:auto">Upgrade</a></div></div>';
   }
 
   VIEWS.assets = function (v) {
@@ -2330,7 +2330,7 @@
       (S.pro ? 'Live trading unlocked. Live bots run <b>fully auto within their budget</b> — every order still passes the session caps, allowlist, hash-chained audit, the 0.05% fee and the kill switch. Mainnet stays off until you enable it.' :
         'Free plan: <b>paper trading + 1 bot</b>. Paper bots simulate fills at live prices and never move funds. Upgrade to Pro for live trading and more bots.') + '</div></div></div>' +
       '<div class="card2" style="background:var(--card2);border-radius:12px;padding:14px;margin-top:12px"><div class="spread"><div class="col" style="align-items:flex-start"><b>' + ic('arena', 18) + ' Arena</b><span class="dim" style="font-size:12px">Backtest a strategy on play-money scenarios.</span></div><button class="btn sm" id="bt-arena">Open Arena</button></div></div>' +
-      (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Copilot Pro unlocks unlimited.'));
+      (S.pro ? '' : proNudge('Go live: Pro unlocks real trading bots (3) and Blockle Alien Pro unlocks unlimited.'));
     $('#bt-new').onclick = function () { newBotSheet(); }; // wrap: never pass the MouseEvent as prefill
     $('#bt-arena').onclick = openArena;
     $('#bt-kill').onclick = stopAllSheet;
@@ -3135,9 +3135,9 @@
 
   /* ---------------- PRO ---------------- */
   VIEWS.pro = function (v) {
-    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('pro', 16) + ' Blockle Copilot</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Copilot Pro' : S.tier === 'copilot' ? 'Copilot' : 'Copilot') : 'Free') + '</span></div>' +
+    v.innerHTML = '<div class="card"><div class="sechead"><h2>' + ic('pro', 16) + ' Blockle Alien</h2><span class="chip ' + (S.pro ? 'pro' : '') + '">' + (S.pro ? (S.tier === 'copilot_pro' ? 'Blockle Alien Pro' : S.tier === 'copilot' ? 'Blockle Alien' : 'Blockle Alien') : 'Free') + '</span></div>' +
       '<p class="muted">Your plan is checked live against your Blockle account — no key access, ever. Upgrade unlocks live trading, a bigger agent brain, pro strategies and analytics across every Blockle wallet and the dashboard.</p>' +
-      '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Copilot</th><th class="c">Copilot Pro</th></tr></thead><tbody>' +
+      '<div class="overflow"><table class="feat-matrix"><thead><tr><th>Feature</th><th class="c">Free</th><th class="c">Blockle Alien</th><th class="c">Blockle Alien Pro</th></tr></thead><tbody>' +
       featRow('Non-custodial wallet · all chains', '✓', '✓', '✓') +
       featRow('DEX swap · bridge · USDB', '✓', '✓', '✓') +
       featRow('Agent command bar', 'anon brain', 'signed · bigger budget', 'signed · biggest') +
@@ -3205,7 +3205,7 @@
       var poll = setInterval(function () {
         tries++;
         MoonPay.commerceStatus(id, fetch).then(function (s) {
-          if (s && s.body && s.body.granted) { clearInterval(poll); toast('Payment confirmed — ' + (tier === 'copilot_pro' ? 'Copilot Pro' : 'Copilot') + ' unlocked.', 'good'); loadTier(); }
+          if (s && s.body && s.body.granted) { clearInterval(poll); toast('Payment confirmed — ' + (tier === 'copilot_pro' ? 'Blockle Alien Pro' : 'Blockle Alien') + ' unlocked.', 'good'); loadTier(); }
         }).catch(function () {});
         if (tries > 100) clearInterval(poll);
       }, 3000);

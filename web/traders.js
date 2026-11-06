@@ -11,7 +11,7 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   function pct(n) { return (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%'; }
   var LBL = { dca: 'DCA', grid: 'Grid', smarttrade: 'Smart Trade', signal: 'Signal', rsi: 'RSI', macd: 'MACD', bollinger: 'Bollinger', breakout: 'Breakout', emacross: 'EMA Cross', momentum: 'Momentum', meanrev: 'Mean Rev', rebalance: 'Rebalance', scalp: 'Scalp', hodl: 'HODL', martingale: 'Martingale' };
-  var TIER = { free: 'Free', copilot: 'Copilot', copilot_pro: 'Copilot Pro' };
+  var TIER = { free: 'Free', copilot: 'Blockle Alien', copilot_pro: 'Blockle Alien Pro' };
 
   function get(path) { return fetch(API + path, { headers: { accept: 'application/json' } }).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }); }
 

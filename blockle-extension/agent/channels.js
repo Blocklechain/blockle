@@ -320,7 +320,7 @@
       if (this.entitlement !== null) {
         const lim = this._limits();
         if (!spec.readOnly && !lim.live) {
-          throw new Error('Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. ' + UPSELL);
+          throw new Error('Your plan is paper-only — upgrade to Blockle Alien to run a live agent. ' + UPSELL);
         }
         if (this.channels.size >= lim.maxChannels) {
           const allowed = lim.maxChannels === Infinity ? 'unlimited' : lim.maxChannels;
@@ -367,7 +367,7 @@
         // subscription gate (active only when wired; fails closed): live trading needs a paid
         // tier, re-checked at arm time so a downgrade can't leave a live agent running.
         if (this.entitlement !== null && !this._limits().live) {
-          throw new Error('refusing to start "' + meta.label + '": live trading needs Blockle Copilot. ' + UPSELL);
+          throw new Error('refusing to start "' + meta.label + '": live trading needs Blockle Alien. ' + UPSELL);
         }
         if (!hasCaps(meta.caps)) {
           throw new Error('refusing to start "' + meta.label + '": set spend/risk caps first — a value-moving channel requires a catch-all caps.sessionUsd that covers every asset');

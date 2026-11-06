@@ -250,9 +250,9 @@
 
   const TIER_BLURB = {
     free: 'Free · paper-only, 1 agent',
-    pro: 'Blockle Pro · live, up to 3 agents',
-    copilot: 'Copilot · live, up to 3 agents',
-    copilot_pro: 'Copilot Pro · live, unlimited agents',
+    pro: 'Blockle Alien · live, up to 3 agents',
+    copilot: 'Blockle Alien · live, up to 3 agents',
+    copilot_pro: 'Blockle Alien Pro · live, unlimited agents',
   };
 
   // Blockle Copilot plan chip — shows the active tier and links the account that supplies it.
@@ -265,7 +265,7 @@
     // applied SERVER-SIDE by the webhook after payment — this button only opens the
     // hosted checkout; entitlement flips on the next /me refresh, never client-side.
     const crypto = (copilotTier === 'free' && global.MoonPay && MoonPay.feature && MoonPay.feature('commerce'))
-      ? ` <button class="mini-btn" id="agent-plan-crypto" title="Pay for Copilot with crypto (MoonPay)">Pay with crypto</button>` : '';
+      ? ` <button class="mini-btn" id="agent-plan-crypto" title="Pay for Blockle Alien with crypto (MoonPay)">Pay with crypto</button>` : '';
     return `<div class="row" style="align-items:center">
       <div class="l"><b>Plan: ${esc(blurb.split(' · ')[0])}</b><small>${esc(blurb.split(' · ')[1] || '')}${acctEmail ? ' · ' + esc(acctEmail) : ''}</small></div>
       <div><button class="mini-btn" id="agent-plan-connect">${acctToken ? 'Reconnect' : 'Connect account'}</button>${upsell}${crypto}</div>
@@ -430,7 +430,7 @@
         const res = await MoonPay.commerceCheckout({ product: 'copilot', refId: 'copilot:' + Date.now(), amountUsd: 20, token: acctToken });
         if (res && res.ok && res.hostedUrl) {
           try { if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) chrome.tabs.create({ url: res.hostedUrl }); else global.open(res.hostedUrl, '_blank', 'noopener'); } catch (_) {}
-          UI.toast('Complete the crypto checkout — Copilot unlocks after payment is confirmed');
+          UI.toast('Complete the crypto checkout — Blockle Alien unlocks after payment is confirmed');
         } else {
           UI.toast((res && res.status === 401) ? 'Sign in again to pay with crypto' : 'Crypto checkout is unavailable right now');
         }

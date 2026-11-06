@@ -779,7 +779,7 @@ fn route(
         "/" => ("200 OK", "text/html; charset=utf-8", page_home().into_bytes()),
         "/network" => ("200 OK", "text/html; charset=utf-8", page_network(&reg).into_bytes()),
         "/stats" => ("200 OK", "text/html; charset=utf-8", page_stats().into_bytes()),
-        "/copilot" => ("200 OK", "text/html; charset=utf-8", page_copilot().into_bytes()),
+        "/copilot" | "/alien" => ("200 OK", "text/html; charset=utf-8", page_copilot().into_bytes()),
         "/markets" => ("200 OK", "text/html; charset=utf-8", page_markets().into_bytes()),
         "/tokenomics" => ("200 OK", "text/html; charset=utf-8", page_tokenomics().into_bytes()),
         "/roadmap" => ("200 OK", "text/html; charset=utf-8", page_roadmap().into_bytes()),
@@ -1542,7 +1542,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 <script>(function(){{try{{var t=localStorage.getItem('blk-theme');if(t)document.documentElement.setAttribute('data-theme',t);}}catch(e){{}}}})();</script>
 </head><body>
 <nav><a class="brand" href="/"><img src="/logo-mark.png" alt="Blockle logo">blockle</a>
-<a href="/copilot" style="color:#4d8bff;font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/mine">Mine</a>
+<a href="/copilot" style="color:#4d8bff;font-weight:700">Alien</a><a href="/wallet">Wallet</a><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/mine">Mine</a>
 <span class="spacer"></span>
 <a href="/stats">Stats</a><a href="/pools">Directory</a><a href="/guide">Guide</a><a href="/studio">Studio</a><a href="/status">Status</a><a href="/api">API</a><a href="/developers">Developers</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a><a href="https://exchange.blockle.org" style="background:linear-gradient(135deg,#7c5cff,#37e0c8);color:#fff;padding:6px 14px;border-radius:8px;font-weight:700">Exchange</a><button class="themebtn" id="themebtn" type="button" aria-label="Toggle light/dark theme" title="Toggle theme"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.2A8.3 8.3 0 119.8 4 6.5 6.5 0 0020 14.2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg></button></nav>
 {aads_top}
@@ -1550,7 +1550,7 @@ fn page_shell_seo(title: &str, desc: &str, canonical_path: &str, head_extra: &st
 {aads_foot}
 <footer>
 <div style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;justify-content:center;margin-bottom:.6rem">
-<a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/faucet">Faucet</a> · <a href="/markets">Markets</a> · <a href="/copilot">Copilot</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
+<a href="/wallet">Wallet</a> · <a href="/explorer">Explorer</a> · <a href="/dex">DEX</a> · <a href="/bridge">Bridge</a> · <a href="/faucet">Faucet</a> · <a href="/markets">Markets</a> · <a href="/copilot">Alien</a> · <a href="/mine">Mine</a> · <a href="https://exchange.blockle.org">Exchange</a>
 </div>
 {domain} — the post-quantum L1, merge-mined by every major algorithm. Directory statistics marked operator-reported are not independently verified. · <a href="/post-quantum">Post-quantum</a> · <a href="/security">Security</a> · <a href="/traders">Top Traders</a> · <a href="/tokenomics">Tokenomics</a> · <a href="/roadmap">Roadmap</a> · <a href="/stats">Stats</a> · <a href="/api">API</a> · <a href="/developers">Developers</a> · <a href="/open-source">Open Source</a> · <a href="https://discord.gg/tx4MfyD9Vu">Discord</a> · <a href="https://github.com/blocklechain/blockle">GitHub</a> · <a href="https://crates.io/crates/blockle">crates.io</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></footer>
 <script>
@@ -1687,15 +1687,15 @@ fn parent_rows() -> String {
 
 fn page_copilot() -> String {
     let body = r##"<section class="cphero">
-  <span class="eyebrow">Blockle Copilot</span>
+  <span class="eyebrow">Blockle Alien</span>
   <h1>Your AI trading desk.</h1>
   <p class="lede">An AI that watches the markets and trades <b>on your command</b> &mdash; from your own wallet, behind one hard safety gate. Keyless, non-custodial, paper-first. The agent proposes; <b>you</b> approve every move.</p>
   <div class="cpcta">
-    <button class="cpbtn primary" data-plan="copilot">Start Copilot &mdash; $19/mo</button>
+    <button class="cpbtn primary" data-plan="copilot">Start Blockle Alien &mdash; $19/mo</button>
     <a class="cpbtn ghost" href="/account/register">Try free (paper)</a>
   </div>
   <div class="cmd" aria-hidden="true">
-    <div class="cmdhead"><span class="d"></span><span class="d"></span><span class="d"></span><span class="lbl">blockle · copilot</span></div>
+    <div class="cmdhead"><span class="d"></span><span class="d"></span><span class="d"></span><span class="lbl">blockle · alien</span></div>
     <div class="cmdbody"><span class="chev">&gt;</span> scan every pair and buy what's profitable after fees
       <div class="cmdcard"><div class="r"><span>proposed</span><span class="mono">BUY 0.4 SOL @ 182.10</span></div><div class="r"><span>edge after fees</span><span class="mono gain">+0.7%</span></div><div class="r"><span>risk gate</span><span class="mono">within caps <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.5 12.5l4.5 4.5 10.5-11" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div><button class="hold">Hold to approve</button></div>
     </div>
@@ -1706,10 +1706,10 @@ fn page_copilot() -> String {
 <h2 class="cph2">Start free. Go live when you're ready.</h2>
 <div class="tiers">
   <div class="tier"><div class="tname">Free</div><div class="tprice">$0</div><ul><li>1 agent, <b>paper only</b></li><li>Conversational command bar</li><li>Arena (play-money)</li><li>Non-custodial wallet</li></ul><a class="cpbtn ghost full" href="/account/register">Create account</a></div>
-  <div class="tier best"><div class="badge">Most popular</div><div class="tname">Copilot</div><div class="tprice">$19<span>/mo</span></div><ul><li><b>Live trading</b> + autopilot</li><li>Up to 3 agents</li><li>Priority hosted agent (no API key)</li><li>Fee-aware routing</li></ul><button class="cpbtn primary full" data-plan="copilot">Get Copilot</button></div>
-  <div class="tier"><div class="tname">Copilot Pro</div><div class="tprice">$49<span>/mo</span></div><ul><li>Everything in Copilot</li><li><b>Unlimited agents</b></li><li>Bigger model + priority</li><li>Portfolio analytics &amp; early signals</li></ul><button class="cpbtn primary full" data-plan="copilot_pro">Get Copilot Pro</button></div>
+  <div class="tier best"><div class="badge">Most popular</div><div class="tname">Blockle Alien</div><div class="tprice">$19<span>/mo</span></div><ul><li><b>Live trading</b> + autopilot</li><li>Up to 3 agents</li><li>Priority hosted agent (no API key)</li><li>Fee-aware routing</li></ul><button class="cpbtn primary full" data-plan="copilot">Get Blockle Alien</button></div>
+  <div class="tier"><div class="tname">Blockle Alien Pro</div><div class="tprice">$49<span>/mo</span></div><ul><li>Everything in Blockle Alien</li><li><b>Unlimited agents</b></li><li>Bigger model + priority</li><li>Portfolio analytics &amp; early signals</li></ul><button class="cpbtn primary full" data-plan="copilot_pro">Get Blockle Alien Pro</button></div>
 </div>
-<p class="fine">Billed monthly via PayPal. Cancel anytime. Not financial advice &mdash; Copilot is a tool; you approve every trade and your keys never leave your device.</p>
+<p class="fine">Billed monthly via PayPal. Cancel anytime. Not financial advice &mdash; Blockle Alien is a tool; you approve every trade and your keys never leave your device.</p>
 </section>
 
 <section class="cphow"><div class="eyebrow" style="text-align:center">How it stays safe</div>
@@ -1719,7 +1719,7 @@ fn page_copilot() -> String {
   <div class="step"><div class="num">2</div><h3>Gate</h3><p>Every action passes one non-bypassable risk gate: spend caps, per-asset limits, allow-lists. Out of bounds? Rejected.</p></div>
   <div class="step"><div class="num">3</div><h3>Approve</h3><p>You confirm on your device. Keys never leave it. A weak or compromised model literally cannot move your funds.</p></div>
 </div>
-<div class="cpcta center"><button class="cpbtn primary" data-plan="copilot">Start Copilot &mdash; $19/mo</button><a class="cpbtn ghost" href="/account/register">Try free first</a></div>
+<div class="cpcta center"><button class="cpbtn primary" data-plan="copilot">Start Blockle Alien &mdash; $19/mo</button><a class="cpbtn ghost" href="/account/register">Try free first</a></div>
 </section>
 
 <style>
@@ -1765,8 +1765,8 @@ fn page_copilot() -> String {
 })();
 </script>"##.to_string();
     page_shell_seo(
-        "Blockle Copilot — your AI trading desk",
-        "Blockle Copilot: an AI that trades on your command from your own non-custodial wallet, behind one hard safety gate. Keyless, paper-first. From $19/mo.",
+        "Blockle Alien — your AI trading desk",
+        "Blockle Alien: an AI that trades on your command from your own non-custodial wallet, behind one hard safety gate. Keyless, paper-first. From $19/mo.",
         "/copilot",
         "",
         body,
@@ -2507,7 +2507,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Copilot</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
+<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Alien</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
@@ -2590,8 +2590,8 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </script>
 <section style="padding:10px 0 0"><div class="wrap">
 <a href="/copilot" style="display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:linear-gradient(135deg,#17324e,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:14px;padding:16px 20px;text-decoration:none">
-<span style="color:var(--text);font-size:15px"><b>Meet Blockle Copilot</b> &mdash; an AI that trades on your command, from your own wallet, behind one hard safety gate. Paper-first, from $19/mo.</span>
-<span style="background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 16px;border-radius:9px;white-space:nowrap">Explore Copilot &rarr;</span>
+<span style="color:var(--text);font-size:15px"><b>Meet Blockle Alien</b> &mdash; an AI that trades on your command, from your own wallet, behind one hard safety gate. Paper-first, from $19/mo.</span>
+<span style="background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 16px;border-radius:9px;white-space:nowrap">Explore Blockle Alien &rarr;</span>
 </a>
 </div></section>
 <section id="product"><div class="wrap"><span class="eyebrow">What's inside</span>
@@ -2634,7 +2634,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <!-- END AADS AD UNIT 2458805 -->
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
-<div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Copilot</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
+<div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Alien</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
 <div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>

@@ -248,7 +248,7 @@ class BotRunner {
     if (bot == null) throw ArgumentError('unknown bot: $id');
     if (!liveEntitled) {
       await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'subscription required'});
-      throw StateError('Live trading requires Blockle Copilot. Start your free trial or subscribe to go live.');
+      throw StateError('Live trading requires Blockle Alien. Start your free trial or subscribe to go live.');
     }
     final alloc = allocationUsd != null ? allocationUsd.toDouble() : bot.allocationUsd;
     final sessionCap = policy.caps.sessionUsd;
@@ -277,7 +277,7 @@ class BotRunner {
       if (liveNow >= liveBotLimit) {
         await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'live bot limit reached', 'limit': liveBotLimit});
         throw StateError(
-            'Live-bot limit reached for your plan ($liveBotLimit). Upgrade to Blockle Copilot Pro to run more.');
+            'Live-bot limit reached for your plan ($liveBotLimit). Upgrade to Blockle Alien Pro to run more.');
       }
     }
     bot.allocationUsd = alloc;

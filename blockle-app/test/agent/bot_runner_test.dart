@@ -291,7 +291,7 @@ void main() {
     su.runner.setLiveEntitled('free'); // free account
     final bot = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}});
     await expectLater(su.runner.armLive(bot.id, allocationUsd: 50),
-        throwsA(predicate((e) => '$e'.contains('Blockle Copilot'))));
+        throwsA(predicate((e) => '$e'.contains('Blockle Alien'))));
     expect(bot.mode, 'paper');
     // trial/paid entitlement flips the gate open
     expect(su.runner.setLiveEntitled('copilot'), true);

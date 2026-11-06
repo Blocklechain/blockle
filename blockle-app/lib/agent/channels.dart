@@ -317,7 +317,7 @@ class ChannelManager {
       final lim = _limits();
       if (!readOnly && !lim.live) {
         throw StateError(
-            'Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. $kCopilotUpsell');
+            'Your plan is paper-only — upgrade to Blockle Alien to run a live agent. $kCopilotUpsell');
       }
       if (lim.maxChannels >= 0 && channels.length >= lim.maxChannels) {
         throw StateError('Your plan includes ${lim.maxChannels} agent(s). $kCopilotUpsell to add more.');
@@ -365,7 +365,7 @@ class ChannelManager {
       // tier, re-checked at arm time so a downgrade can't leave a live agent running.
       if (entitlement != null && !_limits().live) {
         throw StateError(
-            'refusing to start "${meta['label']}": live trading needs Blockle Copilot. $kCopilotUpsell');
+            'refusing to start "${meta['label']}": live trading needs Blockle Alien. $kCopilotUpsell');
       }
       if (!_hasCaps((meta['caps'] as Map?)?.cast<String, dynamic>())) {
         throw StateError(

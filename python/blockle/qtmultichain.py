@@ -2249,10 +2249,10 @@ class AgentTab(QWidget):
         self.plan_lbl.setObjectName("sub")
         self.plan_lbl.setWordWrap(True)
         self.plan_connect_btn = QPushButton("Connect account")
-        self.plan_connect_btn.setToolTip("Link your blockle.org account to unlock your Copilot plan")
+        self.plan_connect_btn.setToolTip("Link your blockle.org account to unlock your Blockle Alien plan")
         self.plan_connect_btn.clicked.connect(self._connect_account)
         self.plan_upgrade_btn = QPushButton("Upgrade ↗")
-        self.plan_upgrade_btn.setToolTip("See Blockle Copilot plans")
+        self.plan_upgrade_btn.setToolTip("See Blockle Alien plans")
         self.plan_upgrade_btn.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl(self.ctrl.copilot_origin + "/copilot")))
         plan_row.addWidget(self.plan_lbl, 1)
@@ -2439,8 +2439,8 @@ class AgentTab(QWidget):
     _TIER_BLURB = {
         "free": "Free · paper-only, 1 agent",
         "pro": "Blockle Pro · live, up to 3 agents",
-        "copilot": "Copilot · live, up to 3 agents",
-        "copilot_pro": "Copilot Pro · live, unlimited agents",
+        "copilot": "Blockle Alien · live, up to 3 agents",
+        "copilot_pro": "Blockle Alien Pro · live, unlimited agents",
     }
 
     def _update_plan_label(self):
@@ -2483,7 +2483,7 @@ class AgentTab(QWidget):
                 self._plan.emit()
                 if tier in ("free",):
                     self._info.emit("Account connected. You're on the Free plan — upgrade to Blockle "
-                                    "Copilot to run a live agent.")
+                                    "Alien to run a live agent.")
                 else:
                     self._info.emit(f"Account connected — {self._TIER_BLURB.get(tier, tier)} unlocked.")
             except Exception as e:  # noqa: BLE001

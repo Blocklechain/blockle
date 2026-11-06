@@ -60,7 +60,7 @@ void main() {
     final m = ChannelManager(fetch: _noFetch, entitlement: () => tier);
     await m.create(_spec('x'));
     tier = 'free';
-    await expectLater(m.start('x'), _throwsContaining('Copilot'));
+    await expectLater(m.start('x'), _throwsContaining('Blockle Alien'));
   });
 
   test('no entitlement source means no gating (backward compatible)', () async {

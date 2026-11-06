@@ -302,7 +302,7 @@ test('tier: a downgrade blocks arming a previously-created live channel', async 
   const mgr = AgentChannels.create(baseOpts(memStore(), { entitlement: () => tier }));
   await mgr.create({ id: 'x', walletId: 'w', provider: 'claude', credRef: 'main', caps: { sessionUsd: 10 } });
   tier = 'free';
-  await assert.rejects(mgr.start('x'), /Copilot/);
+  await assert.rejects(mgr.start('x'), /Blockle Alien/);
 });
 
 test('tier: no entitlement source means no gating (backward compatible)', async () => {

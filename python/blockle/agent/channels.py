@@ -329,7 +329,7 @@ class ChannelManager:
         if self._entitlement is not None:
             lim = self._limits()
             if not read_only and not lim["live"]:
-                raise ValueError("Your plan is paper-only — upgrade to Blockle Copilot to run a live agent. " + UPSELL)
+                raise ValueError("Your plan is paper-only — upgrade to Blockle Alien to run a live agent. " + UPSELL)
             if len(self.channels) >= lim["max_channels"]:
                 allowed = "unlimited" if lim["max_channels"] == float("inf") else int(lim["max_channels"])
                 raise ValueError(f"Your plan includes {allowed} agent(s). {UPSELL} to add more.")
@@ -377,7 +377,7 @@ class ChannelManager:
             # tier, re-checked at arm time so a downgrade can't leave a live agent running.
             if self._entitlement is not None and not self._limits()["live"]:
                 raise ValueError('refusing to start "' + meta["label"]
-                                 + '": live trading needs Blockle Copilot. ' + UPSELL)
+                                 + '": live trading needs Blockle Alien. ' + UPSELL)
             if not _has_caps(meta.get("caps")):
                 raise ValueError('refusing to start "' + meta["label"]
                                  + '": set spend/risk caps first (value-moving channels require caps)')
