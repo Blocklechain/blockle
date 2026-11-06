@@ -5,7 +5,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../multichain/chains/chain_adapter.dart' show Balance;
 import '../state/app_state.dart';
+import '../state/multichain_controller.dart';
 import '../theme.dart';
 import '../widgets/particle_logo.dart';
 import '../widgets/chain_icon.dart';
@@ -30,6 +32,20 @@ class _WalletTabState extends State<WalletTab> {
   List<Map<String, dynamic>> _tokens = [];
   bool _loading = true;
 
+  // The other chains shown (with live native balances) on the home page so it's
+  // a true multi-currency wallet, not BLOCK-only. The full set + per-asset
+  // buy/sell lives on the Accounts tab.
+  static const _homeChains = [
+    'ethereum',
+    'base',
+    'bitcoin',
+    'solana',
+    'polygon',
+    'arbitrum',
+  ];
+  Map<String, Balance?> _native = {};
+  bool _vaultLocked = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,15 +55,44 @@ class _WalletTabState extends State<WalletTab> {
   Future<void> _refresh() async {
     setState(() => _loading = true);
     final app = context.read<AppState>();
+    final mc = context.read<MultichainController>();
     final addr = app.store.address;
     final acct = await app.chain.account(addr);
     final toks = await _loadTokens(addr);
+    final native = await _loadNative(mc);
     if (!mounted) return;
     setState(() {
       _account = acct;
       _tokens = toks;
+      _native = native;
+      _vaultLocked = !mc.vaultUnlocked;
       _loading = false;
     });
+  }
+
+  /// Load each home chain's native-coin balance in parallel. A locked vault or a
+  /// read error just yields null for that chain (rendered as a dash), never a
+  /// crash.
+  Future<Map<String, Balance?>> _loadNative(MultichainController mc) async {
+    if (!mc.vaultUnlocked) return {};
+    final out = <String, Balance?>{};
+    await Future.wait(_homeChains.map((ch) async {
+      try {
+        final bals = await mc.balancesFor(ch);
+        final ticker = mc.chainTicker(ch).toUpperCase();
+        Balance? nat;
+        for (final b in bals) {
+          if (b.asset.symbol.toUpperCase() == ticker) {
+            nat = b;
+            break;
+          }
+        }
+        out[ch] = nat ?? (bals.isNotEmpty ? bals.first : null);
+      } catch (_) {
+        out[ch] = null;
+      }
+    }));
+    return out;
   }
 
   Future<List<Map<String, dynamic>>> _loadTokens(String? holderHex) async {
@@ -214,25 +259,54 @@ class _WalletTabState extends State<WalletTab> {
                       MaterialPageRoute(builder: (_) => const SendScreen()))
                       .then((_) => _refresh());
                 }),
+                const SizedBox(width: 10),
+                _action(Icons.swap_horiz, 'Swap', () {
+                  Navigator.push(context,
+                          MaterialPageRoute(builder: (_) => const SwapScreen()))
+                      .then((_) => _refresh());
+                }),
               ],
             ),
             const SizedBox(height: 10),
             Row(
               children: [
-                _action(Icons.swap_horiz, 'Swap', () {
-                  Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => const SwapScreen()))
-                      .then((_) => _refresh());
+                // Buy / Sell with a card route to the Accounts tab, where each
+                // supported asset has a MoonPay buy/sell flow.
+                _action(Icons.add_card, 'Buy', () {
+                  context.read<AppState>().setTab(1);
+                }),
+                const SizedBox(width: 10),
+                _action(Icons.sell_outlined, 'Sell', () {
+                  context.read<AppState>().setTab(1);
                 }),
                 const SizedBox(width: 10),
                 _action(Icons.receipt_long, 'Queue', () {
                   Navigator.push(context,
                       MaterialPageRoute(builder: (_) => const QueueScreen()));
                 }),
-                const SizedBox(width: 10),
-                const Spacer(),
               ],
             ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                const Text('Assets',
+                    style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => context.read<AppState>().setTab(1),
+                  child: const Text('See all chains'),
+                ),
+              ],
+            ),
+            if (_vaultLocked)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                    'Unlock multi-chain accounts (Accounts tab) to show your ETH, BTC, SOL and more.',
+                    style: TextStyle(color: Bk.muted, fontSize: 13)),
+              )
+            else
+              ..._homeChains.map((ch) => _nativeRow(ch)),
             const SizedBox(height: 22),
             Row(
               children: [
@@ -288,6 +362,46 @@ class _WalletTabState extends State<WalletTab> {
               Text(label, style: const TextStyle(fontSize: 12)),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _nativeRow(String chain) {
+    final mc = context.read<MultichainController>();
+    final ticker = mc.chainTicker(chain);
+    final label = mc.chainLabel(chain);
+    final bal = _native[chain];
+    final loading = _loading && !_native.containsKey(chain);
+    final display = bal == null
+        ? (loading ? '…' : '—')
+        : (bal.error != null ? '—' : bal.display);
+    return InkWell(
+      onTap: () => context.read<AppState>().setTab(1),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Bk.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Bk.border),
+        ),
+        child: Row(
+          children: [
+            ChainIcon(chain, symbol: ticker, radius: 16),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(ticker, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text(label, style: const TextStyle(color: Bk.muted, fontSize: 12)),
+                ],
+              ),
+            ),
+            Text(display, style: kMono),
+          ],
         ),
       ),
     );
