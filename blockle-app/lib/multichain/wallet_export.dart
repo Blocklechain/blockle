@@ -31,6 +31,10 @@
 import 'dart:typed_data';
 
 import 'chains/solana.dart' as solana;
+import 'chains/stellar.dart' as stellar;
+import 'chains/stellar_xdr.dart' as sx;
+import 'chains/tezos.dart' as tezos;
+import 'chains/tezos_forge.dart' as tzf;
 import 'chains/tron.dart' as tron;
 import 'chains/utxo.dart' as utxo;
 import 'chains/xrpl_codec.dart' as xrp;
@@ -230,6 +234,48 @@ ChainKey xrpKey(dynamic seed, [int index = 0]) {
   );
 }
 
+// Stellar: ed25519 via SLIP-0010 (SEP-0005), path m/44'/148'/0'/<index>'. The
+// secret a user imports elsewhere is the 'S…' StrKey secret seed.
+String stellarPathForIndex(int index) => index == 0
+    ? sx.stellarDefaultPath
+    : sx.stellarDefaultPath.replaceFirst(RegExp(r"/0'$"), "/$index'");
+
+ChainKey stellarKey(dynamic seed, [int index = 0]) {
+  final path = stellarPathForIndex(index);
+  final key = stellar.deriveSlip10Key(_toSeed(seed), path);
+  final pub = ed.publicKey(key);
+  return ChainKey(
+    chain: 'stellar',
+    index: index,
+    path: path,
+    address: sx.strkeyEncodeEd25519(pub),
+    secretKey: sx.strkeyEncodeSecretSeed(key),
+    publicKey: c.bytesToHex(pub),
+    scheme: 'ed25519',
+  );
+}
+
+// Tezos: ed25519 via SLIP-0010, path m/44'/1729'/0'/0'. Secret is the 'edsk…'
+// 32-byte SEED form; public key is 'edpk…'; address is 'tz1…'.
+String tezosPathForIndex(int index) => index == 0
+    ? tezos.tezosDefaultPath
+    : tezos.tezosDefaultPath.replaceFirst(RegExp(r"/0'$"), "/$index'");
+
+ChainKey tezosKey(dynamic seed, [int index = 0]) {
+  final path = tezosPathForIndex(index);
+  final key = tezos.deriveSlip10Key(_toSeed(seed), path);
+  final pub = ed.publicKey(key);
+  return ChainKey(
+    chain: 'tezos',
+    index: index,
+    path: path,
+    address: tzf.tz1FromPublicKey(pub),
+    secretKey: tzf.edskFromSeed(key),
+    publicKey: tzf.edpk(pub),
+    scheme: 'ed25519',
+  );
+}
+
 /// BLOCK is NOT HD-derived — its ML-DSA-44 keypair lives in the Wallet session.
 /// Export it straight from the (unlocked) session the caller passes in. Not part
 /// of the shared vectors (not seed-derivable). Returns null when the session has
@@ -265,6 +311,8 @@ Map<String, ChainKey> privateKeys(dynamic seed, [int index = 0]) {
     'solana': solanaKey(s, index),
     'tron': tronKey(s, index),
     'xrp': xrpKey(s, index),
+    'stellar': stellarKey(s, index),
+    'tezos': tezosKey(s, index),
   };
 }
 

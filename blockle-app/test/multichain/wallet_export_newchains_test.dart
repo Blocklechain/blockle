@@ -45,6 +45,28 @@ void main() {
     expect(k.address, 'rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3');
   });
 
+  test('Stellar export matches docs/stellar-vectors.json (m/44\'/148\'/0\')', () {
+    final k = keys['stellar']!;
+    expect(k.path, "m/44'/148'/0'");
+    expect(k.publicKey,
+        '7691d85048acc4ed085d9061ce0948bbdf7de6a92b790aaf241d31b7dcaa4238');
+    expect(k.address,
+        'GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX');
+    // 'S…' StrKey secret seed (independently computed from the vector seed).
+    expect(k.secretKey,
+        'SBUV3MRWKNS6AYKZ6E6MOUVF2OYMON3MIUASWL3JLY5E3ISDJFELYBRZ');
+  });
+
+  test('Tezos export matches docs/tezos-vectors.json (m/44\'/1729\'/0\'/0\')', () {
+    final k = keys['tezos']!;
+    expect(k.path, "m/44'/1729'/0'/0'");
+    expect(k.publicKey,
+        'edpku4US3ZykcZifjzSGFCmFr3zRgCKndE82estE4irj4d5oqDNDvf');
+    expect(k.address, 'tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL');
+    // 'edsk…' 32-byte seed secret (independently computed from the vector seed).
+    expect(k.secretKey, 'edsk4BBVKnpwdnJrx9PB4hLkXZHtceSdSZVTfKBXArhmZ3Jg87Lcxi');
+  });
+
   test('legacy chains unchanged (BTC WIF + EVM 0x-hex still present)', () {
     expect(keys['bitcoin']!.wif, isNotNull);
     expect(keys['evm']!.privateKey!.startsWith('0x'), isTrue);

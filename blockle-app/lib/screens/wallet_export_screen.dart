@@ -221,6 +221,8 @@ class _ExportSecretsScreenState extends State<ExportSecretsScreen> {
         'solana',
         'tron',
         'xrp',
+        'stellar',
+        'tezos',
       ];
       for (final id in order) {
         final k = keys[id];

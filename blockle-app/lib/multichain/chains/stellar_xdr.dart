@@ -94,6 +94,25 @@ String strkeyEncodeEd25519(List<int> pub) {
   return _base32Encode(full);
 }
 
+/// 'S…' strkey SECRET SEED from the 32-byte ed25519 seed (the private key a
+/// user imports into another Stellar wallet). Same base32 + CRC machinery as the
+/// 'G…' address, only the version byte differs (18 << 3 = 0x90).
+String strkeyEncodeSecretSeed(List<int> seed32) {
+  final s = c.toBytes(seed32);
+  if (s.length != 32) throw ArgumentError('ed25519 seed must be 32 bytes');
+  const versionByteSeed = 18 << 3; // 0x90 — strkey 'S…'
+  final payload = c.concatBytes([
+    Uint8List.fromList([versionByteSeed]),
+    s,
+  ]);
+  final crc = crc16Xmodem(payload);
+  final full = c.concatBytes([
+    payload,
+    Uint8List.fromList([crc & 0xff, (crc >> 8) & 0xff]), // little-endian
+  ]);
+  return _base32Encode(full);
+}
+
 /// 32-byte ed25519 public key from a 'G…' strkey (throws on bad version/CRC).
 Uint8List strkeyDecodeEd25519(String address) {
   final full = _base32Decode(address.trim());

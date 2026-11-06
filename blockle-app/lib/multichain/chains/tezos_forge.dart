@@ -20,6 +20,7 @@ const List<int> tz2Prefix = [6, 161, 161]; // tz2 (secp256k1 pkh)
 const List<int> tz3Prefix = [6, 161, 164]; // tz3 (p256 pkh)
 const List<int> kt1Prefix = [2, 90, 121]; // KT1 (originated contract)
 const List<int> edpkPrefix = [13, 15, 37, 217]; // edpk (ed25519 public key)
+const List<int> edskSeedPrefix = [13, 15, 58, 7]; // edsk (ed25519 32-byte SEED)
 const List<int> edsigPrefix = [9, 245, 205, 134, 18]; // edsig (ed25519 sig)
 const List<int> blockHashPrefix = [1, 52]; // B… block hash
 
@@ -38,6 +39,9 @@ String edpk(List<int> pub32) => _b58(edpkPrefix, pub32);
 
 /// edsig… base58 for a 64-byte ed25519 signature.
 String edsig(List<int> sig64) => _b58(edsigPrefix, sig64);
+
+/// edsk… base58 SECRET KEY (the 32-byte SEED form other Tezos wallets import).
+String edskFromSeed(List<int> seed32) => _b58(edskSeedPrefix, seed32);
 
 /// tz1… address = base58check([6,161,159] || blake2b(pub, 20)).
 String tz1FromPublicKey(List<int> pub32) =>
