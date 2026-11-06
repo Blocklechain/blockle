@@ -217,8 +217,14 @@ class TezosAdapter implements ChainAdapter {
     try {
       final raw = await _rpcGet(
           '/chains/main/blocks/head/context/contracts/$address/balance');
-      // The RPC returns a JSON string, e.g. "12300000".
-      final mutez = jsonDecode(raw).toString();
+      // A funded contract returns a numeric JSON string, e.g. "12300000". An
+      // UNFUNDED tz1 returns null / a JSON error array / 'non_existing_contract'
+      // — treat anything non-numeric as a zero balance (not "unavailable").
+      // Only a genuine transport failure (non-JSON) throws into the catch below.
+      final decoded = jsonDecode(raw);
+      final mutez = (decoded is String && RegExp(r'^\d+$').hasMatch(decoded))
+          ? decoded
+          : '0';
       out.add(Balance(
           asset: native, confirmed: mutez, display: formatUnits(mutez, 6)));
     } catch (e) {

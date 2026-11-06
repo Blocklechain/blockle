@@ -579,11 +579,27 @@ class UtxoAdapter implements ChainAdapter {
     );
   }
 
+  /// CashAddr chains (BCH) must query the indexer with the BARE address — the
+  /// 'bitcoincash:' scheme prefix makes the Esplora/Fulcrum REST reject every
+  /// request (400/404). Non-cashaddr chains pass through unchanged.
+  String _apiAddr(String address) =>
+      net.cashaddr != null && address.contains(':')
+          ? address.split(':').last
+          : address;
+
+  /// An indexer "not found" for an address it has never seen means an UNFUNDED
+  /// account (zero balance), not a failure — distinguish it from real outages.
+  static bool _isNotFound(Object e) {
+    final s = e.toString().toLowerCase();
+    return s.contains('404') || s.contains('not found') || s.contains('no such');
+  }
+
   @override
   Future<List<Balance>> getBalance(String address,
       {List<AssetRef>? tokens}) async {
     try {
-      final j = jsonDecode(await _apiGet('/address/$address')) as Map<String, dynamic>;
+      final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}'))
+          as Map<String, dynamic>;
       final cs = (j['chain_stats'] ?? {}) as Map<String, dynamic>;
       final confirmed = (BigInt.parse((cs['funded_txo_sum'] ?? 0).toString()) -
               BigInt.parse((cs['spent_txo_sum'] ?? 0).toString()))
@@ -596,6 +612,16 @@ class UtxoAdapter implements ChainAdapter {
             display: _fmt(confirmed, net.decimals)),
       ];
     } catch (e) {
+      // Unfunded (never-seen) address -> zero balance, not "unavailable".
+      if (_isNotFound(e)) {
+        return [
+          Balance(
+              asset: native,
+              confirmed: '0',
+              spendable: '0',
+              display: _fmt('0', net.decimals)),
+        ];
+      }
       return [
         Balance(
             asset: native, confirmed: '0', display: '—', error: e.toString()),
@@ -608,7 +634,7 @@ class UtxoAdapter implements ChainAdapter {
   Future<List<Balance>> discoverTokens(String address) async => const [];
 
   Future<List<Map<String, dynamic>>> utxos(String address) async {
-    final j = jsonDecode(await _apiGet('/address/$address/utxo')) as List;
+    final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}/utxo')) as List;
     return j
         .map((u) => {
               'txid': u['txid'],

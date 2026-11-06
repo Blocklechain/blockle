@@ -230,8 +230,15 @@ class StellarAdapter implements ChainAdapter {
       out.add(
           Balance(asset: native, confirmed: native7, display: formatUnits(native7, 7)));
     } catch (e) {
-      out.add(Balance(
-          asset: native, confirmed: '0', display: '—', error: e.toString()));
+      // An unfunded Stellar account does not exist on-ledger (Horizon 404) — a
+      // zero balance, not an error. Only real transport failures read as such.
+      final s = e.toString().toLowerCase();
+      if (s.contains('404') || s.contains('not_found') || s.contains('not found')) {
+        out.add(Balance(asset: native, confirmed: '0', display: formatUnits('0', 7)));
+      } else {
+        out.add(Balance(
+            asset: native, confirmed: '0', display: '—', error: e.toString()));
+      }
     }
     return out;
   }
