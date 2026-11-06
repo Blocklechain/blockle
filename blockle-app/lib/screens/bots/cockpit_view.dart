@@ -13,6 +13,20 @@ import 'charts.dart';
 
 enum BotFilter { all, paper, live }
 
+/// Coerce a persisted micro-unit value to BigInt. Deal state round-trips through
+/// JSON/secure-storage, where a BigInt comes back as a String (or int) — a plain
+/// `x as BigInt?` would THROW and grey out the cockpit. Tolerates all shapes.
+BigInt? _big(dynamic v) {
+  if (v == null) return null;
+  if (v is BigInt) return v;
+  if (v is int) return BigInt.from(v);
+  if (v is String) return BigInt.tryParse(v.trim());
+  if (v is double) return BigInt.from(v);
+  return null;
+}
+
+int _int0(dynamic v) => (v is num) ? v.toInt() : (v is String ? (int.tryParse(v) ?? 0) : 0);
+
 class CockpitView extends StatelessWidget {
   const CockpitView({
     super.key,
@@ -50,11 +64,11 @@ class CockpitView extends StatelessWidget {
         if (d is Map) deals.add(d.cast<String, dynamic>());
       }
     }
-    deals.sort((a, c) => ((a['closedAt'] as int?) ?? 0).compareTo((c['closedAt'] as int?) ?? 0));
+    deals.sort((a, c) => _int0(a['closedAt']).compareTo(_int0(c['closedAt'])));
     final out = <double>[0];
     var cum = 0.0;
     for (final d in deals) {
-      cum += (b.ucToUsd(d['realizedUc'] as BigInt?) ?? 0);
+      cum += (b.ucToUsd(_big(d['realizedUc'])) ?? 0);
       out.add(cum);
     }
     return out;
@@ -74,8 +88,8 @@ class CockpitView extends StatelessWidget {
       if (d == null) continue;
       realized += (d['realizedUsd'] as num?) ?? 0;
       unrealized += (d['unrealizedUsd'] as num?) ?? 0;
-      totalDeals += (d['totalDeals'] as int?) ?? 0;
-      wins += (d['winCount'] as int?) ?? 0;
+      totalDeals += _int0(d['totalDeals']);
+      wins += _int0(d['winCount']);
       if (bot.mode == 'live') {
         liveCount++;
         allocLive += bot.allocationUsd;
@@ -84,8 +98,8 @@ class CockpitView extends StatelessWidget {
         paperCount++;
       }
       for (final cd in (bot.state['closedDeals'] as List? ?? const [])) {
-        if (cd is Map && ((cd['closedAt'] as int?) ?? 0) >= cutoff) {
-          todayUsd += (b.ucToUsd(cd['realizedUc'] as BigInt?) ?? 0);
+        if (cd is Map && _int0(cd['closedAt']) >= cutoff) {
+          todayUsd += (b.ucToUsd(_big(cd['realizedUc'])) ?? 0);
           today++;
         }
       }
@@ -363,7 +377,7 @@ class _BotGridCard extends StatelessWidget {
     final used = (d['committedUsd'] as num?) ?? 0;
     final cap = bot.allocationUsd;
     final status = (d['status'] as String?) ?? 'paused';
-    final typeLabel = bot.type[0].toUpperCase() + bot.type.substring(1);
+    final typeLabel = bot.type.isEmpty ? 'Bot' : bot.type[0].toUpperCase() + bot.type.substring(1);
 
     return BotCard(
       onTap: onOpen,
@@ -448,11 +462,11 @@ class _BotGridCard extends StatelessWidget {
     for (final d in (bot.state['closedDeals'] as List? ?? const [])) {
       if (d is Map) deals.add(d.cast<String, dynamic>());
     }
-    deals.sort((a, c) => ((a['closedAt'] as int?) ?? 0).compareTo((c['closedAt'] as int?) ?? 0));
+    deals.sort((a, c) => _int0(a['closedAt']).compareTo(_int0(c['closedAt'])));
     final out = <double>[0];
     var cum = 0.0;
     for (final d in deals) {
-      cum += (b.ucToUsd(d['realizedUc'] as BigInt?) ?? 0);
+      cum += (b.ucToUsd(_big(d['realizedUc'])) ?? 0);
       out.add(cum);
     }
     return out;
