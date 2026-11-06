@@ -4,10 +4,7 @@ import '../state/app_state.dart';
 import '../theme.dart';
 import 'wallet_tab.dart';
 import 'accounts_screen.dart';
-import 'exchange_screen.dart';
-import 'agent_screen.dart';
 import 'bots_screen.dart';
-import 'chat_screen.dart';
 import 'browser_tab.dart';
 import 'settings.dart';
 import 'wallet/wallet_screen.dart';
@@ -28,36 +25,29 @@ class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   // IMPORTANT: order must stay in lock-step with AppState's indices
-  // (e.g. browserTabIndex == 5) so deep-links still land on the right page.
+  // (e.g. browserTabIndex == 3) so deep-links still land on the right page.
   static const _pages = [
     WalletTab(), // 0
     AccountsScreen(), // 1
-    ExchangeScreen(), // 2
-    AgentScreen(), // 3
-    BotsScreen(), // 4
-    BrowserTab(), // 5
-    SettingsScreen(), // 6
-    WalletScreen(), // 7  (Portfolio)
-    ChatScreen(), // 8
+    BotsScreen(), // 2
+    BrowserTab(), // 3
+    SettingsScreen(), // 4
+    WalletScreen(), // 5  (Portfolio)
   ];
 
   static const _dests = <_Dest>[
     _Dest(Icons.account_balance_wallet_outlined, Icons.account_balance_wallet,
         'Wallet'),
     _Dest(Icons.layers_outlined, Icons.layers, 'Accounts'),
-    _Dest(Icons.candlestick_chart_outlined, Icons.candlestick_chart,
-        'Exchange'),
-    _Dest(Icons.smart_toy_outlined, Icons.smart_toy, 'Agent'),
     _Dest(Icons.auto_graph_outlined, Icons.auto_graph, 'Bots'),
     _Dest(Icons.public_outlined, Icons.public, 'Browser'),
     _Dest(Icons.settings_outlined, Icons.settings, 'Settings'),
     _Dest(Icons.diamond_outlined, Icons.diamond, 'Portfolio'),
-    _Dest(Icons.chat_bubble_outline, Icons.chat_bubble, 'AI Chat'),
   ];
 
   /// The few destinations that get an icon-only button on the bottom bar; the
   /// full set always lives in the side menu.
-  static const _bottomPrimary = <int>[0, 2, 4, 5]; // Wallet, Exchange, Bots, Browser
+  static const _bottomPrimary = <int>[0, 1, 2, 3]; // Wallet, Accounts, Bots, Browser
 
   @override
   Widget build(BuildContext context) {

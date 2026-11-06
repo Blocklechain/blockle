@@ -10,7 +10,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../state/bots_controller.dart';
-import 'bots/arena_view.dart';
 import 'bots/bots_tokens.dart';
 import 'bots/bots_widgets.dart';
 import 'bots/cockpit_view.dart';
@@ -147,16 +146,6 @@ class _BotsScreenState extends State<BotsScreen> {
           botId: _selectedBotId!,
           onBack: () => setState(() => _tab = 0),
           onClonedTo: (id) => setState(() => _selectedBotId = id),
-        );
-      case 3:
-        return ArenaView(
-          controller: c,
-          onDesign: () => setState(() => _tab = 1),
-          onUseForReal: (id) => setState(() {
-            _selectedBotId = id;
-            _filter = BotFilter.paper;
-            _tab = 0;
-          }),
         );
       case 0:
       default:
@@ -341,7 +330,7 @@ class _Tabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = BotTheme.of(context);
-    final labels = ['Cockpit', 'Create a bot', 'Bot detail', 'Arena'];
+    final labels = ['Cockpit', 'Create a bot', 'Bot detail'];
     return Container(
       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: t.lineSoft))),
       child: SingleChildScrollView(
