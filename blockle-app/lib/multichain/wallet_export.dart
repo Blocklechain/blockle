@@ -31,7 +31,9 @@
 import 'dart:typed_data';
 
 import 'chains/solana.dart' as solana;
+import 'chains/tron.dart' as tron;
 import 'chains/utxo.dart' as utxo;
+import 'chains/xrpl_codec.dart' as xrp;
 import 'crypto/address.dart' as addr;
 import 'crypto/crypto_core.dart' as c;
 import 'crypto/ed25519.dart' as ed;
@@ -135,9 +137,11 @@ utxo.UtxoNetwork _utxoNet(String chainId) {
   return net;
 }
 
-String _utxoAddress(utxo.UtxoNetwork net, hd.HdNode node) => net.segwit
-    ? addr.p2wpkh(node.publicKey, net.hrp!)
-    : addr.p2pkh(node.publicKey, net.p2pkh);
+String _utxoAddress(utxo.UtxoNetwork net, hd.HdNode node) => net.cashaddr != null
+    ? addr.cashAddrP2pkh(node.publicKey, net.cashaddr!)
+    : net.segwit
+        ? addr.p2wpkh(node.publicKey, net.hrp!)
+        : addr.p2pkh(node.publicKey, net.p2pkh);
 
 ChainKey utxoKey(String chainId, dynamic seed, [int index = 0]) {
   final net = _utxoNet(chainId);
@@ -186,6 +190,46 @@ ChainKey solanaKey(dynamic seed, [int index = 0]) {
   );
 }
 
+// Tron: same secp256k1 HD stack as EVM, path m/44'/195'/0'/0/<index> (coin type
+// 195). Exported as the RAW 64-hex private key with NO 0x prefix (what TronLink
+// / bip_utils ingest) — deliberately different from evmKey's 0x-hex.
+const String tronPath = "m/44'/195'/0'/0"; // chains/tron.dart tronDefaultPath
+
+ChainKey tronKey(dynamic seed, [int index = 0]) {
+  final path = '$tronPath/$index';
+  final node = hd.derivePath(_toSeed(seed), path);
+  return ChainKey(
+    chain: 'tron',
+    index: index,
+    path: path,
+    address: tron.tronAddressFromPub(node.publicKey),
+    privateKey: c.bytesToHex(node.privateKey!), // raw 64-hex, no 0x
+    publicKey: c.bytesToHex(node.publicKey),
+    scheme: 'secp256k1',
+  );
+}
+
+String xrpPathForIndex(int index) => index == 0
+    ? xrp.xrpDefaultPath
+    : xrp.xrpDefaultPath.replaceFirst(RegExp(r'/0$'), '/$index');
+
+// XRP: secp256k1 BIP44 m/44'/144'/0'/0/<index>. The canonical XRPL secp256k1
+// private key is the 32-byte key with a 0x00 prefix, UPPERCASE hex (what
+// ripple-keypairs / xrpl.js ingest) — NOT a 0x-hex EVM key.
+ChainKey xrpKey(dynamic seed, [int index = 0]) {
+  final path = xrpPathForIndex(index);
+  final node = hd.derivePath(_toSeed(seed), path);
+  return ChainKey(
+    chain: 'xrp',
+    index: index,
+    path: path,
+    address: xrp.classicAddressFromPubkey(node.publicKey),
+    privateKey: '00${c.bytesToHex(node.privateKey!)}'.toUpperCase(),
+    publicKey: c.bytesToHex(node.publicKey).toUpperCase(),
+    scheme: 'secp256k1',
+  );
+}
+
 /// BLOCK is NOT HD-derived — its ML-DSA-44 keypair lives in the Wallet session.
 /// Export it straight from the (unlocked) session the caller passes in. Not part
 /// of the shared vectors (not seed-derivable). Returns null when the session has
@@ -216,8 +260,11 @@ Map<String, ChainKey> privateKeys(dynamic seed, [int index = 0]) {
     'bitcoin': utxoKey('bitcoin', s, index),
     'litecoin': utxoKey('litecoin', s, index),
     'dogecoin': utxoKey('dogecoin', s, index),
+    'bitcoincash': utxoKey('bitcoincash', s, index),
     'evm': evmKey(s, index),
     'solana': solanaKey(s, index),
+    'tron': tronKey(s, index),
+    'xrp': xrpKey(s, index),
   };
 }
 

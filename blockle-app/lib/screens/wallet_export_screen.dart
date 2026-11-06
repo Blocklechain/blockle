@@ -212,7 +212,16 @@ class _ExportSecretsScreenState extends State<ExportSecretsScreen> {
     final keys = r.keys;
     if (keys != null) {
       out.add(_head('Private keys'));
-      const order = ['bitcoin', 'litecoin', 'dogecoin', 'evm', 'solana'];
+      const order = [
+        'bitcoin',
+        'litecoin',
+        'dogecoin',
+        'bitcoincash',
+        'evm',
+        'solana',
+        'tron',
+        'xrp',
+      ];
       for (final id in order) {
         final k = keys[id];
         if (k != null) out.add(_keyCard(id, k));
@@ -271,9 +280,18 @@ class _ExportSecretsScreenState extends State<ExportSecretsScreen> {
 
   Widget _keyCard(String chain, wx.ChainKey k) {
     final secret = k.wif ?? k.privateKey ?? k.secretKey ?? '';
-    final label = chain == 'evm'
-        ? 'Ethereum / EVM'
-        : chain[0].toUpperCase() + chain.substring(1);
+    const labels = {
+      'evm': 'Ethereum / EVM',
+      'bitcoincash': 'Bitcoin Cash',
+      'xrp': 'XRP',
+      'ton': 'TON',
+      'tron': 'Tron',
+      'stellar': 'Stellar',
+      'tezos': 'Tezos',
+      'cardano': 'Cardano',
+    };
+    final label =
+        labels[chain] ?? (chain[0].toUpperCase() + chain.substring(1));
     return Padding(
       padding: const EdgeInsets.only(top: 10),
       child: Card(
