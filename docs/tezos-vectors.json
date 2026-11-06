@@ -1,0 +1,78 @@
+{
+  "_comment": "Tezos golden vector — SLIP-0010 ed25519 m/44'/1729'/0'/0' -> edpk pubkey -> tz1 address (base58check [6,161,159]||blake2b(pub,20)); AND a client-forged single 'transaction' manager-op: forge to bytes (branch||0x6c||pkh(source)||zarith fee||zarith counter||zarith gas_limit||zarith storage_limit||zarith amount||contractId(dest)||0x00), sign ed25519 over blake2b(0x03||forged,32), edsig base58check [9,245,205,134,18]. Cross-checked BYTE-IDENTICAL between the pure-JS forge engine and an independent pynacl + stdlib-blake2b (RFC7693) reference. Every port (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce every `expected` byte-identically.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "path": "m/44'/1729'/0'/0'",
+  "network": {
+    "id": "tezos",
+    "symbol": "XTZ",
+    "decimals": 6,
+    "coinType": 1729,
+    "prefixes": {
+      "tz1": [6, 161, 159],
+      "tz2": [6, 161, 161],
+      "tz3": [6, 161, 164],
+      "KT1": [2, 90, 121],
+      "edpk": [13, 15, 37, 217],
+      "edsig": [9, 245, 205, 134, 18],
+      "branchBlockHash": [1, 52],
+      "operationHash": [5, 116]
+    },
+    "watermark": "03",
+    "transactionTag": "6c",
+    "rpc": "https://mainnet.api.tez.ie",
+    "explorerTx": "https://tzkt.io/",
+    "moonpay": { "native": "xtz" }
+  },
+  "blake2bKats": [
+    ["", "3345524abf6bbe1809449224b5972c41790b6cf2", 20],
+    ["abc", "384264f676f39536840523f284921cdc68b6846b", 20],
+    ["", "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8", 32],
+    ["abc", "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319", 32]
+  ],
+  "zarithKats": [
+    [0, "00"],
+    [1, "01"],
+    [127, "7f"],
+    [128, "8001"],
+    [16384, "808001"],
+    [1000000, "c0843d"]
+  ],
+  "expected": {
+    "seedKeyHex": "c62dc125754854b804d4d40b3559bc239e5bacf0da85e2f25e9970b0be1f8705",
+    "edpkPubkeyHex": "370ffb098088e67f8284ca4938f8f1eac02c3e2ab150f29adc8a7075a5ce7e63",
+    "edpk": "edpku4US3ZykcZifjzSGFCmFr3zRgCKndE82estE4irj4d5oqDNDvf",
+    "address": "tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL"
+  },
+  "addressSpecVectors": [
+    ["370ffb098088e67f8284ca4938f8f1eac02c3e2ab150f29adc8a7075a5ce7e63", "tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL"],
+    ["b5c2de41af6b0d9b351a0b683bc0464199041a70473b7055a11cefb65d21ac1a", "tz1RVC4sgAfG5jD5CJrxY1JQUim9z5MFY3qJ"]
+  ],
+  "destinationKats": [
+    ["tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL", "00006b1195925ca88aafe7b7e6a0adf20b97ec20edb7"],
+    ["tz2BVXxG4Apm1ib3kWefscQiAB6c3BdwMt6j", "000122daf8afb9cbf546f1b1c0e2a863a5e955f81d19"],
+    ["tz3PWLuax2xJQM3MAmivsZs5yXz7p1kLXGJF", "000222daf8afb9cbf546f1b1c0e2a863a5e955f81d19"],
+    ["KT1Bm4rgwTGwAuAGfEubFL8UTABDFr5hbuxn", "0122daf8afb9cbf546f1b1c0e2a863a5e955f81d1900"]
+  ],
+  "tx": {
+    "kind": "transaction-native",
+    "fields": {
+      "branch": "BM6yUnNjUnUefkTW1fQoCrqrNTxPvm19xaw6Fpyuh7zSk9KzKhr",
+      "source": "tz1VQA4RP4fLjEEMW2FR4pE9kAg5abb5h5GL",
+      "fee": "1420",
+      "counter": "1",
+      "gas_limit": "10600",
+      "storage_limit": "300",
+      "amount": "1000000",
+      "destination": "tz1RVC4sgAfG5jD5CJrxY1JQUim9z5MFY3qJ"
+    },
+    "expected": {
+      "forgedHex": "b738ac4914adf6f1de6a41941fcc8fdf2e051450b2ee70ee8c2d49ab88e251816c006b1195925ca88aafe7b7e6a0adf20b97ec20edb78c0b01e852ac02c0843d00004024d64445999c1a92ac139a59265e658f4c359a00",
+      "signingHashHex": "515e3aca0edeb930452f75bd7f940bb1b7509518969ce910fb379235cfbe998f",
+      "signatureHex": "7515abf27edfee133f1fdf2fc16efed3d33ff71bb88da47c6ef2a067e587c7d6fa4ce0c383149a5d72f866a63675d325849681d4c2a52de9b8e033e6509da00a",
+      "edsig": "edsigto8CxCctPrDGrmHTiLNtUpbq9zbEMJcAWpiViR6J7heR6jfjTsTj3FLt1HpNmkp1RFDb3CRz7MGrNb5TiygujGiSxSViSm",
+      "injectionHex": "b738ac4914adf6f1de6a41941fcc8fdf2e051450b2ee70ee8c2d49ab88e251816c006b1195925ca88aafe7b7e6a0adf20b97ec20edb78c0b01e852ac02c0843d00004024d64445999c1a92ac139a59265e658f4c359a007515abf27edfee133f1fdf2fc16efed3d33ff71bb88da47c6ef2a067e587c7d6fa4ce0c383149a5d72f866a63675d325849681d4c2a52de9b8e033e6509da00a",
+      "verifies": true
+    }
+  }
+}

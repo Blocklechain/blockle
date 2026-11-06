@@ -344,6 +344,35 @@
     try { return strkeyDecode(addr, STRKEY_VERSION_ACCOUNT).length === 32; } catch { return false; }
   }
 
+  // ---- Tezos (tz1 = base58check([6,161,159] || blake2b(pub,20))) -----------
+  // WE issue tz1 (ed25519) only; destinations may be tz1/tz2/tz3/KT1. Standard
+  // Bitcoin-alphabet base58check (crypto-core), so no custom codec is needed.
+  const TEZOS_PREFIX = {
+    tz1: [6, 161, 159], tz2: [6, 161, 161], tz3: [6, 161, 164], KT1: [2, 90, 121],
+  };
+  function tezosAddress(pubKey32) {
+    const pub = C.toBytes(pubKey32);
+    if (pub.length !== 32) throw new Error('tezos: pubkey must be 32 bytes');
+    return C.base58checkEncode(C.concatBytes(Uint8Array.from(TEZOS_PREFIX.tz1), C.blake2b(pub, 20)));
+  }
+  function tezosDecodeExpect(addr, kind) {
+    const payload = C.base58checkDecode(String(addr));
+    const p = TEZOS_PREFIX[kind];
+    if (payload.length < p.length) throw new Error('tezos: short payload');
+    for (let i = 0; i < p.length; i++) if (payload[i] !== p[i]) throw new Error('tezos: wrong prefix');
+    return payload.slice(p.length);
+  }
+  function isTezosAddress(addr) { // our own account is always tz1
+    if (typeof addr !== 'string' || !/^tz1[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return false;
+    try { return tezosDecodeExpect(addr, 'tz1').length === 20; } catch { return false; }
+  }
+  function isTezosDestination(addr) { // SEND accepts tz1/tz2/tz3/KT1
+    if (typeof addr !== 'string') return false;
+    const kind = addr.slice(0, 3);
+    if (!(kind in TEZOS_PREFIX) || !/^[a-zA-Z0-9]{3}[1-9A-HJ-NP-Za-km-z]{33}$/.test(addr)) return false;
+    try { return tezosDecodeExpect(addr, kind).length === 20; } catch { return false; }
+  }
+
   // ---- UTXO addresses ------------------------------------------------------
   // P2WPKH native segwit (BTC/LTC): hrp-dependent.
   function p2wpkh(pubKeyBytes, hrp) {
@@ -378,6 +407,7 @@
     xrpAccountId, xrpAddress, xrpAddressToAccountId, xrpAccountIdToAddress, isXrpAddress,
     xrplBase58CheckEncode, xrplBase58CheckDecode,
     stellarAddress, stellarAddressToPub, isStellarAddress,
+    tezosAddress, isTezosAddress, isTezosDestination,
     strkeyEncode, strkeyDecode, crc16xmodem, base32Encode, base32Decode,
     p2wpkh, p2pkh, toWIF, fromWIF,
   };

@@ -67,6 +67,7 @@
     ton:       { native: 'ton',        tokens: { USDT: 'usdt_ton' } },
     xrp:       { native: 'xrp',        tokens: {} },
     stellar:   { native: 'xlm',        tokens: {} },
+    tezos:     { native: 'xtz',        tokens: {} },
     // block: absent on purpose (not on MoonPay).
   };
 

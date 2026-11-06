@@ -387,6 +387,121 @@
   function hash256(msg) { return sha256(sha256(msg)); }         // double SHA-256
   function hash160(msg) { return ripemd160(sha256(msg)); }      // RIPEMD160(SHA256)
 
+  // ---- BLAKE2b (RFC 7693) --------------------------------------------------
+  // Pure-JS BLAKE2b with VARIABLE output length (1..64 bytes) + optional key.
+  // Tezos needs it at two lengths: 20 bytes (160-bit) for the tz1 public-key-hash
+  // and 32 bytes (256-bit) for the operation signing hash. Faithful port of the
+  // public-domain blakejs implementation (dcposch); 64-bit words are held as
+  // lo/hi 32-bit pairs. This is the only genuinely new hash primitive here
+  // (SHA-256/SHA-512/keccak cover every other chain).
+  const B2B_IV32 = new Uint32Array([
+    0xf3bcc908, 0x6a09e667, 0x84caa73b, 0xbb67ae85, 0xfe94f82b, 0x3c6ef372,
+    0x5f1d36f1, 0xa54ff53a, 0xade682d1, 0x510e527f, 0x2b3e6c1f, 0x9b05688c,
+    0xfb41bd6b, 0x1f83d9ab, 0x137e2179, 0x5be0cd19,
+  ]);
+  const B2B_SIGMA82 = new Uint8Array([
+    0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+    28, 20, 8, 16, 18, 30, 26, 12, 2, 24, 0, 4, 22, 14, 10, 6,
+    22, 16, 24, 0, 10, 4, 30, 26, 20, 28, 6, 12, 14, 2, 18, 8,
+    14, 18, 6, 2, 26, 24, 22, 28, 4, 12, 10, 20, 8, 0, 30, 16,
+    18, 0, 10, 14, 4, 8, 20, 30, 28, 2, 22, 24, 12, 16, 6, 26,
+    4, 24, 12, 20, 0, 22, 16, 6, 8, 26, 14, 10, 30, 28, 2, 18,
+    24, 10, 2, 30, 28, 26, 8, 20, 0, 14, 12, 6, 18, 4, 16, 22,
+    26, 22, 14, 28, 24, 2, 6, 18, 10, 0, 30, 8, 16, 12, 4, 20,
+    12, 30, 28, 18, 22, 6, 0, 16, 24, 4, 26, 14, 2, 8, 20, 10,
+    20, 4, 16, 8, 14, 12, 2, 10, 30, 22, 18, 28, 6, 24, 26, 0,
+    0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30,
+    28, 20, 8, 16, 18, 30, 26, 12, 2, 24, 0, 4, 22, 14, 10, 6,
+  ]);
+  const B2B_V = new Uint32Array(32);
+  const B2B_M = new Uint32Array(32);
+  function b2bAdd64AA(v, a, b) {
+    const o0 = v[a] + v[b];
+    let o1 = v[a + 1] + v[b + 1];
+    if (o0 >= 0x100000000) o1++;
+    v[a] = o0; v[a + 1] = o1;
+  }
+  function b2bAdd64AC(v, a, b0, b1) {
+    let o0 = v[a] + b0;
+    if (b0 < 0) o0 += 0x100000000;
+    let o1 = v[a + 1] + b1;
+    if (o0 >= 0x100000000) o1++;
+    v[a] = o0; v[a + 1] = o1;
+  }
+  function b2bGet32(arr, i) {
+    return (arr[i] ^ (arr[i + 1] << 8) ^ (arr[i + 2] << 16) ^ (arr[i + 3] << 24));
+  }
+  function b2bG(a, b, c, d, ix, iy) {
+    const x0 = B2B_M[ix], x1 = B2B_M[ix + 1];
+    const y0 = B2B_M[iy], y1 = B2B_M[iy + 1];
+    b2bAdd64AA(B2B_V, a, b);
+    b2bAdd64AC(B2B_V, a, x0, x1);
+    let xor0 = B2B_V[d] ^ B2B_V[a];
+    let xor1 = B2B_V[d + 1] ^ B2B_V[a + 1];
+    B2B_V[d] = xor1; B2B_V[d + 1] = xor0;            // rotr 32
+    b2bAdd64AA(B2B_V, c, d);
+    xor0 = B2B_V[b] ^ B2B_V[c];
+    xor1 = B2B_V[b + 1] ^ B2B_V[c + 1];
+    B2B_V[b] = (xor0 >>> 24) ^ (xor1 << 8);          // rotr 24
+    B2B_V[b + 1] = (xor1 >>> 24) ^ (xor0 << 8);
+    b2bAdd64AA(B2B_V, a, b);
+    b2bAdd64AC(B2B_V, a, y0, y1);
+    xor0 = B2B_V[d] ^ B2B_V[a];
+    xor1 = B2B_V[d + 1] ^ B2B_V[a + 1];
+    B2B_V[d] = (xor0 >>> 16) ^ (xor1 << 16);         // rotr 16
+    B2B_V[d + 1] = (xor1 >>> 16) ^ (xor0 << 16);
+    b2bAdd64AA(B2B_V, c, d);
+    xor0 = B2B_V[b] ^ B2B_V[c];
+    xor1 = B2B_V[b + 1] ^ B2B_V[c + 1];
+    B2B_V[b] = (xor1 >>> 31) ^ (xor0 << 1);          // rotr 63
+    B2B_V[b + 1] = (xor0 >>> 31) ^ (xor1 << 1);
+  }
+  function b2bCompress(ctx, last) {
+    let i = 0;
+    for (i = 0; i < 16; i++) { B2B_V[i] = ctx.h[i]; B2B_V[i + 16] = B2B_IV32[i]; }
+    B2B_V[24] = B2B_V[24] ^ (ctx.t % 0x100000000);
+    B2B_V[25] = B2B_V[25] ^ ((ctx.t / 0x100000000) | 0);
+    if (last) { B2B_V[28] = ~B2B_V[28]; B2B_V[29] = ~B2B_V[29]; }
+    for (i = 0; i < 32; i++) B2B_M[i] = b2bGet32(ctx.b, 4 * i);
+    for (i = 0; i < 12; i++) {
+      b2bG(0, 8, 16, 24, B2B_SIGMA82[i * 16 + 0], B2B_SIGMA82[i * 16 + 1]);
+      b2bG(2, 10, 18, 26, B2B_SIGMA82[i * 16 + 2], B2B_SIGMA82[i * 16 + 3]);
+      b2bG(4, 12, 20, 28, B2B_SIGMA82[i * 16 + 4], B2B_SIGMA82[i * 16 + 5]);
+      b2bG(6, 14, 22, 30, B2B_SIGMA82[i * 16 + 6], B2B_SIGMA82[i * 16 + 7]);
+      b2bG(0, 10, 20, 30, B2B_SIGMA82[i * 16 + 8], B2B_SIGMA82[i * 16 + 9]);
+      b2bG(2, 12, 22, 24, B2B_SIGMA82[i * 16 + 10], B2B_SIGMA82[i * 16 + 11]);
+      b2bG(4, 14, 16, 26, B2B_SIGMA82[i * 16 + 12], B2B_SIGMA82[i * 16 + 13]);
+      b2bG(6, 8, 18, 28, B2B_SIGMA82[i * 16 + 14], B2B_SIGMA82[i * 16 + 15]);
+    }
+    for (i = 0; i < 16; i++) ctx.h[i] = ctx.h[i] ^ B2B_V[i] ^ B2B_V[i + 16];
+  }
+  // blake2b(message, outLen=32, key=null) -> Uint8Array(outLen).
+  function blake2b(input, outLen, key) {
+    outLen = outLen || 32;
+    if (outLen < 1 || outLen > 64) throw new Error('blake2b: outLen must be 1..64');
+    const msg = toBytes(input);
+    const keyBytes = key ? toBytes(key) : null;
+    const keylen = keyBytes ? keyBytes.length : 0;
+    if (keylen > 64) throw new Error('blake2b: key too long');
+    const ctx = { b: new Uint8Array(128), h: new Uint32Array(16), t: 0, c: 0, outlen: outLen };
+    for (let i = 0; i < 16; i++) ctx.h[i] = B2B_IV32[i];
+    ctx.h[0] ^= 0x01010000 ^ (keylen << 8) ^ outLen;
+    function update(data) {
+      for (let i = 0; i < data.length; i++) {
+        if (ctx.c === 128) { ctx.t += ctx.c; b2bCompress(ctx, false); ctx.c = 0; }
+        ctx.b[ctx.c++] = data[i];
+      }
+    }
+    if (keyBytes) { update(keyBytes); ctx.c = 128; }
+    update(msg);
+    ctx.t += ctx.c;
+    while (ctx.c < 128) ctx.b[ctx.c++] = 0;
+    b2bCompress(ctx, true);
+    const out = new Uint8Array(outLen);
+    for (let i = 0; i < outLen; i++) out[i] = (ctx.h[i >> 2] >> (8 * (i & 3))) & 0xff;
+    return out;
+  }
+
   // ---- HKDF-SHA256 (RFC 5869) ----------------------------------------------
   // WalletConnect v2 derives the session symKey as HKDF(SHA256, sharedKey) with
   // an empty info and a zero-filled salt (32 bytes), expanding to 32 bytes.
@@ -615,6 +730,7 @@
     return payload;
   }
 
+
   // ---- RLP (Ethereum) ------------------------------------------------------
   function rlpEncodeLength(len, offset) {
     if (len < 56) return Uint8Array.of(len + offset);
@@ -636,7 +752,7 @@
   const API = {
     toBytes, hexToBytes, bytesToHex, concatBytes, utf8,
     sha256, sha512, hmacSha256, hmacSha512, pbkdf2Sha512,
-    ripemd160, keccak256, hash256, hash160,
+    ripemd160, keccak256, hash256, hash160, blake2b,
     base58encode, base58decode, base58checkEncode, base58checkDecode,
     rlpEncode,
     // HKDF + AEAD + X25519 (WalletConnect v2 transport crypto)

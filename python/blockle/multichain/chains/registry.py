@@ -18,6 +18,7 @@ from .tron import create_tron_adapter
 from .ton import create_ton_adapter
 from .xrp import create_xrp_adapter
 from .stellar import create_stellar_adapter
+from .tezos import create_tezos_adapter
 from .utxo import create_utxo_adapter
 
 try:  # BLOCK wrapper needs a ChainWallet; optional when none is wired in.
@@ -46,6 +47,7 @@ DEFAULT_ENDPOINTS = {
     "ton":      {"api": "https://toncenter.com/api/v2"},  # toncenter v2 jsonRPC (operator-overridable; API key optional)
     "xrp":      {"rpc": "https://xrplcluster.com"},  # rippled JSON-RPC (operator-overridable; fallback https://s1.ripple.com:51234)
     "stellar":  {"horizon": "https://horizon.stellar.org"},  # Horizon REST (operator-overridable)
+    "tezos":    {"rpc": "https://mainnet.api.tez.ie"},  # Tezos node RPC (operator-overridable; alt https://rpc.tzkt.io/mainnet)
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
@@ -109,6 +111,8 @@ DEFAULT_TOKENS = {
         AssetRef(chain="ton", kind="jetton", symbol="USDT", decimals=6,
                  address="EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"),
     ],
+    # XRP / Stellar / Tezos native-only to start (issued assets need an indexer).
+    "tezos": [],
     # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
     # its AMM pool; USDB has no pool, so this list is the only way a held USDB
     # balance surfaces. Curated tokens are never hidden (zero shows as 0).
@@ -122,7 +126,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "xrp", "stellar", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "xrp", "stellar", "tezos", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -225,6 +229,9 @@ class ChainRegistry:
                                               http_get=endpoints["stellar"].get("http_get"),
                                               http_post=endpoints["stellar"].get("http_post"),
                                               post=endpoints["stellar"].get("post"))
+        a["tezos"] = create_tezos_adapter(rpc=endpoints["tezos"].get("rpc"),
+                                          http_get=endpoints["tezos"].get("http_get"),
+                                          http_post=endpoints["tezos"].get("http_post"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
                                            http_get=endpoints["bitcoin"].get("http_get"),
                                            http_post=endpoints["bitcoin"].get("http_post"))

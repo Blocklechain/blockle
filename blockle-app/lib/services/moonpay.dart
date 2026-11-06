@@ -82,6 +82,7 @@ const Map<String, String> kMoonPayNativeCodes = {
   'ton': 'ton',
   'xrp': 'xrp',
   'stellar': 'xlm',
+  'tezos': 'xtz',
   // 'block' intentionally absent — BLOCK is not on MoonPay.
 };
 

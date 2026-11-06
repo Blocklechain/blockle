@@ -56,6 +56,7 @@ CHAIN_ICONS = {
     "bch":       _disc("#0ac18e", "#ffffff", "₿"),   # Bitcoin Cash green
     "tron":      _disc("#ec0623", "#ffffff", "T"),   # TRON red
     "ton":       _disc("#0098ea", "#ffffff", "T"),   # TON blue
+    "tezos":     _disc("#2c7df7", "#ffffff", "ꜩ"),   # Tezos blue (tez sign)
     "block":     _disc("#4c8dff", "#ffffff", "B"),        # Blockle brand accent
     "bnb":       _disc("#f3ba2f", "#1e2026", "B"),
     "base":      _disc("#0052ff", "#ffffff", "B"),
@@ -82,6 +83,7 @@ CHAIN_ALIAS = {
     "arbitrum": "arbitrum", "arb": "arbitrum",
     "optimism": "optimism", "op": "optimism",
     "avalanche": "avalanche", "avax": "avalanche",
+    "tezos": "tezos", "xtz": "tezos",
 }
 
 

@@ -24,6 +24,8 @@
   const Xrp = inNode ? require('./xrp.js') : global.XrpAdapter;
   // Stellar (ed25519, SLIP-0010 m/44'/148'); native XLM via Horizon REST. Pure JS.
   const Stellar = inNode ? require('./stellar.js') : global.StellarAdapter;
+  // Tezos (ed25519, SLIP-0010 m/44'/1729'/0'/0'); native XTZ via node RPC. Pure JS.
+  const Tezos = inNode ? require('./tezos.js') : global.TezosAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -78,6 +80,8 @@
     xrp:       { rpc: 'https://xrplcluster.com' },
     // Stellar mainnet Horizon REST — public default, config-overridable.
     stellar:   { horizon: 'https://horizon.stellar.org' },
+    // Tezos mainnet node RPC — public default, config-overridable (alt: https://rpc.tzkt.io/mainnet).
+    tezos:     { rpc: 'https://mainnet.api.tez.ie' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -128,6 +132,8 @@
     // issued assets can be added here later, same shape as the others).
     xrp: [],
     stellar: [],
+    // Tezos native-only to start (FA1.2/FA2 tokens need an indexer; add later).
+    tezos: [],
   };
 
   // Resolve the Alchemy indexer URL for a network: a per-network override
@@ -150,7 +156,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton', 'xrp', 'stellar'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton', 'xrp', 'stellar', 'tezos'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -235,6 +241,11 @@
     if (Stellar && Stellar.createStellarAdapter) {
       const sep = endpoints.stellar || {};
       adapters.stellar = Stellar.createStellarAdapter({ horizon: sep.horizon, endpoint: sep.endpoint });
+    }
+    // Tezos (native XTZ) — ed25519 SLIP-0010 m/44'/1729'/0'/0', node RPC is config.
+    if (Tezos && Tezos.createTezosAdapter) {
+      const zep = endpoints.tezos || {};
+      adapters.tezos = Tezos.createTezosAdapter({ rpc: zep.rpc, endpoint: zep.endpoint });
     }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});

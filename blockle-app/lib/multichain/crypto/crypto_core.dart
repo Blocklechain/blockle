@@ -13,6 +13,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:pointycastle/export.dart' as pc;
+import 'package:pointycastle/digests/blake2b.dart' show Blake2bDigest;
 
 /// Cryptographically-secure random bytes (Random.secure).
 Uint8List randomBytes(int n) {
@@ -78,6 +79,20 @@ Uint8List ripemd160(List<int> msg) =>
 
 Uint8List keccak256(List<int> msg) =>
     pc.KeccakDigest(256).process(Uint8List.fromList(msg));
+
+/// BLAKE2b with a VARIABLE output length (bytes). Tezos needs it at two lengths:
+/// 20 bytes/160-bit for the public-key-hash inside a tz1 address, and 32 bytes/
+/// 256-bit for the operation signing hash blake2b(0x03||forged). Keyless,
+/// unsalted — the plain BLAKE2b the Tezos protocol uses. Backed by PointyCastle's
+/// Blake2bDigest (the same audited primitive family as the other hashes here).
+Uint8List blake2b(List<int> msg, {int outLen = 32}) {
+  final d = Blake2bDigest(digestSize: outLen);
+  final input = Uint8List.fromList(msg);
+  d.update(input, 0, input.length);
+  final out = Uint8List(outLen);
+  d.doFinal(out, 0);
+  return out;
+}
 
 Uint8List _hmac(pc.Digest digest, int blockSize, List<int> key, List<int> msg) {
   final mac = pc.HMac(digest, blockSize)..init(pc.KeyParameter(toBytes(key)));

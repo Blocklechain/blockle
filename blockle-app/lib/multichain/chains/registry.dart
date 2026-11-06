@@ -11,6 +11,7 @@ import 'custom_network.dart';
 import 'evm.dart';
 import 'solana.dart';
 import 'stellar.dart';
+import 'tezos.dart';
 import 'ton.dart';
 import 'tron.dart';
 import 'utxo.dart';
@@ -111,6 +112,9 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Stellar Horizon REST base (operator-overridable). The Stellar adapter reads
   // `horizon`.
   'stellar': EndpointCfg(horizon: 'https://horizon.stellar.org'),
+  // Tezos RPC base (operator-overridable; fallback https://rpc.tzkt.io/mainnet).
+  // The Tezos adapter reads `rpcUrl`.
+  'tezos': EndpointCfg(rpcUrl: 'https://mainnet.api.tez.ie'),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
@@ -262,6 +266,8 @@ final Map<String, List<AssetRef>> defaultTokens = {
         decimals: 6,
         address: 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs'),
   ],
+  // Tezos: native XTZ only to start (FA1.2/FA2 tokens not shipped by default).
+  'tezos': const [],
   // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
   // auto-discovered); USDB has no pool, so listing it here is the only way a
   // held balance surfaces. Zero balances show as 0 (curated tokens aren't hidden).
@@ -335,7 +341,8 @@ class ChainRegistry {
             'tron',
             'ton',
             'xrp',
-            'stellar'
+            'stellar',
+            'tezos'
           ]),
       'block', // BLOCK is always enabled
     };
@@ -467,6 +474,16 @@ class ChainRegistry {
       horizon: ep['stellar']?.horizon,
       get: getFor(ep['stellar']?.horizon),
       post: postFor(ep['stellar']?.horizon),
+    );
+    // Tezos (account-model ed25519): own adapter + RPC transport. Uses the
+    // injectable HttpGetFn (branch/counter/balance reads) + HttpPostFn (POST
+    // /injection/operation) builders, base = the Tezos `rpcUrl`. The whole
+    // operation is forged + signed CLIENT-SIDE; the node supplies only the
+    // verifiable branch + counter.
+    adapters['tezos'] = TezosAdapter(
+      rpc: ep['tezos']?.rpcUrl,
+      get: getFor(ep['tezos']?.rpcUrl),
+      post: postFor(ep['tezos']?.rpcUrl),
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 

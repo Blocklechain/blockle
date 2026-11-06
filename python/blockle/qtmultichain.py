@@ -60,7 +60,7 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton", "xrp", "stellar"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton", "xrp", "stellar", "tezos"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
@@ -72,6 +72,7 @@ CHAIN_LABELS = {
     "ton": "TON",
     "xrp": "XRP",
     "stellar": "Stellar",
+    "tezos": "Tezos",
 }
 #: Chains with a minimum base reserve that must stay in the account (shown as a
 #: note in the send dialog). XRP: 10-XRP base reserve; Stellar: 1-XLM per entry.
@@ -92,6 +93,7 @@ CHAIN_SCHEME = {
     "ton": "ed25519",
     "xrp": "secp256k1",
     "stellar": "ed25519",
+    "tezos": "ed25519",
 }
 
 #: The treasury the non-bypassable 0.05% agent trade fee is routed to, per chain

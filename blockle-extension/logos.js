@@ -49,6 +49,7 @@
     ton:       disc('#0098ea', '#ffffff', 'T'),      // TON blue
     xrp:       disc('#23292f', '#ffffff', 'X'),      // XRP dark
     stellar:   disc('#000000', '#ffffff', '*'),      // Stellar black
+    tezos:     disc('#2c7df7', '#ffffff', 'ꜩ'),      // Tezos blue (tez sign)
     block:     disc('#4c8dff', '#ffffff', 'B'),           // Blockle brand accent
     bnb:       disc('#f3ba2f', '#1e2026', 'B'),
     base:      disc('#0052ff', '#ffffff', 'B'),
@@ -70,6 +71,7 @@
     ton: 'ton', toncoin: 'ton',
     xrp: 'xrp', xrpl: 'xrp', ripple: 'xrp',
     stellar: 'stellar', xlm: 'stellar',
+    tezos: 'tezos', xtz: 'tezos',
     block: 'block', blockle: 'block',
     bnb: 'bnb', bsc: 'bnb', binance: 'bnb',
     base: 'base',
