@@ -37,6 +37,10 @@ class _BrowserTabState extends State<BrowserTab> {
   String? _inpage;
   bool _canBack = false, _canFwd = false;
 
+  // EVM (EIP-1193) dApp session state for the injected window.ethereum.
+  final Set<String> _evmConnected = {};
+  String _evmChainId = '0x1'; // default Ethereum mainnet; dApp may switch it
+
   // Curated trusted-dApp homepage (#129): a Blockle-vetted directory shown in
   // place of a blank URL page. `_atHome` is an explicit home state (toolbar home
   // button ⇒ true; a tile tap / URL nav ⇒ false) layered over the live webview.
@@ -137,6 +141,93 @@ class _BrowserTabState extends State<BrowserTab> {
           ? 'Connected to ${Uri.tryParse(_origin)?.host ?? _origin}'
           : (err is Map ? '${err['message'] ?? 'Connection not established'}' : 'Connection not established')),
     ));
+  }
+
+  /// The prominent toolbar Connect button: ask the current dApp to connect
+  /// through the injected provider, so the user only approves. Works for EVM
+  /// dApps (window.ethereum) and the BLOCK-native provider (window.blockle).
+  void _connectEvm() {
+    if (_atHome) return;
+    _ctrl?.evaluateJavascript(source: '''
+      try {
+        if (window.ethereum && window.ethereum.request) {
+          window.ethereum.request({method:'eth_requestAccounts'}).catch(function(){});
+        } else if (window.blockle && window.blockle.connect) {
+          window.blockle.connect().catch(function(){});
+        }
+      } catch (e) {}
+    ''');
+  }
+
+  void _emitEvm(String event, dynamic data) {
+    _ctrl?.evaluateJavascript(
+        source:
+            'window.__blockleEmit && window.__blockleEmit(${jsonEncode(event)}, ${jsonEncode(data)})');
+  }
+
+  /// EVM (EIP-1193) dApp bridge for the injected window.ethereum. Connection +
+  /// chain + read-state are handled here; the dApp's handshake is automatic and
+  /// the user only approves the single connect prompt. Message/transaction
+  /// signing is the next increment (returns a clear notice until then).
+  Future<Map<String, dynamic>> _handleEvmRpc(
+      String method, List params, String origin) async {
+    Map<String, dynamic> err(int code, String msg) => {
+          'error': {'code': code, 'message': msg}
+        };
+    String? evmAddr() {
+      try {
+        return context.read<MultichainController>().accounts.evmHostedSigner()?.address;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    switch (method) {
+      case 'eth_chainId':
+        return {'result': _evmChainId};
+      case 'net_version':
+        return {'result': '${int.parse(_evmChainId.substring(2), radix: 16)}'};
+      case 'eth_accounts':
+        final a = evmAddr();
+        return {
+          'result': (a != null && _evmConnected.contains(origin)) ? [a] : []
+        };
+      case 'eth_requestAccounts':
+        final a = evmAddr();
+        if (a == null) {
+          return err(4100,
+              'Unlock your multi-chain accounts (Accounts tab) to connect an EVM dApp.');
+        }
+        if (_evmConnected.contains(origin)) return {'result': [a]};
+        final dec = await _approve(ApprovalRequest('connect', origin));
+        if (!dec.approved) return err(4001, 'Connection request rejected.');
+        _evmConnected.add(origin);
+        _emitEvm('accountsChanged', [a]);
+        _emitEvm('connect', {'chainId': _evmChainId});
+        return {'result': [a]};
+      case 'wallet_switchEthereumChain':
+        final cid = (params.isNotEmpty && params[0] is Map)
+            ? params[0]['chainId']?.toString()
+            : null;
+        if (cid != null && cid.startsWith('0x')) {
+          setState(() => _evmChainId = cid);
+          _emitEvm('chainChanged', cid);
+        }
+        return {'result': null};
+      case 'wallet_addEthereumChain':
+        return {'result': null};
+      case 'personal_sign':
+      case 'eth_sign':
+      case 'eth_signTypedData':
+      case 'eth_signTypedData_v3':
+      case 'eth_signTypedData_v4':
+      case 'eth_sendTransaction':
+        return err(4200,
+            'Signing from the in-app browser is landing in the next update — '
+            'connecting works now; message & transaction signing is on the way.');
+      default:
+        return err(4200, 'Unsupported method: $method');
+    }
   }
 
   void _wireAppState(AppState app) {
@@ -243,6 +334,28 @@ class _BrowserTabState extends State<BrowserTab> {
                   ),
                 ),
                 _navIcon(Icons.refresh, 19, () => _ctrl?.reload()),
+                // Prominent, always-visible Connect pill when on a dApp page —
+                // taps the dApp's own connect via the injected provider so the
+                // user just approves once.
+                if (!_atHome)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: FilledButton.icon(
+                      onPressed: _connectEvm,
+                      icon: const Icon(Icons.link, size: 16),
+                      label: const Text('Connect'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Bk.accent,
+                        foregroundColor: Colors.white,
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        minimumSize: const Size(0, 36),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        textStyle: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
                 // Secondary actions live in an overflow menu so the bar never
                 // crowds/truncates on narrow phones.
                 PopupMenuButton<String>(
@@ -305,6 +418,14 @@ class _BrowserTabState extends State<BrowserTab> {
                         : <String, dynamic>{};
                     final method = (arg['method'] ?? '').toString();
                     final params = (arg['params'] as List?) ?? [];
+                    // EVM / EIP-1193 methods (Uniswap et al.) are handled by the
+                    // EVM bridge; everything else is the BLOCK-native provider.
+                    if (method.startsWith('eth_') ||
+                        method.startsWith('wallet_') ||
+                        method == 'personal_sign' ||
+                        method == 'net_version') {
+                      return await _handleEvmRpc(method, params, _origin);
+                    }
                     return await context.read<AppState>().handleRpc(method, params, _origin);
                   },
                 );
