@@ -1,0 +1,86 @@
+name: iOS TestFlight
+
+# Cloud iOS build + TestFlight upload — runs on a macOS runner with a compatible
+# Xcode (sidesteps local macOS Tahoe / Xcode mismatch). Headless signing via the
+# App Store Connect API key (repo secrets ASC_KEY_*). Pushes to TestFlight for
+# bundle id org.blockle.blockleApp ("Blockle Wallet", team B87ALX4XW9) on every
+# push that touches the app, plus manual dispatch.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'blockle-app/**'
+      - '.github/workflows/ios-testflight.yml'
+
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.7'
+          channel: stable
+          cache: true
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$ASC_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+
+      - name: Flutter deps
+        working-directory: blockle-app
+        run: flutter pub get
+
+      - name: Build + cloud-sign archive + export IPA
+        working-directory: blockle-app
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+          BN: ${{ github.run_number }}
+        run: |
+          set -eo pipefail
+          KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          # compile (unsigned) with a unique, monotonic build number for TestFlight
+          flutter build ios --release --no-codesign --build-number="$BN"
+          # archive with automatic cloud signing via the ASC API key
+          xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \
+            -archivePath build/Runner.xcarchive archive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
+          # export an App Store Connect IPA
+          xcodebuild -exportArchive -archivePath build/Runner.xcarchive \
+            -exportPath build/ipa -exportOptionsPlist ios/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
+          ls -lh build/ipa/*.ipa
+
+      - name: Upload to TestFlight
+        working-directory: blockle-app
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -eo pipefail
+          IPA="$(ls build/ipa/*.ipa | head -1)"
+          echo "Uploading $IPA to TestFlight…"
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$KID" --apiIssuer "$ISS" --verbose
+
+      - name: Upload IPA artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blockle-wallet-ipa
+          path: blockle-app/build/ipa/*.ipa
+          if-no-files-found: ignore
