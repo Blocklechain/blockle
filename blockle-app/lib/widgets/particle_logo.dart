@@ -43,18 +43,35 @@ class _ParticleLogoState extends State<ParticleLogo>
   }
 
   void _seed() {
-    // A ring + inner scatter that reads as a glowing cube of nodes.
-    const ringCount = 26;
-    for (var i = 0; i < ringCount; i++) {
-      final a = (i / ringCount) * 2 * pi;
-      final rad = 0.72 + _rng.nextDouble() * 0.06;
-      _ps.add(_Particle(cos(a) * rad, sin(a) * rad, 1.6 + _rng.nextDouble() * 1.6));
+    // Home positions sampled from the stylized Blockle "B" glyph, so the cloud
+    // of particles settles into the brand mark (and scatters toward a touch).
+    final path = _bGlyphPath();
+    var placed = 0, guard = 0;
+    while (placed < 78 && guard < 40000) {
+      guard++;
+      final px = _rng.nextDouble() * 100;
+      final py = _rng.nextDouble() * 100;
+      if (!path.contains(Offset(px, py))) continue;
+      // 0..100 (y-down) -> normalized -0.9..0.9, matching the painter's mapping.
+      final hx = (px / 100) * 1.8 - 0.9;
+      final hy = (py / 100) * 1.8 - 0.9;
+      _ps.add(_Particle(hx, hy, 1.1 + _rng.nextDouble() * 1.5));
+      placed++;
     }
-    for (var i = 0; i < 34; i++) {
-      final a = _rng.nextDouble() * 2 * pi;
-      final rad = _rng.nextDouble() * 0.6;
-      _ps.add(_Particle(cos(a) * rad, sin(a) * rad, 1.0 + _rng.nextDouble() * 1.8));
-    }
+  }
+
+  /// A bold "B" in a 0..100 box: spine ∪ two bowls, minus the two counters.
+  static Path _bGlyphPath() {
+    Path rr(double l, double t, double r, double b, double rad) => Path()
+      ..addRRect(RRect.fromRectAndCorners(Rect.fromLTRB(l, t, r, b),
+          topRight: Radius.circular(rad), bottomRight: Radius.circular(rad)));
+    final spine = Path()..addRect(const Rect.fromLTRB(20, 12, 40, 88));
+    var body = Path.combine(PathOperation.union, spine, rr(20, 12, 70, 49, 18));
+    body = Path.combine(PathOperation.union, body, rr(20, 49, 78, 88, 20));
+    // counters (the two openings)
+    body = Path.combine(PathOperation.difference, body, rr(40, 22, 56, 40, 8));
+    body = Path.combine(PathOperation.difference, body, rr(40, 59, 60, 78, 9));
+    return body;
   }
 
   void _step() {
