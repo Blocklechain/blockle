@@ -115,11 +115,21 @@ def _read_varint(buf: bytes, i: int):
         shift += 7
 
 
-def _pb_fields(buf: bytes, start: int = 0, end=None) -> dict:
+def _pb_fields(buf: bytes, start: int = 0, end=None, strict: bool = False) -> dict:
     """Decode a flat protobuf message -> {field_number: [value, ...]}.
     Length-delimited (wt 2) values come back as ``bytes``; varints (wt 0) as
     ``int``. Fixed32/64 are returned as raw bytes. Raises on any other wire
-    type or on a length that runs past the message (a malformed payload)."""
+    type or on a length that runs past the message (a malformed payload).
+
+    When ``strict`` is set (HARDENING A.1, approach (b) — reject), the decoder
+    REFUSES any message that carries the SAME field number twice. Protobuf's
+    last/first-wins merge semantics mean a malicious node could append a
+    DUPLICATE scalar (e.g. a second ``amount``) that our first-occurrence
+    reader would silently ignore while a re-serializer/chain read it
+    differently; rejecting duplicates (at the raw, Contract, Any and
+    inner-contract levels) eliminates that ambiguity along with any
+    reorder/extra-field variant. Trailing/truncated bytes are already caught by
+    the exact ``end`` walk + the length-overrun guard below."""
     if end is None:
         end = len(buf)
     i = start
@@ -144,6 +154,9 @@ def _pb_fields(buf: bytes, start: int = 0, end=None) -> dict:
             i += 8
         else:
             raise ValueError(f"tron: unsupported protobuf wire type {wt}")
+        if strict and fn in out:
+            raise ValueError(
+                f"tron: duplicate protobuf field {fn} in raw_data — refusing to sign")
         out.setdefault(fn, []).append(val)
     return out
 
@@ -165,22 +178,29 @@ def decode_raw_data(raw_data_hex) -> dict:
     Raises ValueError on anything it cannot decode or that is not one of the two
     supported transfer contracts."""
     buf = bytes.fromhex(str(raw_data_hex).replace("0x", "", 1))
-    top = _pb_fields(buf)
+    # HARDENING A.1 (approach (b)): decode STRICTLY at every nesting level so a
+    # duplicate/extra field anywhere in the signable payload is rejected rather
+    # than silently first-wins-merged. A single-transfer tx we would ever sign
+    # has exactly one Contract, so a duplicate field 11 (a second contract) is
+    # likewise rejected by the strict top-level walk.
+    top = _pb_fields(buf, strict=True)
     contracts = top.get(11)  # Transaction.raw field 11 (repeated) = Contract
     if not contracts:
         raise ValueError("tron: raw_data has no Contract (field 11)")
+    if len(contracts) != 1:
+        raise ValueError("tron: raw_data carries multiple Contracts — refusing to sign")
     if not isinstance(contracts[0], (bytes, bytearray)):
         raise ValueError("tron: malformed Contract")
-    cf = _pb_fields(contracts[0])
+    cf = _pb_fields(contracts[0], strict=True)
     ctype = _first(cf, 1, 0)  # Contract field 1 = type enum
     param = _first(cf, 2)     # Contract field 2 = google.protobuf.Any
     if not isinstance(param, (bytes, bytearray)):
         raise ValueError("tron: Contract has no parameter")
-    anyf = _pb_fields(param)
+    anyf = _pb_fields(param, strict=True)
     value = _first(anyf, 2)   # Any field 2 = value (bytes)
     if not isinstance(value, (bytes, bytearray)):
         raise ValueError("tron: Any has no value")
-    vf = _pb_fields(value)
+    vf = _pb_fields(value, strict=True)
     if ctype == _TYPE_TRANSFER:
         owner = _first(vf, 1, b"")
         to = _first(vf, 2, b"")
@@ -438,11 +458,16 @@ class TronAdapter:
                    "kind": "trc20-transfer" if is_trc20 else "send", "needsSign": True})
 
     def sign_tx(self, account, tx) -> BuiltTx:
-        """RE-VERIFY txID == sha256(raw_data_hex) AND (when the build-time intent
-        is carried in ``extra['intent']``) RE-DECODE the raw_data and re-assert it
-        still pays exactly what was requested, then secp256k1-sign that txID (and
-        ONLY that) -> 65-byte [r||s||v], attach to tx.signature[]. The intent
-        re-check closes the gap where raw_data could be swapped after build."""
+        """RE-VERIFY txID == sha256(raw_data_hex) AND RE-DECODE the raw_data to
+        re-assert it still pays exactly what was requested, then secp256k1-sign
+        that txID (and ONLY that) -> 65-byte [r||s||v], attach to tx.signature[].
+
+        HARDENING A.2 (MANDATORY INTENT): the locally-built intent
+        (owner/to/amount/contract) that ``build_send`` attached MUST be present
+        and is re-asserted here. We NEVER fall back to the ``txID == sha256``
+        integrity check alone — that check is satisfied by any self-consistent
+        node payload (including one paying an attacker), so signing on it alone
+        is unsafe. A sign-ready payload lacking intent is refused."""
         if self._root is None:
             raise RuntimeError("locked")
         extra = tx.extra if isinstance(tx, BuiltTx) else (tx if isinstance(tx, dict) else {})
@@ -452,9 +477,14 @@ class TronAdapter:
         if not raw_hex:
             raise ValueError("tron: nothing to sign (no raw_data_hex)")
         tx_id_hex = verify_tx_id(raw_hex, claimed)
-        intent = (extra or {}).get("intent")
-        if intent:
-            assert_transfer(raw_hex, **intent)  # re-prove intent before signing
+        intent = (extra or {}).get("intent") or (unsigned or {}).get("intent")
+        if not intent or intent.get("to") is None or intent.get("amount") is None \
+                or not intent.get("owner"):
+            raise ValueError(
+                "tron: refusing to sign — no locally-built intent to assert "
+                "(the txID==sha256 integrity check alone proves nothing about "
+                "who gets paid)")
+        assert_transfer(raw_hex, **intent)  # re-prove intent before signing
         node = self._node_for(getattr(account, "index", 0) or 0)
         sig65 = sign_tx_id(tx_id_hex, node.private_key)
         sig_hex = sig65.hex()

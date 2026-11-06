@@ -93,7 +93,8 @@ test('signTx re-verifies txID before signing and attaches signature[]', async ()
   assert.strictEqual(acct.address, V.expected.base58Address);
   assert.strictEqual(acct.path, V.path);
   const unsigned = { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID, raw_data: {} };
-  const signed = await a.signTx(acct, { unsigned, raw_data_hex: unsigned.raw_data_hex, txID: unsigned.txID });
+  const intent = { owner: V.expected.base58Address, to: V.tx.to, amount: V.tx.amount };
+  const signed = await a.signTx(acct, { unsigned, raw_data_hex: unsigned.raw_data_hex, txID: unsigned.txID, assert: intent });
   assert.strictEqual(signed.signature, V.tx.expected.signatureHex);
   assert.ok(Array.isArray(signed.signed.signature) && signed.signed.signature[0] === V.tx.expected.signatureHex);
   // tampered raw_data_hex must be rejected (malicious-node guard)
@@ -172,6 +173,70 @@ test('decode+assert REJECTS a tampered node payload — NO signature produced', 
   assert.notStrictEqual(swapOwner, V.tx.rawDataHex);
   const swapOwnerTxId = h(C.sha256(C.hexToBytes(swapOwner)));
   await assert.rejects(a.signTx(acct, { raw_data_hex: swapOwner, txID: swapOwnerTxId }), /refusing to sign/);
+});
+
+// ---------------------------------------------------------------------------
+// HARDENING A1 — DUPLICATE / UNEXPECTED FIELDS. The protobuf decoder takes the
+// first occurrence per field, so a malicious node could append a DUPLICATE
+// scalar (e.g. a 2nd amount) that last-wins merge semantics elsewhere would
+// read differently. Only the exact canonical encoding is signable, so the
+// decoder REJECTS any level that repeats a field number (raw / Contract / Any /
+// inner-contract) — tested here by building a TransferContract with a 2nd
+// `amount` (inner level) and by appending a 2nd `contract` (raw level).
+// ---------------------------------------------------------------------------
+test('decode REJECTS a duplicate field (2nd amount, inner level)', () => {
+  // tiny protobuf encoder (varint + length-delimited) — test-only
+  const vbytes = (n) => { n = BigInt(n); const o = []; do { let b = Number(n & 0x7fn); n >>= 7n; if (n > 0n) b |= 0x80; o.push(b); } while (n > 0n); return o; };
+  const f2 = (fn, bytes) => [(fn << 3) | 2, ...vbytes(bytes.length), ...bytes];
+  const fv = (fn, v) => [(fn << 3) | 0, ...vbytes(v)];
+  const owner = [...C.hexToBytes(V.expected.addressHex)];        // 41 + 20B
+  const to = [...C.hexToBytes(Addr.tronAddressToHex(V.tx.to))];
+  // TransferContract value with a DUPLICATE field 3 (amount)
+  const val = [...f2(1, owner), ...f2(2, to), ...fv(3, 1000000), ...fv(3, 2000000)];
+  const anyMsg = [...f2(1, [...C.utf8('type.googleapis.com/protocol.TransferContract')]), ...f2(2, val)];
+  const contract = [...fv(1, TRON.TRON_TRANSFER_CONTRACT), ...f2(2, anyMsg)];
+  const raw = [...f2(11, contract)];
+  const rawHex = C.bytesToHex(Uint8Array.from(raw));
+  assert.throws(() => TRON.decodeRawData(rawHex), /duplicate field 3 in contract-value/);
+  assert.throws(() => TRON.assertRawDataMatches(rawHex,
+    { owner: V.expected.base58Address, to: V.tx.to, amount: V.tx.amount }), /duplicate field/);
+});
+
+test('decode REJECTS a duplicate contract (2nd contract, raw level)', () => {
+  const vbytes = (n) => { n = BigInt(n); const o = []; do { let b = Number(n & 0x7fn); n >>= 7n; if (n > 0n) b |= 0x80; o.push(b); } while (n > 0n); return o; };
+  const f2 = (fn, bytes) => [(fn << 3) | 2, ...vbytes(bytes.length), ...bytes];
+  const fv = (fn, v) => [(fn << 3) | 0, ...vbytes(v)];
+  const owner = [...C.hexToBytes(V.expected.addressHex)];
+  const to = [...C.hexToBytes(Addr.tronAddressToHex(V.tx.to))];
+  const val = [...f2(1, owner), ...f2(2, to), ...fv(3, 1000000)];
+  const anyMsg = [...f2(1, [...C.utf8('type.googleapis.com/protocol.TransferContract')]), ...f2(2, val)];
+  const contract = [...fv(1, TRON.TRON_TRANSFER_CONTRACT), ...f2(2, anyMsg)];
+  // ONE contract decodes fine; TWO field-11 contracts at the raw level is rejected.
+  const okRaw = C.bytesToHex(Uint8Array.from([...f2(11, contract)]));
+  assert.strictEqual(TRON.decodeRawData(okRaw).type, TRON.TRON_TRANSFER_CONTRACT);
+  const dupRaw = C.bytesToHex(Uint8Array.from([...f2(11, contract), ...f2(11, contract)]));
+  assert.throws(() => TRON.decodeRawData(dupRaw), /duplicate field 11 in raw_data/);
+});
+
+// ---------------------------------------------------------------------------
+// HARDENING A2 — MANDATORY INTENT. signTx REFUSES to sign a sign-ready payload
+// that carries no locally-built intent; it never falls back to the
+// txID==sha256 integrity check (or a bare owner check) alone.
+// ---------------------------------------------------------------------------
+test('signTx THROWS when the sign-ready payload carries no intent', async () => {
+  const seed = HD.mnemonicToSeed(V.mnemonic, V.passphrase || '');
+  const a = TRON.createTronAdapter({});
+  a.unlock(seed);
+  const acct = await a.deriveAccount({ seed }, 0);
+  // no `assert` intent and no `unsigned.assert` -> refused outright
+  await assert.rejects(
+    a.signTx(acct, { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID }),
+    /missing transfer intent.*refusing to sign/);
+  // a partial intent (missing amount) is also refused
+  await assert.rejects(
+    a.signTx(acct, { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID,
+      assert: { owner: V.expected.base58Address, to: V.tx.to } }),
+    /missing transfer intent.*refusing to sign/);
 });
 
 test('registry registers + enables tron with TronGrid default + USDT token', () => {

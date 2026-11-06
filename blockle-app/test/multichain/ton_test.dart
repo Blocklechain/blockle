@@ -262,6 +262,94 @@ void main() {
     });
   });
 
+  group('HARDENING B: jetton-wallet local derivation + node validation', () {
+    // The standard TEP-74 jetton wallet's address IS cellHash(StateInit{code,
+    // data{balance:0, owner, master, code}}). We can DERIVE it offline from the
+    // per-master jetton-wallet code and assert a node's get_wallet_address result
+    // equals it. No real USDT code is shipped here, so the test uses the (real,
+    // reproducible) v4R2 code cell as a stand-in jetton-wallet code; the derived
+    // address below was computed by an INDEPENDENT Python reference of the exact
+    // cell-hash algorithm (code cell hash feb5ff68… matched the vector), so this
+    // is a genuine cross-implementation golden, not a self-referential one.
+    final owner = tc.parseAddress(v4['rawAddress'] as String);
+    final master = tc.parseAddress(
+        (V['network'] as Map)['jettonMasters']['USDT'] as String);
+    final code = tc.v4r2CodeCell();
+    const derivedRaw =
+        '0:1890e87764d443b48fed587304425cbe7ad8fc2387a3d4826f5ef46c8e9650a8';
+
+    test('jettonWalletAddress reproduces the independent golden', () {
+      final jw = tc.jettonWalletAddress(owner: owner, master: master, code: code);
+      expect(tc.rawAddress(jw.workchain, jw.hash), derivedRaw);
+    });
+
+    test('derivation is deterministic + changes with owner/master/code', () {
+      final a = tc.jettonWalletAddress(owner: owner, master: master, code: code);
+      final again = tc.jettonWalletAddress(owner: owner, master: master, code: code);
+      expect(tc.rawAddress(a.workchain, a.hash),
+          tc.rawAddress(again.workchain, again.hash));
+      // a different owner → a different wallet address
+      final other = tc.parseAddress(tx['dest'] as String);
+      final b = tc.jettonWalletAddress(owner: other, master: master, code: code);
+      expect(tc.rawAddress(b.workchain, b.hash),
+          isNot(tc.rawAddress(a.workchain, a.hash)));
+    });
+
+    test('assertJettonWalletMatches ACCEPTS the correctly-derived node address',
+        () {
+      final good = tc.parseAddress(derivedRaw);
+      expect(
+        () => ton.assertJettonWalletMatches(
+            nodeAddr: good, owner: owner, master: master, code: code),
+        returnsNormally,
+      );
+    });
+
+    test('assertJettonWalletMatches REJECTS a wrong node-returned wallet', () {
+      final wrong = tc.parseAddress(tx['dest'] as String); // not the derived addr
+      expect(
+        () => ton.assertJettonWalletMatches(
+            nodeAddr: wrong, owner: owner, master: master, code: code),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('getBalance rejects a lying node wallet when code is configured',
+        () async {
+      // Node answers get_wallet_address with the WRONG wallet; with the jetton
+      // code configured, _jettonWalletOf re-derives and refuses it → the jetton
+      // row surfaces an error (never a fabricated balance against a bogus wallet).
+      final usdtMaster = (V['network'] as Map)['jettonMasters']['USDT'] as String;
+      final wrongWalletBoc = tc.tonToBase64(
+          tc.serializeBoc(tc.addressCell(tc.parseAddress(tx['dest'] as String))));
+      Future<String> post(String path, String body) async {
+        final req = jsonDecode(body) as Map<String, dynamic>;
+        // runGetMethod wraps the real method inside params; look there first.
+        final params = req['params'];
+        final method = (params is Map ? params['method'] : null) ?? req['method'];
+        if (method == 'get_wallet_address') {
+          return jsonEncode({
+            'result': {
+              'stack': [
+                ['cell', {'bytes': wrongWalletBoc}]
+              ]
+            }
+          });
+        }
+        return jsonEncode({'result': {'stack': [['num', '0x0']]}});
+      }
+
+      final a = ton.TonAdapter(post: post, jettonWalletCode: tc.v4r2CodeBase64);
+      final tok = AssetRef(
+          chain: 'ton', kind: 'jetton', symbol: 'USDT', decimals: 6,
+          address: usdtMaster);
+      final bals = await a.getBalance(v4['addressBounceable'] as String, tokens: [tok]);
+      final jettonRow = bals.firstWhere((b) => b.asset.kind == 'jetton');
+      expect(jettonRow.error, isNotNull);
+      expect(jettonRow.error, contains('refusing'));
+    });
+  });
+
   group('adapter wiring', () {
     test('native asset: ton, 9 decimals; explorer deep-link', () {
       final a = ton.TonAdapter();

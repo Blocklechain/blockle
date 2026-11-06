@@ -453,6 +453,59 @@ Cell v4r2StateInit(List<int> pubKey32, {int subwallet = subwalletId}) {
       .endCell();
 }
 
+// ---- generic StateInit + standard jetton-wallet derivation ------------------
+//
+// A node's get_wallet_address RPC returns the owner's jetton-wallet address, but
+// the client should not blindly trust it. The standard (TEP-74) jetton wallet is
+// a contract whose address IS cellHash(StateInit{ code: jetton_wallet_code,
+// data: {balance:0, owner, jetton_master, jetton_wallet_code} }). Given the
+// correct per-master jetton-wallet code we can DERIVE the same address offline
+// and assert it equals the node's — closing the gas-misdirect gap. Additive: the
+// verified native/v4R2 vectors are untouched.
+
+/// A TON StateInit cell {code, data} (split_depth / special = none, library
+/// empty) — the exact layout [v4r2StateInit] uses, generalized for any contract.
+Cell stateInitCell(Cell code, Cell data) {
+  return beginCell()
+      .storeUint(0, 2) // split_depth (Maybe=0) + special (Maybe=0)
+      .storeBit(1)
+      .storeRef(code) // code: Maybe ref
+      .storeBit(1)
+      .storeRef(data) // data: Maybe ref
+      .storeBit(0) // library: Maybe = 0
+      .endCell();
+}
+
+/// Standard TEP-74 jetton-wallet data cell:
+///   coins(balance) ++ owner(MsgAddress) ++ jetton_master(MsgAddress) ++ ref(code).
+Cell jettonWalletDataCell({
+  required TonAddr owner,
+  required TonAddr master,
+  required Cell code,
+  BigInt? balance,
+}) {
+  return beginCell()
+      .storeCoins(balance ?? BigInt.zero)
+      .storeAddress(owner)
+      .storeAddress(master)
+      .storeRef(code)
+      .endCell();
+}
+
+/// Locally DERIVE the owner's jetton-wallet address for [master] from the
+/// standard jetton-wallet [code] cell: address = cellHash(StateInit{ code,
+/// data{balance:0, owner, master, code} }). Workchain defaults to 0 (basechain).
+TonAddr jettonWalletAddress({
+  required TonAddr owner,
+  required TonAddr master,
+  required Cell code,
+  int workchain = 0,
+}) {
+  final data = jettonWalletDataCell(owner: owner, master: master, code: code);
+  final si = stateInitCell(code, data);
+  return TonAddr(workchain, si.hash());
+}
+
 // ---- friendly / raw address codec ------------------------------------------
 const int tagBounceable = 0x11;
 const int tagNonBounceable = 0x51;

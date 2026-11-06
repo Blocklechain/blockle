@@ -519,8 +519,12 @@ def test_tron_adapter_sign_tx_reverifies_and_attaches_signature():
     assert acct.address == fx["expected"]["base58Address"]
     tx = fx["tx"]
     unsigned = {"raw_data_hex": tx["rawDataHex"], "txID": tx["expected"]["txID"], "raw_data": {}}
+    # HARDENING A.2: sign_tx now REQUIRES the locally-built intent (the golden
+    # signature output is unchanged — only an intent must accompany the payload).
+    intent = {"owner": fx["expected"]["base58Address"], "to": tx["to"],
+              "amount": int(tx["amount"]), "contract": None}
     built = a.sign_tx(acct, {"unsigned": unsigned, "raw_data_hex": unsigned["raw_data_hex"],
-                             "txID": unsigned["txID"]})
+                             "txID": unsigned["txID"], "intent": intent})
     assert built.extra["signature"] == tx["expected"]["signatureHex"]
     assert built.extra["signed"]["signature"] == [tx["expected"]["signatureHex"]]
     # tampered payload must be rejected (malicious-node guard)
@@ -655,6 +659,61 @@ def test_tron_build_send_rejects_malicious_node_payload_no_signature():
     with pytest.raises(ValueError):
         a.build_send(acct, {"to": nx["to"], "amount": int(nx["amount"])})
     assert signed_calls == []  # nothing was signed/broadcast
+
+
+# ---- HARDENING A.1: duplicate / extra protobuf field REJECTION --------------
+# Approach (b): decode STRICTLY and reject any raw_data carrying a field number
+# twice (at the raw, Contract, Any, or inner-contract level). A full canonical
+# re-encode+byte-compare (approach (a)) is NOT feasible: the signable raw_data
+# also carries node-chosen fields (ref_block_*, expiration, timestamp,
+# fee_limit) the client never builds, so it cannot reproduce the exact bytes.
+def _pb_varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | 0x80 if n else b)
+        if not n:
+            return bytes(out)
+
+
+def test_tron_strict_decode_rejects_duplicate_scalar_field():
+    # a duplicate 'amount' (field 3) — last/first-wins ambiguity is the attack.
+    dup = bytes([0x18]) + _pb_varint(1_000_000) + bytes([0x18]) + _pb_varint(2_000_000)
+    assert TRON._pb_fields(dup)[3] == [1_000_000, 2_000_000]  # lenient first-wins list
+    with pytest.raises(ValueError):
+        TRON._pb_fields(dup, strict=True)
+
+
+def test_tron_decode_raw_data_rejects_duplicate_field_in_payload():
+    fx = _tron_fixture()
+    nx = fx["tx"]
+    buf = bytes.fromhex(nx["rawDataHex"])
+    # append a DUPLICATE top-level Contract (field 11, wire type 2) — the honest
+    # payload has exactly one; the strict walk rejects the second occurrence.
+    c0 = TRON._pb_fields(buf)[11][0]
+    tampered = (buf + bytes([(11 << 3) | 2]) + _pb_varint(len(c0)) + c0).hex()
+    assert TRON._pb_fields(bytes.fromhex(tampered))[11][0] == c0  # lenient still parses
+    with pytest.raises(ValueError):
+        TRON.decode_raw_data(tampered)
+    with pytest.raises(ValueError):
+        TRON.assert_transfer(tampered, owner=fx["expected"]["base58Address"],
+                             to=nx["to"], amount=int(nx["amount"]))
+
+
+# ---- HARDENING A.2: MANDATORY intent — never sign on integrity alone --------
+def test_tron_sign_tx_without_intent_refuses_even_with_valid_txid():
+    fx = _tron_fixture()
+    seed = K.mnemonic_to_seed(fx["mnemonic"], fx.get("passphrase", ""))
+    a = TRON.create_tron_adapter()
+    a.unlock({"seed": seed})
+    acct = a.derive_account({"seed": seed}, 0)
+    nx = fx["tx"]
+    # a perfectly integrity-consistent payload (txID == sha256(raw_data_hex)) but
+    # NO locally-built intent must be refused — integrity proves nothing about
+    # who gets paid.
+    with pytest.raises(ValueError):
+        a.sign_tx(acct, {"raw_data_hex": nx["rawDataHex"], "txID": nx["expected"]["txID"]})
 
 
 # ---- vault (scrypt + AES-256-GCM v2) --------------------------------------

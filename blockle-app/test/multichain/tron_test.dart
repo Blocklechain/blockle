@@ -63,6 +63,22 @@ const trc20BadDataRaw =
     '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5ab001081f12ab010a31747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e54726967676572536d617274436f6e747261637412760a1541c8599111f29c1e1e061265b4af93ea1f274ad78a121541a614f803b6fd780986a42c78ec9c7f77e6ded13c18002244a9059cbb000000000000000000000000e552f6487585c2b58bc2c9bb4492bc1f17132cd000000000000000000000000000000000000000000000000000000000000f4240';
 const trc20BadDataTxId =
     'b9faea6926c377a2b0eee56fff60c88d5e59b31dc0e05c8ad2b134f3747e25c6';
+// HARDENING fixtures (dup-field attack). Both are the native golden transfer
+// with an appended DUPLICATE field so last-wins/merge semantics would read a
+// different value; each txID == sha256(raw) so the first (integrity) guard
+// passes and the dup-field-strict decoder is exercised in isolation.
+// dupAmountRaw: a second `amount` (field 3) appended inside the TransferContract
+// body (inner-contract level), all nested length prefixes recomputed.
+const dupAmountRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a6b080112670a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412360a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d18c0843d';
+const dupAmountTxId =
+    '22fcefe79d9ce1611e373b6f3f87323cd48176bd4a345cddd43464aa381b84dc';
+// dupTopRaw: a second `expiration` (field 8) appended at the Transaction.raw
+// level (top-level dup).
+const dupTopRaw =
+    '0a0202db2208b921b61923a6b1ef40f8e0e9f8a62e5a67080112630a2d747970652e676f6f676c65617069732e636f6d2f70726f746f636f6c2e5472616e73666572436f6e747261637412320a1541c8599111f29c1e1e061265b4af93ea1f274ad78a1215415cd0fb0ab3ce40f3051414c604b27756e69e43db18c0843d40f8e0e9f8a62e';
+const dupTopTxId =
+    '951fcf4b8193ef841df58f8daf53629fe201da42ee07888107a2b4a5777d651d';
 
 Map<String, dynamic> _loadVectors() {
   // Dart test cwd is the package root (blockle-app); the shared vector lives at
@@ -301,6 +317,86 @@ void main() {
       // the attacker address is what the tampered bytes actually encode
       final d = tron.decodeTronRawData(nativeBadToRaw);
       expect(d.toHex, tron.addressToHex(attacker));
+    });
+  });
+
+  group('HARDENING A1: duplicate/unexpected protobuf fields are REJECTED', () {
+    test('inner-contract dup (second amount) is rejected by the decoder', () {
+      // the integrity guard would still pass (txID == sha256(raw))…
+      expect(tron.txIdFromRawData(dupAmountRaw), dupAmountTxId);
+      // …but the strict decoder refuses the duplicated field.
+      expect(() => tron.decodeTronRawData(dupAmountRaw),
+          throwsA(isA<FormatException>()));
+    });
+
+    test('top-level dup (second expiration) is rejected by the decoder', () {
+      expect(tron.txIdFromRawData(dupTopRaw), dupTopTxId);
+      expect(() => tron.decodeTronRawData(dupTopRaw),
+          throwsA(isA<FormatException>()));
+    });
+
+    test('buildSend REJECTS a dup-field node payload (no signature)', () async {
+      final a = _adapterReturning(dupAmountRaw, dupAmountTxId);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      await expectLater(
+        () async =>
+            a.buildSend(acct, const SendRequest(to: recipient, amount: '1000000')),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('the honest golden native raw still decodes (no false positive)', () {
+      final d = tron.decodeTronRawData(nativeOkRaw);
+      expect(d.type, tron.tronTransferContract);
+      expect(d.amount, BigInt.parse('1000000'));
+    });
+  });
+
+  group('HARDENING A2: MANDATORY intent — signing without intent throws', () {
+    test('signTronTxId with intent:null is REFUSED (txID integrity alone)', () {
+      expect(
+        () => tron.signTronTxId(
+          rawDataHex: nativeOkRaw,
+          txId: nativeOkTxId,
+          priv: node.privateKey!,
+          intent: null,
+        ),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('signTronTxId with a present+matching intent signs (sig == golden)', () {
+      final sig = tron.signTronTxId(
+        rawDataHex: nativeOkRaw,
+        txId: nativeOkTxId,
+        priv: node.privateKey!,
+        intent: tron.TronIntent(
+          ownerAddr: expected['base58Address'] as String,
+          to: recipient,
+          amount: '1000000',
+          isTrc20: false,
+        ),
+      );
+      expect(sig.length, 65);
+      expect(h(sig), (V['tx'] as Map)['expected']['signatureHex']);
+    });
+
+    test('signTronTxId with a MISMATCHED intent is refused', () {
+      expect(
+        () => tron.signTronTxId(
+          rawDataHex: nativeOkRaw,
+          txId: nativeOkTxId,
+          priv: node.privateKey!,
+          intent: tron.TronIntent(
+            ownerAddr: expected['base58Address'] as String,
+            to: attacker, // intent says attacker, bytes say recipient
+            amount: '1000000',
+            isTrc20: false,
+          ),
+        ),
+        throwsA(isA<StateError>()),
+      );
     });
   });
 }

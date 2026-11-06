@@ -203,22 +203,6 @@ class _Pb {
 
   BigInt varint() => _varint();
   Uint8List bytes() => _lenDelim();
-
-  /// Skip a field of the given wire type we do not care about.
-  void skip(int wire) {
-    switch (wire) {
-      case 0:
-        _varint();
-      case 2:
-        _lenDelim();
-      case 1:
-        pos += 8; // 64-bit
-      case 5:
-        pos += 4; // 32-bit
-      default:
-        throw FormatException('tron: unsupported wire type $wire in raw_data');
-    }
-  }
 }
 
 /// The subset of contract[0] fund-safety depends on, recovered from raw_data.
@@ -243,102 +227,104 @@ class DecodedTronContract {
   final String? dataHex; // TriggerSmartContract ABI calldata
 }
 
-/// Decode the node-assembled raw_data far enough to re-verify the transfer.
-/// Throws [FormatException] on anything malformed or unexpected.
-DecodedTronContract decodeTronRawData(String rawDataHex) {
-  final top = _Pb(c.hexToBytes(rawDataHex));
-  Uint8List? contract;
-  while (!top.eof) {
-    final (field, wire) = top.tag();
-    if (field == 11 && wire == 2) {
-      contract = top.bytes(); // repeated Contract — take contract[0]
-      break;
+/// One decoded protobuf field: exactly one of [varint] / [bytes] is set.
+class _Field {
+  _Field(this.field, this.wire, {this.varint, this.bytes});
+  final int field;
+  final int wire;
+  final BigInt? varint;
+  final Uint8List? bytes;
+}
+
+/// STRICT decode-only walk of one protobuf message. Tron's Transaction.raw /
+/// Contract / google.protobuf.Any / *Contract bodies use ONLY wire type 0
+/// (varint) and 2 (length-delimited); anything else is rejected. It also
+/// REJECTS a DUPLICATE field number — a malicious node that appends a second
+/// scalar (e.g. a second `amount`, or a second `contract`) to shift last-wins /
+/// merge semantics is refused here. The buffer is consumed exactly to its end
+/// (overrun/truncation already throw), so trailing bytes cannot slip past.
+List<_Field> _pbWalkStrict(Uint8List buf, String ctx) {
+  final p = _Pb(buf);
+  final out = <_Field>[];
+  final seen = <int>{};
+  while (!p.eof) {
+    final (field, wire) = p.tag();
+    if (!seen.add(field)) {
+      throw FormatException('tron: duplicate field $field in $ctx — refusing to sign');
     }
-    top.skip(wire);
+    if (wire == 0) {
+      out.add(_Field(field, wire, varint: p.varint()));
+    } else if (wire == 2) {
+      out.add(_Field(field, wire, bytes: p.bytes()));
+    } else {
+      throw FormatException('tron: unexpected wire type $wire (field $field) in $ctx — refusing to sign');
+    }
   }
-  if (contract == null) {
+  return out;
+}
+
+_Field? _fieldOf(List<_Field> fields, int n) {
+  for (final f in fields) {
+    if (f.field == n) return f;
+  }
+  return null;
+}
+
+/// Decode the node-assembled raw_data far enough to re-verify the transfer.
+/// Throws [FormatException] on anything malformed, unexpected, or DUPLICATED
+/// (dup fields at the raw, Contract, Any, and inner-contract levels are all
+/// rejected — so an attacker cannot append a shadow scalar/contract the signer
+/// would read differently). Repeated Contract is intentionally capped at one:
+/// raw_data carrying a second contract (field 11) is refused.
+DecodedTronContract decodeTronRawData(String rawDataHex) {
+  final top = _pbWalkStrict(c.hexToBytes(rawDataHex), 'Transaction.raw');
+  final cField = _fieldOf(top, 11); // Transaction.raw.contract[] (take the one)
+  if (cField == null || cField.bytes == null) {
     throw const FormatException('tron: raw_data has no contract');
   }
 
-  final cr = _Pb(contract);
-  int? type;
-  Uint8List? param;
-  while (!cr.eof) {
-    final (field, wire) = cr.tag();
-    if (field == 1 && wire == 0) {
-      type = cr.varint().toInt();
-    } else if (field == 2 && wire == 2) {
-      param = cr.bytes();
-    } else {
-      cr.skip(wire);
-    }
-  }
-  if (type == null || param == null) {
+  final contract = _pbWalkStrict(cField.bytes!, 'Contract');
+  final typeF = _fieldOf(contract, 1);
+  final param = _fieldOf(contract, 2)?.bytes;
+  if (typeF?.varint == null || param == null) {
     throw const FormatException('tron: malformed contract');
   }
+  final type = typeF!.varint!.toInt();
 
   // parameter = google.protobuf.Any { f1 type_url (string), f2 value (bytes) }.
-  final anyR = _Pb(param);
-  Uint8List? value;
-  while (!anyR.eof) {
-    final (field, wire) = anyR.tag();
-    if (field == 2 && wire == 2) {
-      value = anyR.bytes();
-    } else {
-      anyR.skip(wire);
-    }
-  }
+  final any = _pbWalkStrict(param, 'Any');
+  final value = _fieldOf(any, 2)?.bytes;
   if (value == null) {
     throw const FormatException('tron: empty Any.value');
   }
 
-  final vr = _Pb(value);
+  final val = _pbWalkStrict(value, 'contract-body');
   if (type == tronTransferContract) {
-    String? owner, to;
-    BigInt? amount;
-    while (!vr.eof) {
-      final (field, wire) = vr.tag();
-      if (field == 1 && wire == 2) {
-        owner = c.bytesToHex(vr.bytes());
-      } else if (field == 2 && wire == 2) {
-        to = c.bytesToHex(vr.bytes());
-      } else if (field == 3 && wire == 0) {
-        amount = vr.varint();
-      } else {
-        vr.skip(wire);
-      }
-    }
+    final owner = _fieldOf(val, 1)?.bytes;
+    final to = _fieldOf(val, 2)?.bytes;
+    final amount = _fieldOf(val, 3)?.varint;
     if (owner == null || to == null || amount == null) {
       throw const FormatException('tron: incomplete TransferContract');
     }
     return DecodedTronContract(
-        type: type, ownerHex: owner, toHex: to, amount: amount);
+        type: type,
+        ownerHex: c.bytesToHex(owner),
+        toHex: c.bytesToHex(to),
+        amount: amount);
   } else if (type == tronTriggerSmartContract) {
-    String? owner, contractAddr, data;
-    var callValue = BigInt.zero;
-    while (!vr.eof) {
-      final (field, wire) = vr.tag();
-      if (field == 1 && wire == 2) {
-        owner = c.bytesToHex(vr.bytes());
-      } else if (field == 2 && wire == 2) {
-        contractAddr = c.bytesToHex(vr.bytes());
-      } else if (field == 3 && wire == 0) {
-        callValue = vr.varint();
-      } else if (field == 4 && wire == 2) {
-        data = c.bytesToHex(vr.bytes());
-      } else {
-        vr.skip(wire);
-      }
-    }
+    final owner = _fieldOf(val, 1)?.bytes;
+    final contractAddr = _fieldOf(val, 2)?.bytes;
+    final callValue = _fieldOf(val, 3)?.varint ?? BigInt.zero;
+    final data = _fieldOf(val, 4)?.bytes;
     if (owner == null || contractAddr == null || data == null) {
       throw const FormatException('tron: incomplete TriggerSmartContract');
     }
     return DecodedTronContract(
         type: type,
-        ownerHex: owner,
-        contractHex: contractAddr,
+        ownerHex: c.bytesToHex(owner),
+        contractHex: c.bytesToHex(contractAddr),
         callValue: callValue,
-        dataHex: data);
+        dataHex: c.bytesToHex(data));
   }
   throw FormatException('tron: unexpected contract type $type');
 }
@@ -391,6 +377,56 @@ void assertTronRawDataMatches({
       throw StateError('tron: raw_data amount != requested amount — refusing to sign');
     }
   }
+}
+
+/// The locally-built transfer intent that MUST accompany any Tron signature.
+/// Captured by buildSend from the user's request (never from the node) and
+/// re-asserted against the node's raw_data immediately before signing.
+class TronIntent {
+  const TronIntent({
+    required this.ownerAddr,
+    required this.to,
+    required this.amount,
+    required this.isTrc20,
+    this.contract,
+  });
+  final String ownerAddr;
+  final String to;
+  final String amount;
+  final bool isTrc20;
+  final String? contract;
+}
+
+/// MANDATORY-INTENT sign step. Signs the Tron txID ONLY when (1) txID ==
+/// sha256(raw_data_hex) binds the id to the bytes AND (2) a locally-built
+/// [intent] is present and the node's raw_data matches it EXACTLY. A sign-ready
+/// payload lacking [intent] is REFUSED — the txID integrity check alone is NOT
+/// fund-safety (it is always true for a well-formed raw_data and says nothing
+/// about who the tx pays), so we never fall back to it. Returns the 65-byte
+/// [r||s||v] signature. Throws [StateError] on any failure (no signature).
+Uint8List signTronTxId({
+  required String rawDataHex,
+  required String txId,
+  required List<int> priv,
+  required TronIntent? intent,
+}) {
+  final localTxId = txIdFromRawData(rawDataHex);
+  if (localTxId != txId.toLowerCase()) {
+    throw StateError('tron: txID mismatch (node lied about raw_data) — refusing to sign');
+  }
+  if (intent == null) {
+    throw StateError(
+        'tron: refusing to sign without a local intent — txID integrity alone is not fund-safety');
+  }
+  assertTronRawDataMatches(
+    rawDataHex: rawDataHex,
+    isTrc20: intent.isTrc20,
+    ownerAddr: intent.ownerAddr,
+    to: intent.to,
+    amount: intent.amount,
+    contract: intent.contract,
+  );
+  return signTxId(c.hexToBytes(localTxId), priv);
 }
 
 class TronAdapter implements ChainAdapter {
@@ -632,27 +668,26 @@ class TronAdapter implements ChainAdapter {
       final err = unsigned['Error'] ?? unsigned['error'] ?? 'node did not assemble a tx';
       throw StateError('tron: $err');
     }
-    // GUARD 1 — txID binds to the bytes: re-derive txID locally. (Necessary but
-    // NOT sufficient: sha256(raw_data) always equals a well-formed txID, so this
-    // alone proves nothing about WHO the tx pays.)
-    final localTxId = txIdFromRawData(rawDataHex);
-    if (localTxId != nodeTxId.toLowerCase()) {
-      throw StateError('tron: txID mismatch (node lied about raw_data)');
-    }
-    // GUARD 2 — the real fund-safety check: decode the node-assembled raw_data
-    // and assert it encodes EXACTLY the transfer buildSend() was asked for. A
-    // malicious node that swaps the recipient/amount/token/calldata is rejected
-    // here, BEFORE any signature is produced.
-    assertTronRawDataMatches(
-      rawDataHex: rawDataHex,
-      isTrc20: isTrc20,
+    // MANDATORY-INTENT SIGN: bind txID to the bytes, then REQUIRE a locally-built
+    // intent (recipient/amount/contract) and assert the node's raw_data encodes
+    // EXACTLY it before producing any signature. A malicious node that swaps the
+    // recipient/amount/token/calldata — or a payload lacking intent — is rejected
+    // here, BEFORE any signature exists. The dup-field-strict decoder inside the
+    // assert also rejects shadow/duplicate protobuf fields.
+    final intent = TronIntent(
       ownerAddr: from,
       to: req.to,
       amount: req.amount,
+      isTrc20: isTrc20,
       contract: isTrc20 ? asset.address : null,
     );
-
-    final sig = signTxId(c.hexToBytes(localTxId), priv);
+    final localTxId = txIdFromRawData(rawDataHex);
+    final sig = signTronTxId(
+      rawDataHex: rawDataHex,
+      txId: nodeTxId,
+      priv: priv,
+      intent: intent,
+    );
     final signed = <String, dynamic>{
       ...unsigned,
       'signature': [c.bytesToHex(sig)],

@@ -31,6 +31,40 @@ const int jettonTransferOp = 0x0f8a7ea5;
 const String defaultJettonGas = '100000000'; // 0.1 TON attached to a jetton transfer
 const String defaultFwdAmount = '1';
 
+// ---- jetton-wallet local derivation + validation (gas-misdirect gate) -------
+//
+// For a jetton transfer the OWNER's jetton-wallet address comes from the node's
+// get_wallet_address RPC. The real recipient/amount live in the client-signed
+// transfer body, so a lying node cannot steal the jettons — but it COULD point
+// the attached gas at a bogus wallet (a griefing / gas-misdirect gap). We close
+// it: given the standard jetton-wallet code for the master, DERIVE the wallet
+// address offline (TEP-74 StateInit) and assert it equals the node's before use.
+bool _tonBytesEq(List<int> a, List<int> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// Assert a node-returned jetton-wallet [nodeAddr] equals the address locally
+/// DERIVED from the standard jetton-wallet [code] cell for ([owner],[master]).
+/// Throws [StateError] (refusing to use it) on any mismatch. This is the
+/// gas-misdirect gate — call it before attaching gas to a node-named wallet.
+void assertJettonWalletMatches({
+  required t.TonAddr nodeAddr,
+  required t.TonAddr owner,
+  required t.TonAddr master,
+  required t.Cell code,
+}) {
+  final derived = t.jettonWalletAddress(owner: owner, master: master, code: code);
+  if (derived.workchain != nodeAddr.workchain ||
+      !_tonBytesEq(derived.hash, nodeAddr.hash)) {
+    throw StateError(
+        'ton: node get_wallet_address != locally-derived jetton wallet — refusing to use it');
+  }
+}
+
 // ---- SLIP-0010 (ed25519) HD derivation (INLINE, copied from solana.dart) ----
 Uint8List _ser32(int i) {
   final b = Uint8List(4);
@@ -260,6 +294,8 @@ class TonAdapter implements ChainAdapter {
     HttpPostFn? post,
     HttpGetFn? get,
     this.subwallet = t.subwalletId,
+    this.jettonWalletCode,
+    this.jettonWalletCodeByMaster = const {},
   })  : _postOverride = post,
         _getOverride = get {
     native = AssetRef(chain: 'ton', kind: 'native', symbol: symbol, decimals: 9);
@@ -278,6 +314,24 @@ class TonAdapter implements ChainAdapter {
   final HttpPostFn? _postOverride;
   final HttpGetFn? _getOverride;
   final int subwallet;
+
+  /// Standard jetton-wallet code BOC (base64) applied to every master unless a
+  /// per-master entry overrides it. When set, a node's get_wallet_address result
+  /// is re-derived locally and asserted equal before its gas is attached. CONFIG,
+  /// never a secret; null => validation is skipped (shape-only, legacy behavior).
+  final String? jettonWalletCode;
+
+  /// Per-master jetton-wallet code BOC (base64), keyed by the jetton-master
+  /// address, for masters (e.g. USDT) whose code differs from the default.
+  final Map<String, String> jettonWalletCodeByMaster;
+
+  /// Parse the jetton-wallet code cell configured for [master], or null when no
+  /// code is configured (then jetton-wallet addresses are shape-validated only).
+  t.Cell? _jettonCodeFor(String master) {
+    final b64 = jettonWalletCodeByMaster[master] ?? jettonWalletCode;
+    if (b64 == null || b64.isEmpty) return null;
+    return t.parseBoc(t.tonFromBase64(b64))[0];
+  }
 
   @override
   ChainId get id => 'ton';
@@ -369,7 +423,22 @@ class TonAdapter implements ChainAdapter {
         ['tvm.Slice', ownerCellBoc]
       ]
     });
-    return _stackAddress(r);
+    final nodeAddr = _stackAddress(r);
+    // HARDENING: don't blindly trust the node — when the standard jetton-wallet
+    // code for this master is configured, re-DERIVE the owner's jetton-wallet
+    // address offline and assert it equals the node's (reject on mismatch). This
+    // closes the gas-misdirect gap. With no code configured we keep the legacy
+    // shape-only validation (_stackAddress already rejected addr_none / bad cells).
+    final code = _jettonCodeFor(master);
+    if (code != null) {
+      assertJettonWalletMatches(
+        nodeAddr: nodeAddr,
+        owner: t.parseAddress(owner),
+        master: t.parseAddress(master),
+        code: code,
+      );
+    }
+    return nodeAddr;
   }
 
   @override

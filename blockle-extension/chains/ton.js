@@ -153,6 +153,49 @@
     return { jettonBody: jbody, signingCell, signature, internalMsg, external, boc: T.toBase64(boc, false), hash: C.bytesToHex(external.hash()) };
   }
 
+  // ---- jetton-wallet address derivation (defense-in-depth validation) -------
+  // The standard (TEP-74) jetton wallet's address is cellHash(StateInit{ code:
+  // jettonWalletCode, data: coins(0) ++ owner ++ jettonMaster ++ ref(code) }).
+  // We derive it LOCALLY and assert the node's get_wallet_address answer matches
+  // — closing the gas-misdirect gap where a malicious node could point the
+  // attached gas at an attacker's jetton wallet. (The real recipient/amount live
+  // in the CLIENT-signed transfer body, so funds were never at risk; this hardens
+  // where the gas-bearing internal message is routed.)
+  function toCodeCell(code) {
+    if (!code) return null;
+    if (code && typeof code.hash === 'function' && code.bitLen !== undefined) return code; // a Cell
+    return T.parseBoc(T.fromBase64(String(code)))[0];
+  }
+  function jettonWalletStateInit(ownerParts, masterParts, code) {
+    const codeCell = toCodeCell(code);
+    if (!codeCell) throw new Error('ton: jetton-wallet code required to derive wallet address');
+    const data = T.beginCell()
+      .storeCoins(0)
+      .storeAddress({ workchain: ownerParts.workchain, hash: ownerParts.hash })
+      .storeAddress({ workchain: masterParts.workchain, hash: masterParts.hash })
+      .storeRef(codeCell)
+      .endCell();
+    return T.beginCell()
+      .storeUint(0, 2)                 // split_depth(Maybe)=0, special(Maybe)=0
+      .storeBit(1).storeRef(codeCell)
+      .storeBit(1).storeRef(data)
+      .storeBit(0)                     // library (HashmapE) empty
+      .endCell();
+  }
+  function jettonWalletAddress(ownerParts, masterParts, code, workchain) {
+    const si = jettonWalletStateInit(ownerParts, masterParts, code);
+    return { workchain: workchain === undefined ? 0 : workchain, hash: si.hash() };
+  }
+  // Assert a node-returned jetton-wallet address equals the locally-derived one.
+  // Jetton wallets live in the basechain (workchain 0) unless overridden.
+  function assertJettonWallet(nodeParts, ownerParts, masterParts, code, workchain) {
+    const want = jettonWalletAddress(ownerParts, masterParts, code, workchain === undefined ? 0 : workchain);
+    if (nodeParts.workchain !== want.workchain || C.bytesToHex(nodeParts.hash) !== C.bytesToHex(want.hash)) {
+      throw new Error('ton: node jetton-wallet address != locally-derived StateInit — refusing to use');
+    }
+    return nodeParts;
+  }
+
   function createTonAdapter(opts) {
     opts = opts || {};
     const id = 'ton';
@@ -269,10 +312,32 @@
       try { const r = await tonApi('runGetMethod', { address, method: 'seqno', stack: [] }); return Number(stackInt(r)); }
       catch (_) { return 0; } // undeployed wallet -> seqno 0 (send carries StateInit)
     }
+    // Resolve a verified jetton-wallet code cell for `master` from config:
+    // opts.jettonWalletCode may be a Cell / base64 BOC (one code for all masters)
+    // or a function(master)->code / a { master: code } map. Returns null when
+    // unconfigured (validation then falls back to the node address shape-check).
+    function resolveJettonCode(master) {
+      const jc = opts.jettonWalletCode;
+      if (!jc) return null;
+      try {
+        if (typeof jc === 'function') return jc(master) || null;
+        if (typeof jc === 'string') return jc;
+        if (jc && typeof jc.hash === 'function') return jc;        // a Cell
+        return jc[master] || jc[String(master)] || null;          // per-master map
+      } catch (_) { return null; }
+    }
     async function jettonWalletOf(ownerAddr, master) {
       const ownerCellBoc = T.toBase64(T.serializeBoc(T.addressCell(T.parseAddress(ownerAddr))), false);
       const r = await tonApi('runGetMethod', { address: master, method: 'get_wallet_address', stack: [['tvm.Slice', ownerCellBoc]] });
-      return stackAddress(r); // { workchain, hash } — validated address shape
+      const nodeAddr = stackAddress(r); // { workchain, hash } — shape-validated
+      // DEFENSE-IN-DEPTH: when a verified jetton-wallet code is configured for
+      // this master, DERIVE the owner's jetton-wallet StateInit address locally
+      // and assert the node's answer matches (reject on mismatch). Defaults to
+      // the shape-check only when no code is configured, so real sends never
+      // break on a missing code.
+      const code = resolveJettonCode(master);
+      if (code) assertJettonWallet(nodeAddr, T.parseAddress(ownerAddr), T.parseAddress(master), code);
+      return nodeAddr;
     }
 
     return {
@@ -387,6 +452,7 @@
     createTonAdapter,
     deriveSlip10, masterKey, deriveChild, parsePath,
     buildNativeExternal, buildJettonExternal,
+    jettonWalletStateInit, jettonWalletAddress, assertJettonWallet, toCodeCell,
     v4SigningCell, internalMessage, externalMessage, commentBody,
     formatUnits,
     DEFAULT_PATH, DEFAULT_API, NANO, DEFAULT_SUBWALLET, JETTON_TRANSFER_OP,

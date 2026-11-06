@@ -414,15 +414,50 @@ def v4r2_data_cell(pub_key32: bytes, subwallet: int = SUBWALLET_ID) -> Cell:
             .end_cell())
 
 
-def v4r2_state_init(pub_key32: bytes, subwallet: int = SUBWALLET_ID) -> Cell:
-    code = v4r2_code_cell()
-    data = v4r2_data_cell(pub_key32, subwallet)
+def _state_init_cell(code: Cell, data: Cell) -> Cell:
+    """StateInit TL-B: split_depth:(Maybe) special:(Maybe) code:(Maybe ^Cell)
+    data:(Maybe ^Cell) library:(HashmapE). We never split/special/library, so:
+    two 0 bits, then maybe-ref(code)=1+ref, maybe-ref(data)=1+ref, library=0."""
     return (begin_cell()
             .store_uint(0, 2)
             .store_bit(1).store_ref(code)
             .store_bit(1).store_ref(data)
             .store_bit(0)
             .end_cell())
+
+
+def v4r2_state_init(pub_key32: bytes, subwallet: int = SUBWALLET_ID) -> Cell:
+    return _state_init_cell(v4r2_code_cell(), v4r2_data_cell(pub_key32, subwallet))
+
+
+# ---- standard (TEP-74) jetton-wallet address derivation --------------------
+def jetton_wallet_data_cell(owner: dict, master: dict, wallet_code: Cell) -> Cell:
+    """The standard jetton-wallet storage cell:
+        [ balance:Coins=0, owner:MsgAddress, jetton_master:MsgAddress,
+          jetton_wallet_code:^Cell ]
+    (owner/master are {'workchain','hash'} dicts as returned by parse_address)."""
+    return (begin_cell()
+            .store_coins(0)
+            .store_address(owner)
+            .store_address(master)
+            .store_ref(wallet_code)
+            .end_cell())
+
+
+def jetton_wallet_state_init(owner: dict, master: dict, wallet_code: Cell) -> Cell:
+    """StateInit of a standard jetton wallet for ``owner`` under ``master`` using
+    ``wallet_code`` as the wallet code cell."""
+    return _state_init_cell(wallet_code, jetton_wallet_data_cell(owner, master, wallet_code))
+
+
+def jetton_wallet_address(owner: dict, master: dict, wallet_code: Cell,
+                          workchain: int = 0) -> dict:
+    """Locally DERIVE the jetton-wallet address = cell_hash(StateInit) in
+    ``workchain`` (basechain 0). Lets the client reproduce the owner's
+    jetton-wallet address offline and compare it to a node-returned one, so a
+    node can't misdirect the attached gas to a wallet that is not ours."""
+    h = jetton_wallet_state_init(owner, master, wallet_code).hash()
+    return {"workchain": workchain, "hash": bytes(h)}
 
 
 # ---- friendly / raw address codec ------------------------------------------

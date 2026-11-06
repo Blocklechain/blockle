@@ -153,3 +153,75 @@ def test_build_send_client_built_reproduces_golden():
     assert built.txid == tx["expected"]["externalMessageBocHashHex"]
     assert built.extra["kind"] == "send"
     assert built.extra["seqno"] == 0
+
+
+# ---- HARDENING B: local jetton-wallet address derivation + validation -------
+# The owner's jetton-WALLET address comes from the master's get_wallet_address
+# RPC. We DERIVE it locally (standard TEP-74 StateInit) and reject a node answer
+# that differs, so a node can't misdirect the attached gas. USDT's governed
+# wallet code is not bundled offline, so these tests use the repo's v4R2 code
+# cell as a stand-in jetton-wallet code to exercise the mechanism.
+def _owner_master_code():
+    owner = TC.parse_address(V["v4r2"]["addressBounceable"])
+    master = TC.parse_address(V["network"]["jettonMasters"]["USDT"])
+    return owner, master, TC.v4r2_code_cell()
+
+
+def test_jetton_wallet_address_matches_independent_statetinit_recompute():
+    owner, master, code = _owner_master_code()
+    got = TC.jetton_wallet_address(owner, master, code)
+    # independent inline recompute: StateInit( code, {0, owner, master, code} ).
+    data = (TC.begin_cell().store_coins(0).store_address(owner)
+            .store_address(master).store_ref(code).end_cell())
+    si = (TC.begin_cell().store_uint(0, 2).store_bit(1).store_ref(code)
+          .store_bit(1).store_ref(data).store_bit(0).end_cell())
+    assert got["workchain"] == 0
+    assert bytes(got["hash"]) == si.hash()
+
+
+def test_validate_jetton_wallet_derive_rejects_wrong_node_address():
+    owner, master, code = _owner_master_code()
+    good = TC.jetton_wallet_address(owner, master, code)
+    # the correctly-derived node answer is accepted
+    assert TON.validate_jetton_wallet(owner, master, good, wallet_code=code) is not None
+    # a different (misdirect) wallet is rejected before any gas is attached
+    wrong = TC.parse_address(V["jettonTx"]["dest"])
+    with pytest.raises(ValueError):
+        TON.validate_jetton_wallet(owner, master, wrong, wallet_code=code)
+
+
+def test_validate_jetton_wallet_code_hash_pin_rejects_wrong_code():
+    owner, master, code = _owner_master_code()
+    node_wallet = TC.jetton_wallet_address(owner, master, code)
+    pin = code.hash().hex()
+    # node wallet whose reported code matches the pin: accepted
+    TON.validate_jetton_wallet(owner, master, node_wallet,
+                               code_hash_hex=pin, node_wallet_code=code)
+    # node wallet reporting a DIFFERENT code than the pinned hash: rejected
+    other = TC.begin_cell().store_uint(0xDEADBEEF, 32).end_cell()
+    with pytest.raises(ValueError):
+        TON.validate_jetton_wallet(owner, master, node_wallet,
+                                   code_hash_hex=pin, node_wallet_code=other)
+
+
+def test_adapter_jetton_wallet_lookup_rejects_misdirected_node_answer():
+    master = V["network"]["jettonMasters"]["USDT"]
+    owner = V["v4r2"]["addressBounceable"]
+    code = TC.v4r2_code_cell()
+    good = TC.jetton_wallet_address(TC.parse_address(owner), TC.parse_address(master), code)
+
+    def _addr_stack(addr_dict):
+        boc = TC.to_base64(TC.serialize_boc(TC.address_cell(addr_dict)))
+        return json.dumps({"ok": True, "result": {"stack": [["tvm.Cell", {"bytes": boc}]]}})
+
+    # honest node returns the correctly-derived wallet -> accepted
+    a = TON.create_ton_adapter(post=lambda p, b: _addr_stack(good),
+                               jetton_wallet_code={master: TC.V4R2_CODE_BASE64})
+    jw = a._jetton_wallet_of(owner, master)
+    assert bytes(jw["hash"]) == bytes(good["hash"])
+    # malicious node returns some OTHER wallet -> rejected (gas-misdirect guard)
+    wrong = TC.parse_address(V["jettonTx"]["dest"])
+    b = TON.create_ton_adapter(post=lambda p, bd: _addr_stack(wrong),
+                               jetton_wallet_code={master: TC.V4R2_CODE_BASE64})
+    with pytest.raises(ValueError):
+        b._jetton_wallet_of(owner, master)

@@ -14,6 +14,14 @@
   and its cell hash is ed25519-signed — nothing signed is node-supplied. Only
   seqno + the owner's jetton-wallet address (get_wallet_address) come from the
   node, both verifiable. Generic build_send -> broadcast path.
+* HARDENING B (gas-misdirect guard): the owner's jetton-WALLET address returned
+  by get_wallet_address is DERIVED/VALIDATED locally whenever we hold the
+  master's jetton-wallet code — StateInit(code, {balance:0, owner, master,
+  code}) -> cell_hash — and a node answer that differs is REJECTED. The real
+  transfer recipient/amount live in the client-signed body, so this is not a
+  theft vector; it stops a node steering the attached gas to a wallet that is
+  not ours. USDT's governed wallet code is not bundled offline, so its check is
+  config-gated (KNOWN_JETTON_WALLET_CODE_*) — see validate_jetton_wallet.
 
 NOT post-quantum — Ed25519 is classical. Ported from the extension's chains/ton.js.
 """
@@ -36,6 +44,67 @@ DEFAULT_API = "https://toncenter.com/api/v2"
 JETTON_TRANSFER_OP = 0x0F8A7EA5
 DEFAULT_JETTON_GAS = "100000000"  # 0.1 TON attached to a jetton transfer
 DEFAULT_FWD_AMOUNT = "1"
+
+# HARDENING B: the owner's jetton-WALLET address used to carry the attached gas
+# is returned by the master's get_wallet_address RPC. Rather than trusting the
+# node's shape-validated answer, we DERIVE it locally when we hold the master's
+# jetton-wallet code cell: StateInit( code=wallet_code, data={balance:0, owner,
+# master, wallet_code} ) -> cell_hash, and REJECT any node answer that differs.
+#
+# USDT on TON is a *governed* jetton whose exact wallet-code cell is not bundled
+# offline in this repo, so its entry is absent here and an operator/config may
+# supply it (a code-cell BOC base64 or a pinned code hash) to turn the check on.
+# Keys are the jetton-master address in ANY accepted form (friendly/raw); we
+# normalise to raw '0:hex' before lookup. The derivation + rejection mechanism
+# is exercised by the unit tests with a stand-in code cell.
+KNOWN_JETTON_WALLET_CODE_BASE64: dict = {}   # master(raw) -> wallet-code BOC base64
+KNOWN_JETTON_WALLET_CODE_HASH: dict = {}     # master(raw) -> expected wallet-code hash hex
+
+
+def _raw_addr(a) -> str:
+    """Normalise any address form (dict / 'EQ…' / '0:hex') to raw '0:hex'."""
+    if isinstance(a, dict):
+        return T.raw_address(a["workchain"], a["hash"])
+    p = T.parse_address(a)
+    return T.raw_address(p["workchain"], p["hash"])
+
+
+def _same_addr(a, b) -> bool:
+    pa = a if isinstance(a, dict) else T.parse_address(a)
+    pb = b if isinstance(b, dict) else T.parse_address(b)
+    return pa["workchain"] == pb["workchain"] and bytes(pa["hash"]) == bytes(pb["hash"])
+
+
+def validate_jetton_wallet(owner, master, node_wallet, *, wallet_code=None,
+                           code_hash_hex=None, node_wallet_code=None):
+    """Assert a node-returned jetton-WALLET address really is the owner's wallet
+    under ``master`` (HARDENING B). Raises ValueError on mismatch (so the send is
+    refused). Returns the validated node_wallet dict.
+
+      * ``wallet_code`` (a Cell): DERIVE the address locally and byte-compare.
+      * else ``code_hash_hex`` + ``node_wallet_code`` (the code the node wallet
+        itself reports): require the code hash to match the pin, then derive with
+        that code and compare the address.
+      * with neither input available the caller keeps shape-only validation;
+        this function only *adds* a check, never loosens one."""
+    o = owner if isinstance(owner, dict) else T.parse_address(owner)
+    m = master if isinstance(master, dict) else T.parse_address(master)
+    nw = node_wallet if isinstance(node_wallet, dict) else T.parse_address(node_wallet)
+    code = wallet_code
+    if code is None and node_wallet_code is not None and code_hash_hex:
+        if node_wallet_code.hash().hex().lower() != str(code_hash_hex).lower():
+            raise ValueError("ton: jetton-wallet code hash != pinned hash — refusing send")
+        code = node_wallet_code
+    if code is None:
+        return nw  # nothing extra to check; shape validation already ran
+    # Jetton wallets live on the basechain (workchain 0). Derive at workchain 0 and
+    # require the node's answer to match BOTH hash AND workchain — otherwise a node
+    # returning the right hash on masterchain (-1) would slip past a hash-only check.
+    derived = T.jetton_wallet_address(o, m, code, workchain=0)
+    if int(nw["workchain"]) != 0 or bytes(derived["hash"]) != bytes(nw["hash"]):
+        raise ValueError("ton: node jetton-wallet address != locally-derived basechain address "
+                         "(gas-misdirect guard) — refusing send")
+    return nw
 
 
 def _default_ton_post(api, api_key):
@@ -179,7 +248,8 @@ def build_jetton_external(pub_key, seed_key, jetton_wallet, dest, response, amou
 class TonAdapter:
     def __init__(self, path=DEFAULT_PATH, explorer="https://tonviewer.com/transaction/",
                  symbol="TON", api=None, apiKey=None, post=None, get=None,
-                 jetton_index=None, subwallet=T.SUBWALLET_ID, **_):
+                 jetton_index=None, subwallet=T.SUBWALLET_ID,
+                 jetton_wallet_code=None, jetton_wallet_code_hash=None, **_):
         self.id = "ton"
         self.scheme = "ed25519"
         self.nano = NANO
@@ -195,6 +265,15 @@ class TonAdapter:
         # secret). Default derives toncenter v3 /jetton/wallets from the v2 api.
         self._get = get or _default_ton_get(apiKey)
         self._jetton_index = jetton_index
+        # per-master jetton-wallet code (code-cell BOC base64) + pinned code
+        # hash, merged over the module defaults; used to locally derive/validate
+        # the owner's jetton-wallet address (HARDENING B). Keyed by raw master.
+        self._jwcode_b64 = dict(KNOWN_JETTON_WALLET_CODE_BASE64)
+        self._jwcode_hash = dict(KNOWN_JETTON_WALLET_CODE_HASH)
+        for mst, b64 in (jetton_wallet_code or {}).items():
+            self._jwcode_b64[_raw_addr(mst)] = b64
+        for mst, h in (jetton_wallet_code_hash or {}).items():
+            self._jwcode_hash[_raw_addr(mst)] = h
 
     def unlock(self, root):
         self._root = as_seed(root)
@@ -259,12 +338,28 @@ class TonAdapter:
         except Exception:
             return 0  # undeployed -> seqno 0 (send carries StateInit)
 
+    def _wallet_code_for(self, master):
+        """The master's jetton-wallet code Cell, if we hold it (ctor/config or the
+        KNOWN_ map); else None. USDT ships without one offline — see the module
+        note on KNOWN_JETTON_WALLET_CODE_BASE64."""
+        b64 = self._jwcode_b64.get(_raw_addr(master))
+        if not b64:
+            return None
+        return T.parse_boc(T.from_base64(b64))[0]
+
     def _jetton_wallet_of(self, owner, master):
         owner_cell_boc = T.to_base64(T.serialize_boc(T.address_cell(T.parse_address(owner))))
         r = self._ton_api("runGetMethod", {
             "address": master, "method": "get_wallet_address",
             "stack": [["tvm.Slice", owner_cell_boc]]})
-        return self._stack_address(r)
+        node_wallet = self._stack_address(r)
+        # HARDENING B: when we hold the master's jetton-wallet code, DERIVE the
+        # owner's wallet address locally and reject any node answer that differs
+        # (gas-misdirect guard). No code held -> shape validation only (above).
+        code = self._wallet_code_for(master)
+        if code is not None:
+            validate_jetton_wallet(owner, master, node_wallet, wallet_code=code)
+        return node_wallet
 
     def derive_account(self, root, index: int = 0) -> DerivedAccount:
         seed = as_seed(root) if root is not None else self._root

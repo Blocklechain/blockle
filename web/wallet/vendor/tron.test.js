@@ -93,7 +93,8 @@ eq('tron trc20 abi parameter', TRON.trc20TransferParam(V.trc20Tx.to, V.trc20Tx.a
 
   // signTx (HD) reproduces the golden signature + rejects a tampered payload
   a.unlock(seed);
-  const signed = await a.signTx(hd, { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID, unsigned: { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID } });
+  const hdIntent = { owner: V.expected.base58Address, to: V.tx.to, amount: V.tx.amount };
+  const signed = await a.signTx(hd, { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID, assert: hdIntent, unsigned: { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID } });
   eq('adapter signTx signature', signed.signature, V.tx.expected.signatureHex);
   ok('adapter signTx attaches signature[]', Array.isArray(signed.signed.signature) && signed.signed.signature[0] === V.tx.expected.signatureHex);
   let threw2 = false; try { await a.signTx(hd, { raw_data_hex: V.tx.rawDataHex + '00', txID: V.tx.expected.txID }); } catch (_) { threw2 = true; }
@@ -157,6 +158,34 @@ eq('tron trc20 abi parameter', TRON.trc20TransferParam(V.trc20Tx.to, V.trc20Tx.a
     const swapOwnerId = h(C.sha256(C.hexToBytes(swapOwner)));
     let dThrew = false; try { await a.signTx(hd, { raw_data_hex: swapOwner, txID: swapOwnerId }); } catch (_) { dThrew = true; }
     ok('signTx refuses foreign-owner payload (no intent)', dThrew);
+  }
+
+  // ---- HARDENING A1: duplicate/extra protobuf field REJECT -----------------
+  {
+    const vbytes = (n) => { n = BigInt(n); const o = []; do { let b = Number(n & 0x7fn); n >>= 7n; if (n > 0n) b |= 0x80; o.push(b); } while (n > 0n); return o; };
+    const f2 = (fn, bytes) => [(fn << 3) | 2, ...vbytes(bytes.length), ...bytes];
+    const fv = (fn, v) => [(fn << 3) | 0, ...vbytes(v)];
+    const owner = [...C.hexToBytes(V.expected.addressHex)];
+    const to = [...C.hexToBytes(A.tronAddressToHex(V.tx.to))];
+    const valDup = [...f2(1, owner), ...f2(2, to), ...fv(3, 1000000), ...fv(3, 2000000)]; // 2nd amount
+    const anyMsg = (val) => [...f2(1, [...C.utf8('type.googleapis.com/protocol.TransferContract')]), ...f2(2, val)];
+    const contract = (val) => [...fv(1, TRON.TRON_TRANSFER_CONTRACT), ...f2(2, anyMsg(val))];
+    const dupInner = C.bytesToHex(Uint8Array.from([...f2(11, contract(valDup))]));
+    let dupThrew = false; try { TRON.decodeRawData(dupInner); } catch (e) { dupThrew = /duplicate field 3/.test(e.message); }
+    ok('decode rejects duplicate inner amount field', dupThrew);
+    const valOk = [...f2(1, owner), ...f2(2, to), ...fv(3, 1000000)];
+    const dupContract = C.bytesToHex(Uint8Array.from([...f2(11, contract(valOk)), ...f2(11, contract(valOk))]));
+    let dupCThrew = false; try { TRON.decodeRawData(dupContract); } catch (e) { dupCThrew = /duplicate field 11/.test(e.message); }
+    ok('decode rejects duplicate raw-level contract field', dupCThrew);
+  }
+
+  // ---- HARDENING A2: signTx refuses a payload with no intent ----------------
+  {
+    a.unlock(seed);
+    let noIntentThrew = false;
+    try { await a.signTx(hd, { raw_data_hex: V.tx.rawDataHex, txID: V.tx.expected.txID }); }
+    catch (e) { noIntentThrew = /missing transfer intent/.test(e.message); }
+    ok('signTx refuses a sign-ready payload lacking intent', noIntentThrew);
   }
 
   // registry wiring

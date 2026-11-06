@@ -114,6 +114,43 @@ test('jetton (USDT) send: transfer body op + signed external message byte-exact'
   assert.strictEqual(built.hash, V.jettonTx.expected.externalMessageBocHashHex);
 });
 
+// ---------------------------------------------------------------------------
+// HARDENING B — JETTON-WALLET DERIVATION/VALIDATION. The owner's jetton-wallet
+// address normally comes from the node's get_wallet_address RPC and was only
+// shape-validated. We now DERIVE it LOCALLY: the standard jetton-wallet address
+// is cellHash(StateInit{ code: jettonWalletCode, data: coins(0) ++ owner ++
+// jettonMaster ++ ref(code) }); the adapter asserts the node's answer equals the
+// derived address (reject on mismatch). This closes the gas-misdirect gap — not
+// a theft vector (the real recipient/amount are in the client-signed transfer
+// body). The derivation is code-cell driven; the golden below pins it using the
+// (verified) v4R2 code cell as the StateInit code, proving the derivation +
+// mismatch-rejection logic end-to-end offline.
+test('jetton-wallet StateInit derivation is deterministic + pinned', () => {
+  const owner = TC.parseAddress(V.jettonTx.responseDest);
+  const master = TC.parseAddress(V.jettonTx.jettonMaster);
+  const code = TON.toCodeCell(TC.V4R2_CODE_B64); // stand-in verified code cell
+  const w1 = TON.jettonWalletAddress(owner, master, code);
+  const w2 = TON.jettonWalletAddress(owner, master, code);
+  assert.strictEqual(w1.workchain, 0);
+  assert.strictEqual(h(w1.hash), h(w2.hash)); // deterministic
+  assert.strictEqual(h(w1.hash), '1890e87764d443b48fed587304425cbe7ad8fc2387a3d4826f5ef46c8e9650a8');
+});
+
+test('jetton-wallet validation ACCEPTS the matching node address, REJECTS a wrong one', () => {
+  const owner = TC.parseAddress(V.jettonTx.responseDest);
+  const master = TC.parseAddress(V.jettonTx.jettonMaster);
+  const code = TON.toCodeCell(TC.V4R2_CODE_B64);
+  const derived = TON.jettonWalletAddress(owner, master, code);
+  // the node returning exactly the derived address is accepted
+  assert.doesNotThrow(() => TON.assertJettonWallet(derived, owner, master, code));
+  // a node returning a DIFFERENT (attacker) jetton-wallet is refused
+  const wrong = { workchain: 0, hash: TC.parseAddress(V.jettonTx.dest).hash };
+  assert.throws(() => TON.assertJettonWallet(wrong, owner, master, code), /refusing to use/);
+  // a wrong workchain is also refused
+  const wrongWc = { workchain: -1, hash: derived.hash };
+  assert.throws(() => TON.assertJettonWallet(wrongWc, owner, master, code), /refusing to use/);
+});
+
 test('registry: TON adapter registered, enabled, endpoint + USDT jetton', async () => {
   const reg = REG.createRegistry({});
   assert.ok(reg.has('ton'));

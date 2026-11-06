@@ -141,23 +141,42 @@
     return out;
   }
   function pbField(fields, n) { return fields.find((f) => f.field === n); }
+  // HARDENING (dup/extra-field reject): the decoder takes first-occurrence per
+  // field, so a malicious node could append a DUPLICATE scalar (e.g. a second
+  // `amount`) that last-wins merge semantics elsewhere would read differently.
+  // Only the exact canonical encoding is signable, so REJECT any message level
+  // that repeats a field number (raw / Contract / Any / inner-contract). pbWalk
+  // already rejects truncation / overrun / unexpected wire + trailing garbage.
+  function assertNoDuplicateFields(fields, level) {
+    const seen = new Set();
+    for (const f of fields) {
+      if (seen.has(f.field)) {
+        throw new Error('tron: duplicate field ' + f.field + ' in ' + level + ' — refusing to sign');
+      }
+      seen.add(f.field);
+    }
+  }
 
   // Decode a node-returned raw_data_hex into the transfer it ACTUALLY encodes.
   // Addresses as 21-byte 0x41 lowercase hex; amounts as BigInt. Throws on any
   // structural problem.
   function decodeRawData(rawDataHex) {
     const top = pbWalk(C.hexToBytes(String(rawDataHex)));
+    assertNoDuplicateFields(top, 'raw_data');        // reject a 2nd contract / dup scalar
     const cField = pbField(top, 11);                 // Transaction.raw.contract[]
     if (!cField || !cField.bytes) throw new Error('tron: raw_data has no contract');
     const contract = pbWalk(cField.bytes);           // contract[0]
+    assertNoDuplicateFields(contract, 'Contract');
     const typeF = pbField(contract, 1);
     const type = typeF ? Number(typeF.varint) : 0;
     const anyF = pbField(contract, 2);
     if (!anyF || !anyF.bytes) throw new Error('tron: contract has no parameter');
     const any = pbWalk(anyF.bytes);
+    assertNoDuplicateFields(any, 'Any');
     const valF = pbField(any, 2);
     if (!valF || !valF.bytes) throw new Error('tron: Any has no value');
     const val = pbWalk(valF.bytes);
+    assertNoDuplicateFields(val, 'contract-value');  // reject a 2nd owner/to/amount/data
     if (type === TRON_TRANSFER_CONTRACT) {
       const owner = pbField(val, 1), to = pbField(val, 2), amt = pbField(val, 3);
       if (!owner || !owner.bytes || !to || !to.bytes || !amt) throw new Error('tron: malformed TransferContract');
@@ -385,19 +404,18 @@
         if (!rawHex) throw new Error('tron: nothing to sign (no raw_data_hex)');
         const txIdHex = verifyTxId(rawHex, claimed);
         const priv = keyFor((account && account.index) || 0);
-        // Fund-safety gate: re-decode + re-assert the payload before signing.
-        // Prefer the build-time intent carried on the tx; otherwise require at
-        // least that the decoded owner is the account we are about to sign with.
+        // MANDATORY INTENT (fund-safety gate): a locally-built transfer intent
+        // (recipient/amount, + token contract for TRC-20) MUST accompany the
+        // sign-ready payload and be re-asserted against the decoded raw_data
+        // before signing. We do NOT fall back to the txID==sha256 integrity
+        // check (always true, proves nothing) or a bare owner check — a payload
+        // lacking intent is refused outright.
         const want = (tx && tx.assert) || (unsigned && unsigned.assert);
-        if (want) {
-          assertRawDataMatches(rawHex, want);
-        } else {
-          const ownAddr = (account && account.address) || Addr.tronAddress(S.publicKey(priv, true));
-          const d = decodeRawData(rawHex);
-          if (d.owner.toLowerCase() !== addressToHex(toBase58(ownAddr)).toLowerCase()) {
-            throw new Error('tron: raw_data owner != signing account — refusing to sign');
-          }
+        if (!want || !want.owner || !want.to || want.amount == null
+            || (want.asset && want.asset.kind === 'trc20' && !want.asset.address)) {
+          throw new Error('tron: missing transfer intent (recipient/amount) — refusing to sign');
         }
+        assertRawDataMatches(rawHex, want);
         const sig65 = signTxId(txIdHex, priv);
         const sigHex = C.bytesToHex(sig65);
         const signed = Object.assign({}, unsigned, { signature: [sigHex] });
@@ -419,7 +437,7 @@
     createTronAdapter,
     tronAddressFromPub, addressToHex, hexToBase58, isTronAddress, toBase58,
     addressBody20, trc20TransferParam, pad32, formatUnits,
-    verifyTxId, signTxId, decodeRawData, assertRawDataMatches,
+    verifyTxId, signTxId, decodeRawData, assertRawDataMatches, assertNoDuplicateFields,
     DEFAULT_PATH, DEFAULT_API, SUN, TRC20_TRANSFER, TRC20_BALANCEOF,
     TRON_TRANSFER_CONTRACT, TRON_TRIGGER_SMART_CONTRACT, TRC20_SELECTOR,
   };
