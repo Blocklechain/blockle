@@ -6,6 +6,7 @@
 // Endpoints are CONFIG, resolved from the vault/settings with sane public
 // defaults. No secret is ever hardcoded here.
 import 'block.dart';
+import 'cardano.dart';
 import 'chain_adapter.dart';
 import 'custom_network.dart';
 import 'evm.dart';
@@ -28,10 +29,21 @@ class EndpointCfg {
       this.alchemyUrl,
       this.api,
       this.apiKey,
-      this.horizon});
+      this.horizon,
+      this.koios,
+      this.blockfrostUrl,
+      this.blockfrostProjectId});
   final String? rpcUrl;
   final String? esplora;
   final int? chainId;
+
+  /// Cardano provider config. `koios` = keyless Koios REST base (default
+  /// https://api.koios.rest/api/v1). Blockfrost is an ALT provider used only
+  /// when `blockfrostProjectId` is set — `blockfrostUrl` is its base and
+  /// `blockfrostProjectId` the project key (CONFIG, never hardcoded/logged).
+  final String? koios;
+  final String? blockfrostUrl;
+  final String? blockfrostProjectId;
 
   /// Stellar Horizon REST base (e.g. https://horizon.stellar.org). CONFIG only;
   /// used solely by the Stellar adapter. Never a secret here. (XRP reuses
@@ -115,6 +127,10 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Tezos RPC base (operator-overridable; fallback https://rpc.tzkt.io/mainnet).
   // The Tezos adapter reads `rpcUrl`.
   'tezos': EndpointCfg(rpcUrl: 'https://mainnet.api.tez.ie'),
+  // Cardano provider (operator-overridable). DEFAULT = KEYLESS Koios. Set
+  // `blockfrostProjectId` to switch to Blockfrost. The adapter reads `koios` /
+  // `blockfrost*`; no secret is hardcoded here.
+  'cardano': EndpointCfg(koios: 'https://api.koios.rest/api/v1'),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
@@ -268,6 +284,9 @@ final Map<String, List<AssetRef>> defaultTokens = {
   ],
   // Tezos: native XTZ only to start (FA1.2/FA2 tokens not shipped by default).
   'tezos': const [],
+  // Cardano: native ADA only in v1 (native-asset/CNT sending is a v2 follow-up;
+  // held CNT amounts are surfaced for display by the adapter).
+  'cardano': const [],
   // Official BLOCK-20 tokens on the Blockle L1. WORLD has an AMM pool (also
   // auto-discovered); USDB has no pool, so listing it here is the only way a
   // held balance surfaces. Zero balances show as 0 (curated tokens aren't hidden).
@@ -342,7 +361,8 @@ class ChainRegistry {
             'ton',
             'xrp',
             'stellar',
-            'tezos'
+            'tezos',
+            'cardano'
           ]),
       'block', // BLOCK is always enabled
     };
@@ -484,6 +504,18 @@ class ChainRegistry {
       rpc: ep['tezos']?.rpcUrl,
       get: getFor(ep['tezos']?.rpcUrl),
       post: postFor(ep['tezos']?.rpcUrl),
+    );
+    // Cardano (BIP32-Ed25519 / Icarus): own adapter. Default KEYLESS Koios REST
+    // (GET /tip, POST /address_utxos, POST /submittx); Blockfrost is an alt when
+    // a project id is configured. CLIENT-BUILT + CLIENT-SIGNED; the provider
+    // supplies only UTXOs + tip. Reuses the injectable HttpGetFn/HttpPostFn
+    // builders (base = the Koios `koios` URL) so tests stay offline.
+    adapters['cardano'] = CardanoAdapter(
+      koios: ep['cardano']?.koios,
+      blockfrostUrl: ep['cardano']?.blockfrostUrl,
+      blockfrostProjectId: ep['cardano']?.blockfrostProjectId,
+      get: getFor(ep['cardano']?.koios),
+      post: postFor(ep['cardano']?.koios),
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 

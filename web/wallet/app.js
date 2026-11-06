@@ -560,7 +560,7 @@
     $('#acctsel-label').innerHTML = acct + esc((S.chain || 'block').toUpperCase()) + ' · ' + esc(shortAddr(S.address));
   }
   // One-line description of an imported account for the switcher.
-  var FAM_SHORT = { evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', bitcoincash: 'BCH', solana: 'SOL', tron: 'TRX', ton: 'TON', xrp: 'XRP', stellar: 'XLM', tezos: 'XTZ', block: 'BLOCK', all: 'all chains' };
+  var FAM_SHORT = { evm: 'EVM', bitcoin: 'BTC', litecoin: 'LTC', dogecoin: 'DOGE', bitcoincash: 'BCH', solana: 'SOL', tron: 'TRX', ton: 'TON', xrp: 'XRP', stellar: 'XLM', tezos: 'XTZ', cardano: 'ADA', block: 'BLOCK', all: 'all chains' };
   function acctSub(a) {
     if (a.id === 'main') return 'BLOCK identity + every chain (HD)';
     var how = { key: 'Private key', mnemonic: 'Seed phrase', keystore: 'Keystore', walletdat: 'wallet.dat', watch: 'Watch-only' }[a.source] || 'Imported';

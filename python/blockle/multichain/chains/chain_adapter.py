@@ -23,9 +23,16 @@ class RootSecret:
 
     For BLOCK the "root secret" is the ML-DSA keypair held in the engine
     session, not this. ``seed`` is the BIP39/HD seed bytes — never logged/sent.
+
+    ``entropy`` carries the raw BIP39 entropy (16-32 bytes) when available —
+    Cardano's Icarus (CIP-3) derivation needs the entropy, NOT the 64-byte seed.
+    It is ``None`` for identities with no recoverable mnemonic (e.g. the
+    extension/web-main BLOCK-derived 32-byte seed), in which case the Cardano
+    adapter surfaces the blocker rather than inventing a non-CIP-3 derivation.
     """
 
     seed: Optional[bytes] = None
+    entropy: Optional[bytes] = None
 
 
 def as_seed(root) -> Optional[bytes]:
@@ -40,6 +47,20 @@ def as_seed(root) -> Optional[bytes]:
         return bytes(root)
     seed = getattr(root, "seed", None)
     return seed if seed is not None else root
+
+
+def as_entropy(root) -> Optional[bytes]:
+    """Extract the BIP39 entropy from a RootSecret / {'entropy':...} mapping, or
+    ``None``. Raw seed bytes carry NO entropy (returns ``None``) — the 64-byte
+    seed is cryptographically insufficient for Icarus."""
+    if root is None:
+        return None
+    if isinstance(root, RootSecret):
+        return root.entropy
+    if isinstance(root, dict):
+        ent = root.get("entropy")
+        return bytes(ent) if isinstance(ent, (bytes, bytearray, memoryview)) else ent
+    return getattr(root, "entropy", None)
 
 
 @dataclass

@@ -17,6 +17,7 @@
     const W = opts.wallet || global.Wallet;
     const registry = opts.registry;
     const C = opts.crypto || global.BLKCrypto;
+    const HD = opts.hd || global.HD; // for Cardano Icarus entropy on mnemonic accounts
     let root = null;                  // { id, seed:Uint8Array|null, keys, watch, chains } in-memory only
     const cache = {};                 // chainId -> DerivedAccount
 
@@ -38,6 +39,14 @@
         watch: r.watch || null,
         chains: r.chains || null, // null = every enabled chain
       };
+      // Cardano (Icarus CIP-3) needs the BIP39 ENTROPY, not the 64-byte seed.
+      // An imported-mnemonic account has a real mnemonic -> canonical,
+      // interoperable CIP-3 entropy; the main (BLOCK-derived) account has no
+      // mnemonic, so the Cardano adapter falls back to using the 32-byte seed
+      // as the Icarus entropy input (self-consistent, non-Daedalus/Yoroi).
+      try {
+        if (r.mnemonic && HD && HD.mnemonicToEntropy) root.entropy = HD.mnemonicToEntropy(r.mnemonic);
+      } catch (_) {}
       registry.unlock(root);
       return root;
     }

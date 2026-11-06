@@ -68,6 +68,7 @@
     xrp:       { native: 'xrp',        tokens: {} },
     stellar:   { native: 'xlm',        tokens: {} },
     tezos:     { native: 'xtz',        tokens: {} },
+    cardano:   { native: 'ada',        tokens: {} },
     // block: absent on purpose (not on MoonPay).
   };
 

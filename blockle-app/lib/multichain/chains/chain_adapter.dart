@@ -12,10 +12,15 @@ typedef ChainId = String; // "block" | "ethereum" | "base" | "bitcoin" | ...
 /// The unlocked root secret handed to secp256k1 / ed25519 adapters. For BLOCK
 /// the "root secret" is the ML-DSA keypair held in the engine session, not this.
 class RootSecret {
-  RootSecret({this.seed});
+  RootSecret({this.seed, this.entropy});
 
   /// BIP39/HD seed bytes (secp256k1 + ed25519 chains). Never logged or sent.
   final Uint8List? seed;
+
+  /// BIP39 ENTROPY (the raw 16-32 entropy bytes, NOT the 64-byte seed). Cardano's
+  /// Icarus (CIP-3) HD root is derived from this — the seed is insufficient. Null
+  /// when the wallet has no mnemonic to recover entropy from. Never logged/sent.
+  final Uint8List? entropy;
 }
 
 /// A coin or token on a given chain.

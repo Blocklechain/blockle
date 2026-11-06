@@ -9,7 +9,7 @@ hardcoded here.
 
 from __future__ import annotations
 
-from .chain_adapter import AssetRef, as_seed, default_json_rpc
+from .chain_adapter import AssetRef, as_entropy, as_seed, default_json_rpc
 from .custom_networks import (explorer_tx_prefix, normalize_custom_networks)
 from .discovery import merge_balances
 from .evm import create_evm_adapter
@@ -19,6 +19,7 @@ from .ton import create_ton_adapter
 from .xrp import create_xrp_adapter
 from .stellar import create_stellar_adapter
 from .tezos import create_tezos_adapter
+from .cardano import create_cardano_adapter
 from .utxo import create_utxo_adapter
 
 try:  # BLOCK wrapper needs a ChainWallet; optional when none is wired in.
@@ -48,6 +49,8 @@ DEFAULT_ENDPOINTS = {
     "xrp":      {"rpc": "https://xrplcluster.com"},  # rippled JSON-RPC (operator-overridable; fallback https://s1.ripple.com:51234)
     "stellar":  {"horizon": "https://horizon.stellar.org"},  # Horizon REST (operator-overridable)
     "tezos":    {"rpc": "https://mainnet.api.tez.ie"},  # Tezos node RPC (operator-overridable; alt https://rpc.tzkt.io/mainnet)
+    "cardano":  {"koios": "https://api.koios.rest/api/v1"},  # KEYLESS Koios default; set {"blockfrost":{"url","projectId"}} to switch
+
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
@@ -113,6 +116,9 @@ DEFAULT_TOKENS = {
     ],
     # XRP / Stellar / Tezos native-only to start (issued assets need an indexer).
     "tezos": [],
+    # Cardano native-only (ADA). Native-asset (CNT) balances surface via the
+    # adapter's get_balance (display-only); CNT sending is a v2 follow-up.
+    "cardano": [],
     # Official BLOCK-20 tokens on the Blockle L1. WORLD also auto-discovers via
     # its AMM pool; USDB has no pool, so this list is the only way a held USDB
     # balance surfaces. Curated tokens are never hidden (zero shows as 0).
@@ -126,7 +132,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "xrp", "stellar", "tezos", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "xrp", "stellar", "tezos", "cardano", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -232,6 +238,10 @@ class ChainRegistry:
         a["tezos"] = create_tezos_adapter(rpc=endpoints["tezos"].get("rpc"),
                                           http_get=endpoints["tezos"].get("http_get"),
                                           http_post=endpoints["tezos"].get("http_post"))
+        a["cardano"] = create_cardano_adapter(koios=endpoints["cardano"].get("koios"),
+                                              blockfrost=endpoints["cardano"].get("blockfrost"),
+                                              http_get=endpoints["cardano"].get("http_get"),
+                                              http_post=endpoints["cardano"].get("http_post"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
                                            http_get=endpoints["bitcoin"].get("http_get"),
                                            http_post=endpoints["bitcoin"].get("http_post"))
@@ -296,10 +306,16 @@ class ChainRegistry:
         return merge_balances(primary, discovered, hide_spam=hide_spam)
 
     def unlock(self, root):
+        # Carry BOTH the HD seed and (when present) the BIP39 entropy. Seed-based
+        # adapters pull ``seed`` via as_seed; Cardano (Icarus/CIP-3) pulls
+        # ``entropy`` via as_entropy. Passing a mapping is transparent to every
+        # existing adapter (they all call as_seed on whatever they receive).
         seed = as_seed(root)
+        entropy = as_entropy(root)
+        carrier = {"seed": seed, "entropy": entropy} if entropy is not None else seed
         for a in self._adapters.values():
             if hasattr(a, "unlock"):
-                a.unlock(seed)
+                a.unlock(carrier)
 
     def lock(self):
         for a in self._adapters.values():

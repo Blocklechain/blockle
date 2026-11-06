@@ -26,6 +26,9 @@
   const Stellar = inNode ? require('./stellar.js') : global.StellarAdapter;
   // Tezos (ed25519, SLIP-0010 m/44'/1729'/0'/0'); native XTZ via node RPC. Pure JS.
   const Tezos = inNode ? require('./tezos.js') : global.TezosAdapter;
+  // Cardano (Icarus CIP-3 + CIP-1852 BIP32-Ed25519 m/1852'/1815'/0'); native ADA
+  // via keyless Koios (Blockfrost opt-in). Pure JS.
+  const Cardano = inNode ? require('./cardano.js') : global.CardanoAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -82,6 +85,9 @@
     stellar:   { horizon: 'https://horizon.stellar.org' },
     // Tezos mainnet node RPC — public default, config-overridable (alt: https://rpc.tzkt.io/mainnet).
     tezos:     { rpc: 'https://mainnet.api.tez.ie' },
+    // Cardano mainnet — KEYLESS Koios by default; Blockfrost used only when a
+    // { blockfrost: { projectId } } is configured. Config-overridable.
+    cardano:   { koios: 'https://api.koios.rest/api/v1' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -134,6 +140,9 @@
     stellar: [],
     // Tezos native-only to start (FA1.2/FA2 tokens need an indexer; add later).
     tezos: [],
+    // Cardano native-only (ADA). Native-assets (CNT) are display-only in v1;
+    // sending them is a v2 follow-up.
+    cardano: [],
   };
 
   // Resolve the Alchemy indexer URL for a network: a per-network override
@@ -156,7 +165,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton', 'xrp', 'stellar', 'tezos'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton', 'xrp', 'stellar', 'tezos', 'cardano'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -246,6 +255,12 @@
     if (Tezos && Tezos.createTezosAdapter) {
       const zep = endpoints.tezos || {};
       adapters.tezos = Tezos.createTezosAdapter({ rpc: zep.rpc, endpoint: zep.endpoint });
+    }
+    // Cardano (native ADA) — Icarus CIP-3 + CIP-1852 BIP32-Ed25519, keyless Koios
+    // by default (Blockfrost when a projectId is configured).
+    if (Cardano && Cardano.createCardanoAdapter) {
+      const cep = endpoints.cardano || {};
+      adapters.cardano = Cardano.createCardanoAdapter({ koios: cep.koios, blockfrost: cep.blockfrost, endpoint: cep.endpoint });
     }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});

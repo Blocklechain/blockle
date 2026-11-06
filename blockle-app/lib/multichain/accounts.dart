@@ -73,8 +73,21 @@ class Accounts {
 
   void _applyRoot(VaultPlaintext pt) {
     final mn = pt.mnemonic;
-    final seed = (mn != null && mn.isNotEmpty) ? _seedFromMnemonic(mn) : null;
-    _root = RootSecret(seed: seed);
+    final hasMn = mn != null && mn.isNotEmpty;
+    final seed = hasMn ? _seedFromMnemonic(mn) : null;
+    // Cardano's Icarus (CIP-3) HD root needs the BIP39 ENTROPY, not the 64-byte
+    // seed. Recover it from the mnemonic when present (best-effort — a malformed
+    // phrase leaves entropy null and Cardano simply can't derive, rather than
+    // throwing here).
+    Uint8List? entropy;
+    if (hasMn) {
+      try {
+        entropy = hd.mnemonicToEntropy(mn);
+      } catch (_) {
+        entropy = null;
+      }
+    }
+    _root = RootSecret(seed: seed, entropy: entropy);
     _cache.clear();
     registry.unlock(_root!);
   }

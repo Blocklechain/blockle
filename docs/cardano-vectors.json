@@ -1,0 +1,82 @@
+{
+  "_comment": "Cardano golden vector — Icarus (CIP-3) from BIP39 ENTROPY (PBKDF2-HMAC-SHA512 salt=entropy iters=4096 dkLen=96, clamp kL) + CIP-1852 BIP32-Ed25519 (full-256-bit kL additive derivation, NO mod L) + Shelley base address (header 0x01 = type0/net1, blake2b-224 payment+stake creds, bech32 hrp 'addr') + canonical definite-length Conway/Babbage CBOR tx (tx_body {0:inputs,1:outputs,2:fee,3:ttl}, txHash=blake2b-256, signExtended over payment extended key, signed_tx [body,{0:[[vkey,sig]]},true,null]). Cross-checked BYTE-IDENTICAL against the independent bip_utils (CardanoIcarus/Cip1852/AdaShelleyAddr) reference for keys+address, and against cbor2 canonical encoding for the tx body; the extended signature VERIFIES under standard RFC8032 ed25519.verify. Every port (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce every `expected` byte-identically or FAIL — do not fake. v1 = native ADA transfer only; CNT (native-asset) SENDING is OUT of scope.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "network": {
+    "id": "cardano",
+    "symbol": "ADA",
+    "decimals": 6,
+    "purpose": 1852,
+    "coinType": 1815,
+    "networkId": 1,
+    "addrHeaderHex": "01",
+    "hrp": "addr",
+    "minFee": { "a": 44, "b": 155381 },
+    "koios": "https://api.koios.rest/api/v1",
+    "explorerTx": "https://cardanoscan.io/transaction/",
+    "moonpay": { "native": "ada" }
+  },
+  "icarus": {
+    "entropyHex": "00000000000000000000000000000000",
+    "masterKeyHex96": "60ce7dbec3616e9fc17e0c32578b3f380337b1b61a1f3cb9651aee30670e6f53970419a23a2e4e4082d12bf78faa8645dfc882cee2ae7179e2b07fe88098abb2072310084784c7308182dbbdb1449b2706586f1ff5cbf13d15e9b6e78c15f067"
+  },
+  "blake2bKats": [
+    ["", "836cc68931c2e4e3e838602eca1902591d216837bafddfe6f0c8cb07", 28],
+    ["abc", "9bd237b02a29e43bdd6738afa5b53ff0eee178d6210b618e4511aec8", 28],
+    ["", "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8", 32],
+    ["abc", "bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319", 32]
+  ],
+  "cborKats": {
+    "uint": [
+      [0, "00"],
+      [23, "17"],
+      [24, "1818"],
+      [255, "18ff"],
+      [256, "190100"],
+      [1000000, "1a000f4240"],
+      [4294967296, "1b0000000100000000"]
+    ],
+    "bstr": [
+      ["", "40"],
+      ["01020304", "4401020304"]
+    ],
+    "array": "83010203",
+    "map": "a200010203"
+  },
+  "derivation": {
+    "paymentPath": "m/1852'/1815'/0'/0/0",
+    "stakePath": "m/1852'/1815'/0'/2/0",
+    "paymentXpubHex": "7ea09a34aebb13c9841c71397b1cabfec5ddf950405293dee496cac2f437480a88848e8af62a27a57e982215741c9eac17e6e45cbfd6ea65a0e0dcc03bb777b2",
+    "paymentPubHex32": "7ea09a34aebb13c9841c71397b1cabfec5ddf950405293dee496cac2f437480a",
+    "stakePubHex32": "012f5dc3115b8a07981e6e50f5a671e2c6fbb26c3ffde1cd1dcaf40a7fe8f160"
+  },
+  "address": {
+    "paymentCredHex28": "0fdc780023d8be7c9ff3a6bdc0d8d3b263bd0cc12448c40948efbf42",
+    "stakeCredHex28": "e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d176",
+    "addressBytesHex57": "010fdc780023d8be7c9ff3a6bdc0d8d3b263bd0cc12448c40948efbf42e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d176",
+    "bech32": "addr1qy8ac7qqy0vtulyl7wntmsxc6wex80gvcyjy33qffrhm7sh927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mq4afdhv"
+  },
+  "recipient": {
+    "_comment": "payment address index 1, same account/stake — a second valid addr1 used as the tx recipient.",
+    "index": 1,
+    "bech32": "addr1qyz85693g4fr8c55mfyxhae8j2u04pydxrgqr73vmwpx3a8927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mqu2c0f9"
+  },
+  "tx": {
+    "_comment": "1 input (10 ADA), send 1 ADA to the recipient, change back to self; fee = 44*size+155381 settled by iterating the serialized size.",
+    "inputs": [{ "txHashHex": "3b40265111d8bb3c3c608d95b3a0bf83461ace32d79336579a1939b3aad1c0b7", "index": 0 }],
+    "inputTotal": "10000000",
+    "outputs": [
+      { "address": "addr1qyz85693g4fr8c55mfyxhae8j2u04pydxrgqr73vmwpx3a8927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mqu2c0f9", "coin": "1000000" },
+      { "address": "addr1qy8ac7qqy0vtulyl7wntmsxc6wex80gvcyjy33qffrhm7sh927ysx5sftuw0dlft05dz3c7revpf7jx0xnlcjz3g69mq4afdhv", "coin": "8831859" }
+    ],
+    "fee": "168141",
+    "ttl": 70000000,
+    "txBodyCborHex": "a400818258203b40265111d8bb3c3c608d95b3a0bf83461ace32d79336579a1939b3aad1c0b700018282583901047a68b1455233e294da486bf72792b8fa848d30d001fa2cdb8268f4e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d1761a000f4240825839010fdc780023d8be7c9ff3a6bdc0d8d3b263bd0cc12448c40948efbf42e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d1761a0086c373021a000290cd031a042c1d80",
+    "txHashHex": "63aa0ce43d79e7a56c87008743bcd3df8b8237e1bb3582b02c1ae8150f848777",
+    "vkeyHex32": "7ea09a34aebb13c9841c71397b1cabfec5ddf950405293dee496cac2f437480a",
+    "signatureHex64": "081f484edd119465a43650bee1ac84e809c360f7350147413d3d53226de562292ac5feef68a0a3325ef5f721480db8d7d192f2daa0889bee1c291aed1ed9090e",
+    "signedTxCborHex": "84a400818258203b40265111d8bb3c3c608d95b3a0bf83461ace32d79336579a1939b3aad1c0b700018282583901047a68b1455233e294da486bf72792b8fa848d30d001fa2cdb8268f4e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d1761a000f4240825839010fdc780023d8be7c9ff3a6bdc0d8d3b263bd0cc12448c40948efbf42e557890352095f1cf6fd2b7d1a28e3c3cb029f48cf34ff890a28d1761a0086c373021a000290cd031a042c1d80a100818258207ea09a34aebb13c9841c71397b1cabfec5ddf950405293dee496cac2f437480a5840081f484edd119465a43650bee1ac84e809c360f7350147413d3d53226de562292ac5feef68a0a3325ef5f721480db8d7d192f2daa0889bee1c291aed1ed9090ef5f6",
+    "verifies": true
+  },
+  "note": "CNT (native-asset) SENDING deliberately absent — min-ADA + multi-asset output bundling is a v2 follow-up. Entropy caveat: Icarus needs the BIP39 entropy; the extension/web-main BLOCK-derived 32-byte seed yields a self-consistent but non-interoperable (non-Daedalus/Yoroi) key, while Qt/Flutter use a real mnemonic (canonical CIP-3)."
+}

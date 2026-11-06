@@ -37,6 +37,7 @@ const Map<String, ChainBrand> kChainBrands = {
   'xrp': ChainBrand(Color(0xFF23292F), 'X'),
   'stellar': ChainBrand(Color(0xFF000000), '✦'),
   'tezos': ChainBrand(Color(0xFF2C7DF7), 'ꜩ'),
+  'cardano': ChainBrand(Color(0xFF0033AD), '₳'),
   'ethereum': ChainBrand(Color(0xFF627EEA), '⧫'), // ⧫ diamond
   'base': ChainBrand(Color(0xFF0052FF), 'B'),
   'arbitrum': ChainBrand(Color(0xFF28A0F0), 'A'),

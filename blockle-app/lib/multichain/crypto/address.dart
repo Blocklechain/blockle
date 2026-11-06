@@ -128,6 +128,28 @@ String bech32Encode(String hrp, List<int> bytes) {
   return sb.toString();
 }
 
+/// Generic plain-bech32 DECODE (no segwit witness version, no 90-char cap) —
+/// the inverse of [bech32Encode], used to validate Cardano `addr1…` addresses.
+/// Returns the decoded 8-bit payload, or throws on a bad hrp / char / checksum.
+Uint8List bech32Decode(String hrp, String addr) {
+  final lowered = addr.toLowerCase();
+  if (!lowered.startsWith('${hrp}1')) throw const FormatException('wrong hrp');
+  final body = lowered.substring(hrp.length + 1);
+  final data = <int>[];
+  for (final ch in body.split('')) {
+    final d = _charset.indexOf(ch);
+    if (d < 0) throw const FormatException('bad bech32 char');
+    data.add(d);
+  }
+  if (data.length < 6) throw const FormatException('bech32 too short');
+  if (!_verifyChecksum(hrp, data, 'bech32')) {
+    throw const FormatException('bad bech32 checksum');
+  }
+  final payload = convertBits(data.sublist(0, data.length - 6), 5, 8, false);
+  if (payload == null) throw const FormatException('bad bech32 payload');
+  return Uint8List.fromList(payload);
+}
+
 // ---- CashAddr (Bitcoin Cash) -----------------------------------------------
 // NOT bech32: a DIFFERENT 40-bit BCH polymod. Self-contained codec; reuses only
 // the shared base32 `_charset` + `convertBits` above. BigInt is used for the

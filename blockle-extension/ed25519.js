@@ -138,6 +138,33 @@
     return C.concatBytes(Rs, bigToBytesLE(S, 32));
   }
 
+  // ---- BIP32-Ed25519 extended-key signing (Cardano / CIP-1852) ------------
+  // The standard sign() SHA-512-expands a 32-byte seed and is UNUSABLE for a
+  // BIP32-Ed25519 extended key (where kL is the scalar directly and kR is the
+  // nonce prefix, with NO SHA-512 expansion). signExtended signs with such a
+  // key and the result VERIFIES under the standard verify() below.
+  //   a = int_LE(kL); r = sha512Mod(kR || msg); R = r·G; Rs = compress(R);
+  //   k = sha512Mod(Rs || A || msg); S = (r + k·a) mod L; sig = Rs || S.
+  // kL, kR are 32-byte little-endian halves of the extended key. A (optional)
+  // is the 32-byte compressed public key = scalarMulBase(kL); recomputed if
+  // omitted.
+  function scalarMulBase(leScalarBytes) {
+    return pointCompress(pointMul(bytesToBigLE(C.toBytes(leScalarBytes)), G));
+  }
+  function signExtended(message, kL, kR, A) {
+    const msg = C.toBytes(message);
+    const kLb = C.toBytes(kL);
+    const kRb = C.toBytes(kR);
+    const a = bytesToBigLE(kLb);
+    const Ab = A ? C.toBytes(A) : scalarMulBase(kLb);
+    const r = sha512Mod(C.concatBytes(kRb, msg));
+    const R = pointMul(r, G);
+    const Rs = pointCompress(R);
+    const k = sha512Mod(C.concatBytes(Rs, Ab, msg));
+    const S = mod(r + k * a, L);
+    return C.concatBytes(Rs, bigToBytesLE(S, 32));
+  }
+
   // Verify a 64-byte signature of message under a 32-byte public key.
   function verify(message, signature, pubKey) {
     const sig = C.toBytes(signature);
@@ -159,6 +186,8 @@
 
   const API = {
     P, L, publicKey, sign, verify,
+    // BIP32-Ed25519 extended-key signing (Cardano / CIP-1852):
+    signExtended, scalarMulBase,
     // exposed for the Solana adapter / tests:
     pointMul, pointAdd, pointCompress, pointDecompress, G,
     bytesToBigLE, bigToBytesLE, secretExpand,

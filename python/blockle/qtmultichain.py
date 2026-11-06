@@ -60,7 +60,7 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton", "xrp", "stellar", "tezos"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton", "xrp", "stellar", "tezos", "cardano"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
@@ -73,6 +73,7 @@ CHAIN_LABELS = {
     "xrp": "XRP",
     "stellar": "Stellar",
     "tezos": "Tezos",
+    "cardano": "Cardano",
 }
 #: Chains with a minimum base reserve that must stay in the account (shown as a
 #: note in the send dialog). XRP: 10-XRP base reserve; Stellar: 1-XLM per entry.
@@ -94,6 +95,7 @@ CHAIN_SCHEME = {
     "xrp": "secp256k1",
     "stellar": "ed25519",
     "tezos": "ed25519",
+    "cardano": "ed25519-bip32",
 }
 
 #: The treasury the non-bypassable 0.05% agent trade fee is routed to, per chain
@@ -580,6 +582,15 @@ class MultiChainController:
 
     def _build(self) -> None:
         seed = self.vault.seed()
+        # Cardano (Icarus / CIP-3) needs the BIP39 ENTROPY, not the 64-byte seed.
+        # The vault always holds a BIP39 mnemonic (even the BLOCK-bound main
+        # account has a deterministic one), so the entropy is always reachable.
+        entropy = None
+        try:
+            entropy = K.mnemonic_to_entropy(self.vault.mnemonic())
+        except Exception:
+            entropy = None
+        root = {"seed": seed, "entropy": entropy} if entropy is not None else seed
         cfg = {
             "endpoints": self.vault.endpoints(),
             "tokens": self.vault.tokens(),
@@ -588,11 +599,11 @@ class MultiChainController:
             "block": {"wallet": self.block_wallet},
         }
         self.registry = create_registry(cfg)
-        self.registry.unlock(seed)
+        self.registry.unlock(root)
         self.accounts = {}
         for cid in self.registry.enabled():
             try:
-                self.accounts[cid] = self.registry.get(cid).derive_account(seed, 0)
+                self.accounts[cid] = self.registry.get(cid).derive_account(root, 0)
             except Exception:
                 self.accounts[cid] = None
 

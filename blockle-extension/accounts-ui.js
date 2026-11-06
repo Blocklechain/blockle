@@ -27,6 +27,8 @@
     tron:      { name: 'Tron',        sym: 'TRX',   pq: false },
     xrp:       { name: 'XRP',         sym: 'XRP',   pq: false },
     stellar:   { name: 'Stellar',     sym: 'XLM',   pq: false },
+    tezos:     { name: 'Tezos',       sym: 'XTZ',   pq: false },
+    cardano:   { name: 'Cardano',     sym: 'ADA',   pq: false, addrPrefix: 'addr1' },
   };
   const EVM_CHAINS = new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bnb', 'avalanche']);
 
@@ -55,6 +57,8 @@
     if (chain === 'ton') return 9;    // TON = 9 (nanoton)
     if (chain === 'xrp') return 6;    // XRP = 6 (drops)
     if (chain === 'stellar') return 7; // XLM = 7 (stroops)
+    if (chain === 'tezos') return 6;   // XTZ = 6 (mutez)
+    if (chain === 'cardano') return 6; // ADA = 6 (lovelace)
     return EVM_CHAINS.has(chain) ? 18 : 8;
   }
   // Pull custom-network meta from the registry into `customMeta`.

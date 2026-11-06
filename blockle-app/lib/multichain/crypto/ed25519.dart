@@ -167,6 +167,38 @@ Uint8List sign(List<int> message, List<int> seed) {
   return c.concatBytes([rs, bigToBytesLE(s, 32)]);
 }
 
+// ---- BIP32-Ed25519 (Khovratovich / CIP-1852) extended-key signing ----------
+// Cardano's HD keys are a 64-byte extended scalar (kL||kR), NOT a 32-byte seed
+// that gets SHA-512-expanded. The standard [sign] above is UNUSABLE for them —
+// these two helpers sign/derive with the extended key directly and still VERIFY
+// under the standard [verify]. Pinned by docs/cardano-vectors.json.
+
+/// scalar · base point, compressed (32 bytes). [leScalar] is little-endian; it
+/// MAY be ≥ L (a BIP32-Ed25519 kL is a raw 256-bit value) — that is fine, since
+/// the base point has order L, so s·B == (s mod L)·B and [_pointMul] reduces
+/// mod L internally. This is the `A = scalarMulBase(kL)` of CIP-1852.
+Uint8List scalarMulBase(List<int> leScalar) {
+  final s = _bytesToBigLE(c.toBytes(leScalar));
+  return _pointCompress(_pointMul(s, _g));
+}
+
+/// BIP32-Ed25519 extended-key signature over [message]. [kL]/[kR] are the two
+/// 32-byte halves of the extended private scalar; [aPub] is the 32-byte
+/// compressed public key (== scalarMulBase(kL)). a = int_LE(kL) is used
+/// DIRECTLY (no SHA-512 expansion); r = sha512Mod(kR||msg); R = r·B;
+/// k = sha512Mod(R||A||msg); S = (r + k·a) mod L. Returns R||S (64 bytes) which
+/// verifies under the standard ed25519 [verify].
+Uint8List signExtended(
+    List<int> message, List<int> kL, List<int> kR, List<int> aPub) {
+  final msg = c.toBytes(message);
+  final a = _bytesToBigLE(c.toBytes(kL));
+  final r = _sha512Mod(c.concatBytes([c.toBytes(kR), msg]));
+  final rs = _pointCompress(_pointMul(r, _g));
+  final k = _sha512Mod(c.concatBytes([rs, c.toBytes(aPub), msg]));
+  final s = _mod(r + k * a, l);
+  return c.concatBytes([rs, bigToBytesLE(s, 32)]);
+}
+
 /// Verify a 64-byte signature of [message] under a 32-byte public key.
 bool verify(List<int> message, List<int> signature, List<int> pubKey) {
   final sig = c.toBytes(signature);

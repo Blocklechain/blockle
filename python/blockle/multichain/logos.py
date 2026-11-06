@@ -57,6 +57,7 @@ CHAIN_ICONS = {
     "tron":      _disc("#ec0623", "#ffffff", "T"),   # TRON red
     "ton":       _disc("#0098ea", "#ffffff", "T"),   # TON blue
     "tezos":     _disc("#2c7df7", "#ffffff", "ꜩ"),   # Tezos blue (tez sign)
+    "cardano":   _disc("#0033ad", "#ffffff", "₳"),   # Cardano blue (ada sign)
     "block":     _disc("#4c8dff", "#ffffff", "B"),        # Blockle brand accent
     "bnb":       _disc("#f3ba2f", "#1e2026", "B"),
     "base":      _disc("#0052ff", "#ffffff", "B"),
@@ -84,6 +85,7 @@ CHAIN_ALIAS = {
     "optimism": "optimism", "op": "optimism",
     "avalanche": "avalanche", "avax": "avalanche",
     "tezos": "tezos", "xtz": "tezos",
+    "cardano": "cardano", "ada": "cardano",
 }
 
 
