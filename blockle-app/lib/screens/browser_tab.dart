@@ -159,6 +159,78 @@ class _BrowserTabState extends State<BrowserTab> {
     ''');
   }
 
+  /// personal_sign messages arrive as 0x-hex of UTF-8 text — decode for display
+  /// + signing (so the user sees exactly what they authorize).
+  String _decodeEvmMessage(String raw) {
+    if (raw.startsWith('0x') && raw.length > 2) {
+      try {
+        final bytes = <int>[];
+        for (var i = 2; i + 1 < raw.length; i += 2) {
+          bytes.add(int.parse(raw.substring(i, i + 2), radix: 16));
+        }
+        return utf8.decode(bytes, allowMalformed: true);
+      } catch (_) {}
+    }
+    return raw;
+  }
+
+  Future<bool> _confirmEvmSign(String origin, String message) async {
+    final host = Uri.tryParse(origin)?.host ?? origin;
+    final res = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Icon(Icons.draw_outlined, color: Bk.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text('Signature request',
+                        style: Theme.of(context).textTheme.titleMedium)),
+              ]),
+              const SizedBox(height: 2),
+              Text(host, style: const TextStyle(color: Bk.muted, fontSize: 12)),
+              const SizedBox(height: 14),
+              const Text('You are signing this message — no funds move:',
+                  style: TextStyle(color: Bk.muted, fontSize: 13)),
+              const SizedBox(height: 8),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 220),
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                    color: Bk.surface2,
+                    borderRadius: BorderRadius.circular(Bk.rMd),
+                    border: Border.all(color: Bk.border)),
+                child: SingleChildScrollView(
+                    child: SelectableText(message.isEmpty ? '(empty)' : message,
+                        style: kMono.copyWith(fontSize: 12))),
+              ),
+              const SizedBox(height: 16),
+              Row(children: [
+                Expanded(
+                    child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'))),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Sign'))),
+              ]),
+            ],
+          ),
+        ),
+      ),
+    );
+    return res ?? false;
+  }
+
   void _emitEvm(String event, dynamic data) {
     _ctrl?.evaluateJavascript(
         source:
@@ -217,14 +289,32 @@ class _BrowserTabState extends State<BrowserTab> {
       case 'wallet_addEthereumChain':
         return {'result': null};
       case 'personal_sign':
+        final signer = context.read<MultichainController>().accounts.evmHostedSigner();
+        if (signer == null || !_evmConnected.contains(origin)) {
+          return err(4100, 'Connect first.');
+        }
+        // params: [message, address]. The message is usually 0x-hex of UTF-8.
+        final rawMsg = params.isNotEmpty ? '${params[0]}' : '';
+        final text = _decodeEvmMessage(rawMsg);
+        final ok = await _confirmEvmSign(origin, text);
+        if (!ok) return err(4001, 'Signature request rejected.');
+        try {
+          final sig = await signer.sign(text);
+          return {'result': sig};
+        } catch (e) {
+          return err(4200, 'Could not sign: ${e.toString().replaceFirst('Exception: ', '')}');
+        }
       case 'eth_sign':
+        return err(4100,
+            'Blind signing (eth_sign) is disabled for your safety. A legitimate '
+            'dApp uses personal_sign or typed-data instead.');
       case 'eth_signTypedData':
       case 'eth_signTypedData_v3':
       case 'eth_signTypedData_v4':
       case 'eth_sendTransaction':
         return err(4200,
-            'Signing from the in-app browser is landing in the next update — '
-            'connecting works now; message & transaction signing is on the way.');
+            'Transaction & typed-data (Permit2) signing from the in-app browser '
+            'is landing in the next update. Connect + message signing work now.');
       default:
         return err(4200, 'Unsupported method: $method');
     }
