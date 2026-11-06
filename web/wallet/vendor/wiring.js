@@ -372,6 +372,13 @@
     opts = opts || {};
     const s = await settings();
     const sym = (typeof asset === 'string' ? asset : (asset && asset.symbol) || '').toUpperCase();
+    // NO BLOCK/USD oracle — this is the injected price resolver the portfolio
+    // uses. Return null for any BLOCK-denominated asset (native BLOCK, every
+    // BLOCK-20/BLOCK-20S incl. USDB, WBLOCK) so they are never summed/shown in
+    // USD; they render in BLOCK units. Guards BOTH the operator priceUsd map and
+    // the STABLES=1 shortcut (which would otherwise price USDB at $1).
+    try { const pf0 = prices(); if (pf0 && pf0.isBlockDenominated && pf0.isBlockDenominated(asset)) return null; } catch (_) {}
+    if (sym === 'BLOCK' || sym === 'WBLOCK') return null;
     const over = (s.agent && s.agent.priceUsd) || {};
     const assetDec = (asset && typeof asset === 'object' && asset.decimals != null) ? Number(asset.decimals) : null;
     let unit = null, dec = assetDec != null ? assetDec : 6;

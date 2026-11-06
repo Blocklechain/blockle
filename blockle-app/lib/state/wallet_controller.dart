@@ -29,6 +29,7 @@ import '../multichain/addressbook.dart' as ab;
 import '../multichain/chains/chain_adapter.dart' show Balance;
 import '../multichain/chains/evm.dart' show EvmAdapter;
 import '../multichain/chains/solana.dart' show SolanaAdapter;
+import '../multichain/denomination.dart' show isBlockDenominated;
 import '../multichain/nft.dart' as nft;
 import '../multichain/nft_indexer.dart' as nidx;
 import '../multichain/portfolio.dart' as pf;
@@ -339,6 +340,11 @@ class WalletController extends ChangeNotifier {
     }
 
     return (asset) async {
+      // NO BLOCK/USD ORACLE: never derive a USD price for a BLOCK-denominated
+      // asset (native BLOCK, every BLOCK-20/BLOCK-20S incl. USDB, or WBLOCK).
+      // Returning null routes it to `unpriced` in portfolio() — the UI then
+      // shows it in BLOCK units instead of a fabricated $ value.
+      if (isBlockDenominated(asset: asset)) return null;
       final sym = '${(asset is Map ? asset['symbol'] : asset) ?? ''}';
       if (sym.isEmpty) return null;
       return usdMark(sym, const {});
@@ -361,6 +367,9 @@ class WalletController extends ChangeNotifier {
               {
                 'confirmed': b.confirmed,
                 'asset': {
+                  // `chain` lets the price resolver's isBlockDenominated() guard
+                  // catch every BLOCK-20 token (not just native BLOCK by symbol).
+                  'chain': chain,
                   'symbol': b.asset.symbol,
                   'decimals': b.asset.decimals,
                   'kind': b.asset.kind,

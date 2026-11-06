@@ -11,7 +11,7 @@ const assert = require('node:assert');
 
 const Logos = require('./logos.js');
 
-const SUPPORTED = ['btc', 'eth', 'sol', 'doge', 'ltc', 'bch', 'tron', 'block', 'bnb', 'base', 'polygon', 'arbitrum', 'optimism', 'avalanche'];
+const SUPPORTED = ['btc', 'eth', 'sol', 'doge', 'ltc', 'bch', 'tron', 'ton', 'xrp', 'stellar', 'tezos', 'cardano', 'block', 'bnb', 'base', 'polygon', 'arbitrum', 'optimism', 'avalanche', 'hyperevm'];
 
 // A remote FETCH (src=/href=/url(...) to http(s)) — NOT the SVG xmlns namespace
 // URI, which is a required identifier, not a network request.
@@ -24,7 +24,10 @@ function fetchesRemote(svg) {
 // ===========================================================================
 test('every supported chain has a bundled inline-SVG icon', () => {
   for (const id of SUPPORTED) {
-    const svg = Logos.CHAIN_ICONS[id];
+    // resolve through CHAIN_ALIAS exactly like the runtime resolver (adapter ids
+    // like 'hyperevm' alias to the brand-icon key 'hype')
+    const canon = Logos.CHAIN_ALIAS[id] || id;
+    const svg = Logos.CHAIN_ICONS[canon];
     assert.ok(svg, id + ' icon exists');
     assert.ok(/^<svg/.test(svg), id + ' is inline SVG');
     // OFFLINE: no remote references anywhere in the markup.
@@ -80,14 +83,38 @@ test('resolve(native) returns the chain brand icon', () => {
 // ===========================================================================
 // 3. RESOLVE — token WITH a logoURI -> image + monogram fallback
 // ===========================================================================
-test('resolve(token w/ logoURI) renders the image and carries a monogram fallback', () => {
-  const r = Logos.resolve({ chain: 'ethereum', kind: 'erc20', symbol: 'USDC',
-    address: '0xA0b8', logoURI: 'https://tokens.example/usdc.png' });
+test('resolve(unknown token w/ logoURI) renders the image and carries a monogram fallback', () => {
+  // NOTE: a non-brand symbol — a KNOWN token (USDT/USDC/…) now resolves to its
+  // bundled brand mark BEFORE the runtime logoURI (see the TOKEN_ICONS test below).
+  const r = Logos.resolve({ chain: 'ethereum', kind: 'erc20', symbol: 'USXYZ',
+    address: '0xA0b8', logoURI: 'https://tokens.example/usxyz.png' });
   assert.strictEqual(r.kind, 'image');
-  assert.strictEqual(r.src, 'https://tokens.example/usdc.png');
+  assert.strictEqual(r.src, 'https://tokens.example/usxyz.png');
   // graceful fallback for an onerror swap — never a broken image
   assert.ok(r.fallback && /^<svg/.test(r.fallback.svg));
   assert.strictEqual(r.fallback.text, 'US');
+});
+
+// ===========================================================================
+// 3b. REAL default/known-TOKEN brand marks — resolved BEFORE any runtime logoURI
+// ===========================================================================
+test('known tokens resolve to a bundled brand mark on every chain (chain-badged by the UI)', () => {
+  // USDT is the same Tether mark across ethereum/tron/ton/solana/etc.
+  for (const t of [
+    { chain: 'ethereum', kind: 'erc20', symbol: 'USDT', address: '0xdac17f', logoURI: 'https://x/u.png' },
+    { chain: 'tron', kind: 'trc20', symbol: 'USDT', address: 'TR7NHq' },
+    { chain: 'solana', kind: 'spl', symbol: 'USDT', mint: 'Es9vMFrz' },
+  ]) {
+    const r = Logos.resolve(t);
+    assert.strictEqual(r.kind, 'token', t.chain + ' USDT -> brand token mark');
+    assert.ok(/^<svg/.test(r.svg) && !fetchesRemote(r.svg));
+    assert.ok(r.dataUri.indexOf('data:image/svg') === 0);
+  }
+  // USDC / DAI / LINK / XAUT / POL likewise have bundled marks.
+  for (const sym of ['USDC', 'DAI', 'LINK', 'XAUT', 'POL']) {
+    const r = Logos.resolve({ chain: 'ethereum', kind: 'erc20', symbol: sym, address: '0xabc' });
+    assert.strictEqual(r.kind, 'token', sym + ' -> brand token mark');
+  }
 });
 
 test('resolve also accepts the discovery `logo` field', () => {

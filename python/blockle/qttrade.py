@@ -302,10 +302,13 @@ class TradeTab(QWidget):
         self.dec = {"BLOCK": info.get("blockDecimals", 8)}
         for p in self.pairs:
             self.dec[p["sym"]] = p["decimals"]
-        self.price.setText("BLOCK price  $%s" % ("%g" % info.get("priceUsd", 0)))
+        # NO USD ON BLOCK: there is no BLOCK->USD oracle. The AMM prices BLOCK
+        # against its USD-pegged BLOCK-20S stable leg (USDB), whose $1 peg is
+        # self-evident — so denominate in USDB, never a fabricated "$".
+        self.price.setText("BLOCK price  %s USDB" % ("%g" % info.get("priceUsd", 0)))
         seed = info.get("seed", {})
         self.sub.setText(("PAPER — no real funds move · " if info.get("paper") else "")
-                         + "fee %s%% · seed %s BLOCK @ $%s"
+                         + "fee %s%% · seed %s BLOCK @ %s USDB"
                          % (info.get("feeBps", 0) / 100, format(int(seed.get("block", 0)), ","), seed.get("priceUsd")))
         if self.cur.count() != len(self.pairs):
             self.cur.blockSignals(True)
@@ -329,7 +332,7 @@ class TradeTab(QWidget):
         impact = (after - before) / before * 100 if before else 0
         if self.side == "buy":
             blk = _whole(d.get("blockOut", 0), self.dec.get("BLOCK", 8))
-            self.quote_lbl.setText("Receive %.4f BLOCK · fee $%.2f · impact %.2f%%" % (blk, float(d.get("feeUsd", 0)) / 1e6, impact))
+            self.quote_lbl.setText("Receive %.4f BLOCK · fee %.2f USDB · impact %.2f%%" % (blk, float(d.get("feeUsd", 0)) / 1e6, impact))
             self.go.setEnabled(True)
             self.go.setText("Buy BLOCK")
         else:
@@ -340,7 +343,7 @@ class TradeTab(QWidget):
                 self.go.setEnabled(False)
                 self.go.setText("No %s liquidity" % sym)
             else:
-                self.quote_lbl.setText("Receive %.6f %s · fee $%.2f · impact %.2f%%" % (out, sym, float(d.get("feeUsd", 0)) / 1e6, impact))
+                self.quote_lbl.setText("Receive %.6f %s · fee %.2f USDB · impact %.2f%%" % (out, sym, float(d.get("feeUsd", 0)) / 1e6, impact))
                 self.go.setEnabled(True)
                 self.go.setText("Sell BLOCK")
 

@@ -114,9 +114,11 @@ void main() {
           ),
         ),
       ));
-      // the resolver maps bitcoin → its brand glyph.
-      expect(chainBrand('bitcoin'), isNotNull);
-      expect(find.text(kChainBrands['bitcoin']!.glyph), findsOneWidget);
+      // the resolver maps bitcoin → its real brand mark (an SVG CustomPaint),
+      // not a monogram letter.
+      expect(kChainLogos['bitcoin'], isNotNull);
+      expect(find.byType(CustomPaint), findsWidgets);
+      expect(find.text('B'), findsNothing);
     });
 
     testWidgets('a logo-less token degrades to a monogram, never a broken icon',

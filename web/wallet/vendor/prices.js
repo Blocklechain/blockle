@@ -33,6 +33,24 @@
   function lc(s) { return String(s == null ? '' : s).toLowerCase(); }
   function isAddr(s) { return /^0x[0-9a-fA-F]{40}$/.test(s) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s) || /^[0-9a-f]{64}$/i.test(s); }
 
+  // ---- BLOCK-denominated guard ---------------------------------------------
+  // There is NO BLOCK/USD oracle. The native BLOCK coin, every BLOCK-20 /
+  // BLOCK-20S token (all chain:'block', INCLUDING the USD-pegged USDB), and the
+  // Solana wrap WBLOCK (whose only price source is blockUsd()) must NEVER be
+  // emitted as a USD figure derived from a BLOCK price — the one place USD is
+  // actually synthesized from BLOCK. blockUsd()/block20Usd() are KEPT (they still
+  // price BLOCK-denominated tokens in BLOCK), they are just no longer surfaced as
+  // USD by prices()/priceOf(). USDB falls here too → shown in USDB units, never a
+  // fabricated BLOCK-derived USD (STABLES still carries USDB=1 for the internal
+  // stable-pool math inside blockUsd(), which is not a displayed value).
+  function isBlockDenominated(asset) {
+    if (!asset) return false;
+    if (typeof asset === 'string') { const s = up(asset); return s === 'BLOCK' || s === 'WBLOCK'; }
+    if (lc(asset.chain) === 'block') return true;
+    const s = up(asset.symbol);
+    return s === 'BLOCK' || s === 'WBLOCK';
+  }
+
   function create(opts) {
     opts = opts || {};
     const fetchImpl = opts.fetchImpl || (typeof fetch === 'function' ? fetch.bind(global) : null);
@@ -203,15 +221,15 @@
       const needCg = [], cgOf = {};
       const needTok = {};   // chain -> [addr]
       const tokSym = {};    // chain:addrLower -> SYM
-      const needBlock20 = [];
-      let needBlock = false;
 
       for (const s of want) {
-        if (STABLES[s] != null) { out[s] = STABLES[s]; continue; }
-        if (s === 'BLOCK' || s === 'WBLOCK') { needBlock = true; continue; }
         const t = tokenMap.get(s);
+        // NO BLOCK/USD oracle — never emit a USD figure for BLOCK / WBLOCK / any
+        // BLOCK-20/BLOCK-20S (incl. USDB). They render in BLOCK units; the UI
+        // prices them via blockUsd()/block20Usd() in BLOCK terms, not here.
+        if (isBlockDenominated({ symbol: s, chain: t && t.chain })) continue;
+        if (STABLES[s] != null) { out[s] = STABLES[s]; continue; }
         const cg = Lists ? Lists.coingeckoId(s) : null;
-        if (t && t.chain === 'block') { needBlock20.push([s, t.address]); continue; }
         // a ticker with a CoinGecko id that is only SOFT-registered (seed list,
         // e.g. the bridged ETH on BNB Chain) prices as the major it names; a HARD
         // registration (discovery / holdings) prices by its on-chain address.
@@ -224,8 +242,7 @@
       }
 
       const jobs = [];
-      if (needBlock) jobs.push(blockUsd().then((v) => { if (v > 0) { out.BLOCK = v; if (want.includes('WBLOCK')) out.WBLOCK = v; } }).catch(() => {}));
-      for (const [s, c] of needBlock20) jobs.push(block20Usd(c).then((v) => { if (v > 0) out[s] = v; }).catch(() => {}));
+      // (BLOCK / WBLOCK / BLOCK-20 are intentionally omitted — no BLOCK/USD oracle.)
 
       // the shared proxy first (one round-trip), then direct providers for gaps.
       const tokList = [];
@@ -270,9 +287,14 @@
       if (!asset) return null;
       if (typeof asset === 'string') {
         if (isAddr(asset)) { for (const [k, sym] of byAddr) if (k.endsWith(':' + lc(asset))) { asset = sym; break; } }
+        if (isBlockDenominated(asset)) return null; // no BLOCK/USD oracle
         const m = await prices([asset]);
         return m[up(asset)] != null ? m[up(asset)] : null;
       }
+      // NO BLOCK/USD oracle — block-denominated assets (BLOCK, WBLOCK, every
+      // BLOCK-20/BLOCK-20S incl. USDB) are never priced in USD. This runs BEFORE
+      // the STABLES=1 shortcut so USDB is shown in USDB units, not a $1 figure.
+      if (isBlockDenominated(asset)) return null;
       const sym = up(asset.symbol);
       if (sym && STABLES[sym] != null) return 1;
       if (asset.stablecoin) return 1;
@@ -317,7 +339,7 @@
     function change24h(symbol) { const v = change.get(up(symbol)); return v == null ? null : v; }
     function clear() { cache.clear(); inflight.clear(); }
 
-    return { prices, priceOf, blockUsd, block20Usd, tokenMeta, remember, lookup, decimalsOf, change24h, clear, STABLES, _tokenMap: tokenMap };
+    return { prices, priceOf, blockUsd, block20Usd, tokenMeta, remember, lookup, decimalsOf, change24h, clear, STABLES, isBlockDenominated, _tokenMap: tokenMap };
   }
 
   const API = { create, STABLES };

@@ -206,6 +206,24 @@ def plain_money(n: Optional[float]) -> str:
     return f"${n:,.0f}"
 
 
+def fmt_block(amount_base: Optional[Any], decimals: Optional[Any] = None,
+              symbol: str = "BLOCK") -> str:
+    """Format a BLOCK-denominated value in BLOCK units — NEVER a $ figure.
+    Used wherever a BLOCK / BLOCK-20 asset would otherwise show a USD amount
+    (there is no BLOCK->USD oracle). ``amount_base`` may be a base-unit integer
+    (with ``decimals``) or an already-whole number."""
+    if amount_base is None:
+        return "—"
+    try:
+        if decimals is not None:
+            whole = int(str(amount_base)) / (10 ** int(decimals))
+        else:
+            whole = float(amount_base)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{whole:,.4f}".rstrip("0").rstrip(".") + f" {symbol}"
+
+
 def _arena_vectors_path() -> Optional[Path]:
     """Locate docs/arena-vectors.json across both a source checkout AND a
     PyInstaller bundle (where it ships under <bundle>/docs via --add-data; see

@@ -27,7 +27,6 @@ class WalletTab extends StatefulWidget {
 
 class _WalletTabState extends State<WalletTab> {
   Map<String, dynamic>? _account;
-  String? _priceUsd;
   List<Map<String, dynamic>> _tokens = [];
   bool _loading = true;
 
@@ -42,28 +41,13 @@ class _WalletTabState extends State<WalletTab> {
     final app = context.read<AppState>();
     final addr = app.store.address;
     final acct = await app.chain.account(addr);
-    final price = await _fetchPrice();
     final toks = await _loadTokens(addr);
     if (!mounted) return;
     setState(() {
       _account = acct;
-      _priceUsd = price;
       _tokens = toks;
       _loading = false;
     });
-  }
-
-  Future<String?> _fetchPrice() async {
-    try {
-      final r = await http
-          .get(Uri.parse('https://blockle.org/api/buy/history'))
-          .timeout(const Duration(seconds: 6));
-      final hist = jsonDecode(r.body) as List;
-      if (hist.isEmpty) return null;
-      return (hist.last['price']).toString();
-    } catch (_) {
-      return null;
-    }
   }
 
   Future<List<Map<String, dynamic>>> _loadTokens(String? holderHex) async {
@@ -157,14 +141,15 @@ class _WalletTabState extends State<WalletTab> {
               children: [
                 const SizedBox(width: 44, height: 44, child: ParticleLogo(size: 44)),
                 const SizedBox(width: 12),
-                Expanded(
+                const Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Blockle Wallet',
+                      Text('Blockle Wallet',
                           style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-                      Text(_priceUsd != null ? '1 BLOCK ≈ \$$_priceUsd' : 'price —',
-                          style: const TextStyle(color: Bk.muted, fontSize: 12)),
+                      // No BLOCK/USD oracle exists — BLOCK is shown in BLOCK, never $.
+                      Text('Native BLOCK network',
+                          style: TextStyle(color: Bk.muted, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -333,6 +318,7 @@ class _WalletTabState extends State<WalletTab> {
             isToken: true,
             logoUri:
                 (t['logoURI'] ?? t['logo'] ?? t['image'])?.toString(),
+            address: (t['contract'] ?? t['address'] ?? t['id'])?.toString(),
             radius: 16,
           ),
           const SizedBox(width: 12),

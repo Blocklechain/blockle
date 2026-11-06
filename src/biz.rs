@@ -1828,7 +1828,11 @@ fn page_markets() -> String {
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   var set=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
   async function j(u){try{var r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null;}catch(e){return null;}}
-  function logoFor(reg,id){var e=reg[id];var l=e&&e.logo;return (l&&/^https?:|^\//.test(l))?l:'/logo.png';}
+  // Known BLOCK-20 tokens get their real brand mark; otherwise the registry
+  // logo (IPFS/URL) written at /api/dex/register, else the Blockle BLOCK mark.
+  var KNOWN={'2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a':'/usdb-token.svg',
+             '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f':'/world-token.svg'};
+  function logoFor(reg,id){if(KNOWN[id])return KNOWN[id];var e=reg[id];var l=e&&e.logo;return (l&&/^https?:|^\//.test(l))?l:'/logo.png';}
   async function go(){
     var reg=await j('/api/dex/tokens')||{}, pl=await j('/api/dex/pools')||{};
     var pools=(pl&&pl.pools)||[];

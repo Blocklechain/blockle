@@ -229,6 +229,47 @@ class AppIcons {
     if (n != null) return icon(n, size: size, color: color);
     return Text(s, style: TextStyle(fontSize: size, color: color));
   }
+
+  /// Render an arbitrary inline-SVG [body] (the same subset the icon set uses:
+  /// path / circle / rect / ellipse, hex or `currentColor` fills + strokes,
+  /// opacity). [cacheKey] must be STABLE and UNIQUE per distinct body so the
+  /// parsed-path cache is reused. Used by the brand-logo set (chain_icon.dart)
+  /// for full-colour marks that carry their own explicit fills. Shapes without
+  /// an explicit colour inherit [color] (or the ambient text colour).
+  static Widget rawSvg(String cacheKey, String body,
+          {String viewBox = '0 0 24 24', double size = 20, Color? color}) =>
+      _SvgBody(
+          cacheKey: cacheKey, body: body, viewBox: viewBox, size: size, color: color);
+}
+
+class _SvgBody extends StatelessWidget {
+  const _SvgBody({
+    required this.cacheKey,
+    required this.body,
+    required this.viewBox,
+    required this.size,
+    this.color,
+  });
+  final String cacheKey;
+  final String body;
+  final String viewBox;
+  final double size;
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final resolved = color ??
+        IconTheme.of(context).color ??
+        DefaultTextStyle.of(context).style.color ??
+        const Color(0xFF000000);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _IconPainter(cacheKey, _IconDef(viewBox, body), resolved),
+      ),
+    );
+  }
 }
 
 class _SvgIcon extends StatelessWidget {

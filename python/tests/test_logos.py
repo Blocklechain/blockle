@@ -72,16 +72,50 @@ def test_resolve_native_coin_returns_bundled_chain_icon():
     assert res["dataUri"].startswith("data:image/svg+xml,")
 
 
-def test_resolve_token_with_logo_uri_uses_image_with_monogram_fallback():
-    res = L.resolve({"chain": "ethereum", "symbol": "USDC", "kind": "erc20",
-                     "address": "0xA0b8...", "logoURI": "https://example.com/usdc.png"})
+def test_resolve_unknown_token_with_logo_uri_uses_image_with_monogram_fallback():
+    # A genuinely-unknown imported token (no brand mark) keeps the logoURI->image
+    # path with a clean monogram fallback.
+    res = L.resolve({"chain": "ethereum", "symbol": "WIFHAT", "kind": "erc20",
+                     "address": "0xbeef...", "logoURI": "https://example.com/wif.png"})
     assert res["kind"] == "image"
-    assert res["src"] == "https://example.com/usdc.png"
+    assert res["src"] == "https://example.com/wif.png"
     fb = res["fallback"]
     assert fb["svg"].startswith("<svg")
-    assert fb["text"] == "US"
+    assert fb["text"] == "WI"
     assert fb["color"].startswith("#")
     assert not _fetches_remote(fb["svg"]), "fallback monogram is offline"
+
+
+def test_resolve_known_token_returns_real_brand_svg_before_logo_uri():
+    # USDC/USDT/LINK/… are default/known tokens: a real brand mark resolves
+    # OFFLINE and WINS over any runtime logoURI (desktop stays self-contained).
+    res = L.resolve({"chain": "ethereum", "symbol": "USDC", "kind": "erc20",
+                     "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                     "logoURI": "https://example.com/usdc.png"})
+    assert res["kind"] == "token"
+    assert res["svg"].startswith("<svg")
+    assert "#2775ca" in res["svg"], "Circle blue"
+    assert not _fetches_remote(res["svg"])
+    assert res["dataUri"].startswith("data:image/svg+xml,")
+    # Tether uses the same green mark across every chain (keyed by bare symbol).
+    assert "#26a17b" in L.resolve({"chain": "tron", "symbol": "USDT",
+                                   "address": "TR7..."})["svg"]
+    # BLOCK-20 tokens keep their Blockle marks (USDB / WORLD).
+    assert L.resolve({"chain": "block", "symbol": "USDB", "address": "2be..."})["kind"] == "token"
+    assert L.resolve({"chain": "block", "symbol": "WORLD", "address": "32a..."})["kind"] == "token"
+
+
+def test_is_block_denominated_guard():
+    # The single USD-suppression guard: native BLOCK + every BLOCK-20 + WBLOCK.
+    assert L.is_block_denominated({"chain": "block", "symbol": "BLOCK"})
+    assert L.is_block_denominated({"chain": "block", "symbol": "USDB"})     # BLOCK-20S
+    assert L.is_block_denominated({"chain": "block", "symbol": "WORLD"})    # BLOCK-20
+    assert L.is_block_denominated({"chain": "solana", "symbol": "WBLOCK"})  # Solana wrap
+    # Real-oracle chains are NEVER block-denominated.
+    assert not L.is_block_denominated({"chain": "ethereum", "symbol": "ETH"})
+    assert not L.is_block_denominated({"chain": "solana", "symbol": "USDC"})
+    assert not L.is_block_denominated({"chain": "bitcoin", "symbol": "BTC"})
+    assert not L.is_block_denominated(None)
 
 
 def test_resolve_token_without_logo_uri_is_colored_monogram():
@@ -100,11 +134,20 @@ def test_resolve_accepts_assetref_objects():
     assert res["kind"] == "chain"
     assert res["id"] == "ltc"
 
-    tok = AssetRef(chain="ethereum", kind="erc20", symbol="USDT", decimals=6,
-                   address="0xdAC1...", logo="https://example.com/usdt.png")
+    # An unknown imported token (no brand mark) keeps the logoURI->image path.
+    tok = AssetRef(chain="ethereum", kind="erc20", symbol="MYSTERY", decimals=6,
+                   address="0xdAC1...", logo="https://example.com/mystery.png")
     res2 = L.resolve(tok)
     assert res2["kind"] == "image"
-    assert res2["src"] == "https://example.com/usdt.png"
+    assert res2["src"] == "https://example.com/mystery.png"
+
+    # A known token (USDT) resolves to its real brand mark, no fetch.
+    tok2 = AssetRef(chain="ethereum", kind="erc20", symbol="USDT", decimals=6,
+                    address="0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                    logo="https://example.com/usdt.png")
+    res3 = L.resolve(tok2)
+    assert res3["kind"] == "token"
+    assert "#26a17b" in res3["svg"]
 
 
 def test_monogram_is_deterministic_and_safe():

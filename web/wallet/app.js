@@ -24,6 +24,20 @@
   function shortAddr(a) { if (!a) return '—'; a = String(a); return a.length > 18 ? a.slice(0, 9) + '…' + a.slice(-6) : a; }
   function fmtAmt(n, dp) { var x = Number(n); if (!isFinite(x)) return '0'; return x.toLocaleString(undefined, { maximumFractionDigits: dp == null ? 6 : dp }); }
   function fmtUsd(n) { var x = Number(n); if (!isFinite(x)) return '—'; return '$' + x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // ---- BLOCK-denominated guard ---------------------------------------------
+  // There is NO BLOCK/USD oracle: the native BLOCK coin, every BLOCK-20 /
+  // BLOCK-20S token (chain:'block', incl. the USD-pegged USDB), and the Solana
+  // wrap WBLOCK must NEVER show a USD figure derived from a BLOCK price. They are
+  // shown in BLOCK units. Real-oracle chains are unaffected.
+  function isBlockDenominated(asset) {
+    if (!asset) return false;
+    if (typeof asset === 'string') { var s = asset.toUpperCase(); return s === 'BLOCK' || s === 'WBLOCK'; }
+    if (String(asset.chain || '').toLowerCase() === 'block') return true;
+    var sy = String(asset.symbol || asset.sym || '').toUpperCase();
+    return sy === 'BLOCK' || sy === 'WBLOCK';
+  }
+  // A whole-coin amount rendered in BLOCK units (never a `$`).
+  function fmtBlock(n, dp) { return fmtAmt(n, dp == null ? 6 : dp) + ' BLOCK'; }
   function baseToNum(confirmed, decimals) { try { return Number(BigInt(confirmed || '0')) / Math.pow(10, decimals || 0); } catch (_) { return Number(confirmed || 0) / Math.pow(10, decimals || 0); } }
   // A row's `display` may be a locale-formatted string ("140,001.74") from some
   // adapters; Number() of that is NaN (→ renders 0 and gets filtered out). Strip
@@ -1305,6 +1319,13 @@
     }
     function curSym() { return $('#amm-cur').value; }
     function curDec() { return S.amm.dec[curSym()] || 8; }
+    // AMM fee, BLOCK-denominated (no BLOCK/USD oracle): the server reports it in
+    // micro-USD; convert back through the market rate to show it in BLOCK.
+    function ammFeeBlock(feeUsdMicro) {
+      var p = Number(S.amm.info && S.amm.info.priceUsd) || 0;
+      var feeBlk = p > 0 ? (Number(feeUsdMicro) / 1e6) / p : 0;
+      return fmtAmt(feeBlk, 4) + ' BLOCK';
+    }
 
     function renderInfo(info) {
       S.amm.info = info;
@@ -1312,10 +1333,16 @@
       S.amm.pairs = info.pairs || [];
       S.amm.dec = { BLOCK: info.blockDecimals || 8 };
       S.amm.pairs.forEach(function (p) { S.amm.dec[p.sym] = p.decimals; });
-      $('#amm-price').textContent = '$' + Number(info.priceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      // No BLOCK/USD oracle — the market rate is shown BLOCK-denominated (BLOCK
+      // per 1 unit of the quote stablecoin), never as a BLOCK-derived USD price.
+      var _blkPerUnit = Number(info.priceUsd) > 0 ? 1 / Number(info.priceUsd) : 0;
+      var _qsym = (S.amm.pairs[0] && S.amm.pairs[0].sym) || 'unit';
+      $('#amm-price').textContent = _blkPerUnit ? (_blkPerUnit.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK') : '—';
       $('#amm-mode').textContent = info.paper ? 'paper' : 'live';
       $('#amm-mode').className = 'chip ' + (info.paper ? 'warn' : 'good');
-      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet. ' : '') + 'Fee ' + (info.feeBps / 100) + '% · seed ' + info.seed.block.toLocaleString() + ' BLOCK @ $' + info.seed.priceUsd;
+      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet. ' : '') + 'Fee ' + (info.feeBps / 100) + '%'
+        + (_blkPerUnit ? (' · ≈ ' + _blkPerUnit.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK per ' + _qsym) : '')
+        + ' · seed ' + info.seed.block.toLocaleString() + ' BLOCK';
       $('#amm-pairs').innerHTML = S.amm.pairs.map(function (p) {
         var liq = p.hasLiquidity;
         var maxBlk = baseToWhole(p.maxSellableBlockBase, info.blockDecimals || 8);
@@ -1346,7 +1373,7 @@
         var impact = d.priceBeforeMicroUsd > 0 ? (Number(d.priceAfterMicroUsd) - Number(d.priceBeforeMicroUsd)) / Number(d.priceBeforeMicroUsd) * 100 : 0;
         if (side === 'buy') {
           var blk = baseToWhole(d.blockOut, S.amm.dec.BLOCK || 8);
-          q.innerHTML = 'Receive <b>' + fmtAmt(blk, 4) + ' BLOCK</b> · fee $' + (Number(d.feeUsd) / 1e6).toFixed(2) + ' · price impact ' + impact.toFixed(2) + '%';
+          q.innerHTML = 'Receive <b>' + fmtAmt(blk, 4) + ' BLOCK</b> · fee ' + ammFeeBlock(d.feeUsd) + ' · price impact ' + impact.toFixed(2) + '%';
           go.disabled = false; go.textContent = 'Buy BLOCK';
         } else {
           var out = baseToWhole(d.assetOut, curDec());
@@ -1356,7 +1383,7 @@
             q.innerHTML = '<span class="dim">Would receive ' + fmtAmt(out, 6) + ' ' + esc(sym) + ' — but the ' + esc(sym) + ' pair only has liquidity for ≤ ' + fmtAmt(maxBlk, 2) + ' BLOCK.</span>';
             go.disabled = true; go.textContent = maxBlk > 0 ? 'Reduce amount' : 'No ' + sym + ' liquidity';
           } else {
-            q.innerHTML = 'Receive <b>' + fmtAmt(out, 6) + ' ' + esc(sym) + '</b> · fee $' + (Number(d.feeUsd) / 1e6).toFixed(2) + ' · price impact ' + impact.toFixed(2) + '%';
+            q.innerHTML = 'Receive <b>' + fmtAmt(out, 6) + ' ' + esc(sym) + '</b> · fee ' + ammFeeBlock(d.feeUsd) + ' · price impact ' + impact.toFixed(2) + '%';
             go.disabled = false; go.textContent = 'Sell BLOCK';
           }
         }
@@ -2990,7 +3017,8 @@
   function renderMoonHeader() {
     if (!$('#mn-bal')) return;
     $('#mn-bal').textContent = fmtAmt(MOON.blockBal, 4) + ' BLOCK';
-    if (MOON.blockUsd > 0) $('#mn-balusd').textContent = '≈ ' + fmtUsd(MOON.blockBal * MOON.blockUsd) + ' · BLOCK ' + fmtPrice(MOON.blockUsd);
+    // No BLOCK/USD oracle — BLOCK (and BLOCK-20 Moon tokens) are shown in BLOCK
+    // units only, never a BLOCK-derived USD value.
   }
   function loadMoonFeed() {
     Wiring.moon.feed('trending').then(function (feed) {
@@ -3012,7 +3040,7 @@
         '<span class="col" style="align-items:flex-start;min-width:0"><b>' + esc(t.symbol || '?') + ' <span class="dim" style="font-weight:500;font-size:12px">' + esc(t.name || '') + '</span></b>' +
         '<span class="dim" style="font-size:12px">liq ' + fmtAmt(t.liquidityBlock, 0) + ' BLOCK' + (t.lpLocked ? ' · ' + mi('lock', 12) : ' · unlocked') + (t.ageBlocks != null && t.ageBlocks < 144 ? ' · ' + mi('seed', 12) + ' new' : '') + (pnl && pnl.qty > 0 ? ' · bag ' + fmtAmt(pnl.qty, 2) + (pnl.unrealizedPct != null ? ' (' + Moon.fmtPct(pnl.unrealizedPct) + ')' : '') : '') + '</span></span>' +
         '<span style="width:72px;flex:none">' + sparkSvg(t.spark, 72, 36) + '</span>' +
-        '<span class="col" style="align-items:flex-end;flex:none"><b class="num">' + fmtPrice(t.priceUsd) + '</b>' + pctChip(t.change24hPct) + '</span></div>';
+        '<span class="col" style="align-items:flex-end;flex:none"><b class="num">' + fmtAmt(t.priceBlock, 8) + ' BLOCK</b>' + pctChip(t.change24hPct) + '</span></div>';
     }).join('');
     $$('#mn-list .moonrow').forEach(function (r) { r.onclick = function () { moonTokenSheet(r.getAttribute('data-cid')); }; });
   }
@@ -3023,9 +3051,9 @@
     var warns = Moon.warnings(t);
     var state = { usd: 20, pct: 50, held: '0', side: 'buy' };
     openSheet('<div class="spread"><h2>' + (t.logo ? '<img src="' + esc(t.logo) + '" alt="" style="width:26px;height:26px;border-radius:7px;vertical-align:middle;margin-right:6px">' : '') + esc(t.symbol || '?') + ' <span class="dim" style="font-size:13px;font-weight:500">' + esc(t.name || '') + '</span></h2><button class="btn sm ghost" id="mt-x">' + ic('close', 15) + '</button></div>' +
-      '<div class="spread" style="margin:8px 0 4px"><div><div class="hero-bal num" style="font-size:30px">' + fmtPrice(t.priceUsd) + '</div><div class="dim" style="font-size:12px">' + fmtAmt(t.priceBlock, 8) + ' BLOCK</div></div><div class="col" style="align-items:flex-end;font-size:13px"><span>1h ' + pctChip(t.change1hPct) + '</span><span>24h ' + pctChip(t.change24hPct) + '</span><span>7d ' + pctChip(t.change7dPct) + '</span></div></div>' +
+      '<div class="spread" style="margin:8px 0 4px"><div><div class="hero-bal num" style="font-size:30px">' + fmtAmt(t.priceBlock, 8) + ' <span style="font-size:15px">BLOCK</span></div><div class="dim" style="font-size:12px">price per ' + esc(t.symbol || 'token') + '</div></div><div class="col" style="align-items:flex-end;font-size:13px"><span>1h ' + pctChip(t.change1hPct) + '</span><span>24h ' + pctChip(t.change24hPct) + '</span><span>7d ' + pctChip(t.change7dPct) + '</span></div></div>' +
       '<div style="height:70px;margin:6px 0">' + (sparkSvg(t.spark, 320, 70) || '<div class="dim" style="font-size:12px">Chart fills in as 15-minute snapshots record.</div>') + '</div>' +
-      '<div class="list" style="margin-bottom:10px"><div class="kv"><span class="muted">Liquidity</span><span class="mono num">' + fmtAmt(t.liquidityBlock, 1) + ' BLOCK' + (t.liquidityUsd ? ' ≈ ' + fmtUsd(t.liquidityUsd) : '') + '</span></div>' +
+      '<div class="list" style="margin-bottom:10px"><div class="kv"><span class="muted">Liquidity</span><span class="mono num">' + fmtAmt(t.liquidityBlock, 1) + ' BLOCK</span></div>' +
       '<div class="kv"><span class="muted">LP lock</span><span class="mono">' + (t.lpLocked ? mi('lock', 13) + ' ' + t.lockDaysLeft + 'd left' : 'unlocked') + '</span></div>' +
       '<div class="kv"><span class="muted">Age</span><span class="mono num">' + (t.ageBlocks != null ? (t.ageBlocks < 144 ? Math.round(t.ageBlocks * 10 / 60) + 'h' : Math.round(t.ageBlocks / 144) + 'd') : '—') + '</span></div>' +
       '<div class="kv"><span class="muted">Contract</span><button class="btn sm ghost" id="mt-copy">' + esc(shortAddr(t.contract)) + ' ' + ic('copy', 13) + '</button></div></div>' +
@@ -3047,9 +3075,9 @@
         var pnl = Moon.pnl(pos || { qty: '0', costBlock: '0', costUsd: 0, decimals: t.decimals }, t.priceBlock, MOON.blockUsd, held);
         var box = $('#mt-pos'); if (!box) return;
         if (!(pnl.qty > 0)) { box.innerHTML = ''; return; }
-        box.innerHTML = '<div class="kv"><span class="muted">Your bag</span><span class="mono num">' + fmtAmt(pnl.qty, 4) + ' ' + esc(t.symbol || '') + ' ≈ ' + fmtAmt(pnl.valueBlock, 4) + ' BLOCK' + (pnl.valueUsd != null ? ' / ' + fmtUsd(pnl.valueUsd) : '') + '</span></div>' +
+        box.innerHTML = '<div class="kv"><span class="muted">Your bag</span><span class="mono num">' + fmtAmt(pnl.qty, 4) + ' ' + esc(t.symbol || '') + ' ≈ ' + fmtAmt(pnl.valueBlock, 4) + ' BLOCK</span></div>' +
           (pnl.untracked ? '<div class="kv"><span class="muted">P&amp;L</span><span class="dim">bought outside Moon — no cost basis</span></div>' :
-            '<div class="kv"><span class="muted">P&amp;L</span><span class="mono num ' + pnlClass(pnl.unrealizedBlock) + '">' + (pnl.unrealizedUsd != null ? fmtSigned(pnl.unrealizedUsd) + ' · ' : '') + Moon.fmtPct(pnl.unrealizedPct) + '</span></div>');
+            '<div class="kv"><span class="muted">P&amp;L</span><span class="mono num ' + pnlClass(pnl.unrealizedBlock) + '">' + (pnl.unrealizedBlock != null ? (Number(pnl.unrealizedBlock) >= 0 ? '+' : '') + fmtAmt(pnl.unrealizedBlock, 4) + ' BLOCK · ' : '') + Moon.fmtPct(pnl.unrealizedPct) + '</span></div>');
         sellQuote();
       }).catch(function () {});
     }
@@ -3072,7 +3100,7 @@
       var q = Moon.quoteSell(amt, MOON.blockUsd, pool), box = $('#mt-sq'), go = $('#mt-sgo');
       if (!q) { box.textContent = BigInt(state.held || '0') > 0n ? 'Move the slider.' : 'Nothing to sell yet.'; go.disabled = true; return; }
       state.sq = q;
-      box.innerHTML = 'Sell <b class="num">' + fmtAmt(q.tokensIn, 2) + ' ' + esc(t.symbol || '') + '</b> (' + pct + '%) → get ≈ <b class="num">' + fmtAmt(q.blockOut, 4) + ' BLOCK</b>' + (q.usdOut != null ? ' / ' + fmtUsd(q.usdOut) : '') + '<br><span class="dim">impact ' + (q.impactPct != null ? q.impactPct.toFixed(2) + '%' : '—') + '</span>' + (q.tooBig ? '<br><span class="bad">Too big for this pool — sell in pieces.</span>' : '');
+      box.innerHTML = 'Sell <b class="num">' + fmtAmt(q.tokensIn, 2) + ' ' + esc(t.symbol || '') + '</b> (' + pct + '%) → get ≈ <b class="num">' + fmtAmt(q.blockOut, 4) + ' BLOCK</b><br><span class="dim">impact ' + (q.impactPct != null ? q.impactPct.toFixed(2) + '%' : '—') + '</span>' + (q.tooBig ? '<br><span class="bad">Too big for this pool — sell in pieces.</span>' : '');
       go.disabled = q.tooBig;
     }
     $$('#mt-buy [data-usd]').forEach(function (b) { b.onclick = function () { $$('#mt-buy .preset').forEach(function (x) { x.classList.toggle('on', x === b); }); $('#mt-usd').value = b.getAttribute('data-usd'); buyQuote(); }; });

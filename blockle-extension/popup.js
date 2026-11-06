@@ -1427,7 +1427,7 @@
 
   // ---- Trade (super-AMM: custodial shared-price BLOCK market) -------------
   const AMM_API = 'https://blockle.org/api/amm';
-  let ammSide = 'buy', ammPairs = [], ammDec = { BLOCK: 8 }, ammWired = false, ammQTimer = null, ammLive = false, ammPollTimer = null;
+  let ammSide = 'buy', ammPairs = [], ammDec = { BLOCK: 8 }, ammWired = false, ammQTimer = null, ammLive = false, ammPollTimer = null, ammPriceUsd = 0;
   function ammToBase(str, dec) {
     str = String(str == null ? '' : str).trim();
     if (!str || !/^\d*\.?\d*$/.test(str)) return '0';
@@ -1438,6 +1438,12 @@
   function ammWhole(base, dec) { try { return Number(BigInt(base)) / Math.pow(10, dec); } catch (_) { return Number(base) / Math.pow(10, dec); } }
   function ammCur() { return $('#amm-cur').value; }
   function ammCurDec() { return ammDec[ammCur()] || 8; }
+  // The AMM fee, BLOCK-denominated (no BLOCK/USD oracle — the server reports the
+  // fee in micro-USD; we convert back through the market rate to show it in BLOCK).
+  function ammFeeBlock(feeUsdMicro) {
+    const feeBlk = ammPriceUsd > 0 ? (Number(feeUsdMicro) / 1e6) / ammPriceUsd : 0;
+    return feeBlk.toLocaleString(undefined, { maximumFractionDigits: 4 }) + ' BLOCK';
+  }
   function ammSetSide(s) {
     ammSide = s;
     $('#amm-buy').classList.toggle('ghost', s !== 'buy');
@@ -1461,9 +1467,16 @@
       ammPairs = info.pairs || [];
       ammDec = { BLOCK: info.blockDecimals || 8 };
       ammPairs.forEach((p) => (ammDec[p.sym] = p.decimals));
-      $('#amm-price').textContent = '$' + Number(info.priceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 });
+      // No BLOCK/USD oracle — the market rate is shown BLOCK-denominated (BLOCK per
+      // 1 unit of the quote stablecoin), never as a BLOCK-derived USD price.
+      ammPriceUsd = Number(info.priceUsd) || 0;
+      const blkPerUnit = ammPriceUsd > 0 ? 1 / ammPriceUsd : 0;
+      const quoteSym = (ammPairs[0] && ammPairs[0].sym) || 'unit';
+      $('#amm-price').textContent = blkPerUnit ? (blkPerUnit.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK') : '—';
       $('#amm-mode').textContent = info.paper ? 'paper' : 'live';
-      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet · ' : '') + 'fee ' + (info.feeBps / 100) + '% · seed ' + info.seed.block.toLocaleString() + ' BLOCK @ $' + info.seed.priceUsd;
+      $('#amm-sub').textContent = (info.paper ? 'Paper market — no real funds move yet · ' : '') + 'fee ' + (info.feeBps / 100) + '%'
+        + (blkPerUnit ? (' · ≈ ' + blkPerUnit.toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' BLOCK per ' + quoteSym) : '')
+        + ' · seed ' + info.seed.block.toLocaleString() + ' BLOCK';
       const sel = $('#amm-cur');
       if (sel.options.length !== ammPairs.length) sel.innerHTML = ammPairs.map((p) => `<option value="${p.sym}">${p.sym} · ${p.network}</option>`).join('');
       $('#amm-pairs').innerHTML = ammPairs.map((p) => {
@@ -1487,7 +1500,7 @@
       if (!r.ok) { q.textContent = d.error || 'Quote failed'; return; }
       const impact = Number(d.priceBeforeMicroUsd) > 0 ? (Number(d.priceAfterMicroUsd) - Number(d.priceBeforeMicroUsd)) / Number(d.priceBeforeMicroUsd) * 100 : 0;
       if (side === 'buy') {
-        q.innerHTML = `Receive <b>${ammWhole(d.blockOut, ammDec.BLOCK || 8).toLocaleString(undefined, { maximumFractionDigits: 4 })} BLOCK</b> · fee $${(Number(d.feeUsd) / 1e6).toFixed(2)} · impact ${impact.toFixed(2)}%`;
+        q.innerHTML = `Receive <b>${ammWhole(d.blockOut, ammDec.BLOCK || 8).toLocaleString(undefined, { maximumFractionDigits: 4 })} BLOCK</b> · fee ${ammFeeBlock(d.feeUsd)} · impact ${impact.toFixed(2)}%`;
         go.disabled = false; go.textContent = 'Buy BLOCK';
       } else {
         const out = ammWhole(d.assetOut, ammCurDec());
@@ -1496,7 +1509,7 @@
           q.innerHTML = `<small>Would receive ${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${sym}, but the ${sym} pair only has liquidity for ≤ ${maxBlk.toLocaleString(undefined, { maximumFractionDigits: 2 })} BLOCK.</small>`;
           go.disabled = true; go.textContent = maxBlk > 0 ? 'Reduce amount' : 'No ' + sym + ' liquidity';
         } else {
-          q.innerHTML = `Receive <b>${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${sym}</b> · fee $${(Number(d.feeUsd) / 1e6).toFixed(2)} · impact ${impact.toFixed(2)}%`;
+          q.innerHTML = `Receive <b>${out.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${sym}</b> · fee ${ammFeeBlock(d.feeUsd)} · impact ${impact.toFixed(2)}%`;
           go.disabled = false; go.textContent = 'Sell BLOCK';
         }
       }

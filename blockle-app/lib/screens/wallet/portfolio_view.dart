@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../multichain/chains/chain_adapter.dart' show formatUnits;
+import '../../multichain/denomination.dart' show isBlockDenominated;
 import '../../multichain/portfolio.dart' as pf;
 import '../../state/app_state.dart';
 import '../../state/wallet_controller.dart';
@@ -61,7 +62,12 @@ class _PortfolioViewState extends State<PortfolioView> {
   Widget _body(BotTokens t, pf.Portfolio p) {
     final wc = context.read<WalletController>();
     final spark = wc.nwSpark();
-    final unpricedCount = p.unpriced.length;
+    // BLOCK-denominated holdings (native BLOCK + BLOCK-20/USDB + WBLOCK) are not
+    // "unpriced" — they are priced in BLOCK, never USD. Count them separately so
+    // they are not mislabeled as unpriced in the net-worth footnote.
+    final blockCount =
+        p.unpriced.where((u) => isBlockDenominated(chain: '${u['chain']}', symbol: '${u['symbol']}')).length;
+    final unpricedCount = p.unpriced.length - blockCount;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
       children: [
@@ -83,6 +89,10 @@ class _PortfolioViewState extends State<PortfolioView> {
         _footnote(t, Icons.info_outline,
             'Unpriced tokens are shown but not counted in net worth — never guessed.'
             '${unpricedCount > 0 ? ' ($unpricedCount unpriced)' : ''}'),
+        if (blockCount > 0)
+          _footnote(t, Icons.info_outline,
+              'BLOCK-chain assets are priced in BLOCK (no BLOCK/USD oracle) and '
+              'are not included in the USD net worth above.'),
       ],
     );
   }
@@ -246,8 +256,12 @@ class _PortfolioViewState extends State<PortfolioView> {
   Widget _holdingRow(BotTokens t, Map<String, dynamic> h, {required bool last}) {
     final wc = context.read<WalletController>();
     final symbol = '${h['symbol']}';
-    final amount = _amount('${h['amountBase']}', (h['decimals'] as num?)?.toInt() ?? 0);
+    final decimals = (h['decimals'] as num?)?.toInt() ?? 0;
+    final amount = _amount('${h['amountBase']}', decimals);
     final priced = h['pricedOk'] == true;
+    // BLOCK-denominated rows (native BLOCK, BLOCK-20/USDB, WBLOCK) are priced in
+    // BLOCK, never USD — show BLOCK units + an honest "no USD oracle" note.
+    final blockDenom = isBlockDenominated(chain: '${h['chain']}', symbol: symbol);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
       decoration: BoxDecoration(
@@ -262,9 +276,12 @@ class _PortfolioViewState extends State<PortfolioView> {
         ]),
         const Spacer(),
         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text('$amount $symbol',
+          Text(blockDenom ? _fmtBlock(amount, symbol) : '$amount $symbol',
               style: TextStyle(fontSize: 13, color: t.ink, fontFamily: kMonoFamily)),
-          if (priced)
+          if (blockDenom)
+            Text('priced in BLOCK',
+                style: TextStyle(fontSize: 12, color: t.inkFaint))
+          else if (priced)
             Text('\$${_grouped((h['usd'] as num).toDouble())}',
                 style: TextStyle(fontSize: 12, color: t.inkFaint, fontFamily: kMonoFamily))
           else
@@ -301,6 +318,11 @@ class _PortfolioViewState extends State<PortfolioView> {
           ]),
         ),
       );
+
+  /// Render a BLOCK-denominated holding's value in BLOCK-chain units (its own
+  /// symbol) — never a $ figure (there is no BLOCK/USD oracle). [amount] is the
+  /// already-formatted whole-unit amount.
+  static String _fmtBlock(String amount, String symbol) => '$amount $symbol';
 
   static String _amount(String base, int decimals) {
     try {

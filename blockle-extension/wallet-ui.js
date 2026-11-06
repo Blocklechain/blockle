@@ -67,6 +67,20 @@
     return '$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
   function signedUsd(n) { n = Number(n) || 0; return (n < 0 ? '−' : '+') + usd(n); }
+
+  // ---- BLOCK-denominated guard ---------------------------------------------
+  // There is NO BLOCK/USD oracle: the native BLOCK coin and every BLOCK-20 /
+  // BLOCK-20S token (all tagged chain:'block', incl. USDB) — plus the Solana
+  // wrap WBLOCK whose only price source is the BLOCK book — must NEVER be shown
+  // with a USD figure derived from a BLOCK price. They render in BLOCK units.
+  function isBlockDenominated(asset) {
+    if (!asset) return false;
+    if (String(asset.chain || '').toLowerCase() === 'block') return true;
+    var sym = String(asset.symbol || '').toUpperCase();
+    return sym === 'BLOCK' || sym === 'WBLOCK';
+  }
+  // Render a base-unit amount as a BLOCK-denominated quantity (never a `$`).
+  function fmtBlock(amtBase, dec) { return fmtAmount(amtBase, dec) + ' BLOCK'; }
   function shortAddr(a) {
     var s = String(a || '');
     if (s.length <= 16) return s;
@@ -227,6 +241,10 @@
       // configured priceUsd map) — returns null when unknown -> portfolio puts the
       // holding in `unpriced` (shown, NOT counted, NEVER guessed).
       async function priceUsd(asset) {
+        // No BLOCK/USD oracle — never derive a USD price for a BLOCK-chain asset
+        // (native BLOCK, every BLOCK-20/BLOCK-20S incl. USDB, and WBLOCK). These
+        // route to `unpriced` in portfolio.js and render in BLOCK units instead.
+        if (isBlockDenominated(asset)) return null;
         var dec = Number(asset && asset.decimals != null ? asset.decimals : 0);
         var whole; try { whole = (BigInt(10) ** BigInt(dec)).toString(); } catch (_) { whole = '1'; }
         try { return await Wiring.estimateUsd(asset, whole); } catch (_) { return null; }
@@ -523,9 +541,15 @@
   function holdingRowHtml(h) {
     var sym = h.symbol || (h.asset && h.asset.symbol) || '?';
     var amt = fmtAmount(h.amountBase, h.decimals);
-    var right = h.pricedOk
-      ? '<div class="q num">' + usd(h.usd) + '</div>'
-      : '<span class="wtag unpriced">UNPRICED</span>';
+    // BLOCK-chain assets have no USD oracle — show the BLOCK-denominated amount,
+    // never a `$` and never the UNPRICED tag (they are intentionally unpriced in
+    // USD, not of unknown value).
+    var blk = isBlockDenominated(h.asset || { chain: h.chain, symbol: sym });
+    var right = blk
+      ? '<div class="q num wblk">' + esc(amt) + ' ' + esc(sym) + '</div>'
+      : (h.pricedOk
+        ? '<div class="q num">' + usd(h.usd) + '</div>'
+        : '<span class="wtag unpriced">UNPRICED</span>');
     return '<div class="whrow">' + holdingIconHtml(h) +
       '<div><div class="nm">' + esc(sym) + '</div><div class="ch">' + esc(h.chain) + '</div></div>' +
       '<div class="amt"><div class="num">' + esc(amt) + ' ' + esc(sym) + '</div>' + right + '</div></div>';
@@ -1087,7 +1111,8 @@
     init: init, enter: enter, onUnlock: onUnlock, onResume: onResume, onLock: onLock,
     openProposalSheet: openProposalSheet, wcRequestCtx: wcRequestCtx, openSecuritySheet: openSecuritySheet,
     // pure helpers (DOM-level test + reuse)
-    usd: usd, signedUsd: signedUsd, shortAddr: shortAddr, checksLine: checksLine,
+    usd: usd, signedUsd: signedUsd, isBlockDenominated: isBlockDenominated, fmtBlock: fmtBlock,
+    shortAddr: shortAddr, checksLine: checksLine,
     sheetConfigFor: sheetConfigFor, maxSev: maxSev,
     holdingRowHtml: holdingRowHtml, activityRowHtml: activityRowHtml,
     nftTileHtml: nftTileHtml, sessionRowHtml: sessionRowHtml, resolvedLineHtml: resolvedLineHtml,

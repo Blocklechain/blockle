@@ -97,15 +97,49 @@ test('holdingRowHtml: calls the Logos resolver (chain icon for native, logoURI f
     assert.ok(/<img[^>]+wtoken-img/.test(nativeRow), 'renders a real icon <img>, not a text badge');
     assert.ok(!/>ET<\/span>/.test(nativeRow), 'no longer the old 2-letter TOKEN_BG badge');
 
-    // a token WITH a metadata logoURI -> an <img> pointing at that URI
-    const tokenRow = WalletUI.holdingRowHtml({ symbol: 'USDC', chain: 'base', amountBase: '5000000', decimals: 6, pricedOk: true, usd: 5, asset: { symbol: 'USDC', kind: 'token', contract: '0xusdc', logoURI: 'https://logos.example/usdc.png' } });
-    assert.ok(/https:\/\/logos\.example\/usdc\.png/.test(tokenRow), 'token row uses the metadata logoURI');
+    // an UNKNOWN token WITH a metadata logoURI -> an <img> pointing at that URI
+    // (a KNOWN token like USDC now resolves to its bundled brand mark first).
+    const tokenRow = WalletUI.holdingRowHtml({ symbol: 'ZZZ', chain: 'base', amountBase: '5000000', decimals: 6, pricedOk: true, usd: 5, asset: { symbol: 'ZZZ', kind: 'token', contract: '0xzzz', logoURI: 'https://logos.example/zzz.png' } });
+    assert.ok(/https:\/\/logos\.example\/zzz\.png/.test(tokenRow), 'unknown token row uses the metadata logoURI');
     // CSP-safe fallback: MV3 blocks inline onerror=, so a broken remote logo
     // degrades to its monogram via a data-fallback data: URI + a capturing error listener.
     assert.ok(/data-fallback="data:/.test(tokenRow), 'a broken remote logo falls back to the monogram (CSP-safe, never a broken image)');
+
+    // a KNOWN token -> its bundled brand mark (a self-contained data: URI), not the logoURI
+    const usdcRow = WalletUI.holdingRowHtml({ symbol: 'USDC', chain: 'base', amountBase: '5000000', decimals: 6, pricedOk: true, usd: 5, asset: { symbol: 'USDC', kind: 'token', contract: '0xusdc', logoURI: 'https://logos.example/usdc.png' } });
+    assert.ok(/<img[^>]+wtoken-img[^>]+src="data:image\/svg/.test(usdcRow), 'known token uses the bundled brand mark');
+    assert.ok(!/logos\.example\/usdc\.png/.test(usdcRow), 'brand mark wins over the runtime logoURI');
   } finally {
     delete global.Logos;
   }
+});
+
+// ---------------------------------------------------------------------------
+// BLOCK-denominated guard — NO BLOCK/USD oracle: never a `$` for a BLOCK-chain
+// asset (native BLOCK, every BLOCK-20/BLOCK-20S incl. USDB, and WBLOCK). The
+// holding row shows BLOCK units; a real-oracle asset is unaffected.
+// ---------------------------------------------------------------------------
+test('isBlockDenominated flags block-chain assets, BLOCK and WBLOCK — and nothing else', () => {
+  assert.ok(WalletUI.isBlockDenominated({ chain: 'block', symbol: 'FOO' }));
+  assert.ok(WalletUI.isBlockDenominated({ chain: 'block', symbol: 'USDB' }));
+  assert.ok(WalletUI.isBlockDenominated({ symbol: 'BLOCK' }));
+  assert.ok(WalletUI.isBlockDenominated({ chain: 'solana', symbol: 'WBLOCK' }));
+  assert.ok(!WalletUI.isBlockDenominated({ chain: 'ethereum', symbol: 'USDC' }));
+  assert.ok(!WalletUI.isBlockDenominated({ chain: 'solana', symbol: 'SOL' }));
+});
+
+test('holdingRowHtml: a BLOCK-chain asset shows BLOCK units and NEVER a $ figure', () => {
+  // native BLOCK
+  const blk = WalletUI.holdingRowHtml({ symbol: 'BLOCK', chain: 'block', amountBase: '123400000000', decimals: 8, pricedOk: false, usd: null, asset: { symbol: 'BLOCK', chain: 'block', kind: 'native' } });
+  assert.ok(!/\$/.test(blk), 'no $ anywhere on a BLOCK row');
+  assert.ok(/BLOCK/.test(blk), 'shows the BLOCK-denominated quantity');
+  assert.ok(!/UNPRICED/.test(blk), 'not tagged UNPRICED — it is intentionally USD-less, not unknown');
+  // a BLOCK-20 token (e.g. USDB) likewise
+  const usdb = WalletUI.holdingRowHtml({ symbol: 'USDB', chain: 'block', amountBase: '5000000', decimals: 6, pricedOk: false, usd: null, asset: { symbol: 'USDB', chain: 'block', kind: 'token', contract: '0x946b' } });
+  assert.ok(!/\$/.test(usdb), 'no $ on a BLOCK-20 row');
+  // a real-oracle asset still shows its USD quote
+  const eth = WalletUI.holdingRowHtml({ symbol: 'ETH', chain: 'ethereum', amountBase: '1000000000000000000', decimals: 18, pricedOk: true, usd: 3000, asset: { symbol: 'ETH', chain: 'ethereum', kind: 'native' } });
+  assert.ok(/\$3,000\.00/.test(eth), 'real-oracle assets keep their USD figure');
 });
 
 // ---------------------------------------------------------------------------

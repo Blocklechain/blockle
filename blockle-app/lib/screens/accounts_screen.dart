@@ -259,6 +259,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
               symbol: b.asset.symbol,
               isToken: true,
               logoUri: logo,
+              address: b.asset.address,
               radius: 9,
             ),
             const SizedBox(width: 6),

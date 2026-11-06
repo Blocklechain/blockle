@@ -496,6 +496,12 @@ class WalletController(QObject):
         return out
 
     def _price_asset(self, asset: Any) -> Optional[float]:
+        # NO USD ON BLOCK / BLOCK-20: a BLOCK-denominated asset has no USD oracle,
+        # so never derive a BLOCK->USD mark. Returning None routes it to the
+        # portfolio's ``unpriced`` bucket (shown in BLOCK units, never summed into
+        # a USD total). Real-oracle chains are unaffected.
+        if logos_mod.is_block_denominated(asset):
+            return None
         sym = None
         if isinstance(asset, dict):
             sym = asset.get("symbol")
@@ -1639,7 +1645,15 @@ class PortfolioPanel(_ScrollPanel):
         amt.setStyleSheet(f"font-family:{MONO};font-size:13px;")
         amt.setAlignment(Qt.AlignRight)
         amtcol.addWidget(amt)
-        if h.get("pricedOk"):
+        if logos_mod.is_block_denominated(h):
+            # NO USD ON BLOCK / BLOCK-20: the amount line above already shows the
+            # value in BLOCK units. There is no USD oracle, so show neither a $
+            # figure nor the "UNPRICED" tag (it is BLOCK-denominated, not unknown).
+            note = QLabel("on BLOCK")
+            note.setStyleSheet(f"color:{tok['ink_faint']};font-family:{MONO};font-size:11px;")
+            note.setAlignment(Qt.AlignRight)
+            amtcol.addWidget(note)
+        elif h.get("pricedOk"):
             q = QLabel(plain_money(h.get("usd")))
             q.setStyleSheet(f"color:{tok['ink_faint']};font-family:{MONO};font-size:12px;")
             q.setAlignment(Qt.AlignRight)

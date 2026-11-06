@@ -6,6 +6,14 @@
   var id = (location.pathname.split('/')[2] || '').toLowerCase();
   var __BLIC={"lock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 018 0v3.1\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"unlock":["0 0 24 24","<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10\" rx=\"2.2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"/><path d=\"M8 10.5V7.4a4 4 0 017.7-1.5\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/><path d=\"M12 14v3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"/>"],"check":["0 0 24 24","<path d=\"M4.5 12.5l4.5 4.5 10.5-11\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"]};function blIco(n){var e=__BLIC[n];return e?'<svg class="bl-ico" viewBox="'+e[0]+'" width="1em" height="1em" fill="none" aria-hidden="true" style="display:inline-block;vertical-align:-0.14em;flex:none">'+e[1]+'</svg>':'';}
   var COIN = 100000000, SWAP_FEE = 0.003, SLIP = 0.01, BLOCK_SECS = 600;
+  // Known BLOCK-20 tokens carry their real brand mark (served from the site),
+  // so the header icon shows it instead of the symbol initials. Mirrors the
+  // biz.rs token_logo() special-cases; unknown tokens use their registered
+  // logoURI, then the initials fallback.
+  var KNOWN_LOGO = {
+    '2beadf6b409427aacca1030778671ead6b9cdc5e817f1b6743c6d931c0c7ae7a': '/usdb-token.svg',
+    '32a97972001bd895203c4bb5ac4645af02d81263438968ea32e35140f130d00f': '/world-token.svg'
+  };
   var pool = null, meta = null, logo = null, tSide = 'buy';
   var $ = function (x) { return document.getElementById(x); };
   function setAttr(sel, attr, key, val) {
@@ -50,6 +58,7 @@
     try { pool = await (await fetch('/api/dex/pool/' + id)).json(); } catch (e) {}
     try { meta = await (await fetch('/api/token/' + id)).json(); meta = meta.result || meta; } catch (e) {}
     try { var t = await (await fetch('/api/dex/tokens')).json(); logo = t[id] && t[id].logo; } catch (e) {}
+    if (KNOWN_LOGO[id]) logo = KNOWN_LOGO[id];
     if (!pool || pool.exists === false) {
       var sym0 = (meta && meta.symbol) || 'token';
       seo(sym0, (meta && meta.name) || 'BLOCK-20 token');
