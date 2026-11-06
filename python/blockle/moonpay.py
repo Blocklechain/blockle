@@ -102,6 +102,8 @@ NATIVE_CURRENCY_CODES: Dict[str, Optional[str]] = {
     "solana": "sol",
     "tron": "trx",
     "ton": "ton",
+    "xrp": "xrp",
+    "stellar": "xlm",
 }
 
 #: Token overlays, keyed by (chain, SYMBOL-UPPER) -> MoonPay code.

@@ -25,6 +25,8 @@
     bitcoincash: { name: 'Bitcoin Cash', sym: 'BCH', pq: false },
     solana:    { name: 'Solana',      sym: 'SOL',   pq: false },
     tron:      { name: 'Tron',        sym: 'TRX',   pq: false },
+    xrp:       { name: 'XRP',         sym: 'XRP',   pq: false },
+    stellar:   { name: 'Stellar',     sym: 'XLM',   pq: false },
   };
   const EVM_CHAINS = new Set(['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'bnb', 'avalanche']);
 
@@ -50,6 +52,9 @@
   function nativeDecimals(chain) {
     if (customMeta[chain] && customMeta[chain].decimals != null) return Number(customMeta[chain].decimals);
     if (chain === 'solana') return 9; // SOL = 9 (lamports); BLOCK/BTC/LTC/DOGE = 8
+    if (chain === 'ton') return 9;    // TON = 9 (nanoton)
+    if (chain === 'xrp') return 6;    // XRP = 6 (drops)
+    if (chain === 'stellar') return 7; // XLM = 7 (stroops)
     return EVM_CHAINS.has(chain) ? 18 : 8;
   }
   // Pull custom-network meta from the registry into `customMeta`.

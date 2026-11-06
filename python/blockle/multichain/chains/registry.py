@@ -16,6 +16,8 @@ from .evm import create_evm_adapter
 from .solana import create_solana_adapter
 from .tron import create_tron_adapter
 from .ton import create_ton_adapter
+from .xrp import create_xrp_adapter
+from .stellar import create_stellar_adapter
 from .utxo import create_utxo_adapter
 
 try:  # BLOCK wrapper needs a ChainWallet; optional when none is wired in.
@@ -42,6 +44,8 @@ DEFAULT_ENDPOINTS = {
     "solana":   {"rpcUrl": "https://api.mainnet-beta.solana.com"},
     "tron":     {"api": "https://api.trongrid.io"},  # TronGrid REST (operator-overridable; API key optional)
     "ton":      {"api": "https://toncenter.com/api/v2"},  # toncenter v2 jsonRPC (operator-overridable; API key optional)
+    "xrp":      {"rpc": "https://xrplcluster.com"},  # rippled JSON-RPC (operator-overridable; fallback https://s1.ripple.com:51234)
+    "stellar":  {"horizon": "https://horizon.stellar.org"},  # Horizon REST (operator-overridable)
     "bitcoin":  {"esplora": "https://blockstream.info/api"},
     "litecoin": {"esplora": "https://litecoinspace.org/api"},
     "dogecoin": {"esplora": "https://doge-esplora.blockle.org"},  # Blockle-hosted Esplora shim (operator-overridable)
@@ -118,7 +122,7 @@ DEFAULT_TOKENS = {
     ],
 }
 
-DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
+DEFAULT_ENABLED = ["block", *EVM_NETWORKS.keys(), "solana", "tron", "ton", "xrp", "stellar", "bitcoin", "litecoin", "dogecoin", "bitcoincash"]
 
 
 def _resolve_alchemy_rpc(cfg):
@@ -215,6 +219,12 @@ class ChainRegistry:
         a["ton"] = create_ton_adapter(api=endpoints["ton"].get("api"),
                                       apiKey=endpoints["ton"].get("apiKey"),
                                       post=endpoints["ton"].get("post"))
+        a["xrp"] = create_xrp_adapter(rpc=endpoints["xrp"].get("rpc"),
+                                      post=endpoints["xrp"].get("post"))
+        a["stellar"] = create_stellar_adapter(horizon=endpoints["stellar"].get("horizon"),
+                                              http_get=endpoints["stellar"].get("http_get"),
+                                              http_post=endpoints["stellar"].get("http_post"),
+                                              post=endpoints["stellar"].get("post"))
         a["bitcoin"] = create_utxo_adapter("bitcoin", esplora=endpoints["bitcoin"].get("esplora"),
                                            http_get=endpoints["bitcoin"].get("http_get"),
                                            http_post=endpoints["bitcoin"].get("http_post"))

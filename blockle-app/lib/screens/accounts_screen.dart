@@ -852,6 +852,29 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(labelText: 'Amount (${_asset?.symbol ?? ''})'),
           ),
+          if (widget.chain == 'xrp' || widget.chain == 'stellar') ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Bk.warn.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Bk.warn.withValues(alpha: 0.5)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.info_outline, size: 15, color: Bk.warn),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(
+                    widget.chain == 'xrp'
+                        ? 'XRP keeps a 10 XRP base reserve — the account cannot drop below it, and the destination must already exist (or be funded with ≥10 XRP).'
+                        : 'Stellar keeps a 1 XLM base reserve per account — the balance cannot drop below it, and the destination must already exist.',
+                    style: const TextStyle(fontSize: 11, color: Bk.warn),
+                  ),
+                ),
+              ]),
+            ),
+          ],
           const SizedBox(height: 12),
           TextField(
             controller: _feeRate,
@@ -975,6 +998,10 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
         return 'Fee rate (sat/vB, optional)';
       case 'block':
         return 'Network fee (base units, optional)';
+      case 'xrp':
+        return 'Fee (drops, optional — default 10)';
+      case 'stellar':
+        return 'Base fee (stroops, optional — default 100)';
       default:
         return isEvm
             ? 'Max fee per gas (wei, optional)'

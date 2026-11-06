@@ -14,6 +14,7 @@ class Bk {
   static const muted = Color(0xFF9A9AB5);
   static const good = Color(0xFF4ADE80);
   static const bad = Color(0xFFFB7185);
+  static const warn = Color(0xFFF5A524);
 
   static const gradient = LinearGradient(
     begin: Alignment.topLeft,

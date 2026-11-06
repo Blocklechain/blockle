@@ -1,0 +1,81 @@
+{
+  "_comment": "XRP golden vector — gate for secp256k1 BIP44 m/44'/144'/0'/0/0 -> 33B compressed pub -> AccountID=RIPEMD160(SHA256(pub)) -> ripple-base58check 'r…', AND the client-built XRPL-binary-codec Payment: SHA512-half('STX\\0'||tx-without-sig) -> secp256k1 canonical low-S DER in TxnSignature -> re-serialized signed tx_blob hex; txid = SHA512-half('TXN\\0'||signed). Cross-checked BYTE-IDENTICAL against ripple-keypairs + ripple-binary-codec. Every port (extension JS canonical, web vendor JS, Flutter Dart, Qt Python) MUST reproduce every `expected` byte-identically before XRP touches funds.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "path": "m/44'/144'/0'/0/0",
+  "network": {
+    "id": "xrp",
+    "symbol": "XRP",
+    "decimals": 6,
+    "coinType": 144,
+    "baseReserveXrp": 10,
+    "endpoint": "https://xrplcluster.com",
+    "endpointFallback": "https://s1.ripple.com:51234",
+    "explorerTx": "https://xrpscan.com/tx/",
+    "moonpay": {
+      "native": "xrp"
+    }
+  },
+  "expected": {
+    "privKeyHex": "90802a50aa84efb6cdb225f17c27616ea94048c179142fecf03f4712a07ea7a4",
+    "pubkeyHexCompressed": "031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae",
+    "accountIdHex": "aff3c2e33458b30714ca16ffee19952dd35c17c8",
+    "classicAddress": "rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3"
+  },
+  "addressSpecVectors": [
+    [
+      "aff3c2e33458b30714ca16ffee19952dd35c17c8",
+      "rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3"
+    ],
+    [
+      "5720939c1336a7356a70ed861d5934345c6b6360",
+      "r3AgF9mMBFtaLhKcg96weMhbbEFLZ3mx17"
+    ],
+    [
+      "eb1822090a09ac822404731b30b061c938ccd20d",
+      "r4Sh61HP7nxB6mQxXSSeN2DCkG3sTrzb2c"
+    ]
+  ],
+  "tx": {
+    "kind": "payment",
+    "fields": {
+      "Account": "rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3",
+      "Destination": "r3AgF9mMBFtaLhKcg96weMhbbEFLZ3mx17",
+      "DestinationTag": null,
+      "Amount": "1000000",
+      "Fee": "10",
+      "Sequence": 1,
+      "Flags": 2147483648,
+      "LastLedgerSequence": 12345,
+      "SigningPubKey": "031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae"
+    },
+    "signingDataHex": "5354580012000022800000002400000001201b000030396140000000000f424068400000000000000a7321031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae8114aff3c2e33458b30714ca16ffee19952dd35c17c883145720939c1336a7356a70ed861d5934345c6b6360",
+    "expected": {
+      "txBlobHex": "12000022800000002400000001201b000030396140000000000f424068400000000000000a7321031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae74473045022100f74ad1fb76b920154ca0c744963f138df8c58655ffbd4965e3446cae07c5e4c9022011a5a78b69f2a23124c3ca4ce3a9a2984bf7a89aafd53f6126f145fd43a80ae38114aff3c2e33458b30714ca16ffee19952dd35c17c883145720939c1336a7356a70ed861d5934345c6b6360",
+      "txnSignatureDerHex": "3045022100f74ad1fb76b920154ca0c744963f138df8c58655ffbd4965e3446cae07c5e4c9022011a5a78b69f2a23124c3ca4ce3a9a2984bf7a89aafd53f6126f145fd43a80ae3",
+      "hash": "9B996D307F605DF1E8A197BBB271EDC170F1C775AEC86687F2A62869FA259314",
+      "verifies": true
+    }
+  },
+  "txWithTag": {
+    "kind": "payment",
+    "fields": {
+      "Account": "rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3",
+      "Destination": "r4Sh61HP7nxB6mQxXSSeN2DCkG3sTrzb2c",
+      "DestinationTag": 42,
+      "Amount": "2500000",
+      "Fee": "10",
+      "Sequence": 2,
+      "Flags": 2147483648,
+      "LastLedgerSequence": 12345,
+      "SigningPubKey": "031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae"
+    },
+    "signingDataHex": "53545800120000228000000024000000022e0000002a201b000030396140000000002625a068400000000000000a7321031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae8114aff3c2e33458b30714ca16ffee19952dd35c17c88314eb1822090a09ac822404731b30b061c938ccd20d",
+    "expected": {
+      "txBlobHex": "120000228000000024000000022e0000002a201b000030396140000000002625a068400000000000000a7321031d68bc1a142e6766b2bdfb006ccfe135ef2e0e2e94abb5cf5c9ab6104776fbae74473045022100f4479da77cc7b5e605a38189a2c60d3f8af797b04a19503ea66088bdd86f163e0220694c31f7277213f901e1a16ca52f35a968009da8f376f8f1ad1267aa4a08afb88114aff3c2e33458b30714ca16ffee19952dd35c17c88314eb1822090a09ac822404731b30b061c938ccd20d",
+      "txnSignatureDerHex": "3045022100f4479da77cc7b5e605a38189a2c60d3f8af797b04a19503ea66088bdd86f163e0220694c31f7277213f901e1a16ca52f35a968009da8f376f8f1ad1267aa4a08afb8",
+      "hash": "9CF6C9CEF0950F2597B6DF0C6E1E2A6C31F39CD74A3A3CB6CD2D993DF702903F",
+      "verifies": true
+    }
+  }
+}

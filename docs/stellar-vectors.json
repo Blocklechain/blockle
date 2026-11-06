@@ -1,0 +1,101 @@
+{
+  "_comment": "Stellar golden vector — gate for SLIP-0010 ed25519 m/44'/148'/0' -> 32B pub -> strkey 'G…' (base32(0x30||pub||crc16xmodem-LE), no pad), AND the client-built TransactionEnvelope XDR (PRECOND_NONE, MEMO_NONE, one Payment op): sign ed25519 over the tx hash = SHA256(networkId || ENVELOPE_TYPE_TX(=2) || txXDR), networkId=SHA256(passphrase); DecoratedSignature{hint,sig} in signatures[]; base64 signed envelope. Cross-checked BYTE-IDENTICAL against @stellar/stellar-base. Every port MUST reproduce every `expected` byte-identically before Stellar touches funds.",
+  "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+  "passphrase": "",
+  "path": "m/44'/148'/0'",
+  "network": {
+    "id": "stellar",
+    "symbol": "XLM",
+    "decimals": 7,
+    "coinType": 148,
+    "baseReserveXlm": 1,
+    "networkPassphrase": "Public Global Stellar Network ; September 2015",
+    "networkIdHex": "7ac33997544e3175d266bd022439b22cdb16508c01163f26e5cb2a3e1045a979",
+    "envelopeTypeTx": 2,
+    "baseFeeStroops": 100,
+    "horizon": "https://horizon.stellar.org",
+    "explorerTx": "https://stellar.expert/explorer/public/tx/",
+    "moonpay": {
+      "native": "xlm"
+    }
+  },
+  "crcKats": [
+    [
+      "",
+      0
+    ],
+    [
+      "123456789",
+      12739
+    ]
+  ],
+  "expected": {
+    "seedKeyHex": "695db2365365e06159f13cc752a5d3b0c7376c45012b2f695e3a4da2434948bc",
+    "pubkeyHex": "7691d85048acc4ed085d9061ce0948bbdf7de6a92b790aaf241d31b7dcaa4238",
+    "address": "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX"
+  },
+  "addressSpecVectors": [
+    [
+      "7691d85048acc4ed085d9061ce0948bbdf7de6a92b790aaf241d31b7dcaa4238",
+      "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX"
+    ],
+    [
+      "eb2c62740276011e6f8365380470e2c678098dc70a2240fd9a68c9497684a66e",
+      "GDVSYYTUAJ3ACHTPQNSTQBDQ4LDHQCMNY4FCEQH5TJUMSSLWQSTG42MV"
+    ],
+    [
+      "4afb066de02e77d9f3856017f151ceb15c61c68b2ba7930bd382f7a46ffac822",
+      "GBFPWBTN4AXHPWPTQVQBP4KRZ2YVYYOGRMV2PEYL2OBPPJDP7LECEVHR"
+    ]
+  ],
+  "tx": {
+    "kind": "payment-native",
+    "fields": {
+      "source": "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX",
+      "sequence": "4294967297",
+      "fee": 100,
+      "op": {
+        "type": "payment",
+        "destination": "GDVSYYTUAJ3ACHTPQNSTQBDQ4LDHQCMNY4FCEQH5TJUMSSLWQSTG42MV",
+        "asset": "native",
+        "amountStroops": "10000000"
+      }
+    },
+    "txXDRunsignedBase64": "AAAAAHaR2FBIrMTtCF2QYc4JSLvffeapK3kKryQdMbfcqkI4AAAAZAAAAAEAAAABAAAAAAAAAAAAAAABAAAAAAAAAAEAAAAA6yxidAJ2AR5vg2U4BHDixngJjccKIkD9mmjJSXaEpm4AAAAAAAAAAACYloAAAAAA",
+    "signingPayloadHex": "fc02c2f7b6157b210f4b56923a452842ce6119e6de309ce651169776bd754dc4",
+    "expected": {
+      "signatureHex": "1c3489216c574bab0577bbfc70e16860f6e1a872f6379b414a912320721043a5ac68fe2f7922b9ddefbb2e8f714cd3537436c135de12b9770034cf4b2d72eb09",
+      "hint": "dcaa4238",
+      "envelopeXDRBase64": "AAAAAgAAAAB2kdhQSKzE7QhdkGHOCUi7333mqSt5Cq8kHTG33KpCOAAAAGQAAAABAAAAAQAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAOssYnQCdgEeb4NlOARw4sZ4CY3HCiJA/ZpoyUl2hKZuAAAAAAAAAAAAmJaAAAAAAAAAAAHcqkI4AAAAQBw0iSFsV0urBXe7/HDhaGD24ahy9jebQUqRIyByEEOlrGj+L3kiud3vuy6PcUzTU3Q2wTXeErl3ADTPSy1y6wk=",
+      "hash": "fc02c2f7b6157b210f4b56923a452842ce6119e6de309ce651169776bd754dc4",
+      "verifies": true
+    }
+  },
+  "assetTx": {
+    "kind": "payment-asset",
+    "fields": {
+      "source": "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX",
+      "sequence": "4294967298",
+      "fee": 100,
+      "op": {
+        "type": "payment",
+        "destination": "GDVSYYTUAJ3ACHTPQNSTQBDQ4LDHQCMNY4FCEQH5TJUMSSLWQSTG42MV",
+        "asset": {
+          "code": "USDC",
+          "issuer": "GBFPWBTN4AXHPWPTQVQBP4KRZ2YVYYOGRMV2PEYL2OBPPJDP7LECEVHR",
+          "type": "alphanum4"
+        },
+        "amountStroops": "10000000"
+      }
+    },
+    "txXDRunsignedBase64": "AAAAAHaR2FBIrMTtCF2QYc4JSLvffeapK3kKryQdMbfcqkI4AAAAZAAAAAEAAAACAAAAAAAAAAAAAAABAAAAAAAAAAEAAAAA6yxidAJ2AR5vg2U4BHDixngJjccKIkD9mmjJSXaEpm4AAAABVVNEQwAAAABK+wZt4C532fOFYBfxUc6xXGHGiyunkwvTgvekb/rIIgAAAAAAmJaAAAAAAA==",
+    "signingPayloadHex": "7af3a5e879d30aabb29642ffed206119238846fbba5bc751bcc1ddd5f0ada371",
+    "expected": {
+      "signatureHex": "a1c0c366cae72494100d966cdf87589dde01a1ce5b8ec08baa33c5726094e80af4bceff418547a1239b322fd3a7080a0a35ebad9b5c193ce4029909242402c0b",
+      "hint": "dcaa4238",
+      "envelopeXDRBase64": "AAAAAgAAAAB2kdhQSKzE7QhdkGHOCUi7333mqSt5Cq8kHTG33KpCOAAAAGQAAAABAAAAAgAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAOssYnQCdgEeb4NlOARw4sZ4CY3HCiJA/ZpoyUl2hKZuAAAAAVVTREMAAAAASvsGbeAud9nzhWAX8VHOsVxhxosrp5ML04L3pG/6yCIAAAAAAJiWgAAAAAAAAAAB3KpCOAAAAEChwMNmyucklBANlmzfh1id3gGhzluOwIuqM8VyYJToCvS87/QYVHoSObMi/TpwgKCjXrrZtcGTzkApkJJCQCwL",
+      "hash": "7af3a5e879d30aabb29642ffed206119238846fbba5bc751bcc1ddd5f0ada371",
+      "verifies": true
+    }
+  }
+}

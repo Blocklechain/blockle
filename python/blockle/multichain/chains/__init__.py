@@ -8,7 +8,8 @@ chain-specific sign paths). Mirrors ``blockle-extension/chains/*.js`` and
 
 from __future__ import annotations
 
-from . import block, custom_networks, discovery, evm, registry, solana, ton, utxo
+from . import (block, custom_networks, discovery, evm, registry, solana,
+               stellar, ton, tron, utxo, xrp)
 from .chain_adapter import (AssetRef, Balance, BroadcastResult, BuiltTx,
                             ChainAdapter, DerivedAccount, RootSecret, as_seed,
                             format_units)
@@ -21,6 +22,9 @@ from .evm import EvmAdapter, create_evm_adapter
 from .registry import ChainRegistry, create_registry
 from .solana import SolanaAdapter, create_solana_adapter
 from .ton import TonAdapter, create_ton_adapter
+from .tron import TronAdapter, create_tron_adapter
+from .xrp import XrpAdapter, create_xrp_adapter
+from .stellar import StellarAdapter, create_stellar_adapter
 from .utxo import NETWORKS, UtxoAdapter, create_utxo_adapter
 from .block import BlockAdapter, create_block_adapter
 
@@ -31,11 +35,14 @@ __all__ = [
     "UtxoAdapter", "NETWORKS", "create_utxo_adapter",
     "SolanaAdapter", "create_solana_adapter",
     "TonAdapter", "create_ton_adapter",
+    "TronAdapter", "create_tron_adapter",
+    "XrpAdapter", "create_xrp_adapter",
+    "StellarAdapter", "create_stellar_adapter",
     "BlockAdapter", "create_block_adapter",
     "ChainRegistry", "create_registry",
     "merge_balances", "is_spam", "parse_spl_accounts",
     "parse_alchemy_balances", "parse_alchemy_metadata",
     "normalize_custom_network", "normalize_custom_networks",
     "dedupe_custom_networks", "explorer_tx_prefix", "probe_chain_id",
-    "block", "evm", "solana", "ton", "utxo", "registry", "discovery", "custom_networks",
+    "block", "evm", "solana", "ton", "tron", "xrp", "stellar", "utxo", "registry", "discovery", "custom_networks",
 ]

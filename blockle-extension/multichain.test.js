@@ -291,6 +291,28 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry ton path', ton.path, "m/44'/607'/0'");
     eq('registry ton addr', ton.address, 'EQAzWZa6nM5mJev91wGc7VCSfBoIsYRqKJpV78N8Add9-U9d');
     ok('registry ton addr is EQ-prefixed base64url', /^EQ[A-Za-z0-9_-]{46}$/.test(ton.address));
+    // XRP adapter is REGISTERED (secp256k1 m/44'/144'/0'/0/0), enabled by default,
+    // derives a classic 'r…' address from the SAME HD seed; rippled JSON-RPC
+    // endpoint defaults to the public mainnet cluster (no key).
+    ok('registry has xrp adapter', reg.has('xrp'));
+    ok('registry enables xrp', reg.enabled().includes('xrp'));
+    eq('registry xrp default rpc', reg.endpoints('xrp').rpc, 'https://xrplcluster.com');
+    const xrp = await reg.get('xrp').deriveAccount({ seed });
+    eq('registry xrp scheme', xrp.scheme, 'secp256k1');
+    eq('registry xrp path', xrp.path, "m/44'/144'/0'/0/0");
+    eq('registry xrp addr', xrp.address, 'rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3');
+    ok('registry xrp addr is r-prefixed', /^r[1-9A-HJ-NP-Za-km-zA-Z]{24,34}$/.test(xrp.address));
+    // Stellar adapter is REGISTERED (ed25519 SLIP-0010 m/44'/148'/0'), enabled by
+    // default, derives a strkey 'G…' address from the SAME HD seed; Horizon REST
+    // endpoint defaults to the public mainnet host (no key).
+    ok('registry has stellar adapter', reg.has('stellar'));
+    ok('registry enables stellar', reg.enabled().includes('stellar'));
+    eq('registry stellar default horizon', reg.endpoints('stellar').horizon, 'https://horizon.stellar.org');
+    const xlm = await reg.get('stellar').deriveAccount({ seed });
+    eq('registry stellar scheme', xlm.scheme, 'ed25519');
+    eq('registry stellar path', xlm.path, "m/44'/148'/0'");
+    eq('registry stellar addr', xlm.address, 'GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX');
+    ok('registry stellar addr is G-prefixed base32', /^G[A-Z2-7]{55}$/.test(xlm.address));
     // A config override replaces the default RPC without touching the key path.
     const reg2 = REG.createRegistry({ endpoints: { solana: { rpcUrl: 'https://solana.example/rpc' } } });
     eq('registry solana rpc override', reg2.endpoints('solana').rpcUrl, 'https://solana.example/rpc');

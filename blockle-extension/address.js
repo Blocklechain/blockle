@@ -210,6 +210,140 @@
     catch { return false; }
   }
 
+  // ---- XRP Ledger (classic 'r…' = base58check over 0x00 || accountId) ------
+  // AccountID = RIPEMD160(SHA256(compressedPub)). The 'r…' classic address is
+  // Bitcoin-style base58check (0x00 version byte, 4-byte double-SHA256 checksum)
+  // but over the RIPPLE base58 alphabet rather than the Bitcoin one.
+  const XRP_ALPHABET = 'rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz';
+  function baseXEncode(bytes, alphabet) {
+    const b = C.toBytes(bytes);
+    let zeros = 0; while (zeros < b.length && b[zeros] === 0) zeros++;
+    const digits = [0];
+    for (let i = zeros; i < b.length; i++) {
+      let carry = b[i];
+      for (let j = 0; j < digits.length; j++) { carry += digits[j] << 8; digits[j] = carry % 58; carry = (carry / 58) | 0; }
+      while (carry) { digits.push(carry % 58); carry = (carry / 58) | 0; }
+    }
+    let str = '';
+    for (let i = 0; i < zeros; i++) str += alphabet[0];
+    if (zeros < b.length) for (let i = digits.length - 1; i >= 0; i--) str += alphabet[digits[i]];
+    return str;
+  }
+  function baseXDecode(str, alphabet) {
+    const bytes = [0];
+    for (const ch of str) {
+      const val = alphabet.indexOf(ch);
+      if (val < 0) throw new Error('invalid base58 char');
+      let carry = val;
+      for (let j = 0; j < bytes.length; j++) { carry += bytes[j] * 58; bytes[j] = carry & 0xff; carry >>= 8; }
+      while (carry) { bytes.push(carry & 0xff); carry >>= 8; }
+    }
+    let zeros = 0;
+    for (const ch of str) { if (ch === alphabet[0]) zeros++; else break; }
+    let n = bytes.length; if (n === 1 && bytes[0] === 0) n = 0;
+    const out = new Uint8Array(zeros + n);
+    for (let i = 0; i < n; i++) out[zeros + i] = bytes[n - 1 - i];
+    return out;
+  }
+  function xrplBase58CheckEncode(payload) {
+    const b = C.toBytes(payload);
+    const checksum = C.hash256(b).slice(0, 4);
+    return baseXEncode(C.concatBytes(b, checksum), XRP_ALPHABET);
+  }
+  function xrplBase58CheckDecode(str) {
+    const full = baseXDecode(String(str), XRP_ALPHABET);
+    if (full.length < 5) throw new Error('xrp: short payload');
+    const payload = full.slice(0, -4), checksum = full.slice(-4);
+    const expect = C.hash256(payload).slice(0, 4);
+    for (let i = 0; i < 4; i++) if (checksum[i] !== expect[i]) throw new Error('xrp: bad base58check checksum');
+    return payload; // 0x00 || accountId(20)
+  }
+  // 20-byte AccountID from a 33-byte compressed secp256k1 pubkey.
+  function xrpAccountId(pubKeyBytes) {
+    const pub = C.toBytes(pubKeyBytes); // MUST be 33-byte compressed (XRPL signs/addresses with compressed)
+    return C.hash160(pub);              // RIPEMD160(SHA256(pub))
+  }
+  function xrpAddress(pubKeyBytes) {
+    return xrplBase58CheckEncode(C.concatBytes(Uint8Array.of(0x00), xrpAccountId(pubKeyBytes)));
+  }
+  // 'r…' -> 20-byte accountId hex. Throws unless version byte is 0x00.
+  function xrpAddressToAccountId(addr) {
+    const payload = xrplBase58CheckDecode(String(addr));
+    if (payload.length !== 21 || payload[0] !== 0x00) throw new Error('not an xrp classic address');
+    return payload.slice(1); // 20 bytes
+  }
+  // 20-byte accountId -> 'r…'.
+  function xrpAccountIdToAddress(accountId20) {
+    const b = C.toBytes(accountId20);
+    if (b.length !== 20) throw new Error('xrp: accountId must be 20 bytes');
+    return xrplBase58CheckEncode(C.concatBytes(Uint8Array.of(0x00), b));
+  }
+  function isXrpAddress(addr) {
+    if (typeof addr !== 'string') return false;
+    if (!/^r[1-9A-HJ-NP-Za-km-zA-Z]{24,34}$/.test(addr)) return false;
+    try { const p = xrplBase58CheckDecode(addr); return p.length === 21 && p[0] === 0x00; }
+    catch { return false; }
+  }
+
+  // ---- Stellar (strkey 'G…' = base32(0x30 || pub32 || crc16xmodem-LE)) -----
+  const B32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const STRKEY_VERSION_ACCOUNT = 6 << 3; // 0x30 => leading 'G'
+  function crc16xmodem(bytes) { // poly 0x1021, init 0x0000 (XModem / CCITT-FALSE sans init)
+    let crc = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i] << 8;
+      for (let b = 0; b < 8; b++) { crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) : (crc << 1); crc &= 0xffff; }
+    }
+    return crc & 0xffff;
+  }
+  function base32Encode(bytes) {
+    const b = C.toBytes(bytes);
+    let out = '', bits = 0, val = 0;
+    for (let i = 0; i < b.length; i++) {
+      val = (val << 8) | b[i]; bits += 8;
+      while (bits >= 5) { out += B32_ALPHABET[(val >>> (bits - 5)) & 31]; bits -= 5; }
+    }
+    if (bits > 0) out += B32_ALPHABET[(val << (5 - bits)) & 31];
+    return out; // no '=' padding (strkey convention)
+  }
+  function base32Decode(str) {
+    const s = String(str).replace(/=+$/, '');
+    let bits = 0, val = 0; const out = [];
+    for (const ch of s) {
+      const idx = B32_ALPHABET.indexOf(ch);
+      if (idx < 0) throw new Error('bad base32 char');
+      val = (val << 5) | idx; bits += 5;
+      if (bits >= 8) { out.push((val >>> (bits - 8)) & 0xff); bits -= 8; }
+    }
+    return Uint8Array.from(out);
+  }
+  function strkeyEncode(versionByte, payload) {
+    const data = C.concatBytes(Uint8Array.of(versionByte), C.toBytes(payload));
+    const crc = crc16xmodem(data);
+    const full = C.concatBytes(data, Uint8Array.of(crc & 0xff, (crc >> 8) & 0xff)); // CRC little-endian
+    return base32Encode(full);
+  }
+  function strkeyDecode(str, expectVersion) {
+    const full = base32Decode(str);
+    if (full.length < 3) throw new Error('strkey: short');
+    const data = full.slice(0, full.length - 2), crcBytes = full.slice(full.length - 2);
+    const crc = crc16xmodem(data);
+    if (crcBytes[0] !== (crc & 0xff) || crcBytes[1] !== ((crc >> 8) & 0xff)) throw new Error('strkey: bad crc');
+    if (expectVersion != null && data[0] !== expectVersion) throw new Error('strkey: wrong version');
+    return data.slice(1); // payload (pubkey for account)
+  }
+  function stellarAddress(pubKey32) {
+    const pub = C.toBytes(pubKey32);
+    if (pub.length !== 32) throw new Error('stellar: pubkey must be 32 bytes');
+    return strkeyEncode(STRKEY_VERSION_ACCOUNT, pub);
+  }
+  function stellarAddressToPub(addr) { return strkeyDecode(String(addr), STRKEY_VERSION_ACCOUNT); }
+  function isStellarAddress(addr) {
+    if (typeof addr !== 'string') return false;
+    if (!/^G[A-Z2-7]{55}$/.test(addr)) return false;
+    try { return strkeyDecode(addr, STRKEY_VERSION_ACCOUNT).length === 32; } catch { return false; }
+  }
+
   // ---- UTXO addresses ------------------------------------------------------
   // P2WPKH native segwit (BTC/LTC): hrp-dependent.
   function p2wpkh(pubKeyBytes, hrp) {
@@ -241,6 +375,10 @@
     cashAddrEncode, cashAddrDecode, cashAddrP2pkh, looksLikeCashAddr, cashPolymod,
     evmAddress, toChecksumAddress,
     tronAddress, tronAddressToHex, tronHexToBase58, isTronAddress,
+    xrpAccountId, xrpAddress, xrpAddressToAccountId, xrpAccountIdToAddress, isXrpAddress,
+    xrplBase58CheckEncode, xrplBase58CheckDecode,
+    stellarAddress, stellarAddressToPub, isStellarAddress,
+    strkeyEncode, strkeyDecode, crc16xmodem, base32Encode, base32Decode,
     p2wpkh, p2pkh, toWIF, fromWIF,
   };
   global.Addr = API;

@@ -65,6 +65,8 @@
     solana:    { native: 'sol',        tokens: { USDC: 'usdc_sol',     USDT: 'usdt_sol' } },
     tron:      { native: 'trx',        tokens: { USDT: 'usdt_tron' } },
     ton:       { native: 'ton',        tokens: { USDT: 'usdt_ton' } },
+    xrp:       { native: 'xrp',        tokens: {} },
+    stellar:   { native: 'xlm',        tokens: {} },
     // block: absent on purpose (not on MoonPay).
   };
 

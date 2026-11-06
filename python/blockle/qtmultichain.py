@@ -60,7 +60,7 @@ from .multichain.chains import create_registry
 
 #: EVM networks — one secp256k1 address across all of them (m/44'/60').
 EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bnb", "avalanche", "hyperevm"]
-CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton"]
+CHAIN_ORDER = ["block", *EVM_CHAINS, "bitcoin", "litecoin", "dogecoin", "bitcoincash", "solana", "tron", "ton", "xrp", "stellar"]
 CHAIN_LABELS = {
     "block": "BLOCK", "ethereum": "Ethereum", "base": "Base",
     "arbitrum": "Arbitrum One", "optimism": "Optimism", "polygon": "Polygon",
@@ -70,6 +70,14 @@ CHAIN_LABELS = {
     "solana": "Solana",
     "tron": "Tron",
     "ton": "TON",
+    "xrp": "XRP",
+    "stellar": "Stellar",
+}
+#: Chains with a minimum base reserve that must stay in the account (shown as a
+#: note in the send dialog). XRP: 10-XRP base reserve; Stellar: 1-XLM per entry.
+CHAIN_RESERVE_NOTE = {
+    "xrp": "XRP keeps a 10 XRP base reserve locked in the account (cannot be sent).",
+    "stellar": "Stellar keeps a 1 XLM base reserve per account entry (cannot be sent).",
 }
 #: Only BLOCK signs post-quantum (ML-DSA-44). Every other chain is ECDSA/ed25519
 #: — the vault hardens the stored key against theft, it is NOT a PQ signature.
@@ -82,6 +90,8 @@ CHAIN_SCHEME = {
     "solana": "ed25519",
     "tron": "secp256k1",
     "ton": "ed25519",
+    "xrp": "secp256k1",
+    "stellar": "ed25519",
 }
 
 #: The treasury the non-bypassable 0.05% agent trade fee is routed to, per chain
@@ -1414,6 +1424,12 @@ class SendDialog(QDialog):
         form.addRow("Amount", self.amount)
         lay.addLayout(form)
 
+        self.reserve_note = QLabel("")
+        self.reserve_note.setWordWrap(True)
+        self.reserve_note.setStyleSheet("color:#b58900;")
+        self.reserve_note.setVisible(False)
+        lay.addWidget(self.reserve_note)
+
         self.review = QPlainTextEdit()
         self.review.setReadOnly(True)
         self.review.setPlaceholderText("Press Build to review the fee + txid before broadcasting.")
@@ -1444,6 +1460,9 @@ class SendDialog(QDialog):
         self.asset.addItem(self.ctrl.chain_label(cid) + " (native)", None)
         for t in self.ctrl.registry.tokens_for(cid):
             self.asset.addItem(t.symbol, t)
+        note = CHAIN_RESERVE_NOTE.get(cid)
+        self.reserve_note.setText(note or "")
+        self.reserve_note.setVisible(bool(note))
 
     def _build(self):
         cid = self._cur_chain()

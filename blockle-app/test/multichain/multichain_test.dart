@@ -497,6 +497,36 @@ void main() {
       expect(acct.path, "m/44'/195'/0'/0/0");
       expect(acct.address, goldenAddr);
     });
+
+    test('registry wires XRP: enabled, rippled endpoint, r… address', () async {
+      final reg = ChainRegistry.create();
+      final root = RootSecret(seed: hd.mnemonicToSeed(abandon, ''));
+      reg.unlock(root);
+      expect(reg.has('xrp'), isTrue);
+      expect(reg.enabled().contains('xrp'), isTrue);
+      expect(reg.endpoints('xrp')?.rpcUrl, 'https://xrplcluster.com');
+      final acct = await reg.get('xrp').deriveAccount(root);
+      expect(acct.chain, 'xrp');
+      expect(acct.scheme, 'secp256k1');
+      expect(acct.path, "m/44'/144'/0'/0/0");
+      expect(acct.address, 'rHsMGQEkVNJmpGWs8XUBoTBiAAbwxZN5v3');
+    });
+
+    test('registry wires Stellar: enabled, Horizon endpoint, G… address',
+        () async {
+      final reg = ChainRegistry.create();
+      final root = RootSecret(seed: hd.mnemonicToSeed(abandon, ''));
+      reg.unlock(root);
+      expect(reg.has('stellar'), isTrue);
+      expect(reg.enabled().contains('stellar'), isTrue);
+      expect(reg.endpoints('stellar')?.horizon, 'https://horizon.stellar.org');
+      final acct = await reg.get('stellar').deriveAccount(root);
+      expect(acct.chain, 'stellar');
+      expect(acct.scheme, 'ed25519');
+      expect(acct.path, "m/44'/148'/0'");
+      expect(acct.address,
+          'GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX');
+    });
   });
 
   group('registry derivation (no network)', () {

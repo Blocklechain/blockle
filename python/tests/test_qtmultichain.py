@@ -123,6 +123,17 @@ class MultiChainControllerTest(unittest.TestCase):
         self.assertEqual(ctrl.accounts["tron"].scheme, "secp256k1")
         self.assertEqual(ctrl._ctx()["explorerTx"]("tron", "abc"),
                          "https://tronscan.org/#/transaction/abc")
+        # XRP derives a classic 'r…' address off the same seed (coin type 144,
+        # secp256k1); Stellar a strkey 'G…' address (coin type 148, ed25519).
+        self.assertTrue(ctrl.accounts["xrp"].address.startswith("r"))
+        self.assertEqual(ctrl.accounts["xrp"].scheme, "secp256k1")
+        self.assertEqual(ctrl._ctx()["explorerTx"]("xrp", "abc"),
+                         "https://xrpscan.com/tx/abc")
+        self.assertTrue(ctrl.accounts["stellar"].address.startswith("G"))
+        self.assertEqual(len(ctrl.accounts["stellar"].address), 56)
+        self.assertEqual(ctrl.accounts["stellar"].scheme, "ed25519")
+        self.assertEqual(ctrl._ctx()["explorerTx"]("stellar", "abc"),
+                         "https://stellar.expert/explorer/public/tx/abc")
         # BLOCK is the engine identity (post-quantum)
         self.assertEqual(ctrl.accounts["block"].address, "block1stub")
         ctx = ctrl._ctx()

@@ -10,9 +10,11 @@ import 'chain_adapter.dart';
 import 'custom_network.dart';
 import 'evm.dart';
 import 'solana.dart';
+import 'stellar.dart';
 import 'ton.dart';
 import 'tron.dart';
 import 'utxo.dart';
+import 'xrp.dart';
 
 export 'custom_network.dart';
 
@@ -24,10 +26,16 @@ class EndpointCfg {
       this.chainId,
       this.alchemyUrl,
       this.api,
-      this.apiKey});
+      this.apiKey,
+      this.horizon});
   final String? rpcUrl;
   final String? esplora;
   final int? chainId;
+
+  /// Stellar Horizon REST base (e.g. https://horizon.stellar.org). CONFIG only;
+  /// used solely by the Stellar adapter. Never a secret here. (XRP reuses
+  /// [rpcUrl] for its rippled JSON-RPC endpoint.)
+  final String? horizon;
 
   /// TronGrid REST base (e.g. https://api.trongrid.io) + optional read-only API
   /// key. CONFIG only; used solely by the Tron adapter. Never a secret here.
@@ -97,6 +105,12 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // toncenter v2 base (operator-overridable). The TON adapter reads `api`
   // (+ optional `apiKey` → X-API-Key); no secret is hardcoded here.
   'ton': EndpointCfg(api: 'https://toncenter.com/api/v2'),
+  // rippled JSON-RPC base (operator-overridable; fallback
+  // https://s1.ripple.com:51234). The XRP adapter reads `rpcUrl`.
+  'xrp': EndpointCfg(rpcUrl: 'https://xrplcluster.com'),
+  // Stellar Horizon REST base (operator-overridable). The Stellar adapter reads
+  // `horizon`.
+  'stellar': EndpointCfg(horizon: 'https://horizon.stellar.org'),
 };
 
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
@@ -319,7 +333,9 @@ class ChainRegistry {
             'bitcoincash',
             'solana',
             'tron',
-            'ton'
+            'ton',
+            'xrp',
+            'stellar'
           ]),
       'block', // BLOCK is always enabled
     };
@@ -436,6 +452,21 @@ class ChainRegistry {
       api: ep['ton']?.api,
       apiKey: ep['ton']?.apiKey,
       post: postFor(ep['ton']?.api),
+    );
+    // XRP (account-model secp256k1): own adapter + rippled JSON-RPC transport.
+    // Reuses the injectable HttpPostFn builder (base = the rippled `rpcUrl`),
+    // like Tron/TON, so tests can swap in an offline poster.
+    adapters['xrp'] = XrpAdapter(
+      rpc: ep['xrp']?.rpcUrl,
+      post: postFor(ep['xrp']?.rpcUrl),
+    );
+    // Stellar (account-model ed25519): own adapter + Horizon REST transport.
+    // Uses the injectable HttpGetFn (sequence/balance reads) + HttpPostFn
+    // (POST /transactions) builders, base = the Horizon `horizon` URL.
+    adapters['stellar'] = StellarAdapter(
+      horizon: ep['stellar']?.horizon,
+      get: getFor(ep['stellar']?.horizon),
+      post: postFor(ep['stellar']?.horizon),
     );
     if (block != null) adapters['block'] = BlockAdapter(block);
 

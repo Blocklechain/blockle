@@ -20,6 +20,10 @@
   const Tron = inNode ? require('./tron.js') : global.TronAdapter;
   // TON (ed25519, SLIP-0010 m/44'/607'); native + jetton via toncenter. Pure JS.
   const Ton = inNode ? require('./ton.js') : global.TonAdapter;
+  // XRP Ledger (secp256k1, m/44'/144'); native XRP via rippled JSON-RPC. Pure JS.
+  const Xrp = inNode ? require('./xrp.js') : global.XrpAdapter;
+  // Stellar (ed25519, SLIP-0010 m/44'/148'); native XLM via Horizon REST. Pure JS.
+  const Stellar = inNode ? require('./stellar.js') : global.StellarAdapter;
   // BlockAdapter is browser-only (wasm); optional in node.
   const Block = inNode ? safeRequire('./block.js') : global.BlockAdapter;
   function safeRequire(p) { try { return require(p); } catch { return null; } }
@@ -70,6 +74,10 @@
     tron:      { api: 'https://api.trongrid.io' },
     // TON mainnet toncenter v2 jsonRPC — public default, config-overridable. API key optional.
     ton:       { api: 'https://toncenter.com/api/v2' },
+    // XRP Ledger mainnet rippled JSON-RPC — public default, config-overridable.
+    xrp:       { rpc: 'https://xrplcluster.com' },
+    // Stellar mainnet Horizon REST — public default, config-overridable.
+    stellar:   { horizon: 'https://horizon.stellar.org' },
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.
@@ -116,6 +124,10 @@
     ton: [
       { chain: 'ton', kind: 'jetton', symbol: 'USDT', decimals: 6, master: 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs' },
     ],
+    // XRP + Stellar are native-only to start (XRPL issued-currencies / Stellar
+    // issued assets can be added here later, same shape as the others).
+    xrp: [],
+    stellar: [],
   };
 
   // Resolve the Alchemy indexer URL for a network: a per-network override
@@ -138,7 +150,7 @@
     // Alchemy config may come top-level (config.alchemy) or under the endpoints
     // bag (endpoints.alchemy), e.g. settings.chainEndpoints.alchemy.{apiKey|net}.
     const alchemyCfg = config.alchemy || endpoints.alchemy || {};
-    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton'];
+    const defaultEnabled = ['block', ...Object.keys(EVM_CHAINS), 'bitcoin', 'litecoin', 'dogecoin', 'bitcoincash', 'solana', 'tron', 'ton', 'xrp', 'stellar'];
     const enabledSet = new Set(config.enabled || defaultEnabled);
     enabledSet.add('block'); // BLOCK is always enabled
 
@@ -213,6 +225,16 @@
     if (Ton && Ton.createTonAdapter) {
       const tep = endpoints.ton || {};
       adapters.ton = Ton.createTonAdapter({ api: tep.api, apiKey: tep.apiKey, endpoint: tep.endpoint });
+    }
+    // XRP (native XRP) — secp256k1 m/44'/144', rippled JSON-RPC is config.
+    if (Xrp && Xrp.createXrpAdapter) {
+      const xep = endpoints.xrp || {};
+      adapters.xrp = Xrp.createXrpAdapter({ rpc: xep.rpc, endpoint: xep.endpoint });
+    }
+    // Stellar (native XLM + issued assets) — ed25519 SLIP-0010 m/44'/148', Horizon is config.
+    if (Stellar && Stellar.createStellarAdapter) {
+      const sep = endpoints.stellar || {};
+      adapters.stellar = Stellar.createStellarAdapter({ horizon: sep.horizon, endpoint: sep.endpoint });
     }
     // BLOCK (native identity) — only when the wrapper is available (browser)
     if (Block && Block.createBlockAdapter) adapters.block = Block.createBlockAdapter(config.block || {});
