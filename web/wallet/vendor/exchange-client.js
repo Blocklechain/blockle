@@ -12,7 +12,7 @@
 //
 // Exposed as global `Exchange`.
 (function (global) {
-  const DEFAULT_BASE = 'https://exchange.blockle.org';
+  const DEFAULT_BASE = ''; // exchange.blockle.org discontinued
   // The x402 seller endpoints (buy-block) may live on the relay or a separate
   // service; default to the relay base and let settings override.
   async function base() {

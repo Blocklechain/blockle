@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
-DEFAULT_BASE = "https://exchange.blockle.org"
+DEFAULT_BASE = ""  # exchange.blockle.org discontinued
 DEFAULT_SITE = "https://blockle.org"
 
 _INT_RE = re.compile(r"^-?\d+$")
