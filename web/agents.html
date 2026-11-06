@@ -87,8 +87,6 @@ node dist/src/index.js --http</code></pre>
       <code>web/dex.js</code>.</li>
     <li><strong>Sell BLOCK → USDC</strong> — redemption through
       <code>services/settlement</code> (reorg-safe depth, daily cap, idempotent ledger).</li>
-    <li><strong>Cross-chain</strong> — non-custodial atomic swaps (HTLC) and
-      permissionless listings at <code>exchange.blockle.org</code>.</li>
   </ul>
 
   <h2>Base-unit conventions</h2>
@@ -107,10 +105,6 @@ node dist/src/index.js --http</code></pre>
     <tbody>
       <tr><td>AMM swap (native pools)</td><td><code>0.30%</code> (SWAP_FEE_BPS=30)</td><td>protocol → LPs</td></tr>
       <tr><td>Buy-curve primary sale</td><td><code>5%</code></td><td>buy curve</td></tr>
-      <tr><td>Cross-chain atomic swap</td><td><code>0.1%</code> protocol fee</td><td>non-custodial exchange</td></tr>
-      <tr><td>Exchange deposit / withdrawal</td><td><code>none</code></td><td>— the exchange holds no funds</td></tr>
-      <tr><td>Self-serve listing</td><td><code>$5</code> per asset (includes the mandatory BLOCK pair)</td><td>exchange</td></tr>
-      <tr><td>Extra trading pair</td><td><code>$1</code> per extra pair</td><td>exchange</td></tr>
     </tbody>
   </table>
   <p class="muted">Tradable assets: BLOCK / ETH / SOL / USDC / USDT plus anything listed.</p>

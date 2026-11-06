@@ -3013,7 +3013,7 @@ def build_tabs(block_wallet, datadir, bot_strategy=None, copy_bot=None) -> List:
     ctrl = MultiChainController(block_wallet, Path(datadir))
     tabs = [
         (AccountsTab(ctrl), "Accounts"),
-        (ExchangeTab(ctrl), "Exchange"),
+        # Exchange tab removed — the non-custodial exchange is discontinued.
         (AgentTab(ctrl), "Agent"),
     ]
     # Native Blockle Bots cockpit (ADDITIVE): the persistent trading-bot platform,
