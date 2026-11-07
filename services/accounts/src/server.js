@@ -17,6 +17,7 @@ import { makeMoonpay } from './moonpay.js';
 import { makePrices } from './prices.js';
 import { makeBotDelegations } from './botdelegate.js';
 import { MAINNET_CHAIN_IDS, mainnetEnabled } from './liveexec.js';
+import { runOnce as liveRunOnce } from './liverunner.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -1229,7 +1230,7 @@ export function createApp(overrides = {}) {
     }
   });
 
-  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, botDelegations, _internal: { loginIpRl, acctRl, userByEmail } };
+  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, botDelegations, prices, _internal: { loginIpRl, acctRl, userByEmail } };
 }
 
 function sanitizeMeta(meta) {
@@ -1260,4 +1261,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Drop expired bot delegations so a key is never held past its lifetime.
   const sweep = setInterval(() => { try { app.botDelegations.sweep(); } catch { /* best-effort */ } }, 60_000);
   if (sweep.unref) sweep.unref();
+  // Server-side live bot loop — evaluates each active delegation's plan and
+  // executes due trades (gated: testnet-only unless BLOCKLE_BOT_MAINNET=1).
+  const liveRun = setInterval(() => {
+    liveRunOnce({
+      delegations: app.botDelegations,
+      // USD price for a native symbol via the server price resolver.
+      prices: async (sym) => {
+        try {
+          const m = await app.prices.resolve([{ chain: '', kind: 'native', symbol: sym }]);
+          return m[':native:' + String(sym).toUpperCase()] ?? Object.values(m)[0] ?? null;
+        } catch { return null; }
+      },
+    }).catch(() => {});
+  }, 60_000);
+  if (liveRun.unref) liveRun.unref();
 }
