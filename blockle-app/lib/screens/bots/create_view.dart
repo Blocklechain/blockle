@@ -1735,6 +1735,42 @@ class _ReviewSheet extends StatelessWidget {
             const SizedBox(height: 4),
             Text('This arms a REAL bot on $pair. Nothing is flipped silently.',
                 style: TextStyle(color: t.inkMuted, fontSize: 12.5)),
+            const SizedBox(height: 14),
+            // SECURITY-CHANGE NOTICE — a live bot that keeps trading while the app
+            // is closed must delegate a scoped signing key to Blockle's server;
+            // otherwise your keys never leave the device. The user acknowledges
+            // this by tapping "Arm live".
+            Container(
+              padding: const EdgeInsets.all(13),
+              decoration: BoxDecoration(
+                color: t.warn.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: t.warn.withValues(alpha: 0.5)),
+              ),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.shield_outlined, size: 18, color: t.warn),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Starting a trading bot changes your security',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w800, color: t.warn, fontSize: 13)),
+                    const SizedBox(height: 3),
+                    Text(
+                        'Normally your keys never leave this device. To keep trading '
+                        'while the app is closed, a live bot delegates a SCOPED, capped, '
+                        'revocable signing key so it can trade within the cap only — never '
+                        'the rest of your wallet. Strict limits:\n'
+                        '• Held only WHILE the bot runs — stopping it or Kill-all wipes the '
+                        'key from the server immediately.\n'
+                        '• Only the key for THIS bot\'s active chain is delegated — no other '
+                        'chain\'s keys are ever uploaded.\n'
+                        'Leave it off and the bot only runs while the app is open.',
+                        style: TextStyle(color: t.inkMuted, fontSize: 12, height: 1.45)),
+                  ]),
+                ),
+              ]),
+            ),
             const SizedBox(height: 16),
             point(Icons.lock_outline, 'Hard allocation cap: ${moneyUsd(alloc, sign: false)}',
                 'The bot can never spend more than this, ever. The cap counts the trade plus the 0.05% fee and is enforced on top of your session caps — the tighter bound wins.'),

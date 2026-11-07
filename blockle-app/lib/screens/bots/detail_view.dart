@@ -214,10 +214,28 @@ class DetailView extends StatelessWidget {
         return AlertDialog(
           backgroundColor: t.surface,
           title: const Text('Resume live bot'),
-          content: Text(
-              'Re-arm "${bot.name}" live within its ${moneyUsd(bot.allocationUsd, sign: false)} '
-              'allocation cap. Orders will run auto within the cap.',
-              style: TextStyle(color: t.inkMuted, fontSize: 13)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+                'Re-arm "${bot.name}" live within its ${moneyUsd(bot.allocationUsd, sign: false)} '
+                'allocation cap. Orders will run auto within the cap.',
+                style: TextStyle(color: t.inkMuted, fontSize: 13)),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: t.warn.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: t.warn.withValues(alpha: 0.5)),
+              ),
+              child: Text(
+                  'Security note: keeping this bot trading while the app is closed '
+                  'delegates a scoped, capped signing key for ONLY this bot\'s chain '
+                  'and allocation. The key is held only while the bot runs — stopping '
+                  'it or Kill-all wipes it from the server at once; no other chain\'s '
+                  'keys ever leave this device.',
+                  style: TextStyle(color: t.warn, fontSize: 11.5, height: 1.4)),
+            ),
+          ]),
           actions: [
             TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Cancel')),
             FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Arm live')),
