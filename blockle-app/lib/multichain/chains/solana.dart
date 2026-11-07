@@ -394,11 +394,19 @@ class SolanaAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _rootSeed;
+  Uint8List? _impEd; // imported single ed25519 seed (bypasses HD)
 
   @override
-  void unlock(RootSecret root) => _rootSeed = root.seed;
+  void unlock(RootSecret root) {
+    _rootSeed = root.seed;
+    _impEd = root.importedEd25519;
+  }
+
   @override
-  void lock() => _rootSeed = null;
+  void lock() {
+    _rootSeed = null;
+    _impEd = null;
+  }
 
   Future<dynamic> _rpc(String method, List<dynamic> params) async {
     if (_rpcOverride != null) return _rpcOverride(method, params);
@@ -423,6 +431,7 @@ class SolanaAdapter implements ChainAdapter {
       index == 0 ? path : path.replaceFirst(RegExp(r"/0'$"), "/$index'");
 
   Uint8List _keyFor(int index) {
+    if (_impEd != null) return _impEd!;
     if (_rootSeed == null) throw StateError('locked');
     return deriveSlip10(_rootSeed!, _pathWithIndex(index)).key;
   }
@@ -487,17 +496,18 @@ class SolanaAdapter implements ChainAdapter {
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
+    final imp = root.importedEd25519 ?? _impEd;
     final seed = root.seed ?? _rootSeed;
-    if (seed == null) throw StateError('no root seed');
-    final node = deriveSlip10(seed, _pathWithIndex(index));
-    final pub = ed.publicKey(node.key);
+    if (imp == null && seed == null) throw StateError('no root seed');
+    final key = imp ?? deriveSlip10(seed!, _pathWithIndex(index)).key;
+    final pub = ed.publicKey(key);
     return DerivedAccount(
       chain: 'solana',
       index: index,
       address: c.base58encode(pub),
       publicKey: c.bytesToHex(pub),
       scheme: 'ed25519',
-      path: _pathWithIndex(index),
+      path: imp != null ? 'imported' : _pathWithIndex(index),
     );
   }
 
@@ -590,7 +600,7 @@ class SolanaAdapter implements ChainAdapter {
   /// Returns a BuiltTx whose `raw` is the signed tx base64 and `txid` is the
   /// base58 signature.
   Future<BuiltTx> signTx(DerivedAccount account, dynamic txRaw) async {
-    if (_rootSeed == null) throw StateError('locked');
+    if (_rootSeed == null && _impEd == null) throw StateError('locked');
     final seedKey = _keyFor(account.index);
     final pub = ed.publicKey(seedKey);
     final signed = signSerializedTx(txRaw, seedKey, pub);

@@ -190,23 +190,46 @@ class CardanoAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _entropy;
+  Uint8List? _impAcctXprv; // imported 96-byte CIP-1852 account xprv (bypasses HD)
 
   bool get _useBlockfrost =>
       blockfrostProjectId != null && blockfrostProjectId!.isNotEmpty;
 
   @override
-  void unlock(RootSecret root) => _entropy = root.entropy;
+  void unlock(RootSecret root) {
+    _entropy = root.entropy;
+    _impAcctXprv = root.importedCardano;
+  }
+
   @override
-  void lock() => _entropy = null;
+  void lock() {
+    _entropy = null;
+    _impAcctXprv = null;
+  }
 
   String _paymentPath(int index) =>
       index == 0 ? cardanoPaymentPathTpl : "m/1852'/1815'/0'/0/$index";
 
-  b32.Bip32Ed25519Node _paymentNode(Uint8List entropy, int index) =>
-      b32.derivePath(entropy, _paymentPath(index));
+  bool get _hasKey => _impAcctXprv != null || _entropy != null;
 
-  Uint8List _stakePub(Uint8List entropy) =>
-      b32.derivePath(entropy, cardanoStakePath).a;
+  /// The payment node for [index] — from the imported account xprv (relative
+  /// children 0/index) or HD-derived from entropy. Carries kL/kR for signing.
+  b32.Bip32Ed25519Node _payNode(int index) {
+    if (_impAcctXprv != null) {
+      final acct = b32.nodeFromAccountXprv(_impAcctXprv!);
+      return b32.deriveChild(b32.deriveChild(acct, 0), index);
+    }
+    return b32.derivePath(_entropy!, _paymentPath(index));
+  }
+
+  /// The stake public key — imported (relative 2/0) or HD-derived.
+  Uint8List _stakePubKey() {
+    if (_impAcctXprv != null) {
+      final acct = b32.nodeFromAccountXprv(_impAcctXprv!);
+      return b32.deriveChild(b32.deriveChild(acct, 2), 0).a;
+    }
+    return b32.derivePath(_entropy!, cardanoStakePath).a;
+  }
 
   String _koiosBase() =>
       (koios ?? cardanoDefaultKoios).replaceFirst(RegExp(r'/+$'), '');
@@ -253,13 +276,15 @@ class CardanoAdapter implements ChainAdapter {
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
-    final entropy = root.entropy ?? _entropy;
-    if (entropy == null) {
-      throw StateError('cardano: no BIP39 entropy (Icarus needs the entropy, '
-          'the 64-byte seed is insufficient)');
+    // Honor a root passed in directly (e.g. before unlock) as well as stored state.
+    _entropy ??= root.entropy;
+    _impAcctXprv ??= root.importedCardano;
+    if (!_hasKey) {
+      throw StateError('cardano: no key (Icarus needs the BIP39 entropy, the '
+          '64-byte seed is insufficient, or an imported account xprv)');
     }
-    final pay = _paymentNode(entropy, index);
-    final stakePub = _stakePub(entropy);
+    final pay = _payNode(index);
+    final stakePub = _stakePubKey();
     return DerivedAccount(
       chain: 'cardano',
       index: index,
@@ -440,8 +465,7 @@ class CardanoAdapter implements ChainAdapter {
   /// inputs, forges + signs offline. Native-asset sending is NOT supported.
   @override
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {
-    final entropy = _entropy;
-    if (entropy == null) throw StateError('locked: no entropy');
+    if (!_hasKey) throw StateError('locked: no key');
     if (req.asset != null && req.asset!.kind != 'native') {
       throw StateError('cardano: native-asset (CNT) sending is out of scope in '
           'v1 — only native ADA transfers are supported');
@@ -449,8 +473,8 @@ class CardanoAdapter implements ChainAdapter {
     if (!isCardanoAddress(req.to)) {
       throw StateError('cardano: invalid destination (expect addr1…)');
     }
-    final pay = _paymentNode(entropy, account.index);
-    final selfBytes = baseAddressBytes(pay.a, _stakePub(entropy));
+    final pay = _payNode(account.index);
+    final selfBytes = baseAddressBytes(pay.a, _stakePubKey());
     final recipientBytes = addr.bech32Decode('addr', req.to);
     final amount = BigInt.parse(req.amount);
 

@@ -263,11 +263,19 @@ class EvmAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _rootSeed;
+  Uint8List? _impSecp; // imported single secp256k1 key (bypasses HD)
 
   @override
-  void unlock(RootSecret root) => _rootSeed = root.seed;
+  void unlock(RootSecret root) {
+    _rootSeed = root.seed;
+    _impSecp = root.importedSecp;
+  }
+
   @override
-  void lock() => _rootSeed = null;
+  void lock() {
+    _rootSeed = null;
+    _impSecp = null;
+  }
 
   Future<dynamic> _rpc(String method, List<dynamic> params) async {
     if (_rpcOverride != null) return _rpcOverride(method, params);
@@ -368,22 +376,27 @@ class EvmAdapter implements ChainAdapter {
   }
 
   hd.HdNode _deriveNode(int index) {
+    if (_impSecp != null) return hd.nodeFromPrivateKey(_impSecp!);
     if (_rootSeed == null) throw StateError('locked');
     return hd.derivePath(_rootSeed, '$path/$index');
   }
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
+    final imp = root.importedSecp ?? _impSecp;
     final seed = root.seed ?? _rootSeed;
-    if (seed == null) throw StateError('no root seed');
-    final node = hd.derivePath(seed, '$path/$index');
+    if (imp == null && seed == null) throw StateError('no root seed');
+    final node = imp != null
+        ? hd.nodeFromPrivateKey(imp)
+        : hd.derivePath(seed, '$path/$index');
     return DerivedAccount(
       chain: id,
       index: index,
       address: addr.evmAddress(node.publicKey),
       publicKey: c.bytesToHex(node.publicKey),
       scheme: 'secp256k1',
-      path: '$path/$index',
+      // Imported single-key accounts have no HD path.
+      path: imp != null ? 'imported' : '$path/$index',
     );
   }
 

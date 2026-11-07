@@ -64,16 +64,25 @@ class XrpAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _rootSeed;
+  Uint8List? _impSecp; // imported single secp256k1 key (bypasses HD)
 
   @override
-  void unlock(RootSecret root) => _rootSeed = root.seed;
+  void unlock(RootSecret root) {
+    _rootSeed = root.seed;
+    _impSecp = root.importedSecp;
+  }
+
   @override
-  void lock() => _rootSeed = null;
+  void lock() {
+    _rootSeed = null;
+    _impSecp = null;
+  }
 
   String _pathWithIndex(int index) =>
       index == 0 ? path : path.replaceFirst(RegExp(r'/0$'), '/$index');
 
   hd.HdNode _nodeFor(int index) {
+    if (_impSecp != null) return hd.nodeFromPrivateKey(_impSecp!);
     if (_rootSeed == null) throw StateError('locked');
     return hd.derivePath(_rootSeed, _pathWithIndex(index));
   }
@@ -104,16 +113,18 @@ class XrpAdapter implements ChainAdapter {
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
+    final imp = root.importedSecp ?? _impSecp;
     final seed = root.seed ?? _rootSeed;
-    if (seed == null) throw StateError('no root seed');
-    final node = hd.derivePath(seed, _pathWithIndex(index));
+    if (imp == null && seed == null) throw StateError('no root seed');
+    final node =
+        imp != null ? hd.nodeFromPrivateKey(imp) : hd.derivePath(seed, _pathWithIndex(index));
     return DerivedAccount(
       chain: 'xrp',
       index: index,
       address: x.classicAddressFromPubkey(node.publicKey),
       publicKey: c.bytesToHex(node.publicKey),
       scheme: 'secp256k1',
-      path: _pathWithIndex(index),
+      path: imp != null ? 'imported' : _pathWithIndex(index),
     );
   }
 

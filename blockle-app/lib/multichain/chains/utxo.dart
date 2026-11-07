@@ -537,11 +537,19 @@ class UtxoAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _rootSeed;
+  Uint8List? _impSecp; // imported single secp256k1 key (bypasses HD)
 
   @override
-  void unlock(RootSecret root) => _rootSeed = root.seed;
+  void unlock(RootSecret root) {
+    _rootSeed = root.seed;
+    _impSecp = root.importedSecp;
+  }
+
   @override
-  void lock() => _rootSeed = null;
+  void lock() {
+    _rootSeed = null;
+    _impSecp = null;
+  }
 
   String get _base {
     final b = _esploraOverride ?? net.esplora;
@@ -565,6 +573,7 @@ class UtxoAdapter implements ChainAdapter {
   }
 
   hd.HdNode _nodeFor(int index) {
+    if (_impSecp != null) return hd.nodeFromPrivateKey(_impSecp!);
     if (_rootSeed == null) throw StateError('locked');
     return hd.derivePath(_rootSeed, '${net.path}/$index');
   }
@@ -577,16 +586,18 @@ class UtxoAdapter implements ChainAdapter {
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
+    final imp = root.importedSecp ?? _impSecp;
     final seed = root.seed ?? _rootSeed;
-    if (seed == null) throw StateError('no root seed');
-    final node = hd.derivePath(seed, '${net.path}/$index');
+    if (imp == null && seed == null) throw StateError('no root seed');
+    final node =
+        imp != null ? hd.nodeFromPrivateKey(imp) : hd.derivePath(seed, '${net.path}/$index');
     return DerivedAccount(
       chain: net.id,
       index: index,
       address: _addressOf(node),
       publicKey: c.bytesToHex(node.publicKey),
       scheme: 'secp256k1',
-      path: '${net.path}/$index',
+      path: imp != null ? 'imported' : '${net.path}/$index',
     );
   }
 
@@ -676,7 +687,7 @@ class UtxoAdapter implements ChainAdapter {
 
   @override
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {
-    if (_rootSeed == null) throw StateError('locked');
+    if (_rootSeed == null && _impSecp == null) throw StateError('locked');
     final node = _nodeFor(account.index);
     final from = account.address;
     final us = req.utxos ?? await utxos(from);

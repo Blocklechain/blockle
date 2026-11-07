@@ -12,7 +12,13 @@ typedef ChainId = String; // "block" | "ethereum" | "base" | "bitcoin" | ...
 /// The unlocked root secret handed to secp256k1 / ed25519 adapters. For BLOCK
 /// the "root secret" is the ML-DSA keypair held in the engine session, not this.
 class RootSecret {
-  RootSecret({this.seed, this.entropy});
+  RootSecret({
+    this.seed,
+    this.entropy,
+    this.importedSecp,
+    this.importedEd25519,
+    this.importedCardano,
+  });
 
   /// BIP39/HD seed bytes (secp256k1 + ed25519 chains). Never logged or sent.
   final Uint8List? seed;
@@ -21,6 +27,25 @@ class RootSecret {
   /// Icarus (CIP-3) HD root is derived from this — the seed is insufficient. Null
   /// when the wallet has no mnemonic to recover entropy from. Never logged/sent.
   final Uint8List? entropy;
+
+  // ---- SINGLE-KEY IMPORT ----------------------------------------------------
+  // A wallet imported from one private key (not a mnemonic). The key is used
+  // DIRECTLY by every adapter of its scheme — HD paths are bypassed (one account
+  // per chain, index 0). A secp256k1 key controls every EVM + UTXO + Tron + XRP
+  // address; an ed25519 seed every Solana/TON/Stellar/Tezos address; a Cardano
+  // account xprv the Cardano address. Never logged/sent.
+
+  /// 32-byte secp256k1 private key → all secp256k1 chains.
+  final Uint8List? importedSecp;
+
+  /// 32-byte ed25519 seed → all ed25519 chains.
+  final Uint8List? importedEd25519;
+
+  /// 96-byte CIP-1852 account xprv → Cardano.
+  final Uint8List? importedCardano;
+
+  bool get isImported =>
+      importedSecp != null || importedEd25519 != null || importedCardano != null;
 }
 
 /// A coin or token on a given chain.

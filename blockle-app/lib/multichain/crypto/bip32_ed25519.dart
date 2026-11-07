@@ -70,6 +70,19 @@ Bip32Ed25519Node icarusMasterKey(List<int> entropy) {
   return Bip32Ed25519Node(kL, kR, cc, a);
 }
 
+/// Reconstruct a node from an exported 96-byte account xprv (kL‖kR‖cc) — the
+/// IMPORTED-key path. The public key `a` is recomputed from kL; relative
+/// children (payment 0/i, stake 2/0) are then derived with [deriveChild].
+Bip32Ed25519Node nodeFromAccountXprv(Uint8List xprv96) {
+  if (xprv96.length != 96) {
+    throw ArgumentError('cardano account xprv must be 96 bytes (kL|kR|cc)');
+  }
+  final kL = Uint8List.fromList(xprv96.sublist(0, 32));
+  final kR = Uint8List.fromList(xprv96.sublist(32, 64));
+  final cc = Uint8List.fromList(xprv96.sublist(64, 96));
+  return Bip32Ed25519Node(kL, kR, cc, ed.scalarMulBase(kL));
+}
+
 /// Derive one child. Hardened when [index] >= 0x80000000. Keeps kL' as a full
 /// 256-bit value (kL' = 8·int_LE(ZL) + int_LE(kL), serialized to 32B LE — NO
 /// reduction mod L); kR' = (int_LE(ZR) + int_LE(kR)) mod 2^256.

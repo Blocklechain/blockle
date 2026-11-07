@@ -110,6 +110,28 @@ class HdNode {
   final Uint8List parentFingerprint;
 }
 
+/// Build a bare HdNode from a RAW 32-byte secp256k1 private key (an IMPORTED
+/// key, not HD-derived). publicKey is the compressed point; chainCode and the
+/// HD metadata are zeroed (never used for signing/address — adapters read only
+/// privateKey/publicKey). Throws on an out-of-range scalar.
+HdNode nodeFromPrivateKey(Uint8List priv) {
+  if (priv.length != 32) {
+    throw ArgumentError('secp256k1 private key must be 32 bytes');
+  }
+  final d = s.bytesToBig(priv);
+  if (d == BigInt.zero || !s.isValidPrivate(d)) {
+    throw ArgumentError('invalid secp256k1 private key');
+  }
+  return HdNode(
+    privateKey: priv,
+    publicKey: s.publicKey(priv),
+    chainCode: Uint8List(32),
+    depth: 0,
+    index: 0,
+    parentFingerprint: Uint8List(4),
+  );
+}
+
 HdNode masterFromSeed(List<int> seed) {
   final i = c.hmacSha512(c.utf8Bytes('Bitcoin seed'), c.toBytes(seed));
   final il = Uint8List.fromList(i.sublist(0, 32));

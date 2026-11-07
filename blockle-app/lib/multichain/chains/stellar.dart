@@ -166,16 +166,25 @@ class StellarAdapter implements ChainAdapter {
   late final AssetRef native;
 
   Uint8List? _rootSeed;
+  Uint8List? _impEd; // imported single ed25519 seed (bypasses HD)
 
   @override
-  void unlock(RootSecret root) => _rootSeed = root.seed;
+  void unlock(RootSecret root) {
+    _rootSeed = root.seed;
+    _impEd = root.importedEd25519;
+  }
+
   @override
-  void lock() => _rootSeed = null;
+  void lock() {
+    _rootSeed = null;
+    _impEd = null;
+  }
 
   String _pathWithIndex(int index) =>
       index == 0 ? path : path.replaceFirst(RegExp(r"/0'$"), "/$index'");
 
   Uint8List _keyFor(int index) {
+    if (_impEd != null) return _impEd!;
     if (_rootSeed == null) throw StateError('locked');
     return deriveSlip10Key(_rootSeed!, _pathWithIndex(index));
   }
@@ -197,9 +206,10 @@ class StellarAdapter implements ChainAdapter {
 
   @override
   Future<DerivedAccount> deriveAccount(RootSecret root, {int index = 0}) async {
+    final imp = root.importedEd25519 ?? _impEd;
     final seed = root.seed ?? _rootSeed;
-    if (seed == null) throw StateError('no root seed');
-    final key = deriveSlip10Key(seed, _pathWithIndex(index));
+    if (imp == null && seed == null) throw StateError('no root seed');
+    final key = imp ?? deriveSlip10Key(seed!, _pathWithIndex(index));
     final pub = ed.publicKey(key);
     return DerivedAccount(
       chain: 'stellar',
@@ -207,7 +217,7 @@ class StellarAdapter implements ChainAdapter {
       address: sx.strkeyEncodeEd25519(pub),
       publicKey: c.bytesToHex(pub),
       scheme: 'ed25519',
-      path: _pathWithIndex(index),
+      path: imp != null ? 'imported' : _pathWithIndex(index),
     );
   }
 
@@ -303,7 +313,7 @@ class StellarAdapter implements ChainAdapter {
   /// sequence comes from the node; the signed envelope is produced locally.
   @override
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {
-    if (_rootSeed == null) throw StateError('locked');
+    if (_rootSeed == null && _impEd == null) throw StateError('locked');
     if (!sx.isStellarAddress(req.to)) {
       throw StateError('stellar: invalid destination address');
     }
