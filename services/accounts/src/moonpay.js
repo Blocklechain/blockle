@@ -16,12 +16,16 @@ const API_BASE = 'https://api.moonpay.com';
 
 // Build from env. Missing keys => the feature reports disabled rather than throwing.
 export function makeMoonpay(env = process.env) {
-  const pk = env.MOONPAY_PUBLISHABLE_KEY || '';
-  const sk = env.MOONPAY_SECRET_KEY || '';
-  const wk = env.MOONPAY_WEBHOOK_KEY || '';
-  const tradeKey = env.MOONPAY_TRADE_API_KEY || '';
-  const commercePk = env.MOONPAY_COMMERCE_PUBLIC_KEY || '';
-  const commerceSk = env.MOONPAY_COMMERCE_SECRET_KEY || '';
+  // TRIM every key — env files routinely leave a trailing newline/space, and a
+  // single stray byte in the secret makes the HMAC wrong → MoonPay "Signature
+  // check failed" even with the correct key pair. Strip surrounding quotes too.
+  const clean = (v) => String(v || '').trim().replace(/^["']|["']$/g, '').trim();
+  const pk = clean(env.MOONPAY_PUBLISHABLE_KEY);
+  const sk = clean(env.MOONPAY_SECRET_KEY);
+  const wk = clean(env.MOONPAY_WEBHOOK_KEY);
+  const tradeKey = clean(env.MOONPAY_TRADE_API_KEY);
+  const commercePk = clean(env.MOONPAY_COMMERCE_PUBLIC_KEY);
+  const commerceSk = clean(env.MOONPAY_COMMERCE_SECRET_KEY);
   const live = pk.startsWith('pk_live_');
 
   // Public config handed to clients: ONLY the publishable + commerce-public keys and
@@ -45,7 +49,11 @@ export function makeMoonpay(env = process.env) {
   // HMAC-SHA256(secretKey, <the URL search string INCLUDING the leading '?'>).
   // The client builds the unsigned buy/sell URL (with the publishable apiKey +
   // walletAddress + currencyCode …); we return the signature to append.
-  function signUrl(unsignedUrl) {
+  // [variant] selects what string is HMAC'd — 'search' (query INCLUDING the
+  // leading '?', MoonPay's documented default), 'noq' (query WITHOUT '?'), or
+  // 'full' (the whole URL). The client can retry with the next variant if MoonPay
+  // rejects one (defensive — integrations occasionally differ).
+  function signUrl(unsignedUrl, variant = 'search') {
     if (!sk) throw new Error('moonpay signing not configured');
     const u = String(unsignedUrl || '');
     const qIdx = u.indexOf('?');
@@ -57,8 +65,11 @@ export function makeMoonpay(env = process.env) {
       throw new Error('refusing to sign a non-moonpay url');
     }
     if (pk && u.indexOf(pk) < 0) throw new Error('url does not carry our publishable key');
-    const signature = crypto.createHmac('sha256', sk).update(query).digest('base64');
-    return { signature, url: u + '&signature=' + encodeURIComponent(signature) };
+    const toSign = variant === 'noq' ? query.replace(/^\?/, '')
+      : variant === 'full' ? u
+      : query; // 'search' (default)
+    const signature = crypto.createHmac('sha256', sk).update(toSign).digest('base64');
+    return { signature, variant, url: u + '&signature=' + encodeURIComponent(signature) };
   }
 
   // Verify a MoonPay webhook. MoonPay signs with header `Moonpay-Signature-V2`:

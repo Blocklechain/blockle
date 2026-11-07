@@ -426,7 +426,7 @@ export function createApp(overrides = {}) {
     res.setHeader('access-control-allow-origin', '*');
     if (!loginIpRl.allow('mpsign:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 8 * 1024).catch(() => ({}));
-    try { return json(res, 200, moonpay.signUrl(String(b.url || ''))); }
+    try { return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant || 'search')); }
     catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
   });
   // MoonPay transaction webhook: verify the HMAC signature with the webhook key, then record the
