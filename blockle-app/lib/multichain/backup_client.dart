@@ -36,6 +36,18 @@ Future<String> login(String? origin, String email, String password, {String? tot
   return token;
 }
 
+/// Create a Blockle account. The server sends an email-verification link and
+/// returns a generic message (never a token, never reveals if the email exists).
+/// Returns the server message to show the user.
+Future<String> register(String? origin, String email, String password, {String? username}) async {
+  final d = await _req(origin, 'POST', '/account/api/register', body: {
+    'email': email,
+    'password': password,
+    if (username != null && username.isNotEmpty) 'username': username,
+  });
+  return (d['message'] as String?) ?? 'Check your email to verify your account.';
+}
+
 /// The signed-in account (incl. `sub` with the Copilot tier) — for feature gating.
 Future<Map<String, dynamic>?> me(String? origin, String token) async {
   final d = await _req(origin, 'GET', '/account/api/me', token: token);

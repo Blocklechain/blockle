@@ -16,6 +16,7 @@ import 'package:provider/provider.dart';
 import '../services/moonpay.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
+import 'account_auth_screen.dart';
 import 'accounts_screen.dart' show MultiSendScreen;
 
 /// A MoonPay-swappable asset: the Trade-API currency code + a display label and
@@ -173,15 +174,20 @@ class _MoonPaySwapScreenState extends State<MoonPaySwapScreen> {
             const SizedBox(height: 8),
             const Text(
               'Swaps run through MoonPay’s Trade service, which needs a linked '
-              'Blockle account. Sign in from Settings → your account, then come '
-              'back to swap. Your keys never leave this device.',
+              'Blockle account. Your wallet keys never leave this device.',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 13.5, height: 1.5, color: Bk.muted),
             ),
             const SizedBox(height: 18),
             FilledButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Back')),
+                onPressed: () async {
+                  final ok = await requireAccount(context,
+                      reason: 'Sign in to swap tokens with MoonPay.');
+                  if (ok && mounted) setState(() {}); // re-render the swap form
+                },
+                style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(48), backgroundColor: Bk.accent),
+                child: const Text('Sign in / Create account')),
           ]),
         ),
       );

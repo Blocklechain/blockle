@@ -18,6 +18,7 @@ import '../../services/moonpay.dart';
 import '../../services/open_url.dart';
 import '../../state/bots_controller.dart';
 import '../../state/multichain_controller.dart';
+import '../account_auth_screen.dart';
 import '../../ui/app_icons.dart';
 import '../accounts_screen.dart' show MoonPayBuyScreen;
 import 'bots_tokens.dart';
@@ -396,7 +397,17 @@ class _CreateViewState extends State<CreateView> {
     await _maybeTopUpShortfall(alloc);
     if (!mounted) return;
     final confirmed = await _showReviewSheet(alloc);
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
+    // Offer sign-in so the bot keeps trading while the app is closed (the
+    // server runner needs a linked account). Non-blocking — decline and the
+    // bot still arms, just running only while the app is open.
+    final mc = context.read<MultichainController>();
+    if ((mc.moonpayBearer ?? '').isEmpty && mounted) {
+      await requireAccount(context,
+          reason: 'Sign in so this bot keeps trading while the app is closed. '
+              'You can skip and it will run only while the app is open.');
+      if (!mounted) return;
+    }
     final bot = _createBot(alloc);
     try {
       await widget.controller.armLive(bot.id, allocationUsd: alloc);

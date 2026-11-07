@@ -244,6 +244,15 @@ class AgentService {
     return _copilotTier;
   }
 
+  /// Create a Blockle account (sign-up). Sends an email-verification link; no
+  /// session is established until the user verifies + signs in. Returns the
+  /// server's generic message.
+  Future<String> createCopilotAccount(String email, String password,
+      {String? username, String? origin}) async {
+    _acctOrigin = origin ?? _acctOrigin;
+    return bc.register(_acctOrigin, email, password, username: username);
+  }
+
   /// Re-read the tier + live-bot cap (e.g. after the user subscribes). Best-effort.
   Future<String> refreshCopilotTier() async {
     final token = _acctToken;
