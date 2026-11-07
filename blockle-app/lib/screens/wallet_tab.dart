@@ -13,7 +13,7 @@ import '../widgets/particle_logo.dart';
 import '../widgets/chain_icon.dart';
 import 'send.dart';
 import 'receive.dart';
-import 'swap.dart';
+import 'moonpay_swap.dart';
 import 'queue.dart';
 
 const _kTokens = 'bk_tokens';
@@ -301,8 +301,9 @@ class _WalletTabState extends State<WalletTab> {
                 }),
                 const SizedBox(width: 10),
                 _action(Icons.swap_horiz, 'Swap', () {
+                  // Swap = MoonPay crypto<->crypto (not the BLOCK<->BLOCK-20 DEX).
                   Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => const SwapScreen()))
+                          MaterialPageRoute(builder: (_) => const MoonPaySwapScreen()))
                       .then((_) => _refresh());
                 }),
               ],
