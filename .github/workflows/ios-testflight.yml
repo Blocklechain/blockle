@@ -59,6 +59,7 @@ jobs:
           # Provider keys injected at build time (not committed); empty -> keyless.
           TONCENTER_API_KEY: ${{ secrets.TONCENTER_API_KEY }}
           BLOCKFROST_PROJECT_ID: ${{ secrets.BLOCKFROST_PROJECT_ID }}
+          BLOCKLE_ALCHEMY_KEY: ${{ secrets.BLOCKLE_ALCHEMY_KEY }}
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
@@ -67,7 +68,8 @@ jobs:
           # which the xcodebuild archive step below reads.
           flutter build ios --release --no-codesign --build-number="$BN" \
             --dart-define=TONCENTER_API_KEY="$TONCENTER_API_KEY" \
-            --dart-define=BLOCKFROST_PROJECT_ID="$BLOCKFROST_PROJECT_ID"
+            --dart-define=BLOCKFROST_PROJECT_ID="$BLOCKFROST_PROJECT_ID" \
+            --dart-define=BLOCKLE_ALCHEMY_KEY="$BLOCKLE_ALCHEMY_KEY"
           # archive UNSIGNED — avoids automatic signing picking a development profile
           # (fresh team has no devices); distribution signing happens at export.
           xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release \

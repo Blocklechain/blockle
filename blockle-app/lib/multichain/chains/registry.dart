@@ -96,6 +96,31 @@ const List<EvmNet> evmNets = [
   EvmNet('hyperevm', 999, 'HYPE', 'https://hyperevmscan.io/tx/'),
 ];
 
+/// Blockle-provided Alchemy key, injected at build time via
+/// --dart-define=BLOCKLE_ALCHEMY_KEY=… (a GitHub Actions secret), NOT committed.
+/// Powers EVM token auto-discovery (and NFT reads) for EVERY user out of the box
+/// — there is no user-supplied Alchemy key. Empty on local builds → off.
+const String kAlchemyKey =
+    String.fromEnvironment('BLOCKLE_ALCHEMY_KEY', defaultValue: '');
+
+/// Alchemy network subdomain per built-in chain (only those Alchemy covers).
+const Map<String, String> _alchemyNet = {
+  'ethereum': 'eth-mainnet',
+  'base': 'base-mainnet',
+  'arbitrum': 'arb-mainnet',
+  'optimism': 'opt-mainnet',
+  'polygon': 'polygon-mainnet',
+};
+
+/// The Blockle Alchemy indexer URL for [chain], or null when no key is baked in
+/// or the chain isn't on Alchemy. Ignores any user-supplied value by design.
+String? ourAlchemyUrl(String chain) {
+  if (kAlchemyKey.isEmpty) return null;
+  final net = _alchemyNet[chain];
+  if (net == null) return null;
+  return 'https://$net.g.alchemy.com/v2/$kAlchemyKey';
+}
+
 const Map<String, EndpointCfg> defaultEndpoints = {
   'ethereum':
       EndpointCfg(rpcUrl: 'https://ethereum-rpc.publicnode.com', chainId: 1),
@@ -407,8 +432,10 @@ class ChainRegistry {
         symbol: n.symbol,
         rpcUrl: cfg?.rpcUrl,
         rpc: rpcFor(cfg?.rpcUrl),
-        alchemyUrl: n.alchemy ? cfg?.alchemyUrl : null,
-        alchemyRpc: n.alchemy ? alchemyFor(cfg?.alchemyUrl) : null,
+        // Always the Blockle-provided Alchemy indexer (baked in at build) — never
+        // a user-supplied key. Null on keyless local builds → discovery simply off.
+        alchemyUrl: n.alchemy ? ourAlchemyUrl(n.id) : null,
+        alchemyRpc: n.alchemy ? alchemyFor(ourAlchemyUrl(n.id)) : null,
         explorer: n.explorer,
       );
     }

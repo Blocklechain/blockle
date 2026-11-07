@@ -46,7 +46,11 @@ import 'multichain_controller.dart';
 // rather than fabricating an empty inventory when no key is configured.
 const String _kWcProjectId = String.fromEnvironment('BLOCKLE_WC_PROJECT_ID', defaultValue: '');
 const String _kWcRelayUrl = String.fromEnvironment('BLOCKLE_WC_RELAY_URL', defaultValue: wcr.kDefaultRelayUrl);
-const String _kAlchemyNftKey = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_KEY', defaultValue: '');
+// NFT indexing shares the one Blockle-provided Alchemy key by default; a
+// dedicated BLOCKLE_ALCHEMY_NFT_KEY (if set) still overrides it.
+const String _kAlchemyKeyShared = String.fromEnvironment('BLOCKLE_ALCHEMY_KEY', defaultValue: '');
+const String _kAlchemyNftKeyRaw = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_KEY', defaultValue: '');
+final String _kAlchemyNftKey = _kAlchemyNftKeyRaw.isNotEmpty ? _kAlchemyNftKeyRaw : _kAlchemyKeyShared;
 const String _kAlchemyNftBaseUrl = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_BASEURL', defaultValue: '');
 const String _kHeliusKey = String.fromEnvironment('BLOCKLE_HELIUS_KEY', defaultValue: '');
 const String _kSolanaDasUrl = String.fromEnvironment('BLOCKLE_SOLANA_DAS_URL', defaultValue: '');

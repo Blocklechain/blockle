@@ -1236,17 +1236,15 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
           else
             for (final n in c.customNetworks) _customNetTile(c, n),
           const SizedBox(height: 20),
-          const Text('Token auto-detect (Alchemy)',
+          const Text('Token auto-detect',
               style: TextStyle(fontWeight: FontWeight.w700)),
           const SizedBox(height: 4),
           const Text(
-              'Paste a read-only Alchemy indexer URL (with key) per network to '
-              'auto-list every ERC-20 you hold. Off until set — no key is ever '
-              'logged. BNB Chain and Avalanche are not covered and use the known '
-              'token list.',
+              'Every ERC-20 you hold on Ethereum, Base, Arbitrum, Optimism and '
+              'Polygon is auto-listed out of the box — Blockle supplies the '
+              'indexer, there is nothing to configure. BNB Chain and Avalanche '
+              'use the built-in known-token list.',
               style: TextStyle(color: Bk.muted, fontSize: 12)),
-          const SizedBox(height: 8),
-          for (final chain in kAlchemyChains) _alchemyTile(c, chain),
           const SizedBox(height: 20),
           const Text('Buy & sell with card (MoonPay)',
               style: TextStyle(fontWeight: FontWeight.w700)),
@@ -1433,61 +1431,6 @@ class _EndpointsScreenState extends State<EndpointsScreen> {
         ),
       ),
     );
-  }
-
-  Widget _alchemyTile(MultichainController c, String chain) {
-    final on = c.alchemyEnabled(chain);
-    return Card(
-      child: ListTile(
-        title: Text(kChainLabels[chain] ?? chain),
-        subtitle: Text(on ? 'auto-detect ON' : 'auto-detect off (known list)',
-            style: TextStyle(
-                color: on ? Bk.good : Bk.muted, fontSize: 11)),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (on)
-              IconButton(
-                icon: const Icon(Icons.clear, size: 18, color: Bk.muted),
-                onPressed: () => c.setAlchemy(chain, null),
-              ),
-            IconButton(
-              icon: const Icon(Icons.key, size: 18, color: Bk.muted),
-              onPressed: () => _editAlchemyDialog(c, chain),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _editAlchemyDialog(
-      MultichainController c, String chain) async {
-    final ctrl = TextEditingController(
-        text: c.effectiveEndpoint(chain).alchemyUrl ?? '');
-    final res = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: Bk.surface,
-        title: Text('${kChainLabels[chain]} Alchemy URL'),
-        content: TextField(
-          controller: ctrl,
-          decoration: const InputDecoration(
-              labelText: 'Alchemy URL (with read-only key)',
-              hintText: 'https://<net>.g.alchemy.com/v2/<key>'),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Save')),
-        ],
-      ),
-    );
-    if (res != true) return;
-    await c.setAlchemy(chain, ctrl.text.trim());
   }
 
   Widget _endpointTile(MultichainController c, String chain) {
