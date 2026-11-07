@@ -199,10 +199,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   ],
                 ),
               ),
-            const SizedBox(height: 10),
-            ...bals.map((b) => _balanceRow(c, chain, addr, b)),
-            if (isPq) _blockBuyNote(c),
-            const SizedBox(height: 6),
+            const SizedBox(height: 12),
+            // Primary actions FIRST — right under the address — so the big Send
+            // is ALWAYS visible, even on EVM chains whose auto-discovered token
+            // list below can be long (it used to push Send off the bottom).
             Row(
               children: [
                 Expanded(
@@ -229,6 +229,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 ],
               ],
             ),
+            const SizedBox(height: 12),
+            ...bals.map((b) => _balanceRow(c, chain, addr, b)),
+            if (isPq) _blockBuyNote(c),
           ],
         ),
       ),
@@ -274,32 +277,39 @@ class _AccountsScreenState extends State<AccountsScreen> {
             const SizedBox(width: 6),
             const Text('token', style: TextStyle(color: Bk.muted, fontSize: 10)),
           ],
-          const Spacer(),
-          if (err)
-            const Text('unavailable',
-                style: TextStyle(color: Bk.bad, fontSize: 12))
-          else
-            Text(b.display, style: kMono.copyWith(fontSize: 13)),
-          // Per-asset Send: opens the send screen PRE-SELECTED to this holding
-          // (so EVM tokens like USDC/USDT — not just native ETH — each have a
-          // one-tap send). Shown for every asset once an address exists.
-          if (addr.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            _sendChip(() => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => MultiSendScreen(
-                            chain: chain, initialAsset: b.asset)))
-                .then((_) => _loadChain(c, chain))),
-          ],
-          if (canBuy) ...[
-            const SizedBox(width: 8),
-            _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
-          ],
-          if (canSell) ...[
-            const SizedBox(width: 6),
-            _sellChip(() => _sellForCash(c, chain, addr, b.asset, b.display)),
-          ],
+          const SizedBox(width: 8),
+          // Balance + per-asset actions in an END-aligned Wrap so a row with
+          // several chips (EVM holdings have Send + Buy + Sell) flows to a second
+          // line instead of overflowing off a narrow screen.
+          Expanded(
+            child: Wrap(
+              alignment: WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                if (err)
+                  const Text('unavailable',
+                      style: TextStyle(color: Bk.bad, fontSize: 12))
+                else
+                  Text(b.display, style: kMono.copyWith(fontSize: 13)),
+                // Per-asset Send: opens the send screen PRE-SELECTED to this
+                // holding (so EVM tokens like USDC/USDT — not just native ETH —
+                // each get a one-tap send). Shown once an address exists.
+                if (addr.isNotEmpty)
+                  _sendChip(() => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => MultiSendScreen(
+                                  chain: chain, initialAsset: b.asset)))
+                      .then((_) => _loadChain(c, chain))),
+                if (canBuy) _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
+                if (canSell)
+                  _sellChip(
+                      () => _sellForCash(c, chain, addr, b.asset, b.display)),
+              ],
+            ),
+          ),
         ],
       ),
     );
