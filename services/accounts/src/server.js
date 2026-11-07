@@ -14,6 +14,7 @@ import { makePaypal, entitlementFromEvent } from './paypal.js';
 import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
+import { makePrices } from './prices.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -45,6 +46,7 @@ export function createApp(overrides = {}) {
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const moonpay = overrides.moonpay || makeMoonpay(process.env);
+  const prices = overrides.prices || makePrices({});
   const googleStore = overrides.googleStore || makeGoogleStore(cfg, overrides.googleDeps);
   const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
   let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
@@ -325,6 +327,16 @@ export function createApp(overrides = {}) {
     if (!sess) return json(res, 401, { error: 'auth' });
     try { return json(res, 200, { markets: await chain.markets(), price: lastKnownPrice }); }
     catch { return json(res, 200, { markets: [], price: lastKnownPrice }); }
+  });
+
+  // Public USD price proxy for the wallet — resolves {assets:[{chain,symbol,kind,
+  // address?}]} to { prices:{ key: usd } }, server-cached + rate-limit-safe, so
+  // clients don't each hammer CoinGecko/DeFiLlama. No auth (prices are public);
+  // BLOCK/BLOCK-20 are never priced (handled inside the resolver).
+  on('POST', /^\/account\/api\/prices$/, async (req, res) => {
+    const b = await readJson(req, 64 * 1024).catch(() => ({}));
+    try { return json(res, 200, { prices: await prices.resolve(b.assets || []) }); }
+    catch { return json(res, 200, { prices: {} }); }
   });
 
   // ===== 3Commas-style paper bots (play money; live trading stays client-signed in the wallet) =

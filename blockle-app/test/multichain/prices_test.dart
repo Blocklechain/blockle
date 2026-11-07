@@ -72,4 +72,69 @@ void main() {
     await svc.fetchUsd([native('ethereum', 'ETH')], nowMs: 1000); // < 2min TTL
     expect(calls, 1);
   });
+
+  test('falls back to DeFiLlama when CoinGecko fails', () async {
+    final svc = PriceService(get: (url) async {
+      if (url.contains('api.coingecko.com')) throw StateError('cg 429');
+      if (url.contains('coins.llama.fi')) {
+        return '{"coins":{"coingecko:ethereum":{"price":2000.5},'
+            '"ethereum:0xdeadbeef":{"price":1.5}}}';
+      }
+      return '{}';
+    });
+    final usd = await svc.fetchUsd([
+      native('ethereum', 'ETH'),
+      token('ethereum', 'FOO', '0xDEADBEEF'),
+    ]);
+    expect(usd[priceKey(native('ethereum', 'ETH'))], 2000.5);
+    expect(usd[priceKey(token('ethereum', 'FOO', '0xDEADBEEF'))], 1.5);
+  });
+
+  test('falls back to Coinbase for a native when CG + Llama miss', () async {
+    final svc = PriceService(get: (url) async {
+      if (url.contains('coinbase.com')) {
+        return '{"data":{"amount":"88.25","base":"SOL","currency":"USD"}}';
+      }
+      if (url.contains('api.coingecko.com')) return '{}';
+      if (url.contains('coins.llama.fi')) return '{"coins":{}}';
+      return '{}';
+    });
+    final usd = await svc.fetchUsd([native('solana', 'SOL')]);
+    expect(usd[priceKey(native('solana', 'SOL'))], 88.25);
+  });
+
+  test('server route is tried first and short-circuits the public sources', () async {
+    var cgCalls = 0;
+    final svc = PriceService(
+      serverBase: 'https://blockle.org',
+      post: (url, body) async {
+        expect(url, 'https://blockle.org/account/api/prices');
+        return '{"prices":{"ethereum:native:ETH":1234.5}}';
+      },
+      get: (url) async {
+        cgCalls++;
+        return '{}';
+      },
+    );
+    final usd = await svc.fetchUsd([native('ethereum', 'ETH')]);
+    expect(usd[priceKey(native('ethereum', 'ETH'))], 1234.5);
+    expect(cgCalls, 0); // server resolved it; no public-source calls
+  });
+
+  test('server failure latches off and public sources take over', () async {
+    var posts = 0;
+    final svc = PriceService(
+      serverBase: 'https://blockle.org',
+      post: (url, body) async {
+        posts++;
+        throw StateError('503');
+      },
+      get: (url) async =>
+          url.contains('api.coingecko.com') ? '{"ethereum":{"usd":10}}' : '{}',
+    );
+    final a = [native('ethereum', 'ETH')];
+    await svc.fetchUsd(a, nowMs: 0);
+    await svc.fetchUsd([native('bitcoin', 'BTC')], nowMs: 0); // different asset
+    expect(posts, 1); // server not re-hit after the first failure this session
+  });
 }

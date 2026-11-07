@@ -37,8 +37,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
   final Map<String, List<Balance>> _bals = {};
   final Set<String> _loading = {};
   // Live USD spot prices (per whole unit), keyed by [priceKey]. Non-BLOCK assets
-  // only — BLOCK/BLOCK-20 are never USD-priced. Populated best-effort per chain.
-  final PriceService _priceSvc = PriceService();
+  // only — BLOCK/BLOCK-20 are never USD-priced. Resolves server-proxy first
+  // (cached, rate-limit-safe), then falls back to CoinGecko → DeFiLlama →
+  // Coinbase. Populated best-effort per chain.
+  final PriceService _priceSvc = PriceService(serverBase: 'https://blockle.org');
   final Map<String, double> _usd = {};
 
   @override
