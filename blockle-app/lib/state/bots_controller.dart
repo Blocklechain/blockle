@@ -25,7 +25,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 
+import 'dart:async' show unawaited;
+
 import '../agent/audit.dart';
+import '../agent/bot_delegation_client.dart';
 import '../agent/bots.dart' as b;
 import '../agent/bot_runner.dart';
 import '../agent/bot_templates.dart' as tpl;
@@ -480,11 +483,37 @@ class BotsController extends ChangeNotifier {
   /// confirm action, never a silent flip.
   Future<void> armLive(String id, {required num allocationUsd}) async {
     await _runner!.armLive(id, allocationUsd: allocationUsd);
+    // Register an EPHEMERAL, per-active-chain delegation so the server runner can
+    // keep this bot trading while the app is closed (Stage 1: lifecycle only, no
+    // key leaves the device). Best-effort; signed-out → runs app-open only.
+    unawaited(_registerDelegation(id, allocationUsd));
     notifyListeners();
+  }
+
+  BotDelegationClient get _delegations => BotDelegationClient(
+        origin: 'https://blockle.org',
+        bearer: () => _mc.agent.acctToken,
+      );
+
+  Future<void> _registerDelegation(String id, num capUsd) async {
+    final bot = _runner?.get(id);
+    if (bot == null) return;
+    // Only the bot's ACTIVE chain is delegated (lane → wallet chain id).
+    const laneToChain = {'bsc': 'bnb'};
+    final lane = bot.lane;
+    final chain = (lane != null && lane.isNotEmpty) ? (laneToChain[lane] ?? lane) : 'ethereum';
+    String? address;
+    try {
+      address = (await _mc.addressFor(chain))?.address;
+    } catch (_) {}
+    await _delegations.register(botId: id, chain: chain, capUsd: capUsd, address: address);
   }
 
   Future<void> pause(String id) async {
     await _runner!.pause(id);
+    // Bot stopped → revoke its server delegation immediately (key, once Stage 2
+    // holds one, is wiped the moment the bot is no longer running).
+    unawaited(_delegations.revoke(id));
     notifyListeners();
   }
 
@@ -509,6 +538,7 @@ class BotsController extends ChangeNotifier {
   /// so the scheduler stops when the last enabled bot is gone.
   Future<void> remove(String id) async {
     await _runner!.remove(id);
+    unawaited(_delegations.revoke(id));
     notifyListeners();
   }
 
@@ -525,6 +555,8 @@ class BotsController extends ChangeNotifier {
   // locks the vault (policy.kill wipes decrypted keys + the LLM credential). ----
   Future<void> killAll([String? reason]) async {
     await _runner!.killAll(reason ?? 'user kill-all');
+    // Kill-all → revoke EVERY server delegation at once.
+    unawaited(_delegations.revokeAll());
     notifyListeners();
   }
 

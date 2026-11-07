@@ -15,6 +15,7 @@ import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makePrices } from './prices.js';
+import { makeBotDelegations } from './botdelegate.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -47,6 +48,9 @@ export function createApp(overrides = {}) {
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const moonpay = overrides.moonpay || makeMoonpay(process.env);
   const prices = overrides.prices || makePrices({});
+  // Ephemeral server-side bot-delegation registry (Stage 1: lifecycle only, no
+  // key material). In-memory → a restart fail-closes every delegation.
+  const botDelegations = overrides.botDelegations || makeBotDelegations({});
   const googleStore = overrides.googleStore || makeGoogleStore(cfg, overrides.googleDeps);
   const chain = overrides.chain || makeChain(cfg, overrides.chainDeps || {});
   let lastKnownPrice = null; // latest BLOCK price for paper-bot marking (best-effort)
@@ -338,6 +342,29 @@ export function createApp(overrides = {}) {
     try { return json(res, 200, { prices: await prices.resolve(b.assets || []) }); }
     catch { return json(res, 200, { prices: {} }); }
   });
+
+  // ===== Server-side live-bot delegation (Stage 1: lifecycle only; NO signing) =
+  // A live bot that keeps running while the app is closed registers an EPHEMERAL,
+  // per-active-chain, capped delegation here; stopping it / Kill-all revokes it.
+  // No key material is accepted or stored in Stage 1 (signing arrives in Stage 2).
+  on('POST', /^\/account\/api\/bots\/delegate$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    try {
+      const d = botDelegations.put(u.id, {
+        botId: b.botId, chain: b.chain, capUsd: b.capUsd, address: b.address, ttl: b.ttl,
+      });
+      return json(res, 200, { delegation: d });
+    } catch (e) { return json(res, 400, { error: String(e.message || 'delegate failed') }); }
+  }));
+  on('POST', /^\/account\/api\/bots\/revoke$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    // { botId } revokes one; omit botId to revoke ALL (Kill-all).
+    const n = b.botId ? (botDelegations.revoke(u.id, String(b.botId)) ? 1 : 0)
+                      : botDelegations.revokeAll(u.id);
+    return json(res, 200, { revoked: n });
+  }));
+  on('GET', /^\/account\/api\/bots\/delegations$/, authed((req, res, { u }) =>
+    json(res, 200, { delegations: botDelegations.list(u.id) })));
 
   // ===== 3Commas-style paper bots (play money; live trading stays client-signed in the wallet) =
   const priceFor = () => (lastKnownPrice || 1);
@@ -1193,7 +1220,7 @@ export function createApp(overrides = {}) {
     }
   });
 
-  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, _internal: { loginIpRl, acctRl, userByEmail } };
+  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, botDelegations, _internal: { loginIpRl, acctRl, userByEmail } };
 }
 
 function sanitizeMeta(meta) {
@@ -1221,4 +1248,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Advance paper bots on an interval (best-effort price feed).
   const timer = setInterval(() => { app.stepAllBots().catch(() => {}); }, app.cfg.botStepMs);
   if (timer.unref) timer.unref();
+  // Drop expired bot delegations so a key is never held past its lifetime.
+  const sweep = setInterval(() => { try { app.botDelegations.sweep(); } catch { /* best-effort */ } }, 60_000);
+  if (sweep.unref) sweep.unref();
 }
