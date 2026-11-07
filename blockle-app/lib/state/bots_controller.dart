@@ -39,7 +39,8 @@ import '../agent/strategies.dart' show StrategyContext;
 import '../agent/tools.dart' show ToolRegistry;
 import '../multichain/backup_client.dart' as bc;
 import '../services/agent_service.dart' show SecureChannelStore;
-import '../services/exchange_client.dart' show ExchangeClient, ExchangeMarket;
+import '../multichain/chains/chain_adapter.dart' show AssetRef;
+import '../multichain/prices.dart' show PriceService, priceKey;
 import 'multichain_controller.dart';
 
 /// The bot order tools that must be on the policy allowlist for a bot to act.
@@ -217,97 +218,46 @@ class BotsController extends ChangeNotifier {
 
   // ---- REAL market marks (§4/§5) -------------------------------------------
   //
-  // Feed the engine a per-symbol USD unit price derived from the wallet's
-  // EXISTING live market data — the non-custodial Blockle Exchange
-  // (getMarkets/getBook/getTrades), the SAME source the agent runner ctx is
-  // wired to. The mark for a symbol is its BASE/QUOTE market's book mid (best
-  // bid/ask), falling back to the last trade, then the market's last price, all
-  // converted to USD through the quote symbol (stablecoins = $1).
+  // Feed the engine a per-symbol USD unit price from the shared [PriceService]
+  // (server proxy → CoinGecko → DeFiLlama → Coinbase) — the SAME live feed the
+  // Accounts/portfolio screens use. Covers every chain's native coin + major
+  // tokens, so the scanner / live bots can price-and-trade on any supported
+  // chain (not just the decommissioned exchange's pairs).
   //
-  // NO SYNTHETIC PRICES: a symbol the Exchange can't price is simply omitted, so
-  // `_unitUc` finds no mark and the engine skips that tick (audited `skipped`).
-  // The Exchange client itself is best-effort (returns [] / null on any network
-  // error) so a genuinely-unavailable market degrades to a clean skip, never a
-  // fabricated fill.
+  // NO SYNTHETIC PRICES: a symbol no source can price is simply omitted, so the
+  // engine skips that tick (audited `skipped`) rather than fabricating a fill.
 
   /// Stablecoins pin to $1 (mirrors the engine's `_stableUsd` set).
   static const Set<String> _stableSyms = {
     'USDC', 'USDT', 'DAI', 'USD', 'USDBC', 'USDB', 'PYUSD', 'TUSD',
   };
 
+  final PriceService _priceSvc = PriceService(serverBase: 'https://blockle.org');
+
   Future<Map<String, num>> _prices(List<String> symbols) async {
-    final wanted = <String>{for (final s in symbols) s};
-    if (wanted.isEmpty) return const {};
-
-    final ExchangeClient ex = _mc.exchange;
-    final List<ExchangeMarket> markets = await ex.getMarkets();
-    if (markets.isEmpty) return const {}; // exchange unavailable -> no marks
-
+    if (symbols.isEmpty) return const {};
     final out = <String, num>{};
-    for (final sym in wanted) {
-      final usd = await _usdMark(sym, markets, ex, const <String>{});
-      if (usd != null && usd.isFinite && usd > 0) out[sym] = usd;
+    final refBySym = <String, AssetRef>{};
+    for (final s in symbols) {
+      final up = s.toUpperCase();
+      if (_stableSyms.contains(up)) {
+        out[s] = 1;
+      } else {
+        // A native-coin AssetRef — PriceService resolves it by symbol→coingecko
+        // id (chain-agnostic for the mark). BLOCK is intentionally never priced.
+        refBySym[s] = AssetRef(chain: '', kind: 'native', symbol: up, decimals: 18);
+      }
+    }
+    if (refBySym.isNotEmpty) {
+      try {
+        final usd = await _priceSvc.fetchUsd(refBySym.values.toList());
+        refBySym.forEach((s, ref) {
+          final p = usd[priceKey(ref)];
+          if (p != null && p.isFinite && p > 0) out[s] = p;
+        });
+      } catch (_) {/* best-effort — unresolved symbols skip the tick */}
     }
     return out;
-  }
-
-  /// USD unit price for [sym]: stable -> $1; else the best BASE/QUOTE market's
-  /// book mid / last trade, converted through the quote's own USD price. Returns
-  /// null when the Exchange has no data to price it (never a synthetic value).
-  /// [seen] guards against cyclic quote chains (e.g. A/B priced via B/A).
-  Future<num?> _usdMark(
-    String sym,
-    List<ExchangeMarket> markets,
-    ExchangeClient ex,
-    Set<String> seen,
-  ) async {
-    final up = sym.toUpperCase();
-    if (_stableSyms.contains(up)) return 1;
-    if (seen.contains(up)) return null;
-
-    // Candidate markets where this symbol is the BASE; prefer a stablecoin quote
-    // (direct USD), then any quote we can price transitively.
-    final candidates = markets.where((m) => m.base.toUpperCase() == up).toList()
-      ..sort((a, c) {
-        final ai = _stableSyms.contains(a.quote.toUpperCase()) ? 0 : 1;
-        final ci = _stableSyms.contains(c.quote.toUpperCase()) ? 0 : 1;
-        return ai.compareTo(ci);
-      });
-
-    for (final m in candidates) {
-      final markInQuote = await _markInQuote(m, ex);
-      if (markInQuote == null || markInQuote <= 0) continue;
-      final quoteUsd = await _usdMark(m.quote, markets, ex, {...seen, up});
-      if (quoteUsd == null || quoteUsd <= 0) continue;
-      return markInQuote * quoteUsd;
-    }
-    return null;
-  }
-
-  /// A single market's mark in QUOTE units: book mid (best bid+ask)/2, else the
-  /// best single side, else the most recent trade, else the market's last price.
-  Future<num?> _markInQuote(ExchangeMarket m, ExchangeClient ex) async {
-    final book = await ex.getBook(m.id);
-    if (book != null) {
-      final num? bid = book.bids.isNotEmpty ? book.bids.first.price : null;
-      final num? ask = book.asks.isNotEmpty ? book.asks.first.price : null;
-      if (bid != null && ask != null && bid > 0 && ask > 0) return (bid + ask) / 2;
-      if (ask != null && ask > 0) return ask;
-      if (bid != null && bid > 0) return bid;
-    }
-    final trades = await ex.getTrades(m.id);
-    if (trades.isNotEmpty) {
-      final p = _asNum(trades.first['price'] ?? trades.first['px'] ?? trades.first['rate']);
-      if (p != null && p > 0) return p;
-    }
-    if (m.last != null && m.last! > 0) return m.last;
-    return null;
-  }
-
-  static num? _asNum(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v;
-    return num.tryParse('$v');
   }
 
   void _onNotify(AgentNotification n) {
