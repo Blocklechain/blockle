@@ -516,6 +516,26 @@ class BotsController extends ChangeNotifier {
     return 0x40000000 | (h % 0x0fffffff); // high + stable, < 2^31
   }
 
+  /// The dedicated EVM sub-account address a BACKGROUND bot trades from — the
+  /// user funds THIS address with the bot's allocation so the server runner can
+  /// drip/trade from it (never the main wallet). Null for non-EVM lanes,
+  /// imported/locked wallets, or if derivation fails. Pure (no network).
+  String? backgroundFundingAddress(String botId) {
+    final bot = _runner?.get(botId);
+    if (bot == null) return null;
+    const laneToChain = {'bsc': 'bnb'};
+    final lane = bot.lane;
+    final chain = (lane != null && lane.isNotEmpty) ? (laneToChain[lane] ?? lane) : 'ethereum';
+    if (!_evmChainId.containsKey(chain)) return null;
+    final mn = _mc.vault.plaintext?.mnemonic;
+    if (mn == null || mn.isEmpty) return null;
+    try {
+      return wx.evmKey(wx.fromMnemonic(mn).seed, _botSubIndex(botId)).address;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _registerDelegation(String id, num capUsd) async {
     final bot = _runner?.get(id);
     if (bot == null) return;

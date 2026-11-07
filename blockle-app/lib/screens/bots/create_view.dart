@@ -400,10 +400,77 @@ class _CreateViewState extends State<CreateView> {
     final bot = _createBot(alloc);
     try {
       await widget.controller.armLive(bot.id, allocationUsd: alloc);
+      // Background bots trade from a DEDICATED sub-account — surface it so the
+      // user can fund it with the allocation (nothing drips until it's funded).
+      final fundAddr = widget.controller.backgroundFundingAddress(bot.id);
+      if (fundAddr != null && mounted) {
+        await _showFundingSheet(fundAddr, alloc);
+      }
       widget.onCreated(bot.id, true);
     } catch (e) {
       _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
     }
+  }
+
+  /// Prompt the user to fund the bot's dedicated background sub-account.
+  Future<void> _showFundingSheet(String address, double alloc) {
+    final t = BotTheme.of(context);
+    return showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: t.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (sheetCtx) => BotTheme(
+        tokens: t,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(20, 18, 20, 18 + MediaQuery.of(sheetCtx).viewInsets.bottom),
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(Icons.account_balance_wallet_outlined, color: t.accent, size: 20),
+              const SizedBox(width: 8),
+              Text('Fund your bot', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: t.ink)),
+            ]),
+            const SizedBox(height: 8),
+            Text(
+                'To keep trading while the app is closed, this bot runs from its OWN '
+                'dedicated sub-account. Send up to ${moneyUsd(alloc, sign: false)} (plus a '
+                'little for gas) to the address below. The bot can only ever touch this '
+                'sub-account — never the rest of your wallet.',
+                style: TextStyle(color: t.inkMuted, fontSize: 13, height: 1.5)),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: t.elevated,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: t.line),
+              ),
+              child: Row(children: [
+                Expanded(child: SelectableText(address, style: mono(t, size: 12, color: t.ink))),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 18),
+                  color: t.accent,
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: address));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Bot sub-account address copied.')));
+                  },
+                ),
+              ]),
+            ),
+            const SizedBox(height: 10),
+            Text(
+                'Not funded yet? No problem — the bot just waits. Stopping it or Kill-all '
+                'revokes the server delegation; sweep the sub-account back any time by '
+                'sending from it in the wallet.',
+                style: TextStyle(color: t.inkFaint, fontSize: 11.5, height: 1.4)),
+            const SizedBox(height: 14),
+            BotButton(label: 'Done', expand: true, onPressed: () => Navigator.pop(sheetCtx)),
+          ]),
+        ),
+      ),
+    );
   }
 
   /// The quote/settlement symbol this bot funds in (AI mode → profit currency;
