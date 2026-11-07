@@ -15,6 +15,7 @@ import '../../state/app_state.dart';
 import '../../state/wallet_controller.dart';
 import '../bots/bots_tokens.dart';
 import '../bots/charts.dart' show Sparkline;
+import '../moonpay_swap.dart';
 import 'wallet_widgets.dart';
 
 class PortfolioView extends StatefulWidget {
@@ -161,7 +162,8 @@ class _PortfolioViewState extends State<PortfolioView> {
           const SizedBox(width: 9),
           Expanded(
               child: _action(t, Icons.swap_horiz, 'Swap',
-                  onTap: () => context.read<AppState>().setTab(2))),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const MoonPaySwapScreen())))),
         ]),
       ]),
     );
