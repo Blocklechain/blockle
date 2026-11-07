@@ -141,8 +141,10 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Blockle-hosted Esplora shim for Dogecoin (operator-overridable, like the
   // other chains). The UTXO adapter is unchanged — just the endpoint config.
   'dogecoin': EndpointCfg(esplora: 'https://doge-esplora.blockle.org'),
-  // Bitcoin Cash Fulcrum/Esplora-compatible REST (operator-overridable).
-  'bitcoincash': EndpointCfg(esplora: 'https://bch.imaginary.cash/api'),
+  // Bitcoin Cash — Haskoin REST (operator-overridable). The public BCH
+  // Esplora/Fulcrum hosts are all dead/bot-walled; the UtxoAdapter's 'haskoin'
+  // apiStyle (on the bitcoincash network) speaks this host's shape.
+  'bitcoincash': EndpointCfg(esplora: 'https://api.haskoin.com/bch'),
   'solana': EndpointCfg(rpcUrl: 'https://api.mainnet-beta.solana.com'),
   // TronGrid REST base (operator-overridable). The Tron adapter reads `api`
   // (+ optional `apiKey`); no secret is hardcoded here.
@@ -160,9 +162,9 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Stellar Horizon REST base (operator-overridable). The Stellar adapter reads
   // `horizon`.
   'stellar': EndpointCfg(horizon: 'https://horizon.stellar.org'),
-  // Tezos RPC base (operator-overridable; fallback https://rpc.tzkt.io/mainnet).
-  // The Tezos adapter reads `rpcUrl`.
-  'tezos': EndpointCfg(rpcUrl: 'https://mainnet.api.tez.ie'),
+  // Tezos RPC base (operator-overridable). The Tezos adapter reads `rpcUrl`.
+  // rpc.tzkt.io is the reliable public node (mainnet.api.tez.ie is defunct).
+  'tezos': EndpointCfg(rpcUrl: 'https://rpc.tzkt.io/mainnet'),
   // Cardano provider (operator-overridable). DEFAULT = KEYLESS Koios. Set
   // `blockfrostProjectId` to switch to Blockfrost. The adapter reads `koios` /
   // `blockfrost*`; no secret is hardcoded here.

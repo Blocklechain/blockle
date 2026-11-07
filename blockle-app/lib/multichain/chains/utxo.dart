@@ -35,6 +35,7 @@ class UtxoNetwork {
     required this.esplora,
     this.forkId = false,
     this.cashaddr,
+    this.apiStyle = 'esplora',
   });
 
   final String id;
@@ -56,6 +57,13 @@ class UtxoNetwork {
   /// CashAddr prefix (e.g. 'bitcoincash'); when set, receive + display use
   /// CashAddr and `addressToScript` accepts CashAddr destinations.
   final String? cashaddr;
+
+  /// Indexer REST dialect. 'esplora' (Blockstream/mempool.space shape:
+  /// /address/{a} → chain_stats, /address/{a}/utxo, POST /tx) is the default.
+  /// 'haskoin' (api.haskoin.com shape: /address/{a}/balance → {confirmed},
+  /// /address/{a}/unspent → [{txid,index,value}], POST /transactions) is used
+  /// for Bitcoin Cash, where no public Esplora/Fulcrum host is reliable.
+  final String apiStyle;
 }
 
 const Map<String, UtxoNetwork> networks = {
@@ -113,7 +121,10 @@ const Map<String, UtxoNetwork> networks = {
     cashaddr: 'bitcoincash',
     path: "m/44'/145'/0'/0",
     explorer: 'https://blockchair.com/bitcoin-cash/transaction/',
-    esplora: 'https://bch.imaginary.cash/api',
+    // Haskoin REST — the public BCH Esplora/Fulcrum hosts are all dead or
+    // bot-walled; Haskoin is the reliable community indexer. See `apiStyle`.
+    esplora: 'https://api.haskoin.com/bch',
+    apiStyle: 'haskoin',
   ),
 };
 
@@ -579,13 +590,19 @@ class UtxoAdapter implements ChainAdapter {
     );
   }
 
-  /// CashAddr chains (BCH) must query the indexer with the BARE address — the
-  /// 'bitcoincash:' scheme prefix makes the Esplora/Fulcrum REST reject every
-  /// request (400/404). Non-cashaddr chains pass through unchanged.
-  String _apiAddr(String address) =>
-      net.cashaddr != null && address.contains(':')
-          ? address.split(':').last
-          : address;
+  bool get _haskoin => net.apiStyle == 'haskoin';
+
+  /// Esplora/Fulcrum REST rejects the 'bitcoincash:' scheme prefix (400/404), so
+  /// CashAddr chains are queried with the BARE address there. Haskoin is the
+  /// opposite — it REQUIRES the full 'bitcoincash:…' CashAddr. Non-cashaddr
+  /// chains pass through unchanged.
+  String _apiAddr(String address) {
+    if (net.cashaddr == null) return address;
+    if (_haskoin) {
+      return address.contains(':') ? address : '${net.cashaddr}:$address';
+    }
+    return address.contains(':') ? address.split(':').last : address;
+  }
 
   /// An indexer "not found" for an address it has never seen means an UNFUNDED
   /// account (zero balance), not a failure — distinguish it from real outages.
@@ -598,12 +615,20 @@ class UtxoAdapter implements ChainAdapter {
   Future<List<Balance>> getBalance(String address,
       {List<AssetRef>? tokens}) async {
     try {
-      final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}'))
-          as Map<String, dynamic>;
-      final cs = (j['chain_stats'] ?? {}) as Map<String, dynamic>;
-      final confirmed = (BigInt.parse((cs['funded_txo_sum'] ?? 0).toString()) -
-              BigInt.parse((cs['spent_txo_sum'] ?? 0).toString()))
-          .toString();
+      final String confirmed;
+      if (_haskoin) {
+        // Haskoin: /address/{a}/balance → {confirmed,unconfirmed,…} in satoshis.
+        final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}/balance'))
+            as Map<String, dynamic>;
+        confirmed = BigInt.parse((j['confirmed'] ?? 0).toString()).toString();
+      } else {
+        final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}'))
+            as Map<String, dynamic>;
+        final cs = (j['chain_stats'] ?? {}) as Map<String, dynamic>;
+        confirmed = (BigInt.parse((cs['funded_txo_sum'] ?? 0).toString()) -
+                BigInt.parse((cs['spent_txo_sum'] ?? 0).toString()))
+            .toString();
+      }
       return [
         Balance(
             asset: native,
@@ -634,11 +659,16 @@ class UtxoAdapter implements ChainAdapter {
   Future<List<Balance>> discoverTokens(String address) async => const [];
 
   Future<List<Map<String, dynamic>>> utxos(String address) async {
-    final j = jsonDecode(await _apiGet('/address/${_apiAddr(address)}/utxo')) as List;
+    // Haskoin: /address/{a}/unspent → [{txid,index,value,…}] (vout == `index`).
+    // Esplora: /address/{a}/utxo    → [{txid,vout,value,…}].
+    final path = _haskoin
+        ? '/address/${_apiAddr(address)}/unspent'
+        : '/address/${_apiAddr(address)}/utxo';
+    final j = jsonDecode(await _apiGet(path)) as List;
     return j
         .map((u) => {
               'txid': u['txid'],
-              'vout': u['vout'],
+              'vout': _haskoin ? u['index'] : u['vout'],
               'value': u['value'].toString(),
             })
         .toList();
@@ -662,6 +692,16 @@ class UtxoAdapter implements ChainAdapter {
 
   @override
   Future<BroadcastResult> broadcast(BuiltTx tx) async {
+    if (_haskoin) {
+      // Haskoin: POST /transactions with raw hex → {"txid":"…"}.
+      final body = await _apiPost('/transactions', tx.raw);
+      String txid = tx.txid;
+      try {
+        final d = jsonDecode(body);
+        if (d is Map && d['txid'] != null) txid = d['txid'].toString();
+      } catch (_) {/* non-JSON: fall back to the locally-computed txid */}
+      return BroadcastResult(txid, true);
+    }
     final txid = (await _apiPost('/tx', tx.raw)).trim();
     return BroadcastResult(txid, true);
   }
