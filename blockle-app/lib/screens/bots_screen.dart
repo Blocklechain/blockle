@@ -160,17 +160,23 @@ class _BotsScreenState extends State<BotsScreen> {
   }
 
   Widget _pickPrompt() {
-    final t = BotTheme.of(context);
-    return Center(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Icon(Icons.touch_app_outlined, color: t.inkMuted, size: 36),
-        const SizedBox(height: 10),
-        Text('Pick a bot in the Cockpit to see its detail.',
-            style: TextStyle(color: t.inkMuted)),
-        const SizedBox(height: 12),
-        BotButton(label: 'Go to cockpit', onPressed: () => setState(() => _tab = 0)),
-      ]),
-    );
+    // Resolve the tokens from a context UNDER the BotTheme wrapper (which is
+    // created inside build()). Using the State's own `context` here walked ABOVE
+    // the BotTheme and tripped BotTheme.of()'s assertion — greying out the whole
+    // screen the moment the Bot-detail tab was opened with no bot selected.
+    return Builder(builder: (ctx) {
+      final t = BotTheme.of(ctx);
+      return Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.touch_app_outlined, color: t.inkMuted, size: 36),
+          const SizedBox(height: 10),
+          Text('Pick a bot in the Cockpit to see its detail.',
+              style: TextStyle(color: t.inkMuted)),
+          const SizedBox(height: 12),
+          BotButton(label: 'Go to cockpit', onPressed: () => setState(() => _tab = 0)),
+        ]),
+      );
+    });
   }
 
   Future<void> _killAll(BotsController c) async {

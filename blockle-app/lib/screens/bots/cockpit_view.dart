@@ -268,20 +268,47 @@ class _Tiles extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = BotTheme.of(context);
     final winRate = totalDeals > 0 ? (wins / totalDeals * 100).round() : null;
+    // A tile sizes to its own content (no fixed aspect ratio) so the value + sub
+    // can never overflow/clip on a narrow phone — the value scales down to the
+    // tile width and the caption is bounded to two lines. (A GridView.count with a
+    // fixed childAspectRatio previously cut the text off / overflowed.)
     Widget tile(String eyebrow, String value, String sub, {Color? vc}) => Container(
           color: t.surface,
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Eyebrow(eyebrow),
               const SizedBox(height: 7),
-              Text(value, style: mono(t, size: 22, color: vc ?? t.ink, w: FontWeight.w600)),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(value,
+                      maxLines: 1,
+                      style: mono(t, size: 22, color: vc ?? t.ink, w: FontWeight.w600)),
+                ),
+              ),
               const SizedBox(height: 2),
-              Text(sub, style: TextStyle(fontSize: 12, color: t.inkMuted)),
+              Text(sub,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: t.inkMuted)),
             ],
           ),
+        );
+    // Two content-sized rows, 1px hairline gaps (the lineSoft ground shows
+    // through between the opaque surface tiles) — the same 2×2 look without the
+    // fixed-height cells that overflowed.
+    Widget row(Widget a, Widget bt) => IntrinsicHeight(
+          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Expanded(child: a),
+            const SizedBox(width: 1),
+            Expanded(child: bt),
+          ]),
         );
     return Container(
       decoration: BoxDecoration(
@@ -290,21 +317,21 @@ class _Tiles extends StatelessWidget {
         border: Border.all(color: t.line),
       ),
       clipBehavior: Clip.antiAlias,
-      child: GridView.count(
-        crossAxisCount: 2,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        mainAxisSpacing: 1,
-        crossAxisSpacing: 1,
-        childAspectRatio: 1.7,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          tile('Active bots', '$active', '$paper paper · $live live'),
-          tile('Allocation in use', moneyUsd(committedLive, sign: false),
-              'of ${moneyUsd(allocLive, sign: false)} capped'),
-          tile('Today', moneyUsd(todayUsd), 'across $todayDeals deals',
-              vc: t.pnlColor(todayUsd)),
-          tile('Win rate', winRate != null ? '$winRate%' : '—',
-              '$wins of $totalDeals deals'),
+          row(
+            tile('Active bots', '$active', '$paper paper · $live live'),
+            tile('Allocation in use', moneyUsd(committedLive, sign: false),
+                'of ${moneyUsd(allocLive, sign: false)} capped'),
+          ),
+          const SizedBox(height: 1),
+          row(
+            tile('Today', moneyUsd(todayUsd), 'across $todayDeals deals',
+                vc: t.pnlColor(todayUsd)),
+            tile('Win rate', winRate != null ? '$winRate%' : '—',
+                '$wins of $totalDeals deals'),
+          ),
         ],
       ),
     );

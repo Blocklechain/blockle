@@ -160,8 +160,14 @@ class BotsController extends ChangeNotifier {
     _runner?.stopScheduler();
     // Keep the live-bot gate in sync with the account's effective Copilot tier (the agent
     // tracks it, incl. an active free trial), so a rebuild never re-locks a paid user.
-    _liveTier = _mc.agent.copilotTier;
-    _liveBotLimit = _mc.agent.liveBotLimit;
+    // `agent` is a late field on the multichain controller; this runs as one of its
+    // listeners and can fire before/while the agent is (re)initialized. A throw here
+    // would propagate out of notifyListeners() and blank the whole Bots screen to a
+    // grey crash, so read it fail-soft and keep the last known tier/limit on failure.
+    try {
+      _liveTier = _mc.agent.copilotTier;
+      _liveBotLimit = _mc.agent.liveBotLimit;
+    } catch (_) {/* agent not ready yet — keep prior tier/limit (fail-closed) */}
     final inst = _backingInstance();
     final Policy policy = inst?.policy ?? _fallbackPolicy;
     final ToolRegistry tools = inst?.tools ?? _fallbackTools;
