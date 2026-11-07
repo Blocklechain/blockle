@@ -58,5 +58,23 @@ await (async () => {
   r = await runOnce({ delegations: dels2, prices: async () => null, rpcFor: () => mockRpc(), env: {}, now: () => t });
   ok('no price → skip (no fabricated trade)', r[0].skipped === 'no-price');
 
+  // SWAP plan: native → token via the V3 router (prices both legs).
+  {
+    let t2 = 5_000_000;
+    const d3 = makeBotDelegations({ now: () => t2 });
+    d3.put('u3', {
+      botId: 'bs', chain: 'base', chainId: 84532, capUsd: 50, address: addr, key: privHex,
+      plan: {
+        type: 'swap', tokenOut: '0x' + '77'.repeat(20), tokenOutSym: 'USDC', tokenOutDecimals: 6,
+        feeTier: 3000, slippageBps: 100, perTradeUsd: 10, intervalMs: 1,
+      },
+    });
+    // ETH $2000, USDC $1.
+    const dualPrice = async (sym) => (sym === 'USDC' ? 1 : 2000);
+    const rr = await runOnce({ delegations: d3, prices: dualPrice, rpcFor: () => mockRpc(), env: {}, now: () => t2 });
+    ok('swap plan executed', rr[0].type === 'swap' && /^0x[0-9a-f]{64}$/.test(rr[0].txid));
+    ok('swap recorded spend (notional+fee)', d3.get('u3', 'bs').spentUsd === 10.2);
+  }
+
   console.log(`liverunner.test.js: ${pass} checks passed`);
 })();

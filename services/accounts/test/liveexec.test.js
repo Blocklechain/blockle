@@ -3,7 +3,7 @@
 // all with a mock RPC (no network).
 
 import assert from 'node:assert';
-import { executeTrade } from '../src/liveexec.js';
+import { executeTrade, uniV3ExactInputSingle } from '../src/liveexec.js';
 import { evmAddressFromPrivate } from '../src/evmsign.js';
 
 const privHex = '0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318';
@@ -89,6 +89,32 @@ await (async () => {
     () => executeTrade({ delegation: del({ chainId: 999999 }), action: { kind: 'native', to: '0x' + '35'.repeat(20), amountBase: '1', notionalUsd: 1, chainId: 999999 }, rpc: mockRpc().rpc, env: {} }),
     /unsupported chainId/, 'unknown chain refused');
   pass++;
+
+  // Uniswap V3 exactInputSingle calldata: selector + 7 static words, values placed.
+  {
+    const weth = '0x4200000000000000000000000000000000000006';
+    const tok = '0x' + '77'.repeat(20);
+    const cd = uniV3ExactInputSingle({ tokenIn: weth, tokenOut: tok, fee: 3000, recipient: addr, amountIn: 1000n, minOut: 950n });
+    ok('swap selector 0x04e45aaf', cd.startsWith('0x04e45aaf'));
+    ok('swap calldata = selector + 7 words', cd.length === 2 + 8 + 7 * 64);
+    ok('tokenOut encoded', cd.toLowerCase().includes('77'.repeat(20)));
+    ok('fee 3000 (0xbb8) encoded', cd.includes((3000).toString(16).padStart(64, '0')));
+  }
+
+  // A swap trade broadcasts (native → token via the router).
+  {
+    const { rpc, calls } = mockRpc();
+    const r = await executeTrade({
+      delegation: del(),
+      action: {
+        kind: 'swap', router: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
+        weth: '0x4200000000000000000000000000000000000006', tokenOut: '0x' + '77'.repeat(20),
+        fee: 3000, amountBase: '1000000000000000', minOut: '900000', notionalUsd: 3, chainId: 84532,
+      }, rpc, env: {},
+    });
+    ok('swap broadcasts', /^0x[0-9a-f]{64}$/.test(r.txid));
+    ok('swap raw is type-2', calls.find((c) => c.method === 'eth_sendRawTransaction').params[0].startsWith('0x02'));
+  }
 
   console.log(`liveexec.test.js: ${pass} checks passed`);
 })();

@@ -35,6 +35,18 @@ export function mainnetEnabled(env = process.env) {
 
 const _big = (v) => (typeof v === 'bigint' ? v : BigInt(v));
 
+// Uniswap V3 SwapRouter02.exactInputSingle(struct) — selector 0x04e45aaf. The
+// struct is all-static (3×address, uint24, address, 2×uint256, uint160), so it
+// ABI-encodes inline as 7 words after the selector. Used for NATIVE→token buys:
+// tokenIn = WETH and the call carries msg.value = amountIn (the router wraps),
+// so no ERC-20 approve is needed. `minOut` is the slippage floor (computed by
+// the runner from the price feed) — a trade returning less reverts on-chain.
+export function uniV3ExactInputSingle({ tokenIn, tokenOut, fee, recipient, amountIn, minOut, sqrtPriceLimitX96 = 0 }) {
+  const w = (h) => String(h).replace(/^0x/i, '').toLowerCase().padStart(64, '0');
+  const n = (v) => w(_big(v).toString(16));
+  return '0x04e45aaf' + w(tokenIn) + w(tokenOut) + n(fee) + w(recipient) + n(amountIn) + n(minOut) + n(sqrtPriceLimitX96);
+}
+
 /// Execute one EVM trade for a delegation. [action] = { to, chainId, kind:
 /// 'native'|'erc20', token?, amountBase (string/bigint, wei or token base
 /// units), notionalUsd, feeUsd? }. [rpc] = async (method, params) => result.
@@ -75,7 +87,20 @@ export async function executeTrade({ delegation, action, rpc, env = process.env 
   const maxPrio = gasPrice;
 
   let to, value, data, gasLimit;
-  if (action.kind === 'erc20') {
+  if (action.kind === 'swap') {
+    // NATIVE → token buy via Uniswap V3 SwapRouter02. value = amountIn (native);
+    // the router wraps to WETH (tokenIn). minOut is the slippage floor.
+    if (!action.router || !action.weth || !action.tokenOut) {
+      throw new Error('swap needs router, weth, tokenOut');
+    }
+    to = action.router;
+    value = _big(action.amountBase);
+    data = uniV3ExactInputSingle({
+      tokenIn: action.weth, tokenOut: action.tokenOut, fee: action.fee || 3000,
+      recipient: action.recipient || from, amountIn: value, minOut: _big(action.minOut || 0),
+    });
+    gasLimit = 0x493e0n; // 300000
+  } else if (action.kind === 'erc20') {
     if (!action.token) throw new Error('erc20 trade needs token');
     to = action.token;
     value = 0n;

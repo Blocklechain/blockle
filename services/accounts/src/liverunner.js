@@ -14,6 +14,31 @@
 
 import { executeTrade } from './liveexec.js';
 
+// Uniswap V3 SwapRouter02 + wrapped-native per chain (for 'swap' plans).
+export const V3_ROUTER = {
+  1: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+  8453: '0x2626664c2603336E57B271c5C0b26F421741e481',
+  42161: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+  10: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+  137: '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45',
+  // testnets
+  11155111: '0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E',
+  84532: '0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4',
+};
+export const WNATIVE = {
+  1: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  8453: '0x4200000000000000000000000000000000000006',
+  42161: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+  10: '0x4200000000000000000000000000000000000006',
+  137: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
+  11155111: '0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14',
+  84532: '0x4200000000000000000000000000000000000006',
+};
+export const NATIVE_SYM = {
+  1: 'ETH', 8453: 'ETH', 42161: 'ETH', 10: 'ETH', 137: 'POL',
+  11155111: 'ETH', 84532: 'ETH',
+};
+
 // Public JSON-RPC per chain. Testnets are always usable; mainnet entries are
 // only ever reached when executeTrade's mainnet gate is open (operator flag).
 export const CHAIN_RPC = {
@@ -67,8 +92,10 @@ export async function runOnce(deps) {
   const out = [];
   for (const { uid, d } of delegations.allActive()) {
     try {
-      if (!d.key || !d.plan || d.plan.type !== 'dca') { out.push({ botId: d.botId, skipped: 'no-plan' }); continue; }
       const plan = d.plan;
+      if (!d.key || !plan || (plan.type !== 'dca' && plan.type !== 'swap')) {
+        out.push({ botId: d.botId, skipped: 'no-plan' }); continue;
+      }
       const interval = Number(plan.intervalMs) || 3600_000;
       if (now() - (Number(plan.lastAt) || 0) < interval) { out.push({ botId: d.botId, skipped: 'not-due' }); continue; }
       const feeUsd = 0.2; // conservative est.; the hard cap gate lives in executeTrade
@@ -76,21 +103,40 @@ export async function runOnce(deps) {
       // Reserve the fee so notional + fee always fits the remaining cap.
       const usd = Math.min(Number(plan.perTradeUsd) || 0, remaining - feeUsd);
       if (usd <= 0.01) { out.push({ botId: d.botId, skipped: 'cap-exhausted' }); continue; }
-      const sym = String(plan.sym || 'ETH').toUpperCase();
-      const px = await prices(sym);
-      if (!px || px <= 0) { out.push({ botId: d.botId, skipped: 'no-price' }); continue; }
-      // native 18-decimal amount for `usd` of the coin.
-      const amountBase = BigInt(Math.floor((usd / px) * 1e18)).toString();
-      const r = await executeTrade({
-        delegation: d,
-        action: { kind: 'native', to: plan.to, amountBase, notionalUsd: usd, feeUsd, chainId: d.chainId },
-        rpc: rpcFor(d.chainId), env,
-      });
+
+      // Native coin price → how much native `usd` buys (amountIn in wei).
+      const nativeSym = NATIVE_SYM[d.chainId] || String(plan.sym || 'ETH');
+      const pxNative = await prices(nativeSym);
+      if (!pxNative || pxNative <= 0) { out.push({ botId: d.botId, skipped: 'no-price' }); continue; }
+      const amountInWei = BigInt(Math.floor((usd / pxNative) * 1e18)).toString();
+
+      let action;
+      if (plan.type === 'swap') {
+        // Real token BUY: native → tokenOut via Uniswap V3, slippage floor from
+        // the tokenOut price feed (a trade returning less reverts on-chain).
+        const router = V3_ROUTER[d.chainId], weth = WNATIVE[d.chainId];
+        if (!router || !weth || !plan.tokenOut) { out.push({ botId: d.botId, skipped: 'no-router' }); continue; }
+        const pxToken = await prices(String(plan.tokenOutSym || '').toUpperCase());
+        if (!pxToken || pxToken <= 0) { out.push({ botId: d.botId, skipped: 'no-token-price' }); continue; }
+        const dec = Number(plan.tokenOutDecimals) || 18;
+        const slip = Math.min(Math.max(Number(plan.slippageBps) || 100, 0), 5000) / 10000; // cap 50%
+        const expectedOut = (usd / pxToken) * (1 - slip);
+        const minOut = BigInt(Math.floor(expectedOut * Math.pow(10, dec))).toString();
+        action = {
+          kind: 'swap', router, weth, tokenOut: plan.tokenOut, fee: Number(plan.feeTier) || 3000,
+          recipient: plan.to, amountBase: amountInWei, minOut, notionalUsd: usd, feeUsd, chainId: d.chainId,
+        };
+      } else {
+        // DCA drip: periodic native transfer into the target (plan.to).
+        action = { kind: 'native', to: plan.to, amountBase: amountInWei, notionalUsd: usd, feeUsd, chainId: d.chainId };
+      }
+
+      const r = await executeTrade({ delegation: d, action, rpc: rpcFor(d.chainId), env });
       // Ledger tracks notional + fee so repeated trades can't creep past the cap.
       delegations.recordSpend(uid, d.botId, usd + feeUsd);
       plan.lastAt = now();
-      log(`[liverunner] bot ${d.botId} drip $${usd} on ${d.chain} tx ${r.txid}`);
-      out.push({ botId: d.botId, usd, txid: r.txid });
+      log(`[liverunner] bot ${d.botId} ${plan.type} $${usd} on ${d.chain} tx ${r.txid}`);
+      out.push({ botId: d.botId, usd, txid: r.txid, type: plan.type });
     } catch (e) {
       out.push({ botId: d.botId, error: String(e && e.message || e) });
     }
