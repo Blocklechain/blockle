@@ -280,6 +280,18 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 style: TextStyle(color: Bk.bad, fontSize: 12))
           else
             Text(b.display, style: kMono.copyWith(fontSize: 13)),
+          // Per-asset Send: opens the send screen PRE-SELECTED to this holding
+          // (so EVM tokens like USDC/USDT — not just native ETH — each have a
+          // one-tap send). Shown for every asset once an address exists.
+          if (addr.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            _sendChip(() => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => MultiSendScreen(
+                            chain: chain, initialAsset: b.asset)))
+                .then((_) => _loadChain(c, chain))),
+          ],
           if (canBuy) ...[
             const SizedBox(width: 8),
             _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
@@ -313,6 +325,30 @@ class _AccountsScreenState extends State<AccountsScreen> {
                     color: Bk.accent,
                     fontSize: 11,
                     fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sendChip(VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          border: Border.all(color: Bk.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.north_east, size: 12, color: Bk.text),
+            SizedBox(width: 4),
+            Text('Send',
+                style: TextStyle(
+                    color: Bk.text, fontSize: 11, fontWeight: FontWeight.w700)),
           ],
         ),
       ),
@@ -722,11 +758,17 @@ String humanToBase(String human, int decimals) {
 
 /// Per-chain Send flow: buildSend -> review (fee + txid) -> confirm -> broadcast.
 class MultiSendScreen extends StatefulWidget {
-  const MultiSendScreen({super.key, required this.chain, this.prefillTo});
+  const MultiSendScreen(
+      {super.key, required this.chain, this.prefillTo, this.initialAsset});
   final String chain;
 
   /// Optional recipient pre-fill (e.g. opened from the address book / a holding).
   final String? prefillTo;
+
+  /// Optional asset to PRE-SELECT (opened from a specific holding row so the
+  /// send screen starts on that token, not the chain's native coin). Merged into
+  /// the asset picker if it isn't already a registry token (e.g. a discovered one).
+  final AssetRef? initialAsset;
   @override
   State<MultiSendScreen> createState() => _MultiSendScreenState();
 }
@@ -751,11 +793,24 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
   void initState() {
     super.initState();
     if (widget.prefillTo != null) _to.text = widget.prefillTo!;
+    // Pre-select a specific holding when opened from its row (native stays null).
+    final ia = widget.initialAsset;
+    if (ia != null && ia.kind != 'native') _asset = ia;
   }
 
   List<AssetRef> _assets(MultichainController c) {
     final native = c.registry.get(widget.chain).native;
-    return [native, ...c.registry.tokensFor(widget.chain)];
+    final toks = [native, ...c.registry.tokensFor(widget.chain)];
+    // A holding opened from the Accounts list may be an auto-DISCOVERED token
+    // that isn't in the static registry — merge it so the picker can show (and
+    // the dropdown value can match) the pre-selected asset.
+    final ia = widget.initialAsset;
+    if (ia != null &&
+        ia.kind != 'native' &&
+        !toks.any((a) => a.address == ia.address)) {
+      toks.add(ia);
+    }
+    return toks;
   }
 
   Future<void> _review() async {
