@@ -378,6 +378,14 @@ class TonAdapter implements ChainAdapter {
   }
 
   BigInt _stackInt(Map<String, dynamic> result) {
+    // A get-method run against an UNINITIALIZED/absent contract (e.g. a jetton
+    // wallet that never received any tokens) still returns ok=true, but with a
+    // non-success TVM exit code (anything other than 0/1) and a GARBAGE stack.
+    // Reading stack[0] there invented a phantom balance — e.g. get_wallet_data
+    // returned exit_code -13 + [["num","0x17b02"]] = 97026 → 0.097 USDT on an
+    // account that holds none. Treat any non-success exit code as zero.
+    final ec = result['exit_code'];
+    if (ec is num && ec != 0 && ec != 1) return BigInt.zero;
     final st = result['stack'];
     if (st is! List || st.isEmpty) return BigInt.zero;
     final v = st[0][1];

@@ -348,6 +348,50 @@ void main() {
       expect(jettonRow.error, isNotNull);
       expect(jettonRow.error, contains('refusing'));
     });
+
+    test('uninitialized jetton wallet (exit_code -13) reads as ZERO, not phantom',
+        () async {
+      // REGRESSION: an owner that never received the jetton has no deployed
+      // jetton wallet. toncenter still answers get_wallet_data with ok=true but
+      // a NON-SUCCESS exit code (-13) and a garbage stack. Reading stack[0]
+      // there fabricated a balance (the real bug: 0x17b02 → 0.097 USDT). It must
+      // read as exactly zero.
+      final usdtMaster = (V['network'] as Map)['jettonMasters']['USDT'] as String;
+      final okWalletBoc = tc.tonToBase64(tc.serializeBoc(
+          tc.addressCell(tc.parseAddress(tx['dest'] as String))));
+      Future<String> post(String path, String body) async {
+        final req = jsonDecode(body) as Map<String, dynamic>;
+        final params = req['params'];
+        final method = (params is Map ? params['method'] : null) ?? req['method'];
+        if (method == 'get_wallet_address') {
+          return jsonEncode({
+            'result': {
+              'stack': [
+                ['cell', {'bytes': okWalletBoc}]
+              ]
+            }
+          });
+        }
+        // get_wallet_data on the undeployed wallet: ok, but exit_code -13 + junk.
+        return jsonEncode({
+          'result': {
+            'exit_code': -13,
+            'stack': [
+              ['num', '0x17b02']
+            ]
+          }
+        });
+      }
+
+      final a = ton.TonAdapter(post: post);
+      final tok = AssetRef(
+          chain: 'ton', kind: 'jetton', symbol: 'USDT', decimals: 6,
+          address: usdtMaster);
+      final bals = await a.getBalance(v4['addressBounceable'] as String, tokens: [tok]);
+      final jettonRow = bals.firstWhere((b) => b.asset.kind == 'jetton');
+      expect(jettonRow.confirmed, '0');
+      expect(jettonRow.error, isNull);
+    });
   });
 
   group('adapter wiring', () {
