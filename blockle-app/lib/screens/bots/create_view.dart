@@ -87,7 +87,13 @@ const List<MapEntry<String?, String>> _laneChoices = [
   MapEntry(null, 'Any lane'),
   MapEntry('solana', 'Solana · SOL'),
   MapEntry('ethereum', 'Ethereum · ETH'),
-  MapEntry('bsc', 'BSC · BNB'),
+  MapEntry('base', 'Base · ETH'),
+  MapEntry('arbitrum', 'Arbitrum · ETH'),
+  MapEntry('optimism', 'Optimism · ETH'),
+  MapEntry('polygon', 'Polygon · POL'),
+  MapEntry('bsc', 'BNB Chain · BNB'),
+  MapEntry('avalanche', 'Avalanche · AVAX'),
+  MapEntry('tron', 'Tron · TRX'),
   MapEntry('block', 'BLOCK'),
 ];
 
