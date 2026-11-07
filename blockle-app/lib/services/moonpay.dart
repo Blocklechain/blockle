@@ -472,13 +472,14 @@ Future<Map<String, dynamic>> moonpaySwapQuote({
   String origin = kMoonPayOrigin,
   HttpSend send = httpSend,
 }) =>
+    // MoonPay Trade API: GET /v3/currencies/{sellAsset}/buy_quote with the BUY
+    // asset + amount as query (matches the web/extension clients; /v3/quote 404s).
     moonpaySwap(
       'GET',
-      '/v3/quote',
+      '/v3/currencies/${Uri.encodeComponent(sellAsset)}/buy_quote',
       config: config,
       query: {
-        'sellAsset': sellAsset,
-        'buyAsset': buyAsset,
+        'quoteCurrencyCode': buyAsset,
         'baseCurrencyAmount': '$amount',
       },
       bearer: bearer,
