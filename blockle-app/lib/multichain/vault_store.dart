@@ -20,6 +20,12 @@ import 'vault.dart';
 class VaultPlaintext {
   int version;
   String? mnemonic; // BIP39 for every secp256k1 chain (EVM/BTC/LTC/DOGE)
+  // SINGLE-KEY IMPORT (no mnemonic): a raw private key imported for one scheme.
+  // `importedKey` is the hex bytes (32B secp / 32B ed25519 / 96B Cardano xprv)
+  // and `importedScheme` is 'secp256k1' | 'ed25519' | 'cardano'. Mutually
+  // exclusive with `mnemonic` in practice.
+  String? importedKey;
+  String? importedScheme;
   Map<String, String>? block; // BLOCK ML-DSA-44 keypair {secret, public}
   Map<String, dynamic>? agent; // { provider, apiKey } — optional LLM credential
   Map<String, dynamic>? endpoints;
@@ -29,6 +35,8 @@ class VaultPlaintext {
   VaultPlaintext({
     this.version = 2,
     this.mnemonic,
+    this.importedKey,
+    this.importedScheme,
     this.block,
     this.agent,
     this.endpoints,
@@ -39,6 +47,8 @@ class VaultPlaintext {
   Map<String, dynamic> toJson() => {
         'version': version,
         if (mnemonic != null) 'mnemonic': mnemonic,
+        if (importedKey != null) 'importedKey': importedKey,
+        if (importedScheme != null) 'importedScheme': importedScheme,
         if (block != null) 'block': block,
         if (agent != null) 'agent': agent,
         if (endpoints != null) 'endpoints': endpoints,
@@ -49,6 +59,8 @@ class VaultPlaintext {
   factory VaultPlaintext.fromJson(Map<String, dynamic> j) => VaultPlaintext(
         version: (j['version'] as num?)?.toInt() ?? 2,
         mnemonic: j['mnemonic'] as String?,
+        importedKey: j['importedKey'] as String?,
+        importedScheme: j['importedScheme'] as String?,
         block: (j['block'] as Map?)?.map((k, v) => MapEntry('$k', '$v')),
         agent: (j['agent'] as Map?)?.cast<String, dynamic>(),
         endpoints: (j['endpoints'] as Map?)?.cast<String, dynamic>(),

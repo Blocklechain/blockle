@@ -29,6 +29,8 @@ import '../multichain/accounts.dart';
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart';
 import '../multichain/crypto/hd.dart' as hd;
+import '../multichain/crypto/crypto_core.dart' as cc;
+import '../multichain/wallet_import.dart' as wi;
 import '../multichain/telemetry.dart' show Telemetry;
 import '../multichain/vault_store.dart';
 import '../multichain/venues.dart' show VenueRegistry;
@@ -548,6 +550,31 @@ class MultichainController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Create a multi-chain wallet from a SINGLE imported private key (no
+  /// mnemonic). Parses [input] (any supported native format, or [kind]-forced),
+  /// seals the raw key under [password], and opens the session. The wallet then
+  /// serves every chain of the key's scheme (a secp256k1 key → EVM + BTC/LTC/
+  /// DOGE/BCH + Tron + XRP; an ed25519 seed → Solana/TON/Stellar/Tezos; a
+  /// Cardano account xprv → Cardano). Throws on an unparseable/out-of-range key.
+  Future<List<String>> importKeyVault(String password, String input,
+      {wi.ImportKind kind = wi.ImportKind.auto}) async {
+    final res = wi.parseImportedKey(input, kind: kind);
+    final scheme = switch (res.scheme) {
+      wi.ImportScheme.secp256k1 => 'secp256k1',
+      wi.ImportScheme.ed25519 => 'ed25519',
+      wi.ImportScheme.cardano => 'cardano',
+    };
+    final pt = VaultPlaintext(
+      importedKey: cc.bytesToHex(res.bytes),
+      importedScheme: scheme,
+    );
+    await vault.create(pt, password);
+    accounts.applyPlaintext(pt);
+    vaultExists = true;
+    notifyListeners();
+    return res.chains;
+  }
+
   /// Unlock the multi-chain vault (HD chains + agent). Best-effort: BLOCK works
   /// without it. Call after the BLOCK wallet is unlocked (common: same password).
   Future<bool> unlockVault(String password) async {
@@ -804,10 +831,17 @@ class MultichainController extends ChangeNotifier {
   /// The chains to render, in display order: the built-ins followed by any
   /// genuinely-new user-added networks (custom nets that merely overrode a
   /// built-in's chainId are not repeated — they ARE the built-in row).
-  List<String> displayChains() => [
-        ...kDisplayChains,
-        ...registry.customNetworkIds(),
-      ];
+  List<String> displayChains() {
+    final all = [...kDisplayChains, ...registry.customNetworkIds()];
+    // A single-key imported wallet only controls its scheme's chains — show
+    // just those (BLOCK stays, it's on its own key) so the Accounts list isn't
+    // cluttered with chains the imported key can't serve.
+    final ic = accounts.importedChains;
+    if (ic != null) {
+      return all.where((c) => c == 'block' || ic.contains(c)).toList();
+    }
+    return all;
+  }
 
   /// Human label for [chain] — built-in label, else the custom network's name.
   String chainLabel(String chain) =>

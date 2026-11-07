@@ -24,8 +24,10 @@ import 'chains/eip712.dart' show eip712Digest;
 import 'chains/evm.dart' as evm;
 import 'chains/registry.dart';
 import 'crypto/address.dart' as addr;
+import 'crypto/crypto_core.dart' as cc;
 import 'crypto/hd.dart' as hd;
 import 'vault_store.dart';
+import 'wallet_import.dart' as wi;
 
 /// A keyless-handshake signer: the 0x [address] it controls plus a [sign]
 /// closure that EIP-191 personal_signs a challenge. The private key stays
@@ -72,7 +74,37 @@ class Accounts {
   /// app). Idempotent; resets the derived-account cache.
   void applyPlaintext(VaultPlaintext pt) => _applyRoot(pt);
 
+  /// Non-null when the wallet was created from a single imported private key:
+  /// the ONLY chains it can serve accounts for (its scheme's chain set). Null
+  /// for a normal mnemonic wallet (every registry chain).
+  List<String>? importedChains;
+
   void _applyRoot(VaultPlaintext pt) {
+    importedChains = null;
+    // SINGLE-KEY IMPORT: a raw key (no mnemonic) → RootSecret with the matching
+    // imported field; only the scheme's chains are served.
+    final ik = pt.importedKey;
+    if (ik != null && ik.isNotEmpty) {
+      final bytes = cc.hexToBytes(ik);
+      switch (pt.importedScheme) {
+        case 'ed25519':
+          _root = RootSecret(importedEd25519: bytes);
+          importedChains = wi.kEd25519ImportChains;
+          break;
+        case 'cardano':
+          _root = RootSecret(importedCardano: bytes);
+          importedChains = wi.kCardanoImportChains;
+          break;
+        case 'secp256k1':
+        default:
+          _root = RootSecret(importedSecp: bytes);
+          importedChains = wi.kSecpImportChains;
+          break;
+      }
+      _cache.clear();
+      registry.unlock(_root!);
+      return;
+    }
     final mn = pt.mnemonic;
     final hasMn = mn != null && mn.isNotEmpty;
     final seed = hasMn ? _seedFromMnemonic(mn) : null;
@@ -93,8 +125,13 @@ class Accounts {
     registry.unlock(_root!);
   }
 
-  /// The enabled chains this facade can serve accounts for.
-  List<String> chains() => registry.enabled();
+  /// The enabled chains this facade can serve accounts for. For an imported
+  /// single-key wallet this is restricted to the key's scheme's chains.
+  List<String> chains() {
+    final ic = importedChains;
+    if (ic != null) return registry.enabled().where(ic.contains).toList();
+    return registry.enabled();
+  }
 
   /// Lazily derive + cache the account for [chain] at [index]. BLOCK resolves
   /// via its engine-session bridge; secp256k1/ed25519 chains require an unlocked
@@ -103,7 +140,9 @@ class Accounts {
     final key = '$chain/$index';
     final cached = _cache[key];
     if (cached != null) return cached;
-    if (chain != 'block' && (_root?.seed == null)) {
+    if (chain != 'block' &&
+        _root?.seed == null &&
+        !(_root?.isImported ?? false)) {
       throw StateError('locked: no HD seed for $chain');
     }
     final acct = await registry

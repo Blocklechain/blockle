@@ -135,14 +135,82 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   : 'Add a single BIP39 recovery phrase to derive your ETH / Base / BTC / LTC / DOGE / SOL accounts. BLOCK remains post-quantum and separate.',
               style: const TextStyle(color: Bk.muted, fontSize: 12)),
           const SizedBox(height: 12),
-          FilledButton(
-            onPressed: () =>
-                exists ? _unlockVaultDialog(c) : _setupVaultDialog(c),
-            child: Text(exists ? 'Unlock' : 'Set up'),
-          ),
+          Row(children: [
+            FilledButton(
+              onPressed: () =>
+                  exists ? _unlockVaultDialog(c) : _setupVaultDialog(c),
+              child: Text(exists ? 'Unlock' : 'Set up'),
+            ),
+            if (!exists) ...[
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: () => _importKeyDialog(c),
+                icon: const Icon(Icons.vpn_key_outlined, size: 16),
+                label: const Text('Import a key'),
+              ),
+            ],
+          ]),
         ],
       ),
     );
+  }
+
+  /// Import a wallet from a SINGLE private key in any supported native format
+  /// (EVM 0x-hex, WIF, Solana base58, Stellar S…, Tezos edsk…, XRP, Cardano
+  /// xprv). One key unlocks every chain of its scheme.
+  Future<void> _importKeyDialog(MultichainController c) async {
+    final pw = TextEditingController();
+    final keyCtrl = TextEditingController();
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Bk.surface,
+        title: const Text('Import a private key'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text(
+              'Paste a private key in any supported format — EVM/0x-hex, WIF '
+              '(BTC/LTC/DOGE/BCH), Solana base58, Stellar S…, Tezos edsk…, XRP, '
+              'or a Cardano account key. The format is detected automatically; '
+              'the key unlocks every chain it controls. It is sealed under your '
+              'password and never leaves this device.',
+              style: TextStyle(color: Bk.muted, fontSize: 12)),
+          const SizedBox(height: 12),
+          TextField(
+            controller: keyCtrl,
+            minLines: 2,
+            maxLines: 3,
+            decoration: const InputDecoration(
+                labelText: 'Private key', hintText: '0x… · 5J… · S… · edsk… · …'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: pw,
+            obscureText: true,
+            decoration: const InputDecoration(labelText: 'New vault password'),
+          ),
+        ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Import')),
+        ],
+      ),
+    );
+    if (res != true) return;
+    if (pw.text.isEmpty || keyCtrl.text.trim().isEmpty) {
+      _snack('Enter the key and a password.');
+      return;
+    }
+    try {
+      final chains = await c.importKeyVault(pw.text, keyCtrl.text.trim());
+      await _loadAll();
+      _snack('Imported — ${chains.length} chains enabled.');
+    } catch (e) {
+      _snack(e.toString().replaceFirst('Exception: ', ''));
+    }
   }
 
   Widget _chainCard(MultichainController c, String chain) {
