@@ -16,6 +16,7 @@ import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makePrices } from './prices.js';
 import { makeBotDelegations } from './botdelegate.js';
+import { MAINNET_CHAIN_IDS, mainnetEnabled } from './liveexec.js';
 import {
   hashPassword, verifyPassword, randomToken, sha256, timingSafeEqualStr,
   totpSecret, totpVerify, totpUri, genRecoveryCodes, safeNow,
@@ -348,12 +349,20 @@ export function createApp(overrides = {}) {
   // per-active-chain, capped delegation here; stopping it / Kill-all revokes it.
   // No key material is accepted or stored in Stage 1 (signing arrives in Stage 2).
   on('POST', /^\/account\/api\/bots\/delegate$/, authed(async (req, res, { u }) => {
-    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
     try {
+      // Defense-in-depth: refuse to even STORE a signing key for a mainnet chain
+      // unless the operator has turned mainnet trading on. Testnet keys + no-key
+      // (Stage 1) registrations are always accepted.
+      const cid = b.chainId != null ? Number(b.chainId) : null;
+      if (b.key && cid != null && MAINNET_CHAIN_IDS.has(cid) && !mainnetEnabled(process.env)) {
+        return json(res, 400, { error: 'mainnet bot keys are disabled on this server' });
+      }
       const d = botDelegations.put(u.id, {
-        botId: b.botId, chain: b.chain, capUsd: b.capUsd, address: b.address, ttl: b.ttl,
+        botId: b.botId, chain: b.chain, chainId: cid, capUsd: b.capUsd,
+        address: b.address, ttl: b.ttl, key: b.key, plan: b.plan,
       });
-      return json(res, 200, { delegation: d });
+      return json(res, 200, { delegation: d }); // view carries hasKey, never the key
     } catch (e) { return json(res, 400, { error: String(e.message || 'delegate failed') }); }
   }));
   on('POST', /^\/account\/api\/bots\/revoke$/, authed(async (req, res, { u }) => {

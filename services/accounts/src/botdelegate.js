@@ -29,30 +29,50 @@ export function makeBotDelegations({ ttlMs = DEFAULT_TTL_MS, now = () => Date.no
   }
 
   function _view(d) {
-    // NEVER include any key material (there is none in Stage 1; this guards
-    // Stage 2 too — the key stays server-internal and is never serialized out).
+    // NEVER include key material or the raw plan — the key/plan stay
+    // server-internal and are never serialized out (to a response or a log).
     return {
-      botId: d.botId, chain: d.chain, capUsd: d.capUsd,
-      address: d.address, createdAt: d.createdAt, expiresAt: d.expiresAt,
+      botId: d.botId, chain: d.chain, chainId: d.chainId, capUsd: d.capUsd,
+      spentUsd: d.spentUsd, remainingUsd: Math.max(0, d.capUsd - d.spentUsd),
+      address: d.address, hasKey: !!d.key, createdAt: d.createdAt, expiresAt: d.expiresAt,
     };
   }
 
   // Register (or refresh) a delegation for a running bot. Returns its view.
-  function put(uid, { botId, chain, capUsd, address, ttl } = {}) {
+  // Stage 2b: optionally carries `key` (0x secp256k1, IN-MEMORY ONLY), `chainId`
+  // (for the testnet/mainnet gate) and `plan` (server-evaluated trade plan).
+  // Refreshing an existing bot PRESERVES its spent ledger (never resets the cap).
+  function put(uid, { botId, chain, chainId, capUsd, address, ttl, key, plan } = {}) {
     if (!uid) throw new Error('no user');
     if (!botId || !chain) throw new Error('botId and chain are required');
     const cap = Number(capUsd);
     if (!Number.isFinite(cap) || cap <= 0) throw new Error('capUsd must be > 0');
     const m = _userMap(uid);
-    if (!m.has(botId) && m.size >= MAX_PER_USER) throw new Error('delegation limit reached');
+    const prior = m.get(String(botId));
+    if (!prior && m.size >= MAX_PER_USER) throw new Error('delegation limit reached');
     const t = now();
     const life = Math.min(Number(ttl) > 0 ? Number(ttl) : ttlMs, ttlMs);
     const d = {
-      botId: String(botId), chain: String(chain), capUsd: cap,
-      address: address ? String(address) : null,
-      createdAt: t, expiresAt: t + life,
+      botId: String(botId), chain: String(chain),
+      chainId: chainId != null ? Number(chainId) : (prior ? prior.chainId : null),
+      capUsd: cap,
+      spentUsd: prior ? prior.spentUsd : 0, // preserve ledger across refresh
+      address: address ? String(address) : (prior ? prior.address : null),
+      key: key != null ? String(key) : (prior ? prior.key : null), // in-memory only
+      plan: plan !== undefined ? plan : (prior ? prior.plan : null),
+      createdAt: prior ? prior.createdAt : t,
+      expiresAt: t + life,
     };
     m.set(d.botId, d);
+    return _view(d);
+  }
+
+  // Record USD spent by a delegation's trade (gates further trades against the
+  // cap). Returns the updated view, or null if the delegation is gone.
+  function recordSpend(uid, botId, usd) {
+    const d = get(uid, botId);
+    if (!d) return null;
+    d.spentUsd += Math.max(0, Number(usd) || 0);
     return _view(d);
   }
 
@@ -105,5 +125,16 @@ export function makeBotDelegations({ ttlMs = DEFAULT_TTL_MS, now = () => Date.no
     return removed;
   }
 
-  return { put, list, get, revoke, revokeAll, sweep };
+  // INTERNAL: every live delegation across all users, WITH key + plan — for the
+  // runner loop only. Never routed/serialized. Drops expired entries first.
+  function allActive() {
+    sweep();
+    const out = [];
+    for (const [uid, m] of byUser) {
+      for (const d of m.values()) out.push({ uid, d });
+    }
+    return out;
+  }
+
+  return { put, list, get, recordSpend, revoke, revokeAll, sweep, allActive };
 }
