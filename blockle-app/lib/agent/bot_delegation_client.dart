@@ -46,13 +46,24 @@ class BotDelegationClient {
     required String chain,
     required num capUsd,
     String? address,
+    int? chainId,
+    String? key, // 0x secp256k1 of the DEDICATED sub-account (background only)
+    Map<String, dynamic>? plan,
   }) async {
     final b = bearer();
     if (!_ready || b == null) return false;
     try {
       await _post(
         '$origin/account/api/bots/delegate',
-        jsonEncode({'botId': botId, 'chain': chain, 'capUsd': capUsd, if (address != null) 'address': address}),
+        jsonEncode({
+          'botId': botId,
+          'chain': chain,
+          'capUsd': capUsd,
+          if (address != null) 'address': address,
+          if (chainId != null) 'chainId': chainId,
+          if (key != null) 'key': key,
+          if (plan != null) 'plan': plan,
+        }),
         b,
       );
       return true;

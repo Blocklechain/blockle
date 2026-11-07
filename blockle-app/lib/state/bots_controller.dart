@@ -29,6 +29,7 @@ import 'dart:async' show unawaited;
 
 import '../agent/audit.dart';
 import '../agent/bot_delegation_client.dart';
+import '../multichain/wallet_export.dart' as wx;
 import '../agent/bots.dart' as b;
 import '../agent/bot_runner.dart';
 import '../agent/bot_templates.dart' as tpl;
@@ -495,18 +496,68 @@ class BotsController extends ChangeNotifier {
         bearer: () => _mc.agent.acctToken,
       );
 
+  // EVM lane → chainId + native symbol (for the server runner's price/gate).
+  static const _evmChainId = {
+    'ethereum': 1, 'base': 8453, 'arbitrum': 42161, 'optimism': 10,
+    'polygon': 137, 'bnb': 56, 'avalanche': 43114,
+  };
+  static const _evmNativeSym = {
+    'ethereum': 'ETH', 'base': 'ETH', 'arbitrum': 'ETH', 'optimism': 'ETH',
+    'polygon': 'POL', 'bnb': 'BNB', 'avalanche': 'AVAX',
+  };
+
+  // A STABLE, high HD index per bot → a dedicated EVM sub-account (so the
+  // server's reach is only that one funded sub-account, never the main wallet).
+  int _botSubIndex(String botId) {
+    var h = 0;
+    for (final cu in botId.codeUnits) {
+      h = (h * 31 + cu) & 0x7fffffff;
+    }
+    return 0x40000000 | (h % 0x0fffffff); // high + stable, < 2^31
+  }
+
   Future<void> _registerDelegation(String id, num capUsd) async {
     final bot = _runner?.get(id);
     if (bot == null) return;
-    // Only the bot's ACTIVE chain is delegated (lane → wallet chain id).
     const laneToChain = {'bsc': 'bnb'};
     final lane = bot.lane;
     final chain = (lane != null && lane.isNotEmpty) ? (laneToChain[lane] ?? lane) : 'ethereum';
-    String? address;
+    final chainId = _evmChainId[chain];
+    final mn = _mc.vault.plaintext?.mnemonic;
+
+    // Non-EVM lane, imported/locked wallet, or unknown chain → Stage-1
+    // metadata-only (no key leaves the device).
+    if (chainId == null || mn == null || mn.isEmpty) {
+      String? address;
+      try {
+        address = (await _mc.addressFor(chain))?.address;
+      } catch (_) {}
+      await _delegations.register(botId: id, chain: chain, capUsd: capUsd, address: address);
+      return;
+    }
+
+    // EVM background: delegate a DEDICATED sub-account key (not the main key) +
+    // a DCA-drip plan. The server REFUSES to store a mainnet key until the
+    // operator flips mainnet on, so this only enables background on testnet /
+    // after go-live. The sub-account must be funded with the allocation.
     try {
-      address = (await _mc.addressFor(chain))?.address;
-    } catch (_) {}
-    await _delegations.register(botId: id, chain: chain, capUsd: capUsd, address: address);
+      final seed = wx.fromMnemonic(mn).seed;
+      final sub = wx.evmKey(seed, _botSubIndex(id)); // dedicated hot sub-account
+      final main = wx.evmKey(seed, 0).address; // drips accumulate into the main acct
+      final plan = {
+        'type': 'dca',
+        'to': main,
+        'sym': _evmNativeSym[chain] ?? 'ETH',
+        'perTradeUsd': (capUsd / 20).clamp(1, capUsd), // ~20 drips across the cap
+        'intervalMs': 3600000,
+      };
+      await _delegations.register(
+        botId: id, chain: chain, capUsd: capUsd,
+        address: sub.address, chainId: chainId, key: sub.privateKey, plan: plan,
+      );
+    } catch (_) {
+      await _delegations.register(botId: id, chain: chain, capUsd: capUsd);
+    }
   }
 
   Future<void> pause(String id) async {
