@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart';
 import '../multichain/chains/registry.dart' show CustomNetwork, slugifyNetworkName;
+import '../multichain/prices.dart';
 import '../multichain/security.dart' as sec;
 import '../services/moonpay.dart';
 import '../services/open_url.dart';
@@ -35,6 +36,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
   final Map<String, DerivedAccount?> _accts = {};
   final Map<String, List<Balance>> _bals = {};
   final Set<String> _loading = {};
+  // Live USD spot prices (per whole unit), keyed by [priceKey]. Non-BLOCK assets
+  // only — BLOCK/BLOCK-20 are never USD-priced. Populated best-effort per chain.
+  final PriceService _priceSvc = PriceService();
+  final Map<String, double> _usd = {};
 
   @override
   void initState() {
@@ -62,6 +67,13 @@ class _AccountsScreenState extends State<AccountsScreen> {
       _bals[chain] = bals;
       _loading.remove(chain);
     });
+    // Pull live USD prices for this chain's assets (best-effort, non-blocking for
+    // the balance render). BLOCK-denominated assets are skipped by the service.
+    try {
+      final usd = await _priceSvc.fetchUsd([for (final b in bals) b.asset]);
+      if (!mounted || usd.isEmpty) return;
+      setState(() => _usd.addAll(usd));
+    } catch (_) {/* prices are decorative; a failure never blocks balances */}
   }
 
   @override
@@ -238,11 +250,55 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
+  // 10^n as a double (small n: token decimals), without importing dart:math here.
+  static double _pow10(int n) {
+    var p = 1.0;
+    for (var i = 0; i < n; i++) {
+      p *= 10;
+    }
+    return p;
+  }
+
+  static String _fmtUsd(double v) {
+    if (v == 0) return '\$0.00';
+    if (v >= 1) {
+      final s = v.toStringAsFixed(2);
+      // Thousands separators for readability.
+      final parts = s.split('.');
+      final buf = StringBuffer();
+      final intPart = parts[0];
+      for (var i = 0; i < intPart.length; i++) {
+        if (i > 0 && (intPart.length - i) % 3 == 0) buf.write(',');
+        buf.write(intPart[i]);
+      }
+      return '\$$buf.${parts[1]}';
+    }
+    return '\$${v.toStringAsFixed(v >= 0.01 ? 4 : 6)}';
+  }
+
+  /// The holding's USD value, or null when the asset has no resolved price
+  /// (BLOCK-denominated, or an unpriced token) — never a guessed value.
+  String? _fiatValue(Balance b) {
+    final p = _usd[priceKey(b.asset)];
+    if (p == null) return null;
+    final base = BigInt.tryParse(b.confirmed) ?? BigInt.zero;
+    final whole = base.toDouble() / _pow10(b.asset.decimals);
+    return _fmtUsd(whole * p);
+  }
+
+  /// The unit spot price (e.g. "$2,232.97") for the asset, or null if unpriced.
+  String? _unitPrice(AssetRef a) {
+    final p = _usd[priceKey(a)];
+    return p == null ? null : _fmtUsd(p);
+  }
+
   Widget _balanceRow(
       MultichainController c, String chain, String addr, Balance b) {
     final err = b.error != null;
     final logo = b.asset.logo;
     final isToken = b.asset.kind != 'native';
+    final fiat = err ? null : _fiatValue(b);
+    final unit = _unitPrice(b.asset);
     // "Buy with card" is offered per asset that MoonPay supports — never for
     // BLOCK, and only when we have a receive address to deliver to.
     final moonpaySupported = !moonpayIsBlock(chain) &&
@@ -268,15 +324,30 @@ class _AccountsScreenState extends State<AccountsScreen> {
             const SizedBox(width: 6),
           ],
           Flexible(
-            child: Text(b.asset.symbol,
-                overflow: TextOverflow.ellipsis,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Flexible(
+                    child: Text(b.asset.symbol,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 13)),
+                  ),
+                  if (isToken) ...[
+                    const SizedBox(width: 6),
+                    const Text('token',
+                        style: TextStyle(color: Bk.muted, fontSize: 10)),
+                  ],
+                ]),
+                // Live unit spot price (non-BLOCK assets only).
+                if (unit != null)
+                  Text('$unit each',
+                      style: const TextStyle(color: Bk.faint, fontSize: 10)),
+              ],
+            ),
           ),
-          if (isToken) ...[
-            const SizedBox(width: 6),
-            const Text('token', style: TextStyle(color: Bk.muted, fontSize: 10)),
-          ],
           const SizedBox(width: 8),
           // Balance + per-asset actions in an END-aligned Wrap so a row with
           // several chips (EVM holdings have Send + Buy + Sell) flows to a second
@@ -292,7 +363,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   const Text('unavailable',
                       style: TextStyle(color: Bk.bad, fontSize: 12))
                 else
-                  Text(b.display, style: kMono.copyWith(fontSize: 13)),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(b.display, style: kMono.copyWith(fontSize: 13)),
+                      if (fiat != null)
+                        Text(fiat,
+                            style: const TextStyle(
+                                fontSize: 11, color: Bk.muted)),
+                    ],
+                  ),
                 // Per-asset Send: opens the send screen PRE-SELECTED to this
                 // holding (so EVM tokens like USDC/USDT — not just native ETH —
                 // each get a one-tap send). Shown once an address exists.
