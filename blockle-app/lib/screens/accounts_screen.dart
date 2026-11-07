@@ -310,89 +310,102 @@ class _AccountsScreenState extends State<AccountsScreen> {
     // "Sell for cash" (off-ramp) is offered for the same supported asset set;
     // the address is the source/refund address MoonPay shows the user.
     final canSell = addr.isNotEmpty && moonpaySupported;
+    final chips = <Widget>[
+      if (addr.isNotEmpty)
+        _sendChip(() => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) =>
+                        MultiSendScreen(chain: chain, initialAsset: b.asset)))
+            .then((_) => _loadChain(c, chain))),
+      if (canBuy) _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
+      if (canSell)
+        _sellChip(() => _sellForCash(c, chain, addr, b.asset, b.display)),
+    ];
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (isToken) ...[
-            AssetIcon(
-              chainId: chain,
-              symbol: b.asset.symbol,
-              isToken: true,
-              logoUri: logo,
-              address: b.asset.address,
-              radius: 9,
-            ),
-            const SizedBox(width: 6),
-          ],
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(mainAxisSize: MainAxisSize.min, children: [
-                  Flexible(
-                    child: Text(b.asset.symbol,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w600, fontSize: 13)),
-                  ),
-                  if (isToken) ...[
-                    const SizedBox(width: 6),
-                    const Text('token',
-                        style: TextStyle(color: Bk.muted, fontSize: 10)),
-                  ],
-                ]),
-                // Live unit spot price (non-BLOCK assets only).
-                if (unit != null)
-                  Text('$unit each',
-                      style: const TextStyle(color: Bk.faint, fontSize: 10)),
+          // Identity (left, flexes/ellipsizes) + balance (right, NEVER truncated
+          // — it sizes to its content and wraps the FULL number across lines
+          // rather than clipping it).
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (isToken) ...[
+                AssetIcon(
+                  chainId: chain,
+                  symbol: b.asset.symbol,
+                  isToken: true,
+                  logoUri: logo,
+                  address: b.asset.address,
+                  radius: 9,
+                ),
+                const SizedBox(width: 6),
               ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          // Balance + per-asset actions in an END-aligned Wrap so a row with
-          // several chips (EVM holdings have Send + Buy + Sell) flows to a second
-          // line instead of overflowing off a narrow screen.
-          Expanded(
-            child: Wrap(
-              alignment: WrapAlignment.end,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              spacing: 8,
-              runSpacing: 6,
-              children: [
-                if (err)
-                  const Text('unavailable',
-                      style: TextStyle(color: Bk.bad, fontSize: 12))
-                else
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(b.display, style: kMono.copyWith(fontSize: 13)),
-                      if (fiat != null)
-                        Text(fiat,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(mainAxisSize: MainAxisSize.min, children: [
+                      Flexible(
+                        child: Text(b.asset.symbol,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 11, color: Bk.muted)),
-                    ],
-                  ),
-                // Per-asset Send: opens the send screen PRE-SELECTED to this
-                // holding (so EVM tokens like USDC/USDT — not just native ETH —
-                // each get a one-tap send). Shown once an address exists.
-                if (addr.isNotEmpty)
-                  _sendChip(() => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => MultiSendScreen(
-                                  chain: chain, initialAsset: b.asset)))
-                      .then((_) => _loadChain(c, chain))),
-                if (canBuy) _buyChip(() => _buyWithCard(c, chain, addr, b.asset)),
-                if (canSell)
-                  _sellChip(
-                      () => _sellForCash(c, chain, addr, b.asset, b.display)),
-              ],
-            ),
+                                fontWeight: FontWeight.w600, fontSize: 13)),
+                      ),
+                      if (isToken) ...[
+                        const SizedBox(width: 6),
+                        const Text('token',
+                            style: TextStyle(color: Bk.muted, fontSize: 10)),
+                      ],
+                    ]),
+                    if (unit != null)
+                      Text('$unit each',
+                          style: const TextStyle(color: Bk.faint, fontSize: 10)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 170),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (err)
+                      const Text('unavailable',
+                          style: TextStyle(color: Bk.bad, fontSize: 12))
+                    else
+                      Text(b.display,
+                          textAlign: TextAlign.right,
+                          style: kMono.copyWith(fontSize: 13)),
+                    if (fiat != null)
+                      Text(fiat,
+                          style:
+                              const TextStyle(fontSize: 11, color: Bk.muted)),
+                  ],
+                ),
+              ),
+            ],
           ),
+          // Per-asset actions on their OWN line (right-aligned Wrap) so the
+          // chips never squeeze or overflow the balance — every asset, incl.
+          // EVM tokens, gets a one-tap Send (+ Buy/Sell where supported).
+          if (chips.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 6,
+                children: chips,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -882,6 +895,10 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
   String? _resolvedName; // the typed name when it wasn't already a raw address
   String? _resolvedSource; // 'ens' | 'sns' | 'book' | 'raw'
 
+  // The chain's live balances, loaded once — backs the 25% / 50% / Max buttons.
+  List<Balance> _bals = const [];
+  bool _didLoadBals = false;
+
   @override
   void initState() {
     super.initState();
@@ -889,6 +906,44 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     // Pre-select a specific holding when opened from its row (native stays null).
     final ia = widget.initialAsset;
     if (ia != null && ia.kind != 'native') _asset = ia;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didLoadBals) return;
+    _didLoadBals = true;
+    final c = context.read<MultichainController>();
+    c.balancesFor(widget.chain).then((b) {
+      if (mounted) setState(() => _bals = b);
+    }).catchError((_) {});
+  }
+
+  /// Confirmed balance (base units) of the currently-selected asset, from the
+  /// loaded balances — 0 if not loaded/held yet.
+  BigInt _selectedBase(MultichainController c) {
+    final sel = _asset ?? c.registry.get(widget.chain).native;
+    for (final b in _bals) {
+      final same = (sel.kind == 'native' || sel.address == null)
+          ? b.asset.kind == 'native'
+          : b.asset.address == sel.address;
+      if (same) return BigInt.tryParse(b.confirmed) ?? BigInt.zero;
+    }
+    return BigInt.zero;
+  }
+
+  /// Fill the amount field with [pct]% of the selected asset's balance. For a
+  /// native coin "Max" (100%) still shows the full balance — if gas then can't
+  /// be covered, the send review surfaces it (and the gas top-up flow helps).
+  void _setPct(MultichainController c, int pct) {
+    final sel = _asset ?? c.registry.get(widget.chain).native;
+    final base = _selectedBase(c);
+    if (base <= BigInt.zero) return;
+    final amt = base * BigInt.from(pct) ~/ BigInt.from(100);
+    setState(() {
+      _amt.text = formatUnits(amt.toString(), sel.decimals);
+      _error = null;
+    });
   }
 
   List<AssetRef> _assets(MultichainController c) {
@@ -1157,6 +1212,32 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(labelText: 'Amount (${_asset?.symbol ?? ''})'),
           ),
+          // Quick amounts — 25% / 50% / Max of the selected asset's balance.
+          const SizedBox(height: 8),
+          Row(children: [
+            for (final p in const [25, 50, 100])
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: OutlinedButton(
+                  onPressed: () => _setPct(c, p),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    side: const BorderSide(color: Bk.border),
+                  ),
+                  child: Text(p == 100 ? 'Max' : '$p%',
+                      style: const TextStyle(fontSize: 12.5)),
+                ),
+              ),
+            const Spacer(),
+            Builder(builder: (_) {
+              final sel = _asset ?? c.registry.get(widget.chain).native;
+              final base = _selectedBase(c);
+              return Text('Balance ${formatUnits(base.toString(), sel.decimals)}',
+                  style: const TextStyle(fontSize: 11.5, color: Bk.muted));
+            }),
+          ]),
           if (widget.chain == 'xrp' || widget.chain == 'stellar') ...[
             const SizedBox(height: 8),
             Container(

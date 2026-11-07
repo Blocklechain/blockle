@@ -26,8 +26,9 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../screens/wallet/security_sheet.dart';
 import '../multichain/activity.dart' as act;
 import '../multichain/addressbook.dart' as ab;
-import '../multichain/chains/chain_adapter.dart' show Balance;
+import '../multichain/chains/chain_adapter.dart' show AssetRef, Balance;
 import '../multichain/chains/evm.dart' show EvmAdapter;
+import '../multichain/prices.dart' show PriceService, priceKey;
 import '../multichain/chains/solana.dart' show SolanaAdapter;
 import '../multichain/denomination.dart' show isBlockDenominated;
 import '../multichain/nft.dart' as nft;
@@ -37,7 +38,6 @@ import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' as wc;
 import '../multichain/wc_relay.dart' as wcr;
 import '../screens/wallet/connect_view.dart' show showWcProposalReview;
-import '../services/exchange_client.dart' show ExchangeClient, ExchangeMarket;
 import 'multichain_controller.dart';
 
 // Operator-configurable transport credentials (set at build time via
@@ -54,11 +54,6 @@ final String _kAlchemyNftKey = _kAlchemyNftKeyRaw.isNotEmpty ? _kAlchemyNftKeyRa
 const String _kAlchemyNftBaseUrl = String.fromEnvironment('BLOCKLE_ALCHEMY_NFT_BASEURL', defaultValue: '');
 const String _kHeliusKey = String.fromEnvironment('BLOCKLE_HELIUS_KEY', defaultValue: '');
 const String _kSolanaDasUrl = String.fromEnvironment('BLOCKLE_SOLANA_DAS_URL', defaultValue: '');
-
-/// Stablecoins pin to $1 (mirrors the engine's `_stableUsd` set / bots_controller).
-const Set<String> _stableSyms = {
-  'USDC', 'USDT', 'DAI', 'USD', 'USDBC', 'USDB', 'PYUSD', 'TUSD',
-};
 
 /// Maps a wallet chain id → the CAIP-2 string WalletConnect settles into, so the
 /// WC core can expose the wallet's real accounts to a dApp session.
@@ -283,75 +278,47 @@ class WalletController extends ChangeNotifier {
     return out;
   }
 
-  // ---- PRICE resolver (the shared live mark source, as the bots use) -------
+  // ---- PRICE resolver (live USD spot, multi-source) ------------------------
   //
-  // A per-load closure caches the Exchange markets + resolved symbol prices so
-  // portfolio() prices every holding from real market data. A symbol the
-  // Exchange can't price returns null → the holding goes to `unpriced` (never a
-  // guessed/zero value).
+  // Prices every holding through the shared [PriceService] — server proxy first
+  // (cached, rate-limit-safe), then CoinGecko → DeFiLlama → Coinbase. A symbol
+  // no source can price returns null → the holding goes to `unpriced` (never a
+  // guessed/zero value). BLOCK-denominated assets are never USD-priced. The
+  // service is a long-lived field so its TTL cache survives across loads.
+  final PriceService _priceSvc = PriceService(serverBase: 'https://blockle.org');
+
   Future<Future<num?> Function(dynamic asset)> _priceResolver() async {
-    final ExchangeClient ex = _mc.exchange;
-    List<ExchangeMarket> markets;
-    try {
-      markets = await ex.getMarkets();
-    } catch (_) {
-      markets = const [];
-    }
-    final cache = <String, num?>{};
-
-    Future<num?> markInQuote(ExchangeMarket m) async {
-      try {
-        final book = await ex.getBook(m.id);
-        if (book != null) {
-          final num? bid = book.bids.isNotEmpty ? book.bids.first.price : null;
-          final num? ask = book.asks.isNotEmpty ? book.asks.first.price : null;
-          if (bid != null && ask != null && bid > 0 && ask > 0) return (bid + ask) / 2;
-          if (ask != null && ask > 0) return ask;
-          if (bid != null && bid > 0) return bid;
-        }
-        final trades = await ex.getTrades(m.id);
-        if (trades.isNotEmpty) {
-          final p = num.tryParse('${trades.first['price'] ?? trades.first['px'] ?? ''}');
-          if (p != null && p > 0) return p;
-        }
-      } catch (_) {/* fall through */}
-      if (m.last != null && m.last! > 0) return m.last;
-      return null;
-    }
-
-    Future<num?> usdMark(String sym, Set<String> seen) async {
-      final up = sym.toUpperCase();
-      if (_stableSyms.contains(up)) return 1;
-      if (cache.containsKey(up)) return cache[up];
-      if (seen.contains(up)) return null;
-      final candidates = markets.where((m) => m.base.toUpperCase() == up).toList()
-        ..sort((a, c) {
-          final ai = _stableSyms.contains(a.quote.toUpperCase()) ? 0 : 1;
-          final ci = _stableSyms.contains(c.quote.toUpperCase()) ? 0 : 1;
-          return ai.compareTo(ci);
-        });
-      num? result;
-      for (final m in candidates) {
-        final mq = await markInQuote(m);
-        if (mq == null || mq <= 0) continue;
-        final qUsd = await usdMark(m.quote, {...seen, up});
-        if (qUsd == null || qUsd <= 0) continue;
-        result = mq * qUsd;
-        break;
+    AssetRef? refOf(dynamic asset) {
+      if (asset is AssetRef) return asset;
+      if (asset is Map) {
+        final sym = '${asset['symbol'] ?? ''}';
+        if (sym.isEmpty) return null;
+        return AssetRef(
+          chain: '${asset['chain'] ?? ''}',
+          kind: '${asset['kind'] ?? 'native'}',
+          symbol: sym,
+          decimals: (asset['decimals'] as num?)?.toInt() ?? 18,
+          address: asset['address']?.toString(),
+        );
       }
-      cache[up] = result;
-      return result;
+      final sym = '$asset';
+      if (sym.isEmpty) return null;
+      return AssetRef(chain: '', kind: 'native', symbol: sym, decimals: 18);
     }
 
     return (asset) async {
-      // NO BLOCK/USD ORACLE: never derive a USD price for a BLOCK-denominated
-      // asset (native BLOCK, every BLOCK-20/BLOCK-20S incl. USDB, or WBLOCK).
-      // Returning null routes it to `unpriced` in portfolio() — the UI then
-      // shows it in BLOCK units instead of a fabricated $ value.
+      // NO BLOCK/USD ORACLE: a BLOCK-denominated asset (native BLOCK, every
+      // BLOCK-20/BLOCK-20S incl. USDB, WBLOCK) is never USD-priced → null routes
+      // it to `unpriced` and the UI shows it in BLOCK units.
       if (isBlockDenominated(asset: asset)) return null;
-      final sym = '${(asset is Map ? asset['symbol'] : asset) ?? ''}';
-      if (sym.isEmpty) return null;
-      return usdMark(sym, const {});
+      final ref = refOf(asset);
+      if (ref == null) return null;
+      try {
+        final m = await _priceSvc.fetchUsd([ref]);
+        return m[priceKey(ref)];
+      } catch (_) {
+        return null;
+      }
     };
   }
 
