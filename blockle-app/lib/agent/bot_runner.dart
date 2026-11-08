@@ -98,6 +98,11 @@ class BotRunner {
   /// it from the account's sub.liveBotLimit; -1 preserves legacy (uncapped)
   /// behavior. Counted at arm time against OTHER already-live+enabled bots.
   int liveBotLimit;
+  /// Optional PORTFOLIO-level live-allocation ceiling in USD (§9). null/≤0 =
+  /// uncapped (default). When set, armLive refuses a bot whose allocation, added
+  /// to the remaining allocation of all other live bots, would exceed it. Host-
+  /// settable at runtime (persisted in the bot store meta).
+  num? portfolioLiveCapUsd;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
   final b.BotStore store;
@@ -131,6 +136,7 @@ class BotRunner {
     this.mainnetEnabled = false,
     this.liveEntitled = false,
     this.liveBotLimit = -1,
+    this.portfolioLiveCapUsd,
     this.onEvent,
     this.pnl,
     b.BotStore? store,
@@ -276,6 +282,32 @@ class BotRunner {
     if (bot.network == 'mainnet' && !mainnetEnabled) {
       await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'mainnet disabled'});
       throw StateError('cannot arm live on mainnet: set mainnetEnabled=true (operator sign-off)');
+    }
+    // PORTFOLIO-LEVEL live exposure cap (§9, opt-in). The per-bot allocation
+    // bounds ONE bot; this bounds the AGGREGATE across every live bot. Sum the
+    // remaining (unspent) allocation of OTHER live+enabled bots + this bot's new
+    // allocation; refuse if it would exceed the configured portfolio ceiling.
+    // null => uncapped (legacy behavior, nothing changes).
+    final portCap = portfolioLiveCapUsd;
+    if (portCap != null && portCap > 0) {
+      var othersRemainingUc = BigInt.zero;
+      for (final x in store.list()) {
+        if (x.id == id || x.mode != 'live' || !x.enabled) continue;
+        final rem = _effectiveCapUc(x) - ((x.state['committedUc'] as BigInt?) ?? BigInt.zero);
+        if (rem > BigInt.zero) othersRemainingUc += rem;
+      }
+      final wantUc = othersRemainingUc + b.microUsd(alloc);
+      if (wantUc > b.microUsd(portCap)) {
+        final inUseUsd = b.ucToUsd(othersRemainingUc) ?? 0;
+        await _audit({
+          'type': 'bot_arm_refused', 'bot': id, 'reason': 'portfolio cap',
+          'portfolioCapUsd': portCap, 'othersRemainingUsd': inUseUsd, 'wantUsd': alloc,
+        });
+        throw StateError(
+            'Portfolio live cap reached: \$${inUseUsd.toStringAsFixed(0)} already committed across live bots '
+            '+ \$${alloc.toStringAsFixed(0)} here would exceed your \$${portCap.toStringAsFixed(0)} ceiling. '
+            'Lower the allocation, pause a live bot, or raise the cap.');
+      }
     }
     // Per-plan LIVE-bot cap (Free 1 / Copilot 3 / Pro unlimited). Count OTHER
     // already-live+enabled bots; -1 = uncapped. Mirrors the web runner.

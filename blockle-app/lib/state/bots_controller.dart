@@ -209,6 +209,7 @@ class BotsController extends ChangeNotifier {
       mainnetEnabled: false,
       liveEntitled: _liveTier != 'free',
       liveBotLimit: _liveBotLimit,
+      portfolioLiveCapUsd: _store.meta['portfolioLiveCapUsd'] as num?,
       onEvent: _onEvent,
       pnl: pnl,
       store: _store,
@@ -388,6 +389,37 @@ class BotsController extends ChangeNotifier {
   }
 
   bool get liveEntitled => _liveTier != 'free';
+
+  /// The opt-in PORTFOLIO-level live-allocation ceiling in USD (§9), or null when
+  /// uncapped. Bounds the aggregate committed allocation across ALL live bots —
+  /// the per-bot allocation only bounds one bot.
+  num? get portfolioLiveCapUsd => _runner?.portfolioLiveCapUsd;
+
+  /// Set (or clear, with null/≤0) the portfolio live cap. Persisted in the bot
+  /// store meta so it survives a rebuild/restart, and applied to the live runner.
+  Future<void> setPortfolioLiveCap(num? usd) async {
+    final v = (usd != null && usd > 0) ? usd : null;
+    _runner?.portfolioLiveCapUsd = v;
+    if (v == null) {
+      _store.meta.remove('portfolioLiveCapUsd');
+    } else {
+      _store.meta['portfolioLiveCapUsd'] = v;
+    }
+    await _store.persist();
+    notifyListeners();
+  }
+
+  /// Total allocation already committed across live+enabled bots (for the cap
+  /// "X / cap" display). Reads the per-bot dashboards (committed in USD).
+  num liveAllocationInUse() {
+    var sum = 0.0;
+    for (final bt in bots()) {
+      if (bt.mode != 'live' || !bt.enabled) continue;
+      final d = _runner?.dashboard(bt.id);
+      sum += ((d?['committedUsd'] as num?) ?? 0).toDouble();
+    }
+    return sum;
+  }
 
   /// The per-plan LIVE-bot cap in effect (Free 1, Copilot 3, Pro -1 = unlimited).
   int get liveBotLimit => _liveBotLimit;

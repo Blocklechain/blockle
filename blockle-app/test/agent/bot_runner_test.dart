@@ -246,6 +246,31 @@ void main() {
     expect(autohalts, greaterThan(0));
   });
 
+  test('portfolio cap: refuses arming a live bot that would exceed the aggregate ceiling (§9)', () async {
+    final su = setup(ctx: mkCtx([100]), sessionUsd: 1000);
+    su.runner.portfolioLiveCapUsd = 150;
+    final a = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});
+    final bot2 = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});
+    await su.runner.armLive(a.id, allocationUsd: 100); // 100 of 150 used
+    // Arming a second live bot at 100 would make 200 > 150 -> refused.
+    expect(
+      () => su.runner.armLive(bot2.id, allocationUsd: 100),
+      throwsA(isA<StateError>()),
+    );
+    // A smaller allocation that fits is allowed (100 + 40 = 140 <= 150).
+    await su.runner.armLive(bot2.id, allocationUsd: 40);
+    expect(bot2.enabled, isTrue);
+  });
+
+  test('portfolio cap: null/uncapped preserves legacy behavior', () async {
+    final su = setup(ctx: mkCtx([100]), sessionUsd: 10000);
+    final a = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});
+    final bot2 = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});
+    await su.runner.armLive(a.id, allocationUsd: 5000);
+    await su.runner.armLive(bot2.id, allocationUsd: 5000);
+    expect(a.enabled && bot2.enabled, isTrue);
+  });
+
   test('health: a trading bot never counts failures and stays running', () async {
     final su = setup(ctx: mkCtx(List<num>.filled(10, 100)), sessionUsd: 1000);
     final bot = su.runner.add({

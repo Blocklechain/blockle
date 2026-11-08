@@ -903,6 +903,9 @@ class BotStore {
   final String wallet;
   final String channel;
   final Map<String, Bot> bots = {};
+  // Persisted scope-level settings (e.g. the portfolio live-allocation cap) that
+  // aren't tied to a single bot. Round-trips with the bot snapshot.
+  final Map<String, dynamic> meta = {};
 
   BotStore({this.store, String? key, String? wallet, String? channel})
       : storeKey = key ?? 'agentBots',
@@ -922,12 +925,18 @@ class BotStore {
   List<Bot> list() => bots.values.toList();
   List<Bot> enabled() => list().where((b) => b.enabled).toList();
 
-  Map<String, dynamic> snapshot() =>
-      {'wallet': wallet, 'channel': channel, 'bots': list().map((b) => b.toJson()).toList()};
+  Map<String, dynamic> snapshot() => {
+        'wallet': wallet,
+        'channel': channel,
+        'bots': list().map((b) => b.toJson()).toList(),
+        if (meta.isNotEmpty) 'meta': meta,
+      };
 
   BotStore load(Map<String, dynamic>? snap) {
     bots.clear();
+    meta.clear();
     if (snap == null || snap['bots'] is! List) return this;
+    if (snap['meta'] is Map) meta.addAll((snap['meta'] as Map).cast<String, dynamic>());
     for (final o in (snap['bots'] as List)) {
       final b = Bot.fromJson((o as Map).cast<String, dynamic>());
       bots[b.id] = b;

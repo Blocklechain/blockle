@@ -142,6 +142,8 @@ class CockpitView extends StatelessWidget {
             ],
           );
         }),
+        const SizedBox(height: 14),
+        _PortfolioCapBar(controller: controller, inUse: committedLive),
         const SizedBox(height: 26),
         Row(
           children: [
@@ -335,6 +337,122 @@ class _Tiles extends StatelessWidget {
                 '$wins of $totalDeals deals'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Opt-in PORTFOLIO live-exposure ceiling (§9). Shows aggregate committed live
+/// allocation against the cap (with a progress meter) and lets the user set or
+/// clear it. The engine enforces it at arm time — this is the surface for it.
+class _PortfolioCapBar extends StatelessWidget {
+  const _PortfolioCapBar({required this.controller, required this.inUse});
+  final BotsController controller;
+  final num inUse;
+
+  Future<void> _edit(BuildContext context) async {
+    final t = BotTheme.of(context);
+    final cur = controller.portfolioLiveCapUsd;
+    final ctl = TextEditingController(text: cur == null ? '' : cur.toStringAsFixed(0));
+    final v = await showDialog<Object?>(
+      context: context,
+      builder: (dctx) => BotTheme(
+        tokens: t,
+        child: AlertDialog(
+          backgroundColor: t.surface,
+          title: Text('Portfolio live cap', style: TextStyle(color: t.ink, fontSize: 17, fontWeight: FontWeight.w800)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('A ceiling on the TOTAL allocation committed across all your live bots. '
+                'Arming a bot that would push the total over this is refused.',
+                style: TextStyle(color: t.inkMuted, fontSize: 13, height: 1.4)),
+            const SizedBox(height: 14),
+            TextField(
+              controller: ctl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: 'Cap (USD)', prefixText: '\$ ', hintText: 'e.g. 2000'),
+            ),
+          ]),
+          actions: [
+            if (cur != null)
+              TextButton(
+                onPressed: () => Navigator.of(dctx).pop('clear'),
+                child: Text('Remove cap', style: TextStyle(color: t.loss)),
+              ),
+            TextButton(onPressed: () => Navigator.of(dctx).pop(null), child: Text('Cancel', style: TextStyle(color: t.inkMuted))),
+            FilledButton(
+              onPressed: () => Navigator.of(dctx).pop(num.tryParse(ctl.text.trim())),
+              style: FilledButton.styleFrom(backgroundColor: t.accent),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (v == 'clear') {
+      await controller.setPortfolioLiveCap(null);
+    } else if (v is num) {
+      await controller.setPortfolioLiveCap(v);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final t = BotTheme.of(context);
+    final cap = controller.portfolioLiveCapUsd;
+    final frac = (cap != null && cap > 0) ? (inUse / cap).clamp(0.0, 1.0).toDouble() : 0.0;
+    final over = cap != null && inUse >= cap;
+    return InkWell(
+      onTap: () => _edit(context),
+      borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: t.surface,
+          borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+          border: Border.all(color: t.line),
+        ),
+        child: Row(children: [
+          Icon(Icons.account_balance_outlined, size: 18, color: cap == null ? t.inkFaint : t.accent),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(
+                  child: Text('Portfolio live cap',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: t.ink)),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  cap == null
+                      ? 'Off — tap to set'
+                      : '${moneyUsd(inUse, sign: false)} / ${moneyUsd(cap, sign: false)}',
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: mono(t, size: 12, color: over ? t.loss : t.inkMuted, w: FontWeight.w600),
+                ),
+              ]),
+              if (cap != null) ...[
+                const SizedBox(height: 8),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: LinearProgressIndicator(
+                    value: frac,
+                    minHeight: 5,
+                    backgroundColor: t.line,
+                    valueColor: AlwaysStoppedAnimation(over ? t.loss : t.accent),
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(height: 2),
+                Text('Cap the total allocation across all live bots.',
+                    style: TextStyle(fontSize: 11.5, color: t.inkFaint)),
+              ],
+            ]),
+          ),
+          const SizedBox(width: 8),
+          Icon(Icons.chevron_right, size: 18, color: t.inkFaint),
+        ]),
       ),
     );
   }
