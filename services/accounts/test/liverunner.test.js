@@ -76,5 +76,56 @@ await (async () => {
     ok('swap recorded spend (notional+fee)', d3.get('u3', 'bs').spentUsd === 10.2);
   }
 
+  // ---- SNIPER plan (Solana autopilot): pick from discovery + buy via Jupiter --
+  {
+    const solana = (await import('../src/vendor/solana.js')).default;
+    const seed = Buffer.alloc(32, 7);
+    const solAddr = solana.addressFromSeed(seed);
+    const solPub = solana.publicKey(seed);
+    // A minimal serialized tx with our pubkey as fee payer (passes the sender gate).
+    const unsignedTx = Buffer.concat([
+      Buffer.from([0x01]), Buffer.alloc(64, 0),               // 1 sig slot
+      Buffer.from([0x01, 0x00, 0x00]), Buffer.from([0x01]),   // msg header + 1 key
+      Buffer.from(solPub), Buffer.alloc(40, 0),
+    ]).toString('base64');
+    const jupFetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/v6/quote')) return { json: async () => ({ outAmount: '999' }) };
+      if (u.includes('/v6/swap')) return { json: async () => ({ swapTransaction: unsignedTx }) };
+      throw new Error('unexpected ' + u);
+    };
+    const solRpc = async (m) => (m === 'sendTransaction' ? 'SoLtxid123' : null);
+    const discover = async () => [
+      { chain: 'solana', token: 'DUMPmint', safe: true, score: 90, metrics: { priceChange1hPct: -4 } }, // dumping → skip
+      { chain: 'solana', token: 'HOTmint', safe: true, score: 82, metrics: { priceChange1hPct: 6 } },   // winner
+      { chain: 'solana', token: 'LOWmint', safe: true, score: 30, metrics: { priceChange1hPct: 9 } },   // low score → skip
+    ];
+    let tS = 5_000_000;
+    const d4 = makeBotDelegations({ now: () => tS });
+    d4.put('u4', {
+      botId: 'bsnipe', chain: 'solana', capUsd: 50, address: solAddr, key: seed.toString('hex'),
+      plan: { type: 'sniper', perTradeUsd: 20, sniperMinScore: 0.6, slippageBps: 100, intervalMs: 1 },
+    });
+    const sr = await runOnce({
+      delegations: d4, prices: async () => 1, rpcFor: () => mockRpc(),
+      discover, solRpc, fetchFn: jupFetch, env: { BLOCKLE_BOT_MAINNET: '1' }, now: () => tS,
+    });
+    ok('sniper picked the highest-score non-dumping token + bought', sr[0].type === 'sniper' && sr[0].pick === 'HOTmint' && sr[0].txid === 'SoLtxid123');
+    ok('sniper recorded spend (notional+fee)', d4.get('u4', 'bsnipe').spentUsd === 20.2);
+
+    // Mainnet OFF → executeTrade refuses; the pass surfaces an error, no spend.
+    let tOff = 6_000_000;
+    const d5 = makeBotDelegations({ now: () => tOff });
+    d5.put('u5', {
+      botId: 'bsoff', chain: 'solana', capUsd: 50, address: solAddr, key: seed.toString('hex'),
+      plan: { type: 'sniper', perTradeUsd: 20, intervalMs: 1 },
+    });
+    const sr2 = await runOnce({
+      delegations: d5, prices: async () => 1, rpcFor: () => mockRpc(),
+      discover, solRpc, fetchFn: jupFetch, env: {}, now: () => tOff,
+    });
+    ok('sniper refused when mainnet off (error, no spend)', sr2[0].error && /mainnet/.test(sr2[0].error) && d5.get('u5', 'bsoff').spentUsd === 0);
+  }
+
   console.log(`liverunner.test.js: ${pass} checks passed`);
 })();

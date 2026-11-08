@@ -16,6 +16,7 @@
 // tested deterministically with no network. Returns { txid }.
 
 import { signEip1559, evmAddressFromPrivate, erc20TransferData } from './evmsign.js';
+import { executeSolSwap, SOL_MINTS } from './solswap.js';
 
 // Testnet chain ids (always allowed). Mainnet ids require the operator flag.
 export const TESTNET_CHAIN_IDS = new Set([
@@ -51,9 +52,39 @@ export function uniV3ExactInputSingle({ tokenIn, tokenOut, fee, recipient, amoun
 /// 'native'|'erc20', token?, amountBase (string/bigint, wei or token base
 /// units), notionalUsd, feeUsd? }. [rpc] = async (method, params) => result.
 /// Throws on any gate failure (nothing is signed/broadcast). Returns { txid }.
-export async function executeTrade({ delegation, action, rpc, env = process.env }) {
+export async function executeTrade({ delegation, action, rpc, env = process.env, fetchFn = globalThis.fetch }) {
   const d = delegation;
   if (!d || !d.key) throw new Error('no delegated key');
+
+  // ---- SOLANA swap branch (Jupiter) — the live path for autopilot/sniper SPL
+  // buys. Same hard gates as EVM: mainnet flag, the per-delegation USD cap, and
+  // the sender gate (the tx fee payer MUST equal our delegated address, enforced
+  // inside executeSolSwap.assertFeePayer). No EVM nonce/gas apply here.
+  if (action.kind === 'sol-swap') {
+    if (!mainnetEnabled(env)) {
+      throw new Error('mainnet trading is disabled (BLOCKLE_BOT_MAINNET not set)');
+    }
+    const snotional = Number(action.notionalUsd) || 0;
+    const sfee = Number(action.feeUsd) || 0;
+    if (snotional <= 0) throw new Error('notionalUsd must be > 0');
+    const sremaining = Math.max(0, d.capUsd - d.spentUsd);
+    if (snotional + sfee > sremaining + 1e-9) {
+      throw new Error('over cap: ' + (snotional + sfee).toFixed(2) + ' > ' + sremaining.toFixed(2));
+    }
+    if (!action.tokenOut) throw new Error('sol-swap needs tokenOut mint');
+    const r = await executeSolSwap({
+      seed: Buffer.from(String(d.key), 'hex'),
+      address: d.address,
+      inputMint: action.inputMint || SOL_MINTS.USDC,
+      outputMint: action.tokenOut,
+      amountInBase: String(action.amountBase),
+      slippageBps: action.slippageBps || 100,
+      fetchFn,
+      rpc,
+    });
+    return { txid: r.txid, chain: 'solana', outputMint: action.tokenOut };
+  }
+
   const chainId = Number(action.chainId ?? d.chainId);
   if (!Number.isFinite(chainId)) throw new Error('missing chainId');
 

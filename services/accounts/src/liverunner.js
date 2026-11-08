@@ -13,6 +13,33 @@
 // tested deterministically with no network and no real keys.
 
 import { executeTrade } from './liveexec.js';
+import { SOL_MINTS } from './solswap.js';
+
+// Pick the single best SNIPER candidate from a discovery feed: safety-approved,
+// discovery score >= min, non-negative recent momentum, not reject-flagged;
+// highest score wins. Mirrors the client scanner's sniperEdge gate so paper and
+// live agree on what the autopilot buys.
+function pickSniper(candidates, plan) {
+  const minScore = Number(plan.sniperMinScore) || 0.6;
+  const reject = new Set(['honeypot', 'scam', 'rug', 'denylist']);
+  let best = null;
+  for (const c of candidates || []) {
+    if (!c || c.chain !== 'solana' || !c.token) continue;
+    if (c.safe !== true && c.approved !== true) continue;
+    const score = Number(c.score) || 0; // feed uses 0..100
+    const score01 = score > 1 ? score / 100 : score;
+    if (score01 < minScore) continue;
+    const m = c.metrics || {};
+    const ch1h = Number(m.priceChange1hPct ?? c.priceChange1hPct);
+    const ch24h = Number(m.priceChange24hPct ?? c.priceChange24hPct);
+    const mom = Number.isFinite(ch1h) ? ch1h : (Number.isFinite(ch24h) ? ch24h : 0);
+    if (!(mom >= 0)) continue;
+    const flags = (c.flags || []).map((f) => String(f).toLowerCase());
+    if (flags.some((f) => reject.has(f))) continue;
+    if (!best || score01 > best.score01) best = { token: c.token, score01, mom };
+  }
+  return best;
+}
 
 // Uniswap V3 SwapRouter02 + wrapped-native per chain (for 'swap' plans).
 export const V3_ROUTER = {
@@ -88,12 +115,15 @@ export async function runOnce(deps) {
   const {
     delegations, prices, rpcFor = (id) => rpcSenderFor(id),
     env = process.env, now = _now, log = () => {},
+    // SNIPER (Solana autopilot) deps: discover() -> candidate feed, solRpc -> a
+    // Solana JSON-RPC sender, fetchFn -> Jupiter HTTP. All injectable for tests.
+    discover = null, solRpc = null, fetchFn = globalThis.fetch,
   } = deps;
   const out = [];
   for (const { uid, d } of delegations.allActive()) {
     try {
       const plan = d.plan;
-      if (!d.key || !plan || (plan.type !== 'dca' && plan.type !== 'swap')) {
+      if (!d.key || !plan || !['dca', 'swap', 'sniper'].includes(plan.type)) {
         out.push({ botId: d.botId, skipped: 'no-plan' }); continue;
       }
       const interval = Number(plan.intervalMs) || 3600_000;
@@ -103,6 +133,29 @@ export async function runOnce(deps) {
       // Reserve the fee so notional + fee always fits the remaining cap.
       const usd = Math.min(Number(plan.perTradeUsd) || 0, remaining - feeUsd);
       if (usd <= 0.01) { out.push({ botId: d.botId, skipped: 'cap-exhausted' }); continue; }
+
+      // SNIPER (Solana autopilot): pick a safety-screened, high-score token from
+      // the discovery feed and BUY it with USDC via Jupiter (no EVM native-price
+      // step). executeTrade applies the mainnet + cap + sender gates.
+      if (plan.type === 'sniper') {
+        if (!discover || !solRpc) { out.push({ botId: d.botId, skipped: 'sniper-not-wired' }); continue; }
+        let cands = [];
+        try { cands = await discover({ lane: d.chain, mode: 'sniper' }); } catch (_) {}
+        const pick = pickSniper(cands, plan);
+        if (!pick) { out.push({ botId: d.botId, skipped: 'no-pick' }); continue; }
+        const amountInBase = BigInt(Math.floor(usd * 1e6)).toString(); // USDC, 6 dp
+        const action = {
+          kind: 'sol-swap', tokenOut: pick.token, inputMint: SOL_MINTS.USDC,
+          amountBase: amountInBase, slippageBps: Number(plan.slippageBps) || 100,
+          notionalUsd: usd, feeUsd,
+        };
+        const sr = await executeTrade({ delegation: d, action, rpc: solRpc, env, fetchFn });
+        delegations.recordSpend(uid, d.botId, usd + feeUsd);
+        plan.lastAt = now();
+        log(`[liverunner] bot ${d.botId} sniper $${usd} ${pick.token} tx ${sr.txid}`);
+        out.push({ botId: d.botId, usd, txid: sr.txid, type: 'sniper', pick: pick.token });
+        continue;
+      }
 
       // Native coin price → how much native `usd` buys (amountIn in wei).
       const nativeSym = NATIVE_SYM[d.chainId] || String(plan.sym || 'ETH');
