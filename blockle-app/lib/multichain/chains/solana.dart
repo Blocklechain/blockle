@@ -616,6 +616,15 @@ class SolanaAdapter implements ChainAdapter {
     );
   }
 
+  /// Sign an arbitrary message (a dApp sign-in / Sign-In-With-Solana payload)
+  /// with the ed25519 key — NO transaction, no funds move. Returns the raw 64-byte
+  /// signature; the caller shows the decoded text to the user before this is called.
+  Uint8List signMessage(DerivedAccount account, Uint8List message) {
+    if (_rootSeed == null && _impEd == null) throw StateError('locked');
+    final seedKey = _keyFor(account.index);
+    return ed.sign(message, seedKey);
+  }
+
   /// Build a real SPL/Metaplex NFT transfer (amount 1, decimals 0 for an NFT).
   /// Resolves our actual source token account, derives/creates the destination
   /// ATA, fetches a fresh blockhash and returns an UNSIGNED serialized tx (base64)

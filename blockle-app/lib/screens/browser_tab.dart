@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -9,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../multichain/chains/evm.dart' show EvmAdapter;
+import '../multichain/chains/solana.dart' show SolanaAdapter;
 import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' show decodePersonalSign;
 import '../services/agent_service.dart' show AgentService, SiteScreening;
@@ -41,6 +43,9 @@ class _BrowserTabState extends State<BrowserTab> {
   // EVM (EIP-1193) dApp session state for the injected window.ethereum.
   final Set<String> _evmConnected = {};
   String _evmChainId = '0x1'; // default Ethereum mainnet; dApp may switch it
+
+  // Solana (window.solana + Wallet Standard) dApp session state.
+  final Set<String> _solConnected = {};
 
   // Curated trusted-dApp homepage (#129): a Blockle-vetted directory shown in
   // place of a blank URL page. `_atHome` is an explicit home state (toolbar home
@@ -151,7 +156,9 @@ class _BrowserTabState extends State<BrowserTab> {
     if (_atHome) return;
     _ctrl?.evaluateJavascript(source: '''
       try {
-        if (window.ethereum && window.ethereum.request) {
+        if (window.solana && window.solana.connect) {
+          window.solana.connect().catch(function(){});
+        } else if (window.ethereum && window.ethereum.request) {
           window.ethereum.request({method:'eth_requestAccounts'}).catch(function(){});
         } else if (window.blockle && window.blockle.connect) {
           window.blockle.connect().catch(function(){});
@@ -352,6 +359,111 @@ class _BrowserTabState extends State<BrowserTab> {
     _ctrl?.evaluateJavascript(
         source:
             'window.__blockleEmit && window.__blockleEmit(${jsonEncode(event)}, ${jsonEncode(data)})');
+  }
+
+  /// Solana (window.solana + Wallet Standard) dApp bridge. connect returns the
+  /// base58 address + base64 pubkey so Jupiter/Raydium can show + select
+  /// "Blockle"; signMessage / signTransaction / signAndSendTransaction each route
+  /// through the wallet's ed25519 key after an explicit approval. signTx verifies
+  /// our key is a required signer before inserting the signature (solana.dart).
+  Future<Map<String, dynamic>> _handleSolanaRpc(
+      String method, List params, String origin) async {
+    Map<String, dynamic> err(int code, String msg) => {
+          'error': {'code': code, 'message': msg}
+        };
+    final mc = context.read<MultichainController>();
+    final adapter = mc.accounts.registry.adapters['solana'];
+    if (adapter is! SolanaAdapter) {
+      return err(4901, 'Solana isn\'t available in this wallet build.');
+    }
+    String b64FromHex(String hex) {
+      final h = hex.startsWith('0x') ? hex.substring(2) : hex;
+      final bytes = <int>[];
+      for (var i = 0; i + 1 < h.length; i += 2) {
+        bytes.add(int.parse(h.substring(i, i + 2), radix: 16));
+      }
+      return base64.encode(bytes);
+    }
+
+    switch (method) {
+      case 'sol_connect':
+        {
+          final a = await mc.addressFor('solana');
+          if (a == null) {
+            return err(4100,
+                'Unlock your multi-chain accounts (Accounts tab) to connect a Solana dApp.');
+          }
+          if (!_solConnected.contains(origin)) {
+            final dec = await _approve(ApprovalRequest('connect', origin));
+            if (!dec.approved) return err(4001, 'Connection request rejected.');
+            _solConnected.add(origin);
+          }
+          return {
+            'result': {'address': a.address, 'publicKey': b64FromHex(a.publicKey)}
+          };
+        }
+      case 'sol_disconnect':
+        _solConnected.remove(origin);
+        return {'result': null};
+      case 'sol_signMessage':
+        {
+          if (!_solConnected.contains(origin)) return err(4100, 'Connect first.');
+          final a = await mc.addressFor('solana');
+          if (a == null) return err(4100, 'Unlock your Solana account first.');
+          final raw = params.isNotEmpty ? '${params[0]}' : '';
+          List<int> msg;
+          try {
+            msg = base64.decode(raw);
+          } catch (_) {
+            return err(4200, 'Invalid message payload.');
+          }
+          final text = utf8.decode(msg, allowMalformed: true);
+          final ok = await _confirmEvmSign(origin, text);
+          if (!ok) return err(4001, 'Signature request rejected.');
+          try {
+            final sig = adapter.signMessage(a, Uint8List.fromList(msg));
+            return {
+              'result': {'signature': base64.encode(sig)}
+            };
+          } catch (e) {
+            return err(4200,
+                'Could not sign: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
+      case 'sol_signTransaction':
+      case 'sol_signAndSendTransaction':
+        {
+          if (!_solConnected.contains(origin)) return err(4100, 'Connect first.');
+          final a = await mc.addressFor('solana');
+          if (a == null) return err(4100, 'Unlock your Solana account first.');
+          final txB64 = params.isNotEmpty ? '${params[0]}' : '';
+          if (txB64.isEmpty) return err(4200, 'Missing transaction.');
+          final send = method == 'sol_signAndSendTransaction';
+          final host = Uri.tryParse(origin)?.host ?? origin;
+          final ok = await _confirmEvmSign(origin,
+              'Solana transaction from $host.\n\n${send ? 'Sign AND submit' : 'Sign'} this transaction. '
+              'It may move SOL or tokens — review in the dApp before approving.');
+          if (!ok) return err(4001, 'Transaction rejected.');
+          try {
+            // signTx verifies OUR key is a required signer before signing (it
+            // throws otherwise — a dApp can't get us to sign a tx we don't sign).
+            final built = await adapter.signTx(a, txB64);
+            if (send) {
+              final res = await adapter.broadcast(built);
+              return {
+                'result': {'signature': res.txid}
+              };
+            }
+            return {
+              'result': {'signedTransaction': built.raw}
+            };
+          } catch (e) {
+            return err(4200,
+                'Could not sign: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
+    }
+    return err(4200, 'Unsupported Solana method: $method');
   }
 
   /// EVM (EIP-1193) dApp bridge for the injected window.ethereum. Connection +
@@ -680,6 +792,9 @@ class _BrowserTabState extends State<BrowserTab> {
                         method == 'personal_sign' ||
                         method == 'net_version') {
                       return await _handleEvmRpc(method, params, _origin);
+                    }
+                    if (method.startsWith('sol_')) {
+                      return await _handleSolanaRpc(method, params, _origin);
                     }
                     return await context.read<AppState>().handleRpc(method, params, _origin);
                   },
