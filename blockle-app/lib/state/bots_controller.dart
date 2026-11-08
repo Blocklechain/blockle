@@ -163,21 +163,45 @@ class BotsController extends ChangeNotifier {
     return null;
   }
 
+  // Identity of the inputs that actually require a runner rebuild. This runs as a
+  // listener on EVERY MultichainController notify (balance/price polls fire it
+  // constantly), so it must NOT rebuild unless something material changed — a
+  // rebuild recreates the scheduler's Timer.periodic from zero, and if that
+  // happens more often than the tick interval the timer never fires and BOTS
+  // NEVER TICK (no trades, paper or live). The guard below keeps the running
+  // scheduler alive across the noise.
+  String? _lastBuildKey;
+
   void _rebuildRunner() {
-    // Cancel the outgoing runner's scheduler so a rebuild (e.g. a channel
-    // connecting) never leaves an orphaned timer ticking the old instance.
-    _runner?.stopScheduler();
-    // Keep the live-bot gate in sync with the account's effective Copilot tier (the agent
-    // tracks it, incl. an active free trial), so a rebuild never re-locks a paid user.
-    // `agent` is a late field on the multichain controller; this runs as one of its
-    // listeners and can fire before/while the agent is (re)initialized. A throw here
-    // would propagate out of notifyListeners() and blank the whole Bots screen to a
-    // grey crash, so read it fail-soft and keep the last known tier/limit on failure.
+    // Keep the live-bot gate in sync with the account's effective tier (the agent
+    // tracks it, incl. an active free trial). Fail-soft: `agent` is a late field
+    // that can be mid-(re)init; a throw here would blank the Bots screen.
     try {
       _liveTier = _mc.agent.copilotTier;
       _liveBotLimit = _mc.agent.liveBotLimit;
     } catch (_) {/* agent not ready yet — keep prior tier/limit (fail-closed) */}
     final inst = _backingInstance();
+    // Only a change in the BACKING INSTANCE (policy/tools source) requires a true
+    // rebuild. Tier/limit/portfolio-cap are pushed into the EXISTING runner below
+    // without touching its scheduler, so a normal notify never resets the tick.
+    final key = '${identityHashCode(inst)}';
+    if (_runner != null && key == _lastBuildKey) {
+      _runner!
+        ..setLiveEntitled(_liveTier)
+        ..setLiveBotLimit(_liveBotLimit)
+        ..portfolioLiveCapUsd = _store.meta['portfolioLiveCapUsd'] as num?;
+      // Make sure a scheduler is running if there are enabled bots (e.g. after a
+      // hot-reload or if it was stopped) — startScheduler is a no-op when already
+      // running at the right cadence is NOT guaranteed, so only start when idle.
+      if (!_runner!.schedulerRunning && _runner!.list().any((b) => b.enabled)) {
+        _runner!.startScheduler();
+      }
+      return;
+    }
+    _lastBuildKey = key;
+    // A genuine rebuild (backing instance changed): stop the old scheduler so it
+    // doesn't orphan-tick the old instance.
+    _runner?.stopScheduler();
     final Policy policy = inst?.policy ?? _fallbackPolicy;
     final ToolRegistry tools = inst?.tools ?? _fallbackTools;
     final dynamic audit = inst?.audit ?? _fallbackAudit;
