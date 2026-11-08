@@ -133,7 +133,31 @@ class DetailView extends StatelessWidget {
             StatusDot(status: (d['status'] as String?) ?? 'paused'),
             const SizedBox(width: 10),
             Text(pair, style: mono(t, size: 12, color: t.inkMuted)),
+            const Spacer(),
+            Text(_tickLabel(d), style: TextStyle(fontSize: 11.5, color: t.inkFaint)),
           ]),
+          if ((d['haltReason'] as String?) != null && !bot.enabled) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: t.loss.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+                border: Border.all(color: t.loss.withValues(alpha: 0.4)),
+              ),
+              child: Row(children: [
+                Icon(Icons.gpp_maybe_outlined, size: 16, color: t.loss),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Auto-stopped by a risk limit (${_haltLabel('${d['haltReason']}')}). '
+                    'Review your settings, then Resume to restart.',
+                    style: TextStyle(fontSize: 12, color: t.ink, height: 1.4),
+                  ),
+                ),
+              ]),
+            ),
+          ],
           const SizedBox(height: 14),
           if (deal == null)
             _noDeal(t, bot)
@@ -145,6 +169,29 @@ class DetailView extends StatelessWidget {
       ),
     );
   }
+
+  // "updated 12s ago · every 60s" liveness affordance (§15). Pure UI clock — the
+  // engine's determinism is unaffected (this never feeds back into a tick).
+  String _tickLabel(Map<String, dynamic> d) {
+    final last = (d['lastTickAt'] as num?)?.toInt() ?? 0;
+    final poll = (d['pollSec'] as num?)?.toInt() ?? 60;
+    if (last <= 0) return 'every ${poll}s';
+    final ago = ((DateTime.now().millisecondsSinceEpoch - last) / 1000).round();
+    final agoStr = ago < 2
+        ? 'just now'
+        : ago < 60
+            ? '${ago}s ago'
+            : ago < 3600
+                ? '${(ago / 60).round()}m ago'
+                : '${(ago / 3600).round()}h ago';
+    return 'updated $agoStr · every ${poll}s';
+  }
+
+  String _haltLabel(String r) => r == 'max-drawdown'
+      ? 'max drawdown'
+      : r == 'loss-streak'
+          ? 'losing streak'
+          : r;
 
   Widget _noDeal(BotTokens t, b.Bot bot) {
     final waiting = bot.enabled;
@@ -447,12 +494,16 @@ class DetailView extends StatelessWidget {
           SafetyNote(
             icon: Icons.shield_outlined,
             child: Text.rich(TextSpan(children: [
-              const TextSpan(
-                  text: 'Profit pop-ups are on. ',
-                  style: TextStyle(fontWeight: FontWeight.w700)),
               TextSpan(
-                  text:
-                      'When a deal closes into a stablecoin in profit you get a notification like ',
+                  text: bot.mode == 'live'
+                      ? 'Profit pop-ups are on. '
+                      : 'Profit pop-ups turn on when live. ',
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+              TextSpan(
+                  text: bot.mode == 'live'
+                      ? 'When a deal closes into a stablecoin in profit you get a notification like '
+                      : 'Paper deals update here in the cockpit; once this bot is live, a closed '
+                          'profit pops a notification like ',
                   style: TextStyle(color: t.inkFaint)),
               TextSpan(
                   text: '“+\$5.97 — sold 1.7 SOL → USDC”.',

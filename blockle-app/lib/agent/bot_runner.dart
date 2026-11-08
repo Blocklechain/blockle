@@ -291,6 +291,7 @@ class BotRunner {
     bot.allocationUsd = alloc;
     bot.mode = 'live';
     bot.enabled = true;
+    bot.state['haltReason'] = null; // a fresh arm clears any prior risk halt
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc, 'network': bot.network});
     emit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc});
     await store.persist();
@@ -309,6 +310,7 @@ class BotRunner {
     }
     bot.mode = 'paper';
     bot.enabled = true;
+    bot.state['haltReason'] = null; // a fresh start clears any prior risk halt
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'paper', 'allocationUsd': bot.allocationUsd});
     await store.persist();
     startScheduler(); // a running bot is actually ticked
@@ -1511,6 +1513,12 @@ class BotRunner {
       'winCount': wins, 'lossCount': bot.state['lossCount'] as int? ?? 0,
       'winRate': dealCount > 0 ? wins / dealCount : null,
       'maxDrawdownUsd': b.ucToUsd((bot.state['maxDrawdownUc'] as BigInt?) ?? BigInt.zero),
+      // Liveness affordance (§15): when the bot last advanced and its tick cadence,
+      // so the UI can show "updated Xs ago · every Ns". 0 => not yet ticked.
+      'lastTickAt': bot.state['lastTickAt'] as int? ?? 0,
+      'pollSec': bot.pollSec,
+      // Risk circuit-breaker state, if one tripped (for a warning chip).
+      'haltReason': bot.state['haltReason'],
     };
   }
 

@@ -8,6 +8,8 @@
 // allocation cap, that orders run auto within it with no further taps, the kill
 // switch, and the mainnet requirement, then a single confirm -> BotRunner.armLive.
 
+import 'dart:async' show unawaited;
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -28,21 +30,22 @@ import 'charts.dart';
 class _Tpl {
   final String key, name, blurb, type;
   final IconData icon;
-  final double base, tp, step, vol, tr;
+  final double base, tp, step, vol, tr, sl;
   final int so;
   const _Tpl(this.key, this.name, this.blurb, this.type, this.icon,
-      {this.base = 20, this.tp = 2, this.so = 3, this.step = 2, this.vol = 1, this.tr = 0});
+      {this.base = 20, this.tp = 2, this.so = 3, this.step = 2, this.vol = 1, this.tr = 0, this.sl = 0});
 }
 
 const List<_Tpl> _templates = [
   _Tpl('conservative_dca', 'Conservative DCA', 'Small base, 3 safety orders, +2% take-profit.',
-      'dca', Icons.shield_outlined, base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0),
+      'dca', Icons.shield_outlined, base: 20, tp: 2, so: 3, step: 2, vol: 1.0, tr: 0, sl: 12),
   _Tpl('aggressive_dca', 'Aggressive DCA', 'Bigger base, martingale safety ladder, +3% TP.',
-      'dca', Icons.bolt_outlined, base: 25, tp: 3, so: 4, step: 3, vol: 1.5, tr: 1),
+      'dca', Icons.bolt_outlined, base: 25, tp: 3, so: 4, step: 3, vol: 1.5, tr: 1, sl: 10),
   _Tpl('wide_grid', 'Wide Grid', 'A ladder of limit orders across a broad range.',
       'grid', Icons.grid_view_outlined),
+  // The accumulator thesis is "no stop-loss, no rush" — keep sl: 0 deliberately.
   _Tpl('block_accumulator', 'BLOCK Accumulator', 'Stack BLOCK on dips, trailing take-profit.',
-      'dca', Icons.layers_outlined, base: 15, tp: 5, so: 5, step: 4, vol: 1.2, tr: 2),
+      'dca', Icons.layers_outlined, base: 15, tp: 5, so: 5, step: 4, vol: 1.2, tr: 2, sl: 0),
 ];
 
 // Reference preview prices (projection only — no oracle is wired; the ladder is
@@ -122,7 +125,7 @@ class _CreateViewState extends State<CreateView> {
   final _pair = TextEditingController(text: 'SOL / USDC');
   final _alloc = TextEditingController(text: '500');
   bool _advanced = false;
-  double _base = 20, _tp = 2, _step = 2, _vol = 1.0, _tr = 0;
+  double _base = 20, _tp = 2, _step = 2, _vol = 1.0, _tr = 0, _sl = 12;
   int _so = 3;
 
   // PAIR SELECTION MODE — defaults to 'ai' ("Let the AI choose pairs": the
@@ -266,6 +269,7 @@ class _CreateViewState extends State<CreateView> {
     _step = t.step;
     _vol = t.vol;
     _tr = t.tr;
+    _sl = t.sl;
   }
 
   @override
@@ -316,6 +320,7 @@ class _CreateViewState extends State<CreateView> {
         'safetyVolumeScale': _vol,
         'takeProfitPct': _tp,
         'trailingTpPct': _tr,
+        'stopLossPct': _sl,
       };
 
   String _normPair() {
@@ -387,6 +392,10 @@ class _CreateViewState extends State<CreateView> {
       _snack('Set an allocation above \$0 — a live bot needs a hard cap.');
       return;
     }
+    if (!widget.controller.liveEntitled) {
+      _snack('Live trading needs Blockle Alien. Start your free trial to arm a live bot — paper trading stays free.');
+      return;
+    }
     if (!widget.controller.canGoLive) {
       _snack('Connect a value-moving agent channel (Agent tab) to arm a live bot.');
       return;
@@ -419,6 +428,9 @@ class _CreateViewState extends State<CreateView> {
       }
       widget.onCreated(bot.id, true);
     } catch (e) {
+      // Arming failed (entitlement, cap, channel) — don't leave a stray disabled
+      // bot cluttering the cockpit; remove the one we just created.
+      unawaited(widget.controller.remove(bot.id));
       _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
     }
   }
@@ -1330,6 +1342,7 @@ class _CreateViewState extends State<CreateView> {
       slider('Price step', '${_step.toStringAsFixed(1)}%', _step, 0.5, 6, 11, (x) => _step = x),
       slider('Volume scale', '${_vol.toStringAsFixed(1)}×', _vol, 1, 2.5, 15, (x) => _vol = x),
       slider('Trailing', '${_tr.toStringAsFixed(1)}%', _tr, 0, 3, 15, (x) => _tr = x),
+      slider('Stop-loss', _sl <= 0 ? 'Off' : '-${_sl.round()}%', _sl, 0, 30, 30, (x) => _sl = x),
     ];
     return Padding(
       padding: const EdgeInsets.only(top: 12),
@@ -1386,6 +1399,20 @@ class _CreateViewState extends State<CreateView> {
             _stat(t, 'Max deal size', moneyUsd(p.maxDealUsd, sign: false)),
             _stat(t, 'Avg entry if all fill', '\$${p.avgEntryUsd.toStringAsFixed(2)}'),
             _stat(t, 'Covers a dip of', '−${p.dipPct.toStringAsFixed(1)}%'),
+          ]),
+          const SizedBox(height: 10),
+          Row(children: [
+            Icon(_sl > 0 ? Icons.verified_user_outlined : Icons.info_outline,
+                size: 14, color: _sl > 0 ? t.gain : t.inkFaint),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                _sl > 0
+                    ? 'Stop-loss at −${_sl.round()}% from average entry — the bot cuts the position if price falls through it.'
+                    : 'No stop-loss — this bot holds through any drawdown. Add one in Advanced for downside protection.',
+                style: TextStyle(fontSize: 11.5, color: _sl > 0 ? t.inkMuted : t.inkFaint, height: 1.4),
+              ),
+            ),
           ]),
           const SizedBox(height: 10),
           Text('Preview at a reference \$${_price.toStringAsFixed(2)} — the exact engine math, not a live quote.',

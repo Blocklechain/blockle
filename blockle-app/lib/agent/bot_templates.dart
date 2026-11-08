@@ -26,7 +26,8 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     'config': {
       'baseOrderUsd': 20, 'safetyOrderUsd': 20, 'maxSafetyOrders': 3,
       'safetyStepPct': 2, 'safetyStepScale': 1.0, 'safetyVolumeScale': 1.0,
-      'takeProfitPct': 2, 'trailingTpPct': 0, 'stopLossPct': 0,
+      'takeProfitPct': 2, 'trailingTpPct': 0, 'stopLossPct': 12,
+      'maxConsecutiveLosses': 4,
       'cooldownSec': 0, 'startCondition': 'asap',
     },
   },
@@ -40,7 +41,8 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     'config': {
       'baseOrderUsd': 25, 'safetyOrderUsd': 25, 'maxSafetyOrders': 4,
       'safetyStepPct': 3, 'safetyStepScale': 1.2, 'safetyVolumeScale': 1.5,
-      'takeProfitPct': 3, 'trailingTpPct': 1, 'stopLossPct': 0,
+      'takeProfitPct': 3, 'trailingTpPct': 1, 'stopLossPct': 10,
+      'maxConsecutiveLosses': 3,
       'cooldownSec': 0, 'startCondition': 'asap',
     },
   },

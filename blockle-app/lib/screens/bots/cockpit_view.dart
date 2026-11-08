@@ -185,7 +185,9 @@ class CockpitView extends StatelessWidget {
                 style: TextStyle(fontWeight: FontWeight.w700)),
             TextSpan(
                 text:
-                    'Keys never leave your device. Live bots trade fully auto within their allocation cap — '
+                    'Your main wallet keys never leave your device. A background live bot trades from a '
+                    'scoped, allocation-capped sub-account key you can revoke at any time — held only while the '
+                    'bot runs and wiped on stop, kill, or restart. Live bots trade fully auto within their cap — '
                     'no per-order tap inside the cap — but every order still passes session caps, the allowlist, '
                     'the hash-chained audit, the 0.05% fee, and the kill switch. Mainnet stays off until you enable it.'),
           ])),
