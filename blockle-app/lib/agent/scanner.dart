@@ -194,6 +194,9 @@ class AgentScanner {
     // planner's entry gate.
     'feeAwareMarginBps': 0,
     'momentumRoundTripCostBps': 0,
+    // SNIPER gate: minimum discovery score (0..1) a safety-approved token needs
+    // before the autopilot will buy it on recent momentum.
+    'sniperMinScore': 0.6,
     // momentum + grid sizing
     'momentumShortN': 10,
     'momentumLongN': 30,
@@ -450,6 +453,42 @@ class AgentScanner {
     };
   }
 
+  // SNIPER edge — for a DISCOVERY candidate (a scored, safety-screened token with
+  // no venue book or SMA history, so arb/momentum/grid all return null). The
+  // directional signal is the token's own recent momentum from the signals feed;
+  // the gate is safety-approved + a minimum discovery score. The "edge" is the
+  // recent % move (real data, in bps) net of the single buy leg's cost — honest:
+  // it is a momentum ENTRY on a vetted token, never a fabricated arbitrage edge.
+  static Map<String, dynamic>? sniperEdge(
+      Map<String, dynamic> c, Map<String, dynamic> cfg) {
+    if (c['approved'] != true) return null; // only safety-screened tokens
+    for (final f in (c['flags'] is List ? c['flags'] as List : const [])) {
+      if ((cfg['rejectFlags'] as List).contains(_lc(f))) return null;
+    }
+    final score = _num(c['score'], 0).toDouble(); // discovery score, 0..1
+    final minScore = _num(cfg['sniperMinScore'], 0.6).toDouble();
+    if (score < minScore) return null;
+    // Recent momentum (prefer the 1h window, fall back to 24h). Require a
+    // non-negative move — never snipe a token that's actively dumping.
+    final ch1h = _num(c['priceChange1hPct'], double.nan);
+    final ch24h = _num(c['priceChange24hPct'], double.nan);
+    final momPct = ch1h.isFinite ? ch1h : (ch24h.isFinite ? ch24h : 0.0);
+    if (!(momPct >= 0)) return null;
+    final strengthBps = momPct * 100.0; // % → bps (real recent move)
+    final costsBps = (cfg['agentFeeBps'] as num) +
+        (cfg['slippageBps'] as num) +
+        ((cfg['feeAwareMarginBps'] as num?) ?? 0);
+    final edgeBps = strengthBps - costsBps;
+    if (!(edgeBps > 0)) return null;
+    return {
+      'strategy': 'sniper',
+      'edgeBps': edgeBps,
+      'strengthBps': strengthBps,
+      'costsBps': costsBps,
+      'discoveryScore': score,
+    };
+  }
+
   static Map<String, dynamic>? gridEdge(
       Map<String, dynamic> c, Map<String, dynamic> cfg) {
     final book = c['book'];
@@ -512,6 +551,10 @@ class AgentScanner {
     }
     if (strategies.contains('grid')) {
       final e = gridEdge(c, cfg);
+      if (e != null) evals.add(e);
+    }
+    if (strategies.contains('sniper')) {
+      final e = sniperEdge(c, cfg);
       if (e != null) evals.add(e);
     }
 
@@ -725,6 +768,43 @@ class AgentScanner {
           estUsd: cfg['perTradeUsd'] as num,
           strategy: 'grid',
           tag: 'grid:$pair:buy',
+          mainnet: mainnet,
+          scannerPair: pair,
+          scannerScore: score.toDouble(),
+        ),
+      ];
+    }
+
+    if (strategy == 'sniper') {
+      // Buy the discovered token with the $-quote, sized at perTradeUsd (the buy
+      // is denominated in the quote, so the token's own price isn't needed to
+      // size it). The candidate's mint + chain ride along so the dispatcher /
+      // server runner can resolve the actual on-chain swap route.
+      final parts = _splitPair(pair);
+      final base = parts[0], quote = parts[1];
+      final cand = (row['candidate'] is Map) ? (row['candidate'] as Map) : const {};
+      final prices = (cand['prices'] is Map) ? cand['prices'] as Map : const {};
+      final quoteUsd = prices[quote] != null
+          ? _num(prices[quote], double.nan)
+          : (_kStableUsd[quote] ?? double.nan);
+      if (!(quoteUsd > 0)) return const [];
+      final qd = _decimalsFor(quote);
+      final amount = usdToBase(cfg['perTradeUsd'] as num, qd, quoteUsd);
+      if (amount <= BigInt.zero) return const [];
+      return [
+        ScanIntent(
+          tool: 'swap',
+          args: {
+            'from': quote,
+            'to': base,
+            'amount': amount.toString(),
+            'venue': 'blockle',
+            if (cand['token'] != null) 'tokenOut': cand['token'],
+            if (cand['chain'] != null) 'chain': cand['chain'],
+          },
+          estUsd: cfg['perTradeUsd'] as num,
+          strategy: 'sniper',
+          tag: 'sniper:$pair:buy',
           mainnet: mainnet,
           scannerPair: pair,
           scannerScore: score.toDouble(),

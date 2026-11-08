@@ -87,7 +87,12 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     'config': {
       'minProfitBps': 30, 'maxConcurrentPairs': 3, 'perTradeUsd': 20,
       'profitCurrency': 'USDC',
-      'strategies': ['arbitrage', 'momentum', 'grid'],
+      // 'sniper' lets the autopilot BUY safety-screened, high-score tokens from
+      // the discovery feed (they have no venue book / SMA history, so arb /
+      // momentum / grid never fire on them) — this is what makes "AI picks the
+      // pairs" actually trade.
+      'strategies': ['arbitrage', 'momentum', 'grid', 'sniper'],
+      'sniperMinScore': 0.6,
       'gasBufferUsd': 2, 'slippageBps': 10, 'agentFeeBps': 5, 'pollSec': 300,
     },
   },

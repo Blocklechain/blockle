@@ -317,4 +317,55 @@ void main() {
       expect(withUsdc.intents[i].args, base.intents[i].args);
     }
   });
+
+  // =========================================================================
+  // SNIPER: a DISCOVERY candidate (score + recent momentum, NO venues/history)
+  // becomes worthy and emits a buy intent — this is what makes "AI picks the
+  // pairs" actually trade.
+  // =========================================================================
+  group('sniper (discovery-feed candidates)', () {
+    final cfg = {
+      'minProfitBps': 30, 'maxConcurrentPairs': 3, 'perTradeUsd': 20,
+      'profitCurrency': 'USDC',
+      'strategies': ['arbitrage', 'momentum', 'grid', 'sniper'],
+      'sniperMinScore': 0.6,
+      'gasBufferUsd': 2, 'slippageBps': 10, 'agentFeeBps': 5,
+    };
+    Map<String, dynamic> cand({
+      bool approved = true,
+      double score = 0.78,
+      double ch1h = 3.5,
+      List flags = const [],
+    }) =>
+        {
+          'pair': 'WIF/USDC', 'chain': 'solana', 'token': 'mintAddr111',
+          'approved': approved, 'score': score, 'flags': flags,
+          'liquidityUsd': 350000, 'priceUsd': 0.0114,
+          'priceChange1hPct': ch1h, 'priceChange24hPct': -5.0,
+          'prices': {'USDC': 1, 'WIF': 0.0114},
+        };
+
+    test('a safe, high-score token on positive momentum is worthy + buys', () {
+      final r = run([cand()], cfg, {'allocationUsd': 100});
+      expect(r.worthy.map((w) => w['pair']), contains('WIF/USDC'));
+      final sniper = r.intents.where((i) => i.strategy == 'sniper').toList();
+      expect(sniper, isNotEmpty);
+      expect(sniper.first.args['from'], 'USDC');
+      expect(sniper.first.args['to'], 'WIF');
+      expect(sniper.first.args['tokenOut'], 'mintAddr111');
+      expect(sniper.first.estUsd, 20);
+    });
+
+    test('an un-approved token, a low score, a dumping token, or a reject flag never snipe', () {
+      expect(run([cand(approved: false)], cfg, {'allocationUsd': 100}).worthy, isEmpty);
+      expect(run([cand(score: 0.2)], cfg, {'allocationUsd': 100}).worthy, isEmpty);
+      expect(run([cand(ch1h: -2.0)], cfg, {'allocationUsd': 100}).worthy, isEmpty);
+      expect(run([cand(flags: ['honeypot'])], cfg, {'allocationUsd': 100}).worthy, isEmpty);
+    });
+
+    test('sniper is off unless enabled in strategies', () {
+      final noSniper = {...cfg, 'strategies': ['arbitrage', 'momentum', 'grid']};
+      expect(run([cand()], noSniper, {'allocationUsd': 100}).worthy, isEmpty);
+    });
+  });
 }

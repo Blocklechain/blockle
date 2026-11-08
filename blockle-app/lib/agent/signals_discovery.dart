@@ -73,6 +73,17 @@ class SignalsDiscovery {
         'liquidityLocked': lpLockedPct != null ? (lpLockedPct as num) >= 50 : null,
         'mintAuthorityRenounced': m['mintRenounced'],
         'flags': c['flags'] ?? const [],
+        // Price + recent momentum so the SNIPER evaluator can price-and-size a buy
+        // of a discovered token (which has no venue book / SMA history). priceUsd
+        // sizes nothing directly — the buy is sized in the $1 quote — but it feeds
+        // the UI + a potential future token-out resolution; the priceChange fields
+        // ARE the sniper's directional signal.
+        'priceUsd': m['priceUsd'],
+        'priceChange1hPct': m['priceChange1hPct'],
+        'priceChange24hPct': m['priceChange24hPct'],
+        // The scanner's settleInto()/sizing reads prices[quote]; USDC pins to $1,
+        // but set it explicitly so the route is never ambiguous.
+        'prices': {quote: 1, if (m['priceUsd'] != null) sym: m['priceUsd']},
       });
     }
     return rows;
