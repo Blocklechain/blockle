@@ -547,6 +547,41 @@ MoonPayTxn? moonpayTxnFromRedirect(Uri uri, {String type = 'buy'}) {
   );
 }
 
+/// SERVER-AUTHORITATIVE on/off-ramp status. Polls the accounts service, which
+/// returns ONLY what a VERIFIED MoonPay webhook recorded for this transaction —
+/// the trustworthy completion signal, unlike the redirect URL's
+/// transactionStatus (which the user's browser controls). Returns null while no
+/// verified webhook has arrived yet (still pending) or on any error, so the
+/// caller keeps polling. No account/bearer needed (the tx id is the capability).
+Future<MoonPayTxn?> moonpayServerTxnStatus(
+  String id, {
+  String origin = kMoonPayOrigin,
+  HttpSend send = httpSend,
+}) async {
+  if (id.isEmpty) return null;
+  try {
+    final reply = await send(HttpReq(
+      'GET',
+      '$origin/account/api/moonpay/transaction/${Uri.encodeComponent(id)}',
+      headers: const {'accept': 'application/json'},
+    ));
+    if (reply.status >= 400 || reply.body.isEmpty) return null;
+    final j = jsonDecode(reply.body);
+    if (j is! Map || j['known'] != true) return null; // no verified webhook yet
+    final usd = j['fiatAmount'];
+    return MoonPayTxn(
+      id: id,
+      type: (j['kind'] ?? 'buy').toString(), // 'buy' | 'sell'
+      status: (j['status'] ?? 'pending').toString(),
+      asset: j['currency']?.toString(),
+      amountUsd: (usd is num) ? usd.toDouble() : double.tryParse('$usd'),
+      at: DateTime.now().toUtc(),
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 MoonPayTxn? _txnFromApi(dynamic e) {
   if (e is! Map) return null;
   final id = (e['id'] ?? e['transactionId'])?.toString();

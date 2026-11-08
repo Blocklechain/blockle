@@ -255,3 +255,45 @@ test('underpaid raid / nft: the grant records the real short paid amount for the
     }
   });
 });
+
+test('on/off-ramp status: GET /transaction/:id is server-authoritative from the verified webhook', async () => {
+  await withServer(async ({ call }) => {
+    // Unknown id (no webhook yet) => known:false, still pending — the client keeps polling.
+    const miss = await call('GET', '/account/api/moonpay/transaction/tx_unknown');
+    assert.equal(miss.status, 200);
+    assert.equal(miss.data.known, false);
+    assert.equal(miss.data.status, 'pending');
+
+    // A verified BUY webhook lands; the status route now reflects it (not the redirect).
+    await call('POST', '/account/api/moonpay/webhook',
+      { type: 'transaction_updated', data: { id: 'tx_buy1', status: 'completed', baseCurrencyAmount: 100, currencyCode: 'eth', walletAddress: '0xabc' } },
+      { 'moonpay-signature-v2': 't=1,s=deadbeef' });
+    const buy = await call('GET', '/account/api/moonpay/transaction/tx_buy1');
+    assert.equal(buy.data.known, true);
+    assert.equal(buy.data.status, 'completed');
+    assert.equal(buy.data.kind, 'buy');
+    assert.equal(buy.data.completed, true);
+    assert.equal(buy.data.fiatAmount, 100);
+
+    // A verified SELL failure is reflected as kind:sell + failed.
+    await call('POST', '/account/api/moonpay/webhook',
+      { type: 'sell_transaction_failed', data: { id: 'tx_sell1', status: 'failed' } },
+      { 'moonpay-signature-v2': 't=1,s=deadbeef' });
+    const sell = await call('GET', '/account/api/moonpay/transaction/tx_sell1');
+    assert.equal(sell.data.kind, 'sell');
+    assert.equal(sell.data.failed, true);
+  });
+});
+
+test('on/off-ramp status: a buy/sell transaction webhook NEVER grants a subscription tier', async () => {
+  await withServer(async ({ call, signIn }) => {
+    const csrf = await signIn('ramp@b.com');
+    // A completed BUY (no commerce metadata/product) must not flip the tier.
+    await call('POST', '/account/api/moonpay/webhook',
+      { type: 'transaction_updated', data: { id: 'tx_buy2', status: 'completed', baseCurrencyAmount: 500 } },
+      { 'moonpay-signature-v2': 't=1,s=deadbeef' });
+    const me = await call('GET', '/account/api/me', undefined, { 'X-CSRF-Token': csrf });
+    assert.notEqual(me.data.entitledTier, 'copilot');
+    assert.notEqual(me.data.entitledTier, 'copilot_pro');
+  });
+});

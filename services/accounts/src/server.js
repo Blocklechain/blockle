@@ -445,6 +445,36 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   });
 
+  // SERVER-AUTHORITATIVE on/off-ramp status. The client polls THIS for a buy/sell
+  // transaction instead of trusting the redirect URL's transactionStatus (which
+  // the user's browser controls). We return ONLY what a VERIFIED MoonPay webhook
+  // recorded in `moonpay_events` (keyed by transaction id). No account needed —
+  // the MoonPay transaction id is an unguessable UUID, so holding it is the
+  // capability (on-ramp works signed-out). `known:false` => no webhook yet (still
+  // pending). Covers buy (transaction_*) and sell (sell_transaction_*) alike.
+  on('GET', /^\/account\/api\/moonpay\/transaction\/([^/]+)$/, async (req, res, url, m) => {
+    const id = String(m[1] || '');
+    const rec = id ? store.get('moonpay_events', id) : null;
+    if (!rec) return json(res, 200, { id, known: false, status: 'pending' });
+    const d = rec.data || {};
+    const type = String(rec.type || '');
+    return json(res, 200, {
+      id,
+      known: true,
+      status: d.status || 'pending',            // pending | waitingPayment | completed | failed | …
+      type: rec.type || null,
+      kind: /sell/i.test(type) ? 'sell' : 'buy',
+      failed: /fail/i.test(type) || /fail/i.test(String(d.status || '')),
+      completed: String(d.status || '') === 'completed',
+      cryptoAmount: d.quoteCurrencyAmount ?? d.cryptoAmount ?? null,
+      fiatAmount: d.baseCurrencyAmount ?? d.fiatAmount ?? null,
+      currency: d.currencyCode ?? d.baseCurrencyCode ?? null,
+      walletAddress: d.walletAddress ?? null,
+      cryptoTxHash: d.cryptoTransactionId ?? null,
+      at: rec.at || null,
+    });
+  });
+
   // Apply a commerce grant from a VERIFIED webhook event. Copilot tiers flip the same user.sub the
   // PayPal/IAP paths write (setStoreSub); launch/raid/nft record a replay-guarded, server-verified
   // grant in `moonpay_grants` that the owning service (launchpad / raid / marketplace) claims — the

@@ -6,6 +6,8 @@
 // chain labelled post-quantum; every other chain is honestly labelled classical
 // (secp256k1 / ed25519).
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2029,21 +2031,9 @@ class MoonPayBuyScreen extends StatelessWidget {
       {super.key, required this.url, required this.assetLabel});
   final String url;
   final String assetLabel;
-
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Buy $assetLabel with card')),
-      body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(url)),
-        initialSettings: InAppWebViewSettings(
-          javaScriptEnabled: true,
-          // MoonPay's card flow may hand off to the bank's 3-D Secure page.
-          useOnLoadResource: false,
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) =>
+      _MoonPayRampScreen(url: url, assetLabel: assetLabel, isSell: false);
 }
 
 /// Hosts the MoonPay hosted SELL (off-ramp) widget in an in-app webview
@@ -2055,16 +2045,134 @@ class MoonPaySellScreen extends StatelessWidget {
       {super.key, required this.url, required this.assetLabel});
   final String url;
   final String assetLabel;
+  @override
+  Widget build(BuildContext context) =>
+      _MoonPayRampScreen(url: url, assetLabel: assetLabel, isSell: true);
+}
+
+/// Shared on/off-ramp webview host. When MoonPay finishes and redirects back to
+/// OUR origin (blockle.org/…) it carries the transactionId; we capture ONLY that
+/// id and then poll the SERVER for the authoritative status — the status the
+/// VERIFIED MoonPay webhook recorded, never the redirect URL's own
+/// transactionStatus (which the user's browser controls). A banner reflects the
+/// real state (processing / complete / failed).
+class _MoonPayRampScreen extends StatefulWidget {
+  const _MoonPayRampScreen(
+      {required this.url, required this.assetLabel, required this.isSell});
+  final String url;
+  final String assetLabel;
+  final bool isSell;
+  @override
+  State<_MoonPayRampScreen> createState() => _MoonPayRampScreenState();
+}
+
+class _MoonPayRampScreenState extends State<_MoonPayRampScreen> {
+  String? _txId;
+  MoonPayTxn? _status;
+  Timer? _poll;
+  bool _done = false;
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  // Capture the transaction id off the redirect back to our origin, then begin
+  // polling the server. We read only the id — the status comes from the webhook.
+  void _onNav(Uri? uri) {
+    if (uri == null || _txId != null) return;
+    if (!uri.host.toLowerCase().contains('blockle.org')) return;
+    final q = uri.queryParameters;
+    final id = q['transactionId'] ?? q['transactionid'] ?? q['id'];
+    if (id == null || id.isEmpty) return;
+    _txId = id;
+    var tries = 0;
+    _poll = Timer.periodic(const Duration(seconds: 4), (t) async {
+      tries++;
+      final s = await moonpayServerTxnStatus(id);
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (s != null) {
+        final st = s.status.toLowerCase();
+        setState(() => _status = s);
+        if (st == 'completed' || st.contains('fail')) {
+          setState(() => _done = true);
+          t.cancel();
+        }
+      }
+      if (tries >= 60) t.cancel(); // ~4 min cap; the webhook may still arrive later
+    });
+    setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
+    final label = widget.isSell
+        ? 'Sell ${widget.assetLabel} for cash'
+        : 'Buy ${widget.assetLabel} with card';
     return Scaffold(
-      appBar: AppBar(title: Text('Sell $assetLabel for cash')),
-      body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(url)),
-        initialSettings: InAppWebViewSettings(
-          javaScriptEnabled: true,
-          useOnLoadResource: false,
+      appBar: AppBar(title: Text(label)),
+      body: Stack(children: [
+        InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+          initialSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            // MoonPay's card flow may hand off to the bank's 3-D Secure page.
+            useOnLoadResource: false,
+          ),
+          onLoadStart: (c, u) => _onNav(u),
+          onUpdateVisitedHistory: (c, u, _) => _onNav(u),
+        ),
+        if (_txId != null) _banner(),
+      ]),
+    );
+  }
+
+  Widget _banner() {
+    final s = _status;
+    final st = (s?.status ?? 'pending').toLowerCase();
+    final failed = st.contains('fail');
+    final completed = st == 'completed';
+    final color = failed ? Bk.bad : (completed ? Bk.good : Bk.accent);
+    final text = s == null
+        ? 'Confirming your transaction…'
+        : failed
+            ? 'Transaction failed — a failed order is never charged.'
+            : completed
+                ? (widget.isSell
+                    ? 'Sold — cash is on its way to your bank.'
+                    : 'Complete — the crypto is in your wallet.')
+                : 'Processing… this can take a few minutes.';
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Material(
+        color: color.withValues(alpha: 0.14),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(children: [
+              Icon(
+                  failed
+                      ? Icons.error_outline
+                      : completed
+                          ? Icons.check_circle_outline
+                          : Icons.sync,
+                  color: color,
+                  size: 20),
+              const SizedBox(width: 10),
+              Expanded(child: Text(text, style: const TextStyle(color: Bk.text, fontSize: 13))),
+              if (_done)
+                TextButton(
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    child: const Text('Done')),
+            ]),
+          ),
         ),
       ),
     );
