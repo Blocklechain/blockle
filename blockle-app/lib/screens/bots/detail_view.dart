@@ -199,7 +199,7 @@ class DetailView extends StatelessWidget {
           else if (((d['holdings'] as List?) ?? const []).isNotEmpty)
             _holdings(t, (d['holdings'] as List).cast<Map<String, dynamic>>())
           else
-            _noDeal(t, bot),
+            _noDeal(t, bot, d, pair),
           // Scanner "AI picks": show the most recent worthy picks even when the
           // holdings list is empty, so an autopilot that's actively scanning looks
           // alive instead of idle.
@@ -317,26 +317,51 @@ class DetailView extends StatelessWidget {
     );
   }
 
-  Widget _noDeal(BotTokens t, b.Bot bot) {
-    final waiting = bot.enabled;
+  // DIAGNOSTIC empty state: say exactly WHY there's no position yet — paused, not
+  // ticked, price-skipping, scanning, or just waiting — instead of a dead-end.
+  Widget _noDeal(BotTokens t, b.Bot bot, Map<String, dynamic> d, String pair) {
+    final enabled = bot.enabled;
+    final lastTick = (d['lastTickAt'] as num?)?.toInt() ?? 0;
+    final poll = (d['pollSec'] as num?)?.toInt() ?? 60;
+    final err = d['lastError'];
+    final isScanner = bot.type == 'scanner';
+
+    IconData icon;
+    String msg;
+    if (!enabled) {
+      icon = Icons.pause_circle_outline;
+      msg = 'Paused — no position. Resume to let it trade on its ${poll}s schedule.';
+    } else if (lastTick <= 0) {
+      icon = Icons.play_circle_outline;
+      msg = 'Starting — the first ${isScanner ? 'scan' : 'tick'} runs within a few seconds. '
+          'Keep this screen open while it works.';
+    } else {
+      final ago = ((DateTime.now().millisecondsSinceEpoch - lastTick) / 1000).round();
+      if (err != null) {
+        icon = Icons.error_outline;
+        msg = 'Ran ${ago}s ago but isn\'t trading: $err. It keeps retrying every ${poll}s.';
+      } else if (isScanner) {
+        icon = Icons.radar;
+        msg = 'Scanning every ${poll}s (last ${ago}s ago). It buys only when a candidate '
+            'clears the safety + score bar — see the last scan below.';
+      } else {
+        icon = Icons.hourglass_empty;
+        msg = 'Ran ${ago}s ago, no fill yet for $pair. A DCA/grid bot opens on its first '
+            'priced tick; if this stays empty, $pair may not be priceable.';
+      }
+    }
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 18),
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 16),
       decoration: BoxDecoration(
         color: t.elevated,
         borderRadius: BorderRadius.circular(BotTokens.radiusSm),
         border: Border.all(color: t.line),
       ),
       child: Row(children: [
-        Icon(waiting ? Icons.hourglass_empty : Icons.pause_circle_outline,
-            color: t.inkMuted, size: 20),
+        Icon(icon, color: t.inkMuted, size: 20),
         const SizedBox(width: 10),
         Expanded(
-          child: Text(
-            waiting
-                ? 'No open deal yet — the bot opens one on its next tick once market data is available.'
-                : 'Paused — no open deal. Resume to let the bot open a deal on its schedule.',
-            style: TextStyle(color: t.inkMuted, fontSize: 13, height: 1.4),
-          ),
+          child: Text(msg, style: TextStyle(color: t.inkMuted, fontSize: 13, height: 1.4)),
         ),
       ]),
     );
