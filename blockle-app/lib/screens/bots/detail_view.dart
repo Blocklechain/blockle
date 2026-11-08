@@ -134,7 +134,21 @@ class DetailView extends StatelessWidget {
             const SizedBox(width: 10),
             Text(pair, style: mono(t, size: 12, color: t.inkMuted)),
             const Spacer(),
-            Text(_tickLabel(d), style: TextStyle(fontSize: 11.5, color: t.inkFaint)),
+            // Tap the liveness label to change how often this bot ticks.
+            PopupMenuButton<int>(
+              tooltip: 'Tick interval',
+              initialValue: (d['pollSec'] as num?)?.toInt() ?? 60,
+              onSelected: (s) => controller.setPollSec(bot.id, s),
+              itemBuilder: (_) => [
+                for (final s in BotsController.pollSecChoices)
+                  PopupMenuItem<int>(value: s, child: Text('Tick every ${BotsController.tickLabel(s)}')),
+              ],
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(_tickLabel(d), style: TextStyle(fontSize: 11.5, color: t.inkFaint)),
+                const SizedBox(width: 2),
+                Icon(Icons.expand_more, size: 14, color: t.inkFaint),
+              ]),
+            ),
           ]),
           if ((d['haltReason'] as String?) != null && !bot.enabled) ...[
             const SizedBox(height: 10),

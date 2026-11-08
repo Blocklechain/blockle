@@ -127,6 +127,7 @@ class _CreateViewState extends State<CreateView> {
   final _alloc = TextEditingController(text: '500');
   bool _advanced = false;
   double _base = 20, _tp = 2, _step = 2, _vol = 1.0, _tr = 0, _sl = 12;
+  int _pollSec = 60; // adjustable tick interval (seconds)
   int _so = 3;
 
   // PAIR SELECTION MODE — defaults to 'ai' ("Let the AI choose pairs": the
@@ -349,6 +350,7 @@ class _CreateViewState extends State<CreateView> {
         lane: _lane,
         riskMode: _riskMode,
         profitMode: _profitMode,
+        pollSec: _pollSec,
       );
     }
     if (_aiPicksPairs) {
@@ -359,6 +361,7 @@ class _CreateViewState extends State<CreateView> {
         lane: _lane,
         riskMode: _riskMode,
         profitMode: _profitMode,
+        pollSec: _pollSec,
       );
     }
     final tpl = _templates[_tpl];
@@ -370,6 +373,7 @@ class _CreateViewState extends State<CreateView> {
       lane: _lane,
       riskMode: _riskMode,
       profitMode: _profitMode,
+      pollSec: _pollSec,
     );
   }
 
@@ -842,6 +846,8 @@ class _CreateViewState extends State<CreateView> {
           _laneRiskSelect(t),
           const SizedBox(height: 16),
           _profitSelect(t),
+          const SizedBox(height: 14),
+          _tickPicker(t),
           const SizedBox(height: 16),
           if (_aiPicksPairs)
             _AutopilotNote(profitCurrency: _profitCurrency, alloc: _allocUsd)
@@ -1402,16 +1408,52 @@ class _CreateViewState extends State<CreateView> {
     ];
     return Padding(
       padding: const EdgeInsets.only(top: 12),
-      child: GridView.count(
-        crossAxisCount: 2,
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        crossAxisSpacing: 13,
-        mainAxisSpacing: 4,
-        childAspectRatio: 3.1,
-        children: kids,
-      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          crossAxisSpacing: 13,
+          mainAxisSpacing: 4,
+          childAspectRatio: 3.1,
+          children: kids,
+        ),
+        const SizedBox(height: 10),
+        _tickPicker(t),
+      ]),
     );
+  }
+
+  /// Adjustable tick-interval picker (how often the bot evaluates + may trade).
+  /// Shorter = more reactive (more RPC/battery); longer = calmer. Applies to
+  /// every bot type.
+  Widget _tickPicker(BotTokens t) {
+    return Row(children: [
+      Icon(Icons.timer_outlined, size: 16, color: t.inkMuted),
+      const SizedBox(width: 8),
+      Text('Tick every', style: TextStyle(fontSize: 12.5, color: t.inkMuted)),
+      const Spacer(),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: t.elevated,
+          borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+          border: Border.all(color: t.line),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<int>(
+            value: _pollSec,
+            dropdownColor: t.surface,
+            style: mono(t, size: 14, color: t.ink),
+            items: [
+              for (final s in BotsController.pollSecChoices)
+                DropdownMenuItem<int>(value: s, child: Text(BotsController.tickLabel(s))),
+            ],
+            onChanged: (v) => setState(() => _pollSec = v ?? _pollSec),
+          ),
+        ),
+      ),
+    ]);
   }
 
   Widget _ladderPane(BotTokens t) {

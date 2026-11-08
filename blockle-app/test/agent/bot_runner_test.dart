@@ -294,6 +294,22 @@ void main() {
     expect(su.audit.list().any((e) => e['type'] == 'bot_paper_fill'), isTrue);
   });
 
+  test('pollSec: a bot honors its configured tick interval; the scheduler uses the tightest enabled', () {
+    final su = setup(ctx: mkCtx([100]));
+    final a = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 10}, 'pollSec': 300,
+    });
+    expect(a.pollSec, 300);
+    a.enabled = true;
+    su.runner.startScheduler();
+    expect(su.probe.interval, const Duration(seconds: 300));
+    // A tighter bot lowers the scheduler cadence; changing pollSec + restarting re-applies it.
+    a.pollSec = 15;
+    su.runner.startScheduler();
+    expect(su.probe.interval, const Duration(seconds: 15));
+  });
+
   test('portfolio cap: null/uncapped preserves legacy behavior', () async {
     final su = setup(ctx: mkCtx([100]), sessionUsd: 10000);
     final a = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});

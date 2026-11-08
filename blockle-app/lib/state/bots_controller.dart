@@ -326,6 +326,7 @@ class BotsController extends ChangeNotifier {
     String? lane,
     String? riskMode,
     String? profitMode,
+    int? pollSec,
   }) {
     final spec = tpl.fromTemplate(templateKey, pair: pair, name: name);
     if (configOverride != null) {
@@ -335,6 +336,7 @@ class BotsController extends ChangeNotifier {
       };
     }
     spec['allocationUsd'] = allocationUsd;
+    if (pollSec != null) spec['pollSec'] = pollSec; // adjustable tick interval
     // LANE + RISK MODE: optional; the Bot constructor validates + nulls unknowns
     // and (when a lane is set) pins chainPrefs to that chain. Null = legacy.
     if (lane != null) spec['lane'] = lane;
@@ -361,6 +363,7 @@ class BotsController extends ChangeNotifier {
     String? lane,
     String? riskMode,
     String? profitMode,
+    int? pollSec,
   }) {
     final spec = tpl.fromStrategy(type, pair: pair, name: name, knobs: knobs);
     if (configOverride != null) {
@@ -370,6 +373,7 @@ class BotsController extends ChangeNotifier {
       };
     }
     spec['allocationUsd'] = allocationUsd;
+    if (pollSec != null) spec['pollSec'] = pollSec; // adjustable tick interval
     if (lane != null) spec['lane'] = lane;
     if (riskMode != null) spec['riskMode'] = riskMode;
     if (profitMode != null) spec['profitMode'] = profitMode;
@@ -377,6 +381,27 @@ class BotsController extends ChangeNotifier {
     _persist();
     notifyListeners();
     return created;
+  }
+
+  /// Supported tick intervals (seconds) for the UI picker. 5s is the floor the
+  /// scheduler allows; longer intervals cut RPC load + battery for slow strategies.
+  static const List<int> pollSecChoices = [5, 15, 30, 60, 300, 900, 3600];
+
+  /// Friendly label for a tick interval in seconds (e.g. 30 → "30s", 3600 → "1h").
+  static String tickLabel(int s) =>
+      s < 60 ? '${s}s' : (s < 3600 ? '${s ~/ 60}m' : '${s ~/ 3600}h');
+
+  /// Change a bot's tick interval (seconds) live. Clamps to [5, 3600] and
+  /// restarts the scheduler so the new cadence takes effect immediately.
+  Future<void> setPollSec(String id, int sec) async {
+    final bot = _runner?.get(id);
+    if (bot == null) return;
+    bot.pollSec = sec.clamp(5, 3600);
+    await _persist();
+    // Re-arm at the new tightest-enabled interval (startScheduler cancels +
+    // recreates the timer), so the change applies without a restart.
+    if (_runner!.list().any((b) => b.enabled)) _runner!.startScheduler();
+    notifyListeners();
   }
 
   /// Arm a bot in PAPER mode (simulated fills; never broadcasts). Allocation is
