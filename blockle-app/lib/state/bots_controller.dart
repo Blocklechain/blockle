@@ -664,6 +664,33 @@ class BotsController extends ChangeNotifier {
     final chainId = _evmChainId[chain];
     final mn = _mc.vault.plaintext?.mnemonic;
 
+    // AUTOPILOT (scanner / "AI picks the pairs"): the discovery feed is Solana
+    // SPL tokens, so delegate a dedicated SOLANA sub-account key + a SNIPER plan.
+    // The server picks the top safety-screened token each tick and buys it via
+    // Jupiter — all under the mainnet + cap + sender gates (executeTrade). The
+    // sub-account must be funded with USDC. Server refuses the key until mainnet.
+    if (bot.type == 'scanner' && mn != null && mn.isNotEmpty) {
+      try {
+        final seed = wx.fromMnemonic(mn).seed;
+        final subAddr = wx.solanaKey(seed, _botSubIndex(id)).address;
+        final subSeedHex = wx.solanaSubSeedHex(seed, _botSubIndex(id));
+        final plan = {
+          'type': 'sniper',
+          'perTradeUsd': (capUsd / 20).clamp(1, capUsd),
+          'sniperMinScore': (bot.config['sniperMinScore'] as num?) ?? 0.6,
+          'slippageBps': (bot.config['slippageBps'] as num?)?.toInt() ?? 100,
+          'intervalMs': 3600000,
+        };
+        await _delegations.register(
+          botId: id, chain: 'solana', capUsd: capUsd,
+          address: subAddr, key: subSeedHex, plan: plan,
+        );
+        return;
+      } catch (_) {
+        // fall through to the metadata-only registration below
+      }
+    }
+
     // Non-EVM lane, imported/locked wallet, or unknown chain → Stage-1
     // metadata-only (no key leaves the device).
     if (chainId == null || mn == null || mn.isEmpty) {

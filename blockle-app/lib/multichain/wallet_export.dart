@@ -182,6 +182,15 @@ ChainKey evmKey(dynamic seed, [int index = 0]) {
 String solPathForIndex(int index) =>
     index != 0 ? solPath.replaceFirst(RegExp(r"/0'$"), "/$index'") : solPath;
 
+/// The RAW 32-byte ed25519 SEED (hex, no prefix) for a Solana sub-account — the
+/// exact form the server-side bot runner reconstructs the keypair from
+/// (services/accounts/src/vendor/solana.js), so the delegated address + any
+/// signature match this device byte-for-byte.
+String solanaSubSeedHex(dynamic seed, [int index = 0]) {
+  final node = solana.deriveSlip10(_toSeed(seed), solPathForIndex(index));
+  return c.bytesToHex(node.key);
+}
+
 ChainKey solanaKey(dynamic seed, [int index = 0]) {
   final path = solPathForIndex(index);
   final node = solana.deriveSlip10(_toSeed(seed), path);

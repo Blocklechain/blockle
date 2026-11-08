@@ -356,7 +356,10 @@ export function createApp(overrides = {}) {
       // unless the operator has turned mainnet trading on. Testnet keys + no-key
       // (Stage 1) registrations are always accepted.
       const cid = b.chainId != null ? Number(b.chainId) : null;
-      if (b.key && cid != null && MAINNET_CHAIN_IDS.has(cid) && !mainnetEnabled(process.env)) {
+      const isMainnetKey = (cid != null && MAINNET_CHAIN_IDS.has(cid)) || b.chain === 'solana';
+      if (b.key && isMainnetKey && !mainnetEnabled(process.env)) {
+        // Solana sniper keys are mainnet (the discovery feed is live SPL tokens),
+        // so gate them behind the operator flag exactly like a mainnet EVM key.
         return json(res, 400, { error: 'mainnet bot keys are disabled on this server' });
       }
       const d = botDelegations.put(u.id, {
@@ -1293,6 +1296,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (sweep.unref) sweep.unref();
   // Server-side live bot loop — evaluates each active delegation's plan and
   // executes due trades (gated: testnet-only unless BLOCKLE_BOT_MAINNET=1).
+  const SIGNALS_BASE = process.env.SIGNALS_BASE || 'https://blockle.org';
+  const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
   const liveRun = setInterval(() => {
     liveRunOnce({
       delegations: app.botDelegations,
@@ -1302,6 +1307,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           const m = await app.prices.resolve([{ chain: '', kind: 'native', symbol: sym }]);
           return m[':native:' + String(sym).toUpperCase()] ?? Object.values(m)[0] ?? null;
         } catch { return null; }
+      },
+      // SNIPER deps: the signals discovery feed + a Solana JSON-RPC sender. The
+      // autopilot buys the top safety-screened token via Jupiter (inside runOnce).
+      discover: async ({ mode } = {}) => {
+        try {
+          const r = await fetch(`${SIGNALS_BASE}/api/signals/discover?mode=${encodeURIComponent(mode || 'sniper')}`, { headers: { accept: 'application/json' } });
+          const j = await r.json();
+          return (j && j.candidates) || [];
+        } catch { return []; }
+      },
+      solRpc: async (method, params) => {
+        try {
+          const r = await fetch(SOLANA_RPC, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+          });
+          const j = await r.json();
+          return j && (j.result !== undefined ? j.result : j);
+        } catch (e) { return { error: { message: String(e && e.message || e) } }; }
       },
     }).catch(() => {});
   }, 60_000);
