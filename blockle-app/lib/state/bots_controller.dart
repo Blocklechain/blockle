@@ -630,14 +630,8 @@ class BotsController extends ChangeNotifier {
     try {
       final seed = wx.fromMnemonic(mn).seed;
       final sub = wx.evmKey(seed, _botSubIndex(id)); // dedicated hot sub-account
-      final main = wx.evmKey(seed, 0).address; // drips accumulate into the main acct
-      final plan = {
-        'type': 'dca',
-        'to': main,
-        'sym': _evmNativeSym[chain] ?? 'ETH',
-        'perTradeUsd': (capUsd / 20).clamp(1, capUsd), // ~20 drips across the cap
-        'intervalMs': 3600000,
-      };
+      final main = wx.evmKey(seed, 0).address; // trades/drips settle into the main acct
+      final plan = _planForBot(bot, chain, main, capUsd);
       await _delegations.register(
         botId: id, chain: chain, capUsd: capUsd,
         address: sub.address, chainId: chainId, key: sub.privateKey, plan: plan,
@@ -645,6 +639,69 @@ class BotsController extends ChangeNotifier {
     } catch (_) {
       await _delegations.register(botId: id, chain: chain, capUsd: capUsd);
     }
+  }
+
+  // The wrapped-native token symbol per EVM chain — buying it with native would
+  // just be a wrap, so a bot targeting it (or the native coin) drips instead.
+  static const _wrappedNativeSym = {
+    'ethereum': {'WETH'}, 'base': {'WETH'}, 'arbitrum': {'WETH'}, 'optimism': {'WETH'},
+    'polygon': {'WPOL', 'WMATIC'}, 'bnb': {'WBNB'}, 'avalanche': {'WAVAX'},
+  };
+
+  /// Build the server-runner PLAN for a live EVM bot.
+  ///
+  /// When the bot targets a concrete ERC-20 (its pair's base asset, resolved to a
+  /// known token on this chain), emit a 'swap' plan so the server actually TRADES
+  /// on-chain: native → tokenOut via Uniswap V3, each drip sized at ~1/20 of the
+  /// cap, with a slippage floor (an underfilled swap reverts) and the tokens
+  /// landing in the main account. When the target is the native coin / its
+  /// wrapped form / an unknown token, fall back to the native DCA-drip (safe
+  /// accumulate into main — never routes funds into an unverified contract).
+  /// Mainnet execution is still gated server-side (cap + sender + mainnet flag).
+  Map<String, dynamic> _planForBot(b.Bot bot, String chain, String mainAddr, num capUsd) {
+    final nativeSym = _evmNativeSym[chain] ?? 'ETH';
+    final perTradeUsd = (capUsd / 20).clamp(1, capUsd); // ~20 drips across the cap
+    final dca = {
+      'type': 'dca', 'to': mainAddr, 'sym': nativeSym,
+      'perTradeUsd': perTradeUsd, 'intervalMs': 3600000,
+    };
+
+    // The base asset the bot accumulates (config market wins, else first pair).
+    String? base;
+    final m = bot.config['market'];
+    if (m is String && m.contains('/')) base = m.split('/')[0].trim().toUpperCase();
+    final ps = bot.pairs();
+    if (base == null && ps.isNotEmpty && ps.first.contains('/')) {
+      base = ps.first.split('/')[0].trim().toUpperCase();
+    }
+    if (base == null || base.isEmpty) return dca;
+
+    // Native or wrapped-native target → drip (buying WETH with ETH is pointless).
+    final wrapped = _wrappedNativeSym[chain] ?? const <String>{};
+    if (base == nativeSym || wrapped.contains(base)) return dca;
+
+    // Resolve the base to a KNOWN ERC-20 on this chain (curated addresses only).
+    AssetRef? tok;
+    for (final t in _mc.registry.tokensFor(chain)) {
+      if (t.kind == 'erc20' && t.address != null && t.symbol.toUpperCase() == base) {
+        tok = t;
+        break;
+      }
+    }
+    if (tok == null) return dca; // unknown token → never route to an unverified contract
+
+    final slip = (bot.config['slippageBps'] as num?)?.toInt() ?? 100; // default 1%
+    return {
+      'type': 'swap',
+      'to': mainAddr, // bought tokens settle into the main account
+      'tokenOut': tok.address,
+      'tokenOutSym': tok.symbol.toUpperCase(),
+      'tokenOutDecimals': tok.decimals,
+      'slippageBps': slip.clamp(1, 5000),
+      'feeTier': 3000, // 0.3% V3 pool — the server reverts if the route can't fill
+      'perTradeUsd': perTradeUsd,
+      'intervalMs': 3600000,
+    };
   }
 
   Future<void> pause(String id) async {
