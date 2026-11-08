@@ -40,7 +40,12 @@ class SignalsDiscovery {
 
     Map<String, dynamic>? j;
     try {
-      final r = await _client.get(uri, headers: const {'accept': 'application/json'});
+      // Hard timeout: a stalled request must NOT hang the scanner tick (which would
+      // freeze the whole bot scheduler via its no-overlap latch). On timeout this
+      // throws, we fall through to "no candidates", and the next tick retries.
+      final r = await _client
+          .get(uri, headers: const {'accept': 'application/json'})
+          .timeout(const Duration(seconds: 12));
       if (r.statusCode >= 200 && r.statusCode < 300) {
         final decoded = jsonDecode(r.body);
         if (decoded is Map) j = decoded.cast<String, dynamic>();

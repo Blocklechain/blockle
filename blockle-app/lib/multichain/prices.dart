@@ -104,15 +104,23 @@ class PriceService {
   final Map<String, double> _cache = {};
   final Map<String, int> _at = {}; // key -> epoch ms of last fetch
 
+  // A hard timeout on EVERY price request. Without it a single stalled socket on a
+  // flaky mobile network hangs the caller forever — and because a bot tick awaits
+  // the price before it can trade, that one hung request freezes the whole bot
+  // scheduler (the _ticking latch never releases). 10s is well past a healthy RTT.
+  static const Duration _httpTimeout = Duration(seconds: 10);
+
   static Future<String> _httpGet(String url) async {
-    final r = await http.get(Uri.parse(url));
+    final r = await http.get(Uri.parse(url)).timeout(_httpTimeout);
     if (r.statusCode >= 400) throw StateError('price http ${r.statusCode}');
     return r.body;
   }
 
   static Future<String> _httpPost(String url, String body) async {
-    final r = await http.post(Uri.parse(url),
-        headers: const {'content-type': 'application/json'}, body: body);
+    final r = await http
+        .post(Uri.parse(url),
+            headers: const {'content-type': 'application/json'}, body: body)
+        .timeout(_httpTimeout);
     if (r.statusCode >= 400) throw StateError('price http ${r.statusCode}');
     return r.body;
   }

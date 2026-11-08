@@ -228,7 +228,15 @@ class BotRunner {
       }
       if (_ticking) return; // never overlap ticks
       _ticking = true;
-      tickAll().whenComplete(() {
+      // WATCHDOG: never let a slow/hung tick latch _ticking forever (which would
+      // freeze every future tick and make the bot look permanently stuck). A tick
+      // that runs past 45s is abandoned for scheduling purposes; the latch releases
+      // and the next interval tries again. The HTTP calls have their own 10-12s
+      // timeouts; this is the last-resort backstop.
+      tickAll()
+          .timeout(const Duration(seconds: 45),
+              onTimeout: () => const <Map<String, dynamic>>[])
+          .whenComplete(() {
         _ticking = false;
         emit({'type': 'bot_tick'});
       });
