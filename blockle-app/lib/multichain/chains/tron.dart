@@ -641,6 +641,53 @@ class TronAdapter implements ChainAdapter {
 
   /// ASSEMBLE (node) + SIGN (local) a TRX / TRC-20 transfer. Returns a BuiltTx
   /// whose `raw` is the SIGNED tx JSON and `txid` is the verified txID. Does NOT
+  /// Sign a dApp-provided transaction object (TronWeb `trx.sign(tx)`): sign its
+  /// txID with secp256k1 and append the 65-byte signature hex to signature[].
+  /// Recomputes the txID from raw_data_hex when present and ASSERTS it matches the
+  /// supplied txID (a dApp can't swap the body out from under the id we sign).
+  Map<String, dynamic> signTransaction(DerivedAccount account, Map<String, dynamic> tx) {
+    final node = _nodeFor(account.index);
+    final priv = node.privateKey!;
+    var txId = (tx['txID'] ?? tx['txid'])?.toString();
+    final rawHex = tx['raw_data_hex']?.toString();
+    if (rawHex != null && rawHex.isNotEmpty) {
+      final computed = txIdFromRawData(rawHex);
+      if (txId != null && txId.isNotEmpty && txId.toLowerCase() != computed.toLowerCase()) {
+        throw StateError('tron: txID does not match raw_data_hex');
+      }
+      txId = computed;
+    }
+    if (txId == null || txId.isEmpty) {
+      throw StateError('tron: transaction missing txID / raw_data_hex');
+    }
+    final sig = signTxId(c.hexToBytes(txId), priv);
+    final out = Map<String, dynamic>.from(tx);
+    final sigs = out['signature'] is List ? List<dynamic>.from(out['signature'] as List) : <dynamic>[];
+    sigs.add(c.bytesToHex(sig));
+    out['signature'] = sigs;
+    return out;
+  }
+
+  /// TronLink `signMessageV2`: keccak256 over the TRON personal-sign prefix, signed
+  /// with secp256k1; returns 0x r||s||(v+27). [message] is utf-8 text, or 0x-hex
+  /// to sign raw bytes. No funds move.
+  String signMessageV2(DerivedAccount account, String message) {
+    final node = _nodeFor(account.index);
+    final priv = node.privateKey!;
+    final msgBytes = message.startsWith('0x')
+        ? c.hexToBytes(message)
+        : Uint8List.fromList(utf8.encode(message));
+    final prefix = utf8.encode('TRON Signed Message:\n${msgBytes.length}');
+    final digest = c.keccak256(Uint8List.fromList([0x19, ...prefix, ...msgBytes]));
+    final sig = s.sign(digest, priv);
+    final out = c.concatBytes([
+      sig.rBytes,
+      sig.sBytes,
+      Uint8List.fromList([(sig.recovery & 0xff) + 27]),
+    ]);
+    return '0x${c.bytesToHex(out)}';
+  }
+
   /// broadcast — the confirmation gate inspects it first, then broadcast().
   @override
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {

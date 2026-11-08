@@ -11,6 +11,8 @@ import 'package:provider/provider.dart';
 
 import '../multichain/chains/evm.dart' show EvmAdapter;
 import '../multichain/chains/solana.dart' show SolanaAdapter;
+import '../multichain/chains/tron.dart' show TronAdapter;
+import '../multichain/chains/ton.dart' show TonAdapter;
 import '../multichain/security.dart' as sec;
 import '../multichain/walletconnect.dart' show decodePersonalSign;
 import '../services/agent_service.dart' show AgentService, SiteScreening;
@@ -46,6 +48,9 @@ class _BrowserTabState extends State<BrowserTab> {
 
   // Solana (window.solana + Wallet Standard) dApp session state.
   final Set<String> _solConnected = {};
+  // Tron (window.tronLink/tronWeb) + TON (TON Connect) dApp session state.
+  final Set<String> _tronConnected = {};
+  final Set<String> _tonConnected = {};
 
   // Curated trusted-dApp homepage (#129): a Blockle-vetted directory shown in
   // place of a blank URL page. `_atHome` is an explicit home state (toolbar home
@@ -466,6 +471,127 @@ class _BrowserTabState extends State<BrowserTab> {
     return err(4200, 'Unsupported Solana method: $method');
   }
 
+  /// Tron (window.tronLink + window.tronWeb) dApp bridge. requestAccounts returns
+  /// the base58 address so TronLink-style dApps DETECT + CONNECT "Blockle";
+  /// signTransaction signs a dApp-built tx object (appends the 65-byte sig after
+  /// re-deriving + asserting its txID), signMessageV2 signs a message. Both via the
+  /// wallet's secp256k1 key, after an explicit approval.
+  Future<Map<String, dynamic>> _handleTronRpc(
+      String method, List params, String origin) async {
+    Map<String, dynamic> err(int code, String msg) => {
+          'error': {'code': code, 'message': msg}
+        };
+    final mc = context.read<MultichainController>();
+    final adapter = mc.accounts.registry.adapters['tron'];
+    if (adapter is! TronAdapter) {
+      return err(4901, 'Tron isn\'t available in this wallet build.');
+    }
+    switch (method) {
+      case 'tron_requestAccounts':
+        {
+          final a = await mc.addressFor('tron');
+          if (a == null) {
+            return err(4100, 'Unlock your multi-chain accounts (Accounts tab) to connect a Tron dApp.');
+          }
+          if (!_tronConnected.contains(origin)) {
+            final dec = await _approve(ApprovalRequest('connect', origin));
+            if (!dec.approved) return err(4001, 'Connection request rejected.');
+            _tronConnected.add(origin);
+          }
+          return {'result': {'address': a.address}};
+        }
+      case 'tron_disconnect':
+        _tronConnected.remove(origin);
+        return {'result': null};
+      case 'tron_signMessageV2':
+        {
+          if (!_tronConnected.contains(origin)) return err(4100, 'Connect first.');
+          final a = await mc.addressFor('tron');
+          if (a == null) return err(4100, 'Unlock your Tron account first.');
+          final msg = params.isNotEmpty ? '${params[0]}' : '';
+          final ok = await _confirmEvmSign(origin, _decodeEvmMessage(msg));
+          if (!ok) return err(4001, 'Signature request rejected.');
+          try {
+            return {'result': adapter.signMessageV2(a, msg)};
+          } catch (e) {
+            return err(4200, 'Could not sign: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
+      case 'tron_signTransaction':
+        {
+          if (!_tronConnected.contains(origin)) return err(4100, 'Connect first.');
+          final a = await mc.addressFor('tron');
+          if (a == null) return err(4100, 'Unlock your Tron account first.');
+          final tx = (params.isNotEmpty && params[0] is Map)
+              ? Map<String, dynamic>.from(params[0] as Map)
+              : <String, dynamic>{};
+          final host = Uri.tryParse(origin)?.host ?? origin;
+          final ok = await _confirmEvmSign(origin,
+              'Tron transaction from $host.\n\nSign this transaction — it may move TRX or TRC-20 tokens. Review in the dApp before approving.');
+          if (!ok) return err(4001, 'Transaction rejected.');
+          try {
+            return {'result': adapter.signTransaction(a, tx)};
+          } catch (e) {
+            return err(4200, 'Could not sign: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
+    }
+    return err(4200, 'Unsupported Tron method: $method');
+  }
+
+  /// TON Connect injected-bridge host. connect/restore return the ton_addr
+  /// (raw address + public key + walletStateInit) so TON Connect dApps DETECT +
+  /// CONNECT "Blockle". sendTransaction (arbitrary BOC messages) is not yet wired —
+  /// it returns a clear notice so the user sends from the wallet meanwhile.
+  Future<Map<String, dynamic>> _handleTonRpc(
+      String method, List params, String origin) async {
+    Map<String, dynamic> err(int code, String msg) => {
+          'error': {'code': code, 'message': msg}
+        };
+    final mc = context.read<MultichainController>();
+    final adapter = mc.accounts.registry.adapters['ton'];
+    if (adapter is! TonAdapter) {
+      return err(4901, 'TON isn\'t available in this wallet build.');
+    }
+    Future<Map<String, dynamic>> addrItem() async {
+      final a = await mc.addressFor('ton');
+      if (a == null) return {};
+      final info = adapter.tonConnectInfo(a);
+      return {
+        'address': info['rawAddress'],
+        'publicKey': info['publicKey'],
+        'walletStateInit': info['walletStateInit'],
+        'network': '-239', // TON mainnet
+      };
+    }
+
+    switch (method) {
+      case 'ton_connect':
+        {
+          final a = await mc.addressFor('ton');
+          if (a == null) {
+            return err(4100, 'Unlock your multi-chain accounts (Accounts tab) to connect a TON dApp.');
+          }
+          if (!_tonConnected.contains(origin)) {
+            final dec = await _approve(ApprovalRequest('connect', origin));
+            if (!dec.approved) return err(4001, 'Connection request rejected.');
+            _tonConnected.add(origin);
+          }
+          return {'result': await addrItem()};
+        }
+      case 'ton_restore':
+        if (!_tonConnected.contains(origin)) return err(4100, 'Not connected.');
+        return {'result': await addrItem()};
+      case 'ton_disconnect':
+        _tonConnected.remove(origin);
+        return {'result': null};
+      case 'ton_sendTransaction':
+        return err(4200,
+            'Sending from a TON dApp isn\'t wired yet — open the Send tab in your wallet to make this transfer. Connect + sign-in work.');
+    }
+    return err(4200, 'Unsupported TON method: $method');
+  }
+
   /// EVM (EIP-1193) dApp bridge for the injected window.ethereum. Connection +
   /// chain + read-state are handled here; the dApp's handshake is automatic and
   /// the user only approves the single connect prompt. Message/transaction
@@ -795,6 +921,12 @@ class _BrowserTabState extends State<BrowserTab> {
                     }
                     if (method.startsWith('sol_')) {
                       return await _handleSolanaRpc(method, params, _origin);
+                    }
+                    if (method.startsWith('tron_')) {
+                      return await _handleTronRpc(method, params, _origin);
+                    }
+                    if (method.startsWith('ton_')) {
+                      return await _handleTonRpc(method, params, _origin);
                     }
                     return await context.read<AppState>().handleRpc(method, params, _origin);
                   },

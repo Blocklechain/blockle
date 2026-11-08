@@ -299,6 +299,87 @@
   }
   registerWallet();
 
+  // ======================================================================
+  // TRON — window.tronWeb + window.tronLink (TronLink-shaped) so Tron dApps
+  // (SunSwap, JustLend, …) DETECT + CONNECT. Signing routes to the host.
+  // ======================================================================
+  const tron = {
+    ready: false,
+    defaultAddress: { base58: false, hex: false },
+    trx: {
+      sign: (tx) => call('tron_signTransaction', [tx]),
+      signMessageV2: (msg) => call('tron_signMessageV2', [msg]),
+    },
+    request: ({ method, params }) => call(method, params),
+    on() {}, removeListener() {},
+  };
+  async function tronConnect() {
+    const r = await call('tron_requestAccounts', []);
+    if (r && r.address) {
+      tron.defaultAddress = { base58: r.address, hex: null, name: '', type: 1 };
+      tron.ready = true;
+    }
+    return r;
+  }
+  const tronLink = {
+    isTronLink: true,
+    ready: true,
+    tronWeb: tron,
+    request: ({ method, params }) => {
+      if (method === 'tron_requestAccounts') {
+        return tronConnect().then(() => ({ code: 200, message: 'ok' }), () => ({ code: 4001, message: 'rejected' }));
+      }
+      return call(method, params);
+    },
+    on() {}, removeListener() {},
+  };
+  try { Object.defineProperty(window, 'tronWeb', { value: tron, configurable: true }); } catch (_) { try { window.tronWeb = tron; } catch (_) {} }
+  try { Object.defineProperty(window, 'tronLink', { value: tronLink, configurable: true }); } catch (_) { try { window.tronLink = tronLink; } catch (_) {} }
+
+  // ======================================================================
+  // TON — TON Connect injected bridge (window.blockleTon.tonconnect). TON
+  // Connect dApps scan window for objects with a `tonconnect` property, so this
+  // makes Blockle DETECT + CONNECT. Transaction sending returns a clear notice.
+  // ======================================================================
+  const TON_DEVICE = {
+    platform: 'iphone', appName: 'Blockle', appVersion: '1.0.0',
+    maxProtocolVersion: 2, features: [{ name: 'SendTransaction', maxMessages: 4 }],
+  };
+  const tonListeners = [];
+  function tonEmit(ev) { tonListeners.forEach((cb) => { try { cb(ev); } catch (_) {} }); }
+  function tonAddrEvent(r) {
+    return { event: 'connect', id: Date.now(), payload: { items: [{ name: 'ton_addr', address: r.address, network: r.network, publicKey: r.publicKey, walletStateInit: r.walletStateInit }], device: TON_DEVICE } };
+  }
+  const tonBridge = {
+    deviceInfo: TON_DEVICE,
+    walletInfo: { name: 'Blockle', image: ICON, about_url: 'https://blockle.org', app_name: 'blockle' },
+    protocolVersion: 2,
+    isWalletBrowser: false,
+    async connect(_protocolVersion, message) {
+      try {
+        const r = await call('ton_connect', [message || {}]);
+        const ev = tonAddrEvent(r); tonEmit(ev); return ev;
+      } catch (e) {
+        return { event: 'connect_error', id: Date.now(), payload: { code: (e && e.code) || 0, message: (e && e.message) || 'rejected' } };
+      }
+    },
+    async restoreConnection() {
+      try { return tonAddrEvent(await call('ton_restore', [])); } catch (_) { return null; }
+    },
+    async send(request) {
+      try {
+        if (request.method === 'disconnect') { await call('ton_disconnect', []); return { result: '', id: request.id }; }
+        const r = await call('ton_' + request.method, request.params || []);
+        return { result: r, id: request.id };
+      } catch (e) {
+        return { error: { code: (e && e.code) || 0, message: (e && e.message) || 'error' }, id: request.id };
+      }
+    },
+    listen(cb) { tonListeners.push(cb); return () => { const i = tonListeners.indexOf(cb); if (i >= 0) tonListeners.splice(i, 1); }; },
+  };
+  try { Object.defineProperty(window, 'blockleTon', { value: { tonconnect: tonBridge }, configurable: true }); } catch (_) { window.blockleTon = { tonconnect: tonBridge }; }
+
   window.dispatchEvent(new Event('blockle#initialized'));
   window.dispatchEvent(new Event('ethereum#initialized'));
+  window.dispatchEvent(new Event('tonconnect#initialized'));
 })();

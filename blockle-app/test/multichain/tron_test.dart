@@ -399,4 +399,37 @@ void main() {
       );
     });
   });
+
+  group('dApp signing bridge (TronLink window.tronWeb)', () {
+    test('signTransaction appends a 65-byte sig; txID derived from raw_data_hex', () async {
+      final a = _adapterReturning('', '');
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      const raw = '0a02abce22080102030405060708';
+      final signed = a.signTransaction(acct, {'raw_data_hex': raw, 'raw_data': <String, dynamic>{}});
+      final sigs = signed['signature'] as List;
+      expect(sigs.length, 1);
+      expect((sigs.first as String).length, 130); // 65 bytes
+      expect(signed['raw_data_hex'], raw); // body untouched
+    });
+
+    test('signTransaction rejects a txID that mismatches raw_data_hex', () async {
+      final a = _adapterReturning('', '');
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      expect(
+        () => a.signTransaction(acct, {'raw_data_hex': '0a02abce', 'txID': 'deadbeef'}),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('signMessageV2 returns a 0x 65-byte signature', () async {
+      final a = _adapterReturning('', '');
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      final sig = a.signMessageV2(acct, 'hello blockle');
+      expect(sig.startsWith('0x'), isTrue);
+      expect(sig.length, 2 + 130);
+    });
+  });
 }

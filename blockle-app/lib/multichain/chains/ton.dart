@@ -476,6 +476,20 @@ class TonAdapter implements ChainAdapter {
     );
   }
 
+  /// TON Connect `ton_addr` payload for an account: the RAW address ("0:hex"), the
+  /// ed25519 public key (hex), and the wallet's walletStateInit (base64 BOC) a dApp
+  /// needs to connect. No signing — connection metadata only.
+  Map<String, String> tonConnectInfo(DerivedAccount account) {
+    final pub = Uint8List.fromList(c.hexToBytes(account.publicKey));
+    final si = t.v4r2StateInit(pub, subwallet: subwallet);
+    final hash = si.hash();
+    return {
+      'rawAddress': '0:${c.bytesToHex(hash)}',
+      'publicKey': account.publicKey,
+      'walletStateInit': t.tonToBase64(t.serializeBoc(si)),
+    };
+  }
+
   @override
   Future<List<Balance>> getBalance(String address, {List<AssetRef>? tokens}) async {
     final out = <Balance>[];
