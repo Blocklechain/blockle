@@ -180,7 +180,7 @@ void main() {
     expect((d['totalDeals'] as int) >= 1, isTrue);
   });
 
-  test('dashboard: an OPEN position with no mark reports unrealizedUsd=null (awaiting data), not a misleading 0', () async {
+  test('dashboard: an OPEN position is marked LIVE from the last tick (unrealizedUsd numeric), and a mark override still works', () async {
     final su = setup(ctx: mkCtx([100]));
     final bot = su.runner.add({
       'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
@@ -191,14 +191,38 @@ void main() {
 
     await su.runner.tickBot(bot.id); // base order fills -> open position held
 
-    // No mark available for BLOCK -> unrealized is unknown, surfaced as null so
-    // the UI shows "awaiting market data" rather than $0.00.
-    final noMark = su.runner.dashboard(bot.id)!;
-    expect(noMark['unrealizedUsd'], isNull);
+    // The tick observed a real BLOCK mark (100) and cached it, so the open
+    // position is now marked LIVE — the headline P&L is correct, not null.
+    final live = su.runner.dashboard(bot.id)!;
+    expect(live['unrealizedUsd'], isA<num>());
 
-    // A real mark -> a concrete (numeric) unrealized figure.
+    // An explicit mark override still takes precedence.
     final marked = su.runner.dashboard(bot.id, {'BLOCK': 100})!;
     expect(marked['unrealizedUsd'], isA<num>());
+  });
+
+  test('dashboard: a held position whose base was NEVER priced reports unrealizedUsd=null (no synthetic mark)', () async {
+    // A runner that never observed a price for BRG — simulate an open position
+    // by injecting a deal, with no tick to populate the live-mark cache. The
+    // dashboard must surface null ("awaiting market data"), never a fabricated 0.
+    final su = setup(ctx: mkCtx([]));
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BRG/USDC']},
+      'config': {'baseOrderUsd': 100, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+    });
+    bot.state['byPair'] = {
+      'BRG/USDC': {
+        'deal': {
+          'type': 'dca', 'status': 'open',
+          'filledQty': BigInt.from(1000000),
+          'costUc': BigInt.from(100000000),
+          'avgEntryUc': BigInt.from(100000000),
+          'safetyOrdersUsed': 0,
+        },
+      },
+    };
+    final d = su.runner.dashboard(bot.id)!;
+    expect(d['unrealizedUsd'], isNull);
   });
 
   test('live within allocation: auto-approves via policy.autoApproveUnderUsd (no confirm asked) and commits', () async {

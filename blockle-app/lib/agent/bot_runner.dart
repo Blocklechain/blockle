@@ -107,6 +107,14 @@ class BotRunner {
   final Map<String, Strategy> strategies;
   bool _killed = false;
 
+  // Transient last-seen USD mark per base symbol, captured each tick from the
+  // SAME real marks the engine trades on (ctx.prices). Fed to [dashboard] so an
+  // OPEN deal's unrealized P&L is shown live instead of "awaiting market data".
+  // Intentionally NOT persisted: a mark is only "current" within a running
+  // session — after a restart the first tick (~1s) repopulates it, so a stale
+  // number is never presented as the live price (docs/BLOCKLE-BOTS.md §4/§5).
+  final Map<String, num> _lastMarks = {};
+
   // ---- background scheduler ------------------------------------------------
   // A real bot RUNS: once a bot is enabled/armed the scheduler ticks every
   // ENABLED bot on its pollSec. Without this nothing would ever advance a deal.
@@ -469,6 +477,9 @@ class BotRunner {
         events.add({'pair': pair, 'skipped': 'price'});
         continue;
       }
+      // Cache the live mark so an open deal's unrealized P&L can be marked (§4).
+      final markUsd = b.ucToUsd(markUc);
+      if (markUsd != null && markUsd > 0) _lastMarks[base] = markUsd;
       final bd = b.decimalsFor(base, cfg['decimals'] as Map<String, dynamic>?);
       final quoteDec = b.decimalsFor(quote, cfg['decimals'] as Map<String, dynamic>?);
       final quoteUc = _unitUc(prices, quote);
@@ -591,8 +602,10 @@ class BotRunner {
     bot.state['dealCount'] = (bot.state['dealCount'] as int) + 1;
     if (r > BigInt.zero) {
       bot.state['winCount'] = (bot.state['winCount'] as int) + 1;
+      bot.state['_consecLosses'] = 0; // a win breaks any losing streak
     } else if (r < BigInt.zero) {
       bot.state['lossCount'] = (bot.state['lossCount'] as int) + 1;
+      bot.state['_consecLosses'] = ((bot.state['_consecLosses'] as int?) ?? 0) + 1;
     }
     bot.state['_peakRealizedUc'] = (bot.state['_peakRealizedUc'] as BigInt?) ?? BigInt.zero;
     if ((bot.state['realizedUc'] as BigInt) > (bot.state['_peakRealizedUc'] as BigInt)) {
@@ -608,6 +621,43 @@ class BotRunner {
     ps['lastCloseAt'] = now;
     ps['deal'] = null;
     ps['signalArmed'] = false;
+
+    // ---- RISK CIRCUIT-BREAKER (§5 safety) ----------------------------------
+    // Optional per-bot guards. When the realized drawdown from peak exceeds
+    // maxDrawdownUsd, or the losing streak hits maxConsecutiveLosses, the bot
+    // auto-halts: it stops ticking AND (for a live bot) its server-side key is
+    // revoked, so a misconfigured bot can't bleed unattended. Opt-in — a bot
+    // without the knobs behaves exactly as before.
+    final maxDdUsd = _posNum(bot.config['maxDrawdownUsd']);
+    final maxLosses = _posInt(bot.config['maxConsecutiveLosses']);
+    final ddUsd = b.ucToUsd(dd) ?? 0;
+    if (maxDdUsd != null && ddUsd >= maxDdUsd) {
+      _autoHalt(bot, 'max-drawdown', {'drawdownUsd': ddUsd, 'limitUsd': maxDdUsd});
+    } else if (maxLosses != null && ((bot.state['_consecLosses'] as int?) ?? 0) >= maxLosses) {
+      _autoHalt(bot, 'loss-streak', {'losses': bot.state['_consecLosses'], 'limit': maxLosses});
+    }
+  }
+
+  // Positive finite num from loose config, else null (0/absent => guard off).
+  static num? _posNum(dynamic v) {
+    if (v is num && v.isFinite && v > 0) return v;
+    if (v is String) { final n = num.tryParse(v); if (n != null && n.isFinite && n > 0) return n; }
+    return null;
+  }
+
+  static int? _posInt(dynamic v) => _posNum(v)?.floor();
+
+  // Disable a single bot NOW for a risk reason, audit + emit a `bot_autohalt`
+  // event (the host revokes the live delegation key on that event), and stop the
+  // scheduler if it was the last running bot. Synchronous: safe to call mid-tick.
+  void _autoHalt(b.Bot bot, String reason, [Map<String, dynamic>? detail]) {
+    if (!bot.enabled) return;
+    bot.enabled = false;
+    bot.state['haltReason'] = reason;
+    bot.state['haltAt'] = _now();
+    unawaited(_audit({'type': 'bot_autohalt', 'bot': bot.id, 'reason': reason, ...?detail}));
+    emit({'type': 'bot_autohalt', 'bot': bot.id, 'reason': reason, ...?detail});
+    if (store.enabled().isEmpty) stopScheduler();
   }
 
   // ===========================================================================
@@ -1084,7 +1134,9 @@ class BotRunner {
       await _audit({'type': 'bot_error', 'bot': bot.id, 'error': '$e'});
       return {'bot': bot.id, 'type': bot.type, 'error': '$e'};
     }
-    final intents = await strat.plan(sctx, params);
+    // Answer the planner's getBalance from THIS bot's own position ledger so
+    // indicator/momentum exits can size (and fire) — see _plannerCtx.
+    final intents = await strat.plan(_plannerCtx(sctx, bot), params);
     final events = await _dispatchIntents(bot, intents);
     return {'bot': bot.id, 'type': bot.type, 'events': events};
   }
@@ -1119,6 +1171,85 @@ class BotRunner {
       }
     }
     return List<num>.from(ring);
+  }
+
+  // ---- planner position ledger (indicator / momentum SELL support) ----------
+  // Indicator planners (rsi/macd/bollinger/breakout/emacross/roc/meanrev/…) and
+  // the momentum death-cross read the HELD base via ctx.getBalance to size an
+  // exit. Rather than expose the whole wallet balance (which would let a bot dump
+  // holdings it never acquired), each planner bot keeps its OWN ledger: its
+  // executed buys accrue base, its executed sells draw it down. So an indicator
+  // bot takes profit on EXACTLY what it itself bought — never more. Self-
+  // consistent in paper AND live; marks come from ctx.prices (never fabricated).
+  Future<void> _accruePlannerPosition(b.Bot bot, dynamic it) async {
+    try {
+      if ('${it.tool}' != 'swap') return;
+      final args = (it.args as Map).cast<String, dynamic>();
+      final from = '${args['from']}'.toUpperCase();
+      final to = '${args['to']}'.toUpperCase();
+      final amount = BigInt.tryParse('${args['amount']}') ?? BigInt.zero;
+      if (amount <= BigInt.zero) return;
+      final pos = ((bot.state['plannerPos'] as Map?)?.cast<String, dynamic>()) ?? <String, dynamic>{};
+      final isSell = RegExp(r':sell(:|$)').hasMatch('${it.tag}');
+      if (isSell) {
+        // SELL: `amount` is BASE units (from=base). Draw the ledger down, floor 0.
+        final cur = BigInt.tryParse('${pos[from] ?? '0'}') ?? BigInt.zero;
+        final next = cur - amount;
+        pos[from] = (next > BigInt.zero ? next : BigInt.zero).toString();
+      } else {
+        // BUY: `amount` is QUOTE units (from=quote, to=base). Convert the USD size
+        // to base via the live base mark so the ledger holds base units (what the
+        // SELL path reads). No mark -> accrue nothing (never fabricate a price).
+        final base = to;
+        final est = it.estUsd as num?;
+        if (est == null || !est.isFinite || est <= 0) return;
+        final marks = await _prices([base]);
+        final markUc = _unitUc(marks, base);
+        if (markUc == null || markUc <= BigInt.zero) return;
+        final bd = b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?);
+        final received = b.qtyForUsd(b.microUsd(est), markUc, bd);
+        if (received <= BigInt.zero) return;
+        final cur = BigInt.tryParse('${pos[base] ?? '0'}') ?? BigInt.zero;
+        pos[base] = (cur + received).toString();
+      }
+      bot.state['plannerPos'] = pos;
+    } catch (_) {/* ledger is best-effort; never blocks a trade */}
+  }
+
+  // A per-tick StrategyContext clone of [base] that answers getBalance from THIS
+  // bot's planner ledger (above). Built fresh each scheduled tick so the shared
+  // read-only ctx stays bot-agnostic.
+  StrategyContext _plannerCtx(StrategyContext base, b.Bot bot) {
+    return StrategyContext(
+      now: base.now,
+      network: base.network,
+      listVenues: base.listVenues,
+      venueQuote: base.venueQuote,
+      getBook: base.getBook,
+      getTrades: base.getTrades,
+      getMarkets: base.getMarkets,
+      prices: base.prices,
+      policyRemaining: base.policyRemaining,
+      openOrders: base.openOrders,
+      note: base.note,
+      getBalance: (chain, [tokens]) async {
+        final pos = (bot.state['plannerPos'] as Map?)?.cast<String, dynamic>() ?? const {};
+        final rows = <Map<String, dynamic>>[];
+        pos.forEach((sym, units) {
+          final u = BigInt.tryParse('$units') ?? BigInt.zero;
+          if (u > BigInt.zero) {
+            rows.add({
+              'asset': {
+                'symbol': sym,
+                'decimals': b.decimalsFor(sym, bot.config['decimals'] as Map<String, dynamic>?),
+              },
+              'confirmed': u.toString(),
+            });
+          }
+        });
+        return rows;
+      },
+    );
   }
 
   // The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:
@@ -1167,6 +1298,7 @@ class BotRunner {
             bot, it.tool as String, (it.args as Map).cast<String, dynamic>(), remainingUc);
         if (r['rejected'] != true && r['result'] != null) {
           bot.state['committedUc'] = ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) + estUsdUc + feeUc;
+          await _accruePlannerPosition(bot, it); // keep the exit-sizing ledger current
           events.add({'tag': it.tag, 'executed': true});
           // UNIFORM SETTLEMENT STEP — a realized exit (sell/take-profit) leg whose
           // output is NOT the profit currency gets ONE extra settlement swap into
@@ -1195,6 +1327,7 @@ class BotRunner {
           continue;
         }
         await _audit({'type': 'bot_paper_intent', 'bot': bot.id, 'tag': it.tag, 'estUsd': est});
+        await _accruePlannerPosition(bot, it); // paper ledger mirrors live sizing
         events.add({'tag': it.tag, 'paper': true});
         // PAPER: the settlement step is paper-recorded, NEVER broadcast.
         final outAsset = _exitOutputAsset(it);
@@ -1294,6 +1427,10 @@ class BotRunner {
   Map<String, dynamic>? dashboard(String id, [Map<String, num>? marksOverride]) {
     final bot = store.get(id);
     if (bot == null) return null;
+    // Use explicit marks when the caller passes them, else the live per-base
+    // marks captured on the last tick (§4) — so an open deal is marked live
+    // rather than stuck on "awaiting market data". Null only before any tick.
+    final marks = marksOverride ?? _lastMarks;
     final openDeals = <Map<String, dynamic>>[];
     var unrealizedUc = BigInt.zero;
     var safetyUsed = 0;
@@ -1308,7 +1445,7 @@ class BotRunner {
       if (deal == null || deal['status'] == 'closed') continue;
       final base = b.splitPair('$pair')[0];
       BigInt? markUc;
-      if (marksOverride != null && marksOverride[base] != null) markUc = b.microUsd(marksOverride[base]);
+      if (marks[base] != null) markUc = b.microUsd(marks[base]!);
       if (deal['type'] == 'grid') {
         var uc = BigInt.zero;
         for (final lv in (deal['levels'] as List)) {

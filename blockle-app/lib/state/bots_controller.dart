@@ -271,6 +271,18 @@ class BotsController extends ChangeNotifier {
   }
 
   void _onEvent(Map<String, dynamic> ev) {
+    // A risk circuit-breaker (max-drawdown / loss-streak) halted a bot in the
+    // engine — revoke its server-side delegation key immediately so a live bot
+    // that tripped a guard holds no key while idle (same teardown as pause()).
+    if (ev['type'] == 'bot_autohalt' && ev['bot'] != null) {
+      final id = '${ev['bot']}';
+      unawaited(_delegations.revoke(id));
+      _onNotify(AgentNotification(
+        title: 'Bot auto-stopped',
+        subtitle: 'A risk limit (${ev['reason']}) halted a bot. Review before restarting.',
+        tag: 'autohalt:$id',
+      ));
+    }
     // bot_skip / bot_armed / bot_kill etc. — refresh the surfaces.
     notifyListeners();
   }
