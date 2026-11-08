@@ -44,6 +44,7 @@ import '../agent/tools.dart' show ToolRegistry;
 import '../multichain/backup_client.dart' as bc;
 import '../services/agent_service.dart' show SecureChannelStore;
 import '../services/local_notifications.dart' show LocalNotifications;
+import 'liquidity_controller.dart' show LiquidityService;
 import '../multichain/chains/chain_adapter.dart' show AssetRef;
 import '../multichain/prices.dart' show PriceService, priceKey;
 import 'multichain_controller.dart';
@@ -321,6 +322,13 @@ class BotsController extends ChangeNotifier {
   }
 
   void _onEvent(Map<String, dynamic> ev) {
+    // The 0.05% liquidity fee on every bot trade (paper OR live) → the in-wallet
+    // liquidity treasury, keyed by the pair's base coin. Fail-soft.
+    if (ev['type'] == 'bot_fee') {
+      final coin = '${ev['coin'] ?? ''}';
+      final fee = (ev['feeUsd'] as num?)?.toDouble() ?? 0;
+      if (coin.isNotEmpty && fee > 0) LiquidityService.instance.takeFee(coin, fee);
+    }
     // A risk circuit-breaker (max-drawdown / loss-streak) halted a bot in the
     // engine — revoke its server-side delegation key immediately so a live bot
     // that tripped a guard holds no key while idle (same teardown as pause()).

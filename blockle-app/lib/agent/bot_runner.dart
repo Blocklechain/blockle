@@ -979,6 +979,7 @@ class BotRunner {
           'type': 'bot_paper_fill', 'bot': bot.id, 'side': 'buy', 'kind': order['kind'],
           'pair': '${m['base']}/${m['quote']}', 'qty': qty.toString(), 'priceUc': execPriceUc.toString(), 'costUc': costUc.toString(),
         });
+        _emitTradeFee(bot, '${m['quote']}', b.ucToUsd(usdSizeUc)); // 0.05% -> liquidity
         return {'side': 'buy', 'qty': qty, 'priceUc': execPriceUc, 'costUc': costUc, 'paper': true};
       }
 
@@ -1008,6 +1009,7 @@ class BotRunner {
       final outQty = (result is Map && result['amountOut'] != null)
           ? BigInt.parse('${result['amountOut']}')
           : qty;
+      _emitTradeFee(bot, '${m['quote']}', b.ucToUsd(usdSizeUc)); // 0.05% -> liquidity
       return {'side': 'buy', 'qty': outQty, 'priceUc': execPriceUc, 'costUc': costUc, 'txid': r['txid'], 'orderId': r['orderId']};
     }
 
@@ -1522,6 +1524,41 @@ class BotRunner {
     );
   }
 
+  // ---- liquidity fee hook (§Blockle Liquidity) ------------------------------
+  // Every bot trade — paper OR live — contributes a 0.05% fee to the in-wallet
+  // liquidity treasury, keyed by the pair's QUOTE/base coin (USDC/SOL/ETH/…), so
+  // the pools deepen with the exact mix of coins the bots actually trade. The
+  // engine only EMITS the event (pure, testable); the host (LiquidityService)
+  // accrues it. notionalUsd is the trade size; feeUsd = 0.05% of it.
+  static const double _liquidityFeeRate = 0.0005; // 0.05%
+  void _emitTradeFee(b.Bot bot, String quoteCoin, num? notionalUsd) {
+    final n = (notionalUsd ?? 0).toDouble();
+    if (n <= 0 || quoteCoin.isEmpty) return;
+    emit({
+      'type': 'bot_fee',
+      'bot': bot.id,
+      'coin': quoteCoin.toUpperCase(),
+      'notionalUsd': n,
+      'feeUsd': n * _liquidityFeeRate,
+      'mode': bot.mode,
+    });
+  }
+
+  // The QUOTE/base coin of an intent's pair (from its `strat:BASE/QUOTE:side` tag,
+  // else its swap `from`), which is the coin whose pool the fee deepens.
+  String _intentQuote(dynamic it) {
+    try {
+      final m = RegExp(r':([A-Za-z0-9]+)/([A-Za-z0-9]+):').firstMatch('${it.tag}');
+      if (m != null) return m.group(2)!.toUpperCase();
+    } catch (_) {}
+    try {
+      final args = (it.args is Map) ? (it.args as Map) : const {};
+      final from = '${args['from'] ?? ''}'.toUpperCase();
+      if (from.isNotEmpty) return from;
+    } catch (_) {}
+    return 'USDC';
+  }
+
   // The ONE shared Intent-dispatch loop used by scheduled bots AND the scanner:
   // every Intent passes the SAME non-bypassable gate — FINITE+positive estimate,
   // the hard per-bot allocation ledger (trade + 0.05% fee), the mainnet gate, the
@@ -1570,6 +1607,7 @@ class BotRunner {
           bot.state['committedUc'] = ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero) + estUsdUc + feeUc;
           await _accruePlannerPosition(bot, it); // keep the exit-sizing ledger current
           events.add({'tag': it.tag, 'executed': true});
+          _emitTradeFee(bot, _intentQuote(it), est); // 0.05% fee -> liquidity treasury
           // UNIFORM SETTLEMENT STEP — a realized exit (sell/take-profit) leg whose
           // output is NOT the profit currency gets ONE extra settlement swap into
           // it, through the SAME gate. The arbitrage exit already outputs the
@@ -1599,6 +1637,7 @@ class BotRunner {
         await _audit({'type': 'bot_paper_intent', 'bot': bot.id, 'tag': it.tag, 'estUsd': est});
         await _accruePlannerPosition(bot, it); // paper ledger mirrors live sizing
         events.add({'tag': it.tag, 'paper': true});
+        _emitTradeFee(bot, _intentQuote(it), est); // 0.05% fee -> liquidity treasury
         // PAPER: the settlement step is paper-recorded, NEVER broadcast.
         final outAsset = _exitOutputAsset(it);
         if (outAsset != null && est != null && est.isFinite && est > 0) {

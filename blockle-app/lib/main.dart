@@ -5,6 +5,7 @@ import 'state/app_state.dart';
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
 import 'state/wallet_controller.dart';
+import 'state/liquidity_controller.dart';
 import 'services/local_notifications.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
@@ -20,6 +21,8 @@ void main() {
   // Initialize OS notifications (bot profit banners). Fire-and-forget + fail-soft:
   // never blocks startup and never throws if permission is denied or unavailable.
   LocalNotifications.instance.init().then((_) => LocalNotifications.instance.requestPermission());
+  // The Blockle Liquidity treasury: load persisted reserves + refresh coin prices.
+  LiquidityService.instance.init();
   final app = AppState()..bootstrap();
   runApp(
     MultiProvider(
@@ -42,6 +45,9 @@ void main() {
           create: (ctx) =>
               WalletController(ctx.read<MultichainController>(), appNavigatorKey)..init(),
         ),
+        // The Blockle Liquidity treasury (app-wide singleton) — fees flow in from
+        // the bot engine; the Liquidity screen reads + swaps against it.
+        ChangeNotifierProvider<LiquidityService>.value(value: LiquidityService.instance),
       ],
       child: const BlockleApp(),
     ),

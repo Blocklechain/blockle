@@ -113,6 +113,30 @@ void main() {
         reason: 'BLOCK pair should skip on price (documents why it never traded)');
   });
 
+  test('LIQUIDITY: a paper bot trade emits a 0.05% bot_fee keyed by the quote coin', () async {
+    final audit = Audit();
+    final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);
+    final reg = ToolRegistry([_mk('swap', []), _mk('place_order', [])]);
+    policy.setAllowlist(reg.names());
+    final fees = <Map<String, dynamic>>[];
+    final runner = BotRunner(
+      policy: policy, tools: reg, audit: audit,
+      ctx: BotContext(now: () => 0, network: () => 'testnet',
+          prices: (syms) async => {'SOL': 89.08, 'USDC': 1}),
+      liveEntitled: true,
+      onEvent: (ev) { if (ev['type'] == 'bot_fee') fees.add(ev); },
+    );
+    final bot = runner.add(tpl.fromTemplate('conservative_dca', pair: 'SOL/USDC'));
+    await runner.enablePaper(bot.id, allocationUsd: 100);
+    await runner.tickBot(bot.id); // base buy ~$20 of SOL quoted in USDC
+    print('FEES: $fees');
+    expect(fees.isNotEmpty, isTrue, reason: 'no bot_fee emitted');
+    expect(fees.first['coin'], 'USDC');
+    final notional = fees.first['notionalUsd'] as num;
+    final fee = fees.first['feeUsd'] as num;
+    expect(fee, closeTo(notional * 0.0005, 1e-9)); // exactly 0.05%
+  });
+
   test('PROFIT notification fires when a paper DCA deal closes in profit', () async {
     final audit = Audit();
     final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);

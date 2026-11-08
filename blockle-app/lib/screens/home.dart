@@ -8,6 +8,7 @@ import 'bots_screen.dart';
 import 'browser_tab.dart';
 import 'settings.dart';
 import 'wallet/wallet_screen.dart';
+import 'liquidity_screen.dart';
 
 /// A single navigation destination (icon + label), the one source of truth for
 /// both the collapsible side menu and the minimal bottom bar.
@@ -33,6 +34,7 @@ class HomeScreen extends StatelessWidget {
     BrowserTab(), // 3
     SettingsScreen(), // 4
     WalletScreen(), // 5  (Portfolio)
+    LiquidityScreen(), // 6  (Blockle Liquidity)
   ];
 
   static const _dests = <_Dest>[
@@ -43,6 +45,7 @@ class HomeScreen extends StatelessWidget {
     _Dest(Icons.public_outlined, Icons.public, 'Browser'),
     _Dest(Icons.settings_outlined, Icons.settings, 'Settings'),
     _Dest(Icons.diamond_outlined, Icons.diamond, 'Portfolio'),
+    _Dest(Icons.water_drop_outlined, Icons.water_drop, 'Liquidity'),
   ];
 
   /// The few destinations that get an icon-only button on the bottom bar; the
