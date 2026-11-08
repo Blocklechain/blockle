@@ -545,7 +545,9 @@ void main() {
       final bch = await reg.get('bitcoincash').deriveAccount(root);
       expect(bch.address, 'bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6');
       expect(reg.enabled().contains('bitcoincash'), isTrue);
-      expect(reg.endpoints('bitcoincash')?.esplora, 'https://bch.imaginary.cash/api');
+      // BCH balances/UTXOs/broadcast go through Haskoin (apiStyle: 'haskoin'),
+      // not an Esplora instance — the imaginary.cash Esplora shim was unreliable.
+      expect(reg.endpoints('bitcoincash')?.esplora, 'https://api.haskoin.com/bch');
       expect(reg.enabled().contains('ethereum'), isTrue);
       expect(reg.enabled().contains('bitcoin'), isTrue);
       expect(reg.tokensFor('ethereum').any((t) => t.symbol == 'USDC'), isTrue);

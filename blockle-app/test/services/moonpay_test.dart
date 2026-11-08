@@ -578,9 +578,10 @@ void main() {
         },
       );
       final body = jsonDecode(seen!.body!) as Map<String, dynamic>;
-      expect(body['path'], '/v3/quote');
-      expect((body['query'] as Map)['sellAsset'], 'usdc');
-      expect((body['query'] as Map)['buyAsset'], 'eth');
+      // MoonPay Trade API: GET /v3/currencies/{sellAsset}/buy_quote with the BUY
+      // asset as quoteCurrencyCode (the legacy /v3/quote 404s).
+      expect(body['path'], '/v3/currencies/usdc/buy_quote');
+      expect((body['query'] as Map)['quoteCurrencyCode'], 'eth');
       expect((body['query'] as Map)['baseCurrencyAmount'], '100');
     });
   });
