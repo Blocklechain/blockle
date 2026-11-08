@@ -292,6 +292,8 @@ class BotRunner {
     bot.mode = 'live';
     bot.enabled = true;
     bot.state['haltReason'] = null; // a fresh arm clears any prior risk halt
+    bot.state['lastError'] = null;
+    bot.state['_consecErrors'] = 0;
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc, 'network': bot.network});
     emit({'type': 'bot_armed', 'bot': id, 'mode': 'live', 'allocationUsd': alloc});
     await store.persist();
@@ -311,6 +313,8 @@ class BotRunner {
     bot.mode = 'paper';
     bot.enabled = true;
     bot.state['haltReason'] = null; // a fresh start clears any prior risk halt
+    bot.state['lastError'] = null;
+    bot.state['_consecErrors'] = 0;
     await _audit({'type': 'bot_armed', 'bot': id, 'mode': 'paper', 'allocationUsd': bot.allocationUsd});
     await store.persist();
     startScheduler(); // a running bot is actually ticked
@@ -454,8 +458,94 @@ class BotRunner {
       await _audit({'type': 'bot_error', 'bot': bot.id, 'error': '$e'});
       report = {'bot': bot.id, 'error': '$e'};
     }
-    await store.persist();
+    // Track bot health: a bot stuck rejecting/blocking every tick (bad allowlist,
+    // repeated cap breach, dispatch error) is invisible otherwise. Surface the
+    // last error + auto-pause after a run of them (§14).
+    _updateHealth(report, bot);
+    // PERSIST ONLY WHEN IT MATTERS. The scheduler can tick as often as every 1s;
+    // writing encrypted state to secure storage on every tick (mostly unchanged
+    // but for lastTickAt) is needless flash wear + main-thread jank. Persist when
+    // a tick actually mutated state (a fill, deal open/close, settlement, auto-
+    // halt), else checkpoint liveness at most once per _persistEverySec.
+    if (_reportMutated(report, bot)) {
+      bot.state['_lastPersistAt'] = now;
+      await store.persist();
+    } else if (now - ((bot.state['_lastPersistAt'] as int?) ?? 0) >= _persistEverySec * 1000) {
+      bot.state['_lastPersistAt'] = now;
+      await store.persist();
+    }
     return report;
+  }
+
+  // After N consecutive hard-failure ticks (rejects/blocks/cap breaches/errors
+  // with no fill between), auto-pause the bot so a hot failing loop can't run
+  // unattended. Price-skips/waits are normal and never counted.
+  static const int _autoHaltAfterErrors = 25;
+  void _updateHealth(Map<String, dynamic> report, b.Bot bot) {
+    if (!bot.enabled) return; // already halted this tick (autohalt/kill)
+    final evs = report['events'];
+    var success = false, hardFail = false;
+    String? reason;
+    if (report['error'] != null) {
+      hardFail = true;
+      reason = 'error';
+    }
+    if (evs is List) {
+      for (final e in evs) {
+        if (e is! Map) continue;
+        if (e['action'] != null || e['side'] != null || e['executed'] == true || e['paper'] == true) {
+          success = true;
+        }
+        if (e['rejected'] != null) {
+          hardFail = true;
+          reason = 'order rejected';
+        } else if (e['blocked'] == true) {
+          hardFail = true;
+          reason = 'tool blocked';
+        } else if (e['skipped'] == 'allocation' || e['skipped'] == 'allocation-unknown') {
+          hardFail = true;
+          reason = 'allocation cap reached';
+        } else if (e['skipped'] == 'mainnet') {
+          hardFail = true;
+          reason = 'mainnet disabled';
+        } else if (e['skipped'] == 'order') {
+          hardFail = true;
+          reason = 'order not placed';
+        }
+      }
+    }
+    if (success) {
+      bot.state['_consecErrors'] = 0;
+      bot.state['lastError'] = null;
+    } else if (hardFail) {
+      final n = ((bot.state['_consecErrors'] as int?) ?? 0) + 1;
+      bot.state['_consecErrors'] = n;
+      bot.state['lastError'] = reason;
+      if (n >= _autoHaltAfterErrors) {
+        _autoHalt(bot, 'repeated-errors', {'consecutive': n, 'lastError': reason});
+      }
+    }
+    // Pure price-skip / waiting ticks neither reset nor increment — normal idle.
+  }
+
+  // A tick "mutated" if it fired/settled an order or flipped the bot off (auto-
+  // halt/kill). Pure skips/waits/price-misses/errors are not material state.
+  static const int _persistEverySec = 30;
+  bool _reportMutated(Map<String, dynamic> report, b.Bot bot) {
+    if (!bot.enabled) return true; // disabled DURING this tick (autohalt/kill)
+    final evs = report['events'];
+    if (evs is! List) return false;
+    for (final e in evs) {
+      if (e is! Map) continue;
+      if (e['action'] != null ||
+          e['side'] != null ||
+          e['executed'] == true ||
+          e['paper'] == true ||
+          e['settlement'] == true) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // ---- deal bots (dca / grid / smarttrade), also reused by signal-spawned ---
@@ -526,7 +616,13 @@ class BotRunner {
         }
 
         final fill = await _executeOrder(bot, m, order, markUc, ctxMainnet);
-        if (fill == null) break; // skipped/blocked/declined — stop this pair's cascade
+        if (fill == null) {
+          // Had an order to place but it didn't fire (allocation cap, mainnet off,
+          // blocked tool, dispatch reject, dust). Record it so health tracking can
+          // surface/auto-pause a bot stuck not trading — vs a benign price skip.
+          events.add({'pair': pair, 'skipped': 'order'});
+          break; // stop this pair's cascade
+        }
         fill['bd'] = bd;
         _engineApply(type, deal, bcfg, cfg, order, fill, now);
         events.add({
@@ -1519,6 +1615,8 @@ class BotRunner {
       'pollSec': bot.pollSec,
       // Risk circuit-breaker state, if one tripped (for a warning chip).
       'haltReason': bot.state['haltReason'],
+      // Last hard-failure reason while running (null once a trade succeeds).
+      'lastError': bot.state['lastError'],
     };
   }
 

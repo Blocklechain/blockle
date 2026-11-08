@@ -157,6 +157,27 @@ class DetailView extends StatelessWidget {
                 ),
               ]),
             ),
+          ] else if ((d['lastError'] as String?) != null && bot.enabled) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: t.warn.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+                border: Border.all(color: t.warn.withValues(alpha: 0.4)),
+              ),
+              child: Row(children: [
+                Icon(Icons.warning_amber_rounded, size: 16, color: t.warn),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Recent ticks aren\'t trading: ${d['lastError']}. The bot keeps retrying; '
+                    'it will auto-pause if this persists.',
+                    style: TextStyle(fontSize: 12, color: t.ink, height: 1.4),
+                  ),
+                ),
+              ]),
+            ),
           ],
           const SizedBox(height: 14),
           if (deal == null)
@@ -191,7 +212,9 @@ class DetailView extends StatelessWidget {
       ? 'max drawdown'
       : r == 'loss-streak'
           ? 'losing streak'
-          : r;
+          : r == 'repeated-errors'
+              ? 'repeated order failures'
+              : r;
 
   Widget _noDeal(BotTokens t, b.Bot bot) {
     final waiting = bot.enabled;

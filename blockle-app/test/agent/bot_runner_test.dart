@@ -225,6 +225,42 @@ void main() {
     expect(d['unrealizedUsd'], isNull);
   });
 
+  test('health: a bot whose orders never place auto-pauses after a run of failures (§14)', () async {
+    // Base order ($100) exceeds the live allocation ($50) so every buy skips on
+    // the allocation cap — a bot stuck not trading. After the error threshold it
+    // auto-pauses with haltReason=repeated-errors; its live key is the host's to
+    // revoke on the emitted event.
+    final su = setup(ctx: mkCtx(List<num>.filled(60, 100)), sessionUsd: 1000);
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 100, 'maxSafetyOrders': 0, 'takeProfitPct': 5},
+    });
+    await su.runner.armLive(bot.id, allocationUsd: 50);
+    var autohalts = 0;
+    for (var i = 0; i < 40 && bot.enabled; i++) {
+      await su.runner.tickBot(bot.id);
+    }
+    autohalts = su.audit.list().where((e) => e['type'] == 'bot_autohalt').length;
+    expect(bot.enabled, isFalse, reason: 'should have auto-paused');
+    expect(su.runner.dashboard(bot.id)!['haltReason'], 'repeated-errors');
+    expect(autohalts, greaterThan(0));
+  });
+
+  test('health: a trading bot never counts failures and stays running', () async {
+    final su = setup(ctx: mkCtx(List<num>.filled(10, 100)), sessionUsd: 1000);
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 20, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+    });
+    await su.runner.armLive(bot.id, allocationUsd: 100);
+    for (var i = 0; i < 5; i++) {
+      await su.runner.tickBot(bot.id);
+    }
+    expect(bot.enabled, isTrue);
+    expect(su.runner.dashboard(bot.id)!['lastError'], isNull);
+    expect(su.audit.list().any((e) => e['type'] == 'bot_autohalt'), isFalse);
+  });
+
   test('live within allocation: auto-approves via policy.autoApproveUnderUsd (no confirm asked) and commits', () async {
     var asked = 0;
     final su = setup(ctx: mkCtx([100]), sessionUsd: 1000, confirm: (_) async {
