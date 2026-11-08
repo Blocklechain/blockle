@@ -194,10 +194,23 @@ class XrpAdapter implements ChainAdapter {
     final fee =
         (req.feeRate != null ? int.tryParse(req.feeRate!) : null) ??
             _defaultFeeDrops;
+    // sendMax: drain to the floor the ledger allows — balance MINUS the fee AND
+    // the mandatory 10-XRP base reserve (an account can never go below it).
+    var amount = req.amount;
+    if (req.sendMax) {
+      final bals = await getBalance(from);
+      final bal = BigInt.parse(
+          bals.firstWhere((b) => b.asset.kind == 'native').confirmed);
+      final maxSend = bal - BigInt.from(fee) - BigInt.from(xrpBaseReserveDrops);
+      if (maxSend <= BigInt.zero) {
+        throw StateError('Balance is at or below the 10 XRP reserve + fee — nothing to send.');
+      }
+      amount = maxSend.toString();
+    }
     final payment = x.XrpPayment(
       accountId: x.accountIdFromAddress(from),
       destinationAccountId: x.accountIdFromAddress(req.to),
-      amountDrops: req.amount,
+      amountDrops: amount,
       feeDrops: fee.toString(),
       sequence: seq,
       flags: 2147483648, // tfFullyCanonicalSig
@@ -216,7 +229,7 @@ class XrpAdapter implements ChainAdapter {
       raw: blobHex,
       txid: txid,
       fee: fee.toString(),
-      summary: req,
+      summary: req.sendMax ? req.copyWith(amount: amount, sendMax: false) : req,
       extra: {'kind': 'payment', 'sequence': seq, 'lastLedgerSequence': lastLedger},
     );
   }

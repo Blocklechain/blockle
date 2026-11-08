@@ -269,14 +269,30 @@ class TezosAdapter implements ChainAdapter {
     final key = _keyFor(account.index);
     final branch = await _branch();
     final counter = (await _counter(account.address)) + BigInt.one;
+    final feeMutez = req.feeRate ?? fee;
+    // sendMax: balance − fee − the allocation burn (0.06425 XTZ is charged on
+    // top when the recipient account is new; reserving it makes Max succeed even
+    // then, and merely leaves that much behind when the recipient already exists).
+    var amount = req.amount;
+    if (req.sendMax) {
+      const allocationBurnMutez = 64250; // 0.06425 XTZ origination/allocation cost
+      final bals = await getBalance(account.address);
+      final bal = BigInt.parse(
+          bals.firstWhere((b) => b.asset.kind == 'native').confirmed);
+      final maxSend = bal - BigInt.from(int.parse(feeMutez)) - BigInt.from(allocationBurnMutez);
+      if (maxSend <= BigInt.zero) {
+        throw StateError('Balance too low to cover the network fee.');
+      }
+      amount = maxSend.toString();
+    }
     final fields = tz.TezosTxFields(
       branch: branch,
       source: account.address,
-      fee: req.feeRate ?? fee,
+      fee: feeMutez,
       counter: counter.toString(),
       gasLimit: gasLimit,
       storageLimit: storageLimit,
-      amount: req.amount,
+      amount: amount,
       destination: req.to,
     );
     final built = buildTransfer(seedKey: key, fields: fields);
@@ -285,7 +301,7 @@ class TezosAdapter implements ChainAdapter {
       raw: built.injectionHex,
       txid: built.edsig,
       fee: fields.fee,
-      summary: req,
+      summary: req.sendMax ? req.copyWith(amount: amount, sendMax: false) : req,
       extra: {
         'kind': 'transaction',
         'counter': counter.toString(),

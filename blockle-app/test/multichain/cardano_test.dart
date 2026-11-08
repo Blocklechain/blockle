@@ -260,6 +260,33 @@ void main() {
       expect(built.raw, tx['signedTxCborHex']);
     });
 
+    test('buildSend sendMax drains every input (amount + fee == total, no change)', () async {
+      final acct = await adapter.deriveAccount(root, index: 0);
+      final inp = (tx['inputs'] as List)[0] as Map<String, dynamic>;
+      final total = BigInt.parse(tx['inputTotal'] as String);
+      final built = await adapter.buildSend(
+        acct,
+        SendRequest(
+          to: recipient['bech32'] as String,
+          amount: '1', // ignored under sendMax
+          memo: (tx['ttl'] as int).toString(),
+          sendMax: true,
+          utxos: [
+            {
+              'tx_hash': inp['txHashHex'],
+              'tx_index': inp['index'],
+              'value': tx['inputTotal'],
+            }
+          ],
+        ),
+      );
+      // Everything is consumed: the sent amount + fee == the inputs, and the
+      // sub-min-UTXO remainder folded into the fee (no change output stranded).
+      expect(BigInt.parse(built.summary.amount) + BigInt.parse(built.fee), total);
+      expect(built.summary.sendMax, isFalse);
+      expect(built.extra?['change'], '0');
+    });
+
     test('buildSend rejects non-addr1 destinations + CNT sending', () async {
       final acct = await adapter.deriveAccount(root, index: 0);
       expect(

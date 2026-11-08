@@ -652,11 +652,26 @@ class TonAdapter implements ChainAdapter {
       );
     }
     final dest = t.parseAddress(req.to);
+    // sendMax: send the whole balance minus a gas buffer. TON's sendMode-3 pays
+    // the (~0.0055 TON) fee from the remaining balance, so leaving 0.02 TON
+    // covers it with margin; the tiny remainder stays rather than risking a fail.
+    var amount = req.amount;
+    if (req.sendMax) {
+      const tonGasBufferNano = 20000000; // 0.02 TON (9 decimals)
+      final bals = await getBalance(owner);
+      final bal = BigInt.parse(
+          bals.firstWhere((b) => b.asset.kind == 'native').confirmed);
+      final maxSend = bal - BigInt.from(tonGasBufferNano);
+      if (maxSend <= BigInt.zero) {
+        throw StateError('Balance too low to cover the network fee.');
+      }
+      amount = maxSend.toString();
+    }
     final built = buildNativeExternal(
       pubKey: pub,
       seedKey: key,
       dest: dest,
-      amount: req.amount,
+      amount: amount,
       comment: req.memo ?? '',
       seqno: seqno,
       subwallet: subwallet,
@@ -666,7 +681,7 @@ class TonAdapter implements ChainAdapter {
       raw: built.boc,
       txid: built.hash,
       fee: '0',
-      summary: req,
+      summary: req.sendMax ? req.copyWith(amount: amount, sendMax: false) : req,
       extra: {'kind': 'send', 'seqno': seqno},
     );
   }

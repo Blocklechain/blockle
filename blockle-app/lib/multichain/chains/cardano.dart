@@ -93,13 +93,16 @@ class CardanoBuilt {
     required this.signedTxHex,
     required this.fee,
     required this.change,
-  });
+    BigInt? amount,
+  }) : amount = amount ?? BigInt.zero;
   final String bodyHex;
   final String txHashHex;
   final String signatureHex;
   final String signedTxHex;
   final BigInt fee;
   final BigInt change;
+  /// The recipient output amount actually sent (for a drain = inputTotal − fee).
+  final BigInt amount;
 }
 
 /// Build + sign a native-ADA transfer, OFFLINE + deterministic (the fee is
@@ -115,13 +118,33 @@ CardanoBuilt buildTransfer({
   required Uint8List payKL,
   required Uint8List payKR,
   required Uint8List payPub,
+  bool drain = false,
 }) {
   // Iterate the fee to a fixed point: build with an estimate, re-measure the
   // FULL signed-tx size (body + single-witness overhead), settle.
   var fee = minFee(cardanoSingleWitnessOverhead);
   Uint8List body = Uint8List(0);
   BigInt change = BigInt.zero;
+  var effAmount = amount;
   for (var i = 0; i < 12; i++) {
+    if (drain) {
+      // DRAIN: a SINGLE recipient output of inputTotal − fee, NO change, so
+      // nothing dust-stranded and the output always clears min-UTXO (it's the
+      // whole balance). The fee itself converges across iterations.
+      effAmount = inputTotal - fee;
+      if (effAmount <= BigInt.zero) {
+        throw StateError('cardano: inputs do not cover the fee');
+      }
+      change = BigInt.zero;
+      final outs = <cbor.CardanoTxOut>[
+        cbor.CardanoTxOut(recipientAddrBytes, effAmount),
+      ];
+      body = cbor.encodeTxBody(inputs: inputs, outputs: outs, fee: fee, ttl: ttl);
+      final newFee = minFee(body.length + cardanoSingleWitnessOverhead);
+      if (newFee == fee) break;
+      fee = newFee;
+      continue;
+    }
     change = inputTotal - amount - fee;
     if (change < BigInt.zero) {
       throw StateError('cardano: inputs do not cover amount + fee');
@@ -154,6 +177,7 @@ CardanoBuilt buildTransfer({
     signedTxHex: c.bytesToHex(signed),
     fee: fee,
     change: change,
+    amount: effAmount,
   );
 }
 
@@ -476,12 +500,13 @@ class CardanoAdapter implements ChainAdapter {
     final pay = _payNode(account.index);
     final selfBytes = baseAddressBytes(pay.a, _stakePubKey());
     final recipientBytes = addr.bech32Decode('addr', req.to);
-    final amount = BigInt.parse(req.amount);
 
     // UTXO set: injected (tests) or fetched.
     final rawUtxos = req.utxos ?? await _utxos(account.address);
     // Greedy selection over ADA-only UTXOs covering amount + a fee ceiling.
     final feeCeiling = minFee(400); // generous upper bound for selection
+    final sendMax = req.sendMax;
+    final target = sendMax ? null : BigInt.parse(req.amount);
     final selected = <cbor.CardanoTxIn>[];
     var total = BigInt.zero;
     for (final u in rawUtxos) {
@@ -492,9 +517,13 @@ class CardanoAdapter implements ChainAdapter {
       selected.add(cbor.CardanoTxIn(
           c.hexToBytes(txHash), (ix as num).toInt()));
       total += value;
-      if (total >= amount + feeCeiling) break;
+      // sendMax drains EVERY input; a normal send stops once it covers amount+fee.
+      if (!sendMax && total >= target! + feeCeiling) break;
     }
-    if (selected.isEmpty || total < amount) {
+    // For a normal send `amount` is the target; for a drain buildTransfer(drain)
+    // computes the recipient amount itself (inputTotal − fee, single output).
+    final BigInt amount = sendMax ? BigInt.zero : target!;
+    if (selected.isEmpty || (sendMax ? total <= BigInt.zero : total < amount)) {
       throw StateError('cardano: insufficient funds / no UTXOs');
     }
 
@@ -512,13 +541,14 @@ class CardanoAdapter implements ChainAdapter {
       payKL: pay.kL,
       payKR: pay.kR,
       payPub: pay.a,
+      drain: sendMax,
     );
     return BuiltTx(
       chain: 'cardano',
       raw: built.signedTxHex,
       txid: built.txHashHex,
       fee: built.fee.toString(),
-      summary: req,
+      summary: sendMax ? req.copyWith(amount: built.amount.toString(), sendMax: false) : req,
       extra: {
         'bodyHex': built.bodyHex,
         'txHash': built.txHashHex,

@@ -329,13 +329,26 @@ class StellarAdapter implements ChainAdapter {
       built = sx.StellarAsset.alphaNum4(
           asset.symbol, sx.strkeyDecodeEd25519(asset.address!));
     }
+    // sendMax (native only): balance − fee − the 1-XLM base reserve (the account
+    // must keep at least the base reserve; a bare account's minimum is 1 XLM).
+    var amountStroops = req.amount;
+    if (req.sendMax && (asset == null || asset.kind == 'native')) {
+      final bals = await getBalance(account.address);
+      final bal = BigInt.parse(
+          bals.firstWhere((x) => x.asset.kind == 'native').confirmed);
+      final maxSend = bal - BigInt.from(_baseFee) - BigInt.from(stellarBaseReserveStroops);
+      if (maxSend <= BigInt.zero) {
+        throw StateError('Balance is at or below the 1 XLM reserve + fee — nothing to send.');
+      }
+      amountStroops = maxSend.toString();
+    }
     final b = buildPayment(
       seedKey: key,
       sourcePub: Uint8List.fromList(pub),
       destPub: destPub,
       sequence: seqNum,
       fee: _baseFee,
-      amountStroops: req.amount,
+      amountStroops: amountStroops,
       asset: built,
       passphrase: passphrase,
     );
@@ -344,7 +357,9 @@ class StellarAdapter implements ChainAdapter {
       raw: b.envelopeBase64,
       txid: b.hashHex,
       fee: _baseFee.toString(),
-      summary: req,
+      summary: req.sendMax && (asset == null || asset.kind == 'native')
+          ? req.copyWith(amount: amountStroops, sendMax: false)
+          : req,
       extra: {'kind': 'payment', 'sequence': seqNum.toString()},
     );
   }

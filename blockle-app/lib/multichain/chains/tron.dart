@@ -650,6 +650,23 @@ class TronAdapter implements ChainAdapter {
     final asset = req.asset;
     final isTrc20 = asset != null && asset.kind == 'trc20' && asset.address != null;
 
+    // sendMax (native TRX): balance − a bandwidth buffer. A plain transfer is
+    // free when the account has daily free bandwidth, else it burns ~0.27 TRX;
+    // 1.1 TRX covers the burn with margin (and merely leaves dust otherwise).
+    // The SAME amount flows into the node request AND the mandatory intent below.
+    var sendAmount = req.amount;
+    if (req.sendMax && !isTrc20) {
+      const trxBandwidthBufferSun = 1100000; // 1.1 TRX (6 decimals)
+      final bals = await getBalance(from);
+      final bal = BigInt.parse(
+          bals.firstWhere((b) => b.asset.kind == 'native').confirmed);
+      final maxSend = bal - BigInt.from(trxBandwidthBufferSun);
+      if (maxSend <= BigInt.zero) {
+        throw StateError('Balance too low to cover the network fee.');
+      }
+      sendAmount = maxSend.toString();
+    }
+
     Map<String, dynamic> unsigned;
     if (isTrc20) {
       unsigned = await _tronPost('/wallet/triggersmartcontract', {
@@ -668,7 +685,7 @@ class TronAdapter implements ChainAdapter {
       unsigned = await _tronPost('/wallet/createtransaction', {
         'owner_address': from,
         'to_address': req.to,
-        'amount': int.parse(req.amount),
+        'amount': int.parse(sendAmount),
         'visible': true,
       });
     }
@@ -688,7 +705,7 @@ class TronAdapter implements ChainAdapter {
     final intent = TronIntent(
       ownerAddr: from,
       to: req.to,
-      amount: req.amount,
+      amount: sendAmount,
       isTrc20: isTrc20,
       contract: isTrc20 ? asset.address : null,
     );
@@ -708,7 +725,7 @@ class TronAdapter implements ChainAdapter {
       raw: jsonEncode(signed),
       txid: localTxId,
       fee: isTrc20 ? _feeLimit.toString() : '0',
-      summary: req,
+      summary: req.sendMax && !isTrc20 ? req.copyWith(amount: sendAmount, sendMax: false) : req,
       extra: {
         'kind': isTrc20 ? 'trc20' : 'native',
         'rawDataHex': rawDataHex,
