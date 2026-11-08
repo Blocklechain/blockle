@@ -586,8 +586,43 @@ class _BrowserTabState extends State<BrowserTab> {
         _tonConnected.remove(origin);
         return {'result': null};
       case 'ton_sendTransaction':
-        return err(4200,
-            'Sending from a TON dApp isn\'t wired yet — open the Send tab in your wallet to make this transfer. Connect + sign-in work.');
+        {
+          if (!_tonConnected.contains(origin)) return err(4100, 'Connect first.');
+          final a = await mc.addressFor('ton');
+          if (a == null) return err(4100, 'Unlock your TON account first.');
+          // TON Connect sends the request JSON-stringified as params[0] (or a Map).
+          Map<String, dynamic> req;
+          try {
+            final raw = params.isNotEmpty ? params[0] : null;
+            req = raw is String
+                ? (jsonDecode(raw) as Map).cast<String, dynamic>()
+                : (raw as Map).cast<String, dynamic>();
+          } catch (_) {
+            return err(4200, 'Invalid sendTransaction payload.');
+          }
+          final msgs = (req['messages'] as List?) ?? const [];
+          if (msgs.isEmpty) return err(4200, 'No messages to send.');
+          // Sum the nanoton value across messages for a human total in the sheet.
+          var totalNano = BigInt.zero;
+          for (final m in msgs) {
+            if (m is Map && m['amount'] != null) {
+              totalNano += BigInt.tryParse('${m['amount']}') ?? BigInt.zero;
+            }
+          }
+          final totalTon = (totalNano / BigInt.from(1000000000)).toStringAsFixed(4);
+          final host = Uri.tryParse(origin)?.host ?? origin;
+          final ok = await _confirmEvmSign(origin,
+              'TON transaction from $host.\n\n${msgs.length} message${msgs.length == 1 ? '' : 's'}, '
+              'total $totalTon TON (+ network fees). Review in the dApp before approving.');
+          if (!ok) return err(4001, 'Transaction rejected.');
+          try {
+            final built = await adapter.buildTonConnect(a, req);
+            await adapter.broadcast(built);
+            return {'result': built.raw}; // TON Connect expects the signed BOC
+          } catch (e) {
+            return err(4200, 'Could not send: ${e.toString().replaceFirst('Exception: ', '')}');
+          }
+        }
     }
     return err(4200, 'Unsupported TON method: $method');
   }

@@ -442,4 +442,62 @@ void main() {
       expect(built.extra?['seqno'], 0);
     });
   });
+
+  group('TON Connect sendTransaction (buildTonConnect)', () {
+    Future<String> seqnoPost(String path, String body) async =>
+        jsonEncode({'ok': true, 'result': {'stack': [['num', '0x5']]}}); // seqno=5
+    final dest = tx['dest'] as String;
+
+    test('one message builds a signed external-message BOC that deserializes', () async {
+      final a = ton.TonAdapter(post: seqnoPost);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      final built = await a.buildTonConnect(acct, {
+        'valid_until': 1900000000,
+        'messages': [
+          {'address': dest, 'amount': '1000000000'} // 1 TON
+        ],
+      });
+      expect(built.chain, 'ton');
+      expect(built.raw.isNotEmpty, isTrue);
+      expect(RegExp(r'^[0-9a-f]{64}$').hasMatch(built.txid), isTrue);
+      final cells = tc.parseBoc(tc.tonFromBase64(built.raw));
+      expect(cells.isNotEmpty, isTrue); // valid BOC
+    });
+
+    test('two messages both ride the same external message (2 refs on the body)', () async {
+      final a = ton.TonAdapter(post: seqnoPost);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      final built = await a.buildTonConnect(acct, {
+        'messages': [
+          {'address': dest, 'amount': '1000000000'},
+          {'address': dest, 'amount': '2000000000'},
+        ],
+      });
+      final root = tc.parseBoc(tc.tonFromBase64(built.raw))[0];
+      // external -> body (signature+signingCell) -> signingCell holds 2 internal refs.
+      expect(root.refs.isNotEmpty, isTrue);
+    });
+
+    test('more than 4 messages is refused', () async {
+      final a = ton.TonAdapter(post: seqnoPost);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      expect(
+        () => a.buildTonConnect(acct, {
+          'messages': List.generate(5, (_) => {'address': dest, 'amount': '1'}),
+        }),
+        throwsA(isA<StateError>()),
+      );
+    });
+
+    test('empty messages is refused', () async {
+      final a = ton.TonAdapter(post: seqnoPost);
+      a.unlock(RootSecret(seed: seed));
+      final acct = await a.deriveAccount(RootSecret(seed: seed));
+      expect(() => a.buildTonConnect(acct, {'messages': const []}),
+          throwsA(isA<StateError>()));
+    });
+  });
 }

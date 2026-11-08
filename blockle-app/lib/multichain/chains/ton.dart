@@ -203,6 +203,34 @@ t.Cell _commentBody(String text) {
   return b.endCell();
 }
 
+/// An internal message for a TON Connect `sendTransaction` request message:
+/// a transfer to [dest] of [amount] nanotons, with an OPTIONAL dApp [stateInit]
+/// and OPTIONAL dApp [body] payload (both already-deserialized Cells). Both the
+/// state-init and the body are stored as refs (dApp payloads can be any size).
+t.Cell _tcInternalMessage(t.TonAddr dest, String amount, t.Cell? stateInit, t.Cell? body) {
+  final b = t
+      .beginCell()
+      .storeBit(0) // int_msg_info$0
+      .storeBit(1) // ihr_disabled
+      .storeBit(dest.bounceable ? 1 : 0) // bounce
+      .storeBit(0) // bounced
+      .storeAddress(null) // src (filled by the validator)
+      .storeAddress(dest)
+      .storeCoins(amount)
+      .storeBit(0) // no extra-currency collection
+      .storeCoins(0) // ihr_fee
+      .storeCoins(0) // fwd_fee
+      .storeUint(0, 64) // created_lt
+      .storeUint(0, 32); // created_at
+  if (stateInit != null) {
+    b.storeBit(1).storeBit(1).storeRef(stateInit); // maybe=1, either-right=ref
+  } else {
+    b.storeBit(0); // no state init
+  }
+  b.storeBit(1).storeRef(body ?? t.beginCell().endCell()); // body: either-right=ref
+  return b.endCell();
+}
+
 /// Build the FULL signed external message for a native TON transfer.
 TonBuilt buildNativeExternal({
   required List<int> pubKey,
@@ -488,6 +516,65 @@ class TonAdapter implements ChainAdapter {
       'publicKey': account.publicKey,
       'walletStateInit': t.tonToBase64(t.serializeBoc(si)),
     };
+  }
+
+  /// Build a signed external message for a TON Connect `sendTransaction` request
+  /// (up to 4 messages, each: address + amount + optional payload + optional
+  /// stateInit). The dApp's messages ARE the intent — the user approved them in
+  /// the sheet — so we build EXACTLY what was requested (no node round-trip to
+  /// trust). Returns a BuiltTx whose `raw` is the external-message BOC (base64),
+  /// which TON Connect expects back; broadcast() submits it.
+  Future<BuiltTx> buildTonConnect(DerivedAccount account, Map<String, dynamic> request) async {
+    final key = _keyFor(account.index);
+    final pub = ed.publicKey(key);
+    final msgsRaw = (request['messages'] as List?) ?? const [];
+    if (msgsRaw.isEmpty) throw StateError('ton: sendTransaction has no messages');
+    if (msgsRaw.length > 4) throw StateError('ton: too many messages (max 4)');
+    final seqno = await _seqnoOf(account.address);
+
+    // valid_until: TON Connect sends SECONDS; tolerate ms. Default +5 min.
+    int? vu;
+    final rawVu = request['valid_until'] ?? request['validUntil'];
+    if (rawVu is num) vu = rawVu.toInt();
+    if (vu != null && vu > 1000000000000) vu = (vu / 1000).floor();
+    final validUntil = vu ?? ((DateTime.now().millisecondsSinceEpoch ~/ 1000) + 300);
+
+    final signing = t
+        .beginCell()
+        .storeUint(subwallet, 32)
+        .storeUint(validUntil & 0xffffffff, 32)
+        .storeUint(seqno, 32)
+        .storeUint(0, 8); // op
+    for (final m in msgsRaw) {
+      final mm = (m as Map).cast<String, dynamic>();
+      final dest = t.parseAddress('${mm['address']}');
+      final amount = '${mm['amount'] ?? '0'}';
+      t.Cell? stateInit;
+      final si = mm['stateInit'] ?? mm['state_init'];
+      if (si is String && si.isNotEmpty) {
+        stateInit = t.deserializeBoc(t.tonFromBase64(si))[0];
+      }
+      t.Cell? body;
+      final payload = mm['payload'];
+      if (payload is String && payload.isNotEmpty) {
+        body = t.deserializeBoc(t.tonFromBase64(payload))[0];
+      }
+      signing.storeUint(3, 8).storeRef(_tcInternalMessage(dest, amount, stateInit, body));
+    }
+    final signingCell = signing.endCell();
+    final signature = ed.sign(signingCell.hash(), key);
+    final bodyCell = t.beginCell().storeBuffer(signature).storeSlice(signingCell).endCell();
+    final deployInit = seqno == 0 ? t.v4r2StateInit(pub, subwallet: subwallet) : null;
+    final self = t.TonAddr(0, t.v4r2StateInit(pub, subwallet: subwallet).hash());
+    final external = _externalMessage(self, deployInit, bodyCell);
+    final boc = t.tonToBase64(t.serializeBoc(external));
+    return BuiltTx(
+      chain: 'ton',
+      raw: boc,
+      txid: c.bytesToHex(external.hash()),
+      fee: '0',
+      summary: const SendRequest(to: '', amount: '0'),
+    );
   }
 
   @override
