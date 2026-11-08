@@ -396,8 +396,17 @@ class _CreateViewState extends State<CreateView> {
       _snack('Live trading needs Blockle Alien. Start your free trial to arm a live bot — paper trading stays free.');
       return;
     }
-    if (!widget.controller.canGoLive) {
-      _snack('Connect a value-moving agent channel (Agent tab) to arm a live bot.');
+    // A live bot runs on Blockle's SERVER so it keeps trading while the app is
+    // closed — that needs a signed-in Blockle account. (There is no in-app agent
+    // channel anymore; signing in is the path.) Required, not optional: without
+    // it there is nothing to execute the bot.
+    final signedIn = await requireAccount(context,
+        reason: 'A live bot runs on Blockle\'s server so it keeps trading while your app '
+            'is closed. Sign in to your Blockle account to arm it — your wallet keys stay '
+            'on this device; only a scoped, capped, revocable sub-account key is delegated.');
+    if (!mounted) return;
+    if (!signedIn) {
+      _snack('Sign in to your Blockle account to run a live bot. Paper trading stays free and needs no sign-in.');
       return;
     }
     // C1 FUND-A-BOT — if the live quote/settlement balance is below the hard
@@ -407,16 +416,6 @@ class _CreateViewState extends State<CreateView> {
     if (!mounted) return;
     final confirmed = await _showReviewSheet(alloc);
     if (confirmed != true || !mounted) return;
-    // Offer sign-in so the bot keeps trading while the app is closed (the
-    // server runner needs a linked account). Non-blocking — decline and the
-    // bot still arms, just running only while the app is open.
-    final mc = context.read<MultichainController>();
-    if ((mc.moonpayBearer ?? '').isEmpty && mounted) {
-      await requireAccount(context,
-          reason: 'Sign in so this bot keeps trading while the app is closed. '
-              'You can skip and it will run only while the app is open.');
-      if (!mounted) return;
-    }
     final bot = _createBot(alloc);
     try {
       await widget.controller.armLive(bot.id, allocationUsd: alloc);

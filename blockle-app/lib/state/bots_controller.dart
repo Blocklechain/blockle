@@ -145,8 +145,12 @@ class BotsController extends ChangeNotifier {
     return null;
   }
 
-  /// Whether a live bot can be armed right now (a real gated channel is up).
-  bool get canGoLive => _backingInstance() != null;
+  /// Whether a live bot can be armed right now. Live execution runs on the
+  /// SERVER (delegation), which needs a signed-in Blockle account — OR, legacy,
+  /// a running in-app value-moving channel. (The old in-app Agent tab is gone;
+  /// signing in is the path now, handled by requireAccount in the go-live flow.)
+  bool get canGoLive =>
+      (_mc.moonpayBearer ?? '').isNotEmpty || _backingInstance() != null;
 
   String? get backingChannelLabel {
     try {
@@ -210,6 +214,10 @@ class BotsController extends ChangeNotifier {
       liveEntitled: _liveTier != 'free',
       liveBotLimit: _liveBotLimit,
       portfolioLiveCapUsd: _store.meta['portfolioLiveCapUsd'] as num?,
+      // Only execute live orders locally when a real value-moving channel backs
+      // the runner. Otherwise live bots run on the SERVER (delegation); the
+      // client just registers them and must not tick-execute (see BotRunner).
+      clientExecutesLive: inst != null,
       onEvent: _onEvent,
       pnl: pnl,
       store: _store,

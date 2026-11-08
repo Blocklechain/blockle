@@ -262,6 +262,38 @@ void main() {
     expect(bot2.enabled, isTrue);
   });
 
+  test('server-managed live: with clientExecutesLive=false the client no-ops live bots (no trade, no auto-pause)', () async {
+    final su = setup(ctx: mkCtx(List<num>.filled(60, 100)), sessionUsd: 1000);
+    su.runner.clientExecutesLive = false; // live execution is delegated to the server
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 100, 'maxSafetyOrders': 0, 'takeProfitPct': 5},
+    });
+    await su.runner.armLive(bot.id, allocationUsd: 500);
+    for (var i = 0; i < 40; i++) {
+      final r = await su.runner.tickBot(bot.id);
+      expect(r['serverManaged'], true);
+    }
+    // Never executed locally, never counted a failure, never auto-paused.
+    expect(bot.enabled, isTrue);
+    expect(su.tools.commits, 0);
+    expect(su.runner.dashboard(bot.id)!['haltReason'], isNull);
+    expect(su.audit.list().any((e) => e['type'] == 'bot_autohalt'), isFalse);
+  });
+
+  test('paper bots still run locally even when clientExecutesLive=false', () async {
+    final su = setup(ctx: mkCtx([100, 100, 100]));
+    su.runner.clientExecutesLive = false;
+    final bot = su.runner.add({
+      'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']},
+      'config': {'baseOrderUsd': 50, 'maxSafetyOrders': 0, 'takeProfitPct': 50},
+    });
+    bot.mode = 'paper';
+    bot.enabled = true;
+    await su.runner.tickBot(bot.id);
+    expect(su.audit.list().any((e) => e['type'] == 'bot_paper_fill'), isTrue);
+  });
+
   test('portfolio cap: null/uncapped preserves legacy behavior', () async {
     final su = setup(ctx: mkCtx([100]), sessionUsd: 10000);
     final a = su.runner.add({'type': 'dca', 'universe': {'pairs': ['BLOCK/USDC']}, 'config': {'baseOrderUsd': 10}});

@@ -103,6 +103,14 @@ class BotRunner {
   /// to the remaining allocation of all other live bots, would exceed it. Host-
   /// settable at runtime (persisted in the bot store meta).
   num? portfolioLiveCapUsd;
+  /// Whether THIS (client-side) runner executes live orders itself. True when a
+  /// real value-moving channel backs it (legacy in-app path). False when live
+  /// execution is delegated to the SERVER runner (the default now that the
+  /// in-app agent channel is gone) — the client then only registers the
+  /// delegation and does NOT tick-execute live bots locally (no double-trade,
+  /// and the stuck-bot auto-pause never fires on a server-run bot). Paper bots
+  /// always run locally regardless.
+  bool clientExecutesLive;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
   final b.BotStore store;
@@ -137,6 +145,7 @@ class BotRunner {
     this.liveEntitled = false,
     this.liveBotLimit = -1,
     this.portfolioLiveCapUsd,
+    this.clientExecutesLive = true,
     this.onEvent,
     this.pnl,
     b.BotStore? store,
@@ -470,6 +479,17 @@ class BotRunner {
     policy.assertLive();
     final now = _now();
     bot.state['lastTickAt'] = now;
+
+    // SERVER-MANAGED LIVE: when this client runner has no local value-moving
+    // executor, a LIVE bot is run by the server-side runner (via the delegation
+    // the controller registered). The client must NOT tick-execute it — doing so
+    // would either double-trade (if it could) or, with empty fallback tools,
+    // reject every tick and trip the stuck-bot auto-pause against a bot that is
+    // actually trading fine server-side. Keep lastTickAt fresh for liveness and
+    // no-op. Paper bots always run locally.
+    if (bot.mode == 'live' && !clientExecutesLive) {
+      return {'bot': bot.id, 'serverManaged': true};
+    }
 
     Map<String, dynamic> report;
     try {
