@@ -22,6 +22,9 @@ dependencies:
   in_app_purchase: ^3.2.0
   # Multi-chain crypto (secp256k1/keccak/ripemd160/sha/hmac/scrypt). Pure Dart.
   pointycastle: ^3.9.1
+  # OS-level banners (iOS UNUserNotificationCenter + Android notifications) so a
+  # bot's realized-profit ping reaches the user even with the app backgrounded.
+  flutter_local_notifications: ^17.2.3
 
 dev_dependencies:
   flutter_lints: ^4.0.0

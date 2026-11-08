@@ -49,33 +49,41 @@ const Map<String, Map<String, dynamic>> kTemplates = {
   'wide_grid': {
     'name': 'Wide Grid',
     'type': 'grid',
-    'blurb': 'A broad ladder for ranging markets — buy low, sell a grid up, repeat.',
+    'blurb': 'A broad ladder for ranging markets — buy low, sell a grid up, repeat. Auto-centers on the live price.',
     'universe': {
-      'pairs': ['BLOCK/USDC']
+      'pairs': ['SOL/USDC']
     },
-    'config': {'lowerPrice': 0.8, 'upperPrice': 1.2, 'gridCount': 8, 'totalUsd': 80, 'takeProfitPct': 0, 'stopLossPct': 0},
+    // spanPct auto-centers the ±20% ladder on the live mark, so it trades on any
+    // real, priceable asset (SOL/ETH/BTC) — not a fixed $1 band that only the
+    // (never-priced) BLOCK pair fit, which could never fill and never traded.
+    'config': {'spanPct': 20, 'gridCount': 8, 'totalUsd': 80, 'takeProfitPct': 0, 'stopLossPct': 0},
   },
   'scalp_grid': {
     'name': 'Scalp Grid',
     'type': 'grid',
-    'blurb': 'A tight ladder for small, frequent moves.',
+    'blurb': 'A tight ladder for small, frequent moves. Auto-centers on the live price.',
     'universe': {
-      'pairs': ['BLOCK/USDC']
+      'pairs': ['ETH/USDC']
     },
-    'config': {'lowerPrice': 0.97, 'upperPrice': 1.03, 'gridCount': 12, 'totalUsd': 60, 'takeProfitPct': 0, 'stopLossPct': 0},
+    'config': {'spanPct': 3, 'gridCount': 12, 'totalUsd': 60, 'takeProfitPct': 0, 'stopLossPct': 0},
   },
-  'block_accumulator': {
-    'name': 'BLOCK Accumulator',
+  'sol_accumulator': {
+    'name': 'SOL Accumulator',
     'type': 'dca',
-    'blurb': 'Accumulate BLOCK on dips with a deep safety ladder; no stop-loss, no rush.',
+    'blurb': 'Accumulate SOL on dips with a deep safety ladder; profit is taken in SOL (grows your stack). No stop-loss, no rush.',
     'universe': {
-      'pairs': ['BLOCK/USDC']
+      'pairs': ['SOL/USDC']
     },
     'config': {
       'baseOrderUsd': 15, 'safetyOrderUsd': 15, 'maxSafetyOrders': 5,
       'safetyStepPct': 4, 'safetyStepScale': 1.1, 'safetyVolumeScale': 1.2,
       'takeProfitPct': 5, 'trailingTpPct': 2, 'stopLossPct': 0,
-      'cooldownSec': 3600, 'startCondition': 'dip', 'dipPct': 3,
+      // Take profit in the BASE currency: each realized exit settles USDC proceeds
+      // back into SOL, so the bot grows its SOL position rather than banking USDC.
+      'profitCurrency': 'SOL',
+      // 'asap' so it opens immediately; a never-triggered 'dip' baseline made it
+      // look dead on first run.
+      'cooldownSec': 1800, 'startCondition': 'asap',
     },
   },
   'scan_and_trade': {

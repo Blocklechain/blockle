@@ -28,6 +28,7 @@
 import 'dart:async';
 
 import 'bots.dart' as b;
+import 'notify.dart' show AgentNotifier, AgentNotification, formatUsd;
 import 'pnl.dart' show PnlHook;
 import 'policy.dart';
 import 'runner.dart' show dispatchValueMoving, DispatchOutcome;
@@ -117,6 +118,12 @@ class BotRunner {
   bool clientExecutesLive;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
+  /// Surface a pop-up whenever a bot REALIZES profit — in paper OR live, in ANY
+  /// profit currency. The PnlHook only pops on a live STABLECOIN exit, so paper
+  /// profit and base-currency (SOL/ETH) profit would otherwise be invisible. This
+  /// fires on the realized-gain DELTA each tick (closed deals + open grid rungs),
+  /// deduped via bot.state['_notifiedRealizedUc']. Carries only public figures.
+  final AgentNotifier? notifier;
   final b.BotStore store;
   final dynamic discovery;
   final String wallet;
@@ -153,6 +160,7 @@ class BotRunner {
     this.immediateFirstTick = false,
     this.onEvent,
     this.pnl,
+    this.notifier,
     b.BotStore? store,
     dynamic persist,
     dynamic discovery,
@@ -527,6 +535,9 @@ class BotRunner {
     // repeated cap breach, dispatch error) is invisible otherwise. Surface the
     // last error + auto-pause after a run of them (§14).
     _updateHealth(report, bot);
+    // Pop a profit notification on any realized-gain since the last one (paper or
+    // live, any profit currency). This is the user-visible "you made money" ping.
+    _maybeNotifyProfit(bot);
     // PERSIST ONLY WHEN IT MATTERS. The scheduler can tick as often as every 1s;
     // writing encrypted state to secure storage on every tick (mostly unchanged
     // but for lastTickAt) is needless flash wear + main-thread jank. Persist when
@@ -591,6 +602,61 @@ class BotRunner {
       }
     }
     // Pure price-skip / waiting ticks neither reset nor increment — normal idle.
+  }
+
+  // The bot's cumulative realized profit (USD microdollars): closed deals
+  // (bot.state['realizedUc']) PLUS the realized rungs of any still-open grid deal
+  // (a running grid books profit per sell without ever closing the deal).
+  BigInt _currentRealizedUc(b.Bot bot) {
+    var total = (bot.state['realizedUc'] as BigInt?) ?? BigInt.zero;
+    final byPair = (bot.state['byPair'] as Map?) ?? const {};
+    for (final ps in byPair.values) {
+      if (ps is! Map) continue;
+      final deal = ps['deal'] as Map?;
+      if (deal != null && deal['status'] != 'closed') {
+        total += (deal['realizedUc'] as BigInt?) ?? BigInt.zero;
+      }
+    }
+    return total;
+  }
+
+  // Pop ONE notification per fresh chunk of realized profit. Fires on the POSITIVE
+  // delta since the last notification (≥ $0.01); sub-cent gains accumulate silently
+  // until they cross the threshold (we don't advance the baseline below it, so no
+  // profit is ever dropped). Works in paper AND live, in any profit currency —
+  // unlike the PnlHook, which only pops on a live stablecoin exit.
+  void _maybeNotifyProfit(b.Bot bot) {
+    final n = notifier;
+    if (n == null) return;
+    final cur = _currentRealizedUc(bot);
+    final last = (bot.state['_notifiedRealizedUc'] as BigInt?) ?? BigInt.zero;
+    final delta = cur - last;
+    if (delta <= BigInt.zero) {
+      // Realized went DOWN (new deal reset, or a loss after the last ping) — re-
+      // baseline so the NEXT gain is measured from here, never a stale high-water.
+      if (cur < last) bot.state['_notifiedRealizedUc'] = cur;
+      return;
+    }
+    final deltaUsd = b.ucToUsd(delta) ?? 0;
+    if (deltaUsd < 0.01) return; // too small yet; let it accumulate (baseline held)
+    bot.state['_notifiedRealizedUc'] = cur;
+    final pc = _profitCurrency(bot);
+    final totalUsd = b.ucToUsd(cur) ?? 0;
+    final tagMode = bot.mode == 'paper' ? ' (paper)' : '';
+    try {
+      unawaited(n.notify(AgentNotification(
+        title: '${bot.name}: ${formatUsd(deltaUsd, sign: true)} profit$tagMode',
+        subtitle: pc != null
+            ? 'Realized in $pc · ${formatUsd(totalUsd, sign: true)} total'
+            : '${formatUsd(totalUsd, sign: true)} realized in total',
+        tag: 'botprofit:${bot.id}',
+        data: {
+          'type': 'bot_profit', 'bot': bot.id, 'name': bot.name, 'mode': bot.mode,
+          'deltaUsd': deltaUsd, 'realizedUsd': totalUsd,
+          if (pc != null) 'currency': pc,
+        },
+      )));
+    } catch (_) {/* notifications are best-effort — never block a tick */}
   }
 
   // A tick "mutated" if it fired/settled an order or flipped the bot off (auto-

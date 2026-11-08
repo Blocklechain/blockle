@@ -241,17 +241,31 @@ Map<String, dynamic> _validateDcaConfig(Map<String, dynamic>? c) {
 
 Map<String, dynamic> _validateGridConfig(Map<String, dynamic>? c) {
   c = c ?? const {};
-  if (c['lowerPrice'] == null || c['upperPrice'] == null) {
-    throw ArgumentError('grid requires lowerPrice and upperPrice');
+  // A grid may be specified two ways:
+  //   • ABSOLUTE bounds  — lowerPrice + upperPrice (legacy; good for a $1 asset).
+  //   • PERCENT SPAN     — spanPct (e.g. 20 => ±20% around the LIVE mark). The
+  //     bounds are then derived from the current price at deal-creation time, so
+  //     the SAME grid works on SOL (~$89) or ETH (~$2200) without hand-tuning —
+  //     without it a grid built for a $1 asset never fills at $89 and never trades.
+  final spanPct = _num(c['spanPct'], 0).toDouble();
+  final hasAbs = c['lowerPrice'] != null && c['upperPrice'] != null;
+  if (!hasAbs && !(spanPct > 0)) {
+    throw ArgumentError('grid requires lowerPrice+upperPrice OR spanPct');
   }
-  final lower = _num(c['lowerPrice'], 0).toDouble();
-  final upper = _num(c['upperPrice'], 0).toDouble();
-  if (!(lower > 0) || !(upper > lower)) {
-    throw ArgumentError('grid requires 0 < lowerPrice < upperPrice');
+  double lower = 0, upper = 0;
+  if (hasAbs) {
+    lower = _num(c['lowerPrice'], 0).toDouble();
+    upper = _num(c['upperPrice'], 0).toDouble();
+    if (!(lower > 0) || !(upper > lower)) {
+      throw ArgumentError('grid requires 0 < lowerPrice < upperPrice');
+    }
   }
   return {
-    'lowerPrice': lower,
-    'upperPrice': upper,
+    // Null absolute bounds (with a spanPct set) signal gridBuild to auto-center
+    // on the live mark. The clamp keeps a span sane (±1%..±90%).
+    'lowerPrice': hasAbs ? lower : null,
+    'upperPrice': hasAbs ? upper : null,
+    'spanPct': spanPct > 0 ? _clampNum(spanPct, 1, 90, 20) : 0,
     'gridCount': _clampInt(c['gridCount'] ?? 6, 2, 50, 6),
     'totalUsd': math.max(0, _num(c['totalUsd'], 60)),
     'takeProfitPct': math.max(0, _num(c['takeProfitPct'], 0)),
@@ -499,8 +513,21 @@ Map<String, dynamic> dcaApply(Map<String, dynamic> deal, Map<String, dynamic> bc
 
 List<Map<String, dynamic>> gridBuild(Map<String, dynamic> cfg, BigInt midUc, int bd) {
   final n = cfg['gridCount'] as int;
-  final lowerUc = microUsd(cfg['lowerPrice'] as num);
-  final upperUc = microUsd(cfg['upperPrice'] as num);
+  // ABSOLUTE bounds when given; otherwise auto-center a ±spanPct window on the
+  // live mark (midUc) so the ladder brackets the current price and actually fills
+  // on any asset regardless of its dollar price. midUc is always > 0 here (the
+  // caller skips the tick when there is no mark — no synthetic price).
+  BigInt lowerUc, upperUc;
+  if (cfg['lowerPrice'] != null && cfg['upperPrice'] != null) {
+    lowerUc = microUsd(cfg['lowerPrice'] as num);
+    upperUc = microUsd(cfg['upperPrice'] as num);
+  } else {
+    final f = ((cfg['spanPct'] as num?)?.toDouble() ?? 20) / 100.0;
+    final mid = midUc.toDouble();
+    lowerUc = BigInt.from((mid * (1 - f)).round());
+    upperUc = BigInt.from((mid * (1 + f)).round());
+    if (lowerUc < BigInt.one) lowerUc = BigInt.one;
+  }
   final spanUc = upperUc - lowerUc;
   final sizeUc = divRound(microUsd(cfg['totalUsd'] as num), BigInt.from(n));
   final levels = <Map<String, dynamic>>[];
@@ -830,7 +857,10 @@ class Bot {
         return 'Buys \$${c['baseOrderUsd']} of $base, adds up to ${c['maxSafetyOrders']} '
             'times if it dips ${c['safetyStepPct']}%, takes profit at +${c['takeProfitPct']}%$trailing.';
       case 'grid':
-        return 'Grid of ${c['gridCount']} levels from ${c['lowerPrice']} to ${c['upperPrice']}, \$${c['totalUsd']} total.';
+        final range = (c['lowerPrice'] != null && c['upperPrice'] != null)
+            ? 'from ${c['lowerPrice']} to ${c['upperPrice']}'
+            : '±${c['spanPct']}% around the live price';
+        return 'Grid of ${c['gridCount']} levels $range, \$${c['totalUsd']} total.';
       case 'smarttrade':
         return 'Buys \$${c['amountUsd']}, takes profit in ${(c['takeProfits'] as List).length} step(s).';
       case 'signal':

@@ -44,8 +44,12 @@ const List<_Tpl> _templates = [
       'dca', Icons.bolt_outlined, base: 25, tp: 3, so: 4, step: 3, vol: 1.5, tr: 1, sl: 10),
   _Tpl('wide_grid', 'Wide Grid', 'A ladder of limit orders across a broad range.',
       'grid', Icons.grid_view_outlined),
+  _Tpl('scalp_grid', 'Scalp Grid', 'A tight ±3% ladder around the live price.',
+      'grid', Icons.grid_on_outlined),
   // The accumulator thesis is "no stop-loss, no rush" — keep sl: 0 deliberately.
-  _Tpl('block_accumulator', 'BLOCK Accumulator', 'Stack BLOCK on dips, trailing take-profit.',
+  // Trades + takes profit in SOL (a real, priceable asset) — the old BLOCK pair
+  // could never be priced, so that bot never traded.
+  _Tpl('sol_accumulator', 'SOL Accumulator', 'Stack SOL on dips, trailing take-profit.',
       'dca', Icons.layers_outlined, base: 15, tp: 5, so: 5, step: 4, vol: 1.2, tr: 2, sl: 0),
 ];
 
@@ -84,7 +88,10 @@ class CreateView extends StatefulWidget {
 }
 
 // Profit-currency choices (settlement/quote assets). USDC is the default.
-const List<String> _profitCurrencies = ['USDC', 'USDT', 'DAI', 'USD'];
+// Stable AND base-currency profit options — "take profit in SOL/ETH/BTC" grows a
+// real-asset stack (the settlement step converts proceeds into the chosen asset),
+// not just a USD-pegged balance.
+const List<String> _profitCurrencies = ['USDC', 'USDT', 'DAI', 'USD', 'SOL', 'ETH', 'BTC'];
 
 // LANE choices — a bot trades ONE lane (chain + base asset), never cross-chain.
 // null = unconstrained (legacy; the autopilot may wander any discoverable chain).

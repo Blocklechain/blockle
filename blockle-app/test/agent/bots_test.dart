@@ -292,9 +292,9 @@ void main() {
   group('Templates: starter set + export/import', () {
     test('starter set builds valid paper+disabled bots', () {
       final names = templateList().map((t) => t['key']).toList();
-      for (final key in const ['conservative_dca', 'aggressive_dca', 'wide_grid', 'scalp_grid', 'block_accumulator']) {
+      for (final key in const ['conservative_dca', 'aggressive_dca', 'wide_grid', 'scalp_grid', 'sol_accumulator']) {
         expect(names.contains(key), isTrue, reason: 'has $key');
-        final spec = fromTemplate(key, pair: 'BLOCK/USDC');
+        final spec = fromTemplate(key, pair: 'SOL/USDC');
         final bot = Bot(spec);
         expect(bot.mode, 'paper');
         expect(bot.enabled, false);

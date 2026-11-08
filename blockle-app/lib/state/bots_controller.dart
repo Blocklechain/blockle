@@ -43,6 +43,7 @@ import '../agent/strategies.dart' show StrategyContext;
 import '../agent/tools.dart' show ToolRegistry;
 import '../multichain/backup_client.dart' as bc;
 import '../services/agent_service.dart' show SecureChannelStore;
+import '../services/local_notifications.dart' show LocalNotifications;
 import '../multichain/chains/chain_adapter.dart' show AssetRef;
 import '../multichain/prices.dart' show PriceService, priceKey;
 import 'multichain_controller.dart';
@@ -250,6 +251,9 @@ class BotsController extends ChangeNotifier {
       clientExecutesLive: inst != null,
       onEvent: _onEvent,
       pnl: pnl,
+      // Profit pings (paper + live, any currency) flow through the SAME in-app
+      // notification sink as the PnlHook, and on to the OS banner surface.
+      notifier: CallbackNotifier(_onNotify),
       store: _store,
     );
     // Resume ticking across a rebuild if any bot is already enabled/armed.
@@ -306,6 +310,13 @@ class BotsController extends ChangeNotifier {
   void _onNotify(AgentNotification n) {
     notifications.insert(0, n);
     if (notifications.length > 20) notifications.removeRange(20, notifications.length);
+    // Also surface money events (a realized profit) as an OS banner so the user is
+    // told even with the app backgrounded. Fail-soft: no-op until the plugin is
+    // initialized, and it never throws. Non-money pings stay in-app only.
+    final type = '${n.data['type'] ?? ''}';
+    if (type == 'bot_profit' || type == 'realized_profit' || n.data['realizedUsd'] != null) {
+      unawaited(LocalNotifications.instance.show(n));
+    }
     notifyListeners();
   }
 

@@ -5,6 +5,7 @@ import 'state/app_state.dart';
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
 import 'state/wallet_controller.dart';
+import 'services/local_notifications.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
@@ -16,6 +17,9 @@ final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialize OS notifications (bot profit banners). Fire-and-forget + fail-soft:
+  // never blocks startup and never throws if permission is denied or unavailable.
+  LocalNotifications.instance.init().then((_) => LocalNotifications.instance.requestPermission());
   final app = AppState()..bootstrap();
   runApp(
     MultiProvider(

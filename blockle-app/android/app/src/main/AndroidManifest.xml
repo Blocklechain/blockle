@@ -4,6 +4,8 @@
          the chain API, and cleartext so the crypto-engine WebView can load the
          local http://localhost asset server and the in-app dApp browser. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Android 13+ runtime notification permission (bot profit banners). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Blockle Wallet"
         android:name="${applicationName}"
