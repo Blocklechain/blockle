@@ -164,5 +164,14 @@ void main() {
     final evs = (rep['events'] as List);
     expect(evs.any((e) => e is Map && (e['action'] != null || e['paper'] == true)), isTrue,
         reason: 'scanner produced no trade: events=$evs');
+    // The sniper buy must surface as an ACTIVE HOLDING in the dashboard (the old
+    // bug: scanner bots traded but showed nothing because dashboard only read deals).
+    final dash = runner.dashboard(bot.id)!;
+    final holdings = (dash['holdings'] as List).cast<Map<String, dynamic>>();
+    print('SCAN holdings: $holdings');
+    expect(holdings.any((h) => h['symbol'] == 'DESSA' &&
+        (BigInt.tryParse('${h['units']}') ?? BigInt.zero) > BigInt.zero), isTrue,
+        reason: 'sniper buy not visible as a holding: $holdings');
+    expect((dash['activeCount'] as int) >= 1, isTrue);
   });
 }

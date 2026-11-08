@@ -194,10 +194,16 @@ class DetailView extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 14),
-          if (deal == null)
-            _noDeal(t, bot)
+          if (deal != null)
+            _Stepper(bot: bot, deal: deal)
+          else if (((d['holdings'] as List?) ?? const []).isNotEmpty)
+            _holdings(t, (d['holdings'] as List).cast<Map<String, dynamic>>())
           else
-            _Stepper(bot: bot, deal: deal),
+            _noDeal(t, bot),
+          // Scanner "AI picks": show the most recent worthy picks even when the
+          // holdings list is empty, so an autopilot that's actively scanning looks
+          // alive instead of idle.
+          if (bot.type == 'scanner') _scanPicks(t, d),
           const SizedBox(height: 18),
           _controls(context, bot),
         ],
@@ -229,6 +235,87 @@ class DetailView extends StatelessWidget {
           : r == 'repeated-errors'
               ? 'repeated order failures'
               : r;
+
+  // ACTIVE POSITIONS — scanner (sniper) + indicator bots hold assets in the
+  // planner ledger rather than a byPair deal; show them so the bot visibly holds
+  // something it is trading.
+  Widget _holdings(BotTokens t, List<Map<String, dynamic>> holdings) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: t.elevated,
+        borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+        border: Border.all(color: t.line),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('ACTIVE POSITIONS',
+            style: TextStyle(fontSize: 11, letterSpacing: 0.6, color: t.inkMuted, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 10),
+        for (final h in holdings) ...[
+          Builder(builder: (_) {
+            final sym = '${h['symbol']}';
+            final dec = (h['decimals'] as num?)?.toInt();
+            final units = BigInt.tryParse('${h['units'] ?? '0'}') ?? BigInt.zero;
+            final value = h['valueUsd'] as num?;
+            final unreal = h['unrealizedUsd'] as num?;
+            final cost = h['costUsd'] as num?;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(children: [
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('${formatQty(units, decimals: dec)} $sym',
+                        style: mono(t, size: 14, color: t.ink)),
+                    Text(
+                        value != null
+                            ? 'worth ${moneyUsd(value, sign: false)}'
+                            : (cost != null
+                                ? 'cost ${moneyUsd(cost, sign: false)} · awaiting price'
+                                : 'awaiting price'),
+                        style: TextStyle(fontSize: 11, color: t.inkMuted)),
+                  ]),
+                ),
+                if (unreal != null)
+                  Text(moneyUsd(unreal, sign: true),
+                      style: mono(t, size: 14,
+                          color: unreal >= 0 ? t.gain : t.loss)),
+              ]),
+            );
+          }),
+        ],
+      ]),
+    );
+  }
+
+  // The scanner's most recent picks, so an actively-scanning autopilot never reads
+  // as idle even before it holds anything.
+  Widget _scanPicks(BotTokens t, Map<String, dynamic> d) {
+    final scan = d['lastScan'] as Map?;
+    if (scan == null) return const SizedBox.shrink();
+    final worthy = (scan['worthy'] as List?)?.cast<dynamic>() ?? const [];
+    final cands = (scan['candidates'] as List?)?.length ?? 0;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: t.elevated,
+          borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+          border: Border.all(color: t.line),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('LAST SCAN', style: TextStyle(fontSize: 11, letterSpacing: 0.6, color: t.inkMuted, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text(
+            worthy.isEmpty
+                ? 'Scanned $cands candidates — none cleared the bar this round.'
+                : 'Picked ${worthy.length} of $cands: ${worthy.take(4).join(', ')}',
+            style: TextStyle(fontSize: 12.5, color: t.ink, height: 1.4),
+          ),
+        ]),
+      ),
+    );
+  }
 
   Widget _noDeal(BotTokens t, b.Bot bot) {
     final waiting = bot.enabled;

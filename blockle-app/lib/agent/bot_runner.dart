@@ -1421,10 +1421,17 @@ class BotRunner {
       final pos = ((bot.state['plannerPos'] as Map?)?.cast<String, dynamic>()) ?? <String, dynamic>{};
       final isSell = RegExp(r':sell(:|$)').hasMatch('${it.tag}');
       if (isSell) {
-        // SELL: `amount` is BASE units (from=base). Draw the ledger down, floor 0.
-        final cur = BigInt.tryParse('${pos[from] ?? '0'}') ?? BigInt.zero;
-        final next = cur - amount;
-        pos[from] = (next > BigInt.zero ? next : BigInt.zero).toString();
+        // SELL: `amount` is BASE units (from=base). Draw the ledger down, floor 0,
+        // and release cost basis pro-rata (average-cost) so remaining unrealized
+        // P&L stays honest.
+        final cur = _posUnits(pos, from);
+        final curCost = _posCostUc(pos, from);
+        final sold = amount > cur ? cur : amount;
+        final nextUnits = cur - sold;
+        final nextCost = cur > BigInt.zero
+            ? (nextUnits <= BigInt.zero ? BigInt.zero : (curCost * nextUnits) ~/ cur)
+            : BigInt.zero;
+        _setPos(pos, from, nextUnits, nextCost);
       } else {
         // BUY: `amount` is QUOTE units (from=quote, to=base). Convert the USD size
         // to base via the live base mark so the ledger holds base units (what the
@@ -1435,14 +1442,40 @@ class BotRunner {
         final marks = await _prices([base]);
         final markUc = _unitUc(marks, base);
         if (markUc == null || markUc <= BigInt.zero) return;
+        // Capture the live mark so [dashboard] can value this holding right away
+        // (the scanner path never flows through _tickDealBot's mark cache).
+        final markUsd = b.ucToUsd(markUc);
+        if (markUsd != null && markUsd > 0) _lastMarks[base] = markUsd;
         final bd = b.decimalsFor(base, bot.config['decimals'] as Map<String, dynamic>?);
         final received = b.qtyForUsd(b.microUsd(est), markUc, bd);
         if (received <= BigInt.zero) return;
-        final cur = BigInt.tryParse('${pos[base] ?? '0'}') ?? BigInt.zero;
-        pos[base] = (cur + received).toString();
+        _setPos(pos, base, _posUnits(pos, base) + received,
+            _posCostUc(pos, base) + b.microUsd(est));
       }
       bot.state['plannerPos'] = pos;
     } catch (_) {/* ledger is best-effort; never blocks a trade */}
+  }
+
+  // plannerPos entries are {units, costUc} maps. Readers tolerate the LEGACY bare
+  // units-string shape (older persisted state) by treating its basis as unknown.
+  static BigInt _posUnits(Map pos, String sym) {
+    final v = pos[sym];
+    if (v is Map) return BigInt.tryParse('${v['units'] ?? '0'}') ?? BigInt.zero;
+    return BigInt.tryParse('$v') ?? BigInt.zero;
+  }
+
+  static BigInt _posCostUc(Map pos, String sym) {
+    final v = pos[sym];
+    if (v is Map) return BigInt.tryParse('${v['costUc'] ?? '0'}') ?? BigInt.zero;
+    return BigInt.zero; // legacy bare-units: basis unknown
+  }
+
+  static void _setPos(Map pos, String sym, BigInt units, BigInt costUc) {
+    if (units <= BigInt.zero) {
+      pos.remove(sym);
+    } else {
+      pos[sym] = {'units': units.toString(), 'costUc': costUc.toString()};
+    }
   }
 
   // A per-tick StrategyContext clone of [base] that answers getBalance from THIS
@@ -1464,8 +1497,8 @@ class BotRunner {
       getBalance: (chain, [tokens]) async {
         final pos = (bot.state['plannerPos'] as Map?)?.cast<String, dynamic>() ?? const {};
         final rows = <Map<String, dynamic>>[];
-        pos.forEach((sym, units) {
-          final u = BigInt.tryParse('$units') ?? BigInt.zero;
+        pos.forEach((sym, _) {
+          final u = _posUnits(pos, sym);
           if (u > BigInt.zero) {
             rows.add({
               'asset': {
@@ -1717,9 +1750,44 @@ class BotRunner {
         });
       }
     }
+    // PLANNER / SCANNER HOLDINGS (§4): scanner (sniper) + indicator/momentum bots
+    // don't open byPair "deals" — their executed buys accrue into plannerPos. Surface
+    // each held asset as an ACTIVE position so the UI shows what the bot is holding
+    // (otherwise an AI-picks bot that IS trading looks idle). Value + unrealized when
+    // a live mark exists; else just units + cost basis (never a fabricated mark).
+    final holdings = <Map<String, dynamic>>[];
+    final pos = (bot.state['plannerPos'] as Map?)?.cast<String, dynamic>() ?? const {};
+    for (final sym in pos.keys) {
+      final units = _posUnits(pos, sym);
+      if (units <= BigInt.zero) continue;
+      final up = sym.toUpperCase();
+      final dec = b.decimalsFor(up, bot.config['decimals'] as Map<String, dynamic>?);
+      final costUc = _posCostUc(pos, sym);
+      BigInt? markUc;
+      if (marks[up] != null) markUc = b.microUsd(marks[up]!);
+      num? valueUsd, unrealUsd;
+      if (markUc != null) {
+        final valUc = b.valueOf(units, markUc, dec);
+        valueUsd = b.ucToUsd(valUc);
+        if (costUc > BigInt.zero) {
+          unrealUsd = b.ucToUsd(valUc - costUc);
+          unrealizedUc += valUc - costUc;
+        }
+      } else {
+        unmarked = true;
+      }
+      holdings.add({
+        'symbol': up, 'units': units.toString(), 'decimals': dec,
+        'costUsd': costUc > BigInt.zero ? b.ucToUsd(costUc) : null,
+        'markUsd': markUc != null ? b.ucToUsd(markUc) : null,
+        'valueUsd': valueUsd, 'unrealizedUsd': unrealUsd,
+      });
+    }
+
     final dealCount = bot.state['dealCount'] as int? ?? 0;
     final wins = bot.state['winCount'] as int? ?? 0;
     return {
+      'holdings': holdings,
       'bot': bot.id, 'name': bot.name, 'type': bot.type, 'mode': bot.mode, 'enabled': bot.enabled, 'network': bot.network,
       'status': _killed ? 'killed' : (bot.enabled ? 'running' : 'paused'),
       'allocationUsd': bot.allocationUsd,
@@ -1748,6 +1816,12 @@ class BotRunner {
       'haltReason': bot.state['haltReason'],
       // Last hard-failure reason while running (null once a trade succeeds).
       'lastError': bot.state['lastError'],
+      // The scanner's most recent scan (worthy picks it traded / is holding) so the
+      // AI-picks cockpit can show what it chose. null for non-scanner bots.
+      'lastScan': bot.state['lastScan'],
+      // One number the UI can trust for "is this bot doing anything": open deals +
+      // planner/scanner holdings currently held.
+      'activeCount': openDeals.length + holdings.length,
     };
   }
 
