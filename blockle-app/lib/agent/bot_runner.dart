@@ -325,8 +325,11 @@ class BotRunner {
           store.list().where((x) => x.id != id && x.mode == 'live' && x.enabled).length;
       if (liveNow >= liveBotLimit) {
         await _audit({'type': 'bot_arm_refused', 'bot': id, 'reason': 'live bot limit reached', 'limit': liveBotLimit});
+        // Point at the NEXT tier: Free (1) → Blockle Alien, Alien (3) → Alien Pro.
+        final nextTier = liveBotLimit <= 1 ? 'Blockle Alien' : 'Blockle Alien Pro';
         throw StateError(
-            'Live-bot limit reached for your plan ($liveBotLimit). Upgrade to Blockle Alien Pro to run more.');
+            'You\'re running your plan\'s $liveBotLimit live bot${liveBotLimit == 1 ? '' : 's'}. '
+            'Upgrade to $nextTier to run more.');
       }
     }
     bot.allocationUsd = alloc;

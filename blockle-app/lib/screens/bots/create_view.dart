@@ -21,6 +21,7 @@ import '../../services/open_url.dart';
 import '../../state/bots_controller.dart';
 import '../../state/multichain_controller.dart';
 import '../account_auth_screen.dart';
+import '../blockle_alien_screen.dart';
 import '../../ui/app_icons.dart';
 import '../accounts_screen.dart' show MoonPayBuyScreen;
 import 'bots_tokens.dart';
@@ -427,10 +428,31 @@ class _CreateViewState extends State<CreateView> {
       }
       widget.onCreated(bot.id, true);
     } catch (e) {
-      // Arming failed (entitlement, cap, channel) — don't leave a stray disabled
-      // bot cluttering the cockpit; remove the one we just created.
+      // Arming failed (cap, channel) — don't leave a stray disabled bot cluttering
+      // the cockpit; remove the one we just created.
       unawaited(widget.controller.remove(bot.id));
-      _snack(e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', ''));
+      final msg = e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', '');
+      // A live-bot-cap breach → route to the upgrade screen instead of a dead-end snack.
+      if (msg.contains('live bot') && msg.contains('Upgrade') && mounted) {
+        final go = await showDialog<bool>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+            title: const Text('Live-bot limit reached'),
+            content: Text(msg),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Not now')),
+              FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('See plans')),
+            ],
+          ),
+        );
+        if (go == true && mounted) {
+          await Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const BlockleAlienScreen()),
+          );
+        }
+      } else {
+        _snack(msg);
+      }
     }
   }
 

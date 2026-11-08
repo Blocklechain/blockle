@@ -211,7 +211,10 @@ class BotsController extends ChangeNotifier {
         ),
       ),
       mainnetEnabled: false,
-      liveEntitled: _liveTier != 'free',
+      // Every tier can run at least ONE live bot (Free 1 / Alien 3 / Pro ∞);
+      // the paywall gates the COUNT, not live access. The per-plan cap below
+      // enforces how many.
+      liveEntitled: true,
       liveBotLimit: _liveBotLimit,
       portfolioLiveCapUsd: _store.meta['portfolioLiveCapUsd'] as num?,
       // Only execute live orders locally when a real value-moving channel backs
@@ -396,7 +399,18 @@ class BotsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool get liveEntitled => _liveTier != 'free';
+  // Every tier can run at least one live bot (Free 1 / Alien 3 / Pro ∞) — live
+  // access is universal; the paywall gates the bot COUNT (liveBotLimit).
+  bool get liveEntitled => true;
+
+  /// The account's current tier slug ('free' / 'copilot' / 'copilot_pro').
+  String get tier => _liveTier;
+
+  /// The per-plan live-bot cap in effect (Free 1, Blockle Alien 3, Pro ∞/-1).
+  int get liveBotCap => _liveBotLimit;
+
+  /// How many live bots are currently armed + enabled (for the cap display/CTA).
+  int get liveBotCount => bots().where((b) => b.mode == 'live' && b.enabled).length;
 
   /// The opt-in PORTFOLIO-level live-allocation ceiling in USD (§9), or null when
   /// uncapped. Bounds the aggregate committed allocation across ALL live bots —

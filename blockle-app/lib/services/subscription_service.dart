@@ -26,6 +26,21 @@ class CopilotProducts {
   static Set<String> all() => {copilot(), copilotPro()};
 }
 
+/// Human-facing plan name for an internal tier string. The tiers are historically
+/// 'copilot'/'copilot_pro' (the product ids keep those slugs), but the BRAND is
+/// Blockle Alien — never show the raw slug to the user.
+String blockleAlienTierLabel(String? tier) {
+  switch ((tier ?? 'free').toLowerCase()) {
+    case 'copilot_pro':
+      return 'Blockle Alien Pro';
+    case 'copilot':
+    case 'pro': // legacy "Blockle Pro"
+      return 'Blockle Alien';
+    default:
+      return 'Free';
+  }
+}
+
 class SubscriptionService {
   SubscriptionService({
     required this.tokenProvider,

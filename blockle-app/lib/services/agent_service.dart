@@ -214,10 +214,10 @@ class AgentService {
 
   // ---- Blockle Copilot account link (supplies the tier to the engine) ----
   String _copilotTier = 'free';
-  // Per-plan LIVE-bot cap from the account's sub.liveBotLimit (Free 1, Copilot 3,
-  // Pro -1 = unlimited). -1 until an account is linked (uncapped; live arming is
-  // separately gated by the tier entitlement, so free users are still blocked).
-  int _liveBotLimit = -1;
+  // Per-plan LIVE-bot cap from the account's sub.liveBotLimit (Free 1, Blockle
+  // Alien 3, Pro -1 = unlimited). Defaults to 1 (the free allowance) until an
+  // account is linked — fail-closed to the FREE cap, never uncapped.
+  int _liveBotLimit = 1;
   String? _acctToken;
   String? _acctEmail;
   String _acctOrigin = bc.kDefaultOrigin;
@@ -269,7 +269,7 @@ class AgentService {
     _acctToken = null;
     _acctEmail = null;
     _copilotTier = 'free';
-    _liveBotLimit = -1;
+    _liveBotLimit = 1; // free allowance: 1 live bot
   }
 
   /// The active tier + what it unlocks, for the UI.

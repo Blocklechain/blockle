@@ -937,7 +937,7 @@ void main() {
       });
       await su.runner.armLive(a.id, allocationUsd: 50);
       await expectLater(su.runner.armLive(b.id, allocationUsd: 50),
-          throwsA(predicate((e) => '$e'.contains('Live-bot limit reached'))));
+          throwsA(predicate((e) => '$e'.contains('live bot') && '$e'.contains('Upgrade'))));
       expect(su.audit.list().any((e) => e['type'] == 'bot_arm_refused' && e['reason'] == 'live bot limit reached'), isTrue);
 
       // Unlimited (Pro) lifts the cap — the second bot arms.
