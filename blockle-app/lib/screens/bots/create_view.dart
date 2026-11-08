@@ -1160,6 +1160,21 @@ class _CreateViewState extends State<CreateView> {
     final pnl = res != null ? (res['pnlPct'] as num?)?.toDouble() : null;
     final dd = res != null ? (res['maxDrawdownPct'] as num?)?.toDouble() : null;
     final trades = res != null ? (res['trades'] as num?)?.toInt() : null;
+    final winRate = res != null ? (res['winRatePct'] as num?)?.toDouble() : null;
+    final sharpe = res != null ? (res['sharpe'] as num?)?.toDouble() : null;
+    final vsHodl = res != null ? (res['vsHodlPct'] as num?)?.toDouble() : null;
+    final hodl = res != null ? (res['assetMovePct'] as num?)?.toDouble() : null;
+
+    Widget metric(String label, String value, {Color? vc}) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: TextStyle(fontSize: 10.5, color: t.inkFaint)),
+            const SizedBox(height: 2),
+            Text(value, style: mono(t, size: 14, color: vc ?? t.ink, w: FontWeight.w700)),
+          ],
+        );
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         BotButton(
@@ -1177,11 +1192,31 @@ class _CreateViewState extends State<CreateView> {
         const SizedBox(height: 10),
         if (curve.length > 1)
           _Sparkline(values: curve, color: (pnl ?? 0) >= 0 ? t.gain : t.loss, line: t.line),
+        const SizedBox(height: 12),
+        // Richer analytics: vs buy-and-hold, win-rate, risk-adjusted return.
+        Wrap(spacing: 22, runSpacing: 10, children: [
+          if (vsHodl != null)
+            metric('vs HODL', '${vsHodl >= 0 ? '+' : ''}${vsHodl.toStringAsFixed(2)}%',
+                vc: vsHodl >= 0 ? t.gain : t.loss),
+          if (winRate != null) metric('Win rate', '${winRate.toStringAsFixed(0)}%'),
+          if (sharpe != null)
+            metric('Risk-adj (Sharpe)', sharpe.toStringAsFixed(2),
+                vc: sharpe >= 0 ? t.ink : t.loss),
+          if (dd != null) metric('Max drawdown', '-${dd.toStringAsFixed(1)}%', vc: t.loss),
+          if (trades != null) metric('Trades', '$trades'),
+        ]),
+        const SizedBox(height: 10),
+        // The "USE THIS STRATEGY" apply the onboarding copy promises — one tap to
+        // start this exact config in paper (live stays behind the review sheet).
+        BotButton(
+          label: 'Use this strategy — start in paper',
+          icon: Icons.play_arrow_rounded,
+          onPressed: _btBusy ? null : _startPaper,
+        ),
         const SizedBox(height: 8),
         Text(
           'Paper simulation on ~30 days of real $_baseSym prices'
-          '${trades != null ? ' · $trades trades' : ''}'
-          '${dd != null ? ' · max drawdown ${dd.toStringAsFixed(1)}%' : ''}. '
+          '${hodl != null ? ' (buy-and-hold was ${hodl >= 0 ? '+' : ''}${hodl.toStringAsFixed(1)}%)' : ''}. '
           'Past results never guarantee future returns.',
           style: TextStyle(fontSize: 11, color: t.inkFaint, height: 1.4),
         ),

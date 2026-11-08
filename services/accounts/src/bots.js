@@ -185,8 +185,14 @@ function buyUsd(s, price, usd) {
   s.base += qty; s.cash -= spend; s.trades.push({ side: 'buy', qty, price, tick: s.tick });
 }
 function sellAll(s, price, reason) {
-  if (s.base <= 0) return; const qty = s.base; s.cash += qty * price; s.base = 0; s.avgCost = 0;
-  s.trades.push({ side: 'sell', qty, price, tick: s.tick, ...(reason ? { reason } : {}) });
+  if (s.base <= 0) return;
+  const qty = s.base;
+  // Realized outcome of this round-trip vs the position's average entry — powers
+  // the backtest win-rate. Captured BEFORE avgCost is reset.
+  const win = s.avgCost > 0 ? price > s.avgCost : null;
+  const pnl = s.avgCost > 0 ? (price - s.avgCost) * qty : null;
+  s.cash += qty * price; s.base = 0; s.avgCost = 0;
+  s.trades.push({ side: 'sell', qty, price, tick: s.tick, ...(win != null ? { win, pnl } : {}), ...(reason ? { reason } : {}) });
 }
 // $ to deploy per entry for the indicator strategies: positionPct of the budget (default 100%).
 const posUsd = (bot) => bot.params.budget * (bot.params.positionPct != null ? bot.params.positionPct : 100) / 100;

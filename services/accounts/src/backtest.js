@@ -54,10 +54,29 @@ export function makeBacktester(deps = {}) {
     }
     // win rate across completed round-trips (each sell realizes the buys since the last flat).
     const sells = bot.state.trades.filter((t) => t.side === 'sell');
+    const judged = sells.filter((t) => typeof t.win === 'boolean');
+    const wins = judged.filter((t) => t.win).length;
+    const winRatePct = judged.length ? Math.round((wins / judged.length) * 1000) / 10 : null;
     const assetMovePct = Math.round(((prices[prices.length - 1] - prices[0]) / prices[0]) * 10000) / 100;
+    // vs buy-and-hold (HODL) over the same window — the honest baseline.
+    const vsHodlPct = Math.round((curve[curve.length - 1] - assetMovePct) * 100) / 100;
+    // Risk-adjusted return: mean / stddev of per-step portfolio returns (unitless,
+    // not annualized — a comparable number across strategies on the same window).
+    let sharpe = null;
+    if (n > 2) {
+      const rets = [];
+      for (let i = 1; i < n; i++) if (values[i - 1] > 0) rets.push((values[i] - values[i - 1]) / values[i - 1]);
+      if (rets.length > 1) {
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const variance = rets.reduce((a, b) => a + (b - mean) * (b - mean), 0) / rets.length;
+        const sd = Math.sqrt(variance);
+        if (sd > 0) sharpe = Math.round((mean / sd) * 100) / 100;
+      }
+    }
     return {
       type, asset: asset || 'sol', params: bot.params, budget,
       pnlPct: curve[curve.length - 1], trades: bot.state.trades.length, sells: sells.length,
+      wins, winRatePct, sharpe, vsHodlPct,
       maxDrawdownPct: Math.round(maxDd * 100) / 100, assetMovePct, windowLabel: '30 days', curve,
     };
   }

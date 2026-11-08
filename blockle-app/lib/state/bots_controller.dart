@@ -497,8 +497,9 @@ class BotsController extends ChangeNotifier {
   // ---- gated backtest + copy-config (account endpoints) --------------------
 
   /// Quick-backtest a configured strategy on recent real prices via the account
-  /// service. Returns {pnlPct, trades, maxDrawdownPct, curve, ...}. Throws when no
-  /// account is linked or the service is unavailable.
+  /// service. Returns {pnlPct, trades, sells, wins, winRatePct, sharpe, vsHodlPct,
+  /// assetMovePct, maxDrawdownPct, curve, ...}. Throws when no account is linked
+  /// or the service is unavailable.
   Future<Map<String, dynamic>> backtest({
     required String type,
     required Map<String, dynamic> params,
