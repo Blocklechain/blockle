@@ -221,11 +221,54 @@ class _BotsScreenState extends State<BotsScreen> {
   Future<void> _sync(BotsController c) async {
     final out = await c.tick();
     if (!mounted) return;
-    final acted = out.where((e) => (e['events'] as List?)?.isNotEmpty == true).length;
+    if (out.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No enabled bots to tick.')));
+      return;
+    }
+    // Report exactly WHAT happened so a non-trading bot explains itself: a fill,
+    // or the precise reason it didn't (no price, allocation cap, waiting on a
+    // start condition, blocked tool, or delegated to the server runner).
+    var traded = 0;
+    final reasons = <String>{};
+    for (final r in out) {
+      if (r['serverManaged'] == true) {
+        reasons.add('live bot runs on the server');
+        continue;
+      }
+      if (r['error'] != null) {
+        reasons.add('error: ${r['error']}');
+        continue;
+      }
+      final evs = (r['events'] as List?) ?? const [];
+      var botTraded = false;
+      for (final e in evs) {
+        if (e is! Map) continue;
+        if (e['action'] != null || e['side'] != null || e['executed'] == true || e['paper'] == true) {
+          botTraded = true;
+        } else if (e['skipped'] == 'price') {
+          reasons.add('no live price for the pair');
+        } else if (e['skipped'] != null) {
+          reasons.add('${e['skipped']}');
+        } else if (e['blocked'] == true) {
+          reasons.add('tool blocked');
+        } else if (e['rejected'] != null) {
+          reasons.add('rejected: ${e['rejected']}');
+        } else if (e['waiting'] == true) {
+          reasons.add('waiting on start condition');
+        }
+      }
+      if (botTraded) {
+        traded++;
+      } else if (evs.isEmpty) {
+        reasons.add('nothing to do this tick');
+      }
+    }
+    final msg = traded > 0
+        ? 'Ticked ${out.length} bot(s) · $traded traded.'
+        : 'Ticked ${out.length} bot(s) · none traded (${reasons.isEmpty ? 'no action' : reasons.take(2).join('; ')}).';
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(out.isEmpty
-            ? 'No enabled bots to tick.'
-            : 'Ticked ${out.length} bot(s)${acted == 0 ? ' · no market data, nothing filled' : ''}.')));
+        content: Text(msg), duration: const Duration(seconds: 5)));
   }
 }
 

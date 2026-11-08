@@ -241,6 +241,9 @@ class BotsController extends ChangeNotifier {
       liveEntitled: true,
       liveBotLimit: _liveBotLimit,
       portfolioLiveCapUsd: _store.meta['portfolioLiveCapUsd'] as num?,
+      // Production: tick a freshly-enabled bot immediately (don't make it wait a
+      // full poll interval to place its first order).
+      immediateFirstTick: true,
       // Only execute live orders locally when a real value-moving channel backs
       // the runner. Otherwise live bots run on the SERVER (delegation); the
       // client just registers them and must not tick-execute (see BotRunner).

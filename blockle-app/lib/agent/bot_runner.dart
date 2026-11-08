@@ -103,6 +103,10 @@ class BotRunner {
   /// to the remaining allocation of all other live bots, would exceed it. Host-
   /// settable at runtime (persisted in the bot store meta).
   num? portfolioLiveCapUsd;
+  /// When true, [startScheduler] fires one tick immediately so a freshly-enabled
+  /// bot acts right away instead of waiting a full poll interval. The host (the
+  /// production controller) enables it; tests leave it off and drive ticks.
+  final bool immediateFirstTick;
   /// Whether THIS (client-side) runner executes live orders itself. True when a
   /// real value-moving channel backs it (legacy in-app path). False when live
   /// execution is delegated to the SERVER runner (the default now that the
@@ -146,6 +150,7 @@ class BotRunner {
     this.liveBotLimit = -1,
     this.portfolioLiveCapUsd,
     this.clientExecutesLive = true,
+    this.immediateFirstTick = false,
     this.onEvent,
     this.pnl,
     b.BotStore? store,
@@ -225,6 +230,11 @@ class BotRunner {
     _schedulerTimer = factory != null
         ? factory(interval, onFire)
         : Timer.periodic(interval, (_) => onFire());
+    // Fire the FIRST tick NOW so a freshly-enabled bot opens its deal / places
+    // its base order immediately instead of waiting a full interval (up to a
+    // minute by default). Opt-in (the host sets it in production); tests drive
+    // ticks explicitly and leave it off so their assertions see a clean tick.
+    if (immediateFirstTick) onFire();
   }
 
   /// Stop the background scheduler (no more automatic ticks).
