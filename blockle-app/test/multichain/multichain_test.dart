@@ -252,6 +252,52 @@ void main() {
               }),
           throwsStateError);
     });
+
+    test('sendMax drains all inputs minus fee into a single output (100% − gas)', () {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final net = u.networks['bitcoin']!;
+      final node = hd.derivePath(seed, '${net.path}/0');
+      final from = a.p2wpkh(node.publicKey, 'bc');
+      final utxos = [
+        {'txid': 'a' * 64, 'vout': 0, 'value': '100000'},
+        {'txid': 'b' * 64, 'vout': 1, 'value': '50000'},
+      ];
+      const feeRate = 10.0;
+      final built = u.buildAndSign(net, node, from, {
+        'to': 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu',
+        'amount': '1', // ignored under sendMax
+        'feeRate': feeRate,
+        'utxos': utxos,
+        'sendMax': true,
+      });
+      // All inputs spent, fee for (overhead + 1 output + N inputs) at feeRate,
+      // amount = total − fee, and NO change (single output) so nothing is stranded.
+      const total = 150000;
+      final vbytes = 10 + 34 + utxos.length * 68; // segwit input vbytes
+      final fee = (vbytes * feeRate).ceil();
+      expect(built.amount, BigInt.from(total - fee));
+      expect(built.fee, '$fee');
+      expect(built.change, '0');
+      expect(built.signedInputs.length, utxos.length); // every input drained
+    });
+
+    test('sendMax throws when the balance cannot cover the fee', () {
+      final seed = hd.mnemonicToSeed(abandon, '');
+      final net = u.networks['bitcoin']!;
+      final node = hd.derivePath(seed, '${net.path}/0');
+      final from = a.p2wpkh(node.publicKey, 'bc');
+      expect(
+          () => u.buildAndSign(net, node, from, {
+                'to': from,
+                'amount': '1',
+                'feeRate': 10,
+                'utxos': [
+                  {'txid': 'a' * 64, 'vout': 0, 'value': '500'}, // < fee
+                ],
+                'sendMax': true,
+              }),
+          throwsStateError);
+    });
   });
 
   // ---- Bitcoin Cash (CashAddr + BIP143 FORKID 0x41) -----------------------

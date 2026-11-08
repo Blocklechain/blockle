@@ -1000,9 +1000,15 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     return BigInt.zero;
   }
 
-  /// Fill the amount field with [pct]% of the selected asset's balance. For a
-  /// native coin "Max" (100%) still shows the full balance — if gas then can't
-  /// be covered, the send review surfaces it (and the gas top-up flow helps).
+  /// When true, the NATIVE-coin send drains the whole balance MINUS the network
+  /// fee (set by tapping "Max" on the native coin). The adapter computes the
+  /// exact amount at build time; cleared the moment the amount is edited.
+  bool _sendMax = false;
+
+  /// Fill the amount field with [pct]% of the selected asset's balance. "Max"
+  /// (100%) on the NATIVE coin arms sendMax so the review reserves the network
+  /// fee (100% minus gas) — a token send pays gas in the native coin, so its
+  /// Max is the full token balance.
   void _setPct(MultichainController c, int pct) {
     final sel = _asset ?? c.registry.get(widget.chain).native;
     final base = _selectedBase(c);
@@ -1010,6 +1016,8 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
     final amt = base * BigInt.from(pct) ~/ BigInt.from(100);
     setState(() {
       _amt.text = formatUnits(amt.toString(), sel.decimals);
+      // Max of the native coin → reserve gas at build time.
+      _sendMax = pct == 100 && sel.kind == 'native';
       _error = null;
     });
   }
@@ -1098,17 +1106,24 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
       }
       final acct = await c.accounts.accountFor(widget.chain);
       final adapter = c.registry.get(widget.chain);
+      final isNative = asset.kind == 'native';
       final built = await adapter.buildSend(
         acct,
         SendRequest(
           to: to,
           amount: amount,
-          asset: asset.kind == 'native' ? null : asset,
+          asset: isNative ? null : asset,
           feeRate: _feeRate.text.trim().isEmpty ? null : _feeRate.text.trim(),
+          sendMax: _sendMax && isNative,
         ),
       );
       setState(() {
         _built = built;
+        // On a native Max the adapter drained balance − fee; show the ACTUAL
+        // amount in the field so the review reflects what really leaves.
+        if (_sendMax && isNative) {
+          _amt.text = formatUnits(built.summary.amount, asset.decimals);
+        }
         _busy = false;
       });
     } catch (e) {
@@ -1279,6 +1294,10 @@ class _MultiSendScreenState extends State<MultiSendScreen> {
             controller: _amt,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(labelText: 'Amount (${_asset?.symbol ?? ''})'),
+            // Typing an exact amount cancels the gas-reserving Max mode.
+            onChanged: (_) {
+              if (_sendMax) setState(() => _sendMax = false);
+            },
           ),
           // Quick amounts — 25% / 50% / Max of the selected asset's balance.
           const SizedBox(height: 8),

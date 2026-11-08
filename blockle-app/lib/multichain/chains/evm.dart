@@ -454,9 +454,21 @@ class EvmAdapter implements ChainAdapter {
       gasLimit = '0x15f90'; // 90000
     } else {
       to = req.to;
-      value = BigInt.parse(req.amount);
       data = '0x';
       gasLimit = '0x5208'; // 21000
+      if (req.sendMax) {
+        // Drain the whole native balance MINUS the gas the send itself costs, so
+        // "Max" can never fail for "insufficient funds for gas". fee = gasLimit *
+        // maxFeePerGas (the upper bound actually charged for an EIP-1559 tx).
+        final bal = _big(await _rpc('eth_getBalance', [account.address, 'latest']));
+        final fee = _big(gasLimit) * _big(maxFee);
+        value = bal - fee;
+        if (value <= BigInt.zero) {
+          throw StateError('Balance too low to cover the network fee.');
+        }
+      } else {
+        value = BigInt.parse(req.amount);
+      }
     }
     final tx = {
       'chainId': chainId,
@@ -470,8 +482,14 @@ class EvmAdapter implements ChainAdapter {
     };
     final signed = signEip1559(tx, node.privateKey!);
     final fee = (_big(gasLimit) * _big(maxFee)).toString();
+    // The summary reflects the ACTUAL amount sent (for sendMax this is the
+    // balance-minus-fee value, not the requested ceiling) so the review screen
+    // shows what really leaves the wallet.
+    final summary = req.sendMax && req.asset?.kind != 'erc20'
+        ? req.copyWith(amount: value.toString(), sendMax: false)
+        : req;
     return BuiltTx(
-        chain: id, raw: signed.raw, txid: signed.txid, fee: fee, summary: req);
+        chain: id, raw: signed.raw, txid: signed.txid, fee: fee, summary: summary);
   }
 
   /// Sign an ARBITRARY EVM transaction (DEX router call): {to, data, value?,

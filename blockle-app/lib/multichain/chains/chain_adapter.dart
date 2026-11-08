@@ -132,6 +132,7 @@ class SendRequest {
     this.feeRate, // sat/vB (UTXO) | maxFeePerGas (EVM) | fee (BLOCK)
     this.memo,
     this.utxos, // optional pre-fetched UTXO set (UTXO chains / tests)
+    this.sendMax = false,
   });
 
   final AssetRef? asset;
@@ -140,6 +141,25 @@ class SendRequest {
   final String? feeRate;
   final String? memo;
   final List<Map<String, dynamic>>? utxos;
+
+  /// Drain the whole NATIVE balance minus the network fee. When true (and the
+  /// asset is the native coin), the adapter computes the actual send amount as
+  /// balance − fee so the transaction leaves exactly enough to pay gas and can't
+  /// fail for "insufficient funds for fee". [amount] is then a ceiling/ignored.
+  /// Honored by the native-fee-bearing adapters (EVM, UTXO); a token send (fee
+  /// paid in the native coin) ignores it. The returned BuiltTx.summary.amount
+  /// reflects the ACTUAL amount sent.
+  final bool sendMax;
+
+  SendRequest copyWith({String? amount, bool? sendMax}) => SendRequest(
+        to: to,
+        amount: amount ?? this.amount,
+        asset: asset,
+        feeRate: feeRate,
+        memo: memo,
+        utxos: utxos,
+        sendMax: sendMax ?? this.sendMax,
+      );
 }
 
 /// A signed, broadcast-ready transaction. `broadcast` is a SEPARATE call so the

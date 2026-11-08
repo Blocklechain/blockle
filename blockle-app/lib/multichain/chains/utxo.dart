@@ -412,12 +412,16 @@ CoinSelection selectCoins(List<Map<String, dynamic>> utxos, BigInt target,
 /// A fully built + signed UTXO transaction, with per-input sighashes + sigs
 /// exposed for verification/tests.
 class BuiltUtxoTx {
-  BuiltUtxoTx(this.raw, this.txid, this.fee, this.change, this.signedInputs);
+  BuiltUtxoTx(this.raw, this.txid, this.fee, this.change, this.signedInputs,
+      {BigInt? amount})
+      : amount = amount ?? BigInt.zero;
   final String raw;
   final String txid;
   final String fee;
   final String change;
   final List<SignedUtxoInput> signedInputs;
+  /// The recipient output amount actually sent (for a drain = inputs − fee).
+  final BigInt amount;
 
   List<String> get sighashes =>
       signedInputs.map((s2) => c.bytesToHex(s2.sighash)).toList();
@@ -433,12 +437,35 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
   final feeRate = (req['feeRate'] ?? 10) is num
       ? (req['feeRate'] ?? 10).toDouble()
       : double.parse(req['feeRate'].toString());
-  final amount = BigInt.parse(req['amount'].toString());
   final utxos = (req['utxos'] as List).cast<Map<String, dynamic>>();
-  final sel = selectCoins(utxos, amount, feeRate, net);
-  final inSum = sel.chosen
-      .fold<BigInt>(BigInt.zero, (a, u) => a + BigInt.parse(u['value'].toString()));
-  final change = inSum - amount - sel.fee;
+  final BigInt amount;
+  final List<Map<String, dynamic>> chosen;
+  final BigInt feeAmt;
+  final BigInt change;
+  if (req['sendMax'] == true) {
+    // DRAIN: spend EVERY input into a SINGLE recipient output (no change), so the
+    // amount is total inputs minus the fee for that exact shape — "Max" leaves
+    // exactly enough to pay the network fee and never over-/under-spends.
+    chosen = utxos;
+    final inSum = chosen.fold<BigInt>(
+        BigInt.zero, (a, u) => a + BigInt.parse(u['value'].toString()));
+    final inVbytes = net.segwit ? 68 : 148;
+    final vbytes = 10 + 34 + chosen.length * inVbytes; // overhead + 1 output + inputs
+    feeAmt = BigInt.from((vbytes * feeRate).ceil());
+    amount = inSum - feeAmt;
+    if (amount <= BigInt.zero) {
+      throw StateError('Balance too low to cover the network fee.');
+    }
+    change = BigInt.zero;
+  } else {
+    amount = BigInt.parse(req['amount'].toString());
+    final sel = selectCoins(utxos, amount, feeRate, net);
+    chosen = sel.chosen;
+    feeAmt = sel.fee;
+    final inSum = chosen.fold<BigInt>(
+        BigInt.zero, (a, u) => a + BigInt.parse(u['value'].toString()));
+    change = inSum - amount - feeAmt;
+  }
 
   final outputs = <UtxoOutput>[
     UtxoOutput(addressToScript(req['to'] as String, net), amount),
@@ -447,7 +474,7 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
     outputs.add(UtxoOutput(addressToScript(fromAddress, net), change));
   }
 
-  final inputs = sel.chosen
+  final inputs = chosen
       .map((u) => UtxoInput(u['txid'] as String, u['vout'] as int, 0xffffffff,
           BigInt.parse(u['value'].toString())))
       .toList();
@@ -460,8 +487,8 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
     // P2PKH-style scriptSig, NO witness and NO segwit marker on serialize.
     const forkIdAll = 0x41;
     final scriptCode = p2pkhScript(ownH160);
-    for (var i = 0; i < sel.chosen.length; i++) {
-      final u = sel.chosen[i];
+    for (var i = 0; i < chosen.length; i++) {
+      final u = chosen[i];
       final sh = sighashSegwit(version, inputs, outputs, i, scriptCode,
           BigInt.parse(u['value'].toString()), 0xffffffff, locktime, forkIdAll);
       final sig = s.sign(sh, node.privateKey!);
@@ -475,8 +502,8 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
     }
   } else if (net.segwit) {
     final scriptCode = p2pkhScript(ownH160); // BIP143 scriptCode for P2WPKH
-    for (var i = 0; i < sel.chosen.length; i++) {
-      final u = sel.chosen[i];
+    for (var i = 0; i < chosen.length; i++) {
+      final u = chosen[i];
       final sh = sighashSegwit(version, inputs, outputs, i, scriptCode,
           BigInt.parse(u['value'].toString()), 0xffffffff, locktime, sighashAll);
       final sig = s.sign(sh, node.privateKey!);
@@ -489,8 +516,8 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
     }
   } else {
     final subScript = p2pkhScript(ownH160);
-    for (var i = 0; i < sel.chosen.length; i++) {
-      final u = sel.chosen[i];
+    for (var i = 0; i < chosen.length; i++) {
+      final u = chosen[i];
       final sh = sighashLegacy(
           version, inputs, outputs, i, subScript, locktime, sighashAll);
       final sig = s.sign(sh, node.privateKey!);
@@ -505,8 +532,8 @@ BuiltUtxoTx buildAndSign(UtxoNetwork net, hd.HdNode node, String fromAddress,
   }
   final rawBytes = serializeTx(version, signedInputs, outputs, locktime, net.segwit);
   final txid = txidOf(version, signedInputs, outputs, locktime);
-  return BuiltUtxoTx(c.bytesToHex(rawBytes), txid, sel.fee.toString(),
-      change.toString(), signedInputs);
+  return BuiltUtxoTx(c.bytesToHex(rawBytes), txid, feeAmt.toString(),
+      change.toString(), signedInputs, amount: amount);
 }
 
 String _fmt(String baseStr, int decimals) {
@@ -696,9 +723,15 @@ class UtxoAdapter implements ChainAdapter {
       'amount': req.amount,
       if (req.feeRate != null) 'feeRate': req.feeRate,
       'utxos': us,
+      if (req.sendMax) 'sendMax': true,
     });
+    // For a drain the actual sent amount = inputs − fee; reflect it in the
+    // summary so the review screen shows what really leaves the wallet.
+    final summary = req.sendMax
+        ? req.copyWith(amount: built.amount.toString(), sendMax: false)
+        : req;
     return BuiltTx(
-        chain: net.id, raw: built.raw, txid: built.txid, fee: built.fee, summary: req);
+        chain: net.id, raw: built.raw, txid: built.txid, fee: built.fee, summary: summary);
   }
 
   @override
