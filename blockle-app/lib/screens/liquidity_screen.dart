@@ -10,7 +10,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../liquidity/liquidity_pool.dart';
 import '../state/liquidity_controller.dart';
 import '../theme.dart';
 
@@ -76,9 +75,8 @@ class _Header extends StatelessWidget {
   final LiquidityService svc;
   @override
   Widget build(BuildContext context) {
-    final price = svc.blockPriceUsd ?? kBlockSeedPriceUsd;
+    final price = svc.blockPriceUsd;
     final treasury = svc.pool.blockTreasury;
-    final deployed = svc.pool.deployedBlock;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -113,7 +111,7 @@ class _Header extends StatelessWidget {
         const SizedBox(height: 10),
         Row(children: [
           _stat('Treasury BLOCK', _fmtAmt(treasury)),
-          _stat('Deployed BLOCK', _fmtAmt(deployed)),
+          _stat('Source', svc.serverBacked ? 'Server treasury' : 'Local preview'),
         ]),
       ]),
     );
@@ -218,12 +216,10 @@ class _SwapCardState extends State<_SwapCard> {
         ]),
         const SizedBox(height: 12),
         Row(children: [
-          Text('Liquidity: ${_fmtUsd(liqUsd)}', style: TextStyle(fontSize: 12, color: Bk.muted)),
+          Text('$_coin liquidity: ${_fmtUsd(liqUsd)}', style: TextStyle(fontSize: 12, color: Bk.muted)),
           const Spacer(),
-          if (q != null && q.ok)
-            Text('Impact ${q.priceImpactPct.toStringAsFixed(2)}%',
-                style: TextStyle(
-                    fontSize: 12, color: q.priceImpactPct > 5 ? Bk.warn : Bk.muted)),
+          Text('1 BLOCK = \$${svc.blockPriceUsd.toStringAsFixed(svc.blockPriceUsd < 0.01 ? 6 : 4)}',
+              style: const TextStyle(fontSize: 12, color: Bk.muted)),
         ]),
         if (q != null && !q.ok) ...[
           const SizedBox(height: 8),
@@ -304,7 +300,7 @@ class _SwapCardState extends State<_SwapCard> {
                 for (final c in coins)
                   Builder(builder: (_) {
                     final liqUsd = svc.availableLiquidityUsd(c);
-                    final units = svc.pool.pools[c]?.rBase ?? 0;
+                    final units = svc.pool.reserves[c] ?? 0;
                     final has = liqUsd > 0.01;
                     final frac = maxLiq > 0 ? (liqUsd / maxLiq).clamp(0.0, 1.0) : 0.0;
                     return ListTile(
@@ -343,9 +339,10 @@ class _SwapCardState extends State<_SwapCard> {
     if (picked != null) setState(() => _coin = picked);
   }
 
-  void _doSwap(BuildContext context, LiquidityService svc, String from, String to, double amount) {
-    final q = svc.swap(from, to, amount);
+  Future<void> _doSwap(BuildContext context, LiquidityService svc, String from, String to, double amount) async {
     final messenger = ScaffoldMessenger.of(context);
+    final q = await svc.swap(from, to, amount);
+    if (!mounted) return;
     if (q.ok) {
       _amt.clear();
       setState(() {});
@@ -364,7 +361,7 @@ class _PoolList extends StatelessWidget {
   final LiquidityService svc;
   @override
   Widget build(BuildContext context) {
-    final entries = svc.pool.pools.entries.toList()
+    final entries = svc.pool.reserves.entries.where((e) => e.value > 1e-9).toList()
       ..sort((a, b) => svc.availableLiquidityUsd(b.key).compareTo(svc.availableLiquidityUsd(a.key)));
     if (entries.isEmpty) {
       return Container(
@@ -372,7 +369,7 @@ class _PoolList extends StatelessWidget {
         decoration: BoxDecoration(
             color: Bk.surface, borderRadius: BorderRadius.circular(Bk.rMd), border: Border.all(color: Bk.border)),
         child: Text(
-          'No pools yet — run a trading bot and its 0.05% fees will seed the first hot wallet here.',
+          'No reserves yet — run a trading bot and its 0.05% fees will seed the first hot wallet here.',
           style: TextStyle(color: Bk.muted, fontSize: 13, height: 1.4),
         ),
       );
@@ -400,14 +397,14 @@ class _PoolList extends StatelessWidget {
                   Text('BLOCK / ${e.key}',
                       style: const TextStyle(fontWeight: FontWeight.w700, color: Bk.text)),
                   const SizedBox(height: 2),
-                  Text('${_fmtAmt(e.value.rBlock)} BLOCK · ${_fmtAmt(e.value.rBase)} ${e.key}',
+                  Text('${_fmtAmt(e.value)} ${e.key} in reserve',
                       style: TextStyle(fontSize: 11.5, color: Bk.muted)),
                 ]),
               ),
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
                 Text(_fmtUsd(svc.availableLiquidityUsd(e.key)),
                     style: const TextStyle(fontWeight: FontWeight.w700, color: Bk.text)),
-                Text('fees ${_fmtUsd(e.value.feesUsd)}', style: TextStyle(fontSize: 11, color: Bk.faint)),
+                Text('fees ${_fmtUsd(svc.pool.feesUsd[e.key] ?? 0)}', style: TextStyle(fontSize: 11, color: Bk.faint)),
               ]),
             ]),
           ),

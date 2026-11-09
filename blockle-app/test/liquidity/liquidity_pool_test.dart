@@ -1,109 +1,84 @@
-// Blockle Liquidity treasury/AMM — the fee→liquidity→swap math.
+// Blockle Liquidity treasury — ONE BLOCK price across currencies, fee intake, swap.
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/liquidity/liquidity_pool.dart';
 
 void main() {
-  group('seed + pricing', () {
-    test('a new pool opens BLOCK at \$0.001 and draws from the 50k treasury', () {
+  group('single BLOCK price', () {
+    test('opens at \$0.001 with a 50k-BLOCK treasury', () {
       final p = LiquidityPool();
       expect(p.blockTreasury, 50000.0);
-      p.ensurePool('USDC', 1.0);
-      final price = p.blockPriceUsd('USDC', 1.0)!;
-      expect(price, closeTo(0.001, 1e-9)); // $0.001 opening
-      expect(p.blockTreasury, 50000.0 - kPerPoolSeedBlock); // deployed from treasury
-      expect(p.deployedBlock, closeTo(kPerPoolSeedBlock, 1e-9));
+      expect(p.blockPriceUsd, closeTo(0.001, 1e-12));
     });
 
-    test('seed holds across coins at any coin price (ETH @ \$2000)', () {
+    test('fees lift the ONE price uniformly across every currency', () {
       final p = LiquidityPool();
-      p.ensurePool('ETH', 2000.0);
-      expect(p.blockPriceUsd('ETH', 2000.0)!, closeTo(0.001, 1e-9));
-    });
-
-    test('treasury + deployed BLOCK always sums to 50,000', () {
-      final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      p.ensurePool('SOL', 90.0);
-      p.ensurePool('ETH', 2000.0);
-      expect(p.blockTreasury + p.deployedBlock, closeTo(50000.0, 1e-6));
+      p.accrueFee('USDC', 500, 1.0); // $500 fees => +$0.01 over 50k
+      expect(p.blockPriceUsd, closeTo(0.001 + 500 / 50000, 1e-12));
+      // BLOCK is worth the SAME in USDC and SOL (no per-pool divergence).
+      p.accrueFee('SOL', 90, 90.0);
+      final qU = p.quote('BLOCK', 'USDC', 100, 1.0);
+      final qS = p.quote('BLOCK', 'SOL', 100, 90.0);
+      expect(qU.amountOut * 1.0, closeTo(qS.amountOut * 90.0, 1e-6)); // equal USD value
+      expect(qU.blockPriceUsd, closeTo(qS.blockPriceUsd, 1e-12)); // same price
     });
   });
 
-  group('fees deepen liquidity + raise BLOCK', () {
-    test('accruing a fee adds coin-side reserve and nudges BLOCK price up', () {
+  group('fees + liquidity', () {
+    test('a fee adds coin-side reserve; liquidity is reported in USD', () {
       final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      final before = p.blockPriceUsd('USDC', 1.0)!;
-      p.accrueFee('USDC', 100.0, 1.0); // $100 of fees
-      final after = p.blockPriceUsd('USDC', 1.0)!;
-      expect(after, greaterThan(before));
-      expect(p.availableLiquidityUsd('USDC', 1.0), greaterThan(100.0));
-      expect(p.totalFeesUsd, 100.0);
-    });
-
-    test('fee below a known price is accrued in base units correctly', () {
-      final p = LiquidityPool();
-      p.accrueFee('SOL', 9.0, 90.0); // $9 fee at $90/SOL => +0.1 SOL
-      final pool = p.pools['SOL']!;
-      // seed base + 0.1 SOL
-      expect(p.availableLiquidityUsd('SOL', 90.0), closeTo(pool.rBase * 90.0, 1e-9));
+      p.accrueFee('SOL', 9, 90.0); // $9 @ $90 => 0.1 SOL
+      expect(p.reserves['SOL'], closeTo(0.1, 1e-9));
+      expect(p.availableLiquidityUsd('SOL', 90.0), closeTo(9.0, 1e-6));
+      expect(p.totalFeesUsd, 9.0);
     });
   });
 
-  group('swap (constant product)', () {
-    test('BLOCK -> USDC returns coin and preserves x*y=k', () {
+  group('swap', () {
+    test('BLOCK -> coin pays out at the one price, bounded by the reserve', () {
       final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      p.accrueFee('USDC', 1000.0, 1.0); // deepen so there is real liquidity
-      final pool = p.pools['USDC']!;
-      final kBefore = pool.k;
-      final q = p.swap('BLOCK', 'USDC', 100.0, 1.0);
+      p.accrueFee('USDC', 1000, 1.0);
+      final q = p.swap('BLOCK', 'USDC', 100, 1.0);
       expect(q.ok, isTrue);
-      expect(q.amountOut, greaterThan(0));
-      expect(pool.k, closeTo(kBefore, kBefore * 1e-6)); // invariant holds
-      expect(pool.rBlock, closeTo(/*seed+100*/ kPerPoolSeedBlock + 100, 1e-6));
+      // 100 BLOCK * $0.001.. / $1 ≈ small USDC amount
+      expect(q.amountOut, closeTo(100 * p.blockPriceUsd / 1.0, 1e-6));
+      expect(p.blockTreasury, closeTo(50100, 1e-6)); // BLOCK came in
     });
 
-    test('a round-trip never PROFITS (zero swap fee => lossless, not a money pump)', () {
+    test('round-trip is lossless (fixed price, never a money pump)', () {
       final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      p.accrueFee('USDC', 5000.0, 1.0);
-      final out = p.swap('BLOCK', 'USDC', 500.0, 1.0).amountOut;
+      p.accrueFee('USDC', 5000, 1.0);
+      final out = p.swap('BLOCK', 'USDC', 500, 1.0).amountOut;
       final back = p.swap('USDC', 'BLOCK', out, 1.0).amountOut;
-      expect(back, lessThanOrEqualTo(500.0 + 1e-6)); // can never extract value
-      expect(back, closeTo(500.0, 1e-3)); // zero swap fee: recovers the input
+      expect(back, closeTo(500, 1e-6));
     });
 
-    test('swapping a coin with no pool is refused (no fabricated liquidity)', () {
+    test('swapping a coin with no reserve is refused', () {
       final p = LiquidityPool();
-      final q = p.quote('BLOCK', 'DOGE', 10.0, 0.1);
+      final q = p.quote('BLOCK', 'DOGE', 10, 0.1);
       expect(q.ok, isFalse);
-      expect(q.reason, contains('liquidity'));
     });
 
     test('one side must be BLOCK', () {
       final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      final q = p.quote('USDC', 'ETH', 10.0, 1.0);
-      expect(q.ok, isFalse);
+      p.accrueFee('USDC', 100, 1.0);
+      expect(p.quote('USDC', 'ETH', 10, 1.0).ok, isFalse);
     });
   });
 
   group('persistence', () {
-    test('encode/decode round-trips reserves + treasury', () {
+    test('encode/decode round-trips reserves + treasury + fees', () {
       final p = LiquidityPool();
-      p.ensurePool('USDC', 1.0);
-      p.accrueFee('USDC', 250.0, 1.0);
-      final restored = LiquidityPool.decode(p.encode());
-      expect(restored.blockTreasury, closeTo(p.blockTreasury, 1e-9));
-      expect(restored.pools['USDC']!.rBase, closeTo(p.pools['USDC']!.rBase, 1e-9));
-      expect(restored.totalFeesUsd, closeTo(p.totalFeesUsd, 1e-9));
+      p.accrueFee('USDC', 250, 1.0);
+      final r = LiquidityPool.decode(p.encode());
+      expect(r.blockTreasury, closeTo(p.blockTreasury, 1e-9));
+      expect(r.reserves['USDC'], closeTo(p.reserves['USDC']!, 1e-9));
+      expect(r.totalFeesUsd, closeTo(p.totalFeesUsd, 1e-9));
     });
 
-    test('decode of junk/empty yields a fresh 50k treasury', () {
+    test('junk/empty decodes to a fresh 50k treasury', () {
       expect(LiquidityPool.decode(null).blockTreasury, 50000.0);
-      expect(LiquidityPool.decode('not json').blockTreasury, 50000.0);
+      expect(LiquidityPool.decode('nope').blockTreasury, 50000.0);
     });
   });
 }

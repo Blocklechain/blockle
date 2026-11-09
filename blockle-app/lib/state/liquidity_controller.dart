@@ -7,9 +7,11 @@
 // paths (bots, wallet) never depend on it.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 
 import '../liquidity/liquidity_pool.dart';
 import '../multichain/prices.dart';
@@ -29,8 +31,16 @@ class LiquidityService extends ChangeNotifier {
   static final LiquidityService instance = LiquidityService._();
 
   static const _storeKey = 'blockle_liquidity_v1';
+  static const _serverBase = 'https://blockle.org';
   final _store = const FlutterSecureStorage();
-  final PriceService _priceSvc = PriceService(serverBase: 'https://blockle.org');
+  final PriceService _priceSvc = PriceService(serverBase: _serverBase);
+
+  /// True once the SERVER treasury (authoritative, shared) has answered — its
+  /// reserves then replace the local preview. Custodial addresses + the on-chain
+  /// settlement gate come from the server too.
+  bool serverBacked = false;
+  Map<String, dynamic> custodial = const {};
+  String settlement = 'accounting'; // 'onchain' when the server gate is live
 
   LiquidityPool _pool = LiquidityPool();
   LiquidityPool get pool => _pool;
@@ -55,6 +65,31 @@ class LiquidityService extends ChangeNotifier {
     _ready = true;
     notifyListeners();
     unawaited(refreshPrices());
+    unawaited(_syncFromServer());
+  }
+
+  /// Adopt the SERVER's authoritative treasury state (shared across all wallets).
+  /// Best-effort: on any failure the local preview stays. Never throws.
+  Future<void> _syncFromServer() async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_serverBase/account/api/liquidity/state'))
+          .timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200) return;
+      final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+      if (j['blockTreasury'] == null) return;
+      _pool = LiquidityPool(
+        blockTreasury: (j['blockTreasury'] as num).toDouble(),
+        reserves: ((j['reserves'] as Map?) ?? const {})
+            .map((k, v) => MapEntry('$k'.toUpperCase(), (v as num).toDouble())),
+        feesUsd: ((j['fees'] as Map?) ?? const {})
+            .map((k, v) => MapEntry('$k'.toUpperCase(), (v as num).toDouble())),
+      );
+      custodial = (j['custodial'] as Map?)?.cast<String, dynamic>() ?? const {};
+      settlement = '${j['settlement'] ?? 'accounting'}';
+      serverBacked = true;
+      notifyListeners();
+    } catch (_) {/* keep the local preview */}
   }
 
   double priceOf(String coin) {
@@ -63,16 +98,13 @@ class LiquidityService extends ChangeNotifier {
     return _coinUsd[c] ?? 0;
   }
 
-  /// BLOCK's price in USD (blended across pools); null until a pool exists.
-  double? get blockPriceUsd => _pool.blockPriceUsdBlended(_coinUsd);
+  /// THE single BLOCK price in USD — identical across every currency.
+  double get blockPriceUsd => _pool.blockPriceUsd;
 
-  /// Total USD value locked across every coin pool (both sides).
+  /// Total USD value held by the treasury: every coin reserve + the BLOCK it holds.
   double get tvlUsd {
-    var usd = 0.0;
-    final bp = blockPriceUsd ?? kBlockSeedPriceUsd;
-    _pool.pools.forEach((coin, p) {
-      usd += p.rBase * priceOf(coin) + p.rBlock * bp;
-    });
+    var usd = _pool.blockTreasury * _pool.blockPriceUsd;
+    _pool.reserves.forEach((coin, units) => usd += units * priceOf(coin));
     return usd;
   }
 
@@ -86,10 +118,21 @@ class LiquidityService extends ChangeNotifier {
     if (px > 0) {
       _pool.accrueFee(c, feeUsd, px);
       _touch();
+      _postFee(c, feeUsd, px); // grow the shared server treasury too
     } else {
-      // price unknown → fetch, then accrue (never seed a pool at a wrong price).
       unawaited(_accrueWhenPriced(c, feeUsd));
     }
+  }
+
+  // Record the fee into the SERVER treasury (best-effort, rate-limited server-side).
+  void _postFee(String coin, double feeUsd, double coinUsd) {
+    if (!serverBacked) return;
+    unawaited(http
+        .post(Uri.parse('$_serverBase/account/api/liquidity/fee'),
+            headers: const {'content-type': 'application/json'},
+            body: jsonEncode({'coin': coin, 'feeUsd': feeUsd, 'coinUsd': coinUsd}))
+        .timeout(const Duration(seconds: 8))
+        .catchError((_) => http.Response('', 599)));
   }
 
   Future<void> _accrueWhenPriced(String coin, double feeUsd) async {
@@ -98,6 +141,7 @@ class LiquidityService extends ChangeNotifier {
     if (px > 0) {
       _pool.accrueFee(coin, feeUsd, px);
       _touch();
+      _postFee(coin, feeUsd, px);
     }
   }
 
@@ -107,12 +151,32 @@ class LiquidityService extends ChangeNotifier {
     return _pool.quote(from, to, amountIn, priceOf(coin));
   }
 
-  /// Execute a swap against the treasury reserves (updates the pool + persists).
-  /// Returns the applied quote. NOTE: this moves the TREASURY's reserves and
-  /// records the user's swap; wiring the on-chain settlement of the user's own
-  /// legs is gated (same posture as the bots' live mode).
-  SwapQuote swap(String from, String to, double amountIn) {
+  /// Execute a swap. When the server treasury is authoritative the swap runs
+  /// SERVER-SIDE (shared reserves, gated settlement) and the returned state is
+  /// adopted; otherwise it runs against the local preview. Fail-soft to local.
+  Future<SwapQuote> swap(String from, String to, double amountIn) async {
     final coin = (from.toUpperCase() == 'BLOCK' ? to : from);
+    if (serverBacked) {
+      try {
+        final r = await http
+            .post(Uri.parse('$_serverBase/account/api/liquidity/swap'),
+                headers: const {'content-type': 'application/json'},
+                body: jsonEncode({'from': from, 'to': to, 'amountIn': amountIn, 'coinUsd': priceOf(coin)}))
+            .timeout(const Duration(seconds: 12));
+        final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+        if (j['ok'] == true) {
+          unawaited(_syncFromServer()); // refresh reserves after the move
+          return SwapQuote(
+            ok: true,
+            amountIn: (j['amountIn'] as num?)?.toDouble() ?? amountIn,
+            amountOut: (j['amountOut'] as num?)?.toDouble() ?? 0,
+            assetIn: from.toUpperCase(), assetOut: to.toUpperCase(),
+            blockPriceUsd: (j['blockPriceUsd'] as num?)?.toDouble() ?? _pool.blockPriceUsd,
+          );
+        }
+        return SwapQuote(ok: false, reason: '${j['reason'] ?? 'Swap unavailable'}');
+      } catch (_) {/* fall through to local */}
+    }
     final q = _pool.swap(from, to, amountIn, priceOf(coin));
     if (q.ok) _touch();
     return q;
@@ -122,16 +186,16 @@ class LiquidityService extends ChangeNotifier {
       _pool.availableLiquidityUsd(coin, priceOf(coin));
 
   /// Coins that currently have real swap liquidity (a non-dust coin reserve).
-  List<String> get liquidCoins => _pool.pools.entries
-      .where((e) => e.value.rBase > 1e-4)
+  List<String> get liquidCoins => _pool.reserves.entries
+      .where((e) => e.value > 1e-4)
       .map((e) => e.key)
       .toList()
     ..sort((a, b) => availableLiquidityUsd(b).compareTo(availableLiquidityUsd(a)));
 
   // ---- prices ---------------------------------------------------------------
   Future<void> refreshPrices() async {
-    // Price the MoonPay set + any coin that already has a pool.
-    final want = {...kMoonPayCoins, ..._pool.pools.keys}.where((c) => !_stable.contains(c)).toList();
+    // Price the MoonPay set + any coin that already has a reserve.
+    final want = {...kMoonPayCoins, ..._pool.reserves.keys}.where((c) => !_stable.contains(c)).toList();
     await _fetchPrices(want);
   }
 

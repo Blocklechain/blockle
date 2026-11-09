@@ -14,6 +14,7 @@ import { makePaypal, entitlementFromEvent } from './paypal.js';
 import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
+import { makeLiquidity } from './liquidity.js';
 import { makePrices } from './prices.js';
 import { makeBotDelegations } from './botdelegate.js';
 import { MAINNET_CHAIN_IDS, mainnetEnabled } from './liveexec.js';
@@ -49,6 +50,7 @@ export function createApp(overrides = {}) {
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const moonpay = overrides.moonpay || makeMoonpay(process.env);
+  const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now });
   const prices = overrides.prices || makePrices({});
   // Ephemeral server-side bot-delegation registry (Stage 1: lifecycle only, no
   // key material). In-memory → a restart fail-closes every delegation.
@@ -432,6 +434,38 @@ export function createApp(overrides = {}) {
     try { return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant || 'search')); }
     catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
   });
+  // ---- Blockle Liquidity treasury (server-authoritative reserves) ----------
+  // Shared reserves, one BLOCK price across every currency, fed by the 0.05% bot
+  // fees. State + quote are open reads (CORS-open for the wallets); swap applies
+  // authoritative accounting (on-chain settlement is gated by LIQUIDITY_MAINNET).
+  on('GET', /^\/account\/api\/liquidity\/state$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    return json(res, 200, liquidity.state());
+  });
+  on('POST', /^\/account\/api\/liquidity\/quote$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    return json(res, 200, liquidity.quote(b.from, b.to, b.amountIn, b.coinUsd));
+  });
+  on('POST', /^\/account\/api\/liquidity\/swap$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('liqswap:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    try {
+      const r = await liquidity.swap({ from: b.from, to: b.to, amountIn: b.amountIn, coinUsd: b.coinUsd, userAddress: b.userAddress });
+      return json(res, r.ok ? 200 : 400, r);
+    } catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'swap failed') }); }
+  });
+  // Record a bot fee into the treasury. Rate-limited; coinUsd required for non-
+  // stable coins so a pool is never seeded at a wrong price.
+  on('POST', /^\/account\/api\/liquidity\/fee$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('liqfee:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    try { return json(res, 200, await liquidity.accrueFee(b.coin, b.feeUsd, b.coinUsd)); }
+    catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'fee failed') }); }
+  });
+
   // MoonPay transaction webhook: verify the HMAC signature with the webhook key, then record the
   // event. MoonPay calls this; no session. We only trust a verified payload.
   on('POST', /^\/account\/api\/moonpay\/webhook$/, async (req, res) => {
