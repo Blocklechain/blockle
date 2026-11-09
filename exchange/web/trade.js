@@ -24,6 +24,14 @@
   // ---- bootstrap ---------------------------------------------------------
   async function init() {
     EX.mountWalletBar($('walletBar'));
+    // Pull the LIVE MoonPay config (publishable key + pin the server-signed
+    // endpoint) once at startup — same as the web wallet / extension / Qt /
+    // Flutter, so the exchange never depends on a hand-edited config.js and
+    // buy/sell URLs are always HMAC-signed. Fire-and-forget; re-render when it
+    // lands so the buttons reflect live flags.
+    try {
+      if (MP && MP.loadRemoteConfig) MP.loadRemoteConfig().then(function () { try { renderMoonPay(); } catch (_) {} });
+    } catch (_) {}
     // Re-render on wallet connect/disconnect: my-orders AND the MoonPay bar
     // (so a freshly connected address flows into the widget links).
     EX.onChange(function () { refreshMine(); renderMoonPay(); });

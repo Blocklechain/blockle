@@ -187,23 +187,61 @@
     }
   }
 
+  // The accounts service hosts the live config + the server-side URL signer.
+  // Absolute URLs so the surface is IDENTICAL across every wallet (web wallet,
+  // extension, Qt, Flutter) — never a relative /api/moonpay/sign (unsigned).
+  const CONFIG_ENDPOINT = 'https://blockle.org/account/api/moonpay/config';
+  const SIGN_ENDPOINT = 'https://blockle.org/account/api/moonpay/sign';
+
   // Config defaults, merged over window.EXCHANGE_CONFIG.moonpay.
   const CONFIG_DEFAULTS = {
     apiKey: DEFAULT_API_KEY,
-    signingEndpoint: '',     // e.g. https://blockle.org/api/moonpay/sign
+    signingEndpoint: '',     // pinned to SIGN_ENDPOINT once /config loads
     theme: 'dark',
     currencyCodes: null,     // per-chain override map (same shape as DEFAULT_MAP)
     baseCurrencyCode: 'usd',
   };
 
-  // Synchronous config read from the exchange's runtime config (no Store here).
+  // In-memory cache of the remote /config response — the SOURCE OF TRUTH for the
+  // live publishable key once loadRemoteConfig() has run. Public values only,
+  // never a secret. Mirrors web/wallet/vendor/moonpay.js + the extension.
+  let _remote = null;
+
+  // Pull the live publishable key + flags from the accounts service and cache
+  // them. CORS-open, no auth. On any failure we keep whatever we had (offline
+  // fallback = EXCHANGE_CONFIG / the committed pk_test key).
+  async function loadRemoteConfig(fetchFn, endpoint) {
+    const f = fetchFn || (typeof fetch !== 'undefined' ? fetch : null);
+    if (!f) return _remote;
+    try {
+      const res = await f(endpoint || CONFIG_ENDPOINT, { credentials: 'omit' });
+      if (!res || !res.ok) return _remote;
+      const data = await res.json();
+      if (data && data.publishableKey) {
+        _remote = { enabled: !!data.enabled, live: !!data.live, apiKey: data.publishableKey };
+      }
+    } catch {}
+    return _remote;
+  }
+
+  // Synchronous config read. Order of precedence: the live /config (remote) wins
+  // for the key AND pins the signing endpoint to the live /sign route; then any
+  // window.EXCHANGE_CONFIG.moonpay overrides; then the defaults.
   function loadConfig() {
     let saved = {};
     try {
       const cfg = global.EXCHANGE_CONFIG;
       if (cfg && cfg.moonpay) saved = cfg.moonpay || {};
     } catch {}
-    return Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    const cfg = Object.assign({}, CONFIG_DEFAULTS, saved || {});
+    // Remote /config wins: live pk + ALWAYS the server-signed endpoint, so buy/
+    // sell URLs are HMAC-signed regardless of what config.js does.
+    if (_remote && _remote.apiKey) {
+      cfg.apiKey = _remote.apiKey;
+      cfg.signingEndpoint = SIGN_ENDPOINT;
+      cfg.live = _remote.live;
+    }
+    return cfg;
   }
 
   function effectiveMap(cfg) {
@@ -274,6 +312,9 @@
     buildSellUrl,
     fetchSignedUrl,
     loadConfig,
+    loadRemoteConfig,
+    SIGN_ENDPOINT,
+    CONFIG_ENDPOINT,
     buyUrl,
     sellUrl,
   };
