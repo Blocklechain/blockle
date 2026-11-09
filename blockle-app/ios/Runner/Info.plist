@@ -47,6 +47,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Blockle Wallet uses the camera to scan QR codes — wallet addresses, WalletConnect sessions, and dApp connections — and to take a profile photo.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Blockle Wallet may request the microphone during identity verification when buying crypto with a card.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Blockle Wallet needs access to your photos so you can import a QR code image (e.g. a wallet address) or choose a profile picture.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

@@ -2120,9 +2120,33 @@ class _MoonPayRampScreenState extends State<_MoonPayRampScreen> {
           initialUrlRequest: URLRequest(url: WebUri(widget.url)),
           initialSettings: InAppWebViewSettings(
             javaScriptEnabled: true,
-            // MoonPay's card flow may hand off to the bank's 3-D Secure page.
             useOnLoadResource: false,
+            // KYC identity capture (selfie / document) runs in the page — the
+            // camera must play inline without a user gesture, and the iframe
+            // MoonPay embeds needs camera/microphone/payment permission. Without
+            // this the BUY flow silently stalls at verification (sell rarely hits
+            // the document step, which is why it looked like only buy was broken).
+            mediaPlaybackRequiresUserGesture: false,
+            allowsInlineMediaPlayback: true,
+            iframeAllow: 'camera; microphone; payment; geolocation',
+            iframeAllowFullscreen: true,
+            // 3-D Secure / Apple Pay / bank-link steps open popups.
+            supportMultipleWindows: true,
+            javaScriptCanOpenWindowsAutomatically: true,
           ),
+          // GRANT the camera/microphone the KYC step requests (there is no card
+          // data here — MoonPay hosts the whole flow; we just host the view).
+          onPermissionRequest: (c, req) async => PermissionResponse(
+            resources: req.resources,
+            action: PermissionResponseAction.GRANT,
+          ),
+          // A popup (3DS / Apple Pay / Plaid) — load it in THIS webview so the
+          // payment step completes instead of dead-ending on a blank window.
+          onCreateWindow: (c, win) async {
+            final u = win.request.url;
+            if (u != null) c.loadUrl(urlRequest: URLRequest(url: u));
+            return false;
+          },
           onLoadStart: (c, u) => _onNav(u),
           onUpdateVisitedHistory: (c, u, _) => _onNav(u),
         ),

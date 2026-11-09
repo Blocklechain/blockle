@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Android 13+ runtime notification permission (bot profit banners). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Camera for MoonPay buy-with-card identity verification (in-webview KYC). -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:label="Blockle Wallet"
         android:name="${applicationName}"
