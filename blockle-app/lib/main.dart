@@ -11,7 +11,7 @@ import 'services/local_notifications.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
-import 'widgets/particle_logo.dart';
+import 'widgets/blockle_3d_logo.dart';
 
 /// App-wide navigator key — lets the AgentService render its REQUIRED confirm
 /// modal from outside the widget tree (it runs in a background service).
@@ -141,7 +141,7 @@ class _Splash extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            ParticleLogo(size: 180),
+            Blockle3DLogo(size: 220),
             SizedBox(height: 24),
             Text('Blockle Wallet',
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),

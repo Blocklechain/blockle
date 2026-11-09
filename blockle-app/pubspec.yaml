@@ -25,6 +25,9 @@ dependencies:
   # OS-level banners (iOS UNUserNotificationCenter + Android notifications) so a
   # bot's realized-profit ping reaches the user even with the app backgrounded.
   flutter_local_notifications: ^17.2.3
+  # Rotatable 3D BLOCKLE logo (GLB) on the splash — Google <model-viewer> in a
+  # webview, drag-to-rotate + auto-rotate. Model built in Blender from the vector mark.
+  model_viewer_plus: ^1.9.3
 
 dev_dependencies:
   flutter_lints: ^4.0.0
@@ -50,3 +53,4 @@ flutter:
     - assets/provider/
     - assets/icons/
     - assets/bots/
+    - assets/model/
