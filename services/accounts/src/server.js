@@ -15,6 +15,8 @@ import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makeLiquidity } from './liquidity.js';
+import { settleSwap, liquidityMainnet } from './liquidity_relayer.js';
+import { rpcSenderFor } from './liverunner.js';
 import { makePrices } from './prices.js';
 import { makeBotDelegations } from './botdelegate.js';
 import { MAINNET_CHAIN_IDS, mainnetEnabled } from './liveexec.js';
@@ -464,6 +466,25 @@ export function createApp(overrides = {}) {
     const b = await readJson(req, 4 * 1024).catch(() => ({}));
     try { return json(res, 200, await liquidity.accrueFee(b.coin, b.feeUsd, b.coinUsd)); }
     catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'fee failed') }); }
+  });
+  // SETTLE a swap on-chain: the user posts the txid of their deposit to the
+  // treasury hot wallet; the relayer verifies it + pays out the output asset.
+  // GATED by LIQUIDITY_MAINNET (returns 503 while the gate is off — no funds move).
+  on('POST', /^\/account\/api\/liquidity\/settle$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!liquidityMainnet(process.env)) return json(res, 503, { ok: false, error: 'on-chain settlement is off' });
+    if (!loginIpRl.allow('liqsettle:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    try {
+      const rec = await settleSwap(String(b.id || ''), String(b.depositTxid || ''), {
+        store,
+        rpcFor: (chainId) => rpcSenderFor(chainId),
+        seedHex: process.env.LIQUIDITY_TREASURY_SEED || '',
+        env: process.env,
+        now,
+      });
+      return json(res, 200, rec);
+    } catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'settle failed') }); }
   });
 
   // MoonPay transaction webhook: verify the HMAC signature with the webhook key, then record the

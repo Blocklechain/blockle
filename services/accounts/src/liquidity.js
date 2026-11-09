@@ -146,10 +146,15 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     }
     await save(t);
     const id = crypto.randomBytes(9).toString('base64url');
+    // Gate OFF: authoritative accounting only ('recorded'). Gate ON: the user must
+    // deposit the input asset to our hot wallet, then the relayer verifies + pays
+    // out ('awaiting-deposit' → settled). depositCoin = the input asset.
+    const depositCoin = (String(from).toUpperCase() === 'BLOCK' ? from : from).toUpperCase();
     const rec = {
       id, from: q.assetIn, to: q.assetOut, amountIn: q.amountIn, amountOut: q.amountOut,
-      userAddress: userAddress || null, depositAddress: depositAddressFor(coin),
-      status: mainnet ? 'settling' : 'recorded', ts: now(),
+      userAddress: userAddress || null,
+      depositAddress: depositAddressFor(depositCoin),
+      status: mainnet ? 'awaiting-deposit' : 'recorded', ts: now(),
     };
     await store.put(COLL, 'swap:' + id, rec);
     return { ...q, ...rec };
