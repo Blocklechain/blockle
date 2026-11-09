@@ -125,5 +125,28 @@ await (async () => {
     ok('deposit txid replay across swaps is refused', replay.status === 'failed' && /already used by swap p1/.test(replay.reason));
   }
 
+  // Two concurrent settle calls for the same swap (poll + auto-resume) pay ONCE.
+  {
+    const store = fakeStore();
+    const treasury = keys.evmAddress;
+    const user = '0x' + '44'.repeat(20);
+    let sends = 0;
+    const rpc = async (m) => {
+      if (m === 'eth_getTransactionReceipt') return { status: '0x1' };
+      if (m === 'eth_getTransactionByHash') return { to: treasury, value: '0x' + (10n ** 18n).toString(16) };
+      if (m === 'eth_getTransactionCount') return '0x0';
+      if (m === 'eth_gasPrice') return '0x3b9aca00';
+      if (m === 'eth_sendRawTransaction') { sends += 1; await new Promise((r) => setTimeout(r, 20)); return '0x' + 'aa'.repeat(32); }
+      return null;
+    };
+    await store.put('liquidity', 'swap:c1', { id: 'c1', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: user, depositAddress: treasury, status: 'awaiting-deposit' });
+    const dep = '0x' + 'cc'.repeat(32);
+    const [a, b] = await Promise.all([
+      settleSwap('c1', dep, { store, rpcFor: () => rpc, seedHex: SEED, env: ON }),
+      settleSwap('c1', dep, { store, rpcFor: () => rpc, seedHex: SEED, env: ON }),
+    ]);
+    ok('concurrent settles for one swap broadcast a single payout', sends === 1 && a.status === 'settled' && b.status === 'settled');
+  }
+
   console.log(`liquidity_relayer.test.js: ${pass} checks passed`);
 })();

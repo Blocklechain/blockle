@@ -17,6 +17,20 @@ class Chain {
   /// `https://blockle.org/api` — the non-explorer API root (dex, token, submit).
   String get _apiRoot => apiBase.replaceFirst(RegExp(r'/explorer$'), '');
 
+  /// The node's submit RPC (and the WASM builder) spell a txid as the raw hash
+  /// bytes; the explorer displays and looks up the byte-REVERSED form. Same tx,
+  /// two spellings — this converts one to the other (64-hex only; anything
+  /// else is returned unchanged).
+  static String flipTxid(String txid) {
+    final t = txid.trim().toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(t)) return txid;
+    final b = StringBuffer();
+    for (var i = t.length - 2; i >= 0; i -= 2) {
+      b.write(t.substring(i, i + 2));
+    }
+    return b.toString();
+  }
+
   static String fmt(num? base, {int maxFrac = 8}) {
     if (base == null) return '—';
     final v = base / coin;
@@ -181,16 +195,26 @@ class Chain {
   /// explorer wraps the tx as `{block_hash, tx: {...}}` (block_hash null while
   /// it is still in the mempool), which this unwraps so callers can read
   /// `mined` (bool), `height`, `confirmations`, `block_hash`, `inputs`,
-  /// `outputs`, `fee` directly.
+  /// `outputs`, `fee` directly. Accepts either txid spelling (see [flipTxid]):
+  /// the given one is tried first, then the byte-reversed one. `txid` in the
+  /// result is the explorer's (display) spelling.
   Future<Map<String, dynamic>?> tx(String txid) async {
-    final t = await _get('/tx/$txid');
-    if (t == null || t['error'] != null) return null;
+    var t = await _get('/tx/$txid');
+    var found = txid;
+    if (t == null || t['error'] != null) {
+      final alt = flipTxid(txid);
+      if (alt == txid) return null;
+      t = await _get('/tx/$alt');
+      if (t == null || t['error'] != null) return null;
+      found = alt;
+    }
     final inner = t['tx'] is Map ? (t['tx'] as Map).cast<String, dynamic>() : t;
     final blockHash = t['block_hash'] ?? inner['block_hash'];
     final height = inner['block_height'] ?? inner['height'] ?? t['height'];
     final confs = inner['confirmations'] ?? t['confirmations'];
     return {
       ...inner,
+      'txid': found,
       'block_hash': blockHash,
       'height': height,
       'confirmations': confs,
@@ -215,6 +239,14 @@ class Chain {
       final msg = e is Map ? (e['message'] ?? e.toString()) : (e ?? 'submit failed');
       throw Exception(msg.toString());
     }
-    return j['result'] ?? j;
+    final res = j['result'] ?? j;
+    // Normalise the accepted txid to the explorer's (display) spelling so the
+    // queue, history and explorer links all agree; keep the node's under
+    // `txidRpc`.
+    if (res is Map && res['txid'] is String) {
+      final rpc = res['txid'] as String;
+      return {...res.cast<String, dynamic>(), 'txid': flipTxid(rpc), 'txidRpc': rpc};
+    }
+    return res;
   }
 }

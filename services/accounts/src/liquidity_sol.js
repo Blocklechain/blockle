@@ -145,6 +145,27 @@ export async function payoutSol({ seedHex, toAddress, amountSol, rpc, env = proc
   const from = sol.addressFromSeed(seed);
   const lam = lamports(amountSol);
   if (lam <= 0n) throw new Error('solana: zero payout');
+  // Pre-flight the treasury balance so an underfunded hot wallet fails with a
+  // clear, actionable reason instead of an opaque RPC/rent error. A system
+  // account must either empty completely or stay above the rent-exempt minimum.
+  const FEE = 5000n;
+  let bal = null, rent = 890880n;
+  try {
+    const b = await rpc('getBalance', [from, { commitment: 'confirmed' }]);
+    const v = b && typeof b === 'object' ? b.value : b;
+    if (v != null) bal = BigInt(v);
+  } catch (_) {/* best-effort */}
+  try { const r = await rpc('getMinimumBalanceForRentExemption', [0]); if (r != null) rent = BigInt(r); } catch (_) {}
+  if (bal != null) {
+    const need = lam + FEE;
+    if (bal < need) {
+      throw new Error(`treasury SOL wallet ${from} is underfunded: has ${Number(bal) / 1e9} SOL, payout needs ${Number(need) / 1e9} SOL — fund it`);
+    }
+    const left = bal - need;
+    if (left > 0n && left < rent) {
+      throw new Error(`treasury SOL wallet ${from} would drop below Solana's rent-exempt minimum (${Number(rent) / 1e9} SOL); fund it with at least ${Number(rent - left) / 1e9} more SOL`);
+    }
+  }
   const bh = await rpc('getLatestBlockhash', [{ commitment: 'finalized' }]);
   const blockhash = bh && (bh.value ? bh.value.blockhash : bh.blockhash);
   if (!blockhash) throw new Error('solana: could not fetch a recent blockhash');

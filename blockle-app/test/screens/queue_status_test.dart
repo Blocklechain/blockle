@@ -13,8 +13,19 @@ const mined = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const mempool = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const unknown = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
+// a tx indexed by the explorer ONLY under its byte-reversed (display) spelling
+const rawOnly = 'a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718a1b2c3d4e5f60718';
+final rawOnlyDisplay = Chain.flipTxid(rawOnly);
+
 Chain fakeChain() => Chain(client: MockClient((req) async {
       final p = req.url.path;
+      if (req.method == 'POST' && p.endsWith('/api/submit')) {
+        return http.Response(jsonEncode({'error': null, 'id': 'ext', 'result': {'accepted': true, 'txid': mined}}), 200);
+      }
+      if (p.endsWith('/tx/$rawOnlyDisplay')) {
+        // known to the explorer ONLY under the reversed spelling
+        return http.Response(jsonEncode({'block_hash': 'ee' * 32, 'tx': {'block_height': 1, 'confirmations': 2, 'txid': rawOnlyDisplay}}), 200);
+      }
       if (p.endsWith('/tx/$mined')) {
         return http.Response(jsonEncode({
           'block_hash': 'ff' * 32,
@@ -47,6 +58,29 @@ void main() {
     final m = await c.tx(mempool);
     expect(m?['mined'], isFalse);
     expect(await c.tx(unknown), isNull);
+  });
+
+  test('flipTxid reverses byte order and is its own inverse; non-txids pass through', () {
+    expect(Chain.flipTxid('f02f46f73613d98ab45de4f3e38c633ba5f1376028d9020a8ced78f366e8d7db'),
+        'dbd7e866f378ed8c0a02d9286037f1a53b638ce3f3e45db48ad91336f7462ff0');
+    expect(Chain.flipTxid(Chain.flipTxid(mined)), mined);
+    expect(Chain.flipTxid('nope'), 'nope');
+  });
+
+  test('a txid the node returned (raw order) is found under the explorer spelling', () async {
+    final c = fakeChain();
+    expect(rawOnlyDisplay, isNot(rawOnly));
+    final byRaw = await c.tx(rawOnly);
+    expect(byRaw?['mined'], isTrue);
+    expect(byRaw?['confirmations'], 2);
+    expect(byRaw?['txid'], rawOnlyDisplay);
+  });
+
+  test('submit normalises the accepted txid to the explorer spelling', () async {
+    final c = fakeChain();
+    final res = await c.submit('00');
+    expect(res['txid'], Chain.flipTxid(mined));
+    expect(res['txidRpc'], mined);
   });
 
   test('queue status: mined → confirmed, mempool → pending, unknown → not found after grace', () async {

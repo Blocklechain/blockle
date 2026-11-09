@@ -19,6 +19,17 @@ import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const COIN = 100000000n; // base units per BLOCK
+
+/// The node's RPC (submitrawtransaction) and the WASM builder report a txid as
+/// the raw hash bytes, while the explorer displays — and looks up — the
+/// byte-REVERSED form (display_hash). Same tx, two spellings. Helpers below
+/// accept either and report the explorer (display) form, which is what users
+/// and wallets can actually look up.
+export function flipTxid(txid) {
+  const t = String(txid || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(t)) return t;
+  return Buffer.from(t, 'hex').reverse().toString('hex');
+}
 const DEFAULT_FEE = 100000n; // 0.001 BLOCK flat fee
 const require = createRequire(import.meta.url);
 
@@ -102,7 +113,11 @@ async function getJson(chainBase, path, fetchFn) {
 // "not confirmed yet" so the wallet's pending-settlement loop simply retries.
 export async function verifyBlockDeposit({ txid, expectTo, minBlock, chainBase, fetchFn = globalThis.fetch }) {
   if (!/^[0-9a-f]{64}$/i.test(String(txid || ''))) return { ok: false, reason: 'bad deposit txid' };
-  const j = await getJson(chainBase, '/tx/' + encodeURIComponent(txid), fetchFn);
+  // Wallets post the txid the node's submit returned (raw byte order); the
+  // explorer indexes the reversed display form. Try the given spelling, then
+  // the flipped one.
+  let j = await getJson(chainBase, '/tx/' + encodeURIComponent(txid), fetchFn);
+  if (!j || j.error) j = await getJson(chainBase, '/tx/' + flipTxid(txid), fetchFn);
   if (!j || j.error) return { ok: false, reason: 'tx not found' };
   const tx = (j.tx && typeof j.tx === 'object') ? j.tx : j;
   const wrapped = Object.prototype.hasOwnProperty.call(j, 'block_hash') || Object.prototype.hasOwnProperty.call(tx, 'block_height');
@@ -157,6 +172,7 @@ export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chai
     throw new Error('BLOCK payout broadcast rejected: ' + msg);
   }
   const res = bj && typeof bj.result === 'object' && bj.result ? bj.result : bj;
-  const txid = (res && (res.txid || (typeof bj.result === 'string' ? bj.result : null))) || built.txid;
-  return { txid, raw };
+  const rpcTxid = (res && (res.txid || (typeof bj.result === 'string' ? bj.result : null))) || built.txid;
+  // Report the explorer-visible (display) spelling; keep the node's for audit.
+  return { txid: flipTxid(rpcTxid), txidRpc: rpcTxid, raw };
 }

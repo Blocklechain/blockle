@@ -83,16 +83,31 @@
 
     // Look up a transaction by id. Returns the tx JSON (with block height +
     // confirmations if mined) or null if not found / still unconfirmed.
+    // The node's submit RPC (and the WASM builder) spell a txid as the raw hash
+    // bytes; the explorer displays and looks up the byte-REVERSED form. Convert
+    // between the two (64-hex only; anything else is returned unchanged).
+    flipTxid(txid) {
+        const t = String(txid || '').trim().toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(t)) return txid;
+        let out = '';
+        for (let i = t.length - 2; i >= 0; i -= 2) out += t.slice(i, i + 2);
+        return out;
+    },
+    // Look up a tx by id — accepts either spelling (given first, then flipped).
     async tx(txid) {
         const base = await endpoint();
-        try {
-            const r = await fetch(base + '/tx/' + txid, { headers: { accept: 'application/json' } });
-            if (!r.ok) return null;
-            const j = await r.json();
-            return j && !j.error ? j : null;
-        } catch {
-            return null;
-        }
+        const get = async (id) => {
+            try {
+                const r = await fetch(base + '/tx/' + id, { headers: { accept: 'application/json' } });
+                if (!r.ok) return null;
+                const j = await r.json();
+                return j && !j.error ? j : null;
+            } catch { return null; }
+        };
+        const first = await get(txid);
+        if (first) return first;
+        const alt = Chain.flipTxid(txid);
+        return alt === txid ? null : get(alt);
     },
 
     // List native AMM pools (DEX). Returns [] on failure.
@@ -122,7 +137,13 @@
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok || j.error) throw new Error((j.error && (j.error.message || j.error)) || 'submit failed');
-        return j.result || j;
+        const res = j.result || j;
+        // Normalise the accepted txid to the explorer's (display) spelling so
+        // activity/explorer links resolve; keep the node's under txidRpc.
+        if (res && typeof res === 'object' && typeof res.txid === 'string') {
+          return Object.assign({}, res, { txid: Chain.flipTxid(res.txid), txidRpc: res.txid });
+        }
+        return res;
       } catch (e) {
         throw new Error(e.message || 'network error');
       }

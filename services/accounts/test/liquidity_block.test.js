@@ -4,7 +4,7 @@
 
 import assert from 'node:assert';
 import { createRequire } from 'node:module';
-import { ensureTreasuryWallet, verifyBlockDeposit, payoutBlock } from '../src/liquidity_block.js';
+import { ensureTreasuryWallet, verifyBlockDeposit, payoutBlock, flipTxid } from '../src/liquidity_block.js';
 
 const require = createRequire(import.meta.url);
 const wasm = require('../src/vendor/blockle_wasm.js');
@@ -63,6 +63,16 @@ await (async () => {
     ok('bare {outputs} explorer shape still accepted', bare.ok);
     const bad = await verifyBlockDeposit({ txid: '0xd', expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([]) });
     ok('non-txid deposit id rejected without a lookup', !bad.ok && /bad deposit txid/.test(bad.reason));
+    // The wallet posts the node's raw-order txid; the explorer only knows the
+    // reversed (display) spelling — the lookup must try both.
+    const RAW = 'dbd7e866f378ed8c0a02d9286037f1a53b638ce3f3e45db48ad91336f7462ff0';
+    const DISPLAY = 'f02f46f73613d98ab45de4f3e38c633ba5f1376028d9020a8ced78f366e8d7db';
+    ok('flipTxid reverses byte order', flipTxid(RAW) === DISPLAY && flipTxid(DISPLAY) === RAW && flipTxid('zz') === 'zz');
+    const onlyDisplay = async (url) => String(url).endsWith('/tx/' + DISPLAY)
+      ? { ok: true, json: async () => ({ block_hash: 'ff'.repeat(32), tx: { block_height: 5, outputs: [{ address: treasury, amount: 100000000 }] } }) }
+      : { ok: false, json: async () => ({ error: 'no such transaction' }) };
+    const flipped = await verifyBlockDeposit({ txid: RAW, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: onlyDisplay });
+    ok('deposit posted in raw txid order is found under the explorer spelling', flipped.ok);
   }
 
   // Payout: gate OFF refuses; gate ON builds an ML-DSA transfer from the treasury
@@ -84,12 +94,13 @@ await (async () => {
         // biz /api/submit reads the signed tx from `raw` (a `rawtx` body is a 400).
         const body = JSON.parse(init.body);
         if (!body.raw) return { ok: false, status: 400, json: async () => ({ error: 'missing raw transaction' }) };
-        return { ok: true, json: async () => ({ error: null, result: { accepted: true, txid: 'broadcast-ok' } }) };
+        return { ok: true, json: async () => ({ error: null, result: { accepted: true, txid: 'dbd7e866f378ed8c0a02d9286037f1a53b638ce3f3e45db48ad91336f7462ff0' } }) };
       }
       return { ok: false, json: async () => ({}) };
     };
     const r = await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn, env: ON });
-    ok('BLOCK payout builds+signs+broadcasts (submit body uses `raw`)', r.txid === 'broadcast-ok' && !!r.raw);
+    ok('BLOCK payout builds+signs+broadcasts (submit body uses `raw`)', !!r.raw && r.txidRpc === 'dbd7e866f378ed8c0a02d9286037f1a53b638ce3f3e45db48ad91336f7462ff0');
+    ok('payout txid is reported in the explorer (display) spelling', r.txid === 'f02f46f73613d98ab45de4f3e38c633ba5f1376028d9020a8ced78f366e8d7db');
 
     // A rejected broadcast must THROW (never a phantom txid / phantom 'settled').
     const rejectFetch = async (url) => String(url).includes('/utxos/')

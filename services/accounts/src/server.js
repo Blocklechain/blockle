@@ -65,6 +65,10 @@ export function createApp(overrides = {}) {
   const acctRl = new RateLimiter({ windowMs: cfg.rateWindowMs, max: cfg.maxLoginPerAccount, lockoutBaseMs: cfg.lockoutBaseMs, lockThreshold: 4 }, now);
   // Per-recipient cap so register/reset can't be used to mail-bomb an address.
   const mailRl = new RateLimiter({ windowMs: cfg.rateWindowMs, max: 5, lockoutBaseMs: cfg.lockoutBaseMs }, now);
+  // Liquidity /settle is POLLED by wallets (every ~15 s per pending swap, plus an
+  // auto-resume on app open), so it gets its own generous window — sharing the
+  // 30-per-15-min login limiter starved the polling and left swaps un-settled.
+  const liqSettleRl = new RateLimiter({ windowMs: 60 * 1000, max: 120, lockoutBaseMs: 0 }, now);
 
   const emailIndex = {
     get: (email) => store.get('emails', email.toLowerCase()),
@@ -477,7 +481,7 @@ export function createApp(overrides = {}) {
   on('POST', /^\/account\/api\/liquidity\/settle$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
     if (!liquidityMainnet(process.env)) return json(res, 503, { ok: false, error: 'on-chain settlement is off' });
-    if (!loginIpRl.allow('liqsettle:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    if (!liqSettleRl.allow('liqsettle:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 4 * 1024).catch(() => ({}));
     try {
       const rec = await settleSwap(String(b.id || ''), String(b.depositTxid || ''), {

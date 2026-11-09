@@ -80,6 +80,8 @@ await (async () => {
     let sent = null;
     const rpc = async (m, p) => {
       if (m === 'getLatestBlockhash') return { value: { blockhash: BLOCKHASH, lastValidBlockHeight: 1 } };
+      if (m === 'getBalance') return { value: 5_000_000_000 };
+      if (m === 'getMinimumBalanceForRentExemption') return 890880;
       if (m === 'sendTransaction') { sent = p; return 'SIG_OK'; }
       return null;
     };
@@ -92,6 +94,26 @@ await (async () => {
     ok('signed message pays USER 0.25 SOL from the treasury', d.from === treasury && d.to === USER && d.lamports === 250000000n);
     const pub = crypto.createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(C.base58decode(treasury))]), format: 'der', type: 'spki' });
     ok('ed25519 signature verifies under the treasury key', crypto.verify(null, msg, pub, sig) === true);
+  }
+
+  // Underfunded / rent-trapped treasury fails BEFORE broadcasting, with a reason
+  // that names the wallet to fund (the live case: 0.001 SOL in, 0.00093 out).
+  {
+    const mk = (balance) => async (m) => {
+      if (m === 'getBalance') return { value: balance };
+      if (m === 'getMinimumBalanceForRentExemption') return 890880;
+      if (m === 'getLatestBlockhash') return { value: { blockhash: BLOCKHASH } };
+      if (m === 'sendTransaction') throw new Error('must not broadcast');
+      return null;
+    };
+    let under = '';
+    try { await payoutSol({ seedHex: SEED, toAddress: USER, amountSol: 0.5, rpc: mk(1_000_000), env: ON }); } catch (e) { under = e.message; }
+    ok('underfunded treasury refuses with a fund-me reason', /underfunded/.test(under) && under.includes(treasury));
+    let rentMsg = '';
+    try { await payoutSol({ seedHex: SEED, toAddress: USER, amountSol: '0.000926964', rpc: mk(1_000_000), env: ON }); } catch (e) { rentMsg = e.message; }
+    ok('payout that would strand the wallet below rent-exempt minimum refuses', /rent-exempt/.test(rentMsg));
+    const exact = await payoutSol({ seedHex: SEED, toAddress: USER, amountSol: '0.000995', rpc: Object.assign(async (m, p) => m === 'sendTransaction' ? 'EMPTIED' : mk(1_000_000)(m, p)), env: ON });
+    ok('emptying the wallet completely (0 left) is allowed', exact.txid === 'EMPTIED');
   }
 
   // rpc sender unwraps result / throws on rpc error

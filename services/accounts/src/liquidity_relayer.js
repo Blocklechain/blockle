@@ -117,7 +117,19 @@ export async function verifyDepositEvm({ rpc, txid, expectTo, coin, minAmount })
 // Settle one swap record: verify the user's deposit, pay out the output asset,
 // mark settled. deps: { store, rpcFor(chainId), seedHex, env, now }. Returns the
 // updated record. Idempotent — a record already 'settled' is returned unchanged.
+// Swaps currently inside settleSwap — a second call for the same id while a
+// payout is in flight returns the in-progress record instead of paying twice
+// (the wallet polls /settle every few seconds AND auto-resumes pending ones).
+const _inflight = new Map();
+
 export async function settleSwap(id, depositTxid, deps) {
+  if (_inflight.has(id)) return _inflight.get(id);
+  const p = _settleSwap(id, depositTxid, deps);
+  _inflight.set(id, p);
+  try { return await p; } finally { _inflight.delete(id); }
+}
+
+async function _settleSwap(id, depositTxid, deps) {
   const { store, rpcFor, seedHex, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch } = deps;
   if (!liquidityMainnet(env)) throw new Error('liquidity settlement disabled (LIQUIDITY_MAINNET not set)');
   const rec = store.get('liquidity', 'swap:' + id);
