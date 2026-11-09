@@ -66,10 +66,11 @@ class LiquidityService extends ChangeNotifier {
     } catch (_) {
       _pool = LiquidityPool();
     }
+    await _loadPending();
     _ready = true;
     notifyListeners();
     unawaited(refreshPrices());
-    unawaited(_syncFromServer());
+    unawaited(_syncFromServer().then((_) => resumePendingSettlements()));
   }
 
   /// Adopt the SERVER's authoritative treasury state (shared across all wallets).
@@ -260,6 +261,66 @@ class LiquidityService extends ChangeNotifier {
       return j;
     } catch (e) {
       return {'ok': false, 'error': '$e'};
+    }
+  }
+
+  // ---- pending on-chain settlements (auto-resume) ---------------------------
+  // Once a deposit is broadcast, the swap can finalize only after it confirms —
+  // which for BLOCK is a ~10-minute block. We persist the (id, depositTxid) so
+  // the payout completes automatically later, even if the user leaves the screen
+  // or closes the app. The server settle is idempotent, so re-posting is safe.
+  static const _pendingKey = 'blockle_liq_pending_v1';
+  List<Map<String, dynamic>> _pending = [];
+  List<Map<String, dynamic>> get pendingSettlements => List.unmodifiable(_pending);
+
+  Future<void> _loadPending() async {
+    try {
+      final s = await _store.read(key: _pendingKey);
+      if (s != null && s.isNotEmpty) {
+        _pending = (jsonDecode(s) as List)
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList();
+      }
+    } catch (_) {/* best-effort */}
+  }
+
+  Future<void> _savePending() async {
+    try {
+      await _store.write(key: _pendingKey, value: jsonEncode(_pending));
+    } catch (_) {/* best-effort */}
+  }
+
+  /// Register a broadcast-but-not-yet-settled swap for automatic completion.
+  Future<void> addPendingSettlement(Map<String, dynamic> rec) async {
+    _pending.removeWhere((e) => e['id'] == rec['id']);
+    _pending.add(rec);
+    await _savePending();
+    notifyListeners();
+  }
+
+  Future<void> _removePending(String id) async {
+    final before = _pending.length;
+    _pending.removeWhere((e) => e['id'] == id);
+    if (_pending.length != before) {
+      await _savePending();
+      notifyListeners();
+    }
+  }
+
+  /// Retry every pending settlement. A settled / terminally-failed / unknown swap
+  /// is dropped; a still-confirming one is kept for the next pass. Best-effort,
+  /// safe to call repeatedly (idempotent server-side).
+  Future<void> resumePendingSettlements() async {
+    if (_pending.isEmpty) return;
+    for (final rec in [..._pending]) {
+      final r = await settle('${rec['id']}', '${rec['depositTxid']}');
+      final st = '${r['status'] ?? ''}';
+      final err = '${r['error'] ?? ''}';
+      final terminal = st == 'settled' ||
+          st == 'unsupported' ||
+          st == 'failed' ||
+          err.contains('unknown swap');
+      if (terminal) await _removePending('${rec['id']}');
     }
   }
 

@@ -12,10 +12,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../multichain/chains/chain_adapter.dart' show Balance;
+import '../multichain/chains/chain_adapter.dart' show AssetRef, Balance, SendRequest;
 import '../state/liquidity_controller.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
+import 'wallet/send_gate.dart';
 
 class LiquidityScreen extends StatelessWidget {
   const LiquidityScreen({super.key});
@@ -230,6 +231,7 @@ class _SwapCardState extends State<_SwapCard> {
   bool _blockToCoin = true; // BLOCK -> coin by default
 
   double? _fromBalance; // wallet balance of the input asset (null = loading)
+  AssetRef? _fromAssetRef; // the exact asset ref (token contract/decimals) to send
   String _balFor = ''; // which asset _fromBalance currently reflects
   bool _loadingBal = false;
 
@@ -256,6 +258,7 @@ class _SwapCardState extends State<_SwapCard> {
       if (_balFor != asset) _fromBalance = null;
     });
     double? bal;
+    AssetRef? ref;
     try {
       final mc = context.read<MultichainController>();
       final chain = _chainForCoin(asset);
@@ -274,6 +277,7 @@ class _SwapCardState extends State<_SwapCard> {
           final raw = BigInt.tryParse(match.confirmed) ?? BigInt.zero;
           final dec = match.asset.decimals;
           bal = raw.toDouble() / math.pow(10, dec);
+          ref = match.asset;
         } else {
           bal = 0;
         }
@@ -284,6 +288,7 @@ class _SwapCardState extends State<_SwapCard> {
     if (!mounted) return;
     setState(() {
       _fromBalance = bal;
+      _fromAssetRef = ref;
       _balFor = asset;
       _loadingBal = false;
     });
@@ -406,9 +411,10 @@ class _SwapCardState extends State<_SwapCard> {
         const SizedBox(height: 6),
         Text(
             svc.onchainSettlement
-                ? 'Live — a swap records against the treasury, then you deposit '
-                    '$from to the hot wallet and we pay out $to on-chain. Your '
-                    'funds are only moved once your deposit is confirmed.'
+                ? 'Live — confirm once and the wallet automatically deposits '
+                    '$from and pays out $to on-chain. Nothing moves until you '
+                    'approve the deposit; the payout completes on its own once '
+                    'the deposit confirms.'
                 : 'Preview — swaps run against the in-wallet treasury model. '
                     'Reserves are simulated (seeded + fee-funded), not yet '
                     'on-chain custodial liquidity.',
@@ -615,25 +621,87 @@ class _SwapCardState extends State<_SwapCard> {
       messenger.showSnackBar(const SnackBar(content: Text('Treasury deposit wallet not ready')));
       return;
     }
+    final id = '${rec['id']}';
+    final amountIn = (rec['amountIn'] as num?)?.toDouble() ?? amount;
+    final amountOut = (rec['amountOut'] as num?)?.toDouble() ?? 0;
+    final depositChain = _chainForCoin(from)!;
+
+    // Resolve the exact asset to send: the one loaded for the balance (correct
+    // token contract + decimals), else the chain's native coin.
+    final mc = context.read<MultichainController>();
+    final isNative = !_isTokenCoin(from);
+    AssetRef? assetRef = (_balFor == from) ? _fromAssetRef : null;
+    if (!isNative && assetRef == null) {
+      // Fetch the token ref if we don't already hold it.
+      try {
+        final bals = await mc.balancesFor(depositChain);
+        for (final b in bals) {
+          if (b.asset.symbol.toUpperCase() == from.toUpperCase()) {
+            assetRef = b.asset;
+            break;
+          }
+        }
+      } catch (_) {}
+      if (assetRef == null) {
+        if (!mounted) return;
+        messenger.showSnackBar(SnackBar(content: Text('Could not resolve $from to deposit')));
+        return;
+      }
+    }
+    final dec = assetRef?.decimals ?? (from == 'BLOCK' ? 8 : 18);
+    final amountBase = _toBaseUnits(amountIn, dec);
+
+    // THE pre-sign security gate — every value-moving send must clear it.
+    final approved = await reviewSend(
+      context,
+      chain: depositChain,
+      to: depositAddress,
+      amount: amountBase,
+      asset: (assetRef ?? mc.registry.get(depositChain).native).toJson(),
+      title: 'Confirm swap deposit',
+      previewHeader: 'Deposit $from to Blockle Liquidity',
+      resolvedAddress: shortSendAddr(depositAddress),
+    );
+    if (!mounted) return;
+    if (!approved) {
+      messenger.showSnackBar(const SnackBar(content: Text('Swap cancelled — nothing was sent.')));
+      return;
+    }
+
+    // Build + broadcast the deposit automatically, then auto-settle.
     _amt.clear();
     setState(() {});
-    // Hand off to the settlement sheet (deposit → paste txid → /settle → payout).
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Bk.surface,
       isScrollControlled: true,
-      builder: (_) => _SettlementSheet(
+      isDismissible: false,
+      enableDrag: false,
+      builder: (_) => _AutoSettleSheet(
         svc: svc,
-        id: '${rec['id']}',
+        mc: mc,
+        id: id,
         from: from,
         to: to,
-        amountIn: (rec['amountIn'] as num?)?.toDouble() ?? amount,
-        amountOut: (rec['amountOut'] as num?)?.toDouble() ?? 0,
+        amountIn: amountIn,
+        amountOut: amountOut,
+        depositChain: depositChain,
         depositAddress: depositAddress,
-        receiveAddress: receiveAddr,
+        assetRef: isNative ? null : assetRef,
+        amountBase: amountBase,
       ),
     );
     if (mounted) _loadBalance();
+  }
+
+  // Whole units → base-unit integer string for [decimals] places.
+  static String _toBaseUnits(double amount, int decimals) {
+    final s = amount.toStringAsFixed(decimals);
+    final parts = s.split('.');
+    final whole = BigInt.parse(parts[0]);
+    final frac = parts.length > 1 ? parts[1].padRight(decimals, '0').substring(0, decimals) : '';
+    final scaled = whole * BigInt.from(10).pow(decimals) + (frac.isEmpty ? BigInt.zero : BigInt.parse(frac));
+    return scaled.toString();
   }
 }
 
@@ -663,119 +731,197 @@ class _PctChip extends StatelessWidget {
   }
 }
 
-// The on-chain settlement sheet: the swap is recorded server-side and awaiting
-// the user's deposit. The user sends `amountIn` of `from` to the treasury hot
-// wallet, pastes the deposit txid, and /settle verifies it + pays out `to`.
-class _SettlementSheet extends StatefulWidget {
-  const _SettlementSheet({
+
+// Fully-automatic on-chain settlement: builds + broadcasts the deposit from the
+// user's wallet (the security gate already cleared), then polls /settle until the
+// payout lands. If the deposit hasn't confirmed within the window (BLOCK blocks
+// are ~10 min), it's registered as a pending settlement that completes
+// automatically later — the user never copies an address or a txid.
+class _AutoSettleSheet extends StatefulWidget {
+  const _AutoSettleSheet({
     required this.svc,
+    required this.mc,
     required this.id,
     required this.from,
     required this.to,
     required this.amountIn,
     required this.amountOut,
+    required this.depositChain,
     required this.depositAddress,
-    required this.receiveAddress,
+    required this.assetRef,
+    required this.amountBase,
   });
   final LiquidityService svc;
+  final MultichainController mc;
   final String id;
   final String from;
   final String to;
   final double amountIn;
   final double amountOut;
+  final String depositChain;
   final String depositAddress;
-  final String receiveAddress;
+  final AssetRef? assetRef; // null = native coin
+  final String amountBase;
 
   @override
-  State<_SettlementSheet> createState() => _SettlementSheetState();
+  State<_AutoSettleSheet> createState() => _AutoSettleSheetState();
 }
 
-class _SettlementSheetState extends State<_SettlementSheet> {
-  final _txid = TextEditingController();
-  bool _busy = false;
+enum _Phase { sending, settling, done, pending, error }
+
+class _AutoSettleSheetState extends State<_AutoSettleSheet> {
+  _Phase _phase = _Phase.sending;
+  String _status = 'Signing and broadcasting your deposit…';
+  String? _depositTxid;
+  String? _payoutTxid;
   String? _error;
-  String? _payoutTxid; // set once settled
+  bool _closed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
 
   @override
   void dispose() {
-    _txid.dispose();
+    _closed = true;
     super.dispose();
   }
 
-  Future<void> _complete() async {
-    final txid = _txid.text.trim();
-    if (txid.isEmpty) {
-      setState(() => _error = 'Paste the transaction ID of your deposit');
+  Future<void> _run() async {
+    // 1) Build + broadcast the deposit from the user's own wallet.
+    String txid;
+    try {
+      final adapter = widget.mc.registry.get(widget.depositChain);
+      final acct = await widget.mc.accounts.accountFor(widget.depositChain);
+      final built = await adapter.buildSend(
+        acct,
+        SendRequest(
+          to: widget.depositAddress,
+          amount: widget.amountBase,
+          asset: widget.assetRef, // null = native
+        ),
+      );
+      final res = await adapter.broadcast(built);
+      txid = res.txid;
+      if (txid.isEmpty) throw Exception('no deposit txid');
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _phase = _Phase.error;
+        _error = 'Deposit failed: ${e.toString().replaceFirst('Exception: ', '')}';
+      });
       return;
     }
-    setState(() {
-      _busy = true;
-      _error = null;
+    _depositTxid = txid;
+    // Persist immediately so the payout completes even if the app is closed.
+    await widget.svc.addPendingSettlement({
+      'id': widget.id,
+      'depositTxid': txid,
+      'from': widget.from,
+      'to': widget.to,
+      'amountOut': widget.amountOut,
     });
-    final r = await widget.svc.settle(widget.id, txid);
     if (!mounted) return;
-    final status = '${r['status'] ?? ''}';
-    if (r['ok'] == false) {
-      setState(() {
-        _busy = false;
-        _error = '${r['error'] ?? 'Settlement failed'}';
-      });
-    } else if (status == 'settled') {
-      setState(() {
-        _busy = false;
-        _payoutTxid = '${r['payoutTxid'] ?? ''}';
-      });
-    } else if (status == 'awaiting-deposit') {
-      setState(() {
-        _busy = false;
-        _error = '${r['reason'] ?? 'Deposit not confirmed yet'} — wait for a '
-            'confirmation, then try Complete again.';
-      });
-    } else {
-      setState(() {
-        _busy = false;
-        _error = '${r['reason'] ?? 'Could not settle ($status)'}';
-      });
+    setState(() {
+      _phase = _Phase.settling;
+      _status = 'Deposit sent. Waiting for confirmation, then paying out…';
+    });
+
+    // 2) Poll /settle until the payout lands or the window elapses.
+    const maxTries = 10;
+    for (var i = 0; i < maxTries && !_closed; i++) {
+      final r = await widget.svc.settle(widget.id, txid);
+      if (!mounted) return;
+      final st = '${r['status'] ?? ''}';
+      if (st == 'settled') {
+        await widget.svc.resumePendingSettlements(); // drops it from pending
+        setState(() {
+          _phase = _Phase.done;
+          _payoutTxid = '${r['payoutTxid'] ?? ''}';
+        });
+        return;
+      }
+      if (st == 'unsupported' || st == 'failed' || '${r['error'] ?? ''}'.contains('unknown swap')) {
+        setState(() {
+          _phase = _Phase.error;
+          _error = '${r['reason'] ?? r['error'] ?? 'Settlement failed'}';
+        });
+        return;
+      }
+      // still 'awaiting-deposit' → wait and retry.
+      setState(() => _status = 'Confirming deposit… (${i + 1}/$maxTries)');
+      await Future<void>.delayed(const Duration(seconds: 15));
     }
+    // Didn't confirm in-window — it stays pending and auto-completes later.
+    if (!mounted) return;
+    setState(() {
+      _phase = _Phase.pending;
+      _status = 'Deposit broadcast. Your ${widget.to} will arrive automatically '
+          'once the deposit confirms — you can close this.';
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final settled = _payoutTxid != null;
+    final done = _phase == _Phase.done;
+    final err = _phase == _Phase.error;
+    final busy = _phase == _Phase.sending || _phase == _Phase.settling;
+    // Closeable once the deposit is broadcast — it finishes automatically.
+    final canClose = _phase != _Phase.sending;
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(18, 16, 18, 16 + MediaQuery.of(context).viewInsets.bottom),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            Text(settled ? 'Swap complete' : 'Complete your swap',
+            Text(
+                done
+                    ? 'Swap complete'
+                    : err
+                        ? 'Swap failed'
+                        : _phase == _Phase.pending
+                            ? 'Deposit sent'
+                            : 'Swapping…',
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Bk.text)),
             const Spacer(),
-            IconButton(icon: const Icon(Icons.close, color: Bk.muted), onPressed: () => Navigator.pop(context)),
+            if (canClose)
+              IconButton(icon: const Icon(Icons.close, color: Bk.muted), onPressed: () => Navigator.pop(context)),
           ]),
           const SizedBox(height: 2),
           Text('${_fmtAmt(widget.amountIn)} ${widget.from}  →  ${_fmtAmt(widget.amountOut)} ${widget.to}',
               style: TextStyle(fontSize: 14, color: Bk.muted, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 16),
-          if (settled) ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                  color: Bk.good.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(Bk.rMd),
-                  border: Border.all(color: Bk.good.withValues(alpha: 0.4))),
-              child: Row(children: [
-                const Icon(Icons.check_circle, color: Bk.good),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text('${_fmtAmt(widget.amountOut)} ${widget.to} sent to your wallet.',
-                      style: const TextStyle(color: Bk.text, fontWeight: FontWeight.w600)),
-                ),
-              ]),
-            ),
+          const SizedBox(height: 18),
+          if (busy) ...[
+            Row(children: [
+              const SizedBox(
+                  height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Bk.accent)),
+              const SizedBox(width: 12),
+              Expanded(child: Text(_status, style: const TextStyle(fontSize: 13.5, color: Bk.text))),
+            ]),
+          ] else if (done) ...[
+            _resultBanner(Bk.good, Icons.check_circle,
+                '${_fmtAmt(widget.amountOut)} ${widget.to} sent to your wallet.'),
             if ((_payoutTxid ?? '').isNotEmpty) ...[
               const SizedBox(height: 10),
-              _copyField('Payout transaction', _payoutTxid!),
+              _txRow('Payout transaction', _payoutTxid!),
             ],
+          ] else if (_phase == _Phase.pending) ...[
+            _resultBanner(Bk.accent, Icons.schedule, _status),
+            if ((_depositTxid ?? '').isNotEmpty) ...[
+              const SizedBox(height: 10),
+              _txRow('Deposit transaction', _depositTxid!),
+            ],
+          ] else ...[
+            _resultBanner(Bk.bad, Icons.error_outline, _error ?? 'Something went wrong'),
+            if ((_depositTxid ?? '').isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Text('Your deposit ($_depositTxid) was broadcast and will still be '
+                  'settled automatically once it confirms.',
+                  style: TextStyle(fontSize: 11.5, color: Bk.faint, height: 1.35)),
+            ],
+          ],
+          if (!busy) ...[
             const SizedBox(height: 16),
             SizedBox(
               width: double.infinity,
@@ -785,53 +931,7 @@ class _SettlementSheetState extends State<_SettlementSheet> {
                     backgroundColor: Bk.accent,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Bk.rMd))),
-                child: const Text('Done', style: TextStyle(fontWeight: FontWeight.w700)),
-              ),
-            ),
-          ] else ...[
-            _stepLabel('1', 'Send exactly this amount from your own wallet'),
-            const SizedBox(height: 8),
-            _copyField('Amount', _trimAmt(widget.amountIn), suffix: widget.from),
-            const SizedBox(height: 8),
-            _copyField('To — treasury ${widget.from} address', widget.depositAddress),
-            const SizedBox(height: 16),
-            _stepLabel('2', 'Paste the deposit transaction ID, then complete'),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _txid,
-              style: const TextStyle(fontSize: 13, color: Bk.text),
-              decoration: InputDecoration(
-                hintText: 'Deposit transaction ID / hash',
-                hintStyle: TextStyle(color: Bk.faint),
-                filled: true,
-                fillColor: Bk.surface2,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(Bk.rMd), borderSide: BorderSide.none),
-              ),
-            ),
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(fontSize: 12.5, color: Bk.bad)),
-            ],
-            const SizedBox(height: 10),
-            Text('Payout goes to your ${widget.to} address '
-                '${_short(widget.receiveAddress)}. The swap is held until your '
-                'deposit is confirmed — your funds are never at risk before then.',
-                style: TextStyle(fontSize: 11, color: Bk.faint, height: 1.35)),
-            const SizedBox(height: 14),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: _busy ? null : _complete,
-                style: FilledButton.styleFrom(
-                    backgroundColor: Bk.accent,
-                    padding: const EdgeInsets.symmetric(vertical: 15),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Bk.rMd))),
-                child: _busy
-                    ? const SizedBox(
-                        height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text('Complete swap', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                child: Text(done ? 'Done' : 'Close', style: const TextStyle(fontWeight: FontWeight.w700)),
               ),
             ),
           ],
@@ -840,47 +940,41 @@ class _SettlementSheetState extends State<_SettlementSheet> {
     );
   }
 
-  static String _short(String a) => a.length <= 14 ? a : '${a.substring(0, 8)}…${a.substring(a.length - 4)}';
+  Widget _resultBanner(Color c, IconData icon, String text) => Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: c.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(Bk.rMd),
+            border: Border.all(color: c.withValues(alpha: 0.4))),
+        child: Row(children: [
+          Icon(icon, color: c),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: const TextStyle(color: Bk.text, fontWeight: FontWeight.w600))),
+        ]),
+      );
 
-  Widget _stepLabel(String n, String text) => Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Container(
-          width: 20,
-          height: 20,
-          alignment: Alignment.center,
-          decoration: const BoxDecoration(color: Bk.accentGhost, shape: BoxShape.circle),
-          child: Text(n, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Bk.accent)),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(text, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Bk.text)),
-        ),
-      ]);
-
-  Widget _copyField(String label, String value, {String? suffix}) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-      decoration: BoxDecoration(color: Bk.surface2, borderRadius: BorderRadius.circular(Bk.rMd)),
-      child: Row(children: [
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(label, style: TextStyle(fontSize: 11, color: Bk.faint)),
-            const SizedBox(height: 2),
-            Text(suffix == null ? value : '$value $suffix',
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Bk.text)),
-          ]),
-        ),
-        IconButton(
-          icon: const Icon(Icons.copy, size: 18, color: Bk.muted),
-          onPressed: () {
-            Clipboard.setData(ClipboardData(text: value));
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('$label copied'), duration: const Duration(seconds: 1)),
-            );
-          },
-        ),
-      ]),
-    );
-  }
+  Widget _txRow(String label, String value) => Container(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        decoration: BoxDecoration(color: Bk.surface2, borderRadius: BorderRadius.circular(Bk.rMd)),
+        child: Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(label, style: TextStyle(fontSize: 11, color: Bk.faint)),
+              const SizedBox(height: 2),
+              Text(value, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: Bk.text)),
+            ]),
+          ),
+          IconButton(
+            icon: const Icon(Icons.copy, size: 18, color: Bk.muted),
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: value));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('$label copied'), duration: const Duration(seconds: 1)),
+              );
+            },
+          ),
+        ]),
+      );
 }
 
 class _PoolList extends StatelessWidget {
