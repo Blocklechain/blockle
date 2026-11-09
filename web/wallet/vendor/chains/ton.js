@@ -30,7 +30,7 @@
 
   const NANO = 1_000_000_000;                 // 1 TON = 1e9 nanoton (9 decimals)
   const DEFAULT_PATH = "m/44'/607'/0'";
-  const DEFAULT_API = 'https://toncenter.com/api/v2';
+  const DEFAULT_API = 'https://blockle.org/account/api/px/toncenter/api/v2'; // same-origin relay (keyless toncenter 429s; server injects the API key)
   const HARDENED = 0x80000000;
   const DEFAULT_SUBWALLET = T.SUBWALLET_ID;   // 698983191
   const JETTON_TRANSFER_OP = 0x0f8a7ea5;

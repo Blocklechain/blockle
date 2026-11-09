@@ -462,6 +462,43 @@ export function createApp(overrides = {}) {
       return json(res, r.ok ? 200 : 502, jr ?? { error: 'upstream rpc error' });
     } catch (e) { return json(res, 502, { error: String((e && e.message) || 'rpc failed') }); }
   });
+  // ---- Same-origin REST proxy for browser-blocked chain providers -----------
+  // The browser wallets can't reach some public providers directly: Koios blocks
+  // CORS, toncenter rate-limits keyless (429), and the old BCH host is dead. This
+  // allow-listed relay forwards /account/api/px/<name>/<path> to the upstream
+  // (preserving method, body, content-type, query), injecting the toncenter API
+  // key server-side. Native wallets call providers directly. Public chain data only.
+  const PX_UPSTREAM = {
+    koios: 'https://api.koios.rest',
+    toncenter: 'https://toncenter.com',
+    // BCH: no live public Esplora host remains (old hosts dead/bot-walled); this
+    // alive upstream keeps BCH failing QUIETLY (no connection-refused) until the
+    // web UTXO adapter is ported to a Blockbook/Haskoin shape. See notes.
+    bch: 'https://bchblockexplorer.com',
+  };
+  async function pxHandler(req, res, _url, m) {
+    res.setHeader('access-control-allow-origin', '*');
+    const name = m[1];
+    const base = PX_UPSTREAM[name];
+    if (!base) return json(res, 404, { error: 'unknown upstream' });
+    if (!loginIpRl.allow('px:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const tail = m[2] + (_url.search || '');
+    const headers = { accept: 'application/json' };
+    const ct = req.headers['content-type']; if (ct) headers['content-type'] = ct;
+    if (name === 'toncenter' && process.env.TONCENTER_API_KEY) headers['X-API-Key'] = process.env.TONCENTER_API_KEY;
+    let body;
+    if (req.method === 'POST') { try { body = await readBody(req, 256 * 1024); } catch { return json(res, 413, { error: 'too large' }); } }
+    try {
+      const r = await fetch(base + '/' + tail, { method: req.method, headers, body: req.method === 'POST' ? body : undefined });
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.statusCode = r.status;
+      res.setHeader('access-control-allow-origin', '*');
+      const rct = r.headers.get('content-type'); if (rct) res.setHeader('content-type', rct);
+      return res.end(buf);
+    } catch (e) { return json(res, 502, { error: String((e && e.message) || 'proxy failed') }); }
+  }
+  on('GET', /^\/account\/api\/px\/([a-z]+)\/(.+)$/, pxHandler);
+  on('POST', /^\/account\/api\/px\/([a-z]+)\/(.+)$/, pxHandler);
   // ---- Blockle Liquidity treasury (server-authoritative reserves) ----------
   // Shared reserves, one BLOCK price across every currency, fed by the 0.05% bot
   // fees. State + quote are open reads (CORS-open for the wallets); swap applies

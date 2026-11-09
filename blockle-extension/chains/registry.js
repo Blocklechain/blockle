@@ -72,7 +72,7 @@
     bitcoin:   { esplora: 'https://blockstream.info/api' },
     litecoin:  { esplora: 'https://litecoinspace.org/api' },
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
-    bitcoincash: { esplora: 'https://bch.imaginary.cash/api' }, // BCH Fulcrum/Esplora-style REST (operator-overridable)
+    bitcoincash: { esplora: 'https://blockle.org/account/api/px/bch/api' }, // BCH via same-origin relay (old Esplora hosts dead/bot-walled; see server PX_UPSTREAM)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
     // Same-origin Solana RPC relay — public RPCs 403/block the browser directly
     // (api.mainnet-beta blocks sends, publicnode 403s browser origins). The server
@@ -81,7 +81,7 @@
     // Tron mainnet TronGrid REST — public default, config-overridable. API key optional.
     tron:      { api: 'https://api.trongrid.io' },
     // TON mainnet toncenter v2 jsonRPC — public default, config-overridable. API key optional.
-    ton:       { api: 'https://toncenter.com/api/v2' },
+    ton:       { api: 'https://blockle.org/account/api/px/toncenter/api/v2' }, // via same-origin relay (keyless toncenter 429s)
     // XRP Ledger mainnet rippled JSON-RPC — public default, config-overridable.
     xrp:       { rpc: 'https://xrplcluster.com' },
     // Stellar mainnet Horizon REST — public default, config-overridable.
@@ -90,7 +90,7 @@
     tezos:     { rpc: 'https://mainnet.api.tez.ie' },
     // Cardano mainnet — KEYLESS Koios by default; Blockfrost used only when a
     // { blockfrost: { projectId } } is configured. Config-overridable.
-    cardano:   { koios: 'https://api.koios.rest/api/v1' },
+    cardano:   { koios: 'https://blockle.org/account/api/px/koios/api/v1' }, // via same-origin relay (Koios blocks browser CORS)
   };
 
   // Default first-class tokens (USDC/USDT, native issuances) per EVM chain.

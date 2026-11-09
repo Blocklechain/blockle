@@ -327,6 +327,13 @@
   function boot() {
     registerSW();
     bootMoonpay();
+    // CSP-safe broken-image hiding: strict CSP (no 'unsafe-inline') blocks inline
+    // onerror handlers, so hide failed images via a single global capture-phase
+    // 'error' listener instead (the 'error' event doesn't bubble → capture:true).
+    document.addEventListener('error', function (e) {
+      var t = e && e.target;
+      if (t && t.tagName === 'IMG') t.style.display = 'none';
+    }, true);
     // One-time repair: an earlier build could persist a testnet `apiBase`, which makes
     // BLOCK + token balances read the testnet chain and show 0 for a mainnet address.
     // The web wallet has no legitimate testnet endpoint, so drop a stale testnet value.
@@ -1724,7 +1731,7 @@
         var label = n.name || (n.tokenId != null ? ('#' + n.tokenId) : shortAddr(n.contract));
         var sendable = (S.chain === 'solana') || (n.standard === 'erc721' || n.standard === 'erc1155');
         return '<div class="planbox" style="padding:0;overflow:hidden"><div style="aspect-ratio:1;background:var(--card2);display:grid;place-items:center">' +
-          (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display=\'none\'">' : ic('image', 26)) +
+          (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover">' : ic('image', 26)) +
           '</div><div style="padding:9px"><b style="font-size:13px">' + esc(label) + '</b><div class="dim" style="font-size:11px">' + esc(n.collection || shortAddr(n.contract || '')) + '</div>' +
           (sendable ? '<button class="btn sm" style="margin-top:7px;width:100%" data-nft="' + i + '">' + ic('send', 13) + ' Send</button>' : '') +
           '</div></div>';
@@ -3378,7 +3385,7 @@
         var name = esc((x.chain || '').toUpperCase());
         var detail, tag;
         if (x.error) { detail = '<span class="dim" style="font-size:12px">' + esc(x.error) + '</span>'; tag = '<span class="pill warn">error</span>'; }
-        else if (x.swept) { anySwept = true; detail = '<span class="dim" style="font-size:12px">Swept ' + esc(x.balance) + ' → ' + esc(shortAddr(x.to)) + '</span>'; tag = '<a class="pill ok" href="#" onclick="return false">' + esc(shortAddr(x.txid || '')) + '</a>'; }
+        else if (x.swept) { anySwept = true; detail = '<span class="dim" style="font-size:12px">Swept ' + esc(x.balance) + ' → ' + esc(shortAddr(x.to)) + '</span>'; tag = '<span class="pill ok">' + esc(shortAddr(x.txid || '')) + '</span>'; }
         else if (x.balance && x.balance !== '0') { anyHeld = true; detail = '<span class="dim" style="font-size:12px">Holds ' + esc(x.balance) + ' at ' + esc(shortAddr(x.address)) + ' — move manually</span>'; tag = '<span class="pill">manual</span>'; }
         else { detail = '<span class="dim" style="font-size:12px">Empty</span>'; tag = '<span class="pill">—</span>'; }
         html += '<div class="li"><span class="col" style="align-items:flex-start"><b>' + name + '</b>' + detail + '</span><span style="margin-left:auto">' + tag + '</span></div>';

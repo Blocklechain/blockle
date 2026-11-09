@@ -9,8 +9,11 @@
      ('self' + wasm, NO 'unsafe-inline') so an injected inline <script> or inline event
      handler cannot run — the primary defense against XSS key theft. style-src allows
      inline styles; img-src allows remote token/NFT art; connect-src covers 'self' plus
-     the hosted agent gateway + every chain RPC/relay the wallet must reach. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'">
+     the hosted agent gateway + every chain RPC/relay the wallet must reach.
+     NB: frame-ancestors is intentionally NOT here — it's ignored in a <meta> CSP
+     (browsers warn), so clickjacking protection is enforced by an HTTP response
+     header at the server (X-Frame-Options: DENY / CSP frame-ancestors 'none'). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; object-src 'none'; base-uri 'self'; form-action 'self'">
 <meta name="referrer" content="no-referrer">
 <meta name="description" content="Blockle Web Wallet — a non-custodial, installable wallet for BLOCK and every chain, with the Blockle agent, bots, DEX, bridge and USDB built in. Your keys never leave your device.">
 <title>Blockle Wallet</title>

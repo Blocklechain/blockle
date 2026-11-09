@@ -33,7 +33,7 @@
   const CBOR = inNode ? require('./cardano-cbor.js') : global.CardanoCbor;
 
   const LOVELACE = 1_000_000;                 // 1 ADA = 1e6 lovelace (6 decimals)
-  const DEFAULT_KOIOS = 'https://api.koios.rest/api/v1';
+  const DEFAULT_KOIOS = 'https://blockle.org/account/api/px/koios/api/v1'; // same-origin relay (Koios blocks browser CORS)
   const DEFAULT_EXPLORER = 'https://cardanoscan.io/transaction/';
   const MIN_FEE_A = 44;
   const MIN_FEE_B = 155381;

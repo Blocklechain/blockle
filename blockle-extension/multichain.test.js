@@ -250,7 +250,7 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     eq('registry btc addr', btc.address, 'bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu');
     ok('registry has bitcoincash adapter', reg.has('bitcoincash'));
     ok('registry enables bitcoincash', reg.enabled().includes('bitcoincash'));
-    eq('registry bch default esplora', reg.endpoints('bitcoincash').esplora, 'https://bch.imaginary.cash/api');
+    eq('registry bch default esplora', reg.endpoints('bitcoincash').esplora, 'https://blockle.org/account/api/px/bch/api');
     const bch = await reg.get('bitcoincash').deriveAccount({ seed });
     eq('registry bch addr (cashaddr)', bch.address, 'bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6');
     eq('registry bch path', bch.path, "m/44'/145'/0'/0/0");
@@ -284,7 +284,7 @@ eq('formatUnits usdc', E.formatUnits('1234567', 6), '1.234567');
     // and its toncenter v2 endpoint defaults to the public mainnet host (no key).
     ok('registry has ton adapter', reg.has('ton'));
     ok('registry enables ton', reg.enabled().includes('ton'));
-    eq('registry ton default api', reg.endpoints('ton').api, 'https://toncenter.com/api/v2');
+    eq('registry ton default api', reg.endpoints('ton').api, 'https://blockle.org/account/api/px/toncenter/api/v2');
     ok('registry ton usdt jetton present', reg.tokensFor('ton').some((t) => t.kind === 'jetton' && t.symbol === 'USDT' && t.master === 'EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs'));
     const ton = await reg.get('ton').deriveAccount({ seed });
     eq('registry ton scheme', ton.scheme, 'ed25519');
