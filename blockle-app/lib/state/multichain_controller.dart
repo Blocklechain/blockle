@@ -213,6 +213,15 @@ class MultichainController extends ChangeNotifier {
     try {
       final cfg = await MoonPayConfig.fromServer();
       _moonpayRemote = cfg;
+      // REPAIR: a stored pk_live_ override that differs from the live /config key
+      // is guaranteed-broken — the server only signs URLs carrying ITS publishable
+      // key, so a stale live override would always fall back to an unsigned URL
+      // (and this account requires signed, IP-pinned URLs). Drop it. A pk_test_
+      // override (forcing the sandbox) is a legitimate choice and is kept.
+      final o = _moonpayApiKey;
+      if (o != null && o.startsWith('pk_live_') && o != cfg.apiKey) {
+        await setMoonpayApiKey(null);
+      }
       notifyListeners();
     } catch (_) {
       // keep the fallback
