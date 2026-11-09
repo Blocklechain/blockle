@@ -69,8 +69,51 @@ class BlockleApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey,
       theme: Bk.theme(),
+      // App-wide keyboard "Done" bar: whenever ANY keyboard is open (including the
+      // numeric keypads that have no return key on iOS), a Done button floats just
+      // above it and dismisses it. One place, every field — no per-field wiring.
+      builder: (context, child) => _KeyboardDoneBar(child: child ?? const SizedBox()),
       home: const _Gate(),
     );
+  }
+}
+
+/// Floats a "Done" button above the on-screen keyboard whenever one is visible,
+/// so every text/number field in the app can minimize the keypad with one tap.
+class _KeyboardDoneBar extends StatelessWidget {
+  const _KeyboardDoneBar({required this.child});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) {
+    final insets = MediaQuery.of(context).viewInsets.bottom;
+    final open = insets > 0;
+    return Stack(children: [
+      child,
+      if (open)
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: insets,
+          child: Material(
+            color: const Color(0xFF1F1F38),
+            elevation: 6,
+            child: SafeArea(
+              top: false,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  child: TextButton(
+                    onPressed: () => FocusManager.instance.primaryFocus?.unfocus(),
+                    child: const Text('Done',
+                        style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+    ]);
   }
 }
 
