@@ -9,6 +9,8 @@ import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'onboarding.dart';
 import 'wallet_export_screen.dart';
+import '../state/dev_settings.dart';
+import 'developer_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -130,6 +132,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           const SizedBox(height: 22),
+          _section('Developer'),
+          Card(
+            child: Column(children: [
+              SwitchListTile(
+                dense: true,
+                secondary: const Icon(Icons.code),
+                title: const Text('Developer mode'),
+                subtitle: const Text('Unlock developer tools + per-chain testnets. Off by default.'),
+                value: context.watch<DevSettings>().devMode,
+                onChanged: (v) async {
+                  await context.read<DevSettings>().setDevMode(v);
+                  // Leaving dev mode returns every chain to mainnet (never strand
+                  // a normal user on a testnet).
+                  if (!v && context.mounted) {
+                    await context.read<MultichainController>().clearAllTestnets();
+                  }
+                },
+              ),
+              if (context.watch<DevSettings>().devMode)
+                ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.terminal),
+                  title: const Text('Developer tools'),
+                  subtitle: const Text('RPC console · testnets · price probe · addresses · liquidity'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const DeveloperScreen())),
+                ),
+            ]),
+          ),
           _section('About'),
           Card(
             child: Column(

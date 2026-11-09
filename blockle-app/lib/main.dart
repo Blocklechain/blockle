@@ -6,6 +6,7 @@ import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
 import 'state/wallet_controller.dart';
 import 'state/liquidity_controller.dart';
+import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
@@ -23,6 +24,8 @@ void main() {
   LocalNotifications.instance.init().then((_) => LocalNotifications.instance.requestPermission());
   // The Blockle Liquidity treasury: load persisted reserves + refresh coin prices.
   LiquidityService.instance.init();
+  // Developer mode (off by default) — gates the Developer Tools + per-chain testnets.
+  DevSettings.instance.init();
   final app = AppState()..bootstrap();
   runApp(
     MultiProvider(
@@ -48,6 +51,8 @@ void main() {
         // The Blockle Liquidity treasury (app-wide singleton) — fees flow in from
         // the bot engine; the Liquidity screen reads + swaps against it.
         ChangeNotifierProvider<LiquidityService>.value(value: LiquidityService.instance),
+        // Developer mode gate (off by default) — Developer Tools + testnets.
+        ChangeNotifierProvider<DevSettings>.value(value: DevSettings.instance),
       ],
       child: const BlockleApp(),
     ),

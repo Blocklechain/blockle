@@ -176,6 +176,33 @@ const Map<String, EndpointCfg> defaultEndpoints = {
       blockfrostProjectId: String.fromEnvironment('BLOCKFROST_PROJECT_ID')),
 };
 
+/// TESTNET endpoints per chain — used ONLY in Developer mode (the per-chain
+/// testnet switch applies these as endpoint overrides). Public faucet-backed
+/// test networks: EVM Sepolia/Amoy/Fuji, Solana devnet, XRP/Stellar/TON/Tezos/
+/// Tron/Cardano/UTXO testnets. A chain absent here has no supported testnet.
+const Map<String, EndpointCfg> kTestnetEndpoints = {
+  'ethereum':
+      EndpointCfg(rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com', chainId: 11155111),
+  'base': EndpointCfg(rpcUrl: 'https://sepolia.base.org', chainId: 84532),
+  'arbitrum':
+      EndpointCfg(rpcUrl: 'https://sepolia-rollup.arbitrum.io/rpc', chainId: 421614),
+  'optimism': EndpointCfg(rpcUrl: 'https://sepolia.optimism.io', chainId: 11155420),
+  'polygon': EndpointCfg(rpcUrl: 'https://rpc-amoy.polygon.technology', chainId: 80002),
+  'bnb': EndpointCfg(rpcUrl: 'https://bsc-testnet-rpc.publicnode.com', chainId: 97),
+  'avalanche':
+      EndpointCfg(rpcUrl: 'https://api.avax-test.network/ext/bc/C/rpc', chainId: 43113),
+  'solana': EndpointCfg(rpcUrl: 'https://api.devnet.solana.com'),
+  'bitcoin': EndpointCfg(esplora: 'https://blockstream.info/testnet/api'),
+  'litecoin': EndpointCfg(esplora: 'https://litecoinspace.org/testnet/api'),
+  'bitcoincash': EndpointCfg(esplora: 'https://api.haskoin.com/bchtest'),
+  'xrp': EndpointCfg(rpcUrl: 'https://s.altnet.rippletest.net:51234'),
+  'stellar': EndpointCfg(horizon: 'https://horizon-testnet.stellar.org'),
+  'tron': EndpointCfg(api: 'https://nile.trongrid.io'),
+  'ton': EndpointCfg(rpcUrl: 'https://testnet.toncenter.com/api/v2/jsonRPC'),
+  'tezos': EndpointCfg(rpcUrl: 'https://rpc.ghostnet.teztnets.com'),
+  'cardano': EndpointCfg(koios: 'https://preprod.koios.rest/api/v1'),
+};
+
 /// Default first-class tokens (USDC/USDT) per EVM chain. Config-overridable.
 final Map<String, List<AssetRef>> defaultTokens = {
   'ethereum': const [

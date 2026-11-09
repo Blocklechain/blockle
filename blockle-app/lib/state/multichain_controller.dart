@@ -452,6 +452,70 @@ class MultichainController extends ChangeNotifier {
   bool alchemyEnabled(String chain) =>
       (effectiveEndpoint(chain).alchemyUrl ?? '').isNotEmpty;
 
+  /// Apply a full endpoint config override for [chain] (every field), persist, and
+  /// rebuild the registry preserving the unlocked session. Used by Developer mode
+  /// to switch a chain to its testnet.
+  Future<void> applyEndpoint(String chain, EndpointCfg cfg) async {
+    _endpoints[chain] = cfg;
+    await _persistEndpoints();
+    _rebuildPreservingSession();
+  }
+
+  /// Remove any endpoint override for [chain] (back to the built-in mainnet
+  /// default) + rebuild. No-op when there is no override.
+  Future<void> clearEndpoint(String chain) async {
+    if (_endpoints.remove(chain) != null) {
+      await _persistEndpoints();
+      _rebuildPreservingSession();
+    }
+  }
+
+  /// Developer mode: switch [chain] to its testnet (true) or back to mainnet
+  /// (false). Returns false when the chain has no supported testnet.
+  Future<bool> setChainTestnet(String chain, bool testnet) async {
+    if (!testnet) {
+      await clearEndpoint(chain);
+      return true;
+    }
+    final cfg = kTestnetEndpoints[chain];
+    if (cfg == null) return false;
+    await applyEndpoint(chain, cfg);
+    return true;
+  }
+
+  /// True when [chain]'s active endpoint is its testnet (the override matches the
+  /// known testnet rpc/esplora/horizon/api).
+  bool isChainTestnet(String chain) {
+    final t = kTestnetEndpoints[chain];
+    if (t == null || !_endpoints.containsKey(chain)) return false;
+    final e = _endpoints[chain]!;
+    return (t.rpcUrl != null && e.rpcUrl == t.rpcUrl) ||
+        (t.esplora != null && e.esplora == t.esplora) ||
+        (t.horizon != null && e.horizon == t.horizon) ||
+        (t.api != null && e.api == t.api) ||
+        (t.koios != null && e.koios == t.koios);
+  }
+
+  /// Chains that have a supported testnet (for the Developer networks list).
+  List<String> get testnetCapableChains =>
+      kTestnetEndpoints.keys.where((c) => registry.adapters.containsKey(c)).toList();
+
+  /// Return every testnet-switched chain to mainnet (called when Developer mode
+  /// is turned OFF, so a normal user is never left on a testnet).
+  Future<void> clearAllTestnets() async {
+    var changed = false;
+    for (final c in kTestnetEndpoints.keys.toList()) {
+      if (isChainTestnet(c)) {
+        _endpoints.remove(c);
+        changed = true;
+      }
+    }
+    if (changed) {
+      await _persistEndpoints();
+      _rebuildPreservingSession();
+    }
+  }
+
   // ---- MoonPay on-ramp config ----------------------------------------------
 
   Future<void> _loadMoonpay() async {
