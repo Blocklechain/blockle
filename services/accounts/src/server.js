@@ -487,7 +487,7 @@ export function createApp(overrides = {}) {
       const rec = await settleSwap(String(b.id || ''), String(b.depositTxid || ''), {
         store,
         rpcFor: (chainId) => chainId === 'solana'
-          ? solRpcSender(process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com')
+          ? solRpcSender(process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com')
           : rpcSenderFor(chainId),
         seedHex: process.env.LIQUIDITY_TREASURY_SEED || '',
         chainBase: cfg.chainApiBase,
@@ -1365,7 +1365,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Server-side live bot loop — evaluates each active delegation's plan and
   // executes due trades (gated: testnet-only unless BLOCKLE_BOT_MAINNET=1).
   const SIGNALS_BASE = process.env.SIGNALS_BASE || 'https://blockle.org';
-  const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+  const SOLANA_RPC = process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com';
   const liveRun = setInterval(() => {
     liveRunOnce({
       delegations: app.botDelegations,

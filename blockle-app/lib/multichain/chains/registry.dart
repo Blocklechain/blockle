@@ -145,7 +145,11 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Esplora/Fulcrum hosts are all dead/bot-walled; the UtxoAdapter's 'haskoin'
   // apiStyle (on the bitcoincash network) speaks this host's shape.
   'bitcoincash': EndpointCfg(esplora: 'https://api.haskoin.com/bch'),
-  'solana': EndpointCfg(rpcUrl: 'https://api.mainnet-beta.solana.com'),
+  // publicnode (no key, full RPC incl. sendTransaction) — the official
+  // api.mainnet-beta endpoint rate-limits/blocks broadcasts (HTTP 403/429), which
+  // made sends fail with a bare "bad state". publicnode is the same provider used
+  // for the EVM chains above.
+  'solana': EndpointCfg(rpcUrl: 'https://solana-rpc.publicnode.com'),
   // TronGrid REST base (operator-overridable). The Tron adapter reads `api`
   // (+ optional `apiKey`); no secret is hardcoded here.
   'tron': EndpointCfg(api: 'https://api.trongrid.io'),
