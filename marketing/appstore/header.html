@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  /* Blockle Wallet — App Store featuring key art (5244×2950).
+     Palette = the app's own theme: bg #0B0B14, accent #7C5CFF, accent2 #37E0C8. */
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:5244px; height:2950px; overflow:hidden; }
+  body {
+    font-family: -apple-system, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    background:#0B0B14; color:#ECECF5; position:relative;
+  }
+  /* ---- cosmic ground ---- */
+  .nebula1 { position:absolute; width:4200px; height:4200px; right:-1400px; top:-1600px;
+    background:radial-gradient(circle, rgba(124,92,255,.38) 0%, rgba(124,92,255,.14) 34%, transparent 66%); }
+  .nebula2 { position:absolute; width:3000px; height:3000px; left:-900px; bottom:-1500px;
+    background:radial-gradient(circle, rgba(55,224,200,.16) 0%, rgba(55,224,200,.05) 40%, transparent 68%); }
+  .grid { position:absolute; inset:0; opacity:.16;
+    background-image:linear-gradient(rgba(124,92,255,.25) 1px, transparent 1px),
+                     linear-gradient(90deg, rgba(124,92,255,.25) 1px, transparent 1px);
+    background-size:164px 164px;
+    -webkit-mask-image:radial-gradient(ellipse 70% 62% at 62% 46%, #000 0%, transparent 72%); }
+  .stars { position:absolute; inset:0; }
+  .star { position:absolute; border-radius:50%; background:#ECECF5; }
+  /* ---- left: the lockup ---- */
+  .copy { position:absolute; left:340px; top:50%; transform:translateY(-50%); width:2450px; }
+  .word { font-weight:800; font-size:430px; letter-spacing:-14px; line-height:.94; }
+  .word .b { color:#ECECF5; }
+  .word .accent { background:linear-gradient(100deg,#7C5CFF 10%,#37E0C8 95%);
+    -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .sub { margin-top:40px; font-weight:300; font-size:148px; letter-spacing:20px; white-space:nowrap; color:#9A9AB5; text-transform:uppercase; }
+  .tag { margin-top:120px; font-weight:600; font-size:132px; letter-spacing:-2px; line-height:1.22; color:#ECECF5; }
+  .tag em { font-style:normal; color:#37E0C8; }
+  .chips { margin-top:130px; display:flex; flex-wrap:wrap; gap:44px; width:2300px; }
+  .chip { display:flex; align-items:center; gap:28px; padding:38px 64px; border-radius:200px;
+    border:3px solid #2A2A45; background:rgba(23,23,43,.72); font-size:84px; font-weight:600; color:#ECECF5; }
+  .dot { width:34px; height:34px; border-radius:50%; background:#7C5CFF; }
+  .chip:nth-child(2) .dot { background:#37E0C8; }
+  .chip:nth-child(3) .dot { background:#4ADE80; }
+  .chip:nth-child(4) .dot { background:#FBBF24; }
+  /* ---- right: the 3D mark ---- */
+  .heroWrap { position:absolute; right:270px; top:50%; transform:translateY(-50%); width:2250px; height:2250px; }
+  .glow { position:absolute; inset:-320px;
+    background:radial-gradient(circle, rgba(124,92,255,.42) 0%, rgba(124,92,255,.12) 42%, transparent 70%); }
+  .hero { position:absolute; inset:0; background:url('logo3d.png') center/contain no-repeat;
+    filter:drop-shadow(0 90px 160px rgba(0,0,0,.6)); }
+  .ring { position:absolute; left:50%; top:50%; border:3px solid rgba(124,92,255,.24); border-radius:50%;
+    transform:translate(-50%,-50%); }
+  .r1 { width:2550px; height:2550px; }
+  .r2 { width:2900px; height:2900px; border-color:rgba(55,224,200,.12); }
+  .orb { position:absolute; border-radius:50%; }
+</style></head>
+<body>
+  <div class="nebula1"></div><div class="nebula2"></div>
+  <div class="grid"></div>
+  <div class="stars" id="stars"></div>
+
+  <div class="heroWrap">
+    <div class="ring r1"></div><div class="ring r2"></div>
+    <div class="glow"></div>
+    <div class="hero"></div>
+    <div class="orb" style="left:-120px;top:420px;width:54px;height:54px;background:#37E0C8;box-shadow:0 0 60px #37E0C8"></div>
+    <div class="orb" style="right:-60px;top:1700px;width:40px;height:40px;background:#7C5CFF;box-shadow:0 0 60px #7C5CFF"></div>
+  </div>
+
+  <div class="copy">
+    <div class="word"><span class="b">BLOCKLE</span><br><span class="accent">WALLET</span></div>
+    <div class="sub">Post-Quantum&nbsp;&middot;&nbsp;Multi-Chain</div>
+    <div class="tag">Your keys. <em>20+ chains.</em><br>AI trading bots built in.</div>
+    <div class="chips">
+      <div class="chip"><span class="dot"></span>ML-DSA post-quantum</div>
+      <div class="chip"><span class="dot"></span>Non-custodial</div>
+      <div class="chip"><span class="dot"></span>AI trading bots</div>
+      <div class="chip"><span class="dot"></span>Buy with card</div>
+    </div>
+  </div>
+
+  <script>
+    // deterministic starfield
+    let seed = 42; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const s = document.getElementById('stars');
+    for (let i = 0; i < 260; i++) {
+      const d = document.createElement('div'); d.className = 'star';
+      const sz = 2 + rnd() * 7;
+      d.style.cssText = `left:${rnd()*5244}px;top:${rnd()*2950}px;width:${sz}px;height:${sz}px;opacity:${.12+rnd()*.5}`;
+      s.appendChild(d);
+    }
+  </script>
+</body></html>
