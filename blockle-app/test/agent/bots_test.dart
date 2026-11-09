@@ -319,6 +319,20 @@ void main() {
     });
   });
 
+  group('Templates: AI picks (scan_and_trade) is the aggressive autopilot', () {
+    test('template knobs: 10 bps edge, 6 pairs, 1-min ticks, sniper on at 0.45', () {
+      final cfg = (fromTemplate('scan_and_trade')['config'] as Map).cast<String, dynamic>();
+      expect(cfg['minProfitBps'], 10);
+      expect(cfg['maxConcurrentPairs'], 6);
+      expect(cfg['pollSec'], 60);
+      expect(cfg['sniperMinScore'], 0.45);
+      expect((cfg['strategies'] as List), contains('sniper'));
+      final bot = Bot(fromTemplate('scan_and_trade'));
+      expect(bot.mode, 'paper');
+      expect(bot.enabled, false);
+    });
+  });
+
   group('Templates: starter set + export/import', () {
     test('starter set builds valid paper+disabled bots', () {
       final names = templateList().map((t) => t['key']).toList();

@@ -76,10 +76,13 @@
       type: 'scanner',
       blurb: 'Scans every discoverable pair, scores each for cost-positive profit, and auto-trades the worthy ones through the one gate. Paper + disabled + testnet by default.',
       universe: { pairs: [] },
+      // AGGRESSIVE by design (mirrors the Flutter template): 10 bps net edge, 6
+      // concurrent pairs, 1-minute ticks, sniper on the screened discovery feed.
       config: {
-        minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 20,
-        strategies: ['arbitrage', 'momentum', 'grid'],
-        gasBufferUsd: 2, slippageBps: 10, agentFeeBps: 5, pollSec: 300,
+        minProfitBps: 10, maxConcurrentPairs: 6, perTradeUsd: 20,
+        strategies: ['arbitrage', 'momentum', 'grid', 'sniper'],
+        sniperMinScore: 0.45,
+        gasBufferUsd: 2, slippageBps: 10, agentFeeBps: 5, pollSec: 60,
       },
     },
   };

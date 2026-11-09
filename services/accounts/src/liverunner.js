@@ -20,7 +20,7 @@ import { SOL_MINTS } from './solswap.js';
 // highest score wins. Mirrors the client scanner's sniperEdge gate so paper and
 // live agree on what the autopilot buys.
 function pickSniper(candidates, plan) {
-  const minScore = Number(plan.sniperMinScore) || 0.6;
+  const minScore = Number(plan.sniperMinScore) || 0.45; // aggressive autopilot default (mirrors the wallet template)
   const reject = new Set(['honeypot', 'scam', 'rug', 'denylist']);
   let best = null;
   for (const c of candidates || []) {
@@ -126,7 +126,7 @@ export async function runOnce(deps) {
       if (!d.key || !plan || !['dca', 'swap', 'sniper'].includes(plan.type)) {
         out.push({ botId: d.botId, skipped: 'no-plan' }); continue;
       }
-      const interval = Number(plan.intervalMs) || 3600_000;
+      const interval = Number(plan.intervalMs) || 900_000; // 15 min default — the autopilot is meant to trade
       if (now() - (Number(plan.lastAt) || 0) < interval) { out.push({ botId: d.botId, skipped: 'not-due' }); continue; }
       const feeUsd = 0.2; // conservative est.; the hard cap gate lives in executeTrade
       const remaining = Math.max(0, d.capUsd - d.spentUsd);

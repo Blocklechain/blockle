@@ -383,6 +383,18 @@ class BotsController extends ChangeNotifier {
     }
     spec['allocationUsd'] = allocationUsd;
     if (pollSec != null) spec['pollSec'] = pollSec; // adjustable tick interval
+    // "AI picks the pairs" (scanner) is AGGRESSIVE by default: the 'high'
+    // discovery gate (smaller, younger tokens) unless the user chose a risk
+    // mode, and a per-trade size that scales with the allocation (~1/8 of the
+    // cap, min $20) instead of a fixed $20 — so a $500 bot trades $62 clips.
+    if (templateKey == 'scan_and_trade') {
+      riskMode ??= 'high';
+      final cfg = (spec['config'] as Map).cast<String, dynamic>();
+      if (configOverride == null || !configOverride.containsKey('perTradeUsd')) {
+        cfg['perTradeUsd'] = aggressivePerTradeUsd(allocationUsd);
+      }
+      spec['config'] = cfg;
+    }
     // LANE + RISK MODE: optional; the Bot constructor validates + nulls unknowns
     // and (when a lane is set) pins chainPrefs to that chain. Null = legacy.
     if (lane != null) spec['lane'] = lane;
@@ -693,12 +705,16 @@ class BotsController extends ChangeNotifier {
         final seed = wx.fromMnemonic(mn).seed;
         final subAddr = wx.solanaKey(seed, _botSubIndex(id)).address;
         final subSeedHex = wx.solanaSubSeedHex(seed, _botSubIndex(id));
+        // AGGRESSIVE autopilot sizing: ~1/8 of the cap per buy (min $5), a
+        // 15-minute cadence, the template's sniper gate (0.45) and enough
+        // slippage headroom for thin microcap pools (>= 150 bps).
+        final cfgSlip = (bot.config['slippageBps'] as num?)?.toInt() ?? 150;
         final plan = {
           'type': 'sniper',
-          'perTradeUsd': (capUsd / 20).clamp(1, capUsd),
-          'sniperMinScore': (bot.config['sniperMinScore'] as num?) ?? 0.6,
-          'slippageBps': (bot.config['slippageBps'] as num?)?.toInt() ?? 100,
-          'intervalMs': 3600000,
+          'perTradeUsd': (capUsd / 8).clamp(5, capUsd),
+          'sniperMinScore': (bot.config['sniperMinScore'] as num?) ?? 0.45,
+          'slippageBps': cfgSlip < 150 ? 150 : cfgSlip,
+          'intervalMs': 15 * 60 * 1000,
         };
         await _delegations.register(
           botId: id, chain: 'solana', capUsd: capUsd,
@@ -956,4 +972,15 @@ class BotsController extends ChangeNotifier {
     notifyListeners();
     return created;
   }
+}
+
+/// Per-trade size for the aggressive "AI picks" autopilot: ~1/8 of the
+/// allocation, never below 20 USD (and never above the allocation itself when
+/// the allocation is smaller than that). Pure — unit-tested.
+num aggressivePerTradeUsd(num allocationUsd) {
+  if (!(allocationUsd > 0)) return 20;
+  final eighth = allocationUsd / 8;
+  final sized = eighth < 20 ? 20 : eighth;
+  final capped = sized > allocationUsd ? allocationUsd : sized;
+  return (capped * 100).roundToDouble() / 100;
 }

@@ -99,18 +99,23 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     'name': 'Scan & Trade (Autopilot)',
     'type': 'scanner',
     'blurb':
-        'Scans every discoverable pair, scores each for cost-positive profit, and auto-trades the worthy ones through the one gate. Paper + disabled + testnet by default.',
+        'AGGRESSIVE autopilot: scans every discoverable pair every minute, takes any cost-positive edge (10 bps), runs up to 6 pairs at once and snipes screened new tokens from the "high" discovery gate. Paper + disabled + testnet by default.',
     'universe': {'pairs': <String>[]},
     'config': {
-      'minProfitBps': 30, 'maxConcurrentPairs': 3, 'perTradeUsd': 20,
+      // AGGRESSIVE by design — "AI picks" exists to trade, not to wait. 10 bps
+      // of net edge (after gas, slippage and fees) is enough; 6 concurrent
+      // pairs; perTradeUsd is re-sized from the allocation at creation
+      // (BotsController.createFromTemplate: ~1/8 of the cap, min $20).
+      'minProfitBps': 10, 'maxConcurrentPairs': 6, 'perTradeUsd': 20,
       'profitCurrency': 'USDC',
       // 'sniper' lets the autopilot BUY safety-screened, high-score tokens from
       // the discovery feed (they have no venue book / SMA history, so arb /
       // momentum / grid never fire on them) — this is what makes "AI picks the
-      // pairs" actually trade.
+      // pairs" actually trade. 0.45 admits the broad top of the screened feed
+      // (rug / honeypot / denylist checks still hard-fail regardless of score).
       'strategies': ['arbitrage', 'momentum', 'grid', 'sniper'],
-      'sniperMinScore': 0.6,
-      'gasBufferUsd': 2, 'slippageBps': 10, 'agentFeeBps': 5, 'pollSec': 300,
+      'sniperMinScore': 0.45,
+      'gasBufferUsd': 2, 'slippageBps': 10, 'agentFeeBps': 5, 'pollSec': 60,
     },
   },
 };

@@ -967,7 +967,7 @@
         dip: { name: 'Dip-buyer', type: 'dca', riskMode: risk, universe: { pairs: [pair] },
           config: withPc({ baseOrderUsd: 0, safetyOrderUsd: 0, maxSafetyOrders: 4, safetyStepPct: 2.5, safetyVolumeScale: 1.3, takeProfitPct: 5, trailingTpPct: 1.5, startCondition: 'dip', dipPct: 1.5, candle: { enabled: true, sec: 300, minProfitPct: 1.5 } }) },
         scanner: { name: 'Autopilot', type: 'scanner', riskMode: risk, universe: { pairs: [] },
-          config: withPc({ minProfitBps: 30, maxConcurrentPairs: 3, perTradeUsd: 0, strategies: ['arbitrage', 'momentum', 'grid'], gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 }) },
+          config: withPc({ minProfitBps: 10, maxConcurrentPairs: 6, perTradeUsd: 0, strategies: ['arbitrage', 'momentum', 'grid', 'sniper'], sniperMinScore: 0.45, gasBufferUsd: 1, slippageBps: 15, agentFeeBps: 5 }) },
       };
     }
     // Size a child's per-order amounts from its budget share (so a 20% child
