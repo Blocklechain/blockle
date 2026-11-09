@@ -236,8 +236,17 @@ Map<String, dynamic> _validateDcaConfig(Map<String, dynamic>? c) {
         ? c['startCondition']
         : 'asap',
     'dipPct': math.max(0, _num(c['dipPct'], 0)),
+    // When true, the take-profit target is lifted by the round-trip agent fee so
+    // the REALIZED profit (after both 0.05% legs) still meets takeProfitPct. Off
+    // unless set (keeps the canonical golden-vector math raw); templates set it on.
+    'feeAwareTp': c['feeAwareTp'] == true,
   };
 }
+
+/// The round-trip agent-fee cost of a complete trade (buy leg + sell leg), in bps.
+/// A fee-aware take-profit target is lifted by this so the bot nets its configured
+/// profit AFTER fees instead of before.
+const int kRoundTripFeeBps = 2 * kAgentFeeBps; // 2 × 0.05% = 0.10%
 
 Map<String, dynamic> _validateGridConfig(Map<String, dynamic>? c) {
   c = c ?? const {};
@@ -270,6 +279,7 @@ Map<String, dynamic> _validateGridConfig(Map<String, dynamic>? c) {
     'totalUsd': math.max(0, _num(c['totalUsd'], 60)),
     'takeProfitPct': math.max(0, _num(c['takeProfitPct'], 0)),
     'stopLossPct': math.max(0, _num(c['stopLossPct'], 0)),
+    'feeAwareTp': c['feeAwareTp'] == true, // net-of-fee whole-grid take-profit
   };
 }
 
@@ -300,6 +310,7 @@ Map<String, dynamic> _validateSmartTradeConfig(Map<String, dynamic>? c) {
     'entry': {'kind': kind, 'price': entry['price'] != null ? _num(entry['price'], 0) : null},
     'takeProfits': tpsOut,
     'stopLoss': {'pct': math.max(0, _num(sl['pct'], 0)), 'trailing': sl['trailing'] == true},
+    'feeAwareTp': c['feeAwareTp'] == true, // net-of-fee take-profit targets
   };
 }
 
@@ -384,18 +395,24 @@ Map<String, dynamic> _validateScannerConfig(Map<String, dynamic>? c) {
   return out;
 }
 
-/// bps-converted copy of a dca config (internal engine use).
-Map<String, dynamic> dcaBps(Map<String, dynamic> cfg) => {
-      'baseOrderUsd': cfg['baseOrderUsd'],
-      'safetyOrderUsd': cfg['safetyOrderUsd'],
-      'maxSafetyOrders': cfg['maxSafetyOrders'],
-      'safetyStepBps': pctToBps(cfg['safetyStepPct'] as num),
-      'safetyStepScale': cfg['safetyStepScale'],
-      'safetyVolumeScale': cfg['safetyVolumeScale'],
-      'takeProfitBps': pctToBps(cfg['takeProfitPct'] as num),
-      'trailingTpBps': pctToBps((cfg['trailingTpPct'] ?? 0) as num),
-      'stopLossBps': pctToBps((cfg['stopLossPct'] ?? 0) as num),
-    };
+/// bps-converted copy of a dca config (internal engine use). When feeAwareTp is
+/// set the take-profit (and its trailing arm point) is lifted by the round-trip
+/// agent fee, so the deal realizes its configured profit NET of both 0.05% legs.
+Map<String, dynamic> dcaBps(Map<String, dynamic> cfg) {
+  final feeBps = cfg['feeAwareTp'] == true ? kRoundTripFeeBps : 0;
+  final tpBps = pctToBps(cfg['takeProfitPct'] as num);
+  return {
+    'baseOrderUsd': cfg['baseOrderUsd'],
+    'safetyOrderUsd': cfg['safetyOrderUsd'],
+    'maxSafetyOrders': cfg['maxSafetyOrders'],
+    'safetyStepBps': pctToBps(cfg['safetyStepPct'] as num),
+    'safetyStepScale': cfg['safetyStepScale'],
+    'safetyVolumeScale': cfg['safetyVolumeScale'],
+    'takeProfitBps': tpBps > 0 ? tpBps + feeBps : tpBps,
+    'trailingTpBps': pctToBps((cfg['trailingTpPct'] ?? 0) as num),
+    'stopLossBps': pctToBps((cfg['stopLossPct'] ?? 0) as num),
+  };
+}
 
 // ===========================================================================
 // DEAL ENGINE — DCA (§2.1 flagship)
@@ -556,11 +573,17 @@ Map<String, dynamic> newGridDeal(
     };
 
 /// bps-converted copy of a grid config (for the optional whole-grid TP/SL exit).
-Map<String, dynamic> gridBcfg(Map<String, dynamic> cfg) => {
-      ...cfg,
-      '_tpBps': pctToBps((cfg['takeProfitPct'] ?? 0) as num),
-      '_slBps': pctToBps((cfg['stopLossPct'] ?? 0) as num),
-    };
+Map<String, dynamic> gridBcfg(Map<String, dynamic> cfg) {
+  final feeBps = cfg['feeAwareTp'] == true ? kRoundTripFeeBps : 0;
+  final tpBps = pctToBps((cfg['takeProfitPct'] ?? 0) as num);
+  return {
+    ...cfg,
+    // The optional whole-grid take-profit is lifted by the round-trip fee so the
+    // liquidation nets the configured profit after both 0.05% legs.
+    '_tpBps': tpBps > 0 ? tpBps + feeBps : tpBps,
+    '_slBps': pctToBps((cfg['stopLossPct'] ?? 0) as num),
+  };
+}
 
 /// Decide the next fillable grid level at [markUc] (or null).
 Map<String, dynamic>? gridStep(
@@ -707,9 +730,12 @@ Map<String, dynamic>? smartStep(
   }
   final tps = (cfg['takeProfits'] as List).cast<Map<String, dynamic>>();
   final tpsHit = (deal['tpsHit'] as List).cast<bool>();
+  // Lift every take-profit target by the round-trip fee when fee-aware, so each
+  // partial exit nets its configured profit after both 0.05% legs.
+  final feeBps = cfg['feeAwareTp'] == true ? kRoundTripFeeBps : 0;
   for (var t = 0; t < tps.length; t++) {
     if (tpsHit[t]) continue;
-    final target = applyBps(deal['avgEntryUc'] as BigInt, pctToBps(tps[t]['pct'] as num));
+    final target = applyBps(deal['avgEntryUc'] as BigInt, pctToBps(tps[t]['pct'] as num) + feeBps);
     if (markUc >= target) {
       final shareBps = pctToBps(tps[t]['sharePct'] as num);
       var qty = divRound((deal['entryQty'] as BigInt) * BigInt.from(shareBps), BigInt.from(10000));

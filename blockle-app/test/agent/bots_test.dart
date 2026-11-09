@@ -289,6 +289,36 @@ void main() {
     });
   });
 
+  group('Fee-aware take-profit (nets profit after the 0.05% round-trip fee)', () {
+    test('dcaBps lifts the TP target by the round-trip fee only when feeAwareTp', () {
+      final raw = dcaBps(validateConfig('dca', {'takeProfitPct': 2}));
+      expect(raw['takeProfitBps'], pctToBps(2)); // unchanged by default (vectors)
+      final aware = dcaBps(validateConfig('dca', {'takeProfitPct': 2, 'feeAwareTp': true}));
+      expect(aware['takeProfitBps'], pctToBps(2) + kRoundTripFeeBps); // +0.10%
+      expect(kRoundTripFeeBps, 2 * kAgentFeeBps); // = 10 bps
+    });
+
+    test('a zero take-profit is never lifted (0 stays 0)', () {
+      final aware = dcaBps(validateConfig('dca', {'takeProfitPct': 0, 'feeAwareTp': true}));
+      expect(aware['takeProfitBps'], 0);
+    });
+
+    test('gridBcfg lifts the whole-grid TP only when set + non-zero', () {
+      final aware = gridBcfg(validateConfig(
+          'grid', {'spanPct': 10, 'takeProfitPct': 5, 'feeAwareTp': true}));
+      expect(aware['_tpBps'], pctToBps(5) + kRoundTripFeeBps);
+      final off = gridBcfg(validateConfig('grid', {'spanPct': 10, 'takeProfitPct': 5}));
+      expect(off['_tpBps'], pctToBps(5));
+    });
+
+    test('every deal-bot template ships fee-aware', () {
+      for (final key in const ['conservative_dca', 'aggressive_dca', 'wide_grid', 'scalp_grid', 'sol_accumulator']) {
+        final bot = Bot(fromTemplate(key, pair: 'SOL/USDC'));
+        expect(bot.config['feeAwareTp'], isTrue, reason: '$key must be fee-aware');
+      }
+    });
+  });
+
   group('Templates: starter set + export/import', () {
     test('starter set builds valid paper+disabled bots', () {
       final names = templateList().map((t) => t['key']).toList();

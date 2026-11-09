@@ -24,6 +24,7 @@ const Map<String, Map<String, dynamic>> kTemplates = {
       'pairs': ['SOL/USDC']
     },
     'config': {
+      'feeAwareTp': true, // take profit NET of the 0.05% round-trip fee
       'baseOrderUsd': 20, 'safetyOrderUsd': 20, 'maxSafetyOrders': 3,
       'safetyStepPct': 2, 'safetyStepScale': 1.0, 'safetyVolumeScale': 1.0,
       'takeProfitPct': 2, 'trailingTpPct': 0, 'stopLossPct': 12,
@@ -39,6 +40,7 @@ const Map<String, Map<String, dynamic>> kTemplates = {
       'pairs': ['SOL/USDC']
     },
     'config': {
+      'feeAwareTp': true, // take profit NET of the 0.05% round-trip fee
       'baseOrderUsd': 25, 'safetyOrderUsd': 25, 'maxSafetyOrders': 4,
       'safetyStepPct': 3, 'safetyStepScale': 1.2, 'safetyVolumeScale': 1.5,
       'takeProfitPct': 3, 'trailingTpPct': 1, 'stopLossPct': 10,
@@ -56,7 +58,10 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     // spanPct auto-centers the ±20% ladder on the live mark, so it trades on any
     // real, priceable asset (SOL/ETH/BTC) — not a fixed $1 band that only the
     // (never-priced) BLOCK pair fit, which could never fill and never traded.
-    'config': {'spanPct': 20, 'gridCount': 8, 'totalUsd': 80, 'takeProfitPct': 0, 'stopLossPct': 0},
+    'config': {
+      'feeAwareTp': true, // take profit NET of the 0.05% round-trip fee
+      'spanPct': 20, 'gridCount': 8, 'totalUsd': 80, 'takeProfitPct': 0, 'stopLossPct': 0,
+    },
   },
   'scalp_grid': {
     'name': 'Scalp Grid',
@@ -65,7 +70,10 @@ const Map<String, Map<String, dynamic>> kTemplates = {
     'universe': {
       'pairs': ['ETH/USDC']
     },
-    'config': {'spanPct': 3, 'gridCount': 12, 'totalUsd': 60, 'takeProfitPct': 0, 'stopLossPct': 0},
+    'config': {
+      'feeAwareTp': true, // take profit NET of the 0.05% round-trip fee
+      'spanPct': 3, 'gridCount': 12, 'totalUsd': 60, 'takeProfitPct': 0, 'stopLossPct': 0,
+    },
   },
   'sol_accumulator': {
     'name': 'SOL Accumulator',
@@ -75,6 +83,7 @@ const Map<String, Map<String, dynamic>> kTemplates = {
       'pairs': ['SOL/USDC']
     },
     'config': {
+      'feeAwareTp': true, // take profit NET of the 0.05% round-trip fee
       'baseOrderUsd': 15, 'safetyOrderUsd': 15, 'maxSafetyOrders': 5,
       'safetyStepPct': 4, 'safetyStepScale': 1.1, 'safetyVolumeScale': 1.2,
       'takeProfitPct': 5, 'trailingTpPct': 2, 'stopLossPct': 0,
