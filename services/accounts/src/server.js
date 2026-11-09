@@ -1304,6 +1304,34 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, id });
   });
 
+  // --- contact form (blockle.org/contact) -----------------------------------------------------
+  // Public support/help form: the message is stored as a ticket (admin-visible)
+  // AND delivered to alex@blockle.org. No account needed; rate-limited per IP.
+  on('POST', /^\/account\/api\/contact$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('contact:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 32 * 1024).catch(() => ({}));
+    const name = String(b.name || '').slice(0, 120).trim();
+    const email = String(b.email || '').toLowerCase().trim();
+    const topic = String(b.topic || 'support').slice(0, 40).trim();
+    const message = String(b.message || '').slice(0, 8000).trim();
+    if (!EMAIL_RE.test(email)) return json(res, 400, { error: 'Enter a valid email so we can reply.' });
+    if (message.length < 5) return json(res, 400, { error: 'Write a message first.' });
+    const id = randomToken(8);
+    await store.put('tickets', id, {
+      id, email, subject: `[contact:${topic}] ${name || email}`, status: 'open', createdAt: now(),
+      messages: [{ from: 'user', body: message, at: now() }],
+    });
+    try {
+      await mailer.send({
+        to: 'alex@blockle.org',
+        subject: `[blockle.org contact] ${topic} — ${name || email}`,
+        text: `From: ${name ? name + ' <' + email + '>' : email}\nTopic: ${topic}\nTicket: ${id}\n\n${message}\n\n— sent via blockle.org/contact (reply directly to ${email})`,
+      });
+    } catch {}
+    return json(res, 200, { ok: true, id });
+  });
+
   // --- admin (role-gated) -------------------------------------------------------------------
   on('GET', /^\/account\/api\/admin\/stats$/, adminOnly((req, res) => {
     const users = store.all('users');

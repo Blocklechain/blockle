@@ -736,6 +736,10 @@ fn route(
             "The Blockle token launchpad has been shut down and is no longer available. Tokens can no longer be launched or listed through Blockle.",
         ).into_bytes()),
         "/market" => serve_web_file("market.html", "text/html; charset=utf-8"),
+        // Contact/support form (posts to the accounts service → alex@blockle.org)
+        // + the iOS App Store marketing page. Static pages in /opt/blockle/web.
+        "/contact" => serve_web_file("contact.html", "text/html; charset=utf-8"),
+        "/ios" => serve_web_file("ios.html", "text/html; charset=utf-8"),
         "/intelligence" => serve_web_file("intelligence.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),

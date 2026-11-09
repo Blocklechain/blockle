@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact &amp; Support — Blockle</title>
+<meta name="description" content="Get help with Blockle Wallet, the BLOCK chain, trading bots, or anything else. Send us a message and we'll reply by email.">
+<link rel="icon" type="image/svg+xml" href="/assets/logo.svg" onerror="this.remove()">
+<style>
+  :root{--bg:#0B0B14;--surface:#141427;--surface2:#1F1F38;--line:#2A2A45;--text:#ECECF5;--muted:#9AA0B5;--accent:#7C5CFF;--accent2:#37E0C8;--bad:#FB7185;--good:#4ADE80;--sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6}
+  a{color:var(--accent2)}
+  header{border-bottom:1px solid var(--line)}
+  .wrap{max-width:720px;margin:0 auto;padding:0 22px}
+  header .wrap{display:flex;align-items:center;gap:10px;height:60px}
+  header b{font-weight:700}
+  header .sp{margin-left:auto;font-size:14px}
+  main{padding:34px 0 70px}
+  h1{font-size:clamp(26px,4vw,34px);letter-spacing:-.02em;margin:6px 0 6px}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 26px}
+  form{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:22px}
+  label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px}
+  label:first-child{margin-top:0}
+  input,select,textarea{width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:10px;color:var(--text);font-family:var(--sans);font-size:15px;padding:12px 14px;outline:none}
+  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+  textarea{min-height:170px;resize:vertical}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:560px){.row{grid-template-columns:1fr}}
+  button{margin-top:18px;width:100%;background:var(--accent);border:0;border-radius:12px;color:#fff;font-size:16px;font-weight:700;padding:14px;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  .note{font-size:12.5px;color:var(--muted);margin-top:12px}
+  .msg{display:none;margin-top:16px;border-radius:12px;padding:14px 16px;font-size:14.5px}
+  .msg.ok{display:block;background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.4);color:var(--good)}
+  .msg.err{display:block;background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.4);color:var(--bad)}
+  .alt{margin-top:26px;font-size:14px;color:var(--muted)}
+  footer{border-top:1px solid var(--line);color:var(--muted);font-size:13px;padding:20px 0}
+</style>
+</head>
+<body>
+<header><div class="wrap"><b>Blockle</b><a class="sp" href="/">blockle.org</a></div></header>
+<main class="wrap">
+  <h1>Contact &amp; Support</h1>
+  <p class="sub">Questions about Blockle Wallet, the BLOCK chain, trading bots, or anything else — send us a message and we'll reply to your email.</p>
+
+  <form id="f">
+    <div class="row">
+      <div>
+        <label for="name">Name (optional)</label>
+        <input id="name" name="name" maxlength="120" autocomplete="name" placeholder="Satoshi">
+      </div>
+      <div>
+        <label for="email">Email *</label>
+        <input id="email" name="email" type="email" required maxlength="200" autocomplete="email" placeholder="you@example.com">
+      </div>
+    </div>
+    <label for="topic">Topic</label>
+    <select id="topic" name="topic">
+      <option value="support">Help &amp; support</option>
+      <option value="bug">Bug report</option>
+      <option value="wallet">Wallet / recovery</option>
+      <option value="bots">Trading bots</option>
+      <option value="billing">Billing / subscription</option>
+      <option value="partnership">Partnership / business</option>
+      <option value="other">Something else</option>
+    </select>
+    <label for="message">Message *</label>
+    <textarea id="message" name="message" required maxlength="8000" placeholder="Tell us what's going on. Include your platform (iOS / extension / web / desktop) if it's about the wallet. Never include your seed phrase or private keys — we will never ask for them."></textarea>
+    <button id="send" type="submit">Send message</button>
+    <div id="out" class="msg"></div>
+    <p class="note">We never ask for your seed phrase, private keys, or passwords — anyone who does is a scammer. Messages go straight to the Blockle team.</p>
+  </form>
+
+  <p class="alt">Prefer email? Write to <a href="mailto:alex@blockle.org">alex@blockle.org</a>.</p>
+</main>
+<footer><div class="wrap">Blockle · <a href="/">Home</a> · <a href="/ios">iOS App</a> · <a href="/wallet/">Web Wallet</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></div></footer>
+<script>
+  const f = document.getElementById('f'), out = document.getElementById('out'), btn = document.getElementById('send');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    out.className = 'msg'; btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const body = {
+        name: f.name.value.trim(),
+        email: f.email.value.trim(),
+        topic: f.topic.value,
+        message: f.message.value.trim(),
+      };
+      const r = await fetch('/account/api/contact', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.ok) {
+        out.className = 'msg ok';
+        out.textContent = 'Message sent — we’ll reply to ' + body.email + '. (Reference: ' + (j.id || 'ok') + ')';
+        f.reset();
+      } else {
+        out.className = 'msg err';
+        out.textContent = j.error || 'Could not send right now — please email alex@blockle.org instead.';
+      }
+    } catch {
+      out.className = 'msg err';
+      out.textContent = 'Network error — please email alex@blockle.org instead.';
+    }
+    btn.disabled = false; btn.textContent = 'Send message';
+  });
+</script>
+</body>
+</html>
