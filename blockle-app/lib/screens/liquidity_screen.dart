@@ -244,8 +244,9 @@ class _SwapCardState extends State<_SwapCard> {
           ),
         ),
         const SizedBox(height: 6),
-        Text('Swaps execute against the fee-funded treasury reserves.',
-            style: TextStyle(fontSize: 11, color: Bk.faint)),
+        Text('Preview — swaps run against the in-wallet treasury model. Reserves are '
+            'simulated (seeded + fee-funded), not yet on-chain custodial liquidity.',
+            style: TextStyle(fontSize: 11, color: Bk.faint, height: 1.35)),
       ]),
     );
   }
@@ -273,26 +274,70 @@ class _SwapCardState extends State<_SwapCard> {
   }
 
   Future<void> _pickCoin() async {
+    final svc = widget.svc;
+    // Sort the pickable coins by how much liquidity each pool actually has — the
+    // deepest first — so the user sees where a swap will fill best.
+    final coins = [...kMoonPayCoins]
+      ..sort((a, b) => svc.availableLiquidityUsd(b).compareTo(svc.availableLiquidityUsd(a)));
+    final maxLiq = coins.fold<double>(0, (m, c) => svc.availableLiquidityUsd(c) > m ? svc.availableLiquidityUsd(c) : m);
     final picked = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Bk.surface,
+      isScrollControlled: true,
       builder: (_) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(18, 14, 18, 8),
-              child: Text('Swap BLOCK for', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Bk.text)),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(18, 16, 18, 4),
+            child: Align(alignment: Alignment.centerLeft,
+              child: Text('Swap BLOCK for', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: Bk.text))),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
+            child: Align(alignment: Alignment.centerLeft,
+              child: Text('Available liquidity per asset (fee-funded).',
+                  style: TextStyle(fontSize: 12, color: Bk.faint))),
+          ),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final c in coins)
+                  Builder(builder: (_) {
+                    final liqUsd = svc.availableLiquidityUsd(c);
+                    final units = svc.pool.pools[c]?.rBase ?? 0;
+                    final has = liqUsd > 0.01;
+                    final frac = maxLiq > 0 ? (liqUsd / maxLiq).clamp(0.0, 1.0) : 0.0;
+                    return ListTile(
+                      onTap: () => Navigator.pop(context, c),
+                      title: Row(children: [
+                        Text(c, style: const TextStyle(color: Bk.text, fontWeight: FontWeight.w700)),
+                        const SizedBox(width: 10),
+                        if (has)
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(3),
+                              child: LinearProgressIndicator(
+                                value: frac, minHeight: 4,
+                                backgroundColor: Bk.surface2,
+                                valueColor: const AlwaysStoppedAnimation(Bk.accent),
+                              ),
+                            ),
+                          )
+                        else
+                          const Spacer(),
+                      ]),
+                      subtitle: Text(
+                        has ? '${_fmtAmt(units)} $c in pool' : 'No liquidity yet — bot fees fund it',
+                        style: TextStyle(fontSize: 11.5, color: has ? Bk.muted : Bk.faint),
+                      ),
+                      trailing: Text(has ? _fmtUsd(liqUsd) : '—',
+                          style: TextStyle(color: has ? Bk.text : Bk.faint, fontSize: 13, fontWeight: FontWeight.w700)),
+                    );
+                  }),
+              ],
             ),
-            for (final c in kMoonPayCoins)
-              ListTile(
-                title: Text(c, style: const TextStyle(color: Bk.text, fontWeight: FontWeight.w600)),
-                trailing: Text(_fmtUsd(widget.svc.availableLiquidityUsd(c)),
-                    style: TextStyle(color: Bk.muted, fontSize: 12)),
-                onTap: () => Navigator.pop(context, c),
-              ),
-          ],
-        ),
+          ),
+        ]),
       ),
     );
     if (picked != null) setState(() => _coin = picked);
