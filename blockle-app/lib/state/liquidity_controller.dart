@@ -182,6 +182,81 @@ class LiquidityService extends ChangeNotifier {
     return q;
   }
 
+  // ---- on-chain settlement (gated server flow) ------------------------------
+  // Coin families sharing a custodial hot wallet — MUST match the server
+  // (liquidity.js). Only these settle on-chain today; everything else is
+  // authoritative accounting until its chain's relayer leg is wired.
+  static const Set<String> _evmCoins = {'USDC', 'USDT', 'DAI', 'ETH', 'BNB', 'MATIC', 'AVAX'};
+  static const Set<String> _solCoins = {'SOL'};
+
+  /// True when the server's on-chain settlement gate (LIQUIDITY_MAINNET) is live.
+  bool get onchainSettlement => settlement == 'onchain';
+
+  /// Whether [coin]'s leg can settle on-chain today. Matches the relayer's real
+  /// capability: BLOCK (ML-DSA) + the EVM family. Solana has a custodial deposit
+  /// address but no payout leg yet, so it does NOT settle on-chain.
+  bool coinSettlesOnchain(String coin) {
+    final c = coin.toUpperCase();
+    return c == 'BLOCK' || _evmCoins.contains(c);
+  }
+
+  /// The treasury DEPOSIT address a user sends [coin] to, from the server's
+  /// custodial set. null until the gate is live / the family is unwired.
+  String? depositAddressFor(String coin) {
+    final c = coin.toUpperCase();
+    if (c == 'BLOCK') return custodial['block'] as String?;
+    if (_solCoins.contains(c)) return custodial['solana'] as String?;
+    if (_evmCoins.contains(c)) return custodial['evm'] as String?;
+    return null;
+  }
+
+  /// Start a REAL on-chain swap: records the swap server-side and returns the
+  /// settlement record ({id, depositAddress, amountIn, amountOut, status}).
+  /// [receiveAddress] is where the PAYOUT (the `to` asset) is sent. null when
+  /// offline/not server-backed. The user then deposits `amountIn` of `from` to
+  /// depositAddress and calls [settle] with that txid.
+  Future<Map<String, dynamic>?> startOnchainSwap(
+      String from, String to, double amount, String receiveAddress) async {
+    if (!serverBacked) return null;
+    final coin = from.toUpperCase() == 'BLOCK' ? to : from;
+    try {
+      final r = await http
+          .post(Uri.parse('$_serverBase/account/api/liquidity/swap'),
+              headers: const {'content-type': 'application/json'},
+              body: jsonEncode({
+                'from': from,
+                'to': to,
+                'amountIn': amount,
+                'coinUsd': priceOf(coin),
+                'userAddress': receiveAddress,
+              }))
+          .timeout(const Duration(seconds: 12));
+      final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+      unawaited(_syncFromServer());
+      return j;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Settle a swap: post the user's deposit txid; the server verifies it and
+  /// pays out the output asset. Returns the updated record (status 'settled' +
+  /// payoutTxid on success, else a reason). Never throws.
+  Future<Map<String, dynamic>> settle(String id, String depositTxid) async {
+    try {
+      final r = await http
+          .post(Uri.parse('$_serverBase/account/api/liquidity/settle'),
+              headers: const {'content-type': 'application/json'},
+              body: jsonEncode({'id': id, 'depositTxid': depositTxid}))
+          .timeout(const Duration(seconds: 25));
+      final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+      unawaited(_syncFromServer());
+      return j;
+    } catch (e) {
+      return {'ok': false, 'error': '$e'};
+    }
+  }
+
   double availableLiquidityUsd(String coin) =>
       _pool.availableLiquidityUsd(coin, priceOf(coin));
 

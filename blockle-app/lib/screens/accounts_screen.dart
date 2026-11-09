@@ -25,7 +25,7 @@ import '../state/wallet_controller.dart';
 import '../theme.dart';
 import '../ui/app_icons.dart';
 import '../widgets/chain_icon.dart';
-import 'swap.dart';
+import 'liquidity_screen.dart';
 import 'wallet/security_sheet.dart';
 
 class AccountsScreen extends StatefulWidget {
@@ -557,8 +557,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
-  /// BLOCK is not on MoonPay — C5 "Get BLOCK with a card": a guided 2-step flow
-  /// (BUY USDC via MoonPay, then auto-open the native /dex swap USDC→BLOCK).
+  /// BLOCK is not on MoonPay — acquire it by swapping a coin you already hold
+  /// (USDC, ETH, …) for BLOCK against Blockle Liquidity, the fee-funded treasury.
   Widget _blockBuyNote(MultichainController c) {
     return Container(
       margin: const EdgeInsets.only(top: 8),
@@ -571,116 +571,43 @@ class _AccountsScreenState extends State<AccountsScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'BLOCK isn’t available to buy with a card. Get it in two steps: '
-            'buy USDC with a card, then swap USDC → BLOCK on the native DEX.',
+            'BLOCK isn’t available to buy with a card. Get it by swapping a coin '
+            'you already hold — USDC, ETH and more — for BLOCK against Blockle '
+            'Liquidity, the fee-funded treasury.',
             style: TextStyle(color: Bk.muted, fontSize: 11),
           ),
-          if (c.moonpayConfig.featureBuy) ...[
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: InkWell(
-                onTap: () => _getBlockWithCard(c),
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: Bk.accent.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.credit_card, size: 12, color: Bk.accent),
-                      SizedBox(width: 5),
-                      Text('Get BLOCK with a card',
-                          style: TextStyle(
-                              color: Bk.accent,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700)),
-                    ],
-                  ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: InkWell(
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LiquidityScreen())),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Bk.accent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.swap_horiz, size: 12, color: Bk.accent),
+                    SizedBox(width: 5),
+                    Text('Swap for BLOCK',
+                        style: TextStyle(
+                            color: Bk.accent,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                  ],
                 ),
               ),
             ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  /// C5 — buy USDC with a card (step 1), then auto-open the native DEX swap
-  /// (step 2) so the user ends up holding BLOCK. USDC is delivered to the
-  /// user's own Solana address (the native DEX's swap target).
-  Future<void> _getBlockWithCard(MultichainController c) async {
-    // The USDC lands on the user's Solana receive address — the swap target.
-    const usdcChain = 'solana';
-    final acct = _accts[usdcChain] ?? await c.addressFor(usdcChain);
-    final addr = acct?.address ?? '';
-    if (addr.isEmpty) {
-      _snack('Unlock your multi-chain vault to receive USDC first.');
-      return;
-    }
-    final amt = await _askUsdAmount();
-    if (amt == null) return;
-    final plan = await moonpayGetBlockWithCard(
-      config: c.moonpayConfig,
-      walletAddress: addr,
-      usdAmount: amt,
-      usdcChain: usdcChain,
-    );
-    if (!mounted) return;
-    if (!plan.ok || plan.step1BuyUrl == null) {
-      _snack(plan.reason ?? 'Couldn’t start the card purchase.');
-      return;
-    }
-    if (kIsWeb) {
-      openExternal(plan.step1BuyUrl!);
-    } else {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (_) => MoonPayBuyScreen(
-                url: plan.step1BuyUrl!, assetLabel: 'USDC')),
-      );
-    }
-    if (!mounted) return;
-    // Step 2 — the native /dex swap USDC → BLOCK.
-    _snack('USDC on the way. Next: swap USDC → BLOCK on the DEX.');
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => const SwapScreen()),
-    );
-  }
-
-  /// Small USD-amount prompt for the guided card purchases.
-  Future<double?> _askUsdAmount() async {
-    final ctrl = TextEditingController(text: '50');
-    final v = await showDialog<double>(
-      context: context,
-      builder: (dctx) => AlertDialog(
-        backgroundColor: Bk.surface,
-        title: const Text('Amount in USD'),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(prefixText: '\$ '),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(dctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dctx, double.tryParse(ctrl.text.trim())),
-            child: const Text('Continue'),
           ),
         ],
       ),
     );
-    if (v == null || v <= 0) return null;
-    return v;
   }
 
   /// Build the MoonPay widget URL for [asset] on [chain] and open it — the
