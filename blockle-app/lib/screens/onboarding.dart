@@ -6,7 +6,7 @@ import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
-import '../widgets/particle_logo.dart';
+import '../widgets/blockle_3d_logo.dart';
 
 void _toRoot(BuildContext c) =>
     Navigator.of(c).popUntil((r) => r.isFirst);
@@ -28,7 +28,7 @@ class OnboardingScreen extends StatelessWidget {
           child: Column(
             children: [
               const Spacer(),
-              const ParticleLogo(size: 180),
+              const Blockle3DLogo(size: 200),
               const SizedBox(height: 28),
               const Text('Blockle Wallet',
                   style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
@@ -271,7 +271,7 @@ class _UnlockScreenState extends State<UnlockScreen> {
           child: Column(
             children: [
               const Spacer(),
-              const ParticleLogo(size: 140),
+              const Blockle3DLogo(size: 160),
               const SizedBox(height: 24),
               const Text('Welcome back',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),

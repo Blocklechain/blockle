@@ -10,7 +10,7 @@ import '../services/token_list.dart';
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
-import '../widgets/particle_logo.dart';
+
 import '../widgets/chain_icon.dart';
 import 'send.dart';
 import 'receive.dart';
@@ -183,7 +183,7 @@ class _WalletTabState extends State<WalletTab> {
           children: [
             Row(
               children: [
-                const SizedBox(width: 44, height: 44, child: ParticleLogo(size: 44)),
+                ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.asset('assets/model/blockle_logo_3d.png', width: 44, height: 44, fit: BoxFit.cover)),
                 const SizedBox(width: 12),
                 const Expanded(
                   child: Column(
