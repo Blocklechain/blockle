@@ -64,6 +64,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Drop one entry from the queue (confirmed long ago, or never accepted).
+  Future<void> removePending(String txid) async {
+    final before = _pending.length;
+    _pending = _pending.where((e) => e['txid'] != txid).toList();
+    if (_pending.length == before) return;
+    await _storage.write(key: _kPending, value: jsonEncode(_pending));
+    notifyListeners();
+  }
+
   // ---- navigation (bottom tabs + browser deep-link) ----
   int tabIndex = 0;
   String? pendingBrowserUrl;

@@ -176,12 +176,26 @@ class Chain {
         'balance': bal.isValidInt ? bal.toInt() : bal.toString(),
       };
 
-  /// Look up a transaction by id. Returns its JSON (with `confirmations`/
-  /// `height` once mined) or null if not found / still unconfirmed.
+  /// Look up a transaction by id. Returns null when the node does not know it
+  /// (never accepted, or dropped from the mempool). Otherwise a FLAT map: the
+  /// explorer wraps the tx as `{block_hash, tx: {...}}` (block_hash null while
+  /// it is still in the mempool), which this unwraps so callers can read
+  /// `mined` (bool), `height`, `confirmations`, `block_hash`, `inputs`,
+  /// `outputs`, `fee` directly.
   Future<Map<String, dynamic>?> tx(String txid) async {
     final t = await _get('/tx/$txid');
     if (t == null || t['error'] != null) return null;
-    return t;
+    final inner = t['tx'] is Map ? (t['tx'] as Map).cast<String, dynamic>() : t;
+    final blockHash = t['block_hash'] ?? inner['block_hash'];
+    final height = inner['block_height'] ?? inner['height'] ?? t['height'];
+    final confs = inner['confirmations'] ?? t['confirmations'];
+    return {
+      ...inner,
+      'block_hash': blockHash,
+      'height': height,
+      'confirmations': confs,
+      'mined': blockHash != null || height != null,
+    };
   }
 
   /// Broadcast a bincode-hex transaction via the submit proxy.

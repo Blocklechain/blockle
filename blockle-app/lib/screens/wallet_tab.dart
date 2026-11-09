@@ -530,8 +530,9 @@ class _WalletTabState extends State<WalletTab> {
 
   Widget _txRow(Map<String, dynamic> t) {
     final txid = (t['txid'] ?? '').toString();
-    final inc = t['incoming'] == true || t['direction'] == 'in';
-    final val = (t['valueFmt'] ?? t['value'] ?? '').toString();
+    final net = (t['net'] as num?);
+    final inc = net != null ? net > 0 : (t['incoming'] == true || t['direction'] == 'in');
+    final val = net != null ? historyAmountLabel(t) : (t['valueFmt'] ?? t['value'] ?? '').toString();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
