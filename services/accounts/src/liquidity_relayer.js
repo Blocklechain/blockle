@@ -12,6 +12,9 @@
 
 import crypto from 'node:crypto';
 import { signEip1559, evmAddressFromPrivate, erc20TransferData } from './evmsign.js';
+import { verifyBlockDeposit, payoutBlock } from './liquidity_block.js';
+
+const isBlock = (c) => String(c || '').toUpperCase() === 'BLOCK';
 
 const _big = (v) => (typeof v === 'bigint' ? v : BigInt(v == null ? 0 : (String(v).startsWith('0x') ? String(v) : String(v))));
 
@@ -104,27 +107,34 @@ export async function verifyDepositEvm({ rpc, txid, expectTo, coin, minAmount })
 // mark settled. deps: { store, rpcFor(chainId), seedHex, env, now }. Returns the
 // updated record. Idempotent — a record already 'settled' is returned unchanged.
 export async function settleSwap(id, depositTxid, deps) {
-  const { store, rpcFor, seedHex, env = process.env, now = () => Date.now() } = deps;
+  const { store, rpcFor, seedHex, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch } = deps;
   if (!liquidityMainnet(env)) throw new Error('liquidity settlement disabled (LIQUIDITY_MAINNET not set)');
   const rec = store.get('liquidity', 'swap:' + id);
   if (!rec) throw new Error('unknown swap ' + id);
   if (rec.status === 'settled') return rec;
 
-  // The user DEPOSITS the input asset; we PAY OUT the output asset.
+  // The user DEPOSITS the input asset; we PAY OUT the output asset. Each leg is
+  // BLOCK (post-quantum, liquidity_block.js) or EVM — one of the two is always
+  // BLOCK. A leg on a chain we haven't wired is honestly marked 'unsupported'.
   const depositCoin = String(rec.from).toUpperCase();
   const payoutCoin = String(rec.to).toUpperCase();
-  if (!_supported(depositCoin) || !_supported(payoutCoin)) {
+  const legOk = (c) => isBlock(c) || _supported(c);
+  if (!legOk(depositCoin) || !legOk(payoutCoin)) {
     rec.status = 'unsupported'; rec.reason = 'chain not wired for on-chain settlement yet';
     await store.put('liquidity', 'swap:' + id, rec); return rec;
   }
   if (!rec.userAddress) { rec.status = 'failed'; rec.reason = 'no user address'; await store.put('liquidity', 'swap:' + id, rec); return rec; }
 
-  // 1) verify the deposit
-  const dv = await verifyDepositEvm({ rpc: rpcFor(COIN_CHAIN[depositCoin]), txid: depositTxid, expectTo: rec.depositAddress, coin: depositCoin, minAmount: rec.amountIn });
+  // 1) verify the deposit (BLOCK via explorer; EVM via receipt).
+  const dv = isBlock(depositCoin)
+    ? await verifyBlockDeposit({ txid: depositTxid, expectTo: rec.depositAddress, minBlock: rec.amountIn, chainBase, fetchFn })
+    : await verifyDepositEvm({ rpc: rpcFor(COIN_CHAIN[depositCoin]), txid: depositTxid, expectTo: rec.depositAddress, coin: depositCoin, minAmount: rec.amountIn });
   if (!dv.ok) { rec.status = 'awaiting-deposit'; rec.reason = dv.reason; await store.put('liquidity', 'swap:' + id, rec); return rec; }
 
-  // 2) pay out
-  const pay = await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
+  // 2) pay out the output asset (BLOCK ML-DSA transfer; or EVM native/ERC-20).
+  const pay = isBlock(payoutCoin)
+    ? await payoutBlock({ store, seedHex, toAddress: rec.userAddress, amountBlock: rec.amountOut, chainBase, fetchFn, env })
+    : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
   rec.status = 'settled'; rec.depositTxid = depositTxid; rec.payoutTxid = pay.txid; rec.settledAt = now(); rec.reason = '';
   await store.put('liquidity', 'swap:' + id, rec);
   return rec;

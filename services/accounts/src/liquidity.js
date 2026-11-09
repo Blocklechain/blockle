@@ -16,6 +16,7 @@
 
 import crypto from 'node:crypto';
 import { evmAddressFromPrivate } from './evmsign.js';
+import { ensureTreasuryWallet } from './liquidity_block.js';
 
 const BLOCK_SEED_SUPPLY = 50000;
 const BLOCK_SEED_PRICE_USD = 0.001;
@@ -36,6 +37,9 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   // custodial address. Until it resolves, only the EVM address is reported.
   let _sol = null;
   if (seedHex) import('./vendor/solana.js').then((m) => { _sol = m.default || m; }).catch(() => {});
+  // Provision the treasury BLOCK (post-quantum) wallet once the gate is live, so
+  // its deposit address exists before anyone swaps. Best-effort.
+  if (seedHex && mainnet) ensureTreasuryWallet(store, seedHex).catch(() => {});
 
   function fresh() {
     return { blockTreasury: BLOCK_SEED_SUPPLY, reserves: {}, fees: {}, updatedAt: now() };
@@ -62,6 +66,9 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
         const solSeed = crypto.createHash('sha256').update('sol:' + seedHex).digest();
         out.solana = _sol.addressFromSeed(solSeed);
       }
+      // BLOCK (post-quantum) wallet — generated once + stored; present once provisioned.
+      const bw = store.get(COLL, 'blockWallet');
+      if (bw && bw.address) out.block = bw.address;
       return out;
     } catch (_) { return {}; }
   }
@@ -69,6 +76,7 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   function depositAddressFor(coin) {
     const a = custodialAddresses();
     const c = String(coin || '').toUpperCase();
+    if (c === 'BLOCK') return a.block || null;
     if (EVM_COINS.has(c)) return a.evm || null;
     if (SOL_COINS.has(c)) return a.solana || null;
     return null;

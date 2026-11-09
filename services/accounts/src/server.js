@@ -480,6 +480,7 @@ export function createApp(overrides = {}) {
         store,
         rpcFor: (chainId) => rpcSenderFor(chainId),
         seedHex: process.env.LIQUIDITY_TREASURY_SEED || '',
+        chainBase: cfg.chainApiBase,
         env: process.env,
         now,
       });
