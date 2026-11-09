@@ -14,6 +14,7 @@
 // server treasury is reachable, mirrors the SERVER's authoritative state.
 
 import 'dart:convert';
+import 'dart:math' as math;
 
 /// Total BLOCK the treasury can deploy as liquidity.
 const double kBlockSeedSupply = 50000.0;
@@ -24,6 +25,13 @@ const double kBlockSeedPriceUsd = 0.001;
 /// How much accumulated fee value (USD) lifts the BLOCK price by one seed-unit
 /// ($0.001). With 50,000 BLOCK backing, every $50 of fees adds $0.001 uniformly.
 const double kFeeAppreciationDivisor = kBlockSeedSupply; // $/BLOCK per $ fee / supply
+
+/// BONDING CURVE: buys of BLOCK push the price UP, sells push it back DOWN
+/// (symmetric), on top of the fee-funded floor. `d = SEED - treasury` is the net
+/// BLOCK bought out; spot = floor × (1 + C·d). STEEP: a 500-BLOCK buy (1% of the
+/// seed) lifts the price ~10%. MUST match services/accounts/src/liquidity.js.
+const double kCurveSteepness = 0.0002;
+const double kCurveMinMult = 0.1;
 
 class SwapQuote {
   final bool ok;
@@ -62,10 +70,18 @@ class LiquidityPool {
   /// Total fee value collected across every coin (USD).
   double get totalFeesUsd => feesUsd.values.fold(0.0, (s, v) => s + v);
 
-  /// THE single BLOCK price in USD — identical for every currency. Starts at
-  /// $0.001 and rises uniformly as fees accumulate. Never per-pool.
-  double get blockPriceUsd =>
+  /// The fee-funded FLOOR price in USD — rises only as fees accumulate ("fees
+  /// just add liquidity"), identical for every currency.
+  double get priceFloorUsd =>
       kBlockSeedPriceUsd + totalFeesUsd / kFeeAppreciationDivisor;
+
+  /// THE single SPOT BLOCK price in USD — the floor times the bonding-curve
+  /// multiplier, so it moves UP as BLOCK is bought out of the treasury. Still one
+  /// price across every currency (never per-pool).
+  double get blockPriceUsd {
+    final mult = 1 + kCurveSteepness * (kBlockSeedSupply - blockTreasury);
+    return priceFloorUsd * (mult < kCurveMinMult ? kCurveMinMult : mult);
+  }
 
   bool hasReserve(String coin) => (reserves[coin.toUpperCase()] ?? 0) > 0;
 
@@ -84,22 +100,29 @@ class LiquidityPool {
   double availableLiquidityUsd(String coin, double coinUsd) =>
       (reserves[coin.toUpperCase()] ?? 0) * (coinUsd > 0 ? coinUsd : 1.0);
 
-  /// Quote a swap at the SINGLE global BLOCK price (no per-pool divergence, no
-  /// slippage — a fixed-price swap against the reserve). One side must be BLOCK.
+  /// Quote a swap along the bonding curve (one side must be BLOCK). A BUY
+  /// (coin→BLOCK) walks the price UP, a SELL (BLOCK→coin) walks it DOWN; a larger
+  /// order integrates along the curve instead of filling at the start price.
+  /// MUST match the server (services/accounts/src/liquidity.js).
   SwapQuote quote(String from, String to, double amountIn, double coinUsd) {
     from = from.toUpperCase();
     to = to.toUpperCase();
-    final bp = blockPriceUsd;
+    final bp = blockPriceUsd; // spot (pre-trade), for display
     if (amountIn <= 0) return SwapQuote(ok: false, reason: 'Enter an amount', blockPriceUsd: bp);
     if ((from == 'BLOCK') == (to == 'BLOCK')) {
       return SwapQuote(ok: false, reason: 'One side must be BLOCK', blockPriceUsd: bp);
     }
     final cu = coinUsd > 0 ? coinUsd : 1.0;
+    final f = priceFloorUsd;
+    final d0 = kBlockSeedSupply - blockTreasury;
     if (from == 'BLOCK') {
-      // BLOCK → coin: USD value of the BLOCK, converted to coin units.
+      // SELL BLOCK → coin: usdOut = ∫ p dd over the BLOCK returned.
       final coin = to;
-      final out = amountIn * bp / cu;
+      final x = amountIn;
+      final usdOut = f * (x + kCurveSteepness * x * (d0 - x / 2));
+      final out = usdOut / cu;
       final have = reserves[coin] ?? 0;
+      if (out <= 0) return SwapQuote(ok: false, reason: 'Amount too small', assetIn: from, assetOut: to, blockPriceUsd: bp);
       if (out > have) {
         return SwapQuote(
             ok: false,
@@ -110,8 +133,12 @@ class LiquidityPool {
       }
       return SwapQuote(ok: true, amountIn: amountIn, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp);
     } else {
-      // coin → BLOCK: USD value of the coin, converted to BLOCK at the one price.
-      final out = amountIn * cu / bp;
+      // BUY coin → BLOCK: solve (C/2)x² + (1+C·d0)x − usdIn/F = 0 for x BLOCK out.
+      final usdIn = amountIn * cu;
+      final a = f * kCurveSteepness / 2;
+      final b = f * (1 + kCurveSteepness * d0);
+      final out = a <= 0 ? usdIn / b : (-b + math.sqrt(b * b + 4 * a * usdIn)) / (2 * a);
+      if (out <= 0) return SwapQuote(ok: false, reason: 'Amount too small', assetIn: from, assetOut: to, blockPriceUsd: bp);
       if (out > blockTreasury) {
         return SwapQuote(ok: false, reason: 'Treasury BLOCK exhausted', assetIn: from, assetOut: to, blockPriceUsd: bp);
       }
@@ -119,8 +146,9 @@ class LiquidityPool {
     }
   }
 
-  /// Execute a swap: re-quotes, then applies the reserve move. Fixed-price, so a
-  /// round-trip is lossless (never a money pump). ok=false leaves state untouched.
+  /// Execute a swap: re-quotes, then applies the reserve move. The curve is baked
+  /// into the quote, so a round-trip pays the spread (a real market, not a free
+  /// loop). ok=false leaves state untouched.
   SwapQuote swap(String from, String to, double amountIn, double coinUsd) {
     final q = quote(from, to, amountIn, coinUsd);
     if (!q.ok) return q;

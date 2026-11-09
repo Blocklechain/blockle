@@ -34,23 +34,39 @@ void main() {
     });
   });
 
-  group('swap', () {
-    test('BLOCK -> coin pays out at the one price, bounded by the reserve', () {
+  group('bonding curve', () {
+    test('buying BLOCK pushes the price UP (~+10% per 1% of treasury)', () {
       final p = LiquidityPool();
-      p.accrueFee('USDC', 1000, 1.0);
-      final q = p.swap('BLOCK', 'USDC', 100, 1.0);
+      final before = p.blockPriceUsd; // 0.001, treasury 50000 (d0=0)
+      // At $0.001/BLOCK, $0.525 buys ~500 BLOCK (1% of the 50k seed).
+      final q = p.swap('USDC', 'BLOCK', 0.525, 1.0);
       expect(q.ok, isTrue);
-      // 100 BLOCK * $0.001.. / $1 ≈ small USDC amount
-      expect(q.amountOut, closeTo(100 * p.blockPriceUsd / 1.0, 1e-6));
-      expect(p.blockTreasury, closeTo(50100, 1e-6)); // BLOCK came in
+      expect(q.amountOut, closeTo(500, 1e-6)); // walks the curve, not fixed price
+      expect(p.blockTreasury, closeTo(49500, 1e-6)); // BLOCK left the treasury
+      final after = p.blockPriceUsd;
+      expect(after, greaterThan(before));
+      expect(after / before, closeTo(1.10, 1e-6)); // steep: +10%
     });
 
-    test('round-trip is lossless (fixed price, never a money pump)', () {
+    test('selling BLOCK pushes the price DOWN', () {
+      final p = LiquidityPool();
+      p.accrueFee('USDC', 100, 1.0); // reserve to sell into
+      final before = p.blockPriceUsd;
+      final q = p.swap('BLOCK', 'USDC', 500, 1.0);
+      expect(q.ok, isTrue);
+      expect(p.blockTreasury, closeTo(50500, 1e-6)); // BLOCK returned
+      expect(p.blockPriceUsd, lessThan(before));
+    });
+
+    test('symmetric: a same-size round-trip returns to the start price', () {
       final p = LiquidityPool();
       p.accrueFee('USDC', 5000, 1.0);
-      final out = p.swap('BLOCK', 'USDC', 500, 1.0).amountOut;
-      final back = p.swap('USDC', 'BLOCK', out, 1.0).amountOut;
-      expect(back, closeTo(500, 1e-6));
+      final start = p.blockPriceUsd;
+      final bought = p.swap('USDC', 'BLOCK', 1.0, 1.0).amountOut; // buy BLOCK
+      expect(p.blockPriceUsd, greaterThan(start)); // moved up mid-trade
+      final back = p.swap('BLOCK', 'USDC', bought, 1.0).amountOut; // sell it back
+      expect(back, closeTo(1.0, 1e-6)); // neutral (no swap fee); fees still ratchet the floor
+      expect(p.blockPriceUsd, closeTo(start, 1e-9)); // price returned
     });
 
     test('swapping a coin with no reserve is refused', () {

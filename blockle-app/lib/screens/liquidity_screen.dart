@@ -390,6 +390,28 @@ class _SwapCardState extends State<_SwapCard> {
           Text('1 BLOCK = \$${svc.blockPriceUsd.toStringAsFixed(svc.blockPriceUsd < 0.01 ? 6 : 4)}',
               style: const TextStyle(fontSize: 12, color: Bk.muted)),
         ]),
+        if (q != null && q.ok) ...[
+          Builder(builder: (_) {
+            // Effective fill price vs spot — shows the curve moving on this trade.
+            final spot = q.blockPriceUsd;
+            final cu = svc.priceOf(_coin) > 0 ? svc.priceOf(_coin) : 1.0;
+            final eff = _blockToCoin
+                ? (q.amountOut * cu) / q.amountIn // BLOCK→coin: USD out / BLOCK in
+                : (q.amountIn * cu) / q.amountOut; // coin→BLOCK: USD in / BLOCK out
+            final pct = spot > 0 ? (eff / spot - 1) * 100 : 0.0;
+            if (pct.abs() < 0.01) return const SizedBox.shrink();
+            final up = pct > 0;
+            return Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                '${up ? 'Pushes BLOCK price up' : 'Moves BLOCK price down'} '
+                '${pct.abs().toStringAsFixed(pct.abs() >= 1 ? 1 : 2)}% · '
+                'fills at \$${eff.toStringAsFixed(eff < 0.01 ? 6 : 4)}/BLOCK',
+                style: TextStyle(fontSize: 11.5, color: up ? Bk.good : Bk.muted),
+              ),
+            );
+          }),
+        ],
         if (q != null && !q.ok) ...[
           const SizedBox(height: 8),
           Text(q.reason ?? 'Unavailable', style: TextStyle(fontSize: 12, color: Bk.bad)),

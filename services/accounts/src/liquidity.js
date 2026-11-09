@@ -21,6 +21,15 @@ import { ensureTreasuryWallet, blockAddressBalance } from './liquidity_block.js'
 const BLOCK_SEED_SUPPLY = 50000;
 const BLOCK_SEED_PRICE_USD = 0.001;
 const FEE_APPRECIATION_DIVISOR = BLOCK_SEED_SUPPLY; // $/BLOCK per $fee, over the supply
+
+// BONDING CURVE: buys of BLOCK push the price UP, sells push it back DOWN
+// (symmetric), ON TOP OF the fee-funded floor. `d = SEED - treasuryBlock` is the
+// net BLOCK bought out of the treasury; spot price = floor × (1 + C·d). STEEP:
+// C = 0.0002/BLOCK, so a 500-BLOCK buy (1% of the 50k seed) lifts the price ~10%.
+// Swaps integrate along the curve so a big single order can't fill at the start
+// price. MIN_MULT floors the multiplier so heavy net-selling can't drive it ≤0.
+const CURVE_STEEPNESS = 0.0002;
+const CURVE_MIN_MULT = 0.1;
 const STABLE = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'PYUSD', 'TUSD']);
 
 // EVM-settled coins share the treasury's EVM hot wallet; Solana coins share the
@@ -53,7 +62,12 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   async function save(t) { t.updatedAt = now(); await store.put(COLL, KEY, t); return t; }
 
   const totalFeesUsd = (t) => Object.values(t.fees).reduce((s, v) => s + (+v || 0), 0);
-  const blockPriceUsd = (t) => BLOCK_SEED_PRICE_USD + totalFeesUsd(t) / FEE_APPRECIATION_DIVISOR;
+  // The fee-funded FLOOR price (rises only with fees — "fees just add liquidity").
+  const priceFloorUsd = (t) => BLOCK_SEED_PRICE_USD + totalFeesUsd(t) / FEE_APPRECIATION_DIVISOR;
+  // Curve multiplier from net BLOCK bought out of the treasury (buys ↑, sells ↓).
+  const curveMult = (treasury) => Math.max(CURVE_MIN_MULT, 1 + CURVE_STEEPNESS * (BLOCK_SEED_SUPPLY - treasury));
+  // SPOT price = floor × curve. This is what every wallet shows and it moves on buys.
+  const blockPriceUsd = (t) => priceFloorUsd(t) * curveMult(t.blockTreasury);
 
   // ---- custodial hot-wallet addresses (public) ------------------------------
   // Derived deterministically from the treasury seed; one EVM + one Solana wallet
@@ -143,26 +157,43 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   }
 
   // ---- quote / swap ---------------------------------------------------------
+  // Prices along the bonding curve: p(d) = F·(1 + C·d), d = SEED − treasury.
+  //  • BUY  (coin→BLOCK): usdIn = ∫ p dd over the BLOCK delivered ⇒ solve the
+  //    quadratic (C/2)x² + (1+C·d0)x − usdIn/F = 0 for x BLOCK out.
+  //  • SELL (BLOCK→coin): usdOut = ∫ p dd over the BLOCK returned =
+  //    F·[x + C·x·(d0 − x/2)], then / coin price.
+  // So a bigger order walks the curve instead of filling at the start price.
   function quote(from, to, amountIn, coinUsd) {
     from = String(from || '').toUpperCase();
     to = String(to || '').toUpperCase();
     const amt = +amountIn;
     const t = load();
-    const bp = blockPriceUsd(t);
+    const bp = blockPriceUsd(t); // spot (pre-trade), for display
     if (!(amt > 0)) return { ok: false, reason: 'enter an amount', blockPriceUsd: bp };
     if ((from === 'BLOCK') === (to === 'BLOCK')) return { ok: false, reason: 'one side must be BLOCK', blockPriceUsd: bp };
     const coin = from === 'BLOCK' ? to : from;
     const cu = STABLE.has(coin) ? 1 : (+coinUsd > 0 ? +coinUsd : 0);
     if (!(cu > 0)) return { ok: false, reason: 'coin price required', blockPriceUsd: bp };
+    const F = priceFloorUsd(t);
+    const d0 = BLOCK_SEED_SUPPLY - t.blockTreasury;
     if (from === 'BLOCK') {
-      const out = amt * bp / cu;
+      // SELL BLOCK → coin (price falls as BLOCK returns to the treasury).
+      const x = amt;
+      const usdOut = F * (x + CURVE_STEEPNESS * x * (d0 - x / 2));
+      const out = usdOut / cu;
       const have = +t.reserves[coin] || 0;
+      if (!(out > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
       if (out > have) return { ok: false, reason: have <= 0 ? `no liquidity for ${coin}` : `only ${have} ${coin} available`, blockPriceUsd: bp };
-      return { ok: true, amountIn: amt, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp };
+      return { ok: true, amountIn: amt, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp, execPriceUsd: usdOut / x };
     }
-    const out = amt * cu / bp;
-    if (out > t.blockTreasury) return { ok: false, reason: 'treasury BLOCK exhausted', blockPriceUsd: bp };
-    return { ok: true, amountIn: amt, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp };
+    // BUY coin → BLOCK (price rises as BLOCK leaves the treasury).
+    const usdIn = amt * cu;
+    const A = F * CURVE_STEEPNESS / 2;
+    const B = F * (1 + CURVE_STEEPNESS * d0);
+    const x = A <= 0 ? usdIn / B : (-B + Math.sqrt(B * B + 4 * A * usdIn)) / (2 * A);
+    if (!(x > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
+    if (x > t.blockTreasury) return { ok: false, reason: 'treasury BLOCK exhausted', blockPriceUsd: bp };
+    return { ok: true, amountIn: amt, amountOut: x, assetIn: from, assetOut: to, blockPriceUsd: bp, execPriceUsd: usdIn / x };
   }
 
   // Execute a swap: apply the reserve move + record a settlement intent. When the
