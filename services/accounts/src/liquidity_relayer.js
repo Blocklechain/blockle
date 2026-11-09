@@ -124,6 +124,13 @@ export async function settleSwap(id, depositTxid, deps) {
     await store.put('liquidity', 'swap:' + id, rec); return rec;
   }
   if (!rec.userAddress) { rec.status = 'failed'; rec.reason = 'no user address'; await store.put('liquidity', 'swap:' + id, rec); return rec; }
+  // One deposit pays for ONE swap: refuse a txid that already settled (or is
+  // mid-payout on) another record, so a deposit can't be replayed across swaps.
+  if (typeof store.entries === 'function') {
+    const dup = store.entries('liquidity').find(([k, r]) => k.startsWith('swap:') && k !== 'swap:' + id && r && r.depositTxid
+      && String(r.depositTxid).toLowerCase() === String(depositTxid).toLowerCase() && (r.status === 'settled' || r.status === 'paying'));
+    if (dup) { rec.status = 'failed'; rec.reason = 'deposit already used by swap ' + dup[0].slice(5); await store.put('liquidity', 'swap:' + id, rec); return rec; }
+  }
 
   // 1) verify the deposit (BLOCK via explorer; EVM via receipt).
   const dv = isBlock(depositCoin)
@@ -132,10 +139,23 @@ export async function settleSwap(id, depositTxid, deps) {
   if (!dv.ok) { rec.status = 'awaiting-deposit'; rec.reason = dv.reason; await store.put('liquidity', 'swap:' + id, rec); return rec; }
 
   // 2) pay out the output asset (BLOCK ML-DSA transfer; or EVM native/ERC-20).
-  const pay = isBlock(payoutCoin)
-    ? await payoutBlock({ store, seedHex, toAddress: rec.userAddress, amountBlock: rec.amountOut, chainBase, fetchFn, env })
-    : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
-  rec.status = 'settled'; rec.depositTxid = depositTxid; rec.payoutTxid = pay.txid; rec.settledAt = now(); rec.reason = '';
+  // The deposit txid is pinned to the record BEFORE the payout so a replay of the
+  // same deposit against another swap is caught above even if this payout
+  // throws; a broadcast rejection leaves the record retryable ('awaiting-deposit'
+  // + the error as reason) instead of a phantom 'settled'.
+  rec.depositTxid = depositTxid; rec.status = 'paying'; rec.reason = '';
+  await store.put('liquidity', 'swap:' + id, rec);
+  let pay;
+  try {
+    pay = isBlock(payoutCoin)
+      ? await payoutBlock({ store, seedHex, toAddress: rec.userAddress, amountBlock: rec.amountOut, chainBase, fetchFn, env })
+      : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
+  } catch (e) {
+    rec.status = 'awaiting-deposit'; rec.reason = 'payout failed: ' + String(e && e.message || e); rec.payoutAttempts = (rec.payoutAttempts || 0) + 1;
+    await store.put('liquidity', 'swap:' + id, rec);
+    throw e;
+  }
+  rec.status = 'settled'; rec.payoutTxid = pay.txid; rec.settledAt = now(); rec.reason = '';
   await store.put('liquidity', 'swap:' + id, rec);
   return rec;
 }

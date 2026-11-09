@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/token_list.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import 'queue.dart';
@@ -91,30 +92,35 @@ class _SwapScreenState extends State<SwapScreen> {
     // inspected recipient, so a denylisted/flagged pool is caught (DANGER forces
     // the explicit confirm); a clean, trusted pool simply shows no warnings. A
     // reject aborts WITHOUT signing. The signer below still broadcasts, only
-    // after this returns true.
-    final approved = await reviewSend(
-      context,
-      chain: 'block',
-      to: token,
-      amount: amountIn.toString(),
-      asset: _buy
-          ? const {'chain': 'block', 'kind': 'native', 'symbol': 'BLOCK', 'decimals': 8}
-          : {'chain': 'block', 'kind': 'block20', 'symbol': _sym, 'address': token, 'decimals': _dec},
-      title: 'Review swap',
-      previewHeader: _buy ? 'Buy $_sym with BLOCK' : 'Sell $_sym for BLOCK',
-      resolvedAddress: shortSendAddr(token),
-    );
-    if (!mounted) return;
-    if (!approved) {
-      setState(() => _error = 'Swap cancelled — nothing was signed.');
-      return;
-    }
-
+    // after this returns true. The gate runs INSIDE the try so a failure there
+    // surfaces as an on-screen error instead of a button that silently does
+    // nothing.
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
+      final approved = await reviewSend(
+        context,
+        chain: 'block',
+        to: token,
+        amount: amountIn.toString(),
+        asset: _buy
+            ? const {'chain': 'block', 'kind': 'native', 'symbol': 'BLOCK', 'decimals': 8}
+            : {'chain': 'block', 'kind': 'block20', 'symbol': _sym, 'address': token, 'decimals': _dec},
+        title: 'Review swap',
+        previewHeader: _buy ? 'Buy $_sym with BLOCK' : 'Sell $_sym for BLOCK',
+        resolvedAddress: shortSendAddr(token),
+      );
+      if (!mounted) return;
+      if (!approved) {
+        setState(() {
+          _busy = false;
+          _error = 'Swap cancelled — nothing was signed.';
+        });
+        return;
+      }
+
       final addr = app.store.address!;
       final u = await app.chain.utxos(addr);
       final utxos = (u?['utxos'] as List?) ?? [];
@@ -132,10 +138,15 @@ class _SwapScreenState extends State<SwapScreen> {
       final res = await app.chain.submit(raw);
       final txid = (res is Map ? (res['txid'] ?? built['txid']) : built['txid']).toString();
       await app.addPending(txid, _buy ? 'Buy $_sym' : 'Sell $_sym');
+      // A bought token is listed on the Wallet tab right away (its balance
+      // fills in once the swap confirms) — otherwise the purchase is invisible
+      // until the user manually imports the contract id.
+      if (_buy) await rememberBlockToken(token);
       if (!mounted) return;
       Navigator.pushReplacement(
           context, MaterialPageRoute(builder: (_) => const QueueScreen()));
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _busy = false;
         _error = e.toString().replaceFirst('Exception: ', '');

@@ -850,8 +850,13 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
         });
         return;
       }
-      // still 'awaiting-deposit' → wait and retry.
-      setState(() => _status = 'Confirming deposit… (${i + 1}/$maxTries)');
+      // still 'awaiting-deposit' / 'paying' → wait and retry. Surface the
+      // server's reason (e.g. "deposit not confirmed yet", or a payout that was
+      // rejected and will be retried) so a stall is never a silent spinner.
+      final why = '${r['reason'] ?? r['error'] ?? ''}'.trim();
+      setState(() => _status = st == 'paying'
+          ? 'Deposit confirmed — paying out your ${widget.to}… (${i + 1}/$maxTries)'
+          : 'Confirming deposit… (${i + 1}/$maxTries)${why.isNotEmpty ? ' — $why' : ''}');
       await Future<void>.delayed(const Duration(seconds: 15));
     }
     // Didn't confirm in-window — it stays pending and auto-completes later.

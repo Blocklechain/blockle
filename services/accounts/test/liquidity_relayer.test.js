@@ -19,6 +19,7 @@ function fakeStore() {
   return {
     get: (c, key) => (m.has(k(c, key)) ? structuredClone(m.get(k(c, key))) : null),
     put: async (c, key, v) => { m.set(k(c, key), structuredClone(v)); },
+    entries: (c) => [...m.entries()].filter(([kk]) => kk.startsWith(c + ' ')).map(([kk, v]) => [kk.slice(c.length + 1), structuredClone(v)]),
   };
 }
 
@@ -96,5 +97,31 @@ await (async () => {
   }
 
   ok('USDC is an ERC-20 payout target', !!COIN_TOKEN.USDC);
+  // A payout that THROWS (e.g. broadcast rejected) leaves the record retryable
+  // ('awaiting-deposit' + reason), never a phantom 'settled'; and ONE deposit
+  // txid can settle only ONE swap (replay across records is refused).
+  {
+    const store = fakeStore();
+    const treasury = keys.evmAddress;
+    const user = '0x' + '33'.repeat(20);
+    const depositOk = async (m) => (m === 'eth_getTransactionReceipt' ? { status: '0x1' }
+      : m === 'eth_getTransactionByHash' ? { to: treasury, value: '0x' + (10n ** 18n).toString(16) }
+      : m === 'eth_getTransactionCount' ? '0x0' : m === 'eth_gasPrice' ? '0x3b9aca00'
+      : m === 'eth_sendRawTransaction' ? (() => { throw new Error('nonce too low'); })() : null);
+    await store.put('liquidity', 'swap:p1', { id: 'p1', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: user, depositAddress: treasury, status: 'awaiting-deposit' });
+    let threw = false;
+    try { await settleSwap('p1', '0x' + 'ee'.repeat(32), { store, rpcFor: () => depositOk, seedHex: SEED, env: ON }); } catch (e) { threw = /nonce too low/.test(e.message); }
+    const after = store.get('liquidity', 'swap:p1');
+    ok('payout failure rethrows and leaves the swap retryable', threw && after.status === 'awaiting-deposit' && /payout failed/.test(after.reason) && after.payoutAttempts === 1);
+    // now a working payout settles it…
+    const rpcGood = async (m) => (m === 'eth_sendRawTransaction' ? '0x' + 'ab'.repeat(32) : depositOk(m));
+    const done = await settleSwap('p1', '0x' + 'ee'.repeat(32), { store, rpcFor: () => rpcGood, seedHex: SEED, env: ON });
+    ok('retry settles once the payout succeeds', done.status === 'settled' && done.depositTxid === '0x' + 'ee'.repeat(32));
+    // …and the SAME deposit txid cannot settle a second swap.
+    await store.put('liquidity', 'swap:p2', { id: 'p2', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: user, depositAddress: treasury, status: 'awaiting-deposit' });
+    const replay = await settleSwap('p2', '0x' + 'EE'.repeat(32), { store, rpcFor: () => rpcGood, seedHex: SEED, env: ON });
+    ok('deposit txid replay across swaps is refused', replay.status === 'failed' && /already used by swap p1/.test(replay.reason));
+  }
+
   console.log(`liquidity_relayer.test.js: ${pass} checks passed`);
 })();

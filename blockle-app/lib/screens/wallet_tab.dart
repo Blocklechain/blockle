@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart' show Balance;
+import '../services/chain.dart';
+import '../services/token_list.dart';
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
@@ -15,11 +16,6 @@ import 'send.dart';
 import 'receive.dart';
 import 'moonpay_swap.dart';
 import 'queue.dart';
-
-const _kTokens = 'bk_tokens';
-const _storage = FlutterSecureStorage(
-  aOptions: AndroidOptions(encryptedSharedPreferences: true),
-);
 
 class WalletTab extends StatefulWidget {
   const WalletTab({super.key});
@@ -58,7 +54,7 @@ class _WalletTabState extends State<WalletTab> {
     final mc = context.read<MultichainController>();
     final addr = app.store.address;
     final acct = await app.chain.account(addr);
-    final toks = await _loadTokens(addr);
+    final toks = await _loadTokens(app.chain, addr);
     final native = await _loadNative(mc);
     if (!mounted) return;
     setState(() {
@@ -95,25 +91,31 @@ class _WalletTabState extends State<WalletTab> {
     return out;
   }
 
-  Future<List<Map<String, dynamic>>> _loadTokens(String? holderHex) async {
-    final raw = await _storage.read(key: _kTokens);
-    if (raw == null || raw.isEmpty) return [];
-    final ids = (jsonDecode(raw) as List).cast<String>();
+  /// Tokens to list: every BLOCK-20 this address HOLDS (auto-detected through
+  /// the node's holder read — parity with the web wallet, so a token bought on
+  /// the DEX shows up by itself) merged with the user's imported watch-list
+  /// (listed even at zero balance, e.g. right after a buy that is still
+  /// pending). Imported ids are read with the holder so their balance fills in.
+  Future<List<Map<String, dynamic>>> _loadTokens(Chain chain, String? holder) async {
+    final imported = await listBlockTokens();
     final out = <Map<String, dynamic>>[];
-    final hq = (holderHex != null && holderHex.isNotEmpty)
-        ? '?holder=${Uri.encodeQueryComponent(holderHex)}'
-        : '';
-    for (final id in ids) {
-      try {
-        final r = await http
-            .get(Uri.parse('https://blockle.org/api/token/$id$hq'))
-            .timeout(const Duration(seconds: 6));
-        final j = jsonDecode(r.body) as Map<String, dynamic>;
-        final res = (j['result'] ?? j) as Map<String, dynamic>;
-        out.add({'id': id, ...res});
-      } catch (_) {
-        out.add({'id': id, 'name': null, 'symbol': null});
+    final seen = <String>{};
+    if (holder != null && holder.isNotEmpty) {
+      for (final h in await chain.addressTokens(holder, extraContracts: imported)) {
+        final id = '${h['id']}'.toLowerCase();
+        if (id.isEmpty || !seen.add(id)) continue;
+        out.add({'imported': imported.any((e) => e.toLowerCase() == id), ...h});
       }
+    }
+    for (final id in imported) {
+      if (!seen.add(id.toLowerCase())) continue;
+      final info = await chain.token(id, holder: holder);
+      out.add({
+        'id': id,
+        'imported': true,
+        ...?info,
+        if (info != null && info['balance'] == null) 'balance': 0,
+      });
     }
     return out;
   }
@@ -154,10 +156,7 @@ class _WalletTabState extends State<WalletTab> {
       _snack('Could not reach the token — check the contract id.');
       return;
     }
-    final raw = await _storage.read(key: _kTokens);
-    final ids = raw == null ? <String>[] : (jsonDecode(raw) as List).cast<String>();
-    if (!ids.contains(id)) ids.add(id);
-    await _storage.write(key: _kTokens, value: jsonEncode(ids));
+    await rememberBlockToken(id);
     await _refresh();
   }
 
@@ -363,7 +362,8 @@ class _WalletTabState extends State<WalletTab> {
             if (_tokens.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text('No tokens imported. Import a BLOCK-20 by contract id.',
+                child: Text(
+                    'No BLOCK-20 tokens yet. Tokens you buy on the DEX appear here automatically, or import one by contract id.',
                     style: TextStyle(color: Bk.muted, fontSize: 13)),
               ),
             ..._tokens.map(_tokenRow),

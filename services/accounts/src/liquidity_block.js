@@ -83,13 +83,24 @@ async function getJson(chainBase, path, fetchFn) {
   return r.json();
 }
 
-// Verify a user's BLOCK DEPOSIT: the tx must have an output paying `expectTo` at
-// least `minBlock` BLOCK. Read-only (explorer), no signing.
+// Verify a user's BLOCK DEPOSIT: the tx must be MINED and have an output paying
+// `expectTo` at least `minBlock` BLOCK. Read-only (explorer), no signing.
+//
+// Explorer shape: /api/explorer/tx/:txid returns { block_hash, tx: { outputs:
+// [{address, amount, vout}], block_height, confirmations, ... } } — block_hash is
+// null while the tx is still in the mempool. (A bare { outputs } body is also
+// accepted for older/other explorers.) An unconfirmed deposit is reported as
+// "not confirmed yet" so the wallet's pending-settlement loop simply retries.
 export async function verifyBlockDeposit({ txid, expectTo, minBlock, chainBase, fetchFn = globalThis.fetch }) {
+  if (!/^[0-9a-f]{64}$/i.test(String(txid || ''))) return { ok: false, reason: 'bad deposit txid' };
   const j = await getJson(chainBase, '/tx/' + encodeURIComponent(txid), fetchFn);
   if (!j || j.error) return { ok: false, reason: 'tx not found' };
+  const tx = (j.tx && typeof j.tx === 'object') ? j.tx : j;
+  const wrapped = Object.prototype.hasOwnProperty.call(j, 'block_hash') || Object.prototype.hasOwnProperty.call(tx, 'block_height');
+  const mined = !wrapped || j.block_hash != null || tx.block_height != null;
+  if (!mined) return { ok: false, reason: 'deposit not confirmed yet' };
   const minBase = base(minBlock);
-  const outs = j.outputs || j.vout || j.out || [];
+  const outs = tx.outputs || tx.vout || tx.out || [];
   let credited = 0n;
   for (const o of outs) {
     const addr = o.address || o.addr || o.scriptpubkey_address;
@@ -123,9 +134,20 @@ export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chai
   const built = JSON.parse(wasm().build_transfer(secretKey, publicKey, JSON.stringify(utxos), toAddress, base(amountBlock), DEFAULT_FEE));
   const raw = built.raw || built.rawtx || built.hex;
   if (!raw) throw new Error('build_transfer produced no raw tx');
+  // The submit proxy (biz /api/submit -> node submitrawtransaction) reads the
+  // signed tx from the `raw` field. A rejected broadcast MUST fail loudly: the
+  // caller marks the swap settled only after this returns, so swallowing an
+  // error here would record a payout that never reached the chain.
   const br = await fetchFn((chainBase || 'https://blockle.org') + '/api/submit', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rawtx: raw }),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ raw }),
   });
   const bj = await br.json().catch(() => ({}));
-  return { txid: bj.txid || bj.result || built.txid, raw };
+  const err = bj && bj.error;
+  if (!br.ok || err) {
+    const msg = err && typeof err === 'object' ? (err.message || JSON.stringify(err)) : (err || ('http ' + br.status));
+    throw new Error('BLOCK payout broadcast rejected: ' + msg);
+  }
+  const res = bj && typeof bj.result === 'object' && bj.result ? bj.result : bj;
+  const txid = (res && (res.txid || (typeof bj.result === 'string' ? bj.result : null))) || built.txid;
+  return { txid, raw };
 }

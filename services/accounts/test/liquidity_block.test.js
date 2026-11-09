@@ -45,16 +45,24 @@ await (async () => {
     ok('provisioning is idempotent', w2.address === w1.address);
   }
 
-  // Deposit verification: an output to the treasury >= min passes; wrong/low fails.
+  // Deposit verification against the REAL explorer shape ({block_hash, tx:{outputs}}):
+  // a mined output to the treasury >= min passes; wrong/low/unconfirmed/bad-txid fail.
   {
     const treasury = 'block1deadbeef';
-    const fetchJson = (outs) => async () => ({ ok: true, json: async () => ({ outputs: outs }) });
-    const good = await verifyBlockDeposit({ txid: '0xd', expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 100000000 }]) });
-    ok('valid BLOCK deposit verifies (1 BLOCK = 1e8)', good.ok);
-    const low = await verifyBlockDeposit({ txid: '0xd', expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 50000000 }]) });
+    const TXID = 'ab'.repeat(32);
+    const fetchJson = (outs, blockHash = 'ff'.repeat(32)) => async () => ({ ok: true, json: async () => ({ block_hash: blockHash, tx: { outputs: outs, block_height: blockHash ? 100 : undefined } }) });
+    const good = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 100000000 }]) });
+    ok('valid BLOCK deposit verifies (1 BLOCK = 1e8)', good.ok && good.creditedBase === '100000000');
+    const low = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 50000000 }]) });
     ok('under-amount deposit rejected', !low.ok);
-    const wrong = await verifyBlockDeposit({ txid: '0xd', expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: 'block1other', amount: 100000000 }]) });
+    const wrong = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: 'block1other', amount: 100000000 }]) });
     ok('deposit to wrong address rejected', !wrong.ok);
+    const mempool = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 100000000 }], null) });
+    ok('unconfirmed (mempool) deposit is not yet accepted', !mempool.ok && /not confirmed/.test(mempool.reason));
+    const bare = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: async () => ({ ok: true, json: async () => ({ outputs: [{ address: treasury, amount: 100000000 }] }) }) });
+    ok('bare {outputs} explorer shape still accepted', bare.ok);
+    const bad = await verifyBlockDeposit({ txid: '0xd', expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([]) });
+    ok('non-txid deposit id rejected without a lookup', !bad.ok && /bad deposit txid/.test(bad.reason));
   }
 
   // Payout: gate OFF refuses; gate ON builds an ML-DSA transfer from the treasury
@@ -73,13 +81,24 @@ await (async () => {
         return { ok: true, json: async () => ({ utxos: [{ txid: 'ab'.repeat(32), vout: 0, amount: 1000000000 }] }) };
       }
       if (String(url).includes('/api/submit')) {
+        // biz /api/submit reads the signed tx from `raw` (a `rawtx` body is a 400).
         const body = JSON.parse(init.body);
-        return { ok: true, json: async () => ({ txid: 'broadcast-' + (body.rawtx ? 'ok' : 'no') }) };
+        if (!body.raw) return { ok: false, status: 400, json: async () => ({ error: 'missing raw transaction' }) };
+        return { ok: true, json: async () => ({ error: null, result: { accepted: true, txid: 'broadcast-ok' } }) };
       }
       return { ok: false, json: async () => ({}) };
     };
     const r = await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn, env: ON });
-    ok('BLOCK payout builds+signs+broadcasts', r.txid === 'broadcast-ok' && !!r.raw);
+    ok('BLOCK payout builds+signs+broadcasts (submit body uses `raw`)', r.txid === 'broadcast-ok' && !!r.raw);
+
+    // A rejected broadcast must THROW (never a phantom txid / phantom 'settled').
+    const rejectFetch = async (url) => String(url).includes('/utxos/')
+      ? { ok: true, json: async () => ({ utxos: [{ txid: 'ab'.repeat(32), vout: 0, amount: 1000000000 }] }) }
+      : { ok: true, json: async () => ({ error: { code: -26, message: 'input spends unknown or already-spent output' }, result: null }) };
+    let rejected = false;
+    try { await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn: rejectFetch, env: ON }); }
+    catch (e) { rejected = /broadcast rejected/.test(e.message) && /already-spent/.test(e.message); }
+    ok('rejected broadcast throws with the node reason', rejected);
   }
 
   console.log(`liquidity_block.test.js: ${pass} checks passed`);
