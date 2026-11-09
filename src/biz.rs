@@ -740,6 +740,16 @@ fn route(
         // + the iOS App Store marketing page. Static pages in /opt/blockle/web.
         "/contact" => serve_web_file("contact.html", "text/html; charset=utf-8"),
         "/ios" => serve_web_file("ios.html", "text/html; charset=utf-8"),
+        // Static assets under web/assets (logo renders etc). Traversal-guarded;
+        // nginx also serves this prefix directly, this covers direct :8900 use.
+        p if p.starts_with("/assets/") && !p.contains("..") => {
+            let ct = if p.ends_with(".png") { "image/png" }
+                else if p.ends_with(".svg") { "image/svg+xml" }
+                else if p.ends_with(".jpg") || p.ends_with(".jpeg") { "image/jpeg" }
+                else if p.ends_with(".webp") { "image/webp" }
+                else { "application/octet-stream" };
+            serve_web_file(p.trim_start_matches('/'), ct)
+        }
         "/intelligence" => serve_web_file("intelligence.html", "text/html; charset=utf-8"),
         "/launch.js" => serve_web_file("launch.js", "application/javascript; charset=utf-8"),
         "/token.js" => serve_web_file("token.js", "application/javascript; charset=utf-8"),
