@@ -13,8 +13,10 @@
 import crypto from 'node:crypto';
 import { signEip1559, evmAddressFromPrivate, erc20TransferData } from './evmsign.js';
 import { verifyBlockDeposit, payoutBlock } from './liquidity_block.js';
+import { verifySolDeposit, payoutSol } from './liquidity_sol.js';
 
 const isBlock = (c) => String(c || '').toUpperCase() === 'BLOCK';
+const isSol = (c) => String(c || '').toUpperCase() === 'SOL';
 
 const _big = (v) => (typeof v === 'bigint' ? v : BigInt(v == null ? 0 : (String(v).startsWith('0x') ? String(v) : String(v))));
 
@@ -46,9 +48,18 @@ export const COIN_DECIMALS = { USDC: 6, USDT: 6, DAI: 18, ETH: 18, BNB: 18, MATI
 const _supported = (coin) => Object.prototype.hasOwnProperty.call(COIN_CHAIN, String(coin || '').toUpperCase());
 
 // Whole-unit amount → base units (wei / token base) as a BigInt string.
+
+// Decimal string for an amount that may be a JS number in scientific notation
+// (e.g. 4.68e-06): fixed to `dec` places, never "4.68e-6".
+function decStr(amount, dec) {
+  const s = String(amount);
+  if (/e/i.test(s)) return Number(amount).toFixed(dec);
+  return s;
+}
+
 function toBase(coin, amount) {
   const dec = COIN_DECIMALS[String(coin).toUpperCase()] ?? 18;
-  const [i, f = ''] = String(amount).split('.');
+  const [i, f = ''] = decStr(amount, dec).split('.');
   const frac = (f + '0'.repeat(dec)).slice(0, dec);
   return (BigInt(i || '0') * 10n ** BigInt(dec) + BigInt(frac || '0')).toString();
 }
@@ -118,7 +129,7 @@ export async function settleSwap(id, depositTxid, deps) {
   // BLOCK. A leg on a chain we haven't wired is honestly marked 'unsupported'.
   const depositCoin = String(rec.from).toUpperCase();
   const payoutCoin = String(rec.to).toUpperCase();
-  const legOk = (c) => isBlock(c) || _supported(c);
+  const legOk = (c) => isBlock(c) || isSol(c) || _supported(c);
   if (!legOk(depositCoin) || !legOk(payoutCoin)) {
     rec.status = 'unsupported'; rec.reason = 'chain not wired for on-chain settlement yet';
     await store.put('liquidity', 'swap:' + id, rec); return rec;
@@ -135,7 +146,9 @@ export async function settleSwap(id, depositTxid, deps) {
   // 1) verify the deposit (BLOCK via explorer; EVM via receipt).
   const dv = isBlock(depositCoin)
     ? await verifyBlockDeposit({ txid: depositTxid, expectTo: rec.depositAddress, minBlock: rec.amountIn, chainBase, fetchFn })
-    : await verifyDepositEvm({ rpc: rpcFor(COIN_CHAIN[depositCoin]), txid: depositTxid, expectTo: rec.depositAddress, coin: depositCoin, minAmount: rec.amountIn });
+    : isSol(depositCoin)
+      ? await verifySolDeposit({ rpc: rpcFor('solana'), signature: depositTxid, expectTo: rec.depositAddress, minSol: rec.amountIn })
+      : await verifyDepositEvm({ rpc: rpcFor(COIN_CHAIN[depositCoin]), txid: depositTxid, expectTo: rec.depositAddress, coin: depositCoin, minAmount: rec.amountIn });
   if (!dv.ok) { rec.status = 'awaiting-deposit'; rec.reason = dv.reason; await store.put('liquidity', 'swap:' + id, rec); return rec; }
 
   // 2) pay out the output asset (BLOCK ML-DSA transfer; or EVM native/ERC-20).
@@ -149,7 +162,9 @@ export async function settleSwap(id, depositTxid, deps) {
   try {
     pay = isBlock(payoutCoin)
       ? await payoutBlock({ store, seedHex, toAddress: rec.userAddress, amountBlock: rec.amountOut, chainBase, fetchFn, env })
-      : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
+      : isSol(payoutCoin)
+        ? await payoutSol({ seedHex, toAddress: rec.userAddress, amountSol: rec.amountOut, rpc: rpcFor('solana'), env })
+        : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
   } catch (e) {
     rec.status = 'awaiting-deposit'; rec.reason = 'payout failed: ' + String(e && e.message || e); rec.payoutAttempts = (rec.payoutAttempts || 0) + 1;
     await store.put('liquidity', 'swap:' + id, rec);
@@ -161,4 +176,4 @@ export async function settleSwap(id, depositTxid, deps) {
 }
 
 // What the public state should report for which coins can actually settle today.
-export function settleableCoins() { return Object.keys(COIN_CHAIN); }
+export function settleableCoins() { return ['BLOCK', ...Object.keys(COIN_CHAIN), 'SOL']; }

@@ -263,6 +263,20 @@ SolIx transferCheckedIx(List<int> source, List<int> mint, List<int> dest,
   );
 }
 
+/// System program `Transfer` (instruction index 2, u32 LE): `lamports` from
+/// `from` (signer, writable) to `to` (writable). The native-SOL send.
+SolIx systemTransferIx(List<int> from, List<int> to, String lamports) {
+  final data = Uint8List.fromList([2, 0, 0, 0, ..._u64le(lamports)]);
+  return SolIx(
+    c.base58decode(systemProgram),
+    [
+      SolKey(Uint8List.fromList(from), true, true),
+      SolKey(Uint8List.fromList(to), false, true),
+    ],
+    data,
+  );
+}
+
 /// ATA `CreateIdempotent` (tag 1): creates `ata` for (owner, mint) if absent.
 SolIx createAtaIdempotentIx(
     List<int> payer, List<int> ata, List<int> owner, List<int> mint) {
@@ -704,13 +718,56 @@ class SolanaAdapter implements ChainAdapter {
     };
   }
 
+  /// Native SOL send: System-program transfer with a fresh blockhash, compiled
+  /// as a legacy message and signed here (ed25519) — the shape the Liquidity
+  /// deposit flow and plain sends need. SPL token sends still go through
+  /// buildNftTransfer/signTx (serialized-tx path). Fee is the base 5000 lamports
+  /// per signature.
   @override
-  Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) {
-    // Native SOL transfers require a recent blockhash + system-program message
-    // assembled on-chain; the exchange/agent paths use signTx over a relay- or
-    // Jupiter-provided serialized transaction instead.
-    throw UnsupportedError(
-        'solana buildSend: use signTx over a serialized transaction');
+  Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {
+    final asset = req.asset;
+    if (asset != null && asset.kind != 'native') {
+      throw UnsupportedError(
+          'solana buildSend: SPL token sends use signTx over a serialized transaction');
+    }
+    if (_rootSeed == null && _impEd == null) throw StateError('locked');
+    final lamports = BigInt.tryParse(req.amount.trim());
+    if (lamports == null || lamports <= BigInt.zero) {
+      throw ArgumentError('solana buildSend: amount must be a positive lamport count');
+    }
+    final Uint8List to;
+    try {
+      to = c.base58decode(req.to.trim());
+    } catch (_) {
+      throw ArgumentError('solana buildSend: invalid recipient address');
+    }
+    if (to.length != 32) throw ArgumentError('solana buildSend: invalid recipient address');
+    final seedKey = _keyFor(account.index);
+    final from = ed.publicKey(seedKey);
+    if (c.base58encode(from) == c.base58encode(to)) {
+      throw ArgumentError('solana buildSend: refusing a self-transfer');
+    }
+    final bh = await _rpc('getLatestBlockhash', [
+      {'commitment': 'finalized'}
+    ]);
+    final blockhash = (bh is Map && bh['value'] is Map)
+        ? bh['value']['blockhash']
+        : (bh is Map ? bh['blockhash'] : null);
+    if (blockhash == null) throw StateError('solana: could not fetch a blockhash');
+    final msg = compileSolanaMessage(
+        from, [systemTransferIx(from, to, lamports.toString())], c.base58decode(blockhash.toString()));
+    final signed = signSerializedTx(unsignedSolanaTx(msg), seedKey, from);
+    final loc = locateSigner(signed, from);
+    final sig = signed.sublist(loc.sigAreaStart + loc.signerIndex * 64,
+        loc.sigAreaStart + loc.signerIndex * 64 + 64);
+    return BuiltTx(
+      chain: 'solana',
+      raw: base64.encode(signed),
+      txid: c.base58encode(sig),
+      fee: '5000',
+      summary: req,
+      extra: {'blockhash': blockhash, 'from': c.base58encode(from), 'lamports': lamports.toString()},
+    );
   }
 
   @override

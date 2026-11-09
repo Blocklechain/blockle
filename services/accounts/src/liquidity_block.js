@@ -70,9 +70,18 @@ function loadSigningMaterial(store, seedHex) {
   return { address: rec.address, publicKey: rec.publicKey, secretKey: decryptSecret(rec.enc, seedHex) };
 }
 
+
+// Decimal string for an amount that may be a JS number in scientific notation
+// (e.g. 4.68e-06): fixed to `dec` places, never "4.68e-6".
+function decStr(amount, dec) {
+  const s = String(amount);
+  if (/e/i.test(s)) return Number(amount).toFixed(dec);
+  return s;
+}
+
 function base(amountBlock) {
   // whole BLOCK -> base units (BigInt), exact to 8 dp.
-  const [i, f = ''] = String(amountBlock).split('.');
+  const [i, f = ''] = decStr(amountBlock, 8).split('.');
   const frac = (f + '00000000').slice(0, 8);
   return BigInt(i || '0') * COIN + BigInt(frac || '0');
 }

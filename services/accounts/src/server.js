@@ -15,7 +15,8 @@ import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makeLiquidity } from './liquidity.js';
-import { settleSwap, liquidityMainnet } from './liquidity_relayer.js';
+import { settleSwap, liquidityMainnet, settleableCoins } from './liquidity_relayer.js';
+import { solRpcSender } from './liquidity_sol.js';
 import { rpcSenderFor } from './liverunner.js';
 import { makePrices } from './prices.js';
 import { makeBotDelegations } from './botdelegate.js';
@@ -444,6 +445,7 @@ export function createApp(overrides = {}) {
     res.setHeader('access-control-allow-origin', '*');
     // Includes the live on-chain treasury BLOCK balance (cached explorer read).
     const s = liquidity.stateWithOnchain ? await liquidity.stateWithOnchain() : liquidity.state();
+    s.settleable = settleableCoins(); // coins whose legs settle on-chain (wallets read this)
     return json(res, 200, s);
   });
   on('POST', /^\/account\/api\/liquidity\/quote$/, async (req, res) => {
@@ -480,7 +482,9 @@ export function createApp(overrides = {}) {
     try {
       const rec = await settleSwap(String(b.id || ''), String(b.depositTxid || ''), {
         store,
-        rpcFor: (chainId) => rpcSenderFor(chainId),
+        rpcFor: (chainId) => chainId === 'solana'
+          ? solRpcSender(process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com')
+          : rpcSenderFor(chainId),
         seedHex: process.env.LIQUIDITY_TREASURY_SEED || '',
         chainBase: cfg.chainApiBase,
         env: process.env,

@@ -48,6 +48,8 @@ await (async () => {
     ok('native payout broadcasts', /^0x[0-9a-f]{64}$/.test(nat.txid) && nat.chainId === 1);
     const erc = await payoutEvm({ coin: 'USDC', toAddress: '0x' + '22'.repeat(20), amount: 25, rpc, seedHex: SEED, env: ON });
     ok('erc20 payout broadcasts', /^0x[0-9a-f]{64}$/.test(erc.txid) && erc.amountBase === '25000000');
+    const tiny = await payoutEvm({ coin: 'ETH', toAddress: '0x' + '22'.repeat(20), amount: 4.7190824618089335e-07, rpc, seedHex: SEED, env: ON });
+    ok('scientific-notation amount (real BLOCK→ETH quote) converts to wei exactly', tiny.amountBase === BigInt(Math.round(4.7190824618089335e-07 * 1e18)).toString() && !/e/.test(tiny.amountBase));
   }
 
   // Deposit verification is strict: native to-treasury + amount; reject wrong dest.

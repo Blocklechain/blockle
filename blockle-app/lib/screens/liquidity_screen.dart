@@ -567,7 +567,7 @@ class _SwapCardState extends State<_SwapCard> {
       if (!svc.coinSettlesOnchain(coin)) {
         messenger.showSnackBar(SnackBar(
           content: Text('$coin on-chain settlement isn\'t live yet — BLOCK ↔ '
-              'USDC/USDT/DAI/ETH/BNB/MATIC/AVAX settle today.'),
+              '${svc.settleableLabel} settle today.'),
         ));
         return;
       }
@@ -648,7 +648,10 @@ class _SwapCardState extends State<_SwapCard> {
         return;
       }
     }
-    final dec = assetRef?.decimals ?? (from == 'BLOCK' ? 8 : 18);
+    // Decimals come from the resolved asset, else the deposit chain's NATIVE coin
+    // (SOL = 9, BLOCK = 8, ETH = 18…) — never a hard-coded 18, which would have
+    // scaled a native SOL deposit by 10^9.
+    final dec = assetRef?.decimals ?? mc.registry.get(depositChain).native.decimals;
     final amountBase = _toBaseUnits(amountIn, dec);
 
     // THE pre-sign security gate — every value-moving send must clear it.

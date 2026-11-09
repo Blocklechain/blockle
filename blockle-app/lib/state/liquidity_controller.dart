@@ -41,6 +41,9 @@ class LiquidityService extends ChangeNotifier {
   bool serverBacked = false;
   Map<String, dynamic> custodial = const {};
   String settlement = 'accounting'; // 'onchain' when the server gate is live
+  /// Coins whose legs settle on-chain, as reported by the server (`settleable`
+  /// on /state). Falls back to the built-in set when the server predates it.
+  List<String> settleable = const [];
   /// Live on-chain BLOCK balance of the custodial treasury wallet (null = not
   /// provisioned / unreadable). Distinct from [pool.blockTreasury] (accounting).
   double? blockOnchainBalance;
@@ -92,6 +95,9 @@ class LiquidityService extends ChangeNotifier {
       );
       custodial = (j['custodial'] as Map?)?.cast<String, dynamic>() ?? const {};
       settlement = '${j['settlement'] ?? 'accounting'}';
+      settleable = ((j['settleable'] as List?) ?? const [])
+          .map((e) => '$e'.toUpperCase())
+          .toList();
       blockOnchainBalance = (j['blockOnchainBalance'] as num?)?.toDouble();
       blockOnchainAddress = j['blockOnchainAddress'] as String?;
       serverBacked = true;
@@ -199,12 +205,21 @@ class LiquidityService extends ChangeNotifier {
   /// True when the server's on-chain settlement gate (LIQUIDITY_MAINNET) is live.
   bool get onchainSettlement => settlement == 'onchain';
 
-  /// Whether [coin]'s leg can settle on-chain today. Matches the relayer's real
-  /// capability: BLOCK (ML-DSA) + the EVM family. Solana has a custodial deposit
-  /// address but no payout leg yet, so it does NOT settle on-chain.
+  /// Whether [coin]'s leg can settle on-chain today. The server is the
+  /// authority (its relayer legs: BLOCK ML-DSA, the EVM family, and SOL —
+  /// liquidity_sol.js); when it does not advertise the list, mirror that set.
   bool coinSettlesOnchain(String coin) {
     final c = coin.toUpperCase();
-    return c == 'BLOCK' || _evmCoins.contains(c);
+    if (settleable.isNotEmpty) return settleable.contains(c);
+    return c == 'BLOCK' || _evmCoins.contains(c) || _solCoins.contains(c);
+  }
+
+  /// Human list of the coins that settle on-chain (for the UI).
+  String get settleableLabel {
+    final list = settleable.isNotEmpty
+        ? settleable
+        : ['BLOCK', ..._evmCoins, ..._solCoins];
+    return list.where((c) => c != 'BLOCK').join('/');
   }
 
   /// The treasury DEPOSIT address a user sends [coin] to, from the server's
