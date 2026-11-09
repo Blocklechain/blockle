@@ -16,7 +16,7 @@
 
 import crypto from 'node:crypto';
 import { evmAddressFromPrivate } from './evmsign.js';
-import { ensureTreasuryWallet } from './liquidity_block.js';
+import { ensureTreasuryWallet, blockAddressBalance } from './liquidity_block.js';
 
 const BLOCK_SEED_SUPPLY = 50000;
 const BLOCK_SEED_PRICE_USD = 0.001;
@@ -28,11 +28,12 @@ const STABLE = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'PYUSD', 'TUSD']);
 const EVM_COINS = new Set(['USDC', 'USDT', 'DAI', 'ETH', 'BNB', 'MATIC', 'AVAX']);
 const SOL_COINS = new Set(['SOL']);
 
-export function makeLiquidity({ store, env = process.env, now = () => Date.now() }) {
+export function makeLiquidity({ store, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch }) {
   const COLL = 'liquidity';
   const KEY = 'treasury';
   const seedHex = env.LIQUIDITY_TREASURY_SEED || '';
   const mainnet = /^(1|true|yes|on)$/i.test(env.LIQUIDITY_MAINNET || '');
+  const chainApi = chainBase || env.ACCOUNTS_CHAIN_API || env.ACCOUNTS_ORIGIN || 'https://blockle.org';
   // vendor/solana.js is CommonJS — load it once (async) and cache for the Solana
   // custodial address. Until it resolves, only the EVM address is reported.
   let _sol = null;
@@ -82,6 +83,22 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return null;
   }
 
+  // ---- on-chain treasury BLOCK balance (cached) -----------------------------
+  // The REAL balance of the custodial BLOCK hot wallet, read from the explorer.
+  // Cached briefly so /state stays cheap. Distinct from the accounting
+  // blockTreasury (the seed/ledger figure).
+  let _balCache = { at: 0, address: null, block: null };
+  async function blockOnchainBalance() {
+    const addr = custodialAddresses().block || null;
+    const age = now() - _balCache.at;
+    if (_balCache.address === addr && age < 30000 && _balCache.block != null) {
+      return { address: addr, block: _balCache.block };
+    }
+    const block = addr ? await blockAddressBalance(addr, chainApi, fetchFn) : null;
+    _balCache = { at: now(), address: addr, block };
+    return { address: addr, block };
+  }
+
   // ---- public state ---------------------------------------------------------
   function state() {
     const t = load();
@@ -96,6 +113,17 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
       settlement: mainnet ? 'onchain' : 'accounting', // gated
       updatedAt: t.updatedAt,
     };
+  }
+
+  // State + the live on-chain treasury BLOCK balance (one explorer read, cached).
+  async function stateWithOnchain() {
+    const s = state();
+    try {
+      const b = await blockOnchainBalance();
+      s.blockOnchainAddress = b.address;
+      s.blockOnchainBalance = b.block; // null if unprovisioned / unreadable
+    } catch (_) {/* accounting-only */}
+    return s;
   }
 
   // ---- fee intake -----------------------------------------------------------
@@ -168,5 +196,5 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return { ...q, ...rec };
   }
 
-  return { state, quote, swap, accrueFee, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
+  return { state, stateWithOnchain, blockOnchainBalance, quote, swap, accrueFee, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
 }

@@ -333,8 +333,27 @@
     },
     on() {}, removeListener() {},
   };
-  try { Object.defineProperty(window, 'tronWeb', { value: tron, configurable: true }); } catch (_) { try { window.tronWeb = tron; } catch (_) {} }
-  try { Object.defineProperty(window, 'tronLink', { value: tronLink, configurable: true }); } catch (_) { try { window.tronLink = tronLink; } catch (_) {} }
+  // Expose ENUMERABLE so adapters that scan Object.keys(window) see them, and
+  // provide the newer `window.tron` (TIP-1193) provider some adapters prefer.
+  function defineWin(key, val) {
+    try {
+      Object.defineProperty(window, key, { value: val, configurable: true, enumerable: true, writable: true });
+    } catch (_) {
+      try { window[key] = val; } catch (_) {}
+    }
+  }
+  defineWin('tronWeb', tron);
+  defineWin('tronLink', tronLink);
+  defineWin('tron', tronLink); // 1193-shaped provider (isTronLink + request)
+  // TronLink's content script announces itself via a window message; the common
+  // adapters (@tronweb3/tronwallet-adapter-tronlink) wait for this to mark the
+  // wallet "found". Re-announce a few times in case the listener mounts late.
+  function tronAnnounce() {
+    try { window.postMessage({ message: { action: 'tabReply', data: { isTronLink: true } }, isTronLink: true }, '*'); } catch (_) {}
+    try { window.dispatchEvent(new Event('tronLink#initialized')); } catch (_) {}
+  }
+  tronAnnounce();
+  try { setTimeout(tronAnnounce, 200); setTimeout(tronAnnounce, 800); } catch (_) {}
 
   // ======================================================================
   // TON — TON Connect injected bridge (window.blockleTon.tonconnect). TON
@@ -377,9 +396,21 @@
     },
     listen(cb) { tonListeners.push(cb); return () => { const i = tonListeners.indexOf(cb); if (i >= 0) tonListeners.splice(i, 1); }; },
   };
-  try { Object.defineProperty(window, 'blockleTon', { value: { tonconnect: tonBridge }, configurable: true }); } catch (_) { window.blockleTon = { tonconnect: tonBridge }; }
+  // MUST be enumerable: @tonconnect/sdk finds injected wallets by scanning
+  // Object.keys(window) for objects carrying a `tonconnect` bridge. A
+  // non-enumerable property is invisible to that scan — Blockle would never
+  // appear in the connect list.
+  try {
+    Object.defineProperty(window, 'blockleTon', { value: { tonconnect: tonBridge }, configurable: true, enumerable: true, writable: true });
+  } catch (_) {
+    window.blockleTon = { tonconnect: tonBridge };
+  }
 
   window.dispatchEvent(new Event('blockle#initialized'));
   window.dispatchEvent(new Event('ethereum#initialized'));
-  window.dispatchEvent(new Event('tonconnect#initialized'));
+  // Re-announce the TON bridge a few times — a dApp whose TonConnect UI mounts
+  // after document-start would otherwise miss the one-shot event.
+  function tonAnnounce() { try { window.dispatchEvent(new Event('tonconnect#initialized')); } catch (_) {} }
+  tonAnnounce();
+  try { setTimeout(tonAnnounce, 200); setTimeout(tonAnnounce, 800); } catch (_) {}
 })();

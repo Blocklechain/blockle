@@ -99,6 +99,19 @@ export async function verifyBlockDeposit({ txid, expectTo, minBlock, chainBase, 
   return { ok: true, creditedBase: credited.toString() };
 }
 
+// Read the ACTUAL on-chain BLOCK balance of an address (whole BLOCK). Read-only
+// (explorer /address/:addr → balance in base units). Returns 0 on any failure.
+export async function blockAddressBalance(address, chainBase, fetchFn = globalThis.fetch) {
+  if (!address) return 0;
+  try {
+    const j = await getJson(chainBase, '/address/' + encodeURIComponent(address), fetchFn);
+    const baseUnits = BigInt((j && (j.balance ?? j.spendable)) || 0);
+    return Number(baseUnits) / Number(COIN);
+  } catch (_) {
+    return 0;
+  }
+}
+
 // Pay out `amountBlock` BLOCK from the treasury to `toAddress`. GATED. Fetches the
 // treasury UTXOs, builds + ML-DSA-signs the transfer (wasm), broadcasts via submit.
 export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chainBase, fetchFn = globalThis.fetch, env = process.env }) {

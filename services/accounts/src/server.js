@@ -52,7 +52,7 @@ export function createApp(overrides = {}) {
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const moonpay = overrides.moonpay || makeMoonpay(process.env);
-  const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now });
+  const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now, chainBase: cfg.chainApiBase });
   const prices = overrides.prices || makePrices({});
   // Ephemeral server-side bot-delegation registry (Stage 1: lifecycle only, no
   // key material). In-memory → a restart fail-closes every delegation.
@@ -442,7 +442,9 @@ export function createApp(overrides = {}) {
   // authoritative accounting (on-chain settlement is gated by LIQUIDITY_MAINNET).
   on('GET', /^\/account\/api\/liquidity\/state$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
-    return json(res, 200, liquidity.state());
+    // Includes the live on-chain treasury BLOCK balance (cached explorer read).
+    const s = liquidity.stateWithOnchain ? await liquidity.stateWithOnchain() : liquidity.state();
+    return json(res, 200, s);
   });
   on('POST', /^\/account\/api\/liquidity\/quote$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');

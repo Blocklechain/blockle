@@ -88,7 +88,11 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final price = svc.blockPriceUsd;
-    final treasury = svc.pool.blockTreasury;
+    // Prefer the REAL on-chain custodial balance when the server reports it;
+    // fall back to the accounting treasury figure otherwise.
+    final onchainBal = svc.blockOnchainBalance;
+    final treasury = onchainBal ?? svc.pool.blockTreasury;
+    final treasuryLabel = onchainBal != null ? 'Treasury BLOCK · on-chain' : 'Treasury BLOCK';
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -122,7 +126,7 @@ class _Header extends StatelessWidget {
         ]),
         const SizedBox(height: 10),
         Row(children: [
-          _stat('Treasury BLOCK', _fmtAmt(treasury)),
+          _stat(treasuryLabel, _fmtAmt(treasury)),
           _stat('Source', svc.serverBacked ? 'Server treasury' : 'Local preview'),
         ]),
       ]),

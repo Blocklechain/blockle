@@ -41,6 +41,10 @@ class LiquidityService extends ChangeNotifier {
   bool serverBacked = false;
   Map<String, dynamic> custodial = const {};
   String settlement = 'accounting'; // 'onchain' when the server gate is live
+  /// Live on-chain BLOCK balance of the custodial treasury wallet (null = not
+  /// provisioned / unreadable). Distinct from [pool.blockTreasury] (accounting).
+  double? blockOnchainBalance;
+  String? blockOnchainAddress;
 
   LiquidityPool _pool = LiquidityPool();
   LiquidityPool get pool => _pool;
@@ -87,6 +91,8 @@ class LiquidityService extends ChangeNotifier {
       );
       custodial = (j['custodial'] as Map?)?.cast<String, dynamic>() ?? const {};
       settlement = '${j['settlement'] ?? 'accounting'}';
+      blockOnchainBalance = (j['blockOnchainBalance'] as num?)?.toDouble();
+      blockOnchainAddress = j['blockOnchainAddress'] as String?;
       serverBacked = true;
       notifyListeners();
     } catch (_) {/* keep the local preview */}
