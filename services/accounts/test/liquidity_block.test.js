@@ -135,6 +135,9 @@ await (async () => {
     catch (e) { rejected = /broadcast rejected/.test(e.message) && /already-spent/.test(e.message) && isRetryablePayoutError(e.message); }
     ok('rejected broadcast throws with the node reason (and is retryable)', rejected);
     ok('double-spend-rejected inputs are marked pending so the retry avoids them', !!store.get('liquidity', 'blockPendingSpends')['cd'.repeat(32) + ':0']);
+    ok('underfunded / rent-trapped treasury is retryable (operator can fund), EVM gas shortfall is not',
+      isRetryablePayoutError('treasury SOL wallet X is underfunded: has 0.001 SOL') && isRetryablePayoutError('would drop below Solana\'s rent-exempt minimum')
+      && !isRetryablePayoutError('insufficient funds for gas * price + value'));
   }
 
   console.log(`liquidity_block.test.js: ${pass} checks passed`);

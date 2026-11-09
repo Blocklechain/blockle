@@ -154,7 +154,9 @@ export async function blockAddressBalance(address, chainBase, fetchFn = globalTh
 /// previous payout is still confirming (its inputs look unspent to the explorer
 /// until the next block), or the node/RPC was momentarily unreachable.
 export function isRetryablePayoutError(msg) {
-  return /double-spend|already in the mempool|payout queued|waiting for a previous|unknown or already-spent|nonce|ECONN|ETIMEDOUT|timed? ?out|fetch failed|rpc:|503|502|blockhash/i.test(String(msg || ''));
+  // An underfunded treasury hot wallet is retryable too: the operator gets the
+  // retry budget (8 attempts / 30 min) to fund it before the deposit is refunded.
+  return /double-spend|already in the mempool|payout queued|waiting for a previous|unknown or already-spent|nonce|underfunded|rent-exempt|insufficient funds: has|ECONN|ETIMEDOUT|timed? ?out|fetch failed|rpc:|503|502|blockhash/i.test(String(msg || ''));
 }
 
 const PENDING_KEY = 'blockPendingSpends';
