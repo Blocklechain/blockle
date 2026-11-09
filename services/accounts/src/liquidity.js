@@ -227,5 +227,26 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return { ...q, ...rec };
   }
 
-  return { state, stateWithOnchain, blockOnchainBalance, quote, swap, accrueFee, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
+  // Undo a swap's reserve move after its deposit was REFUNDED (the payout
+  // could not be made): the treasury never kept the input and never paid the
+  // output, so both legs return to where they were. Idempotent per record.
+  async function revertSwap(rec) {
+    if (!rec || rec.reverted) return { ok: false, reason: 'nothing to revert' };
+    const t = load();
+    const coin = (String(rec.from).toUpperCase() === 'BLOCK' ? rec.to : rec.from).toUpperCase();
+    const aIn = +rec.amountIn || 0, aOut = +rec.amountOut || 0;
+    if (String(rec.from).toUpperCase() === 'BLOCK') {
+      t.blockTreasury -= aIn;
+      t.reserves[coin] = (+t.reserves[coin] || 0) + aOut;
+    } else {
+      t.reserves[coin] = Math.max(0, (+t.reserves[coin] || 0) - aIn);
+      t.blockTreasury += aOut;
+    }
+    await save(t);
+    rec.reverted = true;
+    await store.put(COLL, 'swap:' + rec.id, rec);
+    return { ok: true };
+  }
+
+  return { state, stateWithOnchain, blockOnchainBalance, quote, swap, accrueFee, revertSwap, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
 }

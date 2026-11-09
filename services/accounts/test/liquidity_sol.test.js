@@ -144,10 +144,9 @@ await (async () => {
     ok('BLOCK→SOL settles with a SOL payout', out.status === 'settled' && out.payoutTxid === 'PAYOUT_SIG');
     // SOL -> BLOCK: the SOL deposit is verified over rpcFor('solana'); the BLOCK leg pays out (mocked wasm path needs a treasury wallet, so we stop at verification by making the BLOCK wallet absent → the payout error is surfaced, not a phantom settle)
     await store.put('liquidity', 'swap:s2', { id: 's2', from: 'SOL', to: 'BLOCK', amountIn: 1, amountOut: 100, userAddress: 'block1user', depositAddress: treasury, status: 'awaiting-deposit' });
-    let payoutErr = false;
-    try { await settleSwap('s2', SIG, { store, rpcFor, seedHex: SEED, env: ON, chainBase: 'https://x', fetchFn }); } catch (e) { payoutErr = /treasury BLOCK wallet not provisioned/.test(e.message); }
-    const rec = store.get('liquidity', 'swap:s2');
-    ok('SOL deposit verified, BLOCK payout failure left retryable (no phantom settle)', payoutErr && rec.status === 'awaiting-deposit' && rec.depositTxid === SIG);
+    const reverted = [];
+    const out2 = await settleSwap('s2', SIG, { store, rpcFor, seedHex: SEED, env: ON, chainBase: 'https://x', fetchFn, onRefund: async (r) => reverted.push(r.id) });
+    ok('SOL deposit verified; a truly failed BLOCK payout REFUNDS the SOL to the depositor', out2.status === 'refunded' && out2.refundAddress === USER && out2.refundTxid === 'PAYOUT_SIG' && /not provisioned/.test(out2.lastPayoutError) && reverted[0] === 's2');
   }
 
   console.log(`liquidity_sol.test.js: ${pass} checks passed`);

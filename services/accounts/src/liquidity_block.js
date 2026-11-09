@@ -131,7 +131,10 @@ export async function verifyBlockDeposit({ txid, expectTo, minBlock, chainBase, 
     if (addr === expectTo) credited += BigInt(o.amount ?? o.value ?? 0);
   }
   if (credited < minBase) return { ok: false, reason: 'deposit to treasury too low' };
-  return { ok: true, creditedBase: credited.toString() };
+  // Where a refund would go: the depositor's first input address.
+  const ins = tx.inputs || tx.vin || [];
+  const refundAddress = (ins[0] && (ins[0].address || ins[0].addr)) || null;
+  return { ok: true, creditedBase: credited.toString(), refundAddress };
 }
 
 // Read the ACTUAL on-chain BLOCK balance of an address (whole BLOCK). Read-only
@@ -147,17 +150,74 @@ export async function blockAddressBalance(address, chainBase, fetchFn = globalTh
   }
 }
 
+/// A payout failure the relayer should RETRY rather than treat as final: our own
+/// previous payout is still confirming (its inputs look unspent to the explorer
+/// until the next block), or the node/RPC was momentarily unreachable.
+export function isRetryablePayoutError(msg) {
+  return /double-spend|already in the mempool|payout queued|waiting for a previous|unknown or already-spent|nonce|ECONN|ETIMEDOUT|timed? ?out|fetch failed|rpc:|503|502|blockhash/i.test(String(msg || ''));
+}
+
+const PENDING_KEY = 'blockPendingSpends';
+const PENDING_TTL_MS = 30 * 60 * 1000;
+const opKey = (u) => `${u.txid}:${u.vout}`;
+
+/// Outpoints our own not-yet-confirmed payouts already spend. The explorer's
+/// /utxos keeps listing them until the payout is mined, so a second payout
+/// built from the same list would double-spend and be rejected. Entries vanish
+/// once the outpoint leaves the utxo set (confirmed) or after a TTL.
+function loadPending(store, utxos, nowMs) {
+  const rec = (store && store.get('liquidity', PENDING_KEY)) || {};
+  const live = new Set(utxos.map(opKey));
+  const out = {};
+  for (const [k, v] of Object.entries(rec)) {
+    if (!live.has(k)) continue; // spent for real (confirmed) — drop
+    if (nowMs - (v.at || 0) > PENDING_TTL_MS) continue; // stale — the tx was dropped; free it
+    out[k] = v;
+  }
+  return out;
+}
+
+/// Largest-first selection of spendable inputs covering `need`, excluding
+/// outpoints pending in our own unconfirmed payouts. Capped at 140 inputs (the
+/// post-quantum signature size makes bigger txs unminable).
+function selectInputs(utxos, pending, need) {
+  const free = utxos.filter((u) => !pending[opKey(u)]).sort((a, b) => (BigInt(b.amount) > BigInt(a.amount) ? 1 : -1));
+  const picked = [];
+  let total = 0n;
+  for (const u of free) {
+    picked.push(u); total += BigInt(u.amount);
+    if (total >= need) break;
+    if (picked.length >= 140) break;
+  }
+  return { picked, total, excluded: utxos.length - free.length };
+}
+
 // Pay out `amountBlock` BLOCK from the treasury to `toAddress`. GATED. Fetches the
-// treasury UTXOs, builds + ML-DSA-signs the transfer (wasm), broadcasts via submit.
-export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chainBase, fetchFn = globalThis.fetch, env = process.env }) {
+// treasury UTXOs, selects inputs (skipping ones our own confirming payouts already
+// spend), builds + ML-DSA-signs the transfer (wasm), broadcasts via submit, and
+// records the spent outpoints as pending until they confirm.
+export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chainBase, fetchFn = globalThis.fetch, env = process.env, now = () => Date.now() }) {
   if (!/^(1|true|yes|on)$/i.test(env.LIQUIDITY_MAINNET || '')) throw new Error('liquidity settlement disabled (LIQUIDITY_MAINNET not set)');
   const { address, publicKey, secretKey } = loadSigningMaterial(store, seedHex);
   const u = await getJson(chainBase, '/utxos/' + address, fetchFn);
   const utxos = (u && u.utxos) || [];
   if (!utxos.length) throw new Error('treasury BLOCK wallet has no spendable funds');
-  const built = JSON.parse(wasm().build_transfer(secretKey, publicKey, JSON.stringify(utxos), toAddress, base(amountBlock), DEFAULT_FEE));
+  const need = base(amountBlock) + DEFAULT_FEE;
+  const pending = loadPending(store, utxos, now());
+  const sel = selectInputs(utxos, pending, need);
+  if (sel.total < need) {
+    if (sel.excluded > 0) throw new Error(`payout queued: treasury BLOCK inputs are waiting for a previous payout to confirm (${sel.excluded} pending) — will retry`);
+    throw new Error(`treasury BLOCK wallet has insufficient funds: has ${Number(sel.total) / Number(COIN)} BLOCK, needs ${Number(need) / Number(COIN)} BLOCK`);
+  }
+  const built = JSON.parse(wasm().build_transfer(secretKey, publicKey, JSON.stringify(sel.picked), toAddress, base(amountBlock), DEFAULT_FEE));
   const raw = built.raw || built.rawtx || built.hex;
   if (!raw) throw new Error('build_transfer produced no raw tx');
+  const markPending = async (txid) => {
+    if (!store) return;
+    const cur = loadPending(store, utxos, now());
+    for (const u of sel.picked) cur[opKey(u)] = { txid, at: now() };
+    await store.put('liquidity', PENDING_KEY, cur);
+  };
   // The submit proxy (biz /api/submit -> node submitrawtransaction) reads the
   // signed tx from the `raw` field. A rejected broadcast MUST fail loudly: the
   // caller marks the swap settled only after this returns, so swallowing an
@@ -169,10 +229,15 @@ export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chai
   const err = bj && bj.error;
   if (!br.ok || err) {
     const msg = err && typeof err === 'object' ? (err.message || JSON.stringify(err)) : (err || ('http ' + br.status));
+    // A double-spend rejection means these inputs ARE already spent by a payout
+    // we did not track (e.g. an older build): mark them pending so the retry
+    // picks different inputs instead of failing the same way.
+    if (/double-spend|already in the mempool|already-spent/i.test(String(msg))) await markPending('unknown');
     throw new Error('BLOCK payout broadcast rejected: ' + msg);
   }
   const res = bj && typeof bj.result === 'object' && bj.result ? bj.result : bj;
   const rpcTxid = (res && (res.txid || (typeof bj.result === 'string' ? bj.result : null))) || built.txid;
+  await markPending(rpcTxid);
   // Report the explorer-visible (display) spelling; keep the node's for audit.
-  return { txid: flipTxid(rpcTxid), txidRpc: rpcTxid, raw };
+  return { txid: flipTxid(rpcTxid), txidRpc: rpcTxid, raw, inputs: sel.picked.map(opKey) };
 }

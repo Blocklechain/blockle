@@ -12,7 +12,7 @@
 
 import crypto from 'node:crypto';
 import { signEip1559, evmAddressFromPrivate, erc20TransferData } from './evmsign.js';
-import { verifyBlockDeposit, payoutBlock } from './liquidity_block.js';
+import { verifyBlockDeposit, payoutBlock, isRetryablePayoutError } from './liquidity_block.js';
 import { verifySolDeposit, payoutSol } from './liquidity_sol.js';
 
 const isBlock = (c) => String(c || '').toUpperCase() === 'BLOCK';
@@ -106,12 +106,12 @@ export async function verifyDepositEvm({ rpc, txid, expectTo, coin, minAmount })
     const amtArg = _big('0x' + data.slice(10 + 64, 10 + 128));
     if (toArg.toLowerCase() !== String(expectTo).toLowerCase()) return { ok: false, reason: 'deposit not to treasury' };
     if (amtArg < minBase) return { ok: false, reason: 'deposit amount too low' };
-    return { ok: true };
+    return { ok: true, refundAddress: tx.from || null };
   }
   // Native transfer: to == treasury, value >= min.
   if (String(tx.to || '').toLowerCase() !== String(expectTo).toLowerCase()) return { ok: false, reason: 'deposit not to treasury' };
   if (_big(tx.value) < minBase) return { ok: false, reason: 'deposit amount too low' };
-  return { ok: true };
+  return { ok: true, refundAddress: tx.from || null };
 }
 
 // Settle one swap record: verify the user's deposit, pay out the output asset,
@@ -130,11 +130,21 @@ export async function settleSwap(id, depositTxid, deps) {
 }
 
 async function _settleSwap(id, depositTxid, deps) {
-  const { store, rpcFor, seedHex, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch } = deps;
+  const { store, rpcFor, seedHex, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch, onRefund } = deps;
   if (!liquidityMainnet(env)) throw new Error('liquidity settlement disabled (LIQUIDITY_MAINNET not set)');
   const rec = store.get('liquidity', 'swap:' + id);
   if (!rec) throw new Error('unknown swap ' + id);
-  if (rec.status === 'settled') return rec;
+  if (rec.status === 'settled' || rec.status === 'refunded') return rec;
+  if (rec.status === 'refund-pending') {
+    // The payout already truly failed; only the refund is outstanding.
+    const depositCoin = String(rec.from).toUpperCase();
+    const pay = (coin, toAddress, amount) => isBlock(coin)
+      ? payoutBlock({ store, seedHex, toAddress, amountBlock: amount, chainBase, fetchFn, env, now })
+      : isSol(coin)
+        ? payoutSol({ seedHex, toAddress, amountSol: amount, rpc: rpcFor('solana'), env })
+        : payoutEvm({ coin, toAddress, amount, rpc: rpcFor(COIN_CHAIN[coin]), seedHex, env });
+    return refundSwap(rec, { store, pay, depositCoin, now, onRefund });
+  }
 
   // The user DEPOSITS the input asset; we PAY OUT the output asset. Each leg is
   // BLOCK (post-quantum, liquidity_block.js) or EVM — one of the two is always
@@ -162,29 +172,75 @@ async function _settleSwap(id, depositTxid, deps) {
       ? await verifySolDeposit({ rpc: rpcFor('solana'), signature: depositTxid, expectTo: rec.depositAddress, minSol: rec.amountIn })
       : await verifyDepositEvm({ rpc: rpcFor(COIN_CHAIN[depositCoin]), txid: depositTxid, expectTo: rec.depositAddress, coin: depositCoin, minAmount: rec.amountIn });
   if (!dv.ok) { rec.status = 'awaiting-deposit'; rec.reason = dv.reason; await store.put('liquidity', 'swap:' + id, rec); return rec; }
+  if (dv.refundAddress && !rec.refundAddress) rec.refundAddress = dv.refundAddress;
 
-  // 2) pay out the output asset (BLOCK ML-DSA transfer; or EVM native/ERC-20).
+  // 2) pay out the output asset (BLOCK ML-DSA transfer; SOL; or EVM native/ERC-20).
   // The deposit txid is pinned to the record BEFORE the payout so a replay of the
   // same deposit against another swap is caught above even if this payout
-  // throws; a broadcast rejection leaves the record retryable ('awaiting-deposit'
-  // + the error as reason) instead of a phantom 'settled'.
+  // throws. A failed payout is RETRIED (the usual cause is our own previous
+  // payout still confirming); once it has truly failed — the retry budget is
+  // exhausted, or the error is not retryable — the deposit is REFUNDED to the
+  // sender and the swap's accounting reverted, never a phantom 'settled'.
   rec.depositTxid = depositTxid; rec.status = 'paying'; rec.reason = '';
   await store.put('liquidity', 'swap:' + id, rec);
-  let pay;
+  const pay = async (coin, toAddress, amount) => isBlock(coin)
+    ? payoutBlock({ store, seedHex, toAddress, amountBlock: amount, chainBase, fetchFn, env, now })
+    : isSol(coin)
+      ? payoutSol({ seedHex, toAddress, amountSol: amount, rpc: rpcFor('solana'), env })
+      : payoutEvm({ coin, toAddress, amount, rpc: rpcFor(COIN_CHAIN[coin]), seedHex, env });
+  let paid;
   try {
-    pay = isBlock(payoutCoin)
-      ? await payoutBlock({ store, seedHex, toAddress: rec.userAddress, amountBlock: rec.amountOut, chainBase, fetchFn, env })
-      : isSol(payoutCoin)
-        ? await payoutSol({ seedHex, toAddress: rec.userAddress, amountSol: rec.amountOut, rpc: rpcFor('solana'), env })
-        : await payoutEvm({ coin: payoutCoin, toAddress: rec.userAddress, amount: rec.amountOut, rpc: rpcFor(COIN_CHAIN[payoutCoin]), seedHex, env });
+    paid = await pay(payoutCoin, rec.userAddress, rec.amountOut);
   } catch (e) {
-    rec.status = 'awaiting-deposit'; rec.reason = 'payout failed: ' + String(e && e.message || e); rec.payoutAttempts = (rec.payoutAttempts || 0) + 1;
+    const msg = String(e && e.message || e);
+    rec.payoutAttempts = (rec.payoutAttempts || 0) + 1;
+    rec.firstPayoutFailAt = rec.firstPayoutFailAt || now();
+    rec.lastPayoutError = msg;
+    const exhausted = rec.payoutAttempts >= MAX_PAYOUT_ATTEMPTS && (now() - rec.firstPayoutFailAt) >= PAYOUT_FAIL_WINDOW_MS;
+    if (isRetryablePayoutError(msg) && !exhausted) {
+      rec.status = 'awaiting-deposit'; rec.reason = 'payout pending retry: ' + msg;
+      await store.put('liquidity', 'swap:' + id, rec);
+      throw e;
+    }
+    // TRUE failure → refund the deposit.
+    rec.status = 'refund-pending'; rec.reason = 'payout failed: ' + msg;
     await store.put('liquidity', 'swap:' + id, rec);
-    throw e;
+    return refundSwap(rec, { store, pay, depositCoin, now, onRefund });
   }
-  rec.status = 'settled'; rec.payoutTxid = pay.txid; rec.settledAt = now(); rec.reason = '';
+  rec.status = 'settled'; rec.payoutTxid = paid.txid; rec.settledAt = now(); rec.reason = '';
   await store.put('liquidity', 'swap:' + id, rec);
   return rec;
+}
+
+// Retry budget before a payout is declared truly failed: both bounds must be
+// met (8 attempts AND 30 minutes), so a short mempool backlog is never refunded.
+export const MAX_PAYOUT_ATTEMPTS = 8;
+export const PAYOUT_FAIL_WINDOW_MS = 30 * 60 * 1000;
+
+// Send the deposited input asset back to the depositor and revert the swap's
+// accounting. Leaves 'refund-pending' (+ reason) when the refund itself cannot
+// be made yet, so the next /settle retries it.
+async function refundSwap(rec, { store, pay, depositCoin, now, onRefund }) {
+  const id = rec.id;
+  const to = rec.refundAddress;
+  if (!to) {
+    rec.reason = (rec.reason || 'payout failed') + ' — refund blocked: depositor address unknown';
+    await store.put('liquidity', 'swap:' + id, rec);
+    return rec;
+  }
+  try {
+    const r = await pay(depositCoin, to, rec.amountIn);
+    rec.status = 'refunded'; rec.refundTxid = r.txid; rec.refundedAt = now();
+    rec.reason = 'payout failed — deposit refunded: ' + (rec.lastPayoutError || '');
+    await store.put('liquidity', 'swap:' + id, rec);
+    if (typeof onRefund === 'function') { try { await onRefund(rec); } catch (_) { /* accounting best-effort */ } }
+    return rec;
+  } catch (e) {
+    rec.status = 'refund-pending'; rec.refundAttempts = (rec.refundAttempts || 0) + 1;
+    rec.reason = 'payout failed; refund pending: ' + String(e && e.message || e);
+    await store.put('liquidity', 'swap:' + id, rec);
+    return rec;
+  }
 }
 
 // What the public state should report for which coins can actually settle today.

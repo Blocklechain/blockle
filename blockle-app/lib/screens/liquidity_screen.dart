@@ -868,6 +868,18 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
         });
         return;
       }
+      if (st == 'refunded') {
+        // The payout truly failed (after retries); the server sent the deposit
+        // back to the depositing address and reverted the swap.
+        await widget.svc.resumePendingSettlements(); // drops it from pending
+        setState(() {
+          _phase = _Phase.error;
+          _error = 'Payout could not be made — your ${widget.from} deposit was refunded'
+              '${r['refundTxid'] != null ? ' (tx ${'${r['refundTxid']}'.length > 18 ? '${r['refundTxid']}'.substring(0, 18) : r['refundTxid']}…)' : ''}. '
+              'Nothing was lost; you can try again.';
+        });
+        return;
+      }
       if (st == 'unsupported' || st == 'failed' || '${r['error'] ?? ''}'.contains('unknown swap')) {
         setState(() {
           _phase = _Phase.error;
@@ -881,7 +893,9 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
       final why = '${r['reason'] ?? r['error'] ?? ''}'.trim();
       setState(() => _status = st == 'paying'
           ? 'Deposit confirmed — paying out your ${widget.to}… (${i + 1}/$maxTries)'
-          : 'Confirming deposit… (${i + 1}/$maxTries)${why.isNotEmpty ? ' — $why' : ''}');
+          : st == 'refund-pending'
+              ? 'Payout failed — refunding your ${widget.from} deposit… (${i + 1}/$maxTries)${why.isNotEmpty ? ' — $why' : ''}'
+              : 'Confirming deposit… (${i + 1}/$maxTries)${why.isNotEmpty ? ' — $why' : ''}');
       await Future<void>.delayed(const Duration(seconds: 15));
     }
     // Didn't confirm in-window — it stays pending and auto-completes later.

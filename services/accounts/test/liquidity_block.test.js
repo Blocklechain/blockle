@@ -4,7 +4,7 @@
 
 import assert from 'node:assert';
 import { createRequire } from 'node:module';
-import { ensureTreasuryWallet, verifyBlockDeposit, payoutBlock, flipTxid } from '../src/liquidity_block.js';
+import { ensureTreasuryWallet, verifyBlockDeposit, payoutBlock, flipTxid, isRetryablePayoutError } from '../src/liquidity_block.js';
 
 const require = createRequire(import.meta.url);
 const wasm = require('../src/vendor/blockle_wasm.js');
@@ -53,6 +53,8 @@ await (async () => {
     const fetchJson = (outs, blockHash = 'ff'.repeat(32)) => async () => ({ ok: true, json: async () => ({ block_hash: blockHash, tx: { outputs: outs, block_height: blockHash ? 100 : undefined } }) });
     const good = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 100000000 }]) });
     ok('valid BLOCK deposit verifies (1 BLOCK = 1e8)', good.ok && good.creditedBase === '100000000');
+    const withIn = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: async () => ({ ok: true, json: async () => ({ block_hash: 'ff'.repeat(32), tx: { block_height: 1, inputs: [{ address: 'block1depositor' }], outputs: [{ address: treasury, amount: 100000000 }] } }) }) });
+    ok('deposit verification captures the depositor (refund) address', withIn.ok && withIn.refundAddress === 'block1depositor');
     const low = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: treasury, amount: 50000000 }]) });
     ok('under-amount deposit rejected', !low.ok);
     const wrong = await verifyBlockDeposit({ txid: TXID, expectTo: treasury, minBlock: 1, chainBase: 'https://x', fetchFn: fetchJson([{ address: 'block1other', amount: 100000000 }]) });
@@ -102,14 +104,37 @@ await (async () => {
     ok('BLOCK payout builds+signs+broadcasts (submit body uses `raw`)', !!r.raw && r.txidRpc === 'dbd7e866f378ed8c0a02d9286037f1a53b638ce3f3e45db48ad91336f7462ff0');
     ok('payout txid is reported in the explorer (display) spelling', r.txid === 'f02f46f73613d98ab45de4f3e38c633ba5f1376028d9020a8ced78f366e8d7db');
 
+    // PENDING-SPEND EXCLUSION: the input just spent is still listed by the
+    // explorer until the payout confirms. A second payout from the same list
+    // must NOT reuse it — with no other input it queues (retryable) instead of
+    // broadcasting a double-spend.
+    ok('spent inputs are recorded as pending', !!store.get('liquidity', 'blockPendingSpends')['ab'.repeat(32) + ':0']);
+    let queued = '';
+    try { await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn, env: ON }); } catch (e) { queued = e.message; }
+    ok('second payout on the same (pending) input queues instead of double-spending', /payout queued/.test(queued) && isRetryablePayoutError(queued));
+    // With another input available the second payout uses THAT one.
+    const twoFetch = async (url, init) => String(url).includes('/utxos/')
+      ? { ok: true, json: async () => ({ utxos: [{ txid: 'ab'.repeat(32), vout: 0, amount: 1000000000 }, { txid: 'ee'.repeat(32), vout: 1, amount: 900000000 }] }) }
+      : fetchFn(url, init);
+    const second = await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn: twoFetch, env: ON });
+    ok('second payout selects the free input', second.inputs.length === 1 && second.inputs[0] === 'ee'.repeat(32) + ':1');
+    // Once the explorer stops listing the outpoint (confirmed), it is dropped from pending.
+    const goneFetch = async (url, init) => String(url).includes('/utxos/')
+      ? { ok: true, json: async () => ({ utxos: [{ txid: 'ff'.repeat(32), vout: 0, amount: 1000000000 }] }) }
+      : fetchFn(url, init);
+    await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn: goneFetch, env: ON });
+    const pend = store.get('liquidity', 'blockPendingSpends');
+    ok('confirmed (no longer listed) inputs leave the pending set', !pend['ab'.repeat(32) + ':0'] && !!pend['ff'.repeat(32) + ':0']);
+
     // A rejected broadcast must THROW (never a phantom txid / phantom 'settled').
     const rejectFetch = async (url) => String(url).includes('/utxos/')
-      ? { ok: true, json: async () => ({ utxos: [{ txid: 'ab'.repeat(32), vout: 0, amount: 1000000000 }] }) }
+      ? { ok: true, json: async () => ({ utxos: [{ txid: 'cd'.repeat(32), vout: 0, amount: 1000000000 }] }) }
       : { ok: true, json: async () => ({ error: { code: -26, message: 'input spends unknown or already-spent output' }, result: null }) };
     let rejected = false;
     try { await payoutBlock({ store, seedHex: SEED, toAddress: addr, amountBlock: 2, chainBase: 'https://x', fetchFn: rejectFetch, env: ON }); }
-    catch (e) { rejected = /broadcast rejected/.test(e.message) && /already-spent/.test(e.message); }
-    ok('rejected broadcast throws with the node reason', rejected);
+    catch (e) { rejected = /broadcast rejected/.test(e.message) && /already-spent/.test(e.message) && isRetryablePayoutError(e.message); }
+    ok('rejected broadcast throws with the node reason (and is retryable)', rejected);
+    ok('double-spend-rejected inputs are marked pending so the retry avoids them', !!store.get('liquidity', 'blockPendingSpends')['cd'.repeat(32) + ':0']);
   }
 
   console.log(`liquidity_block.test.js: ${pass} checks passed`);

@@ -5,7 +5,7 @@
 
 import assert from 'node:assert';
 import {
-  treasuryKeys, payoutEvm, verifyDepositEvm, settleSwap, liquidityMainnet, COIN_TOKEN,
+  treasuryKeys, payoutEvm, verifyDepositEvm, settleSwap, liquidityMainnet, COIN_TOKEN, MAX_PAYOUT_ATTEMPTS,
 } from '../src/liquidity_relayer.js';
 
 let pass = 0;
@@ -114,7 +114,7 @@ await (async () => {
     let threw = false;
     try { await settleSwap('p1', '0x' + 'ee'.repeat(32), { store, rpcFor: () => depositOk, seedHex: SEED, env: ON }); } catch (e) { threw = /nonce too low/.test(e.message); }
     const after = store.get('liquidity', 'swap:p1');
-    ok('payout failure rethrows and leaves the swap retryable', threw && after.status === 'awaiting-deposit' && /payout failed/.test(after.reason) && after.payoutAttempts === 1);
+    ok('retryable payout failure rethrows and leaves the swap retryable', threw && after.status === 'awaiting-deposit' && /payout pending retry/.test(after.reason) && after.payoutAttempts === 1);
     // now a working payout settles it…
     const rpcGood = async (m) => (m === 'eth_sendRawTransaction' ? '0x' + 'ab'.repeat(32) : depositOk(m));
     const done = await settleSwap('p1', '0x' + 'ee'.repeat(32), { store, rpcFor: () => rpcGood, seedHex: SEED, env: ON });
@@ -146,6 +146,64 @@ await (async () => {
       settleSwap('c1', dep, { store, rpcFor: () => rpc, seedHex: SEED, env: ON }),
     ]);
     ok('concurrent settles for one swap broadcast a single payout', sends === 1 && a.status === 'settled' && b.status === 'settled');
+  }
+
+  // REFUNDS. (a) A NON-retryable payout failure refunds the deposit to the
+  // depositor (tx.from) at once and reverts the accounting via onRefund.
+  // (b) A retryable failure that exhausts the budget (8 attempts over 30 min)
+  // refunds too. A refund that cannot be made yet stays 'refund-pending'.
+  {
+    const treasury = keys.evmAddress;
+    const depositor = '0x' + '77'.repeat(20);
+    const payoutTo = '0x' + '88'.repeat(20);
+    const mkRpc = (sendImpl) => async (m, p) => {
+      if (m === 'eth_getTransactionReceipt') return { status: '0x1' };
+      if (m === 'eth_getTransactionByHash') return { from: depositor, to: treasury, value: '0x' + (10n ** 18n).toString(16) };
+      if (m === 'eth_getTransactionCount') return '0x0';
+      if (m === 'eth_gasPrice') return '0x3b9aca00';
+      if (m === 'eth_sendRawTransaction') return sendImpl(p);
+      return null;
+    };
+    // (a) non-retryable
+    {
+      const store = fakeStore();
+      await store.put('liquidity', 'swap:r1', { id: 'r1', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: payoutTo, depositAddress: treasury, status: 'awaiting-deposit' });
+      let sends = 0; const reverted = [];
+      const rpc = mkRpc(() => { sends += 1; if (sends === 1) throw new Error('insufficient funds for gas * price + value'); return '0x' + 'ef'.repeat(32); });
+      const out = await settleSwap('r1', '0x' + 'a1'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON, onRefund: async (r) => reverted.push(r.id) });
+      ok('non-retryable payout failure refunds the deposit to the depositor', out.status === 'refunded' && out.refundAddress === depositor && out.refundTxid === '0x' + 'ef'.repeat(32) && sends === 2);
+      ok('refund reverts the swap accounting (onRefund)', reverted.length === 1 && reverted[0] === 'r1');
+      const again = await settleSwap('r1', '0x' + 'a1'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON, onRefund: async () => reverted.push('x') });
+      ok('a refunded swap is final (no second refund / payout)', again.status === 'refunded' && sends === 2 && reverted.length === 1);
+    }
+    // (b) retryable → exhausted after 8 attempts AND 30 minutes → refund
+    {
+      const store = fakeStore();
+      await store.put('liquidity', 'swap:r2', { id: 'r2', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: payoutTo, depositAddress: treasury, status: 'awaiting-deposit' });
+      let t = 1_000_000; const clock = () => t;
+      let sends = 0;
+      const rpc = mkRpc(() => { sends += 1; if (sends <= MAX_PAYOUT_ATTEMPTS) throw new Error('transaction rejected — invalid, double-spend, or already in the mempool'); return '0x' + 'cd'.repeat(32); });
+      for (let i = 0; i < MAX_PAYOUT_ATTEMPTS - 1; i++) {
+        try { await settleSwap('r2', '0x' + 'b2'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON, now: clock }); } catch (_) {}
+        t += 5 * 60 * 1000;
+      }
+      const mid = store.get('liquidity', 'swap:r2');
+      ok('retryable failures keep the swap retryable until the budget is spent', mid.status === 'awaiting-deposit' && mid.payoutAttempts === MAX_PAYOUT_ATTEMPTS - 1);
+      t += 5 * 60 * 1000; // > 30 min since the first failure
+      const out = await settleSwap('r2', '0x' + 'b2'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON, now: clock, onRefund: async () => {} });
+      ok('budget exhausted → deposit refunded', out.status === 'refunded' && out.payoutAttempts === MAX_PAYOUT_ATTEMPTS && out.refundTxid === '0x' + 'cd'.repeat(32));
+    }
+    // (c) refund itself failing stays pending and retries on the next /settle
+    {
+      const store = fakeStore();
+      await store.put('liquidity', 'swap:r3', { id: 'r3', from: 'ETH', to: 'ETH', amountIn: 0.5, amountOut: 0.4, userAddress: payoutTo, depositAddress: treasury, status: 'awaiting-deposit' });
+      let sends = 0;
+      const rpc = mkRpc(() => { sends += 1; if (sends <= 2) throw new Error(sends === 1 ? 'insufficient funds for gas * price + value' : 'insufficient funds for gas * price + value'); return '0x' + '99'.repeat(32); });
+      const first = await settleSwap('r3', '0x' + 'c3'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON });
+      ok('refund that cannot be made yet is refund-pending with the reason', first.status === 'refund-pending' && /refund pending/.test(first.reason));
+      const second = await settleSwap('r3', '0x' + 'c3'.repeat(32), { store, rpcFor: () => rpc, seedHex: SEED, env: ON });
+      ok('next /settle completes the pending refund (no new payout attempt)', second.status === 'refunded' && sends === 3);
+    }
   }
 
   console.log(`liquidity_relayer.test.js: ${pass} checks passed`);

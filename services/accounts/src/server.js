@@ -493,6 +493,8 @@ export function createApp(overrides = {}) {
         chainBase: cfg.chainApiBase,
         env: process.env,
         now,
+        // A truly failed payout refunds the deposit; the accounting is reverted.
+        onRefund: (r) => liquidity.revertSwap(r),
       });
       return json(res, 200, rec);
     } catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'settle failed') }); }

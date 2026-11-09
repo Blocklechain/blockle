@@ -331,7 +331,10 @@ class LiquidityService extends ChangeNotifier {
       final r = await settle('${rec['id']}', '${rec['depositTxid']}');
       final st = '${r['status'] ?? ''}';
       final err = '${r['error'] ?? ''}';
+      // 'refunded' is final too (deposit returned, swap reverted); a
+      // 'refund-pending' swap keeps retrying — the server finishes the refund.
       final terminal = st == 'settled' ||
+          st == 'refunded' ||
           st == 'unsupported' ||
           st == 'failed' ||
           err.contains('unknown swap');

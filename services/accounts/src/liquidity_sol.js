@@ -134,7 +134,8 @@ export async function verifySolDeposit({ rpc, signature, expectTo, minSol }) {
   const pre = BigInt(tx.meta.preBalances?.[idx] ?? 0), post = BigInt(tx.meta.postBalances?.[idx] ?? 0);
   const credited = post - pre;
   if (credited < lamports(minSol)) return { ok: false, reason: 'deposit to treasury too low' };
-  return { ok: true, creditedLamports: credited.toString() };
+  // Where a refund would go: the fee payer (first account) of the deposit tx.
+  return { ok: true, creditedLamports: credited.toString(), refundAddress: allKeys[0] || null };
 }
 
 /// Pay out `amountSol` SOL from the treasury to `toAddress`. GATED. Builds a
