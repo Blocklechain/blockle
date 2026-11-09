@@ -1928,14 +1928,25 @@ class _ReviewSheet extends StatelessWidget {
             ),
           ]),
         );
+    final media = MediaQuery.of(context);
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(
-            20, 18, 20, 18 + MediaQuery.of(context).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+        padding: EdgeInsets.fromLTRB(20, 18, 20, 18 + media.viewInsets.bottom),
+        // The review text is long; on a small phone it overflows a plain
+        // Column. Cap the sheet at 88% of the screen and SCROLL the body while
+        // the Cancel / Arm live buttons stay pinned and always reachable.
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: media.size.height * 0.88),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
             Row(children: [
               Icon(Icons.verified_user, color: t.warn, size: 20),
               const SizedBox(width: 8),
@@ -1993,6 +2004,10 @@ class _ReviewSheet extends StatelessWidget {
             if (channel != null)
               Text('Gated through your "$channel" agent channel.',
                   style: TextStyle(fontSize: 11.5, color: t.inkFaint)),
+                    ],
+                  ),
+                ),
+              ),
             const SizedBox(height: 14),
             Row(children: [
               Expanded(
@@ -2013,7 +2028,8 @@ class _ReviewSheet extends StatelessWidget {
                 ),
               ),
             ]),
-          ],
+            ],
+          ),
         ),
       ),
     );

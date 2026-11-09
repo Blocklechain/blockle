@@ -410,7 +410,8 @@ class DetailView extends StatelessWidget {
         return AlertDialog(
           backgroundColor: t.surface,
           title: const Text('Resume live bot'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          content: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(
                 'Re-arm "${bot.name}" live within its ${moneyUsd(bot.allocationUsd, sign: false)} '
                 'allocation cap. Orders will run auto within the cap.',
@@ -431,7 +432,7 @@ class DetailView extends StatelessWidget {
                   'keys ever leave this device.',
                   style: TextStyle(color: t.warn, fontSize: 11.5, height: 1.4)),
             ),
-          ]),
+          ])),
           actions: [
             TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Cancel')),
             FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('Arm live')),
