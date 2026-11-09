@@ -62,14 +62,50 @@ void main() {
     expect(msg.sublist(138, 142), [2, 0, 0, 0]);
   });
 
+  test('buildSend signs an SPL TransferChecked (creating the recipient ATA)', () async {
+    const usdc = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    final srcAcct = c.base58encode(Uint8List.fromList(List<int>.filled(32, 0x55)));
+    final calls = <String>[];
+    final a = sol.SolanaAdapter(rpc: (method, params) async {
+      calls.add(method);
+      if (method == 'getTokenAccountsByOwner') {
+        return {
+          'value': [
+            {'pubkey': srcAcct, 'account': {'data': {'parsed': {'info': {'tokenAmount': {'amount': '5000000'}}}}}}
+          ]
+        };
+      }
+      if (method == 'getAccountInfo') return {'value': null}; // recipient ATA missing
+      if (method == 'getLatestBlockhash') return {'value': {'blockhash': blockhash}};
+      return null;
+    });
+    a.unlock(RootSecret(importedEd25519: seed));
+    final built = await a.buildSend(acct, SendRequest(to: to, amount: '2500000',
+        asset: const AssetRef(chain: 'solana', kind: 'spl', symbol: 'USDC', decimals: 6, address: usdc)));
+    final tx = base64.decode(built.raw);
+    final sig = tx.sublist(1, 65), msg = tx.sublist(65);
+    expect(ed.verify(msg, sig, pub), isTrue);
+    expect(built.txid, c.base58encode(sig));
+    expect(calls, containsAll(['getTokenAccountsByOwner', 'getAccountInfo', 'getLatestBlockhash']));
+    // the message carries the source token account and the mint, and TWO
+    // instructions (create ATA idempotent + TransferChecked)
+    final keysLen = msg[3];
+    final keys = [for (var i = 0; i < keysLen; i++) c.base58encode(msg.sublist(4 + i * 32, 36 + i * 32))];
+    expect(keys, containsAll([from, srcAcct, usdc, 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA']));
+    final afterKeys = 4 + keysLen * 32 + 32;
+    expect(msg[afterKeys], 2); // two instructions
+    expect(built.extra?['createsRecipientAccount'], isTrue);
+    expect(built.extra?['source'], srcAcct);
+  });
+
   test('buildSend refuses bad input', () async {
     final a = adapter();
     expect(() => a.buildSend(acct, SendRequest(to: to, amount: '0')), throwsArgumentError);
     expect(() => a.buildSend(acct, SendRequest(to: 'not-an-address!', amount: '1')), throwsArgumentError);
     expect(() => a.buildSend(acct, SendRequest(to: from, amount: '1')), throwsArgumentError);
     expect(
-        () => a.buildSend(acct, SendRequest(to: to, amount: '1', asset: const AssetRef(chain: 'solana', kind: 'spl', symbol: 'USDC', decimals: 6, address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'))),
-        throwsUnsupportedError);
+        () => a.buildSend(acct, SendRequest(to: to, amount: '1', asset: const AssetRef(chain: 'solana', kind: 'spl', symbol: 'X', decimals: 6))),
+        throwsArgumentError); // token asset without a mint
     final locked = sol.SolanaAdapter(rpc: (m, p) async => null);
     expect(() => locked.buildSend(acct, SendRequest(to: to, amount: '1')), throwsStateError);
   });

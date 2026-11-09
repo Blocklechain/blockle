@@ -726,11 +726,27 @@ class SolanaAdapter implements ChainAdapter {
   @override
   Future<BuiltTx> buildSend(DerivedAccount account, SendRequest req) async {
     final asset = req.asset;
-    if (asset != null && asset.kind != 'native') {
-      throw UnsupportedError(
-          'solana buildSend: SPL token sends use signTx over a serialized transaction');
-    }
     if (_rootSeed == null && _impEd == null) throw StateError('locked');
+    if (asset != null && asset.kind != 'native') {
+      // SPL token send: TransferChecked from our token account to the
+      // recipient's ATA (created idempotently if missing), via the same builder
+      // the NFT path uses, then signed here.
+      final mint = asset.address;
+      if (mint == null || mint.isEmpty) {
+        throw ArgumentError('solana buildSend: token asset has no mint address');
+      }
+      final built = await buildNftTransfer(account,
+          mint: mint, to: req.to.trim(), amount: req.amount.trim(), decimals: asset.decimals);
+      final signed = await signTx(account, built['raw']);
+      return BuiltTx(
+        chain: 'solana',
+        raw: signed.raw,
+        txid: signed.txid,
+        fee: '5000',
+        summary: req,
+        extra: (built['summary'] as Map?)?.cast<String, dynamic>(),
+      );
+    }
     final lamports = BigInt.tryParse(req.amount.trim());
     if (lamports == null || lamports <= BigInt.zero) {
       throw ArgumentError('solana buildSend: amount must be a positive lamport count');
