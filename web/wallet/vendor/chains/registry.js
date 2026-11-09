@@ -115,7 +115,10 @@
     dogecoin:  { esplora: 'https://doge-esplora.blockle.org' }, // Blockle DOGE Esplora shim (operator-overridable)
     bitcoincash: { esplora: 'https://bch.imaginary.cash/api' }, // BCH Fulcrum/Esplora-style REST (operator-overridable)
     // Solana mainnet JSON-RPC — public default, config-overridable. No key.
-    solana:    { rpcUrl: 'https://solana-rpc.publicnode.com' },
+    // Same-origin Solana RPC relay — public RPCs 403/block the browser directly
+    // (api.mainnet-beta blocks sends, publicnode 403s browser origins). The server
+    // forwards to SOLANA_RPC. See POST /account/api/sol/rpc.
+    solana:    { rpcUrl: 'https://blockle.org/account/api/sol/rpc' },
     // Tron mainnet TronGrid REST — public default, config-overridable. API key optional.
     tron:      { api: 'https://api.trongrid.io' },
     // TON mainnet toncenter v2 jsonRPC — public default, config-overridable. API key optional.

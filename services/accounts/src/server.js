@@ -441,6 +441,27 @@ export function createApp(overrides = {}) {
     try { return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant || 'search')); }
     catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
   });
+  // ---- Solana JSON-RPC proxy (same-origin, fixes browser 403) ---------------
+  // The browser wallets (web + extension) can't hit public Solana RPCs directly:
+  // api.mainnet-beta blocks sendTransaction and solana-rpc.publicnode.com returns
+  // 403 to browser origins. This same-origin relay forwards the JSON-RPC body to
+  // the server-side SOLANA_RPC (publicnode works server-to-server). Native wallets
+  // (Flutter/Qt) can keep calling an RPC directly. No auth (public RPC data only).
+  on('POST', /^\/account\/api\/sol\/rpc$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('solrpc:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 64 * 1024).catch(() => null);
+    if (!b || typeof b.method !== 'string') return json(res, 400, { error: 'bad request' });
+    const SOL = process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com';
+    try {
+      const r = await fetch(SOL, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: b.id ?? 1, method: b.method, params: b.params || [] }),
+      });
+      const jr = await r.json().catch(() => null);
+      return json(res, r.ok ? 200 : 502, jr ?? { error: 'upstream rpc error' });
+    } catch (e) { return json(res, 502, { error: String((e && e.message) || 'rpc failed') }); }
+  });
   // ---- Blockle Liquidity treasury (server-authoritative reserves) ----------
   // Shared reserves, one BLOCK price across every currency, fed by the 0.05% bot
   // fees. State + quote are open reads (CORS-open for the wallets); swap applies
