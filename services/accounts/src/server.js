@@ -53,7 +53,13 @@ export function createApp(overrides = {}) {
   const appleStore = overrides.appleStore || makeAppleStore(cfg, overrides.appleDeps);
   const backtester = overrides.backtester || makeBacktester(overrides.backtestDeps);
   const moonpay = overrides.moonpay || makeMoonpay(process.env);
-  const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now, chainBase: cfg.chainApiBase });
+  // One RPC factory for the liquidity layer: 'solana' → the Solana sender, an
+  // EVM chainId → the EVM sender. Used for REAL hot-wallet balance reads (and the
+  // same shape the settle route uses).
+  const liqRpcFor = (chainId) => chainId === 'solana'
+    ? solRpcSender(process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com')
+    : rpcSenderFor(chainId);
+  const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now, chainBase: cfg.chainApiBase, rpcFor: liqRpcFor });
   const prices = overrides.prices || makePrices({});
   // Ephemeral server-side bot-delegation registry (Stage 1: lifecycle only, no
   // key material). In-memory → a restart fail-closes every delegation.
@@ -522,6 +528,9 @@ export function createApp(overrides = {}) {
   on('POST', /^\/account\/api\/liquidity\/quote$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
     const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    // Refresh the REAL hot-wallet balances (30s cache) so the quote is capped by
+    // what the wallets actually hold, not just the accounting reserves.
+    try { await liquidity.refreshOnchain(); } catch (_) {/* fall back to accounting */}
     return json(res, 200, liquidity.quote(b.from, b.to, b.amountIn, b.coinUsd));
   });
   on('POST', /^\/account\/api\/liquidity\/swap$/, async (req, res) => {
@@ -529,6 +538,7 @@ export function createApp(overrides = {}) {
     if (!loginIpRl.allow('liqswap:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 8 * 1024).catch(() => ({}));
     try {
+      try { await liquidity.refreshOnchain(); } catch (_) {/* fall back to accounting */}
       const r = await liquidity.swap({ from: b.from, to: b.to, amountIn: b.amountIn, coinUsd: b.coinUsd, userAddress: b.userAddress });
       return json(res, r.ok ? 200 : 400, r);
     } catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'swap failed') }); }

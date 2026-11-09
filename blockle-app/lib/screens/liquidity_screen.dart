@@ -521,7 +521,11 @@ class _SwapCardState extends State<_SwapCard> {
                           const Spacer(),
                       ]),
                       subtitle: Text(
-                        has ? '${_fmtAmt(units)} $c in pool' : 'No liquidity yet — bot fees fund it',
+                        has
+                            ? (svc.onchainBalanceOf(c) != null
+                                ? '${_fmtAmt(units)} $c ledger · ${_fmtAmt(svc.onchainBalanceOf(c)!)} on-chain'
+                                : '${_fmtAmt(units)} $c in pool')
+                            : 'No liquidity yet — bot fees fund it',
                         style: TextStyle(fontSize: 11.5, color: has ? Bk.muted : Bk.faint),
                       ),
                       trailing: Text(has ? _fmtUsd(liqUsd) : '—',
@@ -1062,8 +1066,19 @@ class _PoolList extends StatelessWidget {
                   Text('BLOCK / ${e.key}',
                       style: const TextStyle(fontWeight: FontWeight.w700, color: Bk.text)),
                   const SizedBox(height: 2),
-                  Text('${_fmtAmt(e.value)} ${e.key} in reserve',
-                      style: TextStyle(fontSize: 11.5, color: Bk.muted)),
+                  Builder(builder: (_) {
+                    // Ledger reserve vs the hot wallet's REAL on-chain balance.
+                    // A shortfall (real < ledger) is flagged — swaps are capped
+                    // by the real balance, so this is what's actually payable.
+                    final real = svc.onchainBalanceOf(e.key);
+                    final short = real != null && real < e.value;
+                    return Text(
+                      real != null
+                          ? '${_fmtAmt(e.value)} ledger · ${_fmtAmt(real)} on-chain${short ? ' — fund to unlock' : ''}'
+                          : '${_fmtAmt(e.value)} ${e.key} in reserve',
+                      style: TextStyle(fontSize: 11.5, color: short ? Bk.bad : Bk.muted),
+                    );
+                  }),
                 ]),
               ),
               Column(crossAxisAlignment: CrossAxisAlignment.end, children: [

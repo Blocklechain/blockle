@@ -17,6 +17,7 @@
 import crypto from 'node:crypto';
 import { evmAddressFromPrivate } from './evmsign.js';
 import { ensureTreasuryWallet, blockAddressBalance } from './liquidity_block.js';
+import { COIN_CHAIN, COIN_TOKEN, COIN_DECIMALS } from './liquidity_relayer.js';
 
 const BLOCK_SEED_SUPPLY = 50000;
 const BLOCK_SEED_PRICE_USD = 0.001;
@@ -37,7 +38,7 @@ const STABLE = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'PYUSD', 'TUSD']);
 const EVM_COINS = new Set(['USDC', 'USDT', 'DAI', 'ETH', 'BNB', 'MATIC', 'AVAX']);
 const SOL_COINS = new Set(['SOL']);
 
-export function makeLiquidity({ store, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch }) {
+export function makeLiquidity({ store, env = process.env, now = () => Date.now(), chainBase, fetchFn = globalThis.fetch, rpcFor = null }) {
   const COLL = 'liquidity';
   const KEY = 'treasury';
   const seedHex = env.LIQUIDITY_TREASURY_SEED || '';
@@ -46,7 +47,9 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   // vendor/solana.js is CommonJS — load it once (async) and cache for the Solana
   // custodial address. Until it resolves, only the EVM address is reported.
   let _sol = null;
-  if (seedHex) import('./vendor/solana.js').then((m) => { _sol = m.default || m; }).catch(() => {});
+  const _solP = seedHex
+    ? import('./vendor/solana.js').then((m) => { _sol = m.default || m; }).catch(() => {})
+    : null;
   // Provision the treasury BLOCK (post-quantum) wallet once the gate is live, so
   // its deposit address exists before anyone swaps. Best-effort.
   if (seedHex && mainnet) ensureTreasuryWallet(store, seedHex).catch(() => {});
@@ -113,6 +116,69 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return { address: addr, block };
   }
 
+  // ---- REAL on-chain balances for EVERY hot wallet (cached) -----------------
+  // The accounting reserves say what the ledger THINKS each hot wallet holds; a
+  // payout can only spend what the wallet REALLY holds. This reads every wallet's
+  // actual balance (BLOCK explorer, Solana getBalance, EVM native + ERC-20
+  // balanceOf) and quotes are capped by it. Each coin keeps a PAYOUT FLOOR back
+  // (chain fee / Solana rent-exempt minimum) so a payout can never strand the
+  // wallet. null = unreadable (quote falls back to the accounting reserve).
+  const PAYOUT_FLOOR = { BLOCK: 0.002, SOL: 0.001, ETH: 0.0003, BNB: 0.0005, MATIC: 0.02, AVAX: 0.005, USDC: 0, USDT: 0, DAI: 0 };
+  let _oc = { at: 0, data: null }; // { balances: {COIN: n|null}, addresses }
+  async function _readEvmCoin(coin, evmAddr) {
+    if (!rpcFor) return null;
+    try {
+      const rpc = rpcFor(COIN_CHAIN[coin]);
+      if (!rpc) return null;
+      const dec = COIN_DECIMALS[coin] ?? 18;
+      if (COIN_TOKEN[coin]) {
+        const data = '0x70a08231' + '0'.repeat(24) + evmAddr.slice(2).toLowerCase();
+        const hex = await rpc('eth_call', [{ to: COIN_TOKEN[coin], data }, 'latest']);
+        return Number(BigInt(hex || '0x0')) / 10 ** dec;
+      }
+      const hex = await rpc('eth_getBalance', [evmAddr, 'latest']);
+      return Number(BigInt(hex || '0x0')) / 10 ** dec;
+    } catch (_) { return null; }
+  }
+  async function refreshOnchain(force = false) {
+    if (!force && _oc.data && now() - _oc.at < 30000) return _oc.data;
+    if (_solP) { try { await _solP; } catch (_) {} } // Solana address derives from the async vendor module
+    const addrs = custodialAddresses();
+    const balances = {};
+    const jobs = [];
+    // BLOCK (post-quantum explorer read)
+    jobs.push((async () => {
+      balances.BLOCK = addrs.block ? await blockAddressBalance(addrs.block, chainApi, fetchFn).catch(() => null) : null;
+    })());
+    // SOL
+    jobs.push((async () => {
+      if (!addrs.solana || !rpcFor) { balances.SOL = null; return; }
+      try {
+        const r = await rpcFor('solana')('getBalance', [addrs.solana]);
+        const lam = r && typeof r === 'object' ? r.value : r;
+        balances.SOL = Number.isFinite(+lam) ? +lam / 1e9 : null;
+      } catch (_) { balances.SOL = null; }
+    })());
+    // EVM family (native + ERC-20), one shared wallet
+    if (addrs.evm) {
+      for (const coin of Object.keys(COIN_CHAIN)) {
+        jobs.push((async () => { balances[coin] = await _readEvmCoin(coin, addrs.evm); })());
+      }
+    }
+    await Promise.all(jobs);
+    _oc = { at: now(), data: { balances, addresses: addrs } };
+    return _oc.data;
+  }
+  // SPENDABLE on-chain amount of [coin] from the cache: real balance minus its
+  // payout floor. null = unknown (not read yet / unreadable) → caller falls back.
+  function onchainSpendable(coin) {
+    const d = _oc.data;
+    if (!d) return null;
+    const b = d.balances[coin];
+    if (b == null || !Number.isFinite(b)) return null;
+    return Math.max(0, b - (PAYOUT_FLOOR[coin] || 0));
+  }
+
   // ---- public state ---------------------------------------------------------
   function state() {
     const t = load();
@@ -129,13 +195,20 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     };
   }
 
-  // State + the live on-chain treasury BLOCK balance (one explorer read, cached).
+  // State + the live on-chain balances of EVERY hot wallet (cached reads).
   async function stateWithOnchain() {
     const s = state();
     try {
-      const b = await blockOnchainBalance();
-      s.blockOnchainAddress = b.address;
-      s.blockOnchainBalance = b.block; // null if unprovisioned / unreadable
+      const oc = await refreshOnchain();
+      // Per-coin REAL balances + spendable (balance − payout floor). The wallets
+      // show these next to the accounting reserves; quotes are capped by them.
+      s.onchain = {};
+      for (const [coin, bal] of Object.entries(oc.balances)) {
+        s.onchain[coin] = bal == null ? null : { balance: bal, spendable: Math.max(0, bal - (PAYOUT_FLOOR[coin] || 0)) };
+      }
+      // Back-compat fields the wallets already read.
+      s.blockOnchainAddress = oc.addresses.block || null;
+      s.blockOnchainBalance = oc.balances.BLOCK ?? null;
     } catch (_) {/* accounting-only */}
     return s;
   }
@@ -181,9 +254,21 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
       const x = amt;
       const usdOut = F * (x + CURVE_STEEPNESS * x * (d0 - x / 2));
       const out = usdOut / cu;
-      const have = +t.reserves[coin] || 0;
+      // Payable = the LOWER of the accounting reserve and the REAL on-chain
+      // spendable balance of the hot wallet (gate on + balance known). The
+      // ledger must never promise coins the wallet doesn't actually hold.
+      const reserve = +t.reserves[coin] || 0;
+      const spend = mainnet ? onchainSpendable(coin) : null;
+      const have = spend == null ? reserve : Math.min(reserve, spend);
       if (!(out > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
-      if (out > have) return { ok: false, reason: have <= 0 ? `no liquidity for ${coin}` : `only ${have} ${coin} available`, blockPriceUsd: bp };
+      if (out > have) {
+        const why = have <= 0
+          ? `no liquidity for ${coin}`
+          : (spend != null && spend < reserve)
+            ? `only ${have} ${coin} actually in the hot wallet — fund it to unlock the full reserve`
+            : `only ${have} ${coin} available`;
+        return { ok: false, reason: why, blockPriceUsd: bp, onchainAvailable: spend };
+      }
       return { ok: true, amountIn: amt, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp, execPriceUsd: usdOut / x };
     }
     // BUY coin → BLOCK (price rises as BLOCK leaves the treasury).
@@ -192,7 +277,18 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const B = F * (1 + CURVE_STEEPNESS * d0);
     const x = A <= 0 ? usdIn / B : (-B + Math.sqrt(B * B + 4 * A * usdIn)) / (2 * A);
     if (!(x > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
-    if (x > t.blockTreasury) return { ok: false, reason: 'treasury BLOCK exhausted', blockPriceUsd: bp };
+    // Same cap on the BLOCK side: the payout wallet's REAL post-quantum balance.
+    const blockSpend = mainnet ? onchainSpendable('BLOCK') : null;
+    const blockHave = blockSpend == null ? t.blockTreasury : Math.min(t.blockTreasury, blockSpend);
+    if (x > blockHave) {
+      return {
+        ok: false,
+        reason: (blockSpend != null && blockSpend < t.blockTreasury)
+          ? `only ${blockHave} BLOCK actually in the treasury wallet`
+          : 'treasury BLOCK exhausted',
+        blockPriceUsd: bp, onchainAvailable: blockSpend,
+      };
+    }
     return { ok: true, amountIn: amt, amountOut: x, assetIn: from, assetOut: to, blockPriceUsd: bp, execPriceUsd: usdIn / x };
   }
 
@@ -248,5 +344,5 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return { ok: true };
   }
 
-  return { state, stateWithOnchain, blockOnchainBalance, quote, swap, accrueFee, revertSwap, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
+  return { state, stateWithOnchain, blockOnchainBalance, refreshOnchain, onchainSpendable, quote, swap, accrueFee, revertSwap, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
 }

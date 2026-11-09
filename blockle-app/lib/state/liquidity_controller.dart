@@ -49,6 +49,12 @@ class LiquidityService extends ChangeNotifier {
   double? blockOnchainBalance;
   String? blockOnchainAddress;
 
+  /// REAL on-chain balance + spendable (balance − payout floor) per hot-wallet
+  /// coin, from the server's `onchain` map. The server caps quotes by these —
+  /// the ledger can never promise coins the wallet doesn't actually hold.
+  Map<String, double> onchainBalance = const {};
+  Map<String, double> onchainSpendable = const {};
+
   LiquidityPool _pool = LiquidityPool();
   LiquidityPool get pool => _pool;
 
@@ -100,6 +106,21 @@ class LiquidityService extends ChangeNotifier {
           .toList();
       blockOnchainBalance = (j['blockOnchainBalance'] as num?)?.toDouble();
       blockOnchainAddress = j['blockOnchainAddress'] as String?;
+      final oc = (j['onchain'] as Map?)?.cast<String, dynamic>();
+      if (oc != null) {
+        final bal = <String, double>{};
+        final spend = <String, double>{};
+        oc.forEach((coin, v) {
+          if (v is Map) {
+            final b = (v['balance'] as num?)?.toDouble();
+            final s = (v['spendable'] as num?)?.toDouble();
+            if (b != null) bal[coin.toUpperCase()] = b;
+            if (s != null) spend[coin.toUpperCase()] = s;
+          }
+        });
+        onchainBalance = bal;
+        onchainSpendable = spend;
+      }
       serverBacked = true;
       notifyListeners();
     } catch (_) {/* keep the local preview */}
@@ -342,8 +363,22 @@ class LiquidityService extends ChangeNotifier {
     }
   }
 
-  double availableLiquidityUsd(String coin) =>
-      _pool.availableLiquidityUsd(coin, priceOf(coin));
+  /// USD liquidity actually AVAILABLE for [coin]: the accounting reserve capped
+  /// by the hot wallet's REAL on-chain spendable balance (when the server
+  /// reports one + settlement is live). What the ledger says means nothing if
+  /// the wallet doesn't hold the coins.
+  double availableLiquidityUsd(String coin) {
+    final acct = _pool.availableLiquidityUsd(coin, priceOf(coin));
+    if (!onchainSettlement) return acct;
+    final spend = onchainSpendable[coin.toUpperCase()];
+    if (spend == null) return acct;
+    final px = priceOf(coin);
+    final real = spend * (px > 0 ? px : 1.0);
+    return acct < real ? acct : real;
+  }
+
+  /// REAL on-chain balance of [coin]'s hot wallet (null = not reported).
+  double? onchainBalanceOf(String coin) => onchainBalance[coin.toUpperCase()];
 
   /// Coins that currently have real swap liquidity (a non-dust coin reserve).
   List<String> get liquidCoins => _pool.reserves.entries
