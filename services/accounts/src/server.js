@@ -438,7 +438,16 @@ export function createApp(overrides = {}) {
     res.setHeader('access-control-allow-origin', '*');
     if (!loginIpRl.allow('mpsign:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 8 * 1024).catch(() => ({}));
-    try { return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant || 'search')); }
+    try {
+      // Explicit variant = the old direct path (debug/override). Default = the
+      // ROBUST signer: auto-append allowedIpAddress=<caller's IP> (this account
+      // requires IP-pinned signed URLs — 5_PARTNERS_IP_MISSING otherwise), sign,
+      // and VERIFY against MoonPay's own verify_widget_signature before
+      // returning, falling back across every variant if one is rejected.
+      if (b.variant) return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant));
+      const r = await moonpay.signUrlRobust(String(b.url || ''), { clientIp: clientIp(req) });
+      return json(res, 200, r);
+    }
     catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
   });
   // ---- Solana JSON-RPC proxy (same-origin, fixes browser 403) ---------------

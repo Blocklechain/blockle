@@ -72,6 +72,90 @@ export function makeMoonpay(env = process.env) {
     return { signature, variant, url: u + '&signature=' + encodeURIComponent(signature) };
   }
 
+  // Append allowedIpAddress BEFORE signing (so signature stays the last param).
+  // Some MoonPay accounts REQUIRE IP-pinned signed URLs (5_PARTNERS_IP_MISSING
+  // otherwise); the pin must be the END USER's public IP — the same IP MoonPay
+  // sees when the browser loads the widget.
+  function withAllowedIp(url, ip) {
+    const u = String(url || '');
+    if (!ip || /[?&]allowedIpAddress=/.test(u)) return u;
+    return u + (u.includes('?') ? '&' : '?') + 'allowedIpAddress=' + encodeURIComponent(ip);
+  }
+
+  // Ask MoonPay ITSELF whether a signed URL validates (their public
+  // verify_widget_signature endpoint — the same check the widget runs).
+  // ok:true accepted · ok:false rejected (code/message say why) · ok:null the
+  // verify endpoint was unreachable (treat as unknown, fail open).
+  async function verifySignedUrl(signedUrl, fetchFn = globalThis.fetch) {
+    try {
+      const r = await fetchFn(API_BASE + '/v3/verify_widget_signature', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: signedUrl }),
+      });
+      const j = await r.json().catch(() => ({}));
+      return {
+        ok: r.status === 200 && !!(j && j.success),
+        status: r.status,
+        code: (j && j.moonPayErrorCode) || '',
+        message: (j && j.message) || '',
+      };
+    } catch (e) {
+      return { ok: null, status: 0, code: '', message: String((e && e.message) || e) };
+    }
+  }
+
+  // Remember the last combo MoonPay accepted so later signs try the winner first.
+  let _lastGood = null; // { variant, ipPinned }
+
+  // ROBUST signer: sign candidates (IP-pinned first — some accounts require it)
+  // across every HMAC variant (search = documented default, then noq, full),
+  // VERIFYING each against MoonPay before returning. Returns the FIRST signed URL
+  // MoonPay accepts ({verified:true}); if the verify endpoint is unreachable,
+  // falls back to the documented default (IP-pinned + 'search') unverified; if
+  // every combo is rejected, returns the default plus per-attempt diagnostics so
+  // the failure reason is visible instead of a silent widget 400.
+  async function signUrlRobust(unsignedUrl, { clientIp = '', fetchFn = globalThis.fetch } = {}) {
+    const pinned = withAllowedIp(unsignedUrl, clientIp);
+    const candidates = [];
+    if (pinned !== unsignedUrl) candidates.push({ url: pinned, ipPinned: true });
+    candidates.push({ url: String(unsignedUrl || ''), ipPinned: /[?&]allowedIpAddress=/.test(String(unsignedUrl || '')) });
+    const variants = ['search', 'noq', 'full'];
+    // Order attempts so a previously-accepted combo is tried first.
+    const combos = [];
+    for (const cand of candidates) for (const v of variants) combos.push({ cand, v });
+    if (_lastGood) {
+      combos.sort((a, b) => {
+        const am = a.v === _lastGood.variant && a.cand.ipPinned === _lastGood.ipPinned ? 0 : 1;
+        const bm = b.v === _lastGood.variant && b.cand.ipPinned === _lastGood.ipPinned ? 0 : 1;
+        return am - bm;
+      });
+    }
+    const attempts = [];
+    for (const { cand, v } of combos) {
+      let s;
+      try { s = signUrl(cand.url, v); } catch (e) { throw e; } // bad url / no secret: a real error
+      const check = await verifySignedUrl(s.url, fetchFn);
+      attempts.push({ variant: v, ipPinned: cand.ipPinned, ok: check.ok, status: check.status, code: check.code, message: check.message });
+      // ACCEPT on success — and ALSO on IP_MISMATCH for an IP-pinned URL: that
+      // code means the SIGNATURE validated and only the caller IP differed, which
+      // is expected here (this server calls the verifier, but the URL is pinned
+      // to the END USER's IP — the widget will see a match when the user opens it).
+      const sigOk = check.ok === true || (cand.ipPinned && check.code === '5_PARTNERS_IP_MISMATCH');
+      if (sigOk) {
+        _lastGood = { variant: v, ipPinned: cand.ipPinned };
+        return { ...s, ipPinned: cand.ipPinned, verified: true, verifiedVia: check.ok === true ? 'exact' : 'ip-mismatch-proxy', attempts };
+      }
+      if (check.ok === null) {
+        // Can't reach the verifier — fail open with the documented default.
+        const d = signUrl(candidates[0].url, 'search');
+        return { ...d, ipPinned: candidates[0].ipPinned, verified: false, attempts };
+      }
+    }
+    const d = signUrl(candidates[0].url, 'search');
+    return { ...d, ipPinned: candidates[0].ipPinned, verified: false, attempts };
+  }
+
   // Verify a MoonPay webhook. MoonPay signs with header `Moonpay-Signature-V2`:
   //   t=<unix-seconds>,s=<hex HMAC-SHA256(webhookKey, `${t}.${rawBody}`)>
   // Returns { ok, reason }. Uses a timing-safe compare.
@@ -140,7 +224,7 @@ export function makeMoonpay(env = process.env) {
 
   return {
     enabled: !!pk, live, commercePublicKey: commercePk,
-    publicConfig, signUrl, verifyWebhook, apiRequest,
+    publicConfig, signUrl, signUrlRobust, verifySignedUrl, withAllowedIp, verifyWebhook, apiRequest,
     commerceRequest, commerceCheckout, commerceStatus,
   };
 }
