@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'account_auth_screen.dart';
@@ -231,6 +232,14 @@ class _DripScreenState extends State<DripScreen> {
               const SizedBox(height: 12),
               _banner('Sent ${_fmtBlock(_lastAmount)} BLOCK — tx ${_lastTxid!.substring(0, 12)}… '
                   'It will appear in your wallet once the next block confirms.', Bk.good),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () => openExternal('https://blockle.org/tx/$_lastTxid'),
+                icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                label: const Text('View on explorer'),
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(44), foregroundColor: Bk.accent2),
+              ),
             ],
             if (_error != null) ...[
               const SizedBox(height: 12),
