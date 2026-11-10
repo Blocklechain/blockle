@@ -80,6 +80,37 @@
     } catch (_) { return false; }
   }
 
+  // Web Notification API surface (the PWA's OS banner). Fires ONLY when the user
+  // already granted permission — it never prompts (requestPermission below is the
+  // one lazy prompt, called by the host on first bot start). Returns true if fired.
+  function webEmit(msg) {
+    try {
+      if (typeof Notification === 'undefined' || !Notification) return false;
+      if (Notification.permission !== 'granted') return false;
+      // tag dedupes: a fresh profit ping for the same bot replaces the stale one.
+      new Notification(msg.title || 'Blockle', {
+        body: (msg.message || '') + (msg.subtitle ? '\n' + msg.subtitle : ''),
+        tag: msg.tag || undefined,
+        icon: 'blockle-mark.png',
+      });
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // Lazily ask for OS-notification permission (web Notification API). No-op when
+  // unsupported, already granted, or already denied — it prompts AT MOST once per
+  // browser profile, and never throws into the caller.
+  function requestPermission() {
+    try {
+      if (typeof Notification !== 'undefined' && Notification &&
+          Notification.permission === 'default' &&
+          typeof Notification.requestPermission === 'function') {
+        return Promise.resolve(Notification.requestPermission()).catch(function () {});
+      }
+    } catch (_) {}
+    return Promise.resolve();
+  }
+
   // in-page toast fallback: a transient DOM element, auto-removed. Returns true
   // if a document was present to host it.
   function toastEmit(msg) {
@@ -105,10 +136,12 @@
     } catch (_) { return false; }
   }
 
-  // The real default emitter: chrome.notifications, else in-page toast, else
-  // no-op. Overridable via Notifier({ emit }) so tests capture headlessly.
+  // The real default emitter: chrome.notifications, else the web Notification
+  // API (PWA OS banner), else in-page toast, else no-op. Overridable via
+  // Notifier({ emit }) so tests capture headlessly.
   function defaultEmit(msg) {
     if (chromeEmit(msg)) return true;
+    if (webEmit(msg)) return true;
     if (toastEmit(msg)) return true;
     return false;
   }
@@ -134,7 +167,7 @@
   const AgentNotify = {
     create(opts) { return new Notifier(opts); },
     Notifier, format, fmtUsd, fmtUsdPlain, fmtQty,
-    chromeEmit, toastEmit, defaultEmit,
+    chromeEmit, webEmit, toastEmit, defaultEmit, requestPermission,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = AgentNotify;
   root.AgentNotify = AgentNotify;

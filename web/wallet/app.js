@@ -61,6 +61,8 @@
     send: '<path d="M7 17 17 7"/><path d="M8 7h9v9"/>',
     receive: '<path d="M17 7 7 17"/><path d="M16 17H7V8"/>',
     swap: '<path d="M4 8h13l-3.2-3.2"/><path d="M20 16H7l3.2 3.2"/>',
+    liquidity: '<path d="M12 3.2c3.6 4.3 6.2 7.6 6.2 10.6a6.2 6.2 0 0 1-12.4 0c0-3 2.6-6.3 6.2-10.6z"/><path d="M9.2 13.9a3 3 0 0 0 2 3"/>',
+    tool: '<path d="M14.3 6.2a4.1 4.1 0 0 0-5.6 5L4 15.9 8.1 20l4.7-4.7a4.1 4.1 0 0 0 5-5.6l-2.7 2.7-2.5-2.5z"/>',
     bridge: '<path d="M3 9.5v8"/><path d="M21 9.5v8"/><path d="M3 11.5c4.5 0 4-4.5 9-4.5s4.5 4.5 9 4.5"/><path d="M8 11.5v6"/><path d="M16 11.5v6"/>',
     buy: '<rect x="3" y="6" width="18" height="12" rx="2.2"/><path d="M3 10h18"/><path d="M7 15h3"/>',
     agent: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
@@ -327,6 +329,9 @@
   function boot() {
     registerSW();
     bootMoonpay();
+    // Resume any broadcast-but-unsettled liquidity swaps once per app boot —
+    // the server /settle endpoint is idempotent, so re-posting is always safe.
+    try { if (window.Liquidity && Liquidity.resumePending) Liquidity.resumePending().catch(function () {}); } catch (_) {}
     // CSP-safe broken-image hiding: strict CSP (no 'unsafe-inline') blocks inline
     // onerror handlers, so hide failed images via a single global capture-phase
     // 'error' listener instead (the 'error' event doesn't bubble → capture:true).
@@ -499,6 +504,7 @@
     { id: 'send', ic: 'send', label: 'Send' },
     { id: 'receive', ic: 'receive', label: 'Receive' },
     { id: 'swap', ic: 'swap', label: 'Swap' },
+    { id: 'liquidity', ic: 'liquidity', label: 'Liquidity' },
     { id: 'moon', ic: 'moon', label: 'Moon' },
     { id: 'bridge', ic: 'bridge', label: 'Bridge' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
@@ -596,6 +602,7 @@
     resetAutoLock();
     refreshChains();
     loadTier();
+    updateTestnetBadge();
     // AUTO-IMPORT every held token on every network: on unlock, then every 5 min
     // while unlocked (and on chain switch / assets refresh — see runAutoImport).
     runAutoImport('unlock');
@@ -1023,7 +1030,8 @@
   function onRoute() {
     if (!S.unlocked) return;
     var id = (location.hash || '#portfolio').slice(1);
-    if (!NAV.some(function (n) { return n.id === id; })) id = 'portfolio';
+    // #devtools is a hidden route (reached from Settings while Developer mode is on).
+    if (!NAV.some(function (n) { return n.id === id; }) && id !== 'devtools') id = 'portfolio';
     $$('#sidenav .navlink').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-id') === id); });
     $$('#botnav a').forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-id') === id); });
     var v = $('#view'); v.style.animation = 'none'; void v.offsetWidth; v.style.animation = '';
@@ -1949,6 +1957,601 @@
       });
     }).catch(function () { $('#br-body').innerHTML = '<div class="empty">Bridge unavailable right now.</div>'; });
   };
+
+  /* ---------------- BLOCKLE LIQUIDITY (#liquidity) ----------------
+   * Mirrors blockle-app/lib/screens/liquidity_screen.dart over vendor/liquidity.js:
+   * the fee-funded server treasury (one BLOCK price on the bonding curve) with a
+   * BLOCK ↔ MoonPay-coin swap. When the server's on-chain settlement gate is live
+   * the deposit leg runs through the SAME send machinery as VIEWS.send (security
+   * inspection + the one confirm sheet + adapter buildSend/broadcast) and the
+   * payout settles automatically (poll /settle, pending-resume across reloads).
+   * BLOCK amounts are always shown in BLOCK — never a USD figure on BLOCK itself. */
+  var LIQ = { coin: 'USDC', blockToCoin: true, bal: null, balFor: '', balAsset: null, px: {}, quote: null, qrun: 0 };
+  // Native-coin decimals fallback when no balance row is at hand (mirrors the
+  // Flutter registry lookup — never a hard-coded 18).
+  var LIQ_NATIVE_DEC = { block: 8, ethereum: 18, bnb: 18, polygon: 18, avalanche: 18, solana: 9, bitcoin: 8, litecoin: 8, dogecoin: 8, bitcoincash: 8, xrp: 6, cardano: 6, tron: 6 };
+  function liqUp(s) { return String(s || '').toUpperCase(); }
+  function liqFmtUsd(v) { v = Number(v) || 0; if (v >= 1000) return '$' + v.toFixed(0); if (v >= 1) return '$' + v.toFixed(2); if (v === 0) return '$0'; return '$' + v.toFixed(v < 0.01 ? 6 : 4); }
+  function liqFmtAmt(v) { v = Number(v) || 0; if (v >= 1000) return v.toFixed(2); if (v >= 1) return v.toFixed(4); return v.toFixed(6); }
+  function liqTrim(v) { v = Number(v); if (!(v > 0)) return '0'; return v.toFixed(8).replace(/0+$/, '').replace(/\.$/, ''); }
+  function liqPriceFmt(p) { return '$' + Number(p || 0).toFixed(p < 0.01 ? 6 : 4); }
+  // USD price of a non-BLOCK coin (session-cached; stables fall back to $1).
+  function liqCoinUsd(coin) {
+    coin = liqUp(coin);
+    if (LIQ.px[coin] != null) return Promise.resolve(LIQ.px[coin]);
+    var stable = coin === 'USDC' || coin === 'USDT' || coin === 'DAI';
+    var pf = null; try { pf = Wiring.prices(); } catch (_) {}
+    if (!pf) return Promise.resolve(stable ? 1 : 0);
+    return Promise.resolve(pf.priceOf(coin)).then(function (v) {
+      v = Number(v); if (!(v > 0)) v = stable ? 1 : 0; LIQ.px[coin] = v; return v;
+    }).catch(function () { var v = stable ? 1 : 0; LIQ.px[coin] = v; return v; });
+  }
+  function liqPreloadPrices() {
+    var coins = (window.Liquidity && Liquidity.kMoonPayCoins) || [];
+    return Promise.all(coins.map(liqCoinUsd));
+  }
+  function liqCachedPx(coin) { var v = LIQ.px[liqUp(coin)]; return v != null ? v : 0; }
+  // Whether a coin's leg can settle on-chain today (BLOCK always can when the
+  // gate is live; mirror the Flutter fallback set when the server is silent).
+  function liqCoinSettles(coin) {
+    var c = liqUp(coin);
+    if (c === 'BLOCK') return true;
+    var st = (window.Liquidity && Liquidity.state) || {};
+    var list = (st.settleable || []).map(liqUp);
+    if (list.length) return list.indexOf(c) >= 0;
+    return ['USDC', 'USDT', 'DAI', 'ETH', 'BNB', 'MATIC', 'AVAX', 'SOL'].indexOf(c) >= 0;
+  }
+
+  VIEWS.liquidity = function (v) {
+    if (!window.Liquidity) { v.innerHTML = '<div class="card"><div class="empty">Liquidity module unavailable.</div></div>'; return; }
+    v.innerHTML =
+      '<div class="card" style="background:linear-gradient(135deg,#1B1536,var(--card))">' +
+        '<div class="spread"><span class="dim" style="font-weight:600">BLOCK</span><span class="pill" style="color:var(--violet)">0.05% bot fee → liquidity</span></div>' +
+        '<div class="hero-bal num" id="lq-price">—</div><div class="dim" style="font-size:12px">BLOCK price</div>' +
+        '<div class="statline" style="margin-top:12px">' +
+          '<div class="stat"><div class="n num" id="lq-tvl">—</div><div class="l">total liquidity</div></div>' +
+          '<div class="stat"><div class="n num" id="lq-feesum">—</div><div class="l">fees collected</div></div>' +
+          '<div class="stat"><div class="n num" id="lq-trez">—</div><div class="l" id="lq-trez-l">treasury BLOCK</div></div>' +
+        '</div></div>' +
+      '<div class="card"><div class="sechead"><h2>Swap</h2><span class="dim num" id="lq-dir" style="font-size:13px"></span></div>' +
+        '<div class="row" style="gap:10px"><input id="lq-amt" inputmode="decimal" placeholder="0.0" style="flex:1;font-size:18px;font-weight:700"><button class="btn" id="lq-from-chip" style="min-width:86px"></button></div>' +
+        '<div class="row" style="margin-top:7px;font-size:12px;align-items:center;gap:6px;flex-wrap:wrap"><span class="dim">Balance:</span><b id="lq-bal" class="num">…</b>' +
+          '<span class="row" style="margin-left:auto;gap:6px"><button class="btn sm ghost" id="lq-p25">25%</button><button class="btn sm ghost" id="lq-p50">50%</button><button class="btn sm ghost" id="lq-pmax">MAX</button></span></div>' +
+        '<div class="dim" id="lq-gasnote" style="font-size:11px;min-height:14px"></div>' +
+        '<div style="text-align:center;margin:2px 0"><button class="btn sm ghost" id="lq-flip" title="Flip direction" aria-label="Flip direction">' + ic('swap', 16) + '</button></div>' +
+        '<div class="row" style="gap:10px"><div id="lq-out" class="num" style="flex:1;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:18px;font-weight:700;color:var(--ink3)">0.0</div><button class="btn" id="lq-to-chip" style="min-width:86px"></button></div>' +
+        '<div class="spread" style="margin-top:10px;font-size:12px"><span class="dim" id="lq-liq">—</span><span class="dim num" id="lq-spot">—</span></div>' +
+        '<div id="lq-impact" style="font-size:12px;min-height:16px;margin-top:2px"></div>' +
+        '<div id="lq-err" class="bad" style="font-size:12px;min-height:16px"></div>' +
+        '<button class="btn primary wide" id="lq-go" disabled>Enter an amount</button>' +
+        '<p class="dim" id="lq-note" style="font-size:11px;margin-top:8px;line-height:1.4"></p></div>' +
+      '<div class="card"><div class="sechead"><h2>Hot wallets</h2><button class="btn sm ghost" id="lq-refresh" title="Refresh">' + ic('refresh', 15) + '</button></div>' +
+        '<p class="dim" style="font-size:12px;margin-bottom:8px">Fee-funded reserves supplying BLOCK ↔ coin liquidity.</p>' +
+        '<div id="lq-pools" class="list"><div class="empty">Loading reserves…</div></div></div>';
+
+    function from() { return LIQ.blockToCoin ? 'BLOCK' : LIQ.coin; }
+    function to() { return LIQ.blockToCoin ? LIQ.coin : 'BLOCK'; }
+
+    function paintChrome() {
+      if (!$('#lq-dir')) return;
+      $('#lq-dir').textContent = from() + ' → ' + to();
+      $('#lq-from-chip').textContent = from();
+      $('#lq-to-chip').textContent = to();
+      var st = Liquidity.state;
+      $('#lq-note').textContent = st && String(st.settlement) === 'onchain'
+        ? 'Live — confirm once and the wallet automatically deposits ' + from() + ' and pays out ' + to() + ' on-chain. Nothing moves until you approve the deposit; the payout completes on its own once the deposit confirms.'
+        : 'Preview — swaps run against the shared treasury ledger (seeded + fee-funded accounting). No funds move until on-chain settlement is live.';
+      var gr = Liquidity.gasReserve(from());
+      $('#lq-gasnote').textContent = (LIQ.bal > 0 && !Liquidity.isTokenCoin(from()) && gr > 0)
+        ? 'MAX keeps ~' + liqTrim(gr) + ' ' + from() + ' back for gas' : '';
+    }
+
+    function paintHeader() {
+      var st = Liquidity.state || {};
+      var fees = Number(st.totalFeesUsd) || 0;
+      var treasury = st.blockTreasury != null ? Number(st.blockTreasury) : Liquidity.BLOCK_SEED_SUPPLY;
+      var price = st.blockPriceUsd != null ? Number(st.blockPriceUsd) : Liquidity.spotPriceUsd(fees, treasury);
+      if (!$('#lq-price')) return;
+      $('#lq-price').textContent = liqPriceFmt(price);
+      $('#lq-feesum').textContent = liqFmtUsd(fees);
+      var onchainBal = st.blockOnchainBalance != null ? Number(st.blockOnchainBalance) : null;
+      $('#lq-trez').textContent = liqFmtAmt(onchainBal != null ? onchainBal : treasury);
+      $('#lq-trez-l').textContent = onchainBal != null ? 'treasury BLOCK · on-chain' : 'treasury BLOCK';
+      var tvl = treasury * price;
+      var res = st.reserves || {};
+      Object.keys(res).forEach(function (c) { tvl += (Number(res[c]) || 0) * liqCachedPx(c); });
+      $('#lq-tvl').textContent = liqFmtUsd(tvl);
+      $('#lq-spot').textContent = '1 BLOCK = ' + liqPriceFmt(price);
+      liqCoinUsd(LIQ.coin).then(function (px) {
+        var e = $('#lq-liq'); if (e) e.textContent = LIQ.coin + ' liquidity: ' + liqFmtUsd(Liquidity.availableUsd(LIQ.coin, px));
+      });
+    }
+
+    // Reserve rows — ledger units vs the hot wallet's REAL on-chain balance.
+    function poolSub(c, units) {
+      var st = Liquidity.state || {};
+      var oc = (st.onchain || {})[c];
+      var real = oc && oc.balance != null ? Number(oc.balance) : null;
+      if (real != null) {
+        var short = real < units;
+        return { text: liqFmtAmt(units) + ' ledger · ' + liqFmtAmt(real) + ' on-chain' + (short ? ' — fund to unlock' : ''), short: short };
+      }
+      return { text: liqFmtAmt(units) + ' ' + c + ' in reserve', short: false };
+    }
+
+    function paintPools() {
+      var box = $('#lq-pools'); if (!box) return;
+      var st = Liquidity.state || {};
+      var res = st.reserves || {};
+      var entries = Object.keys(res).filter(function (c) { return Number(res[c]) > 1e-9; });
+      entries.sort(function (a, b) { return Liquidity.availableUsd(b, liqCachedPx(b)) - Liquidity.availableUsd(a, liqCachedPx(a)); });
+      if (!entries.length) {
+        box.innerHTML = '<div class="empty">No reserves yet — run a trading bot and its 0.05% fees will seed the first hot wallet here.</div>';
+        return;
+      }
+      box.innerHTML = entries.map(function (c) {
+        var sub = poolSub(c, Number(res[c]) || 0);
+        var feeUsd = Number((st.fees || {})[c]) || 0;
+        return '<div class="li"><span class="ico">' + esc(c.slice(0, 3)) + '</span>' +
+          '<span class="col" style="align-items:flex-start"><b>BLOCK / ' + esc(c) + '</b><span class="dim" style="font-size:11.5px;' + (sub.short ? 'color:var(--bad)' : '') + '">' + esc(sub.text) + '</span></span>' +
+          '<span class="col" style="margin-left:auto;align-items:flex-end"><b class="num">' + liqFmtUsd(Liquidity.availableUsd(c, liqCachedPx(c))) + '</b><span class="dim num" style="font-size:11px">fees ' + liqFmtUsd(feeUsd) + '</span></span></div>';
+      }).join('');
+    }
+
+    function paintBal() {
+      var e = $('#lq-bal'); if (!e) return;
+      e.textContent = LIQ.bal == null ? (Liquidity.chainForCoin(from()) ? '…' : '—') : liqTrim(LIQ.bal) + ' ' + from();
+      paintChrome();
+    }
+
+    // Wallet balance of the input asset via the SAME holdings read the
+    // portfolio uses (token contract + decimals come from the matched row).
+    function loadBal() {
+      var asset = from();
+      var chain = Liquidity.chainForCoin(asset);
+      LIQ.bal = null; LIQ.balAsset = null; LIQ.balFor = asset;
+      paintBal();
+      if (!chain || !window.Wiring) { LIQ.bal = null; return; }
+      Wiring.getHoldings(chain).then(function (bals) {
+        if (LIQ.balFor !== asset || !$('#lq-bal')) return;
+        var want = liqUp(asset), match = null;
+        (bals || []).forEach(function (b) {
+          if (!match && liqUp(b.asset && (b.asset.symbol || b.asset.sym)) === want) match = b;
+        });
+        if (!match && !Liquidity.isTokenCoin(asset)) match = (bals || [])[0] || null;
+        if (match) {
+          var dec = (match.asset && match.asset.decimals) || 0;
+          LIQ.bal = match.display != null ? numVal(match.display) : baseToNum(match.confirmed, dec);
+          LIQ.balAsset = match.asset || null;
+        } else LIQ.bal = 0;
+        paintBal();
+      }).catch(function () { if (LIQ.balFor === asset) { LIQ.bal = null; paintBal(); } });
+    }
+
+    function fillPct(p) {
+      var bal = LIQ.bal || 0; if (!(bal > 0)) return;
+      var amt = (p >= 0.999 && !Liquidity.isTokenCoin(from()))
+        ? Math.max(0, Math.min(bal, bal - Liquidity.gasReserve(from())))
+        : bal * p;
+      $('#lq-amt').value = liqTrim(amt);
+      updateQuote();
+    }
+
+    function paintQuote(q) {
+      if (!$('#lq-out')) return;
+      var amt = Number(($('#lq-amt').value || '').trim());
+      var go = $('#lq-go'), impact = $('#lq-impact'), err = $('#lq-err');
+      impact.textContent = ''; err.textContent = '';
+      if (!q) {
+        $('#lq-out').textContent = '0.0'; $('#lq-out').style.color = 'var(--ink3)';
+        go.disabled = true; go.textContent = amt > 0 ? 'Quoting…' : 'Enter an amount';
+        return;
+      }
+      if (!q.ok) {
+        $('#lq-out').textContent = '0.0'; $('#lq-out').style.color = 'var(--ink3)';
+        err.textContent = q.reason || 'Unavailable';
+        go.disabled = true; go.textContent = 'Swap';
+        return;
+      }
+      $('#lq-out').textContent = liqFmtAmt(q.amountOut); $('#lq-out').style.color = 'var(--ink)';
+      go.disabled = false; go.textContent = 'Swap';
+      // Effective fill price vs spot — shows the curve moving on this trade.
+      var spot = Number(q.blockPriceUsd) || 0;
+      var cu = liqCachedPx(LIQ.coin) > 0 ? liqCachedPx(LIQ.coin) : 1;
+      var eff = Number(q.execPriceUsd) || (LIQ.blockToCoin
+        ? (q.amountOut * cu) / q.amountIn
+        : (q.amountIn * cu) / q.amountOut);
+      var pct = spot > 0 ? (eff / spot - 1) * 100 : 0;
+      if (Math.abs(pct) >= 0.01) {
+        var up = pct > 0;
+        impact.style.color = up ? 'var(--good)' : 'var(--ink2)';
+        impact.textContent = (up ? 'Pushes BLOCK price up ' : 'Moves BLOCK price down ') +
+          Math.abs(pct).toFixed(Math.abs(pct) >= 1 ? 1 : 2) + '% · fills at ' + liqPriceFmt(eff) + '/BLOCK';
+      }
+    }
+
+    function updateQuote() {
+      var amt = Number(($('#lq-amt').value || '').trim());
+      LIQ.quote = null;
+      paintChrome();
+      paintQuote(null);
+      if (!(amt > 0)) return;
+      var run = ++LIQ.qrun, f = from(), t = to();
+      liqCoinUsd(LIQ.coin).then(function (px) {
+        // Instant local curve preview, then the authoritative server quote.
+        var lq = Liquidity.localQuote(f, t, amt, px);
+        if (run === LIQ.qrun) { LIQ.quote = lq; paintQuote(lq); }
+        return Liquidity.quote(f, t, amt, px).then(function (q) {
+          if (run === LIQ.qrun && q && typeof q === 'object') { LIQ.quote = q; paintQuote(q); }
+        });
+      });
+    }
+
+    // Coin picker — sorted by available liquidity, depth bars + ledger/on-chain.
+    function pickCoin() {
+      liqPreloadPrices().then(function () {
+        var st = Liquidity.state || {};
+        var coins = (Liquidity.kMoonPayCoins || []).slice();
+        coins.sort(function (a, b) { return Liquidity.availableUsd(b, liqCachedPx(b)) - Liquidity.availableUsd(a, liqCachedPx(a)); });
+        var maxLiq = coins.reduce(function (m, c) { return Math.max(m, Liquidity.availableUsd(c, liqCachedPx(c))); }, 0);
+        var rows = coins.map(function (c, i) {
+          var liq = Liquidity.availableUsd(c, liqCachedPx(c));
+          var has = liq > 0.01;
+          var frac = maxLiq > 0 ? Math.max(0, Math.min(1, liq / maxLiq)) : 0;
+          var units = Number((st.reserves || {})[c]) || 0;
+          var sub = has ? poolSub(c, units).text : 'No liquidity yet — bot fees fund it';
+          var bar = has ? '<span style="display:block;height:4px;border-radius:3px;background:var(--card2);margin-top:5px;width:100%"><span style="display:block;height:4px;border-radius:3px;background:var(--violet);width:' + Math.round(frac * 100) + '%"></span></span>' : '';
+          return '<button class="li" data-i="' + i + '" style="width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);cursor:pointer">' +
+            '<span class="col" style="align-items:flex-start;flex:1;min-width:0"><b>' + esc(c) + '</b>' + bar +
+            '<span class="dim" style="font-size:11.5px;margin-top:3px">' + esc(sub) + '</span></span>' +
+            '<span class="num" style="margin-left:10px;font-weight:700;' + (has ? '' : 'color:var(--ink3)') + '">' + (has ? liqFmtUsd(liq) : '—') + '</span></button>';
+        }).join('');
+        openSheet('<div class="spread"><h2>Swap BLOCK for</h2><button class="btn sm ghost" id="lp-x">' + ic('close', 15) + '</button></div>' +
+          '<p class="dim" style="font-size:12px;margin:4px 0 8px">Available liquidity per asset (fee-funded).</p>' +
+          '<div class="list" style="max-height:60vh;overflow:auto">' + rows + '</div>');
+        $('#lp-x').addEventListener('click', closeSheet);
+        $$('#sheet [data-i]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            LIQ.coin = coins[Number(b.getAttribute('data-i'))] || LIQ.coin;
+            closeSheet();
+            if (!LIQ.blockToCoin) loadBal(); // the coin is the input asset
+            paintHeader(); paintChrome(); updateQuote();
+          });
+        });
+      });
+    }
+
+    function refreshAll(force) {
+      Liquidity.loadState(force).then(function () {
+        return liqPreloadPrices();
+      }).then(function () { paintHeader(); paintPools(); paintChrome(); });
+    }
+
+    // --- wiring (CSP-safe: addEventListener only) ---
+    $('#lq-amt').addEventListener('input', updateQuote);
+    $('#lq-flip').addEventListener('click', function () { LIQ.blockToCoin = !LIQ.blockToCoin; loadBal(); paintChrome(); updateQuote(); });
+    $('#lq-p25').addEventListener('click', function () { fillPct(0.25); });
+    $('#lq-p50').addEventListener('click', function () { fillPct(0.5); });
+    $('#lq-pmax').addEventListener('click', function () { fillPct(1); });
+    $('#lq-refresh').addEventListener('click', function () { refreshAll(true); });
+    $('#lq-from-chip').addEventListener('click', function () { if (!LIQ.blockToCoin) pickCoin(); });
+    $('#lq-to-chip').addEventListener('click', function () { if (LIQ.blockToCoin) pickCoin(); });
+    $('#lq-go').addEventListener('click', doLiqSwap);
+
+    paintChrome();
+    loadBal();
+    refreshAll(false);
+    // Opportunistic: complete any pending settlements while the user is looking.
+    try { Liquidity.resumePending().then(function () { refreshAll(true); }).catch(function () {}); } catch (_) {}
+
+    function doLiqSwap() {
+      var q = LIQ.quote; if (!q || !q.ok) return;
+      var f = from(), t = to();
+      var amt = Number(($('#lq-amt').value || '').trim()); if (!(amt > 0)) return;
+      var st = Liquidity.state || {};
+      var coin = f === 'BLOCK' ? t : f;
+      if (String(st.settlement) === 'onchain') {
+        if (!liqCoinSettles(f) || !liqCoinSettles(t)) {
+          var lbl = (st.settleable || []).filter(function (c) { return liqUp(c) !== 'BLOCK'; }).join('/') || 'USDC/USDT/DAI/ETH/BNB/MATIC/AVAX/SOL';
+          toast(coin + ' on-chain settlement isn\'t live yet — BLOCK ↔ ' + lbl + ' settle today.', 'bad');
+          return;
+        }
+        doOnchainSwap(f, t, amt);
+        return;
+      }
+      // Gate off → authoritative accounting swap (no funds move).
+      liqCoinUsd(coin).then(function (px) {
+        return Liquidity.startSwap({ from: f, to: t, amountIn: amt, coinUsd: px, userAddress: S.address || '' });
+      }).then(function (r) {
+        if (r && (r.ok === true || r.status === 'recorded')) {
+          $('#lq-amt').value = ''; updateQuote(); refreshAll(true);
+          toast('Swapped ' + liqFmtAmt(r.amountIn != null ? r.amountIn : amt) + ' ' + f + ' → ' + liqFmtAmt(r.amountOut || 0) + ' ' + t, 'good');
+        } else toast((r && (r.reason || r.error)) || 'Swap failed', 'bad');
+      });
+    }
+
+    async function doOnchainSwap(f, t, amt) {
+      var coin = f === 'BLOCK' ? t : f;
+      var payoutChain = Liquidity.chainForCoin(t);
+      if (!payoutChain) { toast('No wallet address for ' + t, 'bad'); return; }
+      var receive = '';
+      try { receive = await chainAddress(payoutChain); } catch (_) {}
+      if (!receive) { toast('Could not derive your ' + t + ' receive address', 'bad'); return; }
+      var px = await liqCoinUsd(coin);
+      var rec = await Liquidity.startSwap({ from: f, to: t, amountIn: amt, coinUsd: px, userAddress: receive });
+      if (!rec || rec.ok === false || !rec.status) { toast(String((rec && (rec.reason || rec.error)) || 'Swap unavailable'), 'bad'); return; }
+      var depositAddress = String(rec.depositAddress || '');
+      if (!depositAddress) { toast('Treasury deposit wallet not ready', 'bad'); return; }
+      var id = String(rec.id);
+      var amountIn = Number(rec.amountIn) || amt;
+      var amountOut = Number(rec.amountOut) || 0;
+      var depositChain = Liquidity.chainForCoin(f);
+      if (!depositChain) { toast('No wallet chain for ' + f, 'bad'); return; }
+      // Exact asset to deposit: the matched balance row (token contract +
+      // decimals) for token coins, else the chain's native coin.
+      var isNative = !Liquidity.isTokenCoin(f);
+      var assetRef = (LIQ.balFor === f) ? LIQ.balAsset : null;
+      if (!isNative && !assetRef) {
+        try {
+          var bals = await Wiring.getHoldings(depositChain);
+          (bals || []).forEach(function (b) { if (!assetRef && liqUp(b.asset && b.asset.symbol) === liqUp(f)) assetRef = b.asset; });
+        } catch (_) {}
+        if (!assetRef) { toast('Could not resolve ' + f + ' to deposit', 'bad'); return; }
+      }
+      var dec = (assetRef && assetRef.decimals != null) ? Number(assetRef.decimals)
+        : (LIQ_NATIVE_DEC[depositChain] != null ? LIQ_NATIVE_DEC[depositChain] : 8);
+      var amountBase = toBaseUnits(liqTrim(amountIn), dec);
+      // THE pre-sign security gate — same read-only inspection + the one
+      // confirm sheet every value-moving send clears (see doSend).
+      var insp = null;
+      try { insp = await Wiring.inspect(depositChain, { to: depositAddress, amount: amountIn, kind: 'send', asset: isNative ? undefined : assetRef }); } catch (_) {}
+      var warnings = (insp && (insp.warnings || insp.alerts)) || [];
+      var danger = !!(insp && (insp.level === 'danger' || insp.severity === 'danger'));
+      var ok = await confirmSheet({
+        title: 'Confirm swap deposit',
+        subtitle: 'Deposit ' + f + ' to Blockle Liquidity — the ' + t + ' payout follows automatically once the deposit confirms.',
+        lines: [['Deposit', liqFmtAmt(amountIn) + ' ' + f], ['To treasury', shortAddr(depositAddress)], ['Receive', liqFmtAmt(amountOut) + ' ' + t], ['Payout to', shortAddr(receive)], ['Network', depositChain.toUpperCase()]],
+        warnings: warnings, danger: danger, okText: 'Sign & deposit',
+      });
+      if (!ok) { toast('Swap cancelled — nothing was sent.'); return; }
+      $('#lq-amt').value = ''; updateQuote();
+      runAutoSettle({ id: id, from: f, to: t, amountIn: amountIn, amountOut: amountOut, depositChain: depositChain, depositAddress: depositAddress, assetRef: isNative ? null : assetRef, amountBase: amountBase })
+        .then(function () { loadBal(); refreshAll(true); });
+    }
+  };
+
+  // Fully-automatic on-chain settlement: build + broadcast the deposit from the
+  // user's wallet (the gate already cleared), then poll /settle until the payout
+  // lands. If it hasn't confirmed within the window it stays pending and
+  // completes automatically later (Liquidity.resumePending at boot).
+  async function runAutoSettle(job) {
+    openSheet('<div class="spread"><h2 id="as-title">Swapping…</h2><button class="btn sm ghost hide" id="as-close">' + ic('close', 15) + '</button></div>' +
+      '<p class="muted num" style="margin:4px 0 12px">' + esc(liqFmtAmt(job.amountIn)) + ' ' + esc(job.from) + ' → ' + esc(liqFmtAmt(job.amountOut)) + ' ' + esc(job.to) + '</p>' +
+      '<div id="as-banner"></div>' +
+      '<div id="as-status" class="muted" style="font-size:13px;min-height:18px">Signing and broadcasting your deposit…</div>' +
+      '<div id="as-txs" class="list" style="margin-top:10px"></div>' +
+      '<button class="btn primary wide hide" id="as-done" style="margin-top:12px">Close</button>');
+    function el(id) { return $('#' + id); }
+    function alive() { return !!el('as-status'); }
+    function setStatus(txt) { var e = el('as-status'); if (e) e.textContent = txt; }
+    function setTitle(txt) { var e = el('as-title'); if (e) e.textContent = txt; }
+    function banner(kind, txt) {
+      var e = el('as-banner'); if (!e) return;
+      var color = kind === 'good' ? 'var(--good)' : kind === 'bad' ? 'var(--bad)' : 'var(--violet)';
+      e.innerHTML = '<div style="border:1px solid ' + color + ';border-radius:10px;padding:12px;margin-bottom:10px;font-weight:600;font-size:13px">' + esc(txt) + '</div>';
+    }
+    function txRow(label, txid) {
+      var e = el('as-txs'); if (!e) return;
+      e.insertAdjacentHTML('beforeend', '<div class="kv"><span class="muted">' + esc(label) + '</span><span class="mono" style="font-size:12px;word-break:break-all">' + esc(txid) + '</span></div>');
+    }
+    function allowClose(primary) {
+      var x = el('as-close'), d = el('as-done');
+      if (x) { x.classList.remove('hide'); x.onclick = closeSheet; }
+      if (d && primary) { d.classList.remove('hide'); d.onclick = closeSheet; }
+    }
+
+    // 1) Build + broadcast the deposit through the SAME send machinery as
+    // VIEWS.send: BLOCK native via wallet-built UTXO transfer, everything else
+    // via the chain adapter's buildSend/broadcast.
+    var txid = '';
+    try {
+      if (job.depositChain === 'block' && !job.assetRef) {
+        var u = await Chain.utxos(Wallet.address);
+        if (!u || !u.utxos || !u.utxos.length) throw new Error('no spendable BLOCK (coinbase matures after 100 blocks)');
+        var built = await Wallet.buildTransfer(u.utxos, job.depositAddress, job.amountBase, Math.round(0.0001 * COIN));
+        var res = await Chain.submit(built.raw);
+        txid = (res && res.txid) || built.txid || '';
+      } else {
+        var req = { to: job.depositAddress, amount: job.amountBase };
+        if (job.assetRef) req.asset = job.assetRef;
+        var b = await Wiring.buildSend(job.depositChain, req);
+        var r0 = await Wiring.broadcast(job.depositChain, b);
+        txid = (r0 && (r0.txid || r0.hash)) || (b && b.txid) || '';
+      }
+      if (!txid) throw new Error('no deposit txid');
+    } catch (e) {
+      setTitle('Swap failed');
+      banner('bad', 'Deposit failed: ' + String((e && e.message) || e));
+      setStatus('Nothing was sent — your funds are untouched. You can try again.');
+      allowClose(true);
+      return;
+    }
+    // Persist immediately so the payout completes even if the tab is closed.
+    try { await Liquidity.addPending({ id: job.id, depositTxid: txid, from: job.from, to: job.to, amountOut: job.amountOut }); } catch (_) {}
+    txRow('Deposit transaction', txid);
+    setStatus('Deposit sent. Waiting for confirmation, then paying out…');
+    allowClose(false); // closeable after broadcast — settlement finishes on its own
+
+    // 2) Poll /settle every 15s, up to 10 tries (idempotent server-side).
+    var maxTries = 10;
+    for (var i = 0; i < maxTries; i++) {
+      var r = await Liquidity.settle(job.id, txid);
+      if (!alive()) return; // sheet closed — resumePending finishes it later
+      var st = String((r && r.status) || '');
+      var err = String((r && r.error) || '');
+      if (st === 'settled') {
+        try { Liquidity.resumePending().catch(function () {}); } catch (_) {} // drops it from pending
+        setTitle('Swap complete');
+        banner('good', liqFmtAmt(job.amountOut) + ' ' + job.to + ' sent to your wallet — paid.');
+        setStatus('');
+        if (r.payoutTxid) txRow('Payout transaction', String(r.payoutTxid));
+        allowClose(true);
+        return;
+      }
+      if (st === 'refunded') {
+        try { Liquidity.resumePending().catch(function () {}); } catch (_) {}
+        setTitle('Swap failed');
+        banner('bad', 'Payout could not be made — your ' + job.from + ' deposit was refunded' + (r.refundTxid ? ' (tx ' + String(r.refundTxid).slice(0, 18) + '…)' : '') + '. Nothing was lost; you can try again.');
+        setStatus('');
+        allowClose(true);
+        return;
+      }
+      if (st === 'unsupported' || st === 'failed' || err.indexOf('unknown swap') !== -1) {
+        setTitle('Swap failed');
+        banner('bad', String((r && (r.reason || r.error)) || 'Settlement failed'));
+        setStatus('Your deposit (' + txid + ') was broadcast and will still be settled automatically once it confirms.');
+        allowClose(true);
+        return;
+      }
+      // still awaiting-deposit / paying / refund-pending → wait and retry.
+      var why = String((r && (r.reason || r.error)) || '').trim();
+      setStatus(st === 'paying'
+        ? 'Deposit confirmed — paying out your ' + job.to + '… (' + (i + 1) + '/' + maxTries + ')'
+        : st === 'refund-pending'
+          ? 'Payout failed — refunding your ' + job.from + ' deposit… (' + (i + 1) + '/' + maxTries + ')' + (why ? ' — ' + why : '')
+          : 'Confirming deposit… (' + (i + 1) + '/' + maxTries + ')' + (why ? ' — ' + why : ''));
+      await new Promise(function (res) { setTimeout(res, 15000); });
+      if (!alive()) return;
+    }
+    // Didn't confirm in-window — it stays pending and auto-completes later.
+    setTitle('Deposit sent');
+    banner('info', 'Deposit broadcast. Your ' + job.to + ' will arrive automatically once the deposit confirms — you can close this.');
+    setStatus('');
+    allowClose(true);
+  }
+
+  /* ---------------- DEVELOPER TOOLS (#devtools, hidden route) ----------------
+   * Mirrors the Flutter Developer screen over vendor/devtools.js. Reachable only
+   * from Settings while Developer mode is on; diagnostics only — nothing here
+   * bypasses the security gate. */
+  function updateTestnetBadge() {
+    var b = $('#testnetbadge'); if (!b || !window.DevTools) return;
+    DevTools.enabled().then(function (on) {
+      if (!on) { b.style.display = 'none'; return; }
+      var chains = DevTools.testnetCapableChains();
+      return Promise.all(chains.map(function (c) { return DevTools.isTestnet(c); })).then(function (flags) {
+        b.style.display = flags.some(Boolean) ? '' : 'none';
+      });
+    }).catch(function () {});
+  }
+
+  VIEWS.devtools = function (v) {
+    if (!window.DevTools) { v.innerHTML = '<div class="card"><div class="empty">Developer tools unavailable.</div></div>'; return; }
+    v.innerHTML = '<div class="card"><div class="empty">Loading developer tools…</div></div>';
+    DevTools.enabled().then(function (on) {
+      if (!$('#view')) return;
+      if (!on) {
+        v.innerHTML = '<div class="card"><div class="sechead"><h2>Developer tools</h2></div><p class="muted">Developer mode is off. Enable it under Settings to use these tools.</p><a class="btn" href="#settings">Open Settings</a></div>';
+        return;
+      }
+      renderDevtools(v);
+    });
+  };
+
+  function renderDevtools(v) {
+    var tnChains = DevTools.testnetCapableChains();
+    var rpcChains = Object.keys((window.ChainRegistry && ChainRegistry.DEFAULT_ENDPOINTS) || {}).filter(function (c) { return c !== 'alchemy'; });
+    if (!rpcChains.length) rpcChains = tnChains.slice();
+    function opts(list, sel) { return list.map(function (c) { return '<option value="' + esc(c) + '"' + (c === sel ? ' selected' : '') + '>' + esc(c.toUpperCase()) + '</option>'; }).join(''); }
+    var preBox = 'overflow:auto;max-height:280px;font-size:11px;background:var(--card2);border:1px solid var(--line);padding:10px;border-radius:10px;margin-top:10px;white-space:pre-wrap;word-break:break-all';
+    v.innerHTML =
+      '<div class="card"><div class="sechead"><h2>' + ic('tool', 18) + ' Developer tools</h2><span class="pill" style="color:var(--bad)">dev mode</span></div>' +
+        '<p class="muted" style="font-size:13px">Diagnostics for development: raw RPC, prices, addresses, testnets and the liquidity treasury. Nothing here bypasses the security gate or moves funds.</p></div>' +
+      '<div class="card"><div class="sechead"><h2>Testnets</h2></div>' +
+        '<p class="dim" style="font-size:12px;margin-bottom:8px">Switch a chain to its public testnet endpoint. Turning Developer mode off returns every chain to mainnet.</p>' +
+        '<div class="list" id="dt-testnets"><div class="empty">Loading…</div></div></div>' +
+      '<div class="card"><div class="sechead"><h2>RPC console</h2></div>' +
+        '<div class="row" style="gap:8px;flex-wrap:wrap"><select id="dt-rpc-chain">' + opts(rpcChains, S.chain) + '</select>' +
+        '<input id="dt-rpc-method" placeholder="eth_blockNumber · GET /blocks/tip/height" style="flex:1;min-width:170px"></div>' +
+        '<div class="field" style="margin-top:8px"><label>Params (JSON array)</label><input id="dt-rpc-params" placeholder="[]"></div>' +
+        '<button class="btn" id="dt-rpc-run">Run</button>' +
+        '<pre id="dt-rpc-out" class="mono" style="' + preBox + '"></pre></div>' +
+      '<div class="card"><div class="sechead"><h2>Price probe</h2></div>' +
+        '<div class="row" style="gap:8px"><input id="dt-px-sym" placeholder="SOL" style="flex:1"><button class="btn" id="dt-px-run">Probe</button></div>' +
+        '<div class="wrap" id="dt-px-presets" style="margin-top:8px;gap:6px"></div>' +
+        '<div id="dt-px-out" class="muted num" style="font-size:13px;min-height:18px;margin-top:8px"></div></div>' +
+      '<div class="card"><div class="sechead"><h2>Address inspector</h2></div>' +
+        '<div class="row" style="gap:8px;flex-wrap:wrap"><select id="dt-ai-chain">' + opts(rpcChains, S.chain) + '</select>' +
+        '<input id="dt-ai-addr" placeholder="address" style="flex:1;min-width:170px"></div>' +
+        '<button class="btn" id="dt-ai-run" style="margin-top:8px">Inspect</button>' +
+        '<pre id="dt-ai-out" class="mono" style="' + preBox + '"></pre></div>' +
+      '<div class="card"><div class="sechead"><h2>Liquidity inspector</h2><button class="btn sm ghost" id="dt-liq-refresh">Force refresh</button></div>' +
+        '<pre id="dt-liq-out" class="mono" style="' + preBox + '">Loading…</pre></div>';
+
+    // Testnet switches
+    function paintTestnets() {
+      var box = $('#dt-testnets'); if (!box) return;
+      Promise.all(tnChains.map(function (c) { return DevTools.isTestnet(c); })).then(function (flags) {
+        if (!$('#dt-testnets')) return;
+        box.innerHTML = tnChains.map(function (c, i) {
+          var on = !!flags[i];
+          return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(c.toUpperCase()) + '</b>' +
+            (on ? '<span style="font-size:11px;font-weight:700;color:var(--bad)">TESTNET</span>' : '<span class="dim" style="font-size:11px">mainnet</span>') + '</span>' +
+            '<button class="btn sm' + (on ? '' : ' ghost') + '" data-tn="' + esc(c) + '" style="margin-left:auto">' + (on ? 'On' : 'Off') + '</button></div>';
+        }).join('');
+        $$('#dt-testnets [data-tn]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var c = btn.getAttribute('data-tn');
+            btn.disabled = true;
+            DevTools.isTestnet(c).then(function (cur) { return DevTools.setTestnet(c, !cur); }).then(function () {
+              updateTestnetBadge(); paintTestnets();
+            });
+          });
+        });
+      });
+    }
+    paintTestnets();
+
+    // RPC console
+    $('#dt-rpc-run').addEventListener('click', function () {
+      var out = $('#dt-rpc-out'); out.textContent = 'Running…';
+      DevTools.rpcProbe($('#dt-rpc-chain').value, $('#dt-rpc-method').value, $('#dt-rpc-params').value)
+        .then(function (txt) { if ($('#dt-rpc-out')) $('#dt-rpc-out').textContent = String(txt); });
+    });
+
+    // Price probe (+ one-tap presets)
+    function runProbe() {
+      var out = $('#dt-px-out'); out.textContent = 'Probing…';
+      DevTools.priceProbe($('#dt-px-sym').value).then(function (r) {
+        var e = $('#dt-px-out'); if (!e) return;
+        if (r.usd != null) e.textContent = r.symbol + ' = ' + fmtUsd(r.usd) + (r.change24h != null ? ' · 24h ' + (Number(r.change24h) >= 0 ? '+' : '') + Number(r.change24h).toFixed(2) + '%' : '');
+        else e.textContent = r.symbol + ': ' + (r.note || 'no price');
+      });
+    }
+    $('#dt-px-run').addEventListener('click', runProbe);
+    var presets = $('#dt-px-presets');
+    presets.innerHTML = (DevTools.PRICE_PRESETS || []).map(function (s) { return '<button class="btn sm ghost" data-px="' + esc(s) + '">' + esc(s) + '</button>'; }).join('');
+    $$('#dt-px-presets [data-px]').forEach(function (b) {
+      b.addEventListener('click', function () { $('#dt-px-sym').value = b.getAttribute('data-px'); runProbe(); });
+    });
+
+    // Address inspector
+    $('#dt-ai-run').addEventListener('click', function () {
+      var out = $('#dt-ai-out'); out.textContent = 'Inspecting…';
+      DevTools.inspectAddress($('#dt-ai-chain').value, $('#dt-ai-addr').value).then(function (r) {
+        if ($('#dt-ai-out')) $('#dt-ai-out').textContent = JSON.stringify(r, null, 2);
+      });
+    });
+
+    // Liquidity inspector
+    function loadLiq() {
+      DevTools.liquidityInfo().then(function (j) {
+        if ($('#dt-liq-out')) $('#dt-liq-out').textContent = JSON.stringify(j, null, 2);
+      });
+    }
+    $('#dt-liq-refresh').addEventListener('click', function () { $('#dt-liq-out').textContent = 'Refreshing…'; loadLiq(); });
+    loadLiq();
+  }
 
   VIEWS.buy = function (v) {
     v.innerHTML = '<div class="card"><div class="sechead"><h2>USDB is paused</h2></div><p class="muted">Blockle USD (USDB) has been bookshelved until the required money transmitter licensing and FinCEN MSB registration are in place. It is not currently available to buy, mint, or redeem.</p></div>';
@@ -3344,6 +3947,8 @@
       settingRow('Theme', 'Light / dark follows your system by default', '<button class="btn sm" id="set-theme">Toggle</button>') +
       settingRow('Lock now', 'Clear keys from memory', '<button class="btn sm" id="set-lock">Lock</button>') +
       settingRow('Force update &amp; reload', 'Fetch the latest wallet code if something looks stale. Does NOT delete your keys.', '<button class="btn sm" id="set-update">Update</button>') +
+      settingRow('Developer mode', 'For development only — unlocks testnets and raw diagnostics. Leaving dev mode returns every chain to mainnet.', '<button class="btn sm" id="set-devmode">…</button>') +
+      '<div class="li" id="row-devtools" style="display:none"><span class="col" style="align-items:flex-start"><b>Developer tools</b><span class="dim" style="font-size:12px">RPC console, price probe, address inspector, testnets, liquidity inspector</span></span><span style="margin-left:auto"><button class="btn sm" id="set-devtools">Open</button></span></div>' +
       '</div></div>' +
       legacyRecoverCard() +
       '<div class="card"><div class="sechead"><h2>Get the native apps</h2></div><p class="muted" style="font-size:13px">The browser extension and desktop/mobile apps add OS-level key isolation — recommended for larger balances.</p><div class="wrap" style="margin-top:8px"><a class="btn" href="/download">Desktop &amp; extension</a><a class="btn ghost" href="/download">Mobile</a></div></div>' +
@@ -3356,6 +3961,28 @@
     $('#set-wc') && ($('#set-wc').onclick = wcSheet);
     $('#set-update') && ($('#set-update').onclick = forceUpdate);
     $('#set-sweep') && ($('#set-sweep').onclick = sweepLegacyFunds);
+    // Developer mode (default OFF). Disabling clears every testnet override
+    // (DevTools.setEnabled(false) → clearAll) so no chain is left on a testnet.
+    (function () {
+      var btn = $('#set-devmode');
+      if (!btn || !window.DevTools) { if (btn) btn.disabled = true; return; }
+      function paint(on) {
+        if (!$('#set-devmode')) return;
+        $('#set-devmode').textContent = on ? 'On' : 'Off';
+        $('#set-devmode').classList.toggle('primary', !!on);
+        var r = $('#row-devtools'); if (r) r.style.display = on ? '' : 'none';
+      }
+      DevTools.enabled().then(paint);
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        DevTools.enabled().then(function (on) { return DevTools.setEnabled(!on); }).then(function (now) {
+          btn.disabled = false;
+          paint(now); updateTestnetBadge();
+          toast(now ? 'Developer mode on' : 'Developer mode off — all chains back on mainnet', now ? undefined : 'good');
+        }).catch(function () { btn.disabled = false; });
+      });
+      $('#set-devtools') && $('#set-devtools').addEventListener('click', function () { location.hash = '#devtools'; });
+    })();
   };
   function settingRow(title, sub, action) { return '<div class="li"><span class="col" style="align-items:flex-start"><b>' + esc(title) + '</b><span class="dim" style="font-size:12px">' + sub + '</span></span><span style="margin-left:auto">' + action + '</span></div>'; }
   // Shown only when this wallet was migrated to the BLOCK-derived multichain seed

@@ -61,6 +61,11 @@
       this.liveBotLimit = (deps.liveBotLimit != null) ? deps.liveBotLimit : -1;
       this.onEvent = typeof deps.onEvent === 'function' ? deps.onEvent : null;
       this.pnl = deps.pnl || null;              // post-commit realized-profit tracker (LIVE)
+      // OS-notification surface (notify.js) for the bot_profit ping — optional:
+      // a host without it still runs, it just never pops (mirrors Flutter's
+      // `notifier == null` no-op).
+      this.Notify = deps.Notify || root.AgentNotify ||
+        (typeof require === 'function' ? (() => { try { return require('./notify.js'); } catch (_) { return null; } })() : null);
       this.store = deps.store || new this.Bots.BotStore({ store: deps.persist, wallet: deps.wallet, channel: deps.channel });
       this.discovery = deps.discovery || this.ctx.discovery || null;
       this.Strategies = deps.Strategies || null; // optional injection (tests); else lazy-required
@@ -183,6 +188,7 @@
       await this._audit({ type: 'bot_armed', bot: id, mode: 'live', allocationUsd: alloc, network: bot.network });
       this.emit({ type: 'bot_armed', bot: id, mode: 'live', allocationUsd: alloc });
       await this.store.persist();
+      this._requestNotifyPermission(); // lazy, at-most-once OS-notification prompt
       this._restartScheduler(); // arming a bot starts/refreshes the background ticker
       return bot;
     }
@@ -200,6 +206,7 @@
       bot.mode = 'paper'; bot.enabled = true;
       await this._audit({ type: 'bot_armed', bot: id, mode: 'paper', allocationUsd: bot.allocationUsd || 0 });
       await this.store.persist();
+      this._requestNotifyPermission(); // lazy, at-most-once OS-notification prompt
       this._restartScheduler(); // enabling a bot starts/refreshes the background ticker
       return bot;
     }
@@ -400,6 +407,9 @@
         bot.state.lastError = { at: now, message: String(e.message || e) };
         report = { bot: bot.id, error: e.message };
       }
+      // Pop a profit notification on any realized-gain since the last one (paper or
+      // live, any profit currency). This is the user-visible "you made money" ping.
+      try { this._maybeNotifyProfit(bot); } catch (_) {}
       bot.state.lastReport = { at: now, events: (report && report.events ? report.events.length : 0), error: report && report.error ? String(report.error) : null };
       await this.store.persist();
       this.emit({ type: 'bot_tick', bot: bot.id, at: now, report });
@@ -727,6 +737,7 @@
           // depletes its budget identically. No-op when unbounded (alloc 0).
           if (enforceBudget) bot.state.committedUc = (bot.state.committedUc || 0n) + usdSizeUc + feeUc;
           await this._audit({ type: 'bot_paper_fill', bot: bot.id, side: 'buy', kind: order.kind, pair: m.base + '/' + m.quote, qty: qty.toString(), priceUc: execPriceUc.toString(), costUc: costUc.toString() });
+          this._emitTradeFee(bot, m.quote, B.ucToUsd(usdSizeUc), m.quoteUc != null ? B.ucToUsd(m.quoteUc) : null); // 0.05% -> liquidity
           return { side: 'buy', qty, priceUc: execPriceUc, costUc, paper: true };
         }
 
@@ -743,6 +754,7 @@
         if (!r || r.rejected || !r.result) { await this._audit({ type: 'bot_order_rejected', bot: bot.id, reason: r && r.reason }); return null; }
         bot.state.committedUc = (bot.state.committedUc || 0n) + usdSizeUc + feeUc; // accrue trade + fee, ONLY on broadcast
         const outQty = r.result && r.result.amountOut != null ? BigInt(String(r.result.amountOut)) : qty;
+        this._emitTradeFee(bot, m.quote, B.ucToUsd(usdSizeUc), m.quoteUc != null ? B.ucToUsd(m.quoteUc) : null); // 0.05% -> liquidity
         return { side: 'buy', qty: outQty, priceUc: execPriceUc, costUc, txid: r.txid, orderId: r.result && r.result.orderId };
       }
 
@@ -792,6 +804,100 @@
       const cur = bot.state.committedUc || 0n;
       const p = proceedsUc || 0n;
       bot.state.committedUc = p >= cur ? 0n : cur - p;
+    }
+
+    // ---- liquidity fee hook (Blockle Liquidity) ------------------------------
+    // Every bot trade — paper OR live — contributes a 0.05% fee to the liquidity
+    // treasury, keyed by the pair's QUOTE coin (USDC/SOL/ETH/…), so the pools
+    // deepen with the exact mix of coins the bots actually trade. Mirrors the
+    // Flutter BotRunner._emitTradeFee: the runner EMITS the `bot_fee` event (pure,
+    // testable) and, when the Liquidity module is loaded, hands the fee straight
+    // to the server treasury (fire-and-forget; never blocks a tick).
+    _emitTradeFee(bot, quoteCoin, notionalUsd, quoteUsd) {
+      const n = Number(notionalUsd || 0);
+      const coin = String(quoteCoin || '').toUpperCase();
+      if (!(n > 0) || !coin) return;
+      const feeUsd = n * 0.0005; // kAgentFeeBps = 5bps per side
+      this.emit({ type: 'bot_fee', bot: bot.id, coin, notionalUsd: n, feeUsd, mode: bot.mode });
+      let coinUsd = (quoteUsd != null && isFinite(Number(quoteUsd)) && Number(quoteUsd) > 0) ? Number(quoteUsd) : null;
+      if (coinUsd == null && STABLE_USD[coin] != null) coinUsd = STABLE_USD[coin];
+      const L = (typeof Liquidity !== 'undefined' && Liquidity) || root.Liquidity || null;
+      if (L && typeof L.takeFee === 'function') {
+        try { L.takeFee(coin, feeUsd, coinUsd); } catch (_) { /* best-effort — never blocks a tick */ }
+      }
+    }
+
+    // The QUOTE coin of an Intent's pair (from its `strat:BASE/QUOTE:side` tag,
+    // else its swap `from`), which is the coin whose pool the fee deepens.
+    _intentQuote(it) {
+      try {
+        const m = /:([A-Za-z0-9]+)\/([A-Za-z0-9]+):/.exec(String(it.tag || ''));
+        if (m) return m[2].toUpperCase();
+      } catch (_) {}
+      try {
+        const from = String((it.args && it.args.from) || '').toUpperCase();
+        if (from) return from;
+      } catch (_) {}
+      return 'USDC';
+    }
+
+    // The bot's cumulative realized profit (micro-dollars): closed deals
+    // (bot.state.realizedUc) PLUS the realized rungs of any still-open grid deal
+    // (a running grid books profit per sell without ever closing the deal).
+    _currentRealizedUc(bot) {
+      let total = bot.state.realizedUc || 0n;
+      const byPair = bot.state.byPair || {};
+      for (const pair of Object.keys(byPair)) {
+        const ps = byPair[pair];
+        const deal = ps && ps.deal;
+        if (deal && deal.status !== 'closed') total += deal.realizedUc || 0n;
+      }
+      return total;
+    }
+
+    // Pop ONE OS notification per fresh chunk of realized profit (mirrors the
+    // Flutter BotRunner._maybeNotifyProfit). Fires on the POSITIVE delta since
+    // the last notification (>= $0.01); sub-cent gains accumulate silently until
+    // they cross the threshold (the baseline is NOT advanced below it, so no
+    // profit is ever dropped — and no spam: one ping per fresh chunk). Works in
+    // paper AND live, in any profit currency — unlike the PnlHook, which only
+    // pops on a live stablecoin exit.
+    _maybeNotifyProfit(bot) {
+      const B = this.Bots;
+      const N = this.Notify;
+      if (!N || typeof N.defaultEmit !== 'function') return;
+      const cur = this._currentRealizedUc(bot);
+      const last = bot.state._notifiedRealizedUc || 0n;
+      const delta = cur - last;
+      if (delta <= 0n) {
+        // Realized went DOWN (new deal reset, or a loss after the last ping) — re-
+        // baseline so the NEXT gain is measured from here, never a stale high-water.
+        if (cur < last) bot.state._notifiedRealizedUc = cur;
+        return;
+      }
+      const deltaUsd = B.ucToUsd(delta) || 0;
+      if (deltaUsd < 0.01) return; // too small yet; let it accumulate (baseline held)
+      bot.state._notifiedRealizedUc = cur;
+      const totalUsd = B.ucToUsd(cur) || 0;
+      const pc = this._profitCurrency(bot);
+      const tagMode = bot.mode === 'paper' ? ' (paper)' : '';
+      const fmt = typeof N.fmtUsd === 'function' ? N.fmtUsd : (v) => (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(2);
+      this.emit({ type: 'bot_profit', bot: bot.id, name: bot.name, mode: bot.mode, deltaUsd, realizedUsd: totalUsd, currency: pc || undefined });
+      try {
+        N.defaultEmit({
+          title: bot.name + ': ' + fmt(deltaUsd) + ' profit' + tagMode,
+          message: pc ? 'Realized in ' + pc + ' · ' + fmt(totalUsd) + ' total' : fmt(totalUsd) + ' realized in total',
+          subtitle: '',
+          tag: 'botprofit:' + bot.id,
+        });
+      } catch (_) { /* notifications are best-effort — never block a tick */ }
+    }
+
+    // Lazy OS-notification permission (web Notification API): requested once, on
+    // the first bot start — never at page load, never repeatedly.
+    _requestNotifyPermission() {
+      const N = this.Notify;
+      if (N && typeof N.requestPermission === 'function') { try { N.requestPermission(); } catch (_) {} }
     }
 
     // The ONE gate call: temporarily set policy.autoApproveUnderUsd = remaining
@@ -1279,6 +1385,7 @@
           if (r && r.result) {
             bot.state.committedUc = (bot.state.committedUc || 0n) + estUsdUc + feeUc;
             const ev = { tag: it.tag, executed: true };
+            this._emitTradeFee(bot, this._intentQuote(it), it.estUsd, null); // 0.05% fee -> liquidity treasury
             // UNIFORM SETTLEMENT: an executed EXIT leg realizes into the profitCurrency
             // (ONE extra gated swap; skipped for the arb sell whose output already IS it).
             const st = await this._maybeSettleIntent(bot, it, remainingUc);
@@ -1289,6 +1396,7 @@
           if ((it.mainnet || ctxMainnet) && !this.mainnetEnabled) { events.push({ tag: it.tag, skipped: 'mainnet' }); continue; }
           await this._audit({ type: 'bot_paper_intent', bot: bot.id, tag: it.tag, estUsd: it.estUsd });
           const ev = { tag: it.tag, paper: true };
+          if (Number.isFinite(it.estUsd) && it.estUsd > 0) this._emitTradeFee(bot, this._intentQuote(it), it.estUsd, null); // 0.05% fee -> liquidity treasury
           const st = await this._maybeSettleIntent(bot, it, null); // PAPER: records, never broadcasts
           if (st) { ev.settledCurrency = st.currency; ev.realized = { currency: st.currency }; }
           events.push(ev);

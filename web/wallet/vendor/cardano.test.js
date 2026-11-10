@@ -169,7 +169,7 @@ test('registry: Cardano adapter registered, enabled, endpoint, derives', async (
   const reg = REG.createRegistry({});
   assert.ok(reg.has('cardano'));
   assert.ok(reg.enabled().includes('cardano'));
-  assert.strictEqual(reg.endpoints('cardano').koios, 'https://api.koios.rest/api/v1');
+  assert.strictEqual(reg.endpoints('cardano').koios, 'https://blockle.org/account/api/px/koios/api/v1');
   const ent = entropy();
   reg.unlock({ entropy: ent, seed: ent });
   const acct = await reg.get('cardano').deriveAccount({ entropy: ent });

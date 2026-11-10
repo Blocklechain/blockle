@@ -797,6 +797,7 @@
     'priceUc', 'qty', 'costUc', 'proceedsUc', 'avgEntryUc', 'nextTriggerUc', 'peakUc',
     'realizedUc', 'usdSizeUc', 'filledQty', 'sizeUc', 'committedUc', 'maxDrawdownUc',
     'heldQty', 'entryQty', 'entryCostUc', 'remainingQty', 'basisUc', '_costUc', '_levelPriceUc', '_markUc',
+    '_notifiedRealizedUc', '_peakRealizedUc',
   ]);
   function encodeState(o) {
     return JSON.parse(JSON.stringify(o, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)));

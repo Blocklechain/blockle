@@ -68,7 +68,7 @@ ok('bch sigs recover to owner', built.signedInputs.every((si) => h(S.recover(si.
   reg.get('bitcoincash').deriveAccount({ seed }).then((bch) => {
     eq('registry bch addr (cashaddr)', bch.address, 'bitcoincash:qqyx49mu0kkn9ftfj6hje6g2wfer34yfnq5tahq3q6');
     ok('registry enables bitcoincash', reg.enabled().includes('bitcoincash'));
-    eq('registry bch default esplora', reg.endpoints('bitcoincash').esplora, 'https://bch.imaginary.cash/api');
+    eq('registry bch default esplora', reg.endpoints('bitcoincash').esplora, 'https://blockle.org/account/api/px/bch/api');
     console.log('\n' + pass + ' passed, ' + fail + ' failed');
     process.exit(fail ? 1 : 0);
   }).catch((e) => { console.log('FAIL registry: ' + e.message); process.exit(1); });
