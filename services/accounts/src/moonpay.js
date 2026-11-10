@@ -117,14 +117,25 @@ export function makeMoonpay(env = process.env) {
   // the failure reason is visible instead of a silent widget 400.
   async function signUrlRobust(unsignedUrl, { clientIp = '', fetchFn = globalThis.fetch } = {}) {
     const pinned = withAllowedIp(unsignedUrl, clientIp);
+    // FAST PATH: once MoonPay has accepted a combo, sign with it IMMEDIATELY —
+    // zero verification round-trips (the original working behavior: instant
+    // responses, no rate-limit pressure, no slow calls for mobile clients).
+    // A background re-verify keeps the cache honest without delaying anyone.
+    if (_lastGood) {
+      const u = _lastGood.ipPinned ? pinned : String(unsignedUrl || '');
+      const s = signUrl(u, _lastGood.variant);
+      const out = { ...s, ipPinned: _lastGood.ipPinned, verified: true, verifiedVia: 'cached' };
+      verifySignedUrl(s.url, fetchFn).then((chk) => {
+        const sigOk = chk.ok === true || (_lastGood && _lastGood.ipPinned && chk.code === '5_PARTNERS_IP_MISMATCH');
+        if (chk.ok === false && !sigOk) _lastGood = null; // rejected → re-probe next call
+      }).catch(() => {});
+      return out;
+    }
+    // PINNED FIRST — the combo this account verifiably accepts (it requires
+    // allowedIpAddress; the signer still falls back to unpinned if that changes).
     const candidates = [];
-    // UNPINNED FIRST: IP pinning breaks mobile (the device IP MoonPay sees often
-    // differs from the IP that called /sign — carrier NAT / v4-v6 split → the
-    // widget shows "Unverified connection"). If the account doesn't require
-    // allowedIpAddress, the unpinned URL verifies clean and works everywhere;
-    // if it DOES (5_PARTNERS_IP_MISSING), we fall back to the pinned candidate.
-    candidates.push({ url: String(unsignedUrl || ''), ipPinned: /[?&]allowedIpAddress=/.test(String(unsignedUrl || '')) });
     if (pinned !== unsignedUrl) candidates.push({ url: pinned, ipPinned: true });
+    candidates.push({ url: String(unsignedUrl || ''), ipPinned: /[?&]allowedIpAddress=/.test(String(unsignedUrl || '')) });
     const variants = ['search', 'noq', 'full'];
     // Order attempts so a previously-accepted combo is tried first.
     const combos = [];
