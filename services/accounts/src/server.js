@@ -545,10 +545,15 @@ export function createApp(overrides = {}) {
   });
   // Record a bot fee into the treasury. Rate-limited; coinUsd required for non-
   // stable coins so a pool is never seeded at a wrong price.
+  // LIVE FILLS ONLY: a paper fill moves no real money, so crediting its fee
+  // would inflate the ledger with nothing backing it (3.47 phantom USDC taught
+  // us). Clients must mark mode:'live'; posts without it (incl. older app
+  // builds) get an ok-but-uncredited response so they never error.
   on('POST', /^\/account\/api\/liquidity\/fee$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
     if (!loginIpRl.allow('liqfee:' + clientIp(req))) return json(res, 429, { error: 'rate' });
     const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    if (b.mode !== 'live') return json(res, 200, { ok: true, credited: false, reason: 'paper/unmarked fees are not credited' });
     try { return json(res, 200, await liquidity.accrueFee(b.coin, b.feeUsd, b.coinUsd)); }
     catch (e) { return json(res, 400, { ok: false, error: String(e.message || 'fee failed') }); }
   });

@@ -289,10 +289,12 @@
   // ---- bot fee intake --------------------------------------------------------
 
   /// Deposit a 0.05% bot fee into the shared server treasury. Fire-and-forget.
-  function takeFee(coin, feeUsd, coinUsd) {
+  function takeFee(coin, feeUsd, coinUsd, mode) {
     feeUsd = num(feeUsd);
     if (!(feeUsd > 0)) return;
-    postJson('/fee', { coin: up(coin), feeUsd: feeUsd, coinUsd: num(coinUsd) }, 8000)
+    // The server only credits fees marked mode:'live' (paper fills move no real
+    // money and must not inflate the ledger).
+    postJson('/fee', { coin: up(coin), feeUsd: feeUsd, coinUsd: num(coinUsd), mode: mode || 'paper' }, 8000)
       .catch(function () { /* best-effort */ });
   }
 

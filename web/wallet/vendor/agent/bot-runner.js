@@ -807,13 +807,14 @@
     }
 
     // ---- liquidity fee hook (Blockle Liquidity) ------------------------------
-    // Every bot trade — paper OR live — contributes a 0.05% fee to the liquidity
-    // treasury, keyed by the pair's QUOTE coin (USDC/SOL/ETH/…), so the pools
-    // deepen with the exact mix of coins the bots actually trade. Mirrors the
-    // Flutter BotRunner._emitTradeFee: the runner EMITS the `bot_fee` event (pure,
-    // testable) and, when the Liquidity module is loaded, hands the fee straight
-    // to the server treasury (fire-and-forget; never blocks a tick).
+    // LIVE bot trades contribute a 0.05% fee to the liquidity treasury, keyed by
+    // the pair's QUOTE coin. PAPER fills are excluded: they move no real money,
+    // so crediting their fee would inflate the ledger with unbacked reserves
+    // (the server also refuses fee posts not marked mode:'live'). The runner
+    // EMITS the `bot_fee` event (pure, testable) and, when the Liquidity module
+    // is loaded, hands the fee to the server treasury (fire-and-forget).
     _emitTradeFee(bot, quoteCoin, notionalUsd, quoteUsd) {
+      if (bot.mode !== 'live') return; // paper fees are not real money
       const n = Number(notionalUsd || 0);
       const coin = String(quoteCoin || '').toUpperCase();
       if (!(n > 0) || !coin) return;
@@ -823,7 +824,7 @@
       if (coinUsd == null && STABLE_USD[coin] != null) coinUsd = STABLE_USD[coin];
       const L = (typeof Liquidity !== 'undefined' && Liquidity) || root.Liquidity || null;
       if (L && typeof L.takeFee === 'function') {
-        try { L.takeFee(coin, feeUsd, coinUsd); } catch (_) { /* best-effort — never blocks a tick */ }
+        try { L.takeFee(coin, feeUsd, coinUsd, 'live'); } catch (_) { /* best-effort — never blocks a tick */ }
       }
     }
 
