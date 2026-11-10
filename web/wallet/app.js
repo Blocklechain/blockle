@@ -3758,39 +3758,20 @@
       featRow('Price alerts · CSV export · custom RPC', '—', '✓', '✓') +
       '</tbody></table></div></div>' +
       '<div id="pro-plans" class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-top:14px"></div>';
-    fetch(ACCOUNTS + '/plans', { credentials: 'include' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+    // BLOCKLE ALIEN IS FREE: no plans, no checkout — sign up (or sign in) and
+    // everything is included. The purchase/crypto-checkout flows are gone.
+    (function () {
       var box = $('#pro-plans');
-      if (!S.user) { box.innerHTML = '<div class="card"><b>Sign in to upgrade</b><p class="muted" style="font-size:13px">Your Blockle account carries your plan across every wallet.</p><a class="btn primary wide" href="/account/login?next=/wallet%23pro">Sign in / create account</a></div>'; return; }
-      var plans = (j && j.plans) || [];
-      if (!plans.length) { box.innerHTML = '<div class="card"><b>Paid plans are coming soon.</b><p class="muted" style="font-size:13px">Billing isn\'t enabled on this deployment yet. Everything in Free works today.</p></div>'; return; }
-      // M1 — PRO IN CRYPTO: offered only when the live /config advertises commerce.
-      var payCrypto = mpFeatures().commerce && !!window.MoonPay;
-      box.innerHTML = plans.map(function (p) {
-        var feat = p.tier === 'copilot_pro';
-        return '<div class="planbox ' + (feat ? 'feat' : '') + '"><b>' + esc(p.name) + '</b><div class="price">' + esc((p.ccy || '$') === 'USD' ? '$' + (p.price || '') : (p.price || '')) + '<span class="dim" style="font-size:14px;font-weight:500">/mo</span></div>' +
-          '<button class="btn primary wide" data-tier="' + esc(p.tier) + '">' + (S.tier === p.tier ? 'Current plan' : 'Choose ' + esc(p.name)) + '</button>' +
-          ((payCrypto && S.tier !== p.tier) ? '<button class="btn ghost wide" style="margin-top:7px" data-crypto="' + esc(p.tier) + '" data-usd="' + esc(p.price || '') + '">' + ic('buy', 14) + ' Pay with crypto</button>' : '') +
-          '</div>';
-      }).join('');
-      $$('#pro-plans [data-tier]').forEach(function (b) {
-        b.onclick = function () {
-          var tier = b.getAttribute('data-tier'); if (S.tier === tier) return;
-          var hdrs = { 'content-type': 'application/json' };
-          if (S.csrf) hdrs['x-csrf-token'] = S.csrf; // cookie-auth mutations require the CSRF token
-          fetch(ACCOUNTS + '/subscribe', { method: 'POST', headers: hdrs, credentials: 'include', body: JSON.stringify({ tier: tier }) }).then(function (r) { return r.json(); }).then(function (res) {
-            if (res && res.approveUrl) location.href = res.approveUrl;
-            else if (res && res.error === 'csrf') toast('Session expired — reload and sign in again', 'bad');
-            else toast((res && res.error) || 'Could not start checkout', 'bad');
-          }).catch(function () { toast('Checkout unavailable', 'bad'); });
-        };
-      });
-      // M1 — pay for Copilot / Copilot Pro in crypto via MoonPay Commerce. The entitlement flips
-      // ONLY when the server verifies MoonPay's webhook; here we just open the hosted checkout and
-      // poll /me so the UI updates once the grant lands. Never client-trusted.
-      $$('#pro-plans [data-crypto]').forEach(function (b) {
-        b.onclick = function () { payProWithCrypto(b.getAttribute('data-crypto'), Number(b.getAttribute('data-usd') || 0)); };
-      });
-    }).catch(function () { $('#pro-plans').innerHTML = '<div class="card"><span class="muted">Plan info unavailable right now.</span></div>'; });
+      if (!S.user) {
+        box.innerHTML = '<div class="card"><b>Blockle Alien is free — sign up to use it</b>' +
+          '<p class="muted" style="font-size:13px">Every feature is included: unlimited live bots, cloud paper bots, the hosted agent, sponsored strategies — all free with a Blockle account.</p>' +
+          '<a class="btn primary wide" href="/account/register?next=/wallet%23pro">Sign up to use</a>' +
+          '<a class="btn ghost wide" style="margin-top:7px" href="/account/login?next=/wallet%23pro">I already have an account</a></div>';
+      } else {
+        box.innerHTML = '<div class="card"><b>You have everything.</b>' +
+          '<p class="muted" style="font-size:13px">Blockle Alien is free for every account — unlimited live bots and every feature, no plan needed.</p></div>';
+      }
+    })();
   };
   function featRow(label, f, p, cp) { var cell = function (x) { return x === '✓' ? mi('check', 14) : x; }; return '<tr><td>' + esc(label) + '</td><td class="c ' + (f === '—' ? 'dim' : '') + '">' + cell(f) + '</td><td class="c good">' + cell(p) + '</td><td class="c good">' + cell(cp) + '</td></tr>'; }
 

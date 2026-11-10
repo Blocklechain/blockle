@@ -1705,8 +1705,8 @@ fn page_copilot() -> String {
   <h1>Your AI trading desk.</h1>
   <p class="lede">An AI that watches the markets and trades <b>on your command</b> &mdash; from your own wallet, behind one hard safety gate. Keyless, non-custodial, paper-first. The agent proposes; <b>you</b> approve every move.</p>
   <div class="cpcta">
-    <button class="cpbtn primary" data-plan="copilot">Start Blockle Alien &mdash; $19/mo</button>
-    <a class="cpbtn ghost" href="/account/register">Try free (paper)</a>
+    <a class="cpbtn primary" href="/account/register">Sign up to use &mdash; it's free</a>
+    <a class="cpbtn ghost" href="/wallet/">Open the web wallet</a>
   </div>
   <div class="cmd" aria-hidden="true">
     <div class="cmdhead"><span class="d"></span><span class="d"></span><span class="d"></span><span class="lbl">blockle · alien</span></div>
@@ -1720,8 +1720,7 @@ fn page_copilot() -> String {
 <h2 class="cph2">Start free. Go live when you're ready.</h2>
 <div class="tiers">
   <div class="tier"><div class="tname">Free</div><div class="tprice">$0</div><ul><li>1 agent, <b>paper only</b></li><li>Conversational command bar</li><li>Arena (play-money)</li><li>Non-custodial wallet</li></ul><a class="cpbtn ghost full" href="/account/register">Create account</a></div>
-  <div class="tier best"><div class="badge">Most popular</div><div class="tname">Blockle Alien</div><div class="tprice">$19<span>/mo</span></div><ul><li><b>Live trading</b> + autopilot</li><li>Up to 3 agents</li><li>Priority hosted agent (no API key)</li><li>Fee-aware routing</li></ul><button class="cpbtn primary full" data-plan="copilot">Get Blockle Alien</button></div>
-  <div class="tier"><div class="tname">Blockle Alien Pro</div><div class="tprice">$49<span>/mo</span></div><ul><li>Everything in Blockle Alien</li><li><b>Unlimited agents</b></li><li>Bigger model + priority</li><li>Portfolio analytics &amp; early signals</li></ul><button class="cpbtn primary full" data-plan="copilot_pro">Get Blockle Alien Pro</button></div>
+  <div class="tier best"><div class="badge">Included free</div><div class="tname">Blockle Alien</div><div class="tprice">Free<span>&nbsp;for everyone</span></div><ul><li><b>Live trading</b> + autopilot</li><li><b>Unlimited agents</b></li><li>Hosted agent (no API key)</li><li>Fee-aware routing · portfolio analytics</li></ul><a class="cpbtn primary full" href="/account/register">Sign up to use</a></div>
 </div>
 <p class="fine">Billed monthly via PayPal. Cancel anytime. Not financial advice &mdash; Blockle Alien is a tool; you approve every trade and your keys never leave your device.</p>
 </section>
@@ -1733,7 +1732,7 @@ fn page_copilot() -> String {
   <div class="step"><div class="num">2</div><h3>Gate</h3><p>Every action passes one non-bypassable risk gate: spend caps, per-asset limits, allow-lists. Out of bounds? Rejected.</p></div>
   <div class="step"><div class="num">3</div><h3>Approve</h3><p>You confirm on your device. Keys never leave it. A weak or compromised model literally cannot move your funds.</p></div>
 </div>
-<div class="cpcta center"><button class="cpbtn primary" data-plan="copilot">Start Blockle Alien &mdash; $19/mo</button><a class="cpbtn ghost" href="/account/register">Try free first</a></div>
+<div class="cpcta center"><a class="cpbtn primary" href="/account/register">Sign up to use &mdash; it's free</a></div>
 </section>
 
 <style>
@@ -1780,7 +1779,7 @@ fn page_copilot() -> String {
 </script>"##.to_string();
     page_shell_seo(
         "Blockle Alien — your AI trading desk",
-        "Blockle Alien: an AI that trades on your command from your own non-custodial wallet, behind one hard safety gate. Keyless, paper-first. From $19/mo.",
+        "Blockle Alien: an AI that trades on your command from your own non-custodial wallet, behind one hard safety gate. Keyless, paper-first. Free — sign up to use.",
         "/copilot",
         "",
         body,
@@ -2604,7 +2603,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </script>
 <section style="padding:10px 0 0"><div class="wrap">
 <a href="/copilot" style="display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:linear-gradient(135deg,#17324e,var(--surface));border:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));border-radius:14px;padding:16px 20px;text-decoration:none">
-<span style="color:var(--text);font-size:15px"><b>Meet Blockle Alien</b> &mdash; an AI that trades on your command, from your own wallet, behind one hard safety gate. Paper-first, from $19/mo.</span>
+<span style="color:var(--text);font-size:15px"><b>Meet Blockle Alien</b> &mdash; an AI that trades on your command, from your own wallet, behind one hard safety gate. Paper-first, free &mdash; sign up to use.</span>
 <span style="background:var(--accent);color:var(--accent-ink);font-weight:700;padding:9px 16px;border-radius:9px;white-space:nowrap">Explore Blockle Alien &rarr;</span>
 </a>
 </div></section>

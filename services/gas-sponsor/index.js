@@ -97,10 +97,11 @@ async function tierFromCookie(cookie) {
     if (!r.ok) return "free";
     const j = await r.json();
     const sub = j && j.user && j.user.sub;
-    // Honor the server's effective tier, which folds in an active free trial (entitledTier);
-    // fall back to the legacy active+tier for older account-service builds.
-    if (sub && sub.entitledTier) return sub.entitledTier;
-    return sub && sub.active ? (sub.tier || "free") : "free";
+    // Blockle Alien is free for everyone now, so entitledTier is always pro —
+    // gas sponsorship (real BLOCK) stays a PAID-subscription perk, keyed on the
+    // honest `paid` flag. Legacy fallback for older account-service builds.
+    if (sub && sub.paid === true && sub.entitledTier) return sub.entitledTier;
+    return sub && sub.active && sub.tier && sub.tier !== "free" ? sub.tier : "free";
   } catch { return "free"; }
 }
 

@@ -65,7 +65,16 @@ export function makeDrip({ store, env = process.env, chainBase, fetchFn = global
     const t = _load();
     const addr = await address().catch(() => addressSync());
     let balance = null;
-    if (addr) { try { balance = await blockAddressBalance(addr, chainBase, fetchFn); } catch (_) {} }
+    // Balance read is cosmetic — never let a slow explorer hold the endpoint
+    // hostage (5s cap, null on timeout; the pool numbers come from the ledger).
+    if (addr) {
+      try {
+        balance = await Promise.race([
+          blockAddressBalance(addr, chainBase, fetchFn),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+        ]);
+      } catch (_) {}
+    }
     const out = {
       address: addr,
       supply: DRIP_SUPPLY,

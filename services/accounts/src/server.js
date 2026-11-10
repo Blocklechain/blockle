@@ -157,16 +157,17 @@ export function createApp(overrides = {}) {
   // How many LIVE (real-money) bots a tier may run at once. Free gets 1, Copilot 3, Pro
   // unlimited (-1). Paper/Arena bots are never capped. The clients enforce this cap in their
   // armLive gate; the server exposes it so every wallet shows the same number.
-  const LIVE_BOT_LIMITS = { free: 1, copilot: 3, copilot_pro: -1 };
+  // BLOCKLE ALIEN IS FREE: every account is Blockle Alien Pro — unlimited live
+  // bots, nothing sold. `paid` keeps its honest meaning (a real, verified
+  // subscription) so money-adjacent perks (the gas sponsor) can still tell the
+  // difference; nothing gates features on it anymore.
   const entitlement = (sub) => {
     sub = sub || {};
-    const t = now();
-    const trialActive = !!sub.trialEnd && t < sub.trialEnd;
-    let tier = 'free';
-    if (sub.active && sub.tier && sub.tier !== 'free') tier = sub.tier;      // paid wins
-    else if (trialActive) tier = sub.trialTier || cfg.trialTier || 'copilot'; // else trial
-    const liveBotLimit = LIVE_BOT_LIMITS[tier] != null ? LIVE_BOT_LIMITS[tier] : 1;
-    return { entitledTier: tier, liveBotLimit, paid: !!(sub.active && sub.tier && sub.tier !== 'free'), trialActive, trialEnd: sub.trialEnd || null };
+    return {
+      entitledTier: 'copilot_pro', liveBotLimit: -1,
+      paid: !!(sub.active && sub.tier && sub.tier !== 'free'),
+      trialActive: false, trialEnd: sub.trialEnd || null,
+    };
   };
   const subView = (sub) => {
     const e = entitlement(sub);
