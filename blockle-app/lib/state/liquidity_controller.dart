@@ -92,6 +92,7 @@ class LiquidityService extends ChangeNotifier {
       if (r.statusCode != 200) return;
       final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
       if (j['blockTreasury'] == null) return;
+      _serverPriceUsd = (j['blockPriceUsd'] as num?)?.toDouble();
       _pool = LiquidityPool(
         blockTreasury: (j['blockTreasury'] as num).toDouble(),
         reserves: ((j['reserves'] as Map?) ?? const {})
@@ -132,12 +133,20 @@ class LiquidityService extends ChangeNotifier {
     return _coinUsd[c] ?? 0;
   }
 
-  /// THE single BLOCK price in USD — identical across every currency.
-  double get blockPriceUsd => _pool.blockPriceUsd;
+  /// The server's authoritative BLOCK price (its bonding curve is the ONE
+  /// source of truth — curve changes ship server-side, never in the app).
+  double? _serverPriceUsd;
+
+  /// THE single BLOCK price in USD — identical across every currency. Prefers
+  /// the SERVER's curve when server-backed; the local pool is offline-only.
+  double get blockPriceUsd =>
+      (serverBacked && _serverPriceUsd != null && _serverPriceUsd! > 0)
+          ? _serverPriceUsd!
+          : _pool.blockPriceUsd;
 
   /// Total USD value held by the treasury: every coin reserve + the BLOCK it holds.
   double get tvlUsd {
-    var usd = _pool.blockTreasury * _pool.blockPriceUsd;
+    var usd = _pool.blockTreasury * blockPriceUsd;
     _pool.reserves.forEach((coin, units) => usd += units * priceOf(coin));
     return usd;
   }
@@ -182,9 +191,64 @@ class LiquidityService extends ChangeNotifier {
   }
 
   // ---- quote / swap ---------------------------------------------------------
+  // SERVER-BACKED QUOTES: the server's bonding curve is authoritative (it is
+  // what a swap actually settles at), so previews come from /liquidity/quote.
+  // The call is async but the screen's quote() is sync — so quote() returns the
+  // cached server quote when it matches the requested (from,to,amount), and
+  // otherwise kicks off a background fetch that notifyListeners() when it
+  // lands (the screen rebuilds into the server numbers a beat later). The
+  // local pool only answers when signed-off/offline — a preview, never truth.
+  SwapQuote? _srvQuote;
+  String _srvQuoteKey = '';
+  String _srvQuoteInflight = '';
+  int _srvQuoteSeq = 0;
+
   SwapQuote quote(String from, String to, double amountIn) {
     final coin = (from.toUpperCase() == 'BLOCK' ? to : from);
+    if (serverBacked) {
+      final key = '${from.toUpperCase()}>${to.toUpperCase()}>$amountIn';
+      if (_srvQuoteKey == key && _srvQuote != null) return _srvQuote!;
+      if (_srvQuoteInflight != key) {
+        _srvQuoteInflight = key;
+        unawaited(_fetchServerQuote(from, to, amountIn, coin, key));
+      }
+    }
     return _pool.quote(from, to, amountIn, priceOf(coin));
+  }
+
+  Future<void> _fetchServerQuote(
+      String from, String to, double amountIn, String coin, String key) async {
+    final seq = ++_srvQuoteSeq;
+    try {
+      final r = await http
+          .post(Uri.parse('$_serverBase/account/api/liquidity/quote'),
+              headers: const {'content-type': 'application/json'},
+              body: jsonEncode({
+                'from': from,
+                'to': to,
+                'amountIn': amountIn,
+                'coinUsd': priceOf(coin),
+              }))
+          .timeout(const Duration(seconds: 8));
+      if (seq != _srvQuoteSeq || r.statusCode != 200) return; // stale / failed
+      final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+      _srvQuote = SwapQuote(
+        ok: j['ok'] == true,
+        reason: j['reason'] as String?,
+        amountIn: (j['amountIn'] as num?)?.toDouble() ?? amountIn,
+        amountOut: (j['amountOut'] as num?)?.toDouble() ?? 0,
+        assetIn: (j['assetIn'] as String?) ?? from.toUpperCase(),
+        assetOut: (j['assetOut'] as String?) ?? to.toUpperCase(),
+        blockPriceUsd:
+            (j['blockPriceUsd'] as num?)?.toDouble() ?? blockPriceUsd,
+      );
+      _srvQuoteKey = key;
+      _serverPriceUsd =
+          (j['blockPriceUsd'] as num?)?.toDouble() ?? _serverPriceUsd;
+      notifyListeners();
+    } catch (_) {/* local preview stays */} finally {
+      if (_srvQuoteInflight == key) _srvQuoteInflight = '';
+    }
   }
 
   /// Execute a swap. When the server treasury is authoritative the swap runs

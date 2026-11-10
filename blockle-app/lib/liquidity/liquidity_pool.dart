@@ -28,8 +28,13 @@ const double kFeeAppreciationDivisor = kBlockSeedSupply; // $/BLOCK per $ fee / 
 
 /// BONDING CURVE: buys of BLOCK push the price UP, sells push it back DOWN
 /// (symmetric), on top of the fee-funded floor. `d = SEED - treasury` is the net
-/// BLOCK bought out; spot = floor × (1 + C·d). STEEP: a 500-BLOCK buy (1% of the
-/// seed) lifts the price ~10%. MUST match services/accounts/src/liquidity.js.
+/// BLOCK bought out; spot = floor × (1 + C·d).
+///
+/// OFFLINE PREVIEW ONLY. The SERVER's curve (services/accounts/src/liquidity.js)
+/// is authoritative — LiquidityService prefers the server's blockPriceUsd and
+/// quotes via /account/api/liquidity/quote whenever it is reachable, so curve
+/// changes ship server-side without an app update. This local pool answers only
+/// when signed off / offline and is NOT kept in lock-step with the server curve.
 const double kCurveSteepness = 0.0002;
 const double kCurveMinMult = 0.1;
 
