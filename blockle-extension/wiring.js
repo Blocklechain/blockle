@@ -29,10 +29,13 @@
   const DEFAULT_TREASURY = {
     agentTradeFeeBps: 5,
     mainnet: {
-      solana: 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j',
-      ethereum: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
-      base: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
-      erc20: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+      solana: '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd',
+      ethereum: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+      base: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+      erc20: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+      // The liquidity custodial BLOCK hot wallet — native BLOCK agent swaps
+      // route their 0.05% fee here on mainnet (fees fund the swap pools).
+      block: 'block1xq2rkzx0jh842nwqw6u40ly8tnh4j3z8rjr2kame4tsmnvjnp7ks4fs0p5',
       sui: '0xf9dc48a73424ce1165352717f1a64569029a1b90e67fa7839bc53bff26fd14f9',
       btc: 'bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm',
       // mainnet BLOCK treasury: operator-configured via

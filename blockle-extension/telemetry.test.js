@@ -61,7 +61,7 @@ const DIRTY_EVENT = {
   outcome: 'filled',
   metIntent: true,
   // --- hostile fields that the whitelist must ignore / the scrubber must catch:
-  fromAddress: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+  fromAddress: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
   toAddress: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
   seedPhrase: 'abandon abandon abandon ability able about above absent',
   apiKey: 'sk-ant-SHOULD-NEVER-APPEAR',
@@ -69,7 +69,7 @@ const DIRTY_EVENT = {
 };
 
 const SECRET_NEEDLES = [
-  '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+  '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
   'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
   'abandon abandon abandon',
   'sk-ant-SHOULD-NEVER-APPEAR',
@@ -138,7 +138,7 @@ test('a disallowed field name anywhere trips the scrubber (emit refused, no thro
 test('scrubber catches address/secret-shaped VALUES in whitelisted fields', async () => {
   // if a raw address were ever smuggled into e.g. venue, the scrubber rejects it
   assert.throws(
-    () => AgentTelemetry.assertNoSecrets({ venue: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c' }),
+    () => AgentTelemetry.assertNoSecrets({ venue: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B' }),
     /secret\/address-like/,
   );
   assert.throws(
@@ -152,7 +152,7 @@ test('scrubber catches address/secret-shaped VALUES in whitelisted fields', asyn
 test('address-shaped label inputs are redacted, not passed through', async () => {
   const t = AgentTelemetry.create({ enabled: true });
   const p = await t.buildPayload({
-    strategy: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+    strategy: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
     venue: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4',
     pair: 'BLOCK/USDC',
   });

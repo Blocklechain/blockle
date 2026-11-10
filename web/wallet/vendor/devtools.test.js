@@ -224,7 +224,7 @@ function fakeWiring() {
     const bad = await dt.inspectAddress('ethereum', 'not-an-address');
     assert.strictEqual(bad.valid, false);
     assert.strictEqual(bad.balance, undefined);
-    const ok = await dt.inspectAddress('ethereum', '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+    const ok = await dt.inspectAddress('ethereum', '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
     assert.strictEqual(ok.valid, true);
     assert.strictEqual(ok.balance, '42');
   });

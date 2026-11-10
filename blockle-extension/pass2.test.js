@@ -48,9 +48,9 @@ const AgentTelemetry = require('./telemetry.js');
 const TREASURY = {
   agentTradeFeeBps: 5,
   mainnet: {
-    solana: 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j',
-    ethereum: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
-    base: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+    solana: '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd',
+    ethereum: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+    base: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
   },
 };
 

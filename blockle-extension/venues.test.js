@@ -22,9 +22,9 @@ const V = require('./venues.js');
 const TREASURY = {
   agentTradeFeeBps: 5,
   mainnet: {
-    solana: 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j',
-    ethereum: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
-    base: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+    solana: '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd',
+    ethereum: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+    base: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
     btc: 'bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm',
   },
 };
@@ -56,14 +56,14 @@ test('fee: default feeBps is 5 when treasury omits it', () => {
 
 test('treasury: routes EVM + Base fees to 0x2eCC…, Solana to EJiC…', () => {
   const t = V.makeTreasury(TREASURY);
-  assert.equal(t.feeFor('ethereum', '1000000', 'USDC').treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
-  assert.equal(t.feeFor('base', '1000000', 'USDC').treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
-  assert.equal(t.feeFor('solana', '1000000000', 'SOL').treasury, 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j');
+  assert.equal(t.feeFor('ethereum', '1000000', 'USDC').treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
+  assert.equal(t.feeFor('base', '1000000', 'USDC').treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
+  assert.equal(t.feeFor('solana', '1000000000', 'SOL').treasury, '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd');
 });
 
 test('treasury: chain aliases + bitcoin->btc key resolve', () => {
   const t = V.makeTreasury(TREASURY);
-  assert.equal(t.feeFor('eth', '1000000', 'ETH').treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+  assert.equal(t.feeFor('eth', '1000000', 'ETH').treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
   assert.equal(t.feeFor('btc', '100000', 'BTC').treasury, 'bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm');
   assert.equal(t.feeFor('bitcoin', '100000', 'BTC').treasury, 'bc1q0wz2gwq09qreh22qrefmt7k8qwtg5m8yekhvcm');
 });
@@ -73,7 +73,7 @@ test('treasury: fee descriptor carries bps, amount, chain, asset', () => {
   const f = t.feeFor('base', '2000000', 'USDC');
   assert.deepEqual(f, {
     bps: 5, chain: 'base', asset: 'USDC', amount: '1000',
-    treasury: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c',
+    treasury: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
   });
 });
 
@@ -85,7 +85,7 @@ test('treasury: FAIL-CLOSED — no address for a chain throws (never silent)', (
 test('feeTransfer: maps a fee descriptor to a buildSend request', () => {
   const t = V.makeTreasury(TREASURY);
   const tr = V.feeTransfer(t.feeFor('base', '2000000', 'USDC'));
-  assert.deepEqual(tr, { chain: 'base', to: '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c', amount: '1000', asset: 'USDC' });
+  assert.deepEqual(tr, { chain: 'base', to: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B', amount: '1000', asset: 'USDC' });
 });
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ test('blockle: quote uses wired exchange.quote and routes fee by input chain', a
   assert.equal(q.minOut, '4158'); // 4200 * 0.99
   assert.equal(q.chain, 'base');
   assert.equal(q.fee.amount, '500'); // 0.05% of 1,000,000
-  assert.equal(q.fee.treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+  assert.equal(q.fee.treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
 });
 
 test('blockle: buildSwap returns a swap INTENT, never a sent tx', async () => {
@@ -138,7 +138,7 @@ test('blockle: buildSwap returns a swap INTENT, never a sent tx', async () => {
   assert.equal(built.autoSend, false);
   assert.equal(built.intent.kind, 'exchange-swap');
   assert.equal(built.amountOut, '996'); // from ammQuote
-  assert.ok(built.feeTransfer && built.feeTransfer.to === '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+  assert.ok(built.feeTransfer && built.feeTransfer.to === '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
   assert.equal(built.fee.amount, '0'); // 0.05% of 1000 floors to 0
 });
 
@@ -163,7 +163,7 @@ test('evmdex: quote normalizes a 0x-style response and prices the fee on the EVM
   assert.equal(q.minOut, '2475000'); // 1% off
   assert.equal(q.chain, 'base');
   assert.equal(q.fee.amount, '500');
-  assert.equal(q.fee.treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+  assert.equal(q.fee.treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
   assert.match(calls[0].url, /sellAmount=1000000/);
   assert.match(calls[0].url, /sellToken=0xUSDC/);
 });
@@ -175,7 +175,7 @@ test('evmdex: buildSwap returns a router-call tx {to,data,value}, unsigned, with
   assert.equal(built.autoSend, false);
   assert.deepEqual(built.tx, { chain: 'ethereum', to: '0xRouter', data: '0xabcd', value: '0' });
   assert.equal(built.allowanceTarget, '0xSpender');
-  assert.equal(built.fee.treasury, '0x2eCC3cbCDc53471209Ecbc039b7FFB63744A3a3c');
+  assert.equal(built.fee.treasury, '0x03AfB9B250e61b0F573c00625B2b549C14E2247B');
   assert.equal(built.feeTransfer.amount, '500');
 });
 
@@ -195,7 +195,7 @@ test('jupiter: quote normalizes outAmount + slippageBps and routes fee to the So
   assert.equal(q.chain, 'solana');
   assert.equal(q.amountOut, '98000000');
   assert.equal(q.fee.amount, '50000'); // 0.05% of 100,000,000
-  assert.equal(q.fee.treasury, 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j');
+  assert.equal(q.fee.treasury, '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd');
   assert.match(calls[0].url, /slippageBps=100/); // 0.01 -> 100 bps
   assert.match(calls[0].url, /amount=100000000/);
 });
@@ -210,7 +210,7 @@ test('jupiter: buildSwap posts the quote + userPublicKey and returns the seriali
   assert.equal(built.autoSend, false);
   assert.equal(built.tx.swapTransaction, 'BASE64TX==');
   assert.equal(built.tx.chain, 'solana');
-  assert.equal(built.feeTransfer.to, 'EJiCDB6PmvvkGgNBxf84yMAkNKYdk2N1Qc7p4fziWC6j');
+  assert.equal(built.feeTransfer.to, '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd');
   assert.equal(built.feeTransfer.amount, '50000');
   assert.equal(calls[1].method, 'POST'); // quote then swap
 });
