@@ -80,7 +80,15 @@ class LiquidityService extends ChangeNotifier {
     notifyListeners();
     unawaited(refreshPrices());
     unawaited(_syncFromServer().then((_) => resumePendingSettlements()));
+    // KEEP TRYING: one failed fetch at launch (offline, server blip) must not
+    // strand the app in "local preview" until a restart. Retry every 30s until
+    // server-backed, then re-sync every 5 min to stay fresh.
+    _resyncTimer ??= Timer.periodic(const Duration(seconds: 30), (t) {
+      if (!serverBacked || t.tick % 10 == 0) unawaited(_syncFromServer());
+    });
   }
+
+  Timer? _resyncTimer;
 
   /// Adopt the SERVER's authoritative treasury state (shared across all wallets).
   /// Best-effort: on any failure the local preview stays. Never throws.
