@@ -22,23 +22,23 @@ near('floor at zero fees', L.priceFloorUsd(0), 0.001);
 near('floor rises $0.001 per $50 of fees', L.priceFloorUsd(50), 0.002);
 near('spot == floor at full treasury', L.spotPriceUsd(0, 50000), 0.001);
 // A 500-BLOCK buy-out (1% of the seed) lifts spot ~10% at the 0.001 floor.
-near('spot +10% after 500 BLOCK bought out', L.spotPriceUsd(0, 49500), 0.0011);
+near('spot after 500 BLOCK bought out ($100k curve)', L.spotPriceUsd(0, 49500), 0.001 * (1 + 0.07996 * 500));
 near('spot min multiplier clamps', L.spotPriceUsd(0, 50000 + 1e7), 0.001 * 0.1);
 
 // ---- localQuote: buy (coin → BLOCK) ----------------------------------------
 L.state = { blockTreasury: 50000, totalFeesUsd: 0, reserves: {} };
 // usdIn that integrates to exactly 500 BLOCK from d0=0:
-//   usdIn = F·(x + C·x²/2) = 0.001·(500 + 0.0002·125000) = 0.525
-const buy = L.localQuote('USDC', 'BLOCK', 0.525, 1);
+//   usdIn = F·(x + C·x²/2) = 0.001·(500 + 0.07996·125000) = 10.495
+const buy = L.localQuote('USDC', 'BLOCK', 10.495, 1);
 ok('buy ok', buy.ok === true && buy.local === true);
-near('0.525 USDC buys exactly 500 BLOCK along the curve', buy.amountOut, 500, 1e-6);
+near('10.495 USDC buys exactly 500 BLOCK along the curve', buy.amountOut, 500, 1e-6);
 eq('buy assets', buy.assetIn + '>' + buy.assetOut, 'USDC>BLOCK');
 near('buy quotes pre-trade spot', buy.blockPriceUsd, 0.001);
 // Tiny buy fills ~at spot (integral ≈ spot for dx→0).
-near('tiny buy ≈ spot fill', L.localQuote('USDC', 'BLOCK', 0.001, 1).amountOut, 1, 1e-3);
+near('tiny buy ≈ spot fill', L.localQuote('USDC', 'BLOCK', 0.00001, 1).amountOut, 0.01, 1e-4);
 // Spot AFTER that 500-BLOCK buy is ~10% higher.
 L.state = { blockTreasury: 49500, totalFeesUsd: 0, reserves: {} };
-near('post-buy spot is +10%', L.spotPriceUsd(0, 49500) / 0.001, 1.1);
+near('post-buy spot multiplier is 1 + C·500', L.spotPriceUsd(0, 49500) / 0.001, 1 + 0.07996 * 500);
 
 // ---- localQuote: round-trip neutrality -------------------------------------
 // Buy x BLOCK, apply the treasury move, sell the same x back: the sell integral
@@ -60,7 +60,7 @@ ok('both-BLOCK rejected', L.localQuote('BLOCK', 'BLOCK', 1, 1).ok === false);
 ok('neither-BLOCK rejected', L.localQuote('USDC', 'SOL', 1, 1).ok === false);
 const dry = L.localQuote('BLOCK', 'SOL', 100, 150);
 ok('no reserve → "No liquidity"', dry.ok === false && /No liquidity for SOL/.test(dry.reason));
-const thin = L.localQuote('BLOCK', 'USDC', 1000, 1); // wants 1 USDC, has 0.4
+const thin = L.localQuote('BLOCK', 'USDC', 5000, 1); // wants ~$0.5, has 0.4
 ok('thin reserve → "Only … available"', thin.ok === false && /Only 0\.4/.test(thin.reason));
 const huge = L.localQuote('USDC', 'BLOCK', 1e9, 1);
 ok('treasury exhausted on huge buy', huge.ok === false && /exhausted/.test(huge.reason));
@@ -140,7 +140,7 @@ L._fetch = async (url, opts) => {
   await L.loadState(true);
   eq('loadState force refetches', calls.state, 2);
   near('spot from live server state', L.spotPriceUsd(L.state.totalFeesUsd, L.state.blockTreasury),
-    (0.001 + 1.5 / 50000) * (1 + 0.0002 * 10), 1e-12);
+    (0.001 + 1.5 / 50000) * (1 + 0.07996 * 10), 1e-12);
 
   // pending: add (dedup by id), resume drops terminal, keeps confirming.
   await L.addPending({ id: 'a1', depositTxid: 't1', from: 'BLOCK', to: 'SOL', amountOut: 0.5 });

@@ -25,12 +25,29 @@ const FEE_APPRECIATION_DIVISOR = BLOCK_SEED_SUPPLY; // $/BLOCK per $fee, over th
 
 // BONDING CURVE: buys of BLOCK push the price UP, sells push it back DOWN
 // (symmetric), ON TOP OF the fee-funded floor. `d = SEED - treasuryBlock` is the
-// net BLOCK bought out of the treasury; spot price = floor × (1 + C·d). STEEP:
-// C = 0.0002/BLOCK, so a 500-BLOCK buy (1% of the 50k seed) lifts the price ~10%.
+// net BLOCK bought out of the treasury; spot price = floor × (1 + C·d). GOAL:
+// selling the ENTIRE 50k-BLOCK seed raises $100,000 total, starting at the
+// $0.001 floor — ∫₀^50000 F·(1+C·d) dd = $100k at F=$0.001 ⇒
+// C = (100000/0.001 − 50000) / (50000²/2) = 0.07996 (end price ≈ $4.00/BLOCK).
 // Swaps integrate along the curve so a big single order can't fill at the start
 // price. MIN_MULT floors the multiplier so heavy net-selling can't drive it ≤0.
-const CURVE_STEEPNESS = 0.0002;
+const CURVE_STEEPNESS = 0.07996;
 const CURVE_MIN_MULT = 0.1;
+// Depth below which the price multiplier is FLOORED at MIN_MULT (net selling
+// below the seed). The swap integrals are piecewise over this breakpoint so a
+// steep curve can never price BLOCK negative.
+const CURVE_D_MIN = (CURVE_MIN_MULT - 1) / CURVE_STEEPNESS;
+// ∫ max(MIN_MULT, 1 + C·d) dd over [a, b] (the price multiplier's integral;
+// × floor USD = the USD value of the BLOCK moved across that depth range).
+function curveMultIntegral(a, b) {
+  if (!(b > a)) return 0;
+  let total = 0;
+  const lo = Math.min(b, CURVE_D_MIN);
+  if (lo > a) total += CURVE_MIN_MULT * (lo - a); // floored region
+  const a2 = Math.max(a, CURVE_D_MIN);
+  if (b > a2) total += (b - a2) + (CURVE_STEEPNESS / 2) * (b * b - a2 * a2); // linear region
+  return total;
+}
 const STABLE = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'PYUSD', 'TUSD']);
 
 // EVM-settled coins share the treasury's EVM hot wallet; Solana coins share the
@@ -167,7 +184,27 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     }
     await Promise.all(jobs);
     _oc = { at: now(), data: { balances, addresses: addrs } };
+    // RECONCILE — the ledger must ALWAYS match the chain. Accounting drifts the
+    // moment anything settles differently on-chain (a parked payout, gas paid
+    // by the hot wallet, a stranded deposit, a manual sweep), so after every
+    // fresh read the coin reserves SNAP to the real balances. Only coins whose
+    // read SUCCEEDED are touched (null = unknown, never clobbers); BLOCK is the
+    // bonding-curve supply counter, not a coin reserve, so it is not snapped.
+    try { await _reconcile(balances); } catch (_) {/* next refresh retries */}
     return _oc.data;
+  }
+  async function _reconcile(balances) {
+    if (!mainnet) return; // accounting-only preview mode: nothing settles on-chain
+    const t = load();
+    let changed = false;
+    for (const [coin, bal] of Object.entries(balances)) {
+      if (coin === 'BLOCK' || bal == null || !Number.isFinite(bal)) continue;
+      const cur = +t.reserves[coin] || 0;
+      if (Math.abs(cur - bal) <= 1e-12) continue;
+      if (bal > 0) t.reserves[coin] = bal; else delete t.reserves[coin];
+      changed = true;
+    }
+    if (changed) await save(t);
   }
   // SPENDABLE on-chain amount of [coin] from the cache: real balance minus its
   // payout floor. null = unknown (not read yet / unreadable) → caller falls back.
@@ -251,8 +288,10 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const d0 = BLOCK_SEED_SUPPLY - t.blockTreasury;
     if (from === 'BLOCK') {
       // SELL BLOCK → coin (price falls as BLOCK returns to the treasury).
+      // Piecewise integral: the multiplier is floored at MIN_MULT, so deep
+      // selling pays the floored price instead of going negative.
       const x = amt;
-      const usdOut = F * (x + CURVE_STEEPNESS * x * (d0 - x / 2));
+      const usdOut = F * curveMultIntegral(d0 - x, d0);
       const out = usdOut / cu;
       // Payable = the LOWER of the accounting reserve and the REAL on-chain
       // spendable balance of the hot wallet (gate on + balance known). The
@@ -271,11 +310,28 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
       }
       return { ok: true, amountIn: amt, amountOut: out, assetIn: from, assetOut: to, blockPriceUsd: bp, execPriceUsd: usdOut / x };
     }
-    // BUY coin → BLOCK (price rises as BLOCK leaves the treasury).
+    // BUY coin → BLOCK (price rises as BLOCK leaves the treasury). Piecewise:
+    // if the depth starts in the floored region, BLOCK fills at MIN_MULT·F
+    // until the breakpoint, then walks the linear curve (solve the quadratic
+    // for the remaining USD, starting exactly at the breakpoint multiplier).
     const usdIn = amt * cu;
-    const A = F * CURVE_STEEPNESS / 2;
-    const B = F * (1 + CURVE_STEEPNESS * d0);
-    const x = A <= 0 ? usdIn / B : (-B + Math.sqrt(B * B + 4 * A * usdIn)) / (2 * A);
+    let x;
+    if (d0 >= CURVE_D_MIN) {
+      const A = F * CURVE_STEEPNESS / 2;
+      const B = F * (1 + CURVE_STEEPNESS * d0);
+      x = A <= 0 ? usdIn / B : (-B + Math.sqrt(B * B + 4 * A * usdIn)) / (2 * A);
+    } else {
+      const flatUsd = F * CURVE_MIN_MULT * (CURVE_D_MIN - d0); // fill the floored region first
+      if (usdIn <= flatUsd) {
+        x = usdIn / (F * CURVE_MIN_MULT);
+      } else {
+        const rem = usdIn - flatUsd;
+        const A = F * CURVE_STEEPNESS / 2;
+        const B = F * CURVE_MIN_MULT; // multiplier AT the breakpoint is exactly MIN_MULT
+        const xLin = A <= 0 ? rem / B : (-B + Math.sqrt(B * B + 4 * A * rem)) / (2 * A);
+        x = (CURVE_D_MIN - d0) + xLin;
+      }
+    }
     if (!(x > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
     // Same cap on the BLOCK side: the payout wallet's REAL post-quantum balance.
     const blockSpend = mainnet ? onchainSpendable('BLOCK') : null;

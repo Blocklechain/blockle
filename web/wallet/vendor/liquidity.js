@@ -12,7 +12,7 @@
 // (services/accounts/src/liquidity.js):
 //   floor = 0.001 + totalFeesUsd / 50000
 //   spot  = floor × max(0.1, 1 + 0.0002 × (50000 − blockTreasury))
-//   SELL BLOCK→coin:  usdOut = F·(x + C·x·(d0 − x/2))
+//   SELL BLOCK→coin:  usdOut = F·∫ max(MIN_MULT, 1+C·d) dd (piecewise, floored)
 //   BUY  coin→BLOCK:  solve (C/2)x² + (1 + C·d0)x − usdIn/F = 0
 //
 // Fail-soft throughout — the money paths never depend on this module.
@@ -25,8 +25,23 @@
   // Curve constants — MUST match the server + the Flutter pool exactly.
   const BLOCK_SEED_SUPPLY = 50000;
   const BLOCK_SEED_PRICE_USD = 0.001;
-  const CURVE_STEEPNESS = 0.0002; // a 500-BLOCK buy (1% of seed) lifts spot ~10%
+  // $100k CURVE: selling the entire 50k seed raises $100,000 from the $0.001
+  // floor — C = (100000/0.001 − 50000) / (50000²/2) = 0.07996 (end ≈ $4/BLOCK).
+  const CURVE_STEEPNESS = 0.07996;
   const CURVE_MIN_MULT = 0.1;
+  // Depth below which the multiplier is FLOORED (net selling below the seed);
+  // the swap integrals are piecewise over it so price can never go negative.
+  const CURVE_D_MIN = (CURVE_MIN_MULT - 1) / CURVE_STEEPNESS;
+  // ∫ max(MIN_MULT, 1 + C·d) dd over [a, b] — × floor USD = USD moved.
+  function curveMultIntegral(a, b) {
+    if (!(b > a)) return 0;
+    var total = 0;
+    var lo = Math.min(b, CURVE_D_MIN);
+    if (lo > a) total += CURVE_MIN_MULT * (lo - a);
+    var a2 = Math.max(a, CURVE_D_MIN);
+    if (b > a2) total += (b - a2) + (CURVE_STEEPNESS / 2) * (b * b - a2 * a2);
+    return total;
+  }
 
   const STATE_TTL_MS = 30 * 1000;
   const PENDING_KEY = 'liq_pending';
@@ -131,7 +146,7 @@
     if (from === 'BLOCK') {
       // SELL BLOCK → coin: usdOut = ∫ p dd over the BLOCK returned.
       const x = amountIn;
-      const usdOut = F * (x + C * x * (d0 - x / 2));
+      const usdOut = F * curveMultIntegral(d0 - x, d0); // piecewise: floored price on deep sells, never negative
       const out = usdOut / cu;
       const have = num(reserves[to]);
       if (!(out > 0)) return Object.assign({ ok: false, reason: 'Amount too small' }, base);
@@ -147,9 +162,24 @@
     }
     // BUY coin → BLOCK: solve (C/2)x² + (1+C·d0)x − usdIn/F = 0 for x BLOCK out.
     const usdIn = amountIn * cu;
-    const a = F * C / 2;
-    const b = F * (1 + C * d0);
-    const out = a <= 0 ? usdIn / b : (-b + Math.sqrt(b * b + 4 * a * usdIn)) / (2 * a);
+    let out;
+    if (d0 >= CURVE_D_MIN) {
+      const a = F * C / 2;
+      const b = F * (1 + C * d0);
+      out = a <= 0 ? usdIn / b : (-b + Math.sqrt(b * b + 4 * a * usdIn)) / (2 * a);
+    } else {
+      // starts in the floored region: fill at MIN_MULT·F to the breakpoint,
+      // then walk the linear curve with whatever USD remains.
+      const flatUsd = F * CURVE_MIN_MULT * (CURVE_D_MIN - d0);
+      if (usdIn <= flatUsd) out = usdIn / (F * CURVE_MIN_MULT);
+      else {
+        const rem = usdIn - flatUsd;
+        const a = F * C / 2;
+        const b = F * CURVE_MIN_MULT;
+        const xLin = a <= 0 ? rem / b : (-b + Math.sqrt(b * b + 4 * a * rem)) / (2 * a);
+        out = (CURVE_D_MIN - d0) + xLin;
+      }
+    }
     if (!(out > 0)) return Object.assign({ ok: false, reason: 'Amount too small' }, base);
     if (out > treasury) return Object.assign({ ok: false, reason: 'Treasury BLOCK exhausted' }, base);
     return Object.assign({ ok: true, amountIn: amountIn, amountOut: out }, base);
