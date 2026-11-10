@@ -459,10 +459,42 @@ export function createApp(overrides = {}) {
       // and VERIFY against MoonPay's own verify_widget_signature before
       // returning, falling back across every variant if one is rejected.
       if (b.variant) return json(res, 200, moonpay.signUrl(String(b.url || ''), b.variant));
-      const r = await moonpay.signUrlRobust(String(b.url || ''), { clientIp: clientIp(req) });
-      return json(res, 200, r);
+      if (b.direct) {
+        const r = await moonpay.signUrlRobust(String(b.url || ''), { clientIp: clientIp(req) });
+        return json(res, 200, r);
+      }
+      // DEFERRED SIGNING: the IP pinned into the signature must be the IP
+      // MoonPay sees when the WIDGET loads — which can differ from the IP that
+      // hits /sign (v4/v6 happy-eyeballs, CGNAT/464XLAT per-destination egress,
+      // network switch between tap and load → "unverified connection" ~half the
+      // time). So return a redirect URL on OUR domain: the browser/webview that
+      // will load the widget hits /go, we sign with THAT request's IP, and 302
+      // straight to MoonPay — same client, same socket family, moments apart.
+      const unsigned = String(b.url || '');
+      moonpay.signUrl(unsigned); // validate NOW (moonpay host + our pk) so bad input still 400s here
+      const u64 = Buffer.from(unsigned, 'utf8').toString('base64url');
+      return json(res, 200, { url: cfg.publicOrigin + '/account/api/moonpay/go?u=' + u64, deferred: true });
     }
     catch (e) { return json(res, 400, { error: String(e.message || 'sign failed') }); }
+  });
+  // The widget-loading client lands here (from the /sign deferred URL), gets the
+  // URL signed against ITS OWN IP, and is 302'd to MoonPay. Signing still runs
+  // the robust pinned-first ladder with MoonPay-side verification + fallbacks.
+  on('GET', /^\/account\/api\/moonpay\/go$/, async (req, res, url) => {
+    res.setHeader('cache-control', 'no-store');
+    if (!loginIpRl.allow('mpgo:' + clientIp(req))) { res.writeHead(429); return res.end('rate limited'); }
+    let unsigned = '';
+    try { unsigned = Buffer.from(String(url.searchParams.get('u') || ''), 'base64url').toString('utf8'); } catch { /* handled below */ }
+    try {
+      if (!unsigned || unsigned.length > 4096) throw new Error('bad url');
+      const r = await moonpay.signUrlRobust(unsigned, { clientIp: clientIp(req) });
+      res.writeHead(302, { location: r.url, 'cache-control': 'no-store' });
+      return res.end();
+    } catch (e) {
+      res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end('<!doctype html><html><body style="font-family:system-ui,sans-serif;background:#0B0B14;color:#ECECF5;text-align:center;padding-top:30vh"><p>Could not prepare the MoonPay checkout.</p><p style="color:#9AA0B5;font-size:13px">' +
+        String(e && e.message || '').replace(/[<>&]/g, '') + '</p><p><a style="color:#37E0C8" href="javascript:location.reload()">Try again</a></p></body></html>');
+    }
   });
   // ---- Solana JSON-RPC proxy (same-origin, fixes browser 403) ---------------
   // The browser wallets (web + extension) can't hit public Solana RPCs directly:
