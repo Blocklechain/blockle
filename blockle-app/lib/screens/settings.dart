@@ -3,8 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../models/wallet.dart';
 import '../state/app_state.dart';
-import '../services/subscription_service.dart';
-import 'blockle_alien_screen.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'onboarding.dart';
@@ -43,24 +41,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 18),
           _section('Blockle account'),
           _accountTile(context.watch<MultichainController>()),
-          const SizedBox(height: 10),
-          Container(
-            decoration: BoxDecoration(
-              color: Bk.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Bk.border),
-            ),
-            child: ListTile(
-              leading: const Icon(Icons.rocket_launch_outlined, color: Bk.accent),
-              title: const Text('Blockle Alien', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Run more live bots · 7-day free trial',
-                  style: TextStyle(color: Bk.muted, fontSize: 12)),
-              trailing: const Icon(Icons.chevron_right, color: Bk.muted),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const BlockleAlienScreen()),
-              ),
-            ),
-          ),
           const SizedBox(height: 22),
           _section('Wallets'),
           ..._wallets.map((w) => _walletTile(app, w)),
@@ -191,7 +171,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _accountTile(MultichainController mc) {
     final email = mc.agent.copilotEmail;
-    final tier = mc.agent.copilotTier;
     if (email == null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -220,8 +199,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: ListTile(
         leading: const Icon(Icons.verified_user_outlined, color: Bk.accent),
         title: Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text('Plan: ${blockleAlienTierLabel(tier)}',
-            style: const TextStyle(color: Bk.muted, fontSize: 12)),
+        subtitle: const Text('Signed in — every feature is included free',
+            style: TextStyle(color: Bk.muted, fontSize: 12)),
         trailing: TextButton(
           onPressed: () {
             mc.agent.disconnectCopilotAccount();

@@ -20,8 +20,6 @@ import '../../services/moonpay.dart';
 import '../../services/open_url.dart';
 import '../../state/bots_controller.dart';
 import '../../state/multichain_controller.dart';
-import '../account_auth_screen.dart';
-import '../blockle_alien_screen.dart';
 import '../../ui/app_icons.dart';
 import '../accounts_screen.dart' show MoonPayBuyScreen;
 import 'bots_tokens.dart';
@@ -404,23 +402,11 @@ class _CreateViewState extends State<CreateView> {
       _snack('Set an allocation above \$0 — a live bot needs a hard cap.');
       return;
     }
-    if (!widget.controller.liveEntitled) {
-      _snack('Live trading needs Blockle Alien. Start your free trial to arm a live bot — paper trading stays free.');
-      return;
-    }
-    // A live bot runs on Blockle's SERVER so it keeps trading while the app is
-    // closed — that needs a signed-in Blockle account. (There is no in-app agent
-    // channel anymore; signing in is the path.) Required, not optional: without
-    // it there is nothing to execute the bot.
-    final signedIn = await requireAccount(context,
-        reason: 'A live bot runs on Blockle\'s server so it keeps trading while your app '
-            'is closed. Sign in to your Blockle account to arm it — your wallet keys stay '
-            'on this device; only a scoped, capped, revocable sub-account key is delegated.');
-    if (!mounted) return;
-    if (!signedIn) {
-      _snack('Sign in to your Blockle account to run a live bot. Paper trading stays free and needs no sign-in.');
-      return;
-    }
+    // Live trading is included for everyone — no plan gate, no sign-in wall.
+    // Signed IN: the bot is delegated to Blockle's server runner and keeps
+    // trading while the app is closed. Signed OUT: it still goes live, executed
+    // by this device's runner while the app is open (delegation is best-effort
+    // and simply skipped without an account bearer).
     // C1 FUND-A-BOT — if the live quote/settlement balance is below the hard
     // allocation cap, offer a card top-up of exactly the shortfall before we
     // arm. The arming gate itself is unchanged (this only funds the wallet).
@@ -443,27 +429,7 @@ class _CreateViewState extends State<CreateView> {
       // the cockpit; remove the one we just created.
       unawaited(widget.controller.remove(bot.id));
       final msg = e.toString().replaceFirst('StateError: ', '').replaceFirst('Exception: ', '');
-      // A live-bot-cap breach → route to the upgrade screen instead of a dead-end snack.
-      if (msg.contains('live bot') && msg.contains('Upgrade') && mounted) {
-        final go = await showDialog<bool>(
-          context: context,
-          builder: (dctx) => AlertDialog(
-            title: const Text('Live-bot limit reached'),
-            content: Text(msg),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Not now')),
-              FilledButton(onPressed: () => Navigator.pop(dctx, true), child: const Text('See plans')),
-            ],
-          ),
-        );
-        if (go == true && mounted) {
-          await Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const BlockleAlienScreen()),
-          );
-        }
-      } else {
-        _snack(msg);
-      }
+      _snack(msg);
     }
   }
 

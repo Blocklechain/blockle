@@ -75,13 +75,11 @@ class BotsController extends ChangeNotifier {
   // Never trades, never auto-allowlists; approval + the gate still apply.
   final SignalsDiscovery _discovery = SignalsDiscovery();
   BotRunner? _runner;
-  // The account's effective Copilot tier (incl. active free trial); gates live arming.
-  // Fail-closed to 'free'. Updated via setLiveEntitled() when subscription state changes.
-  String _liveTier = 'free';
-  // Per-plan LIVE-bot cap (Free 1, Copilot 3, Pro -1 = unlimited). -1 until an
-  // account is linked (live arming is separately gated by _liveTier). Mirrors the
-  // web wallet (app.js loadTier -> runner.setLiveBotLimit).
-  int _liveBotLimit = -1;
+  // PLANS ARE GONE: every user is Blockle Alien Pro — unlimited live bots,
+  // nothing sold in-app. The tier/limit plumbing stays (runner API, dashboards)
+  // but is pinned to Pro and never downgraded by account state.
+  final String _liveTier = 'copilot_pro';
+  final int _liveBotLimit = -1;
   final ar.ArenaProfile arena = ar.ArenaProfile();
   Map<String, dynamic>? _vectors;
 
@@ -183,13 +181,6 @@ class BotsController extends ChangeNotifier {
   String? _lastBuildKey;
 
   void _rebuildRunner() {
-    // Keep the live-bot gate in sync with the account's effective tier (the agent
-    // tracks it, incl. an active free trial). Fail-soft: `agent` is a late field
-    // that can be mid-(re)init; a throw here would blank the Bots screen.
-    try {
-      _liveTier = _mc.agent.copilotTier;
-      _liveBotLimit = _mc.agent.liveBotLimit;
-    } catch (_) {/* agent not ready yet — keep prior tier/limit (fail-closed) */}
     final inst = _backingInstance();
     // Only a change in the BACKING INSTANCE (policy/tools source) requires a true
     // rebuild. Tier/limit/portfolio-cap are pushed into the EXISTING runner below
@@ -530,14 +521,10 @@ class BotsController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Reflect the account's effective Copilot tier (incl. active free trial) into the live-bot
-  /// gate. Call whenever subscription state changes (sign-in, IAP purchase, trial start). A
-  /// tier other than 'free' unlocks live arming; 'free' re-locks it. Paper/Arena are unaffected.
+  /// Plans are gone — everyone is Blockle Alien Pro. Account/tier changes can
+  /// never downgrade the live gate; kept as a no-op for legacy callers.
   void setLiveEntitled(String tier) {
-    _liveTier = tier;
-    _runner?.setLiveEntitled(tier);
-    // Keep the per-plan live-bot cap in sync with the latest account state.
-    _liveBotLimit = _mc.agent.liveBotLimit;
+    _runner?.setLiveEntitled(_liveTier);
     _runner?.setLiveBotLimit(_liveBotLimit);
     notifyListeners();
   }
@@ -586,14 +573,12 @@ class BotsController extends ChangeNotifier {
     return sum;
   }
 
-  /// The per-plan LIVE-bot cap in effect (Free 1, Copilot 3, Pro -1 = unlimited).
+  /// The live-bot cap in effect — always -1 (unlimited): everyone is Pro.
   int get liveBotLimit => _liveBotLimit;
 
-  /// Push an explicit per-plan live-bot cap into the running engine (mirrors the
-  /// web wallet's setLiveBotLimit). -1 = unlimited.
+  /// Legacy API — the cap is pinned to unlimited; pushes it into the engine.
   void setLiveBotLimit(int n) {
-    _liveBotLimit = n;
-    _runner?.setLiveBotLimit(n);
+    _runner?.setLiveBotLimit(_liveBotLimit);
     notifyListeners();
   }
 
