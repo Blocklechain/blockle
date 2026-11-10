@@ -206,6 +206,12 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     }
     if (changed) await save(t);
   }
+  // Native GAS coin that pays for a TOKEN payout: an ERC-20 transfer spends the
+  // chain's NATIVE coin from the hot wallet, not the token itself. Natives map
+  // to null (they fund their own gas via their payout floor).
+  const CHAIN_NATIVE = { 1: 'ETH', 56: 'BNB', 137: 'MATIC', 43114: 'AVAX' };
+  const gasCoinFor = (coin) => (COIN_TOKEN[coin] ? (CHAIN_NATIVE[COIN_CHAIN[coin]] || null) : null);
+
   // SPENDABLE on-chain amount of [coin] from the cache: real balance minus its
   // payout floor. null = unknown (not read yet / unreadable) → caller falls back.
   function onchainSpendable(coin) {
@@ -300,6 +306,23 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
       const spend = mainnet ? onchainSpendable(coin) : null;
       const have = spend == null ? reserve : Math.min(reserve, spend);
       if (!(out > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
+      // GAS GUARD: a TOKEN payout (USDC/USDT/DAI) is an ERC-20 transfer that
+      // spends the chain's NATIVE coin from the hot wallet. If we KNOW the
+      // wallet holds less native than its payout floor, the transfer could
+      // never broadcast — refuse now instead of stranding the settlement.
+      // (An unreadable balance doesn't block — same fail-open as the cap.)
+      if (mainnet) {
+        const gasCoin = gasCoinFor(coin);
+        const gasBal = gasCoin && _oc.data ? _oc.data.balances[gasCoin] : null;
+        const gasNeed = gasCoin ? (PAYOUT_FLOOR[gasCoin] || 0) : 0;
+        if (gasCoin && gasBal != null && Number.isFinite(gasBal) && gasBal < gasNeed) {
+          return {
+            ok: false,
+            reason: `hot wallet has no ${gasCoin} for gas — ${coin} payouts need ~${gasNeed} ${gasCoin} to send; fund the treasury's ${gasCoin} wallet`,
+            blockPriceUsd: bp, onchainAvailable: spend,
+          };
+        }
+      }
       if (out > have) {
         const why = have <= 0
           ? `no liquidity for ${coin}`
