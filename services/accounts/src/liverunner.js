@@ -12,8 +12,13 @@
 // Everything is injected (delegations, prices, rpcFor, now) so the loop is unit
 // tested deterministically with no network and no real keys.
 
-import { executeTrade } from './liveexec.js';
+import { createRequire } from 'node:module';
+import { executeTrade, mainnetEnabled } from './liveexec.js';
 import { SOL_MINTS } from './solswap.js';
+import { buildTransferMessage } from './liquidity_sol.js';
+
+const require = createRequire(import.meta.url);
+const sol = require('./vendor/solana.js');
 
 // Pick the single best SNIPER candidate from a discovery feed: safety-approved,
 // discovery score >= min, non-negative recent momentum, not reject-flagged;
@@ -103,6 +108,40 @@ export function rpcSenderFor(chainId, fetchFn = fetch) {
   };
 }
 
+// REAL fee collection: 5 bps of every executed trade's notional is owed to the
+// liquidity treasury (exchange/treasury.json — the custodial hot wallets that
+// fund the BLOCK swap pools). Owed fees accrue per delegation and are flushed
+// ON-CHAIN once they cross a per-chain minimum (so a $0.005 fee never burns
+// more gas than it is worth). The liquidity ledger is credited ONLY after the
+// on-chain leg confirms broadcast — ledger and chain can't drift apart.
+export const FEE_BPS = 5;
+export const FEE_TREASURY = {
+  solana: '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd',
+  evm: '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+};
+export const FEE_FLUSH_MIN_USD = { solana: 0.05, evm: 1.0 };
+
+/// Flush a delegation's accrued fee as a native SOL System transfer from the
+/// DELEGATED account to the treasury. Same hard gates as a trade: the operator
+/// mainnet flag, and the key must control the delegation address.
+export async function flushFeeSol({ d, owedUsd, pxSol, rpc, treasury, env = process.env }) {
+  if (!mainnetEnabled(env)) throw new Error('mainnet trading is disabled (BLOCKLE_BOT_MAINNET not set)');
+  const seed = Buffer.from(String(d.key), 'hex');
+  const from = sol.addressFromSeed(seed);
+  if (d.address && from !== d.address) throw new Error('delegated key does not control the delegation address');
+  const lam = BigInt(Math.floor((owedUsd / pxSol) * 1e9));
+  if (lam <= 0n) throw new Error('zero fee');
+  const bh = await rpc('getLatestBlockhash', [{ commitment: 'finalized' }]);
+  const blockhash = bh && (bh.value ? bh.value.blockhash : bh.blockhash);
+  if (!blockhash) throw new Error('solana: could not fetch a recent blockhash');
+  const message = buildTransferMessage({ from, to: treasury, lamports: lam, recentBlockhash: blockhash });
+  const sig = Buffer.from(sol.signMessage(seed, message));
+  const tx = Buffer.concat([Buffer.from([1]), sig, message]).toString('base64');
+  const res = await rpc('sendTransaction', [tx, { encoding: 'base64', skipPreflight: false, maxRetries: 3 }]);
+  if (!res || typeof res !== 'string') throw new Error('solana: sendTransaction returned no signature');
+  return { txid: res, lamports: lam.toString() };
+}
+
 const _now = () => Date.now();
 
 /// Run one loop pass. deps:
@@ -118,8 +157,49 @@ export async function runOnce(deps) {
     // SNIPER (Solana autopilot) deps: discover() -> candidate feed, solRpc -> a
     // Solana JSON-RPC sender, fetchFn -> Jupiter HTTP. All injectable for tests.
     discover = null, solRpc = null, fetchFn = globalThis.fetch,
+    // REAL fee collection deps (injectable): treasury addresses, flush minimums,
+    // and a callback the host uses to credit the liquidity ledger AFTER the
+    // on-chain fee leg broadcasts.
+    feeTreasury = FEE_TREASURY, feeFlushMinUsd = FEE_FLUSH_MIN_USD, onFeeCollected = null,
   } = deps;
   const out = [];
+
+  // Accrue 5 bps of an executed notional on the delegation, then try to flush
+  // the running total on-chain once it crosses the chain's minimum. Fail-soft:
+  // a failed flush defers the owed amount to a later pass, never blocks trading.
+  async function collectFee(d, usd, { pxNative = null } = {}) {
+    d.feeOwedUsd = (Number(d.feeOwedUsd) || 0) + (usd * FEE_BPS) / 1e4;
+    const owed = d.feeOwedUsd;
+    try {
+      if (d.chain === 'solana' || !d.chainId) {
+        if (owed < (feeFlushMinUsd.solana ?? 0.05) || !solRpc) return;
+        const pxSol = await prices('SOL');
+        if (!pxSol || pxSol <= 0) return;
+        const f = await flushFeeSol({ d, owedUsd: owed, pxSol, rpc: solRpc, treasury: feeTreasury.solana, env });
+        if (onFeeCollected) await onFeeCollected({ coin: 'SOL', feeUsd: owed, coinUsd: pxSol });
+        d.feeOwedUsd = 0;
+        log(`[liverunner] bot ${d.botId} fee flush $${owed.toFixed(4)} SOL tx ${f.txid}`);
+        out.push({ botId: d.botId, feeTxid: f.txid, feeUsd: owed, type: 'fee' });
+      } else {
+        if (owed < (feeFlushMinUsd.evm ?? 1.0)) return;
+        const sym = NATIVE_SYM[d.chainId] || 'ETH';
+        const px = pxNative || await prices(sym);
+        if (!px || px <= 0) return;
+        const feeWei = BigInt(Math.floor((owed / px) * 1e18)).toString();
+        const fr = await executeTrade({
+          delegation: d,
+          action: { kind: 'native', to: feeTreasury.evm, amountBase: feeWei, notionalUsd: owed, feeUsd: 0, chainId: d.chainId },
+          rpc: rpcFor(d.chainId), env,
+        });
+        if (onFeeCollected) await onFeeCollected({ coin: sym, feeUsd: owed, coinUsd: px });
+        d.feeOwedUsd = 0;
+        log(`[liverunner] bot ${d.botId} fee flush $${owed.toFixed(4)} ${sym} tx ${fr.txid}`);
+        out.push({ botId: d.botId, feeTxid: fr.txid, feeUsd: owed, type: 'fee' });
+      }
+    } catch (e) {
+      log(`[liverunner] bot ${d.botId} fee flush deferred ($${owed.toFixed(4)} owed): ${String(e && e.message || e)}`);
+    }
+  }
   for (const { uid, d } of delegations.allActive()) {
     try {
       const plan = d.plan;
@@ -154,6 +234,7 @@ export async function runOnce(deps) {
         plan.lastAt = now();
         log(`[liverunner] bot ${d.botId} sniper $${usd} ${pick.token} tx ${sr.txid}`);
         out.push({ botId: d.botId, usd, txid: sr.txid, type: 'sniper', pick: pick.token });
+        await collectFee(d, usd);
         continue;
       }
 
@@ -190,6 +271,7 @@ export async function runOnce(deps) {
       plan.lastAt = now();
       log(`[liverunner] bot ${d.botId} ${plan.type} $${usd} on ${d.chain} tx ${r.txid}`);
       out.push({ botId: d.botId, usd, txid: r.txid, type: plan.type });
+      await collectFee(d, usd, { pxNative });
     } catch (e) {
       out.push({ botId: d.botId, error: String(e && e.message || e) });
     }

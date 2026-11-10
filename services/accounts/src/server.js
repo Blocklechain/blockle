@@ -1449,7 +1449,7 @@ export function createApp(overrides = {}) {
     }
   });
 
-  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, botDelegations, prices, _internal: { loginIpRl, acctRl, userByEmail } };
+  return { server, store, sessions, mailer, paypal, chain, cfg, ensureAdmin, stepAllBots, botDelegations, prices, liquidity, _internal: { loginIpRl, acctRl, userByEmail } };
 }
 
 function sanitizeMeta(meta) {
@@ -1498,10 +1498,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         if (!byUid.has(uid)) byUid.set(uid, app.store.get('botactivity', uid) || { bots: {} });
         const acc = byUid.get(uid);
         const b = acc.bots[ev.botId] = acc.bots[ev.botId] || { trades: [] };
-        if (ev.txid) {
-          b.trades.unshift({ ts: now(), usd: ev.usd ?? null, txid: ev.txid, type: ev.type || 'trade', token: ev.pick || null });
+        if (ev.txid || ev.feeTxid) {
+          b.trades.unshift({ ts: now(), usd: ev.usd ?? ev.feeUsd ?? null, txid: ev.txid || ev.feeTxid, type: ev.type || 'trade', token: ev.pick || null });
           b.trades = b.trades.slice(0, 50);
-          b.lastStatus = 'traded';
+          if (ev.txid) b.lastStatus = 'traded';
         } else {
           b.lastStatus = ev.skipped ? `skipped: ${ev.skipped}` : (ev.error ? `error: ${ev.error}`.slice(0, 160) : 'idle');
         }
@@ -1538,6 +1538,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           const j = await r.json();
           return j && (j.result !== undefined ? j.result : j);
         } catch (e) { return { error: { message: String(e && e.message || e) } }; }
+      },
+      // Credit the liquidity ledger ONLY when a fee actually lands on-chain —
+      // the ledger stays backed 1:1 by real treasury balances.
+      onFeeCollected: async ({ coin, feeUsd, coinUsd }) => {
+        try { await app.liquidity.accrueFee(coin, feeUsd, coinUsd); } catch { /* best-effort */ }
       },
     }).then(persistBotActivity).catch(() => {});
   }, 60_000);

@@ -127,5 +127,63 @@ await (async () => {
     ok('sniper refused when mainnet off (error, no spend)', sr2[0].error && /mainnet/.test(sr2[0].error) && d5.get('u5', 'bsoff').spentUsd === 0);
   }
 
+  // ---- REAL fee collection: 5 bps accrues per trade; flushes ON-CHAIN to the
+  // treasury once past the chain minimum; ledger credited only after broadcast.
+  {
+    let tF = 7_000_000;
+    const dF = makeBotDelegations({ now: () => tF });
+    dF.put('u6', {
+      botId: 'bfee', chain: 'base', chainId: 84532, capUsd: 1000, address: addr, key: privHex,
+      plan: { type: 'dca', to: '0x' + '35'.repeat(20), sym: 'ETH', perTradeUsd: 100, intervalMs: 1 },
+    });
+    const collected = [];
+    const feeDeps = {
+      delegations: dF, prices, rpcFor: () => mockRpc(), env: {}, now: () => tF,
+      feeTreasury: { evm: '0x' + 'fe'.repeat(20), solana: 'T' },
+      onFeeCollected: async (f) => collected.push(f),
+    };
+    // Below the $1 EVM minimum → accrues, nothing flushes, ledger untouched.
+    let fr = await runOnce({ ...feeDeps, feeFlushMinUsd: { evm: 1.0 } });
+    ok('fee accrues 5 bps of notional (no flush below min)',
+      fr.filter((e) => e.type === 'fee').length === 0 && collected.length === 0);
+    // Low minimum → the ACCUMULATED owed (2 trades × $0.05) flushes: a fee
+    // event with a txid appears and the ledger callback fires with that USD.
+    tF += 10;
+    fr = await runOnce({ ...feeDeps, feeFlushMinUsd: { evm: 0.01 } });
+    const feeEv = fr.find((e) => e.type === 'fee');
+    ok('fee flushed on-chain once past the minimum (accrual carried over)',
+      feeEv && /^0x[0-9a-f]{64}$/.test(feeEv.feeTxid) && Math.abs(feeEv.feeUsd - 0.1) < 1e-9);
+    ok('ledger credited ONLY after broadcast, with the flushed USD',
+      collected.length === 1 && collected[0].coin === 'ETH' && Math.abs(collected[0].feeUsd - 0.1) < 1e-9 && collected[0].coinUsd === 2000);
+    // Next pass flushes ONLY the fresh $0.05 — proof the owed total reset.
+    tF += 10;
+    fr = await runOnce({ ...feeDeps, feeFlushMinUsd: { evm: 0.01 } });
+    const feeEv2 = fr.find((e) => e.type === 'fee');
+    ok('owed resets after a successful flush (next flush is the fresh 5 bps only)',
+      feeEv2 && Math.abs(feeEv2.feeUsd - 0.05) < 1e-9 && collected.length === 2);
+    // A failing fee broadcast DEFERS the owed amount: the TRADE (1st send)
+    // succeeds, the FLUSH (2nd send) dies → no fee event, no ledger credit,
+    // and the deferred amount rides along into the next successful flush.
+    tF += 10;
+    let sends = 0;
+    const flakyRpc = () => async (method) => {
+      if (method === 'eth_getTransactionCount') return '0x0';
+      if (method === 'eth_gasPrice') return '0x3b9aca00';
+      if (method === 'eth_sendRawTransaction') {
+        if (++sends > 1) throw new Error('rpc down');
+        return '0x' + 'cd'.repeat(32);
+      }
+      return null;
+    };
+    fr = await runOnce({ ...feeDeps, rpcFor: () => flakyRpc(), feeFlushMinUsd: { evm: 0.01 } });
+    ok('failed flush is fail-soft: trade recorded, no fee event, no ledger credit',
+      fr.find((e) => e.txid) && !fr.find((e) => e.type === 'fee') && collected.length === 2);
+    tF += 10;
+    fr = await runOnce({ ...feeDeps, feeFlushMinUsd: { evm: 0.01 } });
+    const feeEv3 = fr.find((e) => e.type === 'fee');
+    ok('deferred fee rides into the next flush (0.05 deferred + 0.05 fresh)',
+      feeEv3 && Math.abs(feeEv3.feeUsd - 0.1) < 1e-9 && collected.length === 3);
+  }
+
   console.log(`liverunner.test.js: ${pass} checks passed`);
 })();
