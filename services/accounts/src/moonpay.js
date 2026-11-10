@@ -118,8 +118,13 @@ export function makeMoonpay(env = process.env) {
   async function signUrlRobust(unsignedUrl, { clientIp = '', fetchFn = globalThis.fetch } = {}) {
     const pinned = withAllowedIp(unsignedUrl, clientIp);
     const candidates = [];
-    if (pinned !== unsignedUrl) candidates.push({ url: pinned, ipPinned: true });
+    // UNPINNED FIRST: IP pinning breaks mobile (the device IP MoonPay sees often
+    // differs from the IP that called /sign — carrier NAT / v4-v6 split → the
+    // widget shows "Unverified connection"). If the account doesn't require
+    // allowedIpAddress, the unpinned URL verifies clean and works everywhere;
+    // if it DOES (5_PARTNERS_IP_MISSING), we fall back to the pinned candidate.
     candidates.push({ url: String(unsignedUrl || ''), ipPinned: /[?&]allowedIpAddress=/.test(String(unsignedUrl || '')) });
+    if (pinned !== unsignedUrl) candidates.push({ url: pinned, ipPinned: true });
     const variants = ['search', 'noq', 'full'];
     // Order attempts so a previously-accepted combo is tried first.
     const combos = [];
@@ -147,13 +152,21 @@ export function makeMoonpay(env = process.env) {
         return { ...s, ipPinned: cand.ipPinned, verified: true, verifiedVia: check.ok === true ? 'exact' : 'ip-mismatch-proxy', attempts };
       }
       if (check.ok === null) {
-        // Can't reach the verifier — fail open with the documented default.
-        const d = signUrl(candidates[0].url, 'search');
-        return { ...d, ipPinned: candidates[0].ipPinned, verified: false, attempts };
+        // Can't reach the verifier — fail open with the last combo MoonPay
+        // accepted (else the pinned documented default, matching this account's
+        // known requirement).
+        const fb = _lastGood
+          ? { url: _lastGood.ipPinned ? pinned : candidates[0].url, ipPinned: _lastGood.ipPinned, v: _lastGood.variant }
+          : { url: pinned, ipPinned: true, v: 'search' };
+        const d = signUrl(fb.url, fb.v);
+        return { ...d, ipPinned: fb.ipPinned, verified: false, attempts };
       }
     }
-    const d = signUrl(candidates[0].url, 'search');
-    return { ...d, ipPinned: candidates[0].ipPinned, verified: false, attempts };
+    const fb2 = _lastGood
+      ? { url: _lastGood.ipPinned ? pinned : candidates[0].url, ipPinned: _lastGood.ipPinned, v: _lastGood.variant }
+      : { url: pinned, ipPinned: true, v: 'search' };
+    const d = signUrl(fb2.url, fb2.v);
+    return { ...d, ipPinned: fb2.ipPinned, verified: false, attempts };
   }
 
   // Verify a MoonPay webhook. MoonPay signs with header `Moonpay-Signature-V2`:
