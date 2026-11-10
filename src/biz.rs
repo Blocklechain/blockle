@@ -840,6 +840,14 @@ fn route(
                 _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("transaction", id).into_bytes()),
             }
         }
+        // Short tx URL the wallets link to from their View-on-explorer buttons.
+        p if p.starts_with("/tx/") => {
+            let id = &p["/tx/".len()..];
+            match chain_api(&format!("/explorer/tx/{id}")) {
+                Some(t) if t.get("error").is_none() => ("200 OK", "text/html; charset=utf-8", page_tx(&t).into_bytes()),
+                _ => ("404 Not Found", "text/html; charset=utf-8", page_notfound("transaction", id).into_bytes()),
+            }
+        }
         p if p.starts_with("/explorer/token/") => {
             let id = &p["/explorer/token/".len()..];
             match token_info(id) {

@@ -623,19 +623,59 @@ fn jhash(h: &[u8; 32]) -> String {
     display_hash(h)
 }
 
-/// Resolve every historical outpoint to (recipient, amount) — the chain is
-/// the index. Linear, fine at prototype scale.
-fn outpoint_index(chain: &Chain) -> HashMap<(blockle_core::Hash32, u32), (Address, u64)> {
-    let mut map = HashMap::new();
-    for b in &chain.blocks {
-        for tx in &b.transactions {
+/// Explorer lookup index, built INCREMENTALLY and cached for the process
+/// lifetime. The old per-request full rebuild re-hashed every transaction in
+/// the chain (ML-DSA txs are ~13 KB, txid() hashes the serialization), which
+/// grew to ~45 s per request by height 36k and took the whole site down.
+/// Now each request only indexes blocks appended since the last one.
+struct ExplorerIndex {
+    /// Number of blocks indexed so far.
+    height: usize,
+    /// Hash of the last indexed block — a mismatch means a reorg replaced
+    /// history under us, so the whole index is rebuilt from genesis.
+    last_hash: [u8; 32],
+    /// (txid, vout) → (recipient, amount) for every historical output.
+    outpoints: HashMap<(blockle_core::Hash32, u32), (Address, u64)>,
+    /// display txid → (block height, tx index) for O(1) /explorer/tx.
+    txloc: HashMap<String, (usize, usize)>,
+}
+
+static EXPLORER_INDEX: std::sync::OnceLock<Mutex<ExplorerIndex>> = std::sync::OnceLock::new();
+
+fn explorer_index(chain: &Chain) -> std::sync::MutexGuard<'static, ExplorerIndex> {
+    let m = EXPLORER_INDEX.get_or_init(|| {
+        Mutex::new(ExplorerIndex { height: 0, last_hash: [0; 32], outpoints: HashMap::new(), txloc: HashMap::new() })
+    });
+    let mut g = m.lock().unwrap();
+    // Reorg / restart safety: if the chain shrank, or the block we indexed up
+    // to is no longer at that height, rebuild from scratch.
+    let stale = g.height > chain.blocks.len()
+        || (g.height > 0
+            && chain
+                .blocks
+                .get(g.height - 1)
+                .map(|b| b.header.hash() != g.last_hash)
+                .unwrap_or(true));
+    if stale {
+        g.height = 0;
+        g.outpoints.clear();
+        g.txloc.clear();
+    }
+    for h in g.height..chain.blocks.len() {
+        let b = &chain.blocks[h];
+        for (ti, tx) in b.transactions.iter().enumerate() {
             let txid = tx.txid();
             for (vout, o) in tx.outputs.iter().enumerate() {
-                map.insert((txid, vout as u32), (o.recipient, o.amount));
+                g.outpoints.insert((txid, vout as u32), (o.recipient, o.amount));
             }
+            g.txloc.insert(jhash(&txid), (h, ti));
         }
     }
-    map
+    g.height = chain.blocks.len();
+    if let Some(b) = chain.blocks.last() {
+        g.last_hash = b.header.hash();
+    }
+    g
 }
 
 fn tx_kind(tx: &blockle_core::Transaction) -> &'static str {
@@ -732,8 +772,31 @@ fn block_summary(chain: &Chain, height: usize, b: &Block) -> Value {
     })
 }
 
+/// Explorer requests share ONE chain snapshot for a few seconds. snapshot()
+/// deep-clones the whole chain UNDER THE CONSENSUS LOCK — at 36k blocks of
+/// ~13 KB post-quantum txs that is hundreds of MB per call, and doing it per
+/// request both burned seconds and stalled mining. 5 s of staleness is
+/// invisible on a 600 s block time.
+static EXPLORER_SNAP: std::sync::OnceLock<Mutex<Option<(u64, Arc<(Chain, Vec<Transaction>)>)>>> =
+    std::sync::OnceLock::new();
+
+fn snapshot_shared(node: &Arc<Node>) -> Arc<(Chain, Vec<Transaction>)> {
+    let m = EXPLORER_SNAP.get_or_init(|| Mutex::new(None));
+    let mut g = m.lock().unwrap();
+    let now = now_unix();
+    if let Some((at, snap)) = g.as_ref() {
+        if now.saturating_sub(*at) < 5 {
+            return snap.clone();
+        }
+    }
+    let snap = Arc::new(node.snapshot());
+    *g = Some((now, snap.clone()));
+    snap
+}
+
 fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
-    let (chain, mempool) = node.snapshot();
+    let snap = snapshot_shared(node);
+    let (chain, mempool) = (&snap.0, &snap.1);
     let ok = |v: Value| ("200 OK", v.to_string());
     let err404 = |m: &str| ("404 Not Found", json!({"error": m}).to_string());
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
@@ -818,11 +881,11 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
                     .find(|(_, b)| jhash(&b.header.hash()) == id)
             };
             let Some((height, b)) = found else { return err404("no such block") };
-            let idx = outpoint_index(&chain);
+            let g = explorer_index(&chain);
             let txs: Vec<Value> = b
                 .transactions
                 .iter()
-                .map(|t| tx_json(&chain, &idx, t, Some(height as u64), Some(b.header.time)))
+                .map(|t| tx_json(&chain, &g.outpoints, t, Some(height as u64), Some(b.header.time)))
                 .collect();
             let aux = b.aux_pow.as_ref().map(|a| json!({
                 "parent_algo": a.parent_algo,
@@ -851,22 +914,22 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
         }
         p if p.starts_with("/explorer/tx/") => {
             let id = &p["/explorer/tx/".len()..];
-            let idx = outpoint_index(&chain);
-            for (h, b) in chain.blocks.iter().enumerate() {
-                for tx in &b.transactions {
-                    if jhash(&tx.txid()) == id {
+            let g = explorer_index(&chain);
+            if let Some(&(h, ti)) = g.txloc.get(id) {
+                if let Some(b) = chain.blocks.get(h) {
+                    if let Some(tx) = b.transactions.get(ti) {
                         return ok(json!({
                             "block_hash": jhash(&b.header.hash()),
-                            "tx": tx_json(&chain, &idx, tx, Some(h as u64), Some(b.header.time)),
+                            "tx": tx_json(&chain, &g.outpoints, tx, Some(h as u64), Some(b.header.time)),
                         }));
                     }
                 }
             }
-            for tx in &mempool {
+            for tx in mempool {
                 if jhash(&tx.txid()) == id {
                     return ok(json!({
                         "block_hash": null,
-                        "tx": tx_json(&chain, &idx, tx, None, None),
+                        "tx": tx_json(&chain, &g.outpoints, tx, None, None),
                     }));
                 }
             }
@@ -875,7 +938,8 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
         p if p.starts_with("/explorer/address/") => {
             let addr_s = &p["/explorer/address/".len()..];
             let Ok(addr) = decode_address(addr_s) else { return err404("bad address") };
-            let idx = outpoint_index(&chain);
+            let g = explorer_index(&chain);
+            let idx = &g.outpoints;
             let mut history = Vec::new();
             let mut received = 0u64;
             let mut sent = 0u64;
@@ -1066,10 +1130,10 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
             }
         }
         "/explorer/mempool" => {
-            let idx = outpoint_index(&chain);
+            let g = explorer_index(&chain);
             let txs: Vec<Value> = mempool
                 .iter()
-                .map(|t| tx_json(&chain, &idx, t, None, None))
+                .map(|t| tx_json(&chain, &g.outpoints, t, None, None))
                 .collect();
             ok(json!({"count": txs.len(), "txs": txs}))
         }
