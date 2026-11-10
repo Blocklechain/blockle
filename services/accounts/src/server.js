@@ -393,6 +393,14 @@ export function createApp(overrides = {}) {
   }));
   on('GET', /^\/account\/api\/bots\/delegations$/, authed((req, res, { u }) =>
     json(res, 200, { delegations: botDelegations.list(u.id) })));
+  // Server-managed live-bot ACTIVITY: per-bot trade history + last runner status
+  // (persisted by the live loop) + whether live execution is even enabled — so
+  // the wallets can SHOW what the autopilot is doing instead of silent zeros.
+  on('GET', /^\/account\/api\/bots\/activity$/, authed((req, res, { u }) => json(res, 200, {
+    liveEnabled: /^(1|true|yes|on)$/i.test(process.env.BLOCKLE_BOT_MAINNET || ''),
+    delegations: botDelegations.list(u.id),
+    activity: (store.get('botactivity', u.id) || { bots: {} }).bots,
+  })));
 
   // ===== 3Commas-style paper bots (play money; live trading stays client-signed in the wallet) =
   const priceFor = () => (lastKnownPrice || 1);
@@ -1476,6 +1484,32 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // executes due trades (gated: testnet-only unless BLOCKLE_BOT_MAINNET=1).
   const SIGNALS_BASE = process.env.SIGNALS_BASE || 'https://blockle.org';
   const SOLANA_RPC = process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com';
+  // Persist each live-loop pass so wallets can SHOW autopilot activity: trades
+  // (txid entries, capped 50/bot) + the latest skip/error status per bot.
+  const persistBotActivity = async (summary) => {
+    try {
+      if (!Array.isArray(summary) || !summary.length) return;
+      const uidOf = new Map();
+      for (const { uid, d } of app.botDelegations.allActive()) uidOf.set(d.botId, uid);
+      const byUid = new Map();
+      for (const ev of summary) {
+        const uid = uidOf.get(ev.botId);
+        if (!uid) continue;
+        if (!byUid.has(uid)) byUid.set(uid, app.store.get('botactivity', uid) || { bots: {} });
+        const acc = byUid.get(uid);
+        const b = acc.bots[ev.botId] = acc.bots[ev.botId] || { trades: [] };
+        if (ev.txid) {
+          b.trades.unshift({ ts: now(), usd: ev.usd ?? null, txid: ev.txid, type: ev.type || 'trade', token: ev.pick || null });
+          b.trades = b.trades.slice(0, 50);
+          b.lastStatus = 'traded';
+        } else {
+          b.lastStatus = ev.skipped ? `skipped: ${ev.skipped}` : (ev.error ? `error: ${ev.error}`.slice(0, 160) : 'idle');
+        }
+        b.lastAt = now();
+      }
+      for (const [uid, acc] of byUid) await app.store.put('botactivity', uid, acc);
+    } catch { /* best-effort — never blocks the loop */ }
+  };
   const liveRun = setInterval(() => {
     liveRunOnce({
       delegations: app.botDelegations,
@@ -1505,7 +1539,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           return j && (j.result !== undefined ? j.result : j);
         } catch (e) { return { error: { message: String(e && e.message || e) } }; }
       },
-    }).catch(() => {});
+    }).then(persistBotActivity).catch(() => {});
   }, 60_000);
   if (liveRun.unref) liveRun.unref();
 }

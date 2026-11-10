@@ -234,6 +234,10 @@ class _SwapCardState extends State<_SwapCard> {
   AssetRef? _fromAssetRef; // the exact asset ref (token contract/decimals) to send
   String _balFor = ''; // which asset _fromBalance currently reflects
   bool _loadingBal = false;
+  // Native GAS coin balance on the input asset's chain — a token swap (USDC…)
+  // still pays network fees in the native coin, so warn when it's missing.
+  double? _nativeGasBal;
+  String _nativeSym = '';
 
   @override
   void initState() {
@@ -280,6 +284,16 @@ class _SwapCardState extends State<_SwapCard> {
           ref = match.asset;
         } else {
           bal = 0;
+        }
+        // Capture the chain's NATIVE balance too — a token swap still needs it
+        // for gas, and we warn when it's missing.
+        for (final x in bals) {
+          if (x.asset.kind == 'native') {
+            final raw = BigInt.tryParse(x.confirmed) ?? BigInt.zero;
+            _nativeGasBal = raw.toDouble() / math.pow(10, x.asset.decimals);
+            _nativeSym = x.asset.symbol.toUpperCase();
+            break;
+          }
         }
       }
     } catch (_) {
@@ -580,6 +594,22 @@ class _SwapCardState extends State<_SwapCard> {
           padding: const EdgeInsets.only(top: 3),
           child: Text('MAX keeps ~${_trimAmt(_gasReserve(from))} $from back for gas',
               style: TextStyle(fontSize: 10.5, color: Bk.faint)),
+        ),
+      // GAS CHECK: a token swap (USDC/USDT/DAI…) pays its network fee in the
+      // chain's NATIVE coin — warn loudly when the user doesn't hold enough.
+      if (_isTokenCoin(from) &&
+          _balFor == from &&
+          _nativeGasBal != null &&
+          _nativeSym.isNotEmpty &&
+          _nativeGasBal! < _gasReserve(_nativeSym))
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            'Not enough $_nativeSym for gas — you hold ${_trimAmt(_nativeGasBal!)} '
+            'but sending $from needs ~${_trimAmt(_gasReserve(_nativeSym))} $_nativeSym '
+            'for the network fee. Top up $_nativeSym first.',
+            style: const TextStyle(fontSize: 11, color: Bk.bad, height: 1.3),
+          ),
         ),
     ]);
   }

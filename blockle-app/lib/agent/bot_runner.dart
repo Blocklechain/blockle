@@ -116,6 +116,13 @@ class BotRunner {
   /// and the stuck-bot auto-pause never fires on a server-run bot). Paper bots
   /// always run locally regardless.
   bool clientExecutesLive;
+
+  /// KEEP-GAS (optional host hook): async check "is the native gas balance on
+  /// [lane] running low?". When wired, a LIVE bot automatically converts a small
+  /// slice of realized profit into the lane's native coin through the SAME gated
+  /// dispatch, so it can never strand itself unable to pay network fees.
+  /// Null (default) = feature inert — the engine stays pure for tests.
+  final Future<bool> Function(String lane)? lowGasCheck;
   final void Function(Map<String, dynamic> ev)? onEvent;
   final PnlHook? pnl;
   /// Surface a pop-up whenever a bot REALIZES profit — in paper OR live, in ANY
@@ -158,6 +165,7 @@ class BotRunner {
     this.portfolioLiveCapUsd,
     this.clientExecutesLive = true,
     this.immediateFirstTick = false,
+    this.lowGasCheck,
     this.onEvent,
     this.pnl,
     this.notifier,
@@ -1132,6 +1140,67 @@ class BotRunner {
   //     the profit currency) OR NO route / blocked / rejected: the label reports
   //     the ACTUAL output asset — it NEVER claims the profit currency it did not
   //     reach (honesty over optimism; a price is never fabricated to force a hop).
+  // Lane -> native gas coin (the asset network fees are paid in).
+  static const Map<String, String> _laneNative = {
+    'solana': 'SOL', 'ethereum': 'ETH', 'base': 'ETH', 'arbitrum': 'ETH',
+    'optimism': 'ETH', 'polygon': 'POL', 'bnb': 'BNB', 'avalanche': 'AVAX',
+    'block': 'BLOCK',
+  };
+
+  // KEEP-GAS (default ON; config keepGas:false disables, keepGasUsd sizes the
+  // top-up, default $3): when the host's lowGasCheck reports the lane's native
+  // gas balance is LOW, a LIVE bot converts a small slice of realized profit
+  // into the native coin FIRST — through the SAME gated dispatch (allocation
+  // envelope, allowlist, mainnet gate, security pre-sign, 0.05% fee) — so it
+  // can never strand itself unable to pay network fees. Returns the proceeds
+  // REMAINING after the gas slice (unchanged when nothing fires). Fail-soft:
+  // any error leaves the proceeds untouched.
+  Future<BigInt> _maybeKeepGas(
+      b.Bot bot, String from, BigInt proceedsUc,
+      {required bool mainnet, required bool paper}) async {
+    if (paper || proceedsUc <= BigInt.zero) return proceedsUc;
+    if (bot.config['keepGas'] == false) return proceedsUc;
+    final check = lowGasCheck;
+    if (check == null) return proceedsUc;
+    final lane = bot.lane ?? '';
+    final gasCoin = _laneNative[lane] ?? '';
+    if (gasCoin.isEmpty || gasCoin == from) return proceedsUc;
+    try {
+      if (!await check(lane)) return proceedsUc;
+      // Same hard gates the settlement hop honors — skip quietly when blocked.
+      if (mainnet && !mainnetEnabled) return proceedsUc;
+      if (!_allowed('swap')) return proceedsUc;
+      final prices = await _prices([from]);
+      final fromUc = _unitUc(prices, from);
+      if (fromUc == null) return proceedsUc;
+      final topUpUc = b.microUsd((bot.config['keepGasUsd'] as num?) ?? 3);
+      final sliceUc = proceedsUc < topUpUc ? proceedsUc : topUpUc;
+      final fromDec = b.decimalsFor(from, bot.config['decimals'] as Map<String, dynamic>?);
+      final amount = b.qtyForUsd(sliceUc, fromUc, fromDec);
+      if (amount <= BigInt.zero) return proceedsUc;
+      final remainingUc = b.microUsd(bot.allocationUsd) -
+          ((bot.state['committedUc'] as BigInt?) ?? BigInt.zero);
+      final r = await _dispatch(
+        bot,
+        'swap',
+        {
+          'from': from, 'to': gasCoin, 'amount': amount.toString(),
+          'venue': await _resolveVenue(bot, from, gasCoin, b.ucToUsd(sliceUc), null),
+        },
+        remainingUc > BigInt.zero ? remainingUc : b.microUsd(bot.allocationUsd),
+      );
+      if (r['rejected'] == true || r['result'] == null) {
+        await _audit({'type': 'bot_keep_gas_skip', 'bot': bot.id, 'reason': r['reason'] ?? 'rejected', 'from': from, 'to': gasCoin});
+        return proceedsUc;
+      }
+      await _audit({'type': 'bot_keep_gas', 'bot': bot.id, 'from': from, 'to': gasCoin, 'amount': amount.toString(), 'txid': r['txid']});
+      emit({'type': 'bot_keep_gas', 'bot': bot.id, 'from': from, 'to': gasCoin, 'usd': b.ucToUsd(sliceUc)});
+      return proceedsUc - sliceUc;
+    } catch (_) {
+      return proceedsUc; // fail-soft — never blocks the settlement path
+    }
+  }
+
   Future<Map<String, dynamic>> _settleRealizedExit(
     b.Bot bot, {
     required String proceedsAsset,
@@ -1140,6 +1209,9 @@ class BotRunner {
     required bool paper,
   }) async {
     final from = proceedsAsset.toUpperCase();
+    // KEEP-GAS runs FIRST (and also covers bots with no profit currency): carve
+    // a small gas top-up out of realized profit when the wallet is running low.
+    proceedsUc = await _maybeKeepGas(bot, from, proceedsUc, mainnet: mainnet, paper: paper);
     final pc = _profitCurrency(bot);
     // No profit currency configured, already in it, or nothing realized -> the
     // native quote IS the realized currency; skip the redundant hop.

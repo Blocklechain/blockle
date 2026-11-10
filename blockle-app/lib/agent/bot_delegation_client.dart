@@ -72,6 +72,23 @@ class BotDelegationClient {
     }
   }
 
+  /// Fetch the server-side AUTOPILOT ACTIVITY for this account: whether live
+  /// execution is enabled on the server, the delegations (cap/spent/remaining),
+  /// and per-bot trade history + last runner status. Null when signed out /
+  /// offline — the UI then shows local-only numbers.
+  Future<Map<String, dynamic>?> activity() async {
+    final b = bearer();
+    if (!_ready || b == null) return null;
+    try {
+      final r = await http.get(Uri.parse('$origin/account/api/bots/activity'),
+          headers: {'authorization': 'Bearer $b'}).timeout(const Duration(seconds: 10));
+      if (r.statusCode >= 400) return null;
+      return (jsonDecode(r.body) as Map).cast<String, dynamic>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Revoke ONE bot's delegation (bot stopped/removed).
   Future<void> revoke(String botId) => _revoke({'botId': botId});
 

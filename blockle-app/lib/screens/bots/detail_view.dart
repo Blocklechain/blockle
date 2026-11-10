@@ -58,6 +58,8 @@ class DetailView extends StatelessWidget {
         ]),
       );
     }
+    // Kick a throttled server-activity refresh so the card below is fresh.
+    controller.refreshServerActivity();
     final d = controller.dashboard(botId) ?? const {};
     final deal = _openDeal(bot);
     final pair = bot.pairs().isNotEmpty ? bot.pairs().first : '—';
@@ -80,6 +82,10 @@ class DetailView extends StatelessWidget {
           ),
         ]),
         const SizedBox(height: 8),
+        // SERVER-MANAGED live bot: the autopilot executes on the server, so the
+        // local engine shows zeros by design — show the server's truth instead.
+        if (d['serverManaged'] == true) _serverCard(context, d),
+        if (d['serverManaged'] == true) const SizedBox(height: 16),
         LayoutBuilder(builder: (ctx, c) {
           final dealCard = _dealCard(context, bot, deal, pair, d);
           final perfCard = _perfCard(context, bot, d);
@@ -524,6 +530,97 @@ class DetailView extends StatelessWidget {
       onBack();
     }
   }
+
+  /// SERVER-MANAGED live bot: what the autopilot is ACTUALLY doing on the
+  /// server — trades, deployed capital, last runner status — and an honest
+  /// banner when live execution is disabled server-side (the reason numbers
+  /// would otherwise sit at zero with no explanation).
+  Widget _serverCard(BuildContext context, Map<String, dynamic> d) {
+    final t = BotTheme.of(context);
+    final enabled = d['liveEnabled'] != false;
+    final spent = (d['spentUsd'] as num?) ?? 0;
+    final remaining = (d['remainingUsd'] as num?);
+    final status = '${d['lastStatus'] ?? 'no runner report yet'}';
+    final trades = (d['serverTrades'] as List?) ?? const [];
+    return BotCard(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.cloud_outlined, size: 18, color: t.inkMuted),
+          const SizedBox(width: 8),
+          Text('Autopilot (server-managed)',
+              style: TextStyle(fontWeight: FontWeight.w700, color: t.ink)),
+        ]),
+        const SizedBox(height: 10),
+        if (!enabled)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.orange.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(BotTokens.radiusSm),
+              border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+            ),
+            child: Text(
+              'Live execution is currently DISABLED on the server — the '
+              'autopilot is armed but not trading, which is why results are 0. '
+              'Trades begin when the operator enables live execution.',
+              style: TextStyle(fontSize: 12.5, color: t.ink, height: 1.35),
+            ),
+          )
+        else ...[
+          Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Deployed', style: TextStyle(fontSize: 11, color: t.inkMuted)),
+                Text(moneyUsd(spent, sign: false),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: t.ink)),
+              ]),
+            ),
+            if (remaining != null)
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Remaining cap', style: TextStyle(fontSize: 11, color: t.inkMuted)),
+                  Text(moneyUsd(remaining, sign: false),
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: t.ink)),
+                ]),
+              ),
+          ]),
+          const SizedBox(height: 8),
+          Text('Runner: $status', style: TextStyle(fontSize: 12, color: t.inkMuted)),
+          if (trades.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text('RECENT TRADES',
+                style: TextStyle(fontSize: 10.5, letterSpacing: 0.8, color: t.inkMuted, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            for (final tr in trades.take(6))
+              if (tr is Map)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Row(children: [
+                    Text(moneyUsd((tr['usd'] as num?) ?? 0, sign: false),
+                        style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: t.ink)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('${tr['type'] ?? 'trade'}${tr['token'] != null ? ' · ${_shortTok('${tr['token']}')}' : ''}',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11.5, color: t.inkMuted)),
+                    ),
+                    Text(_shortTok('${tr['txid'] ?? ''}'),
+                        style: TextStyle(fontSize: 10.5, color: t.inkMuted)),
+                  ]),
+                ),
+          ] else
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('No server trades yet.',
+                  style: TextStyle(fontSize: 12, color: t.inkMuted)),
+            ),
+        ],
+      ]),
+    );
+  }
+
+  static String _shortTok(String s) =>
+      s.length <= 12 ? s : '${s.substring(0, 6)}…${s.substring(s.length - 4)}';
 
   Widget _perfCard(BuildContext context, b.Bot bot, Map<String, dynamic> d) {
     final t = BotTheme.of(context);

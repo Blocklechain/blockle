@@ -25,7 +25,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 
-import 'dart:async' show unawaited;
+import 'dart:async' show Timer, unawaited;
 
 import '../agent/audit.dart';
 import '../agent/bot_delegation_client.dart';
@@ -53,9 +53,16 @@ import 'multichain_controller.dart';
 const List<String> kBotToolNames = ['swap', 'place_order', 'cancel_order'];
 
 class BotsController extends ChangeNotifier {
-  BotsController(this._mc);
+  BotsController(this._mc) {
+    // Server-managed live bots execute on the server — poll their activity so
+    // the UI shows real trades/status instead of silent zeros. 60s cadence;
+    // refreshServerActivity itself no-ops when there are no live bots.
+    _activityTimer = Timer.periodic(
+        const Duration(seconds: 60), (_) => unawaited(refreshServerActivity()));
+  }
 
   final MultichainController _mc;
+  Timer? _activityTimer;
 
   // ---- engine objects (all real; none mocked) ------------------------------
   late final b.BotStore _store;
@@ -127,6 +134,7 @@ class BotsController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _activityTimer?.cancel();
     _runner?.stopScheduler();
     _mc.removeListener(_rebuildRunner);
     super.dispose();
@@ -250,6 +258,9 @@ class BotsController extends ChangeNotifier {
       // the runner. Otherwise live bots run on the SERVER (delegation); the
       // client just registers them and must not tick-execute (see BotRunner).
       clientExecutesLive: inst != null,
+      // KEEP-GAS: lets a live bot convert a small profit slice into native gas
+      // (through the same gate) when the lane's gas balance runs low.
+      lowGasCheck: _lowGasCheck,
       onEvent: _onEvent,
       pnl: pnl,
       // Profit pings (paper + live, any currency) flow through the SAME in-app
@@ -357,7 +368,53 @@ class BotsController extends ChangeNotifier {
   // ---- reads (pure off persisted bot state) --------------------------------
 
   List<b.Bot> bots() => _runner?.list() ?? const [];
-  Map<String, dynamic>? dashboard(String id) => _runner?.dashboard(id);
+  // ---- server-managed autopilot activity ------------------------------------
+  // Live bots execute on the SERVER (delegation); the local runner no-ops them,
+  // so without this the UI shows zeros forever. We poll the server's per-bot
+  // activity (trades + last runner status + whether live execution is even
+  // enabled) and MERGE it into dashboard() so the screens show the truth.
+  Map<String, dynamic> _serverActivity = const {};
+  List<dynamic> _serverDelegations = const [];
+  bool? _serverLiveEnabled; // null = unknown (signed out / unreachable)
+  DateTime _activityAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool get serverLiveEnabled => _serverLiveEnabled ?? true;
+
+  /// Refresh the server-side activity snapshot (30s throttle; best-effort).
+  Future<void> refreshServerActivity({bool force = false}) async {
+    final hasLive = bots().any((bt) => bt.mode == 'live');
+    if (!hasLive) return;
+    if (!force && DateTime.now().difference(_activityAt).inSeconds < 30) return;
+    _activityAt = DateTime.now();
+    final a = await _delegations.activity();
+    if (a == null) return;
+    _serverActivity = (a['activity'] as Map?)?.cast<String, dynamic>() ?? const {};
+    _serverDelegations = (a['delegations'] as List?) ?? const [];
+    _serverLiveEnabled = a['liveEnabled'] == true;
+    notifyListeners();
+  }
+
+  Map<String, dynamic>? dashboard(String id) {
+    final d = _runner?.dashboard(id);
+    if (d == null) return null;
+    final bt = _runner?.get(id);
+    if (bt == null || bt.mode != 'live') return d;
+    // Overlay the server-managed truth for live bots.
+    final act = (_serverActivity[id] as Map?)?.cast<String, dynamic>();
+    Map<String, dynamic>? del;
+    for (final x in _serverDelegations) {
+      if (x is Map && '${x['botId']}' == id) { del = x.cast<String, dynamic>(); break; }
+    }
+    return {
+      ...d,
+      'serverManaged': true,
+      'liveEnabled': _serverLiveEnabled,
+      if (del != null) 'spentUsd': del['spentUsd'],
+      if (del != null) 'remainingUsd': del['remainingUsd'],
+      if (act != null) 'serverTrades': act['trades'] ?? const [],
+      if (act != null) 'lastStatus': act['lastStatus'],
+      if (act != null) 'lastAt': act['lastAt'],
+    };
+  }
   Map<String, dynamic> aggregate() => _runner?.aggregate() ?? {'realizedUsd': 0, 'bots': []};
   b.Bot? bot(String id) => _runner?.get(id);
   bool get killed => _runner?.killed ?? false;
@@ -642,6 +699,33 @@ class BotsController extends ChangeNotifier {
     // key leaves the device). Best-effort; signed-out → runs app-open only.
     unawaited(_registerDelegation(id, allocationUsd));
     notifyListeners();
+  }
+
+  // KEEP-GAS host hook: is the native gas balance on [lane] running low?
+  // (< 2x a conservative per-chain fee reserve). Fail-closed to false — if the
+  // balance can't be read, no top-up fires.
+  static const Map<String, double> _gasFloor = {
+    'solana': 0.00002, 'ethereum': 0.0006, 'base': 0.0003, 'arbitrum': 0.0003,
+    'optimism': 0.0003, 'polygon': 0.05, 'bnb': 0.0008, 'avalanche': 0.01,
+    'block': 0.001,
+  };
+  Future<bool> _lowGasCheck(String lane) async {
+    final floor = _gasFloor[lane];
+    if (floor == null) return false;
+    try {
+      final bals = await _mc.balancesFor(lane);
+      for (final x in bals) {
+        if (x.asset.kind == 'native') {
+          final raw = BigInt.tryParse(x.confirmed) ?? BigInt.zero;
+          var v = raw.toDouble();
+          for (var i = 0; i < x.asset.decimals; i++) {
+            v /= 10;
+          }
+          return v < floor * 2;
+        }
+      }
+    } catch (_) {}
+    return false;
   }
 
   BotDelegationClient get _delegations => BotDelegationClient(
