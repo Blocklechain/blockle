@@ -58,25 +58,25 @@ function decryptSecret(enc, seedHex) {
 
 // Generate (once) + persist the treasury BLOCK wallet. Returns {address,publicKey}.
 // The secret is only ever stored encrypted. Idempotent.
-export async function ensureTreasuryWallet(store, seedHex) {
+export async function ensureTreasuryWallet(store, seedHex, { walletKey = 'blockWallet' } = {}) {
   if (!seedHex || seedHex.length < 32) throw new Error('no treasury seed');
-  const existing = store.get('liquidity', 'blockWallet');
+  const existing = store.get('liquidity', walletKey);
   if (existing && existing.address) return { address: existing.address, publicKey: existing.publicKey };
   const kp = JSON.parse(wasm().keygen());
   const rec = { address: kp.address, publicKey: kp.publicKey, enc: encryptSecret(kp.secretKey, seedHex), createdAt: Date.now() };
-  await store.put('liquidity', 'blockWallet', rec);
+  await store.put('liquidity', walletKey, rec);
   return { address: rec.address, publicKey: rec.publicKey };
 }
 
-export function treasuryBlockAddress(store, seedHex) {
-  const rec = store.get('liquidity', 'blockWallet');
+export function treasuryBlockAddress(store, seedHex, { walletKey = 'blockWallet' } = {}) {
+  const rec = store.get('liquidity', walletKey);
   if (rec && rec.address) return rec.address;
   if (!seedHex) return null;
   return null; // not yet generated — call ensureTreasuryWallet first (on a write path)
 }
 
-function loadSigningMaterial(store, seedHex) {
-  const rec = store.get('liquidity', 'blockWallet');
+function loadSigningMaterial(store, seedHex, walletKey = 'blockWallet') {
+  const rec = store.get('liquidity', walletKey);
   if (!rec || !rec.enc) throw new Error('treasury BLOCK wallet not provisioned');
   return { address: rec.address, publicKey: rec.publicKey, secretKey: decryptSecret(rec.enc, seedHex) };
 }
@@ -167,8 +167,8 @@ const opKey = (u) => `${u.txid}:${u.vout}`;
 /// /utxos keeps listing them until the payout is mined, so a second payout
 /// built from the same list would double-spend and be rejected. Entries vanish
 /// once the outpoint leaves the utxo set (confirmed) or after a TTL.
-function loadPending(store, utxos, nowMs) {
-  const rec = (store && store.get('liquidity', PENDING_KEY)) || {};
+function loadPending(store, utxos, nowMs, pendingKey = PENDING_KEY) {
+  const rec = (store && store.get('liquidity', pendingKey)) || {};
   const live = new Set(utxos.map(opKey));
   const out = {};
   for (const [k, v] of Object.entries(rec)) {
@@ -198,14 +198,14 @@ function selectInputs(utxos, pending, need) {
 // treasury UTXOs, selects inputs (skipping ones our own confirming payouts already
 // spend), builds + ML-DSA-signs the transfer (wasm), broadcasts via submit, and
 // records the spent outpoints as pending until they confirm.
-export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chainBase, fetchFn = globalThis.fetch, env = process.env, now = () => Date.now() }) {
+export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chainBase, fetchFn = globalThis.fetch, env = process.env, now = () => Date.now(), walletKey = 'blockWallet', pendingKey = PENDING_KEY }) {
   if (!/^(1|true|yes|on)$/i.test(env.LIQUIDITY_MAINNET || '')) throw new Error('liquidity settlement disabled (LIQUIDITY_MAINNET not set)');
-  const { address, publicKey, secretKey } = loadSigningMaterial(store, seedHex);
+  const { address, publicKey, secretKey } = loadSigningMaterial(store, seedHex, walletKey);
   const u = await getJson(chainBase, '/utxos/' + address, fetchFn);
   const utxos = (u && u.utxos) || [];
   if (!utxos.length) throw new Error('treasury BLOCK wallet has no spendable funds');
   const need = base(amountBlock) + DEFAULT_FEE;
-  const pending = loadPending(store, utxos, now());
+  const pending = loadPending(store, utxos, now(), pendingKey);
   const sel = selectInputs(utxos, pending, need);
   if (sel.total < need) {
     if (sel.excluded > 0) throw new Error(`payout queued: treasury BLOCK inputs are waiting for a previous payout to confirm (${sel.excluded} pending) — will retry`);
@@ -216,9 +216,9 @@ export async function payoutBlock({ store, seedHex, toAddress, amountBlock, chai
   if (!raw) throw new Error('build_transfer produced no raw tx');
   const markPending = async (txid) => {
     if (!store) return;
-    const cur = loadPending(store, utxos, now());
+    const cur = loadPending(store, utxos, now(), pendingKey);
     for (const u of sel.picked) cur[opKey(u)] = { txid, at: now() };
-    await store.put('liquidity', PENDING_KEY, cur);
+    await store.put('liquidity', pendingKey, cur);
   };
   // The submit proxy (biz /api/submit -> node submitrawtransaction) reads the
   // signed tx from the `raw` field. A rejected broadcast MUST fail loudly: the

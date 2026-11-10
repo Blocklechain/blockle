@@ -5,6 +5,7 @@ import '../models/wallet.dart';
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
+import 'drip_screen.dart';
 import 'onboarding.dart';
 import 'wallet_export_screen.dart';
 import '../state/dev_settings.dart';
@@ -41,6 +42,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 18),
           _section('Blockle account'),
           _accountTile(context.watch<MultichainController>()),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: Bk.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Bk.border),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.water_drop_outlined, color: Bk.accent2),
+              title: const Text('Blockle Drip', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Claim free BLOCK every 24 hours',
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right, color: Bk.muted),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const DripScreen()),
+              ),
+            ),
+          ),
           const SizedBox(height: 22),
           _section('Wallets'),
           ..._wallets.map((w) => _walletTile(app, w)),

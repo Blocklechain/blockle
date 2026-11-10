@@ -15,6 +15,7 @@ import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makeLiquidity } from './liquidity.js';
+import { makeDrip } from './drip.js';
 import { settleSwap, liquidityMainnet, settleableCoins } from './liquidity_relayer.js';
 import { solRpcSender } from './liquidity_sol.js';
 import { rpcSenderFor } from './liverunner.js';
@@ -60,6 +61,7 @@ export function createApp(overrides = {}) {
     ? solRpcSender(process.env.SOLANA_RPC || 'https://solana-rpc.publicnode.com')
     : rpcSenderFor(chainId);
   const liquidity = overrides.liquidity || makeLiquidity({ store, env: process.env, now, chainBase: cfg.chainApiBase, rpcFor: liqRpcFor });
+  const drip = overrides.drip || makeDrip({ store, env: process.env, now, chainBase: cfg.chainApiBase });
   const prices = overrides.prices || makePrices({});
   // Ephemeral server-side bot-delegation registry (Stage 1: lifecycle only, no
   // key material). In-memory → a restart fail-closes every delegation.
@@ -557,6 +559,28 @@ export function createApp(overrides = {}) {
   // ---- Blockle Liquidity treasury (server-authoritative reserves) ----------
   // Shared reserves, one BLOCK price across every currency, fed by the 0.05% bot
   // fees. State + quote are open reads (CORS-open for the wallets); swap applies
+  // ---- BLOCKLE DRIP — daily free-BLOCK claim from the funded giveaway wallet.
+  // State is public (CORS-open); claiming requires a signed-in account (the 24h
+  // meter is per account AND per destination address). Sends are REAL on-chain
+  // BLOCK transfers, gated by LIQUIDITY_MAINNET like every other BLOCK leg.
+  on('GET', /^\/account\/api\/drip\/state$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    const sess = await currentSession(req).catch(() => null);
+    return json(res, 200, await drip.state(sess ? sess.uid : null));
+  });
+  on('POST', /^\/account\/api\/drip\/claim$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('drip:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const sess = await currentSession(req).catch(() => null);
+    if (!sess) return json(res, 401, { error: 'sign in to claim' });
+    const b = await readJson(req, 2 * 1024).catch(() => ({}));
+    try {
+      return json(res, 200, await drip.claim({ uid: sess.uid, toAddress: b.address }));
+    } catch (e) {
+      return json(res, 400, { error: String(e && e.message || 'claim failed'), nextClaimAt: e && e.nextClaimAt || undefined });
+    }
+  });
+
   // authoritative accounting (on-chain settlement is gated by LIQUIDITY_MAINNET).
   on('GET', /^\/account\/api\/liquidity\/state$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
