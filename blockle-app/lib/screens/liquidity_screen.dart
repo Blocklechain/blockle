@@ -14,6 +14,7 @@ import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart' show AssetRef, Balance, SendRequest;
 import '../state/liquidity_controller.dart';
+import '../services/open_url.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'wallet/send_gate.dart';
@@ -982,13 +983,13 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
                 '${_fmtAmt(widget.amountOut)} ${widget.to} sent to your wallet.'),
             if ((_payoutTxid ?? '').isNotEmpty) ...[
               const SizedBox(height: 10),
-              _txRow('Payout transaction', _payoutTxid!),
+              _txRow('Payout transaction', _payoutTxid!, chain: _chainForCoin(widget.to)),
             ],
           ] else if (_phase == _Phase.pending) ...[
             _resultBanner(Bk.accent, Icons.schedule, _status),
             if ((_depositTxid ?? '').isNotEmpty) ...[
               const SizedBox(height: 10),
-              _txRow('Deposit transaction', _depositTxid!),
+              _txRow('Deposit transaction', _depositTxid!, chain: _chainForCoin(widget.from)),
             ],
           ] else ...[
             _resultBanner(Bk.bad, Icons.error_outline, _error ?? 'Something went wrong'),
@@ -1031,7 +1032,7 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
         ]),
       );
 
-  Widget _txRow(String label, String value) => Container(
+  Widget _txRow(String label, String value, {String? chain}) => Container(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
         decoration: BoxDecoration(color: Bk.surface2, borderRadius: BorderRadius.circular(Bk.rMd)),
         child: Row(children: [
@@ -1042,6 +1043,15 @@ class _AutoSettleSheetState extends State<_AutoSettleSheet> {
               Text(value, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: Bk.text)),
             ]),
           ),
+          if (chain != null)
+            IconButton(
+              icon: const Icon(Icons.open_in_new_rounded, size: 18, color: Bk.accent2),
+              tooltip: 'View on explorer',
+              onPressed: () {
+                final u = context.read<MultichainController>().explorerTxUrl(chain, value);
+                if (u != null) openExternal(u);
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.copy, size: 18, color: Bk.muted),
             onPressed: () {

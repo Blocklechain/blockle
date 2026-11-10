@@ -604,8 +604,21 @@ class DetailView extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(fontSize: 11.5, color: t.inkMuted)),
                     ),
-                    Text(_shortTok('${tr['txid'] ?? ''}'),
-                        style: TextStyle(fontSize: 10.5, color: t.inkMuted)),
+                    GestureDetector(
+                      onTap: () {
+                        final txid = '${tr['txid'] ?? ''}';
+                        final bot = controller.bot(botId);
+                        if (txid.isEmpty || bot == null) return;
+                        final u = context.read<MultichainController>().explorerTxUrl(_cashOutChain(bot), txid);
+                        if (u != null) openExternal(u);
+                      },
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Text(_shortTok('${tr['txid'] ?? ''}'),
+                            style: TextStyle(fontSize: 10.5, color: t.inkMuted)),
+                        const SizedBox(width: 4),
+                        Icon(Icons.open_in_new_rounded, size: 12, color: t.inkMuted),
+                      ]),
+                    ),
                   ]),
                 ),
           ] else

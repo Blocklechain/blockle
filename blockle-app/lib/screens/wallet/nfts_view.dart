@@ -13,6 +13,8 @@ import '../../multichain/nft.dart' as nft;
 import '../../multichain/chains/evm.dart' show EvmAdapter;
 import '../../multichain/chains/solana.dart' show SolanaAdapter;
 import '../../multichain/chains/chain_adapter.dart' show BroadcastResult;
+import '../../services/open_url.dart';
+import '../../state/multichain_controller.dart';
 import '../../state/wallet_controller.dart';
 import '../bots/bots_tokens.dart';
 import 'security_sheet.dart';
@@ -331,8 +333,14 @@ class _NftsViewState extends State<NftsView> {
       }
       final res = await doSend();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sent — ${shortAddr(res.txid)}')));
+      final exUrl = context.read<MultichainController>().explorerTxUrl(chain, res.txid);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Sent — ${shortAddr(res.txid)}'),
+        action: exUrl == null
+            ? null
+            : SnackBarAction(label: 'Explorer', onPressed: () => openExternal(exUrl)),
+        duration: const Duration(seconds: 6),
+      ));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));

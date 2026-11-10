@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/chain.dart';
+import '../services/open_url.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 
@@ -234,11 +235,20 @@ class _QueueScreenState extends State<QueueScreen> {
                       Text(p['kind']?.toString() ?? 'Transaction',
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 2),
-                      GestureDetector(
-                        onTap: () => Clipboard.setData(ClipboardData(text: txid)),
-                        child: Text('${txid.length > 24 ? txid.substring(0, 24) : txid}…',
-                            style: kMono.copyWith(fontSize: 11, color: Bk.muted)),
-                      ),
+                      Row(mainAxisSize: MainAxisSize.min, children: [
+                        Flexible(
+                          child: GestureDetector(
+                            onTap: () => Clipboard.setData(ClipboardData(text: txid)),
+                            child: Text('${txid.length > 24 ? txid.substring(0, 24) : txid}…',
+                                style: kMono.copyWith(fontSize: 11, color: Bk.muted)),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: () => openExternal('https://blockle.org/tx/$txid'),
+                          child: const Icon(Icons.open_in_new_rounded, size: 14, color: Bk.accent2),
+                        ),
+                      ]),
                     ],
                   ),
                 ),
@@ -330,11 +340,22 @@ Widget historyRow(Map<String, dynamic> t) {
               const SizedBox(height: 2),
               Text(_historyWhen(t), style: const TextStyle(color: Bk.muted, fontSize: 12)),
               const SizedBox(height: 2),
-              GestureDetector(
-                onTap: () => Clipboard.setData(ClipboardData(text: txid)),
-                child: Text(txid.isNotEmpty ? '${txid.substring(0, txid.length.clamp(0, 24))}…' : '',
-                    style: kMono.copyWith(fontSize: 11, color: Bk.muted)),
-              ),
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                Flexible(
+                  child: GestureDetector(
+                    onTap: () => Clipboard.setData(ClipboardData(text: txid)),
+                    child: Text(txid.isNotEmpty ? '${txid.substring(0, txid.length.clamp(0, 24))}…' : '',
+                        style: kMono.copyWith(fontSize: 11, color: Bk.muted)),
+                  ),
+                ),
+                if (txid.isNotEmpty) ...[
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => openExternal('https://blockle.org/tx/$txid'),
+                    child: const Icon(Icons.open_in_new_rounded, size: 14, color: Bk.accent2),
+                  ),
+                ],
+              ]),
             ],
           ),
         ),

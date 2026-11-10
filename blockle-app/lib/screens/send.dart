@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/open_url.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import '../ui/app_icons.dart';
@@ -192,6 +193,13 @@ class _SendScreenState extends State<SendScreen> {
                   ]),
                   const SizedBox(height: 4),
                   Text(_ok!, style: kMono.copyWith(fontSize: 11)),
+                  const SizedBox(height: 10),
+                  OutlinedButton.icon(
+                    onPressed: () => openExternal('https://blockle.org/tx/$_ok'),
+                    icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                    label: const Text('View on explorer'),
+                    style: OutlinedButton.styleFrom(foregroundColor: Bk.good),
+                  ),
                 ],
               ),
             ),

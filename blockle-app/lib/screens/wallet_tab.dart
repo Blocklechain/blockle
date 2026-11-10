@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../multichain/chains/chain_adapter.dart' show Balance;
 import '../services/chain.dart';
+import '../services/open_url.dart';
 import '../services/token_list.dart';
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
@@ -544,6 +545,14 @@ class _WalletTabState extends State<WalletTab> {
             child: Text(txid.isNotEmpty ? '${txid.substring(0, txid.length.clamp(0, 18))}…' : 'transaction',
                 style: kMono.copyWith(fontSize: 12, color: Bk.muted)),
           ),
+          if (txid.isNotEmpty)
+            GestureDetector(
+              onTap: () => openExternal('https://blockle.org/tx/$txid'),
+              child: const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: Icon(Icons.open_in_new_rounded, size: 14, color: Bk.accent2),
+              ),
+            ),
           Text(val, style: const TextStyle(fontSize: 13)),
         ],
       ),

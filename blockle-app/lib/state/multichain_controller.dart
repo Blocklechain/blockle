@@ -948,6 +948,17 @@ class MultichainController extends ChangeNotifier {
   bool isEvmChain(String chain) =>
       kEvmChains.contains(chain) || registry.customNetwork(chain) != null;
 
+  /// Explorer URL for [txid] on [chain] — each chain adapter knows its own
+  /// explorer (custom networks included). Null when unknown/empty.
+  String? explorerTxUrl(String chain, String txid) {
+    if (txid.isEmpty) return null;
+    try {
+      return registry.get(chain).explorerTx(txid);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<DerivedAccount?> addressFor(String chain) async {
     try {
       return await accounts.accountFor(chain);
