@@ -245,7 +245,26 @@ class MultichainController extends ChangeNotifier {
     await _loadCustomNets();
     await _loadMoonpay();
     _buildRegistryAndAccounts();
-    venues = VenueRegistry.create(); // treasury unset -> agent fee fail-closed
+    // Agent-fee treasury = the Blockle LIQUIDITY custodial hot wallets (mirrors
+    // exchange/treasury.json + web/extension wiring.js DEFAULT_TREASURY), so the
+    // mandatory 0.05% fee leg on every live agent/bot trade is a REAL on-chain
+    // transfer that funds the swap pools. Public receiving addresses only.
+    venues = VenueRegistry.create(treasury: const {
+      'agentTradeFeeBps': 5,
+      'mainnet': {
+        'solana': '8k9eVZhG9GMqneQWpo6jsigh36DLsZkqQndjwHQmYcwd',
+        'ethereum': '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+        'base': '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+        'erc20': '0x03AfB9B250e61b0F573c00625B2b549C14E2247B',
+        'block':
+            'block1xq2rkzx0jh842nwqw6u40ly8tnh4j3z8rjr2kame4tsmnvjnp7ks4fs0p5',
+      },
+      // Testnet/dev: BLOCK fee sink only (genesis dev wallet, never mainnet).
+      'testnet': {
+        'block':
+            'block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0',
+      },
+    });
     agent = AgentService(
       accounts: accounts,
       venues: venues,

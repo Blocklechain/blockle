@@ -142,40 +142,42 @@ class LiquidityService extends ChangeNotifier {
     return usd;
   }
 
-  /// TAKE A BOT FEE. Called from the bot event stream on every executed/paper
-  /// trade: deposit [feeUsd] worth of [coin] into that coin's pool. Non-stable
-  /// coins need a USD price — if we don't have one yet, fetch it then accrue.
-  void takeFee(String coin, double feeUsd) {
-    if (feeUsd <= 0) return;
+  /// TAKE A BOT FEE from a LIVE fill: deposit [feeUsd] worth of [coin] into that
+  /// coin's pool. The server credits only posts marked mode:'live' — paper fills
+  /// move no real money and must never inflate the ledger. Non-stable coins need
+  /// a USD price — if we don't have one yet, fetch it then accrue.
+  void takeFee(String coin, double feeUsd, {String mode = 'live'}) {
+    if (feeUsd <= 0 || mode != 'live') return;
     final c = coin.toUpperCase();
     final px = priceOf(c);
     if (px > 0) {
       _pool.accrueFee(c, feeUsd, px);
       _touch();
-      _postFee(c, feeUsd, px); // grow the shared server treasury too
+      _postFee(c, feeUsd, px, mode); // grow the shared server treasury too
     } else {
-      unawaited(_accrueWhenPriced(c, feeUsd));
+      unawaited(_accrueWhenPriced(c, feeUsd, mode));
     }
   }
 
   // Record the fee into the SERVER treasury (best-effort, rate-limited server-side).
-  void _postFee(String coin, double feeUsd, double coinUsd) {
+  void _postFee(String coin, double feeUsd, double coinUsd, String mode) {
     if (!serverBacked) return;
     unawaited(http
         .post(Uri.parse('$_serverBase/account/api/liquidity/fee'),
             headers: const {'content-type': 'application/json'},
-            body: jsonEncode({'coin': coin, 'feeUsd': feeUsd, 'coinUsd': coinUsd}))
+            body: jsonEncode(
+                {'coin': coin, 'feeUsd': feeUsd, 'coinUsd': coinUsd, 'mode': mode}))
         .timeout(const Duration(seconds: 8))
         .catchError((_) => http.Response('', 599)));
   }
 
-  Future<void> _accrueWhenPriced(String coin, double feeUsd) async {
+  Future<void> _accrueWhenPriced(String coin, double feeUsd, String mode) async {
     await _fetchPrices([coin]);
     final px = priceOf(coin);
     if (px > 0) {
       _pool.accrueFee(coin, feeUsd, px);
       _touch();
-      _postFee(coin, feeUsd, px);
+      _postFee(coin, feeUsd, px, mode);
     }
   }
 

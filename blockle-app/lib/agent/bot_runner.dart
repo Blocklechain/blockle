@@ -1532,6 +1532,10 @@ class BotRunner {
   // accrues it. notionalUsd is the trade size; feeUsd = 0.05% of it.
   static const double _liquidityFeeRate = 0.0005; // 0.05%
   void _emitTradeFee(b.Bot bot, String quoteCoin, num? notionalUsd) {
+    // LIVE fills only: a paper fill moves no real money, so crediting its fee
+    // to the liquidity ledger would inflate reserves with nothing backing them
+    // (the server also refuses fee posts not marked mode:'live').
+    if (bot.mode != 'live') return;
     final n = (notionalUsd ?? 0).toDouble();
     if (n <= 0 || quoteCoin.isEmpty) return;
     emit({

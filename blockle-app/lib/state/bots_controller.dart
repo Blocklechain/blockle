@@ -322,12 +322,15 @@ class BotsController extends ChangeNotifier {
   }
 
   void _onEvent(Map<String, dynamic> ev) {
-    // The 0.05% liquidity fee on every bot trade (paper OR live) → the in-wallet
-    // liquidity treasury, keyed by the pair's base coin. Fail-soft.
+    // The 0.05% liquidity fee on LIVE bot trades → the liquidity treasury,
+    // keyed by the pair's quote coin. The runner only emits bot_fee for live
+    // fills; the mode rides along so the server credits only real-money fees.
     if (ev['type'] == 'bot_fee') {
       final coin = '${ev['coin'] ?? ''}';
       final fee = (ev['feeUsd'] as num?)?.toDouble() ?? 0;
-      if (coin.isNotEmpty && fee > 0) LiquidityService.instance.takeFee(coin, fee);
+      if (coin.isNotEmpty && fee > 0) {
+        LiquidityService.instance.takeFee(coin, fee, mode: '${ev['mode'] ?? 'paper'}');
+      }
     }
     // A risk circuit-breaker (max-drawdown / loss-streak) halted a bot in the
     // engine — revoke its server-side delegation key immediately so a live bot
