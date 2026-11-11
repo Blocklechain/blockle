@@ -68,22 +68,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Bk.border),
             ),
-            child: ListTile(
-              leading: const Icon(Icons.notifications_active_outlined, color: Bk.accent),
-              title: const Text('Bot notifications', style: TextStyle(fontWeight: FontWeight.w600)),
-              subtitle: const Text('Get a banner when your trading bots act',
-                  style: TextStyle(color: Bk.muted, fontSize: 12)),
-              trailing: FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: Bk.accent),
-                onPressed: () async {
-                  final messenger = ScaffoldMessenger.of(context);
-                  final ok = await LocalNotifications.instance.requestPermission();
-                  messenger.showSnackBar(SnackBar(
-                      content: Text(ok
-                          ? 'Notifications enabled — your bots will keep you posted.'
-                          : 'Not allowed — enable notifications for Blockle in system settings.')));
-                },
-                child: const Text('Allow'),
+            // A Row (not ListTile.trailing) so the button keeps its natural width —
+            // in a ListTile the trailing slot gets squeezed by the title/subtitle
+            // and "Allow" wrapped one character per line on narrow screens.
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  const Icon(Icons.notifications_active_outlined, color: Bk.accent),
+                  const SizedBox(width: 16),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('Bot notifications',
+                            style: TextStyle(fontWeight: FontWeight.w600)),
+                        SizedBox(height: 2),
+                        Text('Get a banner when your trading bots act',
+                            style: TextStyle(color: Bk.muted, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: Bk.accent),
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final ok = await LocalNotifications.instance.requestPermission();
+                      messenger.showSnackBar(SnackBar(
+                          content: Text(ok
+                              ? 'Notifications enabled — your bots will keep you posted.'
+                              : 'Not allowed — enable notifications for Blockle in system settings.')));
+                    },
+                    child: const Text('Allow', maxLines: 1, softWrap: false),
+                  ),
+                ],
               ),
             ),
           ),
