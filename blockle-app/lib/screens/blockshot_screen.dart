@@ -534,6 +534,24 @@ class _TokenSheetState extends State<_TokenSheet> {
   double _okAmount = 0;
   final _amt = TextEditingController();
   bool _confetti = false;
+  double? _tokBal; // the user's REAL WORLD/token balance (whole units)
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBalance();
+  }
+
+  Future<void> _loadBalance() async {
+    final app = context.read<AppState>();
+    final addr = app.store.address;
+    if (addr == null) return;
+    final info = await app.chain.token(_token, holder: addr);
+    final raw = info?['balance'];
+    if (!mounted || raw == null) return;
+    final n = (raw is num) ? raw.toDouble() : (double.tryParse('$raw') ?? 0);
+    setState(() => _tokBal = n / math.pow(10, _dec));
+  }
 
   Map<String, dynamic> get p => widget.pool;
   String get _sym => '${p['symbol'] ?? '?'}';
@@ -565,6 +583,13 @@ class _TokenSheetState extends State<_TokenSheet> {
     }
     if (!app.store.isUnlocked) {
       setState(() => _error = 'Wallet is locked — unlock it first.');
+      return;
+    }
+    // Guard: selling more than you hold would SILENTLY no-op on-chain (the
+    // pool contract refunds nothing and burns the gas) — refuse up front.
+    if (!_buy && _tokBal != null && _amountIn > _tokBal! + 1e-9) {
+      setState(() => _error =
+          'You only hold ${_fmtB(_tokBal!, max: 6)} $_sym — lower the amount.');
       return;
     }
     final out = _estOut;
@@ -624,6 +649,7 @@ class _TokenSheetState extends State<_TokenSheet> {
         _amt.clear();
       });
       widget.onTraded();
+      Future.delayed(const Duration(seconds: 12), _loadBalance); // refresh after it confirms
       Future.delayed(const Duration(milliseconds: 1800), () {
         if (mounted) setState(() => _confetti = false);
       });
@@ -734,7 +760,11 @@ class _TokenSheetState extends State<_TokenSheet> {
                       if (_buy) {
                         _amt.text = '$v';
                       } else {
-                        _amt.text = _fmtB(_tokRes * v / 100 / 1000, max: 6);
+                        // % of YOUR balance (minus a hair at 100% so rounding
+                        // can't exceed it) — never the pool reserve.
+                        final bal = _tokBal ?? 0;
+                        final amt = v >= 100 ? bal * 0.999 : bal * v / 100;
+                        _amt.text = _fmtB(amt, max: 6);
                       }
                       setState(() {});
                     },
@@ -743,6 +773,9 @@ class _TokenSheetState extends State<_TokenSheet> {
             ],
           ),
           const SizedBox(height: 6),
+          if (!_buy)
+            Text('Your balance: ${_tokBal == null ? '…' : _fmtB(_tokBal!, max: 6)} $_sym',
+                style: const TextStyle(fontSize: 11.5, color: Bk.faint)),
           Text(
             _amountIn > 0
                 ? (_buy

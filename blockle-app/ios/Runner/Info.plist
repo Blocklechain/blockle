@@ -50,7 +50,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Blockle Wallet may request the microphone during identity verification when buying crypto with a card.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Blockle Wallet needs access to your photos so you can import a QR code image (e.g. a wallet address) or choose a profile picture.</string>
+	<string>Blockle Wallet needs access to your photos so you can import a QR code image, choose a profile picture, or add a logo when launching a token.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Blockle Wallet can save images such as your receive QR code to your photo library.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
