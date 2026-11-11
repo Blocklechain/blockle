@@ -505,6 +505,7 @@
     { id: 'receive', ic: 'receive', label: 'Receive' },
     { id: 'swap', ic: 'swap', label: 'Swap' },
     { id: 'liquidity', ic: 'liquidity', label: 'Liquidity' },
+    { id: 'drip', ic: 'liquidity', label: 'Drip' },
     { id: 'moon', ic: 'moon', label: 'Moon' },
     { id: 'bridge', ic: 'bridge', label: 'Bridge' },
     { id: 'agent', ic: 'agent', label: 'Agent' },
@@ -2444,6 +2445,82 @@
       });
     }).catch(function () {});
   }
+
+
+  /* ---------------- BLOCKLE DRIP (#drip) ----------------
+   * Daily free-BLOCK claim from the funded giveaway wallet. The server meters
+   * claims (per account AND per address, 24h) and sends REAL on-chain BLOCK;
+   * the reward halves as the 50k pool depletes (1 -> 0.5 at 25k -> 0.25 ...). */
+  VIEWS.drip = function (v) {
+    v.innerHTML =
+      '<div class="card" style="background:linear-gradient(135deg,#0E2A22,var(--card))">' +
+        '<div class="spread"><span class="dim" style="font-weight:600">BLOCKLE DRIP</span><span class="pill" style="color:var(--good)">free BLOCK every day</span></div>' +
+        '<div class="hero-bal num" id="dr-reward">—</div><div class="dim" style="font-size:12px">today\'s drip per wallet</div>' +
+        '<div class="statline" style="margin-top:12px">' +
+          '<div class="stat"><div class="n num" id="dr-left">—</div><div class="l">pool left</div></div>' +
+          '<div class="stat"><div class="n num" id="dr-claimed">—</div><div class="l">claimed so far</div></div>' +
+          '<div class="stat"><div class="n num" id="dr-mine">—</div><div class="l">you collected</div></div>' +
+        '</div></div>' +
+      '<div class="card">' +
+        '<div id="dr-cd" class="num" style="font-size:30px;font-weight:800;text-align:center;min-height:38px"></div>' +
+        '<button class="btn primary wide" id="dr-claim" disabled>Loading…</button>' +
+        '<div id="dr-note" style="font-size:12px;min-height:16px;margin-top:8px;text-align:center"></div>' +
+        '<p class="muted" style="font-size:11.5px;line-height:1.5;margin-top:10px">One claim per Blockle account and per address every 24 hours — a real on-chain send from the drip wallet to YOUR block1… address. The drip halves as the 50,000-BLOCK pool depletes: 1 BLOCK/day for the first 25,000, then 0.5, 0.25, and so on.</p>' +
+      '</div>';
+    var st = null, next = 0, busy = false;
+    function fmtB(x) { return x == null ? '—' : (Math.round(x * 100000000) / 100000000).toLocaleString(); }
+    function paint() {
+      var btn = $('#dr-claim'); if (!btn) return;
+      $('#dr-reward').textContent = st ? fmtB(st.reward) + ' BLOCK' : '—';
+      $('#dr-left').textContent = st ? fmtB(st.remaining) : '—';
+      $('#dr-claimed').textContent = st ? fmtB(st.totalClaimed) : '—';
+      $('#dr-mine').textContent = st ? (st.yourTotal != null ? fmtB(st.yourTotal) : 'sign in') : '—';
+      var now = Date.now();
+      if (busy) { btn.textContent = 'Claiming…'; btn.disabled = true; }
+      else if (!st) { btn.textContent = 'Loading…'; btn.disabled = true; }
+      else if (!S.user) { btn.textContent = 'Sign up to claim — it\'s free'; btn.disabled = false; }
+      else if ((st.remaining || 0) <= 0) { btn.textContent = 'The drip pool is fully distributed'; btn.disabled = true; }
+      else if (!st.active) { btn.textContent = 'Drip is paused'; btn.disabled = true; }
+      else if (next > now) { btn.textContent = 'Claimed — come back tomorrow'; btn.disabled = true; }
+      else { btn.textContent = 'Claim ' + fmtB(st.reward) + ' BLOCK'; btn.disabled = false; }
+      var cd = $('#dr-cd');
+      if (next > now) {
+        var left = next - now, h = Math.floor(left / 3600000), m = Math.floor(left % 3600000 / 60000), sec = Math.floor(left % 60000 / 1000);
+        cd.textContent = ('0' + h).slice(-2) + ':' + ('0' + m).slice(-2) + ':' + ('0' + sec).slice(-2);
+      } else { cd.textContent = ''; }
+    }
+    function load() {
+      fetch(ACCOUNTS + '/drip/state', { credentials: 'include' }).then(function (r) { return r.json(); }).then(function (j) {
+        st = j; next = (j && j.nextClaimAt) || 0; paint();
+      }).catch(function () { var n = $('#dr-note'); if (n) { n.textContent = 'Could not reach the drip server.'; n.style.color = 'var(--bad)'; } });
+    }
+    $('#dr-claim').onclick = function () {
+      if (!S.user) { location.href = '/account/register?next=/wallet%23drip'; return; }
+      busy = true; paint();
+      chainAddress('block').then(function (addr) {
+        var hdrs = { 'content-type': 'application/json' };
+        if (S.csrf) hdrs['x-csrf-token'] = S.csrf;
+        return fetch(ACCOUNTS + '/drip/claim', { method: 'POST', headers: hdrs, credentials: 'include', body: JSON.stringify({ address: addr }) })
+          .then(function (r) { return r.json(); });
+      }).then(function (j) {
+        busy = false;
+        var n = $('#dr-note'); if (!n) return;
+        if (j && j.ok) {
+          next = j.nextClaimAt || (Date.now() + 86400000);
+          n.innerHTML = 'Sent ' + fmtB(j.amount) + ' BLOCK — <a href="/tx/' + esc(j.txid || '') + '" target="_blank" rel="noopener">view on explorer</a>';
+          n.style.color = 'var(--good)';
+          toast('Claimed ' + fmtB(j.amount) + ' BLOCK', 'good');
+        } else {
+          if (j && j.nextClaimAt) next = j.nextClaimAt;
+          n.textContent = (j && j.error) || 'Claim failed.';
+          n.style.color = 'var(--bad)';
+        }
+        load();
+      }).catch(function () { busy = false; var n = $('#dr-note'); if (n) { n.textContent = 'Claim failed — try again.'; n.style.color = 'var(--bad)'; } paint(); });
+    };
+    load();
+    var tick = setInterval(function () { if (!$('#dr-claim')) { clearInterval(tick); return; } paint(); }, 1000);
+  };
 
   VIEWS.devtools = function (v) {
     if (!window.DevTools) { v.innerHTML = '<div class="card"><div class="empty">Developer tools unavailable.</div></div>'; return; }
