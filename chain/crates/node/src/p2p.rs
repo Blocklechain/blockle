@@ -49,9 +49,15 @@ const MAX_MESSAGE_SIZE: u32 = 64 * 1024 * 1024;
 const MAX_HEADERS_PER_MSG: usize = 2000;
 const MAX_BLOCKS_PER_REQUEST: usize = 2000;
 const OUTBOUND_TARGET: usize = 8;
-/// After this many consecutive failed dials an address is evicted from the
-/// known set; until then retries are spaced by an exponential backoff.
+/// After this many consecutive failed dials a LEARNED (gossiped) address is
+/// evicted from the known set; until then retries are spaced by an exponential
+/// backoff. SEED addresses (built-in + operator `--connect`) are NEVER evicted —
+/// a temporary outage of the main node must not permanently island a miner.
 const MAX_DIAL_FAILS: u32 = 6;
+/// Built-in always-on seed nodes, merged into every node's known set and never
+/// evicted. A node therefore has a bootstrap path even with no `--connect` and
+/// even after the main node restarts. Add community always-on nodes here.
+const DEFAULT_SEEDS: &[&str] = &["blockle.org:18444"];
 const HEARTBEAT: Duration = Duration::from_secs(10);
 /// How often the local miner abandons and rebuilds its block template so the
 /// quiet-lane difficulty decay (which is a function of wall-clock time) takes
@@ -170,6 +176,10 @@ pub struct Node {
     /// spamming "could not connect" and churning. Backoff spaces retries and
     /// `MAX_DIAL_FAILS` evicts the address from the known set entirely.
     dial_backoff: Mutex<HashMap<String, (u32, Instant)>>,
+    /// Sticky bootstrap addresses (built-in DEFAULT_SEEDS + operator `--connect`)
+    /// that are kept in the known set forever and retried with a capped backoff,
+    /// never evicted — so a transient main-node outage can't orphan a node.
+    seeds: HashSet<String>,
     next_peer_id: AtomicU64,
     /// Bumped on every tip change; miners poll it to abandon stale work.
     pub(crate) tip_version: AtomicU64,
@@ -177,7 +187,14 @@ pub struct Node {
 
 impl Node {
     pub fn new(config: NodeConfig, chain: Chain, mempool: Vec<Transaction>) -> Arc<Self> {
-        let known = config.connect.iter().cloned().collect();
+        // Seeds = operator --connect peers + the built-in defaults, minus our
+        // own listen address (a node must not seed to itself). These are sticky.
+        let mut seeds: HashSet<String> = config.connect.iter().cloned().collect();
+        for s in DEFAULT_SEEDS {
+            seeds.insert((*s).to_string());
+        }
+        seeds.remove(&config.listen);
+        let known: HashSet<String> = seeds.clone();
         Arc::new(Node {
             config,
             state: Mutex::new(SharedState { chain, mempool }),
@@ -186,6 +203,7 @@ impl Node {
             known_addrs: Mutex::new(known),
             outbound_targets: Mutex::new(HashSet::new()),
             dial_backoff: Mutex::new(HashMap::new()),
+            seeds,
             next_peer_id: AtomicU64::new(1),
             tip_version: AtomicU64::new(0),
         })
@@ -371,11 +389,13 @@ impl Node {
         let candidates: Vec<String> = {
             let mut known = self.known_addrs.lock().unwrap();
             let mut backoff = self.dial_backoff.lock().unwrap();
-            // Evict addresses that have failed too many times — stop retrying a
-            // peer that is gone for good (drop it from both known + backoff).
+            // Evict LEARNED addresses that have failed too many times — stop
+            // retrying a gossiped peer that is gone for good. SEEDS are exempt:
+            // they stay known forever (retried on the capped backoff) so the
+            // main node coming back after an outage always re-peers us.
             let dead: Vec<String> = backoff
                 .iter()
-                .filter(|(_, (c, _))| *c >= MAX_DIAL_FAILS)
+                .filter(|(a, (c, _))| *c >= MAX_DIAL_FAILS && !self.seeds.contains(*a))
                 .map(|(a, _)| a.clone())
                 .collect();
             for a in &dead {
