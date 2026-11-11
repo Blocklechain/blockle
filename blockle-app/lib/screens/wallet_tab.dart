@@ -13,6 +13,7 @@ import '../state/multichain_controller.dart';
 import '../theme.dart';
 
 import '../widgets/chain_icon.dart';
+import 'blockshot_screen.dart';
 import 'send.dart';
 import 'receive.dart';
 import 'moonpay_swap.dart';
@@ -27,6 +28,7 @@ class WalletTab extends StatefulWidget {
 class _WalletTabState extends State<WalletTab> {
   Map<String, dynamic>? _account;
   List<Map<String, dynamic>> _tokens = [];
+  List<Map<String, dynamic>> _pools = const [];
   bool _loading = true;
 
   // The other chains shown (with live native balances) on the home page so it's
@@ -57,10 +59,12 @@ class _WalletTabState extends State<WalletTab> {
     final acct = await app.chain.account(addr);
     final toks = await _loadTokens(app.chain, addr);
     final native = await _loadNative(mc);
+    final pools = await app.chain.pools();
     if (!mounted) return;
     setState(() {
       _account = acct;
       _tokens = toks;
+      _pools = pools;
       _native = native;
       _vaultLocked = !mc.vaultUnlocked;
       _loading = false;
@@ -458,10 +462,32 @@ class _WalletTabState extends State<WalletTab> {
     );
   }
 
+  String _fmtPx(double n) {
+    if (n >= 1) return n.toStringAsFixed(2);
+    var str = n.toStringAsFixed(8);
+    return str.replaceFirst(RegExp(r'0+\$'), '').replaceFirst(RegExp(r'\.\$'), '');
+  }
+
+  Widget _miniBtn(String label, Color c, VoidCallback onTap) => SizedBox(
+        height: 28,
+        child: TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            backgroundColor: c.withValues(alpha: 0.14),
+          ),
+          onPressed: onTap,
+          child: Text(label, style: TextStyle(fontSize: 12, color: c, fontWeight: FontWeight.w700)),
+        ),
+      );
+
   Widget _tokenRow(Map<String, dynamic> t) {
     final sym = (t['symbol'] ?? '?').toString();
     final name = (t['name'] ?? 'Unknown token').toString();
     final dec = (t['decimals'] as num?)?.toInt() ?? 0;
+    final cid0 = (t['contract'] ?? t['address'] ?? t['id'] ?? '').toString();
+    final px = blockshotPriceOf(_pools, cid0);
     final balRaw = t['balance'];
     String bal = '—';
     if (balRaw is num) {
@@ -500,28 +526,30 @@ class _WalletTabState extends State<WalletTab> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(bal, style: kMono),
+              if (px > 0) ...[
+                const SizedBox(height: 2),
+                Text('${_fmtPx(px)} BLOCK',
+                    style: const TextStyle(color: Bk.accent2, fontSize: 11.5, fontWeight: FontWeight.w700)),
+              ],
               const SizedBox(height: 6),
-              SizedBox(
-                height: 28,
-                child: TextButton(
-                  style: TextButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    minimumSize: Size.zero,
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                  onPressed: () {
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                if (px > 0)
+                  _miniBtn('Buy / Sell', Bk.accent, () {
                     final cid = (t['contract'] ?? t['address'] ?? t['id'] ?? '').toString();
-                    if (cid.isEmpty) return;
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => SendScreen(token: {'contract': cid, 'decimals': dec, 'symbol': sym}),
-                      ),
-                    );
-                  },
-                  child: const Text('Send', style: TextStyle(fontSize: 12)),
-                ),
-              ),
+                    if (cid.isNotEmpty) openBlockshotTrade(context, cid, onTraded: _refresh);
+                  }),
+                if (px > 0) const SizedBox(width: 6),
+                _miniBtn('Send', Bk.muted, () {
+                  final cid = (t['contract'] ?? t['address'] ?? t['id'] ?? '').toString();
+                  if (cid.isEmpty) return;
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SendScreen(token: {'contract': cid, 'decimals': dec, 'symbol': sym}),
+                    ),
+                  );
+                }),
+              ]),
             ],
           ),
         ],

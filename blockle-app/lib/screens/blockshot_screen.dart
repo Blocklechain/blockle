@@ -515,6 +515,50 @@ Widget _sheetShell(BuildContext context,
   );
 }
 
+/// Open the Blockshot buy/sell sheet for a token by its contract id — used
+/// from the wallet page's owned-token rows. Fetches the live pool + metadata;
+/// shows a short notice if the token has no AMM pool yet.
+Future<void> openBlockshotTrade(BuildContext context, String contractId,
+    {VoidCallback? onTraded}) async {
+  final app = context.read<AppState>();
+  final pools = await app.chain.pools();
+  Map<String, dynamic>? pool;
+  for (final p in pools) {
+    if ('${p['token']}' == contractId) { pool = p; break; }
+  }
+  if (pool == null) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('No trading pool for this token yet.')));
+    }
+    return;
+  }
+  Map<String, dynamic>? meta;
+  try {
+    final base = app.chain.apiBase.replaceFirst(RegExp(r'/explorer$'), '');
+    final r = await http.get(Uri.parse('$base/dex/tokens')).timeout(const Duration(seconds: 8));
+    if (r.statusCode == 200) {
+      final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
+      if (j[contractId] is Map) meta = (j[contractId] as Map).cast<String, dynamic>();
+    }
+  } catch (_) {}
+  if (!context.mounted) return;
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _TokenSheet(pool: pool!, meta: meta, onTraded: onTraded ?? () {}),
+  );
+}
+
+/// The live BLOCK price of a token by contract id, from its pool (0 if none).
+double blockshotPriceOf(List<Map<String, dynamic>> pools, String contractId) {
+  for (final p in pools) {
+    if ('${p['token']}' == contractId) return _poolPrice(p);
+  }
+  return 0;
+}
+
 /* ========================= TOKEN DETAIL + TRADE ========================= */
 
 class _TokenSheet extends StatefulWidget {
