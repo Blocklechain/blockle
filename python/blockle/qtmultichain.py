@@ -3054,4 +3054,12 @@ def build_tabs(block_wallet, datadir, bot_strategy=None, copy_bot=None) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: AI Chat panel unavailable ({e})", file=sys.stderr)
+    # Blockle Drip (ADDITIVE): daily free-BLOCK faucet, parity with the Flutter
+    # drip screen. Reads /account/api/drip; claim needs an Agent-tab sign-in.
+    try:
+        from .qtdrip import build_drip_tab
+        tabs.append(build_drip_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Drip panel unavailable ({e})", file=sys.stderr)
     return tabs
