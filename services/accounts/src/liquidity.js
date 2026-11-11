@@ -198,7 +198,16 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const t = load();
     let changed = false;
     for (const [coin, bal] of Object.entries(balances)) {
-      if (coin === 'BLOCK' || bal == null || !Number.isFinite(bal)) continue;
+      if (bal == null || !Number.isFinite(bal)) continue;
+      if (coin === 'BLOCK') {
+        // The curve's supply counter snaps to the wallet's REAL balance too —
+        // "sold" BLOCK that never actually left the wallet must not inflate the
+        // price. Capped at the seed so a top-up/donation can't push the price
+        // below the floor; parked payouts converge once they broadcast.
+        const next = Math.min(bal, BLOCK_SEED_SUPPLY);
+        if (Math.abs((+t.blockTreasury || 0) - next) > 1e-9) { t.blockTreasury = next; changed = true; }
+        continue;
+      }
       const cur = +t.reserves[coin] || 0;
       if (Math.abs(cur - bal) <= 1e-12) continue;
       if (bal > 0) t.reserves[coin] = bal; else delete t.reserves[coin];
