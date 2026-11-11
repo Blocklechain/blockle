@@ -746,9 +746,44 @@ impl Node {
             println!("[p2p] peer {peer_id} sent mismatched blocks");
             return;
         }
+        let start = sync.start_height as usize;
+        let mut st = self.state.lock().unwrap();
+        // FAST PATH — the batch extends our current tip. Connect each new block
+        // incrementally (O(batch)) and append it (O(1)). The old code rebuilt and
+        // RE-VALIDATED THE ENTIRE CHAIN FROM GENESIS every batch (Chain::from_blocks
+        // over prefix+batch) and rewrote the whole block file (save_chain) — O(n)
+        // per batch, O(n²) for a full sync. Deep syncs slowed to a crawl and stalled
+        // (the serving peer timed out mid-batch), stranding nodes partway. from_blocks
+        // is just connect_block in a loop from genesis, so connecting only the new
+        // blocks onto the existing validated chain is byte-for-byte identical.
+        if start == st.chain.blocks.len() {
+            let old_height = st.chain.height();
+            for b in blocks {
+                if let Err(e) = st.chain.connect_block(b.clone()) {
+                    println!("[p2p] peer {peer_id} block failed validation during sync: {e}");
+                    break; // keep what connected; the next heartbeat fetches the rest
+                }
+                let _ = storage::append_block(&self.config.datadir, &b);
+            }
+            self.prune_mempool(&mut st);
+            self.tip_version.fetch_add(1, Ordering::SeqCst);
+            let (height, total_work, tip) =
+                (st.chain.height(), work_bytes(st.chain.total_work()), st.chain.tip_hash());
+            println!(
+                "[chain] adopted heavier chain from peer {peer_id}: height {old_height:?} → {height:?}, tip {}",
+                display_hash(&tip)
+            );
+            drop(st);
+            self.broadcast(Message::Tip { height, total_work, tip }, None);
+            return;
+        }
+        drop(st);
+
+        // REORG PATH (start < tip) — a fork rooted below our tip. Rare; rebuild from
+        // the shared prefix + the fork's blocks and adopt only if strictly heavier.
         let prefix: Vec<Block> = {
             let st = self.state.lock().unwrap();
-            st.chain.blocks[..sync.start_height as usize].to_vec()
+            st.chain.blocks[..start].to_vec()
         };
         let mut candidate_blocks = prefix;
         candidate_blocks.extend(blocks);
