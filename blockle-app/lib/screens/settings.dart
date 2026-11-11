@@ -256,26 +256,116 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       );
     }
-    return Container(
-      decoration: BoxDecoration(
-        color: Bk.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Bk.border),
-      ),
-      child: ListTile(
-        leading: const Icon(Icons.verified_user_outlined, color: Bk.accent),
-        title: Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: const Text('Signed in — every feature is included free',
-            style: TextStyle(color: Bk.muted, fontSize: 12)),
-        trailing: TextButton(
-          onPressed: () {
-            mc.agent.disconnectCopilotAccount();
-            setState(() {});
-          },
-          child: const Text('Sign out', style: TextStyle(color: Bk.bad)),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: Bk.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Bk.border),
+          ),
+          child: ListTile(
+            leading: const Icon(Icons.verified_user_outlined, color: Bk.accent),
+            title: Text(email, style: const TextStyle(fontWeight: FontWeight.w600)),
+            subtitle: const Text('Signed in — every feature is included free',
+                style: TextStyle(color: Bk.muted, fontSize: 12)),
+            trailing: TextButton(
+              onPressed: () {
+                mc.agent.disconnectCopilotAccount();
+                setState(() {});
+              },
+              child: const Text('Sign out', style: TextStyle(color: Bk.bad)),
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: () => _deleteAccount(mc),
+            icon: const Icon(Icons.delete_forever, size: 18, color: Bk.bad),
+            label: const Text('Delete account', style: TextStyle(color: Bk.bad)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Permanently delete the signed-in Blockle account (App Store requirement for
+  /// apps with account creation). Confirms + re-authenticates with the password;
+  /// the on-device self-custody wallet is NOT touched (it is never stored on the
+  /// server — manage it under Wallets).
+  Future<void> _deleteAccount(MultichainController mc) async {
+    final pw = TextEditingController();
+    final messenger = ScaffoldMessenger.of(context);
+    bool busy = false;
+    String? err;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dctx) => StatefulBuilder(
+        builder: (dctx, setLocal) => AlertDialog(
+          backgroundColor: Bk.surface,
+          title: const Text('Delete account'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'This permanently deletes your Blockle account and its server-side '
+                'data (profile, sessions, saved bots). This cannot be undone.\n\n'
+                'Your on-device wallet and funds are self-custody and are NOT '
+                'deleted by this — remove them separately under Wallets.',
+                style: TextStyle(color: Bk.muted, fontSize: 13),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: pw,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'Confirm your password'),
+              ),
+              if (err != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(err!, style: const TextStyle(color: Bk.bad, fontSize: 12)),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.of(dctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Bk.bad),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setLocal(() {
+                        busy = true;
+                        err = null;
+                      });
+                      try {
+                        await mc.agent.deleteCopilotAccount(pw.text);
+                        if (dctx.mounted) Navigator.of(dctx).pop(true);
+                      } catch (e) {
+                        setLocal(() {
+                          busy = false;
+                          err = e.toString().replaceFirst('Exception: ', '');
+                        });
+                      }
+                    },
+              child: const Text('Delete forever'),
+            ),
+          ],
         ),
       ),
     );
+    if (confirmed == true && mounted) {
+      setState(() {});
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Your Blockle account was deleted.')),
+      );
+    }
   }
 
   Future<void> _accountSignIn() async {

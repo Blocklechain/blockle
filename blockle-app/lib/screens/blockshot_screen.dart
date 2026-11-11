@@ -17,6 +17,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -77,6 +78,7 @@ class BlockshotScreen extends StatefulWidget {
 class _BlockshotScreenState extends State<BlockshotScreen>
     with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>> _pools = [];
+  Set<String> _hidden = {};
   Map<String, Map<String, dynamic>> _meta = {}; // token -> {logo, description, links}
   final Map<String, double> _lastPrice = {};
   final Map<String, int> _flash = {}; // token -> +1 up / -1 down, cleared after paint
@@ -104,7 +106,9 @@ class _BlockshotScreenState extends State<BlockshotScreen>
   Future<void> _load() async {
     final app = context.read<AppState>();
     final pools = await app.chain.pools();
+    final hidden = await _BlockshotModeration.hidden();
     if (!mounted) return;
+    _hidden = hidden;
     for (final p in pools) {
       final id = '${p['token']}';
       final px = _poolPrice(p);
@@ -148,14 +152,18 @@ class _BlockshotScreenState extends State<BlockshotScreen>
   double get _totalLiqBlock =>
       _pools.fold(0.0, (a, p) => a + ((p['blockReserve'] as num?) ?? 0) / _coin * 2);
 
+  // Tokens the user reported/hid are filtered out of every board list.
+  Iterable<Map<String, dynamic>> get _visible =>
+      _pools.where((p) => !_hidden.contains('${p['token']}'));
+
   List<Map<String, dynamic>> get _trending {
-    final l = [..._pools];
+    final l = _visible.toList();
     l.sort((a, b) => ((b['blockReserve'] as num?) ?? 0).compareTo((a['blockReserve'] as num?) ?? 0));
     return l;
   }
 
   List<Map<String, dynamic>> get _fresh {
-    final l = [..._pools];
+    final l = _visible.toList();
     l.sort((a, b) => ((b['createdHeight'] as num?) ?? 0).compareTo((a['createdHeight'] as num?) ?? 0));
     return l;
   }
@@ -468,6 +476,54 @@ Widget _tokenAvatar(String sym, String? logo) {
 
 /// Shared shell for both sheets: DRAG-DOWN CLOSES (DraggableScrollableSheet),
 /// grab-handle + a BACK button in the header row.
+/// Content moderation for launched tokens (user-generated content): a server
+/// REPORT endpoint plus a local HIDE/block list so a user never sees a token
+/// they've flagged again. Required by App Store Guideline 1.2 (UGC).
+class _BlockshotModeration {
+  static const _store = FlutterSecureStorage(
+      aOptions: AndroidOptions(encryptedSharedPreferences: true));
+  static const _key = 'blockshot_hidden_v1';
+  static Set<String> _cache = {};
+  static bool _loaded = false;
+
+  static Future<Set<String>> hidden() async {
+    if (_loaded) return _cache;
+    try {
+      final raw = await _store.read(key: _key);
+      if (raw != null) {
+        _cache = (jsonDecode(raw) as List).map((e) => '$e').toSet();
+      }
+    } catch (_) {}
+    _loaded = true;
+    return _cache;
+  }
+
+  static Future<void> hide(String contractId) async {
+    _cache.add(contractId);
+    _loaded = true;
+    try {
+      await _store.write(key: _key, value: jsonEncode(_cache.toList()));
+    } catch (_) {}
+  }
+
+  /// Flag a token to Blockle for review. Best-effort — a dropped report must not
+  /// block the user from also hiding it locally.
+  static Future<void> report(
+      String origin, String contractId, String symbol, String reason) async {
+    try {
+      await http
+          .post(Uri.parse('$origin/account/api/blockshot/report'),
+              headers: {'content-type': 'application/json'},
+              body: jsonEncode({
+                'token': contractId,
+                'symbol': symbol,
+                'reason': reason,
+              }))
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+}
+
 Widget _sheetShell(BuildContext context,
     {required String title,
     Widget? headerTrailing,
@@ -597,6 +653,43 @@ class _TokenSheetState extends State<_TokenSheet> {
     setState(() => _tokBal = n / math.pow(10, _dec));
   }
 
+  // ---- UGC moderation (App Store Guideline 1.2) --------------------------
+  Future<void> _report() async {
+    final reasons = ['Spam or scam', 'Hateful or abusive', 'Sexual content',
+      'Impersonation', 'Other'];
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Bk.bg2,
+      builder: (bctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('Report this token',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          ),
+          for (final r in reasons)
+            ListTile(title: Text(r), onTap: () => Navigator.of(bctx).pop(r)),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+    if (reason == null || !mounted) return;
+    final origin = Uri.parse(context.read<AppState>().chain.apiBase).origin;
+    await _BlockshotModeration.report(origin, _token, _sym, reason);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Thanks — reported to Blockle for review.')));
+  }
+
+  Future<void> _hide() async {
+    await _BlockshotModeration.hide(_token);
+    if (!mounted) return;
+    widget.onTraded(); // board re-filters hidden tokens on refresh
+    Navigator.of(context).pop();
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$_sym hidden — you won\'t see it again.')));
+  }
+
   Map<String, dynamic> get p => widget.pool;
   String get _sym => '${p['symbol'] ?? '?'}';
   String get _token => '${p['token']}';
@@ -714,7 +807,21 @@ class _TokenSheetState extends State<_TokenSheet> {
       _sheetShell(
         context,
         title: _sym,
-        headerTrailing: _tokenAvatar(_sym, _logo),
+        headerTrailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          _tokenAvatar(_sym, _logo),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert, color: Bk.muted),
+            tooltip: 'More',
+            onSelected: (v) {
+              if (v == 'report') _report();
+              if (v == 'hide') _hide();
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'report', child: Text('Report token')),
+              PopupMenuItem(value: 'hide', child: Text('Hide this token')),
+            ],
+          ),
+        ]),
         children: (_) => [
           Row(children: [
             Expanded(

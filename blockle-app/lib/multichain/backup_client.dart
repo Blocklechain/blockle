@@ -54,6 +54,14 @@ Future<Map<String, dynamic>?> me(String? origin, String token) async {
   return d['user'] as Map<String, dynamic>?;
 }
 
+/// Permanently delete the signed-in account and its server-side data (profile,
+/// sessions, bots). Required by App Store Guideline 5.1.1(v). The on-device
+/// self-custody wallet is NOT held server-side and is cleared separately in-app.
+Future<void> deleteAccount(String? origin, String token, String password) async {
+  await _req(origin, 'POST', '/account/api/account/delete',
+      token: token, body: {'password': password});
+}
+
 /// Extract the EFFECTIVE Copilot tier from a /me user object: the server's `entitledTier`
 /// (which folds in an active free trial), falling back to the legacy active+tier for older
 /// account-service builds. 'free' when neither applies.

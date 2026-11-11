@@ -272,6 +272,18 @@ class AgentService {
     _liveBotLimit = 1; // free allowance: 1 live bot
   }
 
+  /// Permanently delete the linked blockle.org account (server-side record +
+  /// sessions + bots). Requires the account password. On success the local
+  /// session is cleared. The on-device self-custody wallet is never stored
+  /// server-side and is unaffected (it is wiped separately in-app). App Store
+  /// Guideline 5.1.1(v).
+  Future<void> deleteCopilotAccount(String password) async {
+    final token = _acctToken;
+    if (token == null) throw Exception('Not signed in.');
+    await bc.deleteAccount(_acctOrigin, token, password);
+    disconnectCopilotAccount();
+  }
+
   /// The active tier + what it unlocks, for the UI.
   Map<String, dynamic> plan() => manager.plan();
 

@@ -582,6 +582,26 @@ export function createApp(overrides = {}) {
     }
   });
 
+  // ---- UGC MODERATION — report a launched (BLOCKSHOT) token for review.
+  // Open to any viewer (CORS), IP-rate-limited; stored for an operator to triage.
+  // Satisfies App Store Guideline 1.2 (a reporting mechanism for user content).
+  on('POST', /^\/account\/api\/blockshot\/report$/, async (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    if (!loginIpRl.allow('report:' + clientIp(req))) return json(res, 429, { error: 'rate' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const token = String(b.token || '').slice(0, 128);
+    if (!token) return json(res, 400, { error: 'token required' });
+    const id = sha256(token + ':' + Date.now() + ':' + Math.random()).slice(0, 24);
+    await store.put('reports', id, {
+      token,
+      symbol: String(b.symbol || '').slice(0, 32),
+      reason: String(b.reason || '').slice(0, 200),
+      ip: clientIp(req),
+      at: Date.now(),
+    });
+    return json(res, 200, { ok: true });
+  });
+
   // authoritative accounting (on-chain settlement is gated by LIQUIDITY_MAINNET).
   on('GET', /^\/account\/api\/liquidity\/state$/, async (req, res) => {
     res.setHeader('access-control-allow-origin', '*');
@@ -988,6 +1008,31 @@ export function createApp(overrides = {}) {
     if (!any) return json(res, 404, { error: 'No such device.' });
     if (revokedSelf) clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
     return json(res, 200, { ok: true, revokedSelf });
+  }));
+
+  // Permanently delete the signed-in account and all its server-side data
+  // (App Store Guideline 5.1.1(v): any app with account creation must offer
+  // account deletion). Requires the account password when one is set. Wallet
+  // private keys live ONLY on the user's device and are never held here, so this
+  // removes the server-side record (profile, sessions, bots) — the user's
+  // on-device self-custody wallet is unaffected and is cleared separately in-app.
+  on('POST', /^\/account\/api\/account\/delete$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    if (u.pwHash && !verifyPassword(String(b.password || ''), u.pwHash)) {
+      return json(res, 401, { error: 'Password is incorrect.' });
+    }
+    // Revoke every session, then delete owned bots and the reverse indexes.
+    for (const [sid, r] of store.entries('sessions')) {
+      if (r && r.uid === u.id) await store.del('sessions', sid);
+    }
+    for (const [bid, bot] of store.entries('bots')) {
+      if (bot && bot.uid === u.id) await store.del('bots', bid);
+    }
+    if (u.email) await emailIndex.del(u.email);
+    if (u.username) await usernameIndex.del(u.username);
+    await store.del('users', u.id);
+    clearCookie(res, SESSION_COOKIE, { secure: cfg.cookieSecure, domain: cfg.cookieDomain });
+    return json(res, 200, { ok: true });
   }));
 
   // Set / change the unique username (the public @handle).
