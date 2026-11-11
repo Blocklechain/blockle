@@ -2050,8 +2050,9 @@
     function paintHeader() {
       var st = Liquidity.state || {};
       var fees = Number(st.totalFeesUsd) || 0;
-      var treasury = st.blockTreasury != null ? Number(st.blockTreasury) : Liquidity.BLOCK_SEED_SUPPLY;
-      var price = st.blockPriceUsd != null ? Number(st.blockPriceUsd) : Liquidity.spotPriceUsd(fees, treasury);
+      var treasury = st.blockTreasury != null ? Number(st.blockTreasury) : 0;
+      var netBought = st.netBought != null ? Number(st.netBought) : 0;
+      var price = st.blockPriceUsd != null ? Number(st.blockPriceUsd) : Liquidity.spotPriceUsd(fees, netBought);
       if (!$('#lq-price')) return;
       $('#lq-price').textContent = liqPriceFmt(price);
       $('#lq-feesum').textContent = liqFmtUsd(fees);

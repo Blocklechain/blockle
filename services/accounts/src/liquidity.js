@@ -19,33 +19,46 @@ import { evmAddressFromPrivate } from './evmsign.js';
 import { ensureTreasuryWallet, blockAddressBalance } from './liquidity_block.js';
 import { COIN_CHAIN, COIN_TOKEN, COIN_DECIMALS } from './liquidity_relayer.js';
 
-const BLOCK_SEED_SUPPLY = 50000;
-const BLOCK_SEED_PRICE_USD = 0.001;
-const FEE_APPRECIATION_DIVISOR = BLOCK_SEED_SUPPLY; // $/BLOCK per $fee, over the supply
+const COIN = 100_000_000; // base units per BLOCK (1e8, like satoshis)
+const BLOCK_SEED_PRICE_USD = 0.001; // the fee-funded FLOOR starts here
+const CURVE_MIN_MULT = 0.1;
+// Reference calibration point for the steepness: net-buying CURVE_REF_BOUGHT BLOCK
+// out of the pool lifts spot to ≈ CURVE_REF_PRICE_USD (at the zero-fee floor).
+// This fixes the SLOPE; the price itself is UNCAPPED — it keeps climbing linearly
+// past the reference with no ceiling (1M bought ⇒ ~$40, 10M ⇒ ~$400, …).
+const CURVE_REF_PRICE_USD_DEFAULT = 4;     // ≈ $4 …
+const CURVE_REF_BOUGHT_DEFAULT = 100_000;  // … after ~100k BLOCK net-bought (moonshot slope)
+// Fallback circulating supply (whole BLOCK) when the chain is unreadable — used
+// ONLY for the informational market-cap readout, never to scale the slope.
+const CURVE_SUPPLY_DEFAULT = 2_000_000;
+// Legacy constant: the ORIGINAL 50k-BLOCK seed. Kept ONLY to migrate old treasury
+// docs that predate the `netBought` field (netBought = SEED − blockTreasury).
+const LEGACY_SEED = 50000;
 
 // BONDING CURVE: buys of BLOCK push the price UP, sells push it back DOWN
-// (symmetric), ON TOP OF the fee-funded floor. `d = SEED - treasuryBlock` is the
-// net BLOCK bought out of the treasury; spot price = floor × (1 + C·d). GOAL:
-// selling the ENTIRE 50k-BLOCK seed raises $100,000 total, starting at the
-// $0.001 floor — ∫₀^50000 F·(1+C·d) dd = $100k at F=$0.001 ⇒
-// C = (100000/0.001 − 50000) / (50000²/2) = 0.07996 (end price ≈ $4.00/BLOCK).
-// Swaps integrate along the curve so a big single order can't fill at the start
-// price. MIN_MULT floors the multiplier so heavy net-selling can't drive it ≤0.
-const CURVE_STEEPNESS = 0.07996;
-const CURVE_MIN_MULT = 0.1;
-// Depth below which the price multiplier is FLOORED at MIN_MULT (net selling
-// below the seed). The swap integrals are piecewise over this breakpoint so a
-// steep curve can never price BLOCK negative.
-const CURVE_D_MIN = (CURVE_MIN_MULT - 1) / CURVE_STEEPNESS;
-// ∫ max(MIN_MULT, 1 + C·d) dd over [a, b] (the price multiplier's integral;
-// × floor USD = the USD value of the BLOCK moved across that depth range).
-function curveMultIntegral(a, b) {
+// (symmetric), ON TOP OF the fee-funded floor. `d = netBought` is the cumulative
+// BLOCK bought out of the pool by SWAPS (buys +, sells −) — NOT a function of the
+// treasury wallet balance, because BLOCK supply only ever grows (mining emission,
+// fee-BLOCK, donations) and that inflow must raise inventory without moving the
+// price. Spot price = floor × (1 + C·d), UNCAPPED.
+//
+// STEEPNESS: C is fixed by the reference point — C = (REF_PRICE/FLOOR − 1)/REF_BOUGHT.
+// At REF_PRICE=$4, REF_BOUGHT=100k ⇒ C≈0.03999. The curve is LINEAR in d with no
+// upper bound: price keeps rising as demand accumulates, far past $4. Supply is
+// irrelevant to the slope — emission only grows INVENTORY (how much can be bought),
+// never the price, because d counts swap flow. MIN_MULT floors the multiplier so
+// heavy net-selling can't drive it ≤0.
+//
+// ∫ max(MIN_MULT, 1 + C·d) dd over [a, b], breakpoint dMin = (MIN_MULT−1)/C. × floor
+// USD = the USD value of the BLOCK moved across that depth range; the swap integrals
+// are piecewise over the breakpoint so the curve can never price BLOCK negative.
+function curveMultIntegral(a, b, C, dMin) {
   if (!(b > a)) return 0;
   let total = 0;
-  const lo = Math.min(b, CURVE_D_MIN);
+  const lo = Math.min(b, dMin);
   if (lo > a) total += CURVE_MIN_MULT * (lo - a); // floored region
-  const a2 = Math.max(a, CURVE_D_MIN);
-  if (b > a2) total += (b - a2) + (CURVE_STEEPNESS / 2) * (b * b - a2 * a2); // linear region
+  const a2 = Math.max(a, dMin);
+  if (b > a2) total += (b - a2) + (C / 2) * (b * b - a2 * a2); // linear region
   return total;
 }
 const STABLE = new Set(['USDC', 'USDT', 'DAI', 'USD', 'USDB', 'PYUSD', 'TUSD']);
@@ -71,23 +84,68 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   // its deposit address exists before anyone swaps. Best-effort.
   if (seedHex && mainnet) ensureTreasuryWallet(store, seedHex).catch(() => {});
 
+  // ---- curve parameters -----------------------------------------------------
+  // Fixed steepness from the reference point (operator-overridable). The price is
+  // UNCAPPED — it keeps climbing linearly past the reference with no ceiling.
+  const CURVE_REF_PRICE_USD = (+env.LIQUIDITY_CURVE_REF_USD > 0)
+    ? +env.LIQUIDITY_CURVE_REF_USD : CURVE_REF_PRICE_USD_DEFAULT;
+  const CURVE_REF_BOUGHT = (+env.LIQUIDITY_CURVE_REF_BOUGHT > 0)
+    ? +env.LIQUIDITY_CURVE_REF_BOUGHT : CURVE_REF_BOUGHT_DEFAULT;
+  // C = (REF_PRICE/FLOOR − 1) / REF_BOUGHT. Constant — supply does NOT scale it.
+  const CURVE_STEEPNESS = (CURVE_REF_PRICE_USD / BLOCK_SEED_PRICE_USD - 1) / CURVE_REF_BOUGHT;
+  const curveSteepness = () => CURVE_STEEPNESS;
+  // Breakpoint where the multiplier hits its MIN_MULT floor (net selling).
+  const CURVE_D_MIN = (CURVE_MIN_MULT - 1) / CURVE_STEEPNESS;
+  const curveDMin = () => CURVE_D_MIN;
+  // Live circulating supply — INFORMATIONAL ONLY (market-cap readout), never the
+  // slope. Cached from the chain; starts at an env override or the cold-start
+  // default. BLOCK supply only grows, which is why inventory (blockTreasury) is
+  // uncapped; the price does not depend on this.
+  let _curveSupply = (+env.LIQUIDITY_CURVE_SUPPLY > 0)
+    ? +env.LIQUIDITY_CURVE_SUPPLY : CURVE_SUPPLY_DEFAULT;
+  const curveSupply = () => (_curveSupply > 0 ? _curveSupply : CURVE_SUPPLY_DEFAULT);
+
   function fresh() {
-    return { blockTreasury: BLOCK_SEED_SUPPLY, reserves: {}, fees: {}, updatedAt: now() };
+    return { blockTreasury: LEGACY_SEED, netBought: 0, reserves: {}, fees: {}, updatedAt: now() };
   }
   function load() {
     const t = store.get(COLL, KEY);
     if (!t || typeof t.blockTreasury !== 'number') return fresh();
-    return { blockTreasury: t.blockTreasury, reserves: t.reserves || {}, fees: t.fees || {}, updatedAt: t.updatedAt || 0 };
+    // netBought = cumulative BLOCK bought out of the pool by SWAPS (buy +, sell −);
+    // it, not the wallet balance, drives the price (see curveMult). Legacy docs
+    // predate the field — derive it from the old balance-based depth (SEED −
+    // treasury) so the ECONOMIC state (net BLOCK bought) carries forward; the new
+    // supply-scaled curve then re-prices that depth correctly.
+    const netBought = (typeof t.netBought === 'number')
+      ? t.netBought
+      : (LEGACY_SEED - t.blockTreasury);
+    return { blockTreasury: t.blockTreasury, netBought, reserves: t.reserves || {}, fees: t.fees || {}, updatedAt: t.updatedAt || 0 };
   }
   async function save(t) { t.updatedAt = now(); await store.put(COLL, KEY, t); return t; }
 
   const totalFeesUsd = (t) => Object.values(t.fees).reduce((s, v) => s + (+v || 0), 0);
   // The fee-funded FLOOR price (rises only with fees — "fees just add liquidity").
-  const priceFloorUsd = (t) => BLOCK_SEED_PRICE_USD + totalFeesUsd(t) / FEE_APPRECIATION_DIVISOR;
-  // Curve multiplier from net BLOCK bought out of the treasury (buys ↑, sells ↓).
-  const curveMult = (treasury) => Math.max(CURVE_MIN_MULT, 1 + CURVE_STEEPNESS * (BLOCK_SEED_SUPPLY - treasury));
+  // Spread over the reference depth: +$1 of floor per REF_BOUGHT of cumulative fees.
+  const priceFloorUsd = (t) => BLOCK_SEED_PRICE_USD + totalFeesUsd(t) / CURVE_REF_BOUGHT;
+  // Curve multiplier from NET BLOCK bought out of the pool by swaps (d = netBought;
+  // buys ↑, sells ↓). Driven by swap FLOW, not the wallet balance — so mining
+  // emission, fee-BLOCK, and donations arriving in the treasury raise inventory
+  // without ever moving the price. Fixed steep slope, UNCAPPED (climbs past $4).
+  const curveMult = (netBought) => Math.max(CURVE_MIN_MULT, 1 + curveSteepness() * netBought);
   // SPOT price = floor × curve. This is what every wallet shows and it moves on buys.
-  const blockPriceUsd = (t) => priceFloorUsd(t) * curveMult(t.blockTreasury);
+  const blockPriceUsd = (t) => priceFloorUsd(t) * curveMult(t.netBought);
+
+  // Refresh the cached circulating supply from the chain (whole BLOCK). Best-effort;
+  // keeps the last good value on failure. Called from the periodic on-chain refresh.
+  async function refreshSupply() {
+    try {
+      const r = await fetchFn((chainApi || 'https://blockle.org') + '/api/explorer/stats', { headers: { accept: 'application/json' } });
+      if (!r || !r.ok) return;
+      const j = await r.json();
+      const base = Number(j && j.supply);
+      if (Number.isFinite(base) && base > 0) _curveSupply = base / COIN;
+    } catch (_) { /* keep last good */ }
+  }
 
   // ---- custodial hot-wallet addresses (public) ------------------------------
   // Derived deterministically from the treasury seed; one EVM + one Solana wallet
@@ -163,6 +221,8 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const addrs = custodialAddresses();
     const balances = {};
     const jobs = [];
+    // Curve scale tracks the live circulating supply (best-effort, cached).
+    jobs.push(refreshSupply());
     // BLOCK (post-quantum explorer read)
     jobs.push((async () => {
       balances.BLOCK = addrs.block ? await blockAddressBalance(addrs.block, chainApi, fetchFn).catch(() => null) : null;
@@ -200,12 +260,13 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     for (const [coin, bal] of Object.entries(balances)) {
       if (bal == null || !Number.isFinite(bal)) continue;
       if (coin === 'BLOCK') {
-        // The curve's supply counter snaps to the wallet's REAL balance too —
-        // "sold" BLOCK that never actually left the wallet must not inflate the
-        // price. Capped at the seed so a top-up/donation can't push the price
-        // below the floor; parked payouts converge once they broadcast.
-        const next = Math.min(bal, BLOCK_SEED_SUPPLY);
-        if (Math.abs((+t.blockTreasury || 0) - next) > 1e-9) { t.blockTreasury = next; changed = true; }
+        // Inventory snaps to the wallet's REAL balance — UNCAPPED. BLOCK supply
+        // only ever grows (mining emission, fee-BLOCK, net sells into the pool),
+        // so the treasury legitimately holds far more than the 50k seed over
+        // time; clamping it would hide real inventory and freeze the curve's
+        // sell side. The PRICE is driven by `netBought` (swap flow), never this
+        // balance, so emission/top-ups raising the balance can't move the price.
+        if (Math.abs((+t.blockTreasury || 0) - bal) > 1e-9) { t.blockTreasury = bal; changed = true; }
         continue;
       }
       const cur = +t.reserves[coin] || 0;
@@ -236,8 +297,14 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const t = load();
     return {
       blockPriceUsd: blockPriceUsd(t),
-      blockSeedSupply: BLOCK_SEED_SUPPLY,
+      blockSeedSupply: LEGACY_SEED, // legacy field (original seed); informational only
+      circulatingSupply: curveSupply(),                    // live, grows with emission
+      marketCapUsd: blockPriceUsd(t) * curveSupply(),      // price × live supply
+      curveRefPriceUsd: CURVE_REF_PRICE_USD,               // reference calibration point
+      curveRefBought: CURVE_REF_BOUGHT,
+      curveSteepness: curveSteepness(),
       blockTreasury: t.blockTreasury,
+      netBought: t.netBought,
       reserves: t.reserves,
       fees: t.fees,
       totalFeesUsd: totalFeesUsd(t),
@@ -282,7 +349,7 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
   }
 
   // ---- quote / swap ---------------------------------------------------------
-  // Prices along the bonding curve: p(d) = F·(1 + C·d), d = SEED − treasury.
+  // Prices along the bonding curve: p(d) = F·(1 + C·d), d = netBought.
   //  • BUY  (coin→BLOCK): usdIn = ∫ p dd over the BLOCK delivered ⇒ solve the
   //    quadratic (C/2)x² + (1+C·d0)x − usdIn/F = 0 for x BLOCK out.
   //  • SELL (BLOCK→coin): usdOut = ∫ p dd over the BLOCK returned =
@@ -300,13 +367,15 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const cu = STABLE.has(coin) ? 1 : (+coinUsd > 0 ? +coinUsd : 0);
     if (!(cu > 0)) return { ok: false, reason: 'coin price required', blockPriceUsd: bp };
     const F = priceFloorUsd(t);
-    const d0 = BLOCK_SEED_SUPPLY - t.blockTreasury;
+    const C = curveSteepness();   // fixed steep slope (uncapped price)
+    const D_MIN = curveDMin();
+    const d0 = t.netBought; // curve depth = net BLOCK bought out by swaps
     if (from === 'BLOCK') {
       // SELL BLOCK → coin (price falls as BLOCK returns to the treasury).
       // Piecewise integral: the multiplier is floored at MIN_MULT, so deep
       // selling pays the floored price instead of going negative.
       const x = amt;
-      const usdOut = F * curveMultIntegral(d0 - x, d0);
+      const usdOut = F * curveMultIntegral(d0 - x, d0, C, D_MIN);
       const out = usdOut / cu;
       // Payable = the LOWER of the accounting reserve and the REAL on-chain
       // spendable balance of the hot wallet (gate on + balance known). The
@@ -348,20 +417,20 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     // for the remaining USD, starting exactly at the breakpoint multiplier).
     const usdIn = amt * cu;
     let x;
-    if (d0 >= CURVE_D_MIN) {
-      const A = F * CURVE_STEEPNESS / 2;
-      const B = F * (1 + CURVE_STEEPNESS * d0);
+    if (d0 >= D_MIN) {
+      const A = F * C / 2;
+      const B = F * (1 + C * d0);
       x = A <= 0 ? usdIn / B : (-B + Math.sqrt(B * B + 4 * A * usdIn)) / (2 * A);
     } else {
-      const flatUsd = F * CURVE_MIN_MULT * (CURVE_D_MIN - d0); // fill the floored region first
+      const flatUsd = F * CURVE_MIN_MULT * (D_MIN - d0); // fill the floored region first
       if (usdIn <= flatUsd) {
         x = usdIn / (F * CURVE_MIN_MULT);
       } else {
         const rem = usdIn - flatUsd;
-        const A = F * CURVE_STEEPNESS / 2;
+        const A = F * C / 2;
         const B = F * CURVE_MIN_MULT; // multiplier AT the breakpoint is exactly MIN_MULT
         const xLin = A <= 0 ? rem / B : (-B + Math.sqrt(B * B + 4 * A * rem)) / (2 * A);
-        x = (CURVE_D_MIN - d0) + xLin;
+        x = (D_MIN - d0) + xLin;
       }
     }
     if (!(x > 0)) return { ok: false, reason: 'amount too small', blockPriceUsd: bp };
@@ -389,11 +458,15 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const t = load();
     const coin = (String(from).toUpperCase() === 'BLOCK' ? to : from).toUpperCase();
     if (String(from).toUpperCase() === 'BLOCK') {
+      // SELL BLOCK → coin: BLOCK returns to the pool; depth falls (price ↓).
       t.blockTreasury += q.amountIn;
+      t.netBought -= q.amountIn;
       t.reserves[coin] = (+t.reserves[coin] || 0) - q.amountOut;
     } else {
+      // BUY coin → BLOCK: BLOCK leaves the pool; depth rises (price ↑).
       t.reserves[coin] = (+t.reserves[coin] || 0) + q.amountIn;
       t.blockTreasury -= q.amountOut;
+      t.netBought += q.amountOut;
     }
     await save(t);
     const id = crypto.randomBytes(9).toString('base64url');
@@ -421,10 +494,12 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     const aIn = +rec.amountIn || 0, aOut = +rec.amountOut || 0;
     if (String(rec.from).toUpperCase() === 'BLOCK') {
       t.blockTreasury -= aIn;
+      t.netBought += aIn; // undo the sell's price drop
       t.reserves[coin] = (+t.reserves[coin] || 0) + aOut;
     } else {
       t.reserves[coin] = Math.max(0, (+t.reserves[coin] || 0) - aIn);
       t.blockTreasury += aOut;
+      t.netBought -= aOut; // undo the buy's price rise
     }
     await save(t);
     rec.reverted = true;
@@ -432,5 +507,5 @@ export function makeLiquidity({ store, env = process.env, now = () => Date.now()
     return { ok: true };
   }
 
-  return { state, stateWithOnchain, blockOnchainBalance, refreshOnchain, onchainSpendable, quote, swap, accrueFee, revertSwap, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, _consts: { BLOCK_SEED_SUPPLY, BLOCK_SEED_PRICE_USD } };
+  return { state, stateWithOnchain, blockOnchainBalance, refreshOnchain, onchainSpendable, quote, swap, accrueFee, revertSwap, blockPriceUsd: () => blockPriceUsd(load()), custodialAddresses, refreshSupply, _consts: { LEGACY_SEED, BLOCK_SEED_PRICE_USD, CURVE_REF_PRICE_USD, CURVE_REF_BOUGHT, CURVE_STEEPNESS, curveSupply } };
 }

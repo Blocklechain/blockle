@@ -23,14 +23,18 @@
   const SERVER_BASE = 'https://blockle.org/account/api/liquidity';
 
   // Curve constants — MUST match the server + the Flutter pool exactly.
-  const BLOCK_SEED_SUPPLY = 50000;
   const BLOCK_SEED_PRICE_USD = 0.001;
-  // $100k CURVE: selling the entire 50k seed raises $100,000 from the $0.001
-  // floor — C = (100000/0.001 − 50000) / (50000²/2) = 0.07996 (end ≈ $4/BLOCK).
-  const CURVE_STEEPNESS = 0.07996;
+  // MOONSHOT CURVE (mirrors services/accounts/src/liquidity.js): depth d = netBought
+  // (cumulative BLOCK bought out of the pool by swaps — NOT the treasury balance, so
+  // mining emission never moves the price). Fixed steep slope, UNCAPPED: ~$4 after
+  // 100k net-bought and it keeps climbing (1M ⇒ ~$40, no ceiling).
+  //   C = (REF_PRICE/FLOOR − 1) / REF_BOUGHT = (4/0.001 − 1)/100000 = 0.03999
+  const CURVE_REF_PRICE_USD = 4;
+  const CURVE_REF_BOUGHT = 100000;
+  const CURVE_STEEPNESS = (CURVE_REF_PRICE_USD / BLOCK_SEED_PRICE_USD - 1) / CURVE_REF_BOUGHT;
   const CURVE_MIN_MULT = 0.1;
-  // Depth below which the multiplier is FLOORED (net selling below the seed);
-  // the swap integrals are piecewise over it so price can never go negative.
+  // Depth below which the multiplier is FLOORED (heavy net selling); the swap
+  // integrals are piecewise over it so price can never go negative.
   const CURVE_D_MIN = (CURVE_MIN_MULT - 1) / CURVE_STEEPNESS;
   // ∫ max(MIN_MULT, 1 + C·d) dd over [a, b] — × floor USD = USD moved.
   function curveMultIntegral(a, b) {
@@ -106,24 +110,29 @@
   // ---- curve math (preview only — the server quote is authoritative) --------
 
   function priceFloorUsd(totalFeesUsd) {
-    return BLOCK_SEED_PRICE_USD + num(totalFeesUsd) / BLOCK_SEED_SUPPLY;
+    return BLOCK_SEED_PRICE_USD + num(totalFeesUsd) / CURVE_REF_BOUGHT;
   }
 
-  function spotPriceUsd(totalFeesUsd, blockTreasury) {
-    const mult = 1 + CURVE_STEEPNESS * (BLOCK_SEED_SUPPLY - num(blockTreasury, BLOCK_SEED_SUPPLY));
+  function spotPriceUsd(totalFeesUsd, netBought) {
+    const mult = 1 + CURVE_STEEPNESS * num(netBought);
     return priceFloorUsd(totalFeesUsd) * Math.max(CURVE_MIN_MULT, mult);
   }
 
   function stateTotals() {
     const s = L.state || {};
-    const treasury = num(s.blockTreasury, BLOCK_SEED_SUPPLY);
+    // Depth = net BLOCK bought by swaps. Prefer the server's netBought; fall back to
+    // the legacy balance-based depth (50000 − treasury) only for an old server.
+    let netBought = num(s.netBought, NaN);
+    if (!Number.isFinite(netBought)) netBought = 50000 - num(s.blockTreasury, 50000);
     let fees = num(s.totalFeesUsd, NaN);
     if (!Number.isFinite(fees)) {
       fees = 0;
       const f = s.fees || {};
       for (const k in f) fees += num(f[k]);
     }
-    return { treasury, fees, reserves: s.reserves || {} };
+    // treasury = real BLOCK inventory (uncapped), only for the buy-side availability cap.
+    const treasury = num(s.blockTreasury, 50000);
+    return { netBought, treasury, fees, reserves: s.reserves || {} };
   }
 
   /// Instant local preview of a swap along the bonding curve (one side must be
@@ -131,8 +140,8 @@
   /// assetOut, blockPriceUsd} or {ok:false, reason}. Marked local:true.
   function localQuote(from, to, amountIn, coinUsd) {
     from = up(from); to = up(to);
-    const { treasury, fees, reserves } = stateTotals();
-    const bp = spotPriceUsd(fees, treasury); // spot (pre-trade), for display
+    const { netBought, treasury, fees, reserves } = stateTotals();
+    const bp = spotPriceUsd(fees, netBought); // spot (pre-trade), for display
     const base = { local: true, assetIn: from, assetOut: to, blockPriceUsd: bp };
     amountIn = num(amountIn);
     if (!(amountIn > 0)) return Object.assign({ ok: false, reason: 'Enter an amount' }, base);
@@ -142,7 +151,7 @@
     const cu = num(coinUsd) > 0 ? num(coinUsd) : 1.0;
     const F = priceFloorUsd(fees);
     const C = CURVE_STEEPNESS;
-    const d0 = BLOCK_SEED_SUPPLY - treasury;
+    const d0 = netBought;
     if (from === 'BLOCK') {
       // SELL BLOCK → coin: usdOut = ∫ p dd over the BLOCK returned.
       const x = amountIn;
@@ -359,8 +368,9 @@
 
   const L = {
     SERVER_BASE: SERVER_BASE,
-    BLOCK_SEED_SUPPLY: BLOCK_SEED_SUPPLY,
     BLOCK_SEED_PRICE_USD: BLOCK_SEED_PRICE_USD,
+    CURVE_REF_PRICE_USD: CURVE_REF_PRICE_USD,
+    CURVE_REF_BOUGHT: CURVE_REF_BOUGHT,
     CURVE_STEEPNESS: CURVE_STEEPNESS,
     CURVE_MIN_MULT: CURVE_MIN_MULT,
     kMoonPayCoins: kMoonPayCoins,
