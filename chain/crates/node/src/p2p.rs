@@ -57,7 +57,11 @@ const MAX_DIAL_FAILS: u32 = 6;
 /// Built-in always-on seed nodes, merged into every node's known set and never
 /// evicted. A node therefore has a bootstrap path even with no `--connect` and
 /// even after the main node restarts. Add community always-on nodes here.
-const DEFAULT_SEEDS: &[&str] = &["blockle.org:18444"];
+const DEFAULT_SEEDS: &[&str] = &[
+    "blockle.org:18444",
+    // Community always-on node operated by Shears Mining (Andy).
+    "stratum.shears.co.uk:18444",
+];
 const HEARTBEAT: Duration = Duration::from_secs(10);
 /// How often the local miner abandons and rebuilds its block template so the
 /// quiet-lane difficulty decay (which is a function of wall-clock time) takes

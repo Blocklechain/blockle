@@ -146,6 +146,12 @@ blockle --network regtest contract list
 - **Peer discovery**: `Version` carries each node's listen address;
   `GetAddr`/`Addr` gossip spreads them, and nodes auto-dial until the
   outbound target is met — one bootstrap peer is enough to join the mesh.
+- **Built-in seed nodes**: every node merges a set of always-on community
+  seeds into its known-peer set and never evicts them, so a node can bootstrap
+  with no `--connect` and re-join after the main node restarts — a temporary
+  outage can't permanently island a miner. Current mainnet seeds:
+  `blockle.org:18444` and `stratum.shears.co.uk:18444` (Shears Mining).
+  Operators running a public always-on node are welcome to have it added.
 - The built-in miner abandons stale work the moment a better tip arrives.
 
 ```sh
