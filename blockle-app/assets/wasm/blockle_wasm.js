@@ -259,6 +259,53 @@ let wasm_bindgen = (function(exports) {
     exports.build_launch_token = build_launch_token;
 
     /**
+     * Like [build_launch_token] but `seed_block_base` is in BASE UNITS
+     * (1 BLOCK = 100_000_000), enabling sub-1-BLOCK pool seeds — the Blockshot
+     * minimum launch is 0.1 BLOCK. `supply`/`seed_token` stay whole-token counts.
+     * @param {string} secret_hex
+     * @param {string} public_hex
+     * @param {string} utxos_json
+     * @param {string} name
+     * @param {string} symbol
+     * @param {bigint} decimals
+     * @param {bigint} supply
+     * @param {bigint} seed_block_base
+     * @param {bigint} seed_token
+     * @param {bigint} gas_limit
+     * @param {bigint} gas_price
+     * @returns {string}
+     */
+    function build_launch_token_base(secret_hex, public_hex, utxos_json, name, symbol, decimals, supply, seed_block_base, seed_token, gas_limit, gas_price) {
+        let deferred7_0;
+        let deferred7_1;
+        try {
+            const ptr0 = passStringToWasm0(secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(public_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ptr3 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len3 = WASM_VECTOR_LEN;
+            const ptr4 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len4 = WASM_VECTOR_LEN;
+            const ret = wasm.build_launch_token_base(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, decimals, supply, seed_block_base, seed_token, gas_limit, gas_price);
+            var ptr6 = ret[0];
+            var len6 = ret[1];
+            if (ret[3]) {
+                ptr6 = 0; len6 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred7_0 = ptr6;
+            deferred7_1 = len6;
+            return getStringFromWasm0(ptr6, len6);
+        } finally {
+            wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
+        }
+    }
+    exports.build_launch_token_base = build_launch_token_base;
+
+    /**
      * @param {string} secret_hex
      * @param {string} public_hex
      * @param {string} utxos_json

@@ -128,11 +128,11 @@ class Engine {
 
   Future<Map<String, dynamic>> buildLaunchToken(String secretHex, String publicHex,
       String utxosJson, String name, String symbol, int decimals, int supply,
-      int seedBlock, int seedToken, int gasLimit, int gasPrice) async {
+      int seedBlockBase, int seedToken, int gasLimit, int gasPrice) async {
     await ensureStarted();
     return _json(await _str(_engine.buildLaunchToken(secretHex.toJS, publicHex.toJS,
         utxosJson.toJS, name.toJS, symbol.toJS, decimals.toJS, supply.toJS,
-        seedBlock.toJS, seedToken.toJS,
+        seedBlockBase.toJS, seedToken.toJS,
         gasLimit.toString().toJS, gasPrice.toString().toJS)));
   }
 

@@ -96,10 +96,12 @@
 
     // Atomic BLOCK-20 launch: deploy + mint + seed an AMM pool in ONE tx.
     // supply/seedBlock/seedToken are WHOLE-coin counts (wasm scales by decimals).
-    async buildLaunchToken(secretHex, publicHex, utxosJson, name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice) {
+    async buildLaunchToken(secretHex, publicHex, utxosJson, name, symbol, decimals, supply, seedBlockBase, seedToken, gasLimit, gasPrice) {
       await initWasm();
-      return wasm_bindgen.build_launch_token(
-        secretHex, publicHex, utxosJson, name, symbol, BigInt(decimals), BigInt(supply), BigInt(seedBlock), BigInt(seedToken), BigInt(gasLimit), BigInt(gasPrice));
+      // seedBlockBase is BASE UNITS (1 BLOCK = 1e8) — the Blockshot minimum
+      // launch is 0.1 BLOCK, below what the whole-coin builder can express.
+      return wasm_bindgen.build_launch_token_base(
+        secretHex, publicHex, utxosJson, name, symbol, BigInt(decimals), BigInt(supply), BigInt(seedBlockBase), BigInt(seedToken), BigInt(gasLimit), BigInt(gasPrice));
     },
 
     // Password vault — identical format to the extension: {v,salt,iv,data} b64.

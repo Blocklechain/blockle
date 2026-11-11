@@ -10,6 +10,7 @@ import 'settings.dart';
 import 'wallet/wallet_screen.dart';
 import 'liquidity_screen.dart';
 import 'blockshot_screen.dart';
+import 'alien_chat_screen.dart';
 
 /// A single navigation destination (icon + label), the one source of truth for
 /// both the collapsible side menu and the minimal bottom bar.
@@ -37,6 +38,7 @@ class HomeScreen extends StatelessWidget {
     WalletScreen(), // 5  (Portfolio)
     LiquidityScreen(), // 6  (Blockle Liquidity)
     BlockshotScreen(), // 7  (Blockshot — launch + trade BLOCK-20s)
+    AlienChatScreen(), // 8  (Blockle Alien chat — on-device/hosted AI)
   ];
 
   static const _dests = <_Dest>[
@@ -49,6 +51,7 @@ class HomeScreen extends StatelessWidget {
     _Dest(Icons.diamond_outlined, Icons.diamond, 'Portfolio'),
     _Dest(Icons.water_drop_outlined, Icons.water_drop, 'Liquidity'),
     _Dest(Icons.rocket_launch_outlined, Icons.rocket_launch, 'Blockshot'),
+    _Dest(Icons.auto_awesome_outlined, Icons.auto_awesome, 'Alien'),
   ];
 
   /// The few destinations that get an icon-only button on the bottom bar; the

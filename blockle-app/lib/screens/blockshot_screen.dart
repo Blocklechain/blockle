@@ -1,8 +1,12 @@
-// blockshot_screen.dart — BLOCKSHOT: launch + trade BLOCK-20 tokens on the native
-// AMM, pump-style. Fully non-custodial: a launch is ONE user-signed LaunchToken
-// transaction (deploy + mint + seed pool); every trade is the SAME gated AMM
-// swap the Swap screen uses (security inspection + confirm sheet, then a
-// user-signed pool swap). Nothing custodial, no server in the money path.
+// blockshot_screen.dart — BLOCKSHOT: launch + trade BLOCK-20 tokens on the
+// native AMM, pump-style. Fully non-custodial: a launch is ONE user-signed
+// LaunchToken transaction (deploy + mint + seed pool); every trade is the SAME
+// gated AMM swap the Swap screen uses (security inspection + confirm sheet,
+// then a user-signed pool swap). Nothing custodial, no server in the money path.
+//
+// Token metadata (logo image, description, links) is OFF-chain cosmetics,
+// registered with /api/dex/register after the launch confirms and shown on the
+// token page — it can never affect funds.
 //
 // RULES HONORED: BLOCK-20 prices are shown in BLOCK ONLY (never USD); no emoji
 // in product UI (icons + gradients carry the flash).
@@ -14,8 +18,10 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
+import '../services/open_url.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
 import 'queue.dart';
@@ -45,6 +51,23 @@ String _fmtB(double n, {int max = 8}) {
   return s;
 }
 
+/// Brand detection for token links — the right symbol per destination.
+/// (Material ships telegram/discord glyphs; X gets a bold letter mark.)
+({IconData? icon, String? letter, String label}) _linkBrand(String url) {
+  final u = url.toLowerCase();
+  if (u.contains('x.com') || u.contains('twitter.com')) {
+    return (icon: null, letter: 'X', label: 'X');
+  }
+  if (u.contains('t.me') || u.contains('telegram')) {
+    return (icon: Icons.telegram, letter: null, label: 'Telegram');
+  }
+  if (u.contains('discord.gg') || u.contains('discord.com')) {
+    return (icon: Icons.discord, letter: null, label: 'Discord');
+  }
+  final host = Uri.tryParse(url)?.host ?? '';
+  return (icon: Icons.language_rounded, letter: null, label: host.isEmpty ? 'Website' : host);
+}
+
 class BlockshotScreen extends StatefulWidget {
   const BlockshotScreen({super.key});
   @override
@@ -54,7 +77,7 @@ class BlockshotScreen extends StatefulWidget {
 class _BlockshotScreenState extends State<BlockshotScreen>
     with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>> _pools = [];
-  Map<String, String> _logos = {};
+  Map<String, Map<String, dynamic>> _meta = {}; // token -> {logo, description, links}
   final Map<String, double> _lastPrice = {};
   final Map<String, int> _flash = {}; // token -> +1 up / -1 down, cleared after paint
   bool _loading = true;
@@ -67,7 +90,7 @@ class _BlockshotScreenState extends State<BlockshotScreen>
     _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))
       ..repeat(reverse: true);
     _load();
-    _loadLogos();
+    _loadMeta();
     _poll = Timer.periodic(const Duration(seconds: 8), (_) => _load());
   }
 
@@ -96,7 +119,6 @@ class _BlockshotScreenState extends State<BlockshotScreen>
       _pools = pools;
       _loading = false;
     });
-    // Let the flash tint show for a beat, then settle back.
     if (_flash.isNotEmpty) {
       Future.delayed(const Duration(milliseconds: 900), () {
         if (mounted) setState(_flash.clear);
@@ -104,7 +126,7 @@ class _BlockshotScreenState extends State<BlockshotScreen>
     }
   }
 
-  Future<void> _loadLogos() async {
+  Future<void> _loadMeta() async {
     try {
       final app = context.read<AppState>();
       final base = app.chain.apiBase.replaceFirst(RegExp(r'/explorer$'), '');
@@ -114,10 +136,9 @@ class _BlockshotScreenState extends State<BlockshotScreen>
       if (r.statusCode != 200 || !mounted) return;
       final j = (jsonDecode(r.body) as Map).cast<String, dynamic>();
       setState(() {
-        _logos = {
+        _meta = {
           for (final e in j.entries)
-            if (e.value is Map && (e.value as Map)['logo'] is String)
-              e.key: (e.value as Map)['logo'] as String,
+            if (e.value is Map) e.key: (e.value as Map).cast<String, dynamic>(),
         };
       });
     } catch (_) {/* monograms are fine */}
@@ -139,13 +160,18 @@ class _BlockshotScreenState extends State<BlockshotScreen>
     return l;
   }
 
+  void _refreshAll() {
+    _load();
+    _loadMeta();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Bk.bg,
       body: SafeArea(
         child: RefreshIndicator(
-          onRefresh: _load,
+          onRefresh: () async => _refreshAll(),
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 110),
             children: [
@@ -266,7 +292,7 @@ class _BlockshotScreenState extends State<BlockshotScreen>
           context: context,
           isScrollControlled: true,
           backgroundColor: Colors.transparent,
-          builder: (_) => _LaunchSheet(onLaunched: _load),
+          builder: (_) => _LaunchSheet(onLaunched: _refreshAll),
         );
       },
       child: Container(
@@ -330,7 +356,7 @@ class _BlockshotScreenState extends State<BlockshotScreen>
     final ageBlocks = tip - created;
     final isNew = ageBlocks >= 0 && ageBlocks < 144; // < ~24h at 10-min blocks
     final flash = _flash[id] ?? 0;
-    final logo = _logos[id];
+    final logo = _meta[id]?['logo'] as String?;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 500),
@@ -357,7 +383,7 @@ class _BlockshotScreenState extends State<BlockshotScreen>
             context: context,
             isScrollControlled: true,
             backgroundColor: Colors.transparent,
-            builder: (_) => _TokenSheet(pool: p, logo: logo, onTraded: _load),
+            builder: (_) => _TokenSheet(pool: p, meta: _meta[id], onTraded: _refreshAll),
           );
         },
         child: Padding(
@@ -440,12 +466,61 @@ Widget _tokenAvatar(String sym, String? logo) {
   );
 }
 
+/// Shared shell for both sheets: DRAG-DOWN CLOSES (DraggableScrollableSheet),
+/// grab-handle + a BACK button in the header row.
+Widget _sheetShell(BuildContext context,
+    {required String title,
+    Widget? headerTrailing,
+    required List<Widget> Function(ScrollController) children}) {
+  return DraggableScrollableSheet(
+    expand: false,
+    initialChildSize: 0.88,
+    minChildSize: 0.45,
+    maxChildSize: 0.95,
+    builder: (ctx, scroll) => Container(
+      decoration: const BoxDecoration(
+        color: Bk.bg2,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+      child: ListView(
+        controller: scroll,
+        padding: const EdgeInsets.fromLTRB(18, 10, 18, 28),
+        children: [
+          Center(
+            child: Container(
+                width: 42, height: 4,
+                decoration: BoxDecoration(
+                    color: Bk.border, borderRadius: BorderRadius.circular(4))),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back_rounded, color: Bk.text),
+              tooltip: 'Back',
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+            Expanded(
+              child: Text(title,
+                  style: const TextStyle(
+                      fontSize: 19, fontWeight: FontWeight.w900, color: Bk.text)),
+            ),
+            if (headerTrailing != null) headerTrailing,
+          ]),
+          const SizedBox(height: 6),
+          ...children(scroll),
+        ],
+      ),
+    ),
+  );
+}
+
 /* ========================= TOKEN DETAIL + TRADE ========================= */
 
 class _TokenSheet extends StatefulWidget {
-  const _TokenSheet({required this.pool, this.logo, required this.onTraded});
+  const _TokenSheet({required this.pool, this.meta, required this.onTraded});
   final Map<String, dynamic> pool;
-  final String? logo;
+  final Map<String, dynamic>? meta;
   final VoidCallback onTraded;
   @override
   State<_TokenSheet> createState() => _TokenSheetState();
@@ -467,6 +542,10 @@ class _TokenSheetState extends State<_TokenSheet> {
   double get _blockRes => ((p['blockReserve'] as num?) ?? 0) / _coin;
   double get _tokRes => ((p['tokenReserve'] as num?) ?? 0) / math.pow(10, _dec);
   double get _px => _poolPrice(p);
+  String? get _logo => widget.meta?['logo'] as String?;
+  String get _description => '${widget.meta?['description'] ?? ''}';
+  List<String> get _links =>
+      ((widget.meta?['links'] as List?) ?? const []).map((e) => '$e').toList();
 
   double _out(double amt, double inRes, double outRes) {
     if (amt <= 0 || inRes <= 0 || outRes <= 0) return 0;
@@ -562,173 +641,180 @@ class _TokenSheetState extends State<_TokenSheet> {
     final hist = _spark[_token] ?? const <double>[];
     final up = hist.length >= 2 && hist.last >= hist.first;
     return Stack(children: [
-      Container(
-        margin: EdgeInsets.only(top: MediaQuery.of(context).size.height * 0.12),
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-        decoration: const BoxDecoration(
-          color: Bk.bg2,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
-          children: [
-            Center(
-              child: Container(
-                  width: 42, height: 4,
-                  decoration: BoxDecoration(
-                      color: Bk.border, borderRadius: BorderRadius.circular(4))),
+      _sheetShell(
+        context,
+        title: _sym,
+        headerTrailing: _tokenAvatar(_sym, _logo),
+        children: (_) => [
+          Row(children: [
+            Expanded(
+              child: Text('${p['name'] ?? 'BLOCK-20'}',
+                  style: const TextStyle(fontSize: 12, color: Bk.muted)),
             ),
-            const SizedBox(height: 14),
-            Row(children: [
-              _tokenAvatar(_sym, widget.logo),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(_sym,
-                      style: const TextStyle(
-                          fontSize: 20, fontWeight: FontWeight.w900, color: Bk.text)),
-                  Text('${p['name'] ?? 'BLOCK-20'}',
-                      style: const TextStyle(fontSize: 12, color: Bk.muted)),
-                ]),
-              ),
-              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Text('${_fmtB(_px)} BLOCK',
-                    style: TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.w900,
-                        color: up ? Bk.good : Bk.bad,
-                        fontFeatures: const [FontFeature.tabularFigures()])),
-                const Text('per token', style: TextStyle(fontSize: 10.5, color: Bk.faint)),
-              ]),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text('${_fmtB(_px)} BLOCK',
+                  style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w900,
+                      color: up ? Bk.good : Bk.bad,
+                      fontFeatures: const [FontFeature.tabularFigures()])),
+              const Text('per token', style: TextStyle(fontSize: 10.5, color: Bk.faint)),
             ]),
-            const SizedBox(height: 14),
-            if (hist.length >= 2)
-              SizedBox(
-                height: 64,
-                child: CustomPaint(
-                  size: Size.infinite,
-                  painter: _SparkPainter(hist, up ? Bk.good : Bk.bad),
-                ),
-              ),
-            const SizedBox(height: 14),
-            Row(children: [
-              Expanded(child: _poolStat('Liquidity', '${_fmtB(_blockRes * 2, max: 2)} BLOCK')),
-              const SizedBox(width: 8),
-              Expanded(child: _poolStat('Pool $_sym', _fmtB(_tokRes, max: 2))),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: _poolStat(
-                      'LP lock',
-                      (((p['lockedUntil'] as num?)?.toInt() ?? 0) >
-                              ((p['height'] as num?)?.toInt() ?? 0))
-                          ? 'LOCKED'
-                          : 'open')),
-            ]),
-            const SizedBox(height: 16),
-            // BUY / SELL toggle — big, thumb-friendly.
-            Row(children: [
-              Expanded(child: _sideBtn('BUY', true, Bk.good)),
-              const SizedBox(width: 8),
-              Expanded(child: _sideBtn('SELL', false, Bk.bad)),
-            ]),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _amt,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              onChanged: (_) => setState(() {}),
-              style: const TextStyle(
-                  fontSize: 22, fontWeight: FontWeight.w800, color: Bk.text),
-              decoration: InputDecoration(
-                hintText: '0.0',
-                suffixText: _buy ? 'BLOCK' : _sym,
-                suffixStyle: const TextStyle(color: Bk.muted, fontWeight: FontWeight.w700),
-                filled: true,
-                fillColor: Bk.surface,
-                border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                for (final v in _buy ? [10, 50, 250] : [25, 50, 100])
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ActionChip(
-                      backgroundColor: Bk.surface,
-                      side: const BorderSide(color: Bk.border),
-                      label: Text(_buy ? '$v BLOCK' : '$v%',
-                          style: const TextStyle(fontSize: 11.5, color: Bk.text)),
-                      onPressed: () {
-                        HapticFeedback.selectionClick();
-                        if (_buy) {
-                          _amt.text = '$v';
-                        } else {
-                          // Percent of pool-side estimate is a placeholder until
-                          // the balance loads; keep it simple: % fills of 100.
-                          _amt.text = _fmtB(_tokRes * v / 100 / 1000, max: 6);
-                        }
-                        setState(() {});
-                      },
-                    ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              _amountIn > 0
-                  ? (_buy
-                      ? 'You receive about ${_fmtB(_estOut)} $_sym'
-                      : 'You receive about ${_fmtB(_estOut)} BLOCK')
-                  : 'Quotes walk the live pool curve — big orders move the price.',
-              style: const TextStyle(fontSize: 12, color: Bk.muted),
-            ),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: _busy ? null : _trade,
-              style: FilledButton.styleFrom(
-                  backgroundColor: _buy ? Bk.good : Bk.bad,
-                  minimumSize: const Size.fromHeight(52)),
-              child: Text(
-                  _busy ? 'Working…' : (_buy ? 'BUY $_sym' : 'SELL $_sym'),
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w900, fontSize: 15, color: Colors.white)),
-            ),
-            if (_okTxid != null) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(11),
-                decoration: BoxDecoration(
-                  color: Bk.good.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Bk.good.withValues(alpha: 0.4)),
-                ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(
-                      '${_buy ? "Bought" : "Sold"} — about ${_fmtB(_okAmount)} ${_buy ? _sym : "BLOCK"} incoming once the block confirms.',
-                      style: const TextStyle(color: Bk.good, fontSize: 12.5)),
-                  const SizedBox(height: 6),
-                  Row(children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const QueueScreen())),
-                      child: const Text('Track in queue',
-                          style: TextStyle(color: Bk.accent2, fontSize: 12)),
-                    ),
-                  ]),
-                ]),
-              ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: Bk.bad, fontSize: 12.5)),
-            ],
+          ]),
+          if (_description.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(_description,
+                style: const TextStyle(fontSize: 12.5, color: Bk.muted, height: 1.45)),
           ],
-        ),
+          if (_links.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final l in _links) _linkChip(l),
+            ]),
+          ],
+          const SizedBox(height: 14),
+          if (hist.length >= 2)
+            SizedBox(
+              height: 64,
+              child: CustomPaint(
+                size: Size.infinite,
+                painter: _SparkPainter(hist, up ? Bk.good : Bk.bad),
+              ),
+            ),
+          const SizedBox(height: 14),
+          Row(children: [
+            Expanded(child: _poolStat('Liquidity', '${_fmtB(_blockRes * 2, max: 2)} BLOCK')),
+            const SizedBox(width: 8),
+            Expanded(child: _poolStat('Pool $_sym', _fmtB(_tokRes, max: 2))),
+            const SizedBox(width: 8),
+            Expanded(
+                child: _poolStat(
+                    'LP lock',
+                    (((p['lockedUntil'] as num?)?.toInt() ?? 0) >
+                            ((p['height'] as num?)?.toInt() ?? 0))
+                        ? 'LOCKED'
+                        : 'open')),
+          ]),
+          const SizedBox(height: 16),
+          Row(children: [
+            Expanded(child: _sideBtn('BUY', true, Bk.good)),
+            const SizedBox(width: 8),
+            Expanded(child: _sideBtn('SELL', false, Bk.bad)),
+          ]),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _amt,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (_) => setState(() {}),
+            style: const TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w800, color: Bk.text),
+            decoration: InputDecoration(
+              hintText: '0.0',
+              suffixText: _buy ? 'BLOCK' : _sym,
+              suffixStyle: const TextStyle(color: Bk.muted, fontWeight: FontWeight.w700),
+              filled: true,
+              fillColor: Bk.surface,
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              for (final v in _buy ? [10, 50, 250] : [25, 50, 100])
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ActionChip(
+                    backgroundColor: Bk.surface,
+                    side: const BorderSide(color: Bk.border),
+                    label: Text(_buy ? '$v BLOCK' : '$v%',
+                        style: const TextStyle(fontSize: 11.5, color: Bk.text)),
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      if (_buy) {
+                        _amt.text = '$v';
+                      } else {
+                        _amt.text = _fmtB(_tokRes * v / 100 / 1000, max: 6);
+                      }
+                      setState(() {});
+                    },
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _amountIn > 0
+                ? (_buy
+                    ? 'You receive about ${_fmtB(_estOut)} $_sym'
+                    : 'You receive about ${_fmtB(_estOut)} BLOCK')
+                : 'Quotes walk the live pool curve — big orders move the price.',
+            style: const TextStyle(fontSize: 12, color: Bk.muted),
+          ),
+          const SizedBox(height: 12),
+          FilledButton(
+            onPressed: _busy ? null : _trade,
+            style: FilledButton.styleFrom(
+                backgroundColor: _buy ? Bk.good : Bk.bad,
+                minimumSize: const Size.fromHeight(52)),
+            child: Text(
+                _busy ? 'Working…' : (_buy ? 'BUY $_sym' : 'SELL $_sym'),
+                style: const TextStyle(
+                    fontWeight: FontWeight.w900, fontSize: 15, color: Colors.white)),
+          ),
+          if (_okTxid != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: Bk.good.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Bk.good.withValues(alpha: 0.4)),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(
+                    '${_buy ? "Bought" : "Sold"} — about ${_fmtB(_okAmount)} ${_buy ? _sym : "BLOCK"} incoming once the block confirms.',
+                    style: const TextStyle(color: Bk.good, fontSize: 12.5)),
+                const SizedBox(height: 6),
+                Row(children: [
+                  TextButton(
+                    onPressed: () => openExternal('https://blockle.org/tx/$_okTxid'),
+                    child: const Text('View on explorer',
+                        style: TextStyle(color: Bk.accent2, fontSize: 12)),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => const QueueScreen())),
+                    child: const Text('Track in queue',
+                        style: TextStyle(color: Bk.accent2, fontSize: 12)),
+                  ),
+                ]),
+              ]),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: Bk.bad, fontSize: 12.5)),
+          ],
+        ],
       ),
       if (_confetti) const Positioned.fill(child: IgnorePointer(child: _Confetti())),
     ]);
+  }
+
+  Widget _linkChip(String url) {
+    final b = _linkBrand(url);
+    return ActionChip(
+      backgroundColor: Bk.surface,
+      side: const BorderSide(color: Bk.border),
+      avatar: b.icon != null
+          ? Icon(b.icon, size: 15, color: Bk.accent2)
+          : const Text('X',
+              style: TextStyle(
+                  color: Bk.accent2, fontWeight: FontWeight.w900, fontSize: 13)),
+      label: Text(b.label, style: const TextStyle(fontSize: 11.5, color: Bk.text)),
+      onPressed: () => openExternal(url),
+    );
   }
 
   Widget _sideBtn(String label, bool buy, Color c) {
@@ -788,16 +874,87 @@ class _LaunchSheetState extends State<_LaunchSheet> {
   final _name = TextEditingController();
   final _sym = TextEditingController();
   final _supply = TextEditingController(text: '1000000');
-  double _seedBlock = 25;
+  final _desc = TextEditingController();
+  final List<TextEditingController> _links = [TextEditingController()];
+  // Pool seed in BLOCK — LOG-scale slider from the 0.1 BLOCK minimum to 500.
+  double _seedT = 0.65; // slider position 0..1
+  double get _seedBlock => 0.1 * math.pow(5000, _seedT).toDouble();
+  int get _seedBlockBase => (_seedBlock * _coin).round();
   double _seedPct = 50; // % of supply into the pool
   bool _busy = false;
   String? _error;
   String? _okTxid;
   bool _confetti = false;
+  Uint8List? _imageBytes;
+  String? _imageMime;
 
   int get _supplyN => int.tryParse(_supply.text.trim()) ?? 0;
   int get _seedTok => (_supplyN * _seedPct / 100).floor();
   double get _startPx => _seedTok > 0 ? _seedBlock / _seedTok : 0;
+
+  Future<void> _pickImage() async {
+    try {
+      final x = await ImagePicker().pickImage(
+          source: ImageSource.gallery, maxWidth: 512, maxHeight: 512, imageQuality: 82);
+      if (x == null) return;
+      final bytes = await x.readAsBytes();
+      if (bytes.length > 300 * 1024) {
+        setState(() => _error = 'Image too large — pick something under 300 KB.');
+        return;
+      }
+      setState(() {
+        _imageBytes = bytes;
+        _imageMime = (x.name.toLowerCase().endsWith('.png')) ? 'image/png' : 'image/jpeg';
+        _error = null;
+      });
+    } catch (e) {
+      setState(() => _error = 'Could not pick an image: $e');
+    }
+  }
+
+  List<String> get _cleanLinks => _links
+      .map((c) => c.text.trim())
+      .where((l) => l.isNotEmpty)
+      .map((l) => l.startsWith('http') ? l : 'https://$l')
+      .where((l) => l.startsWith('https://'))
+      .take(8)
+      .toList();
+
+  /// After the launch broadcasts, find the new token id (by symbol, newest
+  /// pool) and register its off-chain metadata. Polls fail-soft for ~4 min.
+  Future<void> _registerMeta(AppState app, String sym) async {
+    final base = app.chain.apiBase.replaceFirst(RegExp(r'/explorer$'), '');
+    final body = <String, dynamic>{
+      if (_imageBytes != null)
+        'logoData': 'data:$_imageMime;base64,${base64Encode(_imageBytes!)}',
+      'description': _desc.text.trim(),
+      'links': _cleanLinks,
+    };
+    for (var i = 0; i < 12; i++) {
+      await Future.delayed(const Duration(seconds: 20));
+      try {
+        final pools = await app.chain.pools();
+        Map<String, dynamic>? match;
+        for (final p in pools) {
+          if ('${p['symbol']}'.toUpperCase() == sym) {
+            if (match == null ||
+                ((p['createdHeight'] as num?) ?? 0) >
+                    ((match['createdHeight'] as num?) ?? 0)) {
+              match = p;
+            }
+          }
+        }
+        if (match == null) continue;
+        await http
+            .post(Uri.parse('$base/dex/register'),
+                headers: {'content-type': 'application/json'},
+                body: jsonEncode({'token': match['token'], ...body}))
+            .timeout(const Duration(seconds: 15));
+        widget.onLaunched();
+        return;
+      } catch (_) {/* retry */}
+    }
+  }
 
   Future<void> _launch() async {
     final app = context.read<AppState>();
@@ -824,9 +981,7 @@ class _LaunchSheetState extends State<_LaunchSheet> {
       _error = null;
     });
     try {
-      // The launch SPENDS the seed BLOCK into the new pool — it goes through the
-      // same review gate as any value move before anything is signed.
-      final seedBase = BigInt.from(_seedBlock.round()) * BigInt.from(_coin);
+      final seedBase = BigInt.from(_seedBlockBase);
       final approved = await reviewSend(
         context,
         chain: 'block',
@@ -835,7 +990,7 @@ class _LaunchSheetState extends State<_LaunchSheet> {
         asset: const {'chain': 'block', 'kind': 'native', 'symbol': 'BLOCK', 'decimals': 8},
         title: 'Review launch',
         previewHeader:
-            'Launch $sym — seed ${_seedBlock.round()} BLOCK + $_seedTok $sym into its pool',
+            'Launch $sym — seed ${_fmtB(_seedBlock, max: 2)} BLOCK + $_seedTok $sym into its pool',
         resolvedAddress: 'new $sym pool (atomic launch)',
       );
       if (!mounted) return;
@@ -851,7 +1006,7 @@ class _LaunchSheetState extends State<_LaunchSheet> {
       final utxos = (u?['utxos'] as List?) ?? [];
       if (utxos.isEmpty) throw Exception('no spendable UTXOs — fund your BLOCK address first');
       final built = await app.store.buildLaunchToken(
-          jsonEncode(utxos), name, sym, 8, _supplyN, _seedBlock.round(), _seedTok, 2000000, 10);
+          jsonEncode(utxos), name, sym, 8, _supplyN, _seedBlockBase, _seedTok, 2000000, 10);
       final raw = built['raw'] as String?;
       if (raw == null) throw Exception('could not build the launch');
       final res = await app.chain.submit(raw);
@@ -864,6 +1019,10 @@ class _LaunchSheetState extends State<_LaunchSheet> {
         _confetti = true;
       });
       widget.onLaunched();
+      // Image/description/links are cosmetics registered once the pool appears.
+      if (_imageBytes != null || _desc.text.trim().isNotEmpty || _cleanLinks.isNotEmpty) {
+        unawaited(_registerMeta(app, sym));
+      }
       Future.delayed(const Duration(milliseconds: 2200), () {
         if (mounted) setState(() => _confetti = false);
       });
@@ -879,122 +1038,203 @@ class _LaunchSheetState extends State<_LaunchSheet> {
   @override
   Widget build(BuildContext context) {
     return Stack(children: [
-      Container(
-        margin: EdgeInsets.only(top: MediaQuery.of(context).size.height * 0.08),
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-        decoration: const BoxDecoration(
-          color: Bk.bg2,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
-          children: [
-            Center(
+      _sheetShell(
+        context,
+        title: 'Launch a token',
+        headerTrailing: const Icon(Icons.rocket_launch_rounded, color: Bk.accent, size: 22),
+        children: (_) => [
+          const Text(
+              'One signed transaction deploys your BLOCK-20, mints the supply, and opens its trading pool. Live on the board the moment it confirms.',
+              style: TextStyle(fontSize: 12, color: Bk.muted, height: 1.4)),
+          const SizedBox(height: 16),
+          // Optional token image (shown as the logo on the board + token page).
+          Row(children: [
+            GestureDetector(
+              onTap: _pickImage,
               child: Container(
-                  width: 42, height: 4,
-                  decoration: BoxDecoration(
-                      color: Bk.border, borderRadius: BorderRadius.circular(4))),
-            ),
-            const SizedBox(height: 14),
-            const Row(children: [
-              Icon(Icons.rocket_launch_rounded, color: Bk.accent, size: 22),
-              SizedBox(width: 8),
-              Text('Launch a token',
-                  style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900, color: Bk.text)),
-            ]),
-            const SizedBox(height: 4),
-            const Text(
-                'One signed transaction deploys your BLOCK-20, mints the supply, and opens its trading pool. Live on the board the moment it confirms.',
-                style: TextStyle(fontSize: 12, color: Bk.muted, height: 1.4)),
-            const SizedBox(height: 16),
-            _field('Name', _name, hint: 'Moon Rocket'),
-            const SizedBox(height: 10),
-            _field('Ticker', _sym, hint: 'MOON', caps: true),
-            const SizedBox(height: 10),
-            _field('Total supply', _supply, hint: '1000000', number: true),
-            const SizedBox(height: 16),
-            Text('Pool seed — ${_seedBlock.round()} BLOCK',
-                style: const TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
-            Slider(
-              value: _seedBlock,
-              min: 5,
-              max: 500,
-              divisions: 99,
-              activeColor: Bk.accent,
-              onChanged: (v) => setState(() => _seedBlock = v),
-            ),
-            Text('Supply into the pool — ${_seedPct.round()}%  (you keep ${100 - _seedPct.round()}%)',
-                style: const TextStyle(
-                    fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
-            Slider(
-              value: _seedPct,
-              min: 10,
-              max: 100,
-              divisions: 90,
-              activeColor: Bk.accent2,
-              onChanged: (v) => setState(() => _seedPct = v),
-            ),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Bk.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Bk.border),
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: Bk.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Bk.border),
+                  image: _imageBytes != null
+                      ? DecorationImage(image: MemoryImage(_imageBytes!), fit: BoxFit.cover)
+                      : null,
+                ),
+                child: _imageBytes == null
+                    ? const Icon(Icons.add_photo_alternate_outlined, color: Bk.muted)
+                    : null,
               ),
-              child: Column(children: [
-                _kv('Starting price', '${_fmtB(_startPx)} BLOCK per ${_sym.text.trim().isEmpty ? "token" : _sym.text.trim().toUpperCase()}'),
-                _kv('Pool opens with', '${_seedBlock.round()} BLOCK + $_seedTok tokens'),
-                _kv('You keep', '${_supplyN - _seedTok} tokens'),
-                _kv('Cost', '${_seedBlock.round()} BLOCK + gas'),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Token image (optional)',
+                    style: TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
+                Text(
+                    _imageBytes == null
+                        ? 'Square works best — shown on the board and token page.'
+                        : 'Looks good. Tap to change.',
+                    style: const TextStyle(fontSize: 11, color: Bk.muted)),
+                if (_imageBytes != null)
+                  TextButton(
+                    onPressed: () => setState(() => _imageBytes = null),
+                    style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                    child: const Text('Remove',
+                        style: TextStyle(color: Bk.bad, fontSize: 11.5)),
+                  ),
               ]),
             ),
-            const SizedBox(height: 14),
-            FilledButton(
-              onPressed: _busy ? null : _launch,
-              style: FilledButton.styleFrom(
-                  backgroundColor: Bk.accent, minimumSize: const Size.fromHeight(52)),
-              child: Text(_busy ? 'Launching…' : 'LAUNCH IT',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w900, fontSize: 15, color: Colors.white)),
-            ),
-            if (_okTxid != null) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.all(11),
-                decoration: BoxDecoration(
-                  color: Bk.good.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Bk.good.withValues(alpha: 0.4)),
-                ),
-                child: const Text(
-                    'LAUNCHED — your token hits the board as soon as the next block confirms. Tell people before someone snipes the curve.',
-                    style: TextStyle(color: Bk.good, fontSize: 12.5, height: 1.4)),
+          ]),
+          const SizedBox(height: 12),
+          _field('Name', _name, hint: 'Moon Rocket'),
+          const SizedBox(height: 10),
+          _field('Ticker', _sym, hint: 'MOON', caps: true),
+          const SizedBox(height: 10),
+          _field('Total supply', _supply, hint: '1000000', number: true),
+          const SizedBox(height: 10),
+          _field('Description (optional)', _desc,
+              hint: 'What is this token about?', lines: 3),
+          const SizedBox(height: 12),
+          const Text('Links (optional)',
+              style:
+                  TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
+          const SizedBox(height: 6),
+          for (var i = 0; i < _links.length; i++) ...[
+            Row(children: [
+              // Brand icon auto-detects X / Telegram / Discord as they type.
+              SizedBox(
+                width: 30,
+                child: Builder(builder: (_) {
+                  final b = _linkBrand(_links[i].text);
+                  return b.icon != null
+                      ? Icon(b.icon, size: 18, color: Bk.accent2)
+                      : const Center(
+                          child: Text('X',
+                              style: TextStyle(
+                                  color: Bk.accent2,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 15)));
+                }),
               ),
-            ],
-            if (_error != null) ...[
-              const SizedBox(height: 10),
-              Text(_error!, style: const TextStyle(color: Bk.bad, fontSize: 12.5)),
-            ],
+              const SizedBox(width: 6),
+              Expanded(
+                child: _field('', _links[i],
+                    hint: i == 0 ? 'https://yourtoken.xyz' : 'https://…', dense: true),
+              ),
+              if (_links.length > 1)
+                IconButton(
+                  icon: const Icon(Icons.close_rounded, size: 18, color: Bk.muted),
+                  onPressed: () => setState(() => _links.removeAt(i)),
+                ),
+            ]),
+            const SizedBox(height: 6),
           ],
-        ),
+          if (_links.length < 8)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => setState(() => _links.add(TextEditingController())),
+                icon: const Icon(Icons.add_rounded, size: 17, color: Bk.accent2),
+                label: const Text('Add link',
+                    style: TextStyle(color: Bk.accent2, fontSize: 12.5)),
+              ),
+            ),
+          const SizedBox(height: 10),
+          Text('Pool seed — ${_fmtB(_seedBlock, max: 2)} BLOCK  (min 0.1)',
+              style: const TextStyle(
+                  fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
+          // Logarithmic: equal slider travel multiplies the seed, so 0.1, 1,
+          // 10 and 100 BLOCK are all easy to hit precisely.
+          Slider(
+            value: _seedT,
+            min: 0,
+            max: 1,
+            activeColor: Bk.accent,
+            onChanged: (v) => setState(() => _seedT = v),
+          ),
+          Text('Supply into the pool — ${_seedPct.round()}%  (you keep ${100 - _seedPct.round()}%)',
+              style: const TextStyle(
+                  fontSize: 12.5, fontWeight: FontWeight.w700, color: Bk.text)),
+          Slider(
+            value: _seedPct,
+            min: 10,
+            max: 100,
+            divisions: 90,
+            activeColor: Bk.accent2,
+            onChanged: (v) => setState(() => _seedPct = v),
+          ),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Bk.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Bk.border),
+            ),
+            child: Column(children: [
+              _kv('Starting price',
+                  '${_fmtB(_startPx)} BLOCK per ${_sym.text.trim().isEmpty ? "token" : _sym.text.trim().toUpperCase()}'),
+              _kv('Pool opens with', '${_fmtB(_seedBlock, max: 2)} BLOCK + $_seedTok tokens'),
+              _kv('You keep', '${_supplyN - _seedTok} tokens'),
+              _kv('Cost', '${_fmtB(_seedBlock, max: 2)} BLOCK + gas'),
+            ]),
+          ),
+          const SizedBox(height: 14),
+          FilledButton(
+            onPressed: _busy ? null : _launch,
+            style: FilledButton.styleFrom(
+                backgroundColor: Bk.accent, minimumSize: const Size.fromHeight(52)),
+            child: Text(_busy ? 'Launching…' : 'LAUNCH IT',
+                style: const TextStyle(
+                    fontWeight: FontWeight.w900, fontSize: 15, color: Colors.white)),
+          ),
+          if (_okTxid != null) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(
+                color: Bk.good.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Bk.good.withValues(alpha: 0.4)),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text(
+                    'LAUNCHED — your token hits the board as soon as the next block confirms. Your image and links attach automatically right after.',
+                    style: TextStyle(color: Bk.good, fontSize: 12.5, height: 1.4)),
+                TextButton(
+                  onPressed: () => openExternal('https://blockle.org/tx/$_okTxid'),
+                  style: TextButton.styleFrom(padding: EdgeInsets.zero),
+                  child: const Text('View on explorer',
+                      style: TextStyle(color: Bk.accent2, fontSize: 12)),
+                ),
+              ]),
+            ),
+          ],
+          if (_error != null) ...[
+            const SizedBox(height: 10),
+            Text(_error!, style: const TextStyle(color: Bk.bad, fontSize: 12.5)),
+          ],
+        ],
       ),
       if (_confetti) const Positioned.fill(child: IgnorePointer(child: _Confetti())),
     ]);
   }
 
   Widget _field(String label, TextEditingController c,
-      {String? hint, bool number = false, bool caps = false}) {
+      {String? hint, bool number = false, bool caps = false, int lines = 1, bool dense = false}) {
     return TextField(
       controller: c,
       keyboardType: number ? TextInputType.number : TextInputType.text,
       textCapitalization: caps ? TextCapitalization.characters : TextCapitalization.none,
+      maxLines: lines,
       onChanged: (_) => setState(() {}),
       style: const TextStyle(color: Bk.text, fontWeight: FontWeight.w600),
       decoration: InputDecoration(
-        labelText: label,
+        labelText: label.isEmpty ? null : label,
         hintText: hint,
+        isDense: dense,
         labelStyle: const TextStyle(color: Bk.muted, fontSize: 12.5),
         filled: true,
         fillColor: Bk.surface,
@@ -1055,7 +1295,6 @@ class _SparkPainter extends CustomPainter {
           ..strokeWidth = 2
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round);
-    // Emphasize the live end.
     final lastY =
         size.height - ((points.last - lo) / span) * (size.height - 6) - 3;
     canvas.drawCircle(Offset(size.width, lastY), 3.2, Paint()..color = color);

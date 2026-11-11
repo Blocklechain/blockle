@@ -527,10 +527,45 @@ fn route(
             // created timestamp.
             "/api/dex/register" => {
                 let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("");
-                let logo = body.get("logo").and_then(|v| v.as_str()).unwrap_or("");
+                let mut logo = body.get("logo").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 if token.len() != 64 || !token.chars().all(|c| c.is_ascii_hexdigit()) {
                     return jerr("400 Bad Request", "token must be a 64-hex contract id");
                 }
+                // Optional INLINE logo upload: "logoData" as a data: URL (png/jpeg,
+                // <= 400 KB base64). Saved under /assets/tokens/<id>.<ext> and the
+                // stored logo becomes that URL.
+                if let Some(data) = body.get("logoData").and_then(|v| v.as_str()) {
+                    if let Some(idx) = data.find("base64,") {
+                        let b64 = &data[idx + 7..];
+                        if b64.len() <= 400_000 {
+                            if let Some(bytes) = base64_decode(b64) {
+                                // magic-byte sniff: PNG or JPEG only
+                                let ext = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) { Some("png") }
+                                    else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) { Some("jpg") }
+                                    else { None };
+                                if let Some(ext) = ext {
+                                    let dir = "/opt/blockle/web/assets/tokens";
+                                    let _ = fs::create_dir_all(dir);
+                                    let fp = format!("{dir}/{token}.{ext}");
+                                    if fs::write(&fp, &bytes).is_ok() {
+                                        logo = format!("https://blockle.org/assets/tokens/{token}.{ext}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Optional description (<= 500 chars) + https links (<= 8, each <= 200 chars).
+                let description: String = body.get("description").and_then(|v| v.as_str())
+                    .unwrap_or("").chars().take(500).collect();
+                let links: Vec<String> = body.get("links").and_then(|v| v.as_array())
+                    .map(|a| a.iter()
+                        .filter_map(|l| l.as_str())
+                        .filter(|l| l.starts_with("https://") && l.len() <= 200)
+                        .take(8)
+                        .map(|l| l.to_string())
+                        .collect())
+                    .unwrap_or_default();
                 let path = "/var/lib/blockle-biz/dex-tokens.json";
                 let mut map: Value = fs::read_to_string(path)
                     .ok()
@@ -540,7 +575,13 @@ fn route(
                     .get(token)
                     .and_then(|e| e.get("created").and_then(|c| c.as_u64()))
                     .unwrap_or_else(now_unix);
-                map[token] = json!({ "logo": logo, "created": created });
+                // Keep an existing logo if this update carries none.
+                if logo.is_empty() {
+                    if let Some(prev) = map.get(token).and_then(|e| e.get("logo")).and_then(|l| l.as_str()) {
+                        logo = prev.to_string();
+                    }
+                }
+                map[token] = json!({ "logo": logo, "created": created, "description": description, "links": links });
                 let _ = fs::write(path, map.to_string());
                 ("200 OK", "application/json", json!({"ok": true}).to_string().into_bytes())
             }
@@ -3820,6 +3861,27 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 }
 
 /// Standard base64 (RFC 4648, `+`/`/`, `=` padding).
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut val = [255u8; 256];
+    for (i, c) in T.iter().enumerate() { val[*c as usize] = i as u8; }
+    let bytes: Vec<u8> = s.bytes().filter(|b| !b" \n\r\t=".contains(b)).collect();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for b in bytes {
+        let v = val[b as usize];
+        if v == 255 { return None; }
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 fn base64_encode(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

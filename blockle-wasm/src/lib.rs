@@ -731,6 +731,49 @@ pub fn build_launch_token(
     )
 }
 
+/// Like [build_launch_token] but `seed_block_base` is in BASE UNITS
+/// (1 BLOCK = 100_000_000), enabling sub-1-BLOCK pool seeds — the Blockshot
+/// minimum launch is 0.1 BLOCK. `supply`/`seed_token` stay whole-token counts.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_launch_token_base(
+    secret_hex: &str,
+    public_hex: &str,
+    utxos_json: &str,
+    name: &str,
+    symbol: &str,
+    decimals: u64,
+    supply: u64,
+    seed_block_base: u64,
+    seed_token: u64,
+    gas_limit: u64,
+    gas_price: u64,
+) -> Result<String, JsError> {
+    if decimals > 18 {
+        return Err(JsError::new("decimals too large"));
+    }
+    if seed_token > supply {
+        return Err(JsError::new("seed tokens exceed total supply"));
+    }
+    if seed_block_base < 10_000_000 {
+        return Err(JsError::new("pool seed must be at least 0.1 BLOCK"));
+    }
+    let (kp, utxos, fee) = load_common!(secret_hex, public_hex, utxos_json, gas_limit, gas_price);
+    let scale = 10u64.checked_pow(decimals as u32).ok_or_else(|| JsError::new("decimals overflow"))?;
+    let supply_raw = supply.checked_mul(scale).ok_or_else(|| JsError::new("supply overflow"))?;
+    let token_amt = seed_token.checked_mul(scale).ok_or_else(|| JsError::new("seed token overflow"))?;
+    let block_amt = seed_block_base;
+    let code = blockle_vm::asm::assemble(&block20_asm(name, symbol, decimals, supply_raw))
+        .map_err(|e| JsError::new(&format!("asm error: {e:?}")))?;
+    finalize_action_tx(
+        &kp,
+        &utxos,
+        ContractAction::LaunchToken { code, block_amt, token_amt, gas_limit },
+        block_amt,
+        fee,
+    )
+}
+
 /// Atomic NFT-collection launch — deploy a BLOCK-721 collection and run its
 /// init() (fixing the deployer as minter) in ONE transaction. `code_hex` is the
 /// pre-built BLOCK-721 bytecode (hex).
