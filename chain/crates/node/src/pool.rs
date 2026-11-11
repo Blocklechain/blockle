@@ -103,6 +103,7 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
 /// - `submitauxblock [hash, auxpow]` → `true` once the parent proof is
 ///   attached and the block connects.
 pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
+    spawn_snapshot_refresher(node.clone());
     let pending: Arc<Mutex<HashMap<String, (Block, String, u64)>>> = Arc::new(Mutex::new(HashMap::new()));
     thread::spawn(move || {
         let listener = match TcpListener::bind(&listen) {
@@ -772,26 +773,37 @@ fn block_summary(chain: &Chain, height: usize, b: &Block) -> Value {
     })
 }
 
-/// Explorer requests share ONE chain snapshot for a few seconds. snapshot()
-/// deep-clones the whole chain UNDER THE CONSENSUS LOCK — at 36k blocks of
-/// ~13 KB post-quantum txs that is hundreds of MB per call, and doing it per
-/// request both burned seconds and stalled mining. 5 s of staleness is
+/// Explorer requests NEVER clone the chain. snapshot() deep-clones the whole
+/// chain (multi-GB at 36k blocks of ~13 KB post-quantum txs, 10s+ of memcpy)
+/// under the consensus lock — doing that on the request path, even shared
+/// behind a mutex, serialized every GET behind an endless clone cycle and hung
+/// the explorer. Instead a BACKGROUND thread refreshes one Arc'd snapshot
+/// every 15 s and requests just read the latest. 15 s of staleness is
 /// invisible on a 600 s block time.
-static EXPLORER_SNAP: std::sync::OnceLock<Mutex<Option<(u64, Arc<(Chain, Vec<Transaction>)>)>>> =
+static EXPLORER_SNAP: std::sync::OnceLock<std::sync::RwLock<Option<Arc<(Chain, Vec<Transaction>)>>>> =
     std::sync::OnceLock::new();
 
+fn snap_cell() -> &'static std::sync::RwLock<Option<Arc<(Chain, Vec<Transaction>)>>> {
+    EXPLORER_SNAP.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Spawned once from spawn_aux_http: keeps the shared explorer snapshot fresh.
+fn spawn_snapshot_refresher(node: Arc<Node>) {
+    thread::spawn(move || loop {
+        let snap = Arc::new(node.snapshot());
+        *snap_cell().write().unwrap() = Some(snap);
+        thread::sleep(Duration::from_secs(15));
+    });
+}
+
 fn snapshot_shared(node: &Arc<Node>) -> Arc<(Chain, Vec<Transaction>)> {
-    let m = EXPLORER_SNAP.get_or_init(|| Mutex::new(None));
-    let mut g = m.lock().unwrap();
-    let now = now_unix();
-    if let Some((at, snap)) = g.as_ref() {
-        if now.saturating_sub(*at) < 5 {
-            return snap.clone();
-        }
+    if let Some(s) = snap_cell().read().unwrap().clone() {
+        return s;
     }
-    let snap = Arc::new(node.snapshot());
-    *g = Some((now, snap.clone()));
-    snap
+    // Startup only (refresher hasn't published yet): take one directly.
+    let s = Arc::new(node.snapshot());
+    *snap_cell().write().unwrap() = Some(s.clone());
+    s
 }
 
 fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
