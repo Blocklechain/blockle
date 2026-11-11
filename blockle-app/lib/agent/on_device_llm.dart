@@ -20,11 +20,13 @@ import 'package:path_provider/path_provider.dart';
 enum OnDeviceStatus { none, downloading, downloaded, loading, ready, error }
 
 class ModelInfo {
-  const ModelInfo({required this.id, required this.name, required this.sizeMb, required this.url});
+  const ModelInfo(
+      {required this.id, required this.name, required this.sizeMb, required this.url, this.type = 'gemma'});
   final String id;
   final String name;
   final int sizeMb;
   final String url;
+  final String type; // 'gemma' | 'qwen' | 'llama' | 'deepseek' | 'general'
 }
 
 class OnDeviceLlm extends ChangeNotifier {
@@ -34,10 +36,11 @@ class OnDeviceLlm extends ChangeNotifier {
   static const _manifestUrl = 'https://blockle.org/assets/wallet-ai-models.json';
   // Baked-in fallback so the feature works even if the manifest is unreachable.
   static const _fallback = ModelInfo(
-    id: 'gemma3-1b-it-int4',
-    name: 'Gemma 3 1B (on-device)',
-    sizeMb: 555,
-    url: 'https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/gemma3-1b-it-int4.task',
+    id: 'qwen2.5-1.5b-it',
+    name: 'Qwen2.5 1.5B (on-device)',
+    sizeMb: 1523,
+    url: 'https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv1280.task',
+    type: 'qwen',
   );
 
   OnDeviceStatus status = OnDeviceStatus.none;
@@ -65,6 +68,7 @@ class OnDeviceLlm extends ChangeNotifier {
             name: '${m['name'] ?? _fallback.name}',
             sizeMb: (m['sizeMb'] as num?)?.toInt() ?? _fallback.sizeMb,
             url: m['url'] as String,
+            type: '${m['type'] ?? _fallback.type}',
           );
         }
       }
@@ -137,8 +141,15 @@ class OnDeviceLlm extends ChangeNotifier {
     notifyListeners();
     final path = await _modelPath();
     await FlutterGemmaPlugin.instance.modelManager.setModelPath(path);
+    const typeMap = {
+      'qwen': ModelType.qwen,
+      'llama': ModelType.llama,
+      'deepseek': ModelType.deepSeek,
+      'general': ModelType.general,
+      'gemma': ModelType.gemmaIt,
+    };
     _inference = await FlutterGemmaPlugin.instance.createModel(
-      modelType: ModelType.gemmaIt,
+      modelType: typeMap[model.type] ?? ModelType.gemmaIt,
       maxTokens: 2048,
     );
     status = OnDeviceStatus.ready;

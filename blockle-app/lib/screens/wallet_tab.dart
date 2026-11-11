@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -43,22 +44,37 @@ class _WalletTabState extends State<WalletTab> {
     'arbitrum',
   ];
   Map<String, Balance?> _native = {};
+  // Owned NON-native tokens per chain (balance > 0), for the by-chain section.
+  Map<String, List<Balance>> _chainTokens = {};
   bool _vaultLocked = false;
+  Timer? _poll;
+  Map<String, List<Balance>> _chainTokensTmp = {};
 
   @override
   void initState() {
     super.initState();
     _refresh();
+    // Balances settle a block after a buy/sell — poll while the tab is open so
+    // they update on their own once the tx confirms (silent: no spinner).
+    _poll = Timer.periodic(const Duration(seconds: 25), (_) {
+      if (mounted) _refresh(silent: true);
+    });
   }
 
-  Future<void> _refresh() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
     final app = context.read<AppState>();
     final mc = context.read<MultichainController>();
     final addr = app.store.address;
     final acct = await app.chain.account(addr);
     final toks = await _loadTokens(app.chain, addr);
-    final native = await _loadNative(mc);
+    final native = await _loadNative(mc); // also fills _chainTokensTmp
     final pools = await app.chain.pools();
     if (!mounted) return;
     setState(() {
@@ -66,6 +82,7 @@ class _WalletTabState extends State<WalletTab> {
       _tokens = toks;
       _pools = pools;
       _native = native;
+      _chainTokens = _chainTokensTmp;
       _vaultLocked = !mc.vaultUnlocked;
       _loading = false;
     });
@@ -77,6 +94,7 @@ class _WalletTabState extends State<WalletTab> {
   Future<Map<String, Balance?>> _loadNative(MultichainController mc) async {
     if (!mc.vaultUnlocked) return {};
     final out = <String, Balance?>{};
+    _chainTokensTmp = {};
     await Future.wait(_homeChains.map((ch) async {
       try {
         final bals = await mc.balancesFor(ch);
@@ -89,6 +107,15 @@ class _WalletTabState extends State<WalletTab> {
           }
         }
         out[ch] = nat ?? (bals.isNotEmpty ? bals.first : null);
+        // Non-native rows with a positive balance = tokens this address holds
+        // on that chain (the adapter auto-discovers them).
+        final toks = bals.where((b) {
+          if (b.asset.symbol.toUpperCase() == ticker) return false;
+          if (b.asset.kind == 'native') return false;
+          final v = double.tryParse(b.display.replaceAll(',', '')) ?? 0;
+          return v > 0;
+        }).toList();
+        _chainTokensTmp[ch] = toks;
       } catch (_) {
         out[ch] = null;
       }
@@ -352,10 +379,14 @@ class _WalletTabState extends State<WalletTab> {
               )
             else
               ..._homeChains.map((ch) => _nativeRow(ch)),
+            // OWNED TOKENS BY CHAIN — every non-native token the wallet holds on
+            // each chain, grouped under that chain's header. Empty chains are
+            // skipped. (BLOCK-20 tokens have their own section below.)
+            ..._ownedTokensByChain(),
             const SizedBox(height: 22),
             Row(
               children: [
-                const Text('Tokens',
+                const Text('BLOCK-20 Tokens',
                     style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
                 const Spacer(),
                 TextButton.icon(
@@ -421,6 +452,72 @@ class _WalletTabState extends State<WalletTab> {
 
   String _shortAddr(String a) =>
       a.length <= 20 ? a : '${a.substring(0, 12)}…${a.substring(a.length - 6)}';
+
+  /// The owned-tokens-by-chain section: one labeled group per chain that holds
+  /// at least one non-native token, each row tappable through to its chain's
+  /// account view.
+  List<Widget> _ownedTokensByChain() {
+    final mc = context.read<MultichainController>();
+    final out = <Widget>[];
+    for (final ch in _homeChains) {
+      final toks = _chainTokens[ch] ?? const [];
+      if (toks.isEmpty) continue;
+      out.add(Padding(
+        padding: const EdgeInsets.only(top: 18, bottom: 2),
+        child: Text('${mc.chainLabel(ch)} tokens',
+            style: const TextStyle(
+                fontSize: 11.5, fontWeight: FontWeight.w800, letterSpacing: 0.6, color: Bk.muted)),
+      ));
+      for (final b in toks) {
+        out.add(_chainTokenRow(ch, b));
+      }
+    }
+    return out;
+  }
+
+  Widget _chainTokenRow(String chain, Balance b) {
+    final sym = b.asset.symbol.toUpperCase();
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Bk.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Bk.border),
+      ),
+      child: Row(children: [
+        AssetIcon(
+          chainId: chain,
+          symbol: sym,
+          isToken: true,
+          logoUri: b.asset.logo,
+          address: b.asset.address,
+          radius: 16,
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(sym, style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(b.asset.name?.isNotEmpty == true ? b.asset.name! : sym,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Bk.muted, fontSize: 12)),
+          ]),
+        ),
+        Text(b.error != null ? '—' : b.display, style: kMono),
+        const SizedBox(width: 6),
+        TextButton(
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          onPressed: () => context.read<AppState>().setTab(1),
+          child: const Text('Send', style: TextStyle(fontSize: 12)),
+        ),
+      ]),
+    );
+  }
 
   Widget _nativeRow(String chain) {
     final mc = context.read<MultichainController>();
