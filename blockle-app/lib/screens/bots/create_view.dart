@@ -965,6 +965,32 @@ class _CreateViewState extends State<CreateView> {
           style: mono(t, size: 15),
           decoration: _inputDec(t, suffix: 'Jupiter · Blockle'),
         ),
+        // BLOCKSHOT: on the block lane, offer the live BLOCK-20 pool pairs as
+        // one-tap picks — the bot then trades them with real AMM pool marks.
+        if (_lane == 'block')
+          FutureBuilder<List<String>>(
+            future: widget.controller.blockshotPairs(),
+            builder: (ctx, snap) {
+              final pairs = snap.data ?? const [];
+              if (pairs.isEmpty) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final pr in pairs.take(8))
+                    ActionChip(
+                      label: Text(pr,
+                          style: TextStyle(fontSize: 11, color: t.ink)),
+                      backgroundColor: t.surface,
+                      side: BorderSide(color: t.line),
+                      onPressed: () {
+                        _pair.text = pr;
+                        setState(() => _profitCurrency = _quoteOf(_normPair()));
+                      },
+                    ),
+                ]),
+              );
+            },
+          ),
       ]),
     );
   }

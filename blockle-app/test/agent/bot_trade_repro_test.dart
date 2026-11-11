@@ -113,7 +113,7 @@ void main() {
         reason: 'BLOCK pair should skip on price (documents why it never traded)');
   });
 
-  test('LIQUIDITY: a paper bot trade emits a 0.05% bot_fee keyed by the quote coin', () async {
+  test('LIQUIDITY: paper bot trades emit NO bot_fee (fees are live-only)', () async {
     final audit = Audit();
     final policy = Policy.create(caps: {'sessionUsd': 1000}, audit: audit);
     final reg = ToolRegistry([_mk('swap', []), _mk('place_order', [])]);
@@ -130,11 +130,11 @@ void main() {
     await runner.enablePaper(bot.id, allocationUsd: 100);
     await runner.tickBot(bot.id); // base buy ~$20 of SOL quoted in USDC
     print('FEES: $fees');
-    expect(fees.isNotEmpty, isTrue, reason: 'no bot_fee emitted');
-    expect(fees.first['coin'], 'USDC');
-    final notional = fees.first['notionalUsd'] as num;
-    final fee = fees.first['feeUsd'] as num;
-    expect(fee, closeTo(notional * 0.0005, 1e-9)); // exactly 0.05%
+    // HONEST LEDGER: paper fills move no real money, so they emit NO bot_fee —
+    // only LIVE fills feed the liquidity treasury (server credits mode:'live'
+    // only). A paper tick producing a fee would re-create the phantom-reserve
+    // bug this contract was changed to kill.
+    expect(fees.isEmpty, isTrue, reason: 'paper trades must not emit bot_fee');
   });
 
   test('PROFIT notification fires when a paper DCA deal closes in profit', () async {

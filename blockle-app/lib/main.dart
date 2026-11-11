@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_state.dart';
+import 'services/open_url.dart' as ou;
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
 import 'state/wallet_controller.dart';
@@ -27,6 +28,9 @@ void main() {
   // Developer mode (off by default) — gates the Developer Tools + per-chain testnets.
   DevSettings.instance.init();
   final app = AppState()..bootstrap();
+  // "View on explorer" (and every other external link) opens in the app's own
+  // in-app browser on native — without this hook openExternal was a no-op.
+  ou.openExternalHandler = app.openBrowser;
   runApp(
     MultiProvider(
       providers: [

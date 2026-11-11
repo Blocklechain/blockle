@@ -29,6 +29,9 @@ extension type _EngineJS._(JSObject _) implements JSObject {
       JSString tok, JSString amt, JSString min, JSString gl, JSString gp);
   external JSPromise<JSString> buildPoolSwapSell(JSString s, JSString p, JSString utxos,
       JSString tok, JSString amt, JSString min, JSString gl, JSString gp);
+  external JSPromise<JSString> buildLaunchToken(JSString s, JSString p, JSString utxos,
+      JSString name, JSString sym, JSNumber dec, JSNumber supply, JSNumber sb, JSNumber st,
+      JSString gl, JSString gp);
   external JSPromise<JSString> seal(JSString obj, JSString pw);
   external JSPromise<JSString> open(JSString sealed, JSString pw);
 }
@@ -120,6 +123,16 @@ class Engine {
     await ensureStarted();
     return _json(await _str(_engine.buildPoolSwapSell(secretHex.toJS, publicHex.toJS,
         utxosJson.toJS, tokenHex.toJS, amountIn.toJS, minOut.toJS,
+        gasLimit.toString().toJS, gasPrice.toString().toJS)));
+  }
+
+  Future<Map<String, dynamic>> buildLaunchToken(String secretHex, String publicHex,
+      String utxosJson, String name, String symbol, int decimals, int supply,
+      int seedBlock, int seedToken, int gasLimit, int gasPrice) async {
+    await ensureStarted();
+    return _json(await _str(_engine.buildLaunchToken(secretHex.toJS, publicHex.toJS,
+        utxosJson.toJS, name.toJS, symbol.toJS, decimals.toJS, supply.toJS,
+        seedBlock.toJS, seedToken.toJS,
         gasLimit.toString().toJS, gasPrice.toString().toJS)));
   }
 

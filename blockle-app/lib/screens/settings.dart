@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../models/wallet.dart';
 import '../state/app_state.dart';
+import '../services/local_notifications.dart';
 import '../state/multichain_controller.dart';
 import '../theme.dart';
 import 'drip_screen.dart';
@@ -57,6 +58,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
               trailing: const Icon(Icons.chevron_right, color: Bk.muted),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const DripScreen()),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Container(
+            decoration: BoxDecoration(
+              color: Bk.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Bk.border),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.notifications_active_outlined, color: Bk.accent),
+              title: const Text('Bot notifications', style: TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: const Text('Get a banner when your trading bots act',
+                  style: TextStyle(color: Bk.muted, fontSize: 12)),
+              trailing: FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Bk.accent),
+                onPressed: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final ok = await LocalNotifications.instance.requestPermission();
+                  messenger.showSnackBar(SnackBar(
+                      content: Text(ok
+                          ? 'Notifications enabled — your bots will keep you posted.'
+                          : 'Not allowed — enable notifications for Blockle in system settings.')));
+                },
+                child: const Text('Allow'),
               ),
             ),
           ),

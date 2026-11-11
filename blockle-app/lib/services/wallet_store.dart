@@ -211,6 +211,16 @@ class WalletStore {
         _session.secret!, _session.pub!, utxosJson, contractHex, toAddr, amountBase, gasLimit, gasPrice);
   }
 
+  /// Atomic BLOCK-20 token launch (deploy + mint + seed pool, one tx).
+  Future<Map<String, dynamic>> buildLaunchToken(String utxosJson, String name,
+      String symbol, int decimals, int supply, int seedBlock, int seedToken,
+      int gasLimit, int gasPrice) {
+    if (!isUnlocked) throw Exception('locked');
+    _touch();
+    return _engine.buildLaunchToken(_session.secret!, _session.pub!, utxosJson,
+        name, symbol, decimals, supply, seedBlock, seedToken, gasLimit, gasPrice);
+  }
+
   Future<Map<String, dynamic>> buildPoolSwapBuy(String utxosJson, String token,
       String amountIn, String minOut, int gasLimit, int gasPrice) {
     if (!isUnlocked) throw Exception('locked');

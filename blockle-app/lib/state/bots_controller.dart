@@ -26,8 +26,11 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'dart:convert';
 
 import 'dart:async' show Timer, unawaited;
+import 'dart:math' as math;
 
 import '../agent/audit.dart';
+import '../services/chain.dart';
+import 'liquidity_controller.dart';
 import '../agent/bot_delegation_client.dart';
 import '../multichain/wallet_export.dart' as wx;
 import '../agent/bots.dart' as b;
@@ -75,6 +78,14 @@ class BotsController extends ChangeNotifier {
   // Never trades, never auto-allowlists; approval + the gate still apply.
   final SignalsDiscovery _discovery = SignalsDiscovery();
   BotRunner? _runner;
+  // BLOCKSHOT marks: live BLOCK-20 AMM pools so bots can trade SYM/BLOCK
+  // pairs on the block lane against real pool prices.
+  final Chain _blockChain = Chain();
+  List<Map<String, dynamic>> _shotPools = const [];
+  DateTime _shotAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // txids already OS-notified (server bot activity) — one banner per trade.
+  final Set<String> _notifiedTradeTxids = {};
+
   // PLANS ARE GONE: every user is Blockle Alien Pro — unlimited live bots,
   // nothing sold in-app. The tier/limit plumbing stays (runner API, dashboards)
   // but is pinned to Pro and never downgraded by account state.
@@ -307,7 +318,52 @@ class BotsController extends ChangeNotifier {
         });
       } catch (_) {/* best-effort — unresolved symbols skip the tick */}
     }
+    // BLOCKSHOT marks — any symbol still unresolved may be a BLOCK-20 pool
+    // token (a 'SYM/BLOCK' pair): mark it from its live AMM pool at the server
+    // curve's BLOCK mark. ENGINE-INTERNAL USD only; every UI stays BLOCK-only.
+    final missing = symbols.where((s) => !out.containsKey(s)).toList();
+    if (missing.isNotEmpty) {
+      await _refreshShotPools();
+      final blockUsd = LiquidityService.instance.blockPriceUsd;
+      for (final s in missing) {
+        final up = s.toUpperCase();
+        if (up == 'BLOCK') {
+          if (blockUsd > 0) out[s] = blockUsd;
+          continue;
+        }
+        final px = _shotUsd(up, blockUsd);
+        if (px != null && px > 0) out[s] = px;
+      }
+    }
     return out;
+  }
+
+  Future<void> _refreshShotPools() async {
+    if (DateTime.now().difference(_shotAt).inSeconds < 60) return;
+    _shotAt = DateTime.now();
+    try {
+      final pools = await _blockChain.pools();
+      if (pools.isNotEmpty) _shotPools = pools;
+    } catch (_) {/* keep the last pools */}
+  }
+
+  /// Live Blockshot pairs ('SYM / BLOCK') for the create flow's quick picker.
+  Future<List<String>> blockshotPairs() async {
+    await _refreshShotPools();
+    return [for (final p in _shotPools) '${p['symbol']} / BLOCK'];
+  }
+
+  double? _shotUsd(String sym, double blockUsd) {
+    if (!(blockUsd > 0)) return null;
+    for (final p in _shotPools) {
+      if ('${p['symbol']}'.toUpperCase() != sym) continue;
+      final dec = (p['decimals'] as num?)?.toInt() ?? 0;
+      final br = ((p['blockReserve'] as num?) ?? 0) / 100000000;
+      final tr = ((p['tokenReserve'] as num?) ?? 0) / math.pow(10, dec);
+      if (br <= 0 || tr <= 0) return null;
+      return br / tr * blockUsd;
+    }
+    return null;
   }
 
   void _onNotify(AgentNotification n) {
@@ -381,7 +437,35 @@ class BotsController extends ChangeNotifier {
     _serverActivity = (a['activity'] as Map?)?.cast<String, dynamic>() ?? const {};
     _serverDelegations = (a['delegations'] as List?) ?? const [];
     _serverLiveEnabled = a['liveEnabled'] == true;
+    _notifyNewServerTrades();
     notifyListeners();
+  }
+
+  /// OS-banner each NEW server-side bot trade (bot activity notifications).
+  /// The first poll after launch only seeds the seen-set, so reopening the app
+  /// never replays history as a burst of banners.
+  void _notifyNewServerTrades() {
+    final first = _notifiedTradeTxids.isEmpty;
+    _serverActivity.forEach((botId, act) {
+      final trades = ((act as Map?)?['trades'] as List?) ?? const [];
+      for (final tr in trades) {
+        if (tr is! Map) continue;
+        final txid = '${tr['txid'] ?? ''}';
+        if (txid.isEmpty || !_notifiedTradeTxids.add(txid)) continue;
+        if (first) continue; // backfill, not news
+        final usd = (tr['usd'] as num?)?.toDouble();
+        final name = bot(botId)?.name ?? 'Bot';
+        unawaited(LocalNotifications.instance.show(AgentNotification(
+          title: usd != null
+              ? '$name traded \$${usd.toStringAsFixed(2)}'
+              : '$name traded',
+          subtitle: '${tr['type'] ?? 'trade'}'
+              '${tr['token'] != null ? ' · ${tr['token']}' : ''}',
+          tag: txid,
+          data: {'type': 'bot_server_trade', 'botId': botId, 'txid': txid},
+        )));
+      }
+    });
   }
 
   Map<String, dynamic>? dashboard(String id) {

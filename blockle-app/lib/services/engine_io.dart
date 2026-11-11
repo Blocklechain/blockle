@@ -164,6 +164,25 @@ class Engine {
     return _json(v);
   }
 
+  /// Atomic BLOCK-20 token launch: deploy + mint + seed an AMM pool in ONE tx.
+  /// supply/seedBlock/seedToken are WHOLE-coin counts (wasm scales by decimals).
+  Future<Map<String, dynamic>> buildLaunchToken(
+      String secretHex,
+      String publicHex,
+      String utxosJson,
+      String name,
+      String symbol,
+      int decimals,
+      int supply,
+      int seedBlock,
+      int seedToken,
+      int gasLimit,
+      int gasPrice) async {
+    final v = await _call(
+        'return await window.Engine.buildLaunchToken(${_s(secretHex)}, ${_s(publicHex)}, ${_s(utxosJson)}, ${_s(name)}, ${_s(symbol)}, $decimals, $supply, $seedBlock, $seedToken, $gasLimit, $gasPrice);');
+    return _json(v);
+  }
+
   /// Swap token -> BLOCK against a pool. amountIn/minOut are decimal strings
   /// in base units.
   Future<Map<String, dynamic>> buildPoolSwapSell(
