@@ -92,7 +92,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(width: 12),
                   FilledButton(
-                    style: FilledButton.styleFrom(backgroundColor: Bk.accent),
+                    // Override the theme's Size.fromHeight(52) (== Size(infinity, 52)):
+                    // its infinite MINIMUM width is what collapsed "Allow" to one
+                    // character per line when the button wasn't in a full-width slot.
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Bk.accent,
+                      minimumSize: const Size(72, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                    ),
                     onPressed: () async {
                       final messenger = ScaffoldMessenger.of(context);
                       final ok = await LocalNotifications.instance.requestPermission();
