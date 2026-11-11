@@ -3062,4 +3062,13 @@ def build_tabs(block_wallet, datadir, bot_strategy=None, copy_bot=None) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Drip panel unavailable ({e})", file=sys.stderr)
+    # Blockle Liquidity (ADDITIVE): the shared server bonding-curve BLOCK<->coin
+    # swap (one price across every wallet), parity with the Flutter liquidity
+    # screen. Reads /account/api/liquidity.
+    try:
+        from .qtliquidity import build_liquidity_tab
+        tabs.append(build_liquidity_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Liquidity panel unavailable ({e})", file=sys.stderr)
     return tabs
