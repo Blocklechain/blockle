@@ -25,6 +25,22 @@ class BinaryNotFound(RuntimeError):
     pass
 
 
+# On Windows a windowless GUI app (the packaged wallet runs with pythonw/
+# --windowed, no console) flashes a brief console window on EVERY child process
+# spawn. The wallet polls chain status every second during sync, so that's a
+# console window popping up once a second. CREATE_NO_WINDOW suppresses it. The
+# helper returns kwargs to splat into subprocess.run/Popen; a no-op off Windows.
+if os.name == "nt":  # pragma: no cover - Windows only
+    _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+else:
+    _CREATE_NO_WINDOW = 0
+
+
+def no_window_kwargs() -> dict:
+    """Spawn kwargs that keep a console window from flashing on Windows."""
+    return {"creationflags": _CREATE_NO_WINDOW} if _CREATE_NO_WINDOW else {}
+
+
 def _is_rust_core(path: str) -> bool:
     """The console script installed by pip is also called ``blockle``;
     make sure a PATH hit is the Rust core, not ourselves."""

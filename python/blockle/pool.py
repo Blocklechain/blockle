@@ -8,13 +8,13 @@ import tomllib
 import urllib.request
 from pathlib import Path
 
-from ._binary import find_binary
+from ._binary import find_binary, no_window_kwargs
 from .runner import Process, wait_for_port
 
 
 def _run(args: list[str], timeout: int = 120) -> str:
     out = subprocess.run(
-        [find_binary(), *args], capture_output=True, text=True, timeout=timeout
+        [find_binary(), *args], capture_output=True, text=True, timeout=timeout, **no_window_kwargs()
     )
     if out.returncode != 0:
         raise RuntimeError(f"blockle {' '.join(args)} failed:\n{out.stdout}{out.stderr}")

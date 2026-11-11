@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
-from ._binary import BinaryNotFound
+from ._binary import BinaryNotFound, no_window_kwargs
 
 UNITS_PER_BLOCK = 100_000_000
 
@@ -35,7 +35,9 @@ def format_block(units: int) -> str:
 
 def _is_chain_binary(path: str) -> bool:
     try:
-        out = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(
+            [path, "--help"], capture_output=True, text=True, timeout=10, **no_window_kwargs()
+        )
     except (OSError, subprocess.TimeoutExpired):
         return False
     return "equihash" in (out.stdout + out.stderr).lower()
@@ -91,7 +93,7 @@ def find_chain_binary() -> str:
         built = root / "target" / "release" / f"blockle-chain{EXE}"
         if not built.exists() and shutil.which("cargo"):
             print(f"[blockle] building blockle-chain from {root} (first run)…", file=sys.stderr)
-            subprocess.run(["cargo", "build", "--release"], cwd=root, check=True)
+            subprocess.run(["cargo", "build", "--release"], cwd=root, check=True, **no_window_kwargs())
         if built.exists():
             return str(built)
 
@@ -129,7 +131,9 @@ class ChainWallet:
         env = os.environ.copy()
         if self.passphrase:
             env["BLOCKLE_WALLET_PASSPHRASE"] = self.passphrase
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        out = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=env, **no_window_kwargs()
+        )
         if out.returncode != 0:
             msg = (out.stderr.strip() or out.stdout.strip()).splitlines()
             raise WalletError(msg[-1] if msg else f"blockle-chain {args[0]} failed")
@@ -289,7 +293,7 @@ class NodeProcess:
         if self.mine:
             cmd.append("--mine")
         self.proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **no_window_kwargs()
         )
         threading.Thread(target=self._pump, daemon=True).start()
 

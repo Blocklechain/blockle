@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import qtbots as _qb
+from ._binary import no_window_kwargs
 from .icons import apply_button_icon, icon_html, svg_label
 from .multichain import activity as activity_mod
 from .multichain import addressbook as book_mod
@@ -2428,6 +2429,15 @@ class MiningPanel(QWidget):
             return
         from PySide6.QtCore import QProcess
         self._proc = QProcess(self)
+        # Windows: keep a console window from flashing when the miner child starts.
+        _flags = no_window_kwargs().get("creationflags", 0)
+        if _flags:
+            try:
+                def _no_console(args):
+                    args.flags |= _flags  # CREATE_NO_WINDOW
+                self._proc.setCreateProcessArgumentsModifier(_no_console)
+            except Exception:
+                pass
         self._proc.setProcessChannelMode(QProcess.MergedChannels)
         self._proc.readyReadStandardOutput.connect(
             lambda: self.log.appendPlainText(bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace").rstrip()))

@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from ._binary import find_binary, find_biz_binary
+from ._binary import find_binary, find_biz_binary, no_window_kwargs
 
 
 class Process:
@@ -18,7 +18,7 @@ class Process:
     def __init__(self, args: list[str], ready_port: int | None = None, timeout: float = 15.0):
         self.args = args
         self.proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **no_window_kwargs()
         )
         if ready_port is not None:
             wait_for_port(ready_port, timeout=timeout, proc=self.proc)
@@ -105,6 +105,7 @@ def mine(stratum: str, worker: str = "worker1", shares: int = 3, timeout: int = 
         capture_output=True,
         text=True,
         timeout=timeout + 30,
+        **no_window_kwargs(),
     )
     if out.returncode != 0:
         raise RuntimeError(f"miner failed: {out.stdout}{out.stderr}")
