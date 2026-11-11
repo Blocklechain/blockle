@@ -309,19 +309,39 @@ async function report(chain, token, mode = DEFAULT_MODE) {
 // run each candidate through the mode gate, and return the ones that PASS, best
 // score first. Honest: this is a discovery aid, not a guarantee — most brand-new
 // tokens still fail the gate or go to zero.
-const CHAIN_OF = { solana: 'solana', ethereum: 'ethereum', bsc: 'bsc' };
+const CHAIN_OF = { solana: 'solana', ethereum: 'ethereum', bsc: 'bsc', block: 'block' };
 async function boostFeed(path) {
   const j = await jget(`${DEXSCREENER}/${path}`, { timeout: 9000 });
   const arr = Array.isArray(j) ? j : (j && Array.isArray(j.data) ? j.data : []);
   return arr || [];
 }
+// BLOCKSHOT launches: the native AMM's pools, newest first, as block-lane
+// discovery candidates. Each still passes the SAME mode gate (pool + LP-lock
+// checks in assess) before it can surface — listing is not endorsement.
+const DEX_POOLS_URL = process.env.DEX_POOLS_URL || 'https://blockle.org/api/dex/pools';
+async function blockLaunchCands() {
+  try {
+    const j = await jget(DEX_POOLS_URL, { timeout: 9000 });
+    const pools = (j && j.pools) || [];
+    pools.sort((a, b) => (b.createdHeight || 0) - (a.createdHeight || 0));
+    return pools.slice(0, 20).map((p) => ({ chain: 'block', token: p.token }));
+  } catch { return []; }
+}
+
 async function discover(mode = 'sniper', chain = null, limit = 12) {
-  const [latest, top] = await Promise.all([
+  const [latest, top, blockCands] = await Promise.all([
     boostFeed('token-boosts/latest/v1'),
     boostFeed('token-boosts/top/v1'),
+    (!chain || chain === 'block') ? blockLaunchCands() : Promise.resolve([]),
   ]);
   const seen = new Set();
   const cands = [];
+  for (const c of blockCands) {
+    const k = `block:${c.token}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    cands.push(c);
+  }
   for (const b of [...latest, ...top]) {
     const ch = CHAIN_OF[(b.chainId || '').toLowerCase()];
     const addr = b.tokenAddress || b.address;

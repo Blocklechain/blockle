@@ -130,6 +130,11 @@ class _CreateViewState extends State<CreateView> {
   int _tpl = 0;
   final _pair = TextEditingController(text: 'SOL / USDC');
   final _alloc = TextEditingController(text: '500');
+  // Allocation entry mode: USD (default) or the pair's QUOTE currency — the
+  // engine stays USD-internal; currency entries convert at the live mark.
+  bool _allocInUsd = true;
+  double? _allocCurrencyUsd; // live mark of the quote (1 for stables)
+  String _allocCurrencyFor = '';
   bool _advanced = false;
   double _base = 20, _tp = 2, _step = 2, _vol = 1.0, _tr = 0, _sl = 12;
   int _pollSec = 60; // adjustable tick interval (seconds)
@@ -338,7 +343,39 @@ class _CreateViewState extends State<CreateView> {
     return 'SOL/USDC';
   }
 
-  double get _allocUsd => double.tryParse(_alloc.text.trim()) ?? 0;
+  static const Set<String> _allocStables = {'USDC', 'USDT', 'DAI', 'USDB', 'USD'};
+
+  /// The currency the bot SPENDS (the active pair's quote) — what the
+  /// allocate-in-currency mode denominates in.
+  String get _allocCurrency => _aiPicksPairs
+      ? _profitCurrency
+      : _strategyMode
+          ? _quoteOf(_stratPair())
+          : _quoteOf(_normPair());
+
+  Future<void> _refreshAllocPrice() async {
+    final cur = _allocCurrency.toUpperCase();
+    if (_allocStables.contains(cur)) {
+      _allocCurrencyFor = cur;
+      _allocCurrencyUsd = 1;
+      if (mounted) setState(() {});
+      return;
+    }
+    final px = await widget.controller.markUsd(cur);
+    if (!mounted) return;
+    setState(() {
+      _allocCurrencyFor = cur;
+      _allocCurrencyUsd = px;
+    });
+  }
+
+  double get _allocUsd {
+    final n = double.tryParse(_alloc.text.trim()) ?? 0;
+    if (_allocInUsd) return n;
+    final px = _allocCurrencyFor == _allocCurrency.toUpperCase() ? _allocCurrencyUsd : null;
+    if (px == null || px <= 0) return 0; // unpriced -> fails closed (arm refuses $0)
+    return n * px;
+  }
 
   /// Build a paper + disabled bot from the create-flow state. AI mode ("Let the AI
   /// choose pairs") -> the scan-&-trade autopilot, realizing profit INTO the chosen
@@ -800,20 +837,37 @@ class _CreateViewState extends State<CreateView> {
           _Field(
             label: '3 · Amount to allocate',
             hint: "the bot's hard cap",
-            child: TextField(
-              controller: _alloc,
-              onChanged: (_) => setState(() {}),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-              style: mono(t, size: 16),
-              decoration: _inputDec(t,
-                  prefix: '\$',
-                  suffix: _aiPicksPairs
-                      ? _profitCurrency
-                      : _strategyMode
-                          ? _quoteOf(_stratPair())
-                          : 'USDC'),
-            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(
+                controller: _alloc,
+                onChanged: (_) => setState(() {}),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+                style: mono(t, size: 16),
+                decoration: _inputDec(t,
+                    prefix: _allocInUsd ? '\$' : '',
+                    suffix: _allocInUsd ? 'USD' : _allocCurrency),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                // \$ <-> currency switcher: the engine stays USD-internal; a
+                // currency amount converts at the live mark shown below.
+                _allocModeBtn(t, '\$ USD', true),
+                const SizedBox(width: 8),
+                _allocModeBtn(t, _allocCurrency, false),
+                const Spacer(),
+                Text(
+                  _allocInUsd
+                      ? ((_allocCurrencyUsd ?? 0) > 0 && !_allocStables.contains(_allocCurrency.toUpperCase())
+                          ? '≈ ${(_allocUsd / _allocCurrencyUsd!).toStringAsFixed(4)} $_allocCurrency'
+                          : '')
+                      : ((_allocCurrencyUsd ?? 0) > 0
+                          ? '≈ \$${_allocUsd.toStringAsFixed(2)}'
+                          : 'fetching $_allocCurrency price…'),
+                  style: TextStyle(fontSize: 11, color: t.inkMuted),
+                ),
+              ]),
+            ]),
           ),
           const SizedBox(height: 16),
           _laneRiskSelect(t),
@@ -992,6 +1046,30 @@ class _CreateViewState extends State<CreateView> {
             },
           ),
       ]),
+    );
+  }
+
+  Widget _allocModeBtn(BotTokens t, String label, bool usd) {
+    final on = _allocInUsd == usd;
+    return GestureDetector(
+      onTap: () {
+        setState(() => _allocInUsd = usd);
+        if (!usd) unawaited(_refreshAllocPrice());
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: on ? t.accentGhost : t.surface,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: on ? t.accent : t.line),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: on ? t.accent : t.inkMuted)),
+      ),
     );
   }
 

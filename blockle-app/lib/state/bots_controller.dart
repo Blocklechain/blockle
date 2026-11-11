@@ -338,6 +338,18 @@ class BotsController extends ChangeNotifier {
     return out;
   }
 
+  /// USD mark for one symbol via the SAME feed the engine uses (stables = 1,
+  /// natives via the price service, BLOCK + Blockshot tokens via the AMM/curve).
+  /// Null when unpriceable. Used by the create flow's allocate-in-currency mode.
+  Future<double?> markUsd(String symbol) async {
+    try {
+      final m = await _prices([symbol]);
+      return m[symbol]?.toDouble();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _refreshShotPools() async {
     if (DateTime.now().difference(_shotAt).inSeconds < 60) return;
     _shotAt = DateTime.now();
