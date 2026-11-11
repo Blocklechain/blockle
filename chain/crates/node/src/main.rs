@@ -407,6 +407,66 @@ enum ContractCmd {
         #[arg(long)]
         node: Option<String>,
     },
+    /// Launch a BLOCK-20 token AND seed its native AMM pool in ONE atomic action
+    /// (ContractAction::LaunchToken) — the "BLOCKSHOT"/pump-style launch. Deploys
+    /// the token, mints `--supply` (whole) to the launcher, and seeds the pool with
+    /// `--seed-block` BLOCK + `--seed-token` tokens so it is instantly tradeable.
+    LaunchToken {
+        /// Token name.
+        #[arg(long)]
+        name: String,
+        /// Token symbol/ticker.
+        #[arg(long)]
+        symbol: String,
+        /// Token decimals.
+        #[arg(long, default_value_t = 8)]
+        decimals: u64,
+        /// Total supply, in WHOLE tokens (minted to the launcher, scaled by decimals).
+        #[arg(long)]
+        supply: u64,
+        /// BLOCK to seed the pool with (whole BLOCK).
+        #[arg(long)]
+        seed_block: String,
+        /// Tokens to seed the pool with (WHOLE tokens; scaled by decimals).
+        #[arg(long)]
+        seed_token: u64,
+        #[arg(long, default_value_t = 400_000)]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Buy a BLOCK-20 token from its native AMM pool with BLOCK
+    /// (ContractAction::PoolSwapBuy). Price walks the constant-product curve.
+    TokenBuy {
+        /// Token contract id (hex).
+        id: String,
+        /// BLOCK to spend (whole BLOCK).
+        #[arg(long)]
+        block_in: String,
+        /// Minimum tokens out (BASE units) — slippage guard; 0 = no guard.
+        #[arg(long, default_value_t = 0)]
+        min_token_out: u64,
+        #[arg(long, default_value_t = 300_000)]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
+    /// Sell a BLOCK-20 token back to its native AMM pool for BLOCK
+    /// (ContractAction::PoolSwapSell).
+    TokenSell {
+        /// Token contract id (hex).
+        id: String,
+        /// Tokens to sell (BASE units, scaled by the token's decimals).
+        #[arg(long)]
+        token_in: u64,
+        /// Minimum BLOCK out (whole BLOCK) — slippage guard; 0 = no guard.
+        #[arg(long, default_value = "0")]
+        min_block_out: String,
+        #[arg(long, default_value_t = 300_000)]
+        gas: u64,
+        #[arg(long)]
+        node: Option<String>,
+    },
     /// Dry-run a call against current state (no transaction, no mutation).
     Simulate {
         id: String,
@@ -1263,6 +1323,64 @@ fn contract_cmd(datadir: &Path, params: ChainParams, cmd: ContractCmd) -> Result
                 amount_base,
                 to,
                 gas
+            );
+            submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+        }
+        ContractCmd::LaunchToken {
+            name, symbol, decimals, supply, seed_block, seed_token, gas, node,
+        } => {
+            let seed_block = parse_amount(&seed_block).map_err(|e| anyhow!("bad --seed-block: {e}"))?;
+            let seed_token_base = seed_token
+                .checked_mul(10u64.checked_pow(decimals as u32).ok_or_else(|| anyhow!("decimals too large"))?)
+                .ok_or_else(|| anyhow!("--seed-token overflow"))?;
+            let code = blockle_chain::block20::block20_bytecode(&name, &symbol, decimals, supply);
+            let kp = load_wallet(datadir)?;
+            let chain = storage::load_chain(datadir, params)?;
+            let mut mempool = storage::load_mempool(datadir)?;
+            let fee = gas.checked_mul(chain.params.gas_price).ok_or_else(|| anyhow!("gas overflow"))?;
+            let action = blockle_core::ContractAction::LaunchToken {
+                code, block_amt: seed_block, token_amt: seed_token_base, gas_limit: gas,
+            };
+            let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
+            let id = blockle_chain::contract_id(&tx.txid());
+            println!(
+                "launching {} ({}) — supply {}, seeding {} {} + {} {} into the pool ({} gas)",
+                name, symbol, supply, format_amount(seed_block), chain.params.ticker, seed_token, symbol, gas
+            );
+            println!("token id: {}", hex::encode(id));
+            submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+        }
+        ContractCmd::TokenBuy { id, block_in, min_token_out, gas, node } => {
+            let token = parse_hash32(&id)?;
+            let block_in = parse_amount(&block_in).map_err(|e| anyhow!("bad --block-in: {e}"))?;
+            let kp = load_wallet(datadir)?;
+            let chain = storage::load_chain(datadir, params)?;
+            let mut mempool = storage::load_mempool(datadir)?;
+            let fee = gas.checked_mul(chain.params.gas_price).ok_or_else(|| anyhow!("gas overflow"))?;
+            let action = blockle_core::ContractAction::PoolSwapBuy {
+                token, block_in, min_token_out, gas_limit: gas,
+            };
+            let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
+            println!(
+                "buying {} with {} {} (min {} base out, {} gas)",
+                hex::encode(token), format_amount(block_in), chain.params.ticker, min_token_out, gas
+            );
+            submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
+        }
+        ContractCmd::TokenSell { id, token_in, min_block_out, gas, node } => {
+            let token = parse_hash32(&id)?;
+            let min_block_out = parse_amount(&min_block_out).map_err(|e| anyhow!("bad --min-block-out: {e}"))?;
+            let kp = load_wallet(datadir)?;
+            let chain = storage::load_chain(datadir, params)?;
+            let mut mempool = storage::load_mempool(datadir)?;
+            let fee = gas.checked_mul(chain.params.gas_price).ok_or_else(|| anyhow!("gas overflow"))?;
+            let action = blockle_core::ContractAction::PoolSwapSell {
+                token, token_in, min_block_out, gas_limit: gas,
+            };
+            let tx = build_funded_tx(&kp, &chain, &mempool, vec![], fee, Some(action), None)?;
+            println!(
+                "selling {} base units of {} (min {} {} out, {} gas)",
+                token_in, hex::encode(token), format_amount(min_block_out), chain.params.ticker, gas
             );
             submit_tx(datadir, &chain, &mut mempool, tx, node).map(|_| ())
         }
