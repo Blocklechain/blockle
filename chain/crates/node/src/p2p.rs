@@ -720,14 +720,28 @@ impl Node {
     }
 
     fn serve_blocks(&self, peer_id: u64, hashes: &[Hash32]) {
-        let st = self.state.lock().unwrap();
-        let mut blocks = Vec::new();
-        for h in hashes.iter().take(MAX_BLOCKS_PER_REQUEST) {
-            if let Some(b) = st.chain.blocks.iter().find(|b| &b.header.hash() == h) {
-                blocks.push(b.clone());
+        // Answer in request order with a SINGLE pass over the chain. The old code
+        // did `blocks.iter().find()` per requested hash — O(height × batch) header
+        // re-hashes while holding the state lock, which took MINUTES at high
+        // heights, so the requesting peer timed out and the blocks "never arrived"
+        // (deep-sync stall past the early blocks). Map requested hash -> position,
+        // then scan once (O(n)) placing each match.
+        let want: std::collections::HashMap<Hash32, usize> = hashes
+            .iter()
+            .take(MAX_BLOCKS_PER_REQUEST)
+            .enumerate()
+            .map(|(i, h)| (*h, i))
+            .collect();
+        let mut found: Vec<Option<Block>> = vec![None; want.len()];
+        {
+            let st = self.state.lock().unwrap();
+            for b in &st.chain.blocks {
+                if let Some(&i) = want.get(&b.header.hash()) {
+                    found[i] = Some(b.clone());
+                }
             }
         }
-        drop(st);
+        let blocks: Vec<Block> = found.into_iter().flatten().collect();
         self.send_to(peer_id, Message::Blocks { blocks });
     }
 
