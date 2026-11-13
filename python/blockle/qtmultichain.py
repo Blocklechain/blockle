@@ -3071,4 +3071,14 @@ def build_tabs(block_wallet, datadir, bot_strategy=None, copy_bot=None) -> List:
     except Exception as e:  # pragma: no cover - optional feature
         import sys
         print(f"blockle-qt: Liquidity panel unavailable ({e})", file=sys.stderr)
+    # Blockle Game Hub (ADDITIVE): the desktop crypto-native game store/library/
+    # launcher ("the wallet focused around games") — browse a catalog, install and
+    # launch native games, own your titles/items as NFTs; devs keep 90%. Engine in
+    # blockle.gamehub; paid purchases gated until the on-chain buy flow ships.
+    try:
+        from .qtgames import build_games_tab
+        tabs.append(build_games_tab(ctrl))
+    except Exception as e:  # pragma: no cover - optional feature
+        import sys
+        print(f"blockle-qt: Game Hub panel unavailable ({e})", file=sys.stderr)
     return tabs

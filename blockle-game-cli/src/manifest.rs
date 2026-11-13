@@ -121,10 +121,10 @@ version = "0.1.0"
 description = "A short one-line description players will see in the hub."
 # Chain your game integrates with: blockle, ethereum, solana, bnb, polygon, tron, ton, bitcoin, …
 chain = "blockle"
-# Where it runs — any of: desktop, mobile, web
-platform = ["desktop", "mobile"]
-# Entry point relative to this build dir (index.html for web; the app/executable otherwise)
-entry = "index.html"
+# Desktop PC store — ship native builds for Windows / macOS / Linux
+platform = ["desktop"]
+# Entry executable relative to this build dir (the .exe / .app / .x86_64 that launches the game)
+entry = "MyGame.exe"
 # Store icon relative to this build dir (png/jpg/webp, ideally 512x512)
 icon = "icon.png"
 

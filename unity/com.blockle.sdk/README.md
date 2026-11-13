@@ -77,28 +77,25 @@ Set up the deep-link return so the wallet can hand control back:
 - **WebGL / desktop:** if `CallbackScheme` is empty the SDK uses an HTTPS return
   (`/games/connected`, `/games/signed`) you can host.
 
-## Platform & delivery notes (read before you ship mobile)
+## Platform — desktop PC
 
-A Unity game can target the hub three ways, and the right target depends on the
-platform's rules:
+The Blockle Game Hub is a **desktop** store (the crypto-native alternative to
+Steam). Ship a native build for the desktop OSes you support:
 
-| Target | Delivery in the Blockle Game Hub |
+| Target | Build |
 |---|---|
-| **WebGL** | Runs inside the hub as an HTML5 mini-game. This is the path for the **iOS** mobile hub — mini-games delivered this way are reviewed by Blockle internally and do not each need their own App Store review. Export Unity → WebGL. |
-| **Native Android** | Shipped as a native build; Android allows dynamic delivery. |
-| **Native desktop** | Shipped as a native build (Windows/macOS/Linux); no store restriction. |
+| **Windows** | Unity → Windows build (`.exe`) |
+| **macOS** | Unity → macOS build (`.app`) |
+| **Linux** | Unity → Linux build (`.x86_64`) |
 
-Rules of thumb:
+The hub downloads your build, verifies its SHA-256, installs it, and launches the
+entry executable — crypto checkout, NFT items and on-chain payouts all run through
+the wallet that's already in the hub. Crypto purchases and selling games for BLOCK
+are fully supported on desktop; there are no mobile-store payment restrictions to
+work around.
 
-- **iOS:** deliver dynamically-listed games as **WebGL** mini-games. iOS does not
-  allow a host app to download and execute *native* game code, so native Unity
-  iOS titles can't be hot-loaded into the hub.
-- **Payments on iOS:** don't sell game unlocks for crypto inside the iOS binary —
-  keep crypto purchases to Android, desktop, and the web hub. Free games are fine
-  everywhere.
-- **Android / desktop:** native builds and crypto purchases are both fine.
-
-Set `platform` in your `blockle.toml` accordingly (`web`, `desktop`, `mobile`).
+List the platforms you ship in `blockle.toml` under `platform` (`desktop`), and
+provide a per-OS build in the submission (`blockle-game` packages each).
 
 ## Submitting a game
 
