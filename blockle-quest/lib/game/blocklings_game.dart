@@ -36,7 +36,8 @@ class BlocklingsGame extends FlameGame {
   Companion? companion;
   final List<Enemy> enemies = [];
 
-  late JoystickComponent joystick;
+  /// Movement vector from the on-screen D-pad (set by the HUD).
+  final Vector2 dpad = Vector2.zero();
   bool autoCombat = true;
 
   // Multiplayer presence (best-effort; single-player if the relay is down).
@@ -120,17 +121,13 @@ class BlocklingsGame extends FlameGame {
   }
 
   void _addControls() {
-    joystick = JoystickComponent(
-      knob: CircleComponent(radius: 20, paint: Paint()..color = const Color(0xCCFFFFFF)),
-      background: CircleComponent(radius: 46, paint: Paint()..color = const Color(0x33FFFFFF)),
-      margin: const EdgeInsets.only(left: 28, bottom: 40),
-    );
+    // Movement is the Flutter D-pad (HUD overlay -> game.dpad); attack is a HUD
+    // button rendered by Flame on the right.
     final attackBtn = HudButtonComponent(
       button: CircleComponent(radius: 30, paint: Paint()..color = Bq.accent),
       margin: const EdgeInsets.only(right: 30, bottom: 48),
       onPressed: playerAttack,
     );
-    camera.viewport.add(joystick);
     camera.viewport.add(attackBtn);
   }
 
@@ -162,8 +159,9 @@ class BlocklingsGame extends FlameGame {
   void update(double dt) {
     super.update(dt);
 
-    // Drive the player: auto-combat seeks the nearest foe; otherwise the stick.
-    if (autoCombat) {
+    // Drive the player: the D-pad always takes priority (walk anywhere);
+    // otherwise auto-combat seeks the nearest foe.
+    if (autoCombat && dpad.isZero()) {
       final e = _nearestEnemy();
       if (e != null) {
         final to = e.position - player.position;
@@ -177,7 +175,7 @@ class BlocklingsGame extends FlameGame {
         player.velocity.setZero();
       }
     } else {
-      player.velocity.setFrom(joystick.relativeDelta);
+      player.velocity.setFrom(dpad);
     }
 
     companion?.fight(enemies, dt);

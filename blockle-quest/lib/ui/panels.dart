@@ -233,11 +233,10 @@ class _InventoryPanelState extends State<InventoryPanel> {
     final chain = await _pickChain('Mint on which chain?');
     if (chain == null) return;
     final intent = _econ.mintItem(it, chain);
-    await _open(intent.url); // wallet signs (non-custodial)
-    // Demo: reflect the mint locally; production confirms via the wallet callback.
-    _econ.confirmItemMint(it, 'local-${it.catalogIndex}');
+    await _open(intent.url); // wallet signs + broadcasts, then calls back (non-custodial)
     QuestLog.instance.onMint();
     SkillsState.instance.addXp('Blockchain', 50);
+    _snack('Approve the mint in your Blockle wallet — it confirms on-chain.');
     if (mounted) setState(() {});
   }
 
@@ -246,9 +245,9 @@ class _InventoryPanelState extends State<InventoryPanel> {
     if (chain == null) return;
     final intent = _econ.mintBlockling(b, chain);
     await _open(intent.url);
-    _econ.confirmBlocklingMint(b, 'local-${b.seed.hashCode}');
     QuestLog.instance.onMint();
     SkillsState.instance.addXp('Blockchain', 50);
+    _snack('Approve the mint in your Blockle wallet — it confirms on-chain.');
     if (mounted) setState(() {});
   }
 
@@ -610,9 +609,9 @@ class _ShopPanelState extends State<ShopPanel> {
               child: FilledButton(
                 style: FilledButton.styleFrom(backgroundColor: Bq.accent, padding: const EdgeInsets.symmetric(horizontal: 14), minimumSize: const Size(0, 28)),
                 onPressed: () {
-                  final err = _econ.buyFromVendor(e.item, e.chain, e.price);
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? 'Bought ${e.item.name}')));
-                  setState(() {});
+                  _open(_econ.payVendor(e.item, e.chain, e.price));
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text('Approve the ${e.price} ${e.chain.symbol} payment in your wallet — item delivers on-chain.')));
                 },
                 child: const Text('Buy', style: TextStyle(fontSize: 11)),
               ),

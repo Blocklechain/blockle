@@ -5,15 +5,18 @@ import 'package:flutter/material.dart';
 
 import 'account/account_service.dart';
 import 'account/character.dart';
+import 'account/deeplink_service.dart';
 import 'economy/economy.dart';
 import 'game/blocklings_game.dart';
 import 'theme.dart';
 import 'ui/character_create.dart';
+import 'ui/dpad.dart';
 import 'ui/panels.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   AccountService.instance.init(); // restore a saved Blockle session (best-effort)
+  DeepLinkService.instance.init(); // receive on-chain settlement callbacks
   runApp(const BlocklingsApp());
 }
 
@@ -208,6 +211,12 @@ class _HudState extends State<Hud> {
                 _round('MKT', Bq.panel2, () => _open('market')),
               ],
             ),
+          ),
+          // Bottom-left: movement D-pad (turn AUTO off to walk manually).
+          Positioned(
+            left: 10,
+            bottom: 20,
+            child: DPad(onChanged: (v) => g.dpad.setFrom(v)),
           ),
         ],
       ),

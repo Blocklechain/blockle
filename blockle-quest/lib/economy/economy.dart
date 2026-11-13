@@ -94,6 +94,33 @@ class EconomyService extends ChangeNotifier {
   final List<Listing> market = [];
   int _listingSeq = 0;
 
+  // ---- On-chain settlement round-trip ---------------------------------- //
+  // Real mints / vendor payments deep-link to the non-custodial wallet, which
+  // signs + broadcasts and then calls back via blocklings://settle?req=…&status=
+  // ok&tx=…&nftId=…. Each request registers a confirm callback keyed by req id.
+  static const String callbackScheme = 'blocklings';
+  int _reqSeq = 0;
+  final Map<String, void Function(Map<String, String> q)> _pending = {};
+
+  String _newReq(String kind, void Function(Map<String, String>) onConfirm) {
+    final req = '$kind${_reqSeq++}';
+    _pending[req] = onConfirm;
+    return req;
+  }
+
+  Uri _settleReturn(String req) => Uri.parse('$callbackScheme://settle?req=$req');
+
+  /// Called by the deep-link handler with the wallet's settlement result.
+  void onSettlement(Uri uri) {
+    final q = uri.queryParameters;
+    final req = q['req'];
+    if (req == null) return;
+    _pending.remove(req)?.call(q);
+  }
+
+  /// Number of settlements awaiting a wallet callback (for a "pending" badge).
+  int get pendingCount => _pending.length;
+
   final Map<Chain, double> balances = {
     for (final c in Chain.values) c: 0.0,
   };
@@ -188,6 +215,12 @@ class EconomyService extends ChangeNotifier {
   MintIntent mintItem(Item item, Chain chain) {
     if (!kMintChains.contains(chain)) chain = Chain.blockle;
     item.nftChain = chain.name; // pending until the wallet confirms
+    final req = _newReq('mint', (q) {
+      if (q['status'] == 'ok') {
+        item.nftId = q['nftId'] ?? q['tx'] ?? 'onchain';
+        notifyListeners();
+      }
+    });
     notifyListeners();
     final url = _wallet({
       'action': 'mint',
@@ -196,6 +229,8 @@ class EconomyService extends ChangeNotifier {
       'name': item.name,
       'rarity': item.rarityName,
       'cat': item.catalogIndex.toString(),
+      'req': req,
+      'return': _settleReturn(req).toString(),
     });
     return MintIntent(kind: 'item', name: item.name, chain: chain, url: url);
   }
@@ -203,6 +238,12 @@ class EconomyService extends ChangeNotifier {
   MintIntent mintBlockling(Blockling b, Chain chain) {
     if (!kMintChains.contains(chain)) chain = Chain.blockle;
     b.nftChain = chain.name;
+    final req = _newReq('mint', (q) {
+      if (q['status'] == 'ok') {
+        b.nftId = q['nftId'] ?? q['tx'] ?? 'onchain';
+        notifyListeners();
+      }
+    });
     notifyListeners();
     final url = _wallet({
       'action': 'mint',
@@ -211,6 +252,8 @@ class EconomyService extends ChangeNotifier {
       'name': b.name,
       'seed': b.seed,
       'rarity': b.rarityName,
+      'req': req,
+      'return': _settleReturn(req).toString(),
     });
     return MintIntent(kind: 'blockling', name: b.name, chain: chain, url: url);
   }
@@ -332,14 +375,30 @@ class EconomyService extends ChangeNotifier {
     return null;
   }
 
-  /// Real on-chain vendor payment to the treasury (gated; opens the wallet).
-  Uri vendorPayUrl(Chain chain, double price) => _wallet({
-        'action': 'pay',
-        'chain': chain.name,
-        'amount': price.toString(),
-        'to': treasuryAddress,
-        'memo': 'blocklings-vendor',
-      });
+  /// Real vendor purchase: deep-link the wallet to pay the treasury in crypto.
+  /// The item is delivered and the 90% BLOCK-backing is booked only when the
+  /// wallet confirms the on-chain payment (via onSettlement). Non-custodial —
+  /// the wallet signs/broadcasts; the game never holds keys.
+  Uri payVendor(Item item, Chain chain, double price) {
+    final req = _newReq('pay', (q) {
+      if (q['status'] != 'ok') return;
+      items.add(item); // delivered after on-chain payment
+      treasury[chain] = (treasury[chain] ?? 0) + price;
+      blockBacking[chain] = (blockBacking[chain] ?? 0) + price * vendorBackingPct;
+      notifyListeners();
+    });
+    return _wallet({
+      'action': 'pay',
+      'chain': chain.name,
+      'amount': price.toString(),
+      'to': treasuryAddress,
+      'memo': 'blocklings-vendor',
+      'cat': item.catalogIndex.toString(),
+      'backing': vendorBackingPct.toString(),
+      'req': req,
+      'return': _settleReturn(req).toString(),
+    });
+  }
 
   Uri _wallet(Map<String, String> q) =>
       Uri.parse('$origin/wallet').replace(queryParameters: {'app': 'blocklings', ...q});
