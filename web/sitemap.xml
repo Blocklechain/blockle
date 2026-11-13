@@ -39,4 +39,6 @@
   <url><loc>https://blockle.org/tezos-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://blockle.org/bitcoin-cash-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
   <url><loc>https://blockle.org/block-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/games</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/games/submit</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
 </urlset>

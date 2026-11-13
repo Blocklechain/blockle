@@ -989,6 +989,9 @@ fn route(
         "/open-source" => ("200 OK", "text/html; charset=utf-8", page_open_source(&reg).into_bytes()),
         "/privacy" => ("200 OK", "text/html; charset=utf-8", page_privacy().into_bytes()),
         "/terms" => ("200 OK", "text/html; charset=utf-8", page_terms().into_bytes()),
+        // Blockle Games hub + developer bounty / rev-share portal.
+        "/games" | "/arcade" => ("200 OK", "text/html; charset=utf-8", page_games_hub().into_bytes()),
+        "/games/submit" | "/games/build" => ("200 OK", "text/html; charset=utf-8", page_games_submit().into_bytes()),
         // Per-chain wallet SEO landing pages: /<slug>-wallet (e.g. /ethereum-wallet).
         "/wallets" | "/crypto-wallet" => ("200 OK", "text/html; charset=utf-8", page_wallets_hub().into_bytes()),
         p if p.ends_with("-wallet")
@@ -2272,6 +2275,60 @@ fn page_wallets_hub() -> String {
 <div class="cta"><a class="btn primary" href="/wallet">Open the wallet</a><a class="btn" href="/releases/latest">Download for desktop</a></div></div>
 {index}"##, index = chains_index_html(""));
     page_shell_seo(title, desc, "/wallets", "", body)
+}
+
+fn page_games_hub() -> String {
+    let title = "Blockle Games — Play, Own Your Assets, Earn BLOCK";
+    let desc = "Blockle Games is an on-chain arcade where the coins you earn and the items you win are real assets you own — in-game currency as BLOCK, characters and skins as BLOCK-721 NFTs, tradeable across every game in the Blockle marketplace. Build a game and earn 10,000 BLOCK plus revenue share.";
+    let body = String::from(r##"<div class="hero"><span class="eyebrow">Blockle Games</span>
+<h1>Play games. <span class="grad">Own</span> your loot. Earn BLOCK.</h1>
+<p class="lede">An on-chain arcade where every coin you earn and every item you win is a real asset you hold in your own wallet — in-game currency as BLOCK, characters, skins and items as BLOCK-721 NFTs, tradeable across every game in the Blockle marketplace.</p>
+<div class="cta"><a class="btn primary" href="/games/submit">Build a game — earn 10,000 BLOCK + rev-share</a><a class="btn" href="https://discord.gg/tx4MfyD9Vu">Join the community</a></div></div>
+
+<h2>One wallet, one economy, every game</h2>
+<div class="features">
+<div class="feature"><b>You own your assets</b><p>Items, characters and skins are BLOCK-721 NFTs in your own non-custodial wallet — not locked inside one game's servers.</p></div>
+<div class="feature"><b>Earn real currency</b><p>In-game rewards are BLOCK you can spend, swap, cash out, or carry into the next game.</p></div>
+<div class="feature"><b>Cross-game marketplace</b><p>Trade anything you win in the Blockle marketplace — a single economy spanning every title in the hub.</p></div>
+<div class="feature"><b>Sign in with your wallet</b><p>One Blockle login across every game; your keys stay on your device.</p></div>
+</div>
+
+<h2>An open game platform</h2>
+<p class="sub">We're building Blockle Games as an open platform: build a game on the Blockle Game SDK and we integrate it for free, pay you a 10,000 BLOCK bootstrap bonus, and share the revenue your game earns. The first titles are in development.</p>
+<div class="cta"><a class="btn primary" href="/games/submit">Submit a game</a></div>"##);
+    page_shell_seo(title, desc, "/games", "", body)
+}
+
+fn page_games_submit() -> String {
+    let title = "Build a Game for Blockle — 10,000 BLOCK + Revenue Share";
+    let desc = "Build a game for the Blockle Games hub and earn a 10,000 BLOCK bootstrap bonus on acceptance plus an ongoing share of the revenue your game generates. We integrate it for free. Use the Blockle Game SDK for on-chain currency, BLOCK-721 asset NFTs and a built-in marketplace.";
+    let body = String::from(r##"<div class="hero"><span class="eyebrow">Game developers</span>
+<h1>Build a game for Blockle. <span class="grad">Get paid.</span></h1>
+<p class="lede">Make a game for the Blockle Games hub and we'll integrate it for free — you get a <b>10,000 BLOCK</b> bootstrap bonus on acceptance, plus an ongoing <b>revenue share</b> of everything your game earns. Your players own their assets on-chain; you own the upside.</p>
+<div class="cta"><a class="btn primary" href="https://discord.gg/tx4MfyD9Vu">Apply on Discord</a><a class="btn" href="/contact">Contact us</a></div></div>
+
+<h2>What you get</h2>
+<div class="features">
+<div class="feature"><b>10,000 BLOCK on acceptance</b><p>A bootstrap bonus paid via on-chain escrow the moment your game is accepted and integrated.</p></div>
+<div class="feature"><b>Revenue share — ongoing</b><p>Keep the majority of the revenue your game generates: in-game currency spend, NFT and skin sales, and marketplace fees.</p></div>
+<div class="feature"><b>We integrate it free</b><p>You build the game; we handle wallet login, payments, the BLOCK-721 asset layer and marketplace plumbing.</p></div>
+<div class="feature"><b>Built-in economy</b><p>Your players already have a Blockle wallet, BLOCK to spend, and a marketplace to trade what they win — no cold-start.</p></div>
+</div>
+
+<h2>How it works</h2>
+<ol>
+<li><b>Build</b> a web / HTML5 or lightweight game against the Blockle Game SDK — read balance, award and mint NFTs, spend currency, list assets.</li>
+<li><b>Submit</b> it for review.</li>
+<li><b>We review and integrate</b> — original, working games only; a quick quality + originality pass.</li>
+<li><b>Get paid</b> — the 10,000 BLOCK releases from escrow on acceptance, and your revenue share starts the day it goes live.</li>
+</ol>
+
+<h2>FAQ</h2>
+<h3>Who owns the game?</h3><p>You do. A short submission agreement covers how Blockle hosts and runs it, the revenue split, and removal terms.</p>
+<h3>What counts as revenue?</h3><p>In-game currency purchases, NFT and skin sales, and your game's share of marketplace fees — you keep the majority.</p>
+<h3>What tech can I use?</h3><p>Anything that runs on the web to start (HTML5 / JS / WebGL). The Game SDK is a thin layer you call for wallet login and on-chain assets.</p>
+<div class="cta" style="margin-top:1.5rem"><a class="btn primary" href="https://discord.gg/tx4MfyD9Vu">Apply on Discord</a></div>"##);
+    page_shell_seo(title, desc, "/games/submit", "", body)
 }
 
 fn page_post_quantum() -> String {
