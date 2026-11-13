@@ -89,6 +89,9 @@ class Companion extends PositionComponent {
   }
 
   final Paint _p = Paint();
+  final Paint _pixel = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
@@ -97,7 +100,7 @@ class Companion extends PositionComponent {
     if (sp != null) {
       final bob = _moving ? math.sin(_animT * 13) * 1.8 : math.sin(_animT * 2.6) * 1.0;
       final sy = 1 + math.sin(_animT * (_moving ? 13 : 2.6)) * (_moving ? 0.07 : 0.04);
-      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(24, 24 * sy), anchor: Anchor.center);
+      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(24, 24 * sy), anchor: Anchor.center, overridePaint: _pixel);
       return;
     }
     _p.color = mon.element.color;

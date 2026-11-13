@@ -159,24 +159,10 @@ class BlocklingsGame extends FlameGame {
   void update(double dt) {
     super.update(dt);
 
-    // Drive the player: the D-pad always takes priority (walk anywhere);
-    // otherwise auto-combat seeks the nearest foe.
-    if (autoCombat && dpad.isZero()) {
-      final e = _nearestEnemy();
-      if (e != null) {
-        final to = e.position - player.position;
-        if (to.length > player.attackRange * 0.8) {
-          player.velocity.setFrom(to.normalized());
-        } else {
-          player.velocity.setZero();
-          playerAttack();
-        }
-      } else {
-        player.velocity.setZero();
-      }
-    } else {
-      player.velocity.setFrom(dpad);
-    }
+    // Movement is ALWAYS manual (the D-pad). The player never auto-moves.
+    player.velocity.setFrom(dpad);
+    // Auto-combat only auto-ATTACKS a foe that is already within reach.
+    if (autoCombat) playerAttack();
 
     companion?.fight(enemies, dt);
 

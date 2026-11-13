@@ -33,6 +33,8 @@ class ItemSprite extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
+          filterQuality: FilterQuality.none,
+          isAntiAlias: false,
           errorBuilder: (_, __, ___) => Container(
             width: size,
             height: size,

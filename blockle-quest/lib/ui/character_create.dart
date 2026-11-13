@@ -124,6 +124,7 @@ class _CharacterCreateState extends State<CharacterCreate> {
         child: Column(children: [
           Image.asset('assets/images/chars/${e.name}_s.png',
               width: 64, height: 64,
+              filterQuality: FilterQuality.none, isAntiAlias: false,
               errorBuilder: (_, __, ___) => Container(
                     width: 64, height: 64,
                     decoration: BoxDecoration(color: e.color.withValues(alpha: 0.25), shape: BoxShape.circle),

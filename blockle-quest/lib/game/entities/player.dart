@@ -122,6 +122,9 @@ class Player extends PositionComponent {
   }
 
   final Paint _p = Paint();
+  final Paint _pixel = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
@@ -135,7 +138,8 @@ class Player extends PositionComponent {
       sp.render(canvas,
           position: c + Vector2(0, -2 - bob),
           size: Vector2(38, 38 * sy),
-          anchor: Anchor.center);
+          anchor: Anchor.center,
+          overridePaint: _pixel);
     } else {
       _p.color = Bq.accent;
       canvas.drawCircle(c.toOffset(), 12, _p);

@@ -125,6 +125,10 @@ class TileMap extends PositionComponent {
       };
 
   final Paint _p = Paint();
+  // Crisp 8-bit scaling: no bilinear smoothing when sprites are drawn larger.
+  final Paint _pixel = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
@@ -142,7 +146,8 @@ class TileMap extends PositionComponent {
         final sp = _sprites[t];
         if (sp != null) {
           sp.render(canvas,
-              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.5, ts + 0.5));
+              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.5, ts + 0.5),
+              overridePaint: _pixel);
           continue;
         }
         // Fallback: flat color + simple marker (art not loaded).

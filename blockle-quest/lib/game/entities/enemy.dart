@@ -78,6 +78,9 @@ class Enemy extends PositionComponent {
   }
 
   final Paint _p = Paint();
+  final Paint _pixel = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
@@ -86,7 +89,7 @@ class Enemy extends PositionComponent {
     if (sp != null) {
       final bob = _moving ? math.sin(_animT * 11) * 2.0 : math.sin(_animT * 2.2) * 1.2;
       final sy = 1 + math.sin(_animT * (_moving ? 11 : 2.2)) * (_moving ? 0.06 : 0.04);
-      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(30, 30 * sy), anchor: Anchor.center);
+      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(30, 30 * sy), anchor: Anchor.center, overridePaint: _pixel);
     } else {
       _p.color = wild.element.color;
       canvas.drawCircle(c.toOffset(), 10, _p);
