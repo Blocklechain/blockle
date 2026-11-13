@@ -1,9 +1,9 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
-import 'package:flutter/painting.dart';
 
-import '../../theme.dart';
+import '../billboard.dart';
+import '../blocklings_game.dart';
 
 /// Another player in the shared world. Position is smoothed toward the latest
 /// networked [target] so movement stays fluid between updates.
@@ -24,22 +24,23 @@ class RemotePlayer extends PositionComponent {
   void update(double dt) {
     super.update(dt);
     position.lerp(target, (10 * dt).clamp(0.0, 1.0));
+    priority = position.y.round();
   }
 
-  static final _text = TextPaint(
-    style: const TextStyle(color: Bq.text, fontSize: 9, fontWeight: FontWeight.w600),
-  );
-  final Paint _p = Paint();
+  final Paint _pixel = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
-    final c = size / 2;
-    _p.color = const Color(0xFF4FC3F7); // remote players read as blue vs your purple
-    canvas.drawCircle(c.toOffset(), 11, _p);
-    _p.color = const Color(0xFF8ED8FA);
-    canvas.drawCircle(c.toOffset(), 6, _p);
-    if (name.isNotEmpty) {
-      _text.render(canvas, name, Vector2(c.x, -12), anchor: Anchor.bottomCenter);
-    }
+    final game = findGame();
+    if (game is! BlocklingsGame) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y);
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    Billboard.draw(canvas, s, sc,
+        pixel: _pixel, baseW: 26, baseH: 30, fallbackColor: const Color(0xFF4FC3F7), name: name);
+    canvas.restore();
   }
 }

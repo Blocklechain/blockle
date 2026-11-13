@@ -5,6 +5,9 @@ import 'package:flame/game.dart';
 import 'package:flame/input.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+import 'package:vector_math/vector_math_64.dart' as vm;
+
+import 'tilt.dart';
 
 import '../account/character.dart';
 import '../economy/economy.dart';
@@ -55,6 +58,12 @@ class BlocklingsGame extends FlameGame {
   final skills = SkillsState.instance;
   int? _zoneId; // current zone (for banner + explore quests)
 
+  // Mode-7 tilt projection (player-centred; replaces the Flame camera).
+  Vector2 _screen = Vector2.all(800);
+  vm.Matrix4 _view = vm.Matrix4.identity();
+  Vector2 project(double wx, double wy) => Tilt.projectWith(_view, wx, wy);
+  double scaleAt(double screenY) => Tilt.scaleForY(screenY, _screen.y);
+
   // Vendors: one market stall per nearby zone; the nearest in range is shoppable.
   final Map<int, Vendor> vendors = {};
   Vendor? nearbyVendor;
@@ -87,8 +96,9 @@ class BlocklingsGame extends FlameGame {
     companion = Companion(mon: starter, player: player);
     world.add(companion!);
 
-    camera.viewfinder.zoom = 1.7;
-    camera.follow(player);
+    // No Flame camera follow — the player-centred Tilt projection IS the camera.
+    camera.viewfinder.anchor = Anchor.topLeft;
+    camera.viewfinder.zoom = 1.0;
 
     _addControls();
     for (var i = 0; i < targetEnemies; i++) {
@@ -167,6 +177,12 @@ class BlocklingsGame extends FlameGame {
   @override
   void update(double dt) {
     super.update(dt);
+
+    // Refresh the tilt projection for this frame (centred on the player).
+    _screen.setFrom(size);
+    _view = Tilt.view(player.position, _screen);
+    map.tiltMatrix = _view;
+    map.tiltCam = player.position;
 
     // Movement is ALWAYS manual (the D-pad). The player never auto-moves.
     player.velocity.setFrom(dpad);

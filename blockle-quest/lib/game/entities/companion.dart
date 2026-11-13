@@ -5,6 +5,8 @@ import 'package:flame/components.dart';
 import 'package:flame/sprite.dart';
 
 import '../../models/blockling.dart';
+import '../billboard.dart';
+import '../blocklings_game.dart';
 import 'enemy.dart';
 import 'player.dart';
 
@@ -47,6 +49,7 @@ class Companion extends PositionComponent {
   Enemy? fight(List<Enemy> enemies, double dt) {
     _animT += dt;
     _moving = false;
+    priority = position.y.round();
     if (cdTimer > 0) cdTimer -= dt;
     // Nearest live enemy within range.
     Enemy? target;
@@ -84,28 +87,27 @@ class Companion extends PositionComponent {
     return null;
   }
 
-  final Paint _p = Paint();
   final Paint _pixel = Paint()
     ..filterQuality = FilterQuality.none
     ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
-    final c = size / 2;
-    final sp = _sprite;
-    if (sp != null) {
-      final bob = _moving ? math.sin(_animT * 13) * 1.8 : math.sin(_animT * 2.6) * 1.0;
-      final sy = 1 + math.sin(_animT * (_moving ? 13 : 2.6)) * (_moving ? 0.07 : 0.04);
-      canvas.save();
-      if (facing == 2) { canvas.translate(size.x, 0); canvas.scale(-1, 1); }
-      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(24, 24 * sy), anchor: Anchor.center, overridePaint: _pixel);
-      canvas.restore();
-      return;
-    }
-    _p.color = mon.element.color;
-    canvas.drawCircle(c.toOffset(), 8, _p);
-    _p.color = const Color(0x55000000);
-    canvas.drawCircle(c.toOffset(), 8, _p..style = PaintingStyle.stroke..strokeWidth = 1.5);
-    _p.style = PaintingStyle.fill;
+    final game = findGame();
+    if (game is! BlocklingsGame) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y);
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    final bob = _moving ? math.sin(_animT * 13) * 1.8 : math.sin(_animT * 2.6) * 1.0;
+    Billboard.draw(canvas, s, sc,
+        sprite: _sprite,
+        pixel: _pixel,
+        baseW: 24,
+        baseH: 24,
+        facingLeft: facing == 2,
+        bob: bob,
+        fallbackColor: mon.element.color);
+    canvas.restore();
   }
 }

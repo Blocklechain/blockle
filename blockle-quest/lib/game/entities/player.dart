@@ -6,6 +6,8 @@ import 'package:flame/sprite.dart';
 
 import '../../economy/economy.dart';
 import '../../theme.dart';
+import '../billboard.dart';
+import '../blocklings_game.dart';
 import '../tile_map.dart';
 
 /// The hero. Real-time movement with tile collision; combat resolution (who hits
@@ -97,6 +99,7 @@ class Player extends PositionComponent {
   void update(double dt) {
     super.update(dt);
     _animT += dt;
+    priority = position.y.round(); // depth sort (closer = in front)
     if (cdTimer > 0) cdTimer -= dt;
     if (velocity.isZero()) return;
 
@@ -119,44 +122,29 @@ class Player extends PositionComponent {
     position.y = position.y.clamp(TileMap.ts, map.worldHeight - TileMap.ts);
   }
 
-  final Paint _p = Paint();
   final Paint _pixel = Paint()
     ..filterQuality = FilterQuality.none
     ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
-    final c = size / 2;
-    final sp = _sprite;
-    if (sp != null) {
-      // Procedural animation: walk-bounce while moving, gentle idle breathe.
-      final moving = !velocity.isZero();
-      final bob = moving ? math.sin(_animT * 12) * 2.4 : math.sin(_animT * 2.4) * 0.9;
-      final sy = moving ? 1 + math.sin(_animT * 12) * 0.06 : 1 + math.sin(_animT * 2.4) * 0.025;
-      canvas.save();
-      if (facing == 2) {
-        canvas.translate(size.x, 0);
-        canvas.scale(-1, 1); // mirror for left-facing
-      }
-      sp.render(canvas,
-          position: c + Vector2(0, -2 - bob),
-          size: Vector2(38, 38 * sy),
-          anchor: Anchor.center,
-          overridePaint: _pixel);
-      canvas.restore();
-    } else {
-      _p.color = Bq.accent;
-      canvas.drawCircle(c.toOffset(), 12, _p);
-      _p.color = Bq.accent2;
-      canvas.drawCircle(c.toOffset(), 7, _p);
-    }
-
-    // HP bar above head.
-    const bw = 30.0;
-    final frac = (hp / maxHp).clamp(0.0, 1.0);
-    _p.color = const Color(0xAA000000);
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -10, bw, 4), _p);
-    _p.color = frac > 0.3 ? Bq.hpGood : Bq.hpBad;
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -10, bw * frac, 4), _p);
+    final game = findGame();
+    if (game is! BlocklingsGame) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y); // undo Flame's translate -> screen space
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    Billboard.draw(
+      canvas, s, sc,
+      sprite: _sprite,
+      pixel: _pixel,
+      baseW: 42,
+      baseH: 42,
+      facingLeft: facing == 2,
+      bob: (!velocity.isZero() ? math.sin(_animT * 12) * 2.4 : math.sin(_animT * 2.4) * 0.9),
+      fallbackColor: Bq.accent,
+      hpFrac: hp / maxHp,
+    );
+    canvas.restore();
   }
 }

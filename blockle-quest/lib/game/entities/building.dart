@@ -4,6 +4,7 @@ import 'package:flame/components.dart';
 import 'package:flame/sprite.dart';
 import 'package:flutter/painting.dart';
 
+import '../blocklings_game.dart';
 import '../tile_map.dart';
 
 /// A village building. Sits on the ground (bottom-center anchored) and blocks
@@ -24,7 +25,7 @@ class Building extends PositionComponent {
     this.position = position;
     size = Vector2.all(px);
     anchor = Anchor.bottomCenter;
-    priority = 3;
+    priority = position.y.round();
   }
 
   @override
@@ -48,14 +49,24 @@ class Building extends PositionComponent {
 
   @override
   void render(Canvas canvas) {
+    final game = findGame();
+    if (game is! BlocklingsGame) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y);
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    final w = size.x * sc, h = size.y * sc;
+    _p.color = const Color(0x44000000);
+    canvas.drawOval(Rect.fromCenter(center: Offset(s.x, s.y), width: w * 0.7, height: h * 0.14), _p);
     final sp = _sprite;
     if (sp != null) {
-      sp.render(canvas, position: Vector2.zero(), size: size, overridePaint: _pixel);
+      sp.render(canvas, position: Vector2(s.x, s.y), size: Vector2(w, h), anchor: Anchor.bottomCenter, overridePaint: _pixel);
     } else {
       _p.color = const Color(0xFF6B4A2F);
-      canvas.drawRect(Rect.fromLTWH(0, size.y * 0.4, size.x, size.y * 0.6), _p);
+      canvas.drawRect(Rect.fromLTWH(s.x - w / 2, s.y - h * 0.6, w, h * 0.6), _p);
       _p.color = const Color(0xFF8B2E2E);
-      canvas.drawRect(Rect.fromLTWH(0, size.y * 0.2, size.x, size.y * 0.25), _p);
+      canvas.drawRect(Rect.fromLTWH(s.x - w / 2, s.y - h, w, h * 0.35), _p);
     }
+    canvas.restore();
   }
 }

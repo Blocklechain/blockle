@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/sprite.dart';
+import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../theme.dart';
 import '../world/zones.dart';
@@ -21,6 +22,10 @@ class TileMap extends PositionComponent {
   }
 
   final Map<TileType, Sprite?> _sprites = {};
+
+  // Set by the game each frame: the Mode-7 view matrix + player-centre.
+  vm.Matrix4 tiltMatrix = vm.Matrix4.identity();
+  Vector2 tiltCam = Vector2.zero();
 
   @override
   Future<void> onLoad() async {
@@ -141,42 +146,33 @@ class TileMap extends PositionComponent {
 
   @override
   void render(Canvas canvas) {
-    final game = findGame();
-    if (game == null) return;
-    final view = game.camera.visibleWorldRect;
-    final c0 = (view.left / ts).floor() - 1;
-    final r0 = (view.top / ts).floor() - 1;
-    final c1 = (view.right / ts).ceil() + 1;
-    final r1 = (view.bottom / ts).ceil() + 1;
+    // Pitch the ground plane back (Mode-7). Everything drawn here is in flat
+    // world coords; the tilt matrix projects it to the receding perspective.
+    canvas.save();
+    canvas.transform(tiltMatrix.storage);
 
-    for (var row = r0; row <= r1; row++) {
-      for (var col = c0; col <= c1; col++) {
+    final camCol = (tiltCam.x / ts).floor();
+    final camRow = (tiltCam.y / ts).floor();
+    // Draw a generous window, reaching further "north" toward the horizon.
+    for (var row = camRow - 40; row <= camRow + 22; row++) {
+      for (var col = camCol - 34; col <= camCol + 34; col++) {
         final t = tileAt(col, row);
         final sp = _sprites[t];
         if (sp != null) {
           sp.render(canvas,
-              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.5, ts + 0.5),
+              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.6, ts + 0.6),
               overridePaint: _pixel);
           continue;
         }
-        // Fallback: flat color + simple marker (art not loaded).
         _p.color = _colorFor(t);
-        canvas.drawRect(Rect.fromLTWH(col * ts, row * ts, ts + 0.5, ts + 0.5), _p);
-        if (t == TileType.tree) {
-          _p.color = const Color(0xFF0C2612);
-          canvas.drawCircle(Offset(col * ts + ts / 2, row * ts + ts / 2), ts * 0.42, _p);
-        } else if (t == TileType.rock) {
-          _p.color = const Color(0xFF2E2E38);
-          canvas.drawCircle(Offset(col * ts + ts / 2, row * ts + ts / 2), ts * 0.36, _p);
-        } else if (t == TileType.blockstone) {
-          _p.color = Bq.accent;
-          canvas.drawRect(Rect.fromLTWH(col * ts + 7, row * ts + 7, ts - 14, ts - 14), _p);
-        } else if (t == TileType.tallGrass) {
-          _p.color = const Color(0x3300160A);
-          canvas.drawRect(Rect.fromLTWH(col * ts + 4, row * ts + 10, ts - 8, ts - 14), _p);
+        canvas.drawRect(Rect.fromLTWH(col * ts, row * ts, ts + 0.6, ts + 0.6), _p);
+        if (t == TileType.tree || t == TileType.rock || t == TileType.blockstone) {
+          _p.color = t == TileType.blockstone ? Bq.accent : const Color(0xFF1A1A1F);
+          canvas.drawRect(Rect.fromLTWH(col * ts + 6, row * ts + 6, ts - 12, ts - 12), _p);
         }
       }
     }
+    canvas.restore();
   }
 
   /// A walkable tile near a world point (for spawns/respawns).

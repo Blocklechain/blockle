@@ -3,9 +3,10 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/sprite.dart';
-import 'package:flutter/painting.dart';
 
 import '../../models/blockling.dart';
+import '../billboard.dart';
+import '../blocklings_game.dart';
 import '../../theme.dart';
 import 'player.dart';
 
@@ -72,6 +73,7 @@ class Enemy extends PositionComponent {
   @override
   void update(double dt) {
     super.update(dt);
+    priority = position.y.round();
     if (dead) return;
     _animT += dt;
     _moving = false;
@@ -88,43 +90,30 @@ class Enemy extends PositionComponent {
     }
   }
 
-  final Paint _p = Paint();
   final Paint _pixel = Paint()
     ..filterQuality = FilterQuality.none
     ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
-    final c = size / 2;
-    final sp = _sprite;
-    if (sp != null) {
-      final bob = _moving ? math.sin(_animT * 11) * 2.0 : math.sin(_animT * 2.2) * 1.2;
-      final sy = 1 + math.sin(_animT * (_moving ? 11 : 2.2)) * (_moving ? 0.06 : 0.04);
-      canvas.save();
-      if (facing == 2) { canvas.translate(size.x, 0); canvas.scale(-1, 1); }
-      sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(30, 30 * sy), anchor: Anchor.center, overridePaint: _pixel);
-      canvas.restore();
-    } else {
-      _p.color = wild.element.color;
-      canvas.drawCircle(c.toOffset(), 10, _p);
-      if (wild.shiny) {
-        _p.color = const Color(0xFFFFFFFF);
-        canvas.drawCircle(c.toOffset(), 3, _p);
-      }
-    }
-    // HP bar (wider for bosses).
-    final bw = isBoss ? 44.0 : 24.0;
-    final frac = (hp / maxHp).clamp(0.0, 1.0);
-    _p.color = const Color(0xAA000000);
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw, isBoss ? 4 : 3), _p);
-    _p.color = isBoss ? const Color(0xFFFFC24B) : Bq.enemy;
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw * frac, isBoss ? 4 : 3), _p);
-    if (isBoss && bossName.isNotEmpty) {
-      _bossText.render(canvas, bossName, Vector2(c.x, -12), anchor: Anchor.bottomCenter);
-    }
+    final game = findGame();
+    if (game is! BlocklingsGame || dead) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y);
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    final bob = _moving ? math.sin(_animT * 11) * 2.0 : math.sin(_animT * 2.2) * 1.2;
+    Billboard.draw(canvas, s, sc,
+        sprite: _sprite,
+        pixel: _pixel,
+        baseW: isBoss ? 56 : 30,
+        baseH: isBoss ? 56 : 30,
+        facingLeft: facing == 2,
+        bob: bob,
+        fallbackColor: wild.element.color,
+        hpFrac: hp / maxHp,
+        hpColor: isBoss ? const Color(0xFFFFC24B) : Bq.enemy,
+        name: isBoss ? bossName : null);
+    canvas.restore();
   }
-
-  static final _bossText = TextPaint(
-    style: const TextStyle(color: Color(0xFFFFD27A), fontSize: 8, fontWeight: FontWeight.w800),
-  );
 }

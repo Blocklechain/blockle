@@ -6,6 +6,7 @@ import 'package:flutter/painting.dart';
 import '../../economy/economy.dart';
 import '../../models/item.dart';
 import '../../theme.dart';
+import '../blocklings_game.dart';
 
 /// A single item for sale at a vendor, priced in crypto.
 class ShopEntry {
@@ -28,7 +29,7 @@ class Vendor extends PositionComponent {
     this.position = position;
     size = Vector2.all(30);
     anchor = Anchor.center;
-    priority = 4;
+    priority = position.y.round();
     const chains = [Chain.blockle, Chain.blockle, Chain.blockle, Chain.ethereum, Chain.solana];
     stock = List.generate(8, (i) {
       final item = Item.at(seed * 131 + i * 17 + 3);
@@ -44,21 +45,30 @@ class Vendor extends PositionComponent {
 
   @override
   void render(Canvas canvas) {
-    final w = size.x;
-    // Counter.
+    final game = findGame();
+    if (game is! BlocklingsGame) return;
+    canvas.save();
+    canvas.translate(-position.x, -position.y);
+    final s = game.project(position.x, position.y);
+    final sc = game.scaleAt(s.y);
+    const w = 30.0;
+    // Ground shadow.
+    _p.color = const Color(0x55000000);
+    canvas.drawOval(Rect.fromCenter(center: Offset(s.x, s.y), width: 26 * sc, height: 9 * sc), _p);
+    // Market stall, upright, feet at s.
+    canvas.translate(s.x - w / 2 * sc, s.y - w * sc);
+    canvas.scale(sc);
     _p.color = const Color(0xFF6B4A2F);
     canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, w * 0.5, w, w * 0.5), const Radius.circular(3)), _p);
-    // Striped awning.
     for (var i = 0; i < 4; i++) {
       _p.color = i.isEven ? Bq.accent : const Color(0xFFEDEDF4);
       canvas.drawRect(Rect.fromLTWH(i * w / 4, 0, w / 4, w * 0.3), _p);
     }
-    // Awning trim.
     _p.color = const Color(0xFF3A2A66);
     canvas.drawRect(Rect.fromLTWH(0, w * 0.3, w, 3), _p);
-    // A little "goods" dot on the counter.
     _p.color = Bq.xp;
     canvas.drawCircle(Offset(w * 0.5, w * 0.62), 3, _p);
+    canvas.restore();
   }
 
   /// Build a few vendors near a world point (deterministic by cell).
