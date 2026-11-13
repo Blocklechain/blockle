@@ -643,10 +643,60 @@
       if (_strat) { S._botPrefill = { strategy: _strat }; location.hash = '#bots'; }
       if (_copy) { S._botCopyId = _copy; location.hash = '#bots'; }
     } catch (_) {}
+    // Deep-link from the Blocklings game: a settlement intent — a vendor payment
+    // (?action=pay&to=<treasury>&amount=&chain=) or an NFT mint (?action=mint).
+    // We route into the NORMAL gated send/mint flow (same signed approval the user
+    // always uses; keys never leave the wallet), then redirect back to the game
+    // (blocklings://settle?req=…&status=…&tx=…) so it can confirm on-chain.
+    try {
+      var _gp = new URLSearchParams(location.search);
+      var _gret = _gp.get('return') || '';
+      if ((_gp.get('app') || '') === 'blocklings' && _gp.get('req') && /^blocklings:\/\//.test(_gret)) {
+        S._blkIntent = {
+          action: (_gp.get('action') || '').toLowerCase(),
+          chain: (_gp.get('chain') || 'blockle').toLowerCase(),
+          amount: (_gp.get('amount') || '').replace(/[^\d.]/g, ''),
+          to: (_gp.get('to') || '').replace(/[^\w]/g, ''),
+          req: _gp.get('req'),
+          ret: _gret,
+        };
+        startBlockleIntent();
+      }
+    } catch (_) {}
     if (!location.hash) location.hash = '#portfolio';
     onRoute();
     ['click', 'keydown', 'mousemove', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, resetAutoLock, { passive: true }); });
     if (CONNECT.active) CONNECT.onEnter();
+  }
+
+  // Redirect back to the Blocklings game with the settlement result (deep-link).
+  function blkSettle(status, extra) {
+    var it = S._blkIntent; if (!it) return;
+    S._blkIntent = null;
+    var sep = it.ret.indexOf('?') >= 0 ? '&' : '?';
+    var url = it.ret + sep + 'status=' + encodeURIComponent(status) +
+      (extra && extra.tx ? '&tx=' + encodeURIComponent(String(extra.tx)) : '') +
+      (extra && extra.nftId ? '&nftId=' + encodeURIComponent(String(extra.nftId)) : '');
+    try { location.href = url; } catch (_) {}
+  }
+  function startBlockleIntent() {
+    var it = S._blkIntent; if (!it) return;
+    if (it.action === 'pay' && it.to && it.amount) {
+      var cmap = { blockle: 'block', ethereum: 'eth', solana: 'sol' };
+      S.chain = cmap[it.chain] || 'block';
+      location.hash = '#send';
+      // Prefill the send fields; the user signs via the normal gated approval,
+      // and the send-success hook redirects back to the game.
+      setTimeout(function () {
+        try { var t = $('#s-to'); if (t) t.value = it.to; var am = $('#s-amt'); if (am) am.value = it.amount; } catch (_) {}
+        toast('Blocklings: confirm the ' + it.amount + ' payment to complete your purchase', 'good');
+      }, 400);
+    } else if (it.action === 'mint') {
+      toast('Blocklings: mint your item from the NFTs tab to receive it on-chain', 'good');
+      location.hash = '#nfts';
+    } else {
+      blkSettle('cancel');
+    }
   }
   function buildNav() {
     $('#sidenav').innerHTML = '<div class="drawerhead"><span class="brand"><img class="logo" src="' + BLOCKLE_MARK + '" alt=""> Wallet</span><button class="btn sm ghost" id="nav-close" aria-label="Close menu">' + ic('close', 15) + '</button></div>' + NAV.map(function (n) {
@@ -1863,7 +1913,7 @@
           lines: [['To', shortAddr(to)], ['Amount', fmtAmt(amt) + ' ' + sym], ['Network', chain.toUpperCase()]],
           warnings: warnings, danger: danger, okText: 'Sign & send',
         });
-        if (!ok) { toast('Send cancelled'); return; }
+        if (!ok) { toast('Send cancelled'); if (S._blkIntent) blkSettle('cancel'); return; }
         toast('Signing…');
         var txid;
         if (isToken) {
@@ -1885,6 +1935,8 @@
         }
         toast('Sent · ' + String(txid).slice(0, 14) + '…', 'good');
         $('#s-to').value = ''; $('#s-amt').value = '';
+        // Blocklings vendor settlement: hand the tx back to the game.
+        if (S._blkIntent && S._blkIntent.action === 'pay') { blkSettle('ok', { tx: txid }); return; }
         location.hash = '#activity';
       } catch (e) { err.textContent = 'Send failed: ' + (e.message || e); }
     })();
