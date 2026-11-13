@@ -32,6 +32,9 @@ class Player extends PositionComponent {
   /// Facing direction for directional sprites: 0=down,1=up,2=left,3=right.
   int facing = 0;
 
+  /// Animation clock (procedural walk-bounce + idle breathe).
+  double _animT = 0;
+
   Player({
     required this.map,
     this.maxBaseHp = 60,
@@ -95,6 +98,7 @@ class Player extends PositionComponent {
   @override
   void update(double dt) {
     super.update(dt);
+    _animT += dt;
     if (cdTimer > 0) cdTimer -= dt;
     if (velocity.isZero()) return;
 
@@ -124,7 +128,14 @@ class Player extends PositionComponent {
     final c = size / 2;
     final sp = _dir[facing];
     if (sp != null) {
-      sp.render(canvas, position: c + Vector2(0, -2), size: Vector2.all(38), anchor: Anchor.center);
+      // Procedural animation: walk-bounce while moving, gentle idle breathe.
+      final moving = !velocity.isZero();
+      final bob = moving ? math.sin(_animT * 12) * 2.4 : math.sin(_animT * 2.4) * 0.9;
+      final sy = moving ? 1 + math.sin(_animT * 12) * 0.06 : 1 + math.sin(_animT * 2.4) * 0.025;
+      sp.render(canvas,
+          position: c + Vector2(0, -2 - bob),
+          size: Vector2(38, 38 * sy),
+          anchor: Anchor.center);
     } else {
       _p.color = Bq.accent;
       canvas.drawCircle(c.toOffset(), 12, _p);
