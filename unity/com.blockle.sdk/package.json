@@ -1,0 +1,10 @@
+{
+  "name": "com.blockle.sdk",
+  "version": "0.1.0",
+  "displayName": "Blockle SDK",
+  "description": "Integrate Blockle into Unity mobile games: non-custodial wallet sign-in, BLOCK balance, BLOCK-721 game assets, and wallet-signed on-chain actions. Pairs with the Blender->Unity asset pipeline.",
+  "unity": "2021.3",
+  "keywords": ["blockle", "crypto", "web3", "wallet", "nft", "blockchain"],
+  "author": { "name": "Blockle", "url": "https://blockle.org" },
+  "license": "MIT"
+}

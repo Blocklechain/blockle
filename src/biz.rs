@@ -2278,8 +2278,8 @@ fn page_wallets_hub() -> String {
 }
 
 fn page_games_hub() -> String {
-    let title = "Blockle Games — Crypto Mobile Games, One Wallet, Every Chain";
-    let desc = "Blockle Games is a crypto mobile game hub — discover web3 games across every chain, with the coins you earn and the items you win owned in one non-custodial multichain wallet. Browse by chain: Blockle, Ethereum, Solana, BNB and more as they arrive. Build a game and earn 10,000 BLOCK plus revenue share.";
+    let title = "Blockle Game Hub — Crypto Games for Desktop & Mobile, One Wallet, Every Chain";
+    let desc = "The Blockle Game Hub is a game-focused crypto wallet — discover and buy web3 games across every chain with crypto, with the coins you earn and the items you win owned in one non-custodial multichain wallet. Comes in two apps: Blockle Game Hub for desktop and Blockle Game Hub Mobile. Built-in MoonPay buy, sell and convert. Developers keep 90% on paid games and submit for free.";
     // Category chips — Blockle featured, then the chains the wallet already holds
     // assets on; more light up as games arrive (labels, not dead links yet).
     let mut cats = String::from(r#"<div style="display:flex;flex-wrap:wrap;gap:.55rem;margin:1rem 0 1.5rem"><span style="display:inline-block;padding:7px 15px;border:1px solid #7c5cff;color:#7c5cff;border-radius:999px;font-weight:700">Blockle (featured)</span>"#);
@@ -2288,61 +2288,70 @@ fn page_games_hub() -> String {
     }
     cats.push_str("<span style=\"display:inline-block;padding:7px 15px;border:1px dashed #555;border-radius:999px;color:#888\">more chains soon</span></div>");
     let body = format!(r##"<div class="hero"><span class="eyebrow">Crypto game hub</span>
-<h1>Crypto mobile games. <span class="grad">One wallet.</span> Every chain.</h1>
-<p class="lede">A hub for crypto mobile games across every chain — with the coins you earn and the items you win owned in one non-custodial multichain wallet. Blockle games are native and deeply integrated; titles on Ethereum, Solana, BNB and beyond are categorized by chain as they arrive.</p>
-<div class="cta"><a class="btn primary" href="/games/submit">Build a game — earn 10,000 BLOCK + rev-share</a><a class="btn" href="https://discord.gg/tx4MfyD9Vu">Join the community</a></div></div>
+<h1>Crypto games for desktop &amp; mobile. <span class="grad">One wallet.</span> Every chain.</h1>
+<p class="lede">The Blockle Game Hub is a wallet built around play: discover and buy games with crypto, own the coins you earn and the items you win in one non-custodial multichain wallet, and on-ramp or cash out without leaving the app. It comes in two apps — <b>Blockle Game Hub</b> for desktop and <b>Blockle Game Hub Mobile</b> — sharing one account and inventory. Blockle games are native and deeply integrated; titles on Ethereum, Solana, BNB and beyond are categorized by chain as they arrive.</p>
+<div class="cta"><a class="btn primary" href="/games/submit">Submit your game — free, keep 90%</a><a class="btn" href="https://discord.gg/tx4MfyD9Vu">Join the community</a></div></div>
+
+<h2>Two apps, one account</h2>
+<p class="sub">Blockle Game Hub for desktop and Blockle Game Hub Mobile share the same non-custodial wallet, balances and game-asset inventory — pick up a game on one and your coins and items are already there on the other.</p>
 
 <h2>Browse by chain</h2>
 <p class="sub">Your Blockle wallet already holds assets on 15+ chains, so it's a single login and inventory for your game assets no matter which chain a game runs on.</p>
 {cats}
 
-<h2>Why a Blockle game hub</h2>
+<h2>Why the Blockle Game Hub</h2>
 <div class="features">
+<div class="feature"><b>Buy games with crypto</b><p>Pay for premium games straight from your wallet in crypto — no card, no store account. Free games just open.</p></div>
+<div class="feature"><b>Buy, sell &amp; convert built in</b><p>MoonPay is wired in: on-ramp with a card, cash out to your bank, or convert between coins without leaving the hub.</p></div>
 <div class="feature"><b>You own your assets</b><p>Items, characters and skins are NFTs in your own non-custodial wallet — not locked inside one game's servers, and not tied to one chain.</p></div>
 <div class="feature"><b>Earn real currency</b><p>In-game rewards are real crypto you can spend, swap, cash out, or carry into the next game.</p></div>
 <div class="feature"><b>Cross-game, cross-chain marketplace</b><p>Trade what you win in the Blockle marketplace — one economy that spans titles and chains.</p></div>
 <div class="feature"><b>One wallet for every game</b><p>Sign in with Blockle across every game on every supported chain; your keys stay on your device.</p></div>
 </div>
 
-<h2>A wallet built around games</h2>
-<p class="sub">Blockle Games is the Blockle wallet, focused on play: your balances, your NFT game assets, and every game in one app — self-custody, multichain, on web and mobile.</p>
-
-<h2>List your game</h2>
-<p class="sub">Developers: get your crypto or mobile game in front of Blockle's multichain player base. We integrate wallet login and on-chain assets for free; you pay a one-time listing fee and keep the majority of the revenue your game earns. Listed games are eligible for BLOCK-funded prize competitions (coming soon).</p>
-<div class="cta"><a class="btn primary" href="/games/submit">List your game</a></div>"##);
+<h2>Built for developers</h2>
+<p class="sub">Submitting is free. For paid games you keep <b>90%</b> of every crypto purchase; we integrate wallet login and on-chain assets for you, and listed games are eligible for BLOCK-funded prize competitions (coming soon).</p>
+<div class="cta"><a class="btn primary" href="/games/submit">Submit your game</a></div>"##);
     page_shell_seo(title, desc, "/games", "", body)
 }
 
 fn page_games_submit() -> String {
-    let title = "List Your Game on Blockle Games — Developer Submissions";
-    let desc = "List your crypto or mobile game on the Blockle Games hub and reach players across 15+ chains who own their in-game assets. We integrate wallet login and on-chain assets for free; pay a one-time listing fee, keep the majority of the revenue your game earns, and compete for BLOCK prizes in Blockle tournaments.";
+    let title = "Submit Your Game to the Blockle Game Hub — Free, Keep 90%";
+    let desc = "Submit your crypto, desktop or mobile game to the Blockle Game Hub and reach players across 15+ chains who own their in-game assets. Submitting is free, you keep 90% of every paid-game purchase, and listed games compete for BLOCK prizes. Package and submit with one command using the blockle-game CLI (cargo install), which auto-checks your build for malicious code and completeness before human review.";
     let body = String::from(r##"<div class="hero"><span class="eyebrow">Game developers</span>
-<h1>List your game on <span class="grad">Blockle Games</span>.</h1>
-<p class="lede">Get your crypto or mobile game in front of Blockle's multichain player base — people who sign in with one wallet and own their game assets on-chain. We integrate wallet login and the on-chain asset layer for free. You pay a one-time listing fee, keep the majority of the revenue your game earns, and your game becomes eligible for BLOCK-funded prize competitions.</p>
+<h1>Submit your game to the <span class="grad">Blockle Game Hub</span>.</h1>
+<p class="lede">Get your crypto, desktop or mobile game in front of Blockle's multichain player base — people who sign in with one wallet and own their game assets on-chain. <b>Submitting is free.</b> For paid games you keep <b>90%</b> of every crypto purchase; we integrate wallet login and the on-chain asset layer for you, and your game becomes eligible for BLOCK-funded prize competitions.</p>
 <div class="cta"><a class="btn primary" href="https://discord.gg/tx4MfyD9Vu">Apply on Discord</a><a class="btn" href="/contact">Contact us</a></div></div>
 
 <h2>What you get</h2>
 <div class="features">
-<div class="feature"><b>Distribution</b><p>A spot in the Blockle Games hub in front of players across 15+ chains — one wallet login, no new account to create.</p></div>
-<div class="feature"><b>Free integration</b><p>You build the game; we wire up wallet login, on-chain currency, BLOCK-721 game assets and the marketplace for you.</p></div>
-<div class="feature"><b>Revenue share — ongoing</b><p>Keep the majority of what your game earns: in-game currency spend, NFT and skin sales, and your share of marketplace fees.</p></div>
+<div class="feature"><b>Free to submit</b><p>No listing fee. Package your build and send it in — the only cost is building a good game.</p></div>
+<div class="feature"><b>Keep 90% on paid games</b><p>Price your game in crypto and keep 90% of every purchase; Blockle takes 10% to run the hub, payments and competitions.</p></div>
+<div class="feature"><b>Free integration</b><p>You build the game; we wire up wallet login, crypto checkout, on-chain currency, BLOCK-721 game assets and the marketplace for you.</p></div>
 <div class="feature"><b>BLOCK prize competitions</b><p>Listed games are eligible for BLOCK-funded tournaments and leaderboards — a prize pool that brings players to your game (rolling out soon).</p></div>
 </div>
 
+<h2>Submit from the command line</h2>
+<p class="sub">The <code>blockle-game</code> CLI packages your build and runs the same automated checks our pipeline does <i>before</i> a human ever looks — a malicious-code scan, a completeness and manifest check, and a size/format pass — so most of review is done the moment you submit.</p>
+<pre style="background:#12121a;border:1px solid #2a2a3a;border-radius:10px;padding:14px 16px;overflow-x:auto"><code>cargo install blockle-game
+blockle-game init          # scaffold blockle.toml for your game
+blockle-game check ./build # run the automated pre-review checks locally
+blockle-game submit ./build</code></pre>
+
 <h2>How it works</h2>
 <ol>
-<li><b>Build</b> a web / HTML5 or mobile game against the Blockle Game SDK — read balance, award and mint NFTs, spend currency, list assets.</li>
-<li><b>Submit &amp; pay the one-time listing fee.</b></li>
-<li><b>We review and integrate</b> — original, working games only; a quick quality + originality pass.</li>
-<li><b>Go live</b> — your game joins the hub, your revenue share starts, and you enter the competition rotation.</li>
+<li><b>Build</b> a desktop, mobile or web game against the Blockle Game SDK — read balance, award and mint NFTs, spend currency, take crypto payment, list assets.</li>
+<li><b>Check &amp; submit</b> with <code>blockle-game</code> — it auto-screens your build for malicious code and completeness, then uploads it. Submitting is free.</li>
+<li><b>Human review</b> — a short quality + originality pass on top of what the automated checks already cleared.</li>
+<li><b>Go live</b> — your game joins the hub on desktop and mobile, your 90% revenue share starts, and you enter the competition rotation.</li>
 </ol>
 
 <h2>FAQ</h2>
-<h3>What's the listing fee?</h3><p>A one-time fee paid during submission. See current pricing in the submission flow, or ask us on Discord.</p>
-<h3>Who owns the game?</h3><p>You do. A short submission agreement covers how Blockle hosts and runs it, the revenue split, and removal terms.</p>
-<h3>What counts as revenue?</h3><p>In-game currency purchases, NFT and skin sales, and your game's share of marketplace fees — you keep the majority.</p>
+<h3>How much does it cost to submit?</h3><p>Nothing — submission is free. Blockle only earns when your game does: a 10% cut of paid-game purchases, so you keep 90%.</p>
+<h3>What do the automated checks look for?</h3><p>Known-malicious patterns and dangerous permissions, a completeness and manifest check (required entry points, metadata, icons), and size/format validation. They run locally via <code>blockle-game check</code> and again on submission, before human review.</p>
+<h3>Who owns the game?</h3><p>You do. A short submission agreement covers how Blockle hosts and runs it, the 90/10 split, and removal terms.</p>
 <h3>Are there BLOCK rewards?</h3><p>Yes — we run BLOCK-funded competitions and leaderboards; listed games and their players are eligible as that program rolls out.</p>
-<h3>What tech can I use?</h3><p>Anything that runs on the web to start (HTML5 / JS / WebGL). The Game SDK is a thin layer you call for wallet login and on-chain assets.</p>
+<h3>What tech can I use?</h3><p>Unity (via the Blockle Unity SDK) for desktop and mobile, or anything that runs on the web (HTML5 / JS / WebGL). The SDK is a thin layer you call for wallet login, crypto payment and on-chain assets.</p>
 <div class="cta" style="margin-top:1.5rem"><a class="btn primary" href="https://discord.gg/tx4MfyD9Vu">Apply on Discord</a></div>"##);
     page_shell_seo(title, desc, "/games/submit", "", body)
 }

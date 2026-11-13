@@ -1,0 +1,8 @@
+{
+  "name": "Blockle.Editor",
+  "rootNamespace": "Blockle.Editor",
+  "references": ["Blockle"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "autoReferenced": true
+}

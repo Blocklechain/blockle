@@ -1,0 +1,9 @@
+{
+  "name": "Blockle",
+  "rootNamespace": "Blockle",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": true
+}

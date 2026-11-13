@@ -1,0 +1,32 @@
+[package]
+name = "blockle-game"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Blockle Game Hub developer CLI — scaffold, auto-check (malicious-code + completeness) and submit crypto games to the Blockle Game Hub (desktop & mobile)."
+repository = "https://github.com/blocklechain/blockle"
+homepage = "https://blockle.org/games/submit"
+readme = "README.md"
+keywords = ["blockle", "games", "gamedev", "web3", "submission"]
+categories = ["command-line-utilities", "game-development"]
+
+[[bin]]
+name = "blockle-game"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
+tar = "0.4"
+flate2 = "1"
+ureq = "2"
+
+[profile.release]
+lto = "thin"
+strip = true
