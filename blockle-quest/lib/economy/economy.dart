@@ -347,9 +347,9 @@ class EconomyService extends ChangeNotifier {
   /// Dedicated per-chain treasury wallets that receive vendor crypto sales.
   /// These are YOUR wallets (you hold the keys) — set each to the real address.
   final Map<Chain, String> treasuryAddresses = {
-    Chain.blockle: 'block1treasuryxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-    Chain.ethereum: '0x0000000000000000000000000000000000000000', // set ETH treasury
-    Chain.solana: '11111111111111111111111111111111', // set SOL treasury
+    Chain.blockle: 'block1treasuryxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', // set BLOCK treasury
+    Chain.ethereum: '0x8f55FbeDb99389aADa2B06f12c9567552C7892F5',
+    Chain.solana: 'CHxVpuE297p7YLttya8vLrxrfFNKXp8SRk4rfVd48PdM',
   };
 
   /// The treasury address for a given chain (falls back to the BLOCK treasury).
