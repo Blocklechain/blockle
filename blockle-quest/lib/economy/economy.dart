@@ -344,8 +344,16 @@ class EconomyService extends ChangeNotifier {
   }
 
   // ---- Vendors (buy non-NFT items for crypto; revenue backs BLOCK) ------ //
-  /// Developer treasury that receives vendor crypto sales.
-  String treasuryAddress = 'block1treasuryxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+  /// Dedicated per-chain treasury wallets that receive vendor crypto sales.
+  /// These are YOUR wallets (you hold the keys) — set each to the real address.
+  final Map<Chain, String> treasuryAddresses = {
+    Chain.blockle: 'block1treasuryxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+    Chain.ethereum: '0x0000000000000000000000000000000000000000', // set ETH treasury
+    Chain.solana: '11111111111111111111111111111111', // set SOL treasury
+  };
+
+  /// The treasury address for a given chain (falls back to the BLOCK treasury).
+  String treasuryFor(Chain c) => treasuryAddresses[c] ?? treasuryAddresses[Chain.blockle]!;
 
   /// Share of vendor sales routed to back BLOCK via the Blockle Liquidity pool.
   static const double vendorBackingPct = 0.90;
@@ -391,7 +399,7 @@ class EconomyService extends ChangeNotifier {
       'action': 'pay',
       'chain': chain.name,
       'amount': price.toString(),
-      'to': treasuryAddress,
+      'to': treasuryFor(chain),
       'memo': 'blocklings-vendor',
       'cat': item.catalogIndex.toString(),
       'backing': vendorBackingPct.toString(),
