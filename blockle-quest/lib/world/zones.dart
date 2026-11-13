@@ -22,6 +22,9 @@ class Zone {
   int get minLevel => 1 + tier * 6;
   int get maxLevel => minLevel + 7;
   String get name => Zones.nameFor(id);
+
+  /// Gentler zones sometimes hold a village (a cluster of buildings).
+  bool get isVillage => tier <= 3 && ((id * 2654435761) & 0x7fffffff) % 5 == 0;
   String get bossName => '${_bossAdj[id % _bossAdj.length]} ${_bossNoun[(id ~/ 7) % _bossNoun.length]}';
 
   Color get accent => switch (theme) {

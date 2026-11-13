@@ -15,6 +15,7 @@ import '../skills/skills.dart';
 import '../theme.dart';
 import '../world/zones.dart';
 import '../net/net_client.dart';
+import 'entities/building.dart';
 import 'entities/companion.dart';
 import 'entities/enemy.dart';
 import 'entities/player.dart';
@@ -61,6 +62,10 @@ class BlocklingsGame extends FlameGame {
   // One unique boss per zone, guarding it until defeated.
   final Set<int> bossesDefeated = {};
   final Map<int, Enemy> _bosses = {};
+
+  // Villages: a cluster of buildings in some zones.
+  final Map<int, List<Building>> _villages = {};
+  static const _buildingKinds = ['house', 'shop', 'inn', 'house', 'blockhall', 'cabin', 'tower', 'hall'];
 
   /// Bumped on notable events (loot/level) so the HUD/toasts can react.
   final ValueNotifier<String> toast = ValueNotifier('');
@@ -209,7 +214,44 @@ class BlocklingsGame extends FlameGame {
       _syncRemotes();
       _updateVendors();
       _updateBoss();
+      _updateVillages();
     }
+  }
+
+  void _updateVillages() {
+    final pz = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (pz == null) return;
+    const offs = [
+      [-5, -3], [0, -4], [5, -3], [-4, 2], [3, 2], [-1, 5],
+    ];
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        final zx = pz.zx + dx, zy = pz.zy + dy;
+        if (zx < 0 || zy < 0 || zx >= Zones.grid || zy >= Zones.grid) continue;
+        final z = Zones.all[zy * Zones.grid + zx];
+        if (!z.isVillage || _villages.containsKey(z.id)) continue;
+        final cx = zx * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+        final cy = zy * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+        final list = <Building>[];
+        for (var i = 0; i < offs.length; i++) {
+          final wx = (cx + offs[i][0]) * TileMap.ts;
+          final wy = (cy + offs[i][1]) * TileMap.ts;
+          if (map.solidAtWorld(wx, wy)) continue;
+          final b = Building(kind: _buildingKinds[(z.id + i) % _buildingKinds.length], map: map, position: Vector2(wx, wy));
+          list.add(b);
+          world.add(b);
+        }
+        _villages[z.id] = list;
+      }
+    }
+    _villages.keys.where((id) {
+      final zx = id % Zones.grid, zy = id ~/ Zones.grid;
+      return (zx - pz.zx).abs() > 2 || (zy - pz.zy).abs() > 2;
+    }).toList().forEach((id) {
+      for (final b in _villages.remove(id)!) {
+        b.removeFromParent();
+      }
+    });
   }
 
   void _updateBoss() {

@@ -104,7 +104,16 @@ class TileMap extends PositionComponent {
         t == TileType.bog;
   }
 
-  bool solidAtWorld(double wx, double wy) => solidAt((wx / ts).floor(), (wy / ts).floor());
+  /// Dynamic solid footprints (buildings) registered by entities.
+  final List<Rect> solidRects = [];
+
+  bool solidAtWorld(double wx, double wy) {
+    if (solidAt((wx / ts).floor(), (wy / ts).floor())) return true;
+    for (final r in solidRects) {
+      if (r.contains(Offset(wx, wy))) return true;
+    }
+    return false;
+  }
 
   bool tallGrassAtWorld(double wx, double wy) =>
       tileAt((wx / ts).floor(), (wy / ts).floor()) == TileType.tallGrass;
