@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../account/account_service.dart';
 import '../economy/economy.dart';
 import '../game/blocklings_game.dart';
+import '../game/entities/vendor.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
 import '../quests/quests.dart';
@@ -56,7 +57,7 @@ class _Panel extends StatelessWidget {
     void close() {
       final g = game;
       if (g != null) {
-        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests']) {
+        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests', 'shop']) {
           g.overlays.remove(name);
         }
         g.resumeEngine();
@@ -542,6 +543,83 @@ Future<void> _signInDialog(BuildContext context) async {
       },
     ),
   );
+}
+
+// ---- Vendor shop ----------------------------------------------------------
+class ShopPanel extends StatefulWidget {
+  final BlocklingsGame game;
+  const ShopPanel({super.key, required this.game});
+  @override
+  State<ShopPanel> createState() => _ShopPanelState();
+}
+
+class _ShopPanelState extends State<ShopPanel> {
+  @override
+  Widget build(BuildContext context) {
+    final v = widget.game.nearbyVendor;
+    return _Panel(
+      title: v?.name ?? 'Vendor',
+      game: widget.game,
+      child: v == null
+          ? const Center(child: Text('No vendor nearby.', style: TextStyle(color: Bq.dim)))
+          : AnimatedBuilder(
+              animation: _econ,
+              builder: (_, __) => ListView(
+                padding: const EdgeInsets.all(12),
+                children: [
+                  const Text('Buy with crypto. Items aren’t NFTs — mint them later if you like.',
+                      style: TextStyle(color: Bq.dim, fontSize: 11)),
+                  const SizedBox(height: 8),
+                  for (final e in v.stock) _row(e),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: Bq.panel2, borderRadius: BorderRadius.circular(10)),
+                    child: const Text('90% of every vendor sale backs BLOCK through the Blockle Liquidity pool.',
+                        style: TextStyle(color: Bq.accent2, fontSize: 11, fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            ),
+    );
+  }
+
+  Widget _row(ShopEntry e) => Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(color: Bq.panel2, borderRadius: BorderRadius.circular(10)),
+        child: Row(children: [
+          ItemSprite(e.item, size: 44),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(e.item.name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w700)),
+              Text('${e.item.rarityName} · ATK ${e.item.atk} DEF ${e.item.def} HP ${e.item.hp}',
+                  style: TextStyle(color: e.item.rarityColor, fontSize: 11)),
+            ]),
+          ),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: e.chain.color, shape: BoxShape.circle)),
+              const SizedBox(width: 4),
+              Text('${e.price} ${e.chain.symbol}', style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w700)),
+            ]),
+            const SizedBox(height: 4),
+            SizedBox(
+              height: 28,
+              child: FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Bq.accent, padding: const EdgeInsets.symmetric(horizontal: 14), minimumSize: const Size(0, 28)),
+                onPressed: () {
+                  final err = _econ.buyFromVendor(e.item, e.chain, e.price);
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err ?? 'Bought ${e.item.name}')));
+                  setState(() {});
+                },
+                child: const Text('Buy', style: TextStyle(fontSize: 11)),
+              ),
+            ),
+          ]),
+        ]),
+      );
 }
 
 // ---- Skills (RuneScape-style) ---------------------------------------------

@@ -300,6 +300,47 @@ class EconomyService extends ChangeNotifier {
     return null;
   }
 
+  // ---- Vendors (buy non-NFT items for crypto; revenue backs BLOCK) ------ //
+  /// Developer treasury that receives vendor crypto sales.
+  String treasuryAddress = 'block1treasuryxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+
+  /// Share of vendor sales routed to back BLOCK via the Blockle Liquidity pool.
+  static const double vendorBackingPct = 0.90;
+
+  /// Gross vendor sales received at the treasury, per currency.
+  final Map<Chain, double> treasury = {for (final c in Chain.values) c: 0.0};
+
+  /// Amount of each currency routed into Liquidity to back BLOCK (90% of sales).
+  final Map<Chain, double> blockBacking = {for (final c in Chain.values) c: 0.0};
+
+  /// Buy an item from an in-game vendor for crypto. The item is a normal
+  /// inventory item (NOT an NFT — you can mint it later). The payment goes to
+  /// the treasury wallet and 90% is used to back BLOCK through Liquidity.
+  ///
+  /// The in-game balance is debited here; real on-chain settlement to
+  /// [treasuryAddress] + the liquidity backing happen via the wallet / server
+  /// (see [vendorPayUrl]) and stay non-custodial.
+  String? buyFromVendor(Item item, Chain chain, double price) {
+    if (!kCurrencies.contains(chain)) return 'Unsupported currency.';
+    if (!debit(chain, price)) {
+      return 'Not enough ${chain.symbol}. Buy more with MoonPay or swap via Liquidity.';
+    }
+    items.add(item); // unminted
+    treasury[chain] = (treasury[chain] ?? 0) + price;
+    blockBacking[chain] = (blockBacking[chain] ?? 0) + price * vendorBackingPct;
+    notifyListeners();
+    return null;
+  }
+
+  /// Real on-chain vendor payment to the treasury (gated; opens the wallet).
+  Uri vendorPayUrl(Chain chain, double price) => _wallet({
+        'action': 'pay',
+        'chain': chain.name,
+        'amount': price.toString(),
+        'to': treasuryAddress,
+        'memo': 'blocklings-vendor',
+      });
+
   Uri _wallet(Map<String, String> q) =>
       Uri.parse('$origin/wallet').replace(queryParameters: {'app': 'blocklings', ...q});
 }

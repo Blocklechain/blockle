@@ -72,6 +72,7 @@ class _GameScreenState extends State<GameScreen> {
           'market': (_, BlocklingsGame g) => MarketPanel(game: g),
           'skills': (_, BlocklingsGame g) => SkillsPanel(game: g),
           'quests': (_, BlocklingsGame g) => QuestsPanel(game: g),
+          'shop': (_, BlocklingsGame g) => ShopPanel(game: g),
         },
         initialActiveOverlays: const ['hud'],
       ),
@@ -190,6 +191,10 @@ class _HudState extends State<Hud> {
             bottom: 120,
             child: Column(
               children: [
+                if (g.nearbyVendor != null) ...[
+                  _round('SHOP', Bq.accent2, () => _open('shop')),
+                  const SizedBox(height: 8),
+                ],
                 _round('AUTO', g.autoCombat ? Bq.accent : Bq.panel2, () => setState(g.toggleAuto)),
                 const SizedBox(height: 8),
                 _round('BAG', Bq.panel2, () => _open('inventory')),

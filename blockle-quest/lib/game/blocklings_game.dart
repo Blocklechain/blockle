@@ -19,6 +19,7 @@ import 'entities/companion.dart';
 import 'entities/enemy.dart';
 import 'entities/player.dart';
 import 'entities/remote_player.dart';
+import 'entities/vendor.dart';
 import 'tile_map.dart';
 
 /// The Blocklings game: an open, chunked world with real-time combat, an
@@ -51,6 +52,10 @@ class BlocklingsGame extends FlameGame {
   final quests = QuestLog.instance;
   final skills = SkillsState.instance;
   int? _zoneId; // current zone (for banner + explore quests)
+
+  // Vendors: one market stall per nearby zone; the nearest in range is shoppable.
+  final Map<int, Vendor> vendors = {};
+  Vendor? nearbyVendor;
 
   /// Bumped on notable events (loot/level) so the HUD/toasts can react.
   final ValueNotifier<String> toast = ValueNotifier('');
@@ -203,12 +208,48 @@ class BlocklingsGame extends FlameGame {
       quests.onExplore(zone.id);
     }
 
-    // Multiplayer: push our position ~10Hz and reconcile remote players.
+    // Multiplayer + vendors: ~10Hz.
     _posAcc += dt;
     if (_posAcc >= 0.1) {
       _posAcc = 0;
       net.sendPos(player.position.x, player.position.y, player.level);
       _syncRemotes();
+      _updateVendors();
+    }
+  }
+
+  void _updateVendors() {
+    final pz = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (pz == null) return;
+    // Ensure a vendor exists in the 3×3 block of zones around the player.
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        final zx = pz.zx + dx, zy = pz.zy + dy;
+        if (zx < 0 || zy < 0 || zx >= Zones.grid || zy >= Zones.grid) continue;
+        final id = zy * Zones.grid + zx;
+        if (vendors.containsKey(id)) continue;
+        final cx = zx * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+        final cy = zy * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+        final pos = map.nearestOpen(Vector2(cx * TileMap.ts, cy * TileMap.ts));
+        final v = Vendor(name: Vendor.nameFor(id), seed: id, position: pos);
+        vendors[id] = v;
+        world.add(v);
+      }
+    }
+    // Despawn distant vendors.
+    vendors.keys.where((id) {
+      final zx = id % Zones.grid, zy = id ~/ Zones.grid;
+      return (zx - pz.zx).abs() > 2 || (zy - pz.zy).abs() > 2;
+    }).toList().forEach((id) => vendors.remove(id)?.removeFromParent());
+    // Nearest vendor within interaction range.
+    nearbyVendor = null;
+    var best = 52.0;
+    for (final v in vendors.values) {
+      final d = v.distanceToPlayer(player.position);
+      if (d < best) {
+        best = d;
+        nearbyVendor = v;
+      }
     }
   }
 
