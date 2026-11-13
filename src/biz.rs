@@ -989,6 +989,16 @@ fn route(
         "/open-source" => ("200 OK", "text/html; charset=utf-8", page_open_source(&reg).into_bytes()),
         "/privacy" => ("200 OK", "text/html; charset=utf-8", page_privacy().into_bytes()),
         "/terms" => ("200 OK", "text/html; charset=utf-8", page_terms().into_bytes()),
+        // Per-chain wallet SEO landing pages: /<slug>-wallet (e.g. /ethereum-wallet).
+        "/wallets" | "/crypto-wallet" => ("200 OK", "text/html; charset=utf-8", page_wallets_hub().into_bytes()),
+        p if p.ends_with("-wallet")
+            && WALLET_CHAINS.iter().any(|(s, ..)| *s == &p[1..p.len() - 7]) =>
+        {
+            let slug = &p[1..p.len() - 7];
+            let (s, name, sym, kind, note) =
+                WALLET_CHAINS.iter().find(|(s, ..)| *s == slug).unwrap();
+            ("200 OK", "text/html; charset=utf-8", page_chain_wallet(s, name, sym, kind, note).into_bytes())
+        }
         _ => ("404 Not Found", "text/html; charset=utf-8", page_shell("Not found", "<p>404.</p>".into()).into_bytes()),
     }
 }
@@ -2182,6 +2192,86 @@ fn page_bridge_reserves() -> String {
         "",
         body,
     )
+}
+
+// --- Per-chain wallet SEO landing pages ---------------------------------
+// (slug, display name, ticker, one-line "kind", one unique sentence) — the
+// unique sentence keeps each page from being thin/duplicate content.
+const WALLET_CHAINS: &[(&str, &str, &str, &str, &str)] = &[
+    ("bitcoin", "Bitcoin", "BTC", "the original UTXO blockchain", "Receive, send and buy BTC with a card, and keep it under the same seed as your Ethereum and Solana."),
+    ("ethereum", "Ethereum", "ETH", "the leading smart-contract network", "Hold ETH and any ERC-20 token, connect to dApps over WalletConnect, and swap or bridge into BLOCK."),
+    ("solana", "Solana", "SOL", "a high-speed proof-of-stake chain", "Hold SOL and SPL tokens, send and view Solana NFTs, and swap SOL for other assets."),
+    ("litecoin", "Litecoin", "LTC", "a fast Bitcoin-family UTXO chain", "Send and receive LTC with low fees and buy Litecoin with a card."),
+    ("dogecoin", "Dogecoin", "DOGE", "the original meme UTXO coin", "Hold, send and receive DOGE and buy Dogecoin with a card."),
+    ("xrp", "XRP", "XRP", "the XRP Ledger", "Hold, send and receive XRP from the same seed as every other chain."),
+    ("cardano", "Cardano", "ADA", "a UTXO proof-of-stake chain", "Hold, send and receive ADA with full self-custody."),
+    ("bnb", "BNB", "BNB", "the BNB Smart Chain (EVM)", "Hold BNB and BEP-20 tokens and connect to EVM dApps."),
+    ("polygon", "Polygon", "POL", "an Ethereum scaling network (EVM)", "Hold POL and Polygon tokens with cheap, fast transfers."),
+    ("avalanche", "Avalanche", "AVAX", "a fast EVM chain", "Hold AVAX and C-Chain tokens from one seed."),
+    ("tron", "Tron", "TRX", "the TRON network", "Hold TRX and send USDT-TRC20 stablecoins cheaply."),
+    ("ton", "TON", "TON", "The Open Network", "Hold and send Toncoin from your multichain seed."),
+    ("stellar", "Stellar", "XLM", "the Stellar network", "Hold, send and receive XLM with near-zero fees."),
+    ("tezos", "Tezos", "XTZ", "a self-amending proof-of-stake chain", "Hold, send and receive XTZ in full self-custody."),
+    ("bitcoin-cash", "Bitcoin Cash", "BCH", "a Bitcoin-family UTXO chain", "Send and receive BCH with low fees and buy it with a card."),
+    ("block", "Blockle", "BLOCK", "the native post-quantum layer-1", "Hold BLOCK — secured end-to-end by post-quantum ML-DSA signatures — launch BLOCK-20 tokens and provide liquidity."),
+];
+
+const CHIP_CSS: &str = "display:inline-block;padding:6px 13px;border:1px solid #3a3a4a;border-radius:999px;text-decoration:none;font-weight:600;font-size:.92rem";
+
+fn chains_index_html(current: &str) -> String {
+    let mut s = String::from(r#"<h2>One wallet for every chain</h2><p class="sub">Blockle holds all of these from a single post-quantum seed — tap any to learn more:</p><div style="display:flex;flex-wrap:wrap;gap:.55rem;margin:1rem 0 1.5rem">"#);
+    for (slug, name, sym, _, _) in WALLET_CHAINS {
+        if *slug == current {
+            s.push_str(&format!("<span style=\"{CHIP_CSS};border-color:#7c5cff;color:#7c5cff\">{name} ({sym})</span>"));
+        } else {
+            s.push_str(&format!("<a style=\"{CHIP_CSS}\" href=\"/{slug}-wallet\">{name} ({sym})</a>"));
+        }
+    }
+    s.push_str("</div>");
+    s
+}
+
+fn page_chain_wallet(slug: &str, name: &str, sym: &str, kind: &str, note: &str) -> String {
+    let title = format!("{name} Wallet — Non-Custodial Post-Quantum {sym} Wallet");
+    let desc = format!("Blockle is a free, non-custodial {name} ({sym}) wallet with a post-quantum (ML-DSA) master key. Hold, send, receive, swap and buy {sym} alongside Bitcoin, Ethereum, Solana and 15+ chains from one seed — on web, desktop and Android. Your keys, your coins.");
+    let canonical = format!("/{slug}-wallet");
+    let faq = format!(r##"<script type="application/ld+json">{{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{{"@type":"Question","name":"Is Blockle a non-custodial {name} wallet?","acceptedAnswer":{{"@type":"Answer","text":"Yes. Your {name} keys are generated and sealed on your own device and never sent to any server. Blockle never takes custody of your {sym}."}}}},{{"@type":"Question","name":"Can I buy {name} ({sym}) with a card in Blockle?","acceptedAnswer":{{"@type":"Answer","text":"Yes, where available. Blockle opens MoonPay's regulated on-ramp so you can buy {sym} with a card or bank; the {sym} is delivered to your own wallet address and Blockle never sees your card details."}}}},{{"@type":"Question","name":"Is my {name} wallet quantum-safe?","acceptedAnswer":{{"@type":"Answer","text":"Your Blockle master key and backup are post-quantum: every chain account, including {name}, is derived from a NIST ML-DSA-44 (FIPS-204) root key. The {sym} assets themselves inherit {name}'s own on-chain cryptography until that network adopts post-quantum signatures."}}}}]}}</script>"##);
+    let chains_index = chains_index_html(slug);
+    let body = format!(r##"<div class="hero"><span class="eyebrow">{name} wallet</span>
+<h1>The <span class="grad">{name}</span> wallet with a post-quantum core.</h1>
+<p class="lede">Blockle is a free, non-custodial wallet for {name} ({sym}) — {kind}. {note} All from one seed, protected by a post-quantum (ML-DSA) master key.</p>
+<div class="cta"><a class="btn primary" href="/wallet">Open the web wallet</a><a class="btn" href="/releases/latest">Download for desktop</a></div></div>
+
+<h2>Why hold {sym} in Blockle</h2>
+<div class="features">
+<div class="feature"><b>Non-custodial</b><p>Your {name} private keys never leave your device. Not your keys on a server — your keys on your machine.</p></div>
+<div class="feature"><b>Post-quantum root key</b><p>Every account, {name} included, is derived from a NIST ML-DSA-44 (FIPS-204) key, so your master secret and backup are quantum-resistant.</p></div>
+<div class="feature"><b>One seed, 15+ chains</b><p>Hold {sym} next to Bitcoin, Ethereum, Solana and more — no separate app per coin.</p></div>
+<div class="feature"><b>Buy {sym} with a card</b><p>On-ramp {sym} through MoonPay's regulated flow, delivered straight to your own address.</p></div>
+<div class="feature"><b>Swap &amp; bridge</b><p>Trade {sym} for other assets and move value across chains, non-custodially.</p></div>
+<div class="feature"><b>Web, desktop &amp; Android</b><p>Use the same {name} wallet in your browser, on Windows/macOS/Linux, or on Android.</p></div>
+</div>
+
+{chains_index}
+
+<h2>{name} wallet FAQ</h2>
+<h3>Is Blockle a non-custodial {name} wallet?</h3><p>Yes — your {name} keys are generated and sealed on your device and never sent to any server.</p>
+<h3>Can I buy {name} with a card?</h3><p>Yes, where available: Blockle opens MoonPay's regulated on-ramp and the {sym} is delivered to your own wallet address.</p>
+<h3>Is my {name} wallet quantum-safe?</h3><p>Your Blockle master key and backup are post-quantum (ML-DSA-44); the {sym} assets inherit {name}'s own cryptography until that chain adopts post-quantum signatures.</p>
+
+<div class="cta" style="margin-top:1.5rem"><a class="btn primary" href="/wallet">Open your {name} wallet</a></div>"##);
+    page_shell_seo(&title, &desc, &canonical, &faq, body)
+}
+
+fn page_wallets_hub() -> String {
+    let title = "Crypto Wallets — One Post-Quantum Wallet for Every Chain";
+    let desc = "Blockle is a free, non-custodial multichain crypto wallet with a post-quantum (ML-DSA) core. One seed for Bitcoin, Ethereum, Solana, XRP, Cardano, Litecoin, Dogecoin and 15+ chains — buy, swap and self-custody on web, desktop and Android.";
+    let body = format!(r##"<div class="hero"><span class="eyebrow">Multichain wallet</span>
+<h1>One <span class="grad">post-quantum</span> wallet for every chain.</h1>
+<p class="lede">Hold Bitcoin, Ethereum, Solana and 15+ networks from a single, non-custodial seed — with a NIST ML-DSA post-quantum master key, card on-ramps, cross-chain swaps and AI trading bots.</p>
+<div class="cta"><a class="btn primary" href="/wallet">Open the wallet</a><a class="btn" href="/releases/latest">Download for desktop</a></div></div>
+{index}"##, index = chains_index_html(""));
+    page_shell_seo(title, desc, "/wallets", "", body)
 }
 
 fn page_post_quantum() -> String {

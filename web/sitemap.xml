@@ -22,4 +22,21 @@
   <url><loc>https://blockle.org/developers</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://blockle.org/open-source</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>
   <url><loc>https://blockle.org/status</loc><changefreq>hourly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://blockle.org/wallets</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/bitcoin-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/ethereum-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/solana-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/litecoin-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/dogecoin-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/xrp-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/cardano-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/bnb-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/polygon-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/avalanche-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/tron-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/ton-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/stellar-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/tezos-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/bitcoin-cash-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://blockle.org/block-wallet</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
 </urlset>
