@@ -2478,7 +2478,7 @@ fn page_tokenomics() -> String {
 </div>
 <p class="pp">The <b>210,000 BLOCK premine</b> is ~1% of the mining cap &mdash; a one-time genesis allocation for development, liquidity and ecosystem bootstrapping. Everything else is earned by miners across the merge-mining lanes.</p>
 <h2 class="sh">Why fixed supply matters here</h2>
-<p class="pp">Because the cap is hard, BLOCK used as "gold" across the ecosystem &mdash; tips, awards and boosts in <a href="/social" style="color:var(--accent)">Social</a> and fees on the <a href="/dex" style="color:var(--accent)">DEX</a> &mdash; moves <b>circulating</b> BLOCK between people. Nothing is minted to pay for it.</p>
+<p class="pp">Because the cap is hard, BLOCK used as "gold" across the ecosystem &mdash; tips between people and fees on the <a href="/dex" style="color:var(--accent)">DEX</a> &mdash; moves <b>circulating</b> BLOCK. Nothing is minted to pay for it.</p>
 <p class="sub" style="margin-top:22px"><a href="/stats" style="color:var(--accent)">Live network stats &rarr;</a> &middot; <a href="/guide" style="color:var(--accent)">What is Blockle? &rarr;</a></p>
 <style>
 .tkgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin:18px 0 8px}
@@ -2526,7 +2526,7 @@ fn page_roadmap() -> String {
       <li><b>Cross-chain exchange</b> &mdash; non-custodial atomic swaps at exchange.blockle.org.</li>
       <li><b>BLOCK-20 tokens + native AMM DEX</b> &mdash; constant-product, 0.30% fee, one-week LP lock.</li>
       <li><b>AI trading bots</b> &mdash; DCA / grid / SmartTrade / signal + autopilot, paper-first, behind one safety gate.</li>
-      <li><b>Accounts + Social</b> &mdash; one post-quantum account; a contribution-gated social layer with BLOCK "gold" and agent members.</li>
+      <li><b>Accounts</b> &mdash; one post-quantum account across the wallet and site; non-custodial, 2FA, zero-knowledge encrypted backup.</li>
       <li><b>Self-hosted AI agent</b> &mdash; keyless hosted agent gateway so the in-wallet bot needs no API key.</li>
     </ul>
   </div>
@@ -2866,7 +2866,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <footer><div class="wrap"><div class="foot">
 <div><a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a><div class="reg">Operated by <a href="https://mblsportal.sos.mn.gov/Business/SearchDetails?filingGuid=18a41d23-5873-e911-9173-00155d01b32c">ALienbeing LLC</a>, a Minnesota LLC in good standing.</div><p class="legal">Blockle is self-custody software: you control your keys and funds, and are responsible for securing your seed phrase &mdash; lost keys cannot be recovered by anyone. Nothing here is investment advice; digital assets are volatile and can lose value.</p></div>
 <div class="fcol"><span class="h">Product</span><a href="/wallet">Wallet</a><a href="/copilot">Alien</a><a href="#download">Download</a><a href="https://exchange.blockle.org">Exchange</a><a href="/account/login">Sign in</a></div>
-<div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/social">Social</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
+<div class="fcol"><span class="h">Network</span><a href="/explorer">Explorer</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/markets">Markets</a><a href="/network">Mining</a><a href="/pools">Pool directory</a></div>
 <div class="fcol"><span class="h">More</span><a href="/tokenomics">Tokenomics</a><a href="/roadmap">Roadmap</a><a href="/stats">Network stats</a><a href="/guide">Guide</a><a href="/status">Status</a><a href="https://github.com/blocklechain/blockle">GitHub</a><a href="https://discord.gg/tx4MfyD9Vu">Discord</a></div>
 </div></div></footer>
 <script>
