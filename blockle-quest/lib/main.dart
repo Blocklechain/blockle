@@ -4,9 +4,11 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
 import 'account/account_service.dart';
+import 'account/character.dart';
 import 'economy/economy.dart';
 import 'game/blocklings_game.dart';
 import 'theme.dart';
+import 'ui/character_create.dart';
 import 'ui/panels.dart';
 
 void main() {
@@ -33,13 +35,36 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  late final BlocklingsGame game = BlocklingsGame();
+  BlocklingsGame? game;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    CharacterProfile.load().then((p) {
+      if (!mounted) return;
+      setState(() {
+        if (p != null) game = BlocklingsGame(profile: p);
+        _loading = false;
+      });
+    });
+  }
+
+  void _onCreated(CharacterProfile p) =>
+      setState(() => game = BlocklingsGame(profile: p));
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(backgroundColor: Bq.bg, body: Center(child: CircularProgressIndicator(color: Bq.accent)));
+    }
+    final g = game;
+    if (g == null) {
+      return CharacterCreate(onDone: _onCreated);
+    }
     return Scaffold(
       body: GameWidget(
-        game: game,
+        game: g,
         overlayBuilderMap: {
           'hud': (_, BlocklingsGame g) => Hud(game: g),
           'inventory': (_, BlocklingsGame g) => InventoryPanel(game: g),

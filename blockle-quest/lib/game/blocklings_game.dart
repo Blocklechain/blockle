@@ -6,7 +6,7 @@ import 'package:flame/input.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
-import '../account/account_service.dart';
+import '../account/character.dart';
 import '../economy/economy.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
@@ -25,6 +25,9 @@ import 'tile_map.dart';
 /// auto-combat mode, a Blockling companion, and crypto/NFT loot. UI (HUD,
 /// inventory, wallet, marketplace) is Flutter overlays over this.
 class BlocklingsGame extends FlameGame {
+  final CharacterProfile profile;
+  BlocklingsGame({required this.profile});
+
   final econ = EconomyService.instance;
 
   late TileMap map;
@@ -63,8 +66,8 @@ class BlocklingsGame extends FlameGame {
     player = Player(map: map)..position = map.spawnPoint;
     world.add(player);
 
-    // Starter Blockling companion (provably-fair from a fixed starter seed).
-    final starter = Blockling.fromSeed('starter:blockle')..level = 3;
+    // Starter Blockling companion — the element chosen at character creation.
+    final starter = Blockling.ofElement(profile.starterElement);
     econ.addBlockling(starter);
     companion = Companion(mon: starter, player: player);
     world.add(companion!);
@@ -77,10 +80,12 @@ class BlocklingsGame extends FlameGame {
       _spawnEnemy();
     }
 
-    // Join the shared world (presence relay). Failure is silent -> single-player.
-    net.onChat = (name, msg) => toast.value = '$name: $msg';
-    final who = AccountService.instance.handle ?? 'wanderer${player.position.x.toInt() & 0xfff}';
-    net.connect(NetClient.defaultUrl, name: who);
+    // Join the shared world (presence relay) with your chosen multiplayer name.
+    // Failure is silent -> single-player; the solo toggle skips it entirely.
+    if (profile.multiplayer) {
+      net.onChat = (name, msg) => toast.value = '$name: $msg';
+      net.connect(NetClient.defaultUrl, name: profile.name);
+    }
   }
 
   @override

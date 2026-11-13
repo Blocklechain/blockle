@@ -133,6 +133,22 @@ class Blockling {
         'nftChain': nftChain,
       };
 
+  /// A starter Blockling of a chosen element (picked at character creation).
+  factory Blockling.ofElement(int elementIndex, {int level = 3}) {
+    var si = kSpecies.indexWhere((s) => s.element.index == elementIndex);
+    if (si < 0) si = 0;
+    return Blockling(
+      seed: 'starter:$elementIndex',
+      speciesIndex: si,
+      rarity: 1,
+      shiny: false,
+      baseHp: 34,
+      baseAtk: 10,
+      baseSpd: 5,
+      level: level,
+    );
+  }
+
   /// Deterministic, verifiable generation from a public seed.
   factory Blockling.fromSeed(String seed) {
     final Uint8List h = Uint8List.fromList(sha256.convert(utf8.encode(seed)).bytes);
