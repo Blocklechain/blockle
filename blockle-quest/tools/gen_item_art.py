@@ -114,13 +114,13 @@ def prompt_for(index: int, angle: str | None = None):
     noun, _slot = BASES[base]
     mat = MATERIAL_HINT.get(PREFIXES[prefix], "")
     theme = SUFFIX_THEME[suffix]
-    view = f"{ANGLE_HINT[angle]}, " if angle else ""
-    p = (f"{view}a {RARITIES[rarity]} {noun} made of {mat}, {theme}, "
-         f"fantasy RPG item icon, single centered object, 2D game asset sprite, "
-         f"clean dark neutral background, soft rim lighting, crisp high detail, "
-         f"inventory icon, {_NO_TEXT}")
-    neg = ("text, letters, words, writing, typography, caption, label, watermark, "
-           "signature, multiple objects, hands, person, blurry, frame, border, ui")
+    view = f"{ANGLE_HINT[angle].split(',')[0]}, " if angle else ""
+    # Keep under CLIP's 77-token limit with "no text" FRONT-loaded (SD-Turbo runs
+    # at cfg=0 so the negative prompt is ignored — wording is the only control).
+    p = (f"{view}wordless 2D fantasy RPG item icon, no text, "
+         f"a {RARITIES[rarity]} {noun}, {mat}, {theme}, "
+         f"single centered object, dark background, crisp, high detail")
+    neg = "text, letters, words, watermark, person, blurry, border"
     return p, neg
 
 

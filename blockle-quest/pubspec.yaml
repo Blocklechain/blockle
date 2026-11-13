@@ -37,6 +37,7 @@ dependencies:
   flame: ^1.35.1
   crypto: ^3.0.8
   url_launcher: ^6.3.2
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:

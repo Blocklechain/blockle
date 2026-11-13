@@ -10,9 +10,11 @@ import '../economy/economy.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
 import '../theme.dart';
+import '../net/net_client.dart';
 import 'entities/companion.dart';
 import 'entities/enemy.dart';
 import 'entities/player.dart';
+import 'entities/remote_player.dart';
 import 'tile_map.dart';
 
 /// The Blocklings game: an open, chunked world with real-time combat, an
@@ -28,6 +30,11 @@ class BlocklingsGame extends FlameGame {
 
   late JoystickComponent joystick;
   bool autoCombat = true;
+
+  // Multiplayer presence (best-effort; single-player if the relay is down).
+  final NetClient net = NetClient();
+  final Map<String, RemotePlayer> remotePlayers = {};
+  double _posAcc = 0;
 
   int _seq = 0;
   // Stubbed chain height for provably-fair seeds; swap for the live height.
@@ -62,6 +69,36 @@ class BlocklingsGame extends FlameGame {
     for (var i = 0; i < targetEnemies; i++) {
       _spawnEnemy();
     }
+
+    // Join the shared world (presence relay). Failure is silent -> single-player.
+    net.onChat = (name, msg) => toast.value = '$name: $msg';
+    net.connect(NetClient.defaultUrl, name: 'wanderer${player.position.x.toInt() & 0xfff}');
+  }
+
+  @override
+  void onRemove() {
+    net.dispose();
+    super.onRemove();
+  }
+
+  void _syncRemotes() {
+    // Add/update remote players from the latest network snapshot.
+    net.remotes.forEach((id, s) {
+      final rp = remotePlayers[id];
+      if (rp == null) {
+        final np = RemotePlayer(Vector2(s.x, s.y), s.name, s.lvl);
+        remotePlayers[id] = np;
+        world.add(np);
+      } else {
+        rp.target.setValues(s.x, s.y);
+        rp.name = s.name;
+        rp.lvl = s.lvl;
+      }
+    });
+    // Drop players who left.
+    remotePlayers.keys.where((id) => !net.remotes.containsKey(id)).toList().forEach((id) {
+      remotePlayers.remove(id)?.removeFromParent();
+    });
   }
 
   void _addControls() {
@@ -143,6 +180,14 @@ class BlocklingsGame extends FlameGame {
       player.respawn(map.nearestOpen(player.position));
       player.xp = (player.xp * 0.8).round();
       toast.value = 'You were downed — respawned.';
+    }
+
+    // Multiplayer: push our position ~10Hz and reconcile remote players.
+    _posAcc += dt;
+    if (_posAcc >= 0.1) {
+      _posAcc = 0;
+      net.sendPos(player.position.x, player.position.y, player.level);
+      _syncRemotes();
     }
   }
 
