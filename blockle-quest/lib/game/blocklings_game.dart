@@ -6,6 +6,7 @@ import 'package:flame/input.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
+import '../account/account_service.dart';
 import '../economy/economy.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
@@ -78,7 +79,8 @@ class BlocklingsGame extends FlameGame {
 
     // Join the shared world (presence relay). Failure is silent -> single-player.
     net.onChat = (name, msg) => toast.value = '$name: $msg';
-    net.connect(NetClient.defaultUrl, name: 'wanderer${player.position.x.toInt() & 0xfff}');
+    final who = AccountService.instance.handle ?? 'wanderer${player.position.x.toInt() & 0xfff}';
+    net.connect(NetClient.defaultUrl, name: who);
   }
 
   @override

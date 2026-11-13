@@ -38,6 +38,8 @@ dependencies:
   crypto: ^3.0.8
   url_launcher: ^6.3.2
   web_socket_channel: ^3.0.3
+  flutter_secure_storage: ^10.3.4
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../account/account_service.dart';
 import '../economy/economy.dart';
 import '../game/blocklings_game.dart';
 import '../models/blockling.dart';
@@ -338,6 +339,8 @@ class WalletPanel extends StatelessWidget {
           builder: (_, __) => ListView(
             padding: const EdgeInsets.all(14),
             children: [
+              _accountCard(context),
+              const SizedBox(height: 12),
               for (final c in EconomyService.kCurrencies)
                 Container(
                   margin: const EdgeInsets.only(bottom: 10),
@@ -447,6 +450,98 @@ class _MarketPanelState extends State<MarketPanel> {
           child: Text(t, style: const TextStyle(fontSize: 11)),
         ),
       );
+}
+
+// ---- Shared Blockle account (SSO) -----------------------------------------
+Widget _accountCard(BuildContext context) {
+  final acc = AccountService.instance;
+  return AnimatedBuilder(
+    animation: acc,
+    builder: (_, __) {
+      final tierLabel = acc.tier == 'free' ? 'Free' : (acc.tier == 'copilot' ? 'Blockle Alien' : 'Blockle Alien Pro');
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          gradient: const LinearGradient(colors: [Bq.panel2, Bq.panel]),
+          border: Border.all(color: Bq.accent.withValues(alpha: 0.4)),
+        ),
+        child: Row(children: [
+          const Icon(Icons.account_circle, color: Bq.accent, size: 34),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(acc.signedIn ? (acc.handle ?? 'Blockle account') : 'Not signed in',
+                  style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w700)),
+              Text(acc.signedIn ? 'Blockle account · $tierLabel' : 'One account for wallet, game & economy',
+                  style: const TextStyle(color: Bq.dim, fontSize: 11)),
+            ]),
+          ),
+          acc.signedIn
+              ? TextButton(onPressed: acc.signOut, child: const Text('Sign out'))
+              : FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Bq.accent),
+                  onPressed: () => _signInDialog(context),
+                  child: const Text('Sign in'),
+                ),
+        ]),
+      );
+    },
+  );
+}
+
+Future<void> _signInDialog(BuildContext context) async {
+  final email = TextEditingController();
+  final pass = TextEditingController();
+  final totp = TextEditingController();
+  var creating = false;
+  var busy = false;
+  String? error;
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) {
+        Future<void> submit() async {
+          setLocal(() { busy = true; error = null; });
+          try {
+            if (creating) {
+              final msg = await AccountService.instance.register(email.text.trim(), pass.text, username: email.text.split('@').first);
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+              }
+            } else {
+              await AccountService.instance.signIn(email.text.trim(), pass.text, totp: totp.text.trim());
+              if (ctx.mounted) Navigator.pop(ctx);
+            }
+          } catch (e) {
+            setLocal(() { error = e.toString().replaceFirst('Exception: ', ''); busy = false; });
+          }
+        }
+
+        return AlertDialog(
+          backgroundColor: Bq.panel2,
+          title: Text(creating ? 'Create Blockle account' : 'Sign in with Blockle', style: const TextStyle(color: Bq.text, fontSize: 17)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: email, keyboardType: TextInputType.emailAddress, style: const TextStyle(color: Bq.text), decoration: const InputDecoration(labelText: 'Email')),
+            TextField(controller: pass, obscureText: true, style: const TextStyle(color: Bq.text), decoration: const InputDecoration(labelText: 'Password')),
+            if (!creating)
+              TextField(controller: totp, keyboardType: TextInputType.number, style: const TextStyle(color: Bq.text), decoration: const InputDecoration(labelText: '2FA code (if enabled)')),
+            if (error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(error!, style: const TextStyle(color: Bq.hpBad, fontSize: 12))),
+          ]),
+          actions: [
+            TextButton(onPressed: busy ? null : () => setLocal(() => creating = !creating), child: Text(creating ? 'Have an account?' : 'Create account')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Bq.accent),
+              onPressed: busy ? null : submit,
+              child: busy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : Text(creating ? 'Create' : 'Sign in'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
 }
 
 // ---- Skills (RuneScape-style) ---------------------------------------------

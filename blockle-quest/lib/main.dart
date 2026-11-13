@@ -3,12 +3,17 @@ import 'dart:async';
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 
+import 'account/account_service.dart';
 import 'economy/economy.dart';
 import 'game/blocklings_game.dart';
 import 'theme.dart';
 import 'ui/panels.dart';
 
-void main() => runApp(const BlocklingsApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  AccountService.instance.init(); // restore a saved Blockle session (best-effort)
+  runApp(const BlocklingsApp());
+}
 
 class BlocklingsApp extends StatelessWidget {
   const BlocklingsApp({super.key});
