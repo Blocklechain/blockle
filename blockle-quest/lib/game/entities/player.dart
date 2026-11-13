@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/sprite.dart';
 
 import '../../economy/economy.dart';
 import '../../theme.dart';
@@ -44,6 +45,19 @@ class Player extends PositionComponent {
     size = Vector2.all(26);
     anchor = Anchor.center;
     priority = 10;
+  }
+
+  // Directional sprites indexed by facing: 0=down,1=up,2=left,3=right.
+  final List<Sprite?> _dir = List.filled(4, null);
+
+  @override
+  Future<void> onLoad() async {
+    const files = ['chars/player_s.png', 'chars/player_n.png', 'chars/player_w.png', 'chars/player_e.png'];
+    for (var i = 0; i < 4; i++) {
+      try {
+        _dir[i] = await Sprite.load(files[i]);
+      } catch (_) {}
+    }
   }
 
   int get maxHp => maxBaseHp + (level - 1) * 6 + econ.bonusHp;
@@ -108,10 +122,15 @@ class Player extends PositionComponent {
   @override
   void render(Canvas canvas) {
     final c = size / 2;
-    _p.color = Bq.accent;
-    canvas.drawCircle(c.toOffset(), 12, _p);
-    _p.color = Bq.accent2;
-    canvas.drawCircle(c.toOffset(), 7, _p);
+    final sp = _dir[facing];
+    if (sp != null) {
+      sp.render(canvas, position: c + Vector2(0, -2), size: Vector2.all(38), anchor: Anchor.center);
+    } else {
+      _p.color = Bq.accent;
+      canvas.drawCircle(c.toOffset(), 12, _p);
+      _p.color = Bq.accent2;
+      canvas.drawCircle(c.toOffset(), 7, _p);
+    }
 
     // HP bar above head.
     const bw = 30.0;

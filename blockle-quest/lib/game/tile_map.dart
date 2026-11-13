@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/sprite.dart';
 
 import '../theme.dart';
 import '../world/zones.dart';
@@ -17,6 +18,19 @@ class TileMap extends PositionComponent {
   TileMap() {
     priority = -10;
     position = Vector2.zero();
+  }
+
+  final Map<TileType, Sprite?> _sprites = {};
+
+  @override
+  Future<void> onLoad() async {
+    for (final t in TileType.values) {
+      try {
+        _sprites[t] = await Sprite.load('tiles/${t.name}.png');
+      } catch (_) {
+        _sprites[t] = null; // fall back to a flat color
+      }
+    }
   }
 
   double get worldWidth => Zones.worldTiles * ts;
@@ -125,6 +139,13 @@ class TileMap extends PositionComponent {
     for (var row = r0; row <= r1; row++) {
       for (var col = c0; col <= c1; col++) {
         final t = tileAt(col, row);
+        final sp = _sprites[t];
+        if (sp != null) {
+          sp.render(canvas,
+              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.5, ts + 0.5));
+          continue;
+        }
+        // Fallback: flat color + simple marker (art not loaded).
         _p.color = _colorFor(t);
         canvas.drawRect(Rect.fromLTWH(col * ts, row * ts, ts + 0.5, ts + 0.5), _p);
         if (t == TileType.tree) {

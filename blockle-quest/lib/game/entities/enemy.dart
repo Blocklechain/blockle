@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flame/components.dart';
+import 'package:flame/sprite.dart';
 
 import '../../models/blockling.dart';
 import '../../theme.dart';
@@ -35,6 +36,20 @@ class Enemy extends PositionComponent {
     priority = 5;
   }
 
+  final List<Sprite?> _dir = List.filled(4, null);
+  int facing = 0;
+
+  @override
+  Future<void> onLoad() async {
+    final e = wild.element.name; // spark/stone/leaf/tide/ember/gust
+    const suf = ['s', 'n', 'w', 'e'];
+    for (var i = 0; i < 4; i++) {
+      try {
+        _dir[i] = await Sprite.load('chars/${e}_${suf[i]}.png');
+      } catch (_) {}
+    }
+  }
+
   void takeDamage(int dmg) {
     hp -= dmg;
     if (hp <= 0) dead = true;
@@ -47,6 +62,7 @@ class Enemy extends PositionComponent {
     if (cdTimer > 0) cdTimer -= dt;
     final to = player.position - position;
     final dist = to.length;
+    facing = to.x.abs() > to.y.abs() ? (to.x < 0 ? 2 : 3) : (to.y < 0 ? 1 : 0);
     if (dist < aggro && dist > attackRange) {
       position.add(to.normalized() * spd * dt);
     } else if (dist <= attackRange && cdTimer <= 0) {
@@ -60,11 +76,16 @@ class Enemy extends PositionComponent {
   @override
   void render(Canvas canvas) {
     final c = size / 2;
-    _p.color = wild.element.color;
-    canvas.drawCircle(c.toOffset(), 10, _p);
-    if (wild.shiny) {
-      _p.color = const Color(0xFFFFFFFF);
-      canvas.drawCircle(c.toOffset(), 3, _p);
+    final sp = _dir[facing];
+    if (sp != null) {
+      sp.render(canvas, position: c, size: Vector2.all(30), anchor: Anchor.center);
+    } else {
+      _p.color = wild.element.color;
+      canvas.drawCircle(c.toOffset(), 10, _p);
+      if (wild.shiny) {
+        _p.color = const Color(0xFFFFFFFF);
+        canvas.drawCircle(c.toOffset(), 3, _p);
+      }
     }
     // HP bar.
     const bw = 24.0;
