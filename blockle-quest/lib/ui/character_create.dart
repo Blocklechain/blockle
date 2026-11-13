@@ -122,7 +122,7 @@ class _CharacterCreateState extends State<CharacterCreate> {
           border: Border.all(color: selected ? e.color : Colors.transparent, width: 2),
         ),
         child: Column(children: [
-          Image.asset('assets/images/chars/${e.name}_s.png',
+          Image.asset('assets/images/chars/${e.name}.png',
               width: 64, height: 64,
               filterQuality: FilterQuality.none, isAntiAlias: false,
               errorBuilder: (_, __, ___) => Container(

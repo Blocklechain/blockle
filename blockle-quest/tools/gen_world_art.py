@@ -21,7 +21,8 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 ROOT = Path(__file__).resolve().parents[1] / "assets" / "images"
 
-STYLE = "top-down 2D RPG, Pokemon-inspired but more painterly and detailed, crisp, no text, no letters"
+STYLE = ("16-bit pixel art, classic Pokemon Game Boy Advance sprite, top-down, "
+         "limited color palette, flat colors, crisp clean pixels, no gradients, no text, no letters")
 
 # Terrain tiles (seamless-ish). name -> subject.
 TILES = {
@@ -79,10 +80,21 @@ def main():
     except Exception:
         pass
 
-    def gen(prompt, seed, size):
+    from PIL import Image
+
+    def gen(prompt, seed, size, pixelate=None, colors=16):
         g = torch.Generator(device=device).manual_seed(seed)
-        return pipe(prompt=prompt, num_inference_steps=args.steps, guidance_scale=0.0,
-                    height=512, width=512, generator=g).images[0].resize((size, size))
+        img = pipe(prompt=prompt, num_inference_steps=args.steps, guidance_scale=0.0,
+                   height=512, width=512, generator=g).images[0]
+        if pixelate:
+            # Downsample to a small pixel grid + crush to a limited palette (8-bit).
+            img = img.resize((pixelate, pixelate), Image.BILINEAR)
+            img = img.quantize(colors=colors, method=Image.FASTOCTREE).convert("RGB")
+            if size != pixelate:
+                img = img.resize((size, size), Image.NEAREST)
+        else:
+            img = img.resize((size, size))
+        return img
 
     if do_tiles:
         out = ROOT / "tiles"
@@ -92,20 +104,21 @@ def main():
             if dest.exists() and not args.overwrite:
                 continue
             p = f"seamless tileable {subj}, {STYLE}, flat top-down overhead view, single terrain texture"
-            gen(p, 1000 + i, 128).save(dest)
+            gen(p, 1000 + i, 32, pixelate=32, colors=16).save(dest)
             print(f"tile {name}", flush=True)
 
     if do_chars:
         out = ROOT / "chars"
         out.mkdir(parents=True, exist_ok=True)
         for ci, (key, subj) in enumerate(CHARS.items()):
-            for fi, (fkey, fhint) in enumerate(FACINGS.items()):
-                dest = out / f"{key}_{fkey}.png"
-                if dest.exists() and not args.overwrite:
-                    continue
-                p = f"{fhint}, {subj}, {STYLE}, single centered character, plain dark background, full body"
-                gen(p, 5000 + ci * 10 + fi, 192).save(dest)
-            print(f"char {key} (4 dirs)", flush=True)
+            # ONE sprite per character (the 4 facings must match exactly — the game
+            # uses this single sprite for all directions and flips it for left).
+            dest = out / f"{key}.png"
+            if dest.exists() and not args.overwrite:
+                continue
+            p = f"front view facing the viewer, {subj}, {STYLE}, single centered character, plain dark background, full body, retro game sprite"
+            gen(p, 5000 + ci, 160).save(dest)
+            print(f"char {key}", flush=True)
 
     print("world art done", flush=True)
 

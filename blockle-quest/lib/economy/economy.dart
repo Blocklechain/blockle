@@ -166,13 +166,13 @@ class EconomyService extends ChangeNotifier {
   int get bonusDef => equipped.values.fold(0, (a, i) => a + i.def);
   int get bonusHp => equipped.values.fold(0, (a, i) => a + i.hp);
 
-  /// Starter state for a fresh save (local, play-money until the real wallet is
-  /// linked). A tiny BLOCK float so the economy is usable immediately.
+  /// Fresh save: a new account starts with ZERO of every currency — balances
+  /// reflect what you've actually earned (or hold in your linked wallet), never
+  /// a phantom gift.
   void seed() {
     if (_seeded) return;
     _seeded = true;
-    balances[Chain.blockle] = 25.0;
-    notifyListeners();
+    // no starting funds
   }
 
   double balance(Chain c) => balances[c] ?? 0.0;

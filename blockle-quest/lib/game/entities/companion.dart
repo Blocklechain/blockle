@@ -27,20 +27,16 @@ class Companion extends PositionComponent {
     position = player.position.clone()..add(Vector2(20, 20));
   }
 
-  final List<Sprite?> _dir = List.filled(4, null);
+  Sprite? _sprite;
   int facing = 0;
   double _animT = 0;
   bool _moving = false;
 
   @override
   Future<void> onLoad() async {
-    final e = mon.element.name;
-    const suf = ['s', 'n', 'w', 'e'];
-    for (var i = 0; i < 4; i++) {
-      try {
-        _dir[i] = await Sprite.load('chars/${e}_${suf[i]}.png');
-      } catch (_) {}
-    }
+    try {
+      _sprite = await Sprite.load('chars/${mon.element.name}.png');
+    } catch (_) {}
   }
 
   void _face(Vector2 v) =>
@@ -96,11 +92,14 @@ class Companion extends PositionComponent {
   @override
   void render(Canvas canvas) {
     final c = size / 2;
-    final sp = _dir[facing];
+    final sp = _sprite;
     if (sp != null) {
       final bob = _moving ? math.sin(_animT * 13) * 1.8 : math.sin(_animT * 2.6) * 1.0;
       final sy = 1 + math.sin(_animT * (_moving ? 13 : 2.6)) * (_moving ? 0.07 : 0.04);
+      canvas.save();
+      if (facing == 2) { canvas.translate(size.x, 0); canvas.scale(-1, 1); }
       sp.render(canvas, position: c + Vector2(0, -bob), size: Vector2(24, 24 * sy), anchor: Anchor.center, overridePaint: _pixel);
+      canvas.restore();
       return;
     }
     _p.color = mon.element.color;
