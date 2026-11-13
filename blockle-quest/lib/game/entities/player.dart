@@ -1,0 +1,114 @@
+import 'dart:math' as math;
+import 'dart:ui';
+
+import 'package:flame/components.dart';
+
+import '../../economy/economy.dart';
+import '../../theme.dart';
+import '../tile_map.dart';
+
+/// The hero. Real-time movement with tile collision; combat resolution (who hits
+/// whom) lives in the game loop, which calls [attackReady]/[resetCooldown] and
+/// [takeHit]. Effective stats fold in equipped-gear bonuses from the economy.
+class Player extends PositionComponent {
+  final TileMap map;
+  final econ = EconomyService.instance;
+
+  int maxBaseHp;
+  double hp;
+  int baseAtk;
+  int level;
+  int xp;
+
+  double speed; // px/sec at full stick
+  double attackRange;
+  double attackCd;
+  double cdTimer = 0;
+
+  /// Unit-ish movement vector (magnitude 0..1), set by the game each tick.
+  final Vector2 velocity = Vector2.zero();
+
+  Player({
+    required this.map,
+    this.maxBaseHp = 60,
+    this.baseAtk = 8,
+    this.level = 1,
+    this.xp = 0,
+    this.speed = 150,
+    this.attackRange = 46,
+    this.attackCd = 0.55,
+  }) : hp = 60 {
+    size = Vector2.all(26);
+    anchor = Anchor.center;
+    priority = 10;
+  }
+
+  int get maxHp => maxBaseHp + (level - 1) * 6 + econ.bonusHp;
+  int get atk => baseAtk + (level - 1) * 2 + econ.bonusAtk;
+  int get xpToNext => 30 + level * 20;
+
+  bool get attackReady => cdTimer <= 0;
+  void resetCooldown() => cdTimer = attackCd;
+
+  void takeHit(int enemyAtk) {
+    final dmg = math.max(1, enemyAtk - econ.bonusDef ~/ 2);
+    hp = math.max(0, hp - dmg);
+  }
+
+  void heal(int amount) => hp = math.min(maxHp.toDouble(), hp + amount);
+
+  bool gainXp(int amount) {
+    xp += amount;
+    var leveled = false;
+    while (xp >= xpToNext) {
+      xp -= xpToNext;
+      level++;
+      hp = maxHp.toDouble();
+      leveled = true;
+    }
+    return leveled;
+  }
+
+  void respawn(Vector2 at) {
+    position.setFrom(at);
+    hp = maxHp.toDouble();
+    velocity.setZero();
+  }
+
+  @override
+  void update(double dt) {
+    super.update(dt);
+    if (cdTimer > 0) cdTimer -= dt;
+    if (velocity.isZero()) return;
+
+    final step = velocity * speed * dt;
+    // Axis-separated collision so you slide along walls.
+    final nx = position.x + step.x;
+    if (!map.solidAtWorld(nx, position.y)) position.x = nx;
+    final ny = position.y + step.y;
+    if (!map.solidAtWorld(position.x, ny)) position.y = ny;
+
+    // Clamp to world.
+    position.x = position.x.clamp(TileMap.ts, map.worldWidth - TileMap.ts);
+    position.y = position.y.clamp(TileMap.ts, map.worldHeight - TileMap.ts);
+  }
+
+  final Paint _p = Paint();
+
+  @override
+  void render(Canvas canvas) {
+    final c = size / 2;
+    _p.color = Bq.accent;
+    canvas.drawCircle(c.toOffset(), 12, _p);
+    _p.color = Bq.accent2;
+    canvas.drawCircle(c.toOffset(), 7, _p);
+
+    // HP bar above head.
+    const bw = 30.0;
+    final frac = (hp / maxHp).clamp(0.0, 1.0);
+    _p.color = const Color(0xAA000000);
+    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -10, bw, 4), _p);
+    _p.color = frac > 0.3 ? Bq.hpGood : Bq.hpBad;
+    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -10, bw * frac, 4), _p);
+  }
+}
