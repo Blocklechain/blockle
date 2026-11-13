@@ -40,6 +40,8 @@ class _GameScreenState extends State<GameScreen> {
           'inventory': (_, BlocklingsGame g) => InventoryPanel(game: g),
           'wallet': (_, BlocklingsGame g) => WalletPanel(game: g),
           'market': (_, BlocklingsGame g) => MarketPanel(game: g),
+          'skills': (_, BlocklingsGame g) => SkillsPanel(game: g),
+          'quests': (_, BlocklingsGame g) => QuestsPanel(game: g),
         },
         initialActiveOverlays: const ['hud'],
       ),
@@ -98,6 +100,21 @@ class _HudState extends State<Hud> {
     return SafeArea(
       child: Stack(
         children: [
+          // Top-center: current zone.
+          if (g.currentZoneName.isNotEmpty)
+            Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                margin: const EdgeInsets.only(top: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Bq.panel.withValues(alpha: 0.82),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(g.currentZoneName,
+                    style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w700)),
+              ),
+            ),
           // Top-left: vitals.
           Positioned(
             left: 12,
@@ -144,11 +161,15 @@ class _HudState extends State<Hud> {
             child: Column(
               children: [
                 _round('AUTO', g.autoCombat ? Bq.accent : Bq.panel2, () => setState(g.toggleAuto)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 _round('BAG', Bq.panel2, () => _open('inventory')),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
+                _round('SKL', Bq.panel2, () => _open('skills')),
+                const SizedBox(height: 8),
+                _round('QST', Bq.panel2, () => _open('quests')),
+                const SizedBox(height: 8),
                 _round('\$', Bq.panel2, () => _open('wallet')),
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 _round('MKT', Bq.panel2, () => _open('market')),
               ],
             ),

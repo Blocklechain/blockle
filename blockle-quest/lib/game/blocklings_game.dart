@@ -9,7 +9,10 @@ import 'package:flutter/painting.dart';
 import '../economy/economy.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
+import '../quests/quests.dart';
+import '../skills/skills.dart';
 import '../theme.dart';
+import '../world/zones.dart';
 import '../net/net_client.dart';
 import 'entities/companion.dart';
 import 'entities/enemy.dart';
@@ -41,6 +44,10 @@ class BlocklingsGame extends FlameGame {
   int blockHeight = 2_100_000;
   static const int targetEnemies = 7;
 
+  final quests = QuestLog.instance;
+  final skills = SkillsState.instance;
+  int? _zoneId; // current zone (for banner + explore quests)
+
   /// Bumped on notable events (loot/level) so the HUD/toasts can react.
   final ValueNotifier<String> toast = ValueNotifier('');
 
@@ -52,8 +59,7 @@ class BlocklingsGame extends FlameGame {
     map = TileMap();
     world.add(map);
 
-    final start = Vector2(0, 0);
-    player = Player(map: map)..position = map.nearestOpen(start);
+    player = Player(map: map)..position = map.spawnPoint;
     world.add(player);
 
     // Starter Blockling companion (provably-fair from a fixed starter seed).
@@ -182,6 +188,14 @@ class BlocklingsGame extends FlameGame {
       toast.value = 'You were downed — respawned.';
     }
 
+    // Zone transitions: banner + explore quests.
+    final zone = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (zone != null && zone.id != _zoneId) {
+      _zoneId = zone.id;
+      toast.value = '${zone.name}  ·  Lv ${zone.minLevel}-${zone.maxLevel}';
+      quests.onExplore(zone.id);
+    }
+
     // Multiplayer: push our position ~10Hz and reconcile remote players.
     _posAcc += dt;
     if (_posAcc >= 0.1) {
@@ -191,11 +205,18 @@ class BlocklingsGame extends FlameGame {
     }
   }
 
+  String get currentZoneName => _zoneId == null ? '' : Zones.byId(_zoneId!).name;
+
   void _spawnEnemy() {
     final ang = (_seq * 2.3999632) % (math.pi * 2); // golden-angle scatter
     final dist = 240.0 + (_seq % 5) * 40;
     final at = map.nearestOpen(player.position + Vector2(math.cos(ang), math.sin(ang)) * dist);
     final wild = Blockling.fromSeed('block:$blockHeight:wild:${_seq++}');
+    // Scale the wild Blockling to the zone it spawns in.
+    final zone = Zones.atWorld(at.x, at.y, TileMap.ts);
+    if (zone != null) {
+      wild.level = zone.minLevel + (wild.seed.hashCode.abs() % (zone.maxLevel - zone.minLevel + 1));
+    }
     final e = Enemy(wild: wild, position: at, player: player);
     enemies.add(e);
     world.add(e);
@@ -210,12 +231,26 @@ class BlocklingsGame extends FlameGame {
     if (roll == 1) econ.credit(Chain.ethereum, 0.0005);
 
     // XP to you + your companion.
-    if (player.gainXp(8 + e.wild.rarity * 6)) toast.value = 'Level ${player.level}!';
+    if (player.gainXp(8 + e.wild.rarity * 6)) {
+      toast.value = 'Level ${player.level}!';
+      quests.onLevel(player.level);
+    }
     companion?.mon.gainXp(6 + e.wild.rarity * 4);
+
+    // Combat skill XP (RuneScape-style) + quest hooks.
+    final z = Zones.atWorld(e.position.x, e.position.y, TileMap.ts);
+    quests.onKill(z?.id ?? -1, e.wild.element);
+    for (final sk in const ['Attack', 'Strength', 'Defence', 'Constitution', 'Slayer']) {
+      if (skills.addXp(sk, 6 + e.wild.rarity * 4)) {
+        quests.onSkill(sk, skills.level(skillIndex(sk)));
+      }
+    }
 
     // Item drop (~35%).
     if (e.wild.baseSpd % 3 == 0) {
-      econ.addItem(Item.drop('$seed:item'));
+      final drop = Item.drop('$seed:item');
+      econ.addItem(drop);
+      quests.onGather(drop.rarity);
     }
     // Capture the wild Blockling (~1 in 6).
     if (e.wild.baseSpd % 6 == 0) {

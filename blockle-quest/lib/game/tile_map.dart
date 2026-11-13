@@ -3,28 +3,24 @@ import 'dart:ui';
 import 'package:flame/components.dart';
 
 import '../theme.dart';
+import '../world/zones.dart';
 
-enum TileType { grass, grassAlt, tallGrass, path, water, tree, rock, blockstone }
+enum TileType { grass, grassAlt, tallGrass, path, water, tree, rock, blockstone, sand, snow, ash, bog }
 
-enum Biome { plains, forest, lake, rocky, blocklands }
-
-/// An **open, chunked, procedurally-generated world** — effectively infinite.
-/// Nothing is stored: every tile is derived on the fly from its coordinates
-/// (deterministic, so the world is identical for every player and verifiable),
-/// grouped into [chunk]-sized regions that each roll a biome. Only the tiles in
-/// the camera's view are drawn each frame.
+/// The world surface: a bounded 10×10 grid of 100 themed [Zone]s ("chunk maps").
+/// Every tile is derived deterministically from its coordinates + the owning
+/// zone's theme (same world for everyone, verifiable). Outside the grid is open
+/// ocean. Only the camera's visible window is drawn each frame.
 class TileMap extends PositionComponent {
   static const double ts = 32; // tile size px
-  static const int chunk = 24; // tiles per chunk edge
 
   TileMap() {
     priority = -10;
     position = Vector2.zero();
   }
 
-  // Large logical bounds (used for clamping/spawns; the world is effectively open).
-  double get worldWidth => (1 << 22).toDouble();
-  double get worldHeight => (1 << 22).toDouble();
+  double get worldWidth => Zones.worldTiles * ts;
+  double get worldHeight => Zones.worldTiles * ts;
 
   int _hash(int x, int y, int salt) {
     var h = x * 73856093 ^ y * 19349663 ^ salt * 83492791;
@@ -32,48 +28,66 @@ class TileMap extends PositionComponent {
     return h;
   }
 
-  Biome biomeAt(int col, int row) {
-    final cc = (col >= 0 ? col : col - chunk + 1) ~/ chunk;
-    final cr = (row >= 0 ? row : row - chunk + 1) ~/ chunk;
-    final r = _hash(cc, cr, 101) % 100;
-    if (r < 40) return Biome.plains;
-    if (r < 64) return Biome.forest;
-    if (r < 80) return Biome.lake;
-    if (r < 95) return Biome.rocky;
-    return Biome.blocklands;
-  }
+  Zone? zoneAt(int col, int row) => Zones.at(col, row);
 
   TileType tileAt(int col, int row) {
-    final biome = biomeAt(col, row);
+    final z = Zones.at(col, row);
+    if (z == null) return TileType.water; // ocean beyond the world
     final h = _hash(col, row, 1);
-    switch (biome) {
-      case Biome.plains:
-        if (_hash(col, row, 7) % 23 == 0) return TileType.tree;
+    final tree = _hash(col, row, 7) % 1 == 0; // placeholder, overridden below
+    switch (z.theme) {
+      case ZoneTheme.meadow:
+        if (_hash(col, row, 7) % 26 == 0) return TileType.tree;
         if (_hash(col ~/ 3, row ~/ 3, 3) % 6 == 0) return TileType.tallGrass;
         return h % 2 == 0 ? TileType.grass : TileType.grassAlt;
-      case Biome.forest:
-        if (h % 4 == 0) return TileType.tree; // dense, solid
+      case ZoneTheme.forest:
+        if (h % 4 == 0) return TileType.tree;
         if (_hash(col ~/ 2, row ~/ 2, 5) % 3 == 0) return TileType.tallGrass;
         return TileType.grass;
-      case Biome.lake:
-        // A lake with grassy shores at the chunk edge.
-        final lx = col % chunk, ly = row % chunk;
-        final edge = lx < 3 || ly < 3 || lx > chunk - 4 || ly > chunk - 4;
-        if (edge) return h % 2 == 0 ? TileType.grass : TileType.tallGrass;
+      case ZoneTheme.swamp:
+        if (h % 6 == 0) return TileType.tree;
+        if (h % 3 == 0) return TileType.bog; // solid muck
+        return TileType.grassAlt;
+      case ZoneTheme.desert:
+        if (h % 9 == 0) return TileType.rock;
+        return TileType.sand;
+      case ZoneTheme.tundra:
+        if (h % 8 == 0) return TileType.rock;
+        if (_hash(col ~/ 3, row ~/ 3, 2) % 5 == 0) return TileType.tallGrass;
+        return TileType.snow;
+      case ZoneTheme.volcanic:
+        if (h % 5 == 0) return TileType.rock;
+        if (h % 11 == 0) return TileType.water; // lava pools (impassable)
+        return TileType.ash;
+      case ZoneTheme.crystal:
+        if (h % 6 == 0) return TileType.blockstone;
+        return h % 2 == 0 ? TileType.grassAlt : TileType.snow;
+      case ZoneTheme.ruins:
+        if (h % 5 == 0) return TileType.rock;
+        if (h % 9 == 0) return TileType.path;
+        return h % 2 == 0 ? TileType.grassAlt : TileType.sand;
+      case ZoneTheme.shore:
+        final lx = col % Zones.zoneTiles, ly = row % Zones.zoneTiles;
+        if (lx < 4 || ly < 4 || lx > Zones.zoneTiles - 5 || ly > Zones.zoneTiles - 5) {
+          return h % 2 == 0 ? TileType.sand : TileType.grass;
+        }
         return TileType.water;
-      case Biome.rocky:
-        if (h % 5 == 0) return TileType.rock; // solid
-        return h % 2 == 0 ? TileType.path : TileType.grassAlt;
-      case Biome.blocklands:
-        if (h % 7 == 0) return TileType.blockstone; // solid, violet
+      case ZoneTheme.blocklands:
+        if (h % 7 == 0) return TileType.blockstone;
         if (_hash(col ~/ 2, row ~/ 2, 9) % 4 == 0) return TileType.tallGrass;
         return TileType.grassAlt;
     }
+    // ignore: dead_code
+    return tree ? TileType.grass : TileType.grass;
   }
 
   bool solidAt(int col, int row) {
     final t = tileAt(col, row);
-    return t == TileType.water || t == TileType.tree || t == TileType.rock || t == TileType.blockstone;
+    return t == TileType.water ||
+        t == TileType.tree ||
+        t == TileType.rock ||
+        t == TileType.blockstone ||
+        t == TileType.bog;
   }
 
   bool solidAtWorld(double wx, double wy) => solidAt((wx / ts).floor(), (wy / ts).floor());
@@ -90,6 +104,10 @@ class TileMap extends PositionComponent {
         TileType.tree => Bq.tree,
         TileType.rock => const Color(0xFF4A4A55),
         TileType.blockstone => const Color(0xFF3A2A66),
+        TileType.sand => const Color(0xFFC9B680),
+        TileType.snow => const Color(0xFFD7E6EF),
+        TileType.ash => const Color(0xFF3A3236),
+        TileType.bog => const Color(0xFF3B4A2A),
       };
 
   final Paint _p = Paint();
@@ -130,13 +148,21 @@ class TileMap extends PositionComponent {
   Vector2 nearestOpen(Vector2 near) {
     final c0 = (near.x / ts).floor();
     final r0 = (near.y / ts).floor();
-    for (var radius = 1; radius < 24; radius++) {
+    for (var radius = 1; radius < 40; radius++) {
       for (var r = r0 - radius; r <= r0 + radius; r++) {
         for (var c = c0 - radius; c <= c0 + radius; c++) {
-          if (!solidAt(c, r)) return Vector2(c * ts + ts / 2, r * ts + ts / 2);
+          if (Zones.at(c, r) != null && !solidAt(c, r)) {
+            return Vector2(c * ts + ts / 2, r * ts + ts / 2);
+          }
         }
       }
     }
     return near.clone();
+  }
+
+  /// World-pixel center of the spawn zone (middle of the grid).
+  Vector2 get spawnPoint {
+    const mid = Zones.worldTiles ~/ 2;
+    return nearestOpen(Vector2(mid * ts.toDouble(), mid * ts.toDouble()));
   }
 }

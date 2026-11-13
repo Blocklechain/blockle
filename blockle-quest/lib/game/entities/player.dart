@@ -28,6 +28,9 @@ class Player extends PositionComponent {
   /// Unit-ish movement vector (magnitude 0..1), set by the game each tick.
   final Vector2 velocity = Vector2.zero();
 
+  /// Facing direction for directional sprites: 0=down,1=up,2=left,3=right.
+  int facing = 0;
+
   Player({
     required this.map,
     this.maxBaseHp = 60,
@@ -80,6 +83,13 @@ class Player extends PositionComponent {
     super.update(dt);
     if (cdTimer > 0) cdTimer -= dt;
     if (velocity.isZero()) return;
+
+    // Update facing from the dominant movement axis (for directional sprites).
+    if (velocity.x.abs() > velocity.y.abs()) {
+      facing = velocity.x < 0 ? 2 : 3;
+    } else {
+      facing = velocity.y < 0 ? 1 : 0;
+    }
 
     final step = velocity * speed * dt;
     // Axis-separated collision so you slide along walls.

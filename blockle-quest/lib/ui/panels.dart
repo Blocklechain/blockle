@@ -5,6 +5,8 @@ import '../economy/economy.dart';
 import '../game/blocklings_game.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
+import '../quests/quests.dart';
+import '../skills/skills.dart';
 import '../theme.dart';
 
 final _econ = EconomyService.instance;
@@ -53,7 +55,7 @@ class _Panel extends StatelessWidget {
     void close() {
       final g = game;
       if (g != null) {
-        for (final name in const ['inventory', 'wallet', 'market']) {
+        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests']) {
           g.overlays.remove(name);
         }
         g.resumeEngine();
@@ -232,6 +234,8 @@ class _InventoryPanelState extends State<InventoryPanel> {
     await _open(intent.url); // wallet signs (non-custodial)
     // Demo: reflect the mint locally; production confirms via the wallet callback.
     _econ.confirmItemMint(it, 'local-${it.catalogIndex}');
+    QuestLog.instance.onMint();
+    SkillsState.instance.addXp('Blockchain', 50);
     if (mounted) setState(() {});
   }
 
@@ -241,6 +245,8 @@ class _InventoryPanelState extends State<InventoryPanel> {
     final intent = _econ.mintBlockling(b, chain);
     await _open(intent.url);
     _econ.confirmBlocklingMint(b, 'local-${b.seed.hashCode}');
+    QuestLog.instance.onMint();
+    SkillsState.instance.addXp('Blockchain', 50);
     if (mounted) setState(() {});
   }
 
@@ -248,6 +254,7 @@ class _InventoryPanelState extends State<InventoryPanel> {
     final price = await _askPrice(it.valueBlock);
     if (price == null) return;
     final err = _econ.listItem(it, price, Chain.values.byName(it.nftChain ?? 'blockle'));
+    if (err == null) QuestLog.instance.onTrade();
     _snack(err ?? 'Listed ${it.name} for $price BLOCK');
     setState(() {});
   }
@@ -256,6 +263,7 @@ class _InventoryPanelState extends State<InventoryPanel> {
     final price = await _askPrice((b.powerScore / 3).roundToDouble());
     if (price == null) return;
     final err = _econ.listBlockling(b, price, Chain.values.byName(b.nftChain ?? 'blockle'));
+    if (err == null) QuestLog.instance.onTrade();
     _snack(err ?? 'Listed ${b.name} for $price BLOCK');
     setState(() {});
   }
@@ -439,4 +447,130 @@ class _MarketPanelState extends State<MarketPanel> {
           child: Text(t, style: const TextStyle(fontSize: 11)),
         ),
       );
+}
+
+// ---- Skills (RuneScape-style) ---------------------------------------------
+class SkillsPanel extends StatelessWidget {
+  final BlocklingsGame game;
+  const SkillsPanel({super.key, required this.game});
+
+  @override
+  Widget build(BuildContext context) {
+    final st = SkillsState.instance;
+    return _Panel(
+      title: 'Skills · total ${st.totalLevel}',
+      game: game,
+      child: AnimatedBuilder(
+        animation: st,
+        builder: (_, __) => GridView.count(
+          crossAxisCount: 3,
+          padding: const EdgeInsets.all(12),
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: 1.9,
+          children: [
+            for (var i = 0; i < kSkills.length; i++)
+              GestureDetector(
+                onTap: () => _tree(context, i),
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(color: Bq.panel2, borderRadius: BorderRadius.circular(10)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Row(children: [
+                      Container(width: 10, height: 10, decoration: BoxDecoration(color: kSkills[i].color, shape: BoxShape.circle)),
+                      const SizedBox(width: 5),
+                      Expanded(child: Text(kSkills[i].name, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w700))),
+                      Text('${st.level(i)}', style: const TextStyle(color: Bq.text, fontSize: 13, fontWeight: FontWeight.w800)),
+                    ]),
+                    const SizedBox(height: 6),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(value: st.progress(i), minHeight: 5, backgroundColor: Bq.bg, color: kSkills[i].color),
+                    ),
+                  ]),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _tree(BuildContext context, int i) {
+    final s = kSkills[i];
+    final lvl = SkillsState.instance.level(i);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Bq.panel2,
+      builder: (_) => ListView(
+        padding: const EdgeInsets.all(16),
+        shrinkWrap: true,
+        children: [
+          Text('${s.name} — Lv $lvl', style: const TextStyle(color: Bq.text, fontSize: 16, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 10),
+          for (final a in s.tree)
+            Opacity(
+              opacity: lvl >= a.level ? 1 : 0.45,
+              child: Row(children: [
+                Icon(lvl >= a.level ? Icons.lock_open : Icons.lock, size: 15, color: lvl >= a.level ? s.color : Bq.dim),
+                const SizedBox(width: 8),
+                Expanded(child: Text(a.name, style: const TextStyle(color: Bq.text))),
+                Text('Lv ${a.level}', style: const TextStyle(color: Bq.dim, fontSize: 12)),
+              ]),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---- Quests ---------------------------------------------------------------
+class QuestsPanel extends StatelessWidget {
+  final BlocklingsGame game;
+  const QuestsPanel({super.key, required this.game});
+
+  @override
+  Widget build(BuildContext context) {
+    final log = QuestLog.instance;
+    return _Panel(
+      title: 'Quests · ${log.completedCount}/${log.quests.length}',
+      game: game,
+      child: AnimatedBuilder(
+        animation: log,
+        builder: (_, __) {
+          final active = log.active.toList();
+          return ListView(
+            padding: const EdgeInsets.all(12),
+            children: [
+              const _SectionLabel('Active'),
+              for (final q in active)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(color: Bq.panel2, borderRadius: BorderRadius.circular(10)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Expanded(child: Text(q.title, style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w700))),
+                      Text('+${q.rewardBlock} BLOCK', style: const TextStyle(color: Bq.accent2, fontSize: 11, fontWeight: FontWeight.w700)),
+                    ]),
+                    Text(q.desc, style: const TextStyle(color: Bq.dim, fontSize: 11)),
+                    const SizedBox(height: 6),
+                    Row(children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(value: q.frac, minHeight: 5, backgroundColor: Bq.bg, color: Bq.accent),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text('${q.progress}/${q.target}', style: const TextStyle(color: Bq.dim, fontSize: 11)),
+                    ]),
+                  ]),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
 }
