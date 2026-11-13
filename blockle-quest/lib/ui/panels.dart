@@ -546,6 +546,49 @@ Future<void> _signInDialog(BuildContext context) async {
   );
 }
 
+// ---- Zone loading screen --------------------------------------------------
+class ZoneLoad extends StatefulWidget {
+  final BlocklingsGame game;
+  const ZoneLoad({super.key, required this.game});
+  @override
+  State<ZoneLoad> createState() => _ZoneLoadState();
+}
+
+class _ZoneLoadState extends State<ZoneLoad> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 1150), () {
+      if (mounted) widget.game.overlays.remove('zoneload');
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final z = widget.game.currentZone;
+    return Container(
+      color: Bq.bg,
+      alignment: Alignment.center,
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Text(z?.name ?? 'Loading…',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Bq.text, fontSize: 26, fontWeight: FontWeight.w900, letterSpacing: 1)),
+        if (z != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('Lv ${z.minLevel}–${z.maxLevel}  ·  ${z.theme.name}',
+                style: TextStyle(color: z.accent, fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+        const SizedBox(height: 20),
+        const SizedBox(
+          width: 130,
+          child: LinearProgressIndicator(backgroundColor: Bq.panel2, color: Bq.accent, minHeight: 4),
+        ),
+      ]),
+    );
+  }
+}
+
 // ---- Vendor shop ----------------------------------------------------------
 class ShopPanel extends StatefulWidget {
   final BlocklingsGame game;

@@ -3,6 +3,7 @@ import 'dart:ui';
 
 import 'package:flame/components.dart';
 import 'package:flame/sprite.dart';
+import 'package:flutter/painting.dart';
 
 import '../../models/blockling.dart';
 import '../../theme.dart';
@@ -26,15 +27,29 @@ class Enemy extends PositionComponent {
   double cdTimer = 0;
   bool dead = false;
 
-  Enemy({required this.wild, required Vector2 position, required this.player}) {
+  /// Set for zone bosses: the zone id it guards + its name (shown above it).
+  int? bossZoneId;
+  String bossName;
+
+  bool get isBoss => bossZoneId != null;
+
+  Enemy({
+    required this.wild,
+    required Vector2 position,
+    required this.player,
+    this.bossZoneId,
+    this.bossName = '',
+  }) {
     this.position = position;
-    maxHp = wild.maxHp;
+    final bossMul = bossZoneId != null ? 6 : 1;
+    maxHp = wild.maxHp * bossMul;
     hp = maxHp.toDouble();
-    atkStat = wild.atk;
-    spd = wild.speed * 0.7;
-    size = Vector2.all(22);
+    atkStat = bossZoneId != null ? wild.atk * 2 : wild.atk;
+    spd = wild.speed * (bossZoneId != null ? 0.55 : 0.7);
+    size = Vector2.all(bossZoneId != null ? 44 : 22);
+    aggro = bossZoneId != null ? 260 : 180;
     anchor = Anchor.center;
-    priority = 5;
+    priority = bossZoneId != null ? 7 : 5;
   }
 
   Sprite? _sprite;
@@ -97,12 +112,19 @@ class Enemy extends PositionComponent {
         canvas.drawCircle(c.toOffset(), 3, _p);
       }
     }
-    // HP bar.
-    const bw = 24.0;
+    // HP bar (wider for bosses).
+    final bw = isBoss ? 44.0 : 24.0;
     final frac = (hp / maxHp).clamp(0.0, 1.0);
     _p.color = const Color(0xAA000000);
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw, 3), _p);
-    _p.color = Bq.enemy;
-    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw * frac, 3), _p);
+    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw, isBoss ? 4 : 3), _p);
+    _p.color = isBoss ? const Color(0xFFFFC24B) : Bq.enemy;
+    canvas.drawRect(Rect.fromLTWH(c.x - bw / 2, -8, bw * frac, isBoss ? 4 : 3), _p);
+    if (isBoss && bossName.isNotEmpty) {
+      _bossText.render(canvas, bossName, Vector2(c.x, -12), anchor: Anchor.bottomCenter);
+    }
   }
+
+  static final _bossText = TextPaint(
+    style: const TextStyle(color: Color(0xFFFFD27A), fontSize: 8, fontWeight: FontWeight.w800),
+  );
 }

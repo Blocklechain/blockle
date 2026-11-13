@@ -76,6 +76,7 @@ class _GameScreenState extends State<GameScreen> {
           'skills': (_, BlocklingsGame g) => SkillsPanel(game: g),
           'quests': (_, BlocklingsGame g) => QuestsPanel(game: g),
           'shop': (_, BlocklingsGame g) => ShopPanel(game: g),
+          'zoneload': (_, BlocklingsGame g) => ZoneLoad(game: g),
         },
         initialActiveOverlays: const ['hud'],
       ),
@@ -195,20 +196,20 @@ class _HudState extends State<Hud> {
             child: Column(
               children: [
                 if (g.nearbyVendor != null) ...[
-                  _round('SHOP', Bq.accent2, () => _open('shop')),
+                  _round(Icons.shopping_cart_outlined, Bq.accent2, () => _open('shop')),
                   const SizedBox(height: 8),
                 ],
-                _round('AUTO', g.autoCombat ? Bq.accent : Bq.panel2, () => setState(g.toggleAuto)),
+                _round(Icons.bolt, g.autoCombat ? Bq.accent : Bq.panel2, () => setState(g.toggleAuto)),
                 const SizedBox(height: 8),
-                _round('BAG', Bq.panel2, () => _open('inventory')),
+                _round(Icons.backpack_outlined, Bq.panel2, () => _open('inventory')),
                 const SizedBox(height: 8),
-                _round('SKL', Bq.panel2, () => _open('skills')),
+                _round(Icons.military_tech_outlined, Bq.panel2, () => _open('skills')),
                 const SizedBox(height: 8),
-                _round('QST', Bq.panel2, () => _open('quests')),
+                _round(Icons.menu_book_outlined, Bq.panel2, () => _open('quests')),
                 const SizedBox(height: 8),
-                _round('\$', Bq.panel2, () => _open('wallet')),
+                _round(Icons.account_balance_wallet_outlined, Bq.panel2, () => _open('wallet')),
                 const SizedBox(height: 8),
-                _round('MKT', Bq.panel2, () => _open('market')),
+                _round(Icons.storefront_outlined, Bq.panel2, () => _open('market')),
               ],
             ),
           ),
@@ -259,7 +260,7 @@ class _HudState extends State<Hud> {
         ]),
       );
 
-  Widget _round(String label, Color bg, VoidCallback onTap) => Material(
+  Widget _round(IconData icon, Color bg, VoidCallback onTap) => Material(
         color: bg,
         shape: const CircleBorder(),
         child: InkWell(
@@ -268,10 +269,7 @@ class _HudState extends State<Hud> {
           child: SizedBox(
             width: 52,
             height: 52,
-            child: Center(
-              child: Text(label,
-                  style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w800)),
-            ),
+            child: Center(child: Icon(icon, color: Bq.text, size: 24)),
           ),
         ),
       );

@@ -58,6 +58,10 @@ class BlocklingsGame extends FlameGame {
   final Map<int, Vendor> vendors = {};
   Vendor? nearbyVendor;
 
+  // One unique boss per zone, guarding it until defeated.
+  final Set<int> bossesDefeated = {};
+  final Map<int, Enemy> _bosses = {};
+
   /// Bumped on notable events (loot/level) so the HUD/toasts can react.
   final ValueNotifier<String> toast = ValueNotifier('');
 
@@ -168,6 +172,10 @@ class BlocklingsGame extends FlameGame {
 
     // Resolve deaths + loot.
     for (final e in enemies.where((e) => e.dead).toList()) {
+      if (e.isBoss) {
+        bossesDefeated.add(e.bossZoneId!);
+        _bosses.remove(e.bossZoneId);
+      }
       _loot(e);
       e.removeFromParent();
       enemies.remove(e);
@@ -184,12 +192,13 @@ class BlocklingsGame extends FlameGame {
       toast.value = 'You were downed — respawned.';
     }
 
-    // Zone transitions: banner + explore quests.
+    // Zone transitions: a brief loading screen + explore quests.
     final zone = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
     if (zone != null && zone.id != _zoneId) {
+      final first = _zoneId == null;
       _zoneId = zone.id;
-      toast.value = '${zone.name}  ·  Lv ${zone.minLevel}-${zone.maxLevel}';
       quests.onExplore(zone.id);
+      if (!first) overlays.add('zoneload'); // not on initial spawn
     }
 
     // Multiplayer + vendors: ~10Hz.
@@ -199,7 +208,23 @@ class BlocklingsGame extends FlameGame {
       net.sendPos(player.position.x, player.position.y, player.level);
       _syncRemotes();
       _updateVendors();
+      _updateBoss();
     }
+  }
+
+  void _updateBoss() {
+    final pz = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (pz == null) return;
+    if (bossesDefeated.contains(pz.id) || _bosses.containsKey(pz.id)) return;
+    final cx = pz.zx * Zones.zoneTiles + Zones.zoneTiles ~/ 2 + 3;
+    final cy = pz.zy * Zones.zoneTiles + Zones.zoneTiles ~/ 2 - 3;
+    final pos = map.nearestOpen(Vector2(cx * TileMap.ts, cy * TileMap.ts));
+    final mon = Blockling.ofElement(pz.elementBias.index, level: pz.maxLevel + 6);
+    final boss = Enemy(wild: mon, position: pos, player: player, bossZoneId: pz.id, bossName: pz.bossName);
+    _bosses[pz.id] = boss;
+    enemies.add(boss);
+    world.add(boss);
+    toast.value = '${pz.bossName} guards ${pz.name}!';
   }
 
   void _updateVendors() {
@@ -238,6 +263,7 @@ class BlocklingsGame extends FlameGame {
   }
 
   String get currentZoneName => _zoneId == null ? '' : Zones.byId(_zoneId!).name;
+  Zone? get currentZone => _zoneId == null ? null : Zones.byId(_zoneId!);
 
   void _spawnEnemy() {
     final ang = (_seq * 2.3999632) % (math.pi * 2); // golden-angle scatter
@@ -288,6 +314,14 @@ class BlocklingsGame extends FlameGame {
     if (e.wild.baseSpd % 6 == 0) {
       econ.addBlockling(Blockling.fromSeed('block:$blockHeight:wild:${e.wild.seed.hashCode & 0xffff}'));
       toast.value = 'Caught a ${e.wild.name}!';
+    }
+    // Boss bounty: a big BLOCK drop, a guaranteed item + a captured Blockling.
+    if (e.isBoss) {
+      econ.credit(Chain.blockle, 2.0 + e.wild.rarity);
+      econ.addItem(Item.drop('boss:${e.bossZoneId}:item'));
+      econ.addBlockling(Blockling.fromSeed('boss:${e.bossZoneId}'));
+      player.gainXp(40 + e.wild.rarity * 20);
+      toast.value = 'Defeated ${e.bossName}!';
     }
   }
 }
