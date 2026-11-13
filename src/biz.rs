@@ -2278,23 +2278,34 @@ fn page_wallets_hub() -> String {
 }
 
 fn page_games_hub() -> String {
-    let title = "Blockle Games — Play, Own Your Assets, Earn BLOCK";
-    let desc = "Blockle Games is an on-chain arcade where the coins you earn and the items you win are real assets you own — in-game currency as BLOCK, characters and skins as BLOCK-721 NFTs, tradeable across every game in the Blockle marketplace. Build a game and earn 10,000 BLOCK plus revenue share.";
-    let body = String::from(r##"<div class="hero"><span class="eyebrow">Blockle Games</span>
-<h1>Play games. <span class="grad">Own</span> your loot. Earn BLOCK.</h1>
-<p class="lede">An on-chain arcade where every coin you earn and every item you win is a real asset you hold in your own wallet — in-game currency as BLOCK, characters, skins and items as BLOCK-721 NFTs, tradeable across every game in the Blockle marketplace.</p>
+    let title = "Blockle Games — Crypto Mobile Games, One Wallet, Every Chain";
+    let desc = "Blockle Games is a crypto mobile game hub — discover web3 games across every chain, with the coins you earn and the items you win owned in one non-custodial multichain wallet. Browse by chain: Blockle, Ethereum, Solana, BNB and more as they arrive. Build a game and earn 10,000 BLOCK plus revenue share.";
+    // Category chips — Blockle featured, then the chains the wallet already holds
+    // assets on; more light up as games arrive (labels, not dead links yet).
+    let mut cats = String::from(r#"<div style="display:flex;flex-wrap:wrap;gap:.55rem;margin:1rem 0 1.5rem"><span style="display:inline-block;padding:7px 15px;border:1px solid #7c5cff;color:#7c5cff;border-radius:999px;font-weight:700">Blockle (featured)</span>"#);
+    for c in ["Ethereum", "Solana", "BNB", "Polygon", "Avalanche", "Tron", "TON", "Bitcoin"] {
+        cats.push_str(&format!("<span style=\"{CHIP_CSS}\">{c}</span>"));
+    }
+    cats.push_str("<span style=\"display:inline-block;padding:7px 15px;border:1px dashed #555;border-radius:999px;color:#888\">more chains soon</span></div>");
+    let body = format!(r##"<div class="hero"><span class="eyebrow">Crypto game hub</span>
+<h1>Crypto mobile games. <span class="grad">One wallet.</span> Every chain.</h1>
+<p class="lede">A hub for crypto mobile games across every chain — with the coins you earn and the items you win owned in one non-custodial multichain wallet. Blockle games are native and deeply integrated; titles on Ethereum, Solana, BNB and beyond are categorized by chain as they arrive.</p>
 <div class="cta"><a class="btn primary" href="/games/submit">Build a game — earn 10,000 BLOCK + rev-share</a><a class="btn" href="https://discord.gg/tx4MfyD9Vu">Join the community</a></div></div>
 
-<h2>One wallet, one economy, every game</h2>
+<h2>Browse by chain</h2>
+<p class="sub">Your Blockle wallet already holds assets on 15+ chains, so it's a single login and inventory for your game assets no matter which chain a game runs on.</p>
+{cats}
+
+<h2>Why a Blockle game hub</h2>
 <div class="features">
-<div class="feature"><b>You own your assets</b><p>Items, characters and skins are BLOCK-721 NFTs in your own non-custodial wallet — not locked inside one game's servers.</p></div>
-<div class="feature"><b>Earn real currency</b><p>In-game rewards are BLOCK you can spend, swap, cash out, or carry into the next game.</p></div>
-<div class="feature"><b>Cross-game marketplace</b><p>Trade anything you win in the Blockle marketplace — a single economy spanning every title in the hub.</p></div>
-<div class="feature"><b>Sign in with your wallet</b><p>One Blockle login across every game; your keys stay on your device.</p></div>
+<div class="feature"><b>You own your assets</b><p>Items, characters and skins are NFTs in your own non-custodial wallet — not locked inside one game's servers, and not tied to one chain.</p></div>
+<div class="feature"><b>Earn real currency</b><p>In-game rewards are real crypto you can spend, swap, cash out, or carry into the next game.</p></div>
+<div class="feature"><b>Cross-game, cross-chain marketplace</b><p>Trade what you win in the Blockle marketplace — one economy that spans titles and chains.</p></div>
+<div class="feature"><b>One wallet for every game</b><p>Sign in with Blockle across every game on every supported chain; your keys stay on your device.</p></div>
 </div>
 
-<h2>An open game platform</h2>
-<p class="sub">We're building Blockle Games as an open platform: build a game on the Blockle Game SDK and we integrate it for free, pay you a 10,000 BLOCK bootstrap bonus, and share the revenue your game earns. The first titles are in development.</p>
+<h2>An open, multichain game platform</h2>
+<p class="sub">Build a game on the Blockle Game SDK and we integrate it for free, pay you a 10,000 BLOCK bootstrap bonus, and share the revenue it earns. Games on other chains get listed and categorized here too. The first titles are in development.</p>
 <div class="cta"><a class="btn primary" href="/games/submit">Submit a game</a></div>"##);
     page_shell_seo(title, desc, "/games", "", body)
 }
