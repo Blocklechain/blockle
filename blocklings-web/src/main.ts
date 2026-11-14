@@ -7,8 +7,9 @@
  *
  * Boot order: auth gates everything — the title screen shows first, and the
  * world (save -> items -> skills -> inventory -> minting -> quests -> npcs ->
- * combat -> pets -> gather -> waystones -> worldmap -> gold -> market ->
- * wallet -> HUD) boots on the first 'auth:changed' (sign-in OR offline
+ * combat -> pets -> gather -> crafting -> waystones -> worldmap -> gold ->
+ * market -> wallet -> achievements -> HUD) boots on the first 'auth:changed'
+ * (sign-in OR offline
  * guest). The player module drives the isometric camera; main keeps the
  * sun's shadow frustum centred on the action.
  */
@@ -43,6 +44,7 @@ import { initCombat, setAutoRetaliate } from './combat'
 import { MobRig } from './combat/mobs'
 import { initPets } from './pets'
 import { initGather } from './gather'
+import { initCrafting } from './crafting'
 import { initWaystones } from './waystones'
 import { initWorldmap } from './worldmap'
 import { initAtmosphere } from './atmosphere'
@@ -57,6 +59,7 @@ import {
   S_RIVER,
   S_BANK
 } from './world/surface'
+import { initAchievements } from './achievements'
 import { initGold, spendGold } from './gold'
 import { initMarket } from './market'
 import { wallet } from './wallet/index'
@@ -386,6 +389,14 @@ function enterWorld(): void {
   gather.setSkillTree(skillTree)
   // (zone node registration self-runs off gather's 1 Hz residency poll)
 
+  // --- crafting (forge/stove/alchemy/loom stations + recipe panel) ----------
+
+  const crafting = initCrafting(api)
+  crafting.setInventory(inv)
+  crafting.setSkills(skillsApi)
+  crafting.setSkillTree(skillTree)
+  crafting.setDefSource((id) => itemsApi.def(id))
+
   // --- waystones (attune + teleport network; 'stones' save provider) --------
 
   const waystones = initWaystones(api)
@@ -480,6 +491,13 @@ function enterWorld(): void {
   window.blocklingsWallet = wallet
   installAppearanceHook()
   const walletPanel = initWalletUI(uiMount, wallet)
+
+  // --- achievements (45 comedy trophies; glory-only rewards) ----------------
+  // Last gameplay module before the HUD: every bus emitter above is live, the
+  // save module has long since adopted its 'achv' provider, and its chatSend
+  // interceptor wraps the final net-wired api.chatSend. Self-contained —
+  // trophy button + toasts mount into #ui on their own CSS-arbitrated slots.
+  initAchievements(api)
 
   // --- HUD (plate, balance chip, settings, chat box, zone banner) -----------
 

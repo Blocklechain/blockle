@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 const _gameUrl = 'https://blockle.org/blocklings/';
@@ -62,6 +63,15 @@ class _ShellScreenState extends State<ShellScreen> {
       ..addJavaScriptChannel('BlocklingsIAPNative', onMessageReceived: (msg) {
         _onIapRequest(msg.message);
       })
+      // External-browser bridge: MoonPay (and anything else that refuses to
+      // render in-frame) opens in Safari. The page exposes it as
+      // window.blocklingsOpenURL(url) via the shim below.
+      ..addJavaScriptChannel('BlocklingsNavNative', onMessageReceived: (msg) {
+        final uri = Uri.tryParse(msg.message);
+        if (uri != null && (uri.scheme == 'https' || uri.scheme == 'http')) {
+          launchUrl(uri, mode: LaunchMode.externalApplication);
+        }
+      })
       ..setNavigationDelegate(NavigationDelegate(
         onPageFinished: (_) {
           _injectIapShim();
@@ -102,6 +112,7 @@ class _ShellScreenState extends State<ShellScreen> {
           pending.delete(id);
           ok ? p.resolve(payload) : p.reject(new Error(payload));
         };
+        window.blocklingsOpenURL = function (u) { BlocklingsNavNative.postMessage(String(u)); };
         window.blocklingsIAP = {
           buy: function (sku) {
             return new Promise(function (resolve, reject) {

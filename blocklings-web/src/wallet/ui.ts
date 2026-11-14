@@ -350,25 +350,18 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
       err.textContent = `MoonPay ${kind} is not available for this chain right now.`
       return
     }
-    // window.open is a silent no-op inside the iOS shell's WKWebView — the
-    // widget opens in an in-game overlay iframe instead (MoonPay supports
-    // embedding, and the same-origin /go redirect signs against THIS client's
-    // IP, which an iframe preserves exactly).
-    openMoonpayOverlay(url, kind)
+    // MoonPay refuses cross-origin iframes (frame-ancestors) and window.open
+    // is a no-op in the iOS shell — so: native Safari via the shell bridge
+    // when present, window.open on desktop browsers.
+    const bridge = (window as unknown as { blocklingsOpenURL?: (u: string) => void }).blocklingsOpenURL
+    if (bridge) {
+      bridge(url)
+      err.textContent = 'MoonPay opened in Safari — come back when you are done.'
+    } else {
+      window.open(url, '_blank', 'noopener')
+    }
   }
 
-  function openMoonpayOverlay(url: string, kind: 'buy' | 'sell'): void {
-    document.getElementById('blkw-mp-overlay')?.remove()
-    const ov = document.createElement('div')
-    ov.id = 'blkw-mp-overlay'
-    ov.innerHTML =
-      `<div class="blkw-mp-bar"><span>MoonPay — ${kind === 'buy' ? 'Buy crypto' : 'Sell crypto'}</span>` +
-      `<button type="button" class="blkw-mp-x" aria-label="Close">✕</button></div>` +
-      `<iframe class="blkw-mp-frame" src="${url.replace(/"/g, '&quot;')}" ` +
-      `allow="accelerometer; autoplay; camera; gyroscope; payment" frameborder="0"></iframe>`
-    ov.querySelector('.blkw-mp-x')?.addEventListener('click', () => ov.remove())
-    ;(document.getElementById('ui') ?? document.body).appendChild(ov)
-  }
 
   async function confirmSend(_from: string): Promise<void> {
     const to = (byId('blkw-to') as HTMLInputElement).value.trim()
@@ -507,15 +500,6 @@ function injectStyles(): void {
   background: linear-gradient(#f3e2b3, #e2c683); color: #4a3313; border: 2px solid #8a6414; border-radius: 10px;
   padding: 7px 13px; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
 .blkw-toggle:hover { filter: brightness(1.05); }
-#blkw-mp-overlay { position: absolute; inset: 0; z-index: 70; display: flex; flex-direction: column;
-  background: rgba(8, 9, 14, 0.92); pointer-events: auto; }
-.blkw-mp-bar { display: flex; align-items: center; justify-content: space-between; color: #e8c15a;
-  font: 700 14px/1 'Trebuchet MS', system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase;
-  padding: calc(env(safe-area-inset-top) + 10px) 14px 10px; }
-.blkw-mp-x { width: 44px; height: 44px; font-size: 20px; color: #efe9d8; background: rgba(255,255,255,.06);
-  border: 1px solid rgba(212,175,55,.4); border-radius: 10px; cursor: pointer; }
-.blkw-mp-frame { flex: 1; width: 100%; border: 0; background: #fff;
-  margin-bottom: env(safe-area-inset-bottom); }
 .blkw { position: absolute; top: max(60px, calc(env(safe-area-inset-top) + 48px)); right: 12px; width: min(330px, calc(100vw - 24px));
   z-index: 50; /* OPEN panel sits above the top-right gear/chip cluster (41) */
   max-height: calc(100vh - 80px); overflow-y: auto; background: linear-gradient(#f7ecd0, #efdcae);

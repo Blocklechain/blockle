@@ -18,15 +18,17 @@ import { saveRegistry } from '../save/registry'
 import { BOSSES, NPCS } from '../ids'
 import { ITEM_NAMES as ITEM_NAMES1, PREREQS as PREREQS1, QUESTS as QUESTS1, questById as questById1 } from './defs'
 import { ITEM_NAMES2, PREREQS2, QUESTS2, questById2 } from './defs2'
+import { ITEM_NAMES3, PREREQS3, QUESTS3, questById3 } from './defs3'
 import { createQuestPanel, type QuestPanel } from './panel'
 import { onTrackedChange, setTracked as setTrackedId, trackedId } from './tracking'
 
 // Wave-3 outer-zone arcs concat straight onto the original book; everything
 // below works off the merged tables under the original names.
-const QUESTS: readonly QuestDef[] = [...QUESTS1, ...QUESTS2]
-const PREREQS: Readonly<Record<string, readonly string[]>> = { ...PREREQS1, ...PREREQS2 }
-const ITEM_NAMES: Readonly<Record<string, string>> = { ...ITEM_NAMES1, ...ITEM_NAMES2 }
-const questById = (id: string): QuestDef | undefined => questById1(id) ?? questById2(id)
+const QUESTS: readonly QuestDef[] = [...QUESTS1, ...QUESTS2, ...QUESTS3]
+const PREREQS: Readonly<Record<string, readonly string[]>> = { ...PREREQS1, ...PREREQS2, ...PREREQS3 }
+const ITEM_NAMES: Readonly<Record<string, string>> = { ...ITEM_NAMES1, ...ITEM_NAMES2, ...ITEM_NAMES3 }
+const questById = (id: string): QuestDef | undefined =>
+  questById1(id) ?? questById2(id) ?? questById3(id)
 
 interface ActiveState {
   step: number
