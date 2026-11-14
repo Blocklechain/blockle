@@ -474,6 +474,10 @@
   border: none;
   box-shadow: none;
   overflow: visible;
+  /* the shared panel rule applies backdrop blur — the collapsed bubble must
+     drop it or a 48px blurred smudge lingers in the corner */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .bl-collapsed .bl-chat-head {
   width: 48px;
