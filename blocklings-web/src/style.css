@@ -20,9 +20,14 @@ body {
     system-ui,
     -apple-system,
     sans-serif;
-  /* no rubber-band scroll / pull-to-refresh on mobile */
+  /* no rubber-band scroll / pull-to-refresh / double-tap zoom on mobile.
+     NOTE: this must be `manipulation`, NOT `none` — WKWebView stops
+     synthesizing click events for taps inside a `touch-action: none`
+     subtree, which killed every UI button in the iOS shell. `none` is
+     applied only where raw pointer input is handled (game canvas,
+     joystick, action buttons). */
   overscroll-behavior: none;
-  touch-action: none;
+  touch-action: manipulation;
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -32,6 +37,7 @@ body {
 #app {
   position: fixed;
   inset: 0;
+  touch-action: none; /* raw pointer input: tap-to-attack, camera, drags */
 }
 
 #app canvas {
