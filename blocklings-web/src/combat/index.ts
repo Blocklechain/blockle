@@ -1174,7 +1174,12 @@ export function initCombat(api: GameAPI): CombatModule {
       m.facing += Math.sin(now * 18 + m.homeX) * dt * 2.2
     } else switch (m.state) {
       case 'wander': {
-        if (!playerDead && pDist < m.aggro) {
+        // "Too strong to bother": a non-boss mob stops attacking on sight once
+        // you're at least twice its level — it still fights back if YOU attack
+        // it (applyHit forces chase), but leaves you alone otherwise. Bosses
+        // always aggro.
+        const beneathNotice = !m.boss && (api.player.level ?? 1) >= m.level * 2
+        if (!playerDead && !beneathNotice && pDist < m.aggro) {
           m.state = 'chase'
           if (m.boss && !m.announced && m.bossId) {
             m.announced = true
