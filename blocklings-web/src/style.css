@@ -78,6 +78,7 @@ body {
 #ui > .bl-pets-root,
 #ui > .wm-root,
 #ui > .bl-title--hidden,
+#ui > .ach-root,
 #ui > .bl-hud {
   pointer-events: none;
 }

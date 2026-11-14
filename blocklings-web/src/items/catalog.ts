@@ -285,6 +285,8 @@ const MATERIALS_CATALOG: ItemDef[] = [
   mat('hide_boar', 'Boar Hide', 1, 12, 'Thick, bristly, faintly offended.'),
   mat('hide_tough', 'Tough Hide', 2, 35, 'So tough the tanner billed extra.'),
   mat('wheat', 'Wheat', 0, 2, "Golden wheat. Bread's origin story."),
+  mat('berry_red', 'Red Berry', 0, 3, 'Sweet, juicy, and only occasionally poisonous. These ones are the good kind. Probably.'),
+  mat('mushroom_brown', 'Brown Mushroom', 0, 5, 'Forest-floor delicacy. The Shroomlings consider this cannibalism-adjacent.'),
 ]
 
 function food(id: string, name: string, rarity: Rarity, value: number, hp: number, mp: number, desc: string): ItemDef {
