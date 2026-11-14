@@ -13,6 +13,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -225,7 +227,15 @@ class _ShellScreenState extends State<ShellScreen> {
             )
           : Stack(
               children: [
-                WebViewWidget(controller: _web),
+                WebViewWidget(
+                  controller: _web,
+                  // iOS: the WebView must WIN Flutter's gesture arena outright,
+                  // or taps get claimed by the framework and never reach the
+                  // page (pinch slipped through, everything else was dead).
+                  gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{
+                    Factory<OneSequenceGestureRecognizer>(EagerGestureRecognizer.new),
+                  },
+                ),
                 if (_loading)
                   const ColoredBox(
                     color: Color(0xFF0d1b2a),
