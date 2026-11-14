@@ -16,8 +16,9 @@
 .bl-ws-panel {
   position: absolute;
   left: 50%;
-  transform: translateX(-50%);
-  bottom: max(14px, env(safe-area-inset-bottom));
+  top: 50%;
+  transform: translate(-50%, -50%);
+  /* centered: interaction dialogs must never sit under the joystick/ATK/chat */
   width: min(480px, calc(100vw - 20px));
   max-height: 60vh;
   overflow-y: auto;
