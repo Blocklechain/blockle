@@ -25,7 +25,7 @@ void main() {
   const surface = Size(1170, 540);
 
   // Every sprite the world, characters, companions and buildings use.
-  const images = [
+  final images = [
     'tiles/ash.png', 'tiles/blockstone.png', 'tiles/bog.png', 'tiles/fence.png',
     'tiles/grass.png', 'tiles/grassAlt.png', 'tiles/path.png', 'tiles/rock.png',
     'tiles/sand.png', 'tiles/snow.png', 'tiles/tallGrass.png', 'tiles/tree.png',
@@ -35,6 +35,15 @@ void main() {
     'buildings/blockhall.png', 'buildings/cabin.png', 'buildings/hall.png',
     'buildings/house.png', 'buildings/inn.png', 'buildings/shop.png',
     'buildings/tower.png',
+    // Whole-zone painted scene patches (the ground).
+    for (final t in [
+      'meadow', 'forest', 'swamp', 'desert', 'tundra', 'volcanic',
+      'crystal', 'ruins', 'shore', 'blocklands', 'village_ground',
+    ])
+      for (var v = 0; v < 4; v++) 'scenes/${t}_$v.png',
+    // Standalone props (trees + upright fences).
+    'props/oak_0.png', 'props/oak_1.png', 'props/pine_0.png', 'props/pine_1.png',
+    'props/fence_0.png', 'props/fence_1.png',
   ];
 
   CharacterProfile makeProfile() => CharacterProfile(
@@ -79,7 +88,21 @@ void main() {
       matchesGoldenFile('goldens/world_village.png'),
     );
 
-    // 2) Title cinematic shot: a fresh game left in cinematic mode, the camera
+    // 2) Village gate shot: walk the player to the spawn zone's west border so
+    //    the upright fence line, the gate gap and scattered trees are in frame.
+    final gate = BlocklingsGame(profile: makeProfile());
+    gate.cinematic = false;
+    await pumpGame(tester, gate);
+    gate.player.position.setValues(243 * 32.0, 264 * 32.0);
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    await expectLater(
+      find.byKey(const ValueKey('shot')),
+      matchesGoldenFile('goldens/village_gate.png'),
+    );
+
+    // 3) Title cinematic shot: a fresh game left in cinematic mode, the camera
     //    drifting over the world.
     final title = BlocklingsGame(profile: makeProfile());
     // cinematic defaults to true — leave it.

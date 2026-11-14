@@ -104,6 +104,7 @@ class _GameScreenState extends State<GameScreen> {
           'shop': (_, BlocklingsGame g) => ShopPanel(game: g),
           'interior': (_, BlocklingsGame g) => InteriorPanel(game: g),
           'zoneload': (_, BlocklingsGame g) => ZoneLoad(game: g),
+          'roomfade': (_, BlocklingsGame g) => RoomFade(game: g),
         },
         initialActiveOverlays: const ['title'],
       ),

@@ -98,6 +98,7 @@ class Enemy extends PositionComponent {
   void render(Canvas canvas) {
     final game = findGame();
     if (game is! BlocklingsGame || dead) return;
+    if (!game.inActiveRoom(position)) return; // other rooms are off-screen
     canvas.save();
     canvas.translate(-position.x, -position.y);
     final s = game.project(position.x, position.y);

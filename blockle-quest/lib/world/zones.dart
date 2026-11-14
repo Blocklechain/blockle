@@ -5,6 +5,10 @@ import '../models/blockling.dart' show Element;
 /// Visual/gameplay themes a zone can take.
 enum ZoneTheme { meadow, forest, swamp, desert, tundra, volcanic, crystal, ruins, shore, blocklands }
 
+/// How the player moves inside a zone: free 2D roaming, or a side-scrolling
+/// lane (left/right only — canyon passes, bridges, dungeon corridors).
+enum ZoneMovement { omni, lane }
+
 /// One of the 100 zones ("chunk maps") that tile the open world in a 10×10 grid.
 /// Everything is derived deterministically from the zone id, so the world is the
 /// same for every player and verifiable. Difficulty rises with distance from the
@@ -28,6 +32,14 @@ class Zone {
   bool get isVillage {
     if (zx == Zones.grid ~/ 2 && zy == Zones.grid ~/ 2) return true; // spawn zone
     return tier <= 3 && ((id * 2654435761) & 0x7fffffff) % 5 == 0;
+  }
+
+  /// ~1 in 5 non-village zones are side-scrolling lanes (east-west passes);
+  /// their north/south gates are sealed so travel through them is left/right.
+  ZoneMovement get movement {
+    if (isVillage) return ZoneMovement.omni;
+    final r = ((id * 40503) ^ (id >> 3)) & 0x7fffffff;
+    return r % 5 == 0 ? ZoneMovement.lane : ZoneMovement.omni;
   }
   String get bossName => '${_bossAdj[id % _bossAdj.length]} ${_bossNoun[(id ~/ 7) % _bossNoun.length]}';
 

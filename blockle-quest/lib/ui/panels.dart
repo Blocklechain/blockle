@@ -548,6 +548,42 @@ Future<void> _signInDialog(BuildContext context) async {
   );
 }
 
+// ---- Room-change fade (single-screen transition) --------------------------
+class RoomFade extends StatefulWidget {
+  final BlocklingsGame game;
+  const RoomFade({super.key, required this.game});
+  @override
+  State<RoomFade> createState() => _RoomFadeState();
+}
+
+class _RoomFadeState extends State<RoomFade> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 320),
+  )..forward().whenComplete(() {
+      if (mounted) widget.game.overlays.remove('roomfade');
+    });
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (_, __) {
+            // Quick dip to black and back: 0 -> 1 -> 0 across the duration.
+            final t = _c.value;
+            final a = t < 0.35 ? t / 0.35 : (1 - (t - 0.35) / 0.65);
+            return Container(color: Colors.black.withValues(alpha: a.clamp(0.0, 1.0)));
+          },
+        ),
+      );
+}
+
 // ---- Zone loading screen --------------------------------------------------
 class ZoneLoad extends StatefulWidget {
   final BlocklingsGame game;

@@ -7,39 +7,69 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 import '../theme.dart';
 import '../world/zones.dart';
 
-enum TileType { grass, grassAlt, tallGrass, path, water, tree, rock, blockstone, sand, snow, ash, bog, fence }
+/// Collision-only tile kinds (visuals come from the room's scene painting).
+enum TileType { grass, tallGrass, path, water, fence }
 
-/// The world surface: a bounded 10×10 grid of 100 themed [Zone]s ("chunk maps").
-/// Every tile is derived deterministically from its coordinates + the owning
-/// zone's theme (same world for everyone, verifiable). Outside the grid is open
-/// ocean. Only the camera's visible window is drawn each frame.
+/// SINGLE-SCREEN ROOMS. The world is a grid of rooms (16×16 tiles = 512 logical
+/// px); the game screen shows exactly ONE room — one whole AI-painted scene —
+/// and walking out through a gate cuts to the next room. No scrolling, no two
+/// scenes ever on screen together (so no seams, ever).
+///
+/// Zones (realms) are 3×3 rooms. Gates sit at the midpoint of each room edge:
+/// always open between rooms of the SAME realm; across realms only the middle
+/// room of the shared edge connects (the realm's "small entrance"), and lane
+/// realms seal their north/south entrances.
 class TileMap extends PositionComponent {
-  static const double ts = 32; // tile size px
+  static const double ts = 32; // logical tile size px
+  static const int roomTiles = 16; // tiles per room edge
+  static const double roomPx = roomTiles * ts; // 512 logical px
 
   TileMap() {
     priority = -10;
     position = Vector2.zero();
   }
 
-  final Map<TileType, Sprite?> _sprites = {};
+  final Map<String, List<Sprite>> _scenes = {};
+  final List<Sprite> _fenceProps = [];
+  static const int sceneVariants = 4;
 
-  // Set by the game each frame: the Mode-7 view matrix + player-centre.
-  vm.Matrix4 tiltMatrix = vm.Matrix4.identity();
-  Vector2 tiltCam = Vector2.zero();
-
-  @override
-  Future<void> onLoad() async {
-    for (final t in TileType.values) {
-      try {
-        _sprites[t] = await Sprite.load('tiles/${t.name}.png');
-      } catch (_) {
-        _sprites[t] = null; // fall back to a flat color
-      }
-    }
-  }
+  // Set by the game each frame: the room view (scale+translate) + active room.
+  vm.Matrix4 roomView = vm.Matrix4.identity();
+  Vector2 roomOrigin = Vector2.zero(); // world px of the active room's top-left
 
   double get worldWidth => Zones.worldTiles * ts;
   double get worldHeight => Zones.worldTiles * ts;
+
+  static const _themeScene = {
+    ZoneTheme.meadow: 'meadow',
+    ZoneTheme.forest: 'forest',
+    ZoneTheme.swamp: 'swamp',
+    ZoneTheme.desert: 'desert',
+    ZoneTheme.tundra: 'tundra',
+    ZoneTheme.volcanic: 'volcanic',
+    ZoneTheme.crystal: 'crystal',
+    ZoneTheme.ruins: 'ruins',
+    ZoneTheme.shore: 'shore',
+    ZoneTheme.blocklands: 'blocklands',
+  };
+
+  @override
+  Future<void> onLoad() async {
+    for (final name in {..._themeScene.values, 'village_ground'}) {
+      final list = <Sprite>[];
+      for (var v = 0; v < sceneVariants; v++) {
+        try {
+          list.add(await Sprite.load('scenes/${name}_$v.png'));
+        } catch (_) {}
+      }
+      if (list.isNotEmpty) _scenes[name] = list;
+    }
+    for (final f in const ['props/fence_0.png', 'props/fence_1.png']) {
+      try {
+        _fenceProps.add(await Sprite.load(f));
+      } catch (_) {}
+    }
+  }
 
   int _hash(int x, int y, int salt) {
     var h = x * 73856093 ^ y * 19349663 ^ salt * 83492791;
@@ -47,83 +77,50 @@ class TileMap extends PositionComponent {
     return h;
   }
 
-  Zone? zoneAt(int col, int row) => Zones.at(col, row);
+  bool _gateBand(int v) => (v % roomTiles - roomTiles ~/ 2).abs() <= 1;
 
+  /// Collision grid: room borders are fences with gated openings.
   TileType tileAt(int col, int row) {
     final z = Zones.at(col, row);
-    if (z == null) return TileType.water; // ocean beyond the world
+    if (z == null) return TileType.water; // beyond the world
 
-    // Zone borders: every chunk is walled by a fence with a small gated
-    // entrance in the middle of each edge (the only ways through).
-    final lx = col % Zones.zoneTiles, ly = row % Zones.zoneTiles;
-    const mid = Zones.zoneTiles ~/ 2;
-    final onWest = lx == 0, onNorth = ly == 0;
-    if (onWest || onNorth) {
-      final inWestGate = onWest && (ly - mid).abs() <= 1;
-      final inNorthGate = onNorth && (lx - mid).abs() <= 1;
-      if (inWestGate || inNorthGate) return TileType.path; // the entrance
+    final lx = col % roomTiles, ly = row % roomTiles;
+    if (lx == 0 || ly == 0) {
+      // West edge of this room.
+      if (lx == 0 && _gateBand(row)) {
+        final west = Zones.at(col - 1, row);
+        if (west != null) {
+          final sameZone = west.id == z.id;
+          // Across realms: only the middle room of the shared edge connects.
+          final middleRoom = (row ~/ roomTiles) % 3 == 1;
+          if (sameZone || middleRoom) return TileType.path;
+        }
+      }
+      // North edge of this room.
+      if (ly == 0 && _gateBand(col)) {
+        final north = Zones.at(col, row - 1);
+        if (north != null) {
+          final sameZone = north.id == z.id;
+          final middleRoom = (col ~/ roomTiles) % 3 == 1;
+          final laneOk =
+              z.movement == ZoneMovement.omni && north.movement == ZoneMovement.omni;
+          if (sameZone || (middleRoom && laneOk)) return TileType.path;
+        }
+      }
       return TileType.fence;
     }
 
-    final h = _hash(col, row, 1);
-    final tree = _hash(col, row, 7) % 1 == 0; // placeholder, overridden below
-    switch (z.theme) {
-      case ZoneTheme.meadow:
-        if (_hash(col, row, 7) % 26 == 0) return TileType.tree;
-        if (_hash(col ~/ 3, row ~/ 3, 3) % 6 == 0) return TileType.tallGrass;
-        return h % 2 == 0 ? TileType.grass : TileType.grassAlt;
-      case ZoneTheme.forest:
-        if (h % 4 == 0) return TileType.tree;
-        if (_hash(col ~/ 2, row ~/ 2, 5) % 3 == 0) return TileType.tallGrass;
-        return TileType.grass;
-      case ZoneTheme.swamp:
-        if (h % 6 == 0) return TileType.tree;
-        if (h % 3 == 0) return TileType.bog; // solid muck
-        return TileType.grassAlt;
-      case ZoneTheme.desert:
-        if (h % 9 == 0) return TileType.rock;
-        return TileType.sand;
-      case ZoneTheme.tundra:
-        if (h % 8 == 0) return TileType.rock;
-        if (_hash(col ~/ 3, row ~/ 3, 2) % 5 == 0) return TileType.tallGrass;
-        return TileType.snow;
-      case ZoneTheme.volcanic:
-        if (h % 5 == 0) return TileType.rock;
-        if (h % 11 == 0) return TileType.water; // lava pools (impassable)
-        return TileType.ash;
-      case ZoneTheme.crystal:
-        if (h % 6 == 0) return TileType.blockstone;
-        return h % 2 == 0 ? TileType.grassAlt : TileType.snow;
-      case ZoneTheme.ruins:
-        if (h % 5 == 0) return TileType.rock;
-        if (h % 9 == 0) return TileType.path;
-        return h % 2 == 0 ? TileType.grassAlt : TileType.sand;
-      case ZoneTheme.shore:
-        final lx = col % Zones.zoneTiles, ly = row % Zones.zoneTiles;
-        if (lx < 4 || ly < 4 || lx > Zones.zoneTiles - 5 || ly > Zones.zoneTiles - 5) {
-          return h % 2 == 0 ? TileType.sand : TileType.grass;
-        }
-        return TileType.water;
-      case ZoneTheme.blocklands:
-        if (h % 7 == 0) return TileType.blockstone;
-        if (_hash(col ~/ 2, row ~/ 2, 9) % 4 == 0) return TileType.tallGrass;
-        return TileType.grassAlt;
-    }
-    // ignore: dead_code
-    return tree ? TileType.grass : TileType.grass;
+    // Invisible tall grass for wild encounters.
+    if (_hash(col ~/ 2, row ~/ 2, 3) % 6 == 0) return TileType.tallGrass;
+    return TileType.grass;
   }
 
   bool solidAt(int col, int row) {
     final t = tileAt(col, row);
-    return t == TileType.water ||
-        t == TileType.tree ||
-        t == TileType.rock ||
-        t == TileType.blockstone ||
-        t == TileType.bog ||
-        t == TileType.fence;
+    return t == TileType.water || t == TileType.fence;
   }
 
-  /// Dynamic solid footprints (buildings) registered by entities.
+  /// Dynamic solid footprints (buildings, tree trunks).
   final List<Rect> solidRects = [];
 
   bool solidAtWorld(double wx, double wy) {
@@ -137,53 +134,61 @@ class TileMap extends PositionComponent {
   bool tallGrassAtWorld(double wx, double wy) =>
       tileAt((wx / ts).floor(), (wy / ts).floor()) == TileType.tallGrass;
 
-  Color _colorFor(TileType t) => switch (t) {
-        TileType.grass => Bq.grass,
-        TileType.grassAlt => Bq.grassAlt,
-        TileType.tallGrass => Bq.tallGrass,
-        TileType.path => Bq.path,
-        TileType.water => Bq.water,
-        TileType.tree => Bq.tree,
-        TileType.rock => const Color(0xFF4A4A55),
-        TileType.blockstone => const Color(0xFF3A2A66),
-        TileType.sand => const Color(0xFFC9B680),
-        TileType.snow => const Color(0xFFD7E6EF),
-        TileType.ash => const Color(0xFF3A3236),
-        TileType.bog => const Color(0xFF3B4A2A),
-        TileType.fence => const Color(0xFF7A5C3A),
-      };
-
   final Paint _p = Paint();
-  // Crisp 8-bit scaling: no bilinear smoothing when sprites are drawn larger.
   final Paint _pixel = Paint()
     ..filterQuality = FilterQuality.none
     ..isAntiAlias = false;
 
   @override
   void render(Canvas canvas) {
-    // Pitch the ground plane back (Mode-7). Everything drawn here is in flat
-    // world coords; the tilt matrix projects it to the receding perspective.
     canvas.save();
-    canvas.transform(tiltMatrix.storage);
+    canvas.transform(roomView.storage);
 
-    final camCol = (tiltCam.x / ts).floor();
-    final camRow = (tiltCam.y / ts).floor();
-    // Draw a generous window, reaching further "north" toward the horizon.
-    for (var row = camRow - 40; row <= camRow + 22; row++) {
-      for (var col = camCol - 34; col <= camCol + 34; col++) {
-        final t = tileAt(col, row);
-        final sp = _sprites[t];
-        if (sp != null) {
+    final rc = (roomOrigin.x / ts).round(); // room's first tile col
+    final rr = (roomOrigin.y / ts).round();
+
+    // The room's single scene painting, filling the room exactly.
+    final z = Zones.at(rc + 1, rr + 1);
+    final rect = Rect.fromLTWH(roomOrigin.x, roomOrigin.y, roomPx, roomPx);
+    if (z == null) {
+      _p.color = Bq.water;
+      canvas.drawRect(rect, _p);
+    } else {
+      final key = z.isVillage ? 'village_ground' : _themeScene[z.theme]!;
+      final list = _scenes[key];
+      if (list == null || list.isEmpty) {
+        _p.color = Bq.grass;
+        canvas.drawRect(rect, _p);
+      } else {
+        final sp = list[_hash(rc ~/ roomTiles, rr ~/ roomTiles, 9) % list.length];
+        sp.render(canvas,
+            position: Vector2(rect.left, rect.top),
+            size: Vector2(rect.width, rect.height),
+            overridePaint: _pixel);
+      }
+    }
+
+    // Border wall segments (with gate gaps) around THIS room, drawn with a
+    // slight upward overhang so they read as standing walls.
+    for (var i = 0; i <= roomTiles; i++) {
+      for (final t in [
+        [rc + i, rr], // north edge (and i==roomTiles covers the NE corner)
+        [rc, rr + i], // west edge
+        [rc + i, rr + roomTiles], // south edge (next room's north line)
+        [rc + roomTiles, rr + i], // east edge (next room's west line)
+      ]) {
+        final col = t[0], row = t[1];
+        if (tileAt(col, row) != TileType.fence) continue;
+        final x = col * ts, y = row * ts;
+        if (_fenceProps.isNotEmpty) {
+          final sp = _fenceProps[_hash(col, row, 21) % _fenceProps.length];
           sp.render(canvas,
-              position: Vector2(col * ts, row * ts), size: Vector2(ts + 0.6, ts + 0.6),
+              position: Vector2(x, y - 12),
+              size: Vector2(ts, ts + 12),
               overridePaint: _pixel);
-          continue;
-        }
-        _p.color = _colorFor(t);
-        canvas.drawRect(Rect.fromLTWH(col * ts, row * ts, ts + 0.6, ts + 0.6), _p);
-        if (t == TileType.tree || t == TileType.rock || t == TileType.blockstone) {
-          _p.color = t == TileType.blockstone ? Bq.accent : const Color(0xFF1A1A1F);
-          canvas.drawRect(Rect.fromLTWH(col * ts + 6, row * ts + 6, ts - 12, ts - 12), _p);
+        } else {
+          _p.color = const Color(0xFF7A5C3A);
+          canvas.drawRect(Rect.fromLTWH(x, y - 8, ts, ts + 8), _p);
         }
       }
     }
@@ -206,8 +211,7 @@ class TileMap extends PositionComponent {
     return near.clone();
   }
 
-  /// Centre of the spawn VILLAGE zone (middle of the grid) — inside its fences,
-  /// among the buildings.
+  /// Centre of the spawn VILLAGE zone's middle room.
   Vector2 get spawnPoint {
     const mid = (Zones.grid ~/ 2) * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
     return nearestOpen(Vector2(mid * ts + ts / 2, (mid + 2) * ts + ts / 2));

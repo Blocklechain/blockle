@@ -7,8 +7,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
 
-import 'tilt.dart';
-
 import '../account/character.dart';
 import '../economy/economy.dart';
 import '../models/blockling.dart';
@@ -23,6 +21,7 @@ import 'entities/companion.dart';
 import 'entities/enemy.dart';
 import 'entities/player.dart';
 import 'entities/remote_player.dart';
+import 'entities/tree.dart';
 import 'entities/vendor.dart';
 import 'tile_map.dart';
 
@@ -58,11 +57,25 @@ class BlocklingsGame extends FlameGame {
   final skills = SkillsState.instance;
   int? _zoneId; // current zone (for banner + explore quests)
 
-  // Mode-7 tilt projection (focus-centred; replaces the Flame camera).
-  Vector2 _screen = Vector2.all(800);
-  vm.Matrix4 _view = vm.Matrix4.identity();
-  Vector2 project(double wx, double wy) => Tilt.projectWith(_view, wx, wy);
-  double scaleAt(double screenY) => Tilt.scaleForY(screenY, _screen.y);
+  // SINGLE-SCREEN ROOM VIEW: the screen shows exactly one room (one painted
+  // scene); the camera is fixed per room and cuts on room change.
+  double _roomScale = 1;
+  final Vector2 _roomOff = Vector2.zero();
+  final Vector2 roomOrigin = Vector2.zero();
+  String _roomKey = '';
+
+  Vector2 project(double wx, double wy) => Vector2(
+      (wx - roomOrigin.x) * _roomScale + _roomOff.x,
+      (wy - roomOrigin.y) * _roomScale + _roomOff.y);
+  double scaleAt(double screenY) => _roomScale;
+
+  /// Is a world point inside the active room (+margin)? Used to cull entities
+  /// that live in other rooms — only the current screen's cast is drawn.
+  bool inActiveRoom(Vector2 p, [double margin = 60]) =>
+      p.x >= roomOrigin.x - margin &&
+      p.y >= roomOrigin.y - margin &&
+      p.x < roomOrigin.x + TileMap.roomPx + margin &&
+      p.y < roomOrigin.y + TileMap.roomPx + margin;
 
   /// Title-screen cinematic: the camera drifts across the world until the
   /// player presses Enter World. While cinematic, streaming (villages/vendors)
@@ -73,6 +86,13 @@ class BlocklingsGame extends FlameGame {
 
   /// What the camera + world streaming centre on.
   Vector2 get focus => cinematic ? _cinePos : player.position;
+
+  /// overlays.add that tolerates hosts without the overlay registered (tests).
+  void _tryOverlay(String name) {
+    try {
+      overlays.add(name);
+    } catch (_) {}
+  }
 
   /// Leave the title cinematic and drop into the world.
   void enterWorld() {
@@ -100,6 +120,8 @@ class BlocklingsGame extends FlameGame {
 
   // Villages: a cluster of buildings in some zones.
   final Map<int, List<Building>> _villages = {};
+  // Standalone trees, streamed per zone.
+  final Map<int, List<Tree>> _trees = {};
   static const _buildingKinds = ['house', 'shop', 'inn', 'house', 'blockhall', 'cabin', 'tower', 'hall'];
 
   /// Bumped on notable events (loot/level) so the HUD/toasts can react.
@@ -209,12 +231,29 @@ class BlocklingsGame extends FlameGame {
       );
     }
 
-    // Refresh the tilt projection for this frame (centred on the focus — the
-    // drifting camera while cinematic, the player once in the world).
-    _screen.setFrom(size);
-    _view = Tilt.view(focus, _screen);
-    map.tiltMatrix = _view;
-    map.tiltCam = focus;
+    // Refresh the fixed room view for this frame: which room the focus is in,
+    // scaled to fit the screen (letterboxed; bars stay dark).
+    const rp = TileMap.roomPx;
+    roomOrigin.setValues((focus.x / rp).floorToDouble() * rp, (focus.y / rp).floorToDouble() * rp);
+    _roomScale = (size.x / rp) < (size.y / rp) ? size.x / rp : size.y / rp;
+    _roomOff.setValues((size.x - rp * _roomScale) / 2, (size.y - rp * _roomScale) / 2);
+    final view = vm.Matrix4.identity()
+      ..translate(_roomOff.x, _roomOff.y)
+      ..scale(_roomScale, _roomScale, 1.0)
+      ..translate(-roomOrigin.x, -roomOrigin.y);
+    map.roomView = view;
+    map.roomOrigin.setFrom(roomOrigin);
+
+    // Room-change cut: a quick dark fade between rooms (the zone loading screen
+    // covers realm changes; no fades during the title cinematic).
+    final rk = '${roomOrigin.x.toInt()},${roomOrigin.y.toInt()}';
+    if (rk != _roomKey) {
+      final first = _roomKey.isEmpty;
+      _roomKey = rk;
+      if (!first && !cinematic && !overlays.isActive('zoneload')) {
+        _tryOverlay('roomfade');
+      }
+    }
 
     if (cinematic) {
       // Stream the world along the drifting camera only (~10Hz).
@@ -223,12 +262,17 @@ class BlocklingsGame extends FlameGame {
         _posAcc = 0;
         _updateVendors();
         _updateVillages();
+        _updateTrees();
       }
       return;
     }
 
     // Movement is ALWAYS manual (the D-pad). The player never auto-moves.
     player.velocity.setFrom(dpad);
+    // Side-scroller realms: movement is left/right only (lanes seal their
+    // north/south gates, so travel through them is horizontal).
+    final moveZone = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (moveZone?.movement == ZoneMovement.lane) player.velocity.y = 0;
     // Auto-combat only auto-ATTACKS a foe that is already within reach.
     if (autoCombat) playerAttack();
 
@@ -262,7 +306,7 @@ class BlocklingsGame extends FlameGame {
       final first = _zoneId == null;
       _zoneId = zone.id;
       quests.onExplore(zone.id);
-      if (!first) overlays.add('zoneload'); // not on initial spawn
+      if (!first) _tryOverlay('zoneload'); // not on initial spawn
     }
 
     // Multiplayer + vendors: ~10Hz.
@@ -274,6 +318,7 @@ class BlocklingsGame extends FlameGame {
       _updateVendors();
       _updateBoss();
       _updateVillages();
+      _updateTrees();
       // Nearest enterable building within range (for the HUD door button).
       nearbyBuilding = null;
       var bb = 70.0;
@@ -326,6 +371,62 @@ class BlocklingsGame extends FlameGame {
     }).toList().forEach((id) {
       for (final b in _villages.remove(id)!) {
         b.removeFromParent();
+      }
+    });
+  }
+
+  /// Standalone trees per zone: deterministic scatter, denser in forests,
+  /// pines in the cold, sparse in deserts/volcanic; kept clear of the village
+  /// centre and the fence borders.
+  void _updateTrees() {
+    final pz = Zones.atWorld(focus.x, focus.y, TileMap.ts);
+    if (pz == null) return;
+    int countFor(Zone z) => switch (z.theme) {
+          ZoneTheme.forest => 9,
+          ZoneTheme.meadow => 4,
+          ZoneTheme.tundra || ZoneTheme.shore || ZoneTheme.swamp => 3,
+          ZoneTheme.ruins || ZoneTheme.crystal || ZoneTheme.blocklands => 2,
+          _ => 1,
+        };
+    int h(int a, int b) {
+      var x = a * 73856093 ^ b * 19349663;
+      return (x ^ (x >> 13)) & 0x7fffffff;
+    }
+
+    for (var dy = -1; dy <= 1; dy++) {
+      for (var dx = -1; dx <= 1; dx++) {
+        final zx = pz.zx + dx, zy = pz.zy + dy;
+        if (zx < 0 || zy < 0 || zx >= Zones.grid || zy >= Zones.grid) continue;
+        final z = Zones.all[zy * Zones.grid + zx];
+        if (_trees.containsKey(z.id)) continue;
+        final list = <Tree>[];
+        final n = countFor(z);
+        for (var i = 0; i < n; i++) {
+          // Interior scatter, away from the borders (4..43) by construction.
+          final tx = 4 + h(z.id * 31 + i, 5) % 40;
+          final ty = 4 + h(z.id * 31 + i, 11) % 40;
+          if (z.isVillage) {
+            final mid = Zones.zoneTiles ~/ 2;
+            if ((tx - mid).abs() < 9 && (ty - mid).abs() < 9) continue; // plaza
+          }
+          final wx = (zx * Zones.zoneTiles + tx) * TileMap.ts;
+          final wy = (zy * Zones.zoneTiles + ty) * TileMap.ts;
+          if (map.solidAtWorld(wx, wy)) continue;
+          final cold = z.theme == ZoneTheme.tundra || z.theme == ZoneTheme.forest && i.isOdd;
+          final kind = '${cold ? 'pine' : 'oak'}_${h(z.id, 17 + i) % 2}';
+          final t = Tree(kind: kind, map: map, position: Vector2(wx, wy));
+          list.add(t);
+          world.add(t);
+        }
+        _trees[z.id] = list;
+      }
+    }
+    _trees.keys.where((id) {
+      final zx = id % Zones.grid, zy = id ~/ Zones.grid;
+      return (zx - pz.zx).abs() > 2 || (zy - pz.zy).abs() > 2;
+    }).toList().forEach((id) {
+      for (final t in _trees.remove(id)!) {
+        t.removeFromParent();
       }
     });
   }
@@ -384,9 +485,13 @@ class BlocklingsGame extends FlameGame {
   Zone? get currentZone => _zoneId == null ? null : Zones.byId(_zoneId!);
 
   void _spawnEnemy() {
+    // Spawn INSIDE the player's current room (each screen is its own stage).
+    const rp = TileMap.roomPx;
+    final cx = (player.position.x / rp).floorToDouble() * rp + rp / 2;
+    final cy = (player.position.y / rp).floorToDouble() * rp + rp / 2;
     final ang = (_seq * 2.3999632) % (math.pi * 2); // golden-angle scatter
-    final dist = 240.0 + (_seq % 5) * 40;
-    final at = map.nearestOpen(player.position + Vector2(math.cos(ang), math.sin(ang)) * dist);
+    final dist = 70.0 + (_seq % 5) * 32; // within the room
+    final at = map.nearestOpen(Vector2(cx + math.cos(ang) * dist, cy + math.sin(ang) * dist));
     final wild = Blockling.fromSeed('block:$blockHeight:wild:${_seq++}');
     // Scale the wild Blockling to the zone it spawns in.
     final zone = Zones.atWorld(at.x, at.y, TileMap.ts);
