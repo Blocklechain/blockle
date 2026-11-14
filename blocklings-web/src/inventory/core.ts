@@ -28,6 +28,10 @@ export class InventoryCore implements InventoryAPI {
   private equipMap: Record<string, string | null> = {}
   private defSource: DefSource | null = null
   private changeListeners: Array<() => void> = []
+  /** Integrator-wired (upgrading module): per-item upgrade/enchant/reforge delta. */
+  private upgradeBonus:
+    | ((id: string, base: { atk: number; def: number; str: number; int: number; agi: number }) => Partial<{ atk: number; def: number; str: number; int: number; agi: number }>)
+    | null = null
 
   constructor(private readonly gameApi: GameAPI) {
     for (const slot of GEAR_SLOTS) this.equipMap[slot] = null
@@ -54,6 +58,18 @@ export class InventoryCore implements InventoryAPI {
   }
 
   // --- wiring ---------------------------------------------------------------
+
+  /**
+   * Integrator wires this to the upgrading module's bonusFor(id, base) so
+   * equippedStats() reflects +levels, enchants, and reforge overrides. The
+   * delta is applied on top of the catalog spread the inventory already sums.
+   */
+  setUpgradeBonus(
+    fn: (id: string, base: { atk: number; def: number; str: number; int: number; agi: number }) => Partial<{ atk: number; def: number; str: number; int: number; agi: number }>,
+  ): void {
+    this.upgradeBonus = fn
+    this.notify()
+  }
 
   /** Integrator wires this to ItemsAPI.def for real catalog data. */
   setDefSource(fn: DefSource): void {
@@ -146,9 +162,13 @@ export class InventoryCore implements InventoryAPI {
     for (const slot of GEAR_SLOTS) {
       const id = this.equipMap[slot]
       if (!id) continue
+      // Catalog base spread for this piece (all five keys, zero-filled).
+      const base = { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
       const stats = this.def(id).stats
-      if (!stats) continue
-      for (const k of STAT_KEYS) total[k] += stats[k] ?? 0
+      if (stats) for (const k of STAT_KEYS) base[k] = stats[k] ?? 0
+      // Upgrade/enchant/reforge delta (0 for untouched gear, or when unwired).
+      const bonus = this.upgradeBonus?.(id, base) ?? {}
+      for (const k of STAT_KEYS) total[k] += base[k] + (bonus[k] ?? 0)
     }
     return total
   }

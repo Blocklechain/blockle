@@ -18,7 +18,7 @@ import { saveRegistry } from '../save/registry'
 import { MAX_LEVEL, XP_CAP, bracketProgress, levelForXp, xpForLevel } from './curve'
 import { levelUpLine } from './flavor'
 import { createSkillsPanel } from './panel'
-import { skillTreeApi, initSkillTree, dumpTree, loadTree } from './tree/core'
+import { skillTreeApi, initSkillTree, dumpTree, loadTree, invalidateTree } from './tree/core'
 import { openTreeView, refreshTreeView } from './tree/view'
 
 /** Total XP per skill. The single source of truth; levels are derived. */
@@ -62,9 +62,27 @@ function totalLevel(): number {
 
 let onChanged: (() => void) | null = null
 
+/**
+ * Prestige XP-bonus hook (the ONE read the prestige module needs from this
+ * module's XP path). The integrator wires this to
+ * `(skill) => prestige.masteryModifier(skill, 'xpBonus')`; left null it is a
+ * pure no-op, so skills has no dependency on prestige existing. It scales
+ * INCOMING xp only — the "+5% permanent xp in that skill" mastery perk.
+ */
+let xpBonusSource: ((skill: string) => number) | null = null
+
+/** Integrator setter: supply the per-skill incoming-xp multiplier bonus. */
+export function setPrestigeXpBonus(fn: (skill: string) => number): void {
+  xpBonusSource = fn
+}
+
 function addXp(skill: string, amount: number): void {
   if (!isSkillId(skill)) return
   if (!Number.isFinite(amount) || amount <= 0) return
+
+  // Mastery perk: permanent +xp% in this skill (0 when prestige isn't wired).
+  const bonus = xpBonusSource?.(skill) ?? 0
+  if (Number.isFinite(bonus) && bonus > 0) amount = amount * (1 + bonus)
 
   const before = xpBySkill.get(skill)!
   const after = Math.min(XP_CAP, before + amount)
@@ -107,6 +125,30 @@ export const skillsApi: SkillsAPI = {
   },
   addXp,
   total: totalLevel
+}
+
+/**
+ * Prestige reset hook (the ONE mutation the prestige module needs). Resets a
+ * maxed skill's total XP to 0 (back to level 1) so it can be re-ground for a
+ * permanent Mastery star — the prestige module owns the star/perk bookkeeping.
+ *
+ * Guarded to level 99 so nothing else can wipe progress through here. Reuses
+ * the exact same state + refresh machinery as a normal XP change (the private
+ * `xpBySkill` map, `onChanged`, the 'save:dirty' emit) and invalidates the
+ * talent-tree caches (a straight-to-zero reset fires no 'level:up', so the
+ * tree wouldn't otherwise drop that skill's now-unearned auto nodes).
+ *
+ * Returns true if a reset happened. Chosen perk-tree picks are deliberately
+ * left intact (they stay in the save blob); only the skill's own level resets.
+ */
+export function prestigeResetSkill(skill: string): boolean {
+  if (!isSkillId(skill)) return false
+  if (levelForXp(xpBySkill.get(skill)!) < MAX_LEVEL) return false
+  xpBySkill.set(skill, 0)
+  invalidateTree()
+  events.emit('save:dirty', { why: 'prestige-reset' })
+  onChanged?.()
+  return true
 }
 
 // ---------------------------------------------------------------------------

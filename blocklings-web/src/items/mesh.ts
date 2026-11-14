@@ -514,6 +514,52 @@ function amuletBase(g: THREE.Group): void {
   box(g, -0.08, 0.36, 0, 0.18, 0.03, 0.03, 0xc9c9c9)
 }
 
+// ---------------------------------------------------------------------------
+// Legendary accessories (endgame quest payoffs — see catalog.ts LEGENDARIES)
+// ---------------------------------------------------------------------------
+
+/** A draped cape on a shoulder yoke; tinted + faintly glowing per legendary. */
+function buildCape(id: string): THREE.Group {
+  const g = group()
+  const ascended = id === 'cape_ascended'
+  const cloth = ascended ? 0xf4ead0 : 0xe8c15a // radiant ivory vs Seal-gold
+  const trim = ascended ? 0x9fe8ff : 0xb8860b
+  const glow = faintGlow(ascended ? 0x9fe8ff : 0xffd98a)
+  // shoulder yoke / clasp
+  box(g, 0, 0.62, 0, 0.42, 0.07, 0.1, trim, glow)
+  box(g, 0, 0.6, 0.06, 0.1, 0.1, 0.05, trim, glow) // clasp knot
+  // the drape, tapering downward
+  box(g, 0, 0.44, -0.02, 0.38, 0.22, 0.05, cloth)
+  box(g, 0, 0.24, -0.03, 0.3, 0.22, 0.05, cloth)
+  box(g, 0, 0.08, -0.04, 0.2, 0.18, 0.05, cloth)
+  box(g, 0, 0.42, 0.015, 0.1, 0.5, 0.01, trim, glow) // center seam
+  return g
+}
+
+/** A rune-struck raid sigil (token material): a glowing coin on edge. */
+function buildToken(_id: string): THREE.Group {
+  const g = group()
+  const glow = faintGlow(0xffcb57)
+  box(g, 0, 0.2, 0, 0.3, 0.3, 0.06, 0xb8860b) // coin body (standing on edge)
+  box(g, 0, 0.2, 0.035, 0.2, 0.2, 0.01, 0xffcb57, glow) // engraved face
+  box(g, 0, 0.2, 0.04, 0.06, 0.12, 0.01, 0x6a3a12) // rune slash
+  return g
+}
+
+/** A floating heart-stone in a cut-crystal cradle — the Unending relic. */
+function buildRelic(_id: string): THREE.Group {
+  const g = group()
+  const glow = faintGlow(0xff8a4a)
+  // cradle arms
+  box(g, 0.16, 0.22, 0, 0.05, 0.4, 0.05, 0x6cb8ff)
+  box(g, -0.16, 0.22, 0, 0.05, 0.4, 0.05, 0x6cb8ff)
+  box(g, 0, 0.04, 0, 0.3, 0.05, 0.1, 0x6cb8ff) // base
+  // the warm heart, suspended + glowing
+  box(g, 0, 0.3, 0, 0.18, 0.18, 0.18, 0xff8a4a, { emissive: 0xff8a4a, emissiveIntensity: 0.5 })
+  box(g, 0, 0.3, 0.095, 0.08, 0.08, 0.01, 0xffd9b0, glow) // facet glint
+  return g
+}
+
 function buildAccessory(id: string): THREE.Group {
   const g = group()
   switch (id) {
@@ -598,11 +644,28 @@ function buildFallback(): THREE.Group {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/** Legendaries / tokens whose ids don't carry a copper..mythic tail. */
+const NAMED_MESH: Record<string, () => THREE.Group> = {
+  sword_seal_breaker: () => buildSword(5),
+  relic_frostfang: () => buildSword(5),
+  relic_cinderwall: () => buildShield(5),
+  relic_bonecaller: () => buildStaff(5),
+  relic_eternal_cleaver: () => buildAxe(5),
+  raid_token: () => buildToken('raid_token'),
+}
+
 export function buildItemMesh(def: ItemDef | undefined): THREE.Group {
   if (!def) return buildFallback()
   const id = def.id
+  // Named legendaries / tokens use non-material ids (no copper..mythic tail), so
+  // they'd miss tierOf + the fam switch; route them explicitly to the right
+  // builder at mythic tier so they render as real gear, never a fallback crate.
+  const named = NAMED_MESH[id]
+  if (named) return named()
   const fam = id.slice(0, id.indexOf('_') >= 0 ? id.indexOf('_') : id.length)
   switch (fam) {
+    case 'cape': return buildCape(id)
+    case 'relic': return buildRelic(id)
     case 'sword': return buildSword(tierOf(id))
     case 'axe': return buildAxe(tierOf(id))
     case 'staff': return buildStaff(tierOf(id))

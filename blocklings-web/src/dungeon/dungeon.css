@@ -1,0 +1,176 @@
+/* Trial of the Deep — dungeon overlay UI.
+ *
+ * FOOTGUN NOTE: none of these #ui direct-child roots is a persistent
+ * full-screen, pointer-events:none layer, so none needs an entry in the
+ * `#ui > .class` override list in src/style.css:
+ *   - .bl-dng-enter : content-sized button (bottom centre)
+ *   - .bl-dng-hud   : fit-content pill (top centre) — taps outside it fall through
+ *   - .bl-dng-modal : full-screen modal that WANTS to capture; display:none when idle
+ *   - .bl-dng-veil  : full-screen fade; display:none except during the brief fade
+ */
+
+.bl-dng-enter {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%);
+  display: none;
+  min-height: 48px;
+  padding: 12px 22px;
+  border: 2px solid #ff8a3a;
+  border-radius: 12px;
+  background: linear-gradient(#2a1a12, #1a0f0a);
+  color: #ffd9b0;
+  font: 600 16px/1.2 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.3px;
+  box-shadow: 0 0 22px rgba(255, 106, 42, 0.5), inset 0 0 12px rgba(255, 106, 42, 0.25);
+  cursor: pointer;
+  text-shadow: 0 1px 2px #000;
+}
+.bl-dng-enter.show { display: inline-block; }
+.bl-dng-enter:active { transform: translateX(-50%) scale(0.96); }
+
+/* ---- fade veil ---- */
+.bl-dng-veil {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  display: none;
+  transition: opacity 420ms ease;
+}
+.bl-dng-veil.on { display: block; }
+.bl-dng-veil.black { opacity: 1; }
+
+/* ---- run HUD (fit-content pill, top centre) ---- */
+.bl-dng-hud {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: fit-content;
+  max-width: 94vw;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 138, 58, 0.5);
+  border-radius: 14px;
+  background: rgba(14, 10, 14, 0.82);
+  backdrop-filter: blur(4px);
+  color: #f2e4d6;
+  font: 500 13px/1.2 'Segoe UI', system-ui, sans-serif;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+.bl-dng-hud.show { display: flex; }
+.bl-dng-hud-top { display: flex; align-items: baseline; gap: 10px; white-space: nowrap; }
+.bl-dng-hud-wave { font-size: 20px; font-weight: 800; color: #ffcf8f; text-shadow: 0 0 10px rgba(255, 138, 58, 0.6); }
+.bl-dng-hud-tier { font-size: 12px; color: #c9a98f; }
+.bl-dng-hud-stats { display: flex; gap: 14px; font-size: 12px; color: #d8c7b6; }
+.bl-dng-hud-stats b { color: #fff; font-weight: 700; }
+.bl-dng-hud-line { font-size: 12px; color: #ffb27a; min-height: 14px; }
+.bl-dng-flee {
+  margin-top: 2px;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid #7a4a3a;
+  border-radius: 9px;
+  background: #241512;
+  color: #e8b79c;
+  font: 600 12px 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+.bl-dng-flee:active { transform: scale(0.95); }
+
+/* ---- toast ---- */
+.bl-dng-toast {
+  position: absolute;
+  left: 50%;
+  top: calc(env(safe-area-inset-top) + 92px);
+  transform: translateX(-50%) translateY(-8px);
+  display: none;
+  padding: 9px 18px;
+  border-radius: 11px;
+  border: 1px solid rgba(126, 217, 87, 0.5);
+  background: rgba(16, 24, 14, 0.9);
+  color: #d9f5c5;
+  font: 600 13px 'Segoe UI', system-ui, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 240ms ease, transform 240ms ease;
+  max-width: 90vw;
+  text-align: center;
+}
+.bl-dng-toast.show { display: block; opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---- modal (difficulty picker + run summary) ---- */
+.bl-dng-modal {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 3, 6, 0.72);
+  backdrop-filter: blur(3px);
+}
+.bl-dng-modal.show { display: flex; }
+.bl-dng-card {
+  width: min(460px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  border: 2px solid #ff8a3a;
+  border-radius: 18px;
+  background: linear-gradient(#1a1118, #120b10);
+  box-shadow: 0 0 40px rgba(255, 106, 42, 0.4);
+  padding: 20px;
+  color: #f2e4d6;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+.bl-dng-card h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  color: #ffcf8f;
+  text-shadow: 0 0 12px rgba(255, 138, 58, 0.6);
+  text-align: center;
+}
+.bl-dng-sub { text-align: center; font-size: 12px; color: #c9a98f; margin-bottom: 14px; }
+.bl-dng-shards { text-align: center; font-size: 13px; color: #9fe8ff; margin-bottom: 14px; }
+.bl-dng-tier {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 48px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(255, 138, 58, 0.4);
+  border-radius: 12px;
+  background: rgba(40, 24, 18, 0.5);
+  color: #f2e4d6;
+  cursor: pointer;
+  font: inherit;
+}
+.bl-dng-tier:active { transform: scale(0.98); }
+.bl-dng-tier.locked { opacity: 0.5; cursor: not-allowed; border-style: dashed; }
+.bl-dng-tier-name { font-size: 16px; font-weight: 700; color: #ffd9b0; }
+.bl-dng-tier-blurb { font-size: 12px; color: #c9a98f; margin-top: 3px; }
+.bl-dng-tier-meta { font-size: 12px; color: #9ad67e; margin-top: 5px; }
+.bl-dng-tier.locked .bl-dng-tier-meta { color: #d9594f; }
+.bl-dng-btn {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 8px;
+  border: 1px solid #7a4a3a;
+  border-radius: 12px;
+  background: #241512;
+  color: #e8b79c;
+  font: 600 15px 'Segoe UI', system-ui, sans-serif;
+  cursor: pointer;
+}
+.bl-dng-btn.primary { border-color: #ff8a3a; background: linear-gradient(#2a1a12, #1a0f0a); color: #ffd9b0; }
+.bl-dng-btn:active { transform: scale(0.98); }
+.bl-dng-summary-row { display: flex; justify-content: space-between; padding: 7px 2px; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 14px; }
+.bl-dng-summary-row b { color: #ffcf8f; }
+.bl-dng-newbest { text-align: center; color: #9fe8ff; font-weight: 700; margin: 10px 0; text-shadow: 0 0 10px rgba(159,232,255,0.5); }

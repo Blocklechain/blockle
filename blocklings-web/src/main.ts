@@ -34,14 +34,25 @@ import { needsCreator, showCreator, installAppearanceHook } from './creator'
 import { applyLook } from './player/index'
 import { initSave } from './save'
 import { initItems, itemsApi } from './items'
-import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
+import { initSkills, skillsApi, skillTree, maxHpBonus, prestigeResetSkill, setPrestigeXpBonus } from './skills'
+import {
+  initPrestige,
+  masteryModifier,
+  masteryBonus,
+  setSkillLevelSource,
+  setSkillReset
+} from './prestige'
+import type { SkillTreeAPI } from './types'
 import { initInventory } from './inventory'
+import { initUpgrading } from './upgrading'
 import { initMinting } from './minting'
 import { initQuests } from './quests'
 import { initQuestGuide } from './quests/guide'
 import { initNpcs, setQuestsApi, setPay, setGoldPay } from './npcs'
 import { initCombat, setAutoRetaliate } from './combat'
 import { MobRig } from './combat/mobs'
+import { initRaids } from './raids'
+import { initDungeon } from './dungeon'
 import { initPets } from './pets'
 import { initGather } from './gather'
 import { initCrafting } from './crafting'
@@ -294,6 +305,33 @@ function enterWorld(): void {
     if (skill === 'vitality') applyVitality(4)
   })
 
+  // --- prestige / mastery (reset a level-99 skill → 1 for a permanent star) -
+  //
+  // The endgame flex layer on top of skills. It never imports skills/combat/
+  // gather directly — the integrator wires the three hooks here:
+  //   • read skill levels     → skillsApi.level
+  //   • perform the 99 → 1 reset → prestigeResetSkill (guarded to level 99)
+  //   • feed the "+xp% in this skill" mastery perk back into skills' incoming-
+  //     XP path                → masteryModifier(skill, 'xpBonus')
+  // The 'mod' mastery perk is folded into combat/gather/crafting below via
+  // masteryBonus(key). No player rig aura hook exists yet, so setAuraSink is
+  // intentionally left unwired — the prestige module falls back to dispatching
+  // window CustomEvent('blocklings:prestige-aura', {detail:{tier,color}}),
+  // which the character rig can listen for when it grows an aura attach point.
+  initPrestige(api)
+  setSkillLevelSource((s) => skillsApi.level(s))
+  setSkillReset((s) => prestigeResetSkill(s))
+  setPrestigeXpBonus((s) => masteryModifier(s, 'xpBonus'))
+
+  // A skill-tree view onto the live talents with the summed 'mod' mastery
+  // bonus folded straight into every modifier key — handed to gather/crafting
+  // (which consume a SkillTreeAPI) so a Mastery 'mod' perk stacks onto the
+  // matching talent effect with zero extra plumbing.
+  const masteryTree: SkillTreeAPI = {
+    ...skillTree,
+    modifier: (key) => skillTree.modifier(key) + masteryBonus(key)
+  }
+
   // --- inventory (+ real catalog defs + live 3D item viewer) ----------------
 
   const inv = initInventory(api)
@@ -324,6 +362,20 @@ function enterWorld(): void {
     bundles: () => minting.bundles()
   })
 
+  // --- upgrading (Anvil of Ascension: UPGRADE +0..+10 / ENCHANT / REFORGE) --
+  // Needs the inventory (owned gear + material escrow), the real catalog defs,
+  // and the blacksmithing level. Its per-item stat delta (bonusFor) feeds back
+  // into inventory.equippedStats via setUpgradeBonus, so a +7 flaming sword hits
+  // like one everywhere combat/pets/raids read equippedStats. The anvil prop +
+  // its interact anchor are placed by world/index.ts (registerAnvilStation);
+  // the module self-detects proximity and drives its own prompt/panel. The
+  // 3D viewer is left unlent (the panel shows its flat-color placeholder).
+  const upgrading = initUpgrading(api)
+  upgrading.setInventory(inv)
+  upgrading.setDefSource((id) => itemsApi.def(id))
+  upgrading.setSkillLevel((s) => skillsApi.level(s))
+  inv.setUpgradeBonus((id, base) => upgrading.bonusFor(id, base))
+
   // --- quests (29 defs + log panel + tracker; 'quests' save provider) -------
 
   const quests = initQuests(api)
@@ -349,7 +401,7 @@ function enterWorld(): void {
   combat.setMeshSource((id) => itemsApi.buildMesh(id))
   combat.setDefSource((id) => itemsApi.def(id))
   combat.setEquipmentSource(() => inv.equipment())
-  combat.setModifierSource((key) => skillTree.modifier(key))
+  combat.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
   // Combat already folds gear def + the defense skill into `amount` (its
   // internal defenseReduction uses the skills source), so here we just apply
   // the hit and play the hero's hurt flash/knockback.
@@ -364,6 +416,53 @@ function enterWorld(): void {
   combat.setAutoWalk((t) => setAutoWalk(t))
   combat.setSpecialAnimTrigger((kind, onStrike) => triggerSpecial(kind, onStrike))
   onAttack(() => combat.playerStrike())
+
+  // --- raids (four apex world bosses summoned at far-zone altars) -----------
+  // Reuses combat's MobRig for adds, the shared swing path, and the same
+  // stat/skill/modifier sources; self-drives its own loop + places its altar
+  // props. onPlayerStrike runs IN ADDITION to combat.playerStrike() below.
+  const raids = initRaids(api)
+  raids.setMobRigSource((species, boss) => {
+    const def = SPECIES.find((s) => s.id === species)
+    return def ? new MobRig(def, boss) : null // MobRig satisfies MobRigLike structurally
+  })
+  raids.setStatsSource(() => inv.equippedStats())
+  raids.setSkillsSource((s) => skillsApi.level(s))
+  raids.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
+  raids.setInventory(inv)
+  raids.setPlayerDamage((amount) => {
+    player.hp = Math.max(0, player.hp - amount)
+    playerHurt()
+  })
+  raids.setPlayerDeath((onDown) => playerDie(onDown))
+  raids.setAttackTrigger(() => triggerAttack())
+  raids.setPresenceSource(() => [...hero.net.remotes.values()].map((r) => ({ x: r.pos.x, z: r.pos.z })))
+  onAttack(() => raids.onPlayerStrike())
+
+  // --- dungeon (Trial of the Deep: repeatable wave-survival arena) ----------
+  // Entered from the gate prop it places itself in the Ashen Dungeons region;
+  // teleports the player into a self-contained out-of-world voxel room and
+  // back. Reuses combat's MobRig, the shared swing path, and the same stat/
+  // skill/modifier sources. onPlayerStrike runs IN ADDITION to combat's (the
+  // arena room sits far outside the collision/spawn window, so combat ignores
+  // it). Self-drives its own loop; emits 'dungeon:cleared' + reuses mob/xp
+  // events so music, pets, quests and achievements all react to arena fights.
+  const dungeon = initDungeon(api)
+  dungeon.setMobRigSource((species, boss) => {
+    const def = SPECIES.find((s) => s.id === species)
+    return def ? new MobRig(def, boss) : null // MobRig satisfies MobRigLike structurally
+  })
+  dungeon.setStatsSource(() => inv.equippedStats())
+  dungeon.setSkillsSource((s) => skillsApi.level(s))
+  dungeon.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
+  dungeon.setInventory(inv)
+  dungeon.setPlayerDamage((amount) => {
+    player.hp = Math.max(0, player.hp - amount)
+    playerHurt()
+  })
+  dungeon.setPlayerDeath((onDown) => playerDie(onDown))
+  dungeon.setAttackTrigger(() => triggerAttack())
+  onAttack(() => dungeon.onPlayerStrike())
 
   // --- pets (rare drops, companion AI, collection panel, NFT minting) -------
 
@@ -386,7 +485,7 @@ function enterWorld(): void {
   const gather = initGather(api)
   gather.setInventory(inv)
   gather.setSwing(() => triggerAttack())
-  gather.setSkillTree(skillTree)
+  gather.setSkillTree(masteryTree)
   // (zone node registration self-runs off gather's 1 Hz residency poll)
 
   // --- crafting (forge/stove/alchemy/loom stations + recipe panel) ----------
@@ -394,7 +493,7 @@ function enterWorld(): void {
   const crafting = initCrafting(api)
   crafting.setInventory(inv)
   crafting.setSkills(skillsApi)
-  crafting.setSkillTree(skillTree)
+  crafting.setSkillTree(masteryTree)
   crafting.setDefSource((id) => itemsApi.def(id))
 
   // --- waystones (attune + teleport network; 'stones' save provider) --------

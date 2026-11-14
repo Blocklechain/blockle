@@ -9,5 +9,18 @@
  *                       talent effects via skillTree.modifier(key) (keys like
  *                       'crit', 'cleave', 'lifesteal', 'mineSpeed',
  *                       'doubleOre', 'gatherSpeed', 'recipe:<id>', 'maxHpPct')
+ *
+ * Prestige hooks (wired by the integrator so the prestige module never imports
+ * this one): `prestigeResetSkill(skill)` wipes a maxed skill back to level 1
+ * for a Mastery star; `setPrestigeXpBonus(fn)` feeds the "+xp%" mastery perk
+ * into the incoming-XP path.
  */
-export { initSkills, skillsApi, maxHpBonus, damageReduction, skillTree } from './skills/index'
+export {
+  initSkills,
+  skillsApi,
+  maxHpBonus,
+  damageReduction,
+  skillTree,
+  prestigeResetSkill,
+  setPrestigeXpBonus
+} from './skills/index'

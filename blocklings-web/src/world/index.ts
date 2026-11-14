@@ -41,6 +41,9 @@ import { buildVillage } from './village'
 // Crafting-station props (forge/stove/alchemy/loom) — the crafting module's
 // sanctioned world-side hook: pure kit-vocabulary builders + spot registry.
 import { registerCraftingStations } from '../crafting/stations'
+// Anvil of Ascension (upgrading module's sanctioned world-side hook: pure
+// kit-vocabulary builder + spot registry read back via anvilSpot()).
+import { registerAnvilStation } from '../upgrading/station'
 import { paintRoads } from './roads'
 import { buildBorders } from './borders'
 import { buildRegions } from './regions'
@@ -133,6 +136,7 @@ export function createWorld(scene: THREE.Scene): VillageWorld {
   buildBorders(ctx, scene)
   buildRegions(ctx, scene)
   registerCraftingStations(ctx) // after regions so clear-spot checks see all props
+  registerAnvilStation(ctx) // Anvil of Ascension, right after the crafting stations
   buildGround(ctx)
 
   // --- bake each batch into one InstancedMesh (one draw call each)

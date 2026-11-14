@@ -79,6 +79,23 @@ export interface GameEvents {
   'auth:changed': { signedIn: boolean; name?: string }
   /** An equipped item's special ability was activated (ItemSpecial.id). */
   'special:used': { id: string }
+
+  /* ---- wave-4 append (Trial of the Deep dungeon) ---- */
+
+  /**
+   * A Trial of the Deep run ended (death or flee). Carries the tier, the
+   * waves cleared this run (= score), the persisted personal best for that
+   * tier after the run, whether this run set a new best, and the Deep Shards
+   * banked over the run. Additive append — existing handlers are unaffected.
+   */
+  'dungeon:cleared': {
+    tier: number
+    tierName: string
+    waves: number
+    best: number
+    newBest: boolean
+    shards: number
+  }
 }
 
 type Handler<K extends keyof GameEvents> = (payload: GameEvents[K]) => void

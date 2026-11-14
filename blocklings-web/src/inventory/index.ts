@@ -26,6 +26,18 @@ export interface InventoryModule extends InventoryAPI {
    *   inv.setMintHooks({ open, chainsOf, bundles })
    */
   setMintHooks(hooks: MintHooks): void
+  /**
+   * Wire the upgrading module's per-item delta into equippedStats:
+   *   inv.setUpgradeBonus(upgrading.bonusFor)
+   * The delta (from +levels / enchants / reforge) is summed on top of the
+   * catalog spread. Until wired, gear reads its base catalog stats only.
+   */
+  setUpgradeBonus(
+    fn: (
+      id: string,
+      base: { atk: number; def: number; str: number; int: number; agi: number }
+    ) => Partial<{ atk: number; def: number; str: number; int: number; agi: number }>
+  ): void
 }
 
 export function initInventory(api: GameAPI): InventoryModule {
@@ -43,6 +55,7 @@ export function initInventory(api: GameAPI): InventoryModule {
     equippedStats: () => core.equippedStats(),
     setMeshSource: (fn) => viewer.viewer.setMeshSource(fn),
     setDefSource: (fn) => core.setDefSource(fn),
-    setMintHooks: (hooks) => viewer.setMintHooks(hooks)
+    setMintHooks: (hooks) => viewer.setMintHooks(hooks),
+    setUpgradeBonus: (fn) => core.setUpgradeBonus(fn)
   }
 }

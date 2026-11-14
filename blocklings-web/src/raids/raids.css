@@ -1,0 +1,126 @@
+/* Raids overlay — content-sized roots only (never a full-screen #ui child),
+   so none of these trip the #ui pointer-events footgun; no src/style.css edit
+   is needed. Interactive bits opt back into pointer events explicitly. */
+
+.bl-raid-summon {
+  position: fixed;
+  left: 50%;
+  bottom: 148px;
+  transform: translateX(-50%) translateY(10px);
+  z-index: 14;
+  padding: 13px 22px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 13px;
+  background: linear-gradient(180deg, #b23b3b, #7e2626);
+  color: #fff;
+  font: 600 15px/1.2 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.2px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  max-width: 86vw;
+}
+.bl-raid-summon.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+.bl-raid-summon:active {
+  transform: translateX(-50%) translateY(2px);
+}
+
+/* Shared boss-HP bar — pinned top-centre during the fight. */
+.bl-raid-bar {
+  position: fixed;
+  left: 50%;
+  top: calc(env(safe-area-inset-top) + 10px);
+  transform: translateX(-50%) translateY(-14px);
+  z-index: 14;
+  width: min(640px, 92vw);
+  padding: 9px 14px 11px;
+  border-radius: 12px;
+  background: rgba(14, 12, 18, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  color: #f3efe8;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.bl-raid-bar.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.bl-raid-bar-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.bl-raid-bar-name {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.3px;
+}
+.bl-raid-bar-title {
+  font-size: 12px;
+  opacity: 0.7;
+  font-style: italic;
+}
+.bl-raid-bar-track {
+  position: relative;
+  height: 15px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.bl-raid-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 100%;
+  border-radius: 8px;
+  transition: width 0.18s ease-out;
+  background: linear-gradient(180deg, #ff6a5a, #c23b2f);
+}
+.bl-raid-bar-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+.bl-raid-bar-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.bl-raid-bar-phase {
+  font-weight: 600;
+}
+.bl-raid-bar-enrage {
+  opacity: 0.85;
+}
+.bl-raid-bar-enrage.hot {
+  color: #ff8a5a;
+  font-weight: 700;
+}
+.bl-raid-bar-raiders {
+  opacity: 0.8;
+}
+
+@media (max-width: 520px) {
+  .bl-raid-bar-title { display: none; }
+  .bl-raid-summon { bottom: 160px; }
+}

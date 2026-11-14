@@ -347,6 +347,124 @@ const ACCESSORIES: ItemDef[] = [
   acc('amulet_block', 'BLOCK Pendant', 4, 1000, { atk: 2, def: 2, int: 2 }, 'A glowing BLOCK pendant. HODL it close to your heart.', 25),
 ]
 
+// ---------------------------------------------------------------------------
+// Legendaries — the endgame quest payoffs (The Four Seals / Depths Unending /
+// The Ascended Path, see src/quests/defs4.ts). Reserved ids granted ONLY by
+// those finale quests; registered here so they resolve to real equippable gear
+// (name/slot/rarity/stats/mesh) instead of a fallback crate. Items, not
+// currency — ECONOMY LAW intact; mint keeps uid as any other item (NFT LAW).
+// ---------------------------------------------------------------------------
+const LEGENDARIES: ItemDef[] = [
+  {
+    id: 'sword_seal_breaker',
+    name: 'Sealbreaker, the Last Argument',
+    slot: 'weapon',
+    rarity: 5,
+    stats: { atk: 40, str: 20 },
+    levelReq: 40,
+    value: 12000,
+    gripStyle: 'forward',
+    special: {
+      id: 'lunge_nova',
+      name: 'Seal-Shatter',
+      desc: 'Dash-pierce that detonates the realm’s own bound magic where you land. Four Seals’ worth of opinion, delivered at once.',
+      cooldownS: 12,
+    },
+    desc: 'Four Seals folded into one edge, bound in gold, balanced for a very short hero with a very large head. Hums the Seals in harmony right before you do something brave or extremely dumb.',
+  },
+  {
+    id: 'cape_sealwarden',
+    name: 'Cape of the Four Seals',
+    slot: 'accessory',
+    rarity: 5,
+    stats: { def: 14, str: 6 },
+    levelReq: 40,
+    value: 9000,
+    desc: 'Woven from the quiet that falls when a Seal breaks. Warden of the Four Seals, and everyone can tell.',
+  },
+  {
+    id: 'relic_unending_depths',
+    name: 'Heart of the Unending Depths',
+    slot: 'accessory',
+    rarity: 5,
+    stats: { int: 24, def: 10 },
+    levelReq: 40,
+    value: 11000,
+    desc: 'The warm thing thirty floors were a lid on. Older than the dungeon, older than the King. It waited for someone who’d come back up. Nobody ever had.',
+  },
+  {
+    id: 'cape_ascended',
+    name: 'Mantle of the Ascended',
+    slot: 'accessory',
+    rarity: 5,
+    stats: { atk: 10, def: 10, int: 10, agi: 10 },
+    levelReq: 40,
+    value: 15000,
+    desc: 'Sits on shoulders that are, for the record, still absurdly square, under a head still magnificently too big. That’s the point. That was always the point.',
+  },
+
+  // --- Raid unique legendaries (chance drops; see src/raids/bosses.ts) ------
+  {
+    id: 'relic_frostfang',
+    name: 'Frostfang, the Last Laugh',
+    slot: 'weapon',
+    rarity: 5,
+    stats: { atk: 48, str: 12, agi: 8 },
+    levelReq: 40,
+    value: 14000,
+    gripStyle: 'forward',
+    special: { id: 'lunge_nova', name: 'Frostfang Lunge', desc: 'Dash-pierce that erupts in a glacial nova. Everything nearby takes up ice sculpture, briefly, screaming.', cooldownS: 12 },
+    desc: 'Unique drop: The Frostwyrm. Cold enough to argue with. The laugh is the last thing a lot of things heard.',
+  },
+  {
+    id: 'relic_cinderwall',
+    name: 'Cinderwall, the Load-Bearing Grudge',
+    slot: 'shield',
+    rarity: 5,
+    stats: { def: 38, str: 10 },
+    levelReq: 40,
+    value: 14000,
+    gripStyle: 'shield',
+    special: { id: 'bash_shockwave', name: 'Cinder Slam', desc: 'Slam out a magma shockwave — everything around you is knocked flat and lightly, memorably, singed.', cooldownS: 14 },
+    desc: 'Unique drop: The Magma Colossus. Holds a grudge and a wall at the same time. Warm to the touch, forever.',
+  },
+  {
+    id: 'relic_bonecaller',
+    name: 'Bonecaller, HR’s Final Memo',
+    slot: 'weapon',
+    rarity: 5,
+    stats: { atk: 40, int: 34 },
+    levelReq: 40,
+    value: 14000,
+    gripStyle: 'upright',
+    special: { id: 'fireball_nova', name: 'Marrow Orb', desc: 'Lob an orb of bound bone-fire that detonates into a necrotic nova. The paperwork files itself.', cooldownS: 11 },
+    desc: 'Unique drop: The Bone Tyrant. Technically a staff. Legally a layoff notice. The marrow remembers every slight.',
+  },
+  {
+    id: 'relic_eternal_cleaver',
+    name: 'The Eternal Cleaver (Still Warm)',
+    slot: 'weapon',
+    rarity: 5,
+    stats: { atk: 52, str: 16 },
+    levelReq: 40,
+    value: 16000,
+    gripStyle: 'forward',
+    special: { id: 'whirlwind_nova', name: 'Eternal Maelstrom', desc: 'A spectral 360 that finishes with a soul-shockwave. Grukk swung it forever; now so do you.', cooldownS: 13 },
+    desc: 'Unique drop: Grukk the Eternal. Still warm. Nobody asks from what. It has not stopped being warm since.',
+  },
+
+  // --- Raid token: a REAL material item (not a scalar balance) — ECONOMY LAW
+  //     wants items, not soft currency, so the raid payout is a stackable mat.
+  {
+    id: 'raid_token',
+    name: 'Raid Sigil',
+    slot: 'material',
+    rarity: 4,
+    value: 120,
+    desc: 'A sigil struck from a fallen raid boss. Heavy with bragging rights and the faint smell of the thing it used to be. A deep-end crafting material.',
+  },
+]
+
 /** The whole catalog, frozen at module load. */
 export const CATALOG: readonly ItemDef[] = [
   ...WEAPONS_AND_ARMOR,
@@ -355,4 +473,5 @@ export const CATALOG: readonly ItemDef[] = [
   ...FOODS,
   ...POTIONS,
   ...ACCESSORIES,
+  ...LEGENDARIES,
 ]

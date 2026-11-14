@@ -713,3 +713,79 @@ export function kitHut(ctx: Ctx, ix: number, iz: number): void {
   batches.misc.add(ix + 1.3, 1.35 + wallH, iz + 1.3, 1.4, 0.55, 1.4, P.STRAW)
   grid.blockRect(ix, iz, 4, 4)
 }
+
+// ---------------------------------------------------------------------------
+// Dungeon entrance (Ashen Dungeons) — STANDALONE prop
+// ---------------------------------------------------------------------------
+
+/**
+ * The Trial of the Deep gateway: a hewn dark-stone archway over a pitch-black
+ * descent, ember runes glowering from the keystone. Unlike the ctx builders
+ * above, this returns a self-contained THREE.Group (its own geometry +
+ * Lambert materials + a single ember PointLight) so the dungeon module can
+ * place and own it directly — it is NOT batched and marks no collision; the
+ * dungeon module drives proximity "enter" interaction instead. Origin at the
+ * base centre, mouth facing +Z. Flat-color voxel vocabulary, same as the
+ * village. ONE light, per the lantern budget.
+ */
+export function kitDungeonEntrance(): THREE.Group {
+  const group = new THREE.Group()
+  const mats: THREE.MeshLambertMaterial[] = []
+  const mat = (c: number, emissive = 0): THREE.MeshLambertMaterial => {
+    const m = new THREE.MeshLambertMaterial({ color: c })
+    if (emissive) m.emissive.setHex(emissive)
+    mats.push(m)
+    return m
+  }
+  const stoneA = mat(DUNGEON_GROUND[0])
+  const stoneB = mat(DUNGEON_GROUND[2])
+  const stoneDark = mat(0x201f26)
+  const voidMat = mat(0x050507)
+  const emberMat = mat(EMBER, EMBER)
+
+  const box = (
+    x: number, y: number, z: number,
+    w: number, h: number, d: number,
+    m: THREE.MeshLambertMaterial
+  ): void => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
+    mesh.position.set(x, y + h / 2, z) // y = bottom of the box
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    group.add(mesh)
+  }
+
+  // sunken platform + black descent mouth
+  box(0, -0.1, 0, 5.2, 0.3, 4.0, stoneA)
+  box(0, 0, 0.9, 2.2, 0.04, 2.0, voidMat) // the dark where the stairs go down
+  // stepped jambs (two chunky pillars)
+  for (const sx of [-1.6, 1.6]) {
+    box(sx, 0, -0.2, 1.1, 3.2, 1.1, stoneB)
+    box(sx, 3.2, -0.2, 1.3, 0.4, 1.3, stoneDark)
+    box(sx, 1.4, 0.35, 1.2, 0.5, 0.2, stoneDark) // ledge facing the mouth
+  }
+  // lintel + keystone
+  box(0, 3.3, -0.2, 4.6, 0.6, 1.2, stoneB)
+  box(0, 3.9, -0.2, 1.1, 0.7, 1.0, stoneDark)
+  // ember runes glowering from the keystone + two jamb sconces
+  box(0, 4.0, 0.3, 0.5, 0.5, 0.12, emberMat)
+  box(-1.6, 1.7, 0.42, 0.3, 0.3, 0.14, emberMat)
+  box(1.6, 1.7, 0.42, 0.3, 0.3, 0.14, emberMat)
+  // broken rubble at the feet
+  box(-2.3, 0, 1.3, 0.7, 0.5, 0.7, stoneDark)
+  box(2.1, 0, 1.5, 0.6, 0.35, 0.6, stoneDark)
+
+  const light = new THREE.PointLight(EMBER, 10, 11, 1.9)
+  light.position.set(0, 2.6, 1.0)
+  group.add(light)
+
+  // dispose hook (geometry is per-mesh here; free it with the group)
+  group.userData['dispose'] = (): void => {
+    group.traverse((o) => {
+      const mesh = o as THREE.Mesh
+      if (mesh.isMesh) mesh.geometry.dispose()
+    })
+    for (const m of mats) m.dispose()
+  }
+  return group
+}

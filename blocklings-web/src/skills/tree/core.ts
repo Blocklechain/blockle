@@ -136,6 +136,16 @@ export const skillTreeApi: SkillTreeAPI = {
  *  Wiring (called only from skills/index.ts).                                *
  * ========================================================================== */
 
+/**
+ * Force a recompute of the auto-grant / modifier caches. Normally driven by
+ * 'level:up', but the prestige module resets a skill's XP straight to 0
+ * WITHOUT a level event, so skills/index.ts calls this after a prestige reset
+ * to drop that skill's now-unearned auto nodes from the modifier aggregate.
+ */
+export function invalidateTree(): void {
+  invalidate()
+}
+
 export function initSkillTree(d: TreeDeps, changed?: () => void): SkillTreeAPI {
   deps = d
   onChanged = changed ?? null
