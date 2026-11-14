@@ -1,314 +1,258 @@
+/// Blocklings — iOS shell.
+///
+/// The game itself is the web build served from https://blockle.org/blocklings/
+/// (updated server-side; no app release needed for game updates). This shell is
+/// a fullscreen WKWebView plus the ONE thing the web cannot do on iOS: real
+/// StoreKit purchases for GOLD, exposed to the page as `window.blocklingsIAP`.
+///
+/// Bridge contract (what the game's gold module expects):
+///   window.blocklingsIAP.buy(sku) -> Promise<{ receipt: string }>
+/// The receipt is the App Store receipt (base64) which the game POSTs to the
+/// accounts service for server-side validation; GOLD is only ever credited
+/// there. Nothing in this shell grants anything.
 import 'dart:async';
+import 'dart:convert';
 
-import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
-import 'account/account_service.dart';
-import 'account/character.dart';
-import 'account/deeplink_service.dart';
-import 'economy/economy.dart';
-import 'game/blocklings_game.dart';
-import 'theme.dart';
-import 'ui/dpad.dart';
-import 'ui/panels.dart';
-import 'ui/title_screen.dart';
+const _gameUrl = 'https://blockle.org/blocklings/';
+const _goldSkus = <String>{'gold_100', 'gold_550', 'gold_1200', 'gold_2600'};
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  DeepLinkService.instance.init(); // receive on-chain settlement callbacks
-  runApp(const BlocklingsApp());
+  runApp(const BlocklingsShell());
 }
 
-class BlocklingsApp extends StatelessWidget {
-  const BlocklingsApp({super.key});
+class BlocklingsShell extends StatelessWidget {
+  const BlocklingsShell({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
+  Widget build(BuildContext context) => const MaterialApp(
         title: 'Blocklings',
         debugShowCheckedModeBanner: false,
-        theme: Bq.theme(),
-        home: const GameScreen(),
+        home: ShellScreen(),
       );
 }
 
-class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+class ShellScreen extends StatefulWidget {
+  const ShellScreen({super.key});
   @override
-  State<GameScreen> createState() => _GameScreenState();
+  State<ShellScreen> createState() => _ShellScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
-  BlocklingsGame? game;
+class _ShellScreenState extends State<ShellScreen> {
+  late final WebViewController _web;
   bool _loading = true;
-  bool _hasProfile = false;
+  bool _failed = false;
+
+  // In-flight IAP requests keyed by the JS-side call id.
+  final Map<String, String> _pendingSkuByCallId = {};
+  StreamSubscription<List<PurchaseDetails>>? _purchases;
 
   @override
   void initState() {
     super.initState();
-    _boot();
-  }
 
-  Future<void> _boot() async {
-    // Restore a saved Blockle session, then prefer a character stored on the
-    // account over the local one (so it follows the player across devices).
-    await AccountService.instance.init();
-    var p = await CharacterProfile.load();
-    if (AccountService.instance.signedIn) {
-      final remote = await AccountService.instance.getCharacter();
-      if (remote != null) {
-        try {
-          p = CharacterProfile.fromJson(remote);
-          await p.save();
-        } catch (_) {/* keep the local profile */}
-      }
-    }
-    if (!mounted) return;
-    setState(() {
-      _hasProfile = p != null;
-      // Always create a game: a real profile if we have one, otherwise a
-      // throwaway profile that only drives the title cinematic.
-      game = BlocklingsGame(
-        profile: p ?? CharacterProfile(name: 'Adventurer', starterElement: 0, multiplayer: false),
-      );
-      _loading = false;
-    });
-  }
-
-  /// A brand-new character was created from the title screen: swap in a game
-  /// bound to the real profile and drop into the world once it has loaded.
-  void _onCreated(CharacterProfile p) {
-    final g = BlocklingsGame(profile: p);
-    setState(() {
-      _hasProfile = true;
-      game = g;
-    });
-    g.loaded.then((_) => g.enterWorld());
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final g = game;
-    if (_loading || g == null) {
-      return const Scaffold(backgroundColor: Bq.bg, body: Center(child: CircularProgressIndicator(color: Bq.accent)));
-    }
-    return Scaffold(
-      body: GameWidget(
-        game: g,
-        overlayBuilderMap: {
-          'title': (_, BlocklingsGame g) => TitleScreen(game: g, hasProfile: _hasProfile, onCreated: _onCreated),
-          'hud': (_, BlocklingsGame g) => Hud(game: g),
-          'inventory': (_, BlocklingsGame g) => InventoryPanel(game: g),
-          'wallet': (_, BlocklingsGame g) => WalletPanel(game: g),
-          'market': (_, BlocklingsGame g) => MarketPanel(game: g),
-          'skills': (_, BlocklingsGame g) => SkillsPanel(game: g),
-          'quests': (_, BlocklingsGame g) => QuestsPanel(game: g),
-          'shop': (_, BlocklingsGame g) => ShopPanel(game: g),
-          'interior': (_, BlocklingsGame g) => InteriorPanel(game: g),
-          'zoneload': (_, BlocklingsGame g) => ZoneLoad(game: g),
-          'roomfade': (_, BlocklingsGame g) => RoomFade(game: g),
-          'map': (_, BlocklingsGame g) => MapPanel(game: g),
+    _web = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFF0d1b2a))
+      ..addJavaScriptChannel('BlocklingsIAPNative', onMessageReceived: (msg) {
+        _onIapRequest(msg.message);
+      })
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageFinished: (_) {
+          _injectIapShim();
+          if (mounted) setState(() => _loading = false);
         },
-        initialActiveOverlays: const ['title'],
-      ),
+        onWebResourceError: (err) {
+          // Only the main frame failing should show the offline screen.
+          if (err.isForMainFrame ?? true) {
+            if (mounted) setState(() => _failed = true);
+          }
+        },
+      ))
+      ..loadRequest(Uri.parse(_gameUrl));
+
+    _purchases = InAppPurchase.instance.purchaseStream.listen(
+      _onPurchaseUpdates,
+      onError: (Object e) => _rejectAll('purchase stream error: $e'),
     );
-  }
-}
-
-/// Always-on heads-up display: health/level, crypto balances, auto-combat toggle
-/// and the panel buttons. Rebuilds on a light timer for the live stats.
-class Hud extends StatefulWidget {
-  final BlocklingsGame game;
-  const Hud({super.key, required this.game});
-  @override
-  State<Hud> createState() => _HudState();
-}
-
-class _HudState extends State<Hud> {
-  Timer? _t;
-
-  @override
-  void initState() {
-    super.initState();
-    _t = Timer.periodic(const Duration(milliseconds: 120), (_) => setState(() {}));
-    widget.game.toast.addListener(_onToast);
-  }
-
-  void _onToast() {
-    final msg = widget.game.toast.value;
-    if (msg.isEmpty || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(msg),
-      duration: const Duration(milliseconds: 1400),
-      behavior: SnackBarBehavior.floating,
-    ));
   }
 
   @override
   void dispose() {
-    _t?.cancel();
-    widget.game.toast.removeListener(_onToast);
+    _purchases?.cancel();
     super.dispose();
   }
 
-  void _open(String overlay) {
-    widget.game.overlays.add(overlay);
-    widget.game.pauseEngine();
+  /// window.blocklingsIAP shim: forwards buy() to this shell and awaits the
+  /// native resolution routed back through __blkIapSettle.
+  void _injectIapShim() {
+    const shim = '''
+      (function () {
+        if (window.blocklingsIAP) return;
+        const pending = new Map();
+        let seq = 0;
+        window.__blkIapSettle = function (id, ok, payload) {
+          const p = pending.get(id);
+          if (!p) return;
+          pending.delete(id);
+          ok ? p.resolve(payload) : p.reject(new Error(payload));
+        };
+        window.blocklingsIAP = {
+          buy: function (sku) {
+            return new Promise(function (resolve, reject) {
+              const id = 'iap' + (++seq) + '_' + Date.now();
+              pending.set(id, { resolve: resolve, reject: reject });
+              BlocklingsIAPNative.postMessage(JSON.stringify({ id: id, sku: sku }));
+            });
+          }
+        };
+      })();
+    ''';
+    _web.runJavaScript(shim);
+  }
+
+  Future<void> _onIapRequest(String raw) async {
+    String? callId;
+    try {
+      final req = jsonDecode(raw) as Map<String, dynamic>;
+      callId = req['id'] as String;
+      final sku = req['sku'] as String;
+      if (!_goldSkus.contains(sku)) {
+        _settle(callId, false, 'unknown sku');
+        return;
+      }
+      final available = await InAppPurchase.instance.isAvailable();
+      if (!available) {
+        _settle(callId, false, 'App Store unavailable');
+        return;
+      }
+      final resp = await InAppPurchase.instance.queryProductDetails({sku});
+      final product = resp.productDetails.firstOrNull;
+      if (product == null) {
+        _settle(callId, false, 'product not configured in App Store Connect');
+        return;
+      }
+      _pendingSkuByCallId[callId] = sku;
+      final ok = await InAppPurchase.instance.buyConsumable(
+        purchaseParam: PurchaseParam(productDetails: product),
+      );
+      if (!ok) {
+        _pendingSkuByCallId.remove(callId);
+        _settle(callId, false, 'purchase could not start');
+      }
+      // Success resolves via the purchase stream.
+    } catch (e) {
+      if (callId != null) _settle(callId, false, 'iap error: $e');
+    }
+  }
+
+  void _onPurchaseUpdates(List<PurchaseDetails> purchases) {
+    for (final p in purchases) {
+      if (p.status == PurchaseStatus.purchased || p.status == PurchaseStatus.restored) {
+        final receipt = p.verificationData.serverVerificationData;
+        // Resolve every waiting call for this product (normally exactly one).
+        final ids = _pendingSkuByCallId.entries
+            .where((e) => e.value == p.productID)
+            .map((e) => e.key)
+            .toList();
+        for (final id in ids) {
+          _pendingSkuByCallId.remove(id);
+          _settle(id, true, jsonEncode({'receipt': receipt}));
+        }
+        InAppPurchase.instance.completePurchase(p);
+      } else if (p.status == PurchaseStatus.error || p.status == PurchaseStatus.canceled) {
+        final ids = _pendingSkuByCallId.entries
+            .where((e) => e.value == p.productID)
+            .map((e) => e.key)
+            .toList();
+        for (final id in ids) {
+          _pendingSkuByCallId.remove(id);
+          _settle(id, false, p.error?.message ?? 'purchase ${p.status.name}');
+        }
+        if (p.pendingCompletePurchase) InAppPurchase.instance.completePurchase(p);
+      }
+    }
+  }
+
+  void _rejectAll(String reason) {
+    for (final id in _pendingSkuByCallId.keys.toList()) {
+      _settle(id, false, reason);
+    }
+    _pendingSkuByCallId.clear();
+  }
+
+  void _settle(String callId, bool ok, String payload) {
+    // Payload goes through as a JS string (JSON for success payloads).
+    final js = ok
+        ? 'window.__blkIapSettle(${jsonEncode(callId)}, true, ${payload.startsWith('{') ? payload : jsonEncode(payload)})'
+        : 'window.__blkIapSettle(${jsonEncode(callId)}, false, ${jsonEncode(payload)})';
+    _web.runJavaScript(js);
+  }
+
+  Future<void> _retry() async {
+    setState(() {
+      _failed = false;
+      _loading = true;
+    });
+    await _web.loadRequest(Uri.parse(_gameUrl));
   }
 
   @override
   Widget build(BuildContext context) {
-    final g = widget.game;
-    final p = g.player;
-    final hpFrac = (p.hp / p.maxHp).clamp(0.0, 1.0);
-    final xpFrac = (p.xp / p.xpToNext).clamp(0.0, 1.0);
-
-    return SafeArea(
-      child: Stack(
-        children: [
-          // Top-center: current zone.
-          if (g.currentZoneName.isNotEmpty)
-            Align(
-              alignment: Alignment.topCenter,
-              child: Container(
-                margin: const EdgeInsets.only(top: 10),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
-                decoration: BoxDecoration(
-                  color: Bq.panel.withValues(alpha: 0.82),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(g.currentZoneName,
-                    style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w700)),
-              ),
-            ),
-          // Top-left: vitals.
-          Positioned(
-            left: 12,
-            top: 8,
-            child: Container(
-              width: 190,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Bq.panel.withValues(alpha: 0.82),
-                borderRadius: BorderRadius.circular(12),
-              ),
+    return Scaffold(
+      backgroundColor: const Color(0xFF0d1b2a),
+      body: _failed
+          ? Center(
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Lv ${p.level}',
-                      style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 6),
-                  _bar(hpFrac, Bq.hpGood, '${p.hp.toInt()}/${p.maxHp} HP'),
-                  const SizedBox(height: 4),
-                  _bar(xpFrac, Bq.xp, 'XP'),
+                  const Text('BLOCKLINGS',
+                      style: TextStyle(
+                          color: Color(0xFFE9C46A),
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 4)),
+                  const SizedBox(height: 12),
+                  const Text('The realm is unreachable. Check your connection.',
+                      style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 20),
+                  FilledButton(onPressed: _retry, child: const Text('Try Again')),
                 ],
               ),
-            ),
-          ),
-          // Top-right: crypto balances.
-          Positioned(
-            right: 12,
-            top: 8,
-            child: AnimatedBuilder(
-              animation: EconomyService.instance,
-              builder: (_, __) => Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  for (final c in EconomyService.kCurrencies) _coin(c),
-                ],
-              ),
-            ),
-          ),
-          // Bottom-right: panel buttons + auto toggle (sits above the attack button).
-          Positioned(
-            right: 12,
-            bottom: 120,
-            child: Column(
+            )
+          : Stack(
               children: [
-                if (g.nearbyBuilding != null) ...[
-                  _round(Icons.door_front_door_outlined, Bq.accent, () => _open('interior')),
-                  const SizedBox(height: 8),
-                ],
-                if (g.nearbyVendor != null) ...[
-                  _round(Icons.shopping_cart_outlined, Bq.accent2, () => _open('shop')),
-                  const SizedBox(height: 8),
-                ],
-                _round(Icons.bolt, g.autoCombat ? Bq.accent : Bq.panel2, () => setState(g.toggleAuto)),
-                const SizedBox(height: 8),
-                _round(Icons.map_outlined, Bq.panel2, () => _open('map')),
-                const SizedBox(height: 8),
-                _round(Icons.backpack_outlined, Bq.panel2, () => _open('inventory')),
-                const SizedBox(height: 8),
-                _round(Icons.military_tech_outlined, Bq.panel2, () => _open('skills')),
-                const SizedBox(height: 8),
-                _round(Icons.menu_book_outlined, Bq.panel2, () => _open('quests')),
-                const SizedBox(height: 8),
-                _round(Icons.account_balance_wallet_outlined, Bq.panel2, () => _open('wallet')),
-                const SizedBox(height: 8),
-                _round(Icons.storefront_outlined, Bq.panel2, () => _open('market')),
+                WebViewWidget(controller: _web),
+                if (_loading)
+                  const ColoredBox(
+                    color: Color(0xFF0d1b2a),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text('BLOCKLINGS',
+                              style: TextStyle(
+                                  color: Color(0xFFE9C46A),
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: 4)),
+                          SizedBox(height: 18),
+                          SizedBox(
+                            width: 180,
+                            child: LinearProgressIndicator(
+                              color: Color(0xFF7ed957),
+                              backgroundColor: Color(0xFF1b263b),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
-          ),
-          // Bottom-left: movement D-pad (turn AUTO off to walk manually).
-          Positioned(
-            left: 10,
-            bottom: 20,
-            child: DPad(onChanged: (v) => g.dpad.setFrom(v)),
-          ),
-        ],
-      ),
     );
   }
-
-  Widget _bar(double frac, Color color, String label) => Stack(
-        alignment: Alignment.centerLeft,
-        children: [
-          Container(
-            height: 16,
-            decoration: BoxDecoration(color: Bq.bg, borderRadius: BorderRadius.circular(8)),
-          ),
-          FractionallySizedBox(
-            widthFactor: frac,
-            child: Container(
-              height: 16,
-              decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.only(left: 8),
-            child: Text(label, style: const TextStyle(color: Bq.text, fontSize: 10)),
-          ),
-        ],
-      );
-
-  Widget _coin(Chain c) => Container(
-        margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: Bq.panel.withValues(alpha: 0.82),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 9, height: 9, decoration: BoxDecoration(color: c.color, shape: BoxShape.circle)),
-          const SizedBox(width: 6),
-          Text('${_fmt(EconomyService.instance.balance(c))} ${c.symbol}',
-              style: const TextStyle(color: Bq.text, fontSize: 12, fontWeight: FontWeight.w600)),
-        ]),
-      );
-
-  Widget _round(IconData icon, Color bg, VoidCallback onTap) => Material(
-        color: bg,
-        shape: const CircleBorder(),
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: SizedBox(
-            width: 52,
-            height: 52,
-            child: Center(child: Icon(icon, color: Bq.text, size: 24)),
-          ),
-        ),
-      );
-
-  static String _fmt(double v) =>
-      v >= 100 ? v.toStringAsFixed(0) : (v >= 1 ? v.toStringAsFixed(2) : v.toStringAsFixed(4));
 }

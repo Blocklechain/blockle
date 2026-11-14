@@ -41,6 +41,8 @@ dependencies:
   flutter_secure_storage: ^10.3.4
   http: ^1.6.0
   app_links: ^6.4.1
+  webview_flutter: ^4.13.1
+  in_app_purchase: ^3.2.3
 
 dev_dependencies:
   flutter_test:
