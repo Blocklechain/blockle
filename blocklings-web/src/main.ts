@@ -29,6 +29,8 @@ import {
   playerDie
 } from './player/index'
 import { initAuth } from './auth'
+import { needsCreator, showCreator, installAppearanceHook } from './creator'
+import { applyLook } from './player/index'
 import { initSave } from './save'
 import { initItems, itemsApi } from './items'
 import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
@@ -231,7 +233,16 @@ events.on('auth:changed', ({ signedIn, name }) => {
   if (signedIn && name) player.name = name
   if (!entered) {
     entered = true
-    enterWorld()
+    if (needsCreator()) {
+      // First entry on this device: pick a look, THEN enter — the rig is
+      // born wearing it (and the look rides the save from then on).
+      showCreator((look) => {
+        applyLook(look)
+        enterWorld()
+      })
+    } else {
+      enterWorld()
+    }
   }
 })
 
@@ -465,6 +476,7 @@ function enterWorld(): void {
   // --- wallet (parchment panel + HUD balance-chip hook) ---------------------
 
   window.blocklingsWallet = wallet
+  installAppearanceHook()
   const walletPanel = initWalletUI(uiMount, wallet)
 
   // --- HUD (plate, balance chip, settings, chat box, zone banner) -----------

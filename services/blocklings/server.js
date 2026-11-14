@@ -71,12 +71,14 @@ wss.on('connection', (ws) => {
     switch (m && m.t) {
       case 'join':
         self.name = sanitizeName(m.name);
+        // Compact character-look code (client-defined, opaque here); capped.
+        if (typeof m.look === 'string') self.look = m.look.slice(0, 16);
         break;
       case 'pos':
         if (typeof m.x === 'number' && typeof m.y === 'number') {
           self.x = m.x; self.y = m.y;
           self.lvl = Number(m.lvl) || self.lvl;
-          broadcastNear(self, { t: 'pos', id, name: self.name, x: self.x, y: self.y, lvl: self.lvl });
+          broadcastNear(self, { t: 'pos', id, name: self.name, x: self.x, y: self.y, lvl: self.lvl, look: self.look });
         }
         break;
       case 'chat':

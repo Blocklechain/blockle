@@ -76,7 +76,9 @@ body {
 #ui > .mk-root,
 #ui > .bl-skills-root,
 #ui > .bl-pets-root,
-#ui > .wm-root {
+#ui > .wm-root,
+#ui > .bl-title--hidden,
+#ui > .bl-hud {
   pointer-events: none;
 }
 

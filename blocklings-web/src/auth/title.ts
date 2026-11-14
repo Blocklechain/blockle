@@ -249,9 +249,13 @@ export function createTitleScreen(mount: HTMLElement, cb: TitleCallbacks): Title
     show() {
       api.setBusy(false)
       root.classList.remove('bl-title--hidden')
+      root.style.pointerEvents = '' // interactive while visible
     },
     hide() {
       root.classList.add('bl-title--hidden')
+      // Inline, so no stylesheet specificity can ever re-arm the invisible
+      // title as an input-eating layer (the #ui>* opt-in did exactly that).
+      root.style.pointerEvents = 'none'
     },
     showForms() {
       welcome.classList.remove('bl-title-welcome--on')

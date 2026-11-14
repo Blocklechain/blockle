@@ -726,12 +726,25 @@ for (const s of [
 }
 
 /**
+ * Stingers are 2–6s melodic phrases: retriggering one on top of itself (e.g.
+ * turning in several quests at once, a multi-level XP grant) just smears into
+ * noise, so each id is throttled to one play per window.
+ */
+const STINGER_GAP_MS = 1500
+const lastStingerAt = new Map<string, number>()
+
+/**
  * Fire a musical stinger once, on top of whatever music is playing.
  * `pitch` is a multiplier (quantized to semitones), `vel` 0..1 loudness.
+ * Per-id throttled (1.5s) so event bursts never stack the same phrase.
  */
 export function playStinger(
   id: StingerId,
   opts?: { vel?: number; pitch?: number }
 ): void {
+  const now = performance.now()
+  const last = lastStingerAt.get(id)
+  if (last !== undefined && now - last < STINGER_GAP_MS) return
+  lastStingerAt.set(id, now)
   audio.sfx.play(id, opts)
 }
