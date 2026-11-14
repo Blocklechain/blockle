@@ -34,15 +34,7 @@ import { needsCreator, showCreator, installAppearanceHook } from './creator'
 import { applyLook } from './player/index'
 import { initSave } from './save'
 import { initItems, itemsApi } from './items'
-import { initSkills, skillsApi, skillTree, maxHpBonus, prestigeResetSkill, setPrestigeXpBonus } from './skills'
-import {
-  initPrestige,
-  masteryModifier,
-  masteryBonus,
-  setSkillLevelSource,
-  setSkillReset
-} from './prestige'
-import type { SkillTreeAPI } from './types'
+import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
 import { initInventory } from './inventory'
 import { initUpgrading } from './upgrading'
 import { initMinting } from './minting'
@@ -305,32 +297,7 @@ function enterWorld(): void {
     if (skill === 'vitality') applyVitality(4)
   })
 
-  // --- prestige / mastery (reset a level-99 skill → 1 for a permanent star) -
-  //
-  // The endgame flex layer on top of skills. It never imports skills/combat/
-  // gather directly — the integrator wires the three hooks here:
-  //   • read skill levels     → skillsApi.level
-  //   • perform the 99 → 1 reset → prestigeResetSkill (guarded to level 99)
-  //   • feed the "+xp% in this skill" mastery perk back into skills' incoming-
-  //     XP path                → masteryModifier(skill, 'xpBonus')
-  // The 'mod' mastery perk is folded into combat/gather/crafting below via
-  // masteryBonus(key). No player rig aura hook exists yet, so setAuraSink is
-  // intentionally left unwired — the prestige module falls back to dispatching
-  // window CustomEvent('blocklings:prestige-aura', {detail:{tier,color}}),
-  // which the character rig can listen for when it grows an aura attach point.
-  initPrestige(api)
-  setSkillLevelSource((s) => skillsApi.level(s))
-  setSkillReset((s) => prestigeResetSkill(s))
-  setPrestigeXpBonus((s) => masteryModifier(s, 'xpBonus'))
 
-  // A skill-tree view onto the live talents with the summed 'mod' mastery
-  // bonus folded straight into every modifier key — handed to gather/crafting
-  // (which consume a SkillTreeAPI) so a Mastery 'mod' perk stacks onto the
-  // matching talent effect with zero extra plumbing.
-  const masteryTree: SkillTreeAPI = {
-    ...skillTree,
-    modifier: (key) => skillTree.modifier(key) + masteryBonus(key)
-  }
 
   // --- inventory (+ real catalog defs + live 3D item viewer) ----------------
 
@@ -401,7 +368,7 @@ function enterWorld(): void {
   combat.setMeshSource((id) => itemsApi.buildMesh(id))
   combat.setDefSource((id) => itemsApi.def(id))
   combat.setEquipmentSource(() => inv.equipment())
-  combat.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
+  combat.setModifierSource((key) => skillTree.modifier(key))
   // Combat already folds gear def + the defense skill into `amount` (its
   // internal defenseReduction uses the skills source), so here we just apply
   // the hit and play the hero's hurt flash/knockback.
@@ -428,7 +395,7 @@ function enterWorld(): void {
   })
   raids.setStatsSource(() => inv.equippedStats())
   raids.setSkillsSource((s) => skillsApi.level(s))
-  raids.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
+  raids.setModifierSource((key) => skillTree.modifier(key))
   raids.setInventory(inv)
   raids.setPlayerDamage((amount) => {
     player.hp = Math.max(0, player.hp - amount)
@@ -454,7 +421,7 @@ function enterWorld(): void {
   })
   dungeon.setStatsSource(() => inv.equippedStats())
   dungeon.setSkillsSource((s) => skillsApi.level(s))
-  dungeon.setModifierSource((key) => skillTree.modifier(key) + masteryBonus(key))
+  dungeon.setModifierSource((key) => skillTree.modifier(key))
   dungeon.setInventory(inv)
   dungeon.setPlayerDamage((amount) => {
     player.hp = Math.max(0, player.hp - amount)
@@ -485,7 +452,7 @@ function enterWorld(): void {
   const gather = initGather(api)
   gather.setInventory(inv)
   gather.setSwing(() => triggerAttack())
-  gather.setSkillTree(masteryTree)
+  gather.setSkillTree(skillTree)
   // (zone node registration self-runs off gather's 1 Hz residency poll)
 
   // --- crafting (forge/stove/alchemy/loom stations + recipe panel) ----------
@@ -493,7 +460,7 @@ function enterWorld(): void {
   const crafting = initCrafting(api)
   crafting.setInventory(inv)
   crafting.setSkills(skillsApi)
-  crafting.setSkillTree(masteryTree)
+  crafting.setSkillTree(skillTree)
   crafting.setDefSource((id) => itemsApi.def(id))
 
   // --- waystones (attune + teleport network; 'stones' save provider) --------
