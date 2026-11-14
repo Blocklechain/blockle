@@ -395,7 +395,11 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     cancelAnimationFrame(raf)
   }
 
+  // Robust close: click + a direct touchend (some iOS cases drop the synthetic
+  // click on a button overlapping a canvas pan region), and swallow the pointer
+  // so the tap can't fall through to anything beneath.
   closeBtn.addEventListener('click', close)
+  closeBtn.addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); close() }, { passive: false })
   window.addEventListener('resize', () => {
     if (openFlag) resize()
   })

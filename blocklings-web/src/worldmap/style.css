@@ -162,7 +162,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: calc(env(safe-area-inset-top) + 10px) calc(env(safe-area-inset-right) + 14px) 10px 14px;
   flex: 0 0 auto;
 }
 
@@ -175,13 +175,15 @@
 }
 
 .wm-close {
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
   border-radius: 10px;
   border: 1px solid var(--wm-edge-dim);
   background: var(--wm-panel);
   color: var(--wm-text);
-  font-size: 22px;
+  font-size: 26px;
+  touch-action: manipulation;
+  flex: none;
   line-height: 1;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
