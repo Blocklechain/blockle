@@ -15,7 +15,7 @@ from PIL import Image
 
 OUT = Path(__file__).resolve().parents[1] / "assets" / "images" / "props"
 OUT.mkdir(parents=True, exist_ok=True)
-STYLE = ("detailed painted pixel art, HD-2D fantasy RPG, chunky pixel clusters, "
+STYLE = ("ultra detailed painted pixel art, HD-2D fantasy, chunky bold-outlined pixel clusters, warm golden light and glowing lanterns, deep rich shadows, moss and worn stone detail, vibrant saturated colors, "
          "warm sunny lighting, rich saturated colors, front view, single object "
          "centered, isolated on a plain flat solid magenta background, no text")
 PROPS = {

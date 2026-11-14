@@ -1,6 +1,8 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flame/components.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flame/game.dart';
 import 'package:flame/input.dart';
 import 'package:flutter/foundation.dart';
@@ -118,6 +120,38 @@ class BlocklingsGame extends FlameGame {
   final Set<int> bossesDefeated = {};
   final Map<int, Enemy> _bosses = {};
 
+  /// Realms the player has set foot in — teleport targets (persisted).
+  final Set<int> visitedZones = {};
+  static const _visitedStore = FlutterSecureStorage();
+
+  Future<void> _loadVisited() async {
+    try {
+      final raw = await _visitedStore.read(key: 'blk_visited');
+      if (raw != null) {
+        visitedZones.addAll((jsonDecode(raw) as List).map((e) => (e as num).toInt()));
+      }
+    } catch (_) {}
+  }
+
+  void _saveVisited() {
+    try {
+      _visitedStore.write(key: 'blk_visited', value: jsonEncode(visitedZones.toList()));
+    } catch (_) {}
+  }
+
+  /// Teleport to a realm you've already visited: lands at the centre of its
+  /// middle room. Returns false (no-op) for unvisited realms.
+  bool teleportToZone(int zoneId) {
+    if (!visitedZones.contains(zoneId)) return false;
+    final z = Zones.byId(zoneId);
+    final cx = z.zx * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+    final cy = z.zy * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+    player.position.setFrom(map.nearestOpen(Vector2(cx * TileMap.ts, cy * TileMap.ts)));
+    player.velocity.setZero();
+    dpad.setZero();
+    return true;
+  }
+
   // Villages: a cluster of buildings in some zones.
   final Map<int, List<Building>> _villages = {};
   // Standalone trees, streamed per zone.
@@ -137,6 +171,11 @@ class BlocklingsGame extends FlameGame {
 
     player = Player(map: map)..position = map.spawnPoint;
     world.add(player);
+
+    // Teleport network: load visited realms; home is always available.
+    await _loadVisited();
+    final home = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    if (home != null) visitedZones.add(home.id);
 
     // Starter Blockling companion — the element chosen at character creation.
     final starter = Blockling.ofElement(profile.starterElement);
@@ -300,12 +339,13 @@ class BlocklingsGame extends FlameGame {
       toast.value = 'You were downed — respawned.';
     }
 
-    // Zone transitions: a brief loading screen + explore quests.
+    // Zone transitions: a brief loading screen + explore quests + visited log.
     final zone = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
     if (zone != null && zone.id != _zoneId) {
       final first = _zoneId == null;
       _zoneId = zone.id;
       quests.onExplore(zone.id);
+      if (visitedZones.add(zone.id)) _saveVisited();
       if (!first) _tryOverlay('zoneload'); // not on initial spawn
     }
 

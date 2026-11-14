@@ -21,32 +21,41 @@ from PIL import Image
 OUT = Path(__file__).resolve().parents[1] / "assets" / "images" / "scenes"
 OUT.mkdir(parents=True, exist_ok=True)
 
-STYLE = ("detailed painted pixel art, HD-2D fantasy RPG, chunky pixel clusters, "
-         "warm sunny lighting, soft shadows, rich saturated colors, "
-         "straight top-down overhead view, seamless game ground background, "
+STYLE = ("ultra detailed painted pixel art, HD-2D fantasy, chunky bold-outlined pixel clusters, warm golden light and glowing lanterns, deep rich shadows, moss and worn stone detail, vibrant saturated colors, "
+         "straight top-down overhead view, seamless game ground scene, "
          "no text, no characters, no people, no buildings")
 
 SCENES = {
-    # theme -> scene subject (ground only; buildings/characters billboard on top)
-    "meadow": "a lush green grass meadow crossed by winding grey cobblestone paths, "
-              "clusters of red and white flowers, small green bushes, grass growing between path stones",
-    "forest": "a mossy forest floor clearing, dirt path, ferns, scattered leafy green bushes and roots",
-    "swamp": "murky green swamp ground, shallow bog pools, lily pads, reeds, muddy paths",
-    "desert": "golden desert sand with a worn stone path, dune ripples, sparse dry shrubs and small rocks",
-    "tundra": "fresh white snow field with a trodden path, soft blue shadows, small pine shrubs, ice patches",
-    "volcanic": "dark volcanic ash ground with glowing ember cracks, basalt rocks, a cooled lava path",
-    "crystal": "pale ground studded with glowing violet crystal clusters, magical runes, shimmering path",
-    "ruins": "ancient broken stone ruins floor, cracked flagstones, moss, fallen pillars, grass tufts",
-    "shore": "grassy lakeshore with a clear blue water edge, sandy bank, smooth pebbles, a wooden walkway",
-    "blocklands": "violet crystalline ground with glowing geometric block runes, purple grass, energy veins",
+    # theme -> scene subject (ground only; buildings/characters billboard on top).
+    # Each scene carries a LANDMARK + mood, like the reference frames.
+    "meadow": "a lush sunny green meadow crossed by a winding worn cobblestone path, "
+              "clusters of red and white flowers, mossy stones, a glowing lantern post, golden sunlight",
+    "forest": "a mossy forest floor clearing dappled with golden sun rays, dirt path, ferns, "
+              "red mushrooms, gnarled roots, fireflies",
+    "swamp": "murky green swamp ground at dusk, shallow bog pools glowing with fireflies, "
+             "lily pads, reeds, muddy plank path",
+    "desert": "golden desert sand at sunset with long warm shadows, a worn ancient stone path, "
+              "dune ripples, dry shrubs, a weathered stone obelisk",
+    "tundra": "snow field at blue dusk with a trodden path, warm glowing lantern post, "
+              "ice patches sparkling, small drifts",
+    "volcanic": "dark basalt cavern floor lit by glowing torch braziers, ember cracks, "
+                "cooled lava path, scattered skulls and rubble, ominous mood",
+    "crystal": "dark cave floor lit by glowing violet crystal clusters, magical blue runes, "
+               "shimmering reflective path, mystical glow",
+    "ruins": "ancient broken stone ruins floor, cracked mossy flagstones, fallen carved pillars, "
+             "faintly glowing blue runes, grass tufts, melancholy mood",
+    "shore": "grassy lakeshore at golden hour, clear sparkling blue water edge, sandy bank, "
+             "smooth pebbles, a weathered wooden walkway, warm glow",
+    "blocklands": "deep violet crystalline ground with glowing neon geometric block runes, "
+                  "purple grass, pulsing energy veins, otherworldly glow",
     # Village grounds: FLAT plaza only — buildings are billboards on top.
-    "village_ground": "flat empty village plaza ground viewed straight from directly above, "
-                      "grey cobblestone pavement crossing lush green grass lawns, flower beds with "
-                      "red flowers along the path edges, small bushes, flat ground only, "
-                      "no buildings, no roofs, no walls, no structures",
+    "village_ground": "a cozy village square viewed straight from directly above: circular grey "
+                      "cobblestone paving around a carved stone statue plinth in the centre, "
+                      "flower beds with red flowers, glowing lantern posts, moss between worn stones, "
+                      "flat ground only, no buildings, no roofs, no walls",
 }
 VARIANTS = 4
-SIZE = 512
+SIZE = 768
 COLORS = 56
 
 

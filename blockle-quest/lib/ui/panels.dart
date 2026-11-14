@@ -61,7 +61,7 @@ class _Panel extends StatelessWidget {
     void close() {
       final g = game;
       if (g != null) {
-        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests', 'shop', 'interior']) {
+        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests', 'shop', 'interior', 'map']) {
           g.overlays.remove(name);
         }
         g.resumeEngine();
@@ -546,6 +546,97 @@ Future<void> _signInDialog(BuildContext context) async {
       },
     ),
   );
+}
+
+// ---- World map + teleport -------------------------------------------------
+class MapPanel extends StatelessWidget {
+  final BlocklingsGame game;
+  const MapPanel({super.key, required this.game});
+
+  @override
+  Widget build(BuildContext context) {
+    final current = game.currentZone?.id;
+    return _Panel(
+      title: 'World Map',
+      game: game,
+      child: Column(children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(14, 2, 14, 8),
+          child: Text('Tap a realm you have visited to travel there.',
+              style: TextStyle(color: Bq.dim, fontSize: 12)),
+        ),
+        Expanded(
+          child: Center(
+            child: AspectRatio(
+              aspectRatio: 1,
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: GridView.count(
+                  crossAxisCount: Zones.grid,
+                  mainAxisSpacing: 3,
+                  crossAxisSpacing: 3,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    for (final z in Zones.all) _cell(context, z, z.id == current),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            _legend(Bq.accent, 'you'),
+            const SizedBox(width: 14),
+            _legend(const Color(0xFFFFC24B), 'boss defeated'),
+            const SizedBox(width: 14),
+            _legend(Bq.dim, 'unexplored'),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _cell(BuildContext context, Zone z, bool isCurrent) {
+    final visited = game.visitedZones.contains(z.id);
+    final bossDown = game.bossesDefeated.contains(z.id);
+    return GestureDetector(
+      onTap: visited
+          ? () {
+              if (game.teleportToZone(z.id)) {
+                for (final name in const ['map']) {
+                  game.overlays.remove(name);
+                }
+                game.resumeEngine();
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Traveled to ${z.name}'), duration: const Duration(milliseconds: 1200)));
+              }
+            }
+          : null,
+      child: Container(
+        decoration: BoxDecoration(
+          color: visited ? z.accent.withValues(alpha: 0.85) : Bq.panel2,
+          borderRadius: BorderRadius.circular(4),
+          border: isCurrent ? Border.all(color: Colors.white, width: 2) : null,
+        ),
+        child: Stack(children: [
+          if (z.isVillage && visited)
+            const Positioned(left: 2, top: 2, child: Icon(Icons.home, size: 8, color: Colors.black54)),
+          if (bossDown)
+            const Positioned(right: 2, top: 2, child: Icon(Icons.star, size: 8, color: Color(0xFFFFC24B))),
+          if (z.movement == ZoneMovement.lane && visited)
+            const Positioned(left: 2, bottom: 2, child: Icon(Icons.swap_horiz, size: 8, color: Colors.black54)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _legend(Color c, String label) => Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 10, height: 10, decoration: BoxDecoration(color: c, borderRadius: BorderRadius.circular(3))),
+        const SizedBox(width: 5),
+        Text(label, style: const TextStyle(color: Bq.dim, fontSize: 11)),
+      ]);
 }
 
 // ---- Room-change fade (single-screen transition) --------------------------

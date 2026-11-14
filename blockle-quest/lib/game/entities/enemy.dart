@@ -7,6 +7,7 @@ import 'package:flame/sprite.dart';
 import '../../models/blockling.dart';
 import '../billboard.dart';
 import '../blocklings_game.dart';
+import '../tile_map.dart';
 import '../../theme.dart';
 import 'player.dart';
 
@@ -24,6 +25,13 @@ class Enemy extends PositionComponent {
 
   double aggro = 180;
   double attackRange = 30;
+  late final Vector2 _homeRoom; // room this mob is bound to
+
+  bool _playerInHomeRoom() =>
+      player.position.x >= _homeRoom.x &&
+      player.position.y >= _homeRoom.y &&
+      player.position.x < _homeRoom.x + TileMap.roomPx &&
+      player.position.y < _homeRoom.y + TileMap.roomPx;
   double cd = 1.0;
   double cdTimer = 0;
   bool dead = false;
@@ -42,11 +50,22 @@ class Enemy extends PositionComponent {
     this.bossName = '',
   }) {
     this.position = position;
-    final bossMul = bossZoneId != null ? 6 : 1;
-    maxHp = wild.maxHp * bossMul;
+    // Tuned friendly: regular mobs die fast (~2-4 hits) and hit soft; bosses
+    // stay a real fight but not a wall.
+    if (bossZoneId != null) {
+      maxHp = wild.maxHp * 4;
+      atkStat = (wild.atk * 1.5).ceil();
+    } else {
+      maxHp = (wild.maxHp * 0.55).ceil();
+      atkStat = (wild.atk * 0.6).ceil().clamp(1, 999);
+    }
     hp = maxHp.toDouble();
-    atkStat = bossZoneId != null ? wild.atk * 2 : wild.atk;
     spd = wild.speed * (bossZoneId != null ? 0.55 : 0.7);
+    // Mobs are bound to the room (map screen) they spawned in.
+    _homeRoom = Vector2(
+      (position.x / TileMap.roomPx).floorToDouble() * TileMap.roomPx,
+      (position.y / TileMap.roomPx).floorToDouble() * TileMap.roomPx,
+    );
     size = Vector2.all(bossZoneId != null ? 44 : 22);
     aggro = bossZoneId != null ? 260 : 180;
     anchor = Anchor.center;
@@ -78,6 +97,8 @@ class Enemy extends PositionComponent {
     _animT += dt;
     _moving = false;
     if (cdTimer > 0) cdTimer -= dt;
+    // Only engage while the player is on THIS mob's map screen.
+    if (!_playerInHomeRoom()) return;
     final to = player.position - position;
     final dist = to.length;
     facing = to.x.abs() > to.y.abs() ? (to.x < 0 ? 2 : 3) : (to.y < 0 ? 1 : 0);
@@ -88,6 +109,10 @@ class Enemy extends PositionComponent {
       player.takeHit(atkStat);
       cdTimer = cd;
     }
+    // Never leave the home room (stay clear of the border walls).
+    const pad = TileMap.ts * 1.3;
+    position.x = position.x.clamp(_homeRoom.x + pad, _homeRoom.x + TileMap.roomPx - pad);
+    position.y = position.y.clamp(_homeRoom.y + pad, _homeRoom.y + TileMap.roomPx - pad);
   }
 
   final Paint _pixel = Paint()

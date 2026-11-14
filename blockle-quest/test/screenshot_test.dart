@@ -1,4 +1,3 @@
-import 'package:flame/flame.dart';
 import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,28 +22,6 @@ import 'package:blockle_quest/game/blocklings_game.dart';
 /// loop mounts everything and streams the world in.
 void main() {
   const surface = Size(1170, 540);
-
-  // Every sprite the world, characters, companions and buildings use.
-  final images = [
-    'tiles/ash.png', 'tiles/blockstone.png', 'tiles/bog.png', 'tiles/fence.png',
-    'tiles/grass.png', 'tiles/grassAlt.png', 'tiles/path.png', 'tiles/rock.png',
-    'tiles/sand.png', 'tiles/snow.png', 'tiles/tallGrass.png', 'tiles/tree.png',
-    'tiles/water.png',
-    'chars/ember.png', 'chars/gust.png', 'chars/leaf.png', 'chars/player.png',
-    'chars/spark.png', 'chars/stone.png', 'chars/tide.png',
-    'buildings/blockhall.png', 'buildings/cabin.png', 'buildings/hall.png',
-    'buildings/house.png', 'buildings/inn.png', 'buildings/shop.png',
-    'buildings/tower.png',
-    // Whole-zone painted scene patches (the ground).
-    for (final t in [
-      'meadow', 'forest', 'swamp', 'desert', 'tundra', 'volcanic',
-      'crystal', 'ruins', 'shore', 'blocklands', 'village_ground',
-    ])
-      for (var v = 0; v < 4; v++) 'scenes/${t}_$v.png',
-    // Standalone props (trees + upright fences).
-    'props/oak_0.png', 'props/oak_1.png', 'props/pine_0.png', 'props/pine_1.png',
-    'props/fence_0.png', 'props/fence_1.png',
-  ];
 
   CharacterProfile makeProfile() => CharacterProfile(
         name: 'Adventurer',
@@ -74,9 +51,6 @@ void main() {
   testWidgets('world_village + title_cinematic goldens', (tester) async {
     await tester.binding.setSurfaceSize(surface);
     addTearDown(() => tester.binding.setSurfaceSize(null));
-
-    // Pre-decode all sprites into the global Flame cache (needs runAsync).
-    await tester.runAsync(() => Flame.images.loadAll(images));
 
     // 1) In-world shot: drop out of the title cinematic so the camera centres
     //    on the player at the village spawn (buildings + fences visible).

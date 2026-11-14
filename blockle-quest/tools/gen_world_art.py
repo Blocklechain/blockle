@@ -21,7 +21,7 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 ROOT = Path(__file__).resolve().parents[1] / "assets" / "images"
 
-STYLE = ("detailed painted pixel art, HD-2D fantasy RPG, chunky pixel clusters, "
+STYLE = ("ultra detailed painted pixel art, HD-2D fantasy, chunky bold-outlined pixel clusters, warm golden light and glowing lanterns, deep rich shadows, moss and worn stone detail, vibrant saturated colors, "
          "warm lantern glow lighting, rich saturated colors, soft drop shadows, "
          "cozy storybook fantasy, no text, no letters")
 
