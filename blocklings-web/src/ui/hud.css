@@ -1,0 +1,547 @@
+/* Blocklings HUD — medieval-fantasy, dark translucent panels, gold accents.
+   Touch-friendly: every interactive target is ≥ 40px on coarse pointers. */
+
+.bl-hud {
+  --bl-panel: rgba(13, 15, 22, 0.78);
+  --bl-panel-soft: rgba(13, 15, 22, 0.6);
+  --bl-edge: rgba(212, 175, 55, 0.55);
+  --bl-edge-dim: rgba(212, 175, 55, 0.28);
+  --bl-gold: #e8c15a;
+  --bl-gold-deep: #b8860b;
+  --bl-text: #efe9d8;
+  --bl-text-dim: #b9b2a0;
+  --bl-hp: linear-gradient(180deg, #7ed957 0%, #3f9c2e 100%);
+  --bl-hp-low: linear-gradient(180deg, #ff7a5c 0%, #c62f22 100%);
+  --bl-mp: linear-gradient(180deg, #6cb8ff 0%, #2f6bc6 100%);
+  --bl-xp: linear-gradient(180deg, #ffe9a6 0%, #d4af37 100%);
+
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* children opt back in below */
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: var(--bl-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.bl-hud button,
+.bl-hud input,
+.bl-plate,
+.bl-chip,
+.bl-settings,
+.bl-chat {
+  pointer-events: auto;
+}
+
+.bl-hud button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ===== panels ========================================================== */
+
+.bl-plate,
+.bl-settings,
+.bl-chat,
+.bl-chip,
+.bl-gear {
+  background: var(--bl-panel);
+  border: 1px solid var(--bl-edge-dim);
+  border-radius: 10px;
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* ===== top-left: character plate ======================================= */
+
+.bl-plate {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: min(240px, 58vw);
+  padding: 10px 12px 11px;
+}
+
+.bl-plate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.bl-name {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bl-level {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+  border-radius: 999px;
+  padding: 2px 9px 3px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.bl-bar {
+  position: relative;
+  height: 15px;
+  margin-top: 5px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.7);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.bl-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: 6px;
+  transition: width 0.25s ease;
+}
+
+.bl-bar-hp .bl-bar-fill {
+  background: var(--bl-hp);
+}
+.bl-bar-hp .bl-bar-fill.bl-low {
+  background: var(--bl-hp-low);
+}
+.bl-bar-mp .bl-bar-fill {
+  background: var(--bl-mp);
+}
+
+.bl-bar-xp {
+  height: 9px;
+  border-radius: 5px;
+}
+.bl-bar-xp .bl-bar-fill {
+  background: var(--bl-xp);
+}
+
+.bl-bar-text {
+  position: relative;
+  display: block;
+  text-align: center;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.9),
+    0 0 3px rgba(0, 0, 0, 0.9);
+}
+
+.bl-bar-xp .bl-bar-text {
+  display: none; /* thin bar: tooltip-less, width alone reads */
+}
+
+/* ===== top-right: wallet chip + gear =================================== */
+
+.bl-topright {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bl-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 12px 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.bl-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+}
+
+.bl-chip-cur {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--bl-text-dim);
+}
+
+.bl-chip-lock {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #ffb067;
+  border: 1px solid rgba(255, 176, 103, 0.5);
+  border-radius: 999px;
+  padding: 1px 6px 2px;
+}
+
+.bl-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--bl-gold);
+  transition: transform 0.25s ease, border-color 0.15s ease;
+}
+
+.bl-gear:hover {
+  border-color: var(--bl-edge);
+  transform: rotate(30deg);
+}
+
+/* ===== settings panel ================================================== */
+
+.bl-settings {
+  position: absolute;
+  top: 60px;
+  right: 12px;
+  width: min(280px, calc(100vw - 24px));
+  padding: 10px 14px 14px;
+}
+
+.bl-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--bl-edge-dim);
+}
+
+.bl-settings-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bl-gold);
+}
+
+.bl-settings-close {
+  width: 32px;
+  height: 32px;
+  margin: -4px -8px -4px 0;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--bl-text-dim);
+  border-radius: 8px;
+}
+.bl-settings-close:hover {
+  color: var(--bl-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bl-set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  cursor: pointer;
+}
+
+.bl-set-label {
+  flex: none;
+  width: 84px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--bl-text-dim);
+}
+
+.bl-set-val {
+  flex: none;
+  width: 38px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--bl-text-dim);
+}
+
+/* range slider, cross-browser */
+.bl-set-slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+.bl-set-slider::-webkit-slider-runnable-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--bl-gold-deep), rgba(255, 255, 255, 0.14));
+}
+.bl-set-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6.5px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.6);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.bl-set-slider::-moz-range-track {
+  height: 5px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--bl-gold-deep), rgba(255, 255, 255, 0.14));
+}
+.bl-set-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.6);
+}
+
+/* quality toggle (checkbox styled as a switch) */
+.bl-set-toggle {
+  justify-content: space-between;
+}
+.bl-set-check {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.bl-set-switch {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background 0.15s ease;
+}
+.bl-set-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #cfc8b8;
+  transition: left 0.15s ease, background 0.15s ease;
+}
+.bl-set-check:checked ~ .bl-set-switch {
+  background: var(--bl-gold-deep);
+}
+.bl-set-check:checked ~ .bl-set-switch::after {
+  left: 22px;
+  background: var(--bl-gold);
+}
+
+/* ===== chat ============================================================ */
+
+.bl-chat {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: min(380px, calc(100vw - 24px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bl-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--bl-edge-dim);
+  text-align: left;
+}
+
+.bl-chat-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bl-gold);
+}
+
+.bl-chat-chev {
+  color: var(--bl-text-dim);
+  transition: transform 0.2s ease;
+}
+
+.bl-chat-log {
+  height: 128px;
+  padding: 8px 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: 12.5px;
+  line-height: 1.45;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+}
+
+.bl-collapsed .bl-chat-log {
+  display: none;
+}
+.bl-collapsed .bl-chat-head {
+  border-bottom: none;
+}
+.bl-collapsed .bl-chat-chev {
+  transform: rotate(180deg);
+}
+
+.bl-chat-line {
+  word-break: break-word;
+}
+
+.bl-chat-from {
+  font-weight: 700;
+  color: var(--bl-gold);
+}
+.bl-chat-from::after {
+  content: ':';
+  color: var(--bl-text-dim);
+}
+
+.bl-chat-inputrow {
+  display: flex;
+  gap: 6px;
+  padding: 7px;
+  border-top: 1px solid var(--bl-edge-dim);
+}
+.bl-collapsed .bl-chat-inputrow {
+  border-top: none;
+}
+
+.bl-chat-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  font-size: 16px; /* ≥16px: no iOS focus-zoom */
+  color: var(--bl-text);
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  outline: none;
+}
+.bl-chat-input:focus {
+  border-color: var(--bl-edge);
+}
+.bl-chat-input::placeholder {
+  color: rgba(185, 178, 160, 0.55);
+}
+
+.bl-chat-send {
+  flex: none;
+  height: 38px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+  border-radius: 8px;
+}
+.bl-chat-send:active {
+  filter: brightness(0.9);
+}
+
+/* ===== zone banner ===================================================== */
+
+.bl-zone {
+  position: absolute;
+  top: 18vh;
+  left: 0;
+  right: 0;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  animation: bl-zone-fade 4.6s ease forwards 0.6s;
+}
+
+.bl-zone-name {
+  font-size: clamp(26px, 6vw, 44px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--bl-gold);
+  text-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.85),
+    0 0 24px rgba(212, 175, 55, 0.35);
+}
+
+.bl-zone-rule {
+  width: min(320px, 60vw);
+  height: 2px;
+  margin: 10px auto 0;
+  background: linear-gradient(90deg, transparent, var(--bl-gold), transparent);
+}
+
+@keyframes bl-zone-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* ===== small screens =================================================== */
+
+@media (max-width: 640px) {
+  .bl-plate {
+    width: min(205px, 56vw);
+    padding: 8px 10px 9px;
+  }
+  .bl-chat {
+    width: min(320px, calc(100vw - 24px));
+  }
+  .bl-chat-log {
+    height: 92px;
+  }
+  .bl-chip-cur {
+    display: none; /* icon + amount is enough on a phone */
+  }
+}
