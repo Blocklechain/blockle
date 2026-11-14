@@ -645,6 +645,14 @@
    them instead of on top of them (bag was at +100 ≈ the SPC slot, the paw
    at 124 inside it, skills under ATK). */
 @media (pointer: coarse) {
+  /* The joystick owns the bottom-left corner on touch devices — the chat
+     lifts fully clear of its hit zone (joystick ~130px + margin) so drags
+     always reach the stick and the log is never covered. */
+  #ui .bl-chat {
+    bottom: calc(max(18px, env(safe-area-inset-bottom)) + 172px);
+    width: min(300px, 58vw);
+    max-height: 34vh;
+  }
   #ui .bl-bagbtn {
     right: max(18px, env(safe-area-inset-right));
     bottom: calc(max(32px, env(safe-area-inset-bottom)) + 160px);

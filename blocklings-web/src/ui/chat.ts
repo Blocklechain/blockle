@@ -64,6 +64,12 @@ export function createChat(api: GameAPI, onUiTick: () => void): HTMLElement {
     onUiTick()
   })
 
+  // Touch devices: start collapsed — screen space is scarce and the log must
+  // never shadow the movement joystick below it.
+  if (window.matchMedia('(pointer: coarse)').matches) {
+    root.classList.add('bl-collapsed')
+  }
+
   // -- log ------------------------------------------------------------------
   const log = document.createElement('div')
   log.className = 'bl-chat-log'
