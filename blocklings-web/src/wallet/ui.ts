@@ -485,11 +485,13 @@ function injectStyles(): void {
   stylesDone = true
   const css = `
 #${PANEL_ID}, .blkw-toggle { pointer-events: auto; font-family: Georgia, 'Times New Roman', serif; }
-.blkw-toggle { position: absolute; top: 12px; right: 12px; display: flex; gap: 7px; align-items: center;
+.blkw-toggle { position: absolute; top: max(60px, calc(env(safe-area-inset-top) + 48px)); right: 12px; display: flex; gap: 7px; align-items: center;
+  z-index: 39; /* below the gear cluster (41) when closed */
   background: linear-gradient(#f3e2b3, #e2c683); color: #4a3313; border: 2px solid #8a6414; border-radius: 10px;
   padding: 7px 13px; font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.35); }
 .blkw-toggle:hover { filter: brightness(1.05); }
-.blkw { position: absolute; top: 58px; right: 12px; width: min(330px, calc(100vw - 24px));
+.blkw { position: absolute; top: max(60px, calc(env(safe-area-inset-top) + 48px)); right: 12px; width: min(330px, calc(100vw - 24px));
+  z-index: 50; /* OPEN panel sits above the top-right gear/chip cluster (41) */
   max-height: calc(100vh - 80px); overflow-y: auto; background: linear-gradient(#f7ecd0, #efdcae);
   border: 2px solid #8a6414; border-radius: 12px; box-shadow: 0 6px 22px rgba(0,0,0,.45);
   color: #42300f; font-size: 14px; }
