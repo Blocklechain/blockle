@@ -44,7 +44,6 @@ export class VoxelBatch {
   /** Bake into one InstancedMesh. Returns null when nothing was added. */
   build(opts: BatchBuildOpts = {}): THREE.InstancedMesh | null {
     if (this.items.length === 0) return null
-
     const geo = new THREE.BoxGeometry(1, 1, 1)
     const mat = new THREE.MeshLambertMaterial({
       color: 0xffffff,
@@ -53,6 +52,21 @@ export class VoxelBatch {
       transparent: opts.transparent ?? false,
       opacity: opts.opacity ?? 1
     })
+    return this.bakeInto(geo, mat, opts)
+  }
+
+  /**
+   * Bake into one InstancedMesh that SHARES `geo` + `mat` (the streaming
+   * engine's per-zone bakes all reuse one unit box + one material per batch
+   * kind, so disposing a zone frees ONLY its instance buffers:
+   * `mesh.dispose()` — never geometry/material). Returns null when empty.
+   */
+  bakeInto(
+    geo: THREE.BoxGeometry,
+    mat: THREE.MeshLambertMaterial,
+    opts: BatchBuildOpts = {}
+  ): THREE.InstancedMesh | null {
+    if (this.items.length === 0) return null
     const mesh = new THREE.InstancedMesh(geo, mat, this.items.length)
 
     const m = new THREE.Matrix4()

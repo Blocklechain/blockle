@@ -10,8 +10,9 @@
  * Self-drives at ~10 Hz while visible; tapping the circle opens the full map.
  */
 import type { GameAPI } from '../types'
-import { NPCS, WAYSTONES, REGIONS, regionAt } from '../ids'
-import { ROUTES, BIOME_MINI, RIVER_CENTER_X, RIVER_WIDTH } from './data'
+import { NPCS, REGIONS, regionAt } from '../ids'
+import { ZONES, zoneAt } from '../world/zones/registry'
+import { ROUTES, BIOME_MINI, RIVER_CENTER_X, RIVER_WIDTH, RIVER_Z0, RIVER_Z1, ALL_WAYSTONES } from './data'
 import { smoothPath, drawPlayerArrow } from './draw'
 
 /** A dynamic blip supplied by the integrator (world coords). */
@@ -80,28 +81,38 @@ export function createMinimap(
     g.arc(C, C, R, 0, Math.PI * 2)
     g.clip()
 
-    // Ground: current region's biome shade as the base, then nearby region
-    // rects on top so borders show when standing near one.
-    const here = regionAt(px, pz)
+    // Ground: current region/zone biome shade as the base, then nearby
+    // region + zone rects on top so borders show when standing near one.
+    const hereRegion = regionAt(px, pz)
+    const here = hereRegion ?? zoneAt(px, pz)
     g.fillStyle = here ? (BIOME_MINI[here.biome] ?? '#2c2f26') : '#1a1c22'
     g.fillRect(0, 0, SIZE, SIZE)
-    for (const reg of REGIONS) {
-      if (reg === here) continue
-      const x0 = toX(reg.x0)
-      const y0 = toY(reg.z0)
-      const x1 = toX(reg.x1)
-      const y1 = toY(reg.z1)
-      if (x1 < 0 || x0 > SIZE || y1 < 0 || y0 > SIZE) continue
-      g.fillStyle = BIOME_MINI[reg.biome] ?? '#2c2f26'
+    const groundRect = (x0w: number, z0w: number, x1w: number, z1w: number, biome: string): void => {
+      const x0 = toX(x0w)
+      const y0 = toY(z0w)
+      const x1 = toX(x1w)
+      const y1 = toY(z1w)
+      if (x1 < 0 || x0 > SIZE || y1 < 0 || y0 > SIZE) return
+      g.fillStyle = BIOME_MINI[biome] ?? '#2c2f26'
       g.fillRect(x0, y0, x1 - x0, y1 - y0)
     }
+    for (const zn of ZONES) {
+      if (zn === here) continue
+      groundRect(zn.x0, zn.z0, zn.x1, zn.z1, zn.biome)
+    }
+    for (const reg of REGIONS) {
+      if (reg === here) continue
+      groundRect(reg.x0, reg.z0, reg.x1, reg.z1, reg.biome)
+    }
 
-    // River band (vertical, centered on RIVER_CENTER_X).
+    // River band (vertical, centered on RIVER_CENTER_X, heart z-band only).
     const rx0 = toX(RIVER_CENTER_X - RIVER_WIDTH / 2)
     const rx1 = toX(RIVER_CENTER_X + RIVER_WIDTH / 2)
-    if (rx1 > 0 && rx0 < SIZE) {
+    const ry0 = Math.max(0, toY(RIVER_Z0))
+    const ry1 = Math.min(SIZE, toY(RIVER_Z1))
+    if (rx1 > 0 && rx0 < SIZE && ry1 > ry0) {
       g.fillStyle = '#2f5d75'
-      g.fillRect(rx0, 0, rx1 - rx0, SIZE)
+      g.fillRect(rx0, ry0, rx1 - rx0, ry1 - ry0)
     }
 
     // Roads: thin dashed parchment-colored threads.
@@ -138,7 +149,7 @@ export function createMinimap(
     }
     // Static anchors from ids.ts.
     for (const n of NPCS) dot(n.x, n.z, DOT.npc)
-    for (const w of WAYSTONES) dot(w.x, w.z, DOT.stone, 3.4)
+    for (const w of ALL_WAYSTONES) dot(w.x, w.z, DOT.stone, 3.4)
     // Live entities from the wired source.
     for (const e of deps.getEntities()) dot(e.x, e.z, DOT[e.kind])
 

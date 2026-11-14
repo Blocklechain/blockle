@@ -15,7 +15,10 @@
 import * as THREE from 'three'
 import type { GameAPI } from '../types'
 import { events } from '../events'
-import { BOSSES, SPECIES, WAYSTONES, regionAt, type SpeciesDef } from '../ids'
+import { BOSSES, SPECIES, WAYSTONES, type SpeciesDef } from '../ids'
+// PURE heart-region + streamed-zone lookup (NO stream-focus side channel —
+// spawn probes must never yank zone streaming away from the player).
+import { regionOrZoneAt as regionAt } from '../world/index'
 import { MobRig } from './mobs'
 import { BloodSystem } from './blood'
 import { DamageNumbers, HealthBar, makeBossLabel } from './fx'
@@ -37,6 +40,14 @@ export interface EquippedStats {
 export interface CombatModule {
   /** Resolve one player swing — integrator wires: onAttack(() => combat.playerStrike()). */
   playerStrike(): void
+  /**
+   * Swing trigger for auto-retaliate — integrator wires the player module's
+   * animation entry point: combat.setAttackTrigger(() => triggerAttack()).
+   * That plays the arm swing, which fires onAttack -> playerStrike at the
+   * strike frame (the existing resolution path). Until wired, auto-retaliate
+   * falls back to calling playerStrike() directly (damage, no animation).
+   */
+  setAttackTrigger(fn: () => void): void
   /** Equipped-gear stats (integrator passes inventory.equippedStats). */
   setStatsSource(fn: () => EquippedStats): void
   /** Skill levels (integrator passes skills.level). */
@@ -82,6 +93,8 @@ const DROP_TTL = 20
 const PICKUP_RANGE = 1.0
 const PLAZA_KEEPOUT = 24 // radius around the village well — no spawns
 const COLLIDE_RADIUS = 0.35
+const RETALIATE_COOLDOWN = 0.8 // seconds between automatic counter-swings
+const RETALIATE_BREAK_DIST = 2.5 // walked this far past reach = you left the fight
 
 const SHAPE_SPEED: Record<SpeciesDef['shape'], number> = {
   blob: 1.7,
@@ -105,6 +118,34 @@ const REGION_MIX: Record<string, readonly (readonly [string, number])[]> = {
   ironhold: [['bat', 4], ['goblin', 3], ['wolf', 3], ['bandit', 3], ['golem', 1]],
   ashen: [['skeleton', 4], ['imp', 4], ['bat', 3], ['spider', 2], ['wisp', 1]],
   forgotten: [['orc', 4], ['golem', 3], ['wisp', 3], ['bandit', 2], ['skeleton', 2]],
+}
+
+/**
+ * Biome -> weighted species mix, the fallback for the 90 streamed wilderness
+ * zones (REGION_MIX wins for the 5 heart combat regions). The zone's level
+ * band carries the difficulty; the mix just carries the vibe.
+ */
+const BIOME_MIX: Record<string, readonly (readonly [string, number])[]> = {
+  meadow: [['slime', 5], ['mushroom', 3], ['crab', 2], ['wolf', 2]],
+  forest: [['wolf', 4], ['goblin', 4], ['spider', 3], ['mushroom', 2]],
+  mountain: [['golem', 4], ['bat', 4], ['wolf', 3], ['bandit', 2]],
+  dungeon: [['skeleton', 4], ['bat', 4], ['imp', 3], ['spider', 2]],
+  city: [['bandit', 5], ['goblin', 3], ['skeleton', 2]],
+  wastes: [['orc', 4], ['bandit', 3], ['skeleton', 3], ['golem', 2]],
+  swamp: [['slime', 5], ['spider', 4], ['mushroom', 3], ['wisp', 2]],
+  desert: [['crab', 4], ['bandit', 4], ['skeleton', 3], ['orc', 2]],
+  tundra: [['wolf', 5], ['bat', 3], ['golem', 2], ['wisp', 2]],
+  volcanic: [['imp', 5], ['golem', 4], ['skeleton', 2], ['bat', 2]],
+  crystal: [['wisp', 5], ['golem', 3], ['bat', 3], ['slime', 2]],
+  ruins: [['skeleton', 4], ['bandit', 4], ['wisp', 3], ['spider', 2]],
+  beach: [['crab', 6], ['slime', 3], ['bandit', 2]],
+  mushroom: [['mushroom', 6], ['slime', 3], ['spider', 2]],
+  cherry: [['slime', 4], ['wolf', 3], ['goblin', 3], ['wisp', 1]],
+  savanna: [['wolf', 4], ['crab', 3], ['orc', 3], ['bandit', 2]],
+  canyon: [['bat', 4], ['bandit', 4], ['golem', 3], ['orc', 2]],
+  lagoon: [['crab', 5], ['slime', 4], ['wisp', 2]],
+  graveyard: [['skeleton', 5], ['wisp', 4], ['bat', 3]],
+  glacier: [['wolf', 4], ['golem', 3], ['wisp', 3], ['bat', 2]],
 }
 
 /** Boss dens — fixed lairs inside each combat region, away from waystones. */
@@ -165,6 +206,22 @@ interface Drop {
 
 const speciesById = new Map(SPECIES.map((s) => [s.id, s] as const))
 
+// ---------------------------------------------------------------------------
+// Auto-retaliate setting (default ON) — integrator may surface in settings
+// ---------------------------------------------------------------------------
+
+let autoRetaliateOn = true
+
+/** Turn auto-retaliate on/off (hitting back when hit). Default ON. */
+export function setAutoRetaliate(on: boolean): void {
+  autoRetaliateOn = on
+}
+
+/** Whether the hero currently believes in consequences. */
+export function getAutoRetaliate(): boolean {
+  return autoRetaliateOn
+}
+
 export function initCombat(api: GameAPI): CombatModule {
   const { scene, world, player } = api
   const rng = Math.random
@@ -185,6 +242,13 @@ export function initCombat(api: GameAPI): CombatModule {
   let meshSource: ((id: string) => THREE.Group) | null = null
   let playerDamageFn: ((amount: number, from: string) => void) | null = null
   let playerDeathFn: ((onDown: (revive: () => void) => void) => void) | null = null
+  let attackTriggerFn: (() => void) | null = null
+
+  // --- auto-retaliate state --------------------------------------------------
+  /** The mob the hero is automatically hitting back (null = at peace). */
+  let retaliateTarget: Mob | null = null
+  /** Wall-clock second the next automatic counter-swing may fire. */
+  let nextRetaliateAt = 0
 
   // --- respawn point: village by default, last-touched waystone after -------
   let respawn = { x: world.spawn.x, z: world.spawn.z, label: 'the village' }
@@ -213,8 +277,8 @@ export function initCombat(api: GameAPI): CombatModule {
     return world.isBlocked(x, z)
   }
 
-  const pickSpecies = (regionId: string): SpeciesDef | null => {
-    const mix = REGION_MIX[regionId]
+  const pickSpecies = (region: { id: string; biome: string }): SpeciesDef | null => {
+    const mix = REGION_MIX[region.id] ?? BIOME_MIX[region.biome]
     if (!mix) return null
     let total = 0
     for (const [, w] of mix) total += w
@@ -288,10 +352,12 @@ export function initCombat(api: GameAPI): CombatModule {
       if (spotBlocked(x, z)) continue
       const region = regionAt(x, z)
       if (!region) continue
-      const sp = pickSpecies(region.id)
+      const sp = pickSpecies(region)
       if (!sp) continue
-      const level =
-        region.minLevel + Math.floor(rng() * (Math.min(region.maxLevel, 45) - region.minLevel + 1))
+      // Zone bands run all the way to the lv-99 coast; clamp the span so a
+      // band like 72-88 never goes negative against a cap.
+      const hi = Math.max(region.minLevel, Math.min(region.maxLevel, 99))
+      const level = region.minLevel + Math.floor(rng() * (hi - region.minLevel + 1))
       mobs.push(makeMob(sp, level, x, z, null))
       return true
     }
@@ -329,6 +395,7 @@ export function initCombat(api: GameAPI): CombatModule {
       ;(m.label.material as THREE.SpriteMaterial).map?.dispose()
       ;(m.label.material as THREE.SpriteMaterial).dispose()
     }
+    if (m === retaliateTarget) retaliateTarget = null
     const i = mobs.indexOf(m)
     if (i >= 0) mobs.splice(i, 1)
   }
@@ -400,6 +467,9 @@ export function initCombat(api: GameAPI): CombatModule {
     const stats = statsSource?.() ?? { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
     const atkLevel = skillsSource?.('attack') ?? 1
 
+    let struckRetaliateTarget = false
+    let struckOther: Mob | null = null
+
     for (const m of [...mobs]) {
       if (!m.rig.alive) continue
       const dx = m.x - player.pos.x
@@ -435,7 +505,16 @@ export function initCombat(api: GameAPI): CombatModule {
         m.windupUntil = 0
       }
 
+      if (m === retaliateTarget) struckRetaliateTarget = true
+      else if (m.hp > 0) struckOther = m
+
       if (m.hp <= 0) killMob(m)
+    }
+
+    // manual target switch: the player swung into a different mob while
+    // auto-retaliating — follow their lead and hold the new grudge instead
+    if (retaliateTarget && !struckRetaliateTarget && struckOther) {
+      retaliateTarget = struckOther
     }
   }
 
@@ -519,10 +598,13 @@ export function initCombat(api: GameAPI): CombatModule {
       0.8
     )
     if (player.hp <= 0 && !playerDead) beginPlayerDeath()
+    // getting smacked is an even better argument for violence — hit back
+    else if (autoRetaliateOn) retaliateTarget = m
   }
 
   const beginPlayerDeath = (): void => {
     playerDead = true
+    retaliateTarget = null // corpses hold no grudges
     const at = player.pos.clone()
     blood.burst(at.clone().setY(at.y + 0.5), at.y, 3)
     blood.splat(at.x, at.y, at.z, true)
@@ -728,6 +810,26 @@ export function initCombat(api: GameAPI): CombatModule {
     // --- mobs ----------------------------------------------------------------
     for (const m of [...mobs]) updateMob(m, dt, now)
 
+    // --- auto-retaliate: hit back while the grudge stays warm ----------------
+    if (retaliateTarget && (!autoRetaliateOn || playerDead)) retaliateTarget = null
+    if (retaliateTarget) {
+      const t = retaliateTarget
+      const d = Math.hypot(t.x - player.pos.x, t.z - player.pos.z)
+      if (!t.rig.alive || t.hp <= 0 || t.state !== 'chase') {
+        retaliateTarget = null // it died, leashed, or lost interest — we're done
+      } else if (d > PLAYER_RANGE + t.radius + RETALIATE_BREAK_DIST) {
+        retaliateTarget = null // the player walked away; let it go
+      } else if (d <= PLAYER_RANGE + t.radius && now >= nextRetaliateAt) {
+        nextRetaliateAt = now + RETALIATE_COOLDOWN
+        // square up to the attacker (movement input still overrides facing)
+        player.facing = Math.atan2(t.x - player.pos.x, t.z - player.pos.z)
+        // existing resolution path: swing animation -> onAttack -> playerStrike.
+        // triggerAttack no-ops mid-swing; the next tick past cooldown retries.
+        if (attackTriggerFn) attackTriggerFn()
+        else playerStrike()
+      }
+    }
+
     // --- drops: spin, bob, expire, walk-over pickup --------------------------
     for (const d of [...drops]) {
       if (now >= d.expireAt) {
@@ -764,6 +866,9 @@ export function initCombat(api: GameAPI): CombatModule {
 
   return {
     playerStrike,
+    setAttackTrigger(fn) {
+      attackTriggerFn = fn
+    },
     setStatsSource(fn) {
       statsSource = fn
     },

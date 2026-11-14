@@ -138,7 +138,8 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
       })
       chipLock.style.display = info.locked ? '' : 'none'
       chip.title = info.address
-      chip.style.display = ''
+      // Zero-balance chip is just clutter — show it once there's real crypto.
+      chip.style.display = info.balance > 0 ? '' : 'none'
     } catch {
       chip.style.display = 'none'
     } finally {

@@ -82,7 +82,7 @@ function buildMountains(ctx: Ctx, scene: THREE.Scene): void {
   const count = 14
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + rng.range(-0.15, 0.15)
-    const dist = rng.range(300, 400)
+    const dist = rng.range(840, 980) // island peaks beyond the new coast ring
     peaks.push({
       x: Math.cos(angle) * dist,
       z: Math.sin(angle) * dist,

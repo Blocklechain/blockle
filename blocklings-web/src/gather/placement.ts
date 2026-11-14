@@ -5,7 +5,9 @@
  * layer.
  */
 import type { World } from '../types'
-import { regionAt } from '../ids'
+// PURE heart-region + streamed-zone lookup (no stream-focus side channel),
+// so regionCounts attribute correctly across the whole 1440x1440 continent.
+import { regionOrZoneAt as regionAt } from '../world/index'
 import { CLUSTERS, FIXED } from './data'
 import { buildKindBoxes, type BoxSpec } from './props'
 

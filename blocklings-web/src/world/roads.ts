@@ -67,7 +67,36 @@ const ROUTES: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
   ]
 ]
 
-/** Stamp every continental road into the surface map. */
+/**
+ * ARTERIALS — 8 compass highways from the heart's edge out toward the coast
+ * (~±680). Stamped EAGERLY at boot (before any zone streams in) so the
+ * roads exist world-wide from frame one; streamGroundPass renders the
+ * pre-stamped cells as cobble when each zone's ground streams in.
+ *
+ * NE/NW leave from the heart's east/west edges at z=-100 (south of the
+ * preserved ocean bays); the diagonals leave from the heart corners.
+ */
+const ARTERIALS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+  // N — continues the Capital road past the north rim
+  [[6, -240], [14, -300], [-6, -370], [10, -440], [-4, -520], [8, -600], [0, -680]],
+  // NE — skirts the NE bay, then winds to the icy corner
+  [[240, -100], [310, -160], [370, -240], [430, -320], [500, -410], [570, -500], [640, -600], [660, -660]],
+  // E — out of Greenwood toward the sunrise coast
+  [[240, 8], [300, -6], [370, 10], [440, -8], [520, 6], [600, -4], [680, 2]],
+  // SE — from the Forgotten corner to the far shore
+  [[236, 236], [300, 290], [360, 360], [420, 430], [500, 500], [570, 580], [650, 650]],
+  // S — straight(ish) run south between the dunes
+  [[1, 240], [-10, 300], [8, 370], [-6, 440], [12, 520], [-2, 600], [4, 680]],
+  // SW — out of the Ashen corner
+  [[-236, 236], [-300, 290], [-360, 360], [-420, 430], [-500, 500], [-570, 580], [-650, 650]],
+  // W — past Ironhold into the far ranges
+  [[-240, 6], [-300, 16], [-370, -4], [-440, 10], [-520, -8], [-600, 6], [-680, 0]],
+  // NW — skirts the NW bay toward the glacier coast
+  [[-240, -100], [-310, -160], [-370, -240], [-430, -320], [-500, -410], [-570, -500], [-640, -600], [-660, -660]]
+]
+
+/** Stamp every continental road + arterial into the surface map. */
 export function paintRoads(ctx: Ctx): void {
   for (const route of ROUTES) kitPath(ctx, route)
+  for (const route of ARTERIALS) kitPath(ctx, route, 1.6)
 }

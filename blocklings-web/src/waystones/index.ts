@@ -1,7 +1,10 @@
 /**
  * Blocklings — teleport waystones core.
  *
- * Places every WAYSTONES entry (src/ids.ts) as a runed voxel monolith.
+ * Places every WAYSTONES entry (src/ids.ts) PLUS every zone waystone from
+ * the wilderness registry (src/world/zones/registry.ts) as a runed voxel
+ * monolith — 20 stones total. Rigs are tiny (~30 voxels) so all are built
+ * eagerly at their world coords regardless of zone streaming.
  * Walking within 2 units of a dormant stone attunes it (flash + chime +
  * comedy chat line + save). Interacting with an attuned stone (E key, tap
  * on the stone, or the proximity Travel button on mobile) opens the travel
@@ -20,6 +23,7 @@
 import * as THREE from 'three'
 import type { GameAPI } from '../types'
 import { WAYSTONES, REGIONS } from '../ids'
+import { ZONES } from '../world/zones/registry'
 import { events } from '../events'
 import { saveRegistry } from '../save/registry'
 import { StoneRig } from './monolith'
@@ -64,8 +68,18 @@ export interface WaystonesModule {
 // Init
 // ---------------------------------------------------------------------------
 
+/** Unified stone descriptor: heart stones carry a region, zone stones a zone. */
+interface StoneDef {
+  id: string
+  name: string
+  x: number
+  z: number
+  /** Display locale for the travel panel (region or zone name). */
+  place: string
+}
+
 interface StoneRuntime {
-  def: (typeof WAYSTONES)[number]
+  def: StoneDef
   rig: StoneRig
   arrival: { x: number; z: number }
 }
@@ -78,12 +92,30 @@ export function initWaystones(api: GameAPI): WaystonesModule {
   const uiMount = document.getElementById('ui') ?? document.body
   const regionName = new Map(REGIONS.map((r) => [r.id, r.name]))
 
+  // --- the full stone roster: 6 heart stones + 14 wilderness zone stones ---
+  const defs: StoneDef[] = [
+    ...WAYSTONES.map((w) => ({
+      id: w.id,
+      name: w.name,
+      x: w.x,
+      z: w.z,
+      place: regionName.get(w.regionId) ?? w.regionId
+    })),
+    ...ZONES.filter((zn) => zn.waystone).map((zn) => ({
+      id: zn.waystone!.id,
+      name: zn.waystone!.name,
+      x: zn.waystone!.x,
+      z: zn.waystone!.z,
+      place: zn.name
+    }))
+  ]
+
   // --- place every stone on its anchor ------------------------------------
   const list: StoneRuntime[] = []
   const byId = new Map<string, StoneRuntime>()
   const hitMeshes: THREE.Mesh[] = []
 
-  for (const def of WAYSTONES) {
+  for (const def of defs) {
     const rig = new StoneRig(def.name)
     rig.group.position.set(def.x, api.world.groundHeight(def.x, def.z), def.z)
     rig.hit.userData['stoneIdx'] = list.length
@@ -144,7 +176,7 @@ export function initWaystones(api: GameAPI): WaystonesModule {
       .map((o) => ({
         id: o.def.id,
         name: o.def.name,
-        region: regionName.get(o.def.regionId) ?? o.def.regionId
+        region: o.def.place
       }))
     panel.open(s.def.id, s.def.name, options)
   }

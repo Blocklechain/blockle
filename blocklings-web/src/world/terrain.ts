@@ -35,7 +35,21 @@ import {
 } from './layout'
 import * as P from './palette'
 import { BIOME_GROUND, EMBER, FOREST_MOSS, isLand } from './kit'
-import { HALF } from './collision'
+import { HALF, HEART_HALF, type CollisionGrid } from './collision'
+
+/**
+ * Permanently block the open ocean beyond the coast ring at boot (the
+ * streamed zones handle their own interior sea cells as they paint).
+ * Only the outer band can be ocean, so scan just max(|ix|,|iz|) >= 640.
+ */
+export function blockOpenSea(grid: CollisionGrid): void {
+  for (let ix = -HALF; ix < HALF; ix++) {
+    for (let iz = -HALF; iz < HALF; iz++) {
+      if (Math.max(Math.abs(ix), Math.abs(iz)) < 640) continue
+      if (!isLand(ix + 0.5, iz + 0.5)) grid.block(ix, iz)
+    }
+  }
+}
 
 /** Stamp all surface types into ctx.surface. Order matters (later wins). */
 export function markSurfaces(ctx: Ctx): void {
@@ -63,8 +77,9 @@ export function markSurfaces(ctx: Ctx): void {
   // Farm — tilled soil
   setSurfaceRect(ctx, FARM, S_SOIL)
 
-  // River flowing sea-to-sea down the east side, with grassy-sand banks
-  for (let iz = -HALF; iz < HALF; iz++) {
+  // River down the east side of the HEART, with grassy-sand banks (the
+  // streamed zones north/south of the heart own their own waterways)
+  for (let iz = -HEART_HALF; iz < HEART_HALF; iz++) {
     setSurface(ctx, RIVER_X0 - 1, iz, S_BANK)
     setSurface(ctx, RIVER_X1 + 1, iz, S_BANK)
     for (let ix = RIVER_X0; ix <= RIVER_X1; ix++) setSurface(ctx, ix, iz, S_RIVER)
@@ -93,8 +108,8 @@ function groundColor(ctx: Ctx, ix: number, iz: number): number {
     case 'forest':
       return rng.next() < 0.14 ? FOREST_MOSS : rng.pick(BIOME_GROUND['forest']!)
     case 'mountain': {
-      // snow caps creeping in from the continent rim
-      const rim = HALF - Math.max(Math.abs(ix), Math.abs(iz))
+      // snow caps creeping in from the heart rim (as originally built)
+      const rim = HEART_HALF - Math.max(Math.abs(ix), Math.abs(iz))
       if (rim < 16 && rng.next() < (16 - rim) / 16) return P.SNOW
       return rng.pick(BIOME_GROUND['mountain']!)
     }
@@ -171,13 +186,15 @@ function paintCell(ctx: Ctx, ix: number, iz: number): void {
 }
 
 /**
- * Instance the whole continent's ground. The village core (±VILLAGE_HALF)
- * stays per-cell; beyond it, uniform-grass 2x2 blocks collapse into single
+ * Instance the HEART's ground (|x|,|z| <= HEART_HALF) — exactly the original
+ * eager continent pass; the outer-ring zones stream their own ground via
+ * streamGroundPass (./stream). The village core (±VILLAGE_HALF) stays
+ * per-cell; beyond it, uniform-grass 2x2 blocks collapse into single
  * instances (≈4x fewer ground instances with the same dappled look).
  */
 export function buildGround(ctx: Ctx): void {
-  for (let mx = -HALF; mx < HALF; mx += 2) {
-    for (let mz = -HALF; mz < HALF; mz += 2) {
+  for (let mx = -HEART_HALF; mx < HEART_HALF; mx += 2) {
+    for (let mz = -HEART_HALF; mz < HEART_HALF; mz += 2) {
       const inVillage =
         mx >= -VILLAGE_HALF && mx < VILLAGE_HALF && mz >= -VILLAGE_HALF && mz < VILLAGE_HALF
       let macro = !inVillage
@@ -224,7 +241,7 @@ export function buildWater(scene: THREE.Scene): WaterRefs {
     transparent: true,
     opacity: 0.78
   })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, HALF * 2), material)
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, HEART_HALF * 2), material)
   mesh.rotation.x = -Math.PI / 2
   mesh.position.set(RIVER_X0 + w / 2, -0.22, 0)
   mesh.receiveShadow = true
@@ -239,7 +256,7 @@ export function buildOcean(scene: THREE.Scene): WaterRefs {
     transparent: true,
     opacity: 0.85
   })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400), material)
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4800, 4800), material)
   mesh.rotation.x = -Math.PI / 2
   mesh.position.set(0, -0.42, 0)
   scene.add(mesh)
@@ -249,7 +266,7 @@ export function buildOcean(scene: THREE.Scene): WaterRefs {
 /** Deep sea-floor plane under everything so the world never shows void. */
 export function buildHorizon(scene: THREE.Scene): void {
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(2600, 2600),
+    new THREE.PlaneGeometry(5200, 5200),
     new THREE.MeshLambertMaterial({ color: 0x27486b })
   )
   mesh.rotation.x = -Math.PI / 2
