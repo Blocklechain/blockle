@@ -23,6 +23,10 @@ export interface QuestPanelDeps {
   focused(): { def: QuestDef; step: number; done: number } | null
   setFocus(id: string): void
   isFocused(id: string): boolean
+  /** Guide-trail tracking (./tracking): is this the sparkled quest? */
+  isTracked(id: string): boolean
+  /** Track a quest (switches the one trail) or untrack with null. */
+  setTracked(id: string | null): void
   giverName(id: string): string
   rewardText(def: QuestDef): string
 }
@@ -76,7 +80,10 @@ export function createQuestPanel(deps: QuestPanelDeps): QuestPanel {
   const trkFill = el('div', 'blq-trk-fill')
   trkBar.appendChild(trkFill)
   const trkCount = el('div', 'blq-trk-count')
-  tracker.append(trkTitle, trkStep, trkBar, trkCount)
+  // small 'tracking' glint — lit while the shown quest owns the guide trail
+  const trkGlint = el('span', 'blq-trk-glint', '✦')
+  trkGlint.style.display = 'none'
+  tracker.append(trkGlint, trkTitle, trkStep, trkBar, trkCount)
 
   // =========================================================================
   // Quest log panel
@@ -111,10 +118,11 @@ export function createQuestPanel(deps: QuestPanelDeps): QuestPanel {
 
     const track = el('button', 'blq-track')
     track.type = 'button'
-    const focused = deps.isFocused(a.def.id)
-    track.textContent = focused ? 'Tracking' : 'Track'
-    track.disabled = focused
-    track.addEventListener('click', () => deps.setFocus(a.def.id))
+    const tracked = deps.isTracked(a.def.id)
+    track.textContent = tracked ? 'Untrack' : 'Track'
+    track.classList.toggle('blq-track-on', tracked)
+    track.title = 'Follow the sparkles'
+    track.addEventListener('click', () => deps.setTracked(tracked ? null : a.def.id))
     top.appendChild(track)
     card.appendChild(top)
 
@@ -194,6 +202,7 @@ export function createQuestPanel(deps: QuestPanelDeps): QuestPanel {
       return
     }
     tracker.style.display = ''
+    trkGlint.style.display = deps.isTracked(f.def.id) ? '' : 'none'
     const step = f.def.steps[f.step]
     trkTitle.textContent = f.def.title
     if (step) {

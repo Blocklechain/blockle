@@ -37,6 +37,7 @@ import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
 import { initInventory } from './inventory'
 import { initMinting } from './minting'
 import { initQuests } from './quests'
+import { initQuestGuide } from './quests/guide'
 import { initNpcs, setQuestsApi, setPay, setGoldPay } from './npcs'
 import { initCombat, setAutoRetaliate } from './combat'
 import { MobRig } from './combat/mobs'
@@ -323,6 +324,7 @@ function enterWorld(): void {
   // --- quests (29 defs + log panel + tracker; 'quests' save provider) -------
 
   const quests = initQuests(api)
+  initQuestGuide(api) // glowing guide path for the tracked quest/contract
 
   // --- npcs (15 villagers/vendors; REAL-crypto vendor prices -> treasury) ---
 

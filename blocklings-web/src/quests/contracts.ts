@@ -24,6 +24,7 @@ import { saveRegistry } from '../save/registry'
 import { NODE_KINDS, SPECIES } from '../ids'
 import { ITEM_NAMES } from './defs'
 import { createBoard, type Board } from './board'
+import { onTrackedChange, setTracked, trackedId } from './tracking'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -593,6 +594,7 @@ export const contractsApi: ContractsAPI = {
   abandon(id: string): void {
     const def = byId.get(id)
     if (!active.delete(id)) return
+    if (trackedId() === id) setTracked(null) // the sparkles quit with you
     events.emit('chat:system', {
       text: `Contract abandoned: "${def?.title ?? id}". The board judges silently.`,
     })
@@ -745,7 +747,12 @@ export function installContracts(): ContractsAPI {
     maxActive: () => contractsApi.maxActive(),
     resetsInMs: () => contractsApi.resetsInMs(),
     rewardText: (def) => contractRewardText(def),
+    isTracked: (id) => trackedId() === id,
+    setTracked: (id) => setTracked(id),
   })
+
+  // tracking can change from the quest log / the guide — keep pills in sync
+  onTrackedChange(() => board?.refresh())
 
   return contractsApi
 }

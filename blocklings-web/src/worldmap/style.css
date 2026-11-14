@@ -141,6 +141,10 @@
 
 /* ===== full-screen map panel =========================================== */
 
+.wm-root.wm-root--open {
+  z-index: 60; /* above all HUD chrome while the map is open */
+}
+
 .wm-panel {
   position: absolute;
   inset: 0;

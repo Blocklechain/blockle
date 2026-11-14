@@ -19,6 +19,7 @@ import { BOSSES, NPCS } from '../ids'
 import { ITEM_NAMES as ITEM_NAMES1, PREREQS as PREREQS1, QUESTS as QUESTS1, questById as questById1 } from './defs'
 import { ITEM_NAMES2, PREREQS2, QUESTS2, questById2 } from './defs2'
 import { createQuestPanel, type QuestPanel } from './panel'
+import { onTrackedChange, setTracked as setTrackedId, trackedId } from './tracking'
 
 // Wave-3 outer-zone arcs concat straight onto the original book; everything
 // below works off the merged tables under the original names.
@@ -228,15 +229,17 @@ export function initQuests(api: GameAPI): QuestsAPI {
 
   // --- persistence: CharacterSave.quests -----------------------------------
   saveRegistry.register('quests', {
-    dump(): { done: string[]; active: [string, number, number][] } {
+    dump(): { done: string[]; active: [string, number, number][]; tracked: string | null } {
       return {
         done: [...completedSet],
         active: [...active].map(([id, st]) => [id, st.step, st.done]),
+        // additive field: the guide-trail tracked quest/contract id
+        tracked: trackedId(),
       }
     },
     load(data: unknown): void {
       if (!data || typeof data !== 'object') return
-      const d = data as { done?: unknown; active?: unknown }
+      const d = data as { done?: unknown; active?: unknown; tracked?: unknown }
       completedSet.clear()
       active.clear()
       if (Array.isArray(d.done)) {
@@ -260,6 +263,12 @@ export function initQuests(api: GameAPI): QuestsAPI {
       }
       focusId = null
       ensureFocus()
+      // restore the tracked id (contracts validate lazily in the guide)
+      const t = d.tracked
+      setTrackedId(
+        typeof t === 'string' && (active.has(t) || t.startsWith('contract:')) ? t : null,
+        true
+      )
       ui?.refresh()
     },
   })
@@ -312,9 +321,19 @@ export function initQuests(api: GameAPI): QuestsAPI {
       ui?.refresh()
     },
     isFocused: (id) => focusId === id,
+    isTracked: (id) => trackedId() === id,
+    setTracked: (id) => {
+      // tracking a quest also focuses it (the HUD widget follows the trail)
+      if (id && active.has(id)) focusId = id
+      setTrackedId(id)
+      ui?.refresh()
+    },
     giverName: npcName,
     rewardText: rewardSummary,
   })
+
+  // tracking can change from the job board / the guide — keep pills in sync
+  onTrackedChange(() => ui?.refresh())
 
   return questsApi
 }

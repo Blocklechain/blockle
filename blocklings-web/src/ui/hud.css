@@ -440,14 +440,59 @@
   scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
 }
 
-.bl-collapsed .bl-chat-log {
+.bl-chat-glyph {
+  flex: none;
+  color: var(--bl-gold);
+  margin-right: 8px;
+}
+
+.bl-chat-unread {
+  display: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--bl-gold);
+  color: #16130a;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* FULLY collapsed: the whole chat shrinks to a round bubble button — no
+   header bar, no input, nothing covering the play area. */
+.bl-collapsed .bl-chat-log,
+.bl-collapsed .bl-chat-title,
+.bl-collapsed .bl-chat-chev {
   display: none;
 }
-.bl-collapsed .bl-chat-head {
-  border-bottom: none;
+.bl-collapsed {
+  width: 48px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
 }
-.bl-collapsed .bl-chat-chev {
-  transform: rotate(180deg);
+.bl-collapsed .bl-chat-head {
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0;
+  justify-content: center;
+  border: 1px solid var(--bl-edge-dim);
+  border-radius: 50%;
+  background: var(--bl-panel);
+}
+.bl-collapsed .bl-chat-glyph {
+  margin-right: 0;
+}
+.bl-collapsed .bl-chat-unread {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  margin-left: 0;
 }
 
 .bl-chat-line {
@@ -470,6 +515,7 @@
   border-top: 1px solid var(--bl-edge-dim);
 }
 .bl-collapsed .bl-chat-inputrow {
+  display: none;
   border-top: none;
 }
 

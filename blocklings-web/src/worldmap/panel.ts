@@ -374,6 +374,10 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     if (openFlag) return
     openFlag = true
     el.classList.add('wm-open')
+    // Lift the whole worldmap root above every HUD cluster (gear/chips z<=46)
+    // while open — otherwise the top-right buttons float OVER the map and
+    // sit exactly on its close button on phones.
+    el.parentElement?.classList.add('wm-root--open')
     resize()
     // Start framing the whole continent; the player can dive in from there.
     zoom = minZoom
@@ -387,6 +391,7 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     if (!openFlag) return
     openFlag = false
     el.classList.remove('wm-open')
+    el.parentElement?.classList.remove('wm-root--open')
     cancelAnimationFrame(raf)
   }
 

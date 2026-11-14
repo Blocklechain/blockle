@@ -27,6 +27,10 @@ export interface BoardDeps {
   maxActive(): number
   resetsInMs(): number
   rewardText(def: ContractDef): string
+  /** Guide-trail tracking (./tracking): is this the sparkled contract? */
+  isTracked(id: string): boolean
+  /** Track a contract (switches the one trail) or untrack with null. */
+  setTracked(id: string | null): void
 }
 
 export interface Board {
@@ -96,6 +100,17 @@ export function createBoard(deps: BoardDeps): Board {
       })
       top.appendChild(take)
     } else {
+      const tracked = deps.isTracked(def.id)
+      const track = el('button', 'blq-track', tracked ? 'Untrack' : 'Track')
+      track.type = 'button'
+      track.classList.toggle('blq-track-on', tracked)
+      track.title = 'Follow the sparkles'
+      track.addEventListener('click', () => {
+        deps.setTracked(tracked ? null : def.id)
+        renderBody()
+      })
+      top.appendChild(track)
+
       const drop = el('button', 'blc-abandon', 'Abandon')
       drop.type = 'button'
       drop.addEventListener('click', () => {

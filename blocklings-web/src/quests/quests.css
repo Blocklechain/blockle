@@ -152,6 +152,33 @@
   color: var(--blq-text-dim);
 }
 
+/* 'tracking' glint — twinkles while the shown quest owns the guide trail */
+.blq-trk-glint {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--blq-gold);
+  text-shadow: 0 0 6px rgba(232, 193, 90, 0.8);
+  pointer-events: none;
+  animation: blq-glint-kf 1.6s ease-in-out infinite;
+}
+.blq-tracker .blq-trk-title {
+  padding-right: 14px;
+}
+@keyframes blq-glint-kf {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
 @keyframes blq-pulse-kf {
   0% { transform: scale(1); }
   35% { transform: scale(1.04); }
@@ -300,6 +327,16 @@
   cursor: default;
   color: var(--blq-green);
   border-color: rgba(126, 217, 87, 0.35);
+}
+/* lit gold pill while this row owns the guide-trail sparkles */
+.blq-track-on {
+  color: #1a1408;
+  background: linear-gradient(180deg, #ffe9a6 0%, #d4af37 100%);
+  border-color: var(--blq-edge);
+  box-shadow: 0 0 10px rgba(232, 193, 90, 0.35);
+}
+.blq-track-on:hover {
+  filter: brightness(1.06);
 }
 
 .blq-steps {

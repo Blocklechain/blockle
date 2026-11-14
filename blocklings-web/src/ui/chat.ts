@@ -58,9 +58,24 @@ export function createChat(api: GameAPI, onUiTick: () => void): HTMLElement {
   head.className = 'bl-chat-head'
   head.setAttribute('aria-label', 'Toggle chat log')
   head.innerHTML =
-    '<span class="bl-chat-title">Chat</span><span class="bl-chat-chev" aria-hidden="true">&#9662;</span>'
+    '<svg class="bl-chat-glyph" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">' +
+    '<path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>' +
+    '<span class="bl-chat-title">Chat</span>' +
+    '<span class="bl-chat-unread" aria-hidden="true"></span>' +
+    '<span class="bl-chat-chev" aria-hidden="true">&#9662;</span>'
+  const unreadEl = head.querySelector('.bl-chat-unread') as HTMLElement
+  let unread = 0
+  const refreshUnread = (): void => {
+    unreadEl.textContent = unread > 9 ? '9+' : String(unread)
+    unreadEl.style.display = unread > 0 ? '' : 'none'
+  }
+  refreshUnread()
   head.addEventListener('click', () => {
     root.classList.toggle('bl-collapsed')
+    if (!root.classList.contains('bl-collapsed')) {
+      unread = 0
+      refreshUnread()
+    }
     onUiTick()
   })
 
@@ -76,6 +91,10 @@ export function createChat(api: GameAPI, onUiTick: () => void): HTMLElement {
 
   function appendLine(from: string, msg: string): void {
     const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 28
+    if (root.classList.contains('bl-collapsed') && from !== '*') {
+      unread++
+      refreshUnread()
+    }
     const line = document.createElement('div')
     line.className = 'bl-chat-line'
     const who = document.createElement('span')
@@ -200,6 +219,8 @@ export function createChat(api: GameAPI, onUiTick: () => void): HTMLElement {
     if (e.key !== 'Enter' || e.repeat) return
     if (isTypingTarget(e.target) || isTypingTarget(document.activeElement)) return
     root.classList.remove('bl-collapsed')
+    unread = 0
+    refreshUnread()
     input.focus()
     e.preventDefault()
   })
