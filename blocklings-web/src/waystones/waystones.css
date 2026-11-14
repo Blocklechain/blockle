@@ -1,0 +1,168 @@
+/* Blocklings waystones — travel bottom-sheet, proximity Travel button, and
+   the teleport fade veil. Matches the HUD/NPC look: dark translucent
+   parchment, gold edges, cyan accents, big touch targets. Mounted in #ui
+   (pointer-events none at the root; we opt back in). */
+
+.bl-ws-panel,
+.bl-ws-go {
+  pointer-events: auto;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: #efe9d8;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== travel panel ===================================================== */
+
+.bl-ws-panel {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(14px, env(safe-area-inset-bottom));
+  width: min(480px, calc(100vw - 20px));
+  max-height: 60vh;
+  overflow-y: auto;
+  background: rgba(13, 15, 22, 0.86);
+  border: 1px solid rgba(106, 232, 255, 0.4);
+  border-radius: 12px;
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.55),
+    0 0 18px rgba(53, 220, 255, 0.12),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  padding: 12px 14px;
+  z-index: 30;
+}
+
+.bl-ws-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bl-ws-titlewrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.bl-ws-title {
+  font-weight: bold;
+  font-size: 17px;
+  color: #9beaff;
+}
+
+.bl-ws-sub {
+  font-size: 12px;
+  color: #b9b2a0;
+}
+
+.bl-ws-x {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  font: inherit;
+  font-size: 16px;
+  color: #b9b2a0;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.bl-ws-x:hover {
+  color: #efe9d8;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bl-ws-empty {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #b9b2a0;
+}
+
+.bl-ws-row {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  min-height: 44px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 15px;
+  color: #efe9d8;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(106, 232, 255, 0.25);
+  border-radius: 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.bl-ws-row:hover {
+  background: rgba(106, 232, 255, 0.1);
+  border-color: rgba(106, 232, 255, 0.55);
+}
+
+.bl-ws-rowname {
+  font-weight: bold;
+  color: #cdf4ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bl-ws-rowregion {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #b9b2a0;
+}
+
+/* ===== proximity Travel button (sits above the NPC Talk button) ========= */
+
+.bl-ws-go {
+  position: absolute;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(174px, calc(env(safe-area-inset-bottom) + 174px));
+  min-height: 44px;
+  max-width: 46vw;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: bold;
+  color: #9beaff;
+  background: rgba(13, 15, 22, 0.82);
+  border: 1px solid rgba(106, 232, 255, 0.5);
+  border-radius: 999px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  touch-action: manipulation;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 25;
+}
+
+.bl-ws-go:active {
+  filter: brightness(1.2);
+}
+
+/* ===== teleport fade veil =============================================== */
+
+.bl-ws-veil {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 90;
+}
+
+.bl-ws-veil-on {
+  opacity: 1;
+  pointer-events: auto;
+}

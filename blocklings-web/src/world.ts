@@ -4,4 +4,4 @@
  * not resolve directory indexes), so this one-liner is what wires
  * src/world/ into the game.
  */
-export { createWorld } from './world/index'
+export { createWorld, regionAt, REGIONS } from './world/index'

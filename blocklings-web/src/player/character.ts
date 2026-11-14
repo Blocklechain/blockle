@@ -154,6 +154,22 @@ export class CharacterRig {
   private t = Math.random() * 10 // desync idle cycles between characters
   private phase = 0
 
+  // --- equipment attach points (anchors scale/orient gear for the rig) ----
+  private readonly anchors: Record<string, THREE.Group> = {}
+  private readonly bootAnchorR: THREE.Group
+  private readonly equipped = new Map<string, THREE.Object3D[]>()
+  private readonly defaultSword: THREE.Group
+  private readonly defaultBoots: THREE.Mesh[] = []
+
+  // --- combat animation state ---------------------------------------------
+  private attackT = -1 // <0 = not attacking; else seconds elapsed
+  private strikeFired = false
+  private strikeCb: (() => void) | null = null
+  private hurtT = -1
+  private mode: 'alive' | 'dying' | 'dead' = 'alive'
+  private dieT = 0
+  private dieCb: (() => void) | null = null
+
   constructor(opts: CharacterOptions = {}) {
     const hue = opts.tunicHue ?? 210
     const tunic = new THREE.Color().setHSL(hue / 360, 0.62, 0.52)
@@ -181,6 +197,7 @@ export class CharacterRig {
       leg.position.y = -0.225
       const boot = box(0.22, 0.12, 0.28, bootMat)
       boot.position.set(0, -0.4, 0.02)
+      this.defaultBoots.push(boot)
       pivot.add(leg, boot)
       return pivot
     }
@@ -212,7 +229,16 @@ export class CharacterRig {
     this.armR = makeArm(0.4)
     this.body.add(this.armL, this.armR)
 
-    // --- sword in the right hand (blade up, angled a touch forward) ------
+    // --- right-hand grip anchor + the default sword -----------------------
+    // The anchor carries the exact transform the beloved sword always had
+    // (resting tilt forward), so equipped weapons rest angled the same way
+    // and arc naturally with the arm during attack swings.
+    const gripAnchor = new THREE.Group()
+    gripAnchor.position.set(0.02, -0.44, 0.08)
+    gripAnchor.rotation.x = -0.35 // resting tilt forward
+    this.armR.add(gripAnchor)
+    this.anchors['weapon'] = gripAnchor
+
     const sword = new THREE.Group()
     const grip = box(0.06, 0.16, 0.06, lambert(0x5a3a22))
     const guard = box(0.2, 0.05, 0.07, lambert(0xc9a24b))
@@ -222,9 +248,34 @@ export class CharacterRig {
     const tip = box(0.05, 0.08, 0.035, lambert(0xd8dde6))
     tip.position.y = 0.68
     sword.add(grip, guard, blade, tip)
-    sword.position.set(0.02, -0.44, 0.08)
-    sword.rotation.x = -0.35 // resting tilt forward
-    this.armR.add(sword)
+    gripAnchor.add(sword)
+    this.defaultSword = sword
+
+    // --- left-forearm shield anchor (face points outward, -X when facing +Z)
+    const shieldAnchor = new THREE.Group()
+    shieldAnchor.position.set(-0.13, -0.4, 0.03)
+    shieldAnchor.rotation.y = -Math.PI / 2
+    shieldAnchor.scale.setScalar(0.8)
+    this.armL.add(shieldAnchor)
+    this.anchors['shield'] = shieldAnchor
+
+    // --- torso overlay anchor (origin at torso base, just above the belt) -
+    const chestAnchor = new THREE.Group()
+    chestAnchor.position.set(0, 0.49, 0)
+    chestAnchor.scale.setScalar(0.9)
+    this.body.add(chestAnchor)
+    this.anchors['chest'] = chestAnchor
+
+    // --- boot anchors (one per foot; right side gets a clone) -------------
+    const makeBootAnchor = (pivot: THREE.Group): THREE.Group => {
+      const a = new THREE.Group()
+      a.position.set(0, -0.46, 0.02)
+      a.scale.setScalar(0.45)
+      pivot.add(a)
+      return a
+    }
+    this.anchors['boots'] = makeBootAnchor(this.legL)
+    this.bootAnchorR = makeBootAnchor(this.legR)
 
     // --- head (pivot at neck) + pixel face + hair cap ---------------------
     this.neckY = hipY + 0.5
@@ -245,11 +296,191 @@ export class CharacterRig {
     fringe.position.set(0, headSize - 0.07, headSize / 2 + 0.03)
     this.headPivot.add(head, cap, back, fringe)
     this.body.add(this.headPivot)
+
+    // --- head-top helm anchor (base sits above the eyes, covers the hair) -
+    const helmAnchor = new THREE.Group()
+    helmAnchor.position.set(0, 0.62, 0)
+    helmAnchor.scale.setScalar(0.85)
+    this.headPivot.add(helmAnchor)
+    this.anchors['helm'] = helmAnchor
+  }
+
+  // -------------------------------------------------------------------------
+  // Equipment
+  // -------------------------------------------------------------------------
+
+  /**
+   * Attach (or clear, with null) an equipment mesh on a slot:
+   * 'weapon' | 'shield' | 'helm' | 'chest' | 'boots'. Meshes come from
+   * ItemsAPI.buildMesh (origin at grip/base, facing +Z); the anchors
+   * scale/orient them to sit right on the little guy. A weapon replaces
+   * the default sword; boots hide the default boots and are mirrored
+   * onto both feet. Unknown slots are ignored.
+   */
+  setEquipmentMesh(slot: string, mesh: THREE.Group | null): void {
+    const anchor = this.anchors[slot]
+    if (!anchor) return
+
+    // clear whatever was equipped there
+    const prev = this.equipped.get(slot)
+    if (prev) {
+      for (const obj of prev) obj.removeFromParent()
+      this.equipped.delete(slot)
+    }
+    if (slot === 'weapon') this.defaultSword.visible = mesh === null
+    if (slot === 'boots') {
+      for (const b of this.defaultBoots) b.visible = mesh === null
+    }
+    if (!mesh) return
+
+    const added: THREE.Object3D[] = [mesh]
+    anchor.add(mesh)
+    if (slot === 'boots') {
+      const clone = mesh.clone()
+      this.bootAnchorR.add(clone)
+      added.push(clone)
+    }
+    this.equipped.set(slot, added)
+  }
+
+  // -------------------------------------------------------------------------
+  // Combat animation API (local player; remote rigs simply never call these)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Play the snappy 250ms arm-swing. `onStrike` fires once at the strike
+   * frame (~125ms in, as the weapon whips through the front arc).
+   * Ignored while a swing is in flight or while dead.
+   */
+  startAttack(onStrike?: () => void): boolean {
+    if (this.mode !== 'alive' || this.attackT >= 0) return false
+    this.attackT = 0
+    this.strikeFired = false
+    this.strikeCb = onStrike ?? null
+    return true
+  }
+
+  /** Brief red damage flash (all voxels glow red for ~150ms). */
+  flashHurt(): void {
+    this.hurtT = 0
+    this.setEmissive(0x8a1f1f)
+  }
+
+  /** Dramatic backward topple (~0.7s). `onDone` fires when he's down. */
+  die(onDone?: () => void): void {
+    if (this.mode !== 'alive') return
+    this.mode = 'dying'
+    this.dieT = 0
+    this.dieCb = onDone ?? null
+    this.attackT = -1 // cancel any mid-swing
+  }
+
+  /** Reset the rig to its feet after a death (respawn). */
+  revive(): void {
+    this.mode = 'alive'
+    this.dieT = 0
+    this.dieCb = null
+    this.body.rotation.set(0, 0, 0)
+    this.body.position.y = 0
+    this.armL.rotation.set(0, 0, 0.06)
+    this.armR.rotation.set(0, 0, -0.06)
+    this.legL.rotation.x = 0
+    this.legR.rotation.x = 0
+    if (this.hurtT >= 0) {
+      this.hurtT = -1
+      this.setEmissive(0x000000)
+    }
+  }
+
+  /** True unless mid-topple or down. */
+  get alive(): boolean {
+    return this.mode === 'alive'
+  }
+
+  private setEmissive(hex: number): void {
+    this.group.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh)) return
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+      for (const m of mats) {
+        if (m instanceof THREE.MeshLambertMaterial) m.emissive.setHex(hex)
+      }
+    })
+  }
+
+  private updateHurt(dt: number): void {
+    if (this.hurtT < 0) return
+    this.hurtT += dt
+    if (this.hurtT > 0.15) {
+      this.hurtT = -1
+      this.setEmissive(0x000000)
+    }
+  }
+
+  private updateAttack(dt: number): void {
+    if (this.attackT < 0) return
+    this.attackT += dt
+    const p = Math.min(1, this.attackT / 0.25)
+    let rx: number
+    let twist: number
+    if (p < 0.32) {
+      // wind-up: arm whips up and back, shoulders coil
+      const e = 1 - (1 - p / 0.32) ** 2
+      rx = -2.0 * e
+      twist = -0.18 * e
+    } else if (p < 0.62) {
+      // the slash: fast ease-in whip down through the front arc
+      const k = (p - 0.32) / 0.3
+      const e = k * k
+      rx = -2.0 + 2.9 * e
+      twist = -0.18 + 0.38 * e
+    } else {
+      // recover back to rest
+      const e = 1 - (1 - (p - 0.62) / 0.38) ** 2
+      rx = 0.9 * (1 - e)
+      twist = 0.2 * (1 - e)
+    }
+    this.armR.rotation.x = rx
+    this.armR.rotation.z = -0.15
+    this.body.rotation.y = twist
+    if (!this.strikeFired && p >= 0.5) {
+      this.strikeFired = true
+      this.strikeCb?.()
+    }
+    if (p >= 1) {
+      this.attackT = -1
+      this.body.rotation.y = 0
+      this.armR.rotation.z = -0.06
+    }
+  }
+
+  private updateDeath(dt: number): void {
+    if (this.mode !== 'dying') return
+    this.dieT += dt
+    const k = Math.min(1, this.dieT / 0.7)
+    const e = 1 - (1 - k) ** 3 // ease-out topple
+    this.body.rotation.x = (-Math.PI / 2) * e
+    this.body.rotation.z = Math.sin(k * Math.PI) * 0.18 // comedic lean
+    this.armL.rotation.x = -2.4 * e // arms flail up on the way down
+    this.armR.rotation.x = -2.4 * e
+    this.body.position.y = Math.sin(Math.min(1, k * 1.15) * Math.PI) * 0.08 // little hop
+    if (k >= 1) {
+      this.mode = 'dead'
+      this.body.position.y = 0
+      const cb = this.dieCb
+      this.dieCb = null
+      cb?.()
+    }
   }
 
   /** Advance animations. `speed01` = current speed / max speed (0..1). */
   update(dt: number, moving: boolean, speed01: number): void {
     this.t += dt
+    if (this.mode !== 'alive') {
+      // toppled (or toppling): hold the death pose, keep the flash ticking
+      this.updateDeath(dt)
+      this.updateHurt(dt)
+      return
+    }
     const damp = 1 - Math.exp(-dt * 10)
 
     if (moving) {
@@ -282,6 +513,10 @@ export class CharacterRig {
       this.armR.rotation.z = -0.06 - b * 0.025
       this.headPivot.rotation.y = Math.sin(this.t * 0.6) * 0.07 // looks around a bit
     }
+
+    // layered on top: the attack swing stomps the right arm, hurt flash fades
+    this.updateAttack(dt)
+    this.updateHurt(dt)
   }
 
   /** Free GPU resources (geometries, materials, textures). */

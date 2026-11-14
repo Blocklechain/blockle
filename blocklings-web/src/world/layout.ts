@@ -3,9 +3,12 @@
  * terrain pass (paths/surfaces) and the structure pass (buildings).
  * All coordinates are voxel-grid cells (min corner), world units.
  */
-import type { CollisionGrid } from './collision'
+import { HALF, SIZE, type CollisionGrid } from './collision'
 import type { Rng } from './rng'
 import type { VoxelBatch } from './batch'
+
+/** Half-extent of the original hand-built village core (kept 1:1 detailed). */
+export const VILLAGE_HALF = 60
 
 /** Surface classification per ground cell. */
 export const S_GRASS = 0
@@ -37,10 +40,13 @@ export interface BuildingSpec extends Rect {
 export const FENCE_R = 38
 export const GATE_HALF = 2
 
-/** River band (cells, inclusive) and the bridge crossing it. */
+/** River band (cells, inclusive) and the bridges crossing it. */
 export const RIVER_X0 = 44
 export const RIVER_X1 = 52
 export const BRIDGE: Rect = { x0: 42, z0: -3, w: 13, d: 6 } // outer rows are railings
+/** Second crossing, on the road south-east to the Forgotten Lands. */
+export const SOUTH_BRIDGE: Rect = { x0: 42, z0: 88, w: 13, d: 6 }
+export const BRIDGES: readonly Rect[] = [BRIDGE, SOUTH_BRIDGE]
 
 export const PLAZA_RADIUS = 9
 
@@ -102,16 +108,16 @@ export interface Ctx {
 }
 
 export function surfIdx(ix: number, iz: number): number {
-  return ix + 60 + (iz + 60) * 120
+  return ix + HALF + (iz + HALF) * SIZE
 }
 
 export function surfaceAt(ctx: Ctx, ix: number, iz: number): number {
-  if (ix < -60 || ix >= 60 || iz < -60 || iz >= 60) return S_GRASS
+  if (ix < -HALF || ix >= HALF || iz < -HALF || iz >= HALF) return S_GRASS
   return ctx.surface[surfIdx(ix, iz)] ?? S_GRASS
 }
 
 export function setSurface(ctx: Ctx, ix: number, iz: number, s: number): void {
-  if (ix < -60 || ix >= 60 || iz < -60 || iz >= 60) return
+  if (ix < -HALF || ix >= HALF || iz < -HALF || iz >= HALF) return
   ctx.surface[surfIdx(ix, iz)] = s
 }
 

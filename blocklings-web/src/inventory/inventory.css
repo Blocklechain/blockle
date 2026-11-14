@@ -1,0 +1,417 @@
+/* Blocklings inventory — medieval-dark bag panel matching hud.css:
+   translucent dark plates, gold edges, ≥40px touch targets. */
+
+.bl-invroot {
+  --bl-panel: rgba(13, 15, 22, 0.86);
+  --bl-panel-soft: rgba(13, 15, 22, 0.6);
+  --bl-edge: rgba(212, 175, 55, 0.55);
+  --bl-edge-dim: rgba(212, 175, 55, 0.28);
+  --bl-gold: #e8c15a;
+  --bl-gold-deep: #b8860b;
+  --bl-text: #efe9d8;
+  --bl-text-dim: #b9b2a0;
+
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 45;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: var(--bl-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.bl-invroot button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  pointer-events: auto;
+}
+
+/* ===== bag button (bottom-right, clear of joystick + chat) ============== */
+
+.bl-bagbtn {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bl-gold);
+  background: var(--bl-panel);
+  border: 1px solid var(--bl-edge-dim);
+  border-radius: 12px;
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: border-color 0.15s ease, transform 0.12s ease;
+}
+.bl-bagbtn:hover {
+  border-color: var(--bl-edge);
+}
+.bl-bagbtn:active {
+  transform: scale(0.94);
+}
+
+/* On touch devices the round ATK button owns the bottom-right corner
+   (84px at right 18 / bottom 32) — perch the bag just above it. */
+@media (pointer: coarse) {
+  .bl-bagbtn {
+    right: max(18px, env(safe-area-inset-right));
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 100px);
+  }
+}
+
+/* ===== main panel ======================================================= */
+
+.bl-inv {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 20px));
+  max-height: min(660px, calc(100dvh - 20px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  background: var(--bl-panel);
+  border: 1px solid var(--bl-edge-dim);
+  border-radius: 12px;
+  box-shadow:
+    0 6px 30px rgba(0, 0, 0, 0.6),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.bl-inv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bl-edge-dim);
+}
+
+.bl-inv-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--bl-gold);
+}
+
+.bl-inv-close {
+  width: 36px;
+  height: 36px;
+  margin: -6px -8px -6px 0;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--bl-text-dim);
+  border-radius: 8px;
+}
+.bl-inv-close:hover {
+  color: var(--bl-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bl-inv-body {
+  position: relative;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+}
+
+.bl-inv-sect {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bl-text-dim);
+  margin: 2px 0 8px;
+}
+.bl-inv-sect + .bl-inv-sect,
+.bl-inv-grid + .bl-inv-sect {
+  margin-top: 16px;
+}
+
+/* ===== equipment doll =================================================== */
+
+.bl-inv-doll {
+  display: grid;
+  grid-template-areas:
+    '.      helm   .'
+    'weapon chest  shield'
+    'tool   boots  accessory';
+  gap: 6px;
+  max-width: 320px;
+  margin: 0 auto;
+}
+
+.bl-inv-slot {
+  position: relative;
+  min-height: 52px;
+  padding: 5px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1.5px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  transition: border-color 0.15s ease;
+}
+.bl-inv-slot:hover {
+  border-color: var(--bl-edge);
+}
+
+.bl-inv-slot-name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bl-text-dim);
+}
+
+.bl-inv-slot-item {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+  word-break: break-word;
+}
+
+.bl-inv-slot.bl-empty .bl-inv-slot-name {
+  opacity: 0.6;
+}
+
+/* ===== equipped stat chips ============================================= */
+
+.bl-inv-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.bl-inv-stat {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  padding: 3px 9px 4px;
+  border-radius: 999px;
+  color: var(--bl-text);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--bl-edge-dim);
+}
+.bl-inv-stat b {
+  color: var(--bl-gold);
+}
+
+/* ===== bag grid ========================================================= */
+
+.bl-inv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+}
+
+.bl-inv-cell {
+  position: relative;
+  min-height: 64px;
+  padding: 6px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  word-break: break-word;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1.5px solid rgba(255, 255, 255, 0.12); /* overridden per rarity */
+  border-radius: 9px;
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+.bl-inv-cell:hover {
+  filter: brightness(1.15);
+}
+.bl-inv-cell:active {
+  transform: scale(0.95);
+}
+
+.bl-inv-qty {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--bl-gold);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.bl-inv-empty {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--bl-text-dim);
+}
+
+/* ===== detail card ====================================================== */
+
+.bl-inv-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px 16px;
+  background: var(--bl-panel);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+}
+
+.bl-inv-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 10px 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bl-text-dim);
+  border-radius: 8px;
+}
+.bl-inv-back:hover {
+  color: var(--bl-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bl-inv-viewerwrap {
+  flex: none;
+  height: 176px;
+  margin: 4px 0 8px;
+  border-radius: 10px;
+  background:
+    radial-gradient(ellipse at 50% 80%, rgba(212, 175, 55, 0.14), transparent 65%),
+    rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.bl-inv-viewer {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.bl-inv-itemname {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.bl-inv-rarity {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 2px 0 8px;
+}
+
+.bl-inv-statline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.bl-inv-desc {
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--bl-text-dim);
+  margin-bottom: 6px;
+}
+
+.bl-inv-value {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--bl-text-dim);
+  margin-bottom: 12px;
+}
+.bl-inv-value b {
+  color: var(--bl-gold);
+}
+
+.bl-inv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.bl-inv-act {
+  flex: 1 1 calc(50% - 8px);
+  min-height: 42px;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bl-text);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+}
+.bl-inv-act:hover {
+  filter: brightness(1.15);
+}
+.bl-inv-act:active {
+  filter: brightness(0.9);
+}
+
+.bl-inv-act.bl-primary {
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--bl-gold) 0%, var(--bl-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+}
+
+.bl-inv-act.bl-danger {
+  color: #ffb3a0;
+  border-color: rgba(198, 47, 34, 0.55);
+  background: rgba(198, 47, 34, 0.18);
+}
+
+/* ===== small screens ==================================================== */
+
+@media (max-width: 640px) {
+  .bl-inv {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 90px);
+    top: calc(50% - 34px);
+  }
+  .bl-inv-grid {
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  }
+}

@@ -3,36 +3,20 @@
  * and the distant low-poly mountain silhouettes.
  */
 import * as THREE from 'three'
-import { HALF } from './collision'
-import { RIVER_X0, RIVER_X1, S_GRASS, surfaceAt, type Ctx } from './layout'
+import { RIVER_X0, RIVER_X1, S_GRASS, VILLAGE_HALF, surfaceAt, type Ctx } from './layout'
 import * as P from './palette'
+import { kitTree } from './kit'
 
 // ---------------------------------------------------------------------------
-// Trees
+// Trees (village ring — the shared kitTree IS the village tree)
 // ---------------------------------------------------------------------------
 
 function buildTree(ctx: Ctx, ix: number, iz: number): void {
-  const { rng, batches, grid } = ctx
-  const h = 2 + rng.int(3) // trunk height 2-4
-  batches.wood.add(ix + 0.2, 0, iz + 0.2, 0.6, h, 0.6, rng.pick(P.WOOD))
-  grid.block(ix, iz)
-
-  const big = rng.next() < 0.35
-  const base = big ? 2 : 1 // canopy half-extent
-  // canopy: two stacked slabs + a cap, per-voxel colors for dappling
-  for (let dx = -base; dx <= base; dx++) {
-    for (let dz = -base; dz <= base; dz++) {
-      const edge = Math.abs(dx) === base && Math.abs(dz) === base
-      if (edge && rng.next() < 0.5) continue // rounded corners
-      batches.leaf.voxel(ix + dx, h, iz + dz, rng.pick(P.LEAF))
-      if (!edge) batches.leaf.voxel(ix + dx, h + 1, iz + dz, rng.pick(P.LEAF))
-    }
-  }
-  batches.leaf.voxel(ix, h + 2, iz, rng.pick(P.LEAF))
+  kitTree(ctx, ix, iz)
 }
 
 function treeSpotOk(ctx: Ctx, ix: number, iz: number): boolean {
-  if (ix < -HALF + 1 || ix >= HALF - 1 || iz < -HALF + 1 || iz >= HALF - 1) return false
+  if (ix < -VILLAGE_HALF + 1 || ix >= VILLAGE_HALF - 1 || iz < -VILLAGE_HALF + 1 || iz >= VILLAGE_HALF - 1) return false
   if (ix >= RIVER_X0 - 2 && ix <= RIVER_X1 + 2) return false // keep off the river
   if (surfaceAt(ctx, ix, iz) !== S_GRASS) return false
   if (ctx.grid.isBlocked(ix + 0.5, iz + 0.5)) return false
@@ -75,8 +59,9 @@ function buildFlowers(ctx: Ctx): void {
   let tries = 0
   while (placed < 200 && tries < 1200) {
     tries++
-    const ix = rng.int(HALF * 2 - 4) - HALF + 2
-    const iz = rng.int(HALF * 2 - 4) - HALF + 2
+    // flowers stay in the home meadow — regions scatter their own flora
+    const ix = rng.int(VILLAGE_HALF * 2 - 4) - VILLAGE_HALF + 2
+    const iz = rng.int(VILLAGE_HALF * 2 - 4) - VILLAGE_HALF + 2
     if (surfaceAt(ctx, ix, iz) !== S_GRASS) continue
     if (ctx.grid.isBlocked(ix + 0.5, iz + 0.5)) continue
     const fx = ix + rng.range(0.15, 0.6)
@@ -87,21 +72,22 @@ function buildFlowers(ctx: Ctx): void {
 }
 
 // ---------------------------------------------------------------------------
-// Distant mountains (one instanced low-poly cone mesh: bodies + snow tips)
+// Distant mountains — island silhouettes out past the ocean ring
+// (one instanced low-poly cone mesh: bodies + snow tips)
 // ---------------------------------------------------------------------------
 
 function buildMountains(ctx: Ctx, scene: THREE.Scene): void {
   const { rng } = ctx
   const peaks: Array<{ x: number; z: number; r: number; h: number }> = []
-  const count = 12
+  const count = 14
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + rng.range(-0.15, 0.15)
-    const dist = rng.range(78, 100)
+    const dist = rng.range(300, 400)
     peaks.push({
       x: Math.cos(angle) * dist,
       z: Math.sin(angle) * dist,
-      r: rng.range(10, 20),
-      h: rng.range(14, 30)
+      r: rng.range(26, 48),
+      h: rng.range(36, 80)
     })
   }
 

@@ -1,8 +1,9 @@
 /**
- * Coarse walkability grid — 1 cell per voxel column over the 120x120 world.
- * Cell (ix, iz) covers world-space [ix, ix+1) x [iz, iz+1).
+ * Coarse walkability grid — 1 cell per voxel column over the 480x480
+ * continent. Cell (ix, iz) covers world-space [ix, ix+1) x [iz, iz+1).
+ * Outside the grid is always blocked (the ocean).
  */
-export const HALF = 60
+export const HALF = 240
 export const SIZE = HALF * 2
 
 export class CollisionGrid {

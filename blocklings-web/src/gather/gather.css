@@ -1,0 +1,73 @@
+/* Gather prompt pill — cozy parchment-on-dark, matching the HUD mood. */
+
+.gather-prompt {
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 16px;
+  min-height: 44px; /* comfy mobile tap target */
+  border: 1px solid rgba(255, 231, 178, 0.35);
+  border-radius: 999px;
+  background: rgba(24, 20, 14, 0.82);
+  color: #f3e7c8;
+  font: 600 14px/1.1 system-ui, sans-serif;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.gather-prompt:active {
+  transform: translateX(-50%) scale(0.97);
+}
+
+.gather-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 231, 178, 0.55);
+  border-radius: 6px;
+  font-size: 12px;
+  background: rgba(255, 231, 178, 0.12);
+}
+
+/* The keyboard hint is noise on touch-only screens. */
+@media (pointer: coarse) {
+  .gather-key {
+    display: none;
+  }
+}
+
+.gather-blocked {
+  opacity: 0.75;
+  border-color: rgba(224, 112, 94, 0.55);
+}
+
+.gather-blocked .gather-label {
+  color: #f0b4a6;
+}
+
+.gather-bar {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 4px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 231, 178, 0.18);
+  overflow: hidden;
+  display: none;
+}
+
+.gather-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: #ffd27a;
+}

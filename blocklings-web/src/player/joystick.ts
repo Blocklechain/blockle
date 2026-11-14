@@ -128,3 +128,70 @@ export function createJoystick(root: HTMLElement): Joystick {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Mobile ATTACK button (bottom-right twin of the joystick)
+// ---------------------------------------------------------------------------
+
+export interface AttackButton {
+  dispose(): void
+}
+
+const ATK = 84 // px
+
+/**
+ * A round ATTACK button in the bottom-right of the #ui overlay, styled to
+ * match the joystick (same translucent slate + soft white ring). Fires on
+ * pointerdown for zero-latency swings; stopPropagation keeps the camera
+ * pinch tracker out of it.
+ */
+export function createAttackButton(root: HTMLElement, fire: () => void): AttackButton {
+  const btn = document.createElement('div')
+  btn.style.cssText = [
+    'position:fixed',
+    'right:max(18px, env(safe-area-inset-right))',
+    'bottom:max(32px, env(safe-area-inset-bottom))',
+    `width:${ATK}px`,
+    `height:${ATK}px`,
+    'border-radius:50%',
+    'background:rgba(16,22,34,0.35)',
+    'border:2px solid rgba(255,255,255,0.25)',
+    'color:rgba(240,246,255,0.85)',
+    'font:bold 14px "Courier New", monospace',
+    'letter-spacing:1px',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'pointer-events:auto',
+    'touch-action:none',
+    'z-index:40',
+    'user-select:none',
+    '-webkit-user-select:none',
+    '-webkit-tap-highlight-color:transparent'
+  ].join(';')
+  btn.textContent = 'ATK'
+
+  const onDown = (e: PointerEvent): void => {
+    e.preventDefault()
+    e.stopPropagation()
+    btn.style.background = 'rgba(240,246,255,0.45)'
+    btn.style.transform = 'scale(0.92)'
+    fire()
+  }
+  const onUp = (e: PointerEvent): void => {
+    e.stopPropagation()
+    btn.style.background = 'rgba(16,22,34,0.35)'
+    btn.style.transform = 'scale(1)'
+  }
+  btn.addEventListener('pointerdown', onDown)
+  btn.addEventListener('pointerup', onUp)
+  btn.addEventListener('pointercancel', onUp)
+  btn.addEventListener('pointerleave', onUp)
+  root.appendChild(btn)
+
+  return {
+    dispose() {
+      btn.remove()
+    }
+  }
+}

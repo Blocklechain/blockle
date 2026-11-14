@@ -16,8 +16,69 @@
 import * as THREE from 'three'
 import type { PlayerState, World } from '../types'
 import { CharacterRig } from './character'
-import { createJoystick, type Joystick } from './joystick'
+import { createJoystick, createAttackButton, type Joystick, type AttackButton } from './joystick'
 import { connect, WS_URL, type NetHandle } from '../net/index'
+
+// ---------------------------------------------------------------------------
+// Module-level combat/equipment API (binds to the live player instance)
+// ---------------------------------------------------------------------------
+
+interface PlayerControl {
+  rig: CharacterRig
+  attack(): void
+  hurt(): void
+  die(cb?: (revive: () => void) => void): void
+}
+
+let control: PlayerControl | null = null
+const attackCbs = new Set<() => void>()
+
+/**
+ * Register a strike callback: fires at the strike frame (~125ms) of every
+ * attack swing. The combat module hooks damage-dealing here. Returns an
+ * unsubscribe function.
+ */
+export function onAttack(cb: () => void): () => void {
+  attackCbs.add(cb)
+  return () => {
+    attackCbs.delete(cb)
+  }
+}
+
+/**
+ * Play the 250ms arm-swing attack (weapon arcs with the arm). No-op while
+ * a swing is already in flight or the player is dead. Wired to left-click
+ * on the canvas, spacebar, and the mobile ATTACK button; other modules may
+ * also call it directly.
+ */
+export function triggerAttack(): void {
+  control?.attack()
+}
+
+/**
+ * Attach an equipment mesh (from ItemsAPI.buildMesh) to the character:
+ * slots 'weapon' | 'shield' | 'helm' | 'chest' | 'boots'; null clears the
+ * slot (weapon slot then shows the classic sword again). The integrator
+ * calls this on 'item:equipped'.
+ */
+export function setEquipmentMesh(slot: string, mesh: THREE.Group | null): void {
+  control?.rig.setEquipmentMesh(slot, mesh)
+}
+
+/** Brief red damage flash + a knockback nudge opposite the facing. */
+export function playerHurt(): void {
+  control?.hurt()
+}
+
+/**
+ * Dramatic topple. When the body hits the dirt, `cb(revive)` fires — the
+ * integrator fades the screen, moves state.pos to the respawn point, then
+ * calls revive() to stand the hero back up and re-enable input. Without a
+ * cb he gets back up on his own after ~1.2s (shame is temporary).
+ */
+export function playerDie(cb?: (revive: () => void) => void): void {
+  control?.die(cb)
+}
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -58,6 +119,49 @@ export function createPlayer(
   rig.group.rotation.y = state.facing
   scene.add(rig.group)
 
+  // --- combat state + actions ----------------------------------------------
+  let dead = false
+
+  function doAttack(): void {
+    if (dead) return
+    rig.startAttack(() => {
+      for (const fn of [...attackCbs]) {
+        try {
+          fn()
+        } catch (e) {
+          console.error('[player] onAttack handler threw', e)
+        }
+      }
+    })
+  }
+
+  function doHurt(): void {
+    if (dead) return
+    rig.flashHurt()
+    // knockback nudge: shove opposite the facing; normal integration +
+    // wall collision absorb it over the next few frames
+    const kick = 3.4
+    vel.x -= Math.sin(state.facing) * kick
+    vel.y -= Math.cos(state.facing) * kick
+  }
+
+  function doDie(cb?: (revive: () => void) => void): void {
+    if (dead) return
+    dead = true
+    keys.clear()
+    state.moving = false
+    rig.die(() => {
+      const revive = (): void => {
+        if (!dead) return
+        dead = false
+        rig.revive()
+        rig.group.position.copy(state.pos)
+      }
+      if (cb) cb(revive)
+      else window.setTimeout(revive, 1200)
+    })
+  }
+
   // --- keyboard ------------------------------------------------------------
   const keys = new Set<string>()
 
@@ -74,6 +178,10 @@ export function createPlayer(
     if (typingInField(e)) return
     keys.add(e.code)
     if (e.code.startsWith('Arrow')) e.preventDefault() // no page scroll
+    if (e.code === 'Space') {
+      e.preventDefault() // no page scroll
+      if (!e.repeat) doAttack()
+    }
   }
   const onKeyUp = (e: KeyboardEvent): void => {
     keys.delete(e.code)
@@ -83,14 +191,26 @@ export function createPlayer(
   window.addEventListener('keyup', onKeyUp)
   window.addEventListener('blur', onBlur)
 
-  // --- touch joystick (coarse pointers / touch devices only) ---------------
+  // --- touch joystick + ATTACK button (coarse pointers / touch only) ------
   let joystick: Joystick | null = null
+  let attackBtn: AttackButton | null = null
   const uiRoot = document.getElementById('ui')
   const touchy =
     typeof window.matchMedia === 'function'
       ? window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
       : 'ontouchstart' in window
-  if (uiRoot && touchy) joystick = createJoystick(uiRoot)
+  if (uiRoot && touchy) {
+    joystick = createJoystick(uiRoot)
+    attackBtn = createAttackButton(uiRoot, doAttack)
+  }
+
+  // --- left-click attack (mouse/pen on the canvas, never on UI) ------------
+  const onCanvasDown = (e: PointerEvent): void => {
+    if (e.button !== 0 || e.pointerType === 'touch') return
+    if (!(e.target instanceof HTMLCanvasElement)) return // UI clicks don't swing
+    doAttack()
+  }
+  window.addEventListener('pointerdown', onCanvasDown)
 
   // --- camera zoom (wheel + pinch), only when we drive the camera ----------
   let zoom = 1
@@ -150,6 +270,7 @@ export function createPlayer(
   const vel = new THREE.Vector2() // x/z velocity
 
   function inputVector(): { x: number; z: number } {
+    if (dead) return { x: 0, z: 0 } // corpses don't WASD
     // raw input in screen space: ix right, iy forward(up-screen)
     let ix = 0
     let iy = 0
@@ -260,6 +381,10 @@ export function createPlayer(
     camera.lookAt(camTarget)
   }
 
+  // --- module-level combat API binds to this instance ----------------------
+  const myControl: PlayerControl = { rig, attack: doAttack, hurt: doHurt, die: doDie }
+  control = myControl
+
   // --- tick ----------------------------------------------------------------
   return {
     group: rig.group,
@@ -270,9 +395,11 @@ export function createPlayer(
       updateCamera(dt)
     },
     dispose(): void {
+      if (control === myControl) control = null
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
+      window.removeEventListener('pointerdown', onCanvasDown)
       if (camera) {
         window.removeEventListener('wheel', onWheel)
         window.removeEventListener('pointerdown', onPointerDown)
@@ -281,6 +408,7 @@ export function createPlayer(
         window.removeEventListener('pointercancel', onPointerEnd)
       }
       joystick?.dispose()
+      attackBtn?.dispose()
       net.dispose()
       scene.remove(rig.group)
       rig.dispose()
