@@ -14,9 +14,9 @@ class CharacterProfile {
   Map<String, dynamic> toJson() =>
       {'name': name, 'element': starterElement, 'mp': multiplayer};
 
-  static CharacterProfile _fromJson(Map<String, dynamic> j) => CharacterProfile(
+  factory CharacterProfile.fromJson(Map<String, dynamic> j) => CharacterProfile(
         name: (j['name'] ?? 'Adventurer') as String,
-        starterElement: (j['element'] ?? 0) as int,
+        starterElement: ((j['element'] ?? 0) as num).toInt(),
         multiplayer: (j['mp'] ?? true) as bool,
       );
 
@@ -27,7 +27,7 @@ class CharacterProfile {
     final raw = await _store.read(key: _key);
     if (raw == null) return null;
     try {
-      return _fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      return CharacterProfile.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
       return null;
     }

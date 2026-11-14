@@ -32,6 +32,8 @@ class _CharacterCreateState extends State<CharacterCreate> {
     final name = _name.text.trim().isEmpty ? 'Adventurer' : _name.text.trim();
     final profile = CharacterProfile(name: name, starterElement: _element, multiplayer: _multiplayer);
     await profile.save();
+    // Mirror to the Blockle account so the character follows you across devices.
+    AccountService.instance.putCharacter(profile.toJson()); // fire-and-forget
     widget.onDone(profile);
   }
 

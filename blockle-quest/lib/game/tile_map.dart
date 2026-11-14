@@ -7,7 +7,7 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 import '../theme.dart';
 import '../world/zones.dart';
 
-enum TileType { grass, grassAlt, tallGrass, path, water, tree, rock, blockstone, sand, snow, ash, bog }
+enum TileType { grass, grassAlt, tallGrass, path, water, tree, rock, blockstone, sand, snow, ash, bog, fence }
 
 /// The world surface: a bounded 10×10 grid of 100 themed [Zone]s ("chunk maps").
 /// Every tile is derived deterministically from its coordinates + the owning
@@ -52,6 +52,19 @@ class TileMap extends PositionComponent {
   TileType tileAt(int col, int row) {
     final z = Zones.at(col, row);
     if (z == null) return TileType.water; // ocean beyond the world
+
+    // Zone borders: every chunk is walled by a fence with a small gated
+    // entrance in the middle of each edge (the only ways through).
+    final lx = col % Zones.zoneTiles, ly = row % Zones.zoneTiles;
+    const mid = Zones.zoneTiles ~/ 2;
+    final onWest = lx == 0, onNorth = ly == 0;
+    if (onWest || onNorth) {
+      final inWestGate = onWest && (ly - mid).abs() <= 1;
+      final inNorthGate = onNorth && (lx - mid).abs() <= 1;
+      if (inWestGate || inNorthGate) return TileType.path; // the entrance
+      return TileType.fence;
+    }
+
     final h = _hash(col, row, 1);
     final tree = _hash(col, row, 7) % 1 == 0; // placeholder, overridden below
     switch (z.theme) {
@@ -106,7 +119,8 @@ class TileMap extends PositionComponent {
         t == TileType.tree ||
         t == TileType.rock ||
         t == TileType.blockstone ||
-        t == TileType.bog;
+        t == TileType.bog ||
+        t == TileType.fence;
   }
 
   /// Dynamic solid footprints (buildings) registered by entities.
@@ -136,6 +150,7 @@ class TileMap extends PositionComponent {
         TileType.snow => const Color(0xFFD7E6EF),
         TileType.ash => const Color(0xFF3A3236),
         TileType.bog => const Color(0xFF3B4A2A),
+        TileType.fence => const Color(0xFF7A5C3A),
       };
 
   final Paint _p = Paint();
@@ -191,9 +206,10 @@ class TileMap extends PositionComponent {
     return near.clone();
   }
 
-  /// World-pixel center of the spawn zone (middle of the grid).
+  /// Centre of the spawn VILLAGE zone (middle of the grid) — inside its fences,
+  /// among the buildings.
   Vector2 get spawnPoint {
-    const mid = Zones.worldTiles ~/ 2;
-    return nearestOpen(Vector2(mid * ts.toDouble(), mid * ts.toDouble()));
+    const mid = (Zones.grid ~/ 2) * Zones.zoneTiles + Zones.zoneTiles ~/ 2;
+    return nearestOpen(Vector2(mid * ts + ts / 2, (mid + 2) * ts + ts / 2));
   }
 }

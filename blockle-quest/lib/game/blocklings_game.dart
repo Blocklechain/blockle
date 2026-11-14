@@ -58,15 +58,41 @@ class BlocklingsGame extends FlameGame {
   final skills = SkillsState.instance;
   int? _zoneId; // current zone (for banner + explore quests)
 
-  // Mode-7 tilt projection (player-centred; replaces the Flame camera).
+  // Mode-7 tilt projection (focus-centred; replaces the Flame camera).
   Vector2 _screen = Vector2.all(800);
   vm.Matrix4 _view = vm.Matrix4.identity();
   Vector2 project(double wx, double wy) => Tilt.projectWith(_view, wx, wy);
   double scaleAt(double screenY) => Tilt.scaleForY(screenY, _screen.y);
 
+  /// Title-screen cinematic: the camera drifts across the world until the
+  /// player presses Enter World. While cinematic, streaming (villages/vendors)
+  /// follows the drifting camera, input/HUD are hidden, and nothing toasts.
+  bool cinematic = true;
+  double _cineT = 0;
+  final Vector2 _cinePos = Vector2.zero();
+
+  /// What the camera + world streaming centre on.
+  Vector2 get focus => cinematic ? _cinePos : player.position;
+
+  /// Leave the title cinematic and drop into the world.
+  void enterWorld() {
+    if (!cinematic) return;
+    cinematic = false;
+    _addControls(); // reveal the on-screen attack button now (hidden on title)
+    if (profile.multiplayer) {
+      net.onChat = (name, msg) => toast.value = '$name: $msg';
+      net.connect(NetClient.defaultUrl, name: profile.name);
+    }
+    overlays.remove('title');
+    overlays.add('hud');
+  }
+
   // Vendors: one market stall per nearby zone; the nearest in range is shoppable.
   final Map<int, Vendor> vendors = {};
   Vendor? nearbyVendor;
+
+  // Nearest enterable building within range of the player (null otherwise).
+  Building? nearbyBuilding;
 
   // One unique boss per zone, guarding it until defeated.
   final Set<int> bossesDefeated = {};
@@ -100,16 +126,10 @@ class BlocklingsGame extends FlameGame {
     camera.viewfinder.anchor = Anchor.topLeft;
     camera.viewfinder.zoom = 1.0;
 
-    _addControls();
+    // Controls (attack button) + the multiplayer connection are owned by
+    // enterWorld() — nothing is wired up while the title cinematic plays.
     for (var i = 0; i < targetEnemies; i++) {
       _spawnEnemy();
-    }
-
-    // Join the shared world (presence relay) with your chosen multiplayer name.
-    // Failure is silent -> single-player; the solo toggle skips it entirely.
-    if (profile.multiplayer) {
-      net.onChat = (name, msg) => toast.value = '$name: $msg';
-      net.connect(NetClient.defaultUrl, name: profile.name);
     }
   }
 
@@ -178,11 +198,34 @@ class BlocklingsGame extends FlameGame {
   void update(double dt) {
     super.update(dt);
 
-    // Refresh the tilt projection for this frame (centred on the player).
+    // Title cinematic: drift a slow, wide Lissajous across the world, centred
+    // on the spawn point. Everything else (input, combat, networking) is off.
+    if (cinematic) {
+      _cineT += dt;
+      final sp = map.spawnPoint;
+      _cinePos.setValues(
+        sp.x + math.cos(_cineT * 0.05) * 2800,
+        sp.y + math.sin(_cineT * 0.035) * 2200,
+      );
+    }
+
+    // Refresh the tilt projection for this frame (centred on the focus — the
+    // drifting camera while cinematic, the player once in the world).
     _screen.setFrom(size);
-    _view = Tilt.view(player.position, _screen);
+    _view = Tilt.view(focus, _screen);
     map.tiltMatrix = _view;
-    map.tiltCam = player.position;
+    map.tiltCam = focus;
+
+    if (cinematic) {
+      // Stream the world along the drifting camera only (~10Hz).
+      _posAcc += dt;
+      if (_posAcc >= 0.1) {
+        _posAcc = 0;
+        _updateVendors();
+        _updateVillages();
+      }
+      return;
+    }
 
     // Movement is ALWAYS manual (the D-pad). The player never auto-moves.
     player.velocity.setFrom(dpad);
@@ -231,11 +274,23 @@ class BlocklingsGame extends FlameGame {
       _updateVendors();
       _updateBoss();
       _updateVillages();
+      // Nearest enterable building within range (for the HUD door button).
+      nearbyBuilding = null;
+      var bb = 70.0;
+      for (final list in _villages.values) {
+        for (final b in list) {
+          final d = b.position.distanceTo(player.position);
+          if (d < bb) {
+            bb = d;
+            nearbyBuilding = b;
+          }
+        }
+      }
     }
   }
 
   void _updateVillages() {
-    final pz = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    final pz = Zones.atWorld(focus.x, focus.y, TileMap.ts);
     if (pz == null) return;
     const offs = [
       [-5, -3], [0, -4], [5, -3], [-4, 2], [3, 2], [-1, 5],
@@ -253,7 +308,12 @@ class BlocklingsGame extends FlameGame {
           final wx = (cx + offs[i][0]) * TileMap.ts;
           final wy = (cy + offs[i][1]) * TileMap.ts;
           if (map.solidAtWorld(wx, wy)) continue;
-          final b = Building(kind: _buildingKinds[(z.id + i) % _buildingKinds.length], map: map, position: Vector2(wx, wy));
+          final b = Building(
+              kind: _buildingKinds[(z.id + i) % _buildingKinds.length],
+              map: map,
+              position: Vector2(wx, wy),
+              seed: z.id * 10 + i,
+              zoneId: z.id);
           list.add(b);
           world.add(b);
         }
@@ -286,7 +346,7 @@ class BlocklingsGame extends FlameGame {
   }
 
   void _updateVendors() {
-    final pz = Zones.atWorld(player.position.x, player.position.y, TileMap.ts);
+    final pz = Zones.atWorld(focus.x, focus.y, TileMap.ts);
     if (pz == null) return;
     // Ensure a vendor exists in the 3×3 block of zones around the player.
     for (var dy = -1; dy <= 1; dy++) {

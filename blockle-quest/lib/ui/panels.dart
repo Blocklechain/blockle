@@ -5,11 +5,13 @@ import '../account/account_service.dart';
 import '../economy/economy.dart';
 import '../game/blocklings_game.dart';
 import '../game/entities/vendor.dart';
+import '../game/npc.dart';
 import '../models/blockling.dart';
 import '../models/item.dart';
 import '../quests/quests.dart';
 import '../skills/skills.dart';
 import '../theme.dart';
+import '../world/zones.dart';
 
 final _econ = EconomyService.instance;
 
@@ -59,7 +61,7 @@ class _Panel extends StatelessWidget {
     void close() {
       final g = game;
       if (g != null) {
-        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests', 'shop']) {
+        for (final name in const ['inventory', 'wallet', 'market', 'skills', 'quests', 'shop', 'interior']) {
           g.overlays.remove(name);
         }
         g.resumeEngine();
@@ -739,6 +741,157 @@ class SkillsPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+// ---- Building interior + NPCs ---------------------------------------------
+class InteriorPanel extends StatefulWidget {
+  final BlocklingsGame game;
+  const InteriorPanel({super.key, required this.game});
+  @override
+  State<InteriorPanel> createState() => _InteriorPanelState();
+}
+
+class _InteriorPanelState extends State<InteriorPanel> {
+  static const _avatarColors = [
+    Bq.accent, Bq.accent2, Bq.hpGood, Bq.xp, Bq.enemy, Color(0xFFE0A33E), Color(0xFF59C3C3),
+  ];
+
+  Npc? _talking;
+  int _line = 0;
+
+  void _advance(Npc n) {
+    setState(() {
+      if (_line < n.lines.length - 1) {
+        _line++;
+      } else {
+        _talking = null;
+        _line = 0;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final b = widget.game.nearbyBuilding;
+    if (b == null) {
+      return _Panel(
+        title: 'Inside',
+        game: widget.game,
+        child: const Center(child: Text('No one home.', style: TextStyle(color: Bq.dim))),
+      );
+    }
+    final zoneName = Zones.byId(b.zoneId).name;
+    final npcs = npcsFor(b.seed, b.kind, b.zoneId);
+    final talking = _talking;
+    return _Panel(
+      title: zoneName,
+      game: widget.game,
+      child: Container(
+        color: Bq.panel2,
+        child: Column(children: [
+          // Header: building sprite + what and where it is.
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            child: Row(children: [
+              Image.asset(
+                'assets/images/buildings/${b.kind}.png',
+                width: 48,
+                height: 48,
+                filterQuality: FilterQuality.none,
+                isAntiAlias: false,
+                errorBuilder: (_, __, ___) => Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(color: Bq.panel, borderRadius: BorderRadius.circular(8)),
+                  child: const Icon(Icons.home_outlined, color: Bq.dim, size: 24),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(b.kindLabel, style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w800, fontSize: 15)),
+                  Text(zoneName, style: const TextStyle(color: Bq.dim, fontSize: 12)),
+                ]),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              children: [for (var i = 0; i < npcs.length; i++) _npcCard(npcs[i], i)],
+            ),
+          ),
+          if (talking != null) _dialogue(talking),
+        ]),
+      ),
+    );
+  }
+
+  Widget _npcCard(Npc n, int i) {
+    final color = _avatarColors[(n.name.hashCode.abs() + i) % _avatarColors.length];
+    final selected = identical(_talking, n);
+    return GestureDetector(
+      onTap: () => setState(() {
+        _talking = n;
+        _line = 0;
+      }),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: Bq.panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: selected ? Bq.accent : Colors.transparent),
+        ),
+        child: Row(children: [
+          Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            child: Text(
+              n.name.isEmpty ? '?' : n.name[0],
+              style: const TextStyle(color: Bq.bg, fontWeight: FontWeight.w900, fontSize: 18),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(n.name, style: const TextStyle(color: Bq.text, fontWeight: FontWeight.w700)),
+              Text(n.role, style: const TextStyle(color: Bq.dim, fontSize: 12)),
+            ]),
+          ),
+          const Icon(Icons.chat_bubble_outline, color: Bq.dim, size: 18),
+        ]),
+      ),
+    );
+  }
+
+  Widget _dialogue(Npc n) => GestureDetector(
+        onTap: () => _advance(n),
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Bq.panel,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Bq.accent.withValues(alpha: 0.5)),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text('${n.name} · ${n.role}',
+                style: const TextStyle(color: Bq.accent2, fontSize: 12, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 6),
+            Text(n.lines[_line], style: const TextStyle(color: Bq.text, fontSize: 14, height: 1.3)),
+            const SizedBox(height: 8),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              Text(_line < n.lines.length - 1 ? 'Tap to continue' : 'Tap to close',
+                  style: const TextStyle(color: Bq.dim, fontSize: 11)),
+              const SizedBox(width: 4),
+              const Icon(Icons.touch_app_outlined, color: Bq.dim, size: 14),
+            ]),
+          ]),
+        ),
+      );
 }
 
 // ---- Quests ---------------------------------------------------------------

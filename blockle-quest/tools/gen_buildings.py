@@ -13,19 +13,19 @@ from PIL import Image
 
 OUT = Path(__file__).resolve().parents[1] / "assets" / "images" / "buildings"
 OUT.mkdir(parents=True, exist_ok=True)
-STYLE = ("8-bit pixel art, classic Pokemon Game Boy Advance building, cute cartoon, "
-         "limited palette, flat colors, crisp pixels, front view, single building, "
-         "plain dark background, no text")
+STYLE = ("detailed painted pixel art building, HD-2D fantasy RPG, stone and timber, "
+         "warm glowing lanterns, rich saturated colors, cozy storybook, front 3/4 view, "
+         "single building, plain dark background, no text")
 BUILDINGS = {
-    "house": "a cozy cottage house with a sloped roof and a door",
-    "shop": "a village general store shop with a striped awning and sign board",
-    "inn": "a two-story inn tavern with a wooden sign",
-    "hall": "a grand town hall with columns and a banner",
-    "tower": "a tall stone wizard tower with a pointed roof",
-    "cabin": "a small log cabin with a chimney",
-    "blockhall": "a futuristic violet crystal blockchain guild hall, glowing",
+    "house": "a cozy stone and timber cottage with a mossy green wooden shingle roof, lanterns by the wooden door, a red banner",
+    "shop": "a village general store with a striped awning, crates and barrels out front, lantern glow",
+    "inn": "a two-story stone and timber inn tavern with warm glowing windows and a hanging wooden sign",
+    "hall": "a grand stone town hall with columns, banners and lantern posts",
+    "tower": "a tall stone wizard tower with a pointed green roof and glowing windows",
+    "cabin": "a small log cabin with a stone chimney and warm window light",
+    "blockhall": "a violet crystal guild hall, glowing runes, stone base",
 }
-PX, COLORS = 96, 24
+PX, COLORS = 112, 40
 
 
 def main():

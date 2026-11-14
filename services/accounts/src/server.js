@@ -295,6 +295,23 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true });
   }));
 
+  // Per-account game-character storage (Blockle Quest). The character is an opaque client blob;
+  // the server only bounds its size and persists it on the user record — same store/save path
+  // as every other account field.
+  on('GET', /^\/account\/api\/game\/character$/, authed((req, res, { u }) =>
+    json(res, 200, { character: u.gameCharacter ?? null })));
+
+  on('PUT', /^\/account\/api\/game\/character$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 32 * 1024).catch(() => ({}));
+    const character = b.character;
+    if (!character || typeof character !== 'object' || Array.isArray(character))
+      return json(res, 400, { error: 'Character must be an object.' });
+    if (JSON.stringify(character).length > 16384)
+      return json(res, 400, { error: 'Character too large.' });
+    await store.update('users', u.id, (x) => { if (x) x.gameCharacter = character; return x; });
+    return json(res, 200, { ok: true });
+  }));
+
   on('GET', /^\/account\/api\/me$/, async (req, res) => {
     const sess = await currentSession(req);
     if (!sess) return json(res, 401, { error: 'auth' });

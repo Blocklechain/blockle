@@ -79,6 +79,27 @@ class AccountService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The character saved to this Blockle account, or null. Best-effort — never
+  /// throws to the caller (offline / endpoint absent -> null).
+  Future<Map<String, dynamic>?> getCharacter() async {
+    if (!signedIn) return null;
+    try {
+      final d = await _req('GET', '/account/api/game/character', auth: true);
+      return d['character'] as Map<String, dynamic>?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Persist the character to this Blockle account. Fire-and-forget; errors are
+  /// swallowed so a failed sync never blocks play.
+  Future<void> putCharacter(Map<String, dynamic> c) async {
+    if (!signedIn) return;
+    try {
+      await _req('PUT', '/account/api/game/character', body: {'character': c}, auth: true);
+    } catch (_) {/* best-effort */}
+  }
+
   Future<void> signOut() async {
     _token = null;
     handle = null;

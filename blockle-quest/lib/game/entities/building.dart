@@ -13,15 +13,27 @@ import '../tile_map.dart';
 class Building extends PositionComponent {
   final String kind; // house/shop/inn/hall/tower/cabin/blockhall
   final TileMap map;
+  final int seed; // deterministic NPC roster
+  final int zoneId;
   Sprite? _sprite;
   Rect? _footprint;
+
+  String get kindLabel => switch (kind) {
+        'inn' => 'The Inn',
+        'shop' => 'General Store',
+        'hall' => 'Town Hall',
+        'tower' => 'Wizard Tower',
+        'cabin' => 'Hunter\'s Cabin',
+        'blockhall' => 'Block Guild Hall',
+        _ => 'Cottage',
+      };
 
   final Paint _pixel = Paint()
     ..filterQuality = FilterQuality.none
     ..isAntiAlias = false;
   final Paint _p = Paint();
 
-  Building({required this.kind, required this.map, required Vector2 position, double px = 84}) {
+  Building({required this.kind, required this.map, required Vector2 position, this.seed = 0, this.zoneId = 0, double px = 84}) {
     this.position = position;
     size = Vector2.all(px);
     anchor = Anchor.bottomCenter;

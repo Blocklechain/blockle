@@ -9,13 +9,12 @@ import 'account/deeplink_service.dart';
 import 'economy/economy.dart';
 import 'game/blocklings_game.dart';
 import 'theme.dart';
-import 'ui/character_create.dart';
 import 'ui/dpad.dart';
 import 'ui/panels.dart';
+import 'ui/title_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  AccountService.instance.init(); // restore a saved Blockle session (best-effort)
   DeepLinkService.instance.init(); // receive on-chain settlement callbacks
   runApp(const BlocklingsApp());
 }
@@ -40,35 +39,62 @@ class GameScreen extends StatefulWidget {
 class _GameScreenState extends State<GameScreen> {
   BlocklingsGame? game;
   bool _loading = true;
+  bool _hasProfile = false;
 
   @override
   void initState() {
     super.initState();
-    CharacterProfile.load().then((p) {
-      if (!mounted) return;
-      setState(() {
-        if (p != null) game = BlocklingsGame(profile: p);
-        _loading = false;
-      });
+    _boot();
+  }
+
+  Future<void> _boot() async {
+    // Restore a saved Blockle session, then prefer a character stored on the
+    // account over the local one (so it follows the player across devices).
+    await AccountService.instance.init();
+    var p = await CharacterProfile.load();
+    if (AccountService.instance.signedIn) {
+      final remote = await AccountService.instance.getCharacter();
+      if (remote != null) {
+        try {
+          p = CharacterProfile.fromJson(remote);
+          await p.save();
+        } catch (_) {/* keep the local profile */}
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _hasProfile = p != null;
+      // Always create a game: a real profile if we have one, otherwise a
+      // throwaway profile that only drives the title cinematic.
+      game = BlocklingsGame(
+        profile: p ?? CharacterProfile(name: 'Adventurer', starterElement: 0, multiplayer: false),
+      );
+      _loading = false;
     });
   }
 
-  void _onCreated(CharacterProfile p) =>
-      setState(() => game = BlocklingsGame(profile: p));
+  /// A brand-new character was created from the title screen: swap in a game
+  /// bound to the real profile and drop into the world once it has loaded.
+  void _onCreated(CharacterProfile p) {
+    final g = BlocklingsGame(profile: p);
+    setState(() {
+      _hasProfile = true;
+      game = g;
+    });
+    g.loaded.then((_) => g.enterWorld());
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(backgroundColor: Bq.bg, body: Center(child: CircularProgressIndicator(color: Bq.accent)));
-    }
     final g = game;
-    if (g == null) {
-      return CharacterCreate(onDone: _onCreated);
+    if (_loading || g == null) {
+      return const Scaffold(backgroundColor: Bq.bg, body: Center(child: CircularProgressIndicator(color: Bq.accent)));
     }
     return Scaffold(
       body: GameWidget(
         game: g,
         overlayBuilderMap: {
+          'title': (_, BlocklingsGame g) => TitleScreen(game: g, hasProfile: _hasProfile, onCreated: _onCreated),
           'hud': (_, BlocklingsGame g) => Hud(game: g),
           'inventory': (_, BlocklingsGame g) => InventoryPanel(game: g),
           'wallet': (_, BlocklingsGame g) => WalletPanel(game: g),
@@ -76,9 +102,10 @@ class _GameScreenState extends State<GameScreen> {
           'skills': (_, BlocklingsGame g) => SkillsPanel(game: g),
           'quests': (_, BlocklingsGame g) => QuestsPanel(game: g),
           'shop': (_, BlocklingsGame g) => ShopPanel(game: g),
+          'interior': (_, BlocklingsGame g) => InteriorPanel(game: g),
           'zoneload': (_, BlocklingsGame g) => ZoneLoad(game: g),
         },
-        initialActiveOverlays: const ['hud'],
+        initialActiveOverlays: const ['title'],
       ),
     );
   }
@@ -195,6 +222,10 @@ class _HudState extends State<Hud> {
             bottom: 120,
             child: Column(
               children: [
+                if (g.nearbyBuilding != null) ...[
+                  _round(Icons.door_front_door_outlined, Bq.accent, () => _open('interior')),
+                  const SizedBox(height: 8),
+                ],
                 if (g.nearbyVendor != null) ...[
                   _round(Icons.shopping_cart_outlined, Bq.accent2, () => _open('shop')),
                   const SizedBox(height: 8),

@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 from PIL import Image
 
-PX = 48       # pixel grid
-COLORS = 16   # palette size
+PX = 64       # pixel grid (detailed painted-pixel style)
+COLORS = 32   # palette size
 
 d = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "assets" / "images" / "chars"
 for p in sorted(d.glob("*.png")):

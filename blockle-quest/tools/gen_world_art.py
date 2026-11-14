@@ -21,28 +21,30 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 ROOT = Path(__file__).resolve().parents[1] / "assets" / "images"
 
-STYLE = ("16-bit pixel art, classic Pokemon Game Boy Advance sprite, top-down, "
-         "limited color palette, flat colors, crisp clean pixels, no gradients, no text, no letters")
+STYLE = ("detailed painted pixel art, HD-2D fantasy RPG, chunky pixel clusters, "
+         "warm lantern glow lighting, rich saturated colors, soft drop shadows, "
+         "cozy storybook fantasy, no text, no letters")
 
 # Terrain tiles (seamless-ish). name -> subject.
 TILES = {
-    "grass": "lush green grass terrain, small blades and flowers",
-    "grassAlt": "darker green grass terrain, patchy",
-    "tallGrass": "tall wild grass, dense blades",
-    "path": "worn dirt path, packed earth",
-    "water": "clear blue water surface, gentle ripples",
-    "tree": "top of a round leafy green tree canopy",
-    "rock": "grey rocky boulder ground, cracked stone",
-    "blockstone": "glowing violet crystal stone ground, magical",
-    "sand": "golden desert sand dunes texture",
-    "snow": "fresh white snow terrain, soft drifts",
-    "ash": "dark volcanic ash ground, charred",
-    "bog": "murky green swamp mud, bubbling",
+    "grass": "lush vibrant green grass with tiny red and white wildflowers",
+    "grassAlt": "lush green grass meadow, small clover patches",
+    "tallGrass": "tall wild grass tufts, dense green blades",
+    "path": "grey stone cobblestone path, fitted stone bricks with grass in the cracks",
+    "water": "clear blue water surface, gentle ripples, light sparkle",
+    "tree": "dense leafy green tree canopy from above",
+    "rock": "grey rocky boulder ground, cracked mossy stone",
+    "blockstone": "glowing violet crystal stone ground, magical runes",
+    "sand": "golden desert sand, soft dune ripples",
+    "snow": "fresh white snow, soft blue shadows",
+    "ash": "dark volcanic ash ground, glowing ember cracks",
+    "bog": "murky green swamp mud, lily pads",
+    "fence": "rustic wooden fence rail on stone block posts, on grass, horizontal, lantern glow",
 }
 
 # Characters with 4 facings. key -> subject.
 CHARS = {
-    "player": "a cute brave young adventurer hero character sprite",
+    "player": "a chibi hero character sprite with spiky red hair and a red tunic, big head small body",
     "spark": "a small cute yellow lightning elemental creature",
     "stone": "a small cute rocky earth golem creature",
     "leaf": "a small cute green leafy plant creature",
@@ -104,7 +106,7 @@ def main():
             if dest.exists() and not args.overwrite:
                 continue
             p = f"seamless tileable {subj}, {STYLE}, flat top-down overhead view, single terrain texture"
-            gen(p, 1000 + i, 32, pixelate=32, colors=16).save(dest)
+            gen(p, 1000 + i, 64, pixelate=64, colors=48).save(dest)
             print(f"tile {name}", flush=True)
 
     if do_chars:

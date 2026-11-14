@@ -7,9 +7,11 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 /// the camera is just this projection. Uses vector_math_64 (Float64List storage)
 /// for Canvas.transform.
 class Tilt {
-  static const double pitch = 1.02; // ground pitch, radians (~58°)
-  static const double persp = -0.0016; // perspective strength
-  static const double horizon = 0.56; // horizon line (fraction of screen height)
+  // Gentle 3/4 view (Thronebound Realms): a subtle pitch + faint perspective —
+  // the depth should come mostly from the art, not an aggressive Mode-7 tilt.
+  static const double pitch = 0.42; // ground pitch, radians (~24°)
+  static const double persp = -0.0006; // perspective strength
+  static const double horizon = 0.44; // camera centre line (fraction of screen height)
 
   static vm.Matrix4 view(Vector2 cam, Vector2 screen) {
     final m = vm.Matrix4.identity();
@@ -26,8 +28,8 @@ class Tilt {
   }
 
   static double scaleForY(double screenY, double screenH) {
-    final base = screenH * horizon;
-    final t = ((screenY - base) / (screenH * (1 - horizon))).clamp(0.0, 1.0);
-    return 0.40 + t * 0.95;
+    // Subtle depth scaling to match the gentle pitch (~0.85 far → ~1.1 near).
+    final t = (screenY / screenH).clamp(0.0, 1.0);
+    return 0.85 + t * 0.25;
   }
 }
