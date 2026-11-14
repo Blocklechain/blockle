@@ -12,6 +12,9 @@ function freshApp(configExtra = {}, overrides = {}) {
   const clock = { t: 1_700_000_000_000 };
   const app = createApp({
     now: () => clock.t,
+    // Fake Apple verifier (same shape as gold.test.js): test "receipts" are base64-encoded
+    // verifyReceipt responses, so fund() can mint uniquely-transacted GOLD without the network.
+    goldVerifier: async (receipt) => JSON.parse(Buffer.from(receipt, 'base64').toString('utf8')),
     ...overrides,
     config: {
       dataDir, prod: false, cookieSecure: false, mailTransport: 'stub', paypalEnv: 'stub',
@@ -55,10 +58,16 @@ async function withServer(fn, configExtra = {}, overrides = {}) {
         return client;
       },
       async fund(gold) {
-        // Credit via the IAP path (enabled in tests) — the only legitimate credit path.
-        const receipt = Buffer.from('receipt-' + email_seq++ + '-' + Math.random()).toString('base64');
+        // Credit via the IAP path (enabled in tests) — the only legitimate credit path. The
+        // receipt is a base64 Apple response the injected goldVerifier decodes verbatim; a
+        // unique transaction_id each time keeps the goldTxns replay guard happy.
         const skuFor = { 100: 'gold_100', 550: 'gold_550', 1200: 'gold_1200', 2600: 'gold_2600' };
-        const r = await client.call('POST', '/account/api/game/gold/iap', { receipt, sku: skuFor[gold] || 'gold_100' });
+        const sku = skuFor[gold] || 'gold_100';
+        const receipt = Buffer.from(JSON.stringify({
+          status: 0, environment: 'sandbox',
+          receipt: { bundle_id: 'org.blockle.blocklings', in_app: [{ product_id: sku, transaction_id: 'TX-FUND-' + email_seq++ + '-' + Math.random() }] },
+        })).toString('base64');
+        const r = await client.call('POST', '/account/api/game/gold/iap', { receipt, sku });
         assert.equal(r.status, 200, 'funding failed: ' + JSON.stringify(r.data));
         return r.data.balance;
       },

@@ -83,6 +83,34 @@ function appleStub() {
 }
 
 // ============================================================================================
+// Blocklings GOLD — consumable verifyReceipt. Unlike the subscription path above this sends NO
+// shared secret (consumables don't need one) and returns Apple's RAW decoded JSON — the GOLD
+// route owns the acceptance policy (status/bundle/sku/transaction-id replay guard). Prod
+// endpoint first; status 21007 (sandbox receipt sent to prod — e.g. TestFlight) retries the
+// sandbox endpoint. Network failure/timeout THROWS so the caller can refuse to credit on
+// uncertainty. The result carries a normalized `environment` ('sandbox'|'production') for audit.
+export function makeGoldVerifier(deps = {}) {
+  const fetchFn = deps.fetch || globalThis.fetch;
+  const timeoutMs = deps.timeoutMs ?? 10_000;
+  const PROD = 'https://buy.itunes.apple.com/verifyReceipt';
+  const SANDBOX = 'https://sandbox.itunes.apple.com/verifyReceipt';
+  async function post(endpoint, receipt) {
+    const r = await fetchFn(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ 'receipt-data': receipt }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return r.json();
+  }
+  return async function verifyGoldReceipt(receipt) {
+    let j = await post(PROD, receipt);
+    let environment = 'production';
+    if (j && j.status === 21007) { j = await post(SANDBOX, receipt); environment = 'sandbox'; }
+    return { ...j, environment };
+  };
+}
+
+// ============================================================================================
 // Google Play — Developer API lookup. The OAuth2 access token is produced by an INJECTED
 // `googleAccessToken()` dependency (the service-account JWT signing lives in ../google-token.mjs,
 // outside src/, as the provider-auth layer). No local asymmetric crypto here.

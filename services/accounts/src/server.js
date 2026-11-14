@@ -11,7 +11,7 @@ import { Sessions } from './sessions.js';
 import { RateLimiter } from './ratelimit.js';
 import { makeMailer } from './email.js';
 import { makePaypal, entitlementFromEvent } from './paypal.js';
-import { makeAppleStore, makeGoogleStore, productTier } from './iap.js';
+import { makeAppleStore, makeGoldVerifier, makeGoogleStore, productTier } from './iap.js';
 import { makeBacktester } from './backtest.js';
 import { makeMoonpay } from './moonpay.js';
 import { makeLiquidity } from './liquidity.js';
@@ -323,6 +323,11 @@ export function createApp(overrides = {}) {
     gold_1200: { gold: 1200, usd: 9.99 },
     gold_2600: { gold: 2600, usd: 19.99 },
   };
+  // Blocklings is its own app — GOLD receipts must come from ITS bundle, not the wallet's.
+  const GOLD_BUNDLE_ID = 'org.blockle.blocklings';
+  // Verifies a GOLD consumable receipt with Apple (prod -> 21007 -> sandbox). Injectable so
+  // tests never hit the network, same as overrides.gameMarketFetch / overrides.paypalDeps.
+  const goldVerifier = overrides.goldVerifier || makeGoldVerifier(overrides.goldDeps);
   const goldOf = (u2) => (Number.isSafeInteger(u2?.goldBalance) && u2.goldBalance >= 0 ? u2.goldBalance : 0);
   // A StoreKit payload is a base64 app receipt or a JWS (base64url segments joined by dots).
   // This is a STRUCTURAL check only — it proves shape, never authenticity.
@@ -331,39 +336,56 @@ export function createApp(overrides = {}) {
   on('GET', /^\/account\/api\/game\/gold$/, authed((req, res, { u }) =>
     json(res, 200, { balance: goldOf(u) })));
 
-  // Credit GOLD from an Apple IAP. Receipt validation is currently STRUCTURAL-ONLY and is
-  // honest about it: real crediting is hard-gated behind APPLE_IAP_ENABLED (cfg.appleIapEnabled),
-  // which the operator must only set once server-side receipt verification is wired.
-  // TODO(apple-iap): verify the receipt server-side with the App Store Server API (shared
-  // secret / signed JWS transaction via appleStore) and assert productId === sku, bundle id,
-  // and quantity BEFORE crediting. Until that lands, the flag stays off and this route 503s —
-  // GOLD is NEVER credited from an unvalidated receipt by default.
+  // Credit GOLD from an Apple IAP. The receipt is verified with APPLE (verifyReceipt, prod ->
+  // 21007 -> sandbox for TestFlight) before any crediting; this service only applies policy:
+  //   status===0, receipt.bundle_id===GOLD_BUNDLE_ID, in_app entries matching the claimed sku,
+  //   and ONE CREDIT PER transaction_id EVER (goldTxns claim — same idiom as gamemarket's
+  //   gameMarketTxs txid guard). Crediting stays hard-gated behind APPLE_IAP_ENABLED
+  //   (cfg.appleIapEnabled); off -> 503, and on Apple unreachable/timeout -> 502 with NO credit
+  //   (never credit on uncertainty — the client retries with the same receipt, replay-safe).
   on('POST', /^\/account\/api\/game\/gold\/iap$/, authed(async (req, res, { u }) => {
     const b = await readJson(req, 512 * 1024).catch(() => ({}));
     const sku = String(b.sku || '');
     const def = GOLD_SKUS[sku];
-    if (!def) return json(res, 400, { error: 'Unknown SKU.' });
+    if (!def) return json(res, 400, { ok: false, error: 'Unknown SKU.' });
     const receipt = typeof b.receipt === 'string' ? b.receipt : '';
     if (receipt.length < 32 || receipt.length > 400 * 1024 || !RECEIPT_RE.test(receipt))
-      return json(res, 400, { error: 'Malformed receipt.' });
+      return json(res, 400, { ok: false, error: 'Malformed receipt.' });
     if (!cfg.appleIapEnabled) return json(res, 503, { error: 'IAP not configured' });
-    // Replay guard: one credit per receipt, ever. Claim atomically under the store queue.
-    const rhash = sha256(receipt);
-    let fresh = false;
-    await store.update('goldReceipts', rhash, (x) => {
-      if (x) return undefined; // already redeemed — no change
-      fresh = true;
-      return { uid: u.id, sku, gold: def.gold, at: now() };
-    });
-    if (!fresh) return json(res, 409, { error: 'Receipt already redeemed.' });
-    let balance = 0;
-    await store.update('users', u.id, (x) => {
-      if (!x) return undefined;
-      x.goldBalance = goldOf(x) + def.gold;
-      balance = x.goldBalance;
-      return x;
-    });
-    return json(res, 200, { ok: true, granted: def.gold, balance });
+
+    let v;
+    try { v = await goldVerifier(receipt); }
+    catch { return json(res, 502, { ok: false, error: 'Apple unreachable — nothing was credited. Please retry.' }); }
+    if (!v || v.status !== 0)
+      return json(res, 400, { ok: false, error: `Receipt rejected by Apple (status ${v ? v.status : 'unknown'}).` });
+    if (!v.receipt || v.receipt.bundle_id !== GOLD_BUNDLE_ID)
+      return json(res, 400, { ok: false, error: 'Receipt is for a different app.' });
+    const entries = (Array.isArray(v.receipt.in_app) ? v.receipt.in_app : [])
+      .filter((it) => it && it.product_id === sku && typeof it.transaction_id === 'string' && it.transaction_id);
+    if (!entries.length)
+      return json(res, 400, { ok: false, error: 'Receipt contains no purchase of this SKU.' });
+    const env = v.environment === 'sandbox' ? 'sandbox' : 'production';
+
+    // Replay guard + credit as ONE atomic store txn: claim each new transaction_id in
+    // `goldTxns` and credit the balance together — a crash can't claim without crediting.
+    const out = await store.txn((t) => {
+      const x = t.get('users', u.id);
+      if (!x) throw new Error('user gone'); // rolls back — nothing claimed
+      let fresh = 0;
+      for (const it of entries) {
+        const key = `apple:${it.transaction_id}`;
+        if (t.get('goldTxns', key)) continue; // already credited, ever — skip
+        t.set('goldTxns', key, { uid: u.id, sku, gold: def.gold, env, at: now() });
+        fresh++;
+      }
+      if (!fresh) return { already: true };
+      x.goldBalance = goldOf(x) + def.gold * fresh;
+      t.set('users', u.id, x);
+      return { balance: x.goldBalance, credited: def.gold * fresh };
+    }).catch(() => null);
+    if (!out) return json(res, 401, { error: 'auth' });
+    if (out.already) return json(res, 409, { ok: false, error: 'Transaction already credited.' });
+    return json(res, 200, { ok: true, credited: out.credited, balance: out.balance });
   }));
 
   // Debit GOLD (marketplace/vendor purchases). Atomic read-modify-write under the store

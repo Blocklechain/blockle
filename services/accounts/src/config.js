@@ -93,9 +93,9 @@ export const config = {
   googleCopilotProProduct: env.GOOGLE_COPILOT_PRO_PRODUCT || 'copilotpro_monthly',
 
   // Blocklings GOLD consumable IAP (game premium currency; IAP-only, never earned, never
-  // cashed out). Crediting is HARD-GATED behind this flag: the operator must only set
-  // APPLE_IAP_ENABLED once App Store Server API receipt verification is wired (see the
-  // TODO at the /account/api/game/gold/iap route). Off -> the route answers 503 and no
+  // cashed out). Crediting is HARD-GATED behind this flag, which means "server-side Apple
+  // verifyReceipt verification is LIVE" (see the /account/api/game/gold/iap route — real
+  // verification + per-transaction_id replay guard). Off -> the route answers 503 and no
   // GOLD is ever credited.
   appleIapEnabled: bool(env.APPLE_IAP_ENABLED, false),
 
