@@ -1,0 +1,215 @@
+/* Blocklings skill-tree view — full-screen overlay, dark-parchment + gold,
+   matching the skills panel. Touch targets ≥ 40px. */
+
+.bl-tree-root {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  background: rgba(10, 12, 18, 0.94);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: #efe9d8;
+  -webkit-font-smoothing: antialiased;
+}
+
+.bl-tree-root button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ===== header ========================================================== */
+
+.bl-tree-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.28);
+  background: rgba(13, 15, 22, 0.8);
+}
+
+.bl-tree-back {
+  flex: none;
+  height: 40px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #b9b2a0;
+  border: 1px solid rgba(212, 175, 55, 0.28);
+  border-radius: 10px;
+}
+.bl-tree-back:hover {
+  color: #efe9d8;
+  border-color: rgba(212, 175, 55, 0.55);
+}
+
+.bl-tree-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bl-tree-title-skill {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #e8c15a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bl-tree-title-lvl {
+  font-size: 11px;
+  font-weight: 700;
+  color: #b9b2a0;
+  font-variant-numeric: tabular-nums;
+}
+
+.bl-tree-points {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(212, 175, 55, 0.28);
+  border-radius: 10px;
+}
+
+.bl-tree-points-num {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e8c15a;
+}
+
+.bl-tree-points-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #b9b2a0;
+}
+
+/* ===== canvas ========================================================== */
+
+.bl-tree-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.bl-tree-canvas {
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+.bl-tree-canvas:active {
+  cursor: grabbing;
+}
+
+.bl-tree-hint {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: #8f8a7b;
+  background: rgba(13, 15, 22, 0.7);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* ===== detail card ===================================================== */
+
+.bl-tree-card {
+  flex: none;
+  margin: 0 10px calc(10px + env(safe-area-inset-bottom));
+  padding: 12px 14px;
+  background: rgba(13, 15, 22, 0.92);
+  border: 1px solid rgba(212, 175, 55, 0.4);
+  border-radius: 12px;
+  box-shadow: 0 -2px 14px rgba(0, 0, 0, 0.5);
+}
+
+.bl-tree-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #e8c15a;
+}
+
+.bl-tree-card-meta {
+  margin-top: 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #b9b2a0;
+}
+
+.bl-tree-card-desc {
+  margin-top: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: #efe9d8;
+}
+
+.bl-tree-card-fx {
+  margin-top: 7px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #9fd98a;
+}
+.bl-tree-card-fx:empty {
+  display: none;
+}
+
+.bl-tree-card-block {
+  margin-top: 6px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: #c98a8a;
+}
+.bl-tree-card-block:empty {
+  display: none;
+}
+
+.bl-tree-choose {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  height: 44px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1c1405;
+  background: linear-gradient(180deg, #e8c15a 0%, #b8860b 100%);
+  border-radius: 10px;
+  transition: filter 0.15s ease;
+}
+.bl-tree-choose:hover {
+  filter: brightness(1.08);
+}
+.bl-tree-choose-armed {
+  background: linear-gradient(180deg, #ffd97a 0%, #d4941b 100%);
+  box-shadow: 0 0 12px rgba(232, 193, 90, 0.45);
+}

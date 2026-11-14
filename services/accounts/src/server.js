@@ -35,6 +35,7 @@ import { renderPage } from './pages.js';
 import { makeChain } from './chain.js';
 import { newBot, botView, step as botStep, BOT_TYPES } from './bots.js';
 import { CURATED_DAPPS, CURATED_DAPP_IDS } from './dapps.js';
+import { makeGameMarket } from './gamemarket.js';
 import { trafficReport } from './traffic.js';
 
 const SESSION_COOKIE = 'blk_sess';
@@ -310,6 +311,125 @@ export function createApp(overrides = {}) {
       return json(res, 400, { error: 'Character too large.' });
     await store.update('users', u.id, (x) => { if (x) x.gameCharacter = character; return x; });
     return json(res, 200, { ok: true });
+  }));
+
+  // --- Blocklings GOLD (IAP-only premium currency) --------------------------------------------
+  // Server-authoritative ledger: `goldBalance` (non-negative int) on the user record. GOLD is
+  // NEVER earned in-game, never cashed out, and there is no gold->crypto bridge — the only
+  // credit path is a validated Apple IAP receipt, the only debit path is /spend (market/vendor).
+  const GOLD_SKUS = {
+    gold_100: { gold: 100, usd: 0.99 },
+    gold_550: { gold: 550, usd: 4.99 },
+    gold_1200: { gold: 1200, usd: 9.99 },
+    gold_2600: { gold: 2600, usd: 19.99 },
+  };
+  const goldOf = (u2) => (Number.isSafeInteger(u2?.goldBalance) && u2.goldBalance >= 0 ? u2.goldBalance : 0);
+  // A StoreKit payload is a base64 app receipt or a JWS (base64url segments joined by dots).
+  // This is a STRUCTURAL check only — it proves shape, never authenticity.
+  const RECEIPT_RE = /^[A-Za-z0-9+/=._-]+$/;
+
+  on('GET', /^\/account\/api\/game\/gold$/, authed((req, res, { u }) =>
+    json(res, 200, { balance: goldOf(u) })));
+
+  // Credit GOLD from an Apple IAP. Receipt validation is currently STRUCTURAL-ONLY and is
+  // honest about it: real crediting is hard-gated behind APPLE_IAP_ENABLED (cfg.appleIapEnabled),
+  // which the operator must only set once server-side receipt verification is wired.
+  // TODO(apple-iap): verify the receipt server-side with the App Store Server API (shared
+  // secret / signed JWS transaction via appleStore) and assert productId === sku, bundle id,
+  // and quantity BEFORE crediting. Until that lands, the flag stays off and this route 503s —
+  // GOLD is NEVER credited from an unvalidated receipt by default.
+  on('POST', /^\/account\/api\/game\/gold\/iap$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 512 * 1024).catch(() => ({}));
+    const sku = String(b.sku || '');
+    const def = GOLD_SKUS[sku];
+    if (!def) return json(res, 400, { error: 'Unknown SKU.' });
+    const receipt = typeof b.receipt === 'string' ? b.receipt : '';
+    if (receipt.length < 32 || receipt.length > 400 * 1024 || !RECEIPT_RE.test(receipt))
+      return json(res, 400, { error: 'Malformed receipt.' });
+    if (!cfg.appleIapEnabled) return json(res, 503, { error: 'IAP not configured' });
+    // Replay guard: one credit per receipt, ever. Claim atomically under the store queue.
+    const rhash = sha256(receipt);
+    let fresh = false;
+    await store.update('goldReceipts', rhash, (x) => {
+      if (x) return undefined; // already redeemed — no change
+      fresh = true;
+      return { uid: u.id, sku, gold: def.gold, at: now() };
+    });
+    if (!fresh) return json(res, 409, { error: 'Receipt already redeemed.' });
+    let balance = 0;
+    await store.update('users', u.id, (x) => {
+      if (!x) return undefined;
+      x.goldBalance = goldOf(x) + def.gold;
+      balance = x.goldBalance;
+      return x;
+    });
+    return json(res, 200, { ok: true, granted: def.gold, balance });
+  }));
+
+  // Debit GOLD (marketplace/vendor purchases). Atomic read-modify-write under the store
+  // queue; rejects non-positive / non-integer amounts and never lets the balance go negative.
+  on('POST', /^\/account\/api\/game\/gold\/spend$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
+    const amount = b.amount;
+    if (!Number.isSafeInteger(amount) || amount <= 0)
+      return json(res, 400, { error: 'Amount must be a positive integer.' });
+    const reason = String(b.reason || '').slice(0, 120);
+    if (!reason) return json(res, 400, { error: 'A spend reason is required.' });
+    let result = null;
+    await store.update('users', u.id, (x) => {
+      if (!x) return undefined;
+      const bal = goldOf(x);
+      if (bal < amount) { result = { ok: false, balance: bal }; return undefined; }
+      x.goldBalance = bal - amount;
+      result = { ok: true, balance: x.goldBalance };
+      return x;
+    });
+    if (!result) return json(res, 401, { error: 'auth' });
+    if (!result.ok) return json(res, 400, { error: 'Insufficient GOLD.', balance: result.balance });
+    return json(res, 200, { ok: true, balance: result.balance });
+  }));
+
+  // --- Blocklings player marketplace (listings + gold/crypto settlement) ----------------------
+  // GOLD buys settle atomically server-side (one store.txn: debit buyer, credit seller, flip
+  // the listing). CRYPTO buys are wallet-signed client-side to the seller's own address; the
+  // server verifies BLOCK payments via the public explorer, and honestly marks ETH/SOL as
+  // 'attested' (no verifier infra — never a fake 'verified'). See src/gamemarket.js.
+  const gameMarket = overrides.gameMarket
+    || makeGameMarket({ store, now, fetchFn: overrides.gameMarketFetch, chainBase: cfg.chainApiBase || cfg.publicOrigin });
+
+  on('GET', /^\/account\/api\/game\/market$/, (req, res, url) => {
+    const q = Object.fromEntries(url.searchParams);
+    const out = gameMarket.browse(q);
+    return json(res, out.status, out.data);
+  });
+  on('GET', /^\/account\/api\/game\/market\/mine$/, authed((req, res, { u }) => {
+    const out = gameMarket.mine(u);
+    return json(res, out.status, out.data);
+  }));
+  on('POST', /^\/account\/api\/game\/market\/list$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 16 * 1024).catch(() => ({}));
+    const out = await gameMarket.create(u, b);
+    return json(res, out.status, out.data);
+  }));
+  on('POST', /^\/account\/api\/game\/market\/cancel$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const out = await gameMarket.cancel(u, String(b.id || ''));
+    return json(res, out.status, out.data);
+  }));
+  on('POST', /^\/account\/api\/game\/market\/buy$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const out = await gameMarket.buyGold(u, String(b.id || ''));
+    return json(res, out.status, out.data);
+  }));
+  on('POST', /^\/account\/api\/game\/market\/paid$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const out = await gameMarket.paid(u, String(b.id || ''), String(b.tx || ''));
+    return json(res, out.status, out.data);
+  }));
+  on('POST', /^\/account\/api\/game\/market\/ack$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const out = await gameMarket.ack(u, String(b.id || ''));
+    return json(res, out.status, out.data);
   }));
 
   on('GET', /^\/account\/api\/me$/, async (req, res) => {

@@ -1,0 +1,375 @@
+/* Blocklings marketplace — storefront panel in the HUD's dark-panel/gold-accent
+   language (matches hud.css / inventory.css / gold.css). All classes mk-*. */
+
+.mk-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: #efe9d8;
+  z-index: 40;
+}
+
+/* ---- HUD open button (sits with the top-right cluster, under the gold chip) */
+.mk-btn {
+  position: absolute;
+  top: 108px;
+  right: 12px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e8c15a;
+  background: rgba(13, 15, 22, 0.78);
+  border: 1px solid rgba(212, 175, 55, 0.28);
+  border-radius: 10px;
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  cursor: pointer;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mk-btn:hover { border-color: rgba(212, 175, 55, 0.55); }
+.mk-btn:active { transform: translateY(1px); }
+
+/* ---- panel ---------------------------------------------------------------- */
+.mk-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(720px, calc(100vw - 24px));
+  max-height: min(78vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(13, 15, 22, 0.94);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.mk-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+}
+.mk-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #e8c15a;
+}
+.mk-tabs { display: flex; gap: 6px; margin-left: 4px; }
+.mk-tab {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #b9b2a0;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mk-tab:hover { color: #efe9d8; border-color: rgba(212, 175, 55, 0.35); }
+.mk-tab-on {
+  color: #1a1408;
+  background: #e8c15a;
+  border-color: #e8c15a;
+}
+.mk-close {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  font-size: 18px;
+  line-height: 1;
+  color: #b9b2a0;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.mk-close:hover { color: #efe9d8; border-color: rgba(255, 92, 138, 0.5); }
+
+.mk-body {
+  flex: 1;
+  min-height: 160px;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.mk-status {
+  min-height: 18px;
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  color: #9fd78a;
+}
+.mk-status-bad { color: #ff8aa6; }
+
+/* ---- filters -------------------------------------------------------------- */
+.mk-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.mk-sel,
+.mk-input {
+  font: inherit;
+  font-size: 12px;
+  color: #efe9d8;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 7px 9px;
+  outline: none;
+}
+.mk-input { flex: 1; min-width: 120px; }
+.mk-sel:focus,
+.mk-input:focus { border-color: rgba(212, 175, 55, 0.5); }
+.mk-sel option { background: #14161f; color: #efe9d8; }
+
+/* ---- buttons -------------------------------------------------------------- */
+.mk-b {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.mk-b-gold {
+  color: #1a1408;
+  background: #e8c15a;
+  border-color: #c89b2f;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.mk-b-gold:hover { background: #f2cf72; }
+.mk-b-gold:disabled { opacity: 0.45; cursor: default; }
+.mk-b-ghost {
+  color: #b9b2a0;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.mk-b-ghost:hover { color: #efe9d8; border-color: rgba(212, 175, 55, 0.4); }
+
+/* ---- browse grid / goods cards -------------------------------------------- */
+.mk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.mk-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+}
+.mk-card:hover { border-color: rgba(212, 175, 55, 0.35); }
+.mk-card-viewer {
+  width: 96px;
+  height: 96px;
+  border-radius: 10px;
+  background:
+    radial-gradient(ellipse at 50% 72%, rgba(232, 193, 90, 0.1), transparent 68%),
+    rgba(0, 0, 0, 0.3);
+}
+.mk-card-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: center;
+  color: #efe9d8;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mk-card-seller {
+  font-size: 10.5px;
+  color: #8e897c;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mk-price {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #e8c15a;
+  font-variant-numeric: tabular-nums;
+}
+.mk-card-buy { width: 100%; margin-top: 4px; }
+.mk-empty {
+  grid-column: 1 / -1;
+  padding: 28px 10px;
+  text-align: center;
+  font-size: 13px;
+  color: #8e897c;
+}
+
+/* rarity name tints (index = tier, matches RARITY_COLORS) */
+.mk-r0 { color: #9aa0a6; }
+.mk-r1 { color: #7ed957; }
+.mk-r2 { color: #6cb8ff; }
+.mk-r3 { color: #b07df2; }
+.mk-r4 { color: #ffb04f; }
+.mk-r5 { color: #ff5c8a; }
+
+/* chain badges (mint state travels with the goods) */
+.mk-badges { display: flex; gap: 4px; }
+.mk-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.mk-badge-blockle { color: #e8c15a; border-color: rgba(232, 193, 90, 0.5); }
+.mk-badge-ethereum { color: #a8b9f5; border-color: rgba(168, 185, 245, 0.5); }
+.mk-badge-solana { color: #7ef5c9; border-color: rgba(126, 245, 201, 0.5); }
+
+/* ---- my-listings rows ------------------------------------------------------ */
+.mk-rows { display: flex; flex-direction: column; gap: 6px; }
+.mk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  font-size: 12.5px;
+}
+.mk-row-name {
+  flex: 1;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mk-row-price {
+  color: #e8c15a;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mk-row-status {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.mk-st-open { color: #9fd78a; border-color: rgba(159, 215, 138, 0.45); }
+.mk-st-sold { color: #e8c15a; border-color: rgba(232, 193, 90, 0.5); }
+.mk-st-pending-verify { color: #ffb04f; border-color: rgba(255, 176, 79, 0.5); }
+.mk-st-cancelled { color: #8e897c; border-color: rgba(255, 255, 255, 0.15); }
+
+/* ---- sell tab -------------------------------------------------------------- */
+.mk-sell { display: flex; flex-direction: column; gap: 10px; }
+.mk-sell-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mk-chip {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #cfc9b8;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 6px 11px;
+  cursor: pointer;
+}
+.mk-chip:hover { border-color: rgba(212, 175, 55, 0.4); }
+.mk-chip-on {
+  color: #1a1408;
+  background: #e8c15a;
+  border-color: #c89b2f;
+}
+.mk-chip-pet { border-style: dashed; }
+.mk-sell-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+.mk-sub {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8e897c;
+}
+.mk-note { font-size: 12px; color: #cfc9b8; }
+.mk-note-dim { color: #8e897c; font-style: italic; }
+
+/* ---- confirm overlay ------------------------------------------------------- */
+.mk-veil {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+  z-index: 5;
+}
+.mk-confirm {
+  width: min(360px, calc(100% - 32px));
+  padding: 16px;
+  background: rgba(20, 22, 31, 0.98);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+}
+.mk-confirm-line {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #efe9d8;
+  overflow-wrap: anywhere;
+}
+.mk-confirm-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ---- small screens --------------------------------------------------------- */
+@media (max-width: 480px) {
+  .mk-panel { max-height: calc(100vh - 20px); width: calc(100vw - 12px); }
+  .mk-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+  .mk-head { flex-wrap: wrap; }
+}

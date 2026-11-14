@@ -132,6 +132,13 @@ for (const k of KINDS) {
   })
 }
 
+/**
+ * The ONE shared window-glow material every streamed zone bakes with —
+ * exposed so the atmosphere module can ramp its emissive color at night
+ * (integrator-wired via VillageWorld.glowMaterials; read-only here).
+ */
+export const zoneWindowMat: THREE.MeshLambertMaterial = sharedMats.window
+
 // ---------------------------------------------------------------------------
 // Zone lookup helpers
 // ---------------------------------------------------------------------------

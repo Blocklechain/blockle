@@ -5,5 +5,9 @@
  * ./skills/. Also exports the combat hooks the integrator reads each hit:
  *   maxHpBonus()      — vitality: +4 max HP per level above 1
  *   damageReduction() — defense: 0..0.40 fraction of incoming damage soaked
+ *   skillTree         — SkillTreeAPI; combat/gather/craft read aggregated
+ *                       talent effects via skillTree.modifier(key) (keys like
+ *                       'crit', 'cleave', 'lifesteal', 'mineSpeed',
+ *                       'doubleOre', 'gatherSpeed', 'recipe:<id>', 'maxHpPct')
  */
-export { initSkills, skillsApi, maxHpBonus, damageReduction } from './skills/index'
+export { initSkills, skillsApi, maxHpBonus, damageReduction, skillTree } from './skills/index'

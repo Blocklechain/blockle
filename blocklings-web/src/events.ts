@@ -51,6 +51,23 @@ export interface GameEvents {
   'chat:system': { text: string }
   /** Any persistent state changed; the save module debounces writes on this. */
   'save:dirty': { why: string }
+
+  /* ---- wave-2 appends (NFTs, pets, gold, market, auth, specials) ---- */
+
+  /** A pet dropped for the local player (a fresh PetInstance was created). */
+  'pet:dropped': { petId: string; variant: string }
+  /** A pet was minted on a chain (real tx only — never fabricated). */
+  'pet:minted': { uid: string; chain: string; token: string }
+  /** An item instance was minted on a chain (real tx only — never fabricated). */
+  'item:minted': { uid: string; chain: string; token: string }
+  /** Server-authoritative GOLD balance changed (IAP grant or market spend). */
+  'gold:changed': { balance: number }
+  /** One of the local player's marketplace listings sold. */
+  'market:sold': { listingId: string }
+  /** Blockle-account sign-in state changed. */
+  'auth:changed': { signedIn: boolean; name?: string }
+  /** An equipped item's special ability was activated (ItemSpecial.id). */
+  'special:used': { id: string }
 }
 
 type Handler<K extends keyof GameEvents> = (payload: GameEvents[K]) => void

@@ -9,25 +9,79 @@
  * Interact: click/tap an NPC, press E nearby, or the proximity Talk button
  * (mobile). Opens the dialog panel — comedy greetings, quest offers /
  * progress through the integrator-wired QuestsAPI, and vendor buy lists
- * priced in game-BLOCK-cents from the purse.
+ * priced in REAL crypto (mostly BLOCK, a couple of ETH/SOL novelties).
+ *
+ * Payments: every item is payable on four rails — BLOCK/ETH/SOL (REAL
+ * crypto) or GOLD (IAP premium currency) — at the vendor-posted rates in
+ * vendors.ts. The integrator wires `setPay(fn)` (typically wallet.sendOn to
+ * the treasury address for the chosen chain) and `setGoldPay(fn)` (the gold
+ * module's server-side spend). The dialog runs a two-step confirm (exact
+ * amount + "this is real crypto" / "purchased Gold, no refunds") before
+ * calling either; on a real ok the item grants via 'item:gained' source
+ * 'vendor' — the SAME emit for both rails, right here in the hook wrappers.
+ * No pay fn wired = crypto rails disabled 'Wallet required'; no gold fn /
+ * no session = GOLD rail disabled 'Sign in for Gold'. Nothing here
+ * fabricates balances or txids.
  *
  * Emits: 'npc:talked' (dialog finished), 'item:gained' (vendor purchases —
- * the inventory module applies them), 'chat:system', 'save:dirty' (purse).
+ * the inventory module applies them), 'chat:system'.
  * Runs its own light RAF loop; animation is distance-culled.
  */
 import * as THREE from 'three'
-import type { GameAPI, QuestsAPI } from '../types'
+import type { ChainId, GameAPI, QuestsAPI } from '../types'
 import { NPCS, type NpcDef } from '../ids'
 import { events } from '../events'
 import { NpcRig, makePortrait, type NpcLook } from './rig'
 import { DialogPanel } from './dialog'
-import { purse, registerPurseSave } from './purse'
 import { ROLE_TAGS, greeting, tooFarLine } from './flavor'
-import { VENDOR_STOCK, type StockEntry } from './vendors'
+import { VENDOR_STOCK, fmtRail, type StockEntry } from './vendors'
 import './npcs.css'
 
-export { purse } from './purse'
-export type { PurseAPI } from './purse'
+/**
+ * Real-crypto vendor payment: send `amount` of the chain's native coin to
+ * the game treasury for that chain. The integrator wires this to
+ * wallet.sendOn(chain, TREASURY[chain], amount). Resolves the wallet result
+ * verbatim — a tx string only ever comes from an actual broadcast.
+ */
+export type VendorPayFn = (
+  chain: ChainId,
+  amount: number
+) => Promise<{ ok: boolean; tx?: string; error?: string }>
+
+let payFn: VendorPayFn | null = null
+
+/** Integrator wires the wallet here (pass null on sign-out/guest). */
+export function setPay(fn: VendorPayFn | null): void {
+  payFn = fn
+}
+
+/**
+ * GOLD vendor payment: spend `amount` purchased GOLD server-side (the gold
+ * module's spendGold — server-authoritative, never fabricated). `reason` is
+ * an audit tag like 'vendor:<itemId>'.
+ */
+export type GoldPayFn = (
+  amount: number,
+  reason: string
+) => Promise<{ ok: boolean; error?: string }>
+
+let goldPayFn: GoldPayFn | null = null
+
+/** Integrator wires the gold module's spend here (pass null to unwire). */
+export function setGoldPay(fn: GoldPayFn | null): void {
+  goldPayFn = fn
+}
+
+// GOLD needs a Blockle session, not a wallet — track it from auth events
+// (auth:changed fires on every world entry, signed-in or guest, and on
+// sign-out; gold:changed with a positive balance also implies a session).
+let goldAuthed = false
+events.on('auth:changed', ({ signedIn }) => {
+  goldAuthed = signedIn
+})
+events.on('gold:changed', ({ balance }) => {
+  if (balance > 0) goldAuthed = true
+})
 
 // ---------------------------------------------------------------------------
 // Per-NPC looks (role-flavored outfits in the same voxel vocabulary)
@@ -93,7 +147,6 @@ let inited = false
 export function initNpcs(api: GameAPI): void {
   if (inited) return
   inited = true
-  registerPurseSave()
 
   const uiMount = document.getElementById('ui') ?? document.body
 
@@ -122,13 +175,38 @@ export function initNpcs(api: GameAPI): void {
   // --- dialog panel --------------------------------------------------------
   const dialog = new DialogPanel(uiMount, {
     quests: () => questsApi,
-    purse: () => purse.get(),
-    buy: (entry: StockEntry): boolean => {
-      if (!purse.spend(entry.price)) return false
-      // the inventory module is the one place stacks mutate — we only emit
-      events.emit('item:gained', { id: entry.id, qty: 1, source: 'vendor' })
-      events.emit('chat:system', { text: `Bought ${entry.name} for ${entry.price}c.` })
-      return true
+    walletReady: () => payFn !== null,
+    goldReady: () => goldPayFn !== null && goldAuthed,
+    pay: async (entry: StockEntry, price: { chain: ChainId; amount: number }) => {
+      const fn = payFn
+      if (!fn) return { ok: false, error: 'Wallet required' }
+      // REAL crypto leaves the player's wallet here; the result is the
+      // wallet's own — we never invent a tx or grant on failure.
+      const res = await fn(price.chain, price.amount)
+      if (res.ok) {
+        // the inventory module is the one place stacks mutate — we only emit
+        events.emit('item:gained', { id: entry.id, qty: 1, source: 'vendor' })
+        events.emit('chat:system', {
+          text: `Bought ${entry.name} for ${fmtRail({ rail: price.chain, amount: price.amount })}${res.tx ? ` (tx ${res.tx.slice(0, 10)}…)` : ''}.`
+        })
+      }
+      return res
+    },
+    payGold: async (entry: StockEntry, amount: number) => {
+      const fn = goldPayFn
+      if (!fn) return { ok: false, error: 'Sign in for Gold' }
+      // Server-authoritative GOLD debit; the result is the ledger's own —
+      // we never invent a balance or grant on failure.
+      const res = await fn(amount, `vendor:${entry.id}`)
+      if (res.ok) {
+        // IDENTICAL grant path to the crypto rails: same emit, same source —
+        // the inventory module can't tell (and shouldn't care) how you paid.
+        events.emit('item:gained', { id: entry.id, qty: 1, source: 'vendor' })
+        events.emit('chat:system', {
+          text: `Bought ${entry.name} for ${fmtRail({ rail: 'gold', amount })}.`
+        })
+      }
+      return res
     },
     closed: (npcId: string) => {
       events.emit('npc:talked', { npcId })

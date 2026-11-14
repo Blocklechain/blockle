@@ -41,7 +41,8 @@ import { buildVillage } from './village'
 import { paintRoads } from './roads'
 import { buildBorders } from './borders'
 import { buildRegions } from './regions'
-import { ZoneStream, setStreamFocus, zoneAt } from './stream'
+import { ZoneStream, setStreamFocus, zoneAt, zoneWindowMat } from './stream'
+import { publishSurface } from './surface'
 import { regionAt as heartRegionAt, REGIONS, type RegionDef } from '../ids'
 import type { ZoneDef } from './zones/registry'
 
@@ -87,6 +88,11 @@ export function regionOrZoneAt(x: number, z: number): RegionDef | ZoneDef | null
 /** World + per-frame animation hook (main.ts auto-hooks `update`). */
 export interface VillageWorld extends World {
   update(dt: number): void
+  /**
+   * The shared emissive glow materials (village windows + the streamed-zone
+   * window material) — integrator wiring for the atmosphere night ramp.
+   */
+  glowMaterials: readonly THREE.MeshLambertMaterial[]
 }
 
 let streamRef: ZoneStream | null = null
@@ -115,6 +121,7 @@ export function createWorld(scene: THREE.Scene): VillageWorld {
   }
 
   // --- build passes (surface stamps first, ground instancing LAST)
+  publishSurface(ctx.surface) // read-only overlay sampling (see ./surface)
   blockOpenSea(ctx.grid) // open ocean blocked from frame one (permanent)
   markSurfaces(ctx)
   paintRoads(ctx) // village routes + the 8 arterials, stamped world-wide
@@ -165,6 +172,8 @@ export function createWorld(scene: THREE.Scene): VillageWorld {
   const world: VillageWorld = {
     // Open plaza, south of the well and clear of the market stall's awning.
     spawn: new THREE.Vector3(0.5, 0, 5.5),
+
+    glowMaterials: windowMat ? [windowMat, zoneWindowMat] : [zoneWindowMat],
 
     isBlocked(x: number, z: number): boolean {
       return ctx.grid.isBlocked(x, z)

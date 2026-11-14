@@ -10,6 +10,28 @@ import type { InventoryCore } from './core'
 import { ItemViewer } from './viewer'
 import './inventory.css'
 
+/**
+ * Integrator-wired bridge to the minting module (null until wired): the card
+ * gets one Mint button + chain badges + a 'Minted' flair, the grid gets
+ * minted-chain dots and the minted-bundle pseudo-cells. Styling for these
+ * hook elements lives in src/minting/minting.css.
+ */
+export interface MintHooks {
+  /** Open the shared mint dialog for this catalog id. */
+  open(id: string, def: ItemDef): void
+  /** Chains any minted instance of `id` lives on (empty = unminted). */
+  chainsOf(id: string): readonly string[]
+  /** Minted quantity-bundles (escrowed stackables) to show in the grid. */
+  bundles(): readonly { id: string; qty: number; chains: readonly string[] }[]
+}
+
+/** Chain badge glyphs — the same visual language as the pets panel. */
+const MINT_BADGES: readonly { chain: string; glyph: string; label: string }[] = [
+  { chain: 'blockle', glyph: 'B', label: 'Blockle' },
+  { chain: 'ethereum', glyph: 'Ξ', label: 'Ethereum' },
+  { chain: 'solana', glyph: '◎', label: 'Solana' }
+]
+
 const SLOT_LABELS: Record<string, string> = {
   weapon: 'Weapon',
   shield: 'Shield',
@@ -47,12 +69,18 @@ function sys(text: string): void {
   events.emit('chat:system', { text })
 }
 
-export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer {
+export interface InventoryUI {
+  viewer: ItemViewer
+  setMintHooks(hooks: MintHooks): void
+}
+
+export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryUI {
   const uiMount = document.getElementById('ui')
   if (!uiMount) throw new Error('missing #ui overlay mount')
 
   const root = el('div', 'bl-invroot')
   const viewer = new ItemViewer()
+  let mintHooks: MintHooks | null = null
 
   // =========================================================================
   // Bag button
@@ -134,10 +162,23 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer
     }
   }
 
+  /** Minted-chain dots in a cell's top-left corner (mint hook, read-only). */
+  function mintDots(cell: HTMLElement, chains: readonly string[]): void {
+    if (chains.length === 0) return
+    const dots = el('span', 'bl-inv-celldots')
+    for (const c of chains) {
+      const dot = el('span', 'bl-inv-celldot')
+      dot.title = `Minted on ${c}`
+      dots.appendChild(dot)
+    }
+    cell.appendChild(dots)
+  }
+
   function renderGrid(): void {
     grid.textContent = ''
     const stacks = core.items()
-    if (stacks.length === 0) {
+    const bundles = mintHooks?.bundles() ?? []
+    if (stacks.length === 0 && bundles.length === 0) {
       const empty = el('div', 'bl-inv-empty', 'Nothing but lint and broken dreams. Go hit something.')
       grid.appendChild(empty)
       return
@@ -149,7 +190,21 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer
       cell.style.borderColor = rarityColor(def)
       cell.style.color = rarityColor(def)
       if (stack.qty > 1) cell.appendChild(el('span', 'bl-inv-qty', `×${stack.qty}`))
+      if (mintHooks) mintDots(cell, mintHooks.chainsOf(stack.id))
       cell.addEventListener('click', () => openDetail(stack.id, null))
+      grid.appendChild(cell)
+    }
+    // Minted quantity-bundles: unstackable NFT items that left the stacks.
+    for (const b of bundles) {
+      const def = core.def(b.id)
+      const cell = el('button', 'bl-inv-cell bl-inv-cell-bundle', def.name)
+      cell.type = 'button'
+      cell.style.borderColor = rarityColor(def)
+      cell.style.color = rarityColor(def)
+      cell.appendChild(el('span', 'bl-inv-qty', `×${b.qty}`))
+      cell.appendChild(el('span', 'bl-inv-bundletag', 'NFT'))
+      mintDots(cell, b.chains)
+      cell.addEventListener('click', () => mintHooks?.open(b.id, def))
       grid.appendChild(cell)
     }
   }
@@ -230,7 +285,24 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer
     card.appendChild(el('div', 'bl-inv-itemname', def.name))
     const rar = el('div', 'bl-inv-rarity', RARITY_NAMES[def.rarity] ?? 'Common')
     rar.style.color = rarityColor(def)
+    const mintedChains = mintHooks?.chainsOf(id) ?? []
+    if (mintedChains.length > 0) {
+      // 'Minted' flair riding the rarity line (gold on the rarity border).
+      rar.appendChild(el('span', 'bl-inv-mintflair', 'Minted'))
+    }
     card.appendChild(rar)
+
+    // Chain badges (B/Ξ/◎) lit per existing mint of any instance of this item.
+    if (mintHooks) {
+      const badges = el('div', 'bl-inv-mintbadges')
+      for (const b of MINT_BADGES) {
+        const lit = mintedChains.includes(b.chain)
+        const badge = el('span', `bl-inv-mintbadge${lit ? ' bl-inv-mintbadge-lit' : ''}`, b.glyph)
+        badge.title = lit ? `Minted on ${b.label}` : `Not minted on ${b.label}`
+        badges.appendChild(badge)
+      }
+      card.appendChild(badges)
+    }
 
     // Stat chips (only non-zero stats; restores for consumables).
     const line = el('div', 'bl-inv-statline')
@@ -327,6 +399,12 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer
         )
       }
     }
+    // The one Mint button — hands off to the shared mint flow (chain picker,
+    // lazy uid, bundles for stackables). Any item can become an NFT.
+    if (mintHooks) {
+      const hooks = mintHooks
+      actions.appendChild(actionBtn('Mint NFT', 'bl-mint', () => hooks.open(id, def)))
+    }
     card.appendChild(actions)
   }
 
@@ -372,9 +450,25 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): ItemViewer
     if (cardItem) renderDetail()
   })
 
+  // A real mint landed (badge lit / bundle created) — refresh what's visible.
+  events.on('item:minted', () => {
+    if (!open) return
+    renderAll()
+    if (cardItem) renderDetail()
+  })
+
   root.appendChild(bagBtn)
   root.appendChild(panel)
   uiMount.appendChild(root)
 
-  return viewer
+  return {
+    viewer,
+    setMintHooks(hooks) {
+      mintHooks = hooks
+      if (open) {
+        renderAll()
+        if (cardItem) renderDetail()
+      }
+    }
+  }
 }

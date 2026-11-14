@@ -182,6 +182,32 @@ export interface ItemDef {
   /** Vendor value in BLOCK-cents (game-economy units, NOT on-chain until minted). */
   value: number
   desc?: string
+
+  /* -- wave-2 appends (optional; older items simply omit them) -- */
+
+  /**
+   * How the character model holds this item: 'upright' (torch/staff-like,
+   * vertical in the fist), 'forward' (sword/axe point-ahead), 'bow'
+   * (two-point side grip), 'shield' (strapped to the forearm).
+   * Absent = builder default for the slot.
+   */
+  gripStyle?: 'upright' | 'forward' | 'bow' | 'shield'
+
+  /**
+   * Active special ability granted while this item is equipped. Fired by the
+   * player via the UI; emits 'special:used' on activation and then cools down.
+   */
+  special?: ItemSpecial
+}
+
+/** An item's active special ability (see ItemDef.special). */
+export interface ItemSpecial {
+  /** Stable ability id (referenced by the 'special:used' event). */
+  id: string
+  name: string
+  desc: string
+  /** Cooldown between uses, in seconds. */
+  cooldownS: number
 }
 
 /** A stack of an item in an inventory. */
@@ -259,4 +285,218 @@ export interface CharacterSave {
   stones: string[] // attuned waystone ids
   hp: number
   mp: number
+}
+
+/* ========================================================================== *
+ *  WAVE-2 CONTRACT EXTENSIONS (frozen append — Contracts agent, phase 1).    *
+ *  NFTs/minting, pets, GOLD (IAP-only), marketplace, skill trees, specials.  *
+ *                                                                            *
+ *  ECONOMY LAW: zero earnable soft currency — players EARN items only.       *
+ *  GOLD is IAP-only (never earned in-game, never cashed out, no gold->crypto *
+ *  bridge, server-authoritative). Crypto is real (BLOCK/ETH/SOL),            *
+ *  wallet-signed. NEVER fabricate balances/txids/receipts.                   *
+ *                                                                            *
+ *  NFT LAW: every item/pet INSTANCE gets one canonical `uid` at creation.    *
+ *  Minting embeds that UID on the chosen chain; re-minting the SAME uid on   *
+ *  additional chains is allowed (still one item — it gains chain badges).    *
+ *  Mint state is permanent and travels with the item on trade. Only minted   *
+ *  things trade for crypto; gold trades need no mint.                        *
+ * ========================================================================== */
+
+/** The three chains an item/pet can be minted on / paid with. */
+export type ChainId = 'blockle' | 'ethereum' | 'solana'
+
+/** One completed mint of a uid on one chain (permanent; travels on trade). */
+export interface MintRecord {
+  chain: ChainId
+  /** Chain-native token identifier (BLOCK-20 token id / ERC-721 contract:tokenId / SPL mint address). */
+  token: string
+  /** The REAL mint transaction id. Never fabricated — absent tx = not minted. */
+  tx: string
+  /** Mint time, ms since epoch. */
+  t: number
+}
+
+/**
+ * Anything with a canonical NFT identity: one uid assigned at instance
+ * creation (see src/uid.ts), plus every mint of that uid across chains.
+ * `mints` empty = unminted (tradeable for gold only, never crypto).
+ */
+export interface Mintable {
+  uid: string
+  mints: MintRecord[]
+}
+
+/**
+ * A concrete item INSTANCE (one specific sword, one bundle) as opposed to the
+ * fungible ItemStack. Gear instances and market bundles carry these so they
+ * can be minted/traded; uid/mints are optional because plain stackable items
+ * never get an identity until the moment they're instanced for mint/listing.
+ */
+export interface ItemInstance {
+  /** Catalog id (ItemDef.id). */
+  id: string
+  /** Canonical NFT uid — assigned once at instancing, then permanent. */
+  uid?: string
+  /** All mints of this uid (one per chain; same single item everywhere). */
+  mints?: MintRecord[]
+}
+
+/** Pet visual/rarity variant. 'boss' pets are unique baby-boss drops. */
+export type PetVariant = 'base' | 'ember' | 'snow' | 'golden' | 'shadow' | 'boss'
+
+/**
+ * Static pet catalog entry (see PET_VARIANTS in src/ids.ts).
+ * Canonical petId = `${species}.${variant}` (e.g. 'slime.golden').
+ */
+export interface PetDef {
+  /** Species id from SPECIES in src/ids.ts. */
+  species: string
+  variant: PetVariant
+  /** Display name (comedy tone is intentional and load-bearing). */
+  name: string
+  /** Drop odds: one drop per `dropOneIn` qualifying kills of the species. */
+  dropOneIn: number
+}
+
+/** A pet the player owns. Always Mintable: uid assigned the moment it drops. */
+export interface PetInstance extends Mintable {
+  /** `${species}.${variant}` key into PET_VARIANTS. */
+  petId: string
+  /** Player-chosen nickname (display-only; petId stays canonical). */
+  nickname?: string
+}
+
+/**
+ * Multi-chain wallet: everything WalletAPI does (BLOCK) plus per-chain
+ * accounts, sends, NFT minting, and MoonPay on/off-ramp URLs.
+ * All real, all wallet-signed — failures resolve {ok:false,error}, loudly.
+ */
+export interface WalletAPI2 extends WalletAPI {
+  /** Per-chain account snapshot. Chains the user hasn't set up are absent. */
+  chains(): Promise<Partial<Record<ChainId, { address: string; balance: number }>>>
+
+  /**
+   * Send on a specific chain. `amountOrToken` is a native-coin amount
+   * (number) or a token identifier string (sends that NFT/token).
+   */
+  sendOn(
+    chain: ChainId,
+    to: string,
+    amountOrToken: number | string,
+  ): Promise<{ ok: boolean; tx?: string; error?: string }>
+
+  /**
+   * Mint the NFT for canonical uid `uid` on `chain`, embedding the uid in the
+   * token metadata. Re-minting the same uid on another chain is allowed (same
+   * item, extra chain badge); same uid twice on one chain must fail.
+   */
+  mintNft(
+    chain: ChainId,
+    uid: string,
+    meta: { name: string; desc?: string; image?: string; attrs?: Record<string, string | number> },
+  ): Promise<{ ok: boolean; token?: string; tx?: string; error?: string }>
+
+  /** MoonPay widget URL for fiat on/off-ramp, or null when unavailable. */
+  moonpayUrl(kind: 'buy' | 'sell', chain: ChainId): Promise<string | null>
+}
+
+/** A purchasable GOLD pack (App Store IAP SKU). */
+export interface GoldSku {
+  sku: string
+  /** GOLD granted. */
+  gold: number
+  /** Display price in USD. */
+  usd: number
+}
+
+/**
+ * GOLD: the IAP-ONLY premium currency. Server-authoritative balance; never
+ * earned in-game, never cashed out, no gold->crypto bridge. Purchases go
+ * through the native StoreKit bridge (window.blocklingsIAP) injected by the
+ * iOS shell; in a plain browser purchase() resolves {ok:false,error:'iOS only'}.
+ */
+export interface GoldAPI {
+  /** Current server-authoritative GOLD balance. */
+  balance(): Promise<number>
+  /** The fixed IAP catalog. */
+  buySkus(): GoldSku[]
+  /** Buy one SKU via StoreKit; grant happens server-side on receipt. */
+  purchase(sku: string): Promise<{ ok: boolean; error?: string }>
+}
+
+/** Listing price: GOLD, or real crypto on one chain (crypto ⇒ minted goods only). */
+export type ListingPrice = { gold: number } | { chain: ChainId; amount: number }
+
+/** One marketplace listing (exactly one of item/pet is set). */
+export interface Listing {
+  id: string
+  /** Seller display name / account id. */
+  seller: string
+  item?: ItemInstance
+  pet?: PetInstance
+  price: ListingPrice
+  /** Listed time, ms since epoch. */
+  t: number
+}
+
+/** Browse filters; all optional, ANDed together. */
+export interface ListingFilters {
+  kind?: 'item' | 'pet'
+  /** Only crypto listings on this chain. */
+  chain?: ChainId
+  /** Only GOLD listings. */
+  gold?: boolean
+  /** Pet species / item catalog id. */
+  id?: string
+  /** Free-text name match. */
+  text?: string
+}
+
+/**
+ * Player marketplace. LAW: a crypto-priced listing requires the goods to be
+ * minted (uid + at least one MintRecord on the price chain); gold listings
+ * need no mint. Crypto settlement is real and wallet-signed.
+ */
+export interface MarketAPI {
+  /** List an item instance or pet for sale. */
+  list(
+    goods: { item: ItemInstance } | { pet: PetInstance },
+    price: ListingPrice,
+  ): Promise<{ ok: boolean; listingId?: string; error?: string }>
+  browse(filters?: ListingFilters): Promise<readonly Listing[]>
+  /** Buy a listing (gold debit or wallet-signed crypto transfer). */
+  buy(listingId: string): Promise<{ ok: boolean; tx?: string; error?: string }>
+  myListings(): Promise<readonly Listing[]>
+}
+
+/** One node in a skill's talent tree. */
+export interface TreeNode {
+  id: string
+  /** SkillId this node belongs to. */
+  skill: string
+  /** 'auto' = granted free at lvlReq; 'perk' = costs a point; 'capstone' = big finisher pick. */
+  kind: 'auto' | 'perk' | 'capstone'
+  /** Skill level required before this node can be taken. */
+  lvlReq: number
+  name: string
+  desc: string
+  /** Numeric effects, keyed by modifier id (e.g. 'mining.speed': 0.15 = +15%). */
+  effects: Record<string, number>
+}
+
+/** Talent trees: browse nodes, spend points, and query aggregate modifiers. */
+export interface SkillTreeAPI {
+  /** All nodes of one skill's tree. */
+  nodes(skill: string): readonly TreeNode[]
+  /** Ids of every chosen/granted node. */
+  chosen(): readonly string[]
+  /** True if id's lvlReq is met, prerequisites hold, and a point is available (perk/capstone). */
+  canChoose(id: string): boolean
+  /** Take the node. Returns false (and changes nothing) if not choosable. */
+  choose(id: string): boolean
+  /** Unspent talent points. */
+  points(): number
+  /** Summed effect value for a modifier key across all chosen nodes (0 if none). */
+  modifier(key: string): number
 }

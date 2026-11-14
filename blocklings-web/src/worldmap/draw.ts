@@ -233,6 +233,32 @@ export function drawCastle(ctx: CanvasRenderingContext2D, x: number, y: number, 
   ctx.restore()
 }
 
+/** Active-pet blip: a tiny paw print (pad + three toe beans). */
+export function drawPaw(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, color = '#ffd27f'): void {
+  ctx.save()
+  ctx.translate(x, y)
+  ctx.fillStyle = color
+  ctx.strokeStyle = '#2b2420'
+  ctx.lineWidth = Math.max(0.8, s * 0.1)
+  // main pad
+  ctx.beginPath()
+  ctx.ellipse(0, s * 0.18, s * 0.34, s * 0.28, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.stroke()
+  // toe beans
+  for (const [tx, ty, r] of [
+    [-s * 0.34, -s * 0.1, s * 0.15],
+    [0, -s * 0.26, s * 0.16],
+    [s * 0.34, -s * 0.1, s * 0.15]
+  ] as const) {
+    ctx.beginPath()
+    ctx.arc(tx, ty, r, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
 /** Player blip: gold-edged arrow pointing along the facing direction. */
 export function drawPlayerArrow(ctx: CanvasRenderingContext2D, x: number, y: number, s: number, facing: number): void {
   // facing: yaw radians, 0 = +Z (down-screen on a north-up map), dir=(sin,cos)

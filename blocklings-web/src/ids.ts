@@ -133,6 +133,10 @@ export const NODE_KINDS: readonly { id: string; skill: string; itemId: string; n
   { id: 'fishing_spot', skill: 'fishing', itemId: 'fish_raw', name: 'Fishing Spot' },
   { id: 'herb_patch', skill: 'herbalism', itemId: 'herb_green', name: 'Herb Patch' },
   { id: 'farm_plot', skill: 'farming', itemId: 'wheat', name: 'Farm Plot' },
+  // wave-2 appends:
+  { id: 'berry_bush', skill: 'herbalism', itemId: 'berry_red', name: 'Berry Bush' },
+  { id: 'mushroom_cluster', skill: 'herbalism', itemId: 'mushroom_brown', name: 'Mushroom Cluster' },
+  { id: 'clay_pit', skill: 'mining', itemId: 'clay_lump', name: 'Clay Pit' },
 ] as const
 
 /**
@@ -156,3 +160,106 @@ export type SkillId = (typeof SKILLS)[number]
  * six rarity tiers common..mythical).
  */
 export const MATERIALS = ['copper', 'iron', 'steel', 'gold', 'crystal', 'mythic'] as const
+
+/* ========================================================================== *
+ *  WAVE-2 APPENDS — pet catalog.                                             *
+ * ========================================================================== */
+
+import type { PetDef, PetVariant } from './types'
+
+/** Canonical pet id for a catalog entry: `${species}.${variant}`. */
+export function petIdOf(species: string, variant: PetVariant): string {
+  return `${species}.${variant}`
+}
+
+/**
+ * The full pet catalog: every SPECIES in base + ember + snow + one prestige
+ * variant (golden or shadow, alternating by species), plus one unique baby
+ * pet per region boss (variant 'boss', drops from that boss only).
+ *
+ * Drop model: on a qualifying kill of the species, each variant rolls
+ * independently at 1-in-`dropOneIn` (base ~1/400, ember/snow ~1/1200,
+ * golden/shadow ~1/3000, boss babies 1/40 off the boss itself).
+ * A drop emits 'pet:dropped' and creates a PetInstance with a fresh uid.
+ */
+export const PET_VARIANTS: readonly PetDef[] = [
+  // slime
+  { species: 'slime', variant: 'base', name: 'Goober', dropOneIn: 400 },
+  { species: 'slime', variant: 'ember', name: 'Crème Goulée', dropOneIn: 1200 },
+  { species: 'slime', variant: 'snow', name: 'Slushie', dropOneIn: 1200 },
+  { species: 'slime', variant: 'golden', name: '24-Karat Goober', dropOneIn: 3000 },
+  // mushroom
+  { species: 'mushroom', variant: 'base', name: 'Button', dropOneIn: 400 },
+  { species: 'mushroom', variant: 'ember', name: 'Lil\' Sauté', dropOneIn: 1200 },
+  { species: 'mushroom', variant: 'snow', name: 'Frostcap', dropOneIn: 1200 },
+  { species: 'mushroom', variant: 'shadow', name: 'Portobello Noir', dropOneIn: 3000 },
+  // crab
+  { species: 'crab', variant: 'base', name: 'Sir Pinchley', dropOneIn: 400 },
+  { species: 'crab', variant: 'ember', name: 'Crab Rangoon', dropOneIn: 1200 },
+  { species: 'crab', variant: 'snow', name: 'Cold Snap', dropOneIn: 1200 },
+  { species: 'crab', variant: 'golden', name: 'The Gilded Pinch', dropOneIn: 3000 },
+  // wolf
+  { species: 'wolf', variant: 'base', name: 'Pupper', dropOneIn: 400 },
+  { species: 'wolf', variant: 'ember', name: 'Hot Dog', dropOneIn: 1200 },
+  { species: 'wolf', variant: 'snow', name: 'Pupsicle', dropOneIn: 1200 },
+  { species: 'wolf', variant: 'shadow', name: 'Midnight Zoomies', dropOneIn: 3000 },
+  // goblin
+  { species: 'goblin', variant: 'base', name: 'Dave', dropOneIn: 400 },
+  { species: 'goblin', variant: 'ember', name: 'Spicy Dave', dropOneIn: 1200 },
+  { species: 'goblin', variant: 'snow', name: 'Cool Dave', dropOneIn: 1200 },
+  { species: 'goblin', variant: 'golden', name: 'Tax-Bracket Dave', dropOneIn: 3000 },
+  // bat
+  { species: 'bat', variant: 'base', name: 'Flappy', dropOneIn: 400 },
+  { species: 'bat', variant: 'ember', name: 'Hot Wing', dropOneIn: 1200 },
+  { species: 'bat', variant: 'snow', name: 'Freezer Wing', dropOneIn: 1200 },
+  { species: 'bat', variant: 'shadow', name: 'Echo (Location Unknown)', dropOneIn: 3000 },
+  // spider
+  { species: 'spider', variant: 'base', name: 'Sir Legs-a-Lot', dropOneIn: 400 },
+  { species: 'spider', variant: 'ember', name: 'Toasty Toes', dropOneIn: 1200 },
+  { species: 'spider', variant: 'snow', name: 'Cold Feet', dropOneIn: 1200 },
+  { species: 'spider', variant: 'golden', name: 'Silk Road', dropOneIn: 3000 },
+  // bandit
+  { species: 'bandit', variant: 'base', name: 'Petty Theft', dropOneIn: 400 },
+  { species: 'bandit', variant: 'ember', name: 'Arson-Adjacent', dropOneIn: 1200 },
+  { species: 'bandit', variant: 'snow', name: 'Cold Case', dropOneIn: 1200 },
+  { species: 'bandit', variant: 'shadow', name: 'Plausible Deniability', dropOneIn: 3000 },
+  // skeleton
+  { species: 'skeleton', variant: 'base', name: 'Rattles', dropOneIn: 400 },
+  { species: 'skeleton', variant: 'ember', name: 'Extra Crispy', dropOneIn: 1200 },
+  { species: 'skeleton', variant: 'snow', name: 'Freezer Burn', dropOneIn: 1200 },
+  { species: 'skeleton', variant: 'golden', name: 'Trust-Fund Boney', dropOneIn: 3000 },
+  // imp
+  { species: 'imp', variant: 'base', name: 'Lil\' Problem', dropOneIn: 400 },
+  { species: 'imp', variant: 'ember', name: 'Slightly Bigger Problem', dropOneIn: 1200 },
+  { species: 'imp', variant: 'snow', name: 'Imp on Ice', dropOneIn: 1200 },
+  { species: 'imp', variant: 'shadow', name: 'The Fine Print', dropOneIn: 3000 },
+  // golem
+  { species: 'golem', variant: 'base', name: 'Chip', dropOneIn: 400 },
+  { species: 'golem', variant: 'ember', name: 'Briquette', dropOneIn: 1200 },
+  { species: 'golem', variant: 'snow', name: 'Permafrost Chip', dropOneIn: 1200 },
+  { species: 'golem', variant: 'golden', name: 'Load-Bearing Investment', dropOneIn: 3000 },
+  // orc
+  { species: 'orc', variant: 'base', name: 'Grunk Jr.', dropOneIn: 400 },
+  { species: 'orc', variant: 'ember', name: 'Spicy Grunk', dropOneIn: 1200 },
+  { species: 'orc', variant: 'snow', name: 'Chilled Grunk', dropOneIn: 1200 },
+  { species: 'orc', variant: 'shadow', name: 'Night-Shift Grunk', dropOneIn: 3000 },
+  // wisp
+  { species: 'wisp', variant: 'base', name: 'Nightlight', dropOneIn: 400 },
+  { species: 'wisp', variant: 'ember', name: 'Fire Hazard', dropOneIn: 1200 },
+  { species: 'wisp', variant: 'snow', name: 'Cold Glow', dropOneIn: 1200 },
+  { species: 'wisp', variant: 'golden', name: 'The Electric Bill', dropOneIn: 3000 },
+  // boss babies (one per region boss; drop from that boss only)
+  { species: 'wolf', variant: 'boss', name: 'Beta Direpup', dropOneIn: 40 },
+  { species: 'golem', variant: 'boss', name: 'Gravel Intern', dropOneIn: 40 },
+  { species: 'skeleton', variant: 'boss', name: 'Skeleton Prince (Unpaid)', dropOneIn: 40 },
+  { species: 'orc', variant: 'boss', name: "Grukk's Nephew Kevin", dropOneIn: 40 },
+] as const
+
+/** Lookup a catalog entry by canonical petId (`species.variant`). */
+export function petDef(petId: string): PetDef | undefined {
+  const dot = petId.indexOf('.')
+  if (dot < 0) return undefined
+  const species = petId.slice(0, dot)
+  const variant = petId.slice(dot + 1)
+  return PET_VARIANTS.find((p) => p.species === species && p.variant === variant)
+}

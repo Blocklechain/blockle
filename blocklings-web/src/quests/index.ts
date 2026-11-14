@@ -48,7 +48,7 @@ export function itemName(id: string): string {
   )
 }
 
-/** Human-readable reward summary ("120 Attack XP, Iron Sword ×1, 80c"). */
+/** Human-readable reward summary ("120 Attack XP, Iron Sword ×1"). */
 export function rewardSummary(def: QuestDef): string {
   const bits: string[] = []
   if (def.rewards.xp) {
@@ -63,13 +63,7 @@ export function rewardSummary(def: QuestDef): string {
       bits.push(s.qty > 1 ? `${itemName(s.id)} ×${s.qty}` : itemName(s.id))
     }
   }
-  if (def.rewards.blockCents) bits.push(`${def.rewards.blockCents}c`)
   return bits.join(', ')
-}
-
-/** Exposed for the integrator's purse wiring on 'quest:completed'. */
-export function questDefById(id: string): QuestDef | undefined {
-  return questById(id)
 }
 
 // ---------------------------------------------------------------------------

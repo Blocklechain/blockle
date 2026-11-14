@@ -13,7 +13,7 @@
  * ciphertext alone is stored in localStorage. The game server is never
  * trusted with (or sent) any wallet data.
  */
-import type { WalletAPI, WalletInfo } from '../types'
+import type { ChainId, WalletAPI2, WalletInfo } from '../types'
 import {
   COIN,
   fetchBalanceBase,
@@ -22,6 +22,17 @@ import {
   submitRaw
 } from './chain'
 import { open, seal, type SealedVault } from './crypto'
+import {
+  chainSnapshots,
+  lockChains,
+  mintOnBlock,
+  mintOnEthereumUnsupported,
+  mintOnSolana,
+  moonpayWidgetUrl,
+  primeAccounts,
+  sendOnEthereum,
+  sendOnSolana
+} from './multichain'
 import { addressFromPubkey, buildTransfer, keygen, keypairMatches } from './wasm'
 
 const STORE_KEY = 'blocklings_wallet_v1'
@@ -200,9 +211,18 @@ function requirePassphrase(passphrase: string): void {
   }
 }
 
-// --- WalletAPI ---------------------------------------------------------------
+// After any successful unlock/create/restore, derive + cache the ETH/SOL
+// addresses (public data) so chains() works even while re-locked. Fire and
+// forget — a vendor-load failure here must not break the BLOCK wallet.
+function primeMultichain(secretHex: string): void {
+  void primeAccounts(secretHex).catch(() => {
+    /* surfaced when the user actually opens a chain feature */
+  })
+}
 
-export const wallet: WalletAPI = {
+// --- WalletAPI2 --------------------------------------------------------------
+
+export const wallet: WalletAPI2 = {
   exists(): boolean {
     return loadStored() !== null
   },
@@ -222,6 +242,7 @@ export const wallet: WalletAPI = {
     const kp = await keygen() // real ML-DSA-44 keygen inside the consensus wasm
     await sealAndStore(kp.secretKey, kp.publicKey, kp.address, passphrase)
     session = { secret: kp.secretKey, public: kp.publicKey, address: kp.address }
+    primeMultichain(kp.secretKey)
     // The backup "phrase": ML-DSA-44 has no mnemonic form — this string IS the
     // key and restores the wallet anywhere (web wallet raw-key import too).
     return `${BACKUP_PREFIX}:${kp.secretKey}:${kp.publicKey}`
@@ -236,6 +257,7 @@ export const wallet: WalletAPI = {
     }
     await sealAndStore(secret, pub, address, passphrase)
     session = { secret, public: pub, address }
+    primeMultichain(secret)
     invalidateBalanceCache()
     return address
   },
@@ -250,6 +272,7 @@ export const wallet: WalletAPI = {
       const addr = await addressFromPubkey(pt.public)
       if (addr !== stored.address) return false
       session = { secret: pt.secret, public: pt.public, address: stored.address }
+      primeMultichain(pt.secret)
       return true
     } catch {
       return false
@@ -295,12 +318,71 @@ export const wallet: WalletAPI = {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+  },
+
+  // --- WalletAPI2: tri-chain --------------------------------------------------
+
+  async chains(): Promise<Partial<Record<ChainId, { address: string; balance: number }>>> {
+    const out: Partial<Record<ChainId, { address: string; balance: number }>> = {}
+    const stored = loadStored()
+    if (!stored) return out
+    out.blockle = { address: stored.address, balance: await balanceBlock(stored.address) }
+    try {
+      Object.assign(out, await chainSnapshots())
+    } catch {
+      /* vendor signers unavailable (offline first run) — BLOCK leg still real */
+    }
+    return out
+  },
+
+  async sendOn(
+    chain: ChainId,
+    to: string,
+    amountOrToken: number | string
+  ): Promise<{ ok: boolean; tx?: string; error?: string }> {
+    if (chain === 'blockle') {
+      if (typeof amountOrToken === 'number') return this.send(to, amountOrToken)
+      return {
+        ok: false,
+        error:
+          'BLOCK NFTs mint as one-contract-per-item collections; moving them between players happens through the in-game market (the mint record travels with the item), not a raw on-chain token send yet'
+      }
+    }
+    if (!session) return { ok: false, error: 'wallet is locked — unlock it first' }
+    if (chain === 'ethereum') return sendOnEthereum(session.secret, to, amountOrToken)
+    if (chain === 'solana') return sendOnSolana(session.secret, to, amountOrToken)
+    return { ok: false, error: `unknown chain: ${String(chain)}` }
+  },
+
+  async mintNft(
+    chain: ChainId,
+    uid: string,
+    meta: { name: string; desc?: string; image?: string; attrs?: Record<string, string | number> }
+  ): Promise<{ ok: boolean; token?: string; tx?: string; error?: string }> {
+    if (!uid || !uid.trim()) return { ok: false, error: 'mint needs a canonical uid' }
+    if (!meta?.name) return { ok: false, error: 'mint needs a name' }
+    if (!session) return { ok: false, error: 'wallet is locked — unlock it first' }
+    if (chain === 'blockle') {
+      return mintOnBlock(session.secret, session.public, session.address, uid, meta)
+    }
+    if (chain === 'solana') return mintOnSolana(session.secret, uid, meta)
+    if (chain === 'ethereum') return mintOnEthereumUnsupported()
+    return { ok: false, error: `unknown chain: ${String(chain)}` }
+  },
+
+  async moonpayUrl(kind: 'buy' | 'sell', chain: ChainId): Promise<string | null> {
+    try {
+      return await moonpayWidgetUrl(kind, chain)
+    } catch {
+      return null // no widget rather than a broken/fake one
+    }
   }
 }
 
 /** Re-lock: wipe the in-memory session (strings are GC'd; nothing persisted). */
 export function lock(): void {
   session = null
+  lockChains()
 }
 
 /** True while the secret is decrypted in memory. */

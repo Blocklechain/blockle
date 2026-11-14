@@ -106,19 +106,20 @@ const BUY_OK = [
   'Take it. It’s legally yours now, which makes it legally not my problem.'
 ] as const
 
-const BUY_BROKE = [
-  'Your purse just wheezed. Come back richer.',
-  'That’s adorable. That is not enough money.',
-  'I accept BLOCK-cents, not vibes. Shoo.',
-  'Short on coin? The slimes outside pay better than you’d think.'
+const PAY_FAIL = [
+  'The money didn’t move, so neither does the merchandise.',
+  'Your wallet said no. I respect its honesty.',
+  'No payment landed, no product leaves. It’s an elegant system.',
+  'The chain declined. Take it up with the chain — I hear it’s very approachable.'
 ] as const
 
 export function buyOkLine(): string {
   return BUY_OK[Math.floor(Math.random() * BUY_OK.length)] ?? BUY_OK[0]
 }
 
-export function buyBrokeLine(): string {
-  return BUY_BROKE[Math.floor(Math.random() * BUY_BROKE.length)] ?? BUY_BROKE[0]
+/** Payment failed / rejected / wallet error — honest, no item granted. */
+export function payFailLine(): string {
+  return PAY_FAIL[Math.floor(Math.random() * PAY_FAIL.length)] ?? PAY_FAIL[0]
 }
 
 export const TOO_FAR_LINES = [

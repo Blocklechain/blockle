@@ -1,0 +1,347 @@
+/* Blocklings minting — shared mint dialog + the inventory-card mint hooks.
+   Medieval-dark plates + gold edges, matching inventory.css / pets.css. */
+
+.bl-mintroot {
+  --blm-panel: rgba(13, 15, 22, 0.94);
+  --blm-edge: rgba(212, 175, 55, 0.55);
+  --blm-edge-dim: rgba(212, 175, 55, 0.28);
+  --blm-gold: #e8c15a;
+  --blm-gold-deep: #b8860b;
+  --blm-text: #efe9d8;
+  --blm-text-dim: #b9b2a0;
+
+  position: absolute;
+  inset: 0;
+  z-index: 60; /* above the inventory panel (45) */
+  pointer-events: none;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: var(--blm-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.bl-mintroot button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  pointer-events: auto;
+}
+
+.bl-mint-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.bl-mint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(600px, calc(100dvh - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  padding: 12px 14px 16px;
+  background: var(--blm-panel);
+  border: 1px solid var(--blm-edge-dim);
+  border-radius: 12px;
+  box-shadow:
+    0 6px 30px rgba(0, 0, 0, 0.65),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+}
+
+.bl-mint-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.bl-mint-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--blm-gold);
+}
+.bl-mint-close {
+  width: 36px;
+  height: 36px;
+  margin: -6px -8px -6px 0;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--blm-text-dim);
+  border-radius: 8px;
+}
+.bl-mint-close:hover {
+  color: var(--blm-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+.bl-mint-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bl-mint-item {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+.bl-mint-law {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--blm-text-dim);
+  margin: 4px 0 2px;
+}
+
+.bl-mint-sect {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--blm-text-dim);
+  margin: 14px 0 6px;
+}
+
+/* --- existing instances -------------------------------------------------- */
+
+.bl-mint-inst {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+}
+.bl-mint-inst-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.bl-mint-inst-name {
+  font-size: 12px;
+  font-weight: 700;
+}
+.bl-mint-inst-uid {
+  font-size: 9px;
+  color: var(--blm-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.bl-mint-badges {
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.bl-mint-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+  font-weight: 700;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.bl-mint-badge:hover:not(:disabled) {
+  border-color: var(--blm-edge);
+  color: var(--blm-text);
+}
+.bl-mint-badge-lit,
+.bl-mint-badge-lit:disabled {
+  color: #10131c;
+  background: var(--blm-gold);
+  border-color: var(--blm-gold);
+  cursor: default;
+}
+.bl-mint-badge:disabled:not(.bl-mint-badge-lit) {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* --- new mint: qty + chain buttons --------------------------------------- */
+
+.bl-mint-qtyrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.bl-mint-qty-btn {
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.bl-mint-qty-btn:hover:not(:disabled) {
+  border-color: var(--blm-edge);
+}
+.bl-mint-qty-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.bl-mint-qty {
+  min-width: 48px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--blm-gold);
+}
+.bl-mint-qty-hint {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--blm-text-dim);
+}
+
+.bl-mint-chains {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.bl-mint-chain-btn {
+  flex: 1;
+  height: 40px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 9px;
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--blm-gold) 0%, var(--blm-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+}
+.bl-mint-chain-btn:hover:not(:disabled) {
+  filter: brightness(1.07);
+}
+.bl-mint-chain-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bl-mint-none {
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--blm-text-dim);
+  margin-top: 6px;
+}
+
+.bl-mint-status {
+  margin-top: 12px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  border-radius: 7px;
+  word-break: break-word;
+}
+.bl-mint-status-ok {
+  color: #cfe8b8;
+  background: rgba(126, 217, 87, 0.12);
+  border: 1px solid rgba(126, 217, 87, 0.3);
+}
+.bl-mint-status-err {
+  color: #ffb3a0;
+  background: rgba(198, 47, 34, 0.14);
+  border: 1px solid rgba(198, 47, 34, 0.45);
+}
+
+/* ========================================================================= *
+ * Inventory-card hooks (rendered by src/inventory/ui.ts when wired)         *
+ * ========================================================================= */
+
+/* 'Minted' flair riding the rarity line on the detail card. */
+.bl-inv-mintflair {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #10131c;
+  background: linear-gradient(180deg, #e8c15a 0%, #c99b2e 100%);
+  border: 1px solid #b8860b;
+  border-radius: 999px;
+  vertical-align: 1px;
+}
+
+/* Chain badge row on the detail card (read-only; dialog does the minting). */
+.bl-inv-mintbadges {
+  display: flex;
+  gap: 5px;
+  margin: 0 0 10px;
+}
+.bl-inv-mintbadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.bl-inv-mintbadge-lit {
+  color: #10131c;
+  background: #e8c15a;
+  border-color: #e8c15a;
+}
+
+/* Mini minted-chain dots on bag-grid cells. */
+.bl-inv-celldots {
+  position: absolute;
+  left: 4px;
+  top: 3px;
+  display: flex;
+  gap: 2px;
+}
+.bl-inv-celldot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e8c15a;
+  box-shadow: 0 0 3px rgba(232, 193, 90, 0.8);
+}
+
+/* The one Mint button on the item card's action row. */
+.bl-inv-act.bl-mint {
+  color: #10131c;
+  background: linear-gradient(180deg, #e8c15a 0%, #c99b2e 100%);
+  border: 1px solid #b8860b;
+}
+
+/* Minted-bundle pseudo-cells in the bag grid. */
+.bl-inv-cell-bundle {
+  border-style: dashed !important;
+}
+.bl-inv-bundletag {
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #e8c15a;
+}

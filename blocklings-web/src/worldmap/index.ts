@@ -72,7 +72,8 @@ export function initWorldmap(api: GameAPI): WorldmapModule {
 
   const mini = createMinimap(api, {
     getEntities: () => entitySource(),
-    onTap: () => panel.open()
+    onTap: () => panel.open(),
+    isAttuned: (id) => attuned.has(id)
   })
 
   const btn = document.createElement('button')

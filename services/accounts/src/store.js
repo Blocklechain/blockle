@@ -72,5 +72,38 @@ export class Store {
     });
   }
 
+  // Atomic multi-collection transaction under the same write queue. `fn` receives a
+  // synchronous view {get,set,del} and runs as ONE queued op. Writes are BUFFERED and only
+  // applied + flushed after `fn` returns without throwing, so a mid-transaction error leaves
+  // every collection untouched (all-or-nothing). `get` sees the transaction's own pending
+  // writes. Used by the game marketplace for gold settlement (debit buyer + credit seller +
+  // flip the listing as one op).
+  txn(fn) {
+    return this._enqueue(() => {
+      const writes = []; // [name, key, value] — value===undefined means delete
+      const view = {
+        get: (name, key) => {
+          for (let i = writes.length - 1; i >= 0; i--) {
+            const [n, k, v] = writes[i];
+            if (n === name && k === key) return v === undefined ? null : structuredClone(v);
+          }
+          const v = this._load(name)[key];
+          return v === undefined ? null : structuredClone(v);
+        },
+        set: (name, key, value) => { writes.push([name, key, structuredClone(value)]); },
+        del: (name, key) => { writes.push([name, key, undefined]); },
+      };
+      const out = fn(view); // throws => nothing below runs => no mutation at all
+      const touched = new Set();
+      for (const [name, key, value] of writes) {
+        const coll = this._load(name);
+        if (value === undefined) delete coll[key]; else coll[key] = value;
+        touched.add(name);
+      }
+      for (const name of touched) this._flush(name);
+      return out;
+    });
+  }
+
   async drain() { await this.queue; }
 }

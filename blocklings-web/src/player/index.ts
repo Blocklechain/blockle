@@ -15,7 +15,8 @@
  */
 import * as THREE from 'three'
 import type { PlayerState, World } from '../types'
-import { CharacterRig } from './character'
+import { events } from '../events'
+import { CharacterRig, type GripStyle, type SpecialAnim } from './character'
 import { createJoystick, createAttackButton, type Joystick, type AttackButton } from './joystick'
 import { connect, WS_URL, type NetHandle } from '../net/index'
 
@@ -23,11 +24,21 @@ import { connect, WS_URL, type NetHandle } from '../net/index'
 // Module-level combat/equipment API (binds to the live player instance)
 // ---------------------------------------------------------------------------
 
+/** A point the hero should walk himself to (tap-to-attack chase). */
+export interface AutoWalkTarget {
+  x: number
+  z: number
+  /** Stop when within this distance (world units). */
+  arrive: number
+}
+
 interface PlayerControl {
   rig: CharacterRig
   attack(): void
+  special(kind: SpecialAnim, cb?: () => void): boolean
   hurt(): void
   die(cb?: (revive: () => void) => void): void
+  setAutoWalk(target: AutoWalkTarget | null): void
 }
 
 let control: PlayerControl | null = null
@@ -63,6 +74,56 @@ export function triggerAttack(): void {
  */
 export function setEquipmentMesh(slot: string, mesh: THREE.Group | null): void {
   control?.rig.setEquipmentMesh(slot, mesh)
+}
+
+/**
+ * Play a special-attack animation: 'spin' (whirlwind), 'lunge' (dash-pierce),
+ * 'cast' (staff raise), 'volley' (bow fan) or 'bash' (shield shove).
+ * `onStrike` fires once at the ability's strike frame. Returns false (and
+ * plays nothing) while dead or mid-swing/special — the combat module wires
+ * this via combat.setSpecialAnimTrigger(triggerSpecial).
+ */
+export function triggerSpecial(kind: string, onStrike?: () => void): boolean {
+  if (kind !== 'spin' && kind !== 'lunge' && kind !== 'cast' && kind !== 'volley' && kind !== 'bash') {
+    return false
+  }
+  return control?.special(kind, onStrike) ?? false
+}
+
+/**
+ * Walk the hero to a world-space point (full walk animation + collision),
+ * stopping within `arrive` units; null cancels. Manual input (keys/joystick)
+ * always wins while held. Wired by the integrator:
+ *   combat.setAutoWalk((t) => setAutoWalk(t))
+ */
+export function setAutoWalk(target: AutoWalkTarget | null): void {
+  control?.setAutoWalk(target)
+}
+
+/**
+ * Optional richer grip lookup (integrator may wire items.def to return
+ * ItemDef.gripStyle). Without it the player falls back to the catalog's
+ * id conventions (sword_/axe_/pick_/hatchet_ forward, staff_ upright,
+ * bow_ bow, shield_ shield).
+ */
+let gripSource: ((itemId: string) => string | undefined) | null = null
+export function setGripStyleSource(fn: (itemId: string) => string | undefined): void {
+  gripSource = fn
+}
+
+function gripOf(id: string): GripStyle | null {
+  const fromSource = gripSource?.(id)
+  if (
+    fromSource === 'upright' || fromSource === 'forward' ||
+    fromSource === 'bow' || fromSource === 'shield'
+  ) {
+    return fromSource
+  }
+  if (id.startsWith('staff_')) return 'upright'
+  if (id.startsWith('bow_')) return 'bow'
+  if (id.startsWith('shield_')) return 'shield'
+  if (/^(sword|axe|pick|hatchet)_/.test(id)) return 'forward'
+  return null
 }
 
 /** Brief red damage flash + a knockback nudge opposite the facing. */
@@ -121,6 +182,7 @@ export function createPlayer(
 
   // --- combat state + actions ----------------------------------------------
   let dead = false
+  let autoTarget: AutoWalkTarget | null = null
 
   function doAttack(): void {
     if (dead) return
@@ -134,6 +196,17 @@ export function createPlayer(
       }
     })
   }
+
+  function doSpecial(kind: SpecialAnim, cb?: () => void): boolean {
+    if (dead) return false
+    return rig.startSpecial(kind, cb)
+  }
+
+  // --- weapon grip style follows the equipped weapon ------------------------
+  const offGripEquip = events.on('item:equipped', ({ slot, id }) => {
+    if (slot !== 'weapon') return
+    rig.setGripStyle(id ? gripOf(id) : null)
+  })
 
   function doHurt(): void {
     if (dead) return
@@ -149,6 +222,7 @@ export function createPlayer(
     if (dead) return
     dead = true
     keys.clear()
+    autoTarget = null
     state.moving = false
     rig.die(() => {
       const revive = (): void => {
@@ -287,11 +361,27 @@ export function createPlayer(
       ix /= len
       iy /= len
     }
-    // rotate into world space around the fixed isometric yaw:
-    // screen-forward = -(sin yaw, cos yaw), screen-right = (cos yaw, -sin yaw)
-    const s = Math.sin(CAM_YAW)
-    const c = Math.cos(CAM_YAW)
-    return { x: ix * c - iy * s, z: -ix * s - iy * c }
+    if (ix !== 0 || iy !== 0) {
+      // manual input always wins over tap-to-attack auto-walk
+      autoTarget = null
+      // rotate into world space around the fixed isometric yaw:
+      // screen-forward = -(sin yaw, cos yaw), screen-right = (cos yaw, -sin yaw)
+      const s = Math.sin(CAM_YAW)
+      const c = Math.cos(CAM_YAW)
+      return { x: ix * c - iy * s, z: -ix * s - iy * c }
+    }
+    // tap-to-attack auto-walk: head straight for the target, stop on arrival
+    if (autoTarget) {
+      const dx = autoTarget.x - state.pos.x
+      const dz = autoTarget.z - state.pos.z
+      const d = Math.hypot(dx, dz)
+      if (d <= autoTarget.arrive) {
+        autoTarget = null
+      } else {
+        return { x: dx / d, z: dz / d }
+      }
+    }
+    return { x: 0, z: 0 }
   }
 
   function tryMove(dt: number): void {
@@ -382,7 +472,16 @@ export function createPlayer(
   }
 
   // --- module-level combat API binds to this instance ----------------------
-  const myControl: PlayerControl = { rig, attack: doAttack, hurt: doHurt, die: doDie }
+  const myControl: PlayerControl = {
+    rig,
+    attack: doAttack,
+    special: doSpecial,
+    hurt: doHurt,
+    die: doDie,
+    setAutoWalk(target) {
+      autoTarget = dead ? null : target
+    },
+  }
   control = myControl
 
   // --- tick ----------------------------------------------------------------
@@ -396,6 +495,7 @@ export function createPlayer(
     },
     dispose(): void {
       if (control === myControl) control = null
+      offGripEquip()
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)

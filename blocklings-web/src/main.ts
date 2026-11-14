@@ -1,34 +1,50 @@
 /**
- * Blocklings — bootstrap.
+ * Blocklings — bootstrap + integrator.
  *
- * Sets up the renderer, scene, lights and the RAF loop, then wires the
- * feature modules together for real: world → player (input/camera/net) →
- * wallet (panel + HUD hook) → HUD (plate/chat/settings). The player module
- * drives the isometric camera (smooth follow + wheel/pinch zoom); main
- * keeps the sun's shadow frustum centred on the action.
+ * Sets up the renderer, scene, lights and the RAF loop, then wires ALL the
+ * feature modules together (events + setters only — main.ts is the single
+ * place modules are allowed to meet).
+ *
+ * Boot order: auth gates everything — the title screen shows first, and the
+ * world (save -> items -> skills -> inventory -> minting -> quests -> npcs ->
+ * combat -> pets -> gather -> waystones -> worldmap -> gold -> market ->
+ * wallet -> HUD) boots on the first 'auth:changed' (sign-in OR offline
+ * guest). The player module drives the isometric camera; main keeps the
+ * sun's shadow frustum centred on the action.
  */
 import * as THREE from 'three'
-import type { GameAPI, PlayerState, WalletAPI } from './types'
+import type { ChainId, GameAPI, PlayerState, WalletAPI } from './types'
+import { SPECIES } from './ids'
 import { events } from './events'
-import { createWorld, regionAt } from './world'
+import { createWorld, regionAt, regionOrZoneAt } from './world'
 import {
   createPlayer,
   setEquipmentMesh,
+  setGripStyleSource,
+  setAutoWalk,
   triggerAttack,
+  triggerSpecial,
   onAttack,
   playerHurt,
   playerDie
 } from './player/index'
+import { initAuth } from './auth'
 import { initSave } from './save'
 import { initItems, itemsApi } from './items'
-import { initSkills, skillsApi, maxHpBonus } from './skills'
+import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
 import { initInventory } from './inventory'
-import { initQuests, questDefById } from './quests'
-import { initNpcs, setQuestsApi, purse } from './npcs'
-import { initCombat } from './combat'
+import { initMinting } from './minting'
+import { initQuests } from './quests'
+import { initNpcs, setQuestsApi, setPay, setGoldPay } from './npcs'
+import { initCombat, setAutoRetaliate } from './combat'
+import { MobRig } from './combat/mobs'
+import { initPets } from './pets'
 import { initGather } from './gather'
 import { initWaystones } from './waystones'
 import { initWorldmap } from './worldmap'
+import { initAtmosphere } from './atmosphere'
+import { initGold, spendGold } from './gold'
+import { initMarket } from './market'
 import { wallet } from './wallet/index'
 import { initWalletUI } from './wallet/ui'
 import { createHUD } from './ui'
@@ -40,6 +56,16 @@ declare global {
     /** Render-quality hook the HUD settings toggle calls. */
     blocklingsSetQuality?: (high: boolean) => void
   }
+}
+
+// ---------------------------------------------------------------------------
+// Game treasury — where vendor crypto payments go (one address per chain).
+// ---------------------------------------------------------------------------
+
+const TREASURY: Partial<Record<ChainId, string>> = {
+  blockle: 'block1yyvhau7c2kwy4s60kqrysz6prf2k693kvyx94h9ve4qa8fulwy8q99vvdh',
+  ethereum: '0x8f55FbeDb99389aADa2B06f12c9567552C7892F5',
+  solana: 'CHxVpuE297p7YLttya8vLrxrfFNKXp8SRk4rfVd48PdM'
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +156,8 @@ const player: PlayerState = {
   xpToNext: 100
 }
 
-// --- world (terrain, collision, spawn) --------------------------------------
+// --- world (terrain, collision, spawn; also publishes the minimap's
+//     surface overlay via world/surface) -------------------------------------
 
 const world = createWorld(scene)
 player.pos.copy(world.spawn)
@@ -140,157 +167,20 @@ const api: GameAPI = {
   camera,
   world,
   player,
-  // replaced below once the player (and its net client) exists
+  // replaced once the player (and its net client) exists at world entry
   chatSend(msg: string) {
     api.onChat?.(player.name, msg)
   },
   onChat: null
 }
 
-// --- player (voxel hero, input, camera follow, presence/chat client) --------
+// --- UI mount (every overlay module renders into #ui) ------------------------
 
-const hero = createPlayer(scene, world, player, camera)
-
-// Chat bridge: HUD → net, net → HUD. sendChat locally echoes through
-// onChat itself, so this works identically online and offline.
-api.chatSend = (msg: string) => hero.net.sendChat(msg)
-hero.net.onChat = (from: string, msg: string) => api.onChat?.(from, msg)
-
-// --- UI mount (modules below render overlays into #ui) -----------------------
-
-const uiMount = document.getElementById('ui')
-if (!uiMount) throw new Error('missing #ui overlay mount')
-
-// --- save (FIRST stateful module: loads the envelope, applies player pos/hp,
-//     then late-applies each provider's blob the moment it registers) ---------
-
-initSave(api)
-
-// --- items (static catalog + voxel mesh builders) -----------------------------
-
-initItems(api)
-
-// --- skills (xp/levels; 'skills' save provider registers -> blob applied) ----
-
-initSkills(api)
-
-// Vitality -> max HP. Applied now (after the save loaded skills) and again on
-// every vitality level-up; HP is clamped, and a fresh vitality level tops the
-// new headroom up so leveling feels like a snack, not paperwork.
-const BASE_MAX_HP = 100
-function applyVitality(healDelta: number): void {
-  const prev = player.maxHp
-  player.maxHp = BASE_MAX_HP + maxHpBonus()
-  if (healDelta > 0 && player.maxHp > prev) {
-    player.hp += Math.min(healDelta, player.maxHp - prev)
-  }
-  player.hp = Math.min(player.hp, player.maxHp)
-}
-applyVitality(0)
-events.on('level:up', ({ skill }) => {
-  if (skill === 'vitality') applyVitality(4)
-})
-
-// --- inventory (+ real catalog defs + live 3D item viewer) --------------------
-
-const inv = initInventory(api)
-inv.setMeshSource((id) => itemsApi.buildMesh(id))
-inv.setDefSource((id) => itemsApi.def(id))
-
-// Equipment -> character: build the item's voxel mesh and hang it on the rig's
-// attach points whenever a slot changes, plus one initial pass for loaded gear.
-function applyEquipMesh(slot: string, id: string | null): void {
-  setEquipmentMesh(slot, id ? itemsApi.buildMesh(id) : null)
-}
-events.on('item:equipped', ({ slot, id }) => applyEquipMesh(slot, id))
-for (const [slot, id] of Object.entries(inv.equipment())) {
-  if (id) applyEquipMesh(slot, id)
-}
-
-// --- quests (29 defs + log panel + tracker; 'quests' save provider) ----------
-
-const quests = initQuests(api)
-
-// Quest BLOCK-cent payouts land in the purse (quests only emits the event;
-// the npcs module owns the soft-currency ledger).
-events.on('quest:completed', ({ questId }) => {
-  const cents = questDefById(questId)?.rewards.blockCents
-  if (cents) purse.add(cents)
-})
-
-// --- npcs (15 villagers/vendors + dialogs + purse) ---------------------------
-
-initNpcs(api)
-setQuestsApi(quests)
-
-// --- combat (mobs, bosses, loot, death/respawn) ------------------------------
-
-const combat = initCombat(api)
-combat.setStatsSource(() => inv.equippedStats())
-combat.setSkillsSource((s) => skillsApi.level(s))
-combat.setMeshSource((id) => itemsApi.buildMesh(id))
-// Combat already folds gear def + the defense skill into `amount` (its
-// internal defenseReduction uses the skills source), so here we just apply
-// the hit and play the hero's hurt flash/knockback.
-combat.setPlayerDamage((amount) => {
-  player.hp = Math.max(0, player.hp - amount)
-  playerHurt()
-})
-combat.setPlayerDeath((onDown) => playerDie(onDown))
-onAttack(() => combat.playerStrike())
-
-// --- gathering (90 nodes; reads the equipped tool, swings the hero's arm) ----
-
-const gather = initGather(api)
-gather.setInventory(inv)
-gather.setSwing(() => triggerAttack())
-
-// --- waystones (attune + teleport network; 'stones' save provider) -----------
-
-const waystones = initWaystones(api)
-
-// Respawn where you last touched a stone (Village until then), kept fresh on
-// every attune/teleport.
-function syncRespawn(): void {
-  const s = waystones.lastUsedStone()
-  combat.setRespawnPoint(s.pos.x, s.pos.z, s.name)
-}
-syncRespawn()
-events.on('waystone:attuned', syncRespawn)
-events.on('waystone:traveled', syncRespawn)
-
-// --- world map + mini-map (travel taps bridge into the waystones module) -----
-
-const worldmap = initWorldmap(api)
-worldmap.setAttuned(waystones.attunedStones())
-worldmap.setRequestTravel((stoneId) => waystones.travelTo(stoneId))
-
-// --- wallet (parchment panel + HUD balance-chip hook) ------------------------
-
-window.blocklingsWallet = wallet
-const walletPanel = initWalletUI(uiMount, wallet)
-
-// --- HUD (plate, balance chip, settings, chat box, zone banner) --------------
-
-const hud = createHUD(api, { setQuality })
-
-// System lines ('chat:system' from every module) land in the HUD chat box.
-events.on('chat:system', ({ text }) => api.onChat?.('System', text))
-
-// --- region tracking ('region:entered' on every border crossing) -------------
-
-let currentRegionId: string | null = null
-let regionPollT = 0
-function pollRegion(dt: number): void {
-  regionPollT += dt
-  if (regionPollT < 0.5) return
-  regionPollT = 0
-  const r = regionAt(player.pos.x, player.pos.z)
-  if (r && r.id !== currentRegionId) {
-    currentRegionId = r.id
-    events.emit('region:entered', { regionId: r.id })
-  }
-}
+const uiMount: HTMLElement = (() => {
+  const el = document.getElementById('ui')
+  if (!el) throw new Error('missing #ui overlay mount')
+  return el
+})()
 
 // ---------------------------------------------------------------------------
 // Resize
@@ -305,22 +195,278 @@ window.addEventListener('resize', onResize)
 window.addEventListener('orientationchange', onResize)
 
 // ---------------------------------------------------------------------------
-// Main loop (dt clamped so tab-switches don't teleport anything)
+// AUTH GATE — the title screen owns the boot. The world modules only come up
+// on the first 'auth:changed' (account sign-in or offline guest), so the
+// save module sees the right blk_token and the character wears the right
+// name from frame one.
 // ---------------------------------------------------------------------------
 
-let last = performance.now()
+initAuth(uiMount)
 
-function frame(now: number): void {
-  const dt = Math.min((now - last) / 1000, 0.1)
-  last = now
-  world.update(dt) // water shimmer, window flicker
-  hero.update(dt) // movement, net, camera follow
-  pollRegion(dt) // 'region:entered' on border crossings (every ~0.5s)
-  walletPanel.update(dt)
-  hud.update()
-  updateSun()
-  renderer.render(scene, camera)
+// One parchment-pretty frame behind the title while the player signs in.
+camera.position.set(player.pos.x + 26, player.pos.y + 31, player.pos.z + 26)
+camera.lookAt(player.pos)
+updateSun()
+renderer.render(scene, camera)
+
+let entered = false
+events.on('auth:changed', ({ signedIn, name }) => {
+  if (signedIn && name) player.name = name
+  if (!entered) {
+    entered = true
+    enterWorld()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// World entry — the full module boot + every integrator wire.
+// ---------------------------------------------------------------------------
+
+function enterWorld(): void {
+  // --- player (voxel hero, input, camera follow, presence/chat client) ------
+
+  const hero = createPlayer(scene, world, player, camera)
+
+  // Chat bridge: HUD → net, net → HUD. sendChat locally echoes through
+  // onChat itself, so this works identically online and offline.
+  api.chatSend = (msg: string) => hero.net.sendChat(msg)
+  hero.net.onChat = (from: string, msg: string) => api.onChat?.(from, msg)
+
+  // --- save (FIRST stateful module: loads the envelope, applies player
+  //     pos/hp, then late-applies each provider's blob as it registers) ------
+
+  initSave(api)
+
+  // --- items (static catalog + voxel mesh builders) -------------------------
+
+  initItems(api)
+
+  // --- skills (xp/levels + the 312-node skill tree; save providers) ---------
+
+  initSkills(api)
+
+  // Vitality -> max HP. Applied now (after the save loaded skills) and again
+  // on every vitality level-up; HP is clamped, and a fresh vitality level
+  // tops the new headroom up so leveling feels like a snack, not paperwork.
+  const BASE_MAX_HP = 100
+  function applyVitality(healDelta: number): void {
+    const prev = player.maxHp
+    player.maxHp = BASE_MAX_HP + maxHpBonus()
+    if (healDelta > 0 && player.maxHp > prev) {
+      player.hp += Math.min(healDelta, player.maxHp - prev)
+    }
+    player.hp = Math.min(player.hp, player.maxHp)
+  }
+  applyVitality(0)
+  events.on('level:up', ({ skill }) => {
+    if (skill === 'vitality') applyVitality(4)
+  })
+
+  // --- inventory (+ real catalog defs + live 3D item viewer) ----------------
+
+  const inv = initInventory(api)
+  inv.setMeshSource((id) => itemsApi.buildMesh(id))
+  inv.setDefSource((id) => itemsApi.def(id))
+
+  // Equipment -> character: build the item's voxel mesh and hang it on the
+  // rig's attach points whenever a slot changes, plus one pass for loaded
+  // gear. The grip style (sword/staff/bow/shield rest poses) reads straight
+  // from the catalog def.
+  setGripStyleSource((itemId) => itemsApi.def(itemId)?.gripStyle)
+  function applyEquipMesh(slot: string, id: string | null): void {
+    setEquipmentMesh(slot, id ? itemsApi.buildMesh(id) : null)
+  }
+  events.on('item:equipped', ({ slot, id }) => applyEquipMesh(slot, id))
+  for (const [slot, id] of Object.entries(inv.equipment())) {
+    if (id) applyEquipMesh(slot, id)
+  }
+
+  // --- minting (the ALL-ITEMS NFT framework; inventory card Mint buttons) ---
+
+  const minting = initMinting(api)
+  minting.setWallet(() => wallet)
+  minting.setInventory(() => inv)
+  inv.setMintHooks({
+    open: (id, def) => minting.openForItem(id, def),
+    chainsOf: (id) => minting.chainsOf(id),
+    bundles: () => minting.bundles()
+  })
+
+  // --- quests (29 defs + log panel + tracker; 'quests' save provider) -------
+
+  const quests = initQuests(api)
+
+  // --- npcs (15 villagers/vendors; REAL-crypto vendor prices -> treasury) ---
+
+  initNpcs(api)
+  setQuestsApi(quests)
+  setPay(async (chain, amount) => {
+    const to = TREASURY[chain]
+    if (!to) return { ok: false, error: `No treasury address for ${chain}.` }
+    return wallet.sendOn(chain, to, amount)
+  })
+  // GOLD rail: server-authoritative spend via the gold module (IAP currency)
+  setGoldPay((amount, reason) => spendGold(amount, reason))
+
+  // --- combat (mobs, bosses, loot, specials, tap-to-attack, death flow) -----
+
+  const combat = initCombat(api)
+  combat.setStatsSource(() => inv.equippedStats())
+  combat.setSkillsSource((s) => skillsApi.level(s))
+  combat.setMeshSource((id) => itemsApi.buildMesh(id))
+  combat.setDefSource((id) => itemsApi.def(id))
+  combat.setEquipmentSource(() => inv.equipment())
+  combat.setModifierSource((key) => skillTree.modifier(key))
+  // Combat already folds gear def + the defense skill into `amount` (its
+  // internal defenseReduction uses the skills source), so here we just apply
+  // the hit and play the hero's hurt flash/knockback.
+  combat.setPlayerDamage((amount) => {
+    player.hp = Math.max(0, player.hp - amount)
+    playerHurt()
+  })
+  combat.setPlayerDeath((onDown) => playerDie(onDown))
+  // Swings: tap/auto-retaliate -> the player module's arm animation -> the
+  // strike frame fires onAttack -> combat resolves it. One path, always.
+  combat.setAttackTrigger(() => triggerAttack())
+  combat.setAutoWalk((t) => setAutoWalk(t))
+  combat.setSpecialAnimTrigger((kind, onStrike) => triggerSpecial(kind, onStrike))
+  onAttack(() => combat.playerStrike())
+
+  // --- pets (rare drops, companion AI, collection panel, NFT minting) -------
+
+  const pets = initPets(api)
+  pets.setMobMeshSource((species, boss) => {
+    const def = SPECIES.find((s) => s.id === species)
+    return def ? new MobRig(def, boss) : null // MobRig satisfies PetRig structurally
+  })
+  pets.setWallet(() => wallet)
+  pets.setTargetSource(() => combat.petTarget())
+  // The pet deals ~25% of this; mirror combat's base swing at ~1 swing/1.2s.
+  pets.setPlayerDpsSource(() => {
+    const s = inv.equippedStats()
+    const atkLevel = skillsApi.level('attack')
+    return ((3 + s.atk + 0.4 * s.str) * (1 + (atkLevel - 1) * 0.04)) / 1.2
+  })
+
+  // --- gathering (streamed wilderness zones; reads the equipped tool) -------
+
+  const gather = initGather(api)
+  gather.setInventory(inv)
+  gather.setSwing(() => triggerAttack())
+  gather.setSkillTree(skillTree)
+  // (zone node registration self-runs off gather's 1 Hz residency poll)
+
+  // --- waystones (attune + teleport network; 'stones' save provider) --------
+
+  const waystones = initWaystones(api)
+
+  // Respawn where you last touched a stone (Village until then), kept fresh
+  // on every attune/teleport.
+  function syncRespawn(): void {
+    const s = waystones.lastUsedStone()
+    combat.setRespawnPoint(s.pos.x, s.pos.z, s.name)
+  }
+  syncRespawn()
+  events.on('waystone:attuned', syncRespawn)
+  events.on('waystone:traveled', syncRespawn)
+
+  // --- world map + layered minimap (travel taps bridge into waystones) ------
+
+  const worldmap = initWorldmap(api)
+  worldmap.setAttuned(waystones.attunedStones())
+  worldmap.setRequestTravel((stoneId) => waystones.travelTo(stoneId))
+
+  // --- atmosphere (real-time CST day/night; owns sky/fog/sun from here) -----
+
+  const atmo = initAtmosphere(api)
+  atmo.setSkyLights(sun, hemi)
+  atmo.setEmissiveMaterials(world.glowMaterials)
+  // Every PointLight in the scene at entry is a lantern/campfire (village
+  // posts + heart-region camps, all built synchronously in createWorld) —
+  // atmosphere ramps them up after sundown from their authored intensity.
+  const lanternLights: THREE.PointLight[] = []
+  scene.traverse((o) => {
+    if ((o as THREE.PointLight).isPointLight) lanternLights.push(o as THREE.PointLight)
+  })
+  atmo.setLanternLights(lanternLights)
+  atmo.setBiomeSource((x, z) => regionOrZoneAt(x, z)?.biome ?? null)
+
+  // --- GOLD (IAP-only hard currency; server-authoritative balance chip) -----
+
+  const gold = initGold(api)
+
+  // --- marketplace (gold + 3-chain crypto rails; goods escrow) --------------
+
+  const market = initMarket(api)
+  market.setGold(gold)
+  market.setWallet(wallet)
+  market.setInventory(inv)
+  market.setPets({
+    list: () => pets.owned(),
+    remove: (uid) => pets.remove(uid),
+    add: (p) => pets.add(p)
+  })
+  market.setMeshSource((id) => itemsApi.buildMesh(id))
+  market.setPetMeshSource((petId) => pets.buildMesh(petId))
+  market.setDefSource((id) => itemsApi.def(id))
+  market.setMintedSource(() => minting.mintedItems())
+  // NFT LAW: mint state travels on trade — escrow drops the seller's ledger
+  // row (uid can't double-list), delivery/restore re-enters it intact.
+  market.setMintHooks({
+    take: (uid) => minting.takeByUid(uid),
+    receive: (inst) => minting.receive(inst)
+  })
+
+  // --- wallet (parchment panel + HUD balance-chip hook) ---------------------
+
+  window.blocklingsWallet = wallet
+  const walletPanel = initWalletUI(uiMount, wallet)
+
+  // --- HUD (plate, balance chip, settings, chat box, zone banner) -----------
+
+  const hud = createHUD(api, {
+    setQuality,
+    setAutoRetaliate: (on) => setAutoRetaliate(on),
+    setAlwaysDay: (on) => atmo.setAlwaysDay(on)
+    // setMinimap + signOut resolve via the window hooks worldmap/auth publish
+  })
+
+  // System lines ('chat:system' from every module) land in the HUD chat box.
+  events.on('chat:system', ({ text }) => api.onChat?.('System', text))
+
+  // --- region tracking ('region:entered' on every border crossing) ----------
+
+  let currentRegionId: string | null = null
+  let regionPollT = 0
+  function pollRegion(dt: number): void {
+    regionPollT += dt
+    if (regionPollT < 0.5) return
+    regionPollT = 0
+    const r = regionAt(player.pos.x, player.pos.z)
+    if (r && r.id !== currentRegionId) {
+      currentRegionId = r.id
+      events.emit('region:entered', { regionId: r.id })
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Main loop (dt clamped so tab-switches don't teleport anything)
+  // -------------------------------------------------------------------------
+
+  let last = performance.now()
+
+  function frame(now: number): void {
+    const dt = Math.min((now - last) / 1000, 0.1)
+    last = now
+    world.update(dt) // water shimmer, window flicker
+    hero.update(dt) // movement, net, camera follow
+    pollRegion(dt) // 'region:entered' on border crossings (every ~0.5s)
+    walletPanel.update(dt)
+    hud.update()
+    atmo.update(dt) // sun/moon arc + sky/fog/glow ramps (owns the sun now)
+    renderer.render(scene, camera)
+    requestAnimationFrame(frame)
+  }
+
   requestAnimationFrame(frame)
 }
-
-requestAnimationFrame(frame)

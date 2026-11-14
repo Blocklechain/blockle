@@ -18,6 +18,10 @@ export interface SkillsPanelDeps {
   progress(skill: string): { level: number; into: number; size: number }
   xp(skill: string): number
   total(): number
+  /** Unspent perk points (talent-tree pool). */
+  points(): number
+  /** Open the full-screen talent tree for a skill (row tap). */
+  openTree(skill: string): void
 }
 
 /** Text-presentation glyph + accent per skill (U+FE0E forces non-emoji). */
@@ -94,6 +98,9 @@ export function createSkillsPanel(deps: SkillsPanelDeps): { refresh(): void } {
   flexMeta.appendChild(flexCap)
   flex.appendChild(flexNum)
   flex.appendChild(flexMeta)
+  const flexPts = el('div', 'bl-skills-flex-pts', '')
+  flexPts.title = 'Unspent perk points — tap a skill to open its tree'
+  flex.appendChild(flexPts)
   panel.appendChild(flex)
 
   // rows
@@ -121,6 +128,21 @@ export function createSkillsPanel(deps: SkillsPanelDeps): { refresh(): void } {
     const levelEl = el('span', 'bl-skill-level', '1')
     row.appendChild(levelEl)
 
+    row.appendChild(el('span', 'bl-skill-tree-arrow', '›'))
+
+    // whole row opens the skill's talent tree
+    row.classList.add('bl-skill-row-tree')
+    row.setAttribute('role', 'button')
+    row.tabIndex = 0
+    row.setAttribute('aria-label', `${cap(skill)} talent tree`)
+    row.addEventListener('click', () => deps.openTree(skill))
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        deps.openTree(skill)
+      }
+    })
+
     list.appendChild(row)
     rows.push({ skill, levelEl, fill, bar, row })
   }
@@ -131,13 +153,16 @@ export function createSkillsPanel(deps: SkillsPanelDeps): { refresh(): void } {
   function refresh(): void {
     if (panel.style.display === 'none') return
     const total = deps.total()
-    let key = String(total)
+    const pts = deps.points()
+    let key = `${total}|${pts}`
     for (const r of rows) key += `|${deps.xp(r.skill)}`
     if (key === cacheKey) return
     cacheKey = key
 
     flexNum.textContent = String(total)
     flexCap.textContent = totalCaption(total)
+    flexPts.textContent = pts > 0 ? `${pts} pt${pts === 1 ? '' : 's'}` : ''
+    flexPts.style.display = pts > 0 ? '' : 'none'
 
     for (const r of rows) {
       const { level, into, size } = deps.progress(r.skill)

@@ -26,6 +26,16 @@ const HERB_GLOW = 0xa5ffb0
 const SOIL_TILLED = 0x59402a
 const WHEAT = 0xd8b84a
 const WHEAT_GLOW = 0xf5e08a
+const WILT = 0x8a7a4a
+const STUBBLE = 0xb09a55
+const BUSH = [0x4f9d3f, 0x447f36] as const
+const BERRY = 0xe05555
+const MUSH_STEM = 0xe8e0cc
+const MUSH_CAP = [0x9a6a3f, 0x8a5c33] as const
+const MUSH_SPOT = 0xf0e6d2
+const CLAY_MUD = 0x6b5a44
+const CLAY = [0xb3876a, 0xa87c60] as const
+const CLAY_HOLE = 0x4a3d2e
 
 /** One axis-aligned box of a node prop, in node-local coords. */
 export interface BoxSpec {
@@ -42,6 +52,8 @@ export interface BoxSpec {
   keep?: boolean
   /** Bobs gently (fish ring). */
   bob?: boolean
+  /** Only visible WHILE harvested (rubble piles, wilted stalks, stubble). */
+  wreck?: boolean
 }
 
 type Rng = () => number
@@ -54,11 +66,28 @@ function range(rng: Rng, a: number, b: number): number {
   return a + rng() * (b - a)
 }
 
-/** Rock mound + 3 glowing nuggets of the given ore color. */
+/** Flat scattered rubble chunks, shown only after a rock-style harvest. */
+function rubble(rng: Rng, accent: number): BoxSpec[] {
+  const out: BoxSpec[] = []
+  for (let i = 0; i < 4; i++) {
+    const s = range(rng, 0.25, 0.45)
+    out.push({
+      x: range(rng, -0.8, 0.5),
+      y: 0,
+      z: range(rng, -0.75, 0.45),
+      sx: s, sy: range(rng, 0.14, 0.22), sz: s,
+      color: i === 3 ? accent : pick(rng, ROCK),
+      wreck: true
+    })
+  }
+  return out
+}
+
+/** Rock mound + 3 glowing nuggets; crumbles to rubble when mined out. */
 function vein(rng: Rng, ore: number): BoxSpec[] {
   const out: BoxSpec[] = [
-    { x: -0.7, y: 0, z: -0.6, sx: 1.4, sy: 0.6, sz: 1.2, color: pick(rng, ROCK), keep: true },
-    { x: -0.4, y: 0.6, z: -0.35, sx: 0.9, sy: 0.45, sz: 0.75, color: ROCK_DARK, keep: true }
+    { x: -0.7, y: 0, z: -0.6, sx: 1.4, sy: 0.6, sz: 1.2, color: pick(rng, ROCK) },
+    { x: -0.4, y: 0.6, z: -0.35, sx: 0.9, sy: 0.45, sz: 0.75, color: ROCK_DARK }
   ]
   for (let i = 0; i < 3; i++) {
     const s = range(rng, 0.22, 0.34)
@@ -71,16 +100,18 @@ function vein(rng: Rng, ore: number): BoxSpec[] {
       glow: true
     })
   }
+  out.push(...rubble(rng, ROCK_DARK))
   return out
 }
 
-/** Rock base + jutting crystal shards. */
+/** Rock base + jutting crystal shards; crumbles to shard-flecked rubble. */
 function crystal(rng: Rng): BoxSpec[] {
   return [
-    { x: -0.6, y: 0, z: -0.55, sx: 1.2, sy: 0.4, sz: 1.1, color: pick(rng, ROCK), keep: true },
+    { x: -0.6, y: 0, z: -0.55, sx: 1.2, sy: 0.4, sz: 1.1, color: pick(rng, ROCK) },
     { x: -0.3, y: 0.4, z: -0.25, sx: 0.32, sy: range(rng, 1.0, 1.3), sz: 0.32, color: CRYSTAL, glow: true },
     { x: 0.1, y: 0.4, z: 0.05, sx: 0.24, sy: range(rng, 0.6, 0.85), sz: 0.24, color: CRYSTAL, glow: true },
-    { x: -0.55, y: 0.4, z: 0.2, sx: 0.2, sy: range(rng, 0.45, 0.6), sz: 0.2, color: CRYSTAL, glow: true }
+    { x: -0.55, y: 0.4, z: 0.2, sx: 0.2, sy: range(rng, 0.45, 0.6), sz: 0.2, color: CRYSTAL, glow: true },
+    ...rubble(rng, CRYSTAL)
   ]
 }
 
@@ -126,7 +157,24 @@ function fishRing(): BoxSpec[] {
   ]
 }
 
-/** Leafy clump with a glowy shimmer — all of it gets picked. */
+/** Small drooping wilted sprigs, shown only while a plant is picked bare. */
+function wilted(rng: Rng, n: number): BoxSpec[] {
+  const out: BoxSpec[] = []
+  for (let i = 0; i < n; i++) {
+    const s = range(rng, 0.14, 0.22)
+    out.push({
+      x: range(rng, -0.45, 0.3),
+      y: 0,
+      z: range(rng, -0.45, 0.3),
+      sx: s, sy: range(rng, 0.12, 0.2), sz: s,
+      color: WILT,
+      wreck: true
+    })
+  }
+  return out
+}
+
+/** Leafy clump with a glowy shimmer; wilts to sad brown sprigs. */
 function herb(rng: Rng): BoxSpec[] {
   const out: BoxSpec[] = []
   for (let i = 0; i < 4; i++) {
@@ -150,10 +198,11 @@ function herb(rng: Rng): BoxSpec[] {
       glow: true
     })
   }
+  out.push(...wilted(rng, 3))
   return out
 }
 
-/** Tilled mound (stays) + ripe wheat stalks with glowing tips. */
+/** Tilled mound (stays) + ripe wheat; harvest leaves pale stubble. */
 function farmPlot(rng: Rng): BoxSpec[] {
   const out: BoxSpec[] = [
     { x: -0.65, y: 0, z: -0.65, sx: 1.3, sy: 0.22, sz: 1.3, color: SOIL_TILLED, keep: true }
@@ -164,7 +213,69 @@ function farmPlot(rng: Rng): BoxSpec[] {
     const bz = -0.5 + Math.floor(i / 2) * 0.62 + range(rng, 0, 0.1)
     out.push({ x: bx, y: 0.22, z: bz, sx: 0.26, sy: h, sz: 0.26, color: WHEAT })
     out.push({ x: bx + 0.02, y: 0.22 + h, z: bz + 0.02, sx: 0.22, sy: 0.16, sz: 0.22, color: WHEAT_GLOW, glow: true })
+    out.push({ x: bx + 0.02, y: 0.22, z: bz + 0.02, sx: 0.2, sy: 0.14, sz: 0.2, color: STUBBLE, wreck: true })
   }
+  return out
+}
+
+/** Round leafy bush (stays) studded with glowing berries that get picked. */
+function berryBush(rng: Rng): BoxSpec[] {
+  const out: BoxSpec[] = [
+    { x: -0.65, y: 0, z: -0.65, sx: 1.3, sy: 0.8, sz: 1.3, color: pick(rng, BUSH), keep: true },
+    { x: -0.45, y: 0.8, z: -0.45, sx: 0.9, sy: 0.4, sz: 0.9, color: pick(rng, BUSH), keep: true }
+  ]
+  for (let i = 0; i < 5; i++) {
+    const s = range(rng, 0.16, 0.22)
+    out.push({
+      x: range(rng, -0.6, 0.4),
+      y: range(rng, 0.25, 0.95),
+      z: range(rng, -0.6, 0.4),
+      sx: s, sy: s, sz: s,
+      color: BERRY,
+      glow: true
+    })
+  }
+  return out
+}
+
+/** Cluster of fat spotted toadstools; foraged down to pale stubs. */
+function mushroomCluster(rng: Rng): BoxSpec[] {
+  const out: BoxSpec[] = []
+  for (let i = 0; i < 3; i++) {
+    const stemH = range(rng, 0.3, 0.55)
+    const capW = range(rng, 0.4, 0.6)
+    const bx = range(rng, -0.6, 0.25)
+    const bz = range(rng, -0.6, 0.25)
+    out.push({ x: bx, y: 0, z: bz, sx: 0.22, sy: stemH, sz: 0.22, color: MUSH_STEM })
+    out.push({
+      x: bx - (capW - 0.22) / 2, y: stemH, z: bz - (capW - 0.22) / 2,
+      sx: capW, sy: 0.24, sz: capW,
+      color: pick(rng, MUSH_CAP)
+    })
+    out.push({ x: bx + 0.02, y: stemH + 0.24, z: bz + 0.02, sx: 0.14, sy: 0.08, sz: 0.14, color: MUSH_SPOT, glow: true })
+    // post-forage stub
+    out.push({ x: bx, y: 0, z: bz, sx: 0.2, sy: 0.12, sz: 0.2, color: MUSH_STEM, wreck: true })
+  }
+  return out
+}
+
+/** Muddy pit rim (stays) + glistening clay lumps; digs down to a dark hole. */
+function clayPit(rng: Rng): BoxSpec[] {
+  const out: BoxSpec[] = [
+    { x: -0.8, y: 0, z: -0.8, sx: 1.6, sy: 0.18, sz: 1.6, color: CLAY_MUD, keep: true },
+    { x: -0.55, y: 0.18, z: -0.55, sx: 1.1, sy: 0.1, sz: 1.1, color: CLAY_HOLE, wreck: true }
+  ]
+  for (let i = 0; i < 4; i++) {
+    const s = range(rng, 0.26, 0.4)
+    out.push({
+      x: range(rng, -0.6, 0.3),
+      y: 0.18,
+      z: range(rng, -0.6, 0.3),
+      sx: s, sy: range(rng, 0.2, 0.32), sz: s,
+      color: pick(rng, CLAY)
+    })
+  }
+  out.push({ x: -0.1, y: 0.42, z: -0.12, sx: 0.16, sy: 0.16, sz: 0.16, color: 0xd9c7b4, glow: true })
   return out
 }
 
@@ -180,6 +291,9 @@ export function buildKindBoxes(kind: string, rng: Rng): BoxSpec[] {
     case 'fishing_spot': return fishRing()
     case 'herb_patch': return herb(rng)
     case 'farm_plot': return farmPlot(rng)
+    case 'berry_bush': return berryBush(rng)
+    case 'mushroom_cluster': return mushroomCluster(rng)
+    case 'clay_pit': return clayPit(rng)
     default: return vein(rng, COPPER)
   }
 }
@@ -195,6 +309,7 @@ interface PlacedBox {
   matrix: THREE.Matrix4
   keep: boolean
   bob: boolean
+  wreck: boolean
   /** World-space center (bob animation recomposes around it). */
   cx: number
   cy: number
@@ -204,21 +319,59 @@ interface PlacedBox {
   sz: number
 }
 
+/** Depletion animation styles (mirrors data.ts DepleteStyle). */
+export type PropDepleteStyle = 'topple' | 'crumble' | 'pause' | 'wilt'
+
+interface NodeAnim {
+  phase: 'deplete' | 'restore'
+  style: PropDepleteStyle
+  start: number
+}
+
+interface NodeRec {
+  boxes: PlacedBox[]
+  /** World origin the prop was placed at (topple pivot sits here). */
+  ox: number
+  oy: number
+  oz: number
+  depleted: boolean
+  anim: NodeAnim | null
+  /** Deterministic topple direction (radians around Y). */
+  fallDir: number
+}
+
 const ZERO = new THREE.Matrix4().makeScale(0, 0, 0)
 
+const DUR: Record<PropDepleteStyle, number> = {
+  topple: 1.0,
+  crumble: 0.45,
+  pause: 0.35,
+  wilt: 0.5
+}
+const RESTORE_DUR = 0.5
+
+/** Paused-ring residual scale. */
+const PAUSE_SCALE = 0.55
+
 /**
- * Collects every node's boxes, then bakes two InstancedMeshes. Returned
- * node handles let the gameplay layer hide/show nodes and the ticker
- * animate bobbing rings + the glow pulse with two draw calls total.
+ * Collects every node's boxes, then bakes two InstancedMeshes (one lit,
+ * one glow). Node handles let the gameplay layer play full depletion
+ * animations — trees TOPPLE about their stump, ore CRUMBLES into rubble,
+ * fish rings PAUSE + shrink, plants WILT into brown sprigs — and pop back
+ * on respawn, all by rewriting instance matrices (still two draw calls
+ * per NodeProps). One instance serves the heart; streamed zones get one
+ * small instance each (toggled by distance, disposable).
  */
 export class NodeProps {
   private solids: { m: THREE.Matrix4; color: number }[] = []
   private glows: { m: THREE.Matrix4; color: number }[] = []
-  private nodes: PlacedBox[][] = []
+  private nodes: NodeRec[] = []
   private solidMesh: THREE.InstancedMesh | null = null
   private glowMesh: THREE.InstancedMesh | null = null
   private glowMat: THREE.MeshBasicMaterial | null = null
-  private bobs: PlacedBox[] = []
+  private bobs: { node: NodeRec; box: PlacedBox }[] = []
+  /** Nodes with a running deplete/restore animation. */
+  private animating = new Set<NodeRec>()
 
   /** Add one node's prop at world (wx, wy, wz). Returns its handle index. */
   addNode(boxes: BoxSpec[], wx: number, wy: number, wz: number): number {
@@ -227,6 +380,7 @@ export class NodeProps {
       const cx = wx + b.x + b.sx / 2
       const cy = wy + b.y + b.sy / 2
       const cz = wz + b.z + b.sz / 2
+      const wreck = !!b.wreck
       const m = new THREE.Matrix4().compose(
         new THREE.Vector3(cx, cy, cz),
         new THREE.Quaternion(),
@@ -239,14 +393,23 @@ export class NodeProps {
         matrix: m,
         keep: !!b.keep,
         bob: !!b.bob,
+        wreck,
         cx, cy, cz,
         sx: b.sx, sy: b.sy, sz: b.sz
       }
-      list.push({ m, color: b.color })
+      // wreck boxes start hidden (they only show while depleted)
+      list.push({ m: wreck ? ZERO.clone() : m, color: b.color })
       placed.push(rec)
-      if (rec.bob) this.bobs.push(rec)
     }
-    this.nodes.push(placed)
+    const node: NodeRec = {
+      boxes: placed,
+      ox: wx, oy: wy, oz: wz,
+      depleted: false,
+      anim: null,
+      fallDir: ((this.nodes.length * 2.39996323) % (Math.PI * 2))
+    }
+    for (const b of placed) if (b.bob) this.bobs.push({ node, box: b })
+    this.nodes.push(node)
     return this.nodes.length - 1
   }
 
@@ -288,35 +451,178 @@ export class NodeProps {
     }
   }
 
-  /** Hide (harvest) or restore a node's non-`keep` boxes. */
-  setHarvested(node: number, harvested: boolean): void {
-    const placed = this.nodes[node]
-    if (!placed) return
-    for (const b of placed) {
-      if (b.keep) continue
-      const mesh = b.glow ? this.glowMesh : this.solidMesh
+  /** Start the harvest animation for a node (topple/crumble/pause/wilt). */
+  deplete(node: number, style: PropDepleteStyle, now: number): void {
+    const rec = this.nodes[node]
+    if (!rec || rec.depleted) return
+    rec.depleted = true
+    rec.anim = { phase: 'deplete', style, start: now }
+    this.animating.add(rec)
+  }
+
+  /** Pop a node back in (respawn): hide the wreck, regrow the boxes. */
+  restore(node: number, style: PropDepleteStyle, now: number): void {
+    const rec = this.nodes[node]
+    if (!rec || !rec.depleted) return
+    rec.depleted = false
+    rec.anim = { phase: 'restore', style, start: now }
+    this.animating.add(rec)
+    // wreck boxes vanish the moment regrowth starts
+    for (const b of rec.boxes) if (b.wreck) this.setBox(b, ZERO)
+  }
+
+  /** Show or hide this batch wholesale (zone props far from the player). */
+  setVisible(v: boolean): void {
+    if (this.solidMesh) this.solidMesh.visible = v
+    if (this.glowMesh) this.glowMesh.visible = v
+  }
+
+  /** Remove meshes from the scene and free GPU resources. */
+  dispose(scene: THREE.Scene): void {
+    for (const mesh of [this.solidMesh, this.glowMesh]) {
       if (!mesh) continue
-      mesh.setMatrixAt(b.idx, harvested ? ZERO : b.matrix)
-      mesh.instanceMatrix.needsUpdate = true
+      scene.remove(mesh)
+      mesh.geometry.dispose()
+      const mat = mesh.material
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+      else mat.dispose()
     }
+    this.solidMesh = null
+    this.glowMesh = null
+    this.glowMat = null
   }
 
   private tmpM = new THREE.Matrix4()
   private tmpP = new THREE.Vector3()
   private tmpQ = new THREE.Quaternion()
   private tmpS = new THREE.Vector3()
+  private tmpAxis = new THREE.Vector3()
 
-  /** Per-frame: bob the fish rings, pulse the sparkle. Cheap by design. */
-  update(t: number, isHarvested: (node: number) => boolean): void {
-    void isHarvested
+  private setBox(b: PlacedBox, m: THREE.Matrix4): void {
+    const mesh = b.glow ? this.glowMesh : this.solidMesh
+    if (!mesh) return
+    mesh.setMatrixAt(b.idx, m)
+    mesh.instanceMatrix.needsUpdate = true
+  }
+
+  /** Recompose box `b` scaled by `s` around its own center, sunk by `drop`. */
+  private setScaled(b: PlacedBox, s: number, drop: number): void {
+    if (s <= 0.001) {
+      this.setBox(b, ZERO)
+      return
+    }
+    this.tmpM.compose(
+      this.tmpP.set(b.cx, b.cy - drop, b.cz),
+      this.tmpQ.identity(),
+      this.tmpS.set(b.sx * s, b.sy * s, b.sz * s)
+    )
+    this.setBox(b, this.tmpM)
+  }
+
+  /** Advance one node's deplete/restore animation; true = still running. */
+  private stepAnim(rec: NodeRec, now: number): boolean {
+    const anim = rec.anim
+    if (!anim) return false
+    const dur = anim.phase === 'restore' ? RESTORE_DUR : DUR[anim.style]
+    const p = Math.min(1, (now - anim.start) / dur)
+
+    if (anim.phase === 'restore') {
+      // smooth regrow 0 -> 1 (rings regrow from their paused scale)
+      const from = anim.style === 'pause' ? PAUSE_SCALE : 0
+      const s = from + (1 - from) * (p * p * (3 - 2 * p))
+      for (const b of rec.boxes) {
+        if (b.keep || b.wreck) continue
+        this.setScaled(b, s, 0)
+      }
+      if (p >= 1) {
+        // settle on exact baked matrices
+        for (const b of rec.boxes) if (!b.keep && !b.wreck) this.setBox(b, b.matrix)
+        rec.anim = null
+        return false
+      }
+      return true
+    }
+
+    switch (anim.style) {
+      case 'topple': {
+        // accelerate into the fall: angle eases 0 -> ~85 deg about a ground
+        // pivot at the stump, then the felled tree fades out scale-wise
+        const fall = Math.min(1, p / 0.8)
+        const ang = fall * fall * 1.48
+        const fade = p > 0.85 ? 1 - (p - 0.85) / 0.15 : 1
+        this.tmpAxis.set(Math.cos(rec.fallDir + Math.PI / 2), 0, Math.sin(rec.fallDir + Math.PI / 2))
+        this.tmpQ.setFromAxisAngle(this.tmpAxis, ang)
+        for (const b of rec.boxes) {
+          if (b.keep || b.wreck) continue
+          this.tmpP.set(b.cx - rec.ox, b.cy - rec.oy, b.cz - rec.oz)
+          this.tmpP.applyQuaternion(this.tmpQ)
+          this.tmpM.compose(
+            this.tmpP.set(rec.ox + this.tmpP.x, rec.oy + this.tmpP.y, rec.oz + this.tmpP.z),
+            this.tmpQ,
+            this.tmpS.set(b.sx * fade, b.sy * fade, b.sz * fade)
+          )
+          if (fade <= 0.02) this.setBox(b, ZERO)
+          else this.setBox(b, this.tmpM)
+        }
+        break
+      }
+      case 'crumble': {
+        // mound collapses straight down, then the rubble pops in
+        const s = 1 - p
+        for (const b of rec.boxes) {
+          if (b.keep || b.wreck) continue
+          this.setScaled(b, s, p * (b.cy - rec.oy) * 0.9)
+        }
+        break
+      }
+      case 'pause': {
+        // ring shrinks to PAUSE_SCALE and STAYS (visible but dormant)
+        const s = 1 - (1 - PAUSE_SCALE) * p
+        for (const b of rec.boxes) {
+          if (b.keep || b.wreck) continue
+          this.setScaled(b, s, 0)
+        }
+        break
+      }
+      case 'wilt': {
+        // plant shrivels toward the soil
+        const s = 1 - p
+        for (const b of rec.boxes) {
+          if (b.keep || b.wreck) continue
+          this.setScaled(b, s, p * 0.1)
+        }
+        break
+      }
+    }
+
+    if (p >= 1) {
+      // depleted end-state: hide the goods (rings keep their paused husk),
+      // reveal the wreck layer (rubble / wilted sprigs / stubble / hole)
+      for (const b of rec.boxes) {
+        if (b.keep) continue
+        if (b.wreck) this.setBox(b, b.matrix)
+        else if (anim.style !== 'pause') this.setBox(b, ZERO)
+      }
+      rec.anim = null
+      return false
+    }
+    return true
+  }
+
+  /** Per-frame: run animations, bob live fish rings, pulse the sparkle. */
+  update(t: number): void {
     if (this.glowMat) this.glowMat.opacity = 0.78 + Math.sin(t * 3.1) * 0.18
+
+    if (this.animating.size > 0) {
+      for (const rec of this.animating) {
+        if (!this.stepAnim(rec, t)) this.animating.delete(rec)
+      }
+    }
+
     if (!this.glowMesh) return
     let dirty = false
-    for (const b of this.bobs) {
-      // zero-scaled (harvested) rings stay hidden — check the live matrix
-      this.glowMesh.getMatrixAt(b.idx, this.tmpM)
-      this.tmpM.decompose(this.tmpP, this.tmpQ, this.tmpS)
-      if (this.tmpS.x === 0) continue
+    for (const { node, box: b } of this.bobs) {
+      if (node.depleted || node.anim) continue // paused rings hold still
       const y = b.cy + Math.sin(t * 2.0 + b.cx * 0.7 + b.cz * 0.5) * 0.06
       this.tmpM.compose(
         this.tmpP.set(b.cx, y, b.cz),

@@ -174,10 +174,82 @@
   color: #b9b2a0;
 }
 
-.bl-npc-purse {
-  font-size: 13px;
+.bl-npc-cryptonote {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #b9b2a0;
+  font-style: italic;
+}
+
+/* per-chain price badges next to item names */
+.bl-npc-chainbadge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 11px;
   font-weight: bold;
-  color: #e8c15a;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+.bl-chain-blockle {
+  color: #ffe9a6;
+  background: rgba(212, 175, 55, 0.14);
+  border: 1px solid rgba(212, 175, 55, 0.45);
+}
+
+.bl-chain-ethereum {
+  color: #c9c3ff;
+  background: rgba(118, 110, 255, 0.14);
+  border: 1px solid rgba(118, 110, 255, 0.5);
+}
+
+.bl-chain-solana {
+  color: #a8f5d7;
+  background: rgba(40, 210, 150, 0.12);
+  border: 1px solid rgba(40, 210, 150, 0.45);
+}
+
+/* GOLD (IAP premium currency) — deliberately reads different from the chains */
+.bl-chain-gold {
+  color: #1d1403;
+  background: linear-gradient(180deg, #f4d87c, #daa93c);
+  border: 1px solid #8a6508;
+}
+
+/* row of all four rail prices under an item name */
+.bl-npc-railbadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 3px;
+}
+
+.bl-npc-railbadges .bl-npc-chainbadge {
+  margin-left: 0;
+  vertical-align: 0;
+}
+
+/* Buy cell: a single Buy button, or the expanded 4-rail picker */
+.bl-npc-buybox {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.bl-npc-rail {
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.bl-rail-gold:not(:disabled):not(.bl-npc-confirm) {
+  color: #f4d87c;
+  border-color: rgba(212, 175, 55, 0.6);
 }
 
 .bl-npc-item {
@@ -212,6 +284,20 @@
   flex: 0 0 auto;
   min-width: 64px;
   color: #ffe9a6;
+}
+
+.bl-npc-buy:disabled {
+  opacity: 0.55;
+  cursor: default;
+  filter: none;
+}
+
+/* armed second step — real-crypto confirm reads unmistakably different */
+.bl-npc-confirm {
+  color: #0d0f16;
+  background: #e8c15a;
+  border-color: #ffe9a6;
+  font-weight: bold;
 }
 
 /* ===== proximity Talk button =========================================== */

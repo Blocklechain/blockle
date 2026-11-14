@@ -41,6 +41,19 @@ interface WasmBindgen {
     amount: bigint,
     fee: bigint
   ): string
+  /** Assemble VM assembly → `{ok,bytecode,size}` or `{ok:false,error}` JSON. */
+  assemble_asm(src: string): string
+  /** Atomic BLOCK-721 deploy+init — returns `{txid,raw,fee}` JSON. */
+  build_launch_nft(
+    secretHex: string,
+    publicHex: string,
+    utxosJson: string,
+    codeHex: string,
+    gasLimit: bigint,
+    gasPrice: bigint
+  ): string
+  /** The contract id a deploy/launch txid produces (consensus derivation). */
+  contract_id_for_txid(txidHex: string): string
 }
 
 declare global {
@@ -143,6 +156,44 @@ export async function buildTransfer(
   return JSON.parse(
     wb.build_transfer(secretHex, publicHex, JSON.stringify(utxos), to, amountBase, feeBase)
   ) as BuiltTx
+}
+
+/** Assemble VM assembly source to bytecode hex via the consensus assembler. */
+export async function assembleAsm(src: string): Promise<string> {
+  const wb = await signerReady()
+  const res = JSON.parse(wb.assemble_asm(src)) as {
+    ok: boolean
+    bytecode?: string
+    error?: string
+  }
+  if (!res.ok || !res.bytecode) {
+    throw new Error('BLOCK-721 assembly failed: ' + (res.error ?? 'unknown assembler error'))
+  }
+  return res.bytecode
+}
+
+/**
+ * Build + sign an atomic BLOCK-721 LaunchNft (deploy + init) transaction.
+ * Fee = gasLimit × gasPrice in base units, funded from `utxos`.
+ */
+export async function buildLaunchNft(
+  secretHex: string,
+  publicHex: string,
+  utxos: Utxo[],
+  codeHex: string,
+  gasLimit: bigint,
+  gasPrice: bigint
+): Promise<BuiltTx> {
+  const wb = await signerReady()
+  return JSON.parse(
+    wb.build_launch_nft(secretHex, publicHex, JSON.stringify(utxos), codeHex, gasLimit, gasPrice)
+  ) as BuiltTx
+}
+
+/** Consensus contract-id for a launch txid (node spelling, 64 hex). */
+export async function contractIdForTxid(txidHex: string): Promise<string> {
+  const wb = await signerReady()
+  return wb.contract_id_for_txid(txidHex)
 }
 
 /**

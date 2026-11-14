@@ -62,8 +62,8 @@
 
 .bl-plate {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
   width: min(240px, 58vw);
   padding: 10px 12px 11px;
 }
@@ -157,11 +157,13 @@
 
 .bl-topright {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Above the market root (40) so the gold chip + gear always take the tap. */
+  z-index: 41;
 }
 
 .bl-chip {
@@ -226,10 +228,15 @@
 
 .bl-settings {
   position: absolute;
-  top: 60px;
-  right: 12px;
+  top: max(60px, calc(env(safe-area-inset-top) + 48px));
+  right: max(12px, env(safe-area-inset-right));
   width: min(280px, calc(100vw - 24px));
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
   padding: 10px 14px 14px;
+  /* Above the mini-map, market button/root (40), gold (30) — the open panel
+     must never be tap-shadowed by the buttons it covers. */
+  z-index: 46;
 }
 
 .bl-settings-head {
@@ -364,12 +371,34 @@
   background: var(--bl-gold);
 }
 
+/* sign-out (hook-gated; mounted last) */
+.bl-set-signoutrow {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bl-edge-dim);
+}
+.bl-set-signout {
+  flex: 1;
+  height: 38px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffb067;
+  background: rgba(255, 176, 103, 0.08);
+  border: 1px solid rgba(255, 176, 103, 0.45);
+  border-radius: 8px;
+}
+.bl-set-signout:hover {
+  background: rgba(255, 176, 103, 0.16);
+}
+
 /* ===== chat ============================================================ */
 
 .bl-chat {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
+  left: max(12px, env(safe-area-inset-left));
+  bottom: max(12px, env(safe-area-inset-bottom));
   width: min(380px, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
@@ -536,12 +565,122 @@
     padding: 8px 10px 9px;
   }
   .bl-chat {
-    width: min(320px, calc(100vw - 24px));
+    /* Reserve a ~110px right rail so the chat never slides under the
+       bottom-right button stack (ATK/SPC/bag). */
+    width: min(320px, calc(100vw - 134px));
   }
   .bl-chat-log {
     height: 92px;
   }
   .bl-chip-cur {
     display: none; /* icon + amount is enough on a phone */
+  }
+  #ui .bl-gold-cur {
+    display: none; /* gold chip likewise sheds its label in the cluster */
+  }
+}
+
+/* ========================================================================
+   WAVE-2 OVERLAY COORDINATION (owned here by the UI module).
+   The gold chip, paw, storefront and special buttons mount themselves from
+   their own modules; these rules only arbitrate POSITION / z-index /
+   safe-areas so nothing collides on phone-sized screens.
+
+   Right-edge column (right: 12):           Bottom-right stack (coarse):
+     12  .bl-topright  (chips + gear)         32  ATK   (84px, inline-styled)
+     60  .wm-mini      (140px circle)        130  SPC   (56px, inline-styled)
+    208  .wm-btn | .mk-btn | .blkw-toggle    192  .bl-bagbtn
+         (12)     (60)      (108)            252  .bl-pets-btn
+                                             312  .bl-skills-btn
+   ======================================================================== */
+
+/* Wallet toggle: it used to sit at top:12/right:12 and clipped under the
+   chip + gear cluster. It becomes an icon-only square in the button row
+   under the mini-map, next to the map + storefront buttons. */
+#ui .blkw-toggle {
+  top: 208px;
+  right: 108px;
+  width: 40px;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+}
+#ui .blkw-toggle span {
+  display: none; /* icon-only in the row */
+}
+
+/* Storefront button: was top:108 — buried inside the mini-map circle. */
+#ui .mk-btn {
+  top: 208px;
+  right: 60px;
+  width: 40px;
+  height: 40px;
+}
+
+/* When the mini-map is hidden the map button rises to top:60 (worldmap's
+   own rule) — bring its row companions along. */
+#ui:has(.wm-root.wm-nomini) .mk-btn {
+  top: 60px;
+}
+#ui:has(.wm-root.wm-nomini) .blkw-toggle {
+  top: 60px;
+}
+
+/* Desktop bottom-right: bag and skills button both claimed bottom ~12-16 at
+   right 12 — stack the bag above the skills button, paw above the bag. */
+@media (pointer: fine) {
+  #ui .bl-bagbtn {
+    bottom: max(72px, calc(env(safe-area-inset-bottom) + 60px));
+  }
+  #ui .bl-pets-btn {
+    bottom: max(132px, calc(env(safe-area-inset-bottom) + 120px));
+  }
+  #ui .bl-pets {
+    bottom: max(184px, calc(env(safe-area-inset-bottom) + 172px));
+  }
+}
+
+/* Touch bottom-right: the round ATK (bottom 32, 84px) and SPC (bottom 130,
+   56px) buttons are inline-styled anchors; everything else stacks above
+   them instead of on top of them (bag was at +100 ≈ the SPC slot, the paw
+   at 124 inside it, skills under ATK). */
+@media (pointer: coarse) {
+  #ui .bl-bagbtn {
+    right: max(18px, env(safe-area-inset-right));
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 160px);
+  }
+  #ui .bl-pets-btn {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 220px);
+  }
+  #ui .bl-pets {
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 268px);
+    max-height: min(48vh, 400px);
+  }
+  #ui .bl-skills-btn {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 280px);
+  }
+}
+
+/* Short screens (phone landscape): the vertical stack can't fit, so bag /
+   paw / skills form a horizontal row to the left of the ATK button. */
+@media (pointer: coarse) and (max-height: 520px) {
+  #ui .bl-bagbtn {
+    right: calc(max(18px, env(safe-area-inset-right)) + 96px);
+    bottom: max(32px, env(safe-area-inset-bottom));
+  }
+  #ui .bl-pets-btn {
+    right: calc(max(18px, env(safe-area-inset-right)) + 160px);
+    bottom: max(32px, env(safe-area-inset-bottom));
+  }
+  #ui .bl-pets {
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(max(32px, env(safe-area-inset-bottom)) + 56px);
+    max-height: min(70vh, 300px);
+  }
+  #ui .bl-skills-btn {
+    right: calc(max(18px, env(safe-area-inset-right)) + 276px);
+    bottom: max(32px, env(safe-area-inset-bottom));
   }
 }

@@ -18,6 +18,8 @@ import { saveRegistry } from '../save/registry'
 import { MAX_LEVEL, XP_CAP, bracketProgress, levelForXp, xpForLevel } from './curve'
 import { levelUpLine } from './flavor'
 import { createSkillsPanel } from './panel'
+import { skillTreeApi, initSkillTree, dumpTree, loadTree } from './tree/core'
+import { openTreeView, refreshTreeView } from './tree/view'
 
 /** Total XP per skill. The single source of truth; levels are derived. */
 const xpBySkill = new Map<SkillId, number>()
@@ -81,6 +83,13 @@ function addXp(skill: string, amount: number): void {
   onChanged?.()
 }
 
+/**
+ * The talent-tree API (SkillTreeAPI). Combat/gather/craft systems read
+ * aggregated node effects via `skillTree.modifier(key)` — wired by the
+ * integrator as a setter, never imported by other feature modules.
+ */
+export const skillTree = skillTreeApi
+
 export const skillsApi: SkillsAPI = {
   level(skill: string): number {
     return isSkillId(skill) ? levelForXp(xpBySkill.get(skill)!) : 1
@@ -111,14 +120,18 @@ export function initSkills(api: GameAPI): SkillsAPI {
   if (inited) return skillsApi
   inited = true
 
-  // Persistence: CharacterSave.skills — Record<skill, total xp>.
+  // Persistence: CharacterSave.skills — Record<skill, total xp>, plus the
+  // additive '_tree' key: the string[] of explicitly chosen talent-node ids
+  // (never a valid SkillId, so old loaders skip it harmlessly).
   saveRegistry.register('skills', {
-    dump(): Record<string, number> {
-      const out: Record<string, number> = {}
+    dump(): Record<string, number | string[]> {
+      const out: Record<string, number | string[]> = {}
       for (const s of SKILLS) {
         const x = xpBySkill.get(s)!
         if (x > 0) out[s] = x
       }
+      const picks = dumpTree()
+      if (picks.length > 0) out['_tree'] = picks
       return out
     },
     load(data: unknown): void {
@@ -128,6 +141,7 @@ export function initSkills(api: GameAPI): SkillsAPI {
         const x = typeof val === 'number' && Number.isFinite(val) ? val : 0
         xpBySkill.set(skill, Math.max(0, Math.min(XP_CAP, Math.floor(x))))
       }
+      loadTree((data as Record<string, unknown>)['_tree'])
       onChanged?.()
     }
   })
@@ -135,15 +149,29 @@ export function initSkills(api: GameAPI): SkillsAPI {
   // The ONE way xp enters this module from other systems.
   events.on('xp:gained', ({ skill, amount }) => addXp(skill, amount))
 
+  // Talent trees: points pool from level-ups, auto grants, chosen perks.
+  initSkillTree(
+    { level: (s) => skillsApi.level(s), skills: SKILLS },
+    () => {
+      panel.refresh()
+      refreshTreeView()
+    }
+  )
+
   // HUD button + panel.
   const panel = createSkillsPanel({
     skills: SKILLS,
     level: (s) => skillsApi.level(s),
     progress: (s) => bracketProgress(skillXp(s)),
     xp: (s) => skillXp(s),
-    total: totalLevel
+    total: totalLevel,
+    points: () => skillTreeApi.points(),
+    openTree: (s) => openTreeView(s, { level: (sk) => skillsApi.level(sk) })
   })
-  onChanged = () => panel.refresh()
+  onChanged = () => {
+    panel.refresh()
+    refreshTreeView()
+  }
 
   return skillsApi
 }

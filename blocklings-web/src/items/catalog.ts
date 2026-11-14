@@ -9,7 +9,7 @@
  *   consum.  food_*, potion_*
  * Material ladder copper..mythic maps straight onto rarity tiers 0..5.
  */
-import type { ItemDef, ItemSlot, Rarity } from '../types'
+import type { ItemDef, ItemSlot, ItemSpecial, Rarity } from '../types'
 import { MATERIALS } from '../ids'
 
 const MAT_NAME = ['Copper', 'Iron', 'Steel', 'Gold', 'Crystal', 'Mythic'] as const
@@ -18,6 +18,7 @@ const TIER_VALUE = [15, 45, 140, 450, 1500, 6000] as const
 
 type Stats = NonNullable<ItemDef['stats']>
 type SixStrings = readonly [string, string, string, string, string, string]
+type Grip = NonNullable<ItemDef['gripStyle']>
 
 interface LadderSpec {
   kind: string
@@ -27,20 +28,75 @@ interface LadderSpec {
   valueMul: number
   stats: (t: number) => Stats
   descs: SixStrings
+  /** How the character holds it (see ItemDef.gripStyle). */
+  grip?: Grip
+  /** Active special per tier (steel+ only; lower tiers get none). */
+  specials?: readonly (ItemSpecial | undefined)[]
 }
 
 function ladder(spec: LadderSpec): ItemDef[] {
-  return MATERIALS.map((mat, t) => ({
-    id: `${spec.kind}_${mat}`,
-    name: `${MAT_NAME[t]!} ${spec.noun}`,
-    slot: spec.slot,
-    rarity: t as Rarity,
-    stats: spec.stats(t),
-    levelReq: TIER_LEVEL[t]!,
-    value: Math.round(TIER_VALUE[t]! * spec.valueMul),
-    desc: spec.descs[t]!,
-  }))
+  return MATERIALS.map((mat, t) => {
+    const special = spec.specials?.[t]
+    return {
+      id: `${spec.kind}_${mat}`,
+      name: `${MAT_NAME[t]!} ${spec.noun}`,
+      slot: spec.slot,
+      rarity: t as Rarity,
+      stats: spec.stats(t),
+      levelReq: TIER_LEVEL[t]!,
+      value: Math.round(TIER_VALUE[t]! * spec.valueMul),
+      desc: spec.descs[t]!,
+      ...(spec.grip !== undefined ? { gripStyle: spec.grip } : {}),
+      ...(special !== undefined ? { special } : {}),
+    }
+  })
 }
+
+// ---------------------------------------------------------------------------
+// Weapon specials — steel+ tiers only (index 2..5). Crystal/mythic upgrade
+// to the nova/shockwave variants (same ability family, bigger fireworks).
+// Ability behavior lives in src/combat; these defs are the catalog truth.
+// ---------------------------------------------------------------------------
+
+const SWORD_SPECIALS: readonly (ItemSpecial | undefined)[] = [
+  undefined, undefined,
+  { id: 'lunge', name: 'Lunge', desc: 'Dash forward in a steel blur, piercing everything dumb enough to hold the line.', cooldownS: 9 },
+  { id: 'lunge', name: 'Lunge', desc: 'A golden dash-pierce. Expensive way to travel 4 meters. Devastating way to arrive.', cooldownS: 9 },
+  { id: 'lunge_nova', name: 'Nova Lunge', desc: 'Dash-pierce that detonates a crystal nova where you stop. Arrive dramatically.', cooldownS: 12 },
+  { id: 'lunge_nova', name: 'Starfall Lunge', desc: 'You become briefly indistinguishable from a falling star. The landing has opinions.', cooldownS: 12 },
+]
+
+const AXE_SPECIALS: readonly (ItemSpecial | undefined)[] = [
+  undefined, undefined,
+  { id: 'whirlwind', name: 'Whirlwind', desc: 'Spin a full circle, hitting everything around you. Dizziness is a small price.', cooldownS: 10 },
+  { id: 'whirlwind', name: 'Whirlwind', desc: 'A golden 360 of regret — theirs, not yours.', cooldownS: 10 },
+  { id: 'whirlwind_nova', name: 'Cyclone Nova', desc: 'Spin so hard the air files a complaint. Finishes with a crystal shockwave.', cooldownS: 13 },
+  { id: 'whirlwind_nova', name: 'Mythic Maelstrom', desc: 'A 360 AoE legends whisper about. The whispering happens at a safe distance.', cooldownS: 13 },
+]
+
+const STAFF_SPECIALS: readonly (ItemSpecial | undefined)[] = [
+  undefined, undefined,
+  { id: 'fireball', name: 'Fireball', desc: 'Lob a crackling fireball that explodes into voxel confetti. Hot confetti.', cooldownS: 8 },
+  { id: 'fireball', name: 'Fireball', desc: 'A gilded fireball. Burns with the fury of compound interest.', cooldownS: 8 },
+  { id: 'fireball_nova', name: 'Meteor Orb', desc: 'A crystal orb that detonates into a mana nova. The ground remembers.', cooldownS: 11 },
+  { id: 'fireball_nova', name: 'Reality Splinter', desc: 'Throw a piece of somewhere else at someone here. Physics declines to comment.', cooldownS: 11 },
+]
+
+const BOW_SPECIALS: readonly (ItemSpecial | undefined)[] = [
+  undefined, undefined,
+  { id: 'volley', name: 'Volley', desc: 'Fan five arrows at once. Aiming is for people with one arrow.', cooldownS: 9 },
+  { id: 'volley', name: 'Volley', desc: 'A golden fan of arrows. Subtlety was never in the budget.', cooldownS: 9 },
+  { id: 'volley_storm', name: 'Arrow Storm', desc: 'Nine crystal arrows in a glittering fan. The sky briefly takes your side.', cooldownS: 12 },
+  { id: 'volley_storm', name: 'Horizon Rain', desc: 'The mythic fan. Everything in front of you becomes a pincushion with regrets.', cooldownS: 12 },
+]
+
+const SHIELD_SPECIALS: readonly (ItemSpecial | undefined)[] = [
+  undefined, undefined,
+  { id: 'bash', name: 'Shield Bash', desc: 'Shove a cone of enemies back and leave them seeing cartoon birds for 1.5s.', cooldownS: 10 },
+  { id: 'bash', name: 'Shield Bash', desc: 'A golden shove. Being launched by your net worth adds insult to concussion.', cooldownS: 10 },
+  { id: 'bash_shockwave', name: 'Bulwark Shockwave', desc: 'Slam out a crystal shockwave — everything around you is knocked flat and stunned.', cooldownS: 14 },
+  { id: 'bash_shockwave', name: 'Worldsplitter Slam', desc: 'The ground ripples outward. Nearby enemies take up astronomy, briefly, airborne.', cooldownS: 14 },
+]
 
 // Per-tier stat ramps (index = tier).
 const SWORD_ATK = [4, 8, 14, 22, 32, 46] as const
@@ -62,6 +118,7 @@ const TOOL_STR = [1, 1, 2, 3, 4, 6] as const
 const WEAPONS_AND_ARMOR: ItemDef[] = [
   ...ladder({
     kind: 'sword', slot: 'weapon', noun: 'Sword', valueMul: 2,
+    grip: 'forward', specials: SWORD_SPECIALS,
     stats: t => ({ atk: SWORD_ATK[t]!, str: SWORD_STR[t]! }),
     descs: [
       'Technically a sword. Also technically a large orange butter knife.',
@@ -74,6 +131,7 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
   }),
   ...ladder({
     kind: 'axe', slot: 'weapon', noun: 'Battleaxe', valueMul: 2,
+    grip: 'forward', specials: AXE_SPECIALS,
     stats: t => ({ atk: AXE_ATK[t]!, str: AXE_STR[t]! }),
     descs: [
       'Chops wood, chops goblins. The axe does not judge. Much.',
@@ -86,6 +144,7 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
   }),
   ...ladder({
     kind: 'staff', slot: 'weapon', noun: 'Staff', valueMul: 2,
+    grip: 'upright', specials: STAFF_SPECIALS,
     stats: t => ({ atk: STAFF_ATK[t]!, int: STAFF_INT[t]! }),
     descs: [
       'A stick with delusions of grandeur. The delusions cast fireballs, so fine.',
@@ -98,6 +157,7 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
   }),
   ...ladder({
     kind: 'bow', slot: 'weapon', noun: 'Bow', valueMul: 2,
+    grip: 'bow', specials: BOW_SPECIALS,
     stats: t => ({ atk: BOW_ATK[t]!, agi: BOW_AGI[t]! }),
     descs: [
       'Bends, twangs, occasionally fires where you aimed.',
@@ -110,6 +170,7 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
   }),
   ...ladder({
     kind: 'shield', slot: 'shield', noun: 'Shield', valueMul: 1.5,
+    grip: 'shield', specials: SHIELD_SPECIALS,
     stats: t => ({ def: SHIELD_DEF[t]! }),
     descs: [
       'Keeps the pointy things out of your soft things. Mostly.',
@@ -161,6 +222,7 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
 const TOOLS: ItemDef[] = [
   ...ladder({
     kind: 'pick', slot: 'tool', noun: 'Pickaxe', valueMul: 1.8,
+    grip: 'forward',
     stats: t => ({ atk: TOOL_ATK[t]!, str: TOOL_STR[t]! }),
     descs: [
       'Swing at rock. Repeat until rich or bored.',
@@ -173,6 +235,7 @@ const TOOLS: ItemDef[] = [
   }),
   ...ladder({
     kind: 'hatchet', slot: 'tool', noun: 'Hatchet', valueMul: 1.8,
+    grip: 'forward',
     stats: t => ({ atk: TOOL_ATK[t]!, str: TOOL_STR[t]! }),
     descs: [
       'Little chopper, big dreams.',

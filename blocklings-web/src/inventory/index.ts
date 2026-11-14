@@ -4,7 +4,7 @@
 import type { GameAPI, InventoryAPI } from '../types'
 import type * as THREE from 'three'
 import { InventoryCore } from './core'
-import { createInventoryUI } from './ui'
+import { createInventoryUI, type MintHooks } from './ui'
 import type { DefSource } from './defs'
 
 /** What initInventory hands back: the contract API + integrator hooks. */
@@ -21,6 +21,11 @@ export interface InventoryModule extends InventoryAPI {
    * Until wired, defs are synthesized from the frozen id conventions.
    */
   setDefSource(fn: DefSource): void
+  /**
+   * Wire the minting module's shared flow into the item cards:
+   *   inv.setMintHooks({ open, chainsOf, bundles })
+   */
+  setMintHooks(hooks: MintHooks): void
 }
 
 export function initInventory(api: GameAPI): InventoryModule {
@@ -36,7 +41,8 @@ export function initInventory(api: GameAPI): InventoryModule {
     equip: (id) => core.equip(id),
     unequip: (slot) => core.unequip(slot),
     equippedStats: () => core.equippedStats(),
-    setMeshSource: (fn) => viewer.setMeshSource(fn),
-    setDefSource: (fn) => core.setDefSource(fn)
+    setMeshSource: (fn) => viewer.viewer.setMeshSource(fn),
+    setDefSource: (fn) => core.setDefSource(fn),
+    setMintHooks: (hooks) => viewer.setMintHooks(hooks)
   }
 }

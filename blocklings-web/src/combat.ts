@@ -13,5 +13,5 @@
  * Everything else — spawning, AI, blood, loot drops, damage numbers,
  * respawn-at-last-waystone — runs itself off the event bus.
  */
-export { initCombat } from './combat/index'
+export { initCombat, setAutoRetaliate } from './combat/index'
 export type { CombatModule, EquippedStats } from './combat/index'

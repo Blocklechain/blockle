@@ -1,21 +1,44 @@
 /**
  * NPCs — dialog panel. A cozy bottom-sheet in the HUD style: pixel portrait,
  * gold name, typed-out comedy text, quest offers / live progress (through the
- * integrator-wired QuestsAPI), and a functional vendor buy list priced in
- * game-BLOCK-cents. Mobile-friendly: big targets, bottom sheet, tap text to
- * skip the typewriter.
+ * integrator-wired QuestsAPI), and a functional vendor buy list where EVERY
+ * item is payable on any of four rails — BLOCK / ETH / SOL (REAL crypto) or
+ * GOLD (IAP premium currency) — at the vendor's posted exchange rates (four
+ * per-rail badges per item). Buying is a two-step confirm: Buy expands a
+ * rail picker, picking a rail arms it, then the player confirms the exact
+ * amount ("this is real crypto" for chains, "purchased Gold, no refunds" for
+ * GOLD) and it settles through the integrator-wired pay functions. No wallet
+ * wired = crypto rails disabled ('Wallet required'); no account = GOLD rail
+ * disabled ('Sign in for Gold'). The shop always browses.
+ * Mobile-friendly: big targets, bottom sheet, tap text to skip the typewriter.
  */
-import type { QuestDef, QuestsAPI } from '../types'
-import type { StockEntry } from './vendors'
-import { buyBrokeLine, buyOkLine } from './flavor'
+import type { ChainId, QuestDef, QuestsAPI } from '../types'
+import { railPrices, fmtRail, type RailPrice, type StockEntry } from './vendors'
+import { payFailLine, buyOkLine } from './flavor'
 
 export interface DialogHooks {
   /** Integrator-wired quests API (null until setQuestsApi is called). */
   quests(): QuestsAPI | null
-  /** Current purse balance in BLOCK-cents. */
-  purse(): number
-  /** Attempt a purchase; true on success (purse already debited). */
-  buy(entry: StockEntry): boolean
+  /** True once the integrator has wired a pay function (wallet present). */
+  walletReady(): boolean
+  /** True once a GOLD spender is wired AND the player looks signed in. */
+  goldReady(): boolean
+  /**
+   * Execute the REAL on-chain payment for `entry` on the chosen crypto rail
+   * (already confirmed by the player). Resolves the wallet result verbatim;
+   * on ok the item has been granted ('item:gained' source 'vendor'). Never
+   * fabricates a tx.
+   */
+  pay(
+    entry: StockEntry,
+    price: { chain: ChainId; amount: number }
+  ): Promise<{ ok: boolean; tx?: string; error?: string }>
+  /**
+   * Spend `amount` purchased GOLD server-side for `entry` (already
+   * confirmed). On ok the item has been granted exactly like the crypto
+   * path ('item:gained' source 'vendor'). Never fabricates a balance.
+   */
+  payGold(entry: StockEntry, amount: number): Promise<{ ok: boolean; error?: string }>
   /** Dialog fully closed (emit 'npc:talked' here). */
   closed(npcId: string): void
 }
@@ -43,6 +66,12 @@ export class DialogPanel {
 
   private current: DialogOpenOpts | null = null
   private pending: QuestDef | null = null
+  /** Index into current.stock whose rail picker is expanded. */
+  private picking: number | null = null
+  /** The armed (awaiting-confirm) rail on the picking entry. */
+  private armed: RailPrice | null = null
+  /** A payment is in flight — all buy buttons lock until it resolves. */
+  private paying = false
   private typeTimer: number | null = null
   private fullText = ''
 
@@ -107,6 +136,9 @@ export class DialogPanel {
     }
     this.current = opts
     this.pending = null
+    this.picking = null
+    this.armed = null
+    this.paying = false
     this.nameEl.textContent = opts.name
     this.roleEl.textContent = opts.roleTag
     this.portraitBox.replaceChildren(opts.portrait)
@@ -122,6 +154,8 @@ export class DialogPanel {
     const id = this.current.id
     this.current = null
     this.pending = null
+    this.picking = null
+    this.armed = null
     this.stopTyping()
     this.panel.style.display = 'none'
     this.hooks.closed(id)
@@ -231,46 +265,150 @@ export class DialogPanel {
       return
     }
     this.shopEl.style.display = ''
+    const walletReady = this.hooks.walletReady()
+    const goldReady = this.hooks.goldReady()
 
     const bar = document.createElement('div')
     bar.className = 'bl-npc-shopbar'
     const label = document.createElement('div')
     label.className = 'bl-npc-shoplabel'
     label.textContent = 'Wares'
-    const purseChip = document.createElement('div')
-    purseChip.className = 'bl-npc-purse'
-    purseChip.textContent = `Purse: ${this.hooks.purse()}c`
-    bar.append(label, purseChip)
+    const note = document.createElement('div')
+    note.className = 'bl-npc-cryptonote'
+    note.textContent =
+      walletReady && goldReady
+        ? 'Pay in BLOCK, ETH, SOL or Gold'
+        : walletReady
+          ? 'Pay in BLOCK, ETH or SOL — sign in for Gold'
+          : goldReady
+            ? 'Pay in Gold — wallet required for crypto'
+            : 'Browsing only — wallet or Gold sign-in to buy'
+    bar.append(label, note)
     this.shopEl.appendChild(bar)
 
-    for (const entry of cur.stock) {
+    cur.stock.forEach((entry, idx) => {
+      const rails = railPrices(entry)
       const row = document.createElement('div')
       row.className = 'bl-npc-item'
 
       const info = document.createElement('div')
       info.className = 'bl-npc-iteminfo'
-      const nm = document.createElement('div')
-      nm.className = 'bl-npc-itemname'
-      nm.textContent = entry.name
+      const nameRow = document.createElement('div')
+      nameRow.className = 'bl-npc-itemname'
+      nameRow.textContent = entry.name
       const pitch = document.createElement('div')
       pitch.className = 'bl-npc-itempitch'
       pitch.textContent = entry.pitch
-      info.append(nm, pitch)
+      // all four rail prices as small chips under the name
+      const badges = document.createElement('div')
+      badges.className = 'bl-npc-railbadges'
+      for (const p of rails) {
+        const chip = document.createElement('span')
+        chip.className = `bl-npc-chainbadge bl-chain-${p.rail}`
+        chip.textContent = fmtRail(p)
+        badges.appendChild(chip)
+      }
+      info.append(nameRow, pitch, badges)
 
-      const buy = document.createElement('button')
-      buy.className = 'bl-npc-btn bl-npc-buy'
-      buy.textContent = `${entry.price}c`
-      buy.addEventListener('click', () => {
-        if (this.hooks.buy(entry)) {
-          this.setText(`One ${entry.name}. ${buyOkLine()}`)
-          purseChip.textContent = `Purse: ${this.hooks.purse()}c`
-        } else {
-          this.setText(buyBrokeLine())
+      const buyBox = document.createElement('div')
+      buyBox.className = 'bl-npc-buybox'
+
+      if (this.picking !== idx) {
+        // collapsed: a single Buy button that expands the rail picker
+        const buy = document.createElement('button')
+        buy.className = 'bl-npc-btn bl-npc-buy'
+        buy.textContent = 'Buy'
+        buy.disabled = this.paying
+        buy.addEventListener('click', () => {
+          if (this.paying) return
+          this.picking = idx
+          this.armed = null
+          this.setText(
+            `${entry.name}? Pick your poison — er, payment rail. Same item, four ways to regret nothing.`
+          )
+          this.renderShop()
+        })
+        buyBox.appendChild(buy)
+      } else {
+        // expanded: one button per rail; picking arms it, picking again pays
+        for (const p of rails) {
+          const b = document.createElement('button')
+          const isGold = p.rail === 'gold'
+          const isArmed = this.armed !== null && this.armed.rail === p.rail
+          b.className =
+            `bl-npc-btn bl-npc-buy bl-npc-rail bl-rail-${p.rail}` +
+            (isArmed ? ' bl-npc-confirm' : '')
+          if (isGold && !goldReady) {
+            b.textContent = fmtRail(p)
+            b.title = 'Sign in for Gold'
+            b.disabled = true
+          } else if (!isGold && !walletReady) {
+            b.textContent = fmtRail(p)
+            b.title = 'Wallet required'
+            b.disabled = true
+          } else if (this.paying) {
+            b.textContent = isArmed ? 'Paying…' : fmtRail(p)
+            b.disabled = true
+          } else if (isArmed) {
+            b.textContent = `Confirm ${fmtRail(p)}`
+          } else {
+            b.textContent = fmtRail(p)
+          }
+          b.addEventListener('click', () => {
+            if (this.paying) return
+            if (isGold ? !this.hooks.goldReady() : !this.hooks.walletReady()) return
+            if (!(this.armed !== null && this.armed.rail === p.rail)) {
+              // step 1: arm THIS rail — spell out the exact cost, plainly
+              this.armed = p
+              this.setText(
+                isGold
+                  ? `${entry.name}: ${fmtRail(p)}. That's your purchased Gold — bought with real money, ` +
+                      `spent for keeps, no refunds. Tap "Confirm ${fmtRail(p)}" to spend it, or pick another rail to chicken out gracefully.`
+                  : `${entry.name}: ${fmtRail(p)}. This is REAL crypto sent from your wallet — ` +
+                      `not game money, no refunds. Tap "Confirm ${fmtRail(p)}" to pay, or pick another rail to change your mind.`
+              )
+              this.renderShop()
+              return
+            }
+            // step 2: confirmed — hand off to the wallet / GOLD ledger
+            void this.executePay(entry, p)
+          })
+          buyBox.appendChild(b)
         }
-      })
+      }
 
-      row.append(info, buy)
+      row.append(info, buyBox)
       this.shopEl.appendChild(row)
+    })
+  }
+
+  private async executePay(entry: StockEntry, price: RailPrice): Promise<void> {
+    this.paying = true
+    this.renderShop()
+    this.setText(
+      price.rail === 'gold'
+        ? `Spending ${fmtRail(price)}… the ledger goblins are doing the real thing. One moment.`
+        : `Sending ${fmtRail(price)}… your wallet is doing the real thing. One moment.`
+    )
+    try {
+      const res =
+        price.rail === 'gold'
+          ? await this.hooks.payGold(entry, price.amount)
+          : await this.hooks.pay(entry, { chain: price.rail, amount: price.amount })
+      if (res.ok) {
+        this.setText(`One ${entry.name}, paid in full — ${fmtRail(price)}. ${buyOkLine()}`)
+      } else {
+        this.setText(`${payFailLine()} (${res.error ?? 'payment failed'})`)
+      }
+    } catch (e) {
+      // honest failure — nothing was granted, nothing is pretended
+      this.setText(`${payFailLine()} (${e instanceof Error ? e.message : 'payment failed'})`)
+    } finally {
+      this.paying = false
+      this.picking = null
+      this.armed = null
+      // the dialog may have closed while the payment worked
+      if (this.current) this.renderShop()
     }
   }
 }

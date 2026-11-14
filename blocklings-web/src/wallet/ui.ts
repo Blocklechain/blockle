@@ -7,12 +7,18 @@
  * live balance, and a two-step send flow. No fake data anywhere — errors
  * from the wasm/chain surface verbatim.
  */
-import type { WalletAPI } from '../types'
+import type { ChainId, WalletAPI2 } from '../types'
 import { lock } from './index'
 
 const PANEL_ID = 'blkw-panel'
 
-export function initWalletUI(mount: HTMLElement, api: WalletAPI): { update(dt: number): void } {
+/** Display config for the two classical chains shown as cards. */
+const CHAIN_CARDS: { id: ChainId; label: string; unit: string; hint: string }[] = [
+  { id: 'ethereum', label: 'Ethereum', unit: 'ETH', hint: '0x…' },
+  { id: 'solana', label: 'Solana', unit: 'SOL', hint: 'base58 address' }
+]
+
+export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: number): void } {
   injectStyles()
 
   const toggle = el('button', 'blkw-toggle') as HTMLButtonElement
@@ -220,6 +226,10 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI): { update(dt: n
       `<div class="blkw-good" id="blkw-good"></div>` +
       `<button type="button" class="blkw-btn primary" data-act="send">Review &amp; send</button>` +
       `<div class="blkw-sep"></div>` +
+      `<div class="blkw-sub" style="margin-bottom:4px">Other realms (same keys, same vault)</div>` +
+      `<div id="blkw-chains"><p class="blkw-note">Consulting foreign ledgers…</p></div>` +
+      `<div class="blkw-sep"></div>` +
+      `<div class="blkw-banner">Your keys never leave this browser. Every transaction is signed on this device — nothing custodial, nothing phoned home.</div>` +
       `<button type="button" class="blkw-btn" data-act="lock">Lock purse</button>` +
       `<p class="blkw-note">Fee 0.0001 BLOCK · signed on this device · nothing custodial.</p>` +
       `</div>`
@@ -231,6 +241,116 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI): { update(dt: n
       viewUnlock()
     })
     on('[data-act=send]', () => void confirmSend(info.address))
+    void renderChains()
+  }
+
+  // --- per-chain cards (Ethereum + Solana) -----------------------------------
+
+  async function renderChains(): Promise<void> {
+    const host = panel.querySelector('#blkw-chains') as HTMLElement | null
+    if (!host) return
+    let snaps: Partial<Record<ChainId, { address: string; balance: number }>>
+    try {
+      snaps = await api.chains()
+    } catch (e) {
+      host.innerHTML = `<p class="blkw-note">Chain lookup failed: ${esc(msg(e))}</p>`
+      return
+    }
+    const live = panel.querySelector('#blkw-chains') as HTMLElement | null
+    if (!live) return // view changed while we were fetching
+    const cards = CHAIN_CARDS.map((c) => {
+      const s = snaps[c.id]
+      if (!s) {
+        return (
+          `<div class="blkw-chain"><div class="blkw-chainhead"><b>${esc(c.label)}</b></div>` +
+          `<p class="blkw-note">Not set up yet — unlock once to forge this chain's keys from your vault.</p></div>`
+        )
+      }
+      return (
+        `<div class="blkw-chain" data-chain="${c.id}">` +
+        `<div class="blkw-chainhead"><b>${esc(c.label)}</b>` +
+        `<span class="blkw-chainbal">${fmtBlock(s.balance)} <small>${esc(c.unit)}</small></span></div>` +
+        `<div class="blkw-addr"><code title="${esc(s.address)}">${esc(shortAddr(s.address))}</code> ` +
+        `<button type="button" class="blkw-btn small" data-act="ch-copy" data-chain="${c.id}">copy</button></div>` +
+        `<div class="blkw-row">` +
+        `<button type="button" class="blkw-btn small" data-act="ch-send" data-chain="${c.id}">Send</button>` +
+        `<button type="button" class="blkw-btn small" data-act="ch-buy" data-chain="${c.id}">Buy (MoonPay)</button>` +
+        `<button type="button" class="blkw-btn small" data-act="ch-sell" data-chain="${c.id}">Sell</button>` +
+        `</div>` +
+        `<div class="blkw-chainform" id="blkw-chf-${c.id}" style="display:none"></div>` +
+        `<div class="blkw-err" id="blkw-cherr-${c.id}"></div>` +
+        `<div class="blkw-good" id="blkw-chgood-${c.id}"></div>` +
+        `</div>`
+      )
+    })
+    live.innerHTML = cards.join('')
+    for (const c of CHAIN_CARDS) {
+      const s = snaps[c.id]
+      if (!s) continue
+      const address = s.address
+      onIn(live, `[data-act=ch-copy][data-chain=${c.id}]`, () =>
+        void copyText(address, `[data-act=ch-copy][data-chain=${c.id}]`, 'copied')
+      )
+      onIn(live, `[data-act=ch-send][data-chain=${c.id}]`, () => toggleChainSend(c.id, c.hint, c.unit))
+      onIn(live, `[data-act=ch-buy][data-chain=${c.id}]`, () => void openMoonpay('buy', c.id))
+      onIn(live, `[data-act=ch-sell][data-chain=${c.id}]`, () => void openMoonpay('sell', c.id))
+    }
+  }
+
+  function toggleChainSend(chain: ChainId, hint: string, unit: string): void {
+    const form = panel.querySelector(`#blkw-chf-${chain}`) as HTMLElement | null
+    if (!form) return
+    if (form.style.display !== 'none') {
+      form.style.display = 'none'
+      return
+    }
+    form.style.display = 'block'
+    form.innerHTML =
+      `<label class="blkw-label">To (${esc(hint)})<input id="blkw-chto-${chain}" spellcheck="false" autocomplete="off"></label>` +
+      `<label class="blkw-label">Amount (${esc(unit)})<input id="blkw-chamt-${chain}" inputmode="decimal" autocomplete="off"></label>` +
+      `<button type="button" class="blkw-btn primary" data-act="ch-go-${chain}">Sign &amp; send</button>`
+    onIn(form, `[data-act=ch-go-${chain}]`, () => void doChainSend(chain))
+  }
+
+  async function doChainSend(chain: ChainId): Promise<void> {
+    const to = (byId(`blkw-chto-${chain}`) as HTMLInputElement).value.trim()
+    const amt = Number((byId(`blkw-chamt-${chain}`) as HTMLInputElement).value)
+    const err = byId(`blkw-cherr-${chain}`)
+    const good = byId(`blkw-chgood-${chain}`)
+    err.textContent = ''
+    good.textContent = ''
+    if (!to) return void (err.textContent = 'Enter a recipient address.')
+    if (!Number.isFinite(amt) || amt <= 0)
+      return void (err.textContent = 'Enter an amount greater than zero.')
+    const go = panel.querySelector(`[data-act=ch-go-${chain}]`) as HTMLButtonElement | null
+    if (go) {
+      go.disabled = true
+      go.textContent = 'Signing…'
+    }
+    const res = await api.sendOn(chain, to, amt)
+    if (res.ok) {
+      good.innerHTML = `Sent! tx <code>${esc((res.tx ?? '').slice(0, 16))}…</code>`
+      const form = panel.querySelector(`#blkw-chf-${chain}`) as HTMLElement | null
+      if (form) form.style.display = 'none'
+      void renderChains()
+    } else {
+      err.textContent = res.error ?? 'send failed'
+      if (go) {
+        go.disabled = false
+        go.textContent = 'Sign & send'
+      }
+    }
+  }
+
+  async function openMoonpay(kind: 'buy' | 'sell', chain: ChainId): Promise<void> {
+    const err = byId(`blkw-cherr-${chain}`)
+    err.textContent = ''
+    const url = await api.moonpayUrl(kind, chain)
+    if (!url) {
+      err.textContent = `MoonPay ${kind} is not available for this chain right now.`
+      return
+    }
+    window.open(url, '_blank', 'noopener')
   }
 
   async function confirmSend(_from: string): Promise<void> {
@@ -291,6 +411,10 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI): { update(dt: n
 
   function on(sel: string, fn: () => void): void {
     panel.querySelectorAll(sel).forEach((n) => n.addEventListener('click', fn))
+  }
+
+  function onIn(root: HTMLElement, sel: string, fn: () => void): void {
+    root.querySelectorAll(sel).forEach((n) => n.addEventListener('click', fn))
   }
 
   function busy(text: string): void {
@@ -407,6 +531,14 @@ function injectStyles(): void {
 .blkw-check input { width: auto; margin-top: 2px; }
 .blkw-row { display: flex; gap: 8px; }
 .blkw-row .blkw-btn { margin-top: 6px; }
+.blkw-chain { border: 1.5px solid rgba(138,100,20,.45); border-radius: 9px; padding: 8px 9px; margin: 8px 0;
+  background: rgba(255,250,240,.45); }
+.blkw-chainhead { display: flex; align-items: center; justify-content: space-between; }
+.blkw-chainbal { font-weight: 800; }
+.blkw-chainbal small { font-size: 11px; opacity: .7; }
+.blkw-chainform { margin-top: 6px; }
+.blkw-banner { background: #e7efd8; border: 1.5px solid #567a2e; border-radius: 8px; padding: 8px 9px;
+  font-size: 12px; line-height: 1.45; margin: 8px 0; font-weight: 700; color: #35511c; }
 @media (max-width: 480px) { .blkw { top: 54px; } .blkw-toggle span { display: none; } }
 `
   const style = document.createElement('style')

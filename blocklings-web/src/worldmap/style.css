@@ -25,24 +25,85 @@
   right: 12px;
   width: 140px;
   height: 140px;
+}
+
+/* The tap button IS the circle mask: layered canvases clip to it, so the
+   cached terrain/structures layers can shift between re-composes. */
+.wm-mini-tap {
+  position: absolute;
+  inset: 0;
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: transparent;
+  overflow: hidden;
+  background: #1f3947;
   cursor: pointer;
   pointer-events: auto;
   -webkit-tap-highlight-color: transparent;
 }
 
-.wm-mini canvas {
+.wm-mini-tap canvas {
+  position: absolute;
+  inset: 0;
   width: 140px;
   height: 140px;
-  border-radius: 50%;
   display: block;
 }
 
-.wm-mini:active canvas {
+.wm-mini-tap:active {
   filter: brightness(1.15);
+}
+
+/* current-zone name pill, tucked inside the bottom of the circle */
+.wm-mini-zone {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  max-width: 112px;
+  padding: 1px 8px 2px;
+  border-radius: 8px;
+  background: rgba(13, 15, 22, 0.72);
+  border: 1px solid var(--wm-edge-dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--wm-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* +/- zoom, hugging the circle's left edge */
+.wm-mini-zoom {
+  position: absolute;
+  left: -10px;
+  top: 42px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wm-mini-zoom button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--wm-edge-dim);
+  background: var(--wm-panel);
+  color: var(--wm-gold);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wm-mini-zoom button:hover {
+  border-color: var(--wm-edge);
+  color: var(--wm-text);
 }
 
 /* ===== map button (sits under the mini-map; rises when it's hidden) ===== */

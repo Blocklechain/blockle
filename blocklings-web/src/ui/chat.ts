@@ -13,10 +13,32 @@
  *   - While the input is focused, key events are stopped from bubbling so
  *     WASD never moves the character mid-sentence; while blurred, the
  *     chat touches no keys at all.
+ *
+ * Slash commands (handled locally, never sent to the relay):
+ *   - /who   lists online players (from the net module's duck-typed
+ *     window.blocklingsWho hook; honest when offline).
+ *   - /zone  prints the current zone's name + mob level band.
  */
 import type { GameAPI } from '../types'
+import { regionAt } from '../ids'
 
 const MAX_LINES = 150
+
+/** Duck-typed window hooks other modules may publish (never required). */
+interface ChatGlobals {
+  /** Net module: online players (shape tolerant — names or name+level). */
+  blocklingsWho?: () =>
+    | readonly (string | { name: string; level?: number })[]
+    | undefined
+  /**
+   * World module: zone lookup covering the outer-ring zones the frozen
+   * ids.ts REGIONS table doesn't know about.
+   */
+  blocklingsZoneAt?: (
+    x: number,
+    z: number
+  ) => { name: string; minLevel?: number; maxLevel?: number } | null
+}
 
 function isTypingTarget(t: EventTarget | null): boolean {
   return (
@@ -84,11 +106,66 @@ export function createChat(api: GameAPI, onUiTick: () => void): HTMLElement {
   inputRow.appendChild(input)
   inputRow.appendChild(sendBtn)
 
+  // -- local slash commands ---------------------------------------------------
+
+  function cmdWho(): void {
+    const hook = (window as unknown as ChatGlobals).blocklingsWho
+    const raw = hook?.()
+    const others = (raw ?? [])
+      .map((e) => (typeof e === 'string' ? { name: e } : e))
+      .filter((e) => e.name && e.name !== api.player.name)
+    if (!hook || raw === undefined) {
+      appendLine('*', 'No realm connection. As far as anyone can prove, you are the server.')
+      return
+    }
+    if (others.length === 0) {
+      appendLine('*', 'Online (1): just you. The economy trembles.')
+      return
+    }
+    const names = others
+      .map((e) => (e.level !== undefined ? `${e.name} (Lv ${e.level})` : e.name))
+      .join(', ')
+    appendLine('*', `Online (${others.length + 1}): you, ${names}`)
+  }
+
+  function cmdZone(): void {
+    const { x, z } = api.player.pos
+    const g = window as unknown as ChatGlobals
+    const zone = regionAt(x, z) ?? g.blocklingsZoneAt?.(x, z) ?? null
+    if (!zone) {
+      appendLine('*', 'Uncharted wilderness. The cartographers gave up here, and so should you.')
+      return
+    }
+    const lo = 'minLevel' in zone ? zone.minLevel : undefined
+    const hi = 'maxLevel' in zone ? zone.maxLevel : undefined
+    let line = zone.name
+    if (lo !== undefined && hi !== undefined) {
+      line += ` — levels ${lo}–${hi}.`
+      const lvl = api.player.level
+      if (lvl < lo) line += ` You are level ${lvl}. Brave. Foolish, but brave.`
+      else if (lvl > hi) line += ` You are level ${lvl}. The mobs here have families, you monster.`
+      else line += ` You are level ${lvl}. A fair fight, allegedly.`
+    } else {
+      line += ' — level band unknown. Assume the worst.'
+    }
+    appendLine('*', line)
+  }
+
+  /** True if the message was a local command (and was handled here). */
+  function handleCommand(msg: string): boolean {
+    if (!msg.startsWith('/')) return false
+    const cmd = msg.split(/\s+/, 1)[0]?.toLowerCase()
+    if (cmd === '/who') cmdWho()
+    else if (cmd === '/zone') cmdZone()
+    else appendLine('*', `Unknown command ${cmd}. Known spells: /who, /zone`)
+    return true
+  }
+
   function send(): void {
     const msg = input.value.trim()
     if (!msg) return
-    api.chatSend(msg)
     input.value = ''
+    if (!handleCommand(msg)) api.chatSend(msg)
     onUiTick()
   }
 

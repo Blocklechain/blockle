@@ -10,6 +10,15 @@ import { MATERIALS } from '../ids'
 /** Tool families the gather skills care about. */
 export type ToolFamily = 'pick' | 'hatchet' | 'rod'
 
+/**
+ * How a node visually dies when harvested:
+ *  - topple  — trunk + canopy fall over (stump keeps), tree-style
+ *  - crumble — mound collapses into a rubble scatter, ore-style
+ *  - pause   — fish ring stops bobbing and shrinks (still visible)
+ *  - wilt    — plant shrinks away; a sad wilted remnant shows
+ */
+export type DepleteStyle = 'topple' | 'crumble' | 'pause' | 'wilt'
+
 /** Per-kind gameplay tuning, keyed by NODE_KINDS id. */
 export interface KindTuning {
   /** Prompt verb ("Mine", "Chop", ...). */
@@ -25,18 +34,26 @@ export interface KindTuning {
   xp: number
   /** Items per harvest. */
   qty: number
+  /** Depletion animation style. */
+  style: DepleteStyle
+  /** Respawn window [min, max] seconds — per kind, jittered per harvest. */
+  respawn: readonly [number, number]
 }
 
 export const TUNING: Record<string, KindTuning> = {
-  copper_vein: { verb: 'Mine', tool: 'pick', minTier: 0, xp: 8, qty: 1 },
-  iron_vein: { verb: 'Mine', tool: 'pick', minTier: 1, xp: 14, qty: 1 },
-  gold_vein: { verb: 'Mine', tool: 'pick', minTier: 3, xp: 24, qty: 1 },
-  crystal_node: { verb: 'Mine', tool: 'pick', minTier: 4, xp: 40, qty: 1 },
-  oak_tree: { verb: 'Chop', tool: 'hatchet', minTier: 0, xp: 8, qty: 1 },
-  pine_tree: { verb: 'Chop', tool: 'hatchet', minTier: 1, xp: 13, qty: 1 },
-  fishing_spot: { verb: 'Fish', tool: 'rod', minTier: 0, xp: 12, qty: 1 },
-  herb_patch: { verb: 'Pick', tool: null, minTier: 0, xp: 10, qty: 1 },
-  farm_plot: { verb: 'Harvest', tool: null, minTier: 0, xp: 7, qty: 2 }
+  copper_vein: { verb: 'Mine', tool: 'pick', minTier: 0, xp: 8, qty: 1, style: 'crumble', respawn: [28, 36] },
+  iron_vein: { verb: 'Mine', tool: 'pick', minTier: 1, xp: 14, qty: 1, style: 'crumble', respawn: [32, 42] },
+  gold_vein: { verb: 'Mine', tool: 'pick', minTier: 3, xp: 24, qty: 1, style: 'crumble', respawn: [45, 60] },
+  crystal_node: { verb: 'Mine', tool: 'pick', minTier: 4, xp: 40, qty: 1, style: 'crumble', respawn: [70, 95] },
+  oak_tree: { verb: 'Chop', tool: 'hatchet', minTier: 0, xp: 8, qty: 1, style: 'topple', respawn: [45, 60] },
+  pine_tree: { verb: 'Chop', tool: 'hatchet', minTier: 1, xp: 13, qty: 1, style: 'topple', respawn: [50, 65] },
+  fishing_spot: { verb: 'Fish', tool: 'rod', minTier: 0, xp: 12, qty: 1, style: 'pause', respawn: [10, 16] },
+  herb_patch: { verb: 'Pick', tool: null, minTier: 0, xp: 10, qty: 1, style: 'wilt', respawn: [26, 34] },
+  farm_plot: { verb: 'Harvest', tool: null, minTier: 0, xp: 7, qty: 2, style: 'wilt', respawn: [40, 52] },
+  // wave-2 node kinds (ids.ts appends)
+  berry_bush: { verb: 'Pick', tool: null, minTier: 0, xp: 9, qty: 2, style: 'wilt', respawn: [26, 34] },
+  mushroom_cluster: { verb: 'Forage', tool: null, minTier: 0, xp: 11, qty: 1, style: 'wilt', respawn: [30, 40] },
+  clay_pit: { verb: 'Dig', tool: null, minTier: 0, xp: 9, qty: 1, style: 'wilt', respawn: [22, 30] }
 }
 
 /** Base harvest time; each tool tier above the requirement shaves 0.15s. */
@@ -44,7 +61,7 @@ export const BASE_TIME = 1.8
 export const TIME_PER_TIER = 0.15
 export const MIN_TIME = 1.0
 
-/** Respawn: ~30s with a little jitter so clusters don't pop in unison. */
+/** Fallback respawn window for kinds missing a `respawn` entry. */
 export const RESPAWN_MIN = 28
 export const RESPAWN_MAX = 34
 
@@ -123,6 +140,147 @@ export interface FixedSpec {
   z: number
   ox?: number
   oz?: number
+}
+
+// ---------------------------------------------------------------------------
+// Streamed-zone density pass — per-biome node mixes
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry of a biome's node mix: place rng-rolled [min..max] nodes of
+ * `kind` in the zone. `water: true` = needs a waterline cell (fish rings).
+ */
+export interface ZoneMix {
+  kind: string
+  min: number
+  max: number
+  water?: boolean
+}
+
+/**
+ * Biome -> node mix for the 90 streamed wilderness zones. Totals land in
+ * the ~10-18/zone band. Ores hug mountain/volcanic/canyon (+ harsh biomes),
+ * trees fill everything green, fish ring lagoon/beach shores, herbs grow in
+ * forest/swamp, berries in meadow/cherry, clay in swamp/lagoon, mushrooms
+ * in mushroom/forest — per the wave-2 brief.
+ */
+export const BIOME_NODES: Record<string, readonly ZoneMix[]> = {
+  meadow: [
+    { kind: 'oak_tree', min: 4, max: 5 },
+    { kind: 'pine_tree', min: 1, max: 2 },
+    { kind: 'berry_bush', min: 4, max: 5 },
+    { kind: 'herb_patch', min: 2, max: 3 }
+  ],
+  forest: [
+    { kind: 'oak_tree', min: 5, max: 6 },
+    { kind: 'pine_tree', min: 3, max: 4 },
+    { kind: 'herb_patch', min: 3, max: 4 },
+    { kind: 'mushroom_cluster', min: 2, max: 3 }
+  ],
+  cherry: [
+    { kind: 'oak_tree', min: 4, max: 5 },
+    { kind: 'berry_bush', min: 5, max: 6 },
+    { kind: 'herb_patch', min: 2, max: 3 }
+  ],
+  savanna: [
+    { kind: 'oak_tree', min: 6, max: 7 },
+    { kind: 'herb_patch', min: 3, max: 4 },
+    { kind: 'berry_bush', min: 1, max: 2 }
+  ],
+  swamp: [
+    { kind: 'herb_patch', min: 4, max: 5 },
+    { kind: 'clay_pit', min: 4, max: 5 },
+    { kind: 'mushroom_cluster', min: 2, max: 3 },
+    { kind: 'oak_tree', min: 1, max: 2 }
+  ],
+  mushroom: [
+    { kind: 'mushroom_cluster', min: 7, max: 8 },
+    { kind: 'herb_patch', min: 2, max: 3 },
+    { kind: 'oak_tree', min: 1, max: 2 }
+  ],
+  mountain: [
+    { kind: 'copper_vein', min: 3, max: 4 },
+    { kind: 'iron_vein', min: 3, max: 4 },
+    { kind: 'gold_vein', min: 2, max: 3 },
+    { kind: 'crystal_node', min: 1, max: 1 },
+    { kind: 'pine_tree', min: 2, max: 3 }
+  ],
+  volcanic: [
+    { kind: 'copper_vein', min: 2, max: 3 },
+    { kind: 'iron_vein', min: 3, max: 4 },
+    { kind: 'gold_vein', min: 3, max: 4 },
+    { kind: 'crystal_node', min: 2, max: 3 }
+  ],
+  canyon: [
+    { kind: 'copper_vein', min: 4, max: 5 },
+    { kind: 'iron_vein', min: 3, max: 4 },
+    { kind: 'gold_vein', min: 3, max: 4 }
+  ],
+  crystal: [
+    { kind: 'crystal_node', min: 5, max: 6 },
+    { kind: 'gold_vein', min: 2, max: 3 },
+    { kind: 'iron_vein', min: 2, max: 3 },
+    { kind: 'pine_tree', min: 1, max: 2 }
+  ],
+  lagoon: [
+    { kind: 'fishing_spot', min: 5, max: 6, water: true },
+    { kind: 'clay_pit', min: 3, max: 4 },
+    { kind: 'oak_tree', min: 2, max: 3 },
+    { kind: 'herb_patch', min: 1, max: 2 }
+  ],
+  beach: [
+    { kind: 'fishing_spot', min: 6, max: 8, water: true },
+    { kind: 'oak_tree', min: 2, max: 3 },
+    { kind: 'herb_patch', min: 2, max: 3 }
+  ],
+  tundra: [
+    { kind: 'pine_tree', min: 5, max: 6 },
+    { kind: 'iron_vein', min: 2, max: 3 },
+    { kind: 'copper_vein', min: 2, max: 3 },
+    { kind: 'mushroom_cluster', min: 1, max: 2 }
+  ],
+  glacier: [
+    { kind: 'pine_tree', min: 2, max: 3 },
+    { kind: 'iron_vein', min: 3, max: 4 },
+    { kind: 'crystal_node', min: 2, max: 3 },
+    { kind: 'copper_vein', min: 3, max: 3 }
+  ],
+  desert: [
+    { kind: 'gold_vein', min: 4, max: 5 },
+    { kind: 'copper_vein', min: 3, max: 4 },
+    { kind: 'iron_vein', min: 2, max: 3 },
+    { kind: 'crystal_node', min: 1, max: 2 }
+  ],
+  wastes: [
+    { kind: 'iron_vein', min: 4, max: 5 },
+    { kind: 'copper_vein', min: 3, max: 4 },
+    { kind: 'mushroom_cluster', min: 2, max: 3 },
+    { kind: 'gold_vein', min: 1, max: 2 }
+  ],
+  dungeon: [
+    { kind: 'iron_vein', min: 4, max: 4 },
+    { kind: 'gold_vein', min: 2, max: 3 },
+    { kind: 'crystal_node', min: 2, max: 3 },
+    { kind: 'mushroom_cluster', min: 2, max: 3 }
+  ],
+  ruins: [
+    { kind: 'oak_tree', min: 2, max: 3 },
+    { kind: 'iron_vein', min: 2, max: 3 },
+    { kind: 'gold_vein', min: 2, max: 3 },
+    { kind: 'herb_patch', min: 2, max: 3 },
+    { kind: 'mushroom_cluster', min: 2, max: 3 }
+  ],
+  city: [
+    { kind: 'oak_tree', min: 4, max: 5 },
+    { kind: 'herb_patch', min: 3, max: 4 },
+    { kind: 'berry_bush', min: 3, max: 4 }
+  ],
+  graveyard: [
+    { kind: 'mushroom_cluster', min: 4, max: 5 },
+    { kind: 'herb_patch', min: 3, max: 4 },
+    { kind: 'oak_tree', min: 2, max: 3 },
+    { kind: 'iron_vein', min: 1, max: 2 }
+  ]
 }
 
 export const FIXED: readonly FixedSpec[] = [

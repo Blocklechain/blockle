@@ -1,0 +1,352 @@
+/* Blocklings pets — paw button + collection panel.
+   Matches the HUD's dark-parchment + gold vocabulary (see skills/panel.css).
+   Touch targets ≥ 40px; the panel scrolls on short screens. */
+
+.bl-pets-root {
+  --blp-panel: rgba(13, 15, 22, 0.78);
+  --blp-edge: rgba(212, 175, 55, 0.55);
+  --blp-edge-dim: rgba(212, 175, 55, 0.28);
+  --blp-gold: #e8c15a;
+  --blp-text: #efe9d8;
+  --blp-text-dim: #b9b2a0;
+
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: var(--blp-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.bl-pets-root button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ===== paw button (bottom-right stack, above bag/skills) ================ */
+
+.bl-pets-btn {
+  position: absolute;
+  right: 12px;
+  bottom: max(124px, calc(env(safe-area-inset-bottom) + 112px));
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 44px;
+  padding: 0 14px;
+  pointer-events: auto;
+  background: var(--blp-panel);
+  border: 1px solid var(--blp-edge-dim);
+  border-radius: 10px;
+  color: var(--blp-gold);
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.45),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: border-color 0.15s ease;
+}
+.bl-pets-btn:hover,
+.bl-pets-btn-open {
+  border-color: var(--blp-edge);
+}
+.bl-pets-btn-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--blp-text);
+}
+@keyframes bl-pets-flash {
+  0%, 100% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45); }
+  50% { box-shadow: 0 0 18px 4px rgba(232, 193, 90, 0.75); }
+}
+.bl-pets-btn-flash {
+  animation: bl-pets-flash 0.7s ease 4;
+}
+
+/* ===== panel ============================================================ */
+
+.bl-pets {
+  position: absolute;
+  right: 12px;
+  bottom: max(176px, calc(env(safe-area-inset-bottom) + 164px));
+  width: min(336px, calc(100vw - 24px));
+  max-height: min(62vh, 520px);
+  overflow-y: auto;
+  pointer-events: auto;
+  background: var(--blp-panel);
+  border: 1px solid var(--blp-edge-dim);
+  border-radius: 12px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.bl-pets-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--blp-edge-dim);
+}
+.bl-pets-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--blp-gold);
+  letter-spacing: 0.05em;
+}
+.bl-pets-count {
+  font-size: 11px;
+  color: var(--blp-text-dim);
+  margin-left: auto;
+}
+.bl-pets-close {
+  width: 28px;
+  height: 28px;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--blp-text-dim);
+  border-radius: 7px;
+}
+.bl-pets-close:hover {
+  color: var(--blp-text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.bl-pets-empty {
+  font-size: 12px;
+  color: var(--blp-text-dim);
+  line-height: 1.5;
+  padding: 6px 2px 4px;
+}
+
+/* ===== collection grid ================================================== */
+
+.bl-pets-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.bl-pet-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 4px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  min-height: 92px;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+.bl-pet-tile:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.bl-pet-tile-sel {
+  background: rgba(232, 193, 90, 0.1);
+  transform: translateY(-1px);
+}
+
+.bl-pet-swatch {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  box-shadow: inset 0 -5px 0 rgba(0, 0, 0, 0.22), inset 0 3px 0 rgba(255, 255, 255, 0.2);
+}
+.bl-pet-active-star {
+  position: absolute;
+  top: -7px;
+  right: -8px;
+  font-size: 13px;
+  color: var(--blp-gold);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.bl-pet-tile-name {
+  font-size: 11px;
+  font-weight: 700;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bl-pet-tile-sub {
+  font-size: 9.5px;
+  color: var(--blp-text-dim);
+  text-transform: capitalize;
+}
+
+.bl-pet-badges {
+  display: flex;
+  gap: 3px;
+  margin-top: 1px;
+}
+.bl-pet-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.bl-pet-badge-lit {
+  color: #10131c;
+  background: var(--blp-gold);
+  border-color: var(--blp-gold);
+}
+.bl-pet-badge-big {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  border-radius: 7px;
+}
+
+/* ===== detail card ====================================================== */
+
+.bl-pets-detail {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--blp-edge-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.bl-pet-d-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+.bl-pet-d-sub {
+  font-size: 11px;
+  color: var(--blp-text-dim);
+  text-transform: capitalize;
+}
+.bl-pet-d-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.bl-pet-d-mints {
+  display: flex;
+  gap: 6px;
+}
+.bl-pet-d-done {
+  font-size: 11px;
+  color: var(--blp-gold);
+}
+
+.bl-pet-nick {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--blp-text);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  outline: none;
+}
+.bl-pet-nick:focus {
+  border-color: var(--blp-edge);
+}
+
+.bl-pet-mini-btn {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.bl-pet-mini-btn:hover {
+  border-color: var(--blp-edge);
+}
+
+.bl-pet-wide-btn {
+  height: 40px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.bl-pet-wide-btn:hover {
+  border-color: var(--blp-edge);
+}
+.bl-pet-wide-btn-on {
+  background: rgba(232, 193, 90, 0.14);
+  border-color: var(--blp-edge-dim);
+}
+
+.bl-pet-mint-btn {
+  color: #10131c;
+  background: linear-gradient(180deg, #e8c15a 0%, #c99b2e 100%);
+  border: 1px solid #b8860b;
+}
+.bl-pet-mint-btn:hover {
+  filter: brightness(1.07);
+}
+.bl-pet-mint-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.bl-pet-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bl-pet-picker-label {
+  font-size: 11px;
+  color: var(--blp-text-dim);
+}
+.bl-pet-chain-btn {
+  flex: 1;
+  height: 38px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.bl-pet-chain-btn:hover {
+  border-color: var(--blp-edge);
+}
+.bl-pet-chain-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.bl-pet-status {
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: 7px;
+  word-break: break-all;
+}
+.bl-pet-status-ok {
+  color: #a9e8a0;
+  background: rgba(90, 200, 90, 0.1);
+  border: 1px solid rgba(90, 200, 90, 0.25);
+}
+.bl-pet-status-err {
+  color: #ffb3ad;
+  background: rgba(220, 80, 70, 0.12);
+  border: 1px solid rgba(220, 80, 70, 0.3);
+}

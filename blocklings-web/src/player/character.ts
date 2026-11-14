@@ -31,6 +31,39 @@ export interface CharacterOptions {
   tunicHue?: number
 }
 
+/** How the right hand holds the equipped weapon (ItemDef.gripStyle). */
+export type GripStyle = 'upright' | 'forward' | 'bow' | 'shield'
+
+/**
+ * Weapon-anchor rest rotation per grip style (radians, applied to the
+ * right-hand grip anchor). The weapon mesh itself is always built blade-up
+ * (+Y) facing +Z, so:
+ *   null      — legacy sword rest: blade up, slight tilt (the classic look)
+ *   upright   — staff/torch: near-vertical in the fist
+ *   forward   — sword/axe/pick/hatchet: blade 90° out from the fist, ahead
+ *   bow       — two-point side grip: limbs vertical, face turned outward
+ *   shield    — strapped flat to the forearm
+ */
+const GRIP_POSE: Record<GripStyle, readonly [number, number, number]> = {
+  upright: [-0.18, 0, 0],
+  forward: [1.3, 0, 0],
+  bow: [-0.12, -0.55, 0.22],
+  shield: [0, -Math.PI / 2, 0],
+}
+const GRIP_DEFAULT: readonly [number, number, number] = [-0.35, 0, 0]
+
+/** Named special-attack animations (combat picks one per ability). */
+export type SpecialAnim = 'spin' | 'lunge' | 'cast' | 'volley' | 'bash'
+
+/** [duration seconds, strike point 0..1] per special animation. */
+const SPECIAL_TIMING: Record<SpecialAnim, readonly [number, number]> = {
+  spin: [0.5, 0.45],
+  lunge: [0.4, 0.3],
+  cast: [0.55, 0.5],
+  volley: [0.45, 0.5],
+  bash: [0.35, 0.4],
+}
+
 // ---------------------------------------------------------------------------
 // Pixel-art face (8x8 CanvasTexture)
 // ---------------------------------------------------------------------------
@@ -169,6 +202,12 @@ export class CharacterRig {
   private mode: 'alive' | 'dying' | 'dead' = 'alive'
   private dieT = 0
   private dieCb: (() => void) | null = null
+
+  // --- special-attack animation state --------------------------------------
+  private specialT = -1 // <0 = idle; else seconds elapsed
+  private specialKind: SpecialAnim = 'spin'
+  private specialStrikeFired = false
+  private specialCb: (() => void) | null = null
 
   constructor(opts: CharacterOptions = {}) {
     const hue = opts.tunicHue ?? 210
@@ -343,6 +382,18 @@ export class CharacterRig {
     this.equipped.set(slot, added)
   }
 
+  /**
+   * Point the right-hand weapon per the equipped item's grip style
+   * (ItemDef.gripStyle): null restores the classic blade-up sword rest.
+   * The anchor rotates; attack swings arc the whole arm as before.
+   */
+  setGripStyle(style: GripStyle | null): void {
+    const anchor = this.anchors['weapon']
+    if (!anchor) return
+    const [rx, ry, rz] = style ? GRIP_POSE[style] : GRIP_DEFAULT
+    anchor.rotation.set(rx, ry, rz)
+  }
+
   // -------------------------------------------------------------------------
   // Combat animation API (local player; remote rigs simply never call these)
   // -------------------------------------------------------------------------
@@ -353,10 +404,25 @@ export class CharacterRig {
    * Ignored while a swing is in flight or while dead.
    */
   startAttack(onStrike?: () => void): boolean {
-    if (this.mode !== 'alive' || this.attackT >= 0) return false
+    if (this.mode !== 'alive' || this.attackT >= 0 || this.specialT >= 0) return false
     this.attackT = 0
     this.strikeFired = false
     this.strikeCb = onStrike ?? null
+    return true
+  }
+
+  /**
+   * Play a special-attack animation ('spin' whirlwind, 'lunge' dash-pierce,
+   * 'cast' staff raise, 'volley' bow fan, 'bash' shield shove). `onStrike`
+   * fires once at the ability's strike frame. Ignored while a swing or
+   * another special is in flight, or while dead.
+   */
+  startSpecial(kind: SpecialAnim, onStrike?: () => void): boolean {
+    if (this.mode !== 'alive' || this.attackT >= 0 || this.specialT >= 0) return false
+    this.specialT = 0
+    this.specialKind = kind
+    this.specialStrikeFired = false
+    this.specialCb = onStrike ?? null
     return true
   }
 
@@ -373,6 +439,7 @@ export class CharacterRig {
     this.dieT = 0
     this.dieCb = onDone ?? null
     this.attackT = -1 // cancel any mid-swing
+    this.specialT = -1 // cancel any mid-special
   }
 
   /** Reset the rig to its feet after a death (respawn). */
@@ -453,6 +520,79 @@ export class CharacterRig {
     }
   }
 
+  private updateSpecial(dt: number): void {
+    if (this.specialT < 0) return
+    this.specialT += dt
+    const [dur, strikeAt] = SPECIAL_TIMING[this.specialKind]
+    const p = Math.min(1, this.specialT / dur)
+    // bell curve 0->1->0 over the move (smooth commit + recover)
+    const bell = Math.sin(p * Math.PI)
+
+    switch (this.specialKind) {
+      case 'spin': {
+        // whirlwind: full 360 body spin, weapon arm out level, slight crouch
+        const e = p * p * (3 - 2 * p) // smoothstep
+        this.body.rotation.y = Math.PI * 2 * e
+        this.armR.rotation.x = -Math.PI / 2 * bell
+        this.armR.rotation.z = -0.9 * bell
+        this.armL.rotation.z = 0.7 * bell
+        this.body.position.y = -0.06 * bell
+        break
+      }
+      case 'lunge': {
+        // dash-pierce: deep forward lean, blade rammed out ahead
+        this.body.rotation.x = 0.45 * bell
+        this.armR.rotation.x = -Math.PI / 2 * Math.min(1, p * 3)
+        this.armL.rotation.x = 0.8 * bell // trailing arm back
+        this.legL.rotation.x = -0.9 * bell
+        this.legR.rotation.x = 0.9 * bell
+        break
+      }
+      case 'cast': {
+        // staff raise: both arms up, head back, little hop at release
+        const up = Math.min(1, p * 2.2)
+        this.armR.rotation.x = -2.7 * up * (p > 0.75 ? 1 - (p - 0.75) / 0.25 : 1)
+        this.armL.rotation.x = -2.2 * up * (p > 0.75 ? 1 - (p - 0.75) / 0.25 : 1)
+        this.headPivot.rotation.x = -0.22 * bell
+        this.body.position.y = p > 0.4 && p < 0.7 ? 0.07 : 0
+        break
+      }
+      case 'volley': {
+        // bow fan: bow arm swings up ~45°, draw arm pulls, lean back
+        const up = Math.min(1, p * 2.5)
+        const rel = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1
+        this.armR.rotation.x = -1.9 * up * rel
+        this.armL.rotation.x = -1.5 * up * rel
+        this.armL.rotation.z = 0.5 * bell // draw hand across the chest
+        this.body.rotation.x = -0.16 * bell
+        break
+      }
+      case 'bash': {
+        // shield shove: left arm rams forward, shoulders twist into it
+        this.armL.rotation.x = -1.5 * Math.min(1, p * 3) * (p > 0.6 ? 1 - (p - 0.6) / 0.4 : 1)
+        this.body.rotation.y = 0.35 * bell
+        this.body.rotation.x = 0.18 * bell
+        this.legL.rotation.x = -0.5 * bell
+        this.legR.rotation.x = 0.5 * bell
+        break
+      }
+    }
+
+    if (!this.specialStrikeFired && p >= strikeAt) {
+      this.specialStrikeFired = true
+      const cb = this.specialCb
+      this.specialCb = null
+      cb?.()
+    }
+    if (p >= 1) {
+      this.specialT = -1
+      this.body.rotation.set(0, 0, 0)
+      this.headPivot.rotation.x = 0
+      this.armR.rotation.z = -0.06
+      this.armL.rotation.z = 0.06
+    }
+  }
+
   private updateDeath(dt: number): void {
     if (this.mode !== 'dying') return
     this.dieT += dt
@@ -514,8 +654,10 @@ export class CharacterRig {
       this.headPivot.rotation.y = Math.sin(this.t * 0.6) * 0.07 // looks around a bit
     }
 
-    // layered on top: the attack swing stomps the right arm, hurt flash fades
+    // layered on top: the attack swing stomps the right arm, specials stomp
+    // whatever they need, hurt flash fades
     this.updateAttack(dt)
+    this.updateSpecial(dt)
     this.updateHurt(dt)
   }
 

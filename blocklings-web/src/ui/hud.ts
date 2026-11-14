@@ -5,10 +5,17 @@
  *   - top-left character plate (name, level, HP/MP/XP bars) driven from
  *     `api.player` every frame;
  *   - top-right BLOCK balance chip (shown only when a wallet hook exists)
- *     and a settings gear with a small working panel (music/SFX volume,
- *     optional render-quality toggle);
- *   - bottom chat box (see ./chat);
+ *     and a settings gear with a working panel: music/SFX volume plus
+ *     hook-gated toggles (render quality, mini-map, auto-retaliate,
+ *     always-day) and a sign-out button — rows only render when their
+ *     owning module's hook exists (no dead controls);
+ *   - bottom chat box (see ./chat; local /who and /zone commands);
  *   - zone banner fade-in on spawn.
+ *
+ * hud.css additionally owns the cross-module overlay arbitration: the gold
+ * chip / paw / storefront / special buttons mount themselves, but their
+ * positions, z-indices and safe-area offsets are coordinated there so the
+ * top-right cluster and bottom-right stacks never collide on phones.
  *
  * Every control shipped here works — nothing is decorative.
  */
@@ -26,15 +33,47 @@ export interface HUDOptions {
    * rendered (no dead controls).
    */
   setQuality?: (high: boolean) => void
+
+  /**
+   * Combat auto-retaliate setter (hit back when hit; combat defaults ON).
+   * Fallback global: `window.blocklingsSetAutoRetaliate`. No hook = no row.
+   */
+  setAutoRetaliate?: (on: boolean) => void
+
+  /**
+   * Atmosphere always-day hook (true = pin the clock at high noon).
+   * Fallback global: `window.blocklingsSetAlwaysDay`. No hook = no row.
+   */
+  setAlwaysDay?: (on: boolean) => void
+
+  /**
+   * Mini-map visibility hook (worldmap module persists the preference).
+   * Fallback global: `window.blocklingsSetMinimap`. No hook = no row.
+   */
+  setMinimap?: (visible: boolean) => void
+
+  /**
+   * Blockle-account sign-out hook (auth module; may be async).
+   * Fallback global: `window.blocklingsSignOut`. No hook = no button.
+   */
+  signOut?: () => unknown
 }
 
 /** Window-global hooks other modules may expose (duck-typed, not declared). */
 interface HudGlobals {
   blocklingsWallet?: { info(): Promise<WalletInfo> }
   blocklingsSetQuality?: (high: boolean) => void
+  blocklingsSetAutoRetaliate?: (on: boolean) => void
+  blocklingsSetAlwaysDay?: (on: boolean) => void
+  blocklingsSetMinimap?: (visible: boolean) => void
+  blocklingsSignOut?: () => unknown
 }
 
 const QUALITY_KEY = 'blocklings.quality.high'
+const AUTO_RET_KEY = 'blocklings.autoRetaliate.on'
+const ALWAYS_DAY_KEY = 'blocklings.alwaysDay.on'
+/** Shared with the worldmap module (it reads/writes the same preference). */
+const MINIMAP_KEY = 'blocklings.minimap.on'
 const WALLET_POLL_MS = 5000
 const ZONE_NAME = 'Kingdom of Beginnings'
 
@@ -203,43 +242,122 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
     () => audio.tick() // audible confirmation at the chosen level
   )
 
-  // -- optional render-quality toggle (only if a hook exists) ---------------
-  function resolveSetQuality(): ((high: boolean) => void) | undefined {
-    return opts?.setQuality ?? g.blocklingsSetQuality
-  }
-  let qualityRow: HTMLLabelElement | null = null
-  let qualityHigh = localStorage.getItem(QUALITY_KEY) !== '0'
-  function ensureQualityRow(): void {
-    const setQuality = resolveSetQuality()
-    if (!setQuality || qualityRow) return
-    qualityRow = el('label', 'bl-set-row bl-set-toggle')
-    qualityRow.appendChild(el('span', 'bl-set-label', 'High resolution'))
+  // -- hook-gated toggle rows (no hook = no dead control) -------------------
+
+  function makeToggleRow(
+    label: string,
+    checked: boolean,
+    onChange: (on: boolean) => void
+  ): HTMLLabelElement {
+    const row = el('label', 'bl-set-row bl-set-toggle')
+    row.appendChild(el('span', 'bl-set-label', label))
     const box = document.createElement('input')
     box.type = 'checkbox'
     box.className = 'bl-set-check'
-    box.checked = qualityHigh
+    box.checked = checked
     box.addEventListener('change', () => {
-      qualityHigh = box.checked
-      try {
-        localStorage.setItem(QUALITY_KEY, qualityHigh ? '1' : '0')
-      } catch {
-        /* non-fatal */
-      }
-      resolveSetQuality()?.(qualityHigh)
+      onChange(box.checked)
       uiTick()
     })
-    qualityRow.appendChild(box)
-    qualityRow.appendChild(el('span', 'bl-set-switch'))
-    panel.appendChild(qualityRow)
+    row.appendChild(box)
+    row.appendChild(el('span', 'bl-set-switch'))
+    return row
   }
-  // Apply the stored preference once if a hook is already available.
-  const initialSetQuality = resolveSetQuality()
-  if (initialSetQuality) initialSetQuality(qualityHigh)
-  ensureQualityRow()
+
+  /**
+   * A persisted on/off setting whose backing hook may register after boot
+   * (modules boot in integrator order). Each ensure():
+   *   - no hook yet -> nothing (re-checked on every gear tap);
+   *   - hook found -> push a stored non-default preference into it ONCE,
+   *     then mount the toggle row.
+   */
+  function hookToggle(
+    label: string,
+    storageKey: string,
+    defaultOn: boolean,
+    resolve: () => ((on: boolean) => void) | undefined
+  ): () => void {
+    let row: HTMLLabelElement | null = null
+    let pushed = false
+    const stored = (): boolean => {
+      const v = localStorage.getItem(storageKey)
+      return v === null ? defaultOn : v === '1'
+    }
+    return function ensure(): void {
+      const hook = resolve()
+      if (!hook) return
+      if (!pushed) {
+        pushed = true
+        if (stored() !== defaultOn) hook(stored())
+      }
+      if (row) return
+      row = makeToggleRow(label, stored(), (on) => {
+        try {
+          localStorage.setItem(storageKey, on ? '1' : '0')
+        } catch {
+          /* non-fatal */
+        }
+        resolve()?.(on)
+      })
+      panel.appendChild(row)
+    }
+  }
+
+  const ensureQualityRow = hookToggle(
+    'High resolution',
+    QUALITY_KEY,
+    true,
+    () => opts?.setQuality ?? g.blocklingsSetQuality
+  )
+  const ensureMinimapRow = hookToggle(
+    'Mini-map',
+    MINIMAP_KEY,
+    true,
+    () => opts?.setMinimap ?? g.blocklingsSetMinimap
+  )
+  const ensureRetaliateRow = hookToggle(
+    'Auto-retaliate',
+    AUTO_RET_KEY,
+    true,
+    () => opts?.setAutoRetaliate ?? g.blocklingsSetAutoRetaliate
+  )
+  const ensureAlwaysDayRow = hookToggle(
+    'Always day',
+    ALWAYS_DAY_KEY,
+    false,
+    () => opts?.setAlwaysDay ?? g.blocklingsSetAlwaysDay
+  )
+
+  // -- sign-out (only when the auth module published its hook) --------------
+  let signOutRow: HTMLElement | null = null
+  function ensureSignOutRow(): void {
+    const hook = opts?.signOut ?? g.blocklingsSignOut
+    if (!hook || signOutRow) return
+    signOutRow = el('div', 'bl-set-row bl-set-signoutrow')
+    const btn = el('button', 'bl-set-signout', 'Sign out')
+    btn.type = 'button'
+    btn.addEventListener('click', () => {
+      panel.style.display = 'none'
+      uiTick()
+      void hook()
+    })
+    signOutRow.appendChild(btn)
+    panel.appendChild(signOutRow)
+  }
+
+  /** Mount every row whose hook exists (safe to call repeatedly, in order). */
+  function ensureRows(): void {
+    ensureQualityRow()
+    ensureMinimapRow()
+    ensureRetaliateRow()
+    ensureAlwaysDayRow()
+    ensureSignOutRow()
+  }
+  ensureRows()
 
   gearBtn.addEventListener('click', () => {
     const show = panel.style.display === 'none'
-    ensureQualityRow() // a hook registered after boot still gets its toggle
+    ensureRows() // hooks registered after boot still get their rows
     panel.style.display = show ? '' : 'none'
     uiTick()
   })

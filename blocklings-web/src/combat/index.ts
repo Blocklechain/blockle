@@ -13,9 +13,14 @@
  * exclusively by emitting 'item:gained' when the player walks over a drop.
  */
 import * as THREE from 'three'
-import type { GameAPI } from '../types'
+import type { GameAPI, ItemDef, ItemSpecial } from '../types'
 import { events } from '../events'
 import { BOSSES, SPECIES, WAYSTONES, type SpeciesDef } from '../ids'
+import {
+  animOf, createSpecialButton, fallbackSpecial, tierFxColor, tierOfId,
+  type SpecialButton,
+} from './specials'
+import { SpecialFx, makeArrow, makeOrb, disposeProjectile } from './specialfx'
 // PURE heart-region + streamed-zone lookup (NO stream-focus side channel —
 // spawn probes must never yank zone streaming away from the player).
 import { regionOrZoneAt as regionAt } from '../world/index'
@@ -71,6 +76,57 @@ export interface CombatModule {
   setRespawnPoint(x: number, z: number, label?: string): void
   /** Live tallies (debug/balance peek). */
   counts(): { mobs: number; bosses: number; drops: number }
+
+  /* -- wave-2: tap-to-attack + weapon specials + skill-tree modifiers ------ */
+
+  /**
+   * Fire the equipped weapon's special ability (combat also binds Q /
+   * right-click / the mobile SPC button itself — this is for extra UI).
+   */
+  useSpecial(): void
+  /**
+   * Current special for HUD use: null when no special weapon is equipped.
+   * cdLeft/cdTotal in seconds (cdLeft 0 = ready).
+   */
+  specialStatus(): { id: string; name: string; cdLeft: number; cdTotal: number } | null
+  /**
+   * Tap-to-attack walking — integrator wires the player module's walker:
+   *   combat.setAutoWalk((t) => setAutoWalk(t))
+   * Without it, combat glides the hero itself (moves, but no walk cycle).
+   */
+  setAutoWalk(fn: (target: { x: number; z: number; arrive: number } | null) => void): void
+  /**
+   * Special-move animations — integrator wires the player module:
+   *   combat.setSpecialAnimTrigger((kind, onStrike) => triggerSpecial(kind, onStrike))
+   * fn returns false when the rig is busy (the ability is then not spent).
+   * Without it, abilities still fire (no bespoke animation).
+   */
+  setSpecialAnimTrigger(fn: (kind: string, onStrike: () => void) => boolean): void
+  /** Item catalog lookup (integrator passes items.def) for ItemSpecial data. */
+  setDefSource(fn: (id: string) => ItemDef | undefined): void
+  /** Equipped-ids snapshot (integrator passes inventory.equipment). */
+  setEquipmentSource(fn: () => Readonly<Record<string, string | null>>): void
+  /**
+   * Skill-tree modifier lookup (integrator passes skillTree.modifier).
+   * Keys combat respects: 'combat.damage', 'combat.crit', 'combat.defense',
+   * 'combat.special_damage', 'combat.special_cooldown' (all additive
+   * fractions; cooldown reduction capped at 50%).
+   */
+  setModifierSource(fn: (key: string) => number): void
+  /**
+   * The player's current fight (tap target, else the auto-retaliate grudge)
+   * exposed for the pet companion — integrator wires:
+   *   pets.setTargetSource(() => combat.petTarget())
+   * hit() applies the pet's damage through combat's own pipeline
+   * (damage numbers, 'mob:hit', death flow). null = not fighting.
+   */
+  petTarget(): {
+    x: number
+    z: number
+    radius: number
+    alive: boolean
+    hit(amount: number): void
+  } | null
   dispose(): void
 }
 
@@ -95,6 +151,10 @@ const PLAZA_KEEPOUT = 24 // radius around the village well — no spawns
 const COLLIDE_RADIUS = 0.35
 const RETALIATE_COOLDOWN = 0.8 // seconds between automatic counter-swings
 const RETALIATE_BREAK_DIST = 2.5 // walked this far past reach = you left the fight
+const TAP_CHASE_RANGE = 6 // tap-to-attack walks into range from this close
+const TAP_ATTACK_COOLDOWN = 0.8 // seconds between automatic tap-target swings
+const TAP_MAX_MS = 350 // press longer than this = not a tap
+const TAP_MAX_PX = 16 // moved farther than this = a drag, not a tap
 
 const SHAPE_SPEED: Record<SpeciesDef['shape'], number> = {
   blob: 1.7,
@@ -184,6 +244,8 @@ interface Mob {
   /** >0 while winding up: the wall-clock second the strike lands. */
   windupUntil: number
   windupDur: number
+  /** Wall-clock second a shield-bash stun wears off (0 = not stunned). */
+  stunUntil: number
   bar: HealthBar
   label: THREE.Sprite | null
   radius: number
@@ -223,11 +285,12 @@ export function getAutoRetaliate(): boolean {
 }
 
 export function initCombat(api: GameAPI): CombatModule {
-  const { scene, world, player } = api
+  const { scene, camera, world, player } = api
   const rng = Math.random
 
   const blood = new BloodSystem(scene)
   const numbers = new DamageNumbers(scene)
+  const fxPool = new SpecialFx(scene)
 
   const mobs: Mob[] = []
   const drops: Drop[] = []
@@ -243,6 +306,14 @@ export function initCombat(api: GameAPI): CombatModule {
   let playerDamageFn: ((amount: number, from: string) => void) | null = null
   let playerDeathFn: ((onDown: (revive: () => void) => void) => void) | null = null
   let attackTriggerFn: (() => void) | null = null
+  let autoWalkFn: ((target: { x: number; z: number; arrive: number } | null) => void) | null = null
+  let specialAnimFn: ((kind: string, onStrike: () => void) => boolean) | null = null
+  let defSource: ((id: string) => ItemDef | undefined) | null = null
+  let equipmentSource: (() => Readonly<Record<string, string | null>>) | null = null
+  let modifierSource: ((key: string) => number) | null = null
+
+  /** Skill-tree modifier (0 until the integrator wires skillTree.modifier). */
+  const mod = (key: string): number => modifierSource?.(key) ?? 0
 
   // --- auto-retaliate state --------------------------------------------------
   /** The mob the hero is automatically hitting back (null = at peace). */
@@ -334,6 +405,7 @@ export function initCombat(api: GameAPI): CombatModule {
       cooldownUntil: 0,
       windupUntil: 0,
       windupDur: boss ? 0.6 : 0.4,
+      stunUntil: 0,
       bar,
       label,
       radius: SHAPE_RADIUS[sp.shape] * scale,
@@ -396,6 +468,10 @@ export function initCombat(api: GameAPI): CombatModule {
       ;(m.label.material as THREE.SpriteMaterial).dispose()
     }
     if (m === retaliateTarget) retaliateTarget = null
+    if (m === tapTarget) {
+      tapTarget = null
+      autoWalk(null)
+    }
     const i = mobs.indexOf(m)
     if (i >= 0) mobs.splice(i, 1)
   }
@@ -457,15 +533,70 @@ export function initCombat(api: GameAPI): CombatModule {
   }
 
   // -------------------------------------------------------------------------
-  // Player strike resolution (range 2.2, 90° front arc)
+  // Player strike resolution (range 2.2, 90° front arc) + shared hit applier
   // -------------------------------------------------------------------------
+
+  /**
+   * THE player-damage path: every swing and special flows through here.
+   * `mult` scales the base roll (1 = plain swing); `useInt` adds staff
+   * int-scaling; `special` adds the skill-tree special-damage modifier.
+   */
+  const applyHit = (m: Mob, mult: number, opts: { useInt?: boolean; special?: boolean } = {}): void => {
+    if (!m.rig.alive) return
+    const stats = statsSource?.() ?? { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
+    const atkLevel = skillsSource?.('attack') ?? 1
+
+    const base = 3 + stats.atk + 0.4 * stats.str + (opts.useInt ? 0.6 * stats.int : 0)
+    const crit = rng() < 0.1 + stats.agi * 0.002 + mod('combat.crit')
+    let dmg = base * (1 + (atkLevel - 1) * 0.04) * (0.85 + rng() * 0.3) * mult
+    dmg *= 1 + mod('combat.damage') + (opts.special ? mod('combat.special_damage') : 0)
+    if (crit) dmg *= 1.75
+    const dealt = Math.max(1, Math.round(dmg))
+
+    m.hp -= dealt
+    m.rig.flashHurt()
+    m.bar.set(m.hp / m.maxHp)
+
+    const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
+    events.emit('mob:hit', { species: m.sp.id, amount: dealt, crit, pos: hitPos })
+    numbers.show(hitPos, String(dealt), { crit })
+    blood.burst(hitPos, m.y, crit ? 1.6 : 1)
+    if (crit || rng() < 0.25) blood.splat(m.x, m.y, m.z, crit)
+
+    // getting smacked is an excellent argument for violence
+    if (m.state === 'wander') {
+      m.state = 'chase'
+      m.windupUntil = 0
+    }
+
+    if (m.hp <= 0) killMob(m)
+  }
+
+  /**
+   * Pet-companion damage: a fixed amount through the same pipeline as the
+   * player's hits (hurt flash, bar, 'mob:hit', numbers, death flow) — no
+   * player-stat scaling, no crits; the pet is 25% moxie and 75% heart.
+   */
+  const applyPetHit = (m: Mob, amount: number): void => {
+    if (!m.rig.alive) return
+    const dealt = Math.max(1, Math.round(amount))
+    m.hp -= dealt
+    m.rig.flashHurt()
+    m.bar.set(m.hp / m.maxHp)
+    const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
+    events.emit('mob:hit', { species: m.sp.id, amount: dealt, crit: false, pos: hitPos })
+    numbers.show(hitPos, String(dealt), {})
+    if (m.state === 'wander') {
+      m.state = 'chase'
+      m.windupUntil = 0
+    }
+    if (m.hp <= 0) killMob(m)
+  }
 
   const playerStrike = (): void => {
     if (playerDead) return
     const fx = Math.sin(player.facing)
     const fz = Math.cos(player.facing)
-    const stats = statsSource?.() ?? { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
-    const atkLevel = skillsSource?.('attack') ?? 1
 
     let struckRetaliateTarget = false
     let struckOther: Mob | null = null
@@ -482,33 +613,10 @@ export function initCombat(api: GameAPI): CombatModule {
       while (diff < -Math.PI) diff += Math.PI * 2
       if (Math.abs(diff) > PLAYER_ARC && dist > m.radius + 0.5) continue
 
-      // damage: gear + strength, scaled by the attack level
-      const base = 3 + stats.atk + 0.4 * stats.str
-      const crit = rng() < 0.1 + stats.agi * 0.002
-      let dmg = base * (1 + (atkLevel - 1) * 0.04) * (0.85 + rng() * 0.3)
-      if (crit) dmg *= 1.75
-      const dealt = Math.max(1, Math.round(dmg))
-
-      m.hp -= dealt
-      m.rig.flashHurt()
-      m.bar.set(m.hp / m.maxHp)
-
-      const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
-      events.emit('mob:hit', { species: m.sp.id, amount: dealt, crit, pos: hitPos })
-      numbers.show(hitPos, String(dealt), { crit })
-      blood.burst(hitPos, m.y, crit ? 1.6 : 1)
-      if (crit || rng() < 0.25) blood.splat(m.x, m.y, m.z, crit)
-
-      // getting smacked is an excellent argument for violence
-      if (m.state === 'wander') {
-        m.state = 'chase'
-        m.windupUntil = 0
-      }
+      applyHit(m, 1)
 
       if (m === retaliateTarget) struckRetaliateTarget = true
       else if (m.hp > 0) struckOther = m
-
-      if (m.hp <= 0) killMob(m)
     }
 
     // manual target switch: the player swung into a different mob while
@@ -577,7 +685,7 @@ export function initCombat(api: GameAPI): CombatModule {
 
   const defenseReduction = (stats: EquippedStats): number => {
     const defLevel = skillsSource?.('defense') ?? 1
-    return Math.min(0.65, stats.def * 0.012 + (defLevel - 1) * 0.004)
+    return Math.min(0.75, stats.def * 0.012 + (defLevel - 1) * 0.004 + mod('combat.defense'))
   }
 
   const hurtPlayer = (m: Mob): void => {
@@ -605,6 +713,9 @@ export function initCombat(api: GameAPI): CombatModule {
   const beginPlayerDeath = (): void => {
     playerDead = true
     retaliateTarget = null // corpses hold no grudges
+    tapTarget = null
+    dash = null
+    autoWalk(null)
     const at = player.pos.clone()
     blood.burst(at.clone().setY(at.y + 0.5), at.y, 3)
     blood.splat(at.x, at.y, at.z, true)
@@ -638,6 +749,359 @@ export function initCombat(api: GameAPI): CombatModule {
       window.setTimeout(() => finish(), 1500)
     }
   }
+
+  // -------------------------------------------------------------------------
+  // TAP-TO-ATTACK: tap/click a mob to target it — the hero faces it, walks
+  // into range (if within TAP_CHASE_RANGE), swings, and keeps swinging while
+  // it's targeted. Tap anywhere else to let the grudge go. Hit targets are
+  // screen-space + enlarged, so stubby thumbs on phones still land taps.
+  // -------------------------------------------------------------------------
+
+  let tapTarget: Mob | null = null
+  let nextTapAttackAt = 0
+  /** Fallback glide target used only when the player-module walker isn't wired. */
+  let glideTarget: { x: number; z: number; arrive: number } | null = null
+
+  const autoWalk = (t: { x: number; z: number; arrive: number } | null): void => {
+    if (autoWalkFn) autoWalkFn(t)
+    else glideTarget = t
+  }
+
+  const projCenter = new THREE.Vector3()
+  const projEdge = new THREE.Vector3()
+  const camRight = new THREE.Vector3()
+
+  /** Nearest live mob under a screen point, with mobile-fat hit circles. */
+  const pickMobAt = (clientX: number, clientY: number): Mob | null => {
+    const w = window.innerWidth
+    const h = window.innerHeight
+    camRight.setFromMatrixColumn(camera.matrixWorld, 0)
+    let best: Mob | null = null
+    let bestD = Infinity
+    for (const m of mobs) {
+      if (!m.rig.alive) continue
+      projCenter.set(m.x, m.y + m.rig.height * 0.55, m.z)
+      projEdge.copy(projCenter).addScaledVector(camRight, m.radius + 0.5)
+      projCenter.project(camera)
+      projEdge.project(camera)
+      if (projCenter.z > 1) continue // behind the camera
+      const sx = ((projCenter.x + 1) / 2) * w
+      const sy = ((1 - projCenter.y) / 2) * h
+      const pxR = Math.hypot(
+        ((projEdge.x + 1) / 2) * w - sx,
+        ((1 - projEdge.y) / 2) * h - sy
+      )
+      const d = Math.hypot(clientX - sx, clientY - sy)
+      if (d <= Math.max(34, pxR * 1.4) && d < bestD) {
+        best = m
+        bestD = d
+      }
+    }
+    return best
+  }
+
+  // tap detection: single pointer, short press, little movement, on-canvas.
+  // The joystick/buttons stopPropagation, so their touches never reach here.
+  let tapDownId = -1
+  let tapDownX = 0
+  let tapDownY = 0
+  let tapDownT = 0
+  let tapMulti = false
+  let downCount = 0
+
+  const onTapDown = (e: PointerEvent): void => {
+    downCount++
+    if (downCount > 1) {
+      tapMulti = true // a pinch, not a tap
+      return
+    }
+    if (!(e.target instanceof HTMLCanvasElement)) {
+      tapDownId = -1
+      return
+    }
+    tapDownId = e.pointerId
+    tapDownX = e.clientX
+    tapDownY = e.clientY
+    tapDownT = performance.now()
+    tapMulti = false
+  }
+  const onTapUp = (e: PointerEvent): void => {
+    downCount = Math.max(0, downCount - 1)
+    if (e.pointerId !== tapDownId) return
+    tapDownId = -1
+    if (tapMulti || playerDead) return
+    if (performance.now() - tapDownT > TAP_MAX_MS) return
+    if (Math.hypot(e.clientX - tapDownX, e.clientY - tapDownY) > TAP_MAX_PX) return
+    const hit = pickMobAt(e.clientX, e.clientY)
+    if (hit) {
+      tapTarget = hit
+      retaliateTarget = null // the player picked a fight; drop the old grudge
+      nextTapAttackAt = 0 // first swing lands immediately
+    } else if (tapTarget) {
+      tapTarget = null // tapped elsewhere: stand down
+      autoWalk(null)
+    }
+  }
+  window.addEventListener('pointerdown', onTapDown)
+  window.addEventListener('pointerup', onTapUp)
+  window.addEventListener('pointercancel', onTapUp)
+
+  // -------------------------------------------------------------------------
+  // WEAPON SPECIALS: steel+ weapons grant an active ability (see the item
+  // catalog). Desktop Q / right-click, mobile SPC button w/ cooldown ring.
+  // Damage flows through applyHit (the existing resolution path) x mults.
+  // -------------------------------------------------------------------------
+
+  const specialCdUntil = new Map<string, number>()
+  const specialCdTotal = new Map<string, number>()
+
+  // equipped weapon/shield ids: equipment snapshot when wired, else events
+  const trackedEquip: Record<'weapon' | 'shield', string | null> = { weapon: null, shield: null }
+  const offEquipTracked = events.on('item:equipped', ({ slot, id }) => {
+    if (slot === 'weapon' || slot === 'shield') trackedEquip[slot] = id
+  })
+  const equippedId = (slot: 'weapon' | 'shield'): string | null =>
+    equipmentSource ? equipmentSource()[slot] ?? null : trackedEquip[slot]
+
+  const specialOfItem = (id: string): ItemSpecial | undefined =>
+    defSource ? defSource(id)?.special : fallbackSpecial(id)
+
+  /** The active special: the weapon's, else the shield's. */
+  const currentSpecial = (): { def: ItemSpecial; tier: number } | null => {
+    for (const slot of ['weapon', 'shield'] as const) {
+      const id = equippedId(slot)
+      if (!id) continue
+      const sp = specialOfItem(id)
+      if (sp) return { def: sp, tier: Math.max(0, tierOfId(id)) }
+    }
+    return null
+  }
+
+  interface DashState {
+    dx: number
+    dz: number
+    remaining: number
+    nova: boolean
+    color: number
+    hit: Set<Mob>
+  }
+  let dash: DashState | null = null
+
+  interface Projectile {
+    group: THREE.Group
+    x: number
+    y: number
+    z: number
+    dx: number
+    dz: number
+    speed: number
+    traveled: number
+    maxDist: number
+    kind: 'fire' | 'arrow'
+    nova: boolean
+    color: number
+  }
+  const projectiles: Projectile[] = []
+
+  /** Aim at the tap target when there is one, else where the hero faces. */
+  const aimDir = (): { dx: number; dz: number } => {
+    if (tapTarget && tapTarget.rig.alive) {
+      const dx = tapTarget.x - player.pos.x
+      const dz = tapTarget.z - player.pos.z
+      const d = Math.hypot(dx, dz)
+      if (d > 0.01) return { dx: dx / d, dz: dz / d }
+    }
+    return { dx: Math.sin(player.facing), dz: Math.cos(player.facing) }
+  }
+
+  /** Shove a mob `dist` units along (dx,dz), stopping at walls. */
+  const knockbackMob = (m: Mob, dx: number, dz: number, dist: number): void => {
+    m.windupUntil = 0
+    m.rig.setWindup(-1)
+    const steps = 6
+    for (let i = 0; i < steps; i++) {
+      const nx = m.x + (dx * dist) / steps
+      const nz = m.z + (dz * dist) / steps
+      if (mobBlocked(nx, nz)) break
+      m.x = nx
+      m.z = nz
+    }
+  }
+
+  const executeSpecial = (id: string, tier: number): void => {
+    if (playerDead) return
+    const color = tierFxColor(tier)
+    const { dx, dz } = aimDir()
+    const px = player.pos.x
+    const py = player.pos.y
+    const pz = player.pos.z
+    const nowS = performance.now() / 1000
+
+    switch (id) {
+      case 'whirlwind':
+      case 'whirlwind_nova': {
+        // 360° AoE spin around the hero
+        const nova = id === 'whirlwind_nova'
+        const radius = nova ? 4.2 : 3.2
+        for (const m of [...mobs]) {
+          if (!m.rig.alive) continue
+          if (Math.hypot(m.x - px, m.z - pz) <= radius + m.radius) {
+            applyHit(m, nova ? 2.0 : 1.5, { special: true })
+          }
+        }
+        fxPool.ring(px, py, pz, color, radius)
+        if (nova) fxPool.nova(px, py, pz, color, radius)
+        break
+      }
+
+      case 'lunge':
+      case 'lunge_nova': {
+        // dash-pierce with a motion trail (moved + resolved by the tick)
+        autoWalk(null)
+        player.facing = Math.atan2(dx, dz)
+        dash = { dx, dz, remaining: 4.5, nova: id === 'lunge_nova', color, hit: new Set() }
+        break
+      }
+
+      case 'fireball':
+      case 'fireball_nova': {
+        const nova = id === 'fireball_nova'
+        const group = makeOrb(nova ? 0x7f6cf0 : 0xff8c3a, nova ? color : 0xffd23e)
+        const x = px + dx * 0.7
+        const z = pz + dz * 0.7
+        const y = world.groundHeight(x, z) + 1.0
+        group.position.set(x, y, z)
+        scene.add(group)
+        projectiles.push({
+          group, x, y, z, dx, dz,
+          speed: 11, traveled: 0, maxDist: nova ? 14 : 12,
+          kind: 'fire', nova, color,
+        })
+        break
+      }
+
+      case 'volley':
+      case 'volley_storm': {
+        // arrow fan
+        const storm = id === 'volley_storm'
+        const n = storm ? 9 : 5
+        const spread = storm ? 1.0 : 0.55
+        const base = Math.atan2(dx, dz)
+        for (let i = 0; i < n; i++) {
+          const a = base - spread / 2 + (spread * i) / (n - 1)
+          const adx = Math.sin(a)
+          const adz = Math.cos(a)
+          const group = makeArrow(color)
+          const x = px + adx * 0.6
+          const z = pz + adz * 0.6
+          const y = world.groundHeight(x, z) + 0.9
+          group.position.set(x, y, z)
+          group.rotation.y = a
+          scene.add(group)
+          projectiles.push({
+            group, x, y, z, dx: adx, dz: adz,
+            speed: 14, traveled: 0, maxDist: 10,
+            kind: 'arrow', nova: storm, color,
+          })
+        }
+        break
+      }
+
+      case 'bash':
+      case 'bash_shockwave': {
+        // cone (or full-circle shockwave) knockback + stun
+        const wave = id === 'bash_shockwave'
+        const range = wave ? 3.5 : 2.8
+        const facing = Math.atan2(dx, dz)
+        for (const m of [...mobs]) {
+          if (!m.rig.alive) continue
+          const mdx = m.x - px
+          const mdz = m.z - pz
+          const d = Math.hypot(mdx, mdz)
+          if (d > range + m.radius) continue
+          if (!wave) {
+            let diff = Math.atan2(mdx, mdz) - facing
+            while (diff > Math.PI) diff -= Math.PI * 2
+            while (diff < -Math.PI) diff += Math.PI * 2
+            if (Math.abs(diff) > 0.9) continue // ~100° front cone
+          }
+          applyHit(m, wave ? 1.2 : 1.0, { special: true })
+          if (m.rig.alive && m.hp > 0) {
+            const kd = Math.max(0.01, d)
+            knockbackMob(m, mdx / kd, mdz / kd, wave ? 4 : 3)
+            m.stunUntil = nowS + (wave ? 2 : 1.5)
+          }
+        }
+        if (wave) {
+          fxPool.ring(px, py, pz, color, range)
+          fxPool.nova(px, py, pz, color, range)
+        } else {
+          fxPool.cone(px, py, pz, facing, color, range)
+        }
+        break
+      }
+    }
+  }
+
+  const useSpecial = (): void => {
+    if (playerDead) return
+    const cur = currentSpecial()
+    if (!cur) return
+    const nowS = performance.now() / 1000
+    if (nowS < (specialCdUntil.get(cur.def.id) ?? 0)) return // still cooling
+
+    const fire = (): void => executeSpecial(cur.def.id, cur.tier)
+    let started = true
+    if (specialAnimFn) started = specialAnimFn(animOf(cur.def.id), fire)
+    else window.setTimeout(fire, 140) // unwired: no anim, strike still lands
+    if (!started) return // rig busy mid-swing — nothing spent
+
+    const cd = cur.def.cooldownS * (1 - Math.min(0.5, mod('combat.special_cooldown')))
+    specialCdUntil.set(cur.def.id, nowS + cd)
+    specialCdTotal.set(cur.def.id, cd)
+    events.emit('special:used', { id: cur.def.id })
+  }
+
+  const specialStatus = (): { id: string; name: string; cdLeft: number; cdTotal: number } | null => {
+    const cur = currentSpecial()
+    if (!cur) return null
+    const nowS = performance.now() / 1000
+    const cdLeft = Math.max(0, (specialCdUntil.get(cur.def.id) ?? 0) - nowS)
+    const cdTotal = specialCdTotal.get(cur.def.id) ?? cur.def.cooldownS
+    return { id: cur.def.id, name: cur.def.name, cdLeft, cdTotal }
+  }
+
+  // --- special inputs: Q key, right-click on the canvas, mobile SPC button --
+  const specialTypingInField = (e: KeyboardEvent): boolean => {
+    const t = e.target
+    return (
+      t instanceof HTMLInputElement ||
+      t instanceof HTMLTextAreaElement ||
+      (t instanceof HTMLElement && t.isContentEditable)
+    )
+  }
+  const onSpecialKey = (e: KeyboardEvent): void => {
+    if (e.code !== 'KeyQ' || e.repeat || specialTypingInField(e)) return
+    useSpecial()
+  }
+  const onSpecialContext = (e: MouseEvent): void => {
+    if (!(e.target instanceof HTMLCanvasElement)) return
+    e.preventDefault()
+    useSpecial()
+  }
+  window.addEventListener('keydown', onSpecialKey)
+  window.addEventListener('contextmenu', onSpecialContext)
+
+  let specialBtn: SpecialButton | null = null
+  const specialUiRoot = document.getElementById('ui')
+  const specialTouchy =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
+      : 'ontouchstart' in window
+  if (specialUiRoot && specialTouchy) {
+    specialBtn = createSpecialButton(specialUiRoot, useSpecial)
+  }
+  let specialBtnT = 0
 
   // -------------------------------------------------------------------------
   // Mob movement (axis-separated slide vs world.isBlocked, capital off-limits)
@@ -686,7 +1150,15 @@ export function initCombat(api: GameAPI): CombatModule {
     let moving = false
     let speed01 = 0
 
-    switch (m.state) {
+    // shield-bash stun: no AI, no windup — just a dazed little wobble
+    const stunned = now < m.stunUntil
+    if (stunned && m.windupUntil > 0) {
+      m.windupUntil = 0
+      m.rig.setWindup(-1)
+    }
+    if (stunned) {
+      m.facing += Math.sin(now * 18 + m.homeX) * dt * 2.2
+    } else switch (m.state) {
       case 'wander': {
         if (!playerDead && pDist < m.aggro) {
           m.state = 'chase'
@@ -810,8 +1282,161 @@ export function initCombat(api: GameAPI): CombatModule {
     // --- mobs ----------------------------------------------------------------
     for (const m of [...mobs]) updateMob(m, dt, now)
 
+    // --- tap-to-attack: chase the tapped mob + keep swinging -----------------
+    if (tapTarget) {
+      const t = tapTarget
+      if (playerDead || !t.rig.alive || t.hp <= 0) {
+        tapTarget = null
+        autoWalk(null)
+      } else {
+        const dx = t.x - player.pos.x
+        const dz = t.z - player.pos.z
+        const d = Math.hypot(dx, dz)
+        const reach = PLAYER_RANGE + t.radius
+        if (d <= reach + 0.1) {
+          autoWalk(null)
+          player.facing = Math.atan2(dx, dz)
+          if (now >= nextTapAttackAt) {
+            nextTapAttackAt = now + TAP_ATTACK_COOLDOWN
+            // existing resolution path: swing anim -> onAttack -> playerStrike
+            if (attackTriggerFn) attackTriggerFn()
+            else playerStrike()
+          }
+        } else if (d <= TAP_CHASE_RANGE) {
+          autoWalk({ x: t.x, z: t.z, arrive: Math.max(0.6, reach - 0.25) })
+        } else {
+          autoWalk(null)
+          if (!player.moving) player.facing = Math.atan2(dx, dz)
+        }
+      }
+    }
+
+    // --- glide fallback (player-module walker unwired): slide, no walk cycle -
+    if (glideTarget && !playerDead) {
+      const g = glideTarget
+      const gdx = g.x - player.pos.x
+      const gdz = g.z - player.pos.z
+      const gd = Math.hypot(gdx, gdz)
+      if (gd <= g.arrive) glideTarget = null
+      else {
+        const step = Math.min(gd, 3.8 * dt)
+        const nx = player.pos.x + (gdx / gd) * step
+        const nz = player.pos.z + (gdz / gd) * step
+        if (!world.isBlocked(nx, player.pos.z)) player.pos.x = nx
+        if (!world.isBlocked(player.pos.x, nz)) player.pos.z = nz
+        player.facing = Math.atan2(gdx, gdz)
+      }
+    }
+
+    // --- lunge dash: pierce along the line, trail the whole way --------------
+    if (dash) {
+      if (playerDead) dash = null
+      else {
+        const dsh = dash
+        const step = Math.min(dsh.remaining, 16 * dt)
+        const sub = Math.max(1, Math.ceil(step / 0.3))
+        for (let i = 0; i < sub; i++) {
+          const s = step / sub
+          const nx = player.pos.x + dsh.dx * s
+          const nz = player.pos.z + dsh.dz * s
+          if (world.isBlocked(nx, nz)) {
+            dsh.remaining = 0
+            break
+          }
+          player.pos.x = nx
+          player.pos.z = nz
+        }
+        dsh.remaining -= step
+        player.facing = Math.atan2(dsh.dx, dsh.dz)
+        fxPool.trail(player.pos.x, player.pos.y + 0.7, player.pos.z, dsh.color, 0.2)
+        fxPool.trail(player.pos.x, player.pos.y + 0.3, player.pos.z, dsh.color, 0.15)
+        for (const m of [...mobs]) {
+          if (!m.rig.alive || dsh.hit.has(m)) continue
+          if (Math.hypot(m.x - player.pos.x, m.z - player.pos.z) <= 1.3 + m.radius) {
+            dsh.hit.add(m)
+            applyHit(m, dsh.nova ? 2.2 : 1.8, { special: true })
+          }
+        }
+        if (dsh.remaining <= 0.001) {
+          if (dsh.nova) {
+            // crystal/mythic: arrive with a nova
+            fxPool.nova(player.pos.x, player.pos.y, player.pos.z, dsh.color, 2.6)
+            for (const m of [...mobs]) {
+              if (!m.rig.alive) continue
+              if (Math.hypot(m.x - player.pos.x, m.z - player.pos.z) <= 2.6 + m.radius) {
+                applyHit(m, 1.2, { special: true })
+              }
+            }
+          }
+          dash = null
+        }
+      }
+    }
+
+    // --- special projectiles (fireballs + arrows) ----------------------------
+    for (const p of [...projectiles]) {
+      const step = p.speed * dt
+      p.x += p.dx * step
+      p.z += p.dz * step
+      p.traveled += step
+      const gy = world.groundHeight(p.x, p.z)
+      p.y = gy + (p.kind === 'fire' ? 1.0 : 0.9)
+      p.group.position.set(p.x, p.y, p.z)
+      if (p.kind === 'fire') {
+        p.group.rotation.y += dt * 7
+        p.group.rotation.x += dt * 5
+        fxPool.trail(p.x, p.y, p.z, p.nova ? p.color : 0xff8c3a, 0.12)
+      } else if (rng() < 0.45) {
+        fxPool.trail(p.x, p.y, p.z, p.color, 0.08)
+      }
+
+      let hitMob: Mob | null = null
+      for (const m of mobs) {
+        if (!m.rig.alive) continue
+        if (Math.hypot(m.x - p.x, m.z - p.z) <= 0.5 + m.radius) {
+          hitMob = m
+          break
+        }
+      }
+      const done = hitMob !== null || world.isBlocked(p.x, p.z) || p.traveled >= p.maxDist
+      if (!done) continue
+
+      if (p.kind === 'fire') {
+        // voxel-chunk explosion (chunky burst via the blood pool, recolored)
+        const radius = p.nova ? 3.2 : 2.2
+        blood.burst(new THREE.Vector3(p.x, p.y, p.z), gy, 3.2, p.nova ? p.color : 0xff6a2a)
+        fxPool.ring(p.x, gy, p.z, p.nova ? p.color : 0xffb13a, radius)
+        if (p.nova) fxPool.nova(p.x, gy, p.z, p.color, radius)
+        for (const m of [...mobs]) {
+          if (!m.rig.alive) continue
+          if (Math.hypot(m.x - p.x, m.z - p.z) <= radius + m.radius) {
+            applyHit(m, p.nova ? 2.2 : 1.6, { useInt: true, special: true })
+          }
+        }
+      } else if (hitMob) {
+        applyHit(hitMob, p.nova ? 0.8 : 0.7, { special: true })
+        fxPool.trail(p.x, p.y, p.z, p.color, 0.14)
+      } else {
+        fxPool.trail(p.x, p.y, p.z, 0x9aa0a8, 0.1)
+      }
+      disposeProjectile(p.group)
+      const pi = projectiles.indexOf(p)
+      if (pi >= 0) projectiles.splice(pi, 1)
+    }
+
+    fxPool.update(dt)
+
+    // --- mobile SPC button: visibility + cooldown ring (throttled) -----------
+    specialBtnT += dt
+    if (specialBtn && specialBtnT >= 0.1) {
+      specialBtnT = 0
+      const st = specialStatus()
+      specialBtn.set(st !== null, st !== null && st.cdTotal > 0 ? st.cdLeft / st.cdTotal : 0)
+    }
+
     // --- auto-retaliate: hit back while the grudge stays warm ----------------
-    if (retaliateTarget && (!autoRetaliateOn || playerDead)) retaliateTarget = null
+    // (the tap target owns the fight while one is set)
+    if (retaliateTarget && (!autoRetaliateOn || playerDead || tapTarget)) retaliateTarget = null
     if (retaliateTarget) {
       const t = retaliateTarget
       const d = Math.hypot(t.x - player.pos.x, t.z - player.pos.z)
@@ -894,14 +1519,53 @@ export function initCombat(api: GameAPI): CombatModule {
         drops: drops.length,
       }
     },
+    useSpecial,
+    specialStatus,
+    setAutoWalk(fn) {
+      autoWalkFn = fn
+      glideTarget = null // the real walker owns movement from here on
+    },
+    setSpecialAnimTrigger(fn) {
+      specialAnimFn = fn
+    },
+    setDefSource(fn) {
+      defSource = fn
+    },
+    setEquipmentSource(fn) {
+      equipmentSource = fn
+    },
+    setModifierSource(fn) {
+      modifierSource = fn
+    },
+    petTarget() {
+      const t = tapTarget ?? retaliateTarget
+      if (!t || !t.rig.alive || t.hp <= 0) return null
+      return {
+        x: t.x,
+        z: t.z,
+        radius: t.radius,
+        alive: t.rig.alive && t.hp > 0,
+        hit: (amount: number) => applyPetHit(t, amount),
+      }
+    },
     dispose() {
       cancelAnimationFrame(raf)
       offAttuned()
       offTraveled()
+      offEquipTracked()
+      window.removeEventListener('pointerdown', onTapDown)
+      window.removeEventListener('pointerup', onTapUp)
+      window.removeEventListener('pointercancel', onTapUp)
+      window.removeEventListener('keydown', onSpecialKey)
+      window.removeEventListener('contextmenu', onSpecialContext)
+      specialBtn?.dispose()
+      for (const p of [...projectiles]) disposeProjectile(p.group)
+      projectiles.length = 0
       for (const m of [...mobs]) removeMob(m)
       for (const d of [...drops]) removeDrop(d)
       blood.dispose()
       numbers.dispose()
+      fxPool.dispose()
     },
   }
 }
