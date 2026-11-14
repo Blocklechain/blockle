@@ -558,7 +558,14 @@ export function initCombat(api: GameAPI): CombatModule {
     m.bar.set(m.hp / m.maxHp)
 
     const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
-    events.emit('mob:hit', { species: m.sp.id, amount: dealt, crit, pos: hitPos })
+    events.emit('mob:hit', {
+      species: m.sp.id,
+      amount: dealt,
+      crit,
+      pos: hitPos,
+      boss: m.boss,
+      ...(m.bossId !== null ? { bossId: m.bossId } : {})
+    })
     numbers.show(hitPos, String(dealt), { crit })
     blood.burst(hitPos, m.y, crit ? 1.6 : 1)
     if (crit || rng() < 0.25) blood.splat(m.x, m.y, m.z, crit)
@@ -584,7 +591,14 @@ export function initCombat(api: GameAPI): CombatModule {
     m.rig.flashHurt()
     m.bar.set(m.hp / m.maxHp)
     const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
-    events.emit('mob:hit', { species: m.sp.id, amount: dealt, crit: false, pos: hitPos })
+    events.emit('mob:hit', {
+      species: m.sp.id,
+      amount: dealt,
+      crit: false,
+      pos: hitPos,
+      boss: m.boss,
+      ...(m.bossId !== null ? { bossId: m.bossId } : {})
+    })
     numbers.show(hitPos, String(dealt), {})
     if (m.state === 'wander') {
       m.state = 'chase'

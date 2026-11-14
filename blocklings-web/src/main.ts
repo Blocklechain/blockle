@@ -43,6 +43,17 @@ import { initGather } from './gather'
 import { initWaystones } from './waystones'
 import { initWorldmap } from './worldmap'
 import { initAtmosphere } from './atmosphere'
+import { initDirector } from './audio/director'
+import { initSfx, setSurfaceSource } from './audio/sfx'
+import { initAmbience } from './audio/ambience'
+import {
+  surfaceTypeAt,
+  S_COBBLE,
+  S_BRIDGE,
+  S_SAND,
+  S_RIVER,
+  S_BANK
+} from './world/surface'
 import { initGold, spendGold } from './gold'
 import { initMarket } from './market'
 import { wallet } from './wallet/index'
@@ -202,6 +213,12 @@ window.addEventListener('orientationchange', onResize)
 // ---------------------------------------------------------------------------
 
 initAuth(uiMount)
+
+// --- music director (boot): queues the title theme now — the audio engine
+//     holds it until the first user gesture unlocks the AudioContext, so the
+//     sign-in click itself starts the music. Volume sliders (persisted at
+//     blocklings.vol.music/.sfx) are owned by the engine + HUD AudioManager.
+const director = initDirector(api)
 
 // One parchment-pretty frame behind the title while the player signs in.
 camera.position.set(player.pos.x + 26, player.pos.y + 31, player.pos.z + 26)
@@ -390,6 +407,34 @@ function enterWorld(): void {
   })
   atmo.setLanternLights(lanternLights)
   atmo.setBiomeSource((x, z) => regionOrZoneAt(x, z)?.biome ?? null)
+
+  // --- audio (director music + ambience beds + sfx wiring) ------------------
+
+  // Director: title theme -> biome/night explore songs, combat loop on heat,
+  // boss themes, stingers. Rides the atmosphere's shared CST clock.
+  director.setHourSource(() => atmo.hourCST())
+  director.enterWorld()
+
+  // Ambience: generative biome beds (same clock), water proximity from the
+  // surface map (-1 = off-grid open sea).
+  const ambience = initAmbience(api)
+  ambience.setHourSource(() => atmo.hourCST())
+  ambience.setWaterSource((x, z) => {
+    const s = surfaceTypeAt(x, z)
+    return s === S_RIVER || s === S_BANK || s === -1
+  })
+
+  // SFX: event-bus wiring + footsteps. Surface picks the step sound: snow in
+  // the frozen biomes, sand on beaches/deserts, cobble on roads/bridges.
+  initSfx(api)
+  setSurfaceSource((x, z) => {
+    const biome = regionOrZoneAt(x, z)?.biome ?? null
+    if (biome === 'tundra' || biome === 'glacier') return 'snow'
+    const s = surfaceTypeAt(x, z)
+    if (s === S_COBBLE || s === S_BRIDGE) return 'cobble'
+    if (s === S_SAND || biome === 'desert' || biome === 'beach') return 'sand'
+    return 'grass'
+  })
 
   // --- GOLD (IAP-only hard currency; server-authoritative balance chip) -----
 

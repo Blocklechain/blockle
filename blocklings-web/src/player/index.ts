@@ -16,7 +16,9 @@
 import * as THREE from 'three'
 import type { PlayerState, World } from '../types'
 import { events } from '../events'
+import { saveRegistry } from '../save/registry'
 import { CharacterRig, type GripStyle, type SpecialAnim } from './character'
+import { DEFAULT_LOOK, decodeLook, encodeLook, type CharacterLook } from './look'
 import { createJoystick, createAttackButton, type Joystick, type AttackButton } from './joystick'
 import { connect, WS_URL, type NetHandle } from '../net/index'
 
@@ -43,6 +45,49 @@ interface PlayerControl {
 
 let control: PlayerControl | null = null
 const attackCbs = new Set<() => void>()
+
+// ---------------------------------------------------------------------------
+// Character look (customization) — module-level so the creator can set it
+// BEFORE the world (and the rig) exists, and settings can change it after.
+// ---------------------------------------------------------------------------
+
+let activeLook: CharacterLook = DEFAULT_LOOK
+let announceLook: (() => void) | null = null
+
+/** The hero's current look (copy). */
+export function currentLook(): CharacterLook {
+  return { ...activeLook }
+}
+
+/**
+ * Change the hero's look. Before the world exists this just records it (the
+ * rig is then born wearing it); after, the rig is rebuilt IN PLACE —
+ * position, facing and every equipped item mesh survive — the new look is
+ * announced to the relay, and a save is queued via 'save:dirty'.
+ */
+export function applyLook(look: CharacterLook): void {
+  activeLook = { ...look }
+  control?.rig.applyLook(activeLook)
+  announceLook?.()
+  events.emit('save:dirty', { why: 'look' })
+}
+
+/** Set the look without emitting save:dirty (save-load path). */
+function restoreLook(look: CharacterLook): void {
+  activeLook = { ...look }
+  control?.rig.applyLook(activeLook)
+  announceLook?.()
+}
+
+// Persistence: the look rides the save envelope as a compact code. Register
+// at module scope so initSave's late-binding apply finds it whenever it runs.
+saveRegistry.register('look', {
+  dump: () => encodeLook(activeLook),
+  load(data: unknown): void {
+    const look = decodeLook(data)
+    if (look) restoreLook(look)
+  }
+})
 
 /**
  * Register a strike callback: fires at the strike frame (~125ms) of every
@@ -174,8 +219,8 @@ export function createPlayer(
   state: PlayerState,
   camera?: THREE.PerspectiveCamera
 ): PlayerHandle {
-  // --- character -----------------------------------------------------------
-  const rig = new CharacterRig({ tunicHue: 210 })
+  // --- character (born wearing the chosen/saved look) ----------------------
+  const rig = new CharacterRig(activeLook)
   rig.group.position.copy(state.pos)
   rig.group.rotation.y = state.facing
   scene.add(rig.group)
@@ -338,7 +383,13 @@ export function createPlayer(
   }
 
   // --- multiplayer presence ------------------------------------------------
-  const net = connect(WS_URL, state.name, { scene, world, local: state })
+  const net = connect(WS_URL, state.name, {
+    scene,
+    world,
+    local: state,
+    look: () => encodeLook(activeLook)
+  })
+  announceLook = () => net.sendLook()
 
   // --- movement ------------------------------------------------------------
   const vel = new THREE.Vector2() // x/z velocity
@@ -495,6 +546,7 @@ export function createPlayer(
     },
     dispose(): void {
       if (control === myControl) control = null
+      announceLook = null
       offGripEquip()
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)

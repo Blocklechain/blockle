@@ -1,0 +1,322 @@
+/* Character creator — same cozy flat-color voxel vibes as the title screen:
+   soft morning sky, parchment-dark card, chunky gold buttons. Touch-friendly
+   (targets ≥ 44px) and safe-area aware for the iOS shell. */
+
+.bl-creator {
+  --c-panel: rgba(13, 15, 22, 0.86);
+  --c-edge: rgba(212, 175, 55, 0.5);
+  --c-edge-dim: rgba(212, 175, 55, 0.25);
+  --c-gold: #e8c15a;
+  --c-gold-deep: #b8860b;
+  --c-text: #efe9d8;
+  --c-text-dim: #b9b2a0;
+  --c-grass: #7ed957;
+
+  position: absolute;
+  inset: 0;
+  z-index: 58; /* above the HUD, below the title screen (60) */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+  pointer-events: auto;
+  overflow: hidden auto;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: var(--c-text);
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(120% 70% at 50% 110%, rgba(126, 217, 87, 0.22) 0%, rgba(126, 217, 87, 0) 55%),
+    linear-gradient(180deg, #6ea3dd 0%, #87b7e8 42%, #a8cdf0 70%, #cfe4f6 100%);
+  opacity: 1;
+  transition: opacity 0.45s ease;
+}
+
+.bl-creator--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ===== header =========================================================== */
+
+.bl-creator-logo {
+  margin: 0;
+  font-size: clamp(24px, 6vw, 40px);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: #fff6de;
+  text-align: center;
+  user-select: none;
+  text-shadow:
+    0 1px 0 #e8c15a,
+    0 2px 0 #d4a843,
+    0 3px 0 #b8860b,
+    0 5px 8px rgba(0, 0, 0, 0.35);
+}
+
+.bl-creator-tag {
+  margin: 0;
+  font-size: 13px;
+  font-style: italic;
+  color: #3b4f66;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  text-align: center;
+}
+
+/* ===== card: preview | options ========================================== */
+
+.bl-creator-card {
+  display: flex;
+  gap: 14px;
+  width: min(760px, 94vw);
+  max-height: min(66vh, 560px);
+  background: var(--c-panel);
+  border: 1px solid var(--c-edge-dim);
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 14px;
+}
+
+.bl-creator-preview {
+  flex: 0 0 42%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bl-creator-canvas {
+  width: 100%;
+  flex: 1;
+  min-height: 220px;
+  border-radius: 10px;
+  background:
+    radial-gradient(90% 55% at 50% 100%, rgba(126, 217, 87, 0.25) 0%, rgba(126, 217, 87, 0) 60%),
+    linear-gradient(180deg, rgba(110, 163, 221, 0.55) 0%, rgba(26, 32, 44, 0.35) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.bl-creator-flavor {
+  min-height: 32px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--c-text-dim);
+  text-align: center;
+  padding: 0 4px;
+}
+
+.bl-creator-opts {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+/* ===== rows ============================================================= */
+
+.bl-creator-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bl-creator-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--c-text-dim);
+}
+
+.bl-creator-swatchname {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  color: var(--c-gold);
+}
+
+/* body-frame segmented toggle */
+.bl-creator-seg {
+  display: flex;
+  gap: 6px;
+}
+
+.bl-creator-segbtn {
+  flex: 1;
+  min-height: 44px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--c-text-dim);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.bl-creator-segbtn--on {
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--c-gold) 0%, var(--c-gold-deep) 100%);
+  border-color: rgba(255, 240, 200, 0.5);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* arrow rows */
+.bl-creator-arrows {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bl-creator-arrow {
+  width: 44px;
+  min-height: 44px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--c-gold);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.bl-creator-arrow:active {
+  transform: translateY(1px);
+}
+
+.bl-creator-value {
+  flex: 1;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--c-text);
+}
+
+/* swatch strips */
+.bl-creator-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bl-creator-swatch {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 2px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  touch-action: manipulation;
+  box-shadow: inset -3px -4px 0 rgba(0, 0, 0, 0.18), inset 2px 2px 0 rgba(255, 255, 255, 0.2);
+  padding: 0;
+}
+
+.bl-creator-swatch--on {
+  border-color: var(--c-gold);
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.35),
+    inset -3px -4px 0 rgba(0, 0, 0, 0.18), inset 2px 2px 0 rgba(255, 255, 255, 0.2);
+}
+
+/* the "no cape" swatch: a polite diagonal nothing */
+.bl-creator-swatch--none {
+  background:
+    linear-gradient(135deg, transparent 44%, #ff8d77 46%, #ff8d77 54%, transparent 56%),
+    rgba(255, 255, 255, 0.06);
+}
+
+/* ===== actions ========================================================== */
+
+.bl-creator-actions {
+  display: flex;
+  gap: 10px;
+  width: min(760px, 94vw);
+}
+
+.bl-creator-random {
+  flex: 1;
+  min-height: 48px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--c-text);
+  background: rgba(13, 15, 22, 0.55);
+  border: 1px dashed rgba(239, 233, 216, 0.4);
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.bl-creator-primary {
+  flex: 2;
+  min-height: 48px;
+  font: inherit;
+  font-weight: 800;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  color: #1c1405;
+  background: linear-gradient(180deg, var(--c-gold) 0%, var(--c-gold-deep) 100%);
+  border: 1px solid rgba(255, 240, 200, 0.5);
+  border-radius: 10px;
+  cursor: pointer;
+  touch-action: manipulation;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+.bl-creator-primary:active {
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+.bl-creator-cancel {
+  font: inherit;
+  font-size: 13px;
+  color: var(--c-text-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  min-height: 44px;
+  touch-action: manipulation;
+}
+
+.bl-creator-cancel:hover {
+  color: var(--c-text);
+}
+
+/* ===== small screens: stack preview over options ======================== */
+
+@media (max-width: 640px), (max-height: 560px) {
+  .bl-creator-card {
+    flex-direction: column;
+    max-height: 72vh;
+    overflow: hidden;
+  }
+
+  .bl-creator-preview {
+    flex: 0 0 auto;
+  }
+
+  .bl-creator-canvas {
+    min-height: 160px;
+    height: 160px;
+    flex: 0 0 auto;
+  }
+
+  .bl-creator-flavor {
+    min-height: 16px;
+  }
+
+  .bl-creator-opts {
+    flex: 1;
+  }
+}

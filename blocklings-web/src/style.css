@@ -63,6 +63,23 @@ body {
   pointer-events: auto;
 }
 
+/* THE #1 INPUT FOOTGUN, FIXED: the opt-in rule above (1-0-0 specificity)
+   silently OVERRIDES any module root's class-level `pointer-events: none`
+   (0-1-0) — which armed every full-screen transparent module layer and ate
+   ALL in-world taps/clicks on every platform. Module roots that must stay
+   transparent to input are re-disabled here at #ui>.class specificity.
+   ADDING A NEW FULL-SCREEN MODULE ROOT? Add its class to this list. */
+#ui > .bl-ws-veil,
+#ui > .blq-root,
+#ui > .bl-invroot,
+#ui > .bl-mintroot,
+#ui > .mk-root,
+#ui > .bl-skills-root,
+#ui > .bl-pets-root,
+#ui > .wm-root {
+  pointer-events: none;
+}
+
 #ui input,
 #ui textarea {
   -webkit-user-select: text;

@@ -1,0 +1,112 @@
+/* Blocklings contracts — job-board panel + the 'Contracts' entry in the
+   quest log header. Rides the blq-* design tokens (vars live on .blq-root). */
+
+.blc-tab {
+  flex: none;
+  min-height: 30px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--blq-gold);
+  border: 1px solid var(--blq-edge-dim);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+.blc-tab:hover {
+  border-color: var(--blq-edge);
+}
+.blc-tab-open {
+  border-color: var(--blq-edge);
+}
+
+/* keep the quest head tidy with the extra button in it */
+.blq-head .blc-tab {
+  margin-left: auto;
+  margin-right: 10px;
+}
+.blq-head .blq-title {
+  margin-right: auto;
+}
+
+.blc-head-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.blc-meta {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--blq-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- posting cards -------------------------------------------------------- */
+
+.blc-card-active {
+  border-color: var(--blq-edge-dim);
+}
+
+.blc-card-done {
+  opacity: 0.62;
+}
+
+.blc-post {
+  margin-top: 6px;
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.4;
+  color: var(--blq-text-dim);
+}
+
+.blc-take {
+  color: var(--blq-gold);
+}
+.blc-take:disabled {
+  cursor: default;
+  color: var(--blq-text-dim);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.blc-abandon {
+  flex: none;
+  min-height: 30px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #e08c7a;
+  border: 1px solid rgba(224, 140, 122, 0.35);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+.blc-abandon:hover {
+  border-color: rgba(224, 140, 122, 0.7);
+}
+
+.blc-stamp {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--blq-green);
+  border: 1px solid rgba(126, 217, 87, 0.35);
+  border-radius: 8px;
+  transform: rotate(-3deg);
+}
+
+.blc-foot {
+  margin-top: 10px;
+  padding: 4px 2px 2px;
+  font-size: 10px;
+  font-style: italic;
+  text-align: center;
+  color: var(--blq-text-dim);
+  opacity: 0.8;
+}

@@ -5,22 +5,31 @@
  * (services/blocklings/server.js). The relay is presence-only — the
  * world is deterministic client-side — so the protocol is tiny JSON:
  *
- *   c->s: {t:'join',name}   {t:'pos',x,y,lvl}   {t:'chat',msg}
- *   s->c: {t:'welcome',id,count}  {t:'pos',id,name,x,y,lvl}
+ *   c->s: {t:'join',name,look}   {t:'pos',x,y,lvl}   {t:'chat',msg}
+ *   s->c: {t:'welcome',id,count}  {t:'pos',id,name,x,y,lvl[,look]}
  *         {t:'left',id}  {t:'chat',id,name,msg}  {t:'full'}
  *
  * Server coords are 2D: we map world x -> x and world z -> y, and
  * resolve height locally via world.groundHeight (deterministic world).
  *
+ * LOOKS, honestly: we send our encoded CharacterLook in the join message
+ * (and via sendLook() after a makeover). The CURRENT deployed relay
+ * ignores unknown fields and rebuilds its pos broadcasts from
+ * {id,name,x,y,lvl} only — so until the relay learns to echo `look`,
+ * remote players wear a deterministic-from-name look (lookFromName).
+ * The moment an upgraded relay includes `look` on pos messages, this
+ * client already renders the real thing (and live-rebuilds on change).
+ *
  * Position updates stream at ~8 Hz. Remote players render as the same
- * voxel character as the local hero with a name-hash tunic hue and a
- * CanvasTexture name label, lerp-smoothed toward their last reported
- * position. Auto-reconnects with capped exponential backoff and is
- * fully silent when offline — single-player keeps working untouched.
+ * voxel character rig as the local hero with a CanvasTexture name label,
+ * lerp-smoothed toward their last reported position. Auto-reconnects with
+ * capped exponential backoff and is fully silent when offline —
+ * single-player keeps working untouched.
  */
 import * as THREE from 'three'
 import type { PlayerState, World } from '../types'
-import { CharacterRig, hueFromName, makeNameSprite } from '../player/character'
+import { CharacterRig, makeNameSprite } from '../player/character'
+import { decodeLook, lookFromName } from '../player/look'
 
 /** Deployed relay endpoint. */
 export const WS_URL = 'wss://blockle.org/blocklings/ws'
@@ -43,6 +52,8 @@ export interface RemotePlayer {
   label: THREE.Sprite
   lastSeen: number
   facing: number
+  /** Encoded look the relay reported (null = relay carries no looks). */
+  lookCode: string | null
 }
 
 export interface NetContext {
@@ -50,6 +61,8 @@ export interface NetContext {
   world: World
   /** Local player's live state — read for outgoing pos/level. */
   local: PlayerState
+  /** Encoded CharacterLook getter — sent in join and sendLook(). */
+  look: () => string
 }
 
 export interface NetHandle {
@@ -66,6 +79,11 @@ export interface NetHandle {
   onChat: ((from: string, msg: string) => void) | null
   /** Send a chat line (also locally echoed through onChat). */
   sendChat(msg: string): void
+  /**
+   * Re-announce the local look (after a makeover). A no-op on the current
+   * relay (it doesn't store looks yet) but harmless and forward-compatible.
+   */
+  sendLook(): void
   /** Per-frame: lerp remotes, advance their animations, prune stale. */
   update(dt: number): void
   dispose(): void
@@ -80,6 +98,8 @@ interface WireMsg {
   y?: number
   lvl?: number
   count?: number
+  /** Encoded CharacterLook (only present once the relay echoes looks). */
+  look?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +129,11 @@ export function connect(url: string, name: string, ctx: NetContext): NetHandle {
       // The relay broadcasts to OTHERS only — echo locally so our own
       // line always shows up, online or offline.
       handle.onChat?.(ctx.local.name, text)
+    },
+    sendLook() {
+      // Re-join carries the fresh look; today's relay just re-sanitizes the
+      // name, a look-aware relay will store + rebroadcast the new outfit.
+      send({ t: 'join', name, look: ctx.look() })
     },
     update,
     dispose() {
@@ -142,13 +167,16 @@ export function connect(url: string, name: string, ctx: NetContext): NetHandle {
     if (id === selfId) return
     const rname = typeof m.name === 'string' && m.name ? m.name : 'wanderer'
     const lvl = typeof m.lvl === 'number' && m.lvl > 0 ? Math.floor(m.lvl) : 1
+    const lookCode = typeof m.look === 'string' ? m.look : null
     const gx = m.x
     const gz = m.y // server y == world z
     const gy = ctx.world.groundHeight(gx, gz)
 
     let r = remotes.get(id)
     if (!r) {
-      const rig = new CharacterRig({ tunicHue: hueFromName(rname) })
+      // Real look when the relay carries one; stable name-derived otherwise.
+      const look = (lookCode ? decodeLook(lookCode) : null) ?? lookFromName(rname)
+      const rig = new CharacterRig(look)
       const label = makeNameSprite(`${rname} · Lv ${lvl}`)
       rig.group.add(label)
       rig.group.position.set(gx, gy, gz)
@@ -162,10 +190,16 @@ export function connect(url: string, name: string, ctx: NetContext): NetHandle {
         rig,
         label,
         lastSeen: performance.now(),
-        facing: 0
+        facing: 0,
+        lookCode
       }
       remotes.set(id, r)
       return
+    }
+    if (lookCode !== null && lookCode !== r.lookCode) {
+      // they had a makeover (look-aware relay) — rebuild the rig in place
+      r.lookCode = lookCode
+      r.rig.applyLook(decodeLook(lookCode) ?? lookFromName(rname))
     }
     if (r.name !== rname || r.level !== lvl) {
       // rebuild the label on name/level change
@@ -253,7 +287,7 @@ export function connect(url: string, name: string, ctx: NetContext): NetHandle {
       }
       open = true
       attempts = 0
-      send({ t: 'join', name })
+      send({ t: 'join', name, look: ctx.look() })
       // announce ourselves immediately so others see us without waiting a tick
       send({ t: 'pos', x: ctx.local.pos.x, y: ctx.local.pos.z, lvl: ctx.local.level })
     }

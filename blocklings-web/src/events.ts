@@ -10,8 +10,19 @@ import type * as THREE from 'three'
 export interface GameEvents {
   /** A mob died (killed by the local player unless noted). */
   'mob:killed': { species: string; level: number; pos: THREE.Vector3; boss?: boolean }
-  /** The player dealt damage to a mob. */
-  'mob:hit': { species: string; amount: number; crit: boolean; pos: THREE.Vector3 }
+  /**
+   * The player dealt damage to a mob. `boss`/`bossId` are additive optional
+   * fields (wave-3) so the music director can key boss themes — existing
+   * handlers are unaffected.
+   */
+  'mob:hit': {
+    species: string
+    amount: number
+    crit: boolean
+    pos: THREE.Vector3
+    boss?: boolean
+    bossId?: string
+  }
   /** The local player took damage. */
   'player:damaged': { amount: number; from: string }
   /** The local player died and respawned. */

@@ -110,6 +110,16 @@ export const NPCS: readonly NpcDef[] = [
   { id: 'mage_lyra', name: 'Archmage Lyra', role: 'trainer', regionId: 'capital', x: -30, z: -190 },
   { id: 'gravekeeper_sol', name: 'Gravekeeper Sol', role: 'quests', regionId: 'ashen', x: -120, z: 170 },
   { id: 'hermit_vex', name: 'Hermit Vex', role: 'quests', regionId: 'forgotten', x: 120, z: 180 },
+  // --- wave-3 appends: outer-zone outpost NPCs, parked at real landmarks ---
+  // (regionId is the ZONE id for these; coords sit beside the landmark props)
+  { id: 'survivor_petra', name: 'Petra the Previous', role: 'quests', regionId: 'brainfreeze', x: -546, z: -597 }, // Camp Bad Idea
+  { id: 'lookout_grettel', name: 'Grettel of the Last Laugh', role: 'flavor', regionId: 'nope_shelf', x: -648, z: -632 }, // the frozen pirate ship
+  { id: 'prophet_karl', name: 'Prophet Karl (Whale-Certified)', role: 'quests', regionId: 'glacier_point', x: 628, z: -584 }, // Moby's Last Laugh
+  { id: 'maestro_ribbert', name: 'Maestro Ribbert', role: 'quests', regionId: 'drizzlemire', x: -660, z: 148 }, // the Frog Choir
+  { id: 'tadpole_tony', name: 'Tadpole Tony, Grudge Notary', role: 'flavor', regionId: 'croakening', x: -556, z: 414 }, // Big Gerald's sign
+  { id: 'honest_jim', name: 'Honest Jim', role: 'quests', regionId: 'mirage_mile', x: -32, z: 464 }, // the Mirage Emporium
+  { id: 'shardwarden_igor', name: 'Shard-Warden Igor', role: 'quests', regionId: 'prism_break', x: -536, z: 4 }, // the Great Refractor
+  { id: 'inspector_flora', name: 'Dormancy Inspector Flora', role: 'quests', regionId: 'simmering_steps', x: 556, z: 464 }, // Dormancy Verification Station
 ] as const
 
 /** Teleport waystones: attune by touching, then travel between any attuned pair. */

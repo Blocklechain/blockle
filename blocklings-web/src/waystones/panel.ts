@@ -104,6 +104,10 @@ export class FadeVeil {
   constructor(mount: HTMLElement) {
     this.el = document.createElement('div')
     this.el.className = 'bl-ws-veil'
+    // Inline (beats ANY stylesheet rule): the veil is purely visual and must
+    // NEVER intercept input — it ate every in-world tap when a #ui>* opt-in
+    // rule out-specified the class-level pointer-events:none.
+    this.el.style.pointerEvents = 'none'
     mount.appendChild(this.el)
   }
 

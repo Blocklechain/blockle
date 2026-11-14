@@ -1,34 +1,44 @@
 /**
  * Blocklings — voxel character builder + animation rig.
  *
- * Shared by the local player (src/player) and remote players (src/net):
- * a compact, big-headed voxel hero built from boxes, with a retro 8x8
- * pixel-art face painted onto a CanvasTexture (NearestFilter so every
- * pixel stays crunchy), a voxel hair cap, colorful tunic, and a simple
- * sword in the right hand.
+ * Shared by the local player (src/player), remote players (src/net) and the
+ * character creator (src/creator): a compact, big-headed voxel hero built
+ * from boxes, with a retro 8x8 pixel-art face painted onto a CanvasTexture
+ * (NearestFilter so every pixel stays crunchy), a voxel hair cap, colorful
+ * tunic, and a simple sword in the right hand.
+ *
+ * The whole body is parameterized by a CharacterLook (src/player/look.ts):
+ * two body frames (broad/slender — same big head, same animation rig, same
+ * equipment attach points), 8 hair styles, facial hair, curated color
+ * palettes and an optional swaying cape. buildCharacterMesh(DEFAULT_LOOK)
+ * produces exactly the beloved original hero, box for box.
  *
  * All sizes are in world units (1 unit = 1 voxel block). The rig's
  * group origin is at the character's FEET, facing +Z at rotation 0 —
  * matching the PlayerState contract (facing 0 = +Z).
  */
 import * as THREE from 'three'
+import {
+  DEFAULT_LOOK,
+  SKIN_TONES,
+  HAIR_COLORS,
+  TUNIC_COLORS,
+  PANTS_COLORS,
+  EYE_COLORS,
+  CAPES,
+  pick,
+  type CharacterLook
+} from './look'
 
 // ---------------------------------------------------------------------------
 // Palette helpers
 // ---------------------------------------------------------------------------
 
-/** Deterministic 0..359 hue from a name (djb2). Used for remote tunics. */
+/** Deterministic 0..359 hue from a name (djb2). Legacy remote-tunic hash. */
 export function hueFromName(name: string): number {
   let h = 5381
   for (let i = 0; i < name.length; i++) h = ((h << 5) + h + name.charCodeAt(i)) | 0
   return ((h % 360) + 360) % 360
-}
-
-const HAIR_COLORS = [0x4a2f1b, 0x1d1a17, 0x8a5a2b, 0xb8863b, 0x6e3a24, 0x3b3f8c]
-
-export interface CharacterOptions {
-  /** Tunic hue in degrees (default 210 — a friendly adventurer blue). */
-  tunicHue?: number
 }
 
 /** How the right hand holds the equipped weapon (ItemDef.gripStyle). */
@@ -68,7 +78,7 @@ const SPECIAL_TIMING: Record<SpecialAnim, readonly [number, number]> = {
 // Pixel-art face (8x8 CanvasTexture)
 // ---------------------------------------------------------------------------
 
-function makeFaceTexture(skinCss: string): THREE.CanvasTexture {
+function makeFaceTexture(skinCss: string, eyeCss: string, smileCss: string): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = 8
   c.height = 8
@@ -81,7 +91,7 @@ function makeFaceTexture(skinCss: string): THREE.CanvasTexture {
     g.fillStyle = '#ffffff'
     g.fillRect(1, 2, 2, 2)
     g.fillRect(5, 2, 2, 2)
-    g.fillStyle = '#20242e'
+    g.fillStyle = eyeCss
     g.fillRect(2, 3, 1, 1)
     g.fillRect(5, 3, 1, 1)
     // rosy cheeks
@@ -89,7 +99,7 @@ function makeFaceTexture(skinCss: string): THREE.CanvasTexture {
     g.fillRect(0, 5, 1, 1)
     g.fillRect(7, 5, 1, 1)
     // little smile
-    g.fillStyle = '#7a4a33'
+    g.fillStyle = smileCss
     g.fillRect(3, 5, 2, 1)
   }
   const tex = new THREE.CanvasTexture(c)
@@ -147,7 +157,7 @@ export function makeNameSprite(text: string): THREE.Sprite {
 }
 
 // ---------------------------------------------------------------------------
-// The rig
+// Box helpers
 // ---------------------------------------------------------------------------
 
 function box(
@@ -161,38 +171,436 @@ function box(
   return m
 }
 
-function lambert(color: number): THREE.MeshLambertMaterial {
+function lambert(color: number | THREE.Color): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({ color })
 }
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      obj.geometry.dispose()
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
+      for (const m of mats) {
+        if (m instanceof THREE.MeshLambertMaterial && m.map) m.map.dispose()
+        m.dispose()
+      }
+    }
+    if (obj instanceof THREE.Sprite) {
+      obj.material.map?.dispose()
+      obj.material.dispose()
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// The parameterized body builder
+// ---------------------------------------------------------------------------
+
+/** Everything the rig animates/attaches to, freshly built from a look. */
+interface BodyParts {
+  body: THREE.Group
+  headPivot: THREE.Group
+  torso: THREE.Mesh
+  armL: THREE.Group
+  armR: THREE.Group
+  legL: THREE.Group
+  legR: THREE.Group
+  /** Swaying cape pivot (null when look.cape === 0). */
+  capePivot: THREE.Group | null
+  anchors: Record<string, THREE.Group>
+  bootAnchorR: THREE.Group
+  defaultSword: THREE.Group
+  defaultBoots: THREE.Mesh[]
+}
+
+/** Shared skeleton constants — identical for BOTH body frames (same rig). */
+const HIP_Y = 0.45
+const SHOULDER_Y = HIP_Y + 0.48
+const NECK_Y = HIP_Y + 0.5
+const HEAD_SIZE = 0.72
+
+function buildBodyParts(look: CharacterLook): BodyParts {
+  const broad = look.body !== 'slender'
+
+  // Frame widths: slender narrows torso/shoulders a touch; heights, head,
+  // pivots and equipment anchors stay identical so the one animation rig
+  // (and every attach point) fits both frames.
+  const torsoW = broad ? 0.62 : 0.52
+  const torsoD = broad ? 0.36 : 0.32
+  const shoulderX = broad ? 0.4 : 0.35
+  const armW = broad ? 0.17 : 0.15
+  const handW = broad ? 0.16 : 0.145
+  const hipX = broad ? 0.14 : 0.125
+  const legW = broad ? 0.2 : 0.18
+  const bootW = broad ? 0.22 : 0.2
+
+  const skin = new THREE.Color(pick(SKIN_TONES, look.skin).hex)
+  const skinCss = `#${skin.getHexString()}`
+  const darkSkin = look.skin >= 4 // deep tones get a lighter smile pixel
+  const tunic = new THREE.Color().setHSL(pick(TUNIC_COLORS, look.tunicColor).hue / 360, 0.62, 0.52)
+  const pants = pick(PANTS_COLORS, look.pantsColor).color
+  const hairColor = pick(HAIR_COLORS, look.hairColor).hex
+  const eyeCss = pick(EYE_COLORS, look.eyes).css
+  const capeHex = pick(CAPES, look.cape).hex
+
+  const skinMat = lambert(skin)
+  const tunicMat = lambert(tunic)
+  const pantsMat = lambert(pants)
+  const hairMat = lambert(hairColor)
+  const bootMat = lambert(0x5b4330)
+
+  const body = new THREE.Group()
+  const anchors: Record<string, THREE.Group> = {}
+  const defaultBoots: THREE.Mesh[] = []
+
+  // --- legs (pivot at hip, geometry hangs down) ---------------------------
+  const makeLeg = (x: number): THREE.Group => {
+    const pivot = new THREE.Group()
+    pivot.position.set(x, HIP_Y, 0)
+    const leg = box(legW, 0.45, 0.24, pantsMat)
+    leg.position.y = -0.225
+    const boot = box(bootW, 0.12, 0.28, bootMat)
+    boot.position.set(0, -0.4, 0.02)
+    defaultBoots.push(boot)
+    pivot.add(leg, boot)
+    return pivot
+  }
+  const legL = makeLeg(-hipX)
+  const legR = makeLeg(hipX)
+  body.add(legL, legR)
+
+  // --- torso --------------------------------------------------------------
+  const torso = box(torsoW, 0.52, torsoD, tunicMat)
+  torso.position.y = HIP_Y + 0.26
+  // belt
+  const belt = box(torsoW + 0.02, 0.08, torsoD + 0.02, lambert(0x3a2a18))
+  belt.position.y = HIP_Y + 0.04
+  body.add(torso, belt)
+
+  // --- arms (pivot at shoulder) -------------------------------------------
+  const makeArm = (x: number): THREE.Group => {
+    const pivot = new THREE.Group()
+    pivot.position.set(x, SHOULDER_Y, 0)
+    const sleeve = box(armW, 0.26, 0.21, tunicMat)
+    sleeve.position.y = -0.11
+    const hand = box(handW, 0.24, 0.2, skinMat)
+    hand.position.y = -0.36
+    pivot.add(sleeve, hand)
+    return pivot
+  }
+  const armL = makeArm(-shoulderX)
+  const armR = makeArm(shoulderX)
+  body.add(armL, armR)
+
+  // --- right-hand grip anchor + the default sword -------------------------
+  // The anchor carries the exact transform the beloved sword always had
+  // (resting tilt forward), so equipped weapons rest angled the same way
+  // and arc naturally with the arm during attack swings.
+  const gripAnchor = new THREE.Group()
+  gripAnchor.position.set(0.02, -0.44, 0.08)
+  gripAnchor.rotation.x = -0.35 // resting tilt forward
+  armR.add(gripAnchor)
+  anchors['weapon'] = gripAnchor
+
+  const sword = new THREE.Group()
+  const grip = box(0.06, 0.16, 0.06, lambert(0x5a3a22))
+  const guard = box(0.2, 0.05, 0.07, lambert(0xc9a24b))
+  guard.position.y = 0.1
+  const blade = box(0.07, 0.52, 0.035, lambert(0xd8dde6))
+  blade.position.y = 0.38
+  const tip = box(0.05, 0.08, 0.035, lambert(0xd8dde6))
+  tip.position.y = 0.68
+  sword.add(grip, guard, blade, tip)
+  gripAnchor.add(sword)
+
+  // --- left-forearm shield anchor (face points outward, -X when facing +Z)
+  const shieldAnchor = new THREE.Group()
+  shieldAnchor.position.set(-0.13, -0.4, 0.03)
+  shieldAnchor.rotation.y = -Math.PI / 2
+  shieldAnchor.scale.setScalar(0.8)
+  armL.add(shieldAnchor)
+  anchors['shield'] = shieldAnchor
+
+  // --- torso overlay anchor (origin at torso base, just above the belt) ---
+  const chestAnchor = new THREE.Group()
+  chestAnchor.position.set(0, 0.49, 0)
+  chestAnchor.scale.setScalar(0.9)
+  body.add(chestAnchor)
+  anchors['chest'] = chestAnchor
+
+  // --- boot anchors (one per foot; right side gets a clone) ---------------
+  const makeBootAnchor = (pivot: THREE.Group): THREE.Group => {
+    const a = new THREE.Group()
+    a.position.set(0, -0.46, 0.02)
+    a.scale.setScalar(0.45)
+    pivot.add(a)
+    return a
+  }
+  anchors['boots'] = makeBootAnchor(legL)
+  const bootAnchorR = makeBootAnchor(legR)
+
+  // --- cape (simple back-plane voxels; the rig sways the pivot) -----------
+  let capePivot: THREE.Group | null = null
+  if (capeHex !== null) {
+    capePivot = new THREE.Group()
+    capePivot.position.set(0, HIP_Y + 0.5, -(torsoD / 2 + 0.03))
+    const capeMat = lambert(capeHex)
+    const panel = box(torsoW - 0.06, 0.78, 0.05, capeMat)
+    panel.position.y = -0.39
+    panel.castShadow = true
+    // little clasp bar across the shoulders
+    const clasp = box(torsoW - 0.02, 0.07, 0.07, lambert(0xc9a24b))
+    clasp.position.set(0, 0, 0.04)
+    capePivot.add(panel, clasp)
+    capePivot.rotation.x = 0.08 // rests just off the back
+    body.add(capePivot)
+  }
+
+  // --- head (pivot at neck) + pixel face + hair + facial hair -------------
+  const headPivot = new THREE.Group()
+  headPivot.position.y = NECK_Y
+  const smileCss = darkSkin ? '#e8c9a8' : '#7a4a33'
+  const faceMat = new THREE.MeshLambertMaterial({ map: makeFaceTexture(skinCss, eyeCss, smileCss) })
+  // box material order: +x, -x, +y, -y, +z, -z — face goes on +z
+  const headMats = [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat]
+  const head = box(HEAD_SIZE, HEAD_SIZE, HEAD_SIZE, headMats)
+  head.position.y = HEAD_SIZE / 2 + 0.02
+  headPivot.add(head)
+
+  addHair(headPivot, look.hairStyle, hairMat)
+  addFacialHair(headPivot, look.facialHair, hairMat)
+  body.add(headPivot)
+
+  // --- head-top helm anchor (base sits above the eyes, covers the hair) ---
+  const helmAnchor = new THREE.Group()
+  helmAnchor.position.set(0, 0.62, 0)
+  helmAnchor.scale.setScalar(0.85)
+  headPivot.add(helmAnchor)
+  anchors['helm'] = helmAnchor
+
+  return {
+    body,
+    headPivot,
+    torso,
+    armL,
+    armR,
+    legL,
+    legR,
+    capePivot,
+    anchors,
+    bootAnchorR,
+    defaultSword: sword,
+    defaultBoots
+  }
+}
+
+/** The 8 voxel hair styles. Style 1 ('The Bob') is the original hero hair. */
+function addHair(headPivot: THREE.Group, styleIdx: number, hairMat: THREE.Material): void {
+  const hs = HEAD_SIZE
+  const style = ((Math.floor(styleIdx) % 8) + 8) % 8
+  const add = (...meshes: THREE.Mesh[]): void => {
+    for (const m of meshes) headPivot.add(m)
+  }
+  const cap = (h = 0.16): THREE.Mesh => {
+    const c = box(hs + 0.06, h, hs + 0.06, hairMat)
+    c.position.y = hs + 0.06
+    return c
+  }
+  const fringe = (): THREE.Mesh => {
+    const f = box(hs + 0.06, 0.1, 0.1, hairMat)
+    f.position.set(0, hs - 0.07, hs / 2 + 0.03)
+    return f
+  }
+  const backPanel = (h = 0.34): THREE.Mesh => {
+    const b = box(hs + 0.06, h, 0.12, hairMat)
+    b.position.set(0, hs + 0.14 - 0.06 - h / 2 + 0.01, -(hs / 2 + 0.04))
+    return b
+  }
+
+  switch (style) {
+    case 0: {
+      // spiky: thin cap + a crown of chunky spikes
+      add(cap(0.12), fringe())
+      const spots: Array<[number, number, number]> = [
+        [-0.22, 0.2, -0.18],
+        [0.05, 0.26, -0.02],
+        [0.24, 0.2, 0.14],
+        [-0.12, 0.22, 0.18],
+        [0.18, 0.22, -0.2]
+      ]
+      for (const [x, h, z] of spots) {
+        const s = box(0.16, h, 0.16, hairMat)
+        s.position.set(x, hs + 0.1 + h / 2, z)
+        headPivot.add(s)
+      }
+      break
+    }
+    case 1: {
+      // THE classic bob: cap + back panel + fringe (the original hero, exactly)
+      const c = box(hs + 0.06, 0.16, hs + 0.06, hairMat)
+      c.position.y = hs + 0.06
+      const back = box(hs + 0.06, 0.34, 0.12, hairMat)
+      back.position.set(0, hs - 0.19, -(hs / 2 + 0.04))
+      add(c, back, fringe())
+      break
+    }
+    case 2: {
+      // long & flowing: cap + fringe + shoulder-length back + side curtains
+      add(cap(), fringe(), backPanel(0.88))
+      for (const side of [-1, 1]) {
+        const curtain = box(0.12, 0.62, hs + 0.04, hairMat)
+        curtain.position.set(side * (hs / 2 + 0.05), hs - 0.26, -0.02)
+        headPivot.add(curtain)
+      }
+      break
+    }
+    case 3: {
+      // ponytail: cap + fringe + tie + a jaunty tail out the back
+      add(cap(), fringe(), backPanel(0.3))
+      const tie = box(0.2, 0.1, 0.12, lambert(0xc9a24b))
+      tie.position.set(0, hs - 0.02, -(hs / 2 + 0.12))
+      const tail = box(0.16, 0.52, 0.16, hairMat)
+      tail.position.set(0, hs - 0.32, -(hs / 2 + 0.16))
+      add(tie, tail)
+      break
+    }
+    case 4: {
+      // mohawk: a proud stepped crest, nothing else — commitment
+      const heights: Array<[number, number]> = [
+        [0.3, 0.2], // [z, h]
+        [0.1, 0.3],
+        [-0.1, 0.3],
+        [-0.3, 0.22]
+      ]
+      for (const [z, h] of heights) {
+        const crest = box(0.16, h, 0.2, hairMat)
+        crest.position.set(0, hs + 0.1 + h / 2, z)
+        headPivot.add(crest)
+      }
+      break
+    }
+    case 5:
+      // gloriously bald: the head speaks for itself
+      break
+    case 6: {
+      // braids: cap + fringe + two side braids with tie knobs
+      add(cap(), fringe(), backPanel(0.3))
+      for (const side of [-1, 1]) {
+        const braid = box(0.14, 0.56, 0.14, hairMat)
+        braid.position.set(side * (hs / 2 + 0.04), hs - 0.24, -0.1)
+        const knob = box(0.17, 0.1, 0.17, lambert(0xc9a24b))
+        knob.position.set(side * (hs / 2 + 0.04), hs - 0.54, -0.1)
+        headPivot.add(braid, knob)
+      }
+      break
+    }
+    default: {
+      // topknot: slim cap + tie + a disciplined bun on top
+      add(cap(0.12), fringe())
+      const tie = box(0.22, 0.07, 0.22, lambert(0xc9a24b))
+      tie.position.y = hs + 0.15
+      const bun = box(0.28, 0.2, 0.28, hairMat)
+      bun.position.y = hs + 0.28
+      add(tie, bun)
+      break
+    }
+  }
+}
+
+/** Facial hair, in the wearer's hair color. 0 = baby smooth. */
+function addFacialHair(headPivot: THREE.Group, idx: number, hairMat: THREE.Material): void {
+  const hs = HEAD_SIZE
+  const z = hs / 2 + 0.03
+  const which = ((Math.floor(idx) % 5) + 5) % 5
+  switch (which) {
+    case 1: {
+      // stubble: a thin shadow of regret along the jaw
+      const stub = box(0.5, 0.1, 0.08, hairMat)
+      stub.position.set(0, 0.1, z - 0.01)
+      headPivot.add(stub)
+      break
+    }
+    case 2: {
+      // full lumberjack: chin curtain + jaw sides
+      const beard = box(0.52, 0.2, 0.1, hairMat)
+      beard.position.set(0, 0.14, z)
+      const chops = box(hs + 0.04, 0.16, 0.1, hairMat)
+      chops.position.set(0, 0.12, z - 0.09)
+      headPivot.add(beard, chops)
+      break
+    }
+    case 3: {
+      // the diplomat: a stately mustache above the smile
+      const stache = box(0.36, 0.08, 0.07, hairMat)
+      stache.position.set(0, 0.3, z)
+      headPivot.add(stache)
+      break
+    }
+    case 4: {
+      // suspicious goatee: chin puff + a whisper of mustache
+      const goat = box(0.2, 0.16, 0.08, hairMat)
+      goat.position.set(0, 0.1, z)
+      const whisper = box(0.3, 0.06, 0.06, hairMat)
+      whisper.position.set(0, 0.31, z)
+      headPivot.add(goat, whisper)
+      break
+    }
+    default:
+      break
+  }
+}
+
+/**
+ * Build a standalone character mesh for a look (origin at feet, facing +Z).
+ * Static — no animation wiring; for previews, pedestals, and other agents.
+ * buildCharacterMesh(DEFAULT_LOOK) is the original hard-coded hero, box for
+ * box. For a living, animated character use CharacterRig.
+ */
+export function buildCharacterMesh(look: CharacterLook = DEFAULT_LOOK): THREE.Group {
+  const root = new THREE.Group()
+  root.add(buildBodyParts(look).body)
+  return root
+}
+
+// ---------------------------------------------------------------------------
+// The rig
+// ---------------------------------------------------------------------------
 
 /**
  * A voxel character with idle-breathe + walk animations.
  *
  * Call `update(dt, moving, speed01)` every frame; `speed01` is current
  * speed normalized 0..1 and scales the walk-cycle energy.
+ *
+ * `applyLook(look)` rebuilds the body IN PLACE: position/facing, the group
+ * node (including externally-added children like name labels) and every
+ * equipped item mesh all survive the swap.
  */
 export class CharacterRig {
   /** Add this to the scene; position = feet, rotation.y = facing. */
   readonly group: THREE.Group
 
-  private readonly body: THREE.Group
-  private readonly headPivot: THREE.Group
-  private readonly torso: THREE.Mesh
-  private readonly armL: THREE.Group
-  private readonly armR: THREE.Group
-  private readonly legL: THREE.Group
-  private readonly legR: THREE.Group
+  private body!: THREE.Group
+  private headPivot!: THREE.Group
+  private torso!: THREE.Mesh
+  private armL!: THREE.Group
+  private armR!: THREE.Group
+  private legL!: THREE.Group
+  private legR!: THREE.Group
+  private capePivot: THREE.Group | null = null
 
-  private readonly neckY: number
+  private readonly neckY = NECK_Y
   private t = Math.random() * 10 // desync idle cycles between characters
   private phase = 0
+  private lookNow: CharacterLook
 
   // --- equipment attach points (anchors scale/orient gear for the rig) ----
-  private readonly anchors: Record<string, THREE.Group> = {}
-  private readonly bootAnchorR: THREE.Group
+  private anchors: Record<string, THREE.Group> = {}
+  private bootAnchorR!: THREE.Group
   private readonly equipped = new Map<string, THREE.Object3D[]>()
-  private readonly defaultSword: THREE.Group
-  private readonly defaultBoots: THREE.Mesh[] = []
+  private defaultSword!: THREE.Group
+  private defaultBoots: THREE.Mesh[] = []
+  private gripStyle: GripStyle | null = null
 
   // --- combat animation state ---------------------------------------------
   private attackT = -1 // <0 = not attacking; else seconds elapsed
@@ -209,139 +617,70 @@ export class CharacterRig {
   private specialStrikeFired = false
   private specialCb: (() => void) | null = null
 
-  constructor(opts: CharacterOptions = {}) {
-    const hue = opts.tunicHue ?? 210
-    const tunic = new THREE.Color().setHSL(hue / 360, 0.62, 0.52)
-    const tunicDark = tunic.clone().multiplyScalar(0.75)
-    const skin = new THREE.Color(0xf0c49a)
-    const skinCss = `#${skin.getHexString()}`
-    const hairColor = HAIR_COLORS[Math.abs(Math.round(hue * 7)) % HAIR_COLORS.length] ?? 0x4a2f1b
-
+  constructor(look: CharacterLook = DEFAULT_LOOK) {
     this.group = new THREE.Group()
-    this.body = new THREE.Group()
+    this.lookNow = { ...look }
+    this.buildBody(this.lookNow)
+  }
+
+  /** The look this rig is currently wearing (copy). */
+  currentLook(): CharacterLook {
+    return { ...this.lookNow }
+  }
+
+  private buildBody(look: CharacterLook): void {
+    const parts = buildBodyParts(look)
+    this.body = parts.body
+    this.headPivot = parts.headPivot
+    this.torso = parts.torso
+    this.armL = parts.armL
+    this.armR = parts.armR
+    this.legL = parts.legL
+    this.legR = parts.legR
+    this.capePivot = parts.capePivot
+    this.anchors = parts.anchors
+    this.bootAnchorR = parts.bootAnchorR
+    this.defaultSword = parts.defaultSword
+    this.defaultBoots = parts.defaultBoots
+    this.armL.rotation.z = 0.06
+    this.armR.rotation.z = -0.06
     this.group.add(this.body)
+  }
 
-    const skinMat = lambert(skin.getHex())
-    const tunicMat = lambert(tunic.getHex())
-    const tunicDarkMat = lambert(tunicDark.getHex())
-    const hairMat = lambert(hairColor)
-    const bootMat = lambert(0x5b4330)
-
-    // --- legs (pivot at hip, geometry hangs down) -------------------------
-    const hipY = 0.45
-    const makeLeg = (x: number): THREE.Group => {
-      const pivot = new THREE.Group()
-      pivot.position.set(x, hipY, 0)
-      const leg = box(0.2, 0.45, 0.24, tunicDarkMat)
-      leg.position.y = -0.225
-      const boot = box(0.22, 0.12, 0.28, bootMat)
-      boot.position.set(0, -0.4, 0.02)
-      this.defaultBoots.push(boot)
-      pivot.add(leg, boot)
-      return pivot
+  /**
+   * Swap the whole body for a new look, in place. Position, facing, any
+   * externally-added group children (name labels) and all equipped item
+   * meshes are preserved; combat/animation state keeps ticking.
+   */
+  applyLook(look: CharacterLook): void {
+    // 1) lift equipped meshes off the old body (clones are rebuilt fresh)
+    const keep = new Map<string, THREE.Group>()
+    for (const [slot, objs] of this.equipped) {
+      const primary = objs[0]
+      if (primary instanceof THREE.Group) {
+        primary.removeFromParent()
+        keep.set(slot, primary)
+      }
+      for (let i = 1; i < objs.length; i++) {
+        const extra = objs[i]
+        if (extra) {
+          extra.removeFromParent()
+          disposeObject(extra)
+        }
+      }
     }
-    this.legL = makeLeg(-0.14)
-    this.legR = makeLeg(0.14)
-    this.body.add(this.legL, this.legR)
+    this.equipped.clear()
 
-    // --- torso ------------------------------------------------------------
-    this.torso = box(0.62, 0.52, 0.36, tunicMat)
-    this.torso.position.y = hipY + 0.26
-    // belt
-    const belt = box(0.64, 0.08, 0.38, lambert(0x3a2a18))
-    belt.position.y = hipY + 0.04
-    this.body.add(this.torso, belt)
+    // 2) tear down the old body (group-level children stay put)
+    this.group.remove(this.body)
+    disposeObject(this.body)
 
-    // --- arms (pivot at shoulder) ----------------------------------------
-    const shoulderY = hipY + 0.48
-    const makeArm = (x: number): THREE.Group => {
-      const pivot = new THREE.Group()
-      pivot.position.set(x, shoulderY, 0)
-      const sleeve = box(0.17, 0.26, 0.21, tunicMat)
-      sleeve.position.y = -0.11
-      const hand = box(0.16, 0.24, 0.2, skinMat)
-      hand.position.y = -0.36
-      pivot.add(sleeve, hand)
-      return pivot
-    }
-    this.armL = makeArm(-0.4)
-    this.armR = makeArm(0.4)
-    this.body.add(this.armL, this.armR)
-
-    // --- right-hand grip anchor + the default sword -----------------------
-    // The anchor carries the exact transform the beloved sword always had
-    // (resting tilt forward), so equipped weapons rest angled the same way
-    // and arc naturally with the arm during attack swings.
-    const gripAnchor = new THREE.Group()
-    gripAnchor.position.set(0.02, -0.44, 0.08)
-    gripAnchor.rotation.x = -0.35 // resting tilt forward
-    this.armR.add(gripAnchor)
-    this.anchors['weapon'] = gripAnchor
-
-    const sword = new THREE.Group()
-    const grip = box(0.06, 0.16, 0.06, lambert(0x5a3a22))
-    const guard = box(0.2, 0.05, 0.07, lambert(0xc9a24b))
-    guard.position.y = 0.1
-    const blade = box(0.07, 0.52, 0.035, lambert(0xd8dde6))
-    blade.position.y = 0.38
-    const tip = box(0.05, 0.08, 0.035, lambert(0xd8dde6))
-    tip.position.y = 0.68
-    sword.add(grip, guard, blade, tip)
-    gripAnchor.add(sword)
-    this.defaultSword = sword
-
-    // --- left-forearm shield anchor (face points outward, -X when facing +Z)
-    const shieldAnchor = new THREE.Group()
-    shieldAnchor.position.set(-0.13, -0.4, 0.03)
-    shieldAnchor.rotation.y = -Math.PI / 2
-    shieldAnchor.scale.setScalar(0.8)
-    this.armL.add(shieldAnchor)
-    this.anchors['shield'] = shieldAnchor
-
-    // --- torso overlay anchor (origin at torso base, just above the belt) -
-    const chestAnchor = new THREE.Group()
-    chestAnchor.position.set(0, 0.49, 0)
-    chestAnchor.scale.setScalar(0.9)
-    this.body.add(chestAnchor)
-    this.anchors['chest'] = chestAnchor
-
-    // --- boot anchors (one per foot; right side gets a clone) -------------
-    const makeBootAnchor = (pivot: THREE.Group): THREE.Group => {
-      const a = new THREE.Group()
-      a.position.set(0, -0.46, 0.02)
-      a.scale.setScalar(0.45)
-      pivot.add(a)
-      return a
-    }
-    this.anchors['boots'] = makeBootAnchor(this.legL)
-    this.bootAnchorR = makeBootAnchor(this.legR)
-
-    // --- head (pivot at neck) + pixel face + hair cap ---------------------
-    this.neckY = hipY + 0.5
-    this.headPivot = new THREE.Group()
-    this.headPivot.position.y = this.neckY
-    const headSize = 0.72
-    const faceMat = new THREE.MeshLambertMaterial({ map: makeFaceTexture(skinCss) })
-    // box material order: +x, -x, +y, -y, +z, -z — face goes on +z
-    const headMats = [skinMat, skinMat, skinMat, skinMat, faceMat, skinMat]
-    const head = box(headSize, headSize, headSize, headMats)
-    head.position.y = headSize / 2 + 0.02
-    // hair: top cap + back panel + little fringe over the forehead
-    const cap = box(headSize + 0.06, 0.16, headSize + 0.06, hairMat)
-    cap.position.y = headSize + 0.06
-    const back = box(headSize + 0.06, 0.34, 0.12, hairMat)
-    back.position.set(0, headSize - 0.19, -(headSize / 2 + 0.04))
-    const fringe = box(headSize + 0.06, 0.1, 0.1, hairMat)
-    fringe.position.set(0, headSize - 0.07, headSize / 2 + 0.03)
-    this.headPivot.add(head, cap, back, fringe)
-    this.body.add(this.headPivot)
-
-    // --- head-top helm anchor (base sits above the eyes, covers the hair) -
-    const helmAnchor = new THREE.Group()
-    helmAnchor.position.set(0, 0.62, 0)
-    helmAnchor.scale.setScalar(0.85)
-    this.headPivot.add(helmAnchor)
-    this.anchors['helm'] = helmAnchor
+    // 3) rebuild + re-hang the gear and grip pose
+    this.lookNow = { ...look }
+    this.buildBody(this.lookNow)
+    for (const [slot, mesh] of keep) this.setEquipmentMesh(slot, mesh)
+    this.setGripStyle(this.gripStyle)
+    if (this.hurtT >= 0) this.setEmissive(0x8a1f1f) // mid-flash: keep glowing
   }
 
   // -------------------------------------------------------------------------
@@ -388,6 +727,7 @@ export class CharacterRig {
    * The anchor rotates; attack swings arc the whole arm as before.
    */
   setGripStyle(style: GripStyle | null): void {
+    this.gripStyle = style
     const anchor = this.anchors['weapon']
     if (!anchor) return
     const [rx, ry, rz] = style ? GRIP_POSE[style] : GRIP_DEFAULT
@@ -638,6 +978,11 @@ export class CharacterRig {
       this.headPivot.position.y += (this.neckY - this.headPivot.position.y) * damp
       this.armL.rotation.z += (0.06 - this.armL.rotation.z) * damp
       this.armR.rotation.z += (-0.06 - this.armR.rotation.z) * damp
+      // cape: lifts with speed and flutters with the step bounce
+      if (this.capePivot) {
+        const want = 0.16 + 0.3 * energy + Math.sin(this.phase) * 0.06 * energy
+        this.capePivot.rotation.x += (want - this.capePivot.rotation.x) * damp
+      }
     } else {
       // ease limbs back to rest
       this.armL.rotation.x *= 1 - damp
@@ -652,6 +997,11 @@ export class CharacterRig {
       this.armL.rotation.z = 0.06 + b * 0.025
       this.armR.rotation.z = -0.06 - b * 0.025
       this.headPivot.rotation.y = Math.sin(this.t * 0.6) * 0.07 // looks around a bit
+      // cape settles to a gentle breeze-sway
+      if (this.capePivot) {
+        const want = 0.08 + Math.sin(this.t * 1.6) * 0.03
+        this.capePivot.rotation.x += (want - this.capePivot.rotation.x) * damp
+      }
     }
 
     // layered on top: the attack swing stomps the right arm, specials stomp
@@ -663,19 +1013,6 @@ export class CharacterRig {
 
   /** Free GPU resources (geometries, materials, textures). */
   dispose(): void {
-    this.group.traverse((obj) => {
-      if (obj instanceof THREE.Mesh) {
-        obj.geometry.dispose()
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material]
-        for (const m of mats) {
-          if (m instanceof THREE.MeshLambertMaterial && m.map) m.map.dispose()
-          m.dispose()
-        }
-      }
-      if (obj instanceof THREE.Sprite) {
-        obj.material.map?.dispose()
-        obj.material.dispose()
-      }
-    })
+    disposeObject(this.group)
   }
 }
