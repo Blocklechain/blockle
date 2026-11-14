@@ -1,0 +1,129 @@
+name: ASC Gold IAP Setup
+
+# One-off (re-runnable, idempotent): create the four GOLD consumable in-app
+# purchases for Blocklings in App Store Connect via the ASC API — product,
+# en-US localization, USD-anchored price schedule, worldwide availability.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  iap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create Gold IAP products
+        env:
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          python3 -m pip install --quiet pyjwt cryptography requests
+          python3 - <<'PY'
+          import os, time, base64, jwt, requests, json, sys
+
+          kid = os.environ['ASC_KEY_ID']; iss = os.environ['ASC_ISSUER_ID']
+          key = base64.b64decode(os.environ['ASC_KEY_BASE64']).decode()
+          now = int(time.time())
+          tok = jwt.encode({'iss': iss, 'iat': now, 'exp': now+1200, 'aud': 'appstoreconnect-v1'},
+                           key, algorithm='ES256', headers={'kid': kid, 'typ': 'JWT'})
+          H = {'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json'}
+          B = 'https://api.appstoreconnect.apple.com'
+
+          def die(msg, r=None):
+              print('!!', msg)
+              if r is not None: print(r.status_code, r.text[:2000])
+              sys.exit(1)
+
+          r = requests.get(B+'/v1/apps', headers=H,
+                           params={'filter[bundleId]': 'org.blockle.blocklings', 'limit': 2})
+          apps = r.json().get('data', [])
+          if not apps: die('app not found', r)
+          app_id = apps[0]['id']
+          print('APP', app_id, apps[0]['attributes'].get('name'))
+
+          # All territory ids (for worldwide availability).
+          terrs, url = [], B+'/v1/territories?limit=200'
+          while url:
+              tr = requests.get(url, headers=H)
+              j = tr.json()
+              terrs += [t['id'] for t in j.get('data', [])]
+              url = j.get('links', {}).get('next')
+          print('territories:', len(terrs))
+
+          SKUS = [
+              ('gold_100',  'Pouch of Gold (100)',   '100 Gold for the Blocklings marketplace.',        0.99),
+              ('gold_550',  'Sack of Gold (550)',    '550 Gold — a bonus-stuffed sack.',                4.99),
+              ('gold_1200', 'Chest of Gold (1200)',  '1200 Gold — a respectable hoard.',                9.99),
+              ('gold_2600', 'Vault of Gold (2600)',  '2600 Gold — dragon-adjacent wealth.',            19.99),
+          ]
+
+          for sku, display, desc, usd in SKUS:
+              # Idempotency: skip if it already exists.
+              r = requests.get(B+f'/v1/apps/{app_id}/inAppPurchasesV2', headers=H,
+                               params={'filter[productId]': sku, 'limit': 2})
+              existing = r.json().get('data', [])
+              if existing:
+                  print(f'SKIP {sku} — exists as {existing[0]["id"]} '
+                        f'(state {existing[0]["attributes"].get("state")})')
+                  continue
+
+              # 1) product
+              r = requests.post(B+'/v2/inAppPurchases', headers=H, data=json.dumps({
+                  'data': {'type': 'inAppPurchases',
+                    'attributes': {'name': display, 'productId': sku,
+                                   'inAppPurchaseType': 'CONSUMABLE',
+                                   'reviewNote': 'Premium currency (Gold) for in-game trading. '
+                                                 'Credited server-side after receipt validation.'},
+                    'relationships': {'app': {'data': {'type': 'apps', 'id': app_id}}}}}))
+              if r.status_code != 201: die(f'create {sku}', r)
+              iap_id = r.json()['data']['id']
+              print(f'CREATED {sku} -> {iap_id}')
+
+              # 2) en-US localization
+              r = requests.post(B+'/v1/inAppPurchaseLocalizations', headers=H, data=json.dumps({
+                  'data': {'type': 'inAppPurchaseLocalizations',
+                    'attributes': {'locale': 'en-US', 'name': display, 'description': desc},
+                    'relationships': {'inAppPurchaseV2':
+                        {'data': {'type': 'inAppPurchases', 'id': iap_id}}}}}))
+              print(f'  localization: {r.status_code}')
+
+              # 3) price: find the USA price point matching the USD price
+              pp_id, url = None, B+f'/v2/inAppPurchases/{iap_id}/pricePoints?filter[territory]=USA&limit=200'
+              while url and not pp_id:
+                  pr = requests.get(url, headers=H)
+                  j = pr.json()
+                  for p in j.get('data', []):
+                      if abs(float(p['attributes']['customerPrice']) - usd) < 0.001:
+                          pp_id = p['id']; break
+                  url = j.get('links', {}).get('next')
+              if not pp_id: die(f'no USA price point at ${usd} for {sku}')
+              r = requests.post(B+'/v1/inAppPurchasePriceSchedules', headers=H, data=json.dumps({
+                  'data': {'type': 'inAppPurchasePriceSchedules',
+                    'relationships': {
+                      'inAppPurchase': {'data': {'type': 'inAppPurchases', 'id': iap_id}},
+                      'baseTerritory': {'data': {'type': 'territories', 'id': 'USA'}},
+                      'manualPrices': {'data': [{'type': 'inAppPurchasePrices', 'id': '${p1}'}]}},
+                  },
+                  'included': [{'type': 'inAppPurchasePrices', 'id': '${p1}',
+                    'attributes': {'startDate': None},
+                    'relationships': {
+                      'inAppPurchasePricePoint': {'data': {'type': 'inAppPurchasePricePoints', 'id': pp_id}},
+                      'inAppPurchaseV2': {'data': {'type': 'inAppPurchases', 'id': iap_id}}}}]}))
+              print(f'  price ${usd}: {r.status_code}' + ('' if r.status_code == 201 else ' ' + r.text[:500]))
+
+              # 4) worldwide availability
+              r = requests.post(B+'/v1/inAppPurchaseAvailabilities', headers=H, data=json.dumps({
+                  'data': {'type': 'inAppPurchaseAvailabilities',
+                    'attributes': {'availableInNewTerritories': True},
+                    'relationships': {
+                      'inAppPurchase': {'data': {'type': 'inAppPurchases', 'id': iap_id}},
+                      'availableTerritories': {'data':
+                          [{'type': 'territories', 'id': t} for t in terrs]}}}}))
+              print(f'  availability: {r.status_code}' + ('' if r.status_code == 201 else ' ' + r.text[:500]))
+
+          # Final state listing.
+          r = requests.get(B+f'/v1/apps/{app_id}/inAppPurchasesV2', headers=H, params={'limit': 20})
+          for d in r.json().get('data', []):
+              a = d['attributes']
+              print('IAP', a.get('productId'), '| state:', a.get('state'), '| name:', a.get('name'))
+          PY
