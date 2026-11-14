@@ -150,3 +150,113 @@ export interface WalletAPI {
   /** True if an encrypted wallet is already stored on this device. */
   exists(): boolean
 }
+
+/* ========================================================================== *
+ *  PHASE 2+ CONTRACT EXTENSIONS (frozen — parallel modules build against     *
+ *  these plus src/ids.ts and src/events.ts). Shim convention: each feature   *
+ *  ships a top-level src/<name>.ts exporting `init<Name>(api: GameAPI)`      *
+ *  (wired by main.ts in integrator-defined order); heavy code lives in       *
+ *  src/<name>/ directories.                                                  *
+ * ========================================================================== */
+
+/** Six rarity tiers, common..mythical (index = tier). */
+export type Rarity = 0 | 1 | 2 | 3 | 4 | 5
+
+/** Equipment + item slots. */
+export type ItemSlot =
+  | 'weapon' | 'shield' | 'helm' | 'chest' | 'boots' | 'accessory'
+  | 'tool' | 'consumable' | 'material'
+
+/** Static item definition (catalog entry). */
+export interface ItemDef {
+  id: string
+  name: string
+  slot: ItemSlot
+  rarity: Rarity
+  /** Combat/utility stats granted while equipped. */
+  stats?: Partial<{ atk: number; def: number; str: number; int: number; agi: number }>
+  /** Level required (attack level for weapons, defense for armor...). */
+  levelReq?: number
+  /** For consumables: hp/mp restored. */
+  restores?: Partial<{ hp: number; mp: number }>
+  /** Vendor value in BLOCK-cents (game-economy units, NOT on-chain until minted). */
+  value: number
+  desc?: string
+}
+
+/** A stack of an item in an inventory. */
+export interface ItemStack { id: string; qty: number }
+
+/** Items module: catalog + 3D voxel meshes for every item. */
+export interface ItemsAPI {
+  def(id: string): ItemDef | undefined
+  all(): readonly ItemDef[]
+  /**
+   * Build the item's 3D voxel model (fresh group, ~0.5-1.2 units tall,
+   * origin at grip/base, facing +Z). Used for the equipped-on-character
+   * attachment, world loot drops, and the rotating inventory viewer.
+   */
+  buildMesh(id: string): import('three').Group
+}
+
+/** Inventory + equipment (persists via the save module). */
+export interface InventoryAPI {
+  items(): readonly ItemStack[]
+  add(id: string, qty: number, source?: string): void
+  remove(id: string, qty: number): boolean
+  count(id: string): number
+  equipment(): Readonly<Record<string, string | null>>
+  equip(id: string): boolean
+  unequip(slot: string): void
+  /** Aggregate stats from all equipped items. */
+  equippedStats(): { atk: number; def: number; str: number; int: number; agi: number }
+}
+
+/** Skills: xp/levels for every SkillId in src/ids.ts. */
+export interface SkillsAPI {
+  level(skill: string): number
+  xp(skill: string): number
+  xpToNext(skill: string): number
+  addXp(skill: string, amount: number): void
+  /** Total level across all skills (profile flex number). */
+  total(): number
+}
+
+/** Quest definitions + live log. */
+export interface QuestStep {
+  kind: 'kill' | 'gather' | 'talk' | 'explore' | 'collect'
+  /** species id / node kind / npc id / region id / item id (by kind). */
+  target: string
+  need: number
+  label: string
+}
+export interface QuestDef {
+  id: string
+  title: string
+  giver: string // npc id
+  regionId: string
+  steps: QuestStep[]
+  rewards: { xp?: Partial<Record<string, number>>; items?: ItemStack[]; blockCents?: number }
+  intro: string
+  outro: string
+}
+export interface QuestsAPI {
+  available(npcId: string): readonly QuestDef[]
+  active(): readonly { def: QuestDef; step: number; done: number }[]
+  accept(questId: string): void
+  completed(): readonly string[]
+}
+
+/** Serializable character save (MUST stay well under 16KB JSON). */
+export interface CharacterSave {
+  v: 1
+  name: string
+  pos: [number, number]
+  skills: Record<string, number> // skill -> xp
+  inv: [string, number][] // [itemId, qty]
+  equip: Record<string, string | null>
+  quests: { done: string[]; active: [string, number, number][] } // [id, step, done]
+  stones: string[] // attuned waystone ids
+  hp: number
+  mp: number
+}
