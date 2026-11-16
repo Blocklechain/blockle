@@ -37,6 +37,12 @@
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<!-- Portrait-only game: opt out of iPad multitasking (Slide Over / Split
+	     View) so Apple allows the restricted orientation set. Without this the
+	     upload is rejected (ITMS code 90474 — iPad multitasking requires all
+	     four orientations). -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
