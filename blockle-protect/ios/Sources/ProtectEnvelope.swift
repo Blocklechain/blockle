@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // Blockle Protect — envelope encryption + manifest + Merkle, a byte-exact port
 // of packages/core/src/{envelope,manifest,merkle,proof}.ts. Produces the SAME

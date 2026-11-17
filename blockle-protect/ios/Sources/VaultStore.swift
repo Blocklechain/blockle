@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import CryptoKit
 
 // The Vault: protect a file end-to-end on-device — encrypt + sign with the
 // post-quantum core, anchor its commitment on the Blockle chain, and keep a
