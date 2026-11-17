@@ -53,7 +53,7 @@ enum ProtectCrypto {
     enum PQ {
         // ---- ML-DSA-65 (signatures) ----
         static func dsaKeygenFromSeed(_ seed32: Data) throws -> (publicKey: Data, privateKey: MLDSA65.PrivateKey) {
-            let sk = try MLDSA65.PrivateKey(seedRepresentation: seed32)
+            let sk = try MLDSA65.PrivateKey(seedRepresentation: seed32, publicKey: nil)
             return (sk.publicKey.rawRepresentation, sk)
         }
         static func dsaSign(_ privateKey: MLDSA65.PrivateKey, _ message: Data) throws -> Data {
@@ -66,12 +66,12 @@ enum ProtectCrypto {
 
         // ---- ML-KEM-768 (key establishment) ----
         static func kemKeygenFromSeed(_ seed64: Data) throws -> (publicKey: Data, privateKey: MLKEM768.PrivateKey) {
-            let sk = try MLKEM768.PrivateKey(seedRepresentation: seed64)
+            let sk = try MLKEM768.PrivateKey(seedRepresentation: seed64, publicKey: nil)
             return (sk.publicKey.rawRepresentation, sk)
         }
         static func kemEncapsulate(publicKey: Data) throws -> (cipherText: Data, sharedSecret: Data) {
             let pk = try MLKEM768.PublicKey(rawRepresentation: publicKey)
-            let r = try pk.encapsulate()
+            let r = pk.encapsulate()
             let ss = r.sharedSecret.withUnsafeBytes { Data($0) }
             return (r.encapsulated, ss)
         }
