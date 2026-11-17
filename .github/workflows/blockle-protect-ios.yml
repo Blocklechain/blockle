@@ -75,6 +75,18 @@ jobs:
         working-directory: blockle-protect/ios
         run: xcodegen generate
 
+      - name: Cross-platform crypto tests (iOS 26 simulator)
+        working-directory: blockle-protect/ios
+        run: |
+          set -eo pipefail
+          # Pick an available iPhone simulator (name varies by Xcode release).
+          SIM="$(xcrun simctl list devices available | grep -oE 'iPhone [0-9][0-9A-Za-z ]*\(' | sed 's/ ($//' | head -1 | xargs)"
+          [ -z "$SIM" ] && SIM="iPhone 16"
+          echo "Testing on simulator: $SIM"
+          xcodebuild test -project BlockleProtect.xcodeproj -scheme BlockleProtect \
+            -destination "platform=iOS Simulator,name=$SIM,OS=latest" \
+            CODE_SIGNING_ALLOWED=NO | tail -80
+
       - name: Archive + export IPA (cloud-signed)
         working-directory: blockle-protect/ios
         env:

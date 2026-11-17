@@ -65,21 +65,96 @@ struct HomeView: View {
 struct VaultView: View {
     var body: some View {
         NavigationStack {
-            VStack(spacing: 14) {
-                Spacer()
-                Image(systemName: "lock.doc.fill").font(.system(size: 54)).foregroundStyle(Brand.red)
-                Text("Your private vault").font(.title2.weight(.bold)).foregroundStyle(Brand.ink)
-                Text("Encrypted, post-quantum-protected storage for your most important documents, photos and records.")
-                    .font(.subheadline).foregroundStyle(Brand.inkSoft)
-                    .multilineTextAlignment(.center).padding(.horizontal, 32)
-                Text("File & photo protection arrives in the next beta build.")
-                    .font(.footnote).foregroundStyle(Brand.muted)
-                Spacer()
+            Group {
+                if #available(iOS 26.0, *) {
+                    VaultContent()
+                } else {
+                    unsupported
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Brand.bg.ignoresSafeArea())
             .navigationTitle("Vault")
         }
+    }
+    private var unsupported: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            Image(systemName: "lock.doc.fill").font(.system(size: 54)).foregroundStyle(Brand.red)
+            Text("Your private vault").font(.title2.weight(.bold)).foregroundStyle(Brand.ink)
+            Text("Post-quantum file protection uses the newest U.S. cryptography standards, which require iOS 26 or later on this device.")
+                .font(.subheadline).foregroundStyle(Brand.inkSoft)
+                .multilineTextAlignment(.center).padding(.horizontal, 32)
+            Spacer()
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@available(iOS 26.0, *)
+struct VaultContent: View {
+    @StateObject private var store = VaultStore()
+    @State private var picking = false
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                Card {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Protect a file").font(.headline).foregroundStyle(Brand.ink)
+                        Text("Pick a document or photo. It's encrypted and signed on this device with post-quantum cryptography, and a tamper-evident fingerprint is anchored on the Blockle chain. Your original stays where it is, untouched.")
+                            .font(.subheadline).foregroundStyle(Brand.inkSoft)
+                        Button { picking = true } label: {
+                            Label("Choose a file to protect", systemImage: "plus.circle.fill")
+                        }.buttonStyle(PrimaryButtonStyle()).disabled(store.busy)
+                        if store.busy { HStack(spacing: 8) { ProgressView().tint(Brand.red); Text("Protecting…").font(.footnote).foregroundStyle(Brand.muted) } }
+                        if let err = store.lastError {
+                            Text(err).font(.footnote).foregroundStyle(Brand.red)
+                        }
+                    }
+                }
+                if store.items.isEmpty {
+                    Text("Protected files appear here.").font(.footnote).foregroundStyle(Brand.muted).padding(.top, 8)
+                } else {
+                    ForEach(store.items) { item in itemRow(item) }
+                }
+            }.padding(16)
+        }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+            guard case let .success(urls) = result, let url = urls.first else { return }
+            Task { await importAndProtect(url) }
+        }
+    }
+
+    private func itemRow(_ item: ProtectedItem) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Image(systemName: "lock.doc.fill").foregroundStyle(Brand.red)
+                    Text(item.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Brand.ink).lineLimit(1)
+                    Spacer()
+                    if item.anchored {
+                        Label("Anchored", systemImage: "checkmark.seal.fill").font(.caption2).foregroundStyle(Brand.ok)
+                    } else {
+                        Label("Encrypted", systemImage: "lock.fill").font(.caption2).foregroundStyle(Brand.muted)
+                    }
+                }
+                Text("\(byteString(item.size)) · SHA-384 \(String(item.fingerprintB64.prefix(12)))…")
+                    .font(.caption).foregroundStyle(Brand.muted)
+                if let tx = item.txid {
+                    Text("anchor tx \(String(tx.prefix(12)))…").font(.caption2.monospaced()).foregroundStyle(Brand.redSoft)
+                }
+            }
+        }
+    }
+
+    private func importAndProtect(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { store.lastError = "Couldn't read that file."; return }
+        await store.protectFile(name: url.lastPathComponent, plaintext: data, now: Int(Date().timeIntervalSince1970))
+    }
+
+    private func byteString(_ n: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
     }
 }
 
