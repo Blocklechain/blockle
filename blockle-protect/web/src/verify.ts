@@ -5,19 +5,24 @@
  * backend. The only network call is an OPTIONAL read of the PUBLIC Blockle chain
  * to confirm the anchor transaction exists.
  */
-import { verifyProof, fileMatchesProof, sha384, toBase64Url } from '../../packages/core/src/index.js'
+import { verifyProof, fileMatchesProof, sha384, toBase64Url, fromBase64Url, toHex } from '../../packages/core/src/index.js'
 import type { PortableProof, AnchorRef } from '../../packages/core/src/index.js'
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T
 
-/** Confirm the anchored Merkle root really sits in a Blockle transaction.
- *  Reads the PUBLIC chain via a CORS-open read shim — chain data, not our word. */
+/** Confirm the anchored Merkle root really sits on the Blockle chain.
+ *  Queries the anchor-registry contract's read-only `anchored(root)` view: the
+ *  root is on-chain iff the registry returns a nonzero block height. This is a
+ *  direct contract read of PUBLIC chain state — not our word, not a txid→roots
+ *  table we could forge. The on-chain key is the first 32 bytes of the SHA-384
+ *  root (what the registry stores). */
 async function confirmOnChain(anchor: AnchorRef): Promise<boolean> {
   try {
-    const r = await fetch(`/api/anchor/${encodeURIComponent(anchor.txid)}`, { cache: 'no-store' })
+    const rootHex = toHex(fromBase64Url(anchor.root))
+    const r = await fetch(`/api/anchor/root/${encodeURIComponent(rootHex)}`, { cache: 'no-store' })
     if (!r.ok) return false
-    const j = (await r.json()) as { roots?: string[] }
-    return Array.isArray(j.roots) && j.roots.includes(anchor.root)
+    const j = (await r.json()) as { anchored?: boolean; height?: number }
+    return j.anchored === true && (j.height ?? 0) > 0
   } catch {
     return false
   }
