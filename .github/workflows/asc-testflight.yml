@@ -1,0 +1,89 @@
+name: ASC TestFlight Setup
+# Make Blockle Protect builds installable without manual clicks:
+#  1. set export compliance (usesNonExemptEncryption=false) on any build missing it,
+#  2. ensure an internal TestFlight beta group exists,
+#  3. assign the latest VALID build to that group.
+# Runs on ubuntu (no macOS queue). Idempotent — safe to re-run.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure TestFlight for org.blockle.protect
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          GROUP_NAME: "Blockle Internal"
+        run: |
+          pip install --quiet pyjwt cryptography
+          python3 - <<'PY'
+          import os, time, json, base64, urllib.request, urllib.error, jwt
+          KID, ISS = os.environ['KID'], os.environ['ISS']
+          KEY = base64.b64decode(os.environ['ASC_KEY_BASE64']).decode()
+          GROUP = os.environ['GROUP_NAME']
+          BASE = 'https://api.appstoreconnect.apple.com'
+          now = int(time.time())
+          TOK = jwt.encode({'iss': ISS, 'iat': now, 'exp': now + 900, 'aud': 'appstoreconnect-v1'},
+                           KEY, algorithm='ES256', headers={'kid': KID, 'typ': 'JWT'})
+          def req(method, path, body=None):
+              data = json.dumps(body).encode() if body is not None else None
+              r = urllib.request.Request(BASE + path, data=data, method=method,
+                  headers={'Authorization': 'Bearer ' + TOK, 'Content-Type': 'application/json'})
+              try:
+                  resp = urllib.request.urlopen(r)
+                  txt = resp.read().decode()
+                  return resp.status, (json.loads(txt) if txt else {})
+              except urllib.error.HTTPError as e:
+                  return e.code, {'error': e.read().decode()[:600]}
+
+          st, apps = req('GET', '/v1/apps?filter%5BbundleId%5D=org.blockle.protect')
+          app = (apps.get('data') or [None])[0]
+          assert app, f'app not found: {st} {apps}'
+          aid = app['id']
+          print(f'App: {app["attributes"]["name"]} ({aid})')
+
+          # 1) export compliance on builds missing it
+          st, builds = req('GET', f'/v1/apps/{aid}/builds?limit=20')
+          for b in builds.get('data', []):
+              bid, at = b['id'], b['attributes']
+              if at.get('usesNonExemptEncryption') is None:
+                  s, r = req('PATCH', f'/v1/builds/{bid}',
+                             {'data': {'type': 'builds', 'id': bid,
+                                       'attributes': {'usesNonExemptEncryption': False}}})
+                  print(f'  compliance set on build v{at.get("version")}: HTTP {s}')
+              else:
+                  print(f'  build v{at.get("version")} compliance already {at.get("usesNonExemptEncryption")}')
+
+          # 2) ensure an internal beta group
+          st, groups = req('GET', f'/v1/apps/{aid}/betaGroups?limit=50')
+          grp = next((g for g in groups.get('data', []) if g['attributes'].get('name') == GROUP), None)
+          if not grp:
+              # internal groups: isInternalGroup true; try to create one
+              s, r = req('POST', '/v1/betaGroups', {'data': {
+                  'type': 'betaGroups',
+                  'attributes': {'name': GROUP, 'isInternalGroup': True},
+                  'relationships': {'app': {'data': {'type': 'apps', 'id': aid}}}}})
+              print(f'  create internal group "{GROUP}": HTTP {s}')
+              if s not in (200, 201):
+                  print('    (internal-group create not permitted via API — create "'+GROUP+'" once in TestFlight → Internal Testing; re-run to auto-assign) detail:', r.get('error', '')[:300])
+                  grp = None
+              else:
+                  grp = r.get('data')
+          else:
+              print(f'  internal group "{GROUP}" exists ({grp["id"]})')
+
+          # 3) assign the latest VALID build to the group
+          valid = [b for b in builds.get('data', []) if b['attributes'].get('processingState') == 'VALID']
+          if grp and valid:
+              latest = valid[0]
+              s, r = req('POST', f'/v1/betaGroups/{grp["id"]}/relationships/builds',
+                         {'data': [{'type': 'builds', 'id': latest['id']}]})
+              print(f'  assign build v{latest["attributes"].get("version")} to "{GROUP}": HTTP {s}',
+                    '' if s in (200, 201, 204) else r.get('error', '')[:300])
+          elif not valid:
+              print('  no VALID build yet to assign')
+          print('DONE')
+          PY

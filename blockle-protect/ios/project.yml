@@ -33,6 +33,11 @@ targets:
         INFOPLIST_KEY_UIRequiresFullScreen: YES
         INFOPLIST_KEY_NSFaceIDUsageDescription: "Unlock your private vault with Face ID."
         INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Pick a photo to protect. Your original stays in your library, untouched."
+        # Export compliance: the app uses ONLY standard, published algorithms
+        # (AES-256, ML-KEM-768, ML-DSA-65, SHA-384) — exempt encryption — so no
+        # per-build compliance prompt. Review with legal; flip to YES if you must
+        # self-classify / file an annual report.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
   BlockleProtectTests:
     type: bundle.unit-test
