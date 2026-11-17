@@ -1,0 +1,46 @@
+name: ASC Build Status
+# Ground-truth check: query App Store Connect for Blockle Protect's builds and
+# their processing state (PROCESSING / VALID / INVALID / FAILED) + any delivery
+# issues. Runs on ubuntu (no macOS queue), signs a proper ES256 JWT with PyJWT.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query ASC for org.blockle.protect builds
+        env:
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: |
+          pip install --quiet pyjwt cryptography
+          python3 - <<'PY'
+          import os, time, json, base64, urllib.request, urllib.error, jwt
+          kid, iss = os.environ['KID'], os.environ['ISS']
+          key = base64.b64decode(os.environ['ASC_KEY_BASE64']).decode()
+          now = int(time.time())
+          tok = jwt.encode({'iss': iss, 'iat': now, 'exp': now + 600, 'aud': 'appstoreconnect-v1'},
+                           key, algorithm='ES256', headers={'kid': kid, 'typ': 'JWT'})
+          def get(url):
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + tok})
+              try:
+                  return json.load(urllib.request.urlopen(req))
+              except urllib.error.HTTPError as e:
+                  return {'_http_error': e.code, '_body': e.read().decode()[:500]}
+          apps = get('https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=org.blockle.protect')
+          print('APPS:', json.dumps(apps.get('data') and [(a['id'], a['attributes']['name'], a['attributes']['bundleId'], a['attributes'].get('sku')) for a in apps['data']] or apps, indent=2))
+          for a in apps.get('data', []):
+              aid = a['id']
+              builds = get(f'https://api.appstoreconnect.apple.com/v1/apps/{aid}/builds?limit=20')
+              print(f'\nBUILDS for app {aid} ({a["attributes"]["name"]}):')
+              if not builds.get('data'):
+                  print('  (none)  raw:', json.dumps(builds)[:400])
+              for b in builds.get('data', []):
+                  at = b['attributes']
+                  print(f'  v{at.get("version")}  processingState={at.get("processingState")}  expired={at.get("expired")}  uploaded={at.get("uploadedDate")}  minOS={at.get("minOsVersion")}')
+              # also preReleaseVersions (TestFlight groups a build under these)
+              prv = get(f'https://api.appstoreconnect.apple.com/v1/apps/{aid}/preReleaseVersions?limit=10')
+              print('  preReleaseVersions:', [p['attributes'].get('version') for p in prv.get('data', [])] or prv.get('_http_error', 'none'))
+          PY
