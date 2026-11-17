@@ -7,6 +7,8 @@ final class CheckupModel: ObservableObject {
     @Published var running = false
     @Published var passwordToCheck = ""
     @Published var lastPwnedHits: Int?
+    /// The exact signals behind the latest scan — reused by Blockle Intelligence.
+    @Published var lastSignals = PostureSignals()
 
     func run() async {
         running = true
@@ -18,6 +20,7 @@ final class CheckupModel: ObservableObject {
         s.recoveryConfigured = nil
         s.advancedDataProtection = nil
         s.protectedFilesFailing = 0
+        lastSignals = s
         checkup = CheckupEngine.run(s)
     }
 
@@ -39,6 +42,7 @@ final class CheckupModel: ObservableObject {
 
 struct SecurityCheckupView: View {
     @StateObject private var model = CheckupModel()
+    @StateObject private var ai = AssistantModel()
     @State private var showPwField = false
 
     var body: some View {
@@ -50,6 +54,7 @@ struct SecurityCheckupView: View {
                 } else {
                     introCard
                 }
+                intelligenceCard
                 breachCheckCard
                 Text("Blockle Protect checks what iOS actually permits — device posture and account breaches. It is a security health check, not a whole-device virus scanner (no iOS app can scan other apps).")
                     .font(.footnote).foregroundStyle(Brand.muted)
@@ -60,6 +65,51 @@ struct SecurityCheckupView: View {
         .background(Brand.bg.ignoresSafeArea())
         .navigationTitle("Security Checkup")
         .task { if model.checkup == nil { await model.run() } }
+    }
+
+    private var intelligenceCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").foregroundStyle(Brand.red)
+                    Text("Ask Blockle Intelligence").font(.system(size: 15, weight: .semibold)).foregroundStyle(Brand.ink)
+                }
+                Text("A private security advisor. It reads your scan results on-device and explains what to do — it only ever suggests the same safe, one-tap fixes above, and never acts on its own.")
+                    .font(.footnote).foregroundStyle(Brand.muted)
+                HStack(spacing: 8) {
+                    TextField("e.g. What should I fix first?", text: $ai.question)
+                        .textFieldStyle(.plain).autocorrectionDisabled()
+                        .padding(10).background(Color.black.opacity(0.3))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line))
+                    Button {
+                        Task { await ai.ask(signals: model.lastSignals) }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    }.tint(Brand.red).disabled(ai.asking || ai.question.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if ai.asking { HStack(spacing: 8) { ProgressView().tint(Brand.red); Text("Thinking…").font(.footnote).foregroundStyle(Brand.muted) } }
+                if ai.injectionSuspected {
+                    Label("One of your files looked like it was trying to manipulate this assistant. It was ignored.", systemImage: "exclamationmark.shield.fill")
+                        .font(.footnote).foregroundStyle(Brand.warn)
+                }
+                if let answer = ai.answer {
+                    Text(answer).font(.subheadline).foregroundStyle(Brand.inkSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(ai.suggestions) { s in
+                        if let label = fixLabel(s.fix) {
+                            Button { applyFix(s.fix) } label: {
+                                HStack { Image(systemName: "wrench.and.screwdriver.fill"); Text("\(s.title) — \(label)") }
+                                    .font(.footnote.weight(.semibold))
+                            }.buttonStyle(.borderedProminent).tint(Brand.red)
+                        }
+                    }
+                }
+                if let err = ai.errorText {
+                    Text(err).font(.footnote).foregroundStyle(Brand.muted)
+                }
+            }
+        }
     }
 
     private var introCard: some View {

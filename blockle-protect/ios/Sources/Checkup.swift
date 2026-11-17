@@ -35,7 +35,7 @@ struct Checkup {
     let summary: String
 }
 
-struct PostureSignals {
+struct PostureSignals: Encodable {
     var jailbroken: Bool?
     var appTampered: Bool?
     var passcodeSet: Bool?
@@ -46,6 +46,8 @@ struct PostureSignals {
     var protectedFilesFailing: Int?
     var pwnedPasswordHits: Int?
     var recoveryConfigured: Bool?
+    // Synthesised Encodable uses encodeIfPresent for optionals, so nil signals
+    // are omitted (not sent as null) — the server treats absent as "unknown".
 }
 
 enum CheckupEngine {
