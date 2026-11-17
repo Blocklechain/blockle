@@ -1,0 +1,18 @@
+{
+  "name": "@blockle-protect/anchor",
+  "version": "0.1.0",
+  "description": "Blockle Protect — Merkle-root anchoring service: batches file/manifest commitments, anchors only the root on the Blockle chain via the permissionless anchor-registry contract, and serves independently-verifiable read APIs.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "author": "Alienbeing LLC",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.10.0"
+  }
+}

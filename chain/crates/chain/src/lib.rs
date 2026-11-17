@@ -1,5 +1,6 @@
 //! Consensus rules, chain state, and mining for the Blockle blockchain.
 
+pub mod anchor_registry;
 pub mod block20;
 pub mod block721;
 pub mod stablecoin;
