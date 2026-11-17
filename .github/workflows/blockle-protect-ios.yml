@@ -72,11 +72,14 @@ jobs:
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
+          # archive UNSIGNED — avoids automatic signing picking an iOS *development*
+          # profile (a fresh team has no registered devices, so that lookup fails).
+          # Distribution signing happens at export, where the ASC API key creates the
+          # device-less App Store cert + profile on demand.
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
             CURRENT_PROJECT_VERSION="$BN" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
           xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
