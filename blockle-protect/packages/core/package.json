@@ -1,0 +1,23 @@
+{
+  "name": "@blockle-protect/core",
+  "version": "0.1.0",
+  "description": "Blockle Protect — shared post-quantum cryptographic core (envelope encryption, ML-DSA-65 signing, ML-KEM-768 key wrapping, Merkle anchoring proofs). Audited primitives only.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "author": "Alienbeing LLC",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.4.1",
+    "@noble/ciphers": "^1.2.1",
+    "@noble/hashes": "^1.7.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.10.0"
+  }
+}

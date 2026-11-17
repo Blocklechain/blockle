@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Verify a File — Blockle Protect</title>
+<meta name="description" content="Independently verify a Blockle Protect proof: check a file's post-quantum signature, integrity fingerprint, and its tamper-evident record on the Blockle chain — entirely in your browser, no account needed.">
+<link rel="canonical" href="https://protect.blockle.org/verify">
+<meta name="theme-color" content="#0a0a0e">
+<link rel="icon" href="/icon.png" type="image/png">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="bar" id="bar">
+  <div class="wrap">
+    <a class="brand" href="/"><img src="/icon.png" width="24" height="24" alt="">Blockle&nbsp;Protect</a>
+    <nav>
+      <a class="link" href="/#how">How it works</a>
+      <a class="link" href="/#security">Security</a>
+      <a class="btn btn-ghost btn-sm" href="/">Home</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section class="hero" style="padding:52px 0 18px">
+  <div class="wrap">
+    <div><span class="eyebrow">Independent verification</span></div>
+    <h1 style="font-size:clamp(2rem,5vw,3rem);max-width:20ch">Verify a protected file</h1>
+    <p class="lede">Paste a Blockle Protect proof below. Everything runs in your browser — the only network call is an optional read of the public Blockle chain to confirm the anchor. No account, no trust in us required.</p>
+  </div>
+</section>
+
+<section style="padding:0 0 40px">
+  <div class="wrap">
+    <div class="tool">
+      <div class="field">
+        <label for="proof">Proof (paste the JSON, or load a <code>.json</code> proof file)</label>
+        <textarea id="proof" placeholder='{ "v": 1, "signed": { ... }, "commitment": "...", "merkleProof": { ... }, "anchor": { "chain": "blockle", "txid": "...", "root": "..." } }'></textarea>
+      </div>
+      <div class="field">
+        <label class="filepick" for="proofFile">
+          <svg class="pick-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+          <span>Load a proof file (.json)</span>
+          <input id="proofFile" type="file" accept="application/json,.json">
+        </label>
+      </div>
+      <div class="field">
+        <label class="filepick" for="file">
+          <svg class="pick-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/></svg>
+          <span id="fileName">Optional: upload the original file to confirm it matches</span>
+          <input id="file" type="file">
+        </label>
+      </div>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="verifyBtn">Verify</button>
+        <span id="error"></span>
+      </div>
+      <div class="result" id="result"></div>
+    </div>
+
+    <p class="disclaim">A valid result means the record is authentic, intact, and anchored on-chain. A signature proves control of a signing key — not the real-world identity of its owner. A timestamp shows when the record was made, not who authored the content.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Blockle Protect — by <a href="https://blockle.org">Alienbeing&nbsp;LLC</a> · powered by the Blockle blockchain</span>
+    <span><a href="/">Home</a> · <a href="https://blockle.org">Blockle.org</a></span>
+  </div>
+</footer>
+
+<script type="module" src="/verify.js"></script>
+<script src="/site.js" defer></script>
+</body>
+</html>
