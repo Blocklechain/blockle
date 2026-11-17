@@ -71,7 +71,7 @@ enum ProtectCrypto {
         }
         static func kemEncapsulate(publicKey: Data) throws -> (cipherText: Data, sharedSecret: Data) {
             let pk = try MLKEM768.PublicKey(rawRepresentation: publicKey)
-            let r = pk.encapsulate()
+            let r = try pk.encapsulate()
             let ss = r.sharedSecret.withUnsafeBytes { Data($0) }
             return (r.encapsulated, ss)
         }
