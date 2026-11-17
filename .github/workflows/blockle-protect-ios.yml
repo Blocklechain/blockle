@@ -45,19 +45,27 @@ jobs:
       - name: Ensure App Store Connect app record (best-effort)
         continue-on-error: true
         env:
-          APP_STORE_CONNECT_API_KEY_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          APP_STORE_CONNECT_API_KEY_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          KID: ${{ secrets.ASC_KEY_ID }}
+          ISS: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
         run: |
-          export APP_STORE_CONNECT_API_KEY_KEY="$(echo "$ASC_KEY_BASE64" | base64 --decode)"
-          export APP_STORE_CONNECT_API_KEY_IS_KEY_CONTENT_BASE64=false
+          # fastlane produce must be given the ASC API key explicitly via a JSON
+          # file — without it, produce falls back to username/password auth and
+          # dies with "No value found for 'username'", so the app record never
+          # gets created and the TestFlight upload then can't find an Apple ID.
+          KEY_PEM="$(echo "$ASC_KEY_BASE64" | base64 --decode)"
+          jq -n --arg kid "$KID" --arg iss "$ISS" --arg key "$KEY_PEM" \
+            '{key_id:$kid, issuer_id:$iss, key:$key, duration:1200, in_house:false}' > asc_api_key.json
           gem install fastlane -N || true
           fastlane produce create \
+            --api_key_path asc_api_key.json \
             --app_identifier org.blockle.protect \
             --app_name "Blockle Protect" \
+            --sku blockleprotect0001 \
             --language "English (U.S.)" \
             --team_id B87ALX4XW9 \
-            --skip_itc false --skip_devcenter false || echo "produce failed — app record may already exist, or the key lacks App Manager."
+            --skip_devcenter true || echo "produce non-fatal — app record may already exist, or the name is taken / key lacks App Manager."
+          rm -f asc_api_key.json
 
       - name: Generate Xcode project
         working-directory: blockle-protect/ios
