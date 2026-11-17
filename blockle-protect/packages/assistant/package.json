@@ -1,0 +1,14 @@
+{
+  "name": "@blockle-protect/assistant",
+  "version": "0.1.0",
+  "description": "Blockle Intelligence — prompt-injection-hardened security assistant for Blockle Protect. The LLM advises; deterministic code decides. Runs on the self-hosted Blockle LLM, keyless, loopback-only.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "author": "Alienbeing LLC",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": { "tsx": "^4.19.2", "typescript": "^5.6.3", "@types/node": "^22.10.0" }
+}

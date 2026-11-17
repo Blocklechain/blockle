@@ -1,0 +1,18 @@
+[Unit]
+Description=Blockle Intelligence security assistant (injection-hardened, local LLM)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/blockle/services/assistant
+Environment=ASSISTANT_PORT=8948
+Environment=ASSISTANT_LLM_URL=http://127.0.0.1:11434/v1
+Environment=ASSISTANT_MODEL=blockle-agent
+ExecStart=/usr/bin/node /opt/blockle/services/assistant/dist/server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
