@@ -105,7 +105,12 @@ export class AnchorChain {
       w.secretKey, w.publicKey, JSON.stringify(utxos),
       this.cfg.contractId, input, 0n, GAS_LIMIT, GAS_PRICE,
     ))
-    const txid = await this.rpc('submitrawtransaction', [built.raw])
+    // submitrawtransaction returns either a bare txid string or {accepted, txid}
+    const res = await this.rpc('submitrawtransaction', [built.raw])
+    const txid: string = typeof res === 'string' ? res : (res?.txid ?? String(res))
+    if (res && typeof res === 'object' && res.accepted === false) {
+      throw new Error('node rejected the anchor transaction')
+    }
     return { txid, fee: Number(built.fee ?? 0) }
   }
 

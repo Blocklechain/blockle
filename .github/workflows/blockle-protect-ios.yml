@@ -42,30 +42,34 @@ jobs:
           echo "$ASC_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
 
-      - name: Ensure App Store Connect app record (best-effort)
-        continue-on-error: true
+      - name: Preflight — App Store Connect app record must exist
         env:
           KID: ${{ secrets.ASC_KEY_ID }}
           ISS: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
         run: |
-          # fastlane produce must be given the ASC API key explicitly via a JSON
-          # file — without it, produce falls back to username/password auth and
-          # dies with "No value found for 'username'", so the app record never
-          # gets created and the TestFlight upload then can't find an Apple ID.
+          # The App Store Connect API cannot CREATE an app record — that is a
+          # one-time manual step in App Store Connect (App Store Connect → Apps →
+          # + → New App: Platform iOS, Bundle ID org.blockle.protect, name
+          # "Blockle Protect", SKU blockleprotect0001). Everything else
+          # (signing, upload, TestFlight) is automated. This step just checks the
+          # record exists and fails early with a clear message if it doesn't,
+          # instead of a cryptic altool "Cannot determine the Apple ID" later.
           KEY_PEM="$(echo "$ASC_KEY_BASE64" | base64 --decode)"
-          jq -n --arg kid "$KID" --arg iss "$ISS" --arg key "$KEY_PEM" \
-            '{key_id:$kid, issuer_id:$iss, key:$key, duration:1200, in_house:false}' > asc_api_key.json
-          gem install fastlane -N || true
-          fastlane produce create \
-            --api_key_path asc_api_key.json \
-            --app_identifier org.blockle.protect \
-            --app_name "Blockle Protect" \
-            --sku blockleprotect0001 \
-            --language "English (U.S.)" \
-            --team_id B87ALX4XW9 \
-            --skip_devcenter true || echo "produce non-fatal — app record may already exist, or the name is taken / key lacks App Manager."
-          rm -f asc_api_key.json
+          NOW=$(date +%s); EXP=$((NOW + 600))
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          HEADER=$(printf '{"alg":"ES256","kid":"%s","typ":"JWT"}' "$KID" | b64url)
+          PAYLOAD=$(printf '{"iss":"%s","iat":%s,"exp":%s,"aud":"appstoreconnect-v1"}' "$ISS" "$NOW" "$EXP" | b64url)
+          SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign <(printf '%s' "$KEY_PEM") | b64url)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          COUNT=$(curl -s "https://api.appstoreconnect.apple.com/v1/apps?filter%5BbundleId%5D=org.blockle.protect" \
+            -H "Authorization: Bearer $JWT" | jq '.data | length')
+          echo "App records for org.blockle.protect: ${COUNT:-unknown}"
+          if [ "${COUNT:-0}" = "0" ]; then
+            echo "::error::No App Store Connect app record for org.blockle.protect. Create it once in App Store Connect (Apps → + → New App), then re-run this workflow. The signed IPA is still produced and uploaded as a build artifact."
+            # don't hard-fail the build — let archive + artifact upload still run
+            echo "MISSING_APP_RECORD=1" >> "$GITHUB_ENV"
+          fi
 
       - name: Generate Xcode project
         working-directory: blockle-protect/ios
@@ -101,6 +105,10 @@ jobs:
           ISS: ${{ secrets.ASC_ISSUER_ID }}
         run: |
           set -eo pipefail
+          if [ "${MISSING_APP_RECORD:-0}" = "1" ]; then
+            echo "Skipping TestFlight upload — create the App Store Connect app record first (see the preflight step). The signed IPA is attached as a build artifact."
+            exit 0
+          fi
           IPA="$(ls build/ipa/*.ipa | head -1)"
           xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$KID" --apiIssuer "$ISS" --verbose
 
