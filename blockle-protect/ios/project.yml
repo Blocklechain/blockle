@@ -19,8 +19,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-    resources:
-      - path: Resources/Assets.xcassets
+      - path: Resources   # XcodeGen auto-classifies Assets.xcassets as a resource
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect
