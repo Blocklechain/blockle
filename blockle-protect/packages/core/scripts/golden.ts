@@ -6,8 +6,9 @@
  */
 import {
   sha384, hkdfSha384, aesGcmEncrypt, kem, dsa,
-  toBase64Url, toHex, utf8, canonicalJson, canonicalJsonBytes,
+  toBase64Url, toHex, fromBase64Url, utf8, canonicalJson, canonicalJsonBytes,
   merkleTree, hashLeaf,
+  identityFromSeed, recipientFromIdentity, protect, signManifest, signedManifestBytes,
 } from '../src/index.js'
 
 function hex(b: Uint8Array): string { return toHex(b) }
@@ -89,6 +90,25 @@ const vectors = {
     cipherText_hex: hex(kenc.cipherText),       // Swift decapsulate(ct, seedKey) must equal:
     sharedSecret_hex: hex(kenc.sharedSecret),
   },
+}
+
+// Envelope: TS protects a file to a seeded recipient; Swift must UNPROTECT it
+// (proves a file protected on web/TS opens on iOS). protect() is randomised, so
+// this vector is captured once and committed — stable thereafter.
+const rseed = new Uint8Array(96).map((_, i) => (i * 9 + 4) & 0xff) // 64 KEM + 32 DSA
+const recipientIdentity = identityFromSeed(rseed)
+const sharedPlaintext = te.encode('shared secret document — must open cross-platform')
+const prot = protect(sharedPlaintext,
+  [recipientFromIdentity(recipientIdentity.public, 'share')],
+  fromBase64Url(recipientIdentity.public.dsaPublicKey),
+  { now: 1700000000, label: 'shared.txt' })
+const signedShared = signManifest(prot.manifest, recipientIdentity.secret.dsaSecretKey)
+;(vectors as any).envelope = {
+  kemSeed64_hex: hex(rseed.slice(0, 64)),
+  recipientId: recipientIdentity.public.recipientId,
+  signedManifestJson: new TextDecoder().decode(signedManifestBytes(signedShared)),
+  ciphertext_hex: hex(prot.ciphertext),
+  plaintext_utf8: 'shared secret document — must open cross-platform',
 }
 
 // sanity: round-trip our own vectors before emitting

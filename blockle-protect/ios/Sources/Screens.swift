@@ -223,6 +223,19 @@ struct ShieldDetail: View {
                         }
                     }
                 }.buttonStyle(.plain)
+                NavigationLink { SharingView() } label: {
+                    Card {
+                        HStack {
+                            Image(systemName: "paperplane.fill").font(.title2).foregroundStyle(Brand.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Secure Sharing").font(.headline).foregroundStyle(Brand.ink)
+                                Text("Send a file only one person can open (post-quantum)").font(.subheadline).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Brand.muted)
+                        }
+                    }
+                }.buttonStyle(.plain)
                 Card {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack { Image(systemName: "icloud.fill").foregroundStyle(Brand.red); Text("iCloud Shield").font(.headline).foregroundStyle(Brand.ink) }

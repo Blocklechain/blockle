@@ -113,6 +113,22 @@ final class CryptoVectorsTests: XCTestCase {
         _ = kemSk
     }
 
+    /// A file protected by the TS core to a seeded recipient must UNPROTECT on
+    /// iOS — proves cross-platform secure sharing (web/backend → iOS).
+    func testUnprotectCrossPlatform() throws {
+        try requireIOS26()
+        guard #available(iOS 26.0, macOS 26.0, *) else { return }
+        let g = sub("envelope")
+        let (pub, sk) = try ProtectCrypto.PQ.kemKeygenFromSeed(Data(hex: g["kemSeed64_hex"] as! String)!)
+        let signed = try JSONDecoder().decode(SignedManifest.self, from: Data((g["signedManifestJson"] as! String).utf8))
+        let holder = Protector.Holder(kemPrivateKey: sk, recipientId: recipientIdFor(pub))
+        XCTAssertEqual(holder.recipientId, g["recipientId"] as! String, "recipientId derivation must match TS")
+        let pt = try Protector.unprotect(ciphertext: Data(hex: g["ciphertext_hex"] as! String)!,
+                                         manifest: signed.manifest, holder: holder)
+        XCTAssertEqual(String(data: pt, encoding: .utf8), g["plaintext_utf8"] as! String,
+                       "a TS-protected file must open on iOS")
+    }
+
     private func requireIOS26() throws {
         if #available(iOS 26.0, macOS 26.0, *) { return }
         throw XCTSkip("Post-quantum tests require iOS/macOS 26+")

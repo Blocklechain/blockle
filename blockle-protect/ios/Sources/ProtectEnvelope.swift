@@ -23,7 +23,7 @@ enum CONTEXT {
 
 struct Recipient { let kemPublicKey: Data; let kind: String } // kind: device|recovery|share
 
-struct WrapEntry {
+struct WrapEntry: Decodable {
     let recipient, kind, kemCipherText, wrapNonce, wrappedKey: String
     var json: JSONValue {
         .object([("recipient", .string(recipient)), ("kind", .string(kind)),
@@ -32,7 +32,7 @@ struct WrapEntry {
     }
 }
 
-struct Manifest {
+struct Manifest: Decodable {
     var v = MANIFEST_VERSION
     var fileId: String
     var fingerprint: String
@@ -58,7 +58,7 @@ struct Manifest {
     var signingBytes: Data { CanonicalJSON.bytes(json) }
 }
 
-struct SignedManifest {
+struct SignedManifest: Decodable {
     let manifest: Manifest
     let signature: String // base64url
     var json: JSONValue { .object([("manifest", manifest.json), ("signature", .string(signature))]) }
@@ -157,5 +157,39 @@ enum Protector {
         manifest.v = MANIFEST_VERSION
         let signature = try ProtectCrypto.PQ.dsaSign(signerPrivateKey, manifest.signingBytes)
         return Result(ciphertext: ciphertext, signed: SignedManifest(manifest: manifest, signature: signature.base64url))
+    }
+
+    // ---- receive side: unwrap the DEK for an authorized recipient + decrypt ----
+
+    struct Holder { let kemPrivateKey: MLKEM768.PrivateKey; let recipientId: String }
+
+    /// Recover the file's data key using a holder's ML-KEM secret (inverse of
+    /// wrapDekFor). Throws if this identity isn't an authorized recipient.
+    static func recoverDek(manifest: Manifest, holder: Holder) throws -> Data {
+        guard let entry = manifest.wraps.first(where: { $0.recipient == holder.recipientId }) else {
+            throw ProtectError.crypto("this identity is not an authorized recipient of the file")
+        }
+        guard let ct = Data(base64url: entry.kemCipherText),
+              let fileId = Data(base64url: manifest.fileId),
+              let wrapNonce = Data(base64url: entry.wrapNonce),
+              let wrappedKey = Data(base64url: entry.wrappedKey) else { throw ProtectError.encoding("wrap entry") }
+        let ss = try ProtectCrypto.PQ.kemDecapsulate(cipherText: ct, privateKey: holder.kemPrivateKey)
+        let kek = ProtectCrypto.hkdfSha384(ikm: ss, salt: fileId, info: CONTEXT.kek, length: 32)
+        return try ProtectCrypto.aesGcmDecrypt(key: kek, nonce: wrapNonce, ciphertextAndTag: wrappedKey, aad: CONTEXT.wrapAad)
+    }
+
+    /// Decrypt a protected file and VERIFY integrity (GCM tag + SHA-384
+    /// fingerprint). Throws if tampered or if the holder isn't a recipient.
+    static func unprotect(ciphertext: Data, manifest: Manifest, holder: Holder) throws -> Data {
+        let dek = try recoverDek(manifest: manifest, holder: holder)
+        guard let fileId = Data(base64url: manifest.fileId),
+              let fingerprint = Data(base64url: manifest.fingerprint),
+              let nonce = Data(base64url: manifest.contentNonce) else { throw ProtectError.encoding("manifest") }
+        let aad = contentAad(fileId: fileId, fingerprint: fingerprint, size: manifest.size)
+        let plaintext = try ProtectCrypto.aesGcmDecrypt(key: dek, nonce: nonce, ciphertextAndTag: ciphertext, aad: aad)
+        guard ProtectCrypto.sha384(plaintext) == fingerprint else {
+            throw ProtectError.crypto("fingerprint mismatch — the file does not match its signed record")
+        }
+        return plaintext
     }
 }
