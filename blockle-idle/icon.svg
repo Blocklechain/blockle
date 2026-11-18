@@ -1,0 +1,39 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+	<!-- Warm cream sky backdrop; rounded-square app mark -->
+	<rect width="512" height="512" rx="112" fill="#f6ead2"/>
+	<rect width="512" height="512" rx="112" fill="#f2dfbe" opacity="0.5" transform="translate(0,40)"/>
+	<rect width="512" height="512" rx="112" fill="none"/>
+	<!-- clip art to the rounded square -->
+	<defs>
+		<clipPath id="card"><rect width="512" height="512" rx="112"/></clipPath>
+	</defs>
+	<g clip-path="url(#card)">
+		<rect width="512" height="512" fill="#f6ead2"/>
+		<!-- Floating island: grassy cap over an earthy underside -->
+		<ellipse cx="256" cy="372" rx="150" ry="46" fill="#6cae4f"/>
+		<path d="M118 372 Q130 470 200 476 Q256 492 312 476 Q382 470 394 372 Q330 404 256 404 Q182 404 118 372 Z" fill="#8a5a33"/>
+		<path d="M160 430 Q150 450 176 456 Q160 436 160 430 Z" fill="#6f4426"/>
+		<path d="M336 432 Q348 452 322 458 Q338 438 336 432 Z" fill="#6f4426"/>
+		<!-- Grass highlight on the cap -->
+		<ellipse cx="256" cy="360" rx="140" ry="36" fill="#7cbe5c"/>
+		<!-- Trunk -->
+		<path d="M242 360 Q238 300 246 262 L266 262 Q274 300 270 360 Z" fill="#9c6a3c"/>
+		<!-- Heart-shaped canopy, two warm greens stacked -->
+		<path d="M256 150
+			C236 112 182 112 170 156
+			C160 192 196 224 256 262
+			C316 224 352 192 342 156
+			C330 112 276 112 256 150 Z" fill="#4f9a3a"/>
+		<path d="M256 168
+			C242 142 206 142 198 172
+			C190 198 216 222 256 248
+			C296 222 322 198 314 172
+			C306 142 270 142 256 168 Z" fill="#62b24a"/>
+		<!-- Soft red heart accent nestled in the canopy -->
+		<path d="M256 196
+			C249 184 232 184 228 199
+			C225 210 240 221 256 234
+			C272 221 287 210 284 199
+			C280 184 263 184 256 196 Z" fill="#e05b4a"/>
+	</g>
+</svg>

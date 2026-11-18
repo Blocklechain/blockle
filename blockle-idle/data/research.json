@@ -1,0 +1,54 @@
+{
+  "branches": [
+    { "id": "nature",        "name": "Nature",            "accent": "#2E7D4F" },
+    { "id": "mining",        "name": "Mining",            "accent": "#9AA3AD" },
+    { "id": "architecture",  "name": "Architecture",      "accent": "#C9955B" },
+    { "id": "magic",         "name": "Magic",             "accent": "#C79BFF" },
+    { "id": "exploration",   "name": "Exploration",       "accent": "#FFC978" },
+    { "id": "ancient_tech",  "name": "Ancient Technology", "accent": "#8FB8FF" },
+    { "id": "blockling_evo", "name": "Blockling Evolution","accent": "#7FE3B0" }
+  ],
+  "nodes": [
+    { "id": "nat1", "branch": "nature", "name": "Deep Roots", "tier": 0, "requires": [], "cost": { "essence": 150 }, "effect": { "type": "resource_prod", "resource": "essence", "value": 0.5 }, "desc": "+50% Essence production." },
+    { "id": "nat2", "branch": "nature", "name": "Living Soil", "tier": 1, "requires": ["nat1"], "cost": { "essence": 800, "timber": 200 }, "effect": { "type": "building_prod", "building": "essence_garden", "value": 1.0 }, "desc": "Essence Gardens produce +100%." },
+    { "id": "nat3", "branch": "nature", "name": "Heartwood", "tier": 2, "requires": ["nat2"], "cost": { "essence": 5000, "crystal": 400 }, "effect": { "type": "building_prod", "building": "heart_tree", "value": 1.5 }, "desc": "The Heart Tree produces +150%." },
+    { "id": "nat4", "branch": "nature", "name": "Bloomtide", "tier": 3, "requires": ["nat3"], "cost": { "essence": 40000, "crystal": 3000 }, "effect": { "type": "resource_prod", "resource": "essence", "value": 1.0 }, "desc": "+100% Essence production." },
+    { "id": "nat5", "branch": "nature", "name": "World Garden", "tier": 4, "requires": ["nat4"], "cost": { "essence": 300000, "stardust": 500 }, "effect": { "type": "global_prod", "value": 0.25 }, "desc": "+25% to ALL production." },
+
+    { "id": "min1", "branch": "mining", "name": "Iron Picks", "tier": 0, "requires": [], "cost": { "timber": 200 }, "effect": { "type": "resource_prod", "resource": "stone", "value": 0.5 }, "desc": "+50% Stone production." },
+    { "id": "min2", "branch": "mining", "name": "Veinsight", "tier": 1, "requires": ["min1"], "cost": { "stone": 600, "timber": 400 }, "effect": { "type": "resource_prod", "resource": "crystal", "value": 0.6 }, "desc": "+60% Crystal production." },
+    { "id": "min3", "branch": "mining", "name": "Deep Shafts", "tier": 2, "requires": ["min2"], "cost": { "stone": 4000, "crystal": 500 }, "effect": { "type": "building_prod", "building": "crystal_mine", "value": 1.2 }, "desc": "Crystal Mines produce +120%." },
+    { "id": "min4", "branch": "mining", "name": "Resonant Ore", "tier": 3, "requires": ["min3"], "cost": { "crystal": 6000, "stone": 20000 }, "effect": { "type": "resource_prod", "resource": "crystal", "value": 1.0 }, "desc": "+100% Crystal production." },
+    { "id": "min5", "branch": "mining", "name": "Core Tap", "tier": 4, "requires": ["min4"], "cost": { "crystal": 50000, "stardust": 600 }, "effect": { "type": "global_prod", "value": 0.2 }, "desc": "+20% to ALL production." },
+
+    { "id": "arc1", "branch": "architecture", "name": "True Joinery", "tier": 0, "requires": [], "cost": { "timber": 250 }, "effect": { "type": "resource_prod", "resource": "timber", "value": 0.6 }, "desc": "+60% Timber production." },
+    { "id": "arc2", "branch": "architecture", "name": "Cheaper Scaffolds", "tier": 1, "requires": ["arc1"], "cost": { "timber": 1200, "stone": 600 }, "effect": { "type": "build_cost", "value": -0.1 }, "desc": "All building costs -10%." },
+    { "id": "arc3", "branch": "architecture", "name": "Deep Foundations", "tier": 2, "requires": ["arc2"], "cost": { "stone": 8000, "crystal": 800 }, "effect": { "type": "build_cost", "value": -0.1 }, "desc": "All building costs -10%." },
+    { "id": "arc4", "branch": "architecture", "name": "Living Stone", "tier": 3, "requires": ["arc3"], "cost": { "stone": 60000, "crystal": 6000 }, "effect": { "type": "global_prod", "value": 0.15 }, "desc": "+15% to ALL production." },
+    { "id": "arc5", "branch": "architecture", "name": "Grand Design", "tier": 4, "requires": ["arc4"], "cost": { "crystal": 80000, "stardust": 1000 }, "effect": { "type": "build_cost", "value": -0.15 }, "desc": "All building costs -15%." },
+
+    { "id": "mag1", "branch": "magic", "name": "Focused Essence", "tier": 0, "requires": [], "cost": { "essence": 400 }, "effect": { "type": "tap_mult", "value": 1.0 }, "desc": "Tapping the Heart Tree gives +100%." },
+    { "id": "mag2", "branch": "magic", "name": "Attunement", "tier": 1, "requires": ["mag1"], "cost": { "crystal": 1000 }, "effect": { "type": "blockling_bonus", "value": 0.25 }, "desc": "Assigned Blocklings are +25% more effective." },
+    { "id": "mag3", "branch": "magic", "name": "Starcatcher", "tier": 2, "requires": ["mag2"], "cost": { "crystal": 9000, "stardust": 200 }, "effect": { "type": "resource_prod", "resource": "stardust", "value": 0.8 }, "desc": "+80% Stardust production." },
+    { "id": "mag4", "branch": "magic", "name": "Ley Lines", "tier": 3, "requires": ["mag3"], "cost": { "crystal": 70000, "stardust": 1500 }, "effect": { "type": "global_prod", "value": 0.3 }, "desc": "+30% to ALL production." },
+    { "id": "mag5", "branch": "magic", "name": "Deep Magic", "tier": 4, "requires": ["mag4"], "cost": { "stardust": 12000, "relics": 100 }, "effect": { "type": "blockling_bonus", "value": 0.5 }, "desc": "Assigned Blocklings are +50% more effective." },
+
+    { "id": "exp1", "branch": "exploration", "name": "Trail Maps", "tier": 0, "requires": [], "cost": { "timber": 300 }, "effect": { "type": "discovery", "value": 0.2 }, "desc": "+20% chance to discover new Blocklings." },
+    { "id": "exp2", "branch": "exploration", "name": "Longer Expeditions", "tier": 1, "requires": ["exp1"], "cost": { "crystal": 1500 }, "effect": { "type": "offline_cap_hours", "value": 4 }, "desc": "+4h offline accumulation cap." },
+    { "id": "exp3", "branch": "exploration", "name": "Keen Eyes", "tier": 2, "requires": ["exp2"], "cost": { "crystal": 12000, "stardust": 300 }, "effect": { "type": "discovery", "value": 0.4 }, "desc": "+40% chance to discover new Blocklings." },
+    { "id": "exp4", "branch": "exploration", "name": "Pathfinders", "tier": 3, "requires": ["exp3"], "cost": { "stardust": 4000 }, "effect": { "type": "offline_mult", "value": 0.5 }, "desc": "+50% offline earnings." },
+    { "id": "exp5", "branch": "exploration", "name": "Worldwalkers", "tier": 4, "requires": ["exp4"], "cost": { "stardust": 30000, "relics": 150 }, "effect": { "type": "offline_cap_hours", "value": 12 }, "desc": "+12h offline accumulation cap." },
+
+    { "id": "anc1", "branch": "ancient_tech", "name": "Readable Runes", "tier": 0, "requires": [], "cost": { "crystal": 2000 }, "effect": { "type": "research_speed", "value": 0.25 }, "desc": "Research is 25% cheaper to unlock downstream." },
+    { "id": "anc2", "branch": "ancient_tech", "name": "Automata", "tier": 1, "requires": ["anc1"], "cost": { "crystal": 15000, "stardust": 400 }, "effect": { "type": "global_prod", "value": 0.2 }, "desc": "+20% to ALL production." },
+    { "id": "anc3", "branch": "ancient_tech", "name": "Relic Engines", "tier": 2, "requires": ["anc2"], "cost": { "stardust": 6000, "relics": 60 }, "effect": { "type": "resource_prod", "resource": "relics", "value": 1.0 }, "desc": "+100% Relic production." },
+    { "id": "anc4", "branch": "ancient_tech", "name": "Memory of the First", "tier": 3, "requires": ["anc3"], "cost": { "stardust": 50000, "relics": 300 }, "effect": { "type": "ascension_mult", "value": 0.25 }, "desc": "+25% Ancient Knowledge from Ascension." },
+    { "id": "anc5", "branch": "ancient_tech", "name": "The Old Science", "tier": 4, "requires": ["anc4"], "cost": { "relics": 1000 }, "effect": { "type": "global_prod", "value": 0.5 }, "desc": "+50% to ALL production." },
+
+    { "id": "evo1", "branch": "blockling_evo", "name": "Good Rest", "tier": 0, "requires": [], "cost": { "timber": 400, "essence": 400 }, "effect": { "type": "blockling_bonus", "value": 0.2 }, "desc": "Assigned Blocklings are +20% more effective." },
+    { "id": "evo2", "branch": "blockling_evo", "name": "Apprenticeship", "tier": 1, "requires": ["evo1"], "cost": { "crystal": 2500 }, "effect": { "type": "level_cost", "value": -0.15 }, "desc": "Blockling level-ups cost 15% less." },
+    { "id": "evo3", "branch": "blockling_evo", "name": "Shared Craft", "tier": 2, "requires": ["evo2"], "cost": { "crystal": 20000, "stardust": 500 }, "effect": { "type": "blockling_bonus", "value": 0.35 }, "desc": "Assigned Blocklings are +35% more effective." },
+    { "id": "evo4", "branch": "blockling_evo", "name": "Kinship", "tier": 3, "requires": ["evo3"], "cost": { "stardust": 8000 }, "effect": { "type": "global_prod", "value": 0.2 }, "desc": "+20% to ALL production." },
+    { "id": "evo5", "branch": "blockling_evo", "name": "Ascendant Kin", "tier": 4, "requires": ["evo4"], "cost": { "stardust": 60000, "relics": 400 }, "effect": { "type": "blockling_bonus", "value": 0.75 }, "desc": "Assigned Blocklings are +75% more effective." }
+  ]
+}

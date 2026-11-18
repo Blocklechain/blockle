@@ -1,0 +1,14 @@
+# Godot editor cache and imported assets
+.godot/
+
+# Build output
+/build/
+
+# Temp files
+*.tmp
+
+# Export credentials / signing secrets — never commit
+export_credentials.cfg
+*.mobileprovision
+*.p12
+*.keystore

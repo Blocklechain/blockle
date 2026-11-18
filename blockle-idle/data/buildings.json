@@ -1,0 +1,84 @@
+{
+  "buildings": [
+    {
+      "id": "heart_tree", "name": "Heart Tree", "realm": "verdant",
+      "desc": "The ancient tree at the island's core. Its roots dream the world into being.",
+      "produces": "essence", "base_prod": 1.0, "prod_growth": 1.16,
+      "base_cost": { "essence": 10 }, "cost_growth": 1.17, "max_level": 500,
+      "slots": 2, "pref_profession": "gardener", "special": {}, "starts_owned": true,
+      "art": { "shape": "tree", "palette": ["#2E7D4F", "#7FE3B0", "#C9955B"] }
+    },
+    {
+      "id": "lumber_grove", "name": "Lumber Grove", "realm": "verdant",
+      "desc": "Gentle giants tended by Gatherers. The island's first industry.",
+      "produces": "timber", "base_prod": 0.8, "prod_growth": 1.15,
+      "base_cost": { "essence": 25 }, "cost_growth": 1.16, "max_level": 300,
+      "slots": 2, "pref_profession": "gatherer", "special": {},
+      "art": { "shape": "grove", "palette": ["#3F6B3A", "#C9955B", "#86C06C"] }
+    },
+    {
+      "id": "stone_quarry", "name": "Stone Quarry", "realm": "verdant",
+      "desc": "The patient work of breaking the island's old bones into shape.",
+      "produces": "stone", "base_prod": 0.5, "prod_growth": 1.15,
+      "base_cost": { "essence": 60, "timber": 30 }, "cost_growth": 1.17, "max_level": 300,
+      "slots": 2, "pref_profession": "miner", "special": {},
+      "art": { "shape": "quarry", "palette": ["#9AA3AD", "#6E7680", "#C9955B"] }
+    },
+    {
+      "id": "crystal_mine", "name": "Crystal Mine", "realm": "verdant",
+      "desc": "Where the island's buried magic is coaxed, humming, into the light.",
+      "produces": "crystal", "base_prod": 0.3, "prod_growth": 1.16,
+      "base_cost": { "timber": 80, "stone": 60 }, "cost_growth": 1.18, "max_level": 250,
+      "slots": 3, "pref_profession": "miner", "special": {},
+      "art": { "shape": "mine", "palette": ["#8FB8FF", "#5C7CC4", "#9AA3AD"] }
+    },
+    {
+      "id": "essence_garden", "name": "Essence Garden", "realm": "verdant",
+      "desc": "Terraced beds that catch the Heart Tree's magic and let it bloom.",
+      "produces": "essence", "base_prod": 2.5, "prod_growth": 1.16,
+      "base_cost": { "timber": 120, "stone": 80 }, "cost_growth": 1.17, "max_level": 300,
+      "slots": 3, "pref_profession": "gardener", "special": {},
+      "art": { "shape": "garden", "palette": ["#7FE3B0", "#2E7D4F", "#C79BFF"] }
+    },
+    {
+      "id": "blockling_homes", "name": "Blockling Homes", "realm": "verdant",
+      "desc": "Round little houses with warm windows. Every home raises how many Blocklings can live here.",
+      "produces": "", "base_prod": 0, "prod_growth": 1.0,
+      "base_cost": { "timber": 150, "stone": 100 }, "cost_growth": 1.22, "max_level": 100,
+      "slots": 0, "pref_profession": "", "special": { "type": "blockling_cap", "per_level": 2 },
+      "art": { "shape": "homes", "palette": ["#C9955B", "#E8C39E", "#3F6B3A"] }
+    },
+    {
+      "id": "research_library", "name": "Research Library", "realm": "verdant",
+      "desc": "Scholars copy out what the island teaches them. Speeds all research.",
+      "produces": "", "base_prod": 0, "prod_growth": 1.0,
+      "base_cost": { "stone": 200, "crystal": 60 }, "cost_growth": 1.2, "max_level": 100,
+      "slots": 2, "pref_profession": "scholar", "special": { "type": "research_speed", "per_level": 0.05 },
+      "art": { "shape": "library", "palette": ["#5C7CC4", "#C79BFF", "#C9955B"] }
+    },
+    {
+      "id": "explorers_lodge", "name": "Explorer's Lodge", "realm": "verdant",
+      "desc": "A hearth for those who wander. Raises the chance of discovering new Blocklings.",
+      "produces": "", "base_prod": 0, "prod_growth": 1.0,
+      "base_cost": { "timber": 220, "crystal": 90 }, "cost_growth": 1.2, "max_level": 100,
+      "slots": 2, "pref_profession": "explorer", "special": { "type": "discovery", "per_level": 0.04 },
+      "art": { "shape": "lodge", "palette": ["#C9955B", "#3F6B3A", "#FFC978"] }
+    },
+    {
+      "id": "ancient_observatory", "name": "Ancient Observatory", "realm": "verdant",
+      "desc": "A great lens aimed at the cosmic ocean, gathering the Stardust that falls between worlds.",
+      "produces": "stardust", "base_prod": 0.05, "prod_growth": 1.17,
+      "base_cost": { "stone": 400, "crystal": 220 }, "cost_growth": 1.19, "max_level": 200,
+      "slots": 3, "pref_profession": "astral_keeper", "special": {},
+      "art": { "shape": "observatory", "palette": ["#C79BFF", "#5C7CC4", "#FFC978"] }
+    },
+    {
+      "id": "relic_temple", "name": "Relic Temple", "realm": "verdant",
+      "desc": "Older than the island itself. It remembers the First Kingdom, and yields its Relics to the worthy.",
+      "produces": "relics", "base_prod": 0.01, "prod_growth": 1.18,
+      "base_cost": { "crystal": 600, "stardust": 150 }, "cost_growth": 1.21, "max_level": 200,
+      "slots": 3, "pref_profession": "guardian", "special": {},
+      "art": { "shape": "temple", "palette": ["#FFC978", "#C79BFF", "#9AA3AD"] }
+    }
+  ]
+}

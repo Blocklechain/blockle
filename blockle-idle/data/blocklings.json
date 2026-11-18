@@ -1,0 +1,47 @@
+{
+  "rarities": [
+    { "id": "common",    "name": "Common",    "color": "#B9C2CC", "base_bonus": 0.10, "weight": 100 },
+    { "id": "uncommon",  "name": "Uncommon",  "color": "#7FE3B0", "base_bonus": 0.20, "weight": 45 },
+    { "id": "rare",      "name": "Rare",      "color": "#8FB8FF", "base_bonus": 0.35, "weight": 18 },
+    { "id": "epic",      "name": "Epic",      "color": "#C79BFF", "base_bonus": 0.60, "weight": 6 },
+    { "id": "legendary", "name": "Legendary", "color": "#FFC978", "base_bonus": 1.00, "weight": 1.5 },
+    { "id": "mythic",    "name": "Mythic",    "color": "#FF9BB0", "base_bonus": 2.00, "weight": 0.3 }
+  ],
+  "blocklings": [
+    { "id": "pip",      "name": "Pip",      "profession": "gatherer",     "rarity": "common",    "shape": "sprout",   "palette": ["#86C06C", "#3F6B3A"], "desc": "A sprout with legs who never stops humming." },
+    { "id": "mossy",    "name": "Mossy",    "profession": "gardener",     "rarity": "common",    "shape": "mossling", "palette": ["#4F8A5B", "#7FE3B0"], "desc": "Carries a tiny garden on their back wherever they go." },
+    { "id": "cobble",   "name": "Cobble",   "profession": "miner",        "rarity": "common",    "shape": "pebble",   "palette": ["#9AA3AD", "#6E7680"], "desc": "A round little rock-Blockling. Surprisingly fast." },
+    { "id": "fen",      "name": "Fen",      "profession": "gatherer",     "rarity": "common",    "shape": "frog",     "palette": ["#5FA86B", "#C9E8B0"], "desc": "Collects more than they could ever carry." },
+    { "id": "quill",    "name": "Quill",    "profession": "scholar",      "rarity": "common",    "shape": "owlet",    "palette": ["#C9955B", "#E8C39E"], "desc": "Asks 'but why?' until someone answers." },
+    { "id": "burrow",   "name": "Burrow",   "profession": "miner",        "rarity": "common",    "shape": "mole",     "palette": ["#8A6A4A", "#C9955B"], "desc": "Happiest with a tunnel ahead and dirt behind." },
+    { "id": "dewdrop",  "name": "Dewdrop",  "profession": "gardener",     "rarity": "common",    "shape": "sprout",   "palette": ["#7FE3B0", "#AEEFD0"], "desc": "Waters every plant, including the ones that don't need it." },
+    { "id": "twig",     "name": "Twig",     "profession": "gatherer",     "rarity": "common",    "shape": "stickbug", "palette": ["#9C7A4A", "#C9955B"], "desc": "Thin as a branch and twice as stubborn." },
+    { "id": "flint",    "name": "Flint",    "profession": "miner",        "rarity": "common",    "shape": "pebble",   "palette": ["#7E868F", "#B9C2CC"], "desc": "Strikes sparks when they get excited." },
+    { "id": "clover",   "name": "Clover",   "profession": "explorer",     "rarity": "common",    "shape": "deer",     "palette": ["#5FA86B", "#FFC978"], "desc": "Always just over the next hill." },
+
+    { "id": "ember",    "name": "Ember",    "profession": "artisan",      "rarity": "uncommon",  "shape": "cat",      "palette": ["#E08A4A", "#FFC978"], "desc": "Warm paws, warmer heart. Makes beautiful things." },
+    { "id": "willow",   "name": "Willow",   "profession": "gardener",     "rarity": "uncommon",  "shape": "deer",     "palette": ["#4F8A5B", "#C79BFF"], "desc": "Flowers bloom in their hoofprints." },
+    { "id": "bramble",  "name": "Bramble",  "profession": "guardian",     "rarity": "uncommon",  "shape": "turtle",   "palette": ["#3F6B3A", "#9AA3AD"], "desc": "Slow to anger, impossible to move." },
+    { "id": "sable",    "name": "Sable",    "profession": "explorer",     "rarity": "uncommon",  "shape": "fox",      "palette": ["#B5673A", "#FFE1B0"], "desc": "Knows a shortcut you've never heard of." },
+    { "id": "inky",     "name": "Inky",     "profession": "scholar",      "rarity": "uncommon",  "shape": "owlet",    "palette": ["#4C3A80", "#C79BFF"], "desc": "Has read every book twice and remembers the margins." },
+    { "id": "pyrite",   "name": "Pyrite",   "profession": "miner",        "rarity": "uncommon",  "shape": "golem",    "palette": ["#C9A24A", "#9AA3AD"], "desc": "Fool's gold, genuine friend." },
+    { "id": "breeze",   "name": "Breeze",   "profession": "gatherer",     "rarity": "uncommon",  "shape": "bird",     "palette": ["#AED4FF", "#E7F2FF"], "desc": "Arrives before you knew you needed them." },
+
+    { "id": "lumen",    "name": "Lumen",    "profession": "astral_keeper","rarity": "rare",      "shape": "moth",     "palette": ["#C79BFF", "#FFF4D6"], "desc": "Carries a little of the night sky under their wings." },
+    { "id": "thorne",   "name": "Thorne",   "profession": "guardian",     "rarity": "rare",      "shape": "golem",    "palette": ["#3F6B3A", "#C9955B"], "desc": "A living hedge-wall that chose to walk." },
+    { "id": "opal",     "name": "Opal",     "profession": "artisan",      "rarity": "rare",      "shape": "cat",      "palette": ["#8FB8FF", "#C79BFF"], "desc": "Everything they touch catches the light." },
+    { "id": "marrow",   "name": "Marrow",   "profession": "miner",        "rarity": "rare",      "shape": "golem",    "palette": ["#6E7680", "#8FB8FF"], "desc": "Hears the crystal singing deep underground." },
+    { "id": "fable",    "name": "Fable",    "profession": "scholar",      "rarity": "rare",      "shape": "fox",      "palette": ["#C9955B", "#C79BFF"], "desc": "Tells stories so good the island listens." },
+    { "id": "gale",     "name": "Gale",     "profession": "explorer",     "rarity": "rare",      "shape": "bird",     "palette": ["#5C7CC4", "#E7F2FF"], "desc": "Maps the wind itself." },
+
+    { "id": "verdania", "name": "Verdania", "profession": "gardener",     "rarity": "epic",      "shape": "deer",     "palette": ["#2E7D4F", "#7FE3B0"], "desc": "Where she sleeps, a forest wakes." },
+    { "id": "aurum",    "name": "Aurum",    "profession": "artisan",      "rarity": "epic",      "shape": "golem",    "palette": ["#FFC978", "#E08A4A"], "desc": "Smith of the Heart Tree's fallen light." },
+    { "id": "nocturne", "name": "Nocturne", "profession": "astral_keeper","rarity": "epic",      "shape": "mooncat",  "palette": ["#2A2350", "#C79BFF"], "desc": "Keeps the hours the stars forget." },
+    { "id": "basalt",   "name": "Basalt",   "profession": "guardian",     "rarity": "epic",      "shape": "golem",    "palette": ["#3A3F46", "#FFC978"], "desc": "Older than the quarry it guards." },
+
+    { "id": "solenne",  "name": "Solenne",  "profession": "astral_keeper","rarity": "legendary", "shape": "star",     "palette": ["#FFC978", "#FFF4D6"], "desc": "A fallen star who stayed for the company." },
+    { "id": "sylvaan",  "name": "Sylvaan",  "profession": "gardener",     "rarity": "legendary", "shape": "greatdeer","palette": ["#2E7D4F", "#C79BFF"], "desc": "The first Blockling the Heart Tree ever dreamed." },
+
+    { "id": "cosmyra",  "name": "Cosmyra",  "profession": "astral_keeper","rarity": "mythic",    "shape": "dragon",   "palette": ["#C79BFF", "#FF9BB0"], "desc": "Remembers the First Kingdom because she was there." }
+  ]
+}

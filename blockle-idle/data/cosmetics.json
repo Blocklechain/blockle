@@ -1,0 +1,230 @@
+{
+	"items": [
+		{
+			"id": "premium_starter_pack",
+			"name": "Premium Starter Pack",
+			"type": "starter_pack",
+			"price_usd": 4.99,
+			"product_id": "org.blockle.idle.premium_starter_pack",
+			"slot": "bundle",
+			"desc": "A welcome bundle of purely visual flair: an exclusive glowing Blockling skin, a radiant Heart Tree, island decorations and a founder nameplate.",
+			"grants": ["skin_pip_glimmer", "heart_tree_radiant", "island_lantern_grove", "nameplate_founder"],
+			"cosmetic": true
+		},
+		{
+			"id": "premium_edition",
+			"name": "Premium Edition",
+			"type": "premium_edition",
+			"price_usd": 9.99,
+			"product_id": "org.blockle.idle.premium_edition",
+			"slot": "bundle",
+			"desc": "The complete cosmetic collection: every Heart Tree and building reskin, both environment effects and a unique Premium nameplate. Visual only.",
+			"grants": ["heart_tree_radiant", "heart_tree_ancient", "heart_tree_blossom", "heart_tree_crystal", "building_lumber_rustic", "building_quarry_marble", "building_crystal_prism", "building_library_grand", "effect_fireflies", "effect_falling_leaves", "island_lantern_grove", "nameplate_premium"],
+			"cosmetic": true
+		},
+		{
+			"id": "heart_tree_radiant",
+			"name": "Radiant Heart Tree",
+			"type": "heart_tree_skin",
+			"price_usd": 2.99,
+			"product_id": "org.blockle.idle.heart_tree_radiant",
+			"slot": "heart_tree",
+			"desc": "Bathes the Heart Tree in a soft golden glow. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "heart_tree_ancient",
+			"name": "Ancient Heart Tree",
+			"type": "heart_tree_skin",
+			"price_usd": 2.49,
+			"product_id": "org.blockle.idle.heart_tree_ancient",
+			"slot": "heart_tree",
+			"desc": "A gnarled, moss-draped elder tree with carved runes. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "heart_tree_blossom",
+			"name": "Blossom Heart Tree",
+			"type": "heart_tree_skin",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.heart_tree_blossom",
+			"slot": "heart_tree",
+			"desc": "Covers the Heart Tree in drifting pink blossoms. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "heart_tree_crystal",
+			"name": "Crystal Heart Tree",
+			"type": "heart_tree_skin",
+			"price_usd": 2.99,
+			"product_id": "org.blockle.idle.heart_tree_crystal",
+			"slot": "heart_tree",
+			"desc": "Reshapes the Heart Tree into living crystal that catches the light. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "building_lumber_rustic",
+			"name": "Rustic Lumber Grove",
+			"type": "building_skin",
+			"price_usd": 0.99,
+			"product_id": "org.blockle.idle.building_lumber_rustic",
+			"slot": "lumber_grove",
+			"desc": "A weathered timber-and-rope makeover for the Lumber Grove. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "building_quarry_marble",
+			"name": "Marble Stone Quarry",
+			"type": "building_skin",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.building_quarry_marble",
+			"slot": "stone_quarry",
+			"desc": "Veined white marble dressing for the Stone Quarry. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "building_crystal_prism",
+			"name": "Prism Crystal Mine",
+			"type": "building_skin",
+			"price_usd": 2.49,
+			"product_id": "org.blockle.idle.building_crystal_prism",
+			"slot": "crystal_mine",
+			"desc": "Refracted rainbow facets for the Crystal Mine. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "building_library_grand",
+			"name": "Grand Research Library",
+			"type": "building_skin",
+			"price_usd": 2.99,
+			"product_id": "org.blockle.idle.building_library_grand",
+			"slot": "research_library",
+			"desc": "An ornate domed facade for the Research Library. Cosmetic reskin only.",
+			"cosmetic": true
+		},
+		{
+			"id": "island_lantern_grove",
+			"name": "Lantern Grove Decorations",
+			"type": "island_decoration",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.island_lantern_grove",
+			"slot": "island",
+			"desc": "Scatters hanging paper lanterns and warm string lights across the island. Cosmetic decoration only.",
+			"cosmetic": true
+		},
+		{
+			"id": "island_zen_garden",
+			"name": "Zen Garden Decorations",
+			"type": "island_decoration",
+			"price_usd": 2.99,
+			"product_id": "org.blockle.idle.island_zen_garden",
+			"slot": "island",
+			"desc": "Raked sand, stepping stones and a quiet koi pond for the island. Cosmetic decoration only.",
+			"cosmetic": true
+		},
+		{
+			"id": "island_festival_grand",
+			"name": "Grand Festival Decorations",
+			"type": "island_decoration",
+			"price_usd": 4.99,
+			"product_id": "org.blockle.idle.island_festival_grand",
+			"slot": "island",
+			"desc": "Banners, bunting, confetti and a central maypole dress the island for a festival. Cosmetic decoration only.",
+			"cosmetic": true
+		},
+		{
+			"id": "effect_fireflies",
+			"name": "Firefly Ambience",
+			"type": "environment_effect",
+			"price_usd": 0.99,
+			"product_id": "org.blockle.idle.effect_fireflies",
+			"slot": "environment",
+			"desc": "Gentle drifting fireflies around the island at dusk. Cosmetic ambience only.",
+			"cosmetic": true
+		},
+		{
+			"id": "effect_falling_leaves",
+			"name": "Falling Leaves Ambience",
+			"type": "environment_effect",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.effect_falling_leaves",
+			"slot": "environment",
+			"desc": "A soft, continuous drift of falling leaves across the view. Cosmetic ambience only.",
+			"cosmetic": true
+		},
+		{
+			"id": "seasonal_autumn_forest",
+			"name": "Autumn Forest Pack",
+			"type": "seasonal_pack",
+			"price_usd": 3.99,
+			"product_id": "org.blockle.idle.seasonal_autumn_forest",
+			"slot": "bundle",
+			"desc": "Amber foliage, a harvest Heart Tree and drifting leaves for the autumn season. Cosmetic theme only.",
+			"grants": ["heart_tree_ancient", "effect_falling_leaves"],
+			"cosmetic": true
+		},
+		{
+			"id": "seasonal_winter_kingdom",
+			"name": "Winter Kingdom Pack",
+			"type": "seasonal_pack",
+			"price_usd": 4.99,
+			"product_id": "org.blockle.idle.seasonal_winter_kingdom",
+			"slot": "bundle",
+			"desc": "A frosted crystal Heart Tree, snow-dusted island and lantern lights for the winter season. Cosmetic theme only.",
+			"grants": ["heart_tree_crystal", "island_lantern_grove"],
+			"cosmetic": true
+		},
+		{
+			"id": "seasonal_celestial_festival",
+			"name": "Celestial Festival Pack",
+			"type": "seasonal_pack",
+			"price_usd": 4.99,
+			"product_id": "org.blockle.idle.seasonal_celestial_festival",
+			"slot": "bundle",
+			"desc": "Starlit banners, fireflies and a grand festival island under the night sky. Cosmetic theme only.",
+			"grants": ["island_festival_grand", "effect_fireflies"],
+			"cosmetic": true
+		},
+		{
+			"id": "seasonal_spring_blossom",
+			"name": "Spring Blossom Pack",
+			"type": "seasonal_pack",
+			"price_usd": 2.99,
+			"product_id": "org.blockle.idle.seasonal_spring_blossom",
+			"slot": "bundle",
+			"desc": "A blossoming Heart Tree and a serene zen garden for the spring season. Cosmetic theme only.",
+			"grants": ["heart_tree_blossom", "island_zen_garden"],
+			"cosmetic": true
+		},
+		{
+			"id": "loadout_slot_extra",
+			"name": "Extra Cosmetic Loadout Slot",
+			"type": "convenience",
+			"price_usd": 0.99,
+			"product_id": "org.blockle.idle.loadout_slot_extra",
+			"slot": "loadout",
+			"desc": "Adds one extra saved cosmetic loadout so you can store a favourite look. Organizational only; does not affect gameplay.",
+			"cosmetic": true
+		},
+		{
+			"id": "loadout_slot_pack",
+			"name": "Cosmetic Loadout Slot Pack",
+			"type": "convenience",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.loadout_slot_pack",
+			"slot": "loadout",
+			"desc": "Adds three extra saved cosmetic loadouts for quickly switching between saved looks. Organizational only; does not affect gameplay.",
+			"cosmetic": true
+		},
+		{
+			"id": "skin_pip_glimmer",
+			"name": "Glimmer Pip Skin",
+			"type": "blockling_skin",
+			"price_usd": 1.99,
+			"product_id": "org.blockle.idle.skin_pip_glimmer",
+			"slot": "pip",
+			"desc": "An exclusive softly-glowing recolour for your starter Blockling, Pip. Cosmetic reskin only.",
+			"cosmetic": true
+		}
+	]
+}

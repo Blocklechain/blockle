@@ -1,0 +1,19 @@
+{
+  "achievements": [
+    { "id": "first_tap",    "name": "A Spark of Life",     "desc": "Tap the Heart Tree for the first time.",       "metric": "taps",            "threshold": 1,       "reward": { "essence": 25 } },
+    { "id": "first_build",  "name": "Breaking Ground",     "desc": "Construct your first building.",               "metric": "buildings_built", "threshold": 1,       "reward": { "timber": 50 } },
+    { "id": "first_kin",    "name": "You Are Not Alone",   "desc": "Recruit your second Blockling.",               "metric": "blocklings_owned","threshold": 2,       "reward": { "essence": 100 } },
+    { "id": "little_town",  "name": "A Little Town",       "desc": "Own 5 buildings.",                             "metric": "buildings_built", "threshold": 5,       "reward": { "global_prod": 0.02 } },
+    { "id": "collector10",  "name": "Curious Collector",   "desc": "Discover 10 different Blocklings.",            "metric": "discovered",      "threshold": 10,      "reward": { "global_prod": 0.03 } },
+    { "id": "collector20",  "name": "Keeper of Kin",       "desc": "Discover 20 different Blocklings.",            "metric": "discovered",      "threshold": 20,      "reward": { "global_prod": 0.05 } },
+    { "id": "collector30",  "name": "The Whole Family",    "desc": "Discover all 30 starting Blocklings.",         "metric": "discovered",      "threshold": 30,      "reward": { "global_prod": 0.1 } },
+    { "id": "essence1k",    "name": "Overflowing",         "desc": "Hold 1,000 Essence at once.",                  "metric": "essence_held",    "threshold": 1000,    "reward": { "global_prod": 0.02 } },
+    { "id": "essence1m",    "name": "Wellspring",          "desc": "Earn 1,000,000 Essence in total.",             "metric": "total_essence",   "threshold": 1000000, "reward": { "global_prod": 0.05 } },
+    { "id": "research5",    "name": "Student of the Isle", "desc": "Complete 5 research unlocks.",                 "metric": "research_done",   "threshold": 5,       "reward": { "crystal": 200 } },
+    { "id": "research15",   "name": "Lorekeeper",          "desc": "Complete 15 research unlocks.",                "metric": "research_done",   "threshold": 15,      "reward": { "global_prod": 0.05 } },
+    { "id": "realm2",       "name": "Beyond the Shore",    "desc": "Unlock a second realm.",                       "metric": "realms",          "threshold": 2,       "reward": { "stardust": 100 } },
+    { "id": "realm4",       "name": "Worldwalker",         "desc": "Unlock four realms.",                          "metric": "realms",          "threshold": 4,       "reward": { "global_prod": 0.08 } },
+    { "id": "ascend1",      "name": "Full Circle",         "desc": "Ascend your world for the first time.",        "metric": "ascensions",      "threshold": 1,       "reward": { "global_prod": 0.05 } },
+    { "id": "ascend5",      "name": "The Long View",       "desc": "Ascend five times.",                           "metric": "ascensions",      "threshold": 5,       "reward": { "global_prod": 0.15 } }
+  ]
+}
