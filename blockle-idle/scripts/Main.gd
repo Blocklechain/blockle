@@ -95,6 +95,14 @@ func _connect_signals() -> void:
 	Game.recruited.connect(_on_recruited)
 	Game.realm_changed.connect(_on_realm_changed)
 	Game.offline_ready.connect(_on_offline_ready)
+	# Ecosystem wallet tie-in (connect + display-only NFT collectibles + mint handoff).
+	Wallet.connected.connect(func(_a): Game.toast.emit("Blockle wallet connected"))
+	Wallet.connect_failed.connect(func(r): Game.toast.emit("Connect failed: " + r))
+	Wallet.disconnected.connect(func(): Game.toast.emit("Wallet disconnected"))
+	Wallet.nfts_changed.connect(func(_n): if _panel_open and _current_tab == "world": _rebuild_panel_body())
+	Wallet.mint_started.connect(func(): Game.toast.emit("Opening your Blockle wallet to mint…"))
+	Wallet.mint_done.connect(func(cid, _t, _x): Game.toast.emit("Minted " + Cosmetics.item(cid).get("name", "collectible") + " — it's yours on-chain"))
+	Wallet.mint_failed.connect(func(r): Game.toast.emit("Mint: " + r))
 
 func _on_resized() -> void:
 	_vp = get_viewport_rect().size
@@ -1083,6 +1091,10 @@ func _fill_world_panel() -> void:
 	var store_btn := _btn("Cosmetic Store")
 	store_btn.pressed.connect(_open_store)
 	_panel_body.add_child(store_btn)
+	# Blockle wallet (ecosystem tie-in) — connect + collectible NFT cosmetics
+	var wallet_btn := _btn("Blockle Wallet" + ("   Connected" if Wallet.is_connected_wallet() else ""))
+	wallet_btn.pressed.connect(_open_wallet)
+	_panel_body.add_child(wallet_btn)
 	_panel_body.add_child(_hsep())
 	# settings
 	_panel_body.add_child(_wlabel("Settings", 22, INK))
@@ -1133,7 +1145,8 @@ func _open_store() -> void:
 	var available := _iap_available()
 	if not available:
 		body.add_child(_wlabel("Store unavailable in this build.", 17, Color("#B5473A")))
-	var items := _cosmetic_items()
+	# NFT collectibles are minted through the Blockle wallet, not bought here.
+	var items := _cosmetic_items().filter(func(it): return not it.get("nft", false))
 	if items.is_empty():
 		body.add_child(_wlabel("New cosmetics are on the way.", 18, INK))
 	# Grouped by type so the catalog reads as tidy sections.
@@ -1189,6 +1202,84 @@ func _price_str(it: Dictionary) -> String:
 
 func _titleize(s: String) -> String:
 	return s.replace("_", " ").capitalize()
+
+# =============================================================================
+# Blockle Wallet — ecosystem tie-in. Connect a wallet (read-only), display the
+# collectible NFT cosmetics it owns, and hand a mint off to the Blockle wallet
+# app. The game never signs and never holds keys. On iOS it is a pure viewer:
+# the Mint CTA is hidden (Wallet.can_mint() == false) to keep App Review clean.
+# =============================================================================
+func _open_wallet() -> void:
+	var body := _show_modal("Blockle Wallet")
+	var intro := _wlabel("Carry hand-painted collectibles between the Blockle ecosystem and your world. Blockle Idle never holds your keys  -  it only shows what you own, and minting is signed in your wallet.", 16, INK_SOFT)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(intro)
+	if not Wallet.is_connected_wallet():
+		var cbtn := _btn("Connect Blockle Wallet")
+		cbtn.pressed.connect(func(): Wallet.connect_wallet())
+		body.add_child(cbtn)
+		var hint := _wlabel("Opens the Blockle wallet app to approve. No wallet yet? Get it at blockle.org.", 14, INK_SOFT)
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(hint)
+		return
+	# connected
+	body.add_child(_wlabel("Connected   " + _short_addr(Wallet.address()), 17, _accent()))
+	var n: int = Wallet.owned_nfts().size()
+	body.add_child(_wlabel(str(n) + " NFT" + ("" if n == 1 else "s") + " in this wallet", 15, INK_SOFT))
+	if not Wallet.can_mint():
+		var ios := _wlabel("Collectibles you already own show here. Mint new ones in the Blockle wallet app or on the web.", 14, INK_SOFT)
+		ios.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body.add_child(ios)
+	body.add_child(_hsep())
+	body.add_child(_wlabel("Collectibles", 20, _accent()))
+	for it in _cosmetic_items():
+		if it.get("nft", false):
+			body.add_child(_wallet_collectible_row(it))
+	body.add_child(_hsep())
+	var refresh := _btn("Refresh collectibles")
+	refresh.pressed.connect(func(): Wallet.refresh_nfts(); Game.toast.emit("Refreshing from chain…"))
+	body.add_child(refresh)
+	var disc := _btn("Disconnect")
+	disc.add_theme_color_override("font_color", Color("#B5473A"))
+	disc.pressed.connect(func(): Wallet.disconnect_wallet())
+	body.add_child(disc)
+
+func _wallet_collectible_row(it: Dictionary) -> Control:
+	var id := str(it.get("id", ""))
+	var card := _card()
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 2)
+	card.add_child(vb)
+	vb.add_child(_wlabel(str(it.get("name", "Collectible")), 21, INK))
+	if it.has("desc"):
+		var d := _wlabel(str(it["desc"]), 15, INK_SOFT)
+		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vb.add_child(d)
+	if _cosmetic_owned(id):
+		# Owned because the connected wallet holds the matching NFT (display-only).
+		vb.add_child(_wlabel("Owned on-chain", 17, _accent()))
+		var slot := str(it.get("slot", ""))
+		var equipped: bool = _has(Cosmetics, "equipped") and Cosmetics.equipped(slot) == id
+		var eq := _btn("Equipped" if equipped else "Equip")
+		eq.disabled = equipped
+		eq.pressed.connect(func():
+			if Cosmetics.equip(slot, id):
+				Game.toast.emit("Equipped " + str(it.get("name", "collectible")))
+				if _panel_open: _rebuild_panel_body()
+		)
+		vb.add_child(eq)
+	elif Wallet.can_mint():
+		var mint := _btn("Mint as NFT")
+		mint.pressed.connect(func(): Wallet.mint_cosmetic(id))
+		vb.add_child(mint)
+	else:
+		vb.add_child(_wlabel("Mint in the Blockle wallet to unlock here.", 14, INK_SOFT))
+	return card
+
+func _short_addr(a: String) -> String:
+	if a.length() <= 14:
+		return a
+	return a.substr(0, 8) + "…" + a.substr(a.length() - 4)
 
 # =============================================================================
 # Modals: ascension confirm, reset confirm, offline popup, store

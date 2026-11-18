@@ -55,6 +55,9 @@ func migrate(s: Dictionary) -> Dictionary:
 	# "cosmetics" is added by the Cosmetics manager and may predate this field.
 	if not s.has("cosmetics"):
 		s["cosmetics"] = {}
+	# "wallet" is added by the Wallet manager (ecosystem tie-in) and may predate it.
+	if not s.has("wallet"):
+		s["wallet"] = {}
 	# Every resource the game knows about must exist so res()/UI never see null.
 	if typeof(s.get("resources", null)) != TYPE_DICTIONARY:
 		s["resources"] = {}

@@ -30,6 +30,7 @@ Audio="*res://scripts/autoload/Audio.gd"
 Achievements="*res://scripts/autoload/Achievements.gd"
 Cosmetics="*res://scripts/autoload/Cosmetics.gd"
 IAP="*res://scripts/autoload/IAP.gd"
+Wallet="*res://scripts/autoload/Wallet.gd"
 
 [display]
 

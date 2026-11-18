@@ -225,6 +225,42 @@
 			"slot": "pip",
 			"desc": "An exclusive softly-glowing recolour for your starter Blockling, Pip. Cosmetic reskin only.",
 			"cosmetic": true
+		},
+		{
+			"id": "nft_heart_tree_eternal",
+			"name": "Eternal Heart Tree",
+			"type": "collectible_heart_tree",
+			"slot": "heart_tree",
+			"desc": "A hand-painted collectible Heart Tree you can mint to your Blockle wallet as a BLOCK-721 NFT. You own it on-chain; the game simply shows it. Cosmetic only.",
+			"cosmetic": true,
+			"nft": true
+		},
+		{
+			"id": "nft_skin_pip_aurora",
+			"name": "Aurora Pip Skin",
+			"type": "collectible_blockling_skin",
+			"slot": "pip",
+			"desc": "A collectible aurora-lit recolour for Pip, mintable to your Blockle wallet as an NFT. On-chain ownership unlocks the look in your world. Cosmetic only.",
+			"cosmetic": true,
+			"nft": true
+		},
+		{
+			"id": "nft_island_starfield",
+			"name": "Starfield Isle",
+			"type": "collectible_island",
+			"slot": "island",
+			"desc": "A collectible starlit island dressing, mintable as a BLOCK-721 NFT in your Blockle wallet. Display-only in the game. Cosmetic only.",
+			"cosmetic": true,
+			"nft": true
+		},
+		{
+			"id": "nft_effect_aurora",
+			"name": "Aurora Veil",
+			"type": "collectible_environment",
+			"slot": "environment",
+			"desc": "A collectible shimmering aurora over your world, mintable to your Blockle wallet as an NFT. Cosmetic only.",
+			"cosmetic": true,
+			"nft": true
 		}
 	]
 }
