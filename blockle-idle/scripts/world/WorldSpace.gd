@@ -60,6 +60,10 @@ var vp: Vector2 = Vector2(1080, 1920)
 
 # --- scene graph -------------------------------------------------------------
 var _sky: ProcNode                   # the living backdrop (screen-space; parallax + weather drift)
+var _far_layer: Node2D               # treeline + distant islets (behind the ground)
+var _atmo_layer: Node2D              # horizon glow + haze band
+var _fg_layer: Node2D                # foreground framing silhouettes (in front)
+var _post: CanvasLayer               # full-screen grade / vignette / bloom
 var _cam: Node2D                     # the ONE pannable container; everything world-space lives under it
 var _terrain: ProcNode               # ProcTerrain._Island — authoritative ground geometry
 var _heart: ProcNode                 # the Heart Tree: light source + essence pool anchor
@@ -136,12 +140,99 @@ func setup(seed_value: int, viewport: Vector2) -> void:
 	_ent_layer.z_index = 1
 	_cam.add_child(_ent_layer)
 
+	_build_25d_layers()
+
 	_recompute_pan_bounds()
 	_pan_home = Vector2.ZERO
 	_cam.position = _pan_home
 	_ready_built = true
 	_pool_node.set_amount(_pool_total())
 	emit_signal("world_ready")
+
+
+# =============================================================================
+# 2.5D DEPTH STACK  (docs/GFX-2.5D.md)
+# Layers from far to near, each panning at its own rate so the scene reads as a
+# diorama with real depth rather than a flat picture sliding sideways:
+#   sky (0.06) < treeline/islets (0.18) < haze (0.3) < GROUND (1.0) < foliage
+#   (1.0, on the band) < foreground framing (1.35)
+# =============================================================================
+func _build_25d_layers() -> void:
+	var realm := _realm_id()
+	var pal := Proc.palette(world_seed)
+
+	# Lighting first: everything else samples its context (sun/moon + locals).
+	ProcLighting.install(self, _sky)
+	ProcLighting.set_source_space(_cam)
+
+	# --- far background, behind the ground (parallax 0.18) ---
+	_far_layer = Node2D.new()
+	_far_layer.name = "Far"
+	_far_layer.z_index = -8
+	add_child(_far_layer)
+	var strip := Vector2(vp.x * 1.6, vp.y * 0.46)
+	var tl := ProcSilhouettes.make_treeline(world_seed, "tl", strip, 0.85, realm, {"lod": 1})
+	tl.position = Vector2(-vp.x * 0.3, _ground_origin.y - vp.y * 0.40)
+	_far_layer.add_child(tl)
+	var isl := ProcSilhouettes.make_islets(world_seed, "isl", Vector2(vp.x * 1.6, vp.y * 0.5), 3,
+		{"realm": realm, "lod": 1})
+	isl.position = Vector2(-vp.x * 0.3, _ground_origin.y - vp.y * 0.62)
+	_far_layer.add_child(isl)
+
+	# --- atmosphere between the bands (parallax 0.3) ---
+	_atmo_layer = Node2D.new()
+	_atmo_layer.name = "Atmo"
+	_atmo_layer.z_index = -6
+	add_child(_atmo_layer)
+	var glow := ProcAtmosphere.make_horizon_glow(world_seed, "glow", vp)
+	_atmo_layer.add_child(glow)
+	var haze := ProcAtmosphere.make_haze_band(world_seed, "haze", Vector2(vp.x * 1.4, vp.y * 0.3), 0.7)
+	haze.position = Vector2(-vp.x * 0.2, _ground_origin.y - vp.y * 0.26)
+	_atmo_layer.add_child(haze)
+
+	# --- dense ground detail ON the band (moves with the world) ---
+	var ext := _ground_extents()
+	var cover := ProcFoliage.make_ground_cover(world_seed, "cover", ext.y - ext.x,
+		pal["base"], {"accent": pal["base_lt"], "density": 0.9, "d": 0.12})
+	cover.position = _ground_origin + Vector2(0, _ground_surface(0.0))
+	cover.z_index = 1
+	_cam.add_child(cover)
+
+	# --- foreground framing, in front of everything (parallax 1.35) ---
+	_fg_layer = Node2D.new()
+	_fg_layer.name = "Foreground"
+	_fg_layer.z_index = 40
+	add_child(_fg_layer)
+	var fg := ProcSilhouettes.make_framing(world_seed, "fg", vp, "both", {"density": 0.75, "lod": 1})
+	_fg_layer.add_child(fg)
+
+	# --- the full-screen post stack (grade / vignette / soft bloom) ---
+	_post = ProcPost.make(world_seed, vp, {"grain": false, "intensity": 0.85})
+	add_child(_post)
+	if _post.has_method("set_world_ref"):
+		_post.call("set_world_ref", _cam)
+
+	_apply_parallax()
+
+
+# Each layer offsets against the camera by its own rate; the vertical component
+# also TILTS the stack — panning up/down counter-shifts the far layers against
+# the near ones, so the viewing angle itself appears to change a few degrees.
+# This is the "small pannable change in perspective".
+func _apply_parallax() -> void:
+	if _cam == null:
+		return
+	var c := _cam.position
+	if _sky != null and _sky.has_method("set_parallax"):
+		_sky.call("set_parallax", Vector2(-c.x * 0.06, -c.y * 0.03))
+	# tilt: far layers lag horizontally AND lift slightly as you pan down
+	var tilt := clampf(-c.y / maxf(1.0, _pan_ext.y), -1.0, 1.0)
+	if is_instance_valid(_far_layer):
+		_far_layer.position = Vector2(c.x * -0.82, c.y * -0.88 + tilt * 26.0)
+	if is_instance_valid(_atmo_layer):
+		_atmo_layer.position = Vector2(c.x * -0.70, c.y * -0.78 + tilt * 14.0)
+	if is_instance_valid(_fg_layer):
+		_fg_layer.position = Vector2(c.x * 0.35, c.y * 0.30 - tilt * 18.0)
 
 
 func _realm_id() -> String:
@@ -203,9 +294,9 @@ func pan_by(delta: Vector2) -> void:
 	var target := _cam.position + delta
 	# soft rubber-band: motion past the clamp is damped, not walled.
 	_cam.position = _rubber(target)
-	# the sky is far away: it drifts a touch with the pan (6%), selling the depth
-	if _sky != null and _sky.has_method("set_parallax"):
-		_sky.call("set_parallax", Vector2(-_cam.position.x * 0.06, -_cam.position.y * 0.03))
+	# every depth layer shifts at its own rate (and tilts vertically) — this is
+	# what makes panning read as a change of perspective, not a sliding picture.
+	_apply_parallax()
 
 
 func _rubber(pos: Vector2) -> Vector2:
@@ -590,13 +681,15 @@ func _process(delta: float) -> void:
 		_weather_t = 0.0
 		_weather_step += 1
 		_weather_next = Proc.rangef(world_seed, "wdur:%d" % _weather_step, 150.0, 420.0)
+		var roll := Proc.hashf(world_seed, "wx:%d" % _weather_step)
+		var w := "clear"
+		if roll > 0.92: w = "storm"
+		elif roll > 0.74: w = "overcast"
+		elif roll > 0.56: w = "mist"
 		if _sky != null and _sky.has_method("set_weather"):
-			var roll := Proc.hashf(world_seed, "wx:%d" % _weather_step)
-			var w := "clear"
-			if roll > 0.92: w = "storm"
-			elif roll > 0.74: w = "overcast"
-			elif roll > 0.56: w = "mist"
 			_sky.call("set_weather", w)
+		if _post != null and _post.has_method("set_weather"):
+			_post.call("set_weather", w)   # the grade follows the weather too
 	# persist the Heart Tree's very slow growth (throttled; survives restarts so
 	# it never re-bursts into existence)
 	_heart_save_accum += delta

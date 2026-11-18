@@ -59,17 +59,12 @@ func _enter_world() -> void:
 
 # Once Interact's world is live, mount the idle loop + puzzles onto it.
 func _wire_world() -> void:
-	if OS.get_environment("NO_WIRE") == "1":
-		return
 	var space := _interact.space()
 	if space == null:
 		return
 	var ws: int = int(Game.state.get("world_seed", 1))
 
 	# Idle simulation: producers shed motes that drift to the Heart Tree's roots.
-	if OS.get_environment("NO_SIM") == "1":
-		_wire_puzzles(space, ws)
-		return
 	_sim = IdleSim.make(ws)
 	space.cam_node().add_child(_sim)
 	if is_instance_valid(space.heart_node()):
@@ -86,8 +81,6 @@ func _wire_world() -> void:
 			_register_producer(n)
 	)
 
-	if OS.get_environment("NO_PUZZLES") == "1":
-		return
 	_wire_puzzles(space, ws)
 
 func _wire_puzzles(space: WorldSpace, ws: int) -> void:
