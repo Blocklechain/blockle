@@ -22,6 +22,11 @@ enum ProtectState {
         get { d.object(forKey: "protect.integrityAt") as? Date }
         set { d.set(newValue, forKey: "protect.integrityAt") }
     }
+    /// True once the user has saved their recovery key (feeds the Checkup).
+    static var recoveryConfigured: Bool {
+        get { d.bool(forKey: "protect.recoveryConfigured") }
+        set { d.set(newValue, forKey: "protect.recoveryConfigured") }
+    }
 
     struct Event: Codable, Identifiable {
         var id = UUID()

@@ -18,7 +18,7 @@ final class CheckupModel: ObservableObject {
         s.pwnedPasswordHits = lastPwnedHits
         // Vault integrity feeds the score: a protected file that no longer
         // matches its signed record is a high-severity finding.
-        s.recoveryConfigured = nil
+        s.recoveryConfigured = ProtectState.recoveryConfigured
         s.advancedDataProtection = nil
         s.protectedFilesFailing = ProtectState.integrityFailing
         lastSignals = s

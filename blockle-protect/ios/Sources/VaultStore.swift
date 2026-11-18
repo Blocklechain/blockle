@@ -20,8 +20,21 @@ struct VaultIdentity {
     /// Load the device identity, generating + storing a fresh 96-byte seed the
     /// first time. The seed (not the expanded keys) lives in the Keychain,
     /// protected by the device passcode/biometrics (ThisDeviceOnly).
+    static let seedAccount = "blockle.protect.identity.seed"
+
+    /// The raw 96-byte identity seed — the material behind the recovery key.
+    static func exportSeed() throws -> Data { try Keychain.loadOrCreate(account: seedAccount, bytes: 96) }
+
+    /// Restore an identity from a recovery key's 96-byte seed (replaces this
+    /// device's identity). Caller must warn the user this changes which files
+    /// they can open.
+    static func restore(seed: Data) throws {
+        guard seed.count == 96 else { throw ProtectError.crypto("recovery seed must be 96 bytes") }
+        guard Keychain.write(account: seedAccount, data: seed) else { throw ProtectError.crypto("keychain write failed") }
+    }
+
     static func loadOrCreate() throws -> VaultIdentity {
-        let seed = try Keychain.loadOrCreate(account: "blockle.protect.identity.seed", bytes: 96)
+        let seed = try Keychain.loadOrCreate(account: seedAccount, bytes: 96)
         let kemSeed = Data(seed[0..<64])   // ML-KEM d||z
         let dsaSeed = Data(seed[64..<96])  // ML-DSA xi (32)
         let (kemPub, kemSk) = try ProtectCrypto.PQ.kemKeygenFromSeed(kemSeed)
@@ -31,6 +44,22 @@ struct VaultIdentity {
 }
 
 enum Keychain {
+    static func read(account: String) -> Data? {
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrAccount as String: account,
+                                kSecReturnData as String: true]
+        var out: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? (out as? Data) : nil
+    }
+    @discardableResult
+    static func write(account: String, data: Data) -> Bool {
+        let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrAccount as String: account]
+        SecItemDelete(base as CFDictionary)
+        var add = base
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+    }
     static func loadOrCreate(account: String, bytes: Int) throws -> Data {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

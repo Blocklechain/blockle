@@ -19,9 +19,9 @@ struct HomeView: View {
                                     .clipShape(Capsule())
                             }
                             HStack(spacing: 22) {
-                                stat("0", "Protected")
-                                stat("0", "Verified")
-                                stat("—", "Last backup")
+                                stat("\(ProtectState.protectedFileCount)", "Protected")
+                                stat("\(max(0, ProtectState.integrityChecked - ProtectState.integrityFailing))", "Verified")
+                                stat(ProtectState.recoveryConfigured ? "Key saved" : "Set up", "Recovery")
                             }
                         }
                     }
@@ -306,8 +306,8 @@ struct SettingsView: View {
             List {
                 Section {
                     row("person.crop.circle", "Account")
-                    row("key.fill", "Recovery key")
-                    row("lock.shield", "Security")
+                    NavigationLink { RecoveryKeyView() } label: { label("key.fill", "Recovery key") }
+                    NavigationLink { SafariShieldView() } label: { label("lock.shield", "Security & Family Protection") }
                 }
                 Section {
                     row("doc.text", "How it works")
