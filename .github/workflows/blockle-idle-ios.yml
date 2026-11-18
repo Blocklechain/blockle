@@ -127,19 +127,25 @@ jobs:
         working-directory: blockle-idle/build/ios
         run: |
           set -eo pipefail
-          PLIST="$(find . -maxdepth 2 -name Info.plist | head -1)"
-          echo "Patching $PLIST"
-          /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool NO" "$PLIST"
-          # Force portrait on iPad too: without UIRequiresFullScreen, iPad ignores the
-          # supported-orientations list and lets the app rotate / go split-view.
-          /usr/libexec/PlistBuddy -c "Delete :UIRequiresFullScreen" "$PLIST" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool YES" "$PLIST"
-          # Pin supported orientations to portrait only (both device families).
-          for K in UISupportedInterfaceOrientations "UISupportedInterfaceOrientations~ipad"; do
-            /usr/libexec/PlistBuddy -c "Delete :$K" "$PLIST" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Add :$K array" "$PLIST"
-            /usr/libexec/PlistBuddy -c "Add :$K:0 string UIInterfaceOrientationPortrait" "$PLIST"
+          # The APP Info.plist is named "<Target>-Info.plist" (e.g. BlockleIdle-Info.plist),
+          # NOT "Info.plist" — the only files literally named Info.plist are the xcframeworks.
+          # Godot's exporter also writes LANDSCAPE orientations here regardless of the portrait
+          # preset, so we authoritatively rewrite them. Patch every app-level *-Info.plist.
+          PLISTS="$(find . -name '*-Info.plist' -not -path '*xcframework*' -not -path '*.framework/*')"
+          if [ -z "$PLISTS" ]; then echo "::error::no app Info.plist found"; find . -name '*.plist' | head; exit 1; fi
+          for PLIST in $PLISTS; do
+            echo "Patching $PLIST"
+            /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool NO" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Delete :UIRequiresFullScreen" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool YES" "$PLIST"
+            # Pin supported orientations to PORTRAIT ONLY (both device families).
+            for K in UISupportedInterfaceOrientations "UISupportedInterfaceOrientations~ipad"; do
+              /usr/libexec/PlistBuddy -c "Delete :$K" "$PLIST" 2>/dev/null || true
+              /usr/libexec/PlistBuddy -c "Add :$K array" "$PLIST"
+              /usr/libexec/PlistBuddy -c "Add :$K:0 string UIInterfaceOrientationPortrait" "$PLIST"
+            done
+            echo "  -> $(/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations' "$PLIST" | tr -d '\n')"
           done
 
       - name: Write ExportOptions.plist (distribution signing)
