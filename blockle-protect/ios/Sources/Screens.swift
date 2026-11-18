@@ -114,6 +114,7 @@ struct VaultContent: View {
                 if store.items.isEmpty {
                     Text("Protected files appear here.").font(.footnote).foregroundStyle(Brand.muted).padding(.top, 8)
                 } else {
+                    integrityCard
                     ForEach(store.items) { item in itemRow(item) }
                 }
             }.padding(16)
@@ -121,6 +122,34 @@ struct VaultContent: View {
         .fileImporter(isPresented: $picking, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             guard case let .success(urls) = result, let url = urls.first else { return }
             Task { await importAndProtect(url) }
+        }
+    }
+
+    private var integrityCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: "checkmark.shield.fill").foregroundStyle(Brand.red)
+                    Text("File Integrity Monitor").font(.headline).foregroundStyle(Brand.ink)
+                    Spacer()
+                    Button { Task { await store.verifyIntegrity() } } label: {
+                        Text(store.verifying ? "Checking…" : "Verify now")
+                    }.buttonStyle(.bordered).tint(Brand.red).disabled(store.verifying)
+                }
+                Text("Re-checks that every protected file still matches its signed record and on-chain anchor — so corruption or tampering is caught.")
+                    .font(.footnote).foregroundStyle(Brand.muted)
+                if let r = store.lastReport {
+                    HStack(spacing: 6) {
+                        Image(systemName: r.failing == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(r.failing == 0 ? Brand.ok : Brand.red)
+                        Text(r.failing == 0 ? "All \(r.checked) file(s) verified intact" : "\(r.failing) of \(r.checked) file(s) failed verification")
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(Brand.ink)
+                    }
+                    ForEach(r.results.filter { $0.state != .intact }) { res in
+                        Text("• \(res.name): \(res.detail)").font(.footnote).foregroundStyle(Brand.red)
+                    }
+                }
+            }
         }
     }
 

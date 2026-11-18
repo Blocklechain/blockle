@@ -60,7 +60,8 @@ struct ProtectedItem: Codable, Identifiable {
     var size: Int
     var createdAt: Int
     var fingerprintB64: String
-    var commitmentB64: String // Merkle leaf / anchor input
+    var commitmentB64: String // Merkle leaf / anchor input == SHA-384 of the signed manifest file
+    var cipherSha384B64: String? // SHA-384 of the ciphertext file (integrity anchor)
     var rootB64: String?      // anchored Merkle root (from the service)
     var txid: String?         // anchor transaction (nil until anchored)
     var anchored: Bool
@@ -123,6 +124,7 @@ final class VaultStore: ObservableObject {
                 createdAt: result.signed.manifest.createdAt,
                 fingerprintB64: result.signed.manifest.fingerprint,
                 commitmentB64: result.signed.commitment.base64url,
+                cipherSha384B64: ProtectCrypto.sha384(result.ciphertext).base64url,
                 rootB64: nil, txid: nil, anchored: false,
                 manifestPath: manifestPath, cipherPath: cipherPath)
 
@@ -139,6 +141,54 @@ final class VaultStore: ObservableObject {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
+
+    // MARK: - File Integrity Monitor
+
+    enum IntegrityState: String { case intact, changed, missing }
+    struct IntegrityResult: Identifiable {
+        let id: String; let name: String; let state: IntegrityState
+        let manifestOk: Bool; let cipherOk: Bool; let anchorConfirmed: Bool?
+        let detail: String
+    }
+    struct IntegrityReport { var checked = 0; var failing = 0; var results: [IntegrityResult] = []; var ranAt = Date() }
+
+    @Published var lastReport: IntegrityReport?
+    @Published var verifying = false
+
+    /// Re-verify every protected file still matches its signed record and (online)
+    /// its on-chain anchor. Detects corruption or tampering without needing keys:
+    /// the manifest file's SHA-384 IS the anchored commitment, and we stored the
+    /// ciphertext's SHA-384 at protect time.
+    func verifyIntegrity() async {
+        verifying = true; defer { verifying = false }
+        var report = IntegrityReport()
+        for item in items {
+            report.checked += 1
+            let manURL = dir.appendingPathComponent(item.manifestPath)
+            let cipURL = dir.appendingPathComponent(item.cipherPath)
+            guard let man = try? Data(contentsOf: manURL), let cip = try? Data(contentsOf: cipURL) else {
+                report.failing += 1
+                report.results.append(IntegrityResult(id: item.id, name: item.name, state: .missing,
+                    manifestOk: false, cipherOk: false, anchorConfirmed: nil,
+                    detail: "Protected file is missing from the vault."))
+                continue
+            }
+            let manifestOk = ProtectCrypto.sha384(man).base64url == item.commitmentB64
+            let cipherOk = item.cipherSha384B64.map { ProtectCrypto.sha384(cip).base64url == $0 } ?? true
+            var anchorConfirmed: Bool? = nil
+            if let root = item.rootB64 { anchorConfirmed = try? await AnchorService.isAnchored(rootB64: root) }
+            let intact = manifestOk && cipherOk
+            if !intact { report.failing += 1 }
+            let detail: String
+            if !manifestOk { detail = "The signed record changed unexpectedly — possible tampering." }
+            else if !cipherOk { detail = "The encrypted file changed since it was protected." }
+            else { detail = anchorConfirmed == false ? "Intact; on-chain anchor not confirmed (pending or network)." : "Verified intact." }
+            report.results.append(IntegrityResult(id: item.id, name: item.name,
+                state: intact ? .intact : .changed, manifestOk: manifestOk, cipherOk: cipherOk,
+                anchorConfirmed: anchorConfirmed, detail: detail))
+        }
+        lastReport = report
+    }
 }
 
 // MARK: - Anchoring service client
@@ -147,6 +197,17 @@ struct AnchorResult { let root: String?; let txid: String?; let anchored: Bool }
 
 enum AnchorService {
     static let submitURL = URL(string: "https://protect.blockle.org/api/anchor/submit")!
+
+    /// Read-only: is this Merkle root anchored on-chain? (base64url SHA-384 root)
+    static func isAnchored(rootB64: String) async throws -> Bool {
+        guard let raw = Data(base64url: rootB64) else { return false }
+        let hex = raw.hex
+        guard let url = URL(string: "https://protect.blockle.org/api/anchor/root/\(hex)") else { return false }
+        var req = URLRequest(url: url); req.timeoutInterval = 20
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (obj?["anchored"] as? Bool) ?? false
+    }
 
     static func submit(commitmentB64: String) async throws -> AnchorResult {
         struct Body: Encodable { let commitments: [String] }
