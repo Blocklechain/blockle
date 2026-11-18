@@ -14,6 +14,7 @@ boot_splash/show_image=false
 [autoload]
 
 GameData="*res://scripts/autoload/GameData.gd"
+Proc="*res://scripts/autoload/Proc.gd"
 WorldGen="*res://scripts/autoload/WorldGen.gd"
 Traits="*res://scripts/autoload/Traits.gd"
 Save="*res://scripts/autoload/Save.gd"
@@ -31,6 +32,7 @@ Achievements="*res://scripts/autoload/Achievements.gd"
 Cosmetics="*res://scripts/autoload/Cosmetics.gd"
 IAP="*res://scripts/autoload/IAP.gd"
 Wallet="*res://scripts/autoload/Wallet.gd"
+Growth="*res://scripts/world/GrowthState.gd"
 
 [display]
 
