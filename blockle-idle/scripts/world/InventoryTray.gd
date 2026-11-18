@@ -51,7 +51,8 @@ const KIND_TINT := {
 
 var world_seed: int = 1
 var _expanded := false
-var _tray_h := 196.0
+var _tray_h := 244.0   # handle (74) + chip row (118) + breathing room — chips must
+                       # never clip at the tray's bottom edge
 var _handle_h := 74.0
 var _inset_bot := 16.0
 

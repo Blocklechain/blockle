@@ -37,6 +37,11 @@ signal world_booted()   # fired once the world + UI are live (Main wires IdleSim
 
 var world_seed: int = 1
 var vp: Vector2 = Vector2(1080, 1920)
+# Interaction mode: "place" (default — taps open the action bubble, long-press picks
+# up) or "grab" (pressing a placed thing instantly lifts it to move / pocket it).
+# Toggled by the one floating mode button above the tray.
+var mode := "place"
+var _mode_btn: Button
 
 # scene graph
 var _space: WorldSpace
@@ -135,10 +140,47 @@ func _boot() -> void:
 	if Game and not Game.realm_changed.is_connected(_on_realm_changed):
 		Game.realm_changed.connect(_on_realm_changed)
 
+	# the one mode toggle: Place <-> Grab, floating just above the tray
+	_mode_btn = Button.new()
+	_mode_btn.focus_mode = Control.FOCUS_NONE
+	_mode_btn.custom_minimum_size = Vector2(170, 72)
+	_mode_btn.add_theme_font_size_override("font_size", 26)
+	_mode_btn.add_theme_color_override("font_color", PARCH)
+	var msb := StyleBoxFlat.new()
+	msb.bg_color = Color(INK.r, INK.g, INK.b, 0.82)
+	msb.set_corner_radius_all(36)
+	msb.content_margin_left = 20.0
+	msb.content_margin_right = 20.0
+	_mode_btn.add_theme_stylebox_override("normal", msb)
+	_mode_btn.add_theme_stylebox_override("hover", msb)
+	var msbp := msb.duplicate()
+	msbp.bg_color = Color(INK.r, INK.g, INK.b, 0.95)
+	_mode_btn.add_theme_stylebox_override("pressed", msbp)
+	_mode_btn.pressed.connect(_toggle_mode)
+	_ui.add_child(_mode_btn)
+	_layout_mode_btn()
+	_refresh_mode_btn()
+
 	# the entire tutorial: one whisper, once.
 	if Game.state.get("placements", {}).is_empty() and not bool(Game.state.get("diegetic_hinted", false)):
 		_show_whisper("Pull something from your basket. Plant it anywhere.", 5.0)
 	world_booted.emit()
+
+
+func _toggle_mode() -> void:
+	mode = "grab" if mode == "place" else "place"
+	_refresh_mode_btn()
+	_dismiss_bubble()
+	_show_whisper("Grab: touch anything to lift it." if mode == "grab" else "Place: plant from your basket, tap to tend.", 2.2)
+
+func _refresh_mode_btn() -> void:
+	if _mode_btn:
+		_mode_btn.text = "Grab" if mode == "grab" else "Place"
+
+func _layout_mode_btn() -> void:
+	if _mode_btn:
+		var tr := _tray.tray_rect() if _tray else Rect2(Vector2(0, vp.y - 160), Vector2(vp.x, 160))
+		_mode_btn.position = Vector2(vp.x - _mode_btn.custom_minimum_size.x - 18.0, tr.position.y - _mode_btn.custom_minimum_size.y - 14.0)
 
 
 # The live world (valid after world_booted) — Main wires IdleSim/Puzzles onto it.
@@ -312,6 +354,15 @@ func _on_world_press(p: Vector2) -> void:
 	_press_time = _now()
 	_press_record = _space.record_at_screen(p)
 	_press_heart = _space.heart_hit(p) and _press_record.is_empty()
+	# GRAB mode: touching a placed thing lifts it immediately (no hold needed).
+	if mode == "grab" and not _press_record.is_empty():
+		var rec := _press_record
+		_pressing = false
+		_press_record = {}
+		_dismiss_bubble()
+		var entry: Dictionary = _space.remove_record(String(rec.id))
+		if not entry.is_empty():
+			_begin_ghost(entry, "", p, true)
 
 
 func _on_world_drag(p: Vector2) -> void:

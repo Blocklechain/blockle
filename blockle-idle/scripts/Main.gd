@@ -22,6 +22,10 @@ var _puzzles: PuzzleSystem
 var _world_up := false
 
 func _ready() -> void:
+	# CRITICAL: Main is a full-rect Control; with the default STOP filter it would
+	# consume every touch and Interact's _unhandled_input (pan/tap/pick-up) would
+	# never fire. The world must see the input; UI children still hit-test fine.
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# Game (autoload) boots itself deferred; wait for it before deciding the path.
 	if Game.booted:
 		_route()

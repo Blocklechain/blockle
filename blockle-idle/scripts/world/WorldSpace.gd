@@ -49,7 +49,8 @@ signal essence_pool_changed(amount: float)
 signal world_ready
 
 const GROUND_SNAP_RISE := 0.08       # fresh-seed sprout stage (mirrors ItemCatalog.SEED_GROWTH)
-const OVERLAP_TOL := 0.70            # neighbours may nestle until footprints overlap ~30%
+const OVERLAP_TOL := 0.45            # neighbours may nestle deeply — placement stays forgiving
+								     # even for big-footprint buildings on a busy island
 const NEIGHBOUR_REACH := 1.9         # footprints: how far "nearby" reaches for adaptation
 const MAX_MOTES := 48                # concurrency cap on drifting resource motes
 const POOL_KEYS := ["essence", "timber", "stone", "crystal", "stardust", "relics"]
@@ -89,24 +90,31 @@ func setup(seed_value: int, viewport: Vector2) -> void:
 	_cam.name = "PanCam"
 	add_child(_cam)
 
-	# Ground: the hero island. Sized to the viewport so it fills the portrait width.
-	var half := clampf(vp.x * 0.42, 180.0, 520.0)
+	# Ground: the hero island. Deliberately WIDER than the portrait screen so the
+	# world feels bigger than the window and panning is meaningful (borders still
+	# only slightly beyond the view — pan bounds derive from this span).
+	var half := clampf(vp.x * 0.62, 260.0, 780.0)
 	_terrain = ProcTerrain.make(world_seed, "home", half, _realm_id(), 0)
 	_ground_origin = Vector2(vp.x * 0.5, vp.y * 0.60)
 	_terrain.position = _ground_origin
 	_cam.add_child(_terrain)
 
-	# Essence pool + its root heap sit at the island crown, where the Heart Tree stands.
+	# The Heart Tree: the centrepiece and light source — and the FARTHEST-BACK
+	# feature: everything planted lives in front of it (z above), so it reads as
+	# the great backdrop the world grows against. It also grows VERY slowly, its
+	# stage persisted — no bursting into existence.
 	_heart_base = Vector2(_ground_origin.x, _ground_origin.y + _ground_surface(0.0))
+	_heart = ProcHeartTree.make_for_realm(world_seed, "heart", _realm_id())
+	_heart.position = _heart_base
+	_heart.z_index = 0
+	_heart.growth = clampf(float(Game.state.get("heart_growth", 0.06)) if (Game and Game.state) else 0.06, 0.02, 1.0)
+	_heart.set_grow_minutes(600.0)   # ~10 real hours from seedling to the ancient giant
+	_cam.add_child(_heart)
+
+	# Essence pool + its root heap sit at the island crown, at the Heart Tree's feet.
 	_pool_node = _RootPool.new()
 	_pool_node.position = _heart_base
 	_cam.add_child(_pool_node)
-
-	# The Heart Tree: the centrepiece, the light source, the ascension ritual site.
-	_heart = ProcHeartTree.make_for_realm(world_seed, "heart", _realm_id())
-	_heart.position = _heart_base
-	_heart.z_index = 2
-	_cam.add_child(_heart)
 
 	_fx_layer = Node2D.new()
 	_fx_layer.name = "FX"
@@ -257,9 +265,9 @@ func can_place(entry: Dictionary, ghost: ProcNode, world_pos: Vector2) -> Dictio
 	var snap := snap_ground(world_pos)
 	var tx := terrain_x(world_pos)
 	var fr := _footprint_of(ghost)
-	# off the island?
+	# off the island? (lenient: a thing may hang a little over the edge)
 	var ext := _ground_extents()
-	if tx <= ext.x + fr * 0.35 or tx >= ext.y - fr * 0.35:
+	if tx <= ext.x + fr * 0.15 or tx >= ext.y - fr * 0.15:
 		return {"ok": false, "snap": snap, "reason": "off_island"}
 	# ground-type gating (water flora want water; land things reject water tiles)
 	var want := String(ItemCatalog.ground_type(entry))
@@ -553,9 +561,20 @@ func awaken_region(dir: int = 1, key: String = "") -> void:
 # =============================================================================
 # DIEGETIC ACCRUAL + MOTES  (§2.4 — the only "resource UI" is the world itself)
 # =============================================================================
+var _heart_save_accum := 0.0
+
 func _process(delta: float) -> void:
 	if not _ready_built or not (Game and Game.booted):
 		return
+	# persist the Heart Tree's very slow growth (throttled; survives restarts so
+	# it never re-bursts into existence)
+	_heart_save_accum += delta
+	if _heart_save_accum >= 10.0:
+		_heart_save_accum = 0.0
+		if is_instance_valid(_heart) and Game and Game.state:
+			var cur := float(Game.state.get("heart_growth", 0.0))
+			if absf(float(_heart.growth) - cur) > 0.001:
+				Game.state["heart_growth"] = float(_heart.growth)
 	# producers slowly fill their own little stock, scaled by how grown they are
 	_mote_accum += delta
 	for r in _records:
