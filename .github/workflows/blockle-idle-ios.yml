@@ -114,8 +114,10 @@ jobs:
         run: |
           set -eo pipefail
           mkdir -p blockle-idle/build/ios
+          # The export path is resolved RELATIVE TO THE PROJECT (--path blockle-idle),
+          # so pass a project-relative path (res://build/ios/...), not a repo-relative one.
           ~/godot-bin/godot --headless --path blockle-idle \
-            --export-release iOS blockle-idle/build/ios/BlockleIdle.xcodeproj
+            --export-release iOS build/ios/BlockleIdle.xcodeproj
           ls -R blockle-idle/build/ios | head -40
 
       # Encryption-exemption declaration (App Store requires it); set it on the
