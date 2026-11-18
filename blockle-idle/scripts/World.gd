@@ -26,8 +26,16 @@ func _process(delta: float) -> void:
 
 # ---- generation --------------------------------------------------------------
 
+# A seeded 0..1 value. Godot's hash() of two SIMILAR strings returns two similar
+# numbers ("tk1","tk2","tk3" came out 0.87182, 0.87183, 0.87184), so taking it
+# straight made every tree pick the same species and the grass band in stripes.
+# Avalanche the bits first so neighbouring keys land far apart.
 func _rf(key: String) -> float:
-	return float(abs(hash("%d:%s" % [world_seed, key])) % 100000) / 100000.0
+	var h: int = hash("%d:%s" % [world_seed, key]) & 0x7FFFFFFF
+	h = ((h ^ (h >> 16)) * 0x7feb352d) & 0x7FFFFFFF
+	h = ((h ^ (h >> 15)) * 0x846ca68b) & 0x7FFFFFFF
+	h = (h ^ (h >> 16)) & 0x7FFFFFFF
+	return float(h % 1000000) / 1000000.0
 
 func _generate() -> void:
 	_tiles.clear()
@@ -51,7 +59,13 @@ func _generate() -> void:
 			# Steeply deeper toward the middle so the island has real mass below.
 			var dn: float = 1.0 - clampf(d / float(R), 0.0, 1.0)
 			var deep := int(round(3.0 + dn * dn * 26.0))
-			_tiles[Vector2i(gx, gy)] = {"h": h, "deep": deep}
+			# A pond, dug toward the FRONT of the island where the camera can see
+			# into it — it gives the palette its cool accent.
+			var pc := Vector2(float(R) * 0.26, float(R) * 0.44)
+			var water := Vector2(float(gx), float(gy)).distance_to(pc) < 2.6
+			if water:
+				h -= 1.0
+			_tiles[Vector2i(gx, gy)] = {"h": h, "deep": deep, "water": water}
 
 	# Props on valid tiles, seeded and spaced so nothing overlaps badly.
 	# Walk a deterministically SHUFFLED tile list instead of guessing random
@@ -78,6 +92,8 @@ func _generate() -> void:
 				var d := sqrt(float(c.x * c.x + c.y * c.y))
 				if d > R * 0.80:
 					continue                       # keep props off the crumbling rim
+				if bool(_tiles[c].get("water", false)):
+					continue                       # and out of the pond
 				var clear := true
 				for o in used.keys():
 					var oc: Vector2i = o
@@ -142,6 +158,21 @@ func _draw_sky() -> void:
 		# thing that ruined the last sky.
 		var y: float = floorf(top + f * span)
 		draw_rect(Rect2(Vector2(-vp.x * 1.5, y), Vector2(vp.x * 3.0, bh + 2.0)), col)
+	# the sun, with a soft stepped halo (banding, again, on purpose)
+	var sun := Vector2(vp.x * 0.30, -vp.y * 0.44)
+	for i in range(4, 0, -1):
+		var rr := 13.0 + float(i) * 7.0
+		draw_circle(sun, rr, Color(Pal.GOLD.r, Pal.GOLD.g, Pal.GOLD.b, 0.07))
+	draw_circle(sun, 13.0, Pal.CREAM)
+	# birds: little drifting v-marks, the cheapest life a sky can have
+	for i in range(4):
+		var bs := "bd%d" % i
+		var bx := fmod(_rf(bs) * 700.0 + t * (14.0 + i * 5.0), 760.0) - 380.0
+		var by := -150.0 - _rf(bs + "y") * 190.0 + sin(t * 1.4 + float(i)) * 4.0
+		var bc := Color(Pal.INK_SOFT.r, Pal.INK_SOFT.g, Pal.INK_SOFT.b, 0.55)
+		Iso.box(self, Vector2(bx - 3, by), Vector2(2, 1), bc)
+		Iso.box(self, Vector2(bx - 1, by - 1), Vector2(2, 1), bc)
+		Iso.box(self, Vector2(bx + 1, by), Vector2(2, 1), bc)
 	# a few slow clouds
 	for i in range(5):
 		var cs := "cl%d" % i
@@ -164,8 +195,17 @@ func _draw_column(k: Vector2i) -> void:
 	Iso.cube(self, k.x, k.y, h - 1.0, 1.0, Pal.mat("soil"))
 	# Per-tile grass variation: a large flat field of one green reads as empty, so
 	# each tile shifts slightly and some wear to a lighter, sandier patch.
-	var g := Pal.mat("grass")
 	var v := _rf("g%d_%d" % [k.x, k.y])
+	if bool(tl.get("water", false)):
+		Iso.cube(self, k.x, k.y, h, 1.0, Pal.mat("water"))
+		# a glint that drifts across the surface
+		var wc := Iso.to_screen(k.x, k.y, h + 1.0)
+		var gl := 0.5 + 0.5 * sin(t * 1.3 + float(k.x + k.y) * 0.9)
+		if gl > 0.72:
+			Iso.box(self, wc + Vector2(-4, -1), Vector2(8, 2),
+				Color(Pal.CREAM.r, Pal.CREAM.g, Pal.CREAM.b, 0.5))
+		return
+	var g := Pal.mat("grass")
 	var m: Array = g
 	if v > 0.88:
 		m = [g[0].lerp(Pal.SOIL_T, 0.35), g[1].lerp(Pal.SOIL_L, 0.3), g[2].lerp(Pal.SOIL_R, 0.3)]
@@ -173,7 +213,17 @@ func _draw_column(k: Vector2i) -> void:
 		m = [g[0].lightened(0.07), g[1].lightened(0.05), g[2].lightened(0.04)]
 	elif v < 0.18:
 		m = [g[0].darkened(0.08), g[1].darkened(0.07), g[2].darkened(0.06)]
+	# Rim tiles sit a shade darker so the island reads with a crisp silhouette
+	# instead of its edge dissolving into the sky.
+	if not _tiles.has(Vector2i(k.x + 1, k.y)) or not _tiles.has(Vector2i(k.x, k.y + 1)):
+		m = [m[0].darkened(0.06), m[1], m[2]]
 	Iso.cube(self, k.x, k.y, h, 1.0, m)
+	# a couple of pixel grass tufts, so the turf has texture up close
+	if v > 0.30 and v < 0.62:
+		var c := Iso.to_screen(k.x, k.y, h + 1.0)
+		var dk: Color = m[0].darkened(0.18)
+		Iso.box(self, c + Vector2(-5 + v * 8.0, -2), Vector2(1, 3), dk)
+		Iso.box(self, c + Vector2(2 - v * 5.0, 1), Vector2(1, 2), dk)
 
 func _draw_prop(p: Dictionary) -> void:
 	var gx: float = p["gx"]
@@ -192,30 +242,50 @@ func _tree(gx: float, gy: float, z: float, s: int) -> void:
 	# A tree must read instantly against the grass, so: a TALL visible trunk and
 	# a canopy in a deeper, bluer green than the turf (never the same family).
 	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.9)
-	Iso.cube(self, gx, gy, z, 1.7, Pal.mat("wood"), 0.28)
-	var autumn := _rf("aut%d" % s) < 0.28
-	var m := Pal.mat("autumn") if autumn else Pal.mat("leaf")
-	var base := z + 1.5
-	# three stacked shrinking cubes = a chunky, unmistakable tree
-	Iso.cube(self, gx, gy, base, 1.7, m, 1.12)
-	Iso.cube(self, gx, gy, base + 1.6, 1.3, m, 0.82)
-	Iso.cube(self, gx, gy, base + 2.8, 1.0, m, 0.48)
+	# Every tree is its own size and species — a grove of identical trees is the
+	# fastest way to make a world look stamped out.
+	var sz: float = 0.78 + _rf("tz%d" % s) * 0.5
+	var kind := _rf("tk%d" % s)
+	var m := Pal.mat("leaf")
+	if kind > 0.84:
+		m = Pal.mat("autumn")
+	elif kind > 0.70:
+		m = [Pal.BLOSSOM, Pal.BLOSSOM.darkened(0.18), Pal.BLOSSOM.darkened(0.34)]
+	var trunk := 1.5 * sz
+	Iso.cube(self, gx, gy, z, trunk, Pal.mat("wood"), 0.28)
+	var base := z + trunk - 0.2
+	if kind < 0.24:
+		# a tall narrow conifer
+		Iso.cube(self, gx, gy, base, 1.5 * sz, m, 1.0 * sz)
+		Iso.cube(self, gx, gy, base + 1.4 * sz, 1.3 * sz, m, 0.74 * sz)
+		Iso.cube(self, gx, gy, base + 2.6 * sz, 1.1 * sz, m, 0.5 * sz)
+		Iso.cube(self, gx, gy, base + 3.6 * sz, 0.8 * sz, m, 0.26 * sz)
+	else:
+		# a full round-crowned tree
+		Iso.cube(self, gx, gy, base, 1.7 * sz, m, 1.16 * sz)
+		Iso.cube(self, gx, gy, base + 1.6 * sz, 1.3 * sz, m, 0.84 * sz)
+		Iso.cube(self, gx, gy, base + 2.8 * sz, 1.0 * sz, m, 0.48 * sz)
 
 func _cottage(gx: float, gy: float, z: float, s: int) -> void:
 	# walls
 	Iso.cube(self, gx, gy, z, 2.0, Pal.mat("stone"), 1.6)
 	# roof: two shrinking blue cubes read as a pitched roof at this scale
-	Iso.cube(self, gx, gy, z + 2.0, 0.8, Pal.mat("roof"), 1.9)
-	Iso.cube(self, gx, gy, z + 2.8, 0.7, Pal.mat("roof"), 1.2)
+	# a stepped pyramid reads as a pitched roof far better than two slabs
+	Iso.cube(self, gx, gy, z + 2.0, 0.55, Pal.mat("roof"), 1.95)
+	Iso.cube(self, gx, gy, z + 2.55, 0.5, Pal.mat("roof"), 1.5)
+	Iso.cube(self, gx, gy, z + 3.05, 0.45, Pal.mat("roof"), 1.05)
+	Iso.cube(self, gx, gy, z + 3.5, 0.4, Pal.mat("roof"), 0.6)
 	# a warm window on the left face + a chimney
 	var c := Iso.to_screen(gx, gy, z + 1.2)
-	Iso.box(self, c + Vector2(-11, -2), Vector2(6, 6), Pal.GLOW)
-	Iso.box(self, c + Vector2(4, -1), Vector2(5, 5), Pal.GOLD_DEEP)
-	Iso.cube(self, gx + 0.35, gy - 0.35, z + 3.0, 0.9, Pal.mat("stone"), 0.3)
+	Iso.box(self, c + Vector2(-12, -4), Vector2(5, 5), Pal.GLOW)      # lit window
+	Iso.box(self, c + Vector2(6, -3), Vector2(5, 5), Pal.GOLD_DEEP)   # window
+	Iso.box(self, c + Vector2(-3, 1), Vector2(6, 9), Pal.WOOD_R)      # door
+	Iso.box(self, c + Vector2(1, 5), Vector2(1, 1), Pal.GOLD)         # handle
+	Iso.cube(self, gx + 0.45, gy - 0.45, z + 3.2, 1.0, Pal.mat("stone"), 0.3)
 	# chimney smoke
 	for i in range(3):
 		var f := fmod(t * 0.5 + float(i) * 0.33, 1.0)
-		var sc := Iso.to_screen(gx + 0.35, gy - 0.35, z + 3.9 + f * 2.2)
+		var sc := Iso.to_screen(gx + 0.45, gy - 0.45, z + 4.3 + f * 2.2)
 		var a := (1.0 - f) * 0.5
 		draw_rect(Rect2((sc + Vector2(-2, -2 - f * 6.0)).round(), Vector2(4, 4)),
 			Color(Pal.CREAM.r, Pal.CREAM.g, Pal.CREAM.b, a))
@@ -230,6 +300,6 @@ func _flower(gx: float, gy: float, z: float, s: int) -> void:
 	var sway := sin(t * 1.6 + float(s) * 1.7) * 1.0
 	var cols := [Pal.BLOSSOM, Pal.GOLD, Pal.CREAM, Pal.WATER_T]
 	var col: Color = cols[s % cols.size()]
-	Iso.box(self, c + Vector2(-1, -7), Vector2(2, 7), Pal.LEAF_R)
-	Iso.box(self, c + Vector2(-2.5 + sway, -11), Vector2(5, 5), col)
-	Iso.box(self, c + Vector2(-0.5 + sway, -9.5), Vector2(2, 2), Pal.CREAM)
+	Iso.box(self, c + Vector2(-1, -8), Vector2(2, 8), Pal.LEAF_R)
+	Iso.box(self, c + Vector2(-3 + sway, -13), Vector2(6, 6), col)
+	Iso.box(self, c + Vector2(-1 + sway, -11), Vector2(1, 1), col.lightened(0.45))
