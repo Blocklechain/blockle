@@ -16,10 +16,12 @@ final class CheckupModel: ObservableObject {
         var s = DevicePosture.collect()
         s.latestOsVersion = await Self.fetchLatestOS()
         s.pwnedPasswordHits = lastPwnedHits
-        // Values the app will learn from its own state in later builds:
+        // Vault integrity feeds the score: a protected file that no longer
+        // matches its signed record is a high-severity finding.
         s.recoveryConfigured = nil
         s.advancedDataProtection = nil
-        s.protectedFilesFailing = 0
+        s.protectedFilesChecked = ProtectState.integrityChecked
+        s.protectedFilesFailing = ProtectState.integrityFailing
         lastSignals = s
         checkup = CheckupEngine.run(s)
     }

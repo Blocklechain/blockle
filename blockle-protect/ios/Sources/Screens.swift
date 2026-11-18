@@ -254,20 +254,46 @@ struct ShieldDetail: View {
 // MARK: - Activity
 
 struct ActivityView: View {
+    @State private var events: [ProtectState.Event] = []
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                Spacer()
-                Image(systemName: "list.bullet.rectangle").font(.system(size: 46)).foregroundStyle(Brand.muted)
-                Text("No activity yet").font(.title3.weight(.semibold)).foregroundStyle(Brand.ink)
-                Text("Protection events, integrity checks and blockchain anchors will appear here.")
-                    .font(.subheadline).foregroundStyle(Brand.muted)
-                    .multilineTextAlignment(.center).padding(.horizontal, 36)
-                Spacer()
+            Group {
+                if events.isEmpty { empty } else { list }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Brand.bg.ignoresSafeArea())
             .navigationTitle("Activity")
+        }
+        .onAppear { events = ProtectState.events }
+    }
+    private var empty: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "list.bullet.rectangle").font(.system(size: 46)).foregroundStyle(Brand.muted)
+            Text("No activity yet").font(.title3.weight(.semibold)).foregroundStyle(Brand.ink)
+            Text("Protecting a file, verifying integrity, sharing, and security events will appear here.")
+                .font(.subheadline).foregroundStyle(Brand.muted).multilineTextAlignment(.center).padding(.horizontal, 36)
+            Spacer()
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var list: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                ForEach(events) { e in
+                    Card {
+                        HStack(spacing: 12) {
+                            Image(systemName: e.icon).font(.title3)
+                                .foregroundStyle(e.icon.contains("triangle") ? Brand.red : Brand.ok)
+                                .frame(width: 26)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(e.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Brand.ink)
+                                Text(e.detail).font(.footnote).foregroundStyle(Brand.inkSoft)
+                                Text(e.at.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }.padding(16)
         }
     }
 }

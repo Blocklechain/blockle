@@ -97,6 +97,7 @@ final class SharingModel: ObservableObject {
             signerPublicKey: me.dsaPublicKey, signerPrivateKey: me.dsaPrivateKey, label: name, now: now)
         let bundle = ShareBundle(manifestJson: String(decoding: CanonicalJSON.bytes(r.signed.json), as: UTF8.self),
                                  ct: r.ciphertext.base64url)
+        ProtectState.log(icon: "paperplane.fill", title: "Shared “\(name)”", detail: "Encrypted to \(contact.name) — only they can open it.")
         return try JSONEncoder().encode(bundle)
     }
 
@@ -108,6 +109,8 @@ final class SharingModel: ObservableObject {
         let me = try VaultIdentity.loadOrCreate()
         let holder = Protector.Holder(kemPrivateKey: me.kemPrivateKey, recipientId: me.recipientId)
         let pt = try Protector.unprotect(ciphertext: ct, manifest: signed.manifest, holder: holder)
-        return (signed.manifest.label ?? "shared-file", pt)
+        let name = signed.manifest.label ?? "shared-file"
+        ProtectState.log(icon: "lock.open.fill", title: "Opened a shared file", detail: "Decrypted “\(name)” sent to you.")
+        return (name, pt)
     }
 }

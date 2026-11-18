@@ -137,6 +137,9 @@ final class VaultStore: ObservableObject {
             }
             items.insert(item, at: 0)
             persist()
+            ProtectState.protectedFileCount = items.count
+            ProtectState.log(icon: "lock.doc.fill", title: "Protected “\(name)”",
+                             detail: item.anchored ? "Encrypted, signed, and anchored on-chain." : "Encrypted and signed on this device.")
         } catch {
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -188,6 +191,12 @@ final class VaultStore: ObservableObject {
                 anchorConfirmed: anchorConfirmed, detail: detail))
         }
         lastReport = report
+        ProtectState.integrityChecked = report.checked
+        ProtectState.integrityFailing = report.failing
+        ProtectState.lastIntegrityAt = report.ranAt
+        ProtectState.log(icon: report.failing == 0 ? "checkmark.seal.fill" : "exclamationmark.triangle.fill",
+                         title: "Integrity check",
+                         detail: report.failing == 0 ? "All \(report.checked) file(s) verified intact." : "\(report.failing) of \(report.checked) file(s) failed verification.")
     }
 }
 

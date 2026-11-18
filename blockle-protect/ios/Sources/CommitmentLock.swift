@@ -135,6 +135,8 @@ final class CommitmentLockModel: ObservableObject {
                 c.lastTamperAt = Date()
                 self.commitment = c; self.save()
                 self.notifyTamper(c)
+                ProtectState.log(icon: "exclamationmark.triangle.fill", title: "Gambling block turned off",
+                                 detail: c.partnerName.map { "During your commitment — consider telling \($0)." } ?? "During your active commitment.")
             }
         }
     }
