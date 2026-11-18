@@ -12,3 +12,6 @@ export_credentials.cfg
 *.mobileprovision
 *.p12
 *.keystore
+
+# AI render cache (pre-cutout); final art is committed under art/
+art/.raw/

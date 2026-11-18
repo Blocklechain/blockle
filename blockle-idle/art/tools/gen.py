@@ -30,27 +30,23 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DATA = os.path.join(ROOT, "data")
 ART = os.path.join(ROOT, "art")
 
-STYLE = ("children's storybook illustration, hand-painted watercolor and gouache, "
-         "soft diffused warm lighting, painterly textured brushwork, whimsical cozy "
-         "fantasy, muted natural palette, subtle paper grain, gentle rim light, "
-         "highly detailed award-winning picture-book art, no outline")
-NEG = ("photograph, 3d render, cgi, plastic, low quality, blurry, jpeg artifacts, "
-       "text, words, letters, watermark, signature, logo, ui, frame, border, "
-       "harsh black outlines, flat vector, clipart, deformed, extra limbs, "
-       "mutated, creepy, scary, grid, multiple characters")
+# Kept short so the subject survives CLIP's 77-token limit.
+STYLE = ("children's storybook watercolor and gouache illustration, soft painterly, "
+         "whimsical cozy fantasy, muted palette, hand-painted")
+NEG = ("photo, 3d render, cgi, plastic, blurry, text, watermark, signature, logo, "
+       "frame, border, vignette, harsh outline, flat vector, deformed, extra limbs, "
+       "creepy, multiple characters")
 
 def seed_for(s: str) -> int:
     return int(hashlib.sha256(s.encode()).hexdigest(), 16) % (2**31)
 
 def clean_cut(img, session):
-    """Cut the subject to a clean transparent sprite: alpha-matted rembg, drop
-    the faint painted-vignette halo (alpha < threshold -> 0), keep only the
-    largest connected blob (removes stray background bits), then autocrop."""
+    """Cut the subject to a clean transparent sprite: plain rembg (NO alpha
+    matting — it OOMs while the SD model is resident), drop the faint painted-
+    vignette halo (alpha < threshold -> 0), keep only the largest connected blob
+    (removes stray background bits), then autocrop."""
     import rembg
-    cut = rembg.remove(img, session=session, alpha_matting=True,
-                       alpha_matting_foreground_threshold=240,
-                       alpha_matting_background_threshold=20,
-                       alpha_matting_erode_size=8)
+    cut = rembg.remove(img, session=session)
     arr = np.array(cut)
     a = arr[:, :, 3].astype(np.float32)
     a = np.where(a < 130, 0.0, a)
@@ -80,14 +76,12 @@ def build_jobs(which, only_ids):
     jobs = []  # (path, prompt, kind, id)
 
     def blockling_prompt(e):
-        return (f"A single adorable {e['shape']}-like magical fantasy creature named {e['name']}, "
-                f"a gentle {e['profession']}. {e.get('desc','')} Full body, facing forward, centred, "
-                f"one character only, {STYLE}, on a plain flat pale cream background, soft contact shadow.")
+        return (f"A single adorable {e['shape']} fantasy creature, a gentle {e['profession']}, "
+                f"full body, centred, one character, {STYLE}, plain pale background, soft shadow.")
 
     def building_prompt(e):
-        return (f"A single small whimsical fantasy structure: the {e['name']}. {e.get('desc','')} "
-                f"Cozy storybook architecture, three-quarter view, centred, one building only, "
-                f"{STYLE}, on a plain flat pale cream background, soft contact shadow.")
+        return (f"A small whimsical fantasy {e['name']}, cozy storybook building, three-quarter view, "
+                f"centred, one building, {STYLE}, plain pale background, soft shadow.")
 
     for e in b["blocklings"]:
         if which in ("blocklings", "all") or (which == "only" and e["id"] in only_ids) \
@@ -101,9 +95,8 @@ def build_jobs(which, only_ids):
         if not want:
             continue
         if is_heart:
-            p = ("The Heart Tree: one ancient colossal magical tree with a glowing luminous "
-                 "canopy and softly lit roots, floating motes of light. One tree only, centred, "
-                 f"{STYLE}, on a plain flat pale cream background, soft contact shadow.")
+            p = ("One ancient colossal magical Heart Tree, glowing luminous canopy, lit roots, "
+                 f"floating light motes, centred, {STYLE}, plain pale background, soft shadow.")
         else:
             p = building_prompt(e)
         jobs.append((os.path.join(ART, "buildings", e["id"] + ".png"), p, "sprite", e["id"]))
@@ -111,9 +104,8 @@ def build_jobs(which, only_ids):
     for e in realms:
         if which in ("realms", "all") or (which == "only" and e["id"] in only_ids) \
            or (which == "anchors" and e["id"] == "verdant"):
-            p = (f"A breathtaking portrait fantasy landscape: {e['name']}. {e.get('desc','')} "
-                 f"Atmospheric establishing shot, layered depth, no characters, no text, "
-                 f"{STYLE}, cinematic soft light.")
+            p = (f"A beautiful fantasy landscape of {e['name']}, atmospheric, layered depth, "
+                 f"no characters, {STYLE}, cinematic soft light.")
             jobs.append((os.path.join(ART, "realms", e["id"] + "_bg.png"), p, "bg", e["id"]))
 
     # Hand-painted world set-dressing so NOTHING is a flat vector shape: the
@@ -170,21 +162,43 @@ def main():
     pipe.to(device)
     pipe.enable_attention_slicing()
 
-    import rembg
-    session = rembg.new_session("isnet-general-use")
-
+    # Phase 1 — RENDER everything with SD (sprites to a .raw cache, backgrounds
+    # straight to their final path). rembg is NOT loaded here (holding both the
+    # fp32 SD model and rembg's matting at once OOMs 16GB).
+    raw_dir = os.path.join(ART, ".raw")
+    os.makedirs(raw_dir, exist_ok=True)
+    to_cut = []  # (final_path, raw_path)
     for path, prompt, kind, aid in jobs:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         w, h = (512, 768) if kind == "bg" else (512, 512)
         g = torch.Generator(device=device).manual_seed(seed_for(aid))
-        print(f"[gen] {aid} ({kind}) {w}x{h} ...", flush=True)
+        print(f"[gen] render {aid} ({kind}) {w}x{h} ...", flush=True)
         img = pipe(prompt=prompt, negative_prompt=NEG, num_inference_steps=28,
                    guidance_scale=7.5, width=w, height=h, generator=g).images[0]
-        if kind == "sprite":
-            cut = clean_cut(img, session)
-            cut.save(path)
-        else:
+        if kind == "bg":
             img.save(path)
+            print("   saved", os.path.relpath(path, ROOT), flush=True)
+        else:
+            rawp = os.path.join(raw_dir, aid + ".png")
+            img.save(rawp)
+            to_cut.append((path, rawp))
+
+    # Free the SD model before loading rembg.
+    import gc
+    del pipe
+    gc.collect()
+    try:
+        torch.mps.empty_cache()
+    except Exception:
+        pass
+
+    # Phase 2 — CUT sprites to transparent with rembg (SD now unloaded).
+    import rembg
+    session = rembg.new_session("isnet-general-use")
+    for path, rawp in to_cut:
+        print(f"[gen] cut {os.path.relpath(path, ROOT)} ...", flush=True)
+        cut = clean_cut(Image.open(rawp), session)
+        cut.save(path)
         print("   saved", os.path.relpath(path, ROOT), flush=True)
     print("[gen] done")
 
