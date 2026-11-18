@@ -31,8 +31,8 @@ DATA = os.path.join(ROOT, "data")
 ART = os.path.join(ROOT, "art")
 
 # Kept short so the subject survives CLIP's 77-token limit.
-STYLE = ("children's storybook watercolor and gouache illustration, soft painterly, "
-         "whimsical cozy fantasy, muted palette, hand-painted")
+STYLE = ("lush painterly storybook fantasy illustration, rich warm saturated color, "
+         "soft volumetric light, cozy whimsical, detailed hand-painted, clean")
 NEG = ("photo, 3d render, cgi, plastic, blurry, text, watermark, signature, logo, "
        "frame, border, vignette, harsh outline, flat vector, deformed, extra limbs, "
        "creepy, multiple characters")
@@ -80,8 +80,9 @@ def build_jobs(which, only_ids):
                 f"full body, centred, one character, {STYLE}, plain pale background, soft shadow.")
 
     def building_prompt(e):
-        return (f"A small whimsical fantasy {e['name']}, cozy storybook building, three-quarter view, "
-                f"centred, one building, {STYLE}, plain pale background, soft shadow.")
+        return (f"A cozy whimsical fantasy {e['name']}, storybook cottage, isometric three-quarter view, "
+                f"blue shingle roof, warm stone and timber walls, one building, {STYLE}, "
+                f"plain pale background, soft shadow.")
 
     for e in b["blocklings"]:
         if which in ("blocklings", "all") or (which == "only" and e["id"] in only_ids) \
@@ -90,7 +91,7 @@ def build_jobs(which, only_ids):
 
     for e in bld["buildings"]:
         is_heart = e["id"] == "heart_tree"
-        want = which in ("buildings", "all") or (which == "only" and e["id"] in only_ids) \
+        want = which in ("buildings", "all", "hero") or (which == "only" and e["id"] in only_ids) \
             or (which == "anchors" and is_heart)
         if not want:
             continue
@@ -102,7 +103,7 @@ def build_jobs(which, only_ids):
         jobs.append((os.path.join(ART, "buildings", e["id"] + ".png"), p, "sprite", e["id"]))
 
     for e in realms:
-        if which in ("realms", "all") or (which == "only" and e["id"] in only_ids) \
+        if which in ("realms", "all", "hero") or (which == "only" and e["id"] in only_ids) \
            or (which == "anchors" and e["id"] == "verdant"):
             p = (f"A beautiful fantasy landscape of {e['name']}, atmospheric, layered depth, "
                  f"no characters, {STYLE}, cinematic soft light.")
@@ -110,17 +111,28 @@ def build_jobs(which, only_ids):
 
     # Hand-painted world set-dressing so NOTHING is a flat vector shape: the
     # floating island, soft clouds, and glowing magic motes.
+    # world/sky is a full portrait BACKDROP (teal painterly cloud sky, like the
+    # floating-island reference); island/cloud are transparent sprites composited
+    # on top; mote is an fx orb.
+    world_bg = [
+        ("world/sky", "A dreamy fantasy sky, soft teal and warm cream clouds, layered billowing "
+         "cloudbanks with gentle depth, no characters, cinematic soft light."),
+    ]
     world = [
-        ("world/island", "A single small floating fantasy island, lush grassy green rounded top "
-         "with wildflowers and a craggy earthy underside, dangling roots, one island only, "
-         "three-quarter slightly-top view, centred, transparent background."),
+        ("world/island", "A single lush floating sky-island, rounded grassy green top with "
+         "wildflowers and little trees, craggy earthy underside with dangling roots and moss, "
+         "isometric three-quarter view, one island only, centred, transparent background."),
         ("world/cloud", "A single soft fluffy stylised cloud, rounded billows, one cloud only, "
          "centred, transparent background."),
         ("fx/mote", "A single small round glowing magical light mote with a soft warm halo, "
          "one orb only, centred, plain dark background."),
     ]
+    for rel, base in world_bg:
+        if which in ("world", "all", "hero") or (which == "only" and rel.split("/")[-1] in only_ids):
+            jobs.append((os.path.join(ART, rel + ".png"),
+                         base + " " + STYLE + ".", "bg", rel.split("/")[-1]))
     for rel, base in world:
-        if which in ("world", "all") or (which == "only" and rel.split("/")[-1] in only_ids):
+        if which in ("world", "all", "hero") or (which == "only" and rel.split("/")[-1] in only_ids):
             jobs.append((os.path.join(ART, rel + ".png"),
                          base + " " + STYLE + ", soft painterly edges.", "sprite", rel.split("/")[-1]))
 

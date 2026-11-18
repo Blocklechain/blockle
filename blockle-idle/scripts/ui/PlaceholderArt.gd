@@ -48,6 +48,8 @@ static func realm_sky(size: Vector2, realm_def: Dictionary) -> Node2D:
 	var art := _real_art(_variant_path("realms", rid + "_bg", rv), size, true)
 	if art == null and rv > 1:
 		art = _real_art(_variant_path("realms", rid + "_bg", 1), size, true)
+	if art == null:
+		art = _real_art("res://art/world/sky.png", size, true)   # shared painterly sky backdrop
 	if art != null:
 		return art
 	var p := _Painter.new()

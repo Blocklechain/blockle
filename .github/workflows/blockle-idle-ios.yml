@@ -131,6 +131,16 @@ jobs:
           echo "Patching $PLIST"
           /usr/libexec/PlistBuddy -c "Delete :ITSAppUsesNonExemptEncryption" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool NO" "$PLIST"
+          # Force portrait on iPad too: without UIRequiresFullScreen, iPad ignores the
+          # supported-orientations list and lets the app rotate / go split-view.
+          /usr/libexec/PlistBuddy -c "Delete :UIRequiresFullScreen" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIRequiresFullScreen bool YES" "$PLIST"
+          # Pin supported orientations to portrait only (both device families).
+          for K in UISupportedInterfaceOrientations "UISupportedInterfaceOrientations~ipad"; do
+            /usr/libexec/PlistBuddy -c "Delete :$K" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :$K array" "$PLIST"
+            /usr/libexec/PlistBuddy -c "Add :$K:0 string UIInterfaceOrientationPortrait" "$PLIST"
+          done
 
       - name: Write ExportOptions.plist (distribution signing)
         working-directory: blockle-idle/build/ios

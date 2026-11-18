@@ -120,7 +120,7 @@ func _recompute_insets() -> void:
 	else:
 		_inset_top = 24.0
 		_inset_bot = 16.0
-	_nav_h = 64.0 + _inset_bot
+	_nav_h = 92.0 + _inset_bot
 	_bar_h = 80.0 + _inset_top
 
 # =============================================================================
@@ -646,19 +646,19 @@ func _build_nav() -> void:
 	for tab in TAB_IDS:
 		var cell := Control.new()
 		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		cell.custom_minimum_size = Vector2(44, 44)
+		cell.custom_minimum_size = Vector2(58, 58)
 		var vb := VBoxContainer.new()
 		vb.set_anchors_preset(Control.PRESET_FULL_RECT)
 		vb.alignment = BoxContainer.ALIGNMENT_CENTER
 		vb.add_theme_constant_override("separation", 2)
 		vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var g := _glyph(TAB_GLYPH[tab], INK_SOFT, Vector2(30, 30))
+		var g := _glyph(TAB_GLYPH[tab], INK_SOFT, Vector2(36, 36))
 		g.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		vb.add_child(g)
 		var lbl := Label.new()
 		lbl.text = TAB_LABELS[tab]
 		lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		lbl.add_theme_font_size_override("font_size", 16)
+		lbl.add_theme_font_size_override("font_size", 20)
 		lbl.add_theme_color_override("font_color", INK_SOFT)
 		vb.add_child(lbl)
 		cell.add_child(vb)
@@ -1594,16 +1594,16 @@ func _btn(text: String) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(0, 52)
-	b.add_theme_font_size_override("font_size", 20)
+	b.custom_minimum_size = Vector2(0, 74)
+	b.add_theme_font_size_override("font_size", 27)
 	b.add_theme_color_override("font_color", INK)
 	b.add_theme_color_override("font_disabled_color", Color(INK.r, INK.g, INK.b, 0.4))
 	b.add_theme_color_override("font_hover_color", INK)
 	b.add_theme_color_override("font_pressed_color", INK)
-	b.add_theme_stylebox_override("normal", _sb(Color("#E7D4A8"), 14, 10))
-	b.add_theme_stylebox_override("hover", _sb(Color("#EEDFB8"), 14, 10))
-	b.add_theme_stylebox_override("pressed", _sb(Color("#D8C291"), 14, 10))
-	b.add_theme_stylebox_override("disabled", _sb(Color("#DED2BC"), 14, 10))
+	b.add_theme_stylebox_override("normal", _sb(Color("#E7D4A8"), 16, 16))
+	b.add_theme_stylebox_override("hover", _sb(Color("#EEDFB8"), 16, 16))
+	b.add_theme_stylebox_override("pressed", _sb(Color("#D8C291"), 16, 16))
+	b.add_theme_stylebox_override("disabled", _sb(Color("#DED2BC"), 16, 16))
 	return b
 
 func _icon_button(glyph_name: String) -> Button:
