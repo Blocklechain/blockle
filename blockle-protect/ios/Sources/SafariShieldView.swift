@@ -74,6 +74,19 @@ struct SafariShieldView: View {
                             .font(.footnote).foregroundStyle(Brand.muted)
                     }
                 }
+                NavigationLink { CommitmentLockView() } label: {
+                    Card {
+                        HStack {
+                            Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(Brand.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Commitment Lock").font(.headline).foregroundStyle(Brand.ink)
+                                Text("Stop yourself turning the block off in a weak moment").font(.subheadline).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Brand.muted)
+                        }
+                    }
+                }.buttonStyle(.plain)
                 ForEach(model.filters) { f in filterRow(f) }
                 Text("Lists are compiled from large, regularly-updated open blocklists. No site you visit is ever sent to us — the filtering happens entirely on your device.")
                     .font(.footnote).foregroundStyle(Brand.muted)
