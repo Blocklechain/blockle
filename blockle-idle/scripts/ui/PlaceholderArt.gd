@@ -14,7 +14,38 @@ const DEFAULT_PAL := ["#86C06C", "#C9E8B0", "#C9955B"]
 
 # A floating realm sky: a soft vertical gradient from the realm's sky[] stops,
 # plus a glow orb (sun/moon) tinted by the realm accent. Caller sizes it.
+# Load hand-painted art from res://art/... when present, else null (caller falls
+# back to the programmatic placeholder). Sprites anchor bottom-centre at the
+# origin (matching the painter's feet-at-origin convention); backgrounds fill
+# `target` from the top-left.
+static func _real_art(path: String, target: Vector2, bg: bool) -> Node2D:
+	if not ResourceLoader.exists(path):
+		return null
+	var tex = load(path)
+	if tex == null or not (tex is Texture2D):
+		return null
+	var ts: Vector2 = tex.get_size()
+	if ts.x <= 0.0 or ts.y <= 0.0:
+		return null
+	var s := Sprite2D.new()
+	s.texture = tex
+	s.centered = false
+	if bg:
+		s.position = Vector2.ZERO
+		s.scale = Vector2(target.x / ts.x, target.y / ts.y)
+	else:
+		var k: float = target.y / ts.y
+		s.scale = Vector2(k, k)
+		s.offset = Vector2(-ts.x / 2.0, -ts.y)
+	return s
+
+static func _has_real_art() -> bool:
+	return ResourceLoader.exists("res://art/buildings/heart_tree.png")
+
 static func realm_sky(size: Vector2, realm_def: Dictionary) -> Node2D:
+	var art := _real_art("res://art/realms/%s_bg.png" % realm_def.get("id", ""), size, true)
+	if art != null:
+		return art
 	var p := _Painter.new()
 	p.kind = "sky"
 	p.dims = size
@@ -23,6 +54,9 @@ static func realm_sky(size: Vector2, realm_def: Dictionary) -> Node2D:
 	return p
 
 static func build_heart_tree(def: Dictionary) -> Node2D:
+	var art := _real_art("res://art/buildings/%s.png" % def.get("id", "heart_tree"), Vector2(360, 460), false)
+	if art != null:
+		return art
 	var p := _Painter.new()
 	p.kind = "tree"
 	p.shape = "tree"
@@ -31,6 +65,9 @@ static func build_heart_tree(def: Dictionary) -> Node2D:
 	return p
 
 static func build_building(def: Dictionary) -> Node2D:
+	var art := _real_art("res://art/buildings/%s.png" % def.get("id", ""), Vector2(132, 132), false)
+	if art != null:
+		return art
 	var p := _Painter.new()
 	p.kind = "building"
 	p.shape = def.get("art", {}).get("shape", "homes")
@@ -39,6 +76,9 @@ static func build_building(def: Dictionary) -> Node2D:
 	return p
 
 static func build_blockling(def: Dictionary) -> Node2D:
+	var art := _real_art("res://art/blocklings/%s.png" % def.get("id", ""), Vector2(64, 64), false)
+	if art != null:
+		return art
 	var p := _Painter.new()
 	p.kind = "blockling"
 	p.shape = def.get("shape", "sprout")
@@ -46,10 +86,43 @@ static func build_blockling(def: Dictionary) -> Node2D:
 	p.dims = Vector2(64, 64)
 	return p
 
-# The subtle corner stamp so this art is never mistaken for final art.
+# One Blockling INDIVIDUAL: the species base + its hand-painted trait stack
+# (hue wash, marking, accessory, aura) + size/flip, keyed by uid via Traits.
+# This is what makes the roster space millions of distinct creatures. Overlays
+# load from res://art/traits/... when present and are skipped otherwise, so it
+# degrades cleanly before the overlay art exists.
+static func build_blockling_individual(def: Dictionary, uid: String) -> Node2D:
+	var t: Dictionary = Traits.traits_for(uid)
+	var root := Node2D.new()
+	var base := build_blockling(def)
+	base.modulate = t["hue"]
+	root.add_child(base)
+	_overlay(root, "res://art/traits/markings/%s.png" % t["marking"], Vector2(0, -34), 56.0, t["hue"])
+	_overlay(root, "res://art/traits/accessories/%s.png" % t["accessory"], Vector2(0, -52), 46.0, Color.WHITE)
+	_overlay(root, "res://art/traits/auras/%s.png" % t["aura"], Vector2(0, -34), 94.0, Color.WHITE)
+	var k: float = t["size"]
+	root.scale = Vector2(k * (-1.0 if t["flip"] else 1.0), k)
+	return root
+
+static func _overlay(root: Node2D, path: String, at: Vector2, target_w: float, tint: Color) -> void:
+	if not ResourceLoader.exists(path):
+		return
+	var tex = load(path)
+	if tex == null or not (tex is Texture2D):
+		return
+	var s := Sprite2D.new()
+	s.texture = tex
+	var tw: float = tex.get_size().x
+	s.scale = Vector2(target_w / tw, target_w / tw) if tw > 0.0 else Vector2.ONE
+	s.position = at
+	s.modulate = tint
+	root.add_child(s)
+
+# The subtle corner stamp so placeholder art is never mistaken for final art.
+# Vanishes automatically once real hand-painted art is present.
 static func placeholder_label() -> Node2D:
 	var p := _Painter.new()
-	p.kind = "stamp"
+	p.kind = "none" if _has_real_art() else "stamp"
 	return p
 
 # ---- helpers ----------------------------------------------------------------

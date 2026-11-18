@@ -14,6 +14,8 @@ boot_splash/show_image=false
 [autoload]
 
 GameData="*res://scripts/autoload/GameData.gd"
+WorldGen="*res://scripts/autoload/WorldGen.gd"
+Traits="*res://scripts/autoload/Traits.gd"
 Save="*res://scripts/autoload/Save.gd"
 Game="*res://scripts/autoload/Game.gd"
 Economy="*res://scripts/autoload/Economy.gd"

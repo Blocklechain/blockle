@@ -101,6 +101,9 @@ func new_state() -> Dictionary:
 		"settings": { "music": 0.6, "sfx": 0.8 },
 		"tutorial_step": 0,
 		"uid_counter": 0,
+		# Per-player procedural seed: shapes this player's island, palette, layout
+		# and Blockling variants so every world forms uniquely (see WorldGen).
+		"world_seed": WorldGen.fresh_seed(),
 		"last_saved": Time.get_unix_time_from_system(),
 	}
 	for r in GameData.resources:

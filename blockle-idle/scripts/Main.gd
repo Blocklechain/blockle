@@ -37,6 +37,7 @@ var _tree_hit := 150.0
 var _ent_layer: Node2D           # buildings + blocklings (rebuilt on change)
 var _fx_layer: Node2D            # clouds + motes
 var _blockling_nodes: Array = [] # {node, base, phase, amp, speed}
+var _introduced: Dictionary = {} # entity keys that have already played their entrance
 var _cloud_nodes: Array = []     # {node, speed, span}
 var _mote_nodes: Array = []      # {node, speed, phase, base}
 var _anim_t := 0.0
@@ -118,6 +119,8 @@ func _build_world() -> void:
 	_world = Node2D.new()
 	add_child(_world)
 	move_child(_world, 0)
+	# Per-player palette: a subtle whole-world tint unique to this save's seed.
+	_world.modulate = WorldGen.world_tint()
 	_sky = PlaceholderArt.realm_sky(_vp, Realms.current_def())
 	_world.add_child(_sky)
 	_island = _make_island()
@@ -133,38 +136,99 @@ func _build_world() -> void:
 	_build_fx()
 	_layout_world()
 
+# Optional hand-painted texture loader (null when the art file is absent).
+func _opt_tex(path: String) -> Texture2D:
+	if not ResourceLoader.exists(path):
+		return null
+	var t = load(path)
+	return t if t is Texture2D else null
+
 func _make_island() -> Node2D:
+	# Prefer the hand-painted island; a slight seed-based scale/flip keeps even
+	# the shared painting feeling personal.
+	var tex := _opt_tex("res://art/world/island.png")
+	if tex != null:
+		var wn := Node2D.new()
+		var s := Sprite2D.new()
+		s.texture = tex
+		var tw: float = tex.get_size().x
+		var k: float = (380.0 / tw) if tw > 0.0 else 1.0
+		var jr := WorldGen._rng("island_scale")
+		var jk: float = k * jr.randf_range(0.94, 1.08)
+		s.scale = Vector2(jk * (-1.0 if jr.randf() < 0.5 else 1.0), jk)
+		wn.add_child(s)
+		return wn
+	# The silhouette is jittered by the player's world seed, so no two islands
+	# share a shape; ground + soil colours are seed-chosen too.
 	var n := Node2D.new()
+	var soil := WorldGen.soil_color()
+	var grass_col := WorldGen.grass_color()
 	var under := Polygon2D.new()
 	under.polygon = PackedVector2Array([
 		Vector2(-170, 0), Vector2(170, 0), Vector2(90, 120), Vector2(0, 190), Vector2(-90, 120)])
-	under.color = Color("#6B4A2E")
+	under.color = soil.darkened(0.08)
 	n.add_child(under)
 	var under2 := Polygon2D.new()
 	under2.polygon = PackedVector2Array([
 		Vector2(-120, 10), Vector2(120, 10), Vector2(50, 90), Vector2(-50, 90)])
-	under2.color = Color("#543A24")
+	under2.color = soil.darkened(0.22)
 	n.add_child(under2)
-	var top := _circle_poly(176.0, Color("#3F6B3A"), 26)
+	var top := _blob_poly(176.0, grass_col.darkened(0.22), 26, "top")
 	top.scale = Vector2(1.0, 0.34)
 	n.add_child(top)
-	var grass := _circle_poly(176.0, Color("#5FA86B"), 26)
+	var grass := _blob_poly(176.0, grass_col, 26, "grass")
 	grass.scale = Vector2(1.0, 0.30)
 	grass.position = Vector2(0, -6)
 	n.add_child(grass)
 	return n
 
+# A circle whose radius wobbles per vertex using the world seed — the unique
+# island outline. `key` gives the two layers slightly different wobble.
+func _blob_poly(radius: float, color: Color, segs: int, key: String) -> Polygon2D:
+	var jit := WorldGen.island_jitter(segs)
+	var pts := PackedVector2Array()
+	var salt := 0.0 if key == "grass" else 0.5
+	for i in range(segs):
+		var ang := TAU * float(i) / float(segs)
+		var j: Vector2 = jit[i]
+		var rr := radius * (1.0 + j.x + salt * j.y * 0.4)
+		pts.append(Vector2(cos(ang), sin(ang)) * rr)
+	var p := Polygon2D.new()
+	p.polygon = pts
+	p.color = color
+	return p
+
 func _build_fx() -> void:
+	var cloud_tex := _opt_tex("res://art/world/cloud.png")
+	var mote_tex := _opt_tex("res://art/fx/mote.png")
 	for i in range(4):
 		var c := Node2D.new()
-		for off in [Vector2(-26, 2), Vector2(0, -8), Vector2(28, 4), Vector2(6, 6)]:
-			var p := _circle_poly(22.0, Color(1, 1, 1, 0.82), 14)
-			p.position = off
-			c.add_child(p)
+		if cloud_tex != null:
+			var cs := Sprite2D.new()
+			cs.texture = cloud_tex
+			var cw: float = cloud_tex.get_size().x
+			var ck: float = (150.0 / cw) if cw > 0.0 else 1.0
+			cs.scale = Vector2(ck, ck)
+			cs.modulate = Color(1, 1, 1, 0.9)
+			c.add_child(cs)
+		else:
+			for off in [Vector2(-26, 2), Vector2(0, -8), Vector2(28, 4), Vector2(6, 6)]:
+				var p := _circle_poly(22.0, Color(1, 1, 1, 0.82), 14)
+				p.position = off
+				c.add_child(p)
 		_fx_layer.add_child(c)
 		_cloud_nodes.append({ "node": c, "speed": 10.0 + i * 6.0, "span": 0.0 })
 	for i in range(9):
-		var m := _circle_poly(3.0 + randf() * 2.0, Color("#FFF4D6"), 10)
+		var m: Node2D
+		if mote_tex != null:
+			var ms := Sprite2D.new()
+			ms.texture = mote_tex
+			var mw: float = mote_tex.get_size().x
+			var mk: float = (16.0 / mw) if mw > 0.0 else 1.0
+			ms.scale = Vector2(mk, mk)
+			m = ms
+		else:
+			m = _circle_poly(3.0 + randf() * 2.0, Color("#FFF4D6"), 10)
 		_fx_layer.add_child(m)
 		_mote_nodes.append({ "node": m, "speed": 14.0 + randf() * 16.0,
 			"phase": randf() * TAU, "base": Vector2.ZERO })
@@ -218,10 +282,12 @@ func _rebuild_entities() -> void:
 	for idx in range(n):
 		var def: Dictionary = owned[idx]
 		var node := PlaceholderArt.build_building(def)
+		var pl := WorldGen.plot(def["id"])     # seed-stable per-plot placement
 		var spread: float = 150.0 * isc
 		var t := 0.0 if n <= 1 else (float(idx) / float(n - 1) - 0.5) * 2.0
-		node.position = Vector2(cx + t * spread, ground + 70 * isc + absf(t) * 10 * isc)
-		node.scale = Vector2(0.72 * isc, 0.72 * isc)
+		node.position = Vector2(cx + (t + pl["dx"]) * spread, ground + (70.0 + pl["dy"] * 60.0) * isc + absf(t) * 10 * isc)
+		var bsc: float = 0.72 * isc * pl["sc"]
+		node.scale = Vector2(bsc * (-1.0 if pl["flip"] else 1.0), bsc)
 		_ent_layer.add_child(node)
 		# tiny level pip
 		var pip := Label.new()
@@ -230,8 +296,14 @@ func _rebuild_entities() -> void:
 		pip.add_theme_color_override("font_color", PARCH)
 		pip.add_theme_color_override("font_outline_color", INK)
 		pip.add_theme_constant_override("outline_size", 5)
-		pip.position = node.position + Vector2(-8, -98 * 0.72 * isc)
+		pip.position = node.position + Vector2(-8, -128 * bsc)
 		_ent_layer.add_child(pip)
+		# cool entrance the first time a building appears in the world
+		if not _introduced.has("b:" + def["id"]):
+			_introduced["b:" + def["id"]] = true
+			_pop_in(node, node.scale, idx * 0.05)
+			_fade_in(pip, idx * 0.05 + 0.3)
+			_spawn_puff(node.position + Vector2(0, -40 * bsc))
 	# wandering blocklings
 	var uids: Array = Game.state.get("blocklings", {}).keys()
 	var shown: int = min(uids.size(), 8)
@@ -240,16 +312,54 @@ func _rebuild_entities() -> void:
 		var sp := Blocklings.species_of(uid)
 		if sp.is_empty():
 			continue
-		var bn := PlaceholderArt.build_blockling(sp)
+		var bn := PlaceholderArt.build_blockling_individual(sp, uid)  # species + unique trait stack
 		var base := Vector2(cx + randf_range(-150, 150) * isc, ground + randf_range(10, 60) * isc)
 		bn.position = base
-		bn.scale = Vector2(0.9 * isc, 0.9 * isc)
+		bn.scale *= Vector2(0.9 * isc, 0.9 * isc)   # keep the trait size/flip, fit to the view
 		_ent_layer.add_child(bn)
 		_blockling_nodes.append({ "node": bn, "base": base, "phase": randf() * TAU,
 			"amp": randf_range(30, 80) * isc, "speed": randf_range(0.3, 0.7) })
+		# a new Blockling springs into the world with a little sparkle
+		if not _introduced.has("k:" + uid):
+			_introduced["k:" + uid] = true
+			_pop_in(bn, bn.scale, i * 0.04)
+			_spawn_puff(base + Vector2(0, -20 * isc))
 
 func _place_entities() -> void:
 	_rebuild_entities()
+
+# ---- entrance animations ----------------------------------------------------
+
+# Spring a node up from nothing with a soft overshoot (elastic "pop").
+func _pop_in(node: Node2D, final_scale: Vector2, delay: float) -> void:
+	node.scale = Vector2.ZERO
+	var tw := create_tween()
+	if delay > 0.0:
+		tw.tween_interval(delay)
+	tw.tween_property(node, "scale", final_scale, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+func _fade_in(node: CanvasItem, delay: float) -> void:
+	var c := node.modulate
+	c.a = 0.0
+	node.modulate = c
+	var tw := create_tween()
+	if delay > 0.0:
+		tw.tween_interval(delay)
+	tw.tween_property(node, "modulate:a", 1.0, 0.3)
+
+# A quick burst of fading sparkles where something just appeared.
+func _spawn_puff(pos: Vector2) -> void:
+	for i in range(6):
+		var dot := _circle_poly(5.0, Color("#FFF4D6"), 10)
+		dot.position = pos
+		_fx_layer.add_child(dot)
+		var ang := TAU * float(i) / 6.0 + randf() * 0.6
+		var dest := pos + Vector2(cos(ang), sin(ang)) * randf_range(28.0, 58.0)
+		var tw := create_tween().set_parallel(true)
+		tw.tween_property(dot, "position", dest, 0.5).set_ease(Tween.EASE_OUT)
+		tw.tween_property(dot, "scale", Vector2(0.2, 0.2), 0.5)
+		tw.tween_property(dot, "modulate:a", 0.0, 0.5)
+		tw.chain().tween_callback(dot.queue_free)
 
 func _process(delta: float) -> void:
 	# Keep the world cheap: only animate when the player is looking at it.
@@ -407,7 +517,8 @@ func _build_strip() -> void:
 func _refresh_strip() -> void:
 	if not Game.booted:
 		return
-	_strip_realm.text = Realms.current_def().get("name", "The Verdant Beginning")
+	# Show the realm plus THIS player's unique procedurally-named world.
+	_strip_realm.text = "%s · %s" % [Realms.current_def().get("name", "The Verdant Beginning"), WorldGen.world_name()]
 	_strip_weather.text = _weather_word
 	_strip_know.text = "Ancient Knowledge  " + Fmt.short(float(Ascension.ancient_knowledge()))
 
