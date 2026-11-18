@@ -20,7 +20,6 @@ final class CheckupModel: ObservableObject {
         // matches its signed record is a high-severity finding.
         s.recoveryConfigured = nil
         s.advancedDataProtection = nil
-        s.protectedFilesChecked = ProtectState.integrityChecked
         s.protectedFilesFailing = ProtectState.integrityFailing
         lastSignals = s
         checkup = CheckupEngine.run(s)
