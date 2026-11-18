@@ -154,7 +154,7 @@ def build_jobs(which, only_ids):
                 p = (e["prompt"] + ", a single small object, centred, one item only, "
                      + STYLE + ", plain pale background, soft shadow.")
                 jobs.append((os.path.join(ART, "decorations", "%s_%02d.png" % (e["id"], v)),
-                             p, "sprite", "decor_%s_%02d" % (e["id"], v)))
+                             p, "decor", "decor_%s_%02d" % (e["id"], v)))
     return jobs
 
 def main():
@@ -183,10 +183,16 @@ def main():
     to_cut = []  # (final_path, raw_path)
     for path, prompt, kind, aid in jobs:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        w, h = (512, 768) if kind == "bg" else (512, 512)
+        # decorations render tiny on screen, so make them faster/smaller.
+        if kind == "bg":
+            w, h, steps = 512, 768, 28
+        elif kind == "decor":
+            w, h, steps = 384, 384, 22
+        else:
+            w, h, steps = 512, 512, 28
         g = torch.Generator(device=device).manual_seed(seed_for(aid))
         print(f"[gen] render {aid} ({kind}) {w}x{h} ...", flush=True)
-        img = pipe(prompt=prompt, negative_prompt=NEG, num_inference_steps=28,
+        img = pipe(prompt=prompt, negative_prompt=NEG, num_inference_steps=steps,
                    guidance_scale=7.5, width=w, height=h, generator=g).images[0]
         if kind == "bg":
             img.save(path)
