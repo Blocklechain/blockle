@@ -37,6 +37,10 @@ NEG = ("photo, 3d render, cgi, plastic, blurry, text, watermark, signature, logo
        "frame, border, vignette, harsh outline, flat vector, deformed, extra limbs, "
        "creepy, multiple characters")
 
+# When set, re-render even assets that already exist (used for a style change, where
+# skip-if-exists would otherwise keep the old-look art). Normal runs stay resumable.
+FORCE = bool(os.environ.get("GEN_FORCE"))
+
 def seed_for(s: str) -> int:
     return int(hashlib.sha256(s.encode()).hexdigest(), 16) % (2**31)
 
@@ -174,7 +178,7 @@ def build_jobs(which, only_ids):
     # job skips if its file already exists (resumable; preserves committed art).
     if which == "variants":
         def add(path, prompt, kind, aid):
-            if not os.path.exists(path):
+            if FORCE or not os.path.exists(path):
                 jobs.append((path, prompt, kind, aid))
         for e in b["blocklings"]:                                   # species body variants (v2..4)
             for v in range(2, 5):
@@ -239,7 +243,7 @@ def main():
     to_cut = []  # (final_path, raw_path)
     for path, prompt, kind, aid in jobs:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        if os.path.exists(path):
+        if os.path.exists(path) and not FORCE:
             continue                       # finished in a prior run — resumable
         # decorations render tiny on screen, so make them faster/smaller.
         if kind == "bg":
@@ -249,7 +253,7 @@ def main():
         else:
             w, h, steps = 512, 512, 28
         rawp = os.path.join(raw_dir, aid + ".png")
-        if kind != "bg" and os.path.exists(rawp):
+        if kind != "bg" and os.path.exists(rawp) and not FORCE:
             to_cut.append((path, rawp))     # already rendered; only the cut remains
             continue
         g = torch.Generator(device=device).manual_seed(seed_for(aid))
