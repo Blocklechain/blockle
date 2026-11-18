@@ -72,6 +72,15 @@ pub struct ChainParams {
     /// been live for a while. Below it, deregister txs are rejected. A deregister is
     /// additionally subject to a one-epoch cooldown past the neuron's registration.
     pub intel_unbond_height: u64,
+    /// Height at which **cross-algorithm difficulty coupling** activates
+    /// (`docs/CROSS-ALGO-COUPLING.md`). Below it, each mining lane retargets
+    /// independently (pure per-lane LWMA). At and above it, all lanes are
+    /// retargeted from one shared base difficulty scaled by each lane's
+    /// benchmark-measured energy-per-hash coefficient, and fork-choice work is
+    /// energy-weighted — so block production tracks real power draw rather than
+    /// raw hashrate. Pre-fork blocks keep validating under the independent rule.
+    /// `u64::MAX` = disabled.
+    pub cross_algo_activation_height: u64,
 }
 
 impl ChainParams {
@@ -137,6 +146,13 @@ impl ChainParams {
             // Unbonding opens ~112 blocks after intel activates, giving the registry a
             // brief settling window before bonds can be withdrawn.
             intel_unbond_height: 19_000,
+            // Cross-algorithm (energy-weighted) difficulty coupling activates at
+            // block 53,000 — well ahead of the tip at scheduling time, giving
+            // every node/miner an upgrade window. Before this height lanes
+            // retarget independently; at/after it they are coupled by real
+            // power draw. Every mainnet node/miner MUST run a binary carrying
+            // this rule before height 53,000 or it will fork off.
+            cross_algo_activation_height: 53_000,
         }
     }
 

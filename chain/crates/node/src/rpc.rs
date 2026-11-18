@@ -137,6 +137,11 @@ fn call(node: &Arc<Node>, method: &str, params: &Value) -> Result<Value, RpcErr>
                 "chainwork": hex::encode({ let mut be=[0u8;32]; chain.total_work().to_big_endian(&mut be); be }),
                 "size_on_disk": 0,
                 "pruned": false,
+                // Cross-algorithm (energy-coupled) difficulty fork — so explorers,
+                // the site countdown banner, and operators can see the schedule.
+                "cross_algo_activation_height": chain.params.cross_algo_activation_height,
+                "cross_algo_active": chain.height().unwrap_or(0) >= chain.params.cross_algo_activation_height,
+                "cross_algo_blocks_remaining": chain.params.cross_algo_activation_height.saturating_sub(chain.height().unwrap_or(0)),
                 "warnings": "",
             }))
         }

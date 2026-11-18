@@ -13,6 +13,51 @@ pub mod equihash;
 
 pub use primitive_types::U256;
 
+/// Fixed-point scale for [`energy_coeff`]: a coefficient equal to
+/// `ENERGY_COEFF_SCALE` means 1.0 — the median lane. See
+/// `docs/CROSS-ALGO-COUPLING.md`.
+pub const ENERGY_COEFF_SCALE: u64 = 1_000_000;
+
+/// Benchmark-derived **energy per hash** of a mining lane, normalised to the
+/// median lane (= [`ENERGY_COEFF_SCALE`] = 1.0) and expressed in micro-units.
+///
+/// These are the coupling weights: a lane's required difficulty is the shared
+/// base difficulty scaled by this coefficient, so every lane expends the same
+/// REAL ENERGY per block regardless of how efficient its hardware is. The values
+/// are derived from measured energy-per-hash on the best production hardware for
+/// each algorithm (watts ÷ hashrate), normalised by the median of the ten lanes
+/// (≈ 3.23e-9 J/H). Methodology and sources: `docs/CROSS-ALGO-COUPLING.md`.
+///
+/// | lane        | hardware (basis)        | ~J/hash  | coeff (×1e-6) |
+/// |-------------|-------------------------|----------|---------------|
+/// | sha256d     | SHA-256 ASIC (S21-class)| 1.75e-11 | 0.00542       |
+/// | eaglesong   | CKB ASIC (K7-class)     | 1.5e-10  | 0.04644       |
+/// | kheavyhash  | Kaspa ASIC (KS5-class)  | 1.7e-10  | 0.05263       |
+/// | blake2b     | Sia/Blake2b ASIC        | 1.5e-9   | 0.4644        |
+/// | blake2s     | Blake2s ASIC            | 1.5e-9   | 0.4644        |
+/// | x11         | X11 ASIC (X7-class)     | 4.96e-9  | 1.5356        |
+/// | blake3      | Blake3 GPU/early ASIC   | 1.0e-7   | 30.96         |
+/// | scrypt      | Scrypt ASIC (L7-class)  | 3.6e-7   | 111.46        |
+/// | equihash    | Equihash ASIC (Z15)     | 3.6e-3   | 1.1146e6      |
+/// | native      | Blockle Equihash (CPU)  | 3.3e0    | 1.0217e9      |
+///
+/// Unknown lanes fall back to the median (1.0) rather than a privileged weight.
+pub fn energy_coeff(lane: &str) -> u64 {
+    match lane {
+        "sha256d" => 5_420,
+        "eaglesong" => 46_440,
+        "kheavyhash" => 52_630,
+        "blake2b" => 464_400,
+        "blake2s" => 464_400,
+        "x11" => 1_535_600,
+        "blake3" => 30_960_000,
+        "scrypt" => 111_460_000,
+        "equihash" => 1_114_600_000_000,
+        "native" => 1_021_700_000_000_000,
+        _ => ENERGY_COEFF_SCALE,
+    }
+}
+
 /// Litecoin-style scrypt proof-of-work hash: scrypt(N=1024, r=1, p=1) of
 /// the 80-byte header, with the header itself as salt.
 pub fn scrypt_pow_hash(header: &[u8]) -> [u8; 32] {

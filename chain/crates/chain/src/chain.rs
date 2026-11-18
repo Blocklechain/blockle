@@ -7,7 +7,10 @@ use blockle_core::hash::Hash32;
 use blockle_core::keys::{pubkey_to_address, verify_signature};
 use blockle_core::{auxpow, sha256d, AuxPow, Block, BlockHeader, ContractAction, OutPoint, Transaction, TxOutput};
 use blockle_pow::parent;
-use blockle_pow::difficulty::{block_work, hash_meets_target, lwma_next_bits};
+use blockle_pow::difficulty::{
+    block_work, energy_work, hash_meets_target, lwma_coupled_next_bits, lwma_next_bits,
+};
+use blockle_pow::{energy_coeff, ENERGY_COEFF_SCALE};
 use blockle_pow::equihash;
 use blockle_pow::U256;
 use thiserror::Error;
@@ -144,11 +147,22 @@ impl Chain {
         self.blocks.last().map(|b| b.header.hash()).unwrap_or([0u8; 32])
     }
 
-    /// Total accumulated proof-of-work — the fork-choice metric.
+    /// Total accumulated proof-of-work — the fork-choice metric. From
+    /// `cross_algo_activation_height` each block's contribution is
+    /// ENERGY-WEIGHTED (`block_work × lane energy coefficient`), so the heaviest
+    /// chain is the one backed by the most real power draw, not the most raw
+    /// hashes. Pre-fork blocks keep counting at their raw work so history is
+    /// unchanged.
     pub fn total_work(&self) -> U256 {
-        self.blocks
-            .iter()
-            .fold(U256::zero(), |acc, b| acc.saturating_add(block_work(b.header.bits)))
+        let act = self.params.cross_algo_activation_height;
+        self.blocks.iter().enumerate().fold(U256::zero(), |acc, (h, b)| {
+            let w = if (h as u64) >= act {
+                energy_work(b.header.bits, energy_coeff(Self::lane_of(b)), ENERGY_COEFF_SCALE)
+            } else {
+                block_work(b.header.bits)
+            };
+            acc.saturating_add(w)
+        })
     }
 
     /// Median timestamp of the last 11 blocks.
@@ -217,6 +231,30 @@ impl Chain {
         lwma_next_bits(spacing, self.params.lwma_window, self.params.pow_limit, &headers)
     }
 
+    /// Cross-algorithm **coupled** difficulty for `lane` (active at/above
+    /// `cross_algo_activation_height`). All lanes share one base difficulty,
+    /// retargeted over the most recent blocks across EVERY lane at the whole-
+    /// chain spacing and weighted by each block's benchmark energy coefficient;
+    /// the base is then re-scaled to this lane's coefficient. An efficient lane
+    /// must out-hash an inefficient one by exactly their energy-per-hash ratio,
+    /// so real power draw per block is equalised across lanes. See
+    /// `docs/CROSS-ALGO-COUPLING.md`.
+    pub fn next_bits_coupled(&self, lane: &str) -> u32 {
+        let headers: Vec<(u32, i64, u64)> = self
+            .blocks
+            .iter()
+            .map(|b| (b.header.bits, b.header.time as i64, energy_coeff(Self::lane_of(b))))
+            .collect();
+        lwma_coupled_next_bits(
+            self.params.target_spacing,
+            self.params.lwma_window,
+            self.params.pow_limit,
+            ENERGY_COEFF_SCALE,
+            &headers,
+            energy_coeff(lane),
+        )
+    }
+
     /// Grace window and halflife (seconds) for the quiet-lane difficulty decay
     /// at a given block height. Two schedules so the live fork doesn't rewrite
     /// history: below `decay_v2_height` the original v1 schedule (grace = twice
@@ -252,8 +290,14 @@ impl Chain {
     /// plus the quiet-lane decay once the lane has been silent past the grace
     /// window. Pure LWMA below `decay_activation_height`.
     pub fn next_bits_for_at(&self, lane: &str, now_ts: i64) -> u32 {
-        let base = self.next_bits_for(lane);
         let height = self.blocks.len() as u64;
+        // At/above the activation height, lanes are energy-coupled; below it they
+        // retarget independently (unchanged history).
+        let base = if height >= self.params.cross_algo_activation_height {
+            self.next_bits_coupled(lane)
+        } else {
+            self.next_bits_for(lane)
+        };
         if height < self.params.decay_activation_height {
             return base;
         }
