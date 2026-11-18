@@ -255,6 +255,29 @@ impl Chain {
         )
     }
 
+    /// The shared **global difficulty coefficient** of the energy-coupled
+    /// retarget: the coupled target for a hypothetical median lane (energy
+    /// coefficient = 1.0). Every lane's own target is this base scaled by its
+    /// energy coefficient, so this single number is the chain's unified
+    /// energy-difficulty. Exposed by the explorer alongside each lane's own
+    /// computed difficulty (informational before activation, authoritative
+    /// after). See `docs/CROSS-ALGO-COUPLING.md`.
+    pub fn coupled_base_bits(&self) -> u32 {
+        let headers: Vec<(u32, i64, u64)> = self
+            .blocks
+            .iter()
+            .map(|b| (b.header.bits, b.header.time as i64, energy_coeff(Self::lane_of(b))))
+            .collect();
+        lwma_coupled_next_bits(
+            self.params.target_spacing,
+            self.params.lwma_window,
+            self.params.pow_limit,
+            ENERGY_COEFF_SCALE,
+            &headers,
+            ENERGY_COEFF_SCALE,
+        )
+    }
+
     /// Grace window and halflife (seconds) for the quiet-lane difficulty decay
     /// at a given block height. Two schedules so the live fork doesn't rewrite
     /// history: below `decay_v2_height` the original v1 schedule (grace = twice

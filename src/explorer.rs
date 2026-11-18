@@ -136,6 +136,47 @@ impl Explorer {
         }))
     }
 
+    /// Per-lane difficulties plus the GLOBAL (energy-coupled) difficulty
+    /// coefficient — the shared base every lane is scaled from under the
+    /// block-53,000 cross-algorithm coupling. Rendered on the home page to
+    /// prepare operators for the change. Empty string if the node is old / the
+    /// method is unavailable.
+    fn lane_section(&self) -> String {
+        let v = match self.rpc("getlanedifficulties", json!([])) {
+            Ok(v) => v,
+            Err(_) => return String::new(),
+        };
+        let active = v["active"].as_bool().unwrap_or(false);
+        let act_h = v["activation_height"].as_u64().unwrap_or(0);
+        let remaining = v["blocks_remaining"].as_u64().unwrap_or(0);
+        let gcoeff = v["global_difficulty_coefficient"].as_f64().unwrap_or(0.0);
+        let mut rows = String::new();
+        if let Some(arr) = v["lanes"].as_array() {
+            for l in arr {
+                rows.push_str(&format!(
+                    r#"<tr><td>{name}</td><td class="mono">{diff}</td><td class="mono">{coeff}×</td><td class="mono">{coupled}</td></tr>"#,
+                    name = l["lane"].as_str().unwrap_or("?"),
+                    diff = fmt_sci(l["difficulty"].as_f64().unwrap_or(0.0)),
+                    coeff = fmt_sci(l["energy_coeff"].as_f64().unwrap_or(0.0) / 1_000_000.0),
+                    coupled = fmt_sci(l["coupled_difficulty"].as_f64().unwrap_or(0.0)),
+                ));
+            }
+        }
+        let status = if active {
+            "<b>active</b>".to_string()
+        } else {
+            format!("activates at block {act_h} — <b>{remaining} blocks to go</b>")
+        };
+        format!(
+            r##"<h2>Difficulty by mining lane</h2>
+<p class="sub">Cross-algorithm energy coupling: {status}. Global difficulty coefficient: <b>{g}</b> — the shared base every lane is scaled from by its benchmark energy-per-hash. <a href="/fork">What changes?</a></p>
+<table><tr><th>lane</th><th>difficulty</th><th>energy coeff</th><th>coupled difficulty</th></tr>{rows}</table>"##,
+            status = status,
+            g = fmt_sci(gcoeff),
+            rows = rows,
+        )
+    }
+
     fn block_by_id(&self, id: &str) -> Result<Value> {
         let hash = if id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()) {
             id.to_string()
@@ -209,6 +250,7 @@ impl Explorer {
             r##"<h1>{coin} Explorer</h1>
 <form class="search" method="get" action="/search"><input name="q" placeholder="block height · block hash · txid" autofocus><button type="submit">Search</button></form>
 <div class="cards">{c1}{c2}{c3}{c4}</div>
+{lanes}
 <h2>Latest blocks</h2>
 <table><tr><th>height</th><th>hash</th><th>txs</th><th>size</th><th>age</th></tr>{rows}</table>
 <p class="sub"><a href="/mempool">Mempool</a> · <a href="/api/stats">API</a></p>"##,
@@ -217,6 +259,7 @@ impl Explorer {
             c2 = card("Difficulty", fmt_sci(stats["difficulty"].as_f64().unwrap_or(0.0))),
             c3 = card("Network hashrate", fmt_hashrate(hashps)),
             c4 = card("Mempool tx", stats["pooledtx"].as_u64().unwrap_or(0).to_string()),
+            lanes = self.lane_section(),
             rows = rows,
         );
         shell(&self.coin, &self.domain, body)

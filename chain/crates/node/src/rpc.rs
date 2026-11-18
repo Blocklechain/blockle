@@ -20,6 +20,7 @@ use blockle_chain::{Chain, U256};
 use blockle_core::keys::encode_address;
 use blockle_core::{display_hash, Block, Hash32, Transaction};
 use blockle_pow::difficulty::compact_to_target;
+use blockle_pow::{energy_coeff, ENERGY_COEFF_SCALE};
 
 use crate::p2p::Node;
 
@@ -148,6 +149,41 @@ fn call(node: &Arc<Node>, method: &str, params: &Value) -> Result<Value, RpcErr>
         "getdifficulty" => {
             let (chain, _) = node.snapshot();
             Ok(json!(difficulty_from_bits(chain.blocks.last().map(|b| b.header.bits).unwrap_or(0))))
+        }
+        // Per-lane difficulties plus the GLOBAL (energy-coupled) difficulty
+        // coefficient — the shared base every lane is scaled from under the
+        // block-53,000 cross-algorithm coupling. Informational before the fork
+        // (shows what each lane's coupled difficulty will be) and authoritative
+        // after it. See docs/CROSS-ALGO-COUPLING.md.
+        "getlanedifficulties" => {
+            let (chain, _) = node.snapshot();
+            let height = chain.height().unwrap_or(0);
+            let active = height >= chain.params.cross_algo_activation_height;
+            let base_bits = chain.coupled_base_bits();
+            let lanes: Vec<Value> = chain
+                .lanes()
+                .iter()
+                .map(|lane| {
+                    let indep = chain.next_bits_for(lane);
+                    let coupled = chain.next_bits_coupled(lane);
+                    json!({
+                        "lane": lane,
+                        "energy_coeff": energy_coeff(lane),
+                        "bits": if active { coupled } else { indep },
+                        "difficulty": difficulty_from_bits(if active { coupled } else { indep }),
+                        "independent_difficulty": difficulty_from_bits(indep),
+                        "coupled_difficulty": difficulty_from_bits(coupled),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "active": active,
+                "activation_height": chain.params.cross_algo_activation_height,
+                "blocks_remaining": chain.params.cross_algo_activation_height.saturating_sub(height),
+                "energy_coeff_scale": ENERGY_COEFF_SCALE,
+                "global_difficulty_coefficient": difficulty_from_bits(base_bits),
+                "lanes": lanes,
+            }))
         }
         "getmininginfo" => {
             let (chain, mempool) = node.snapshot();
