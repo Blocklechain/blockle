@@ -47,7 +47,9 @@ static func make(world_seed: int, key: String, half_width: float = 420.0,
 	n.world_seed = world_seed
 	n.key = key
 	n.base_w = max(60.0, half_width)
-	n.max_depth = n.base_w * 1.55
+	# Depth scales with width but is capped: a very WIDE landmass should read as a
+	# broad stretch of land, not an abyssal spike hanging kilometres below.
+	n.max_depth = minf(n.base_w * 1.55, 860.0)
 	n.realm_id = realm_id
 	n.lod = clampi(lod, 0, 2)
 	n.set_grow_minutes(60.0 * 8.0)   # the land itself is ancient & slow

@@ -90,10 +90,10 @@ func setup(seed_value: int, viewport: Vector2) -> void:
 	_cam.name = "PanCam"
 	add_child(_cam)
 
-	# Ground: the hero island. Deliberately WIDER than the portrait screen so the
-	# world feels bigger than the window and panning is meaningful (borders still
-	# only slightly beyond the view — pan bounds derive from this span).
-	var half := clampf(vp.x * 0.62, 260.0, 780.0)
+	# Ground: the hero island — a BIG stretch of land, roughly three screens wide,
+	# explored by scrolling left/right. Pan bounds derive from this span, so the
+	# world ends just past the island's tips.
+	var half := clampf(vp.x * 1.55, 700.0, 2100.0)
 	_terrain = ProcTerrain.make(world_seed, "home", half, _realm_id(), 0)
 	_ground_origin = Vector2(vp.x * 0.5, vp.y * 0.60)
 	_terrain.position = _ground_origin
@@ -166,9 +166,10 @@ func _island_radius() -> float:
 func _recompute_pan_bounds() -> void:
 	var ext := _ground_extents()
 	var span := ext.y - ext.x
-	# "just-beyond-the-edge": you may pan about one screen past the ground, no more.
-	var hx: float = maxf(0.0, span * 0.5 - vp.x * 0.42) + vp.x * 0.55
-	_pan_ext = Vector2(hx, vp.y * 0.62)
+	# Left/right is the PRIMARY travel: pan the full landmass edge-to-edge, plus a
+	# small peek past each tip. Vertical stays modest — the world is wide, not tall.
+	var hx: float = maxf(0.0, span * 0.5 - vp.x * 0.5) + vp.x * 0.25
+	_pan_ext = Vector2(hx, vp.y * 0.30)
 
 
 # =============================================================================
