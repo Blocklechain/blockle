@@ -76,6 +76,30 @@ func blockling_variant(uid: String) -> Dictionary:
 		"personality": PERSONS[r.randi() % PERSONS.size()],
 		"epithet": EPITHETS[r.randi() % EPITHETS.size()] }
 
+# Deterministic island set-dressing: a seed-chosen scatter of hand-painted
+# decorations across the island so no two players' islands look alike. Positions
+# are island-local offsets (u,v); Main places + animates them by material.
+func island_decorations() -> Array:
+	var types: Array = GameData.decoration_types
+	if types.is_empty():
+		return []
+	var r := _rng("decor")
+	var out: Array = []
+	var n := 12 + r.randi() % 12   # 12..23, unique per seed
+	for i in range(n):
+		var t: Dictionary = types[r.randi() % types.size()]
+		var ang := r.randf() * TAU
+		var rad := 0.5 + r.randf() * 0.55
+		out.append({
+			"type": t.get("id", ""), "material": t.get("material", "plant"),
+			"variant": 1 + r.randi() % max(1, GameData.decoration_variants),
+			"u": cos(ang) * 150.0 * rad,
+			"v": sin(ang) * 44.0 * rad + 28.0,
+			"scale": r.randf_range(0.5, 1.0), "flip": r.randf() < 0.5,
+			"phase": r.randf() * TAU })
+	out.sort_custom(func(a, b): return a["v"] < b["v"])   # nearer draws in front
+	return out
+
 func world_name() -> String:
 	var r := _rng("name")
 	return "The %s %s" % [ADJ[r.randi() % ADJ.size()], NOUN[r.randi() % NOUN.size()]]

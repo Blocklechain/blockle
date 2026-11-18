@@ -104,6 +104,24 @@ static func build_blockling_individual(def: Dictionary, uid: String) -> Node2D:
 	root.scale = Vector2(k * (-1.0 if t["flip"] else 1.0), k)
 	return root
 
+# One hand-painted island decoration (bottom-anchored), or a small procedural
+# mound before its art exists.
+static func build_decoration(type: String, variant: int) -> Node2D:
+	var art := _real_art("res://art/decorations/%s_%02d.png" % [type, variant], Vector2(60, 60), false)
+	if art != null:
+		return art
+	var n := Node2D.new()
+	var dot := Polygon2D.new()
+	var pts := PackedVector2Array()
+	for i in range(12):
+		var a := TAU * i / 12.0
+		pts.append(Vector2(cos(a), sin(a)) * 13.0)
+	dot.polygon = pts
+	dot.color = Color("#6FA86B")
+	dot.position = Vector2(0, -11)
+	n.add_child(dot)
+	return n
+
 static func _overlay(root: Node2D, path: String, at: Vector2, target_w: float, tint: Color) -> void:
 	if not ResourceLoader.exists(path):
 		return

@@ -142,6 +142,19 @@ def build_jobs(which, only_ids):
             if which in ("traits", "all") or (which == "only" and nm in only_ids):
                 p = tprompt[cat].format(n=nm) + " " + STYLE
                 jobs.append((os.path.join(ART, "traits", cat, nm + ".png"), p, "sprite", cat + "_" + nm))
+
+    # Island DECORATIONS: each type painted in `variants` seed-unique versions
+    # (type_01..type_NN). WorldGen scatters a seed-chosen subset per player, so
+    # these few hundred pieces make every island look one-of-a-kind.
+    decs = load_json("decorations.json")
+    dvar = int(decs.get("variants", 8))
+    for e in decs.get("types", []):
+        for v in range(1, dvar + 1):
+            if which in ("decorations", "all") or (which == "only" and e["id"] in only_ids):
+                p = (e["prompt"] + ", a single small object, centred, one item only, "
+                     + STYLE + ", plain pale background, soft shadow.")
+                jobs.append((os.path.join(ART, "decorations", "%s_%02d.png" % (e["id"], v)),
+                             p, "sprite", "decor_%s_%02d" % (e["id"], v)))
     return jobs
 
 def main():

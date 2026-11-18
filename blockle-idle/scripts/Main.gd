@@ -38,6 +38,9 @@ var _ent_layer: Node2D           # buildings + blocklings (rebuilt on change)
 var _fx_layer: Node2D            # clouds + motes
 var _blockling_nodes: Array = [] # {node, base, phase, amp, speed}
 var _introduced: Dictionary = {} # entity keys that have already played their entrance
+var _decor_layer: Node2D          # hand-painted island set-dressing
+var _decor_nodes: Array = []      # {node, base, material, phase}
+var _decor_grown := false         # grow-in plays once (not on every resize)
 var _cloud_nodes: Array = []     # {node, speed, span}
 var _mote_nodes: Array = []      # {node, speed, phase, base}
 var _anim_t := 0.0
@@ -125,6 +128,8 @@ func _build_world() -> void:
 	_world.add_child(_sky)
 	_island = _make_island()
 	_world.add_child(_island)
+	_decor_layer = Node2D.new()
+	_world.add_child(_decor_layer)
 	_tree = PlaceholderArt.build_heart_tree(GameData.buildings_by_id.get("heart_tree", {}))
 	_world.add_child(_tree)
 	_fx_layer = Node2D.new()
@@ -327,6 +332,69 @@ func _rebuild_entities() -> void:
 
 func _place_entities() -> void:
 	_rebuild_entities()
+	_build_decorations()
+
+# Scatter this player's seed-chosen island decorations; each spawns with a
+# material-appropriate entrance (plants sprout up, crystals pop + sparkle, lights
+# fade, stone drops + settles) and idles by material in _process.
+func _build_decorations() -> void:
+	if _decor_layer == null:
+		return
+	for ch in _decor_layer.get_children():
+		ch.queue_free()
+	_decor_nodes.clear()
+	if not Game.booted:
+		return
+	var cx := _vp.x * 0.5
+	var ground := _vp.y * 0.56
+	var isc: float = clamp(_vp.x / 760.0, 0.7, 1.4)
+	var first := not _decor_grown
+	_decor_grown = true
+	var i := 0
+	for d in WorldGen.island_decorations():
+		var node := PlaceholderArt.build_decoration(d["type"], int(d["variant"]))
+		var pos := Vector2(cx + d["u"] * isc, ground + d["v"] * isc)
+		var sc: float = d["scale"] * isc * 0.9
+		var fscale := Vector2(sc * (-1.0 if d["flip"] else 1.0), sc)
+		node.position = pos
+		node.scale = fscale
+		_decor_layer.add_child(node)
+		_decor_nodes.append({ "node": node, "base": pos, "material": d["material"], "phase": d["phase"] })
+		if first:
+			_grow_decoration(node, fscale, String(d["material"]), pos, i * 0.03)
+		i += 1
+
+func _grow_decoration(node: Node2D, fscale: Vector2, material: String, pos: Vector2, delay: float) -> void:
+	match material:
+		"plant", "fungus":
+			node.scale = Vector2(fscale.x, 0.0)   # sprout up from the ground
+			var tw := create_tween()
+			tw.tween_interval(delay)
+			tw.tween_property(node, "scale", fscale, 0.55).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		"crystal":
+			node.scale = Vector2.ZERO
+			var tw := create_tween()
+			tw.tween_interval(delay)
+			tw.tween_property(node, "scale", fscale, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			_spawn_puff(pos + Vector2(0, -12))
+		"light":
+			var c := node.modulate
+			c.a = 0.0
+			node.modulate = c
+			node.scale = fscale * 0.6
+			var tw := create_tween().set_parallel(true)
+			tw.tween_property(node, "modulate:a", 1.0, 0.5).set_delay(delay)
+			tw.tween_property(node, "scale", fscale, 0.5).set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		"stone", "wood":
+			node.position = pos + Vector2(0, -26)   # drop in and settle
+			var tw := create_tween()
+			tw.tween_interval(delay)
+			tw.tween_property(node, "position", pos, 0.45).set_trans(Tween.TRANS_BOUNCE).set_ease(Tween.EASE_OUT)
+		_:
+			node.scale = Vector2.ZERO
+			var tw := create_tween()
+			tw.tween_interval(delay)
+			tw.tween_property(node, "scale", fscale, 0.45).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 # ---- entrance animations ----------------------------------------------------
 
@@ -388,6 +456,23 @@ func _process(delta: float) -> void:
 		node.position.y = b["base"].y + absf(sin(_anim_t * 2.0 + b["phase"])) * 4.0
 		var s: float = node.scale.y
 		node.scale.x = (s if dir >= 0.0 else -s)
+	# Decorations idle with character set by their material.
+	for d in _decor_nodes:
+		var node: Node2D = d["node"]
+		var ph: float = d["phase"]
+		var base: Vector2 = d["base"]
+		match d["material"]:
+			"plant":
+				node.rotation = sin(_anim_t * 0.9 + ph) * 0.06
+			"fungus":
+				node.position.y = base.y + sin(_anim_t * 1.1 + ph) * 2.0
+			"crystal":
+				var g: float = 0.82 + 0.18 * (0.5 + 0.5 * sin(_anim_t * 2.2 + ph))
+				node.modulate = Color(g, g, g, 1.0)
+			"light":
+				node.modulate.a = 0.7 + 0.3 * (0.5 + 0.5 * sin(_anim_t * 5.0 + ph))
+			"water":
+				node.position.y = base.y + sin(_anim_t * 1.4 + ph) * 2.5
 
 func _unhandled_input(event: InputEvent) -> void:
 	if _panel_open or not Game.booted:

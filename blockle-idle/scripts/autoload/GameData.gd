@@ -17,6 +17,8 @@ var rarities_by_id: Dictionary = {}
 var blocklings: Array = []
 var blocklings_by_id: Dictionary = {}
 var achievements: Array = []
+var decoration_types: Array = []    # hand-painted island set-dressing (with material)
+var decoration_variants := 8
 
 func _ready() -> void:
 	_load_resources()
@@ -25,6 +27,12 @@ func _ready() -> void:
 	_load_research()
 	_load_blocklings()
 	_load_achievements()
+	_load_decorations()
+
+func _load_decorations() -> void:
+	var d := _read_json("res://data/decorations.json")
+	decoration_types = d.get("types", [])
+	decoration_variants = int(d.get("variants", 8))
 
 func _read_json(path: String) -> Dictionary:
 	if not FileAccess.file_exists(path):
