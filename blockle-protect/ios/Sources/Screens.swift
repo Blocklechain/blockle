@@ -359,12 +359,12 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
-                    row("person.crop.circle", "Account")
+                    NavigationLink { AccountView() } label: { label("person.crop.circle", "Account") }
                     NavigationLink { RecoveryKeyView() } label: { label("key.fill", "Recovery key") }
                     NavigationLink { SafariShieldView() } label: { label("lock.shield", "Security & Family Protection") }
                 }
                 Section {
-                    row("doc.text", "How it works")
+                    NavigationLink { HowItWorksView() } label: { label("doc.text", "How it works") }
                     Link(destination: URL(string: "https://protect.blockle.org")!) {
                         label("globe", "protect.blockle.org")
                     }
