@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Network Upgrade · Cross-Algorithm Difficulty Coupling · Blockle</title>
+<meta name="description" content="Blockle activates energy-weighted cross-algorithm difficulty coupling at block 53,000. What node operators, miners and wallet users need to do.">
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#0b0b0f;color:#e8e2d6;font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 20px 80px}
+  .eyebrow{display:inline-block;background:#2a1600;color:#ffb84d;border:1px solid #74491a;border-radius:999px;padding:5px 12px;font-size:13px;font-weight:700;letter-spacing:.02em}
+  h1{font-size:34px;line-height:1.15;margin:18px 0 6px;text-wrap:balance}
+  h2{font-size:21px;margin:36px 0 8px;color:#fff}
+  .cd{font-size:20px;color:#ffb84d;font-weight:800;font-variant-numeric:tabular-nums}
+  p{color:#cfc8ba}
+  code{background:#000;color:#9fe6b0;padding:2px 7px;border-radius:6px;font-size:14px}
+  pre{background:#07070a;border:1px solid #23232b;border-radius:10px;padding:14px;overflow:auto}
+  pre code{background:none;color:#cfe8d4;padding:0}
+  .card{background:#111118;border:1px solid #23232b;border-radius:14px;padding:18px 20px;margin:14px 0}
+  .card h3{margin:0 0 6px;color:#ffb84d;font-size:17px}
+  a{color:#ffb84d}
+  .muted{color:#9a9488;font-size:14px}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin-top:8px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #20202a}
+  th{color:#9a9488;font-weight:600}
+  td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="eyebrow">Network upgrade</span>
+  <h1>Cross-Algorithm Difficulty Coupling</h1>
+  <p class="cd" id="cd">Activates at block 53,000.</p>
+  <p>Blockle is merge-mined across ten algorithm lanes. Today each lane sets its own
+  difficulty independently, which means every lane earns the same share of blocks
+  no matter how much real energy backs it — an ultra-efficient ASIC lane is rewarded
+  the same as a power-hungry one. At <b>block 53,000</b> that changes.</p>
+
+  <h2>What changes</h2>
+  <p>All lanes are retargeted from <b>one shared base difficulty</b>, scaled per lane by a
+  benchmark-measured <b>energy-per-hash</b> coefficient. Each lane must then expend the
+  same <b>real power</b> per block, so block production — and therefore reward and
+  security weight — tracks actual energy draw rather than raw hashrate. Fork-choice work
+  is energy-weighted too, so the heaviest chain is the one backed by the most power.</p>
+  <p class="muted">This is a mining-difficulty and fork-choice rule only. No address formats,
+  keys, balances, supply, or transaction rules change.</p>
+
+  <h2>What you need to do</h2>
+
+  <div class="card">
+    <h3>Node operators</h3>
+    <p>Upgrade before block 53,000 — a node without this rule will reject post-fork
+    blocks and split off the network.</p>
+    <pre><code>git pull
+cargo build --release
+# restart your node service, e.g.
+systemctl restart blockle-node</code></pre>
+    <p>Confirm the rule is present: <code>blockle-cli getblockchaininfo</code> should include
+    <code>cross_algo_activation_height: 53000</code> and a live
+    <code>cross_algo_blocks_remaining</code>.</p>
+  </div>
+
+  <div class="card">
+    <h3>Miners &amp; pools</h3>
+    <p>Point your miner/pool at an upgraded node. <code>getblocktemplate</code> returns the
+    coupled difficulty bits automatically once you are on the new build — no pool config
+    maths required. Payout addresses are unchanged. After the fork, your returns follow your
+    share of real network power draw, not raw hashrate.</p>
+  </div>
+
+  <div class="card">
+    <h3>Wallet users</h3>
+    <p>Nothing changes for your coins — addresses, keys and balances are unaffected. Just
+    update to the latest Blockle wallet when prompted so you stay on the upgraded network.
+    <a href="https://blockle.org/#downloads">Get the latest wallet &rarr;</a></p>
+  </div>
+
+  <h2>Why energy, not hashrate?</h2>
+  <p>Coupling to measured energy-per-hash means reward and security both scale with the one
+  thing an attacker actually has to spend — power. An efficient lane can no longer earn an
+  outsized share or accumulate chain-work cheaply. The coefficients are fixed consensus
+  constants derived from best-in-class hardware for each algorithm; the full methodology and
+  the per-lane table are in the technical note below.</p>
+
+  <p class="muted">Technical note: <a href="https://github.com/Blocklechain/blockle/blob/main/docs/CROSS-ALGO-COUPLING.md">docs/CROSS-ALGO-COUPLING.md</a>.
+  Live per-lane and global difficulty on the <a href="https://blockle.org/explorer">explorer</a>.</p>
+</div>
+<script>
+  fetch("https://blockle.org/fork.json",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
+    var el=document.getElementById("cd");
+    var act=(typeof d.active==="boolean")?d.active:(d.height>=(d.activation_height||53000));
+    if(act){el.textContent="Now active (block "+(d.activation_height||53000)+").";return;}
+    var rem=d.blocks_remaining; if(rem==null&&d.height!=null)rem=(d.activation_height||53000)-d.height;
+    if(rem==null)return;
+    var days=Math.floor(rem*10/1440);
+    el.innerHTML="<b>"+rem.toLocaleString()+"</b> blocks to go"+(days>0?" (~"+days+" day"+(days===1?"":"s")+")":"")+" · block 53,000.";
+  }).catch(function(){});
+</script>
+</body>
+</html>
