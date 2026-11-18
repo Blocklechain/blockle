@@ -1,0 +1,50 @@
+<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Blockle Notary — on-chain proof-of-existence API</title>
+<style>
+:root{--bg:#0A0A0E;--pan:#17121B;--ink:#FBEEF1;--soft:#D8C7CF;--mut:#A5939E;--red:#FF3B4E;--line:#352330;--ok:#43D9A3}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55}
+.wrap{max-width:780px;margin:0 auto;padding:40px 20px}
+h1{font-size:2rem;margin:0 0 .3em}.red{color:var(--red)}
+h2{margin-top:2em;font-size:1.25rem}p,li{color:var(--soft)}.mut{color:var(--mut);font-size:.9rem}
+.card{background:var(--pan);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}
+pre{background:#000;border:1px solid var(--line);border-radius:12px;padding:14px;overflow-x:auto;color:#err}
+code{font-family:ui-monospace,Menlo,monospace;font-size:.86rem;color:#9ad}
+.price{display:flex;gap:12px;flex-wrap:wrap}.price .card{flex:1;min-width:180px}
+.big{font-size:1.6rem;font-weight:700;color:var(--red)}
+a{color:var(--red)}
+</style></head><body><div class=wrap>
+<h1>Blockle <span class=red>Notary</span></h1>
+<p>Tamper-evident, independently-verifiable timestamps for any document — anchored on the Blockle blockchain. You send only a <b>SHA-256 hash</b>; the document itself never leaves your systems.</p>
+
+<div class=card>
+<h2 style=margin-top:0>Why</h2>
+<ul><li>Prove a file existed, unaltered, at a point in time — contracts, records, audit logs, journalism, IP.</li>
+<li>Verifiable by anyone, forever, without trusting Blockle — the proof is on-chain.</li>
+<li>Privacy by construction: we only ever see a hash.</li></ul>
+</div>
+
+<h2>Get a key</h2>
+<pre><code>curl -s https://protect.blockle.org/api/notary/signup \
+  -H "content-type: application/json" \
+  -d '{"email":"you@company.com","org":"Acme Inc"}'</code></pre>
+<p class=mut>Your API key is emailed to you (and returned once). Free tier: 50 anchors.</p>
+
+<h2>Anchor a hash</h2>
+<pre><code>curl -s https://protect.blockle.org/api/notary/anchor \
+  -H "Authorization: Bearer blk_live_..." \
+  -H "content-type: application/json" \
+  -d '{"hash":"&lt;sha256-hex-of-your-document&gt;"}'
+# → { "hash": "...", "txid": "...", "verifyUrl": "..." }</code></pre>
+
+<h2>Verify (public, no key)</h2>
+<pre><code>curl -s https://protect.blockle.org/api/notary/verify/&lt;sha256-hex&gt;
+# → { "anchored": true, "height": 50469, "chain": "blockle" }</code></pre>
+
+<h2>Pricing</h2>
+<div class=price>
+<div class=card><div class=big>Free</div><p>50 anchors<br>Evaluation & small projects</p></div>
+<div class=card><div class=big>Pro</div><p>Prepaid credits for high volume — <a href="mailto:support@blockle.org?subject=Blockle%20Notary%20Pro">contact us</a></p></div>
+<div class=card><div class=big>Enterprise</div><p>SLA, dedicated throughput, on-prem verify — <a href="mailto:support@blockle.org?subject=Blockle%20Notary%20Enterprise">contact us</a></p></div>
+</div>
+<p class=mut>Questions: <a href="mailto:support@blockle.org">support@blockle.org</a> · Powered by Blockle Protect.</p>
+</div></body></html>

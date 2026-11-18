@@ -80,6 +80,22 @@ export function makeHandler(deps: ServerDeps) {
         return json(res, result.anchored ? 200 : 202, result)
       }
 
+      // Direct raw-hash anchor (used by the B2B notary layer): anchor an exact
+      // 32-byte hash (64 hex) on-chain, no Merkle batching.
+      if (req.method === 'POST' && path === '/api/anchor/hash') {
+        const raw = await readBody(req)
+        let parsed: any
+        try { parsed = JSON.parse(raw) } catch { return json(res, 400, { error: 'invalid JSON' }) }
+        const hex = typeof parsed?.hash === 'string' ? parsed.hash.toLowerCase() : ''
+        if (!/^[0-9a-f]{64}$/.test(hex)) return json(res, 400, { error: 'hash must be 32 bytes (64 hex)' })
+        try {
+          const sub = await deps.chain.anchor(hex)
+          return json(res, 200, { hash: hex, txid: sub.txid, anchored: true })
+        } catch (e) {
+          return json(res, 503, { error: `anchor not submitted — ${(e as Error).message}`, anchored: false })
+        }
+      }
+
       if (req.method === 'GET' && path.startsWith('/api/anchor/root/')) {
         const rootParam = decodeURIComponent(path.slice('/api/anchor/root/'.length))
         let key: string
