@@ -564,6 +564,9 @@ func heart_foot() -> Vector2:
 func cam_node() -> Node2D:
 	return _cam
 
+func sky_node() -> ProcNode:
+	return _sky
+
 func entity_layer() -> Node2D:
 	return _ent_layer
 

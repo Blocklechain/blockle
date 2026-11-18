@@ -245,6 +245,10 @@ var _hint_place := ""              # Nurture's "ask" pick, used to aim tend wish
 var _trails: Array = []            # live trail motes
 var _creature_pool_cache: Array = []
 var _cache_t := -999.0
+# De-dupe for care reports: Nurture can report the same care twice (dyn_event +
+# direct note_progress), so collapse repeats of one (verb, thing) within a second.
+var _last_care_key := ""
+var _last_care_at := -999.0
 
 
 # =============================================================================

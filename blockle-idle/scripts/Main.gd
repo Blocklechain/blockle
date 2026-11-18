@@ -19,6 +19,7 @@ var _journey: StartJourney
 var _interact: Interact
 var _sim: IdleSim
 var _puzzles: PuzzleSystem
+var _dyn: Array = []          # the game-dynamics systems (docs/DYNAMICS.md)
 var _world_up := false
 
 func _ready() -> void:
@@ -82,6 +83,29 @@ func _wire_world() -> void:
 	)
 
 	_wire_puzzles(space, ws)
+	_wire_dynamics(space, ws)
+
+# The game-dynamics layer (docs/DYNAMICS.md): creature life, wishes, discovery,
+# seasons + events, rituals and nurture. Each is a self-contained Node2D that
+# takes the same world context and runs diegetically — no menus, no HUD.
+func _wire_dynamics(space: WorldSpace, ws: int) -> void:
+	var ctx := {
+		"space": space, "interact": _interact, "sim": _sim,
+		"puzzles": _puzzles, "sky": space.sky_node(),
+	}
+	var host := space.cam_node()
+	_mount_dyn(host, CreatureLife.new(), ws, ctx)
+	_mount_dyn(host, SeasonsEvents.new(), ws, ctx)
+	_mount_dyn(host, Discovery.new(), ws, ctx)
+	_mount_dyn(host, Wishes.new(), ws, ctx)
+	_mount_dyn(host, Rituals.new(), ws, ctx)
+	_mount_dyn(host, Nurture.new(), ws, ctx)
+
+func _mount_dyn(host: Node, sys: Node, ws: int, ctx: Dictionary) -> void:
+	host.add_child(sys)
+	if sys.has_method("setup"):
+		sys.call("setup", ws, ctx)
+	_dyn.append(sys)
 
 func _wire_puzzles(space: WorldSpace, ws: int) -> void:
 	# In-world puzzles, seeded, standing on real ground.
