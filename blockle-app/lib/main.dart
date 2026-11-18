@@ -1,7 +1,9 @@
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_state.dart';
+import 'services/dapp_link.dart';
 import 'services/open_url.dart' as ou;
 import 'state/bots_controller.dart';
 import 'state/multichain_controller.dart';
@@ -31,6 +33,10 @@ void main() {
   // "View on explorer" (and every other external link) opens in the app's own
   // in-app browser on native — without this hook openExternal was a no-op.
   ou.openExternalHandler = app.openBrowser;
+  // `blockle://dapp?req=…` deep-link handshake (CONNECT/MINT from the Blockle
+  // Idle game). Routes BOTH the cold-start initial link and links received
+  // while running; only our scheme+host is acted on, everything else ignored.
+  _initDappDeepLinks(app);
   runApp(
     MultiProvider(
       providers: [
@@ -61,6 +67,24 @@ void main() {
       child: const BlockleApp(),
     ),
   );
+}
+
+/// Subscribe to `blockle://dapp` deep links. [AppLinks] delivers both the
+/// link that cold-started the app and every link that arrives while it runs;
+/// each is handed to [DappLink], which ignores anything that is not our
+/// scheme+host and drives the approval → resolve handshake.
+void _initDappDeepLinks(AppState app) {
+  final link = DappLink(app, appNavigatorKey);
+  final appLinks = AppLinks();
+  // Links received while the app is already running.
+  appLinks.uriLinkStream.listen(
+    (uri) => link.handleUri(uri),
+    onError: (_) {},
+  );
+  // The link that launched the app from cold start (if any).
+  appLinks.getInitialLink().then((uri) {
+    if (uri != null) link.handleUri(uri);
+  }).catchError((_) {});
 }
 
 class BlockleApp extends StatelessWidget {

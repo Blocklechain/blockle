@@ -55,5 +55,21 @@
 	<string>Blockle Wallet can save images such as your receive QR code to your photo library.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>org.blockle.wallet</string>
+			<!-- `blockle` is the dApp deep-link scheme (blockle://dapp?req=…);
+			     `blockle_app` is kept for backward compatibility. -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>blockle</string>
+				<string>blockle_app</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

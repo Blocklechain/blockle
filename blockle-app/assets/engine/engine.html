@@ -104,6 +104,22 @@
         secretHex, publicHex, utxosJson, name, symbol, BigInt(decimals), BigInt(supply), BigInt(seedBlockBase), BigInt(seedToken), BigInt(gasLimit), BigInt(gasPrice));
     },
 
+    // --- BLOCK-721 (NFT) ------------------------------------------------------
+    // Assemble VM assembly source to bytecode via the consensus assembler.
+    // Returns JSON string {ok, bytecode?, error?}.
+    async assembleAsm(src) { await initWasm(); return wasm_bindgen.assemble_asm(src); },
+
+    // Build + sign an atomic BLOCK-721 LaunchNft (deploy + init) tx from a
+    // pre-assembled codeHex. Returns JSON string {raw, txid} (txid = node spelling).
+    async buildLaunchNft(secretHex, publicHex, utxosJson, codeHex, gasLimit, gasPrice) {
+      await initWasm();
+      return wasm_bindgen.build_launch_nft(
+        secretHex, publicHex, utxosJson, codeHex, BigInt(gasLimit), BigInt(gasPrice));
+    },
+
+    // Consensus contract-id (64 hex) for a launch txid (node spelling in).
+    async contractIdForTxid(txidHex) { await initWasm(); return wasm_bindgen.contract_id_for_txid(txidHex); },
+
     // Password vault — identical format to the extension: {v,salt,iv,data} b64.
     async seal(objJson, password) {
       const salt = crypto.getRandomValues(new Uint8Array(16));

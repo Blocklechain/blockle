@@ -203,6 +203,27 @@ class WalletStore {
         _session.secret!, _session.pub!, utxosJson, codeHex, gasLimit, gasPrice);
   }
 
+  /// Assemble BLOCK-721 VM assembly source -> {ok, bytecode?, error?}. Pure
+  /// (no secret touched) but routed through the engine so the SAME consensus
+  /// assembler the node uses produces the bytecode.
+  Future<Map<String, dynamic>> assembleAsm(String src) => _engine.assembleAsm(src);
+
+  /// Build + sign an atomic BLOCK-721 LaunchNft tx from a pre-assembled
+  /// [codeHex]. The in-session ML-DSA secret NEVER leaves this store — it is
+  /// passed straight into the engine, exactly like [buildDeploy]. Returns
+  /// {raw, txid}.
+  Future<Map<String, dynamic>> buildLaunchNft(
+      String utxosJson, String codeHex, String gasLimit, String gasPrice) {
+    if (!isUnlocked) throw Exception('locked');
+    _touch();
+    return _engine.buildLaunchNft(
+        _session.secret!, _session.pub!, utxosJson, codeHex, gasLimit, gasPrice);
+  }
+
+  /// Consensus contract-id (64 hex) for a launch txid (node spelling in).
+  Future<String> contractIdForTxid(String txidHex) =>
+      _engine.contractIdForTxid(txidHex);
+
   Future<Map<String, dynamic>> buildTokenTransfer(String utxosJson, String contractHex,
       String toAddr, String amountBase, String gasLimit, String gasPrice) {
     if (!isUnlocked) throw Exception('locked');

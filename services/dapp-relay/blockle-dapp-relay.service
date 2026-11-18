@@ -1,0 +1,17 @@
+[Unit]
+Description=Blockle dApp-connect relay (pairing broker for wallet connect + mint handoff)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/blockle/dapp-relay/relay.py
+Restart=always
+RestartSec=2
+# stdlib-only; no venv/deps. Hardening: no privileges, read-only FS view.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

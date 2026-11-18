@@ -200,6 +200,35 @@ class Engine {
     return _json(v);
   }
 
+  // ---- BLOCK-721 (NFT) ----
+
+  /// Assemble VM assembly source to bytecode. Returns {ok, bytecode?, error?}.
+  Future<Map<String, dynamic>> assembleAsm(String src) async {
+    final v = await _call('return await window.Engine.assembleAsm(${_s(src)});');
+    return _json(v);
+  }
+
+  /// Build + sign an atomic BLOCK-721 LaunchNft tx from a pre-assembled
+  /// [codeHex]. Returns {raw, txid} (txid = node spelling).
+  Future<Map<String, dynamic>> buildLaunchNft(
+      String secretHex,
+      String publicHex,
+      String utxosJson,
+      String codeHex,
+      String gasLimit,
+      String gasPrice) async {
+    final v = await _call(
+        'return await window.Engine.buildLaunchNft(${_s(secretHex)}, ${_s(publicHex)}, ${_s(utxosJson)}, ${_s(codeHex)}, ${_s(gasLimit)}, ${_s(gasPrice)});');
+    return _json(v);
+  }
+
+  /// Consensus contract-id (64 hex) for a launch txid (node spelling in).
+  Future<String> contractIdForTxid(String txidHex) async {
+    final v = await _call(
+        'return await window.Engine.contractIdForTxid(${_s(txidHex)});');
+    return v as String;
+  }
+
   /// Seal plaintext JSON under a password -> sealed-vault JSON string.
   Future<String> seal(String objJson, String password) async {
     final v = await _call(

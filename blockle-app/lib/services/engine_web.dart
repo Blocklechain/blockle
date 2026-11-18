@@ -32,6 +32,10 @@ extension type _EngineJS._(JSObject _) implements JSObject {
   external JSPromise<JSString> buildLaunchToken(JSString s, JSString p, JSString utxos,
       JSString name, JSString sym, JSNumber dec, JSNumber supply, JSNumber sb, JSNumber st,
       JSString gl, JSString gp);
+  external JSPromise<JSString> assembleAsm(JSString src);
+  external JSPromise<JSString> buildLaunchNft(
+      JSString s, JSString p, JSString utxos, JSString code, JSString gl, JSString gp);
+  external JSPromise<JSString> contractIdForTxid(JSString txid);
   external JSPromise<JSString> seal(JSString obj, JSString pw);
   external JSPromise<JSString> open(JSString sealed, JSString pw);
 }
@@ -134,6 +138,25 @@ class Engine {
         utxosJson.toJS, name.toJS, symbol.toJS, decimals.toJS, supply.toJS,
         seedBlockBase.toJS, seedToken.toJS,
         gasLimit.toString().toJS, gasPrice.toString().toJS)));
+  }
+
+  // ---- BLOCK-721 (NFT) ----
+
+  Future<Map<String, dynamic>> assembleAsm(String src) async {
+    await ensureStarted();
+    return _json(await _str(_engine.assembleAsm(src.toJS)));
+  }
+
+  Future<Map<String, dynamic>> buildLaunchNft(String secretHex, String publicHex,
+      String utxosJson, String codeHex, String gasLimit, String gasPrice) async {
+    await ensureStarted();
+    return _json(await _str(_engine.buildLaunchNft(secretHex.toJS, publicHex.toJS,
+        utxosJson.toJS, codeHex.toJS, gasLimit.toJS, gasPrice.toJS)));
+  }
+
+  Future<String> contractIdForTxid(String txidHex) async {
+    await ensureStarted();
+    return _str(_engine.contractIdForTxid(txidHex.toJS));
   }
 
   Future<String> seal(String objJson, String password) async {

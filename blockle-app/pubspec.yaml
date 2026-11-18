@@ -30,6 +30,10 @@ dependencies:
   flutter_gemma: ^0.12.6
   path_provider: ^2.1.5
   image_picker: ^1.2.2
+  # `blockle://dapp?req=…` deep links — an external app (the Blockle Idle game)
+  # hands a CONNECT/MINT request to the wallet via the relay-poll handshake.
+  # Handles both the cold-start initial link and links received while running.
+  app_links: ^6.3.2
 
 dev_dependencies:
   flutter_lints: ^4.0.0
