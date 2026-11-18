@@ -1,4 +1,16 @@
 import SwiftUI
+import UIKit
+
+struct IdentifiableURL: Identifiable { let id = UUID(); let url: URL }
+
+/// Thin wrapper so SwiftUI can present the system share sheet for a file URL.
+struct ShareSheet: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
 
 // MARK: - Home
 
@@ -93,6 +105,7 @@ struct VaultView: View {
 struct VaultContent: View {
     @StateObject private var store = VaultStore()
     @State private var picking = false
+    @State private var proofShare: IdentifiableURL?
 
     var body: some View {
         ScrollView {
@@ -123,6 +136,7 @@ struct VaultContent: View {
             guard case let .success(urls) = result, let url = urls.first else { return }
             Task { await importAndProtect(url) }
         }
+        .sheet(item: $proofShare) { ShareSheet(url: $0.url) }
     }
 
     private var integrityCard: some View {
@@ -171,6 +185,11 @@ struct VaultContent: View {
                 if let tx = item.txid {
                     Text("anchor tx \(String(tx.prefix(12)))…").font(.caption2.monospaced()).foregroundStyle(Brand.redSoft)
                 }
+                Button { if let u = store.exportProof(item) { proofShare = IdentifiableURL(url: u) } } label: {
+                    Label("Share verification proof", systemImage: "checkmark.seal")
+                }.font(.footnote.weight(.medium)).buttonStyle(.bordered).tint(Brand.red)
+                Text("Anyone can verify this file's authenticity at protect.blockle.org/verify — no account, no trust in us.")
+                    .font(.caption2).foregroundStyle(Brand.muted)
             }
         }
     }

@@ -174,6 +174,33 @@ final class VaultStore: ObservableObject {
         }
     }
 
+    // MARK: - Portable verification proof
+
+    /// Build the portable proof a third party verifies at protect.blockle.org/verify
+    /// (or fully offline): the signed manifest + the single-leaf Merkle inclusion
+    /// + the on-chain anchor reference. Writes a .json and returns its URL.
+    /// Contains NO plaintext and NO keys — only the public, verifiable record.
+    func exportProof(_ item: ProtectedItem) -> URL? {
+        let manURL = dir.appendingPathComponent(item.manifestPath)
+        guard let manData = try? Data(contentsOf: manURL),
+              let signedObj = try? JSONSerialization.jsonObject(with: manData) else { return nil }
+        var anchor: [String: Any] = ["chain": "blockle"]
+        if let root = item.rootB64 { anchor["root"] = root }
+        if let tx = item.txid { anchor["txid"] = tx }
+        // single-file batch: the Merkle root is the (tagged) leaf hash, so the
+        // inclusion proof has no siblings — matches merkleTree([commitment]).
+        let proof: [String: Any] = [
+            "v": 1,
+            "signed": signedObj,
+            "commitment": item.commitmentB64,
+            "merkleProof": ["leafIndex": 0, "siblings": [Any]()],
+            "anchor": anchor,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: proof, options: [.sortedKeys]) else { return nil }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("\(item.name).blockle-proof.json")
+        do { try data.write(to: out, options: .atomic); return out } catch { return nil }
+    }
+
     // MARK: - File Integrity Monitor
 
     enum IntegrityState: String { case intact, changed, missing }
