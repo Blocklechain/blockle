@@ -1,5 +1,7 @@
-; Engine configuration file.
-; Blockle Idle — portrait idle civilization game (Godot 4.7).
+; Blockle Idle — isometric pixel-art idle game.
+; Engine configuration. Rendering is PIXEL-PERFECT by construction: the game
+; renders at a small internal resolution (360x640) and the viewport is scaled up
+; with integer nearest-neighbour, so every pixel is a real, chunky pixel.
 
 config_version=5
 
@@ -7,49 +9,29 @@ config_version=5
 
 config/name="Blockle Idle"
 run/main_scene="res://scenes/Main.tscn"
-config/features=PackedStringArray("4.7", "Mobile")
+config/features=PackedStringArray("4.4", "GL Compatibility")
 config/icon="res://icon.png"
+boot_splash/bg_color=Color(0.055, 0.065, 0.11, 1)
 boot_splash/show_image=false
 
 [autoload]
 
-GameData="*res://scripts/autoload/GameData.gd"
-Proc="*res://scripts/autoload/Proc.gd"
-WorldGen="*res://scripts/autoload/WorldGen.gd"
-Traits="*res://scripts/autoload/Traits.gd"
-Save="*res://scripts/autoload/Save.gd"
-Game="*res://scripts/autoload/Game.gd"
-Economy="*res://scripts/autoload/Economy.gd"
-Production="*res://scripts/autoload/Production.gd"
-Buildings="*res://scripts/autoload/Buildings.gd"
-Blocklings="*res://scripts/autoload/Blocklings.gd"
-Research="*res://scripts/autoload/Research.gd"
-Realms="*res://scripts/autoload/Realms.gd"
-Ascension="*res://scripts/autoload/Ascension.gd"
-Offline="*res://scripts/autoload/Offline.gd"
-Audio="*res://scripts/autoload/Audio.gd"
-Achievements="*res://scripts/autoload/Achievements.gd"
-Cosmetics="*res://scripts/autoload/Cosmetics.gd"
-IAP="*res://scripts/autoload/IAP.gd"
-Wallet="*res://scripts/autoload/Wallet.gd"
-Growth="*res://scripts/world/GrowthState.gd"
+Pal="*res://scripts/Pal.gd"
+Iso="*res://scripts/Iso.gd"
 
 [display]
 
-window/size/viewport_width=1080
-window/size/viewport_height=1920
+window/size/viewport_width=360
+window/size/viewport_height=640
+window/stretch/mode="viewport"
+window/stretch/aspect="keep_height"
 window/handheld/orientation="portrait"
-window/stretch/mode="canvas_items"
-window/stretch/aspect="expand"
-
-[input_devices]
-
-pointing/emulate_touch_from_mouse=true
 
 [rendering]
 
-textures/vram_compression/import_etc2_astc=true
-
-renderer/rendering_method="mobile"
-renderer/rendering_method.mobile="mobile"
-textures/canvas_textures/default_texture_filter=1
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0
+environment/defaults/default_clear_color=Color(0.055, 0.065, 0.11, 1)
+2d/snap/snap_2d_transforms_to_pixel=true
+2d/snap/snap_2d_vertices_to_pixel=true
