@@ -181,6 +181,19 @@ struct ShieldDetail: View {
                         }
                     }
                 }.buttonStyle(.plain)
+                NavigationLink { SafariShieldView() } label: {
+                    Card {
+                        HStack {
+                            Image(systemName: "hand.raised.fill").font(.title2).foregroundStyle(Brand.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Family Protection").font(.headline).foregroundStyle(Brand.ink)
+                                Text("Block 1.3M+ gambling, scam & adult sites in Safari").font(.subheadline).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Brand.muted)
+                        }
+                    }
+                }.buttonStyle(.plain)
                 Card {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack { Image(systemName: "icloud.fill").foregroundStyle(Brand.red); Text("iCloud Shield").font(.headline).foregroundStyle(Brand.ink) }

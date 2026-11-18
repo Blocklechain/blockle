@@ -42,6 +42,19 @@ jobs:
           echo "$ASC_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
           chmod 600 ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
 
+      - name: Fetch Safari blocklists into content-blocker extensions
+        working-directory: blockle-protect/ios
+        run: |
+          set -eo pipefail
+          curl -fsSL https://protect.blockle.org/blocklists/core.json   -o Blockers/Core/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adultA.json -o Blockers/AdultA/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adultB.json -o Blockers/AdultB/blockerList.json
+          ls -lh Blockers/*/blockerList.json
+          # sanity: each must be a non-empty JSON array
+          for f in Core AdultA AdultB; do
+            python3 -c "import json,sys; d=json.load(open('Blockers/$f/blockerList.json')); assert isinstance(d,list) and len(d)>0; print('$f:', len(d), 'rules')"
+          done
+
       - name: Generate Xcode project
         working-directory: blockle-protect/ios
         run: xcodegen generate

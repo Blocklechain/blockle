@@ -39,6 +39,66 @@ targets:
         # self-classify / file an annual report.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
+    dependencies:
+      - target: ShieldCore
+        embed: true
+      - target: ShieldAdultA
+        embed: true
+      - target: ShieldAdultB
+        embed: true
+
+  # ---- Safari content-blocker extensions (Family Protection) ----------------
+  # Each bundles its own packed blockerList.json (fetched in CI). Static +
+  # independent: no App Group, and one oversized category can't break another.
+  ShieldCore:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Shared
+      - path: Blockers/Core
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldCore
+    info:
+      path: Blockers/Core/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — Gambling & Scams"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+  ShieldAdultA:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Shared
+      - path: Blockers/AdultA
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdultA
+    info:
+      path: Blockers/AdultA/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — Adult (1/2)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+  ShieldAdultB:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Shared
+      - path: Blockers/AdultB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdultB
+    info:
+      path: Blockers/AdultB/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — Adult (2/2)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+
   BlockleProtectTests:
     type: bundle.unit-test
     platform: iOS
