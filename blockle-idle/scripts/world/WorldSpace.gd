@@ -59,6 +59,7 @@ var world_seed: int = 1
 var vp: Vector2 = Vector2(1080, 1920)
 
 # --- scene graph -------------------------------------------------------------
+var _sky: ProcNode                   # the living backdrop (screen-space; parallax + weather drift)
 var _cam: Node2D                     # the ONE pannable container; everything world-space lives under it
 var _terrain: ProcNode               # ProcTerrain._Island — authoritative ground geometry
 var _heart: ProcNode                 # the Heart Tree: light source + essence pool anchor
@@ -86,6 +87,15 @@ var _ready_built := false
 func setup(seed_value: int, viewport: Vector2) -> void:
 	world_seed = seed_value
 	vp = viewport
+
+	# The LIVING SKY backdrop — screen-space, behind everything. It is never a flat
+	# colour: a seeded day/night cycle advances continuously, shader cloudbanks
+	# drift, stars wheel in at night, and the weather itself slowly wanders
+	# (handled in _process). Panning the world eases it sideways a touch (parallax).
+	_sky = ProcSky.make_for_realm(world_seed, _realm_id(), vp)
+	_sky.z_index = -10
+	add_child(_sky)
+
 	_cam = Node2D.new()
 	_cam.name = "PanCam"
 	add_child(_cam)
@@ -193,6 +203,9 @@ func pan_by(delta: Vector2) -> void:
 	var target := _cam.position + delta
 	# soft rubber-band: motion past the clamp is damped, not walled.
 	_cam.position = _rubber(target)
+	# the sky is far away: it drifts a touch with the pan (6%), selling the depth
+	if _sky != null and _sky.has_method("set_parallax"):
+		_sky.call("set_parallax", Vector2(-_cam.position.x * 0.06, -_cam.position.y * 0.03))
 
 
 func _rubber(pos: Vector2) -> Vector2:
@@ -563,10 +576,27 @@ func awaken_region(dir: int = 1, key: String = "") -> void:
 # DIEGETIC ACCRUAL + MOTES  (§2.4 — the only "resource UI" is the world itself)
 # =============================================================================
 var _heart_save_accum := 0.0
+var _weather_t := 0.0
+var _weather_next := 180.0
+var _weather_step := 0
 
 func _process(delta: float) -> void:
 	if not _ready_built or not (Game and Game.booted):
 		return
+	# The weather itself slowly wanders: mostly clear, sometimes mist or overcast,
+	# the rare storm — a seeded sequence so each world has its own moods.
+	_weather_t += delta
+	if _weather_t >= _weather_next:
+		_weather_t = 0.0
+		_weather_step += 1
+		_weather_next = Proc.rangef(world_seed, "wdur:%d" % _weather_step, 150.0, 420.0)
+		if _sky != null and _sky.has_method("set_weather"):
+			var roll := Proc.hashf(world_seed, "wx:%d" % _weather_step)
+			var w := "clear"
+			if roll > 0.92: w = "storm"
+			elif roll > 0.74: w = "overcast"
+			elif roll > 0.56: w = "mist"
+			_sky.call("set_weather", w)
 	# persist the Heart Tree's very slow growth (throttled; survives restarts so
 	# it never re-bursts into existence)
 	_heart_save_accum += delta
