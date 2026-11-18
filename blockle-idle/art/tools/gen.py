@@ -155,6 +155,50 @@ def build_jobs(which, only_ids):
                      + STYLE + ", plain pale background, soft shadow.")
                 jobs.append((os.path.join(ART, "decorations", "%s_%02d.png" % (e["id"], v)),
                              p, "decor", "decor_%s_%02d" % (e["id"], v)))
+
+    # The "even bigger" batch: painted VARIANTS of every Blockling layer + new
+    # trait categories (hats/wings/tails) + building/realm variants. Combined with
+    # the stack in Traits.gd this pushes the look-space into the trillions. Each
+    # job skips if its file already exists (resumable; preserves committed art).
+    if which == "variants":
+        def add(path, prompt, kind, aid):
+            if not os.path.exists(path):
+                jobs.append((path, prompt, kind, aid))
+        for e in b["blocklings"]:                                   # species body variants (v2..4)
+            for v in range(2, 5):
+                add(os.path.join(ART, "blocklings", "%s_v%d.png" % (e["id"], v)),
+                    blockling_prompt(e), "sprite", "%s_v%d" % (e["id"], v))
+        trait_cats = {
+            "accessories": (["flower", "scarf", "leaf", "lantern", "glasses", "bow", "acorn", "bell", "cloak", "backpack", "necklace", "umbrella", "balloon", "book", "staff"], 4,
+                            "a single small {n} prop by itself, one object only, no character, centred, on a plain flat pale cream background."),
+            "markings":   (["spots", "stripes", "dapple", "swirl", "freckles", "starmark", "patch", "speckle", "ring"], 4,
+                            "a soft {n} pattern patch of painterly markings, texture only, no character, centred, on a plain flat pale cream background."),
+            "auras":      (["sparkle", "glow", "petals", "embers", "frost", "bubbles", "leaves"], 4,
+                            "a soft faint glowing {n} magical aura, a gentle ring of light particles, no creature, centred, on a plain flat dark background."),
+            "hats":       (["strawhat", "tophat", "crown", "flowercrown", "cap", "beanie", "wizardhat", "bowhat", "leafhat", "mushroomcap", "acorncap"], 3,
+                            "a single small {n} by itself, one object only, no character, centred, on a plain flat pale cream background."),
+            "wings":      (["butterfly", "moth", "bird", "dragon", "fairy", "bat", "leafwing"], 3,
+                            "a single pair of small {n} wings by themselves, no character, centred, on a plain flat pale cream background."),
+            "tails":      (["foxtail", "cattail", "pufftail", "leaftail", "curltail", "fintail", "startail"], 3,
+                            "a single small {n} animal tail by itself, no character, centred, on a plain flat pale cream background."),
+        }
+        for cat, (names, nv, tp) in trait_cats.items():
+            for nm in names:
+                for v in range(1, nv + 1):
+                    rel = nm if v == 1 else "%s_v%d" % (nm, v)
+                    disp = nm.replace("hat", " hat").replace("cap", " cap").replace("wing", " wing").replace("tail", " tail")
+                    add(os.path.join(ART, "traits", cat, rel + ".png"),
+                        tp.format(n=disp) + " " + STYLE, "decor", "tr_%s_%s_%d" % (cat, nm, v))
+        for e in bld["buildings"]:                                  # building variants (v2..3)
+            for v in range(2, 4):
+                p = ("One ancient colossal magical Heart Tree, glowing luminous canopy, lit roots, "
+                     f"floating light motes, centred, {STYLE}, plain pale background, soft shadow.") if e["id"] == "heart_tree" else building_prompt(e)
+                add(os.path.join(ART, "buildings", "%s_v%d.png" % (e["id"], v)), p, "sprite", "%s_v%d" % (e["id"], v))
+        for e in realms:                                            # realm background variants (v2..3)
+            for v in range(2, 4):
+                p = (f"A beautiful fantasy landscape of {e['name']}, atmospheric, layered depth, "
+                     f"no characters, {STYLE}, cinematic soft light.")
+                add(os.path.join(ART, "realms", "%s_bg_v%d.png" % (e["id"], v)), p, "bg", "%s_bg_v%d" % (e["id"], v))
     return jobs
 
 def main():
@@ -183,6 +227,8 @@ def main():
     to_cut = []  # (final_path, raw_path)
     for path, prompt, kind, aid in jobs:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            continue                       # finished in a prior run — resumable
         # decorations render tiny on screen, so make them faster/smaller.
         if kind == "bg":
             w, h, steps = 512, 768, 28
@@ -190,6 +236,10 @@ def main():
             w, h, steps = 384, 384, 22
         else:
             w, h, steps = 512, 512, 28
+        rawp = os.path.join(raw_dir, aid + ".png")
+        if kind != "bg" and os.path.exists(rawp):
+            to_cut.append((path, rawp))     # already rendered; only the cut remains
+            continue
         g = torch.Generator(device=device).manual_seed(seed_for(aid))
         print(f"[gen] render {aid} ({kind}) {w}x{h} ...", flush=True)
         img = pipe(prompt=prompt, negative_prompt=NEG, num_inference_steps=steps,
@@ -198,7 +248,6 @@ def main():
             img.save(path)
             print("   saved", os.path.relpath(path, ROOT), flush=True)
         else:
-            rawp = os.path.join(raw_dir, aid + ".png")
             img.save(rawp)
             to_cut.append((path, rawp))
 

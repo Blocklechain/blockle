@@ -100,6 +100,13 @@ func island_decorations() -> Array:
 	out.sort_custom(func(a, b): return a["v"] < b["v"])   # nearer draws in front
 	return out
 
+# Which painted variant of a building / realm background this player sees.
+func building_variant(id: String) -> int:
+	return 1 + _rng("bv:" + id).randi() % 3
+
+func realm_bg_variant(realm_id: String) -> int:
+	return 1 + _rng("rbv:" + realm_id).randi() % 3
+
 func world_name() -> String:
 	var r := _rng("name")
 	return "The %s %s" % [ADJ[r.randi() % ADJ.size()], NOUN[r.randi() % NOUN.size()]]

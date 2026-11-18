@@ -43,7 +43,11 @@ static func _has_real_art() -> bool:
 	return ResourceLoader.exists("res://art/buildings/heart_tree.png")
 
 static func realm_sky(size: Vector2, realm_def: Dictionary) -> Node2D:
-	var art := _real_art("res://art/realms/%s_bg.png" % realm_def.get("id", ""), size, true)
+	var rid: String = realm_def.get("id", "")
+	var rv := WorldGen.realm_bg_variant(rid)
+	var art := _real_art(_variant_path("realms", rid + "_bg", rv), size, true)
+	if art == null and rv > 1:
+		art = _real_art(_variant_path("realms", rid + "_bg", 1), size, true)
 	if art != null:
 		return art
 	var p := _Painter.new()
@@ -54,7 +58,11 @@ static func realm_sky(size: Vector2, realm_def: Dictionary) -> Node2D:
 	return p
 
 static func build_heart_tree(def: Dictionary) -> Node2D:
-	var art := _real_art("res://art/buildings/%s.png" % def.get("id", "heart_tree"), Vector2(360, 460), false)
+	var id: String = def.get("id", "heart_tree")
+	var bv := WorldGen.building_variant(id)
+	var art := _real_art(_variant_path("buildings", id, bv), Vector2(360, 460), false)
+	if art == null and bv > 1:
+		art = _real_art(_variant_path("buildings", id, 1), Vector2(360, 460), false)
 	if art != null:
 		return art
 	var p := _Painter.new()
@@ -65,7 +73,11 @@ static func build_heart_tree(def: Dictionary) -> Node2D:
 	return p
 
 static func build_building(def: Dictionary) -> Node2D:
-	var art := _real_art("res://art/buildings/%s.png" % def.get("id", ""), Vector2(132, 132), false)
+	var id: String = def.get("id", "")
+	var bv := WorldGen.building_variant(id)
+	var art := _real_art(_variant_path("buildings", id, bv), Vector2(132, 132), false)
+	if art == null and bv > 1:
+		art = _real_art(_variant_path("buildings", id, 1), Vector2(132, 132), false)
 	if art != null:
 		return art
 	var p := _Painter.new()
@@ -93,16 +105,40 @@ static func build_blockling(def: Dictionary) -> Node2D:
 # degrades cleanly before the overlay art exists.
 static func build_blockling_individual(def: Dictionary, uid: String) -> Node2D:
 	var t: Dictionary = Traits.traits_for(uid)
+	var id: String = def.get("id", "")
 	var root := Node2D.new()
-	var base := build_blockling(def)
+	# wings + tail go BEHIND the body (added first).
+	_overlay_v(root, "traits/wings", t["wings"], t["wings_variant"], Vector2(0, -32), 98.0, Color.WHITE)
+	_overlay_v(root, "traits/tails", t["tail"], t["tail_variant"], Vector2(0, -14), 46.0, Color.WHITE)
+	# species base, using one of its painted variants, hue-washed.
+	var base := _real_art(_variant_path("blocklings", id, int(t["species_variant"])), Vector2(64, 64), false)
+	if base == null:
+		base = build_blockling(def)   # falls back to variant 1 / the painter
 	base.modulate = t["hue"]
 	root.add_child(base)
-	_overlay(root, "res://art/traits/markings/%s.png" % t["marking"], Vector2(0, -34), 56.0, t["hue"])
-	_overlay(root, "res://art/traits/accessories/%s.png" % t["accessory"], Vector2(0, -52), 46.0, Color.WHITE)
-	_overlay(root, "res://art/traits/auras/%s.png" % t["aura"], Vector2(0, -34), 94.0, Color.WHITE)
+	# front layers.
+	_overlay_v(root, "traits/markings", t["marking"], t["marking_variant"], Vector2(0, -34), 56.0, t["hue"])
+	_overlay_v(root, "traits/accessories", t["accessory"], t["accessory_variant"], Vector2(0, -50), 46.0, Color.WHITE)
+	_overlay_v(root, "traits/hats", t["hat"], t["hat_variant"], Vector2(0, -58), 50.0, Color.WHITE)
+	_overlay_v(root, "traits/auras", t["aura"], t["aura_variant"], Vector2(0, -34), 94.0, Color.WHITE)
 	var k: float = t["size"]
 	root.scale = Vector2(k * (-1.0 if t["flip"] else 1.0), k)
 	return root
+
+# Path for a painted variant: variant 1 is the base name, 2+ get a _vN suffix.
+static func _variant_path(folder: String, name: String, v: int) -> String:
+	if v <= 1:
+		return "res://art/%s/%s.png" % [folder, name]
+	return "res://art/%s/%s_v%d.png" % [folder, name, v]
+
+# Overlay a named trait layer (skipping "none"), honouring its painted variant.
+static func _overlay_v(root: Node2D, folder: String, name: String, variant: int, at: Vector2, target_w: float, tint: Color) -> void:
+	if name == "" or name == "none":
+		return
+	var path := _variant_path(folder, name, variant)
+	if not ResourceLoader.exists(path):   # fall back to the base variant if that one isn't painted yet
+		path = _variant_path(folder, name, 1)
+	_overlay(root, path, at, target_w, tint)
 
 # One hand-painted island decoration (bottom-anchored), or a small procedural
 # mound before its art exists.
