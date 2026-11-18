@@ -45,8 +45,13 @@ targets:
         com.apple.developer.icloud-container-identifiers: [iCloud.org.blockle.protect]
         com.apple.developer.ubiquity-container-identifiers: [iCloud.org.blockle.protect]
         com.apple.developer.icloud-services: [CloudDocuments]
+        # Shared container so the app can hand a user-authored (and family-synced)
+        # blocklist to the dynamic ShieldCustom content-blocker extension.
+        com.apple.security.application-groups: [group.org.blockle.protect]
     dependencies:
       - target: ShieldCore
+        embed: true
+      - target: ShieldCustom
         embed: true
       - target: ShieldAdult1
         embed: true
@@ -76,6 +81,31 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.Safari.content-blocker
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+  # ---- Dynamic "My List" content blocker -------------------------------------
+  # Unlike the static category blockers, this one reads its packed rule list from
+  # the shared App Group container at runtime, so the user (or a family head)
+  # can add their own sites and have them blocked in Safari. The app writes
+  # custom-blockerList.json into the group and calls reloadContentBlocker.
+  ShieldCustom:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Custom
+    entitlements:
+      path: ShieldCustom.entitlements
+      properties:
+        com.apple.security.application-groups: [group.org.blockle.protect]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldCustom
+    info:
+      path: Blockers/Custom/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — My List"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).CustomBlockerRequestHandler
+
   ShieldAdult1:
     type: app-extension
     platform: iOS

@@ -280,6 +280,19 @@ struct ShieldDetail: View {
                         }
                     }
                 }.buttonStyle(.plain)
+                NavigationLink { CustomBlockView() } label: {
+                    Card {
+                        HStack {
+                            Image(systemName: "nosign").font(.title2).foregroundStyle(Brand.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("My List").font(.headline).foregroundStyle(Brand.ink)
+                                Text("Block your own sites — shared across your family or team").font(.subheadline).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Brand.muted)
+                        }
+                    }
+                }.buttonStyle(.plain)
                 NavigationLink { SharingView() } label: {
                     Card {
                         HStack {

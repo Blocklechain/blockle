@@ -111,6 +111,16 @@ enum HouseholdClient {
         guard h.role == .member, let mid = h.memberId, let mt = h.memberToken else { return }
         _ = await post("/household/alert", ["householdId": h.householdId, "memberId": mid, "memberToken": mt, "event": event])
     }
+
+    /// Shared family blocklist. `action` is add / remove / set / get; every call
+    /// returns the full merged domain list. Any member (or the head) may edit.
+    static func custom(_ h: Household, action: String, domains: [String] = []) async -> [String]? {
+        let token = h.ownerToken ?? h.memberToken
+        guard let token else { return nil }
+        guard let o = await post("/household/custom",
+            ["householdId": h.householdId, "token": token, "action": action, "domains": domains]) else { return nil }
+        return o["domains"] as? [String]
+    }
 }
 
 @MainActor

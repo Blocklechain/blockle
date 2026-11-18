@@ -161,6 +161,27 @@ const handler = async (req, res) => {
       return json(res, 200, { householdId: Object.keys(state.households).find((k) => state.households[k] === hh), memberId, memberToken, hoHAlias: hh.hoHAlias });
     }
 
+    // Shared custom blocklist — any family member can add sites; all members
+    // pull the merged list and block them in Safari.
+    if (req.method === 'POST' && p === '/household/custom') {
+      const b = JSON.parse(await readBody(req));
+      const hh = state.households[b.householdId];
+      if (!hh) return json(res, 404, { error: 'household not found' });
+      const authed = hh.ownerToken === b.token || Object.values(hh.members).some((m) => m.memberToken === b.token);
+      if (!authed) return json(res, 401, { error: 'unauthorized' });
+      hh.customDomains = hh.customDomains || [];
+      const clean = (Array.isArray(b.domains) ? b.domains : []).map((d) =>
+        String(d).toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, ''))
+        .filter((d) => /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d) && d.length < 200);
+      if (b.action === 'add') hh.customDomains = [...new Set([...hh.customDomains, ...clean])];
+      else if (b.action === 'remove') hh.customDomains = hh.customDomains.filter((d) => !clean.includes(d));
+      else if (b.action === 'set') hh.customDomains = [...new Set(clean)];
+      // 'get' (or anything else) just returns the current list
+      hh.customDomains = hh.customDomains.slice(0, 5000);
+      save();
+      return json(res, 200, { domains: hh.customDomains });
+    }
+
     if (req.method === 'POST' && p === '/household/alert') {
       const b = JSON.parse(await readBody(req));
       const hh = state.households[b.householdId];
