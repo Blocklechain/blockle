@@ -35,6 +35,33 @@ struct Commitment: Codable {
     /// Times a protected filter was found disabled during this commitment.
     var tamperCount: Int = 0
     var lastTamperAt: Date?
+    /// Accountability email service linkage (set once the buddy invite is sent).
+    var inviteId: String?
+    var ownerToken: String?
+    var lastProgressAt: Date?
+}
+
+/// Talks to the accountability-buddy email service (support@blockle.org sends
+/// the actual emails after the buddy double-opt-in confirms).
+enum AccountabilityClient {
+    static let base = "https://protect.blockle.org/api/accountability"
+    static func invite(buddyEmail: String, buddyName: String?, alias: String) async -> (inviteId: String, ownerToken: String)? {
+        guard let url = URL(string: base + "/invite") else { return nil }
+        var req = URLRequest(url: url); req.httpMethod = "POST"; req.timeoutInterval = 20
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["buddyEmail": buddyEmail, "buddyName": buddyName ?? "", "userAlias": alias])
+        guard let (d, _) = try? await URLSession.shared.data(for: req),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let id = o["inviteId"] as? String, let t = o["ownerToken"] as? String else { return nil }
+        return (id, t)
+    }
+    static func notify(inviteId: String, ownerToken: String, event: String, detail: String? = nil) async {
+        guard let url = URL(string: base + "/notify") else { return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"; req.timeoutInterval = 20
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["inviteId": inviteId, "ownerToken": ownerToken, "event": event, "detail": detail ?? ""])
+        _ = try? await URLSession.shared.data(for: req)
+    }
 }
 
 @MainActor
@@ -83,7 +110,29 @@ final class CommitmentLockModel: ObservableObject {
                                 unlockRequestedAt: nil, cooldownHours: cooldownHours)
         save()
         requestNotificationAuth()
+        // If the partner gave an email, send the double-opt-in invite (they must
+        // confirm before any update email is sent).
+        if let contact = partnerContact, contact.contains("@") {
+            let saved = UserDefaults.standard.string(forKey: "blockle.protect.displayName")
+            let alias = (saved?.isEmpty == false ? saved : nil) ?? "Your friend"
+            Task {
+                guard let r = await AccountabilityClient.invite(buddyEmail: contact, buddyName: partnerName, alias: alias),
+                      var c = self.commitment else { return }
+                c.inviteId = r.inviteId; c.ownerToken = r.ownerToken
+                self.commitment = c; self.save()
+            }
+        }
         return key
+    }
+
+    /// Weekly "still going strong" update to the buddy. Call on foreground.
+    func sendProgressIfDue() {
+        guard var c = commitment, let id = c.inviteId, let t = c.ownerToken else { return }
+        let last = c.lastProgressAt ?? c.startedAt
+        guard Date().timeIntervalSince(last) >= 7 * 24 * 3600 else { return }
+        let days = Int(Date().timeIntervalSince(c.startedAt) / 86400)
+        c.lastProgressAt = Date(); commitment = c; save()
+        Task { await AccountabilityClient.notify(inviteId: id, ownerToken: t, event: "progress", detail: "Day \(days) and going strong.") }
     }
 
     /// Natural expiry (endsAt reached) — always allowed, no friction.
@@ -108,7 +157,12 @@ final class CommitmentLockModel: ObservableObject {
     /// Attempt to end the commitment. Natural expiry bypasses all checks.
     func attemptEnd(enteredKey: String?) -> UnlockResult {
         guard let c = commitment else { return .ended }
-        if hasExpired { finish(); return .ended }
+        if hasExpired {
+            if let id = c.inviteId, let t = c.ownerToken {
+                Task { await AccountabilityClient.notify(inviteId: id, ownerToken: t, event: "completed") }
+            }
+            finish(); return .ended
+        }
         if c.keyHolder == .discarded { return .discardedNoEarlyExit }
         guard let eligible = unlockEligibleAt else { return .cooldown(Date()) } // not yet requested
         if Date() < eligible { return .cooldown(eligible) }
@@ -137,6 +191,9 @@ final class CommitmentLockModel: ObservableObject {
                 self.notifyTamper(c)
                 ProtectState.log(icon: "exclamationmark.triangle.fill", title: "Gambling block turned off",
                                  detail: c.partnerName.map { "During your commitment — consider telling \($0)." } ?? "During your active commitment.")
+                if let id = c.inviteId, let t = c.ownerToken {
+                    Task { await AccountabilityClient.notify(inviteId: id, ownerToken: t, event: "relapse") }
+                }
             }
         }
     }

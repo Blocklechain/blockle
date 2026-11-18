@@ -13,8 +13,8 @@ struct CommitmentLockView: View {
         }
         .background(Brand.bg.ignoresSafeArea())
         .navigationTitle("Commitment Lock")
-        .task { model.checkTamper() }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.checkTamper() }
+        .task { model.checkTamper(); model.sendProgressIfDue() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.checkTamper(); model.sendProgressIfDue() }
     }
 
     // MARK: setup
@@ -42,7 +42,9 @@ struct CommitmentLockView: View {
 
                 Text("Accountability partner (optional)").font(.subheadline.weight(.semibold)).foregroundStyle(Brand.ink)
                 field("Name", text: $partnerName)
-                field("Their email or phone", text: $partnerContact)
+                field("Their email", text: $partnerContact)
+                Text("Enter their email and we'll ask them to confirm, then send progress updates — and a heads-up if you turn the block off — from support@blockle.org. They can opt out anytime.")
+                    .font(.caption).foregroundStyle(Brand.muted)
 
                 Text("Who holds the early-exit key?").font(.subheadline.weight(.semibold)).foregroundStyle(Brand.ink)
                 Picker("", selection: $holder) {
