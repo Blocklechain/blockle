@@ -259,3 +259,225 @@ static func _has_prop(o: Object, name: String) -> bool:
 		if String(p.get("name", "")) == name:
 			return true
 	return false
+
+
+# =============================================================================
+# --- dyn:discovery (additive) ------------------------------------------------
+# Owned by scripts/world/dyn/Discovery.gd (DYNAMICS §9.6). APPEND-ONLY: nothing
+# above this line is modified by this block. It gives the collection/breeding
+# layer stable names, art routing and journal prose for rare variants and for
+# cross-pollinated hybrids, so Discovery never has to hardcode content.
+# =============================================================================
+
+const VARIANT_TIERS := ["common", "lush", "radiant", "ancient"]
+
+const VARIANT_LABELS := {
+	"common": "Common", "lush": "Lush", "radiant": "Radiant", "ancient": "Ancient",
+}
+
+const VARIANT_LINES := {
+	"common": "an ordinary one, and no less loved for it",
+	"lush": "fuller than its kin, greener at the heart",
+	"radiant": "it carries a light of its own, and the air bends to it",
+	"ancient": "older than the island remembers — gold runs under its skin",
+}
+
+# How strongly a species' own art reads, used to pick which parent a crossing
+# inherits its silhouette from (a tree beats a flower).
+const _KIND_RANK := {"tree": 5, "fungus": 4, "crystal": 3, "water": 2, "plant": 2, "decor": 1}
+
+# The fourteen crossings that earned real names. Everything else gets a seeded
+# two-part name (see hybrid_label) so no find is ever called "Hybrid #7".
+const HYBRIDS := {
+	"x:poppy+sunflower": {"label": "Dawnpoppy", "dominant": "poppy", "accent": "sunflower",
+		"line": "a poppy that opens facing the first light, and closes at noon"},
+	"x:bluebell+fern": {"label": "Mistbell", "dominant": "bluebell", "accent": "fern",
+		"line": "its bells hold morning mist long after the rest of the island dries"},
+	"x:clover+poppy": {"label": "Emberclover", "dominant": "clover", "accent": "poppy",
+		"line": "three leaves and one coal-red fourth, warm to the touch"},
+	"x:bluecap+fern": {"label": "Moonfern", "dominant": "fern", "accent": "bluecap",
+		"line": "fronds that curl shut by day and unroll under the moon"},
+	"x:crystal+lilypad": {"label": "Glasslily", "dominant": "lilypad", "accent": "crystal",
+		"line": "a pad so clear you can count the stones beneath it"},
+	"x:blossom+toadstool": {"label": "Ashblossom", "dominant": "blossom", "accent": "toadstool",
+		"line": "pale petals with a dusting of spore, and a faint, good smell of rain"},
+	"x:lantern+willow": {"label": "Willowlight", "dominant": "willow", "accent": "lantern",
+		"line": "a willow whose catkins glow, so the path under it is never dark"},
+	"x:clover+mushroom": {"label": "Stoneclover", "dominant": "clover", "accent": "mushroom",
+		"line": "it roots in bare rock and makes soil out of patience"},
+	"x:crystalpink+daisy": {"label": "Starthistle", "dominant": "daisy", "accent": "crystalpink",
+		"line": "a daisy with a hard bright heart that chimes in wind"},
+	"x:birch+fern": {"label": "Dewbirch", "dominant": "birch", "accent": "fern",
+		"line": "silver bark that beads with water every single dawn"},
+	"x:berrybush+maple": {"label": "Thornapple", "dominant": "maple", "accent": "berrybush",
+		"line": "small sharp fruit, sweet once the frost has been through it"},
+	"x:bluecap+mushroom": {"label": "Lanternmoss", "dominant": "mushroom", "accent": "bluecap",
+		"line": "a cap that keeps a low blue light burning all night"},
+	"x:blossom+geode": {"label": "Frostbloom", "dominant": "blossom", "accent": "geode",
+		"line": "petals that keep their shape like something carved and left out in winter"},
+	"x:oak+sunflower": {"label": "Sunoak", "dominant": "oak", "accent": "sunflower",
+		"line": "an oak whose crown turns, very slowly, to follow the day"},
+}
+
+# Seeded name parts for unnamed crossings — "Dew-Fern", "Ember-Clover".
+const _HYBRID_PREFIX := ["Dew", "Ember", "Moon", "Mist", "Dusk", "Glass", "Ash",
+	"Stone", "Star", "Frost", "Sun", "Thorn", "Lantern", "Amber", "Hollow", "Brook",
+	"Quiet", "Copper", "Rain", "Cinder"]
+
+const _HYBRID_LINES := ["a crossing the island made up on its own",
+	"neither parent, and somehow more like the place than either",
+	"it took the shape of one and the colour of the other",
+	"the first of its kind to stand on this ground"]
+
+
+# Which kind of thing a species is, for the pools this catalog already owns.
+static func species_kind(species: String) -> String:
+	var s := species.strip_edges().to_lower()
+	if s == "":
+		return "plant"
+	if WILD_TREES.has(s):
+		return "tree"
+	if WILD_FUNGI.has(s):
+		return "fungus"
+	if WILD_CRYSTALS.has(s):
+		return "crystal"
+	if WATER_SPECIES.has(s):
+		return "water" if s != "well" else "decor"
+	if WILD_DECOR.has(s):
+		return "decor"
+	if WILD_PLANTS.has(s):
+		return "plant"
+	# fall back to the decoration data's own material tagging
+	var mat := ""
+	if typeof(GameData) == TYPE_OBJECT:
+		for item in GameData.decoration_types:
+			var d: Dictionary = item
+			if String(d.get("id", "")) == s:
+				mat = String(d.get("material", ""))
+				break
+	match mat:
+		"fungus": return "fungus"
+		"crystal": return "crystal"
+		"water": return "water"
+		"light", "stone", "wood": return "decor"
+		_: return "plant"
+
+
+# Every species this catalog can ever produce — the Journal's "growing things"
+# denominator. Computed from live data, never a hardcoded number.
+static func species_pool() -> Array:
+	var seen := {}
+	var out: Array = []
+	var pools: Array = [WILD_TREES, WILD_PLANTS, WILD_FUNGI, WILD_CRYSTALS, WILD_DECOR]
+	for item in pools:
+		var pool: Array = item
+		for sp in pool:
+			var s := String(sp)
+			if not seen.has(s):
+				seen[s] = true
+				out.append(s)
+	for k in WATER_SPECIES.keys():
+		var s2 := String(k)
+		if not seen.has(s2):
+			seen[s2] = true
+			out.append(s2)
+	if typeof(GameData) == TYPE_OBJECT:
+		for item2 in GameData.decoration_types:
+			var d: Dictionary = item2
+			var s3 := String(d.get("id", ""))
+			if s3 != "" and not seen.has(s3):
+				seen[s3] = true
+				out.append(s3)
+	return out
+
+
+# The stable identity of a crossing: "x:" + the two parents, sorted.
+static func hybrid_species(a: String, b: String) -> String:
+	var pair: Array = [a.strip_edges().to_lower(), b.strip_edges().to_lower()]
+	pair.sort()
+	return "x:%s+%s" % [String(pair[0]), String(pair[1])]
+
+
+static func hybrid_parents(species: String) -> Array:
+	var s := species
+	if s.begins_with("x:"):
+		s = s.substr(2)
+	var parts := s.split("+")
+	if parts.size() < 2:
+		return [s, s]
+	return [String(parts[0]), String(parts[1])]
+
+
+static func hybrid_count() -> int:
+	return HYBRIDS.size()
+
+
+# A full description of a crossing: which parent's art it wears, which parent
+# only tints it, its name and its journal line. Works for unnamed crossings too.
+static func hybrid_def(species: String, world_seed: int = 0) -> Dictionary:
+	if HYBRIDS.has(species):
+		var named: Dictionary = (HYBRIDS[species] as Dictionary).duplicate(true)
+		named["parents"] = hybrid_parents(species)
+		named["named"] = true
+		named["kind"] = species_kind(String(named.get("dominant", "flower")))
+		return named
+	var ps := hybrid_parents(species)
+	var a := String(ps[0])
+	var b := String(ps[1])
+	var ra := int(_KIND_RANK.get(species_kind(a), 2))
+	var rb := int(_KIND_RANK.get(species_kind(b), 2))
+	var dom := a
+	var acc := b
+	if rb > ra:
+		dom = b
+		acc = a
+	var li := int(Proc.hashf(world_seed, "hybline:" + species) * float(_HYBRID_LINES.size()))
+	return {
+		"label": hybrid_label(species, world_seed),
+		"dominant": dom, "accent": acc, "parents": [a, b], "named": false,
+		"kind": species_kind(dom),
+		"line": String(_HYBRID_LINES[clampi(li, 0, _HYBRID_LINES.size() - 1)]),
+	}
+
+
+static func hybrid_label(species: String, world_seed: int = 0) -> String:
+	if HYBRIDS.has(species):
+		return String((HYBRIDS[species] as Dictionary).get("label", "Crossing"))
+	var ps := hybrid_parents(species)
+	var a := String(ps[0])
+	var b := String(ps[1])
+	var ra := int(_KIND_RANK.get(species_kind(a), 2))
+	var rb := int(_KIND_RANK.get(species_kind(b), 2))
+	var dom := a if ra >= rb else b
+	var i := int(Proc.hashf(world_seed, "hybname:" + species) * float(_HYBRID_PREFIX.size()))
+	var pre := String(_HYBRID_PREFIX[clampi(i, 0, _HYBRID_PREFIX.size() - 1)])
+	return "%s-%s" % [pre, dom.capitalize()]
+
+
+# A tray entry for a crossing's seed. It carries the DOMINANT parent as `species`
+# so the existing art path draws it correctly with no new routing, plus the
+# hybrid identity so Discovery (and adapt()) can tint it with the other parent.
+static func hybrid_entry(species: String, world_seed: int = 0, count: int = 1) -> Dictionary:
+	var def := hybrid_def(species, world_seed)
+	return {
+		"count": maxi(1, count),
+		"kind": String(def.get("kind", "plant")),
+		"species": String(def.get("dominant", "flower")),
+		"label": String(def.get("label", "Crossing")),
+		"hybrid": species,
+		"hybrid_accent": String(def.get("accent", "")),
+		"growth": -1.0,
+		"minted": false,
+	}
+
+
+static func is_hybrid(entry: Dictionary) -> bool:
+	return String(entry.get("hybrid", "")) != ""
+
+
+static func variant_label(tier: String) -> String:
+	return String(VARIANT_LABELS.get(tier, tier.capitalize()))
+
+
+static func variant_line(tier: String) -> String:
+	return String(VARIANT_LINES.get(tier, "a shape all its own"))
