@@ -23,7 +23,7 @@ from .biz import BizClient
 from .pool import Pool, add_chain, discover, init, inspect
 from .runner import Process, biz_server, mine, simchain
 
-__version__ = "0.1.0"
+__version__ = "0.5.4"
 
 __all__ = [
     "BinaryNotFound",

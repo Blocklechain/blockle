@@ -47,6 +47,20 @@ def build_app_window(block_wallet: Any, datadir: Any,
     for widget, label in build_tabs(block_wallet, datadir):
         tabw.addTab(widget, label)
     win.setCentralWidget(tabw)
+    # Persistent network-upgrade notice: the cross-algorithm difficulty coupling
+    # activates at block 53,000. The wallet embeds the node, so an updated build
+    # is already fork-ready; this just points users at the details. Guarded so a
+    # status-bar quirk can never drop the window.
+    try:
+        from PySide6.QtWidgets import QLabel
+        notice = QLabel(
+            "Network upgrade at block 53,000 — cross-algorithm difficulty coupling. "
+            "Keep this wallet updated · blockle.org/fork"
+        )
+        notice.setStyleSheet("color:#ff9a1f;font-weight:600;padding:2px 8px;")
+        win.statusBar().addPermanentWidget(notice)
+    except Exception:  # pragma: no cover - cosmetic only
+        pass
     # keep handles so tests (and later wiring) can introspect the tab stack.
     win.tabs = tabw
     return win
