@@ -106,6 +106,8 @@ struct VaultContent: View {
     @StateObject private var store = VaultStore()
     @State private var picking = false
     @State private var proofShare: IdentifiableURL?
+    @State private var syncing = false
+    @State private var syncMsg: String?
 
     var body: some View {
         ScrollView {
@@ -124,6 +126,7 @@ struct VaultContent: View {
                         }
                     }
                 }
+                iCloudCard
                 if store.items.isEmpty {
                     Text("Protected files appear here.").font(.footnote).foregroundStyle(Brand.muted).padding(.top, 8)
                 } else {
@@ -137,6 +140,38 @@ struct VaultContent: View {
             Task { await importAndProtect(url) }
         }
         .sheet(item: $proofShare) { ShareSheet(url: $0.url) }
+    }
+
+    private var iCloudCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack { Image(systemName: "icloud.fill").foregroundStyle(Brand.red); Text("iCloud Backup").font(.headline).foregroundStyle(Brand.ink) }
+                Text("Back up your encrypted vault to your private iCloud, then restore it on another device with your Recovery Key. Only encrypted files are stored — never plaintext or keys.")
+                    .font(.footnote).foregroundStyle(Brand.muted)
+                HStack {
+                    Button { Task { await doSync(backup: true) } } label: { Label("Back up", systemImage: "arrow.up.to.line") }
+                        .buttonStyle(.bordered).tint(Brand.red).disabled(syncing)
+                    Button { Task { await doSync(backup: false) } } label: { Label("Restore", systemImage: "arrow.down.to.line") }
+                        .buttonStyle(.bordered).tint(Brand.red).disabled(syncing)
+                }
+                if syncing { HStack(spacing: 8) { ProgressView().tint(Brand.red); Text("Syncing…").font(.footnote).foregroundStyle(Brand.muted) } }
+                if let m = syncMsg { Text(m).font(.footnote).foregroundStyle(Brand.inkSoft) }
+            }
+        }
+    }
+
+    private func doSync(backup: Bool) async {
+        syncing = true; defer { syncing = false }
+        let local = store.dir
+        do {
+            let n = try await Task.detached {
+                backup ? try VaultSync.backup(localVault: local) : try VaultSync.restore(localVault: local)
+            }.value
+            if !backup { store.reload() }
+            syncMsg = backup ? "Backed up \(n) file(s) to iCloud." : "Restored \(n) file(s) from iCloud."
+        } catch {
+            syncMsg = (error as? LocalizedError)?.errorDescription ?? "iCloud isn't available on this device."
+        }
     }
 
     private var integrityCard: some View {

@@ -39,6 +39,12 @@ targets:
         # self-classify / file an annual report.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleLightContent
+    entitlements:
+      path: BlockleProtect.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.org.blockle.protect]
+        com.apple.developer.ubiquity-container-identifiers: [iCloud.org.blockle.protect]
+        com.apple.developer.icloud-services: [CloudDocuments]
     dependencies:
       - target: ShieldCore
         embed: true

@@ -107,7 +107,7 @@ final class VaultStore: ObservableObject {
     @Published var busy = false
     @Published var lastError: String?
 
-    private let dir: URL
+    let dir: URL
     private let indexURL: URL
 
     init() {
@@ -124,6 +124,8 @@ final class VaultStore: ObservableObject {
               let decoded = try? JSONDecoder().decode([ProtectedItem].self, from: data) else { return }
         items = decoded
     }
+    /// Re-read the index from disk (after an iCloud restore).
+    func reload() { load(); ProtectState.protectedFileCount = items.count }
     private func persist() {
         if let data = try? JSONEncoder().encode(items) { try? data.write(to: indexURL, options: .atomic) }
     }
