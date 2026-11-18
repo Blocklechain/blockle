@@ -21,6 +21,7 @@ struct SharingContent: View {
     @State private var bundleURL: URL?
     @State private var openedName: String?
     @State private var openingBundle = false
+    @State private var showPaywall = false
 
     var body: some View {
         ScrollView {
@@ -33,6 +34,7 @@ struct SharingContent: View {
                     .font(.footnote).foregroundStyle(Brand.muted).frame(maxWidth: .infinity, alignment: .leading)
             }.padding(16)
         }
+        .sheet(isPresented: $showPaywall) { PaywallView() }
     }
 
     private var myIDCard: some View {
@@ -91,7 +93,7 @@ struct SharingContent: View {
                 Text("Send a file securely").font(.headline).foregroundStyle(Brand.ink)
                 Text(selectedContact.map { "To: \($0.name)" } ?? "Tap a contact above to choose a recipient.")
                     .font(.subheadline).foregroundStyle(selectedContact == nil ? Brand.muted : Brand.inkSoft)
-                Button { picking = true } label: { Label("Choose a file to encrypt & send", systemImage: "lock.rectangle.stack.fill") }
+                Button { if Entitlement.shared.unlocked { picking = true } else { showPaywall = true } } label: { Label("Choose a file to encrypt & send", systemImage: "lock.rectangle.stack.fill") }
                     .buttonStyle(PrimaryButtonStyle()).disabled(selectedContact == nil)
                 if let url = bundleURL {
                     ShareLink(item: url) { Label("Share encrypted file", systemImage: "square.and.arrow.up") }

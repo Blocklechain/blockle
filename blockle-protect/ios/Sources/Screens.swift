@@ -108,6 +108,7 @@ struct VaultContent: View {
     @State private var proofShare: IdentifiableURL?
     @State private var syncing = false
     @State private var syncMsg: String?
+    @State private var showPaywall = false
 
     var body: some View {
         ScrollView {
@@ -140,6 +141,7 @@ struct VaultContent: View {
             Task { await importAndProtect(url) }
         }
         .sheet(item: $proofShare) { ShareSheet(url: $0.url) }
+        .sheet(isPresented: $showPaywall) { PaywallView() }
     }
 
     private var iCloudCard: some View {
@@ -161,6 +163,7 @@ struct VaultContent: View {
     }
 
     private func doSync(backup: Bool) async {
+        guard Entitlement.shared.unlocked else { showPaywall = true; return }
         syncing = true; defer { syncing = false }
         let local = store.dir
         do {
@@ -284,6 +287,19 @@ struct ShieldDetail: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Secure Sharing").font(.headline).foregroundStyle(Brand.ink)
                                 Text("Send a file only one person can open (post-quantum)").font(.subheadline).foregroundStyle(Brand.muted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Brand.muted)
+                        }
+                    }
+                }.buttonStyle(.plain)
+                NavigationLink { FamilyView() } label: {
+                    Card {
+                        HStack {
+                            Image(systemName: "person.3.fill").font(.title2).foregroundStyle(Brand.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Family & Full Plan").font(.headline).foregroundStyle(Brand.ink)
+                                Text("One $20 unlock, shared with family or your team").font(.subheadline).foregroundStyle(Brand.muted)
                             }
                             Spacer()
                             Image(systemName: "chevron.right").foregroundStyle(Brand.muted)

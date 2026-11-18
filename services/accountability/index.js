@@ -22,8 +22,11 @@ const DATA = process.env.ACCT_DATA || '/var/lib/blockle-accountability/state.jso
 const MIN_NOTIFY_MS = 60 * 1000;          // per-invite min spacing
 const MAX_INVITES_PER_IP_HOUR = 12;
 
-let state = { invites: {}, ipHits: {} };
+let state = { invites: {}, households: {}, ipHits: {} };
 try { state = JSON.parse(fs.readFileSync(DATA, 'utf8')); } catch {}
+state.invites ||= {}; state.households ||= {}; state.ipHits ||= {};
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no ambiguous chars
+const inviteCode = () => Array.from({ length: 8 }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('');
 function save() { try { fs.mkdirSync(require('path').dirname(DATA), { recursive: true }); fs.writeFileSync(DATA, JSON.stringify(state)); } catch (e) { console.error('save', e.message); } }
 const tok = () => crypto.randomBytes(16).toString('hex');
 const now = () => Date.now();
@@ -99,16 +102,79 @@ const handler = async (req, res) => {
     }
 
     if (req.method === 'GET' && p === '/confirm') {
-      const inv = Object.values(state.invites).find((i) => i.buddyToken === url.searchParams.get('token'));
-      if (!inv) return page(res, 'Link not found', 'This confirmation link is invalid or expired.');
-      inv.confirmed = true; inv.unsub = false; save();
-      return page(res, "You're all set", `Thanks for supporting ${inv.alias}. You'll get a note if they turn their gambling block off, and the occasional progress update. You can opt out any time from a link in those emails.`);
+      const token = url.searchParams.get('token');
+      const inv = Object.values(state.invites).find((i) => i.buddyToken === token);
+      const hh = Object.values(state.households).find((h) => h.hoHToken === token);
+      const t = inv || hh;
+      if (!t) return page(res, 'Link not found', 'This confirmation link is invalid or expired.');
+      t.confirmed = true; t.unsub = false; save();
+      const who = inv ? inv.alias : 'your household';
+      return page(res, "You're all set", `Thanks for looking out for ${who}. You'll get a note if a gambling block is turned off, plus occasional progress updates. You can opt out any time from a link in those emails.`);
     }
 
     if (req.method === 'GET' && p === '/unsubscribe') {
-      const inv = Object.values(state.invites).find((i) => i.buddyToken === url.searchParams.get('token'));
-      if (inv) { inv.unsub = true; save(); }
-      return page(res, 'Unsubscribed', 'You will no longer receive accountability emails for this person.');
+      const token = url.searchParams.get('token');
+      const t = Object.values(state.invites).find((i) => i.buddyToken === token)
+        || Object.values(state.households).find((h) => h.hoHToken === token);
+      if (t) { t.unsub = true; save(); }
+      return page(res, 'Unsubscribed', 'You will no longer receive accountability emails.');
+    }
+
+    // ---- Household (family plan): one head-of-household, many members via code ----
+    if (req.method === 'POST' && p === '/household/create') {
+      if (!rateIp(ipOf(req))) return json(res, 429, { error: 'too many requests, try later' });
+      const b = JSON.parse(await readBody(req));
+      if (!emailOk(b.hoHEmail)) return json(res, 400, { error: 'valid hoHEmail required' });
+      const id = tok(), ownerToken = tok(), hoHToken = tok();
+      let code = inviteCode();
+      while (Object.values(state.households).some((h) => h.code === code)) code = inviteCode();
+      const alias = esc(b.hoHAlias) || 'your household';
+      state.households[id] = { hoHEmail: b.hoHEmail, hoHAlias: alias, hoHToken, ownerToken, code,
+        confirmed: false, unsub: false, createdAt: now(), lastSentAt: 0, members: {} };
+      save();
+      const confirm = `${BASE}/api/accountability/confirm?token=${hoHToken}`;
+      const unsub = `${BASE}/api/accountability/unsubscribe?token=${hoHToken}`;
+      await sendMail(b.hoHEmail, `You're the head of household on Blockle Protect`,
+        `You set up a Blockle Protect family household. Confirm to receive alerts if a family member turns their gambling/adult block off, plus progress updates:\n${confirm}\n\n`
+        + `Your family invite code is:  ${code}\nFamily members enter it in Blockle Protect (or open ${BASE}/api/accountability/join/${code}) to join.\n\n`
+        + `Opt out of alerts: ${unsub}\n\n— Blockle Protect`);
+      return json(res, 200, { householdId: id, ownerToken, code, joinUrl: `${BASE}/api/accountability/join/${code}` });
+    }
+
+    if (req.method === 'GET' && p.startsWith('/join/')) {
+      const code = p.slice('/join/'.length).toUpperCase();
+      const hh = Object.values(state.households).find((h) => h.code === code);
+      if (!hh) return page(res, 'Invite not found', 'This family invite code is invalid or expired.');
+      return page(res, `Join ${hh.hoHAlias} on Blockle Protect`,
+        `You've been invited to a Blockle Protect family. Install Blockle Protect, open Family Protection, choose “Join a household”, and enter this code:<br><br>`
+        + `<b style="font-size:28px;letter-spacing:4px;color:#FF3B4E">${code}</b><br><br>`
+        + `Your head of household will be alerted if a gambling or adult block is turned off.`);
+    }
+
+    if (req.method === 'POST' && p === '/household/join') {
+      const b = JSON.parse(await readBody(req));
+      const hh = Object.values(state.households).find((h) => h.code === String(b.code || '').toUpperCase());
+      if (!hh) return json(res, 404, { error: 'invalid invite code' });
+      const memberId = tok(), memberToken = tok();
+      hh.members[memberId] = { alias: esc(b.memberAlias) || 'A family member', memberToken, joinedAt: now() };
+      save();
+      return json(res, 200, { householdId: Object.keys(state.households).find((k) => state.households[k] === hh), memberId, memberToken, hoHAlias: hh.hoHAlias });
+    }
+
+    if (req.method === 'POST' && p === '/household/alert') {
+      const b = JSON.parse(await readBody(req));
+      const hh = state.households[b.householdId];
+      const m = hh && hh.members[b.memberId];
+      if (!hh || !m || m.memberToken !== b.memberToken) return json(res, 401, { error: 'unauthorized' });
+      if (!hh.confirmed || hh.unsub) return json(res, 200, { sent: false, reason: 'head of household not confirmed / opted out' });
+      if (now() - hh.lastSentAt < MIN_NOTIFY_MS) return json(res, 200, { sent: false, reason: 'rate limited' });
+      const ev = String(b.event || '').slice(0, 20);
+      const unsub = `${BASE}/api/accountability/unsubscribe?token=${hh.hoHToken}`;
+      await sendMail(hh.hoHEmail,
+        ev === 'relapse' ? `${m.alias} turned off a block` : `Family update: ${m.alias}`,
+        `${bodyFor(ev, m.alias, esc(b.detail))}\n\n— Blockle Protect (family)\n\nStop these emails: ${unsub}`);
+      hh.lastSentAt = now(); save();
+      return json(res, 200, { sent: true });
     }
 
     if (req.method === 'POST' && p === '/notify') {
