@@ -1,5 +1,11 @@
 class_name ProcFungiCrystals
 extends RefCounted
+
+# WorldSpace supplies an ARRAY of neighbour descriptors; tolerate a plain count.
+static func _nbcount(ctx: Dictionary) -> int:
+	var v = ctx.get("neighbours", 0)
+	return (v as Array).size() if v is Array else int(v)
+
 # ProcFungiCrystals — procedurally-grown FUNGI and CRYSTALS for Blockle Idle.
 #
 # Two living families drawn entirely from math (CONVENTIONS.md), both feet-at-origin:
@@ -243,7 +249,7 @@ class _Fungus extends ProcNode:
 		size_mul = Proc.rangef(seedv, "sz", 0.84, 1.16)
 		var elev := float(ctx.get("elevation", 0.0))
 		size_mul *= (1.0 - 0.18 * clampf(elev, 0.0, 1.0))
-		if int(ctx.get("neighbours", 0)) > 0:
+		if ProcFungiCrystals._nbcount(ctx) > 0:
 			size_mul *= 0.93
 
 		# lean toward light; higher ground sways a touch more
@@ -737,7 +743,7 @@ class _Crystal extends ProcNode:
 		size_mul = Proc.rangef(seedv, "csz", 0.85, 1.18)
 		var elev := float(ctx.get("elevation", 0.0))
 		size_mul *= (1.0 - 0.14 * clampf(elev, 0.0, 1.0))
-		if int(ctx.get("neighbours", 0)) > 0:
+		if ProcFungiCrystals._nbcount(ctx) > 0:
 			size_mul *= 0.95
 
 		match species:

@@ -1,5 +1,11 @@
 class_name ProcDecor
 extends RefCounted
+
+# WorldSpace supplies an ARRAY of neighbour descriptors; tolerate a plain count.
+static func _nbcount(ctx: Dictionary) -> int:
+	var v = ctx.get("neighbours", 0)
+	return (v as Array).size() if v is Array else int(v)
+
 # ProcDecor — procedurally-built WORLD SET-DRESSING / PROPS for Blockle Idle.
 #
 # The crafted, built things that make an island read as a *tended place* rather
@@ -462,7 +468,7 @@ class _Decor extends ProcNode:
 		size_mul = Proc.rangef(seedv, "sz", 0.86, 1.14)
 		var elev := float(ctx.get("elevation", 0.0))
 		size_mul *= (1.0 - 0.16 * clampf(elev, 0.0, 1.0))
-		if int(ctx.get("neighbours", 0)) > 0:
+		if ProcDecor._nbcount(ctx) > 0:
 			size_mul *= 0.94
 
 		# orientation flip per-instance so repeats don't read as copies

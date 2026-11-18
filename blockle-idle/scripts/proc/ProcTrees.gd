@@ -179,8 +179,11 @@ class _Tree extends ProcNode:
 			cfg["exposure"] = lerpf(1.0, 1.28, e)
 			cfg["size_mul"] = lerpf(1.04, 0.86, e)
 		if ctx.has("neighbours"):
-			# Sheltered clusters run a little fuller.
-			var nb := clampi(int(ctx["neighbours"]), 0, 6)
+			# Sheltered clusters run a little fuller. WorldSpace supplies an ARRAY of
+			# neighbour descriptors; tolerate a plain count too.
+			var nbv = ctx["neighbours"]
+			var nb_raw: int = (nbv as Array).size() if nbv is Array else int(nbv)
+			var nb := clampi(nb_raw, 0, 6)
 			cfg["fullness"] = lerpf(1.0, 1.1, float(nb) / 6.0)
 
 	# ---- style parameter set (the L-system-ish genome) ---------------------

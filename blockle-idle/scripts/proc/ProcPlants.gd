@@ -294,7 +294,9 @@ class _Plant extends ProcNode:
 		_h *= sh
 		footprint_radius *= lerpf(1.0, 0.88, clampf(elev, 0.0, 1.0))
 		_amp *= lerpf(1.0, 1.35, clampf(elev, 0.0, 1.0))
-		var nb := int(_ctx.get("neighbours", 0))
+		# WorldSpace supplies an ARRAY of neighbour descriptors; tolerate a count too.
+		var nbv = _ctx.get("neighbours", 0)
+		var nb: int = (nbv as Array).size() if nbv is Array else int(nbv)
 		if nb > 0:
 			# desync the sway within a cluster so it breathes as a loose round
 			phase += float(nb) * 0.7
