@@ -77,6 +77,8 @@ jobs:
 
           # 3) assign the latest VALID build to the group
           valid = [b for b in builds.get('data', []) if b['attributes'].get('processingState') == 'VALID']
+          # the API does NOT return builds newest-first — sort by numeric version.
+          valid.sort(key=lambda b: int(b['attributes'].get('version') or 0), reverse=True)
           if grp and valid:
               latest = valid[0]
               s, r = req('POST', f'/v1/betaGroups/{grp["id"]}/relationships/builds',
