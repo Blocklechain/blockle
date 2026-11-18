@@ -47,11 +47,13 @@ jobs:
         run: |
           set -eo pipefail
           curl -fsSL https://protect.blockle.org/blocklists/core.json   -o Blockers/Core/blockerList.json
-          curl -fsSL https://protect.blockle.org/blocklists/adultA.json -o Blockers/AdultA/blockerList.json
-          curl -fsSL https://protect.blockle.org/blocklists/adultB.json -o Blockers/AdultB/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adult1.json -o Blockers/Adult1/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adult2.json -o Blockers/Adult2/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adult3.json -o Blockers/Adult3/blockerList.json
+          curl -fsSL https://protect.blockle.org/blocklists/adult4.json -o Blockers/Adult4/blockerList.json
           ls -lh Blockers/*/blockerList.json
           # sanity: each must be a non-empty JSON array
-          for f in Core AdultA AdultB; do
+          for f in Core Adult1 Adult2 Adult3 Adult4; do
             python3 -c "import json,sys; d=json.load(open('Blockers/$f/blockerList.json')); assert isinstance(d,list) and len(d)>0; print('$f:', len(d), 'rules')"
           done
 

@@ -42,9 +42,13 @@ targets:
     dependencies:
       - target: ShieldCore
         embed: true
-      - target: ShieldAdultA
+      - target: ShieldAdult1
         embed: true
-      - target: ShieldAdultB
+      - target: ShieldAdult2
+        embed: true
+      - target: ShieldAdult3
+        embed: true
+      - target: ShieldAdult4
         embed: true
 
   # ---- Safari content-blocker extensions (Family Protection) ----------------
@@ -66,35 +70,67 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.Safari.content-blocker
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
-  ShieldAdultA:
+  ShieldAdult1:
     type: app-extension
     platform: iOS
     sources:
       - path: Blockers/Shared
-      - path: Blockers/AdultA
+      - path: Blockers/Adult1
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdultA
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdult1
     info:
-      path: Blockers/AdultA/Info.plist
+      path: Blockers/Adult1/Info.plist
       properties:
-        CFBundleDisplayName: "Blockle Shield — Adult (1/2)"
+        CFBundleDisplayName: "Blockle Shield — Adult (1/4)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.Safari.content-blocker
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
-  ShieldAdultB:
+  ShieldAdult2:
     type: app-extension
     platform: iOS
     sources:
       - path: Blockers/Shared
-      - path: Blockers/AdultB
+      - path: Blockers/Adult2
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdultB
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdult2
     info:
-      path: Blockers/AdultB/Info.plist
+      path: Blockers/Adult2/Info.plist
       properties:
-        CFBundleDisplayName: "Blockle Shield — Adult (2/2)"
+        CFBundleDisplayName: "Blockle Shield — Adult (2/4)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+  ShieldAdult3:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Shared
+      - path: Blockers/Adult3
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdult3
+    info:
+      path: Blockers/Adult3/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — Adult (3/4)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.content-blocker
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
+  ShieldAdult4:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Blockers/Shared
+      - path: Blockers/Adult4
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.blockle.protect.shieldAdult4
+    info:
+      path: Blockers/Adult4/Info.plist
+      properties:
+        CFBundleDisplayName: "Blockle Shield — Adult (4/4)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.Safari.content-blocker
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ContentBlockerRequestHandler
