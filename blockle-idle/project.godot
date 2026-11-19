@@ -31,6 +31,10 @@ window/handheld/orientation="portrait"
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+; REQUIRED for the iOS export to validate. Without it Godot's exporter refuses
+; with a bare "configuration errors:" and no message at all — the failure gives
+; you nothing to go on, so it is worth stating plainly why this line exists.
+textures/vram_compression/import_etc2_astc=true
 textures/canvas_textures/default_texture_filter=0
 environment/defaults/default_clear_color=Color(0.055, 0.065, 0.11, 1)
 2d/snap/snap_2d_transforms_to_pixel=true
