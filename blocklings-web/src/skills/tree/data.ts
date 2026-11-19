@@ -1,22 +1,29 @@
 /**
  * Blocklings skill trees — the node catalog.
  *
- * 13 skills x 24 nodes = 312 nodes, all built from one skeleton so save data
- * stays tiny and layout stays sane:
+ * 14 skills x 241 nodes = 3374 nodes. The first 24 slots of every skill are
+ * the original hand-authored skeleton (ids FROZEN — saves reference them); the
+ * remaining ~217 are procedurally stamped deeper ranks that reuse each skill's
+ * own effect vocabulary, escalating in magnitude AND in point price:
  *
- *   autos    u1..u8  @ lvl 1/5/10/20/30/40/60/85 — granted free (actions,
- *                      recipes, material tiers)
- *   branch A a1..a4  @ lvl 3/12/22/38 — chained perk path (requires previous)
- *   branch B b1..b4  @ lvl 3/12/22/38 — rival chained perk path
- *   floaters f1..f3  @ lvl 8/16/28    — standalone perks
- *   capstones        @ 50/50/75/75/99 — c50a|c50b exclusive pair (c50a needs
- *                      the A-branch tip, c50b the B tip), c75a|c75b exclusive
- *                      pair, c99 the grand finisher
+ *   autos    u1..u8   @ lvl 1/5/10/20/30/40/60/85 — granted free (actions,
+ *                       recipes, material tiers) — PLUS u9..u21 @ 100..910, free
+ *                       passive bonuses in the skill's own stat.
+ *   branch A a1..a4   @ lvl 3/12/22/38 — PLUS a5..a72 @ 44..975, one long chained
+ *                       perk path (each needs the previous).
+ *   branch B b1..b4   @ lvl 3/12/22/38 — PLUS b5..b72, the rival chained path.
+ *   floaters f1..f3   @ lvl 8/16/28    — PLUS f4..f60 @ 35..950, standalone perks.
+ *   capstones         @ 50/50/75/75/99 — original five — PLUS five new exclusive
+ *                       pairs c150a|c150b .. c800a|c800b and a final c999.
+ *
+ * Point economy: autos cost 0; perk cost = round(lvl/36) (1..60), capstone cost
+ * = round(lvl/26) (2..70). The whole catalog costs ~41,160 points; a fully-maxed
+ * (all skills 999) player earns 13,972 — so picks are scarce and choices matter.
  *
  * Node ids are `${skill}.${slot}` ('mining.b4') — short on purpose, they are
  * persisted. Effects are modifier keys summed by SkillTreeAPI.modifier();
  * 'recipe:*' / 'tier:*' / 'unlock:*' keys are 0/1 flags, everything else is
- * an additive fraction (0.05 = +5%).
+ * an additive fraction (0.05 = +5%). Generated nodes NEVER mint new gate keys.
  */
 import type { TreeNode } from '../../types'
 
@@ -28,7 +35,7 @@ export interface TreeNodeDef extends TreeNode {
   excl?: string
   /** Visual-only edge parent (drawn, not required). */
   vis?: string
-  /** Layout grid position (columns right, lanes down). */
+  /** Layout grid position (x grows with lvlReq, y picks a lane). */
   x: number
   y: number
 }
@@ -46,9 +53,220 @@ interface Spec {
 }
 
 const AUTO_LVLS = [1, 5, 10, 20, 30, 40, 60, 85] as const
-const AUTO_X = [0, 1, 2, 3, 4, 5, 6.6, 8.2] as const
 const BRANCH_LVLS = [3, 12, 22, 38] as const
 const FLOAT_LVLS = [8, 16, 28] as const
+
+/* -------------------------------------------------------------------------- *
+ *  Extended-tree level ladders (shared by every skill).                      *
+ * -------------------------------------------------------------------------- */
+
+/** New free-auto levels (u9..u21). */
+const NEW_AUTO_LVLS = [100, 120, 145, 175, 210, 250, 300, 360, 430, 520, 630, 760, 910] as const
+/** New chained-perk levels (a5..a72 / b5..b72): 68 steps, 44 -> 975. */
+const NEW_BRANCH_LVLS: number[] = Array.from({ length: 68 }, (_, k) =>
+  Math.round(44 + (k * (975 - 44)) / 67)
+)
+/** New standalone-floater levels (f4..f60): 57 steps, 35 -> 950. */
+const NEW_FLOAT_LVLS: number[] = Array.from({ length: 57 }, (_, k) =>
+  Math.round(35 + (k * (950 - 35)) / 56)
+)
+/** New exclusive capstone pairs. */
+const NEW_CAP_LVLS = [150, 250, 400, 600, 800] as const
+
+/* -------------------------------------------------------------------------- *
+ *  Cost + magnitude curves.                                                  *
+ * -------------------------------------------------------------------------- */
+
+const clampN = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+const round2 = (n: number): number => Math.round(n * 100) / 100
+
+/** Perk-point price from kind + level. autos free; deep nodes dear. */
+function costOf(kind: TreeNode['kind'], lvlReq: number): number {
+  if (kind === 'auto') return 0
+  if (kind === 'capstone') return clampN(Math.round(lvlReq / 26), 2, 70)
+  return clampN(Math.round(lvlReq / 36), 1, 60)
+}
+
+const isFlatKey = (key: string): boolean => key === 'hpRegen' || key === 'mpRegen'
+
+/** Escalating magnitude for a generated perk effect. */
+function perkMag(key: string, lvl: number): number {
+  return isFlatKey(key) ? round2(0.1 + lvl * 0.0018) : round2(0.02 + lvl * 0.00035)
+}
+/** Escalating magnitude for a free-auto bonus (gentler than a perk). */
+function autoMag(key: string, lvl: number): number {
+  return isFlatKey(key) ? round2(0.1 + lvl * 0.0008) : round2(0.02 + lvl * 0.0002)
+}
+/** Escalating magnitude for a capstone effect (steepest). */
+function capMag(key: string, lvl: number): number {
+  return isFlatKey(key) ? round2(0.15 + lvl * 0.00035) : round2(0.05 + lvl * 0.0005)
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Generated-content flavor (names + quips). Deterministic, varied, on-voice. *
+ * -------------------------------------------------------------------------- */
+
+const pick = <X>(arr: readonly X[], seed: number): X =>
+  arr[((Math.trunc(seed) % arr.length) + arr.length) % arr.length]!
+
+const ADJ = [
+  'Relentless', 'Unhinged', 'Caffeinated', 'Spiteful', 'Feral', 'Obsessive',
+  'Unpaid', 'Overqualified', 'Sleep-Deprived', 'Mildly Cursed', 'Aggressively Average',
+  'Professionally Petty', 'Suspiciously Effective', 'Legally Distinct', 'Quietly Unwell',
+  'Chronically Committed', 'Borderline Illegal', 'Emotionally Invested',
+  'Deeply Unnecessary', 'Weaponized'
+] as const
+
+const QUIPS = [
+  'The grind respects no one. You, least of all.',
+  'Progress! Allegedly.',
+  'Your ancestors are confused, but supportive.',
+  'Nobody asked for this. You did it anyway.',
+  'A skill nobody will thank you for.',
+  'Diminishing returns, maximized spite.',
+  'You could have slept. You chose this.',
+  'The numbers go up. The soul stays put.',
+  'Peaked at a hobby. Still climbing.',
+  'One more rank. It is always one more rank.',
+  'Mastery: a word, a burden, a Tuesday.',
+  'The talent tree grew. So did the debt.',
+  'Technically an improvement.',
+  'Your therapist calls this "a lot".',
+  'Worth it, probably, almost certainly, maybe.',
+  'The bar went up. You went with it.',
+  'Hard work beats talent when talent naps.',
+  'Excellence, out of pure stubbornness.',
+  'You optimized a life you forgot to live.',
+  'Small gains, enormous commitment issues.',
+  'The meta fears a person with free time.',
+  'Min-maxed, max-regretted.',
+  'Still better than a real job. Marginally.',
+  'Growth: unsettling, relentless, yours.'
+] as const
+
+const CAP_QUIPS = [
+  'A capstone. The tree bends the knee.',
+  'This is what the whole grind was for. Supposedly.',
+  'Legends are mostly just people who did not stop.',
+  'The ceiling called. You put a hole in it.',
+  'History will footnote this. In small print.',
+  'You crossed a line most people cannot see.',
+  'Overpowered, over budget, over it.',
+  'The devs did not plan for you.',
+  'A power so great it needs a nap after.',
+  'Peak form. Downhill is a myth you ignore.',
+  'The grandmaster tier. Lonely up here.',
+  'Final-form energy, with a slight limp.'
+] as const
+
+const CAP_TITLE = [
+  'Apex', 'Zenith', 'Ascendant', 'Grandmaster', 'Paragon', 'Transcendent',
+  'Ultimate', 'Legendary', 'Mythic', 'Overlord'
+] as const
+
+const SKILL_NOUN: Record<string, readonly string[]> = {
+  attack: ['Swing', 'Haymaker', 'Follow-Through', 'Overhead', 'Backhand', 'Windup', 'Smackdown', 'Clobber', 'Wallop', 'Bonk Theory', 'Grievance', 'Finisher'],
+  defense: ['Stance', 'Bulwark', 'Flinch', 'Turtling', 'Wall', 'Guard', 'Shrug', 'Deflection', 'Stubbornness', 'Resolve', 'Blockade', 'Immovability'],
+  magic: ['Incantation', 'Sparkwork', 'Hex', 'Cantrip', 'Channel', 'Arcana', 'Sorcery', 'Mumbo', 'Glyphcraft', 'Overcast', 'Thaumaturgy', 'Spellspam'],
+  archery: ['Loose', 'Draw', 'Volley', 'Bullseye', 'Nock', 'Longshot', 'Snipe', 'Fletching', 'Trick Shot', 'Quickdraw', 'Perforation', 'Groupings'],
+  vitality: ['Constitution', 'Second Wind', 'Stamina', 'Beefiness', 'Vigor', 'Heartbeat', 'Durability', 'Gusto', 'Lifeforce', 'Hardiness', 'Pulse', 'Survivability'],
+  mining: ['Swing', 'Delve', 'Vein Sense', 'Excavation', 'Crunch', 'Pickwork', 'Tunneling', 'Ore Lust', 'Deep Dig', 'Rock Logic', 'Prospecting', 'Quarrying'],
+  woodcutting: ['Chop', 'Timber', 'Felling', 'Notch', 'Swing', 'Limbing', 'Clearcut', 'Grain Sense', 'Splitting', 'Lumberjackery', 'Deforestation', 'Sawdust'],
+  fishing: ['Cast', 'Reel', 'Catch', 'Patience', 'Lure Craft', 'Angling', 'Nibble', 'Tug', 'Deep Haul', 'Baitcraft', 'Trawling', 'Overfishing'],
+  farming: ['Harvest', 'Tilling', 'Sowing', 'Cultivation', 'Green Thumb', 'Rotation', 'Yield', 'Pruning', 'Reaping', 'Agronomy', 'Composting', 'Bumper Crop'],
+  herbalism: ['Gather', 'Forage', 'Pinch', 'Snip', 'Pluck', 'Fieldcraft', 'Harvest', 'Bundle', 'Trimming', 'Botany', 'Weed Lore', 'Overpicking'],
+  blacksmithing: ['Hammer', 'Forge', 'Temper', 'Quench', 'Anvilcraft', 'Strike', 'Fold', 'Smithing', 'Clang', 'Metallurgy', 'Heatwork', 'Reforge'],
+  cooking: ['Simmer', 'Sear', 'Plating', 'Chop', 'Flambé', 'Seasoning', 'Sauté', 'Roast', 'Flavorcraft', 'Mise', 'Braise', 'Overcooking'],
+  alchemy: ['Brew', 'Distillation', 'Stir', 'Reduction', 'Bubble', 'Mixology', 'Reagentwork', 'Infusion', 'Decoction', 'Transmutation', 'Steeping', 'Overbrew'],
+  tailoring: ['Stitch', 'Seam', 'Hemwork', 'Cut', 'Weave', 'Needlecraft', 'Pattern', 'Tailoring', 'Pleat', 'Dressmaking', 'Lining', 'Overstitch']
+}
+
+const ROMAN: readonly [number, string][] = [
+  [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'], [100, 'C'], [90, 'XC'],
+  [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']
+]
+function roman(n: number): string {
+  let r = ''
+  let v = n
+  for (const [val, sym] of ROMAN) {
+    while (v >= val) {
+      r += sym
+      v -= val
+    }
+  }
+  return r || 'I'
+}
+
+/** A generated perk/auto name — adj + skill noun + a rank numeral (unique/rank). */
+function genName(skill: string, off: number, rank: number): string {
+  const nouns = SKILL_NOUN[skill] ?? ['Mastery']
+  return `${pick(ADJ, rank * 2 + off)} ${pick(nouns, rank * 3 + off * 5)} ${roman(rank)}`
+}
+/** A generated capstone name — grand title + skill noun. */
+function genCapName(skill: string, off: number): string {
+  const nouns = SKILL_NOUN[skill] ?? ['Mastery']
+  return `${pick(CAP_TITLE, off)}: ${pick(nouns, off * 3 + 4)}`
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Per-skill effect palette for the generated ranks (reuses existing keys).  *
+ * -------------------------------------------------------------------------- */
+
+interface Palette {
+  /** Stat the free deep autos pump. */
+  auto: string
+  /** Branch-A chained-perk stat. */
+  a: string
+  /** Branch-B chained-perk stat. */
+  b: string
+  /** Floater stats, cycled by floater index. */
+  f: readonly string[]
+  /** Capstone side-A combo (two stats). */
+  capA: readonly [string, string]
+  /** Capstone side-B combo (two stats). */
+  capB: readonly [string, string]
+  /** The final c999 combo. */
+  capFinal: readonly [string, string]
+}
+
+const PALETTE: Record<string, Palette> = {
+  attack: { auto: 'atkDmgPct', a: 'critDmg', b: 'cleave', f: ['atkSpeed', 'comboDmg', 'crit'], capA: ['critDmg', 'crit'], capB: ['cleave', 'atkSpeed'], capFinal: ['atkDmgPct', 'crit'] },
+  defense: { auto: 'maxHpPct', a: 'dmgReducePct', b: 'thorns', f: ['maxHpPct', 'blockChance', 'dmgReducePct'], capA: ['dmgReducePct', 'maxHpPct'], capB: ['thorns', 'blockChance'], capFinal: ['dmgReducePct', 'maxHpPct'] },
+  magic: { auto: 'mpMaxPct', a: 'magDmgPct', b: 'dmgReducePct', f: ['castSpeed', 'mpRegen', 'magDmgPct'], capA: ['magDmgPct', 'chain'], capB: ['dmgReducePct', 'maxHpPct'], capFinal: ['magDmgPct', 'mpMaxPct'] },
+  archery: { auto: 'atkDmgPct', a: 'critDmg', b: 'dmgReducePct', f: ['atkSpeed', 'comboDmg', 'atkDmgPct'], capA: ['critDmg', 'crit'], capB: ['dmgReducePct', 'blockChance'], capFinal: ['atkDmgPct', 'crit'] },
+  vitality: { auto: 'maxHpPct', a: 'maxHpPct', b: 'hpRegen', f: ['maxHpPct', 'hpRegen', 'lifesteal'], capA: ['maxHpPct', 'hpRegen'], capB: ['lifesteal', 'foodHealPct'], capFinal: ['maxHpPct', 'hpRegen'] },
+  mining: { auto: 'mineSpeed', a: 'mineSpeed', b: 'doubleOre', f: ['mineSpeed', 'gemFind', 'doubleOre'], capA: ['mineSpeed', 'gemFind'], capB: ['doubleOre', 'gemFind'], capFinal: ['mineSpeed', 'doubleOre'] },
+  woodcutting: { auto: 'chopSpeed', a: 'chopSpeed', b: 'doubleWood', f: ['chopSpeed', 'nestFind', 'doubleWood'], capA: ['chopSpeed', 'nestFind'], capB: ['doubleWood', 'nestFind'], capFinal: ['chopSpeed', 'doubleWood'] },
+  fishing: { auto: 'fishSpeed', a: 'fishSpeed', b: 'doubleFish', f: ['fishSpeed', 'treasureFind', 'doubleFish'], capA: ['fishSpeed', 'treasureFind'], capB: ['doubleFish', 'treasureFind'], capFinal: ['fishSpeed', 'doubleFish'] },
+  farming: { auto: 'growSpeed', a: 'growSpeed', b: 'doubleCrop', f: ['growSpeed', 'seedSave', 'doubleCrop'], capA: ['growSpeed', 'seedSave'], capB: ['doubleCrop', 'seedSave'], capFinal: ['growSpeed', 'doubleCrop'] },
+  herbalism: { auto: 'gatherSpeed', a: 'gatherSpeed', b: 'doubleHerb', f: ['gatherSpeed', 'rareHerb', 'doubleHerb'], capA: ['gatherSpeed', 'rareHerb'], capB: ['doubleHerb', 'rareHerb'], capFinal: ['gatherSpeed', 'doubleHerb'] },
+  blacksmithing: { auto: 'smithSpeed', a: 'smithSpeed', b: 'saveBar', f: ['smithSpeed', 'quality', 'saveBar'], capA: ['smithSpeed', 'quality'], capB: ['saveBar', 'quality'], capFinal: ['smithSpeed', 'quality'] },
+  cooking: { auto: 'cookSpeed', a: 'cookSpeed', b: 'foodHealPct', f: ['cookSpeed', 'noBurn', 'foodHealPct'], capA: ['cookSpeed', 'noBurn'], capB: ['foodHealPct', 'noBurn'], capFinal: ['cookSpeed', 'foodHealPct'] },
+  alchemy: { auto: 'brewSpeed', a: 'brewSpeed', b: 'potency', f: ['brewSpeed', 'doublePotion', 'potency'], capA: ['brewSpeed', 'doublePotion'], capB: ['potency', 'doublePotion'], capFinal: ['brewSpeed', 'potency'] },
+  tailoring: { auto: 'sewSpeed', a: 'sewSpeed', b: 'saveCloth', f: ['sewSpeed', 'quality', 'saveCloth'], capA: ['sewSpeed', 'quality'], capB: ['saveCloth', 'quality'], capFinal: ['sewSpeed', 'saveCloth'] }
+}
+
+const DEFAULT_PALETTE: Palette = {
+  auto: 'maxHpPct', a: 'maxHpPct', b: 'maxHpPct', f: ['maxHpPct'],
+  capA: ['maxHpPct', 'maxHpPct'], capB: ['maxHpPct', 'maxHpPct'], capFinal: ['maxHpPct', 'maxHpPct']
+}
+
+/* -------------------------------------------------------------------------- *
+ *  Layout: x grows with lvlReq (left -> right progression), y is the lane.    *
+ * -------------------------------------------------------------------------- */
+
+const LVL_SX = 0.11 // grid columns per level
+const LANE = {
+  capTop: 0.2,
+  branchA: 1.1,
+  floatA: 1.55,
+  spine: 2.0,
+  floatB: 2.45,
+  branchB: 2.9,
+  capBot: 3.8
+} as const
+
+const lvlX = (lvl: number): number => lvl * LVL_SX
 
 function build(skill: string, s: Spec): TreeNodeDef[] {
   const id = (slot: string): string => `${skill}.${slot}`
@@ -58,7 +276,6 @@ function build(skill: string, s: Spec): TreeNodeDef[] {
     kind: TreeNode['kind'],
     lvlReq: number,
     t: T,
-    x: number,
     y: number,
     requires: readonly string[] = [],
     extra: { excl?: string; vis?: string } = {}
@@ -70,39 +287,90 @@ function build(skill: string, s: Spec): TreeNodeDef[] {
       lvlReq,
       name: t[0],
       desc: t[1],
+      cost: costOf(kind, lvlReq),
       effects: t[2],
       requires,
-      x,
+      x: lvlX(lvlReq),
       y,
       ...extra
     })
   }
 
-  // auto spine, lane 2
+  const pal = PALETTE[skill] ?? DEFAULT_PALETTE
+  let seedBase = 0
+  for (let i = 0; i < skill.length; i++) seedBase += skill.charCodeAt(i) * (i + 1)
+
+  // --- auto spine: original 8 (free gate/stat unlocks) -----------------------
   for (let i = 0; i < 8; i++) {
-    node(`u${i + 1}`, 'auto', AUTO_LVLS[i]!, s.autos[i]!, AUTO_X[i]!, 2, [],
+    node(`u${i + 1}`, 'auto', AUTO_LVLS[i]!, s.autos[i]!, LANE.spine, [],
       i > 0 ? { vis: id(`u${i}`) } : {})
   }
-  // branch A (upper) + branch B (lower)
-  const ax = [0.7, 1.7, 2.7, 3.7]
-  const ay = [1.05, 0.6, 0.3, 0]
-  const by = [2.95, 3.4, 3.7, 4]
+  // --- deep autos u9..u21: free passive bonuses in the skill's stat ----------
+  for (let i = 0; i < NEW_AUTO_LVLS.length; i++) {
+    const slot = `u${9 + i}`
+    const lvl = NEW_AUTO_LVLS[i]!
+    const t: T = [genName(skill, seedBase + 101, i + 1), pick(QUIPS, seedBase + i * 5 + 1),
+      { [pal.auto]: autoMag(pal.auto, lvl) }]
+    node(slot, 'auto', lvl, t, LANE.spine, [], { vis: id(`u${8 + i}`) })
+  }
+
+  // --- branch A (chained) + branch B (chained): original 4 + deep ranks -------
   for (let i = 0; i < 4; i++) {
-    node(`a${i + 1}`, 'perk', BRANCH_LVLS[i]!, s.a[i]!, ax[i]!, ay[i]!,
+    node(`a${i + 1}`, 'perk', BRANCH_LVLS[i]!, s.a[i]!, LANE.branchA,
       i > 0 ? [id(`a${i}`)] : [], i === 0 ? { vis: id('u1') } : {})
-    node(`b${i + 1}`, 'perk', BRANCH_LVLS[i]!, s.b[i]!, ax[i]!, by[i]!,
+    node(`b${i + 1}`, 'perk', BRANCH_LVLS[i]!, s.b[i]!, LANE.branchB,
       i > 0 ? [id(`b${i}`)] : [], i === 0 ? { vis: id('u1') } : {})
   }
-  // floaters, between spine and branches
-  node('f1', 'perk', FLOAT_LVLS[0]!, s.f[0]!, 1.35, 1.5, [], { vis: id('u2') })
-  node('f2', 'perk', FLOAT_LVLS[1]!, s.f[1]!, 2.35, 2.55, [], { vis: id('u3') })
-  node('f3', 'perk', FLOAT_LVLS[2]!, s.f[2]!, 3.4, 1.55, [], { vis: id('u4') })
-  // capstones
-  node('c50a', 'capstone', 50, s.caps[0]!, 4.9, 0.35, [id('a4')], { excl: id('c50') })
-  node('c50b', 'capstone', 50, s.caps[1]!, 4.9, 3.65, [id('b4')], { excl: id('c50') })
-  node('c75a', 'capstone', 75, s.caps[2]!, 6.1, 0.9, [], { excl: id('c75'), vis: id('c50a') })
-  node('c75b', 'capstone', 75, s.caps[3]!, 6.1, 3.1, [], { excl: id('c75'), vis: id('c50b') })
-  node('c99', 'capstone', 99, s.caps[4]!, 7.5, 1.2, [], { vis: id('u7') })
+  for (let i = 0; i < NEW_BRANCH_LVLS.length; i++) {
+    const rank = i + 5 // slot index (a5, a6, ...)
+    const lvl = NEW_BRANCH_LVLS[i]!
+    const ta: T = [genName(skill, seedBase + 11, rank), pick(QUIPS, seedBase + rank * 3),
+      { [pal.a]: perkMag(pal.a, lvl) }]
+    node(`a${rank}`, 'perk', lvl, ta, LANE.branchA, [id(`a${rank - 1}`)])
+    const tb: T = [genName(skill, seedBase + 29, rank), pick(QUIPS, seedBase + rank * 3 + 7),
+      { [pal.b]: perkMag(pal.b, lvl) }]
+    node(`b${rank}`, 'perk', lvl, tb, LANE.branchB, [id(`b${rank - 1}`)])
+  }
+
+  // --- floaters (standalone): original 3 + deep ranks ------------------------
+  node('f1', 'perk', FLOAT_LVLS[0]!, s.f[0]!, LANE.floatA, [], { vis: id('u2') })
+  node('f2', 'perk', FLOAT_LVLS[1]!, s.f[1]!, LANE.floatB, [], { vis: id('u3') })
+  node('f3', 'perk', FLOAT_LVLS[2]!, s.f[2]!, LANE.floatA, [], { vis: id('u4') })
+  for (let i = 0; i < NEW_FLOAT_LVLS.length; i++) {
+    const rank = i + 4 // f4, f5, ...
+    const lvl = NEW_FLOAT_LVLS[i]!
+    const key = pal.f[i % pal.f.length]!
+    const t: T = [genName(skill, seedBase + 53, rank), pick(QUIPS, seedBase + rank * 5 + 3),
+      { [key]: perkMag(key, lvl) }]
+    node(`f${rank}`, 'perk', lvl, t, i % 2 === 0 ? LANE.floatA : LANE.floatB)
+  }
+
+  // --- capstones: original 5 (ids + excl + requires FROZEN) ------------------
+  node('c50a', 'capstone', 50, s.caps[0]!, LANE.capTop, [id('a4')], { excl: id('c50') })
+  node('c50b', 'capstone', 50, s.caps[1]!, LANE.capBot, [id('b4')], { excl: id('c50') })
+  node('c75a', 'capstone', 75, s.caps[2]!, LANE.capTop, [], { excl: id('c75'), vis: id('c50a') })
+  node('c75b', 'capstone', 75, s.caps[3]!, LANE.capBot, [], { excl: id('c75'), vis: id('c50b') })
+  node('c99', 'capstone', 99, s.caps[4]!, LANE.spine, [], { vis: id('u7') })
+  // --- new exclusive capstone pairs ------------------------------------------
+  for (let i = 0; i < NEW_CAP_LVLS.length; i++) {
+    const lvl = NEW_CAP_LVLS[i]!
+    const grp = id(`c${lvl}`)
+    const aName = genCapName(skill, seedBase + lvl)
+    const bName = genCapName(skill, seedBase + lvl + 7)
+    const ta: T = [aName, pick(CAP_QUIPS, seedBase + i),
+      { [pal.capA[0]]: capMag(pal.capA[0], lvl), [pal.capA[1]]: capMag(pal.capA[1], lvl) }]
+    const tb: T = [bName, pick(CAP_QUIPS, seedBase + i + 6),
+      { [pal.capB[0]]: capMag(pal.capB[0], lvl), [pal.capB[1]]: capMag(pal.capB[1], lvl) }]
+    node(`c${lvl}a`, 'capstone', lvl, ta, LANE.capTop, [], { excl: grp })
+    node(`c${lvl}b`, 'capstone', lvl, tb, LANE.capBot, [], { excl: grp })
+  }
+  // --- the grand finisher ----------------------------------------------------
+  {
+    const tf: T = [`Singularity: ${pick(SKILL_NOUN[skill] ?? ['Mastery'], seedBase + 2)}`,
+      pick(CAP_QUIPS, seedBase + 11),
+      { [pal.capFinal[0]]: capMag(pal.capFinal[0], 999), [pal.capFinal[1]]: capMag(pal.capFinal[1], 999) }]
+    node('c999', 'capstone', 999, tf, LANE.spine, [], { vis: id('c800a') })
+  }
   return out
 }
 
@@ -204,10 +472,10 @@ const SPECS: Record<string, Spec> = {
       ['Overchannel', '+10% spell damage. Warranty on your eyebrows: void.', { magDmgPct: 0.1 }]
     ],
     b: [
-      ['Coupon Casting', 'Spells cost 5% less MP. Extreme couponing, arcane edition.', { mpCostDown: 0.05 }],
-      ['Mana Hoarder', '+8% max MP. It sparks joy. All of it sparks joy.', { mpMaxPct: 0.08 }],
-      ['Drip Feed', '+0.15 MP regen. Slow magic is still magic.', { mpRegen: 0.15 }],
-      ['Free Trial Forever', 'Spells cost 8% less MP. Never entered a card.', { mpCostDown: 0.08 }]
+      ['Mana Ward', 'Bleed off a little mana to blunt blows: +3% damage reduction.', { dmgReducePct: 0.03 }],
+      ['Spell Resist', '+3% reduction, +3% max HP. Hostile magic finds you deeply boring.', { dmgReducePct: 0.03, maxHpPct: 0.03 }],
+      ['Backlash Barrier', 'Attackers eat 6% of their own damage as arcane feedback.', { thorns: 0.06 }],
+      ['Arcane Shell', '+5% damage reduction. A shimmer you can almost see.', { dmgReducePct: 0.05 }]
     ],
     f: [
       ['Wand Hygiene', '+3% spell damage. A clean wand is a deadly wand.', { magDmgPct: 0.03 }],
@@ -220,6 +488,43 @@ const SPECS: Record<string, Spec> = {
       ['Chain Reaction', '+15% bounce. Hits a friend. Their friend. Their accountant.', { chain: 0.15 }],
       ['Mana Monopoly', '+15% max MP, +0.1 regen. Pass GO, collect mana.', { mpMaxPct: 0.15, mpRegen: 0.1 }],
       ['Reality Is a Suggestion', '+20% spell damage, +10% bounce. Physics filed a complaint.', { magDmgPct: 0.2, chain: 0.1 }]
+    ]
+  },
+
+  archery: {
+    autos: [
+      ['Which End Points Out', 'You may now nock an arrow correctly. Basic shots unlocked.', { 'unlock:shoot': 1 }],
+      ['Draw Weight', 'Unlocks power shots: slower draw, much ruder arrival.', { 'unlock:powerShot': 1 }],
+      ['Iron Tips', 'You are allowed iron arrowheads now. The deer have noticed.', { 'tier:iron': 1 }],
+      ['Steel Fletching', 'Steel-tipped arrows unlocked. Heavier. Meaner.', { 'tier:steel': 1 }],
+      ['Rapid Nock', 'Every third shot flies 15% harder. Rhythm is a weapon.', { comboDmg: 0.15 }],
+      ['Gold Shafts', 'Gold arrows unlocked. Wildly impractical. You do it anyway.', { 'tier:gold': 1 }],
+      ['Crystal Broadheads', 'Crystal arrows unlocked. They sparkle mid-flight. Then mid-you.', { 'tier:crystal': 1 }],
+      ['Mythic Quiver', 'Mythic arrows unlocked. They never run out, and they know it.', { 'tier:mythic': 1 }]
+    ],
+    a: [
+      ['Aim Small, Miss Small', '+3% crit chance. Pick a freckle. Hit the freckle.', { crit: 0.03 }],
+      ['Weak-Point Enthusiast', '+4% crit chance. You read the enemy manual. Cover to cover.', { crit: 0.04 }],
+      ['Impalement Studies', '+25% crit damage. Honours thesis: "Through And Out The Back."', { critDmg: 0.25 }],
+      ['Bullseye. Mostly.', '+5% crit, +25% crit damage. Precision, with a scenic exit wound.', { crit: 0.05, critDmg: 0.25 }]
+    ],
+    b: [
+      ['Nimble Footwork', '+2% damage reduction — you are rarely still where the blow lands.', { dmgReducePct: 0.02 }],
+      ['Leather and Luck', '+3% reduction, +3% max HP. Light armor, lighter conscience.', { dmgReducePct: 0.03, maxHpPct: 0.03 }],
+      ['Roll Away', '+5% evasion (block chance). The ground is a fine place to be, briefly.', { blockChance: 0.05 }],
+      ['Ghost Step', '+4% reduction. They keep swinging at where you just were.', { dmgReducePct: 0.04 }]
+    ],
+    f: [
+      ['Bracer Discipline', '+4% arrow damage. No more string-slapped forearms.', { atkDmgPct: 0.04 }],
+      ['Steady Breath', '+6% arrow damage from exhaling at the right moment.', { atkDmgPct: 0.06 }],
+      ['Range Diary', '+2% crit, +4% damage. Dear diary: hit the thing from very far away.', { crit: 0.02, atkDmgPct: 0.04 }]
+    ],
+    caps: [
+      ['Headhunter Memo', 'Enemies under 25% HP take +30% damage. The quiver does the paperwork.', { execDmg: 0.3 }],
+      ['Arrow Storm', '+25% pierce, +5% draw speed. Legally classified as weather.', { cleave: 0.25, atkSpeed: 0.05 }],
+      ['Dead-Eye', '+8% crit, +40% crit damage. You stopped missing. It got awkward.', { crit: 0.08, critDmg: 0.4 }],
+      ['Collateral Fletching', '+12% damage, +10% pierce. The fence behind them also died.', { atkDmgPct: 0.12, cleave: 0.1 }],
+      ['Legolas Allegations', '+20% damage, +5% crit. Witnesses disagree on how many arrows that was.', { atkDmgPct: 0.2, crit: 0.05 }]
     ]
   },
 

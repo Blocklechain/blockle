@@ -103,11 +103,26 @@ export function html(res, status, body, extraHeaders = {}) {
 
 export function redirect(res, location) { res.writeHead(302, { Location: location }); res.end(); }
 
-// Same-origin check for mutating requests (CSRF defense-in-depth alongside the session token).
+// True for the account apex (blockle.org) and any first-party subdomain of it
+// (blocklings.blockle.org, world.blockle.org, …) — plus localhost for dev. These
+// are all surfaces we ship; they may call the account API cross-origin.
+export function firstPartyOrigin(origin, config) {
+  if (!origin) return false;
+  try {
+    const o = new URL(origin);
+    const apex = new URL(config.publicOrigin).hostname;
+    if (o.hostname === 'localhost' || o.hostname === '127.0.0.1') return true;
+    return o.hostname === apex || o.hostname.endsWith('.' + apex);
+  } catch { return false; }
+}
+
+// Same-origin check for mutating requests (CSRF defense-in-depth alongside the
+// session token). Accepts first-party subdomains so the game (blocklings.blockle.org)
+// and other *.blockle.org surfaces can authenticate; the session/CSRF token still guards.
 export function sameOrigin(req, config) {
   const origin = req.headers.origin;
   if (!origin) return true; // non-browser / same-origin fetches may omit it; session CSRF still applies
-  try { return new URL(origin).origin === new URL(config.publicOrigin).origin; } catch { return false; }
+  return firstPartyOrigin(origin, config);
 }
 
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

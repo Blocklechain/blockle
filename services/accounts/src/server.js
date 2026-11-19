@@ -29,7 +29,7 @@ import {
 } from './crypto.js';
 import {
   securityHeaders, readJson, readBody, parseCookies, parseCookieValues, setCookie, clearCookie,
-  json, html, redirect, sameOrigin, EMAIL_RE,
+  json, html, redirect, sameOrigin, firstPartyOrigin, EMAIL_RE,
 } from './http.js';
 import { renderPage } from './pages.js';
 import { makeChain } from './chain.js';
@@ -300,7 +300,7 @@ export function createApp(overrides = {}) {
   // the server only bounds its size and persists it on the user record — same store/save path
   // as every other account field.
   on('GET', /^\/account\/api\/game\/character$/, authed((req, res, { u }) =>
-    json(res, 200, { character: u.gameCharacter ?? null })));
+    json(res, 200, { character: u.gameCharacter ?? null, deleted: !!u.blocklingsDeleted })));
 
   on('PUT', /^\/account\/api\/game\/character$/, authed(async (req, res, { u }) => {
     const b = await readJson(req, 32 * 1024).catch(() => ({}));
@@ -310,6 +310,25 @@ export function createApp(overrides = {}) {
     if (JSON.stringify(character).length > 16384)
       return json(res, 400, { error: 'Character too large.' });
     await store.update('users', u.id, (x) => { if (x) x.gameCharacter = character; return x; });
+    return json(res, 200, { ok: true });
+  }));
+
+  // SOFT delete — flags the Blockling hidden but PRESERVES the account +
+  // gameCharacter so it can be restored from the account dashboard. Never
+  // removes data; the "Restore my Blockling" button clears the flag.
+  on('POST', /^\/account\/api\/game\/blocklings\/delete$/, authed(async (req, res, { u }) => {
+    await store.update('users', u.id, (x) => {
+      if (x) { x.blocklingsDeleted = true; x.blocklingsDeletedAt = now(); }
+      return x;
+    });
+    return json(res, 200, { ok: true });
+  }));
+
+  on('POST', /^\/account\/api\/game\/blocklings\/restore$/, authed(async (req, res, { u }) => {
+    await store.update('users', u.id, (x) => {
+      if (x) { delete x.blocklingsDeleted; delete x.blocklingsDeletedAt; }
+      return x;
+    });
     return json(res, 200, { ok: true });
   }));
 
@@ -388,6 +407,67 @@ export function createApp(overrides = {}) {
     return json(res, 200, { ok: true, credited: out.credited, balance: out.balance });
   }));
 
+  // Credit GOLD from a PayPal one-time Order (web + sideloaded Android, where there is no
+  // StoreKit). TWO steps, both authed: /create mints a CAPTURE order for the SKU's exact USD
+  // price; /capture captures it and credits — but ONLY after re-verifying, server-side, that
+  // the captured amount+currency match the SKU and that custom_id binds the order to THIS user
+  // and sku. One credit per capture_id EVER (goldTxns `paypal:<id>` claim, same guard as Apple).
+  // Crediting is gated behind PayPal being configured; it fails closed otherwise. iOS keeps
+  // using StoreKit — Apple requires IAP for digital goods in-app; PayPal is web/Android only.
+  on('POST', /^\/account\/api\/game\/gold\/paypal\/create$/, authed(async (req, res, { u }) => {
+    if (paypal.disabled) return json(res, 503, { error: 'PayPal is not configured.' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const sku = String(b.sku || '');
+    const def = GOLD_SKUS[sku];
+    if (!def) return json(res, 400, { error: 'Unknown SKU.' });
+    try {
+      // The return page reads sku from the URL to call capture; tampering is
+      // harmless — capture re-checks the captured amount and that custom_id
+      // binds the order to this user+sku, so a swapped sku is rejected there.
+      const ret = `${cfg.publicOrigin}/blocklings/gold-return.html?sku=${encodeURIComponent(sku)}`;
+      const order = await paypal.createOrder({
+        userId: u.id, sku, usd: def.usd,
+        returnUrl: ret, cancelUrl: `${ret}&cancel=1`,
+      });
+      return json(res, 200, { orderId: order.id, approveUrl: order.approveUrl });
+    } catch { return json(res, 502, { error: 'Could not start PayPal checkout. Please try again.' }); }
+  }));
+
+  on('POST', /^\/account\/api\/game\/gold\/paypal\/capture$/, authed(async (req, res, { u }) => {
+    if (paypal.disabled) return json(res, 503, { error: 'PayPal is not configured.' });
+    const b = await readJson(req, 4 * 1024).catch(() => ({}));
+    const sku = String(b.sku || '');
+    const orderId = String(b.orderId || '');
+    const def = GOLD_SKUS[sku];
+    if (!def) return json(res, 400, { ok: false, error: 'Unknown SKU.' });
+    if (!orderId || orderId.length > 64) return json(res, 400, { ok: false, error: 'Missing order id.' });
+
+    let cap;
+    try { cap = await paypal.captureOrder(orderId); }
+    catch { return json(res, 502, { ok: false, error: 'PayPal unreachable — nothing was credited. Please retry.' }); }
+    if (!cap || !cap.ok || !cap.captureId)
+      return json(res, 400, { ok: false, error: `PayPal did not complete the payment (${cap ? cap.status || cap.error : 'unknown'}).` });
+    // Re-verify the money server-side: exact price, USD, and bound to THIS user+sku.
+    if (cap.currency !== 'USD' || Number(cap.amount) !== Number(def.usd.toFixed(2)))
+      return json(res, 400, { ok: false, error: 'Captured amount does not match the SKU.' });
+    if (cap.custom && cap.custom !== `${u.id}:${sku}`)
+      return json(res, 400, { ok: false, error: 'This payment belongs to a different order.' });
+
+    const out = await store.txn((t) => {
+      const x = t.get('users', u.id);
+      if (!x) throw new Error('user gone');
+      const key = `paypal:${cap.captureId}`;
+      if (t.get('goldTxns', key)) return { already: true };
+      t.set('goldTxns', key, { uid: u.id, sku, gold: def.gold, env: cfg.paypalEnv, at: now() });
+      x.goldBalance = goldOf(x) + def.gold;
+      t.set('users', u.id, x);
+      return { balance: x.goldBalance, credited: def.gold };
+    }).catch(() => null);
+    if (!out) return json(res, 401, { error: 'auth' });
+    if (out.already) return json(res, 409, { ok: false, error: 'This payment was already credited.' });
+    return json(res, 200, { ok: true, credited: out.credited, balance: out.balance });
+  }));
+
   // Debit GOLD (marketplace/vendor purchases). Atomic read-modify-write under the store
   // queue; rejects non-positive / non-integer amounts and never lets the balance go negative.
   on('POST', /^\/account\/api\/game\/gold\/spend$/, authed(async (req, res, { u }) => {
@@ -410,6 +490,43 @@ export function createApp(overrides = {}) {
     if (!result.ok) return json(res, 400, { error: 'Insufficient GOLD.', balance: result.balance });
     return json(res, 200, { ok: true, balance: result.balance });
   }));
+
+  // --- Blocklings skill leaderboard -----------------------------------------------------------
+  // Players report their skill levels (signed-in); the public board ranks everyone by a chosen
+  // skill or by total level. Levels are clamped 1..999 and the name is sanitized server-side, so
+  // nothing a client sends can poison the board beyond a plausible score + a clean display name.
+  const BLK_SKILLS = ['attack','defense','archery','magic','vitality','mining','woodcutting','fishing','farming','herbalism','blacksmithing','cooking','alchemy','tailoring'];
+
+  on('POST', /^\/account\/api\/game\/blocklings\/skills$/, authed(async (req, res, { u }) => {
+    const b = await readJson(req, 8 * 1024).catch(() => ({}));
+    const raw = b && typeof b.skills === 'object' && b.skills ? b.skills : {};
+    const skills = {};
+    let total = 0;
+    for (const s of BLK_SKILLS) {
+      const lv = Math.max(1, Math.min(999, Math.floor(Number(raw[s]) || 1)));
+      skills[s] = lv; total += lv;
+    }
+    const name = (String(b.name || 'Adventurer').replace(/[^\w \-]/g, '').trim().slice(0, 18)) || 'Adventurer';
+    await store.update('users', u.id, (x) => { if (!x) return undefined; x.blocklingsSkills = { name, skills, total, at: now() }; return x; });
+    return json(res, 200, { ok: true, total });
+  }));
+
+  on('GET', /^\/account\/api\/game\/blocklings\/leaderboard$/, (req, res) => {
+    res.setHeader('access-control-allow-origin', '*');
+    let metric = 'total';
+    try { metric = new URL(req.url, 'http://x').searchParams.get('metric') || 'total'; } catch {}
+    if (metric !== 'total' && !BLK_SKILLS.includes(metric)) metric = 'total';
+    const rows = [];
+    for (const x of store.all('users')) {
+      const bs = x && x.blocklingsSkills;
+      if (!bs || !bs.skills) continue;
+      const value = metric === 'total' ? bs.total : (bs.skills[metric] || 1);
+      rows.push({ name: bs.name || 'Adventurer', value, total: bs.total, skills: bs.skills });
+    }
+    rows.sort((a, b) => b.value - a.value || b.total - a.total);
+    rows.splice(100);
+    return json(res, 200, { metric, skills: BLK_SKILLS, players: rows, generatedAt: now() });
+  });
 
   // --- Blocklings player marketplace (listings + gold/crypto settlement) ----------------------
   // GOLD buys settle atomically server-side (one store.txn: debit buyer, credit seller, flip
@@ -1677,6 +1794,26 @@ export function createApp(overrides = {}) {
   const server = http.createServer(async (req, res) => {
     const base = securityHeaders(cfg);
     for (const [k, v] of Object.entries(base)) res.setHeader(k, v);
+    // First-party CORS: the game (blocklings.blockle.org) and other *.blockle.org
+    // surfaces call this API cross-origin. Echo the specific origin (never *) so
+    // credentialed requests work; bearer-auth routes need this to be reachable.
+    const reqOrigin = req.headers.origin;
+    if (firstPartyOrigin(reqOrigin, cfg)) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      const vary = res.getHeader('Vary');
+      res.setHeader('Vary', vary ? `${vary}, Origin` : 'Origin');
+      if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token, X-Blockle-Client');
+        res.setHeader('Access-Control-Max-Age', '600');
+        res.writeHead(204);
+        return res.end();
+      }
+    } else if (req.method === 'OPTIONS') {
+      res.writeHead(403);
+      return res.end();
+    }
     if (cfg.killed) return json(res, 503, { error: 'maintenance' });
     let url;
     try { url = new URL(req.url, cfg.publicOrigin); } catch { return json(res, 400, { error: 'bad url' }); }

@@ -24,6 +24,7 @@ import {
 import { open, seal, type SealedVault } from './crypto'
 import {
   chainSnapshots,
+  ethPrivateKey,
   lockChains,
   mintOnBlock,
   mintOnEthereumUnsupported,
@@ -31,7 +32,8 @@ import {
   moonpayWidgetUrl,
   primeAccounts,
   sendOnEthereum,
-  sendOnSolana
+  sendOnSolana,
+  solPrivateKey
 } from './multichain'
 import { addressFromPubkey, buildTransfer, keygen, keypairMatches } from './wasm'
 
@@ -375,6 +377,22 @@ export const wallet: WalletAPI2 = {
       return await moonpayWidgetUrl(kind, chain)
     } catch {
       return null // no widget rather than a broken/fake one
+    }
+  },
+
+  // BACKUP ONLY: the keys are already decrypted in memory while unlocked; this
+  // just surfaces them so the user can save them off-device. Nothing is sent,
+  // logged, or persisted. Locked => null.
+  async revealKeys(): Promise<{ blockle: string; ethereum: string; solana: string } | null> {
+    if (!session) return null
+    const [ethereum, solana] = await Promise.all([
+      ethPrivateKey(session.secret),
+      solPrivateKey(session.secret)
+    ])
+    return {
+      blockle: `${BACKUP_PREFIX}:${session.secret}:${session.public}`,
+      ethereum,
+      solana
     }
   }
 }

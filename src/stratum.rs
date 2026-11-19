@@ -150,13 +150,15 @@ impl Engine {
             .to_string()
     }
 
-    /// Starting share difficulty for a new miner: just below the chain's
-    /// network difficulty (so test chains and CPU miners get instant shares)
-    /// but never above 2^12 to start.
+    /// Starting share difficulty for a new miner: a couple of doublings below
+    /// the chain's network difficulty (so test chains and CPU miners get
+    /// instant shares), capped so ASICs on high-difficulty scrypt/sha256 chains
+    /// (Dogecoin, Litecoin…) START near a sane difficulty instead of being
+    /// pinned at 4096 and crawling up one step per retarget. 2^24 ≈ 16.7M.
     fn initial_diff_k(&self) -> i32 {
         let Some(job) = self.current_job.lock().unwrap().clone() else { return 0 };
         let net = btc::network_difficulty(&job.block_target);
-        (net.log2().floor() as i32).clamp(-40, 12)
+        ((net.log2().floor() as i32) - 2).clamp(-40, 24)
     }
 
     fn broadcast_job(&self, job: &Job) {
@@ -429,12 +431,19 @@ impl Engine {
         if elapsed < RETARGET_SECS {
             return;
         }
-        let expected = (elapsed / TARGET_SHARE_SECS).max(1) as u32;
+        let expected = (elapsed / TARGET_SHARE_SECS).max(1) as f64;
         let old = s.diff_k;
-        if s.window_shares > expected * 2 {
-            s.diff_k += 1;
-        } else if s.window_shares * 2 < expected && s.diff_k > -40 {
-            s.diff_k -= 1;
+        // Proportional retarget: jump straight toward the right difficulty from
+        // the observed share rate (log2 of the over/under-shoot) instead of a
+        // single doubling per window — so a fast ASIC reaches 2^18..2^20 in one
+        // retarget, not twenty. Capped to 2^32 up / 2^-40 down.
+        let ratio = s.window_shares as f64 / expected;
+        if ratio > 1.5 {
+            let step = (ratio.log2().round() as i32).max(1);
+            s.diff_k = (s.diff_k + step).min(32);
+        } else if ratio < 0.5 {
+            let step = (ratio.log2().round() as i32).min(-1);
+            s.diff_k = (s.diff_k + step).max(-40);
         }
         s.window_start = Instant::now();
         s.window_shares = 0;

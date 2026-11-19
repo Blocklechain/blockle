@@ -68,31 +68,41 @@ const ROUTES: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
 ]
 
 /**
- * ARTERIALS — 8 compass highways from the heart's edge out toward the coast
- * (~±680). Stamped EAGERLY at boot (before any zone streams in) so the
- * roads exist world-wide from frame one; streamGroundPass renders the
+ * ARTERIALS — compass highways from the heart's edge all the way out to the
+ * far coast (~±2300). Stamped EAGERLY at boot (before any zone streams in) so
+ * the roads exist world-wide from frame one; streamGroundPass renders the
  * pre-stamped cells as cobble when each zone's ground streams in.
  *
+ * The 4 cardinal roads cross the whole continent to the new coast; the 4
+ * diagonals strike out past the old ±720 ring toward the corner approaches.
  * NE/NW leave from the heart's east/west edges at z=-100 (south of the
  * preserved ocean bays); the diagonals leave from the heart corners.
  */
 const ARTERIALS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
-  // N — continues the Capital road past the north rim
-  [[6, -240], [14, -300], [-6, -370], [10, -440], [-4, -520], [8, -600], [0, -680]],
-  // NE — skirts the NE bay, then winds to the icy corner
-  [[240, -100], [310, -160], [370, -240], [430, -320], [500, -410], [570, -500], [640, -600], [660, -660]],
-  // E — out of Greenwood toward the sunrise coast
-  [[240, 8], [300, -6], [370, 10], [440, -8], [520, 6], [600, -4], [680, 2]],
+  // N — continues the Capital road clear to the north coast
+  [[6, -240], [14, -400], [-6, -600], [10, -820], [-8, -1040], [14, -1280],
+   [-6, -1520], [12, -1760], [-4, -2000], [8, -2240]],
+  // NE — skirts the NE bay, then runs to the icy corner approaches
+  [[240, -100], [370, -240], [500, -410], [660, -620], [840, -840], [1040, -1060],
+   [1260, -1280], [1500, -1520], [1760, -1760], [2040, -2020]],
+  // E — out of Greenwood all the way to the sunrise coast
+  [[240, 8], [400, -6], [600, 12], [820, -10], [1040, 10], [1280, -8], [1520, 10],
+   [1760, -6], [2000, 8], [2260, -4]],
   // SE — from the Forgotten corner to the far shore
-  [[236, 236], [300, 290], [360, 360], [420, 430], [500, 500], [570, 580], [650, 650]],
-  // S — straight(ish) run south between the dunes
-  [[1, 240], [-10, 300], [8, 370], [-6, 440], [12, 520], [-2, 600], [4, 680]],
-  // SW — out of the Ashen corner
-  [[-236, 236], [-300, 290], [-360, 360], [-420, 430], [-500, 500], [-570, 580], [-650, 650]],
-  // W — past Ironhold into the far ranges
-  [[-240, 6], [-300, 16], [-370, -4], [-440, 10], [-520, -8], [-600, 6], [-680, 0]],
+  [[236, 236], [360, 360], [500, 500], [680, 680], [880, 880], [1080, 1080],
+   [1300, 1300], [1540, 1540], [1780, 1780], [2040, 2040]],
+  // S — straight(ish) run south between the dunes to the south coast
+  [[1, 240], [-10, 400], [8, 600], [-8, 820], [12, 1040], [-6, 1280], [10, 1520],
+   [-4, 1760], [8, 2000], [-2, 2260]],
+  // SW — out of the Ashen corner to the swamp-coast edge
+  [[-236, 236], [-360, 360], [-500, 500], [-680, 680], [-880, 880], [-1080, 1080],
+   [-1300, 1300], [-1540, 1540], [-1780, 1780], [-2040, 2040]],
+  // W — past Ironhold and the far ranges to the western cliffs
+  [[-240, 6], [-400, 16], [-600, -4], [-820, 10], [-1040, -8], [-1280, 8],
+   [-1520, -6], [-1760, 10], [-2000, -4], [-2260, 6]],
   // NW — skirts the NW bay toward the glacier coast
-  [[-240, -100], [-310, -160], [-370, -240], [-430, -320], [-500, -410], [-570, -500], [-640, -600], [-660, -660]]
+  [[-240, -100], [-370, -240], [-500, -410], [-660, -620], [-840, -840], [-1040, -1060],
+   [-1260, -1280], [-1500, -1520], [-1760, -1760], [-2040, -2020]]
 ]
 
 /** Stamp every continental road + arterial into the surface map. */

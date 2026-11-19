@@ -32,15 +32,16 @@
 <div class="wrap">
   <span class="eyebrow">Network upgrade</span>
   <h1>Cross-Algorithm Difficulty Coupling</h1>
-  <p class="cd" id="cd">Activates at block 53,000.</p>
-  <p>Blockle is merge-mined across ten algorithm lanes. Today each lane sets its own
-  difficulty independently, which means every lane earns the same share of blocks
-  no matter how much real energy backs it — an ultra-efficient ASIC lane is rewarded
-  the same as a power-hungry one. At <b>block 53,000</b> that changes.</p>
+  <p class="cd" id="cd">Live since block 53,000.</p>
+  <p>Blockle is merge-mined across ten algorithm lanes. Each lane used to set its own
+  difficulty independently, which meant every lane earned the same share of blocks
+  no matter how much real energy backed it — an ultra-efficient ASIC lane was rewarded
+  the same as a power-hungry one. <b>Block 53,000 changed that</b>, and the rule has been
+  in force ever since.</p>
 
-  <h2>What changes</h2>
-  <p>All lanes are retargeted from <b>one shared base difficulty</b>, scaled per lane by a
-  benchmark-measured <b>energy-per-hash</b> coefficient. Each lane must then expend the
+  <h2>What changed</h2>
+  <p>All lanes are now retargeted from <b>one shared base difficulty</b>, scaled per lane by a
+  benchmark-measured <b>energy-per-hash</b> coefficient. Each lane must expend the
   same <b>real power</b> per block, so block production — and therefore reward and
   security weight — tracks actual energy draw rather than raw hashrate. Fork-choice work
   is energy-weighted too, so the heaviest chain is the one backed by the most power.</p>
@@ -51,28 +52,29 @@
 
   <div class="card">
     <h3>Node operators</h3>
-    <p>Upgrade before block 53,000 — a node without this rule will reject post-fork
-    blocks and split off the network.</p>
+    <p><b>This is already active.</b> A node without this rule rejects post-fork blocks and
+    is split off the network — if yours has not been upgraded, it is not following the main
+    chain.</p>
     <pre><code>git pull
 cargo build --release
 # restart your node service, e.g.
 systemctl restart blockle-node</code></pre>
     <p>Confirm the rule is present: <code>blockle-cli getblockchaininfo</code> should include
-    <code>cross_algo_activation_height: 53000</code> and a live
-    <code>cross_algo_blocks_remaining</code>.</p>
+    <code>cross_algo_activation_height: 53000</code>. Check you are on the live chain by
+    comparing your tip against the <a href="/explorer">explorer</a>.</p>
   </div>
 
   <div class="card">
     <h3>Miners &amp; pools</h3>
     <p>Point your miner/pool at an upgraded node. <code>getblocktemplate</code> returns the
     coupled difficulty bits automatically once you are on the new build — no pool config
-    maths required. Payout addresses are unchanged. After the fork, your returns follow your
+    maths required. Payout addresses are unchanged. Returns now follow your
     share of real network power draw, not raw hashrate.</p>
   </div>
 
   <div class="card">
     <h3>Wallet users</h3>
-    <p>Nothing changes for your coins — addresses, keys and balances are unaffected. Just
+    <p>Nothing changed for your coins — addresses, keys and balances were unaffected. Just
     update to the latest Blockle wallet when prompted so you stay on the upgraded network.
     <a href="https://blockle.org/#downloads">Get the latest wallet &rarr;</a></p>
   </div>

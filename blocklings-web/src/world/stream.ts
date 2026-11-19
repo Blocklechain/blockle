@@ -50,6 +50,7 @@ import {
 import { makeRng } from './rng'
 import * as P from './palette'
 import { BIOME_GROUND, CRYSTAL_GLOW, EMBER, FOREST_MOSS, SWAMP_MURK, isLand } from './kit'
+import { heightAt } from './height'
 import { regionAt as heartRegionAt } from '../ids'
 import { ZONES, type ZoneDef } from './zones/registry'
 
@@ -116,7 +117,8 @@ const KIND_OPTS: Record<
   roof: { cast: true, receive: true },
   leaf: { cast: true, receive: true },
   misc: { cast: true, receive: true },
-  window: { emissive: 0xffa94d, emissiveIntensity: 0.85, cast: false, receive: false }
+  window: { emissive: 0xffa94d, emissiveIntensity: 0.85, cast: false, receive: false },
+  castleRoof: { cast: true, receive: true } // streamed zones never use it (no castle)
 }
 
 const KINDS = Object.keys(KIND_OPTS) as BatchKind[]
@@ -428,7 +430,8 @@ export class ZoneStream {
           roof: new VoxelBatch(),
           window: new VoxelBatch(),
           leaf: new VoxelBatch(),
-          misc: new VoxelBatch()
+          misc: new VoxelBatch(),
+          castleRoof: new VoxelBatch()
         }
       }
       rec.ctx = ctx
@@ -441,7 +444,11 @@ export class ZoneStream {
     for (const kind of KINDS) {
       this.queue.push(() => {
         if (rec.cancelled || !rec.ctx) return
-        const mesh = rec.ctx.batches[kind].bakeInto(sharedGeo, sharedMats[kind])
+        // Lift the zone's ground cubes + every prop baked on them onto the
+        // heightfield in one shot (see world/height.ts).
+        const mesh = rec.ctx.batches[kind].bakeInto(sharedGeo, sharedMats[kind], {
+          offsetY: heightAt
+        })
         if (mesh) {
           mesh.castShadow = KIND_OPTS[kind].cast
           mesh.receiveShadow = KIND_OPTS[kind].receive

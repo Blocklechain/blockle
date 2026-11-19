@@ -17,9 +17,14 @@ import type { ChainId, ItemInstance, ListingFilters, PetInstance } from '../type
 import { petDef } from '../ids'
 import type { MarketInternal, WireListing } from './index'
 import { CardSpinner, placeholderMesh } from './viewer'
+import { RARITY_COLORS } from '../inventory/defs'
 import './market.css'
 
 const CHAIN_LABEL: Record<ChainId, string> = { blockle: 'BLOCK', ethereum: 'ETH', solana: 'SOL' }
+
+// iOS App Store build: players VIEW crypto listings but OFFER none of the crypto
+// trading (GOLD only) — crypto stays on the web. See src/platform.ts (lazy gate).
+import { isIosApp, openCryptoWeb } from '../platform'
 
 /** Flat market-stall icon (custom SVG — no emoji, per product rule). */
 const STALL_SVG =
@@ -259,16 +264,29 @@ export function createMarketUI(mk: MarketInternal): MarketUI {
     let okGo: boolean
     if (typeof w.price.gold === 'number') {
       okGo = await confirmBox([`Buy ${name} for ${w.price.gold.toLocaleString()} GOLD?`, 'GOLD settles instantly and is non-refundable.'], 'Buy')
+    } else if (isIosApp()) {
+      // iOS build: crypto trading isn't offered here. Point to the web (same account).
+      const go = await confirmBox(
+        [
+          'Crypto purchases aren’t available in the app.',
+          'To buy this with crypto, sign in to your SAME account at blocklings.blockle.org in your browser.'
+        ],
+        'Open in browser'
+      )
+      if (go) openCryptoWeb()
+      return
     } else {
       const chain = (w.price.chain as ChainId) ?? 'blockle'
+      const price = w.price.amount ?? 0
+      const total = Math.ceil(price * 1.01 * 1e8) / 1e8
       okGo = await confirmBox(
         [
-          `Buy ${name} for ${w.price.amount} ${CHAIN_LABEL[chain]}?`,
-          `This sends a REAL, wallet-signed payment on ${chain} to the seller's address:`,
-          w.price.address ?? '',
+          `Buy ${name} for ${price} ${CHAIN_LABEL[chain]} + 1% fee = ${total} ${CHAIN_LABEL[chain]}?`,
+          `TWO REAL wallet-signed payments on ${chain}: 99% to the seller and a 2% marketplace fee to the treasury (no fee, no sale).`,
+          `Seller: ${w.price.address ?? ''}`,
           chain === 'blockle'
-            ? 'The sale completes once the payment is verified on-chain.'
-            : 'The sale completes as "payment attested" — keep your tx id.'
+            ? 'The sale completes once both payments are verified on-chain.'
+            : 'The sale completes as "payment attested" — keep your tx ids.'
         ],
         'Pay & buy'
       )
@@ -338,8 +356,20 @@ export function createMarketUI(mk: MarketInternal): MarketUI {
     const wrap = el('div', 'mk-sell')
     body.appendChild(wrap)
 
-    const pick = el('div', 'mk-sell-pick')
-    wrap.appendChild(el('div', 'mk-sub', 'Pick goods to sell'))
+    // Picker reads like the inventory grid: a cell per sellable stack/NFT/pet,
+    // rarity-tinted, tap to select (the slight difference from the bag: tapping
+    // earmarks it for sale + opens the price form rather than the item detail).
+    const pick = el('div', 'mk-sell-grid')
+    wrap.appendChild(el('div', 'mk-sub', 'Select from your inventory to sell'))
+    if (isIosApp()) {
+      const note = el('div', 'mk-note')
+      note.textContent = 'Listings here are priced in GOLD. Want to sell for crypto? Sign in to your same account at blocklings.blockle.org in a browser.'
+      const link = btn('mk-b mk-b-gold', 'Open in browser')
+      link.style.marginTop = '6px'
+      link.addEventListener('click', openCryptoWeb)
+      wrap.appendChild(note)
+      wrap.appendChild(link)
+    }
     wrap.appendChild(pick)
 
     const inv = mk.inventory()
@@ -354,10 +384,26 @@ export function createMarketUI(mk: MarketInternal): MarketUI {
 
     function choose(goods: { item: ItemInstance } | { pet: PetInstance }, elBtn: HTMLElement): void {
       chosen = goods
-      chosenEl?.classList.remove('mk-chip-on')
+      chosenEl?.classList.remove('mk-cell-on')
       chosenEl = elBtn
-      elBtn.classList.add('mk-chip-on')
+      elBtn.classList.add('mk-cell-on')
       buildForm()
+    }
+
+    /** Inventory-style grid cell: rarity-tinted name, a sub line, optional qty badge. */
+    function cell(
+      name: string, sub: string, rarity: number | null, extra: string, qty: number | null
+    ): HTMLButtonElement {
+      const c = btn(`mk-cell${extra ? ' ' + extra : ''}`, '')
+      c.textContent = ''
+      const color = rarity != null ? RARITY_COLORS[rarity] : undefined
+      if (color) c.style.borderColor = color
+      const nm = el('div', 'mk-cell-name', name)
+      if (color) nm.style.color = color
+      c.appendChild(nm)
+      if (sub) c.appendChild(el('div', 'mk-cell-sub', sub))
+      if (qty != null && qty > 1) c.appendChild(el('span', 'mk-cell-qty', `×${qty}`))
+      return c
     }
 
     if (!stacks.length && !petList.length && !minted.length) {
@@ -368,21 +414,21 @@ export function createMarketUI(mk: MarketInternal): MarketUI {
       if (!inv || inv.count(m.id) < 1) continue // escrow goes through the bag
       const d = mk.def(m.id)
       const chains = (m.mints ?? []).map((x) => CHAIN_LABEL[x.chain]).join('/')
-      const chip = btn('mk-chip', `${d?.name ?? m.id} · NFT${chains ? ' (' + chains + ')' : ''}`)
-      chip.addEventListener('click', () => choose({ item: m }, chip))
-      pick.appendChild(chip)
+      const c = cell(d?.name ?? m.id, `NFT${chains ? ' · ' + chains : ''}`, d?.rarity ?? null, 'mk-cell-nft', null)
+      c.addEventListener('click', () => choose({ item: m }, c))
+      pick.appendChild(c)
     }
     for (const s of stacks) {
       const d = mk.def(s.id)
-      const chip = btn('mk-chip', `${d?.name ?? s.id} ×${s.qty}${equipped.has(s.id) ? ' (equipped)' : ''}`)
-      chip.addEventListener('click', () => choose({ item: { id: s.id } }, chip))
-      pick.appendChild(chip)
+      const c = cell(d?.name ?? s.id, equipped.has(s.id) ? 'equipped' : '', d?.rarity ?? null, '', s.qty)
+      c.addEventListener('click', () => choose({ item: { id: s.id } }, c))
+      pick.appendChild(c)
     }
     for (const p of petList) {
       const d = petDef(p.petId)
-      const chip = btn('mk-chip mk-chip-pet', p.nickname || d?.name || p.petId)
-      chip.addEventListener('click', () => choose({ pet: p }, chip))
-      pick.appendChild(chip)
+      const c = cell(p.nickname || d?.name || p.petId, 'Pet', null, 'mk-cell-pet', null)
+      c.addEventListener('click', () => choose({ pet: p }, c))
+      pick.appendChild(c)
     }
     wrap.appendChild(form)
 
@@ -399,12 +445,15 @@ export function createMarketUI(mk: MarketInternal): MarketUI {
       goldOpt.value = 'gold'
       goldOpt.textContent = 'GOLD'
       railSel.appendChild(goldOpt)
-      for (const c of ['blockle', 'ethereum', 'solana'] as ChainId[]) {
-        const o = document.createElement('option')
-        o.value = c
-        o.textContent = CHAIN_LABEL[c] + ' (crypto)'
-        o.disabled = !inst.uid || !mints.some((m) => m.chain === c)
-        railSel.appendChild(o)
+      // iOS build: GOLD-only pricing (no crypto listings offered here).
+      if (!isIosApp()) {
+        for (const c of ['blockle', 'ethereum', 'solana'] as ChainId[]) {
+          const o = document.createElement('option')
+          o.value = c
+          o.textContent = CHAIN_LABEL[c] + ' (crypto)'
+          o.disabled = !inst.uid || !mints.some((m) => m.chain === c)
+          railSel.appendChild(o)
+        }
       }
       const amount = document.createElement('input')
       amount.className = 'mk-input'

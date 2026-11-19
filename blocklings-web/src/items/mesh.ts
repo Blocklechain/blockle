@@ -12,6 +12,7 @@
 import * as THREE from 'three'
 import type { ItemDef } from '../types'
 import { MATERIALS } from '../ids'
+import { mountSpec, type MountFeature } from './mounts'
 import {
   TIER_PALETTES, tierOpts, faintGlow, type TierPalette, type VoxOpts,
   WOOD, WOOD_DARK, WOOD_LIGHT, LEATHER, STRING, STONE, STONE_DARK, LEAF, LEAF_DARK,
@@ -66,7 +67,10 @@ function tierOf(id: string): number {
 }
 
 function pal(t: number): TierPalette {
-  return TIER_PALETTES[Math.min(Math.max(t, 0), 5)]!
+  // Clamp across the FULL ladder (now 12 tiers), not just the first six, so the
+  // late-game tiers (obsidian..runic) resolve to their own palettes instead of
+  // collapsing onto mythic.
+  return TIER_PALETTES[Math.min(Math.max(t, 0), TIER_PALETTES.length - 1)]!
 }
 
 // ---------------------------------------------------------------------------
@@ -151,12 +155,18 @@ function buildHelm(t: number): THREE.Group {
   const g = group()
   const p = pal(t)
   const glow = tierOpts(p)
-  box(g, 0, 0.12, 0, 0.46, 0.24, 0.46, p.main, glow) // skull band
-  box(g, 0, 0.3, 0, 0.38, 0.14, 0.38, p.light, glow) // dome
-  box(g, 0, 0.1, 0.24, 0.08, 0.2, 0.04, p.dark) // nose guard
-  box(g, 0, 0.03, 0, 0.48, 0.06, 0.48, p.dark, glow) // brim
-  box(g, 0, 0.44, -0.04, 0.08, 0.14, 0.26, p.accent) // plume crest
-  box(g, 0, 0.34, -0.26, 0.08, 0.12, 0.14, p.accent) // plume tail
+  // Sized to FULLY wrap the big 0.72 voxel head: the band drops to the brow
+  // and overhangs the head on every side, with cheek guards framing the face —
+  // not a skullcap perched on top.
+  box(g, 0, 0.06, 0, 0.56, 0.36, 0.56, p.main, glow) // skull band (brow -> crown)
+  box(g, 0, 0.28, 0, 0.48, 0.16, 0.48, p.light, glow) // dome
+  for (const s of [1, -1]) {
+    box(g, s * 0.27, -0.04, 0.12, 0.06, 0.28, 0.34, p.main, glow) // cheek guard
+  }
+  box(g, 0, -0.02, 0.3, 0.09, 0.3, 0.05, p.dark) // nose guard
+  box(g, 0, -0.1, 0, 0.58, 0.07, 0.58, p.dark, glow) // brim
+  box(g, 0, 0.44, -0.04, 0.09, 0.18, 0.3, p.accent) // plume crest
+  box(g, 0, 0.3, -0.32, 0.09, 0.14, 0.18, p.accent) // plume tail
   return g
 }
 
@@ -164,10 +174,12 @@ function buildChest(t: number): THREE.Group {
   const g = group()
   const p = pal(t)
   const glow = tierOpts(p)
-  box(g, 0, 0.32, 0, 0.5, 0.5, 0.3, p.main, glow) // torso
-  box(g, 0, 0.44, 0.16, 0.3, 0.2, 0.02, p.light, glow) // chest shine
-  box(g, 0.3, 0.54, 0, 0.16, 0.12, 0.28, p.dark, glow) // pauldron R
-  box(g, -0.3, 0.54, 0, 0.16, 0.12, 0.28, p.dark, glow) // pauldron L
+  // Torso plate: sized to FULLY wrap the character torso (incl. the broad
+  // frame) from the belt line up over the shoulders — no tunic poking out.
+  box(g, 0, 0.3, 0, 0.58, 0.64, 0.38, p.main, glow) // torso
+  box(g, 0, 0.46, 0.2, 0.34, 0.24, 0.02, p.light, glow) // chest shine
+  box(g, 0.32, 0.56, 0, 0.18, 0.14, 0.32, p.dark, glow) // pauldron R
+  box(g, -0.32, 0.56, 0, 0.18, 0.14, 0.32, p.dark, glow) // pauldron L
   box(g, 0, 0.6, 0, 0.3, 0.06, 0.2, p.dark) // collar
   box(g, 0, 0.08, 0, 0.52, 0.09, 0.32, LEATHER) // belt
   box(g, 0, 0.08, 0.17, 0.09, 0.09, 0.02, p.accent) // buckle
@@ -180,11 +192,588 @@ function buildBoots(t: number): THREE.Group {
   const glow = tierOpts(p)
   for (const s of [1, -1]) {
     const x = s * 0.15
-    box(g, x, 0.03, 0.05, 0.19, 0.04, 0.36, p.accent) // sole
-    box(g, x, 0.1, 0.09, 0.17, 0.11, 0.3, p.dark, glow) // foot
-    box(g, x, 0.22, -0.02, 0.16, 0.18, 0.2, p.main, glow) // shaft
-    box(g, x, 0.33, -0.02, 0.18, 0.06, 0.22, p.light, glow) // cuff
+    box(g, x, 0.03, 0.05, 0.2, 0.04, 0.38, p.accent) // sole
+    box(g, x, 0.11, 0.09, 0.18, 0.12, 0.32, p.dark, glow) // foot
+    // Full greave: wraps the shin + lower thigh up to the hip (not just the ankle).
+    box(g, x, 0.27, -0.01, 0.21, 0.4, 0.24, p.main, glow) // greave
+    box(g, x, 0.46, -0.01, 0.23, 0.08, 0.26, p.light, glow) // thigh cuff (under hip)
+    box(g, x, 0.3, 0.1, 0.05, 0.22, 0.03, p.light, glow) // shin shine
   }
+  return g
+}
+
+// ---------------------------------------------------------------------------
+// Ranger set — light leather (helm=hood, chest=leathers, boots=treads).
+// Leather base, tier metal only in studs/trim so it reads "light" not "plate".
+// ---------------------------------------------------------------------------
+
+const LEATHER_DARK = 0x5a4229
+
+function buildHood(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.14, -0.02, 0.44, 0.3, 0.42, LEATHER) // hood shell
+  box(g, 0, 0.32, -0.06, 0.32, 0.16, 0.34, LEATHER_DARK) // crown fold
+  box(g, 0, 0.18, 0.21, 0.3, 0.3, 0.05, 0x1c1a18) // shadowed face opening
+  box(g, 0, 0.04, 0, 0.46, 0.06, 0.44, p.dark, glow) // tier trim band
+  box(g, 0, 0.1, 0.22, 0.07, 0.07, 0.03, p.accent, glow) // brow stud
+  box(g, 0, 0.38, -0.18, 0.08, 0.1, 0.12, LEATHER_DARK) // droop tip
+  return g
+}
+
+function buildLeathers(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.56, 0.62, 0.36, LEATHER) // jerkin torso (wraps the full body)
+  box(g, 0, 0.44, 0.145, 0.28, 0.26, 0.02, LEATHER_DARK) // lace panel
+  box(g, 0.26, 0.5, 0, 0.12, 0.3, 0.26, LEATHER_DARK) // shoulder strap R
+  box(g, -0.26, 0.5, 0, 0.12, 0.3, 0.26, LEATHER_DARK) // shoulder strap L
+  box(g, 0.1, 0.46, 0.15, 0.015, 0.22, 0.01, STRING) // lacing R
+  box(g, -0.1, 0.46, 0.15, 0.015, 0.22, 0.01, STRING) // lacing L
+  box(g, 0, 0.1, 0, 0.5, 0.08, 0.3, p.dark, glow) // studded belt (tier)
+  box(g, 0, 0.1, 0.16, 0.08, 0.08, 0.02, p.accent, glow) // buckle
+  box(g, 0.18, 0.5, 0.14, 0.04, 0.04, 0.02, p.accent, glow) // chest stud R
+  box(g, -0.18, 0.5, 0.14, 0.04, 0.04, 0.02, p.accent, glow) // chest stud L
+  return g
+}
+
+function buildTreads(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.17, 0.04, 0.34, 0x3a2a1a) // sole
+    box(g, x, 0.11, 0.08, 0.15, 0.12, 0.28, LEATHER) // foot
+    box(g, x, 0.24, -0.02, 0.14, 0.16, 0.18, LEATHER_DARK) // ankle
+    box(g, x, 0.31, -0.01, 0.15, 0.05, 0.2, p.dark, glow) // tier cuff
+    box(g, x, 0.2, 0.13, 0.025, 0.1, 0.02, STRING) // lace
+  }
+  return g
+}
+
+// ---------------------------------------------------------------------------
+// Mage set — cloth robes (helm=mhat, chest=robe, boots=slippers).
+// Cloth IS the tier color (p.main) so robes clearly read copper..mythic.
+// ---------------------------------------------------------------------------
+
+function buildMhat(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.04, 0, 0.58, 0.05, 0.58, p.main, glow) // wide brim
+  box(g, 0, 0.1, 0, 0.38, 0.05, 0.38, p.dark) // hat band
+  box(g, 0, 0.1, 0.19, 0.06, 0.05, 0.02, p.accent, glow) // band jewel
+  box(g, 0, 0.2, -0.01, 0.32, 0.2, 0.32, p.main, glow) // lower cone
+  box(g, 0, 0.37, -0.03, 0.2, 0.18, 0.2, p.main, glow) // mid cone
+  box(g, 0, 0.52, -0.06, 0.11, 0.18, 0.11, p.main, glow) // upper cone
+  box(g, 0, 0.64, -0.1, 0.05, 0.1, 0.05, p.accent, glow) // bent tip
+  return g
+}
+
+function buildRobe(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.36, 0, 0.46, 0.52, 0.26, p.main, glow) // robe torso
+  box(g, 0, 0.12, 0, 0.52, 0.22, 0.3, p.main, glow) // skirt flare
+  box(g, 0, 0.42, 0.14, 0.1, 0.42, 0.02, p.light, glow) // front trim stripe
+  box(g, 0.27, 0.5, 0, 0.12, 0.16, 0.27, p.dark, glow) // shoulder R
+  box(g, -0.27, 0.5, 0, 0.12, 0.16, 0.27, p.dark, glow) // shoulder L
+  box(g, 0, 0.6, 0, 0.3, 0.08, 0.22, p.dark) // collar
+  box(g, 0, 0.2, 0, 0.5, 0.06, 0.3, p.accent, glow) // mana sash
+  box(g, 0, 0.2, 0.16, 0.06, 0.06, 0.02, p.light, glow) // sash gem
+  return g
+}
+
+function buildSlippers(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.05, 0.03, 0.15, 0.1, 0.32, p.main, glow) // slipper body
+    box(g, x, 0.04, 0.21, 0.12, 0.07, 0.1, p.main, glow) // toe
+    box(g, x, 0.11, 0.27, 0.05, 0.08, 0.05, p.accent, glow) // curled tip
+    box(g, x, 0.14, -0.05, 0.13, 0.08, 0.14, p.dark) // ankle cuff
+  }
+  return g
+}
+
+// ===========================================================================
+// NEW ARMOR FAMILIES (content-phase foundation).
+//
+// Seven extra set styles beyond plate / ranger-leather / mage-cloth. Each set
+// has a helm / chest / boots builder, keyed by its own family prefix (one
+// prefix per piece — see SLOT_BY_PREFIX in inventory/defs.ts and the dispatch
+// switch at the bottom of this file). All share the plate set's body-wrapping
+// sizing (big 0.72 head, broad torso, hip-length greaves) so none of them
+// leaves the character poking out, and all tint from pal(t) so they render at
+// every material tier (copper..runic). Content packs mint `<prefix>_<tier>`.
+//
+//   family      helm         chest         boots
+//   knight      greathelm    cuirass       sabatons
+//   samurai     kabuto       doumaru       suneate
+//   barbarian   horned       furplate      furboots
+//   royal       crown        regalia       regalboots
+//   assassin    cowl         shroud        creepers
+//   shaman      totemmask    spiritweave   spiritboots
+//   dragoon     wyrmhelm     wyrmscale     wyrmboots
+// ---------------------------------------------------------------------------
+
+const BONE = 0xe8dcc2
+const DARK_CLOTH = 0x26242e
+const DARK_CLOTH_2 = 0x16151a
+const FUR_LIGHT = 0x6a4a30
+
+/** Shared heavy greaves (hip-length, fully wrapping) used by several sets. */
+function greaves(
+  g: THREE.Group, p: TierPalette, glow: VoxOpts,
+  soleColor: number, footColor: number
+): void {
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.2, 0.04, 0.38, soleColor) // sole
+    box(g, x, 0.11, 0.09, 0.18, 0.12, 0.32, footColor, glow) // foot
+    box(g, x, 0.27, -0.01, 0.21, 0.4, 0.24, p.main, glow) // greave
+    box(g, x, 0.46, -0.01, 0.23, 0.08, 0.26, p.light, glow) // thigh cuff
+  }
+}
+
+// --- KNIGHT — heavy plate: visored great helm, bulked cuirass, sabatons ----
+
+function buildGreathelm(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.08, 0, 0.58, 0.42, 0.58, p.main, glow) // big bucket skull
+  box(g, 0, 0.32, 0, 0.5, 0.16, 0.5, p.light, glow) // flat crown
+  box(g, 0, -0.03, 0.31, 0.5, 0.28, 0.05, p.dark, glow) // visor face
+  box(g, 0, 0.0, 0.345, 0.4, 0.035, 0.02, 0x14161c) // visor sight slit
+  box(g, 0, -0.12, 0, 0.6, 0.08, 0.6, p.dark, glow) // brim overhang
+  box(g, 0, 0.48, -0.02, 0.07, 0.22, 0.16, p.accent, glow) // crest fin
+  box(g, 0, 0.3, -0.3, 0.07, 0.14, 0.14, p.accent, glow) // crest tail
+  return g
+}
+
+function buildCuirass(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.6, 0.66, 0.4, p.main, glow) // heavy torso (wraps body)
+  box(g, 0, 0.44, 0.21, 0.4, 0.3, 0.02, p.light, glow) // breastplate ridge
+  box(g, 0.36, 0.56, 0, 0.22, 0.18, 0.36, p.dark, glow) // big pauldron R
+  box(g, -0.36, 0.56, 0, 0.22, 0.18, 0.36, p.dark, glow) // big pauldron L
+  box(g, 0.38, 0.64, 0, 0.1, 0.08, 0.2, p.accent, glow) // pauldron spike R
+  box(g, -0.38, 0.64, 0, 0.1, 0.08, 0.2, p.accent, glow) // pauldron spike L
+  box(g, 0, 0.62, 0, 0.34, 0.08, 0.22, p.dark) // gorget collar
+  box(g, 0, 0.04, 0, 0.56, 0.12, 0.36, p.dark, glow) // fauld (waist plate)
+  return g
+}
+
+function buildSabatons(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.08, 0.2, 0.05, 0.44, p.dark, glow) // pointed armored sole
+    box(g, x, 0.03, 0.3, 0.14, 0.05, 0.1, p.accent, glow) // pointed toe
+    box(g, x, 0.12, 0.08, 0.19, 0.14, 0.32, p.main, glow) // armored foot
+    box(g, x, 0.27, -0.01, 0.21, 0.4, 0.24, p.main, glow) // greave
+    box(g, x, 0.3, 0.1, 0.06, 0.1, 0.03, p.accent, glow) // knee cop
+    box(g, x, 0.46, -0.01, 0.23, 0.08, 0.26, p.light, glow) // thigh cuff
+  }
+  return g
+}
+
+// --- SAMURAI — kabuto, lamellar do, suneate --------------------------------
+
+function buildKabuto(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.08, 0, 0.54, 0.34, 0.54, p.main, glow) // bowl
+  box(g, 0, 0.28, 0, 0.44, 0.12, 0.44, p.light, glow) // riveted crown
+  box(g, 0, -0.1, -0.02, 0.72, 0.1, 0.52, p.dark, glow) // flared neck guard (shikoro)
+  box(g, 0, -0.14, 0.28, 0.5, 0.14, 0.08, p.dark, glow) // front flare
+  for (const s of [1, -1]) {
+    box(g, s * 0.16, 0.42, 0.12, 0.05, 0.26, 0.05, p.accent, glow) // golden horn (kuwagata)
+  }
+  box(g, 0, 0.1, 0.3, 0.12, 0.14, 0.05, p.dark) // menpo (face mask)
+  box(g, 0, 0.0, 0.32, 0.08, 0.06, 0.03, p.accent) // mask snarl
+  return g
+}
+
+function buildDoumaru(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.56, 0.64, 0.38, p.dark, glow) // lacquered under-torso
+  for (const y of [0.1, 0.24, 0.38, 0.52]) {
+    box(g, 0, y, 0.2, 0.5, 0.09, 0.03, p.main, glow) // lamellar plate row
+  }
+  box(g, 0.3, 0.52, 0, 0.16, 0.2, 0.3, p.main, glow) // sode (shoulder) R
+  box(g, -0.3, 0.52, 0, 0.16, 0.2, 0.3, p.main, glow) // sode (shoulder) L
+  box(g, 0, 0.1, 0, 0.5, 0.1, 0.34, LEATHER) // obi sash
+  box(g, 0, 0.1, 0.17, 0.09, 0.1, 0.03, p.accent, glow) // sash knot
+  return g
+}
+
+function buildSuneate(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.18, 0.04, 0.36, LEATHER) // sole
+    box(g, x, 0.11, 0.09, 0.16, 0.12, 0.3, p.dark, glow) // tabi foot
+    box(g, x, 0.27, -0.01, 0.2, 0.4, 0.22, p.dark, glow) // shin splint base
+    for (const sp of [-0.05, 0.05]) {
+      box(g, x + sp, 0.3, 0.1, 0.03, 0.34, 0.03, p.main, glow) // vertical splint
+    }
+    box(g, x, 0.46, -0.01, 0.22, 0.08, 0.24, p.light, glow) // knee cuff
+  }
+  return g
+}
+
+// --- BARBARIAN — horned fur helm, fur harness, fur boots -------------------
+
+function buildHorned(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.1, 0, 0.52, 0.32, 0.52, FUR_LIGHT) // fur cap
+  box(g, 0, -0.02, 0, 0.56, 0.1, 0.56, LEATHER_DARK) // fur brim
+  for (const s of [1, -1]) {
+    box(g, s * 0.26, 0.2, -0.02, 0.09, 0.2, 0.09, p.light, glow) // horn base
+    box(g, s * 0.34, 0.36, -0.04, 0.07, 0.16, 0.07, p.main, glow) // horn mid
+    box(g, s * 0.39, 0.48, -0.02, 0.06, 0.12, 0.06, p.accent, glow) // horn tip
+  }
+  box(g, 0, 0.28, -0.06, 0.2, 0.16, 0.2, FUR_LIGHT) // top fur tuft
+  box(g, 0, 0.08, 0.24, 0.1, 0.1, 0.03, p.accent, glow) // brow stud
+  return g
+}
+
+function buildFurplate(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.58, 0.64, 0.38, LEATHER_DARK) // fur vest torso (wraps body)
+  box(g, 0, 0.4, 0.18, 0.5, 0.42, 0.04, FUR_LIGHT) // shaggy front pelt
+  box(g, 0.28, 0.54, 0, 0.16, 0.16, 0.3, BONE) // bone pauldron R
+  box(g, -0.28, 0.54, 0, 0.16, 0.16, 0.3, BONE) // bone pauldron L
+  box(g, 0, 0.5, 0.2, 0.06, 0.18, 0.04, p.main, glow) // tier medallion
+  box(g, 0, 0.1, 0, 0.52, 0.1, 0.34, LEATHER) // wide belt
+  box(g, 0, 0.1, 0.17, 0.1, 0.1, 0.03, p.accent, glow) // tier buckle
+  return g
+}
+
+function buildFurboots(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.18, 0.04, 0.36, 0x3a2a1a) // sole
+    box(g, x, 0.13, 0.09, 0.17, 0.16, 0.3, LEATHER) // hide foot
+    box(g, x, 0.3, -0.01, 0.21, 0.36, 0.24, FUR_LIGHT) // shaggy fur leg
+    box(g, x, 0.46, -0.01, 0.23, 0.1, 0.26, LEATHER_DARK) // fur cuff
+    box(g, x, 0.24, 0.13, 0.04, 0.1, 0.03, p.accent, glow) // tier strap stud
+  }
+  return g
+}
+
+// --- ROYAL — crown, gilded regalia, jeweled boots --------------------------
+
+function buildCrown(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.06, 0, 0.5, 0.32, 0.5, 0x3a2a5a) // velvet cap (under crown)
+  box(g, 0, -0.02, 0, 0.56, 0.14, 0.56, p.main, glow) // gold band
+  for (const x of [-0.18, -0.06, 0.06, 0.18]) {
+    box(g, x, 0.14, 0.24, 0.05, 0.14, 0.05, p.main, glow) // front point
+    box(g, x, 0.22, 0.24, 0.04, 0.04, 0.04, p.accent, glow) // point jewel
+  }
+  box(g, 0, 0.2, 0.26, 0.06, 0.2, 0.06, p.light, glow) // tall center point
+  box(g, 0, 0.31, 0.28, 0.06, 0.06, 0.05, p.accent, glow) // crown jewel
+  return g
+}
+
+function buildRegalia(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, -0.21, 0.5, 0.6, 0.04, 0x7a2a4a) // royal cape (behind)
+  box(g, 0, 0.3, 0, 0.58, 0.64, 0.38, p.main, glow) // gilded torso
+  box(g, 0, 0.44, 0.2, 0.12, 0.42, 0.03, p.light, glow) // jeweled center stripe
+  box(g, 0.1, 0.5, 0.21, 0.05, 0.05, 0.03, p.accent, glow) // jewel R
+  box(g, -0.1, 0.5, 0.21, 0.05, 0.05, 0.03, p.accent, glow) // jewel L
+  box(g, 0.32, 0.58, 0, 0.18, 0.12, 0.34, p.light, glow) // ornate epaulette R
+  box(g, -0.32, 0.58, 0, 0.18, 0.12, 0.34, p.light, glow) // ornate epaulette L
+  box(g, 0, 0.64, 0, 0.34, 0.1, 0.24, 0x7a2a4a) // high fur collar
+  box(g, 0, 0.08, 0, 0.54, 0.1, 0.34, p.dark) // gilt belt
+  return g
+}
+
+function buildRegalboots(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  greaves(g, p, glow, p.dark, p.main)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.11, 0.24, 0.06, 0.06, 0.04, p.accent, glow) // toe jewel
+    box(g, x, 0.46, 0.11, 0.06, 0.06, 0.03, p.accent, glow) // cuff jewel
+  }
+  return g
+}
+
+// --- ASSASSIN — cowl + mask, wrapped shroud, soft creepers -----------------
+
+function buildCowl(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.14, -0.02, 0.44, 0.32, 0.44, DARK_CLOTH) // hood shell
+  box(g, 0, 0.32, -0.06, 0.3, 0.16, 0.32, DARK_CLOTH_2) // crown fold
+  box(g, 0, 0.16, 0.2, 0.34, 0.3, 0.06, DARK_CLOTH_2) // shadowed face opening
+  box(g, 0, 0.1, 0.23, 0.3, 0.14, 0.04, 0x3a3842) // mask over nose/mouth
+  for (const s of [1, -1]) {
+    box(g, s * 0.06, 0.2, 0.25, 0.05, 0.03, 0.02, p.accent, glow) // glowing eye
+  }
+  box(g, 0, 0.04, 0, 0.46, 0.05, 0.44, p.dark, glow) // tier trim band
+  box(g, 0, 0.36, -0.2, 0.08, 0.1, 0.12, DARK_CLOTH_2) // droop tip
+  return g
+}
+
+function buildShroud(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.56, 0.62, 0.36, DARK_CLOTH) // wrapped torso (full body)
+  box(g, 0, 0.3, -0.19, 0.46, 0.56, 0.04, DARK_CLOTH_2) // back cloak
+  box(g, -0.06, 0.4, 0.17, 0.3, 0.46, 0.03, DARK_CLOTH_2) // diagonal chest wrap
+  box(g, 0.26, 0.5, 0, 0.12, 0.3, 0.26, DARK_CLOTH_2) // shoulder wrap R
+  box(g, -0.26, 0.5, 0, 0.12, 0.3, 0.26, DARK_CLOTH_2) // shoulder wrap L
+  box(g, 0, 0.1, 0, 0.5, 0.08, 0.3, DARK_CLOTH_2) // sash belt
+  box(g, -0.14, 0.14, 0.17, 0.05, 0.14, 0.03, p.main, glow) // tucked dagger hilt (tier)
+  box(g, 0.16, 0.44, 0.15, 0.04, 0.04, 0.02, p.accent, glow) // tier buckle stud
+  return g
+}
+
+function buildCreepers(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.16, 0.04, 0.34, DARK_CLOTH_2) // soft sole
+    box(g, x, 0.11, 0.08, 0.15, 0.12, 0.28, DARK_CLOTH) // wrapped foot
+    box(g, x, 0.28, -0.02, 0.16, 0.36, 0.2, DARK_CLOTH) // tall shin wrap
+    box(g, x, 0.44, -0.01, 0.17, 0.06, 0.22, DARK_CLOTH_2) // top fold
+    box(g, x, 0.2, 0.12, 0.04, 0.04, 0.03, p.accent, glow) // tier anklet charm
+  }
+  return g
+}
+
+// --- SHAMAN — totem mask, woven spirit robe, hide boots --------------------
+
+function buildTotemmask(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.1, 0, 0.5, 0.42, 0.42, WOOD) // carved wood mask head
+  box(g, 0, 0.1, 0.22, 0.42, 0.34, 0.05, 0x8a6a3a) // mask face front
+  for (const s of [1, -1]) {
+    box(g, s * 0.1, 0.16, 0.25, 0.08, 0.06, 0.02, p.main, glow) // tier eye gem
+  }
+  box(g, 0, 0.0, 0.26, 0.12, 0.08, 0.03, 0x4a3522) // snarling mouth
+  box(g, 0, 0.36, -0.02, 0.4, 0.1, 0.12, BONE) // bone crest row
+  for (const x of [-0.14, 0, 0.14]) {
+    box(g, x, 0.5, -0.06, 0.04, 0.2, 0.02, x === 0 ? p.accent : 0xd94a3a, x === 0 ? glow : undefined) // feather
+  }
+  box(g, 0, 0.3, 0.2, 0.06, 0.08, 0.04, p.accent, glow) // forehead gem
+  return g
+}
+
+function buildSpiritweave(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.32, 0, 0.56, 0.6, 0.36, 0x4a5a3f) // woven robe torso (wraps body)
+  box(g, 0, 0.12, 0, 0.52, 0.24, 0.3, 0x3f4a35) // skirt flare
+  box(g, 0, 0.44, 0.16, 0.4, 0.3, 0.03, 0x6a7a4f) // woven front panel
+  box(g, 0.26, 0.52, 0, 0.14, 0.16, 0.28, BONE) // bone shoulder R
+  box(g, -0.26, 0.52, 0, 0.14, 0.16, 0.28, BONE) // bone shoulder L
+  box(g, 0, 0.5, 0.2, 0.06, 0.12, 0.05, p.main, glow) // tier spirit-gem pendant
+  box(g, 0.14, 0.3, 0.17, 0.03, 0.2, 0.02, 0xd94a3a) // hanging red feather
+  box(g, -0.14, 0.28, 0.17, 0.03, 0.18, 0.02, p.accent, glow) // tier charm
+  box(g, 0, 0.1, 0, 0.5, 0.08, 0.32, LEATHER) // hide belt
+  return g
+}
+
+function buildSpiritboots(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.03, 0.05, 0.17, 0.04, 0.34, 0x3a2a1a) // sole
+    box(g, x, 0.12, 0.08, 0.16, 0.14, 0.28, LEATHER) // hide foot
+    box(g, x, 0.28, -0.02, 0.17, 0.36, 0.2, 0x4a5a3f) // woven wrap leg
+    box(g, x, 0.44, -0.01, 0.18, 0.06, 0.22, BONE) // bone anklet ring
+    box(g, x, 0.2, 0.12, 0.04, 0.04, 0.03, p.accent, glow) // tier spirit bead
+  }
+  return g
+}
+
+// --- DRAGOON — scaled dragon-knight set (crest, scales, clawed boots) -------
+
+function buildWyrmhelm(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.06, 0, 0.54, 0.36, 0.54, p.main, glow) // scaled skull
+  box(g, 0, 0.26, 0, 0.46, 0.16, 0.46, p.light, glow) // dome
+  box(g, 0, -0.08, 0, 0.56, 0.08, 0.56, p.dark, glow) // brim
+  box(g, 0, -0.02, 0.3, 0.1, 0.3, 0.05, p.dark) // face/nose guard
+  box(g, 0, 0.42, -0.02, 0.05, 0.22, 0.3, p.accent, glow) // tall dragon crest
+  box(g, 0, 0.3, -0.32, 0.05, 0.14, 0.16, p.accent, glow) // crest tail
+  for (const s of [1, -1]) {
+    box(g, s * 0.3, 0.2, -0.08, 0.1, 0.05, 0.26, p.light, glow) // swept wing-horn
+  }
+  return g
+}
+
+function buildWyrmscale(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  box(g, 0, 0.3, 0, 0.58, 0.64, 0.38, p.main, glow) // scaled torso (wraps body)
+  for (const y of [0.12, 0.28, 0.44]) {
+    box(g, 0, y, 0.2, 0.5, 0.06, 0.03, p.dark, glow) // overlapping scale row
+  }
+  box(g, 0.34, 0.56, 0, 0.18, 0.16, 0.32, p.dark, glow) // spiked pauldron R
+  box(g, -0.34, 0.56, 0, 0.18, 0.16, 0.32, p.dark, glow) // spiked pauldron L
+  box(g, 0.36, 0.64, 0, 0.06, 0.12, 0.1, p.accent, glow) // pauldron spike R
+  box(g, -0.36, 0.64, 0, 0.06, 0.12, 0.1, p.accent, glow) // pauldron spike L
+  for (const s of [1, -1]) {
+    box(g, s * 0.2, 0.5, -0.2, 0.12, 0.3, 0.04, p.light, glow) // folded wing nub
+  }
+  box(g, 0, 0.6, 0, 0.3, 0.06, 0.2, p.dark) // collar
+  box(g, 0, 0.08, 0, 0.52, 0.1, 0.34, p.dark) // belt
+  return g
+}
+
+function buildWyrmboots(t: number): THREE.Group {
+  const g = group()
+  const p = pal(t)
+  const glow = tierOpts(p)
+  for (const s of [1, -1]) {
+    const x = s * 0.15
+    box(g, x, 0.11, 0.08, 0.18, 0.14, 0.3, p.main, glow) // scaled foot
+    for (const cx of [-0.06, 0, 0.06]) {
+      box(g, x + cx, 0.04, 0.26, 0.04, 0.05, 0.1, p.accent, glow) // dragon claw
+    }
+    box(g, x, 0.27, -0.01, 0.21, 0.4, 0.24, p.main, glow) // scaled greave
+    box(g, x, 0.3, 0.1, 0.05, 0.3, 0.03, p.dark, glow) // shin scale ridge
+    box(g, x, 0.46, -0.01, 0.23, 0.08, 0.26, p.light, glow) // thigh cuff
+  }
+  return g
+}
+
+// ---------------------------------------------------------------------------
+// Mounts — ULTRA-RARE rideable voxel creatures (+40% move speed). Each faces
+// +Z with its origin at the ground so it reads as a standing mount in the
+// inventory viewer and under the player when ridden.
+// ---------------------------------------------------------------------------
+
+interface MountPal { body: number; dark: number; belly: number; accent: number; glow?: VoxOpts }
+
+function mountPalOf(id: string): MountPal {
+  const s = mountSpec(id)
+  if (!s) return { body: 0x8a8a8a, dark: 0x5a5a5a, belly: 0xb0b0b0, accent: 0xe0e0e0 }
+  const [b, d, be, a] = s.pal
+  return { body: b, dark: d, belly: be, accent: a, ...(s.glow ? { glow: faintGlow(a) } : {}) }
+}
+
+/** Four legs at the body corners (quad/drake). */
+function mountLegs(g: THREE.Group, p: MountPal, h: number): void {
+  for (const sx of [1, -1]) for (const sz of [1, -1]) {
+    box(g, sx * 0.17, h * 0.5, sz * 0.26, 0.11, h, 0.11, p.dark)
+    box(g, sx * 0.17, 0.03, sz * 0.26, 0.13, 0.06, 0.15, p.accent) // hoof/paw
+  }
+}
+
+/** Head-mounted features (antlers/horn/tusks/ears/plume/frill) at (hy, hz). */
+function mountHeadFeatures(
+  g: THREE.Group, p: MountPal, feats: readonly MountFeature[], hy: number, hz: number
+): void {
+  if (feats.includes('antlers')) for (const sx of [1, -1]) {
+    box(g, sx * 0.08, hy + 0.22, hz - 0.04, 0.03, 0.22, 0.03, p.accent, p.glow)
+    box(g, sx * 0.15, hy + 0.3, hz - 0.06, 0.12, 0.03, 0.03, p.accent, p.glow)
+    box(g, sx * 0.09, hy + 0.36, hz - 0.1, 0.03, 0.09, 0.03, p.accent, p.glow)
+  }
+  if (feats.includes('horn')) box(g, 0, hy + 0.16, hz + 0.08, 0.05, 0.16, 0.06, p.accent, p.glow)
+  if (feats.includes('tusks')) for (const sx of [1, -1]) box(g, sx * 0.1, hy - 0.06, hz + 0.14, 0.04, 0.04, 0.12, p.accent)
+  if (feats.includes('ears')) for (const sx of [1, -1]) box(g, sx * 0.07, hy + 0.16, hz - 0.06, 0.05, 0.1, 0.04, p.body)
+  if (feats.includes('plume')) box(g, 0, hy + 0.04, hz - 0.1, 0.22, 0.14, 0.06, p.accent, p.glow)
+  if (feats.includes('frill')) box(g, 0, hy + 0.1, hz - 0.08, 0.32, 0.22, 0.04, p.accent, p.glow)
+}
+
+function buildMount(id: string): THREE.Group {
+  const g = group()
+  const p = mountPalOf(id)
+  const s = mountSpec(id)
+  const feats = s?.features ?? []
+  const arch = s?.arch ?? 'quad'
+
+  if (arch === 'raptor') {
+    box(g, 0, 0.5, -0.04, 0.26, 0.3, 0.6, p.body, p.glow) // body
+    box(g, 0, 0.72, 0.3, 0.2, 0.22, 0.24, p.body, p.glow) // neck base
+    box(g, 0, 0.9, 0.42, 0.18, 0.18, 0.26, p.body, p.glow) // head
+    box(g, 0, 0.9, 0.58, 0.1, 0.09, 0.12, p.belly) // snout
+    box(g, 0.05, 0.95, 0.5, 0.03, 0.03, 0.03, 0x20242e) // eye R
+    box(g, -0.05, 0.95, 0.5, 0.03, 0.03, 0.03, 0x20242e) // eye L
+    box(g, 0, 0.42, -0.5, 0.1, 0.1, 0.5, p.dark) // tail
+    box(g, 0, 0.42, -0.78, 0.07, 0.07, 0.2, p.accent, p.glow) // tail tip
+    for (const sx of [1, -1]) {
+      box(g, sx * 0.14, 0.26, 0.1, 0.1, 0.52, 0.12, p.dark) // thigh
+      box(g, sx * 0.14, 0.03, 0.18, 0.12, 0.06, 0.2, p.accent) // foot
+    }
+    if (feats.includes('spikes')) for (const z of [-0.1, 0.1, 0.3]) box(g, 0, 0.72, z, 0.05, 0.12, 0.05, p.accent, p.glow)
+    mountHeadFeatures(g, p, feats, 0.9, 0.42)
+    return g
+  }
+
+  // quadruped base (wolf/boar/stag/steed/bear/ram/ox/cat/beetle + drake)
+  box(g, 0, 0.56, 0, 0.3, 0.3, 0.74, p.body, p.glow) // barrel
+  box(g, 0, 0.5, 0.1, 0.26, 0.2, 0.5, p.belly) // underbelly
+  box(g, 0, 0.62, 0.44, 0.24, 0.24, 0.2, p.body, p.glow) // neck/chest
+  box(g, 0, 0.74, 0.56, 0.2, 0.22, 0.24, p.body, p.glow) // head
+  box(g, 0, 0.7, 0.7, 0.14, 0.12, 0.12, p.belly) // muzzle
+  box(g, 0.07, 0.8, 0.64, 0.03, 0.03, 0.03, 0x20242e) // eye R
+  box(g, -0.07, 0.8, 0.64, 0.03, 0.03, 0.03, 0x20242e) // eye L
+  box(g, 0, 0.56, -0.42, 0.1, 0.1, 0.3, p.dark) // tail
+  mountLegs(g, p, 0.5)
+
+  if (feats.includes('mane')) {
+    box(g, 0, 0.86, 0.42, 0.06, 0.16, 0.26, p.accent, p.glow) // neck mane
+    box(g, 0, 0.56, -0.5, 0.05, 0.1, 0.16, p.accent, p.glow) // tail flag
+  }
+  if (feats.includes('spikes')) for (const z of [-0.2, 0, 0.2]) box(g, 0, 0.74, z, 0.05, 0.12, 0.05, p.accent, p.glow) // back spikes
+  if (arch === 'drake') {
+    for (const sx of [1, -1]) {
+      box(g, sx * 0.28, 0.78, -0.02, 0.06, 0.04, 0.4, p.dark, p.glow) // wing arm
+      box(g, sx * 0.44, 0.72, -0.06, 0.26, 0.02, 0.36, p.accent, p.glow) // wing membrane
+    }
+    box(g, 0, 0.56, -0.56, 0.08, 0.12, 0.1, p.accent, p.glow) // tail spade
+  }
+  mountHeadFeatures(g, p, feats, 0.74, 0.56)
   return g
 }
 
@@ -376,18 +965,39 @@ function buildWheat(): THREE.Group {
 
 function buildPotion(id: string): THREE.Group {
   const g = group()
+  // craft-expansion themed brews get their own tints; everything else falls
+  // back to the hp(red)/mp(blue)/elixir/regret/mystery buckets.
+  const THEMED: Record<string, number> = {
+    potion_emberbrew: 0xff6a2a,
+    potion_tidebrew: 0x2fb6c8,
+    potion_mossmend: 0x5aa83f,
+    potion_starwater: 0x5a6ae0,
+    potion_ironblood: 0x8a1f2a,
+    potion_dreamfizz: 0x9a5aba,
+    potion_voidsip: 0x3a2a5a,
+    potion_sunsap: 0xf2c14e,
+    potion_dualcask: 0x8a3fb0,
+    potion_phoenixdraught: 0xff8a2a,
+    potion_secondwind: 0x7ed9c0,
+    potion_warcry: 0xe0603a,
+    potion_adrenagel: 0xd94a6a,
+  }
   const liquid =
-    id.startsWith('potion_hp') ? 0xd93a4a :
+    THEMED[id] ??
+    (id.startsWith('potion_hp') ? 0xd93a4a :
     id.startsWith('potion_mp') ? 0x3a6fd9 :
     id === 'potion_elixir' ? 0xf2c14e :
     id === 'potion_regret' ? 0x8a8d93 :
-    0x6fc24a // mystery
+    0x6fc24a) // mystery
   const size =
     id.endsWith('_small') || id === 'potion_regret' ? 0.8 :
-    id.endsWith('_large') ? 1.2 :
-    id.endsWith('_huge') || id === 'potion_elixir' ? 1.45 :
+    id.endsWith('_large') || id.endsWith('_grand') ? 1.2 :
+    id.endsWith('_huge') || id === 'potion_elixir' || id === 'potion_phoenixdraught' ? 1.45 :
     1.0
-  const glow = id === 'potion_elixir' ? { emissive: 0xf2c14e, emissiveIntensity: 0.3, opacity: 0.8 } : { opacity: 0.8 }
+  const glow =
+    id === 'potion_phoenixdraught' ? { emissive: 0xff8a2a, emissiveIntensity: 0.45, opacity: 0.85 } :
+    id === 'potion_elixir' ? { emissive: 0xf2c14e, emissiveIntensity: 0.3, opacity: 0.8 } :
+    { opacity: 0.8 }
   const s = size
   box(g, 0, 0.14 * s, 0, 0.26 * s, 0.26 * s, 0.26 * s, liquid, glow) // body
   box(g, 0, 0.3 * s, 0, 0.17 * s, 0.07 * s, 0.17 * s, liquid, glow) // shoulder
@@ -488,6 +1098,83 @@ function buildFood(id: string): THREE.Group {
       box(g, -0.08, 0.17, -0.05, 0.08, 0.1, 0.08, 0x1a1817)
       box(g, 0.02, 0.13, 0.11, 0.03, 0.03, 0.02, 0xd94a2b, faintGlow(0xd94a2b)) // ember
       return g
+
+    // --- craft-expansion dishes (The Wandering Artificer) ----------------
+    case 'food_omelette_deluxe':
+      box(g, 0, 0.05, 0, 0.36, 0.08, 0.3, 0xf2d872) // folded egg
+      box(g, 0, 0.12, 0.02, 0.22, 0.06, 0.2, 0xf6e49a) // fold highlight
+      box(g, 0.06, 0.14, 0.04, 0.05, 0.04, 0.05, 0x7a4a2d) // mushroom bit
+      box(g, -0.07, 0.13, -0.03, 0.05, 0.03, 0.05, 0x5aa83f) // herb
+      return g
+    case 'food_crab_cakes':
+      box(g, -0.08, 0.07, 0, 0.18, 0.14, 0.18, 0xd98a52) // cake 1
+      box(g, 0.1, 0.06, 0.03, 0.16, 0.12, 0.16, 0xc97a44) // cake 2
+      box(g, -0.08, 0.15, 0, 0.14, 0.02, 0.14, 0xf0c090) // crumb top
+      box(g, 0.02, 0.17, -0.02, 0.05, 0.02, 0.05, 0xe8605a) // crab fleck
+      return g
+    case 'food_dragon_chili':
+      box(g, 0, 0.08, 0, 0.3, 0.16, 0.3, 0x3a2a24) // dark bowl
+      box(g, 0, 0.17, 0, 0.24, 0.05, 0.24, 0x9a2a1a) // chili
+      box(g, 0.06, 0.2, 0.04, 0.04, 0.03, 0.04, 0xf2a93b) // bean
+      box(g, 0, 0.24, 0, 0.05, 0.08, 0.02, 0xff5a2b, faintGlow(0xff5a2b)) // flame curl
+      return g
+    case 'food_frostberry_pie':
+      box(g, 0, 0.07, 0, 0.34, 0.14, 0.34, 0xcfe4ef) // frosted crust
+      box(g, 0, 0.16, 0, 0.36, 0.05, 0.36, 0xeaf4fb) // icing lid
+      box(g, 0.08, 0.2, 0.06, 0.05, 0.05, 0.05, 0x8a4a9a) // berry
+      box(g, -0.06, 0.2, -0.05, 0.05, 0.05, 0.05, 0x6a3a8a) // berry
+      return g
+    case 'food_mushroom_risotto':
+      box(g, 0, 0.08, 0, 0.32, 0.16, 0.32, 0xdfe6ea) // white bowl
+      box(g, 0, 0.17, 0, 0.25, 0.05, 0.25, 0xf0e8cf) // creamy rice
+      box(g, 0.07, 0.2, 0.03, 0.06, 0.05, 0.06, 0x8a6a4a) // mushroom cap
+      box(g, -0.06, 0.2, -0.05, 0.05, 0.04, 0.05, 0x9a7a5a)
+      return g
+    case 'food_royal_roast':
+      box(g, 0, 0.04, 0, 0.5, 0.06, 0.4, 0xdfe6ea) // silver platter
+      box(g, 0, 0.17, 0, 0.3, 0.2, 0.24, 0x9a5a34) // big roast
+      box(g, 0, 0.3, 0, 0.3, 0.05, 0.24, 0xb87a4a) // glaze top
+      box(g, 0.12, 0.3, 0.06, 0.04, 0.07, 0.04, 0xf0e8d0) // bone R
+      box(g, -0.12, 0.3, 0.06, 0.04, 0.07, 0.04, 0xf0e8d0) // bone L
+      return g
+    case 'food_sea_platter':
+      box(g, 0, 0.03, 0, 0.44, 0.05, 0.4, 0xe8eef2) // shell plate
+      box(g, -0.1, 0.09, 0.04, 0.12, 0.06, 0.26, 0xf0a0a0) // salmon
+      box(g, 0.08, 0.09, -0.02, 0.1, 0.06, 0.24, 0xd98a6a) // trout
+      box(g, 0.16, 0.08, 0.1, 0.06, 0.05, 0.06, 0xf2d872) // lemon
+      return g
+    case 'food_sugar_donut':
+      box(g, 0, 0.1, 0, 0.3, 0.14, 0.3, 0xe0b06a) // ring body
+      box(g, 0, 0.1, 0, 0.1, 0.16, 0.1, 0x0b0e14) // hole (dark)
+      box(g, 0, 0.18, 0, 0.3, 0.03, 0.3, 0xf6c0d8) // pink glaze
+      box(g, 0.08, 0.2, 0.05, 0.02, 0.02, 0.02, 0x6fe3e8) // sprinkle
+      box(g, -0.07, 0.2, -0.04, 0.02, 0.02, 0.02, 0xf2d872) // sprinkle
+      return g
+    case 'food_trail_biscuit':
+      box(g, 0, 0.07, 0, 0.26, 0.12, 0.26, 0xc9a86a) // square biscuit
+      box(g, 0, 0.14, 0, 0.2, 0.02, 0.2, 0xb08c4e)
+      box(g, 0.05, 0.14, 0.05, 0.02, 0.03, 0.02, 0x6b4a2d) // fork dimple
+      box(g, -0.05, 0.14, -0.05, 0.02, 0.03, 0.02, 0x6b4a2d)
+      return g
+    case 'food_spicy_noodles':
+      box(g, 0, 0.07, 0, 0.32, 0.14, 0.32, 0xd93a3a) // red bowl
+      box(g, 0, 0.16, 0, 0.26, 0.05, 0.26, 0xf0d060) // noodles
+      box(g, 0.02, 0.22, 0, 0.14, 0.04, 0.03, 0xeec84a) // noodle lift
+      box(g, 0.12, 0.26, -0.05, 0.03, 0.18, 0.03, 0x6b3f25) // chopstick
+      box(g, 0.16, 0.26, -0.03, 0.03, 0.18, 0.03, 0x6b3f25) // chopstick
+      return g
+    case 'food_berry_parfait':
+      box(g, 0, 0.14, 0, 0.18, 0.3, 0.18, 0xd8c0e8, { opacity: 0.6 }) // glass
+      box(g, 0, 0.08, 0, 0.14, 0.08, 0.14, 0x8a4a9a) // berry layer
+      box(g, 0, 0.18, 0, 0.14, 0.06, 0.14, 0xf8f0f0) // cream layer
+      box(g, 0, 0.3, 0, 0.06, 0.06, 0.06, 0xd93a5a) // berry crown
+      return g
+    case 'food_campfire_sausage':
+      box(g, 0, 0.1, 0, 0.12, 0.12, 0.34, 0x8a4a2d) // sausage
+      box(g, 0, 0.1, 0.0, 0.125, 0.02, 0.34, 0x5a2e1a) // char stripe
+      box(g, 0, 0.02, -0.26, 0.02, 0.02, 0.5, WOOD) // skewer stick
+      return g
+
     default:
       return buildFallback()
   }
@@ -560,6 +1247,38 @@ function buildRelic(_id: string): THREE.Group {
   return g
 }
 
+/** Mini-boss trophy — a little voxel cup/statue on a pedestal, deterministically
+ *  varied by the id (metal tint + crowning ornament) so every zone's trophy
+ *  looks its own. One builder covers all ~980 trophy_* ids (no '?' fallback). */
+function buildTrophy(id: string): THREE.Group {
+  const g = group()
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  const METALS = [0xf4c430, 0xe8b923, 0xd4af37, 0xc0c0c0, 0xcd7f32, 0xb9f2ff, 0x9fe8d4, 0xff8fab]
+  const metal = METALS[h % METALS.length]!
+  const accent = METALS[(h >>> 5) % METALS.length]!
+  const mglow = faintGlow(metal)
+  const aglow = faintGlow(accent)
+  box(g, 0, 0.04, 0, 0.42, 0.08, 0.42, 0x4a3b2a) // base
+  box(g, 0, 0.14, 0, 0.3, 0.14, 0.3, 0x5a4a35) // pedestal
+  box(g, 0, 0.3, 0, 0.08, 0.22, 0.08, metal, mglow) // stem
+  box(g, 0, 0.46, 0, 0.3, 0.2, 0.22, metal, mglow) // bowl
+  box(g, 0.18, 0.48, 0, 0.06, 0.16, 0.1, metal, mglow) // handle R
+  box(g, -0.18, 0.48, 0, 0.06, 0.16, 0.1, metal, mglow) // handle L
+  const orn = (h >>> 11) % 4
+  const oy = 0.64
+  if (orn === 0) box(g, 0, oy, 0, 0.1, 0.1, 0.1, accent, aglow) // orb
+  else if (orn === 1) {
+    box(g, 0, oy, 0, 0.16, 0.06, 0.16, accent, aglow) // star
+    box(g, 0, oy, 0, 0.06, 0.16, 0.06, accent, aglow)
+  } else if (orn === 2) box(g, 0, oy + 0.04, 0, 0.05, 0.2, 0.05, accent, aglow) // spike
+  else box(g, 0, oy, 0, 0.12, 0.12, 0.12, accent, aglow) // cube
+  return g
+}
+
 function buildAccessory(id: string): THREE.Group {
   const g = group()
   switch (id) {
@@ -623,6 +1342,108 @@ function buildAccessory(id: string): THREE.Group {
       box(g, 0, 0.2, 0, 0.16, 0.16, 0.16, 0xf2a93b, { emissive: 0xf2a93b, emissiveIntensity: 0.35 }) // BLOCK cube
       box(g, 0, 0.2, 0.085, 0.08, 0.08, 0.01, 0xfff0d0) // face glint
       return g
+
+    // --- craft-expansion: forged metal trinkets (blacksmithing) ----------
+    case 'ring_signet':
+      ringBase(g, 0x8a9199) // iron band
+      box(g, 0, 0.31, 0.02, 0.1, 0.09, 0.05, 0xb8c0c8) // flat signet face
+      box(g, 0, 0.31, 0.05, 0.05, 0.05, 0.01, 0x5a626a) // stamped crest
+      return g
+    case 'ring_bandit':
+      ringBase(g, 0xb87333) // copper band
+      box(g, 0, 0.31, 0.02, 0.07, 0.07, 0.05, 0x3a2a1a) // dark setting
+      box(g, 0, 0.31, 0.05, 0.04, 0.04, 0.01, 0x6b3f25) // oaken inlay
+      return g
+    case 'acc_toolbelt':
+      box(g, 0, 0.14, 0, 0.42, 0.1, 0.12, LEATHER) // belt strap
+      box(g, 0, 0.14, 0.07, 0.1, 0.12, 0.03, 0x9aa0a8) // iron buckle
+      box(g, -0.14, 0.06, 0.06, 0.07, 0.12, 0.04, 0x6b4a2d) // pouch L
+      box(g, 0.13, 0.07, 0.06, 0.05, 0.14, 0.03, 0xc0c6cc) // hanging wrench
+      return g
+    case 'amulet_forgeheart':
+      amuletBase(g)
+      box(g, 0, 0.2, 0, 0.16, 0.16, 0.08, 0x3a3236) // iron casing
+      box(g, 0, 0.2, 0.04, 0.09, 0.09, 0.03, 0xff6a2a, { emissive: 0xff6a2a, emissiveIntensity: 0.5 }) // glowing coal
+      return g
+    case 'ring_bulwark':
+      ringBase(g, 0x9198a0) // heavy steel
+      box(g, 0, 0.26, 0, 0.24, 0.08, 0.08, 0xaab0b8) // thick top guard
+      box(g, 0, 0.31, 0.04, 0.06, 0.04, 0.02, 0xd0d6dc) // rivet
+      return g
+    case 'amulet_lodestone':
+      amuletBase(g)
+      box(g, 0, 0.2, 0, 0.14, 0.18, 0.06, 0x4a4f57) // dark stone
+      box(g, 0, 0.27, 0.02, 0.05, 0.05, 0.05, 0xd9a93a) // gold cap N
+      box(g, 0, 0.13, 0.02, 0.05, 0.05, 0.05, 0xd9a93a) // gold cap S
+      return g
+    case 'acc_warplate': {
+      const glow = faintGlow(0xf2d060)
+      box(g, 0, 0.3, 0, 0.3, 0.1, 0.22, 0xd9b24a, glow) // gold pauldron cap
+      box(g, 0, 0.2, 0, 0.26, 0.1, 0.2, 0xc0a040) // mid tier
+      box(g, 0, 0.1, 0, 0.2, 0.1, 0.18, 0x9aa0a8) // steel underplate
+      box(g, 0, 0.37, 0.08, 0.06, 0.05, 0.05, 0xf2e090, glow) // crest spike
+      return g
+    }
+    case 'ring_emberband': {
+      const glow = faintGlow(0xff7a2a)
+      ringBase(g, 0xd9a93a) // gold band
+      box(g, 0, 0.155, 0, 0.14, 0.14, 0.03, 0xff7a2a, { emissive: 0xff7a2a, emissiveIntensity: 0.45 }) // ember core
+      box(g, 0, 0.31, 0.02, 0.06, 0.06, 0.04, 0xffd090, glow) // top spark
+      return g
+    }
+
+    // --- craft-expansion: stitched cloth trinkets (tailoring) ------------
+    case 'acc_scarf':
+      box(g, 0, 0.3, 0, 0.36, 0.1, 0.1, 0x8a5a4a) // wrapped loop
+      box(g, 0, 0.24, 0.05, 0.1, 0.1, 0.06, 0x9a6a5a) // knot
+      box(g, 0.02, 0.1, 0.06, 0.09, 0.22, 0.04, 0x8a5a4a) // hanging tail
+      box(g, 0.02, 0.0, 0.06, 0.09, 0.04, 0.04, 0xe8d0b0) // fringe
+      return g
+    case 'acc_bandana':
+      box(g, 0, 0.26, 0, 0.34, 0.12, 0.06, 0x8a2a2a) // headband wrap
+      box(g, -0.14, 0.24, 0, 0.06, 0.06, 0.06, 0x7a2424) // side knot
+      box(g, -0.18, 0.16, 0, 0.04, 0.14, 0.03, 0x8a2a2a) // tail 1
+      box(g, -0.22, 0.17, 0, 0.04, 0.12, 0.03, 0x9a3434) // tail 2
+      return g
+    case 'acc_satchel_fine':
+      box(g, 0, 0.14, 0, 0.3, 0.26, 0.12, 0x6b4a2d) // bag body
+      box(g, 0, 0.26, 0.02, 0.32, 0.1, 0.13, 0x7a5636) // flap
+      box(g, 0, 0.2, 0.08, 0.06, 0.05, 0.02, 0xd9a93a) // brass clasp
+      box(g, 0, 0.32, -0.08, 0.3, 0.04, 0.03, 0x5a3f22) // shoulder strap
+      return g
+    case 'acc_sash':
+      box(g, 0, 0.3, 0, 0.1, 0.3, 0.05, 0x3a5aa0) // diagonal band top
+      box(g, -0.04, 0.12, 0, 0.1, 0.3, 0.05, 0x3a5aa0) // band bottom
+      box(g, -0.06, 0.12, 0.03, 0.12, 0.1, 0.04, 0xd9a93a) // gold trim knot
+      box(g, -0.08, 0.02, 0.03, 0.05, 0.1, 0.03, 0x2f4a88) // tassel
+      return g
+    case 'charm_feather':
+      box(g, 0, 0.3, 0, 0.05, 0.05, 0.05, 0x9aa0a8) // clasp
+      box(g, 0, 0.15, 0, 0.02, 0.26, 0.02, 0xe8e2d0) // quill shaft
+      box(g, 0.04, 0.16, 0, 0.06, 0.16, 0.02, 0x5a9ae0, { opacity: 0.9 }) // vane R
+      box(g, -0.04, 0.16, 0, 0.06, 0.16, 0.02, 0x5a9ae0, { opacity: 0.9 }) // vane L
+      return g
+    case 'acc_silkgloves':
+      box(g, -0.1, 0.12, 0, 0.12, 0.2, 0.1, 0xe8dcc8) // glove L
+      box(g, 0.1, 0.12, 0, 0.12, 0.2, 0.1, 0xe8dcc8) // glove R
+      box(g, -0.1, 0.24, 0.02, 0.1, 0.06, 0.06, 0xd9a93a) // cuff L
+      box(g, 0.1, 0.24, 0.02, 0.1, 0.06, 0.06, 0xd9a93a) // cuff R
+      return g
+    case 'amulet_silkknot':
+      amuletBase(g)
+      box(g, 0, 0.2, 0, 0.16, 0.16, 0.05, 0x7a3a9a) // silk medallion
+      box(g, 0, 0.2, 0.03, 0.1, 0.1, 0.03, 0x9a5aba) // knot weave
+      box(g, 0, 0.2, 0.05, 0.04, 0.04, 0.02, 0xd9a93a) // gold center
+      return g
+    case 'charm_clover':
+      box(g, 0, 0.3, 0, 0.05, 0.05, 0.05, 0x9aa0a8) // clasp
+      box(g, 0, 0.1, 0, 0.03, 0.14, 0.03, 0x3f7a2d) // stem
+      box(g, 0.07, 0.2, 0, 0.1, 0.1, 0.02, 0x5aa83f) // leaf E
+      box(g, -0.07, 0.2, 0, 0.1, 0.1, 0.02, 0x5aa83f) // leaf W
+      box(g, 0, 0.27, 0, 0.1, 0.1, 0.02, 0x5aa83f) // leaf N
+      box(g, 0, 0.13, 0, 0.1, 0.1, 0.02, 0x5aa83f) // leaf S (fourth)
+      return g
+
     default:
       return buildFallback()
   }
@@ -674,6 +1495,35 @@ export function buildItemMesh(def: ItemDef | undefined): THREE.Group {
     case 'helm': return buildHelm(tierOf(id))
     case 'chest': return buildChest(tierOf(id))
     case 'boots': return buildBoots(tierOf(id))
+    case 'hood': return buildHood(tierOf(id))
+    case 'leathers': return buildLeathers(tierOf(id))
+    case 'treads': return buildTreads(tierOf(id))
+    case 'mhat': return buildMhat(tierOf(id))
+    case 'robe': return buildRobe(tierOf(id))
+    case 'slippers': return buildSlippers(tierOf(id))
+    // --- new armor families (helm / chest / boots per set) ---
+    case 'greathelm': return buildGreathelm(tierOf(id)) // knight helm
+    case 'cuirass': return buildCuirass(tierOf(id)) // knight chest
+    case 'sabatons': return buildSabatons(tierOf(id)) // knight boots
+    case 'kabuto': return buildKabuto(tierOf(id)) // samurai helm
+    case 'doumaru': return buildDoumaru(tierOf(id)) // samurai chest
+    case 'suneate': return buildSuneate(tierOf(id)) // samurai boots
+    case 'horned': return buildHorned(tierOf(id)) // barbarian helm
+    case 'furplate': return buildFurplate(tierOf(id)) // barbarian chest
+    case 'furboots': return buildFurboots(tierOf(id)) // barbarian boots
+    case 'crown': return buildCrown(tierOf(id)) // royal helm
+    case 'regalia': return buildRegalia(tierOf(id)) // royal chest
+    case 'regalboots': return buildRegalboots(tierOf(id)) // royal boots
+    case 'cowl': return buildCowl(tierOf(id)) // assassin helm
+    case 'shroud': return buildShroud(tierOf(id)) // assassin chest
+    case 'creepers': return buildCreepers(tierOf(id)) // assassin boots
+    case 'totemmask': return buildTotemmask(tierOf(id)) // shaman helm
+    case 'spiritweave': return buildSpiritweave(tierOf(id)) // shaman chest
+    case 'spiritboots': return buildSpiritboots(tierOf(id)) // shaman boots
+    case 'wyrmhelm': return buildWyrmhelm(tierOf(id)) // dragoon helm
+    case 'wyrmscale': return buildWyrmscale(tierOf(id)) // dragoon chest
+    case 'wyrmboots': return buildWyrmboots(tierOf(id)) // dragoon boots
+    case 'mount': return buildMount(id)
     case 'pick': return buildPick(tierOf(id))
     case 'hatchet': return buildHatchet(tierOf(id))
     case 'rod': return buildRod(id)
@@ -691,6 +1541,7 @@ export function buildItemMesh(def: ItemDef | undefined): THREE.Group {
     case 'acc':
     case 'charm':
     case 'amulet': return buildAccessory(id)
+    case 'trophy': return buildTrophy(id)
     default: return buildFallback()
   }
 }

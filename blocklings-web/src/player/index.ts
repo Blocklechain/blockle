@@ -20,7 +20,7 @@ import { saveRegistry } from '../save/registry'
 import { CharacterRig, type GripStyle, type SpecialAnim } from './character'
 import { DEFAULT_LOOK, decodeLook, encodeLook, type CharacterLook } from './look'
 import { createJoystick, createAttackButton, type Joystick, type AttackButton } from './joystick'
-import { connect, WS_URL, type NetHandle } from '../net/index'
+import { connect, realmWsUrl, type NetHandle } from '../net/index'
 
 // ---------------------------------------------------------------------------
 // Module-level combat/equipment API (binds to the live player instance)
@@ -41,6 +41,7 @@ interface PlayerControl {
   hurt(): void
   die(cb?: (revive: () => void) => void): void
   setAutoWalk(target: AutoWalkTarget | null): void
+  setNorthLock(on: boolean): void
 }
 
 let control: PlayerControl | null = null
@@ -122,6 +123,40 @@ export function setEquipmentMesh(slot: string, mesh: THREE.Group | null): void {
 }
 
 /**
+ * Apply the right-hand weapon rest-pose for an equipped weapon id (null = bare
+ * fists / default sword). Call this alongside setEquipmentMesh('weapon', …) so
+ * the grip is set on EVERY equip path — including the silent load-restore pass,
+ * which attaches the mesh without emitting 'item:equipped'. Without it a
+ * restored 'forward'/'upright' weapon renders in the default blade-up pose
+ * ("up and down") until the player re-equips it.
+ */
+export function setWeaponGrip(id: string | null): void {
+  control?.rig.setGripStyle(id ? gripOf(id) : null)
+}
+
+/** Defense stance: hold the shield arm raised in front of the hero. */
+export function setGuardPose(on: boolean): void {
+  control?.rig.setGuard(on)
+}
+
+/** Snap-to-North: on = camera faces North and holds; off = iso default yaw. */
+export function setNorthLock(on: boolean): void {
+  control?.setNorthLock(on)
+}
+
+/** Mount speed bonus (0 = on foot, 0.4 = +40%). Set by the mounts module. */
+let mountSpeedBonus = 0
+
+/**
+ * Mount up (or dismount): `mesh` rides under the character and `speedBonus`
+ * (e.g. 0.4 for +40%) boosts movement. Pass active=false to put feet down.
+ */
+export function setMountActive(active: boolean, mesh: THREE.Group | null, speedBonus: number): void {
+  mountSpeedBonus = active ? Math.max(0, speedBonus) : 0
+  control?.rig.setMount(active ? mesh : null)
+}
+
+/**
  * Play a special-attack animation: 'spin' (whirlwind), 'lunge' (dash-pierce),
  * 'cast' (staff raise), 'volley' (bow fan) or 'bash' (shield shove).
  * `onStrike` fires once at the ability's strike frame. Returns false (and
@@ -198,6 +233,9 @@ const TURN_RATE = 14 // facing lerp sharpness
 
 // Camera rig — matches the scaffold's isometric feel (45° yaw, 50° pitch).
 const CAM_YAW = Math.PI / 4
+// "Snap to North": yaw 0 looks along -Z, which is UP on the north-up map
+// (see worldmap/draw.ts: yaw 0 = +Z = down-screen), so the view faces North.
+const NORTH_YAW = 0
 const CAM_PITCH = (50 * Math.PI) / 180
 const CAM_DIST = 30
 const ZOOM_MIN = 0.55 // closest (≈16.5 units)
@@ -228,6 +266,10 @@ export function createPlayer(
   // --- combat state + actions ----------------------------------------------
   let dead = false
   let autoTarget: AutoWalkTarget | null = null
+  // Active camera yaw: the iso default, or snapped to North via settings. Both
+  // the camera offset and the screen-relative movement mapping read this, so
+  // joystick-up stays view-up after a north snap.
+  let camYaw = CAM_YAW
 
   function doAttack(): void {
     if (dead) return
@@ -247,11 +289,9 @@ export function createPlayer(
     return rig.startSpecial(kind, cb)
   }
 
-  // --- weapon grip style follows the equipped weapon ------------------------
-  const offGripEquip = events.on('item:equipped', ({ slot, id }) => {
-    if (slot !== 'weapon') return
-    rig.setGripStyle(id ? gripOf(id) : null)
-  })
+  // Weapon grip rest-pose is applied by the integrator via setWeaponGrip() on
+  // every equip path (live equip AND the silent load-restore pass), so it no
+  // longer rides the 'item:equipped' event here — that skipped restored gear.
 
   function doHurt(): void {
     if (dead) return
@@ -382,8 +422,8 @@ export function createPlayer(
     window.addEventListener('pointercancel', onPointerEnd)
   }
 
-  // --- multiplayer presence ------------------------------------------------
-  const net = connect(WS_URL, state.name, {
+  // --- multiplayer presence (joins the player's chosen realm) --------------
+  const net = connect(realmWsUrl(), state.name, {
     scene,
     world,
     local: state,
@@ -417,8 +457,8 @@ export function createPlayer(
       autoTarget = null
       // rotate into world space around the fixed isometric yaw:
       // screen-forward = -(sin yaw, cos yaw), screen-right = (cos yaw, -sin yaw)
-      const s = Math.sin(CAM_YAW)
-      const c = Math.cos(CAM_YAW)
+      const s = Math.sin(camYaw)
+      const c = Math.cos(camYaw)
       return { x: ix * c - iy * s, z: -ix * s - iy * c }
     }
     // tap-to-attack auto-walk: head straight for the target, stop on arrival
@@ -437,8 +477,9 @@ export function createPlayer(
 
   function tryMove(dt: number): void {
     const want = inputVector()
-    const targetVx = want.x * MAX_SPEED
-    const targetVz = want.z * MAX_SPEED
+    const spd = MAX_SPEED * (1 + mountSpeedBonus)
+    const targetVx = want.x * spd
+    const targetVz = want.z * spd
     const hasInput = want.x !== 0 || want.z !== 0
     const rate = hasInput ? ACCEL : DECEL
     const maxStep = rate * dt
@@ -501,14 +542,16 @@ export function createPlayer(
 
   // --- camera follow -------------------------------------------------------
   const camTarget = new THREE.Vector3()
-  const camOffsetDir = new THREE.Vector3(
-    Math.sin(CAM_YAW) * Math.cos(CAM_PITCH),
-    Math.sin(CAM_PITCH),
-    Math.cos(CAM_YAW) * Math.cos(CAM_PITCH)
-  )
+  const camOffsetDir = new THREE.Vector3()
 
   function updateCamera(dt: number): void {
     if (!camera) return
+    // Offset follows the active yaw (iso default, or North when snapped).
+    camOffsetDir.set(
+      Math.sin(camYaw) * Math.cos(CAM_PITCH),
+      Math.sin(CAM_PITCH),
+      Math.cos(camYaw) * Math.cos(CAM_PITCH)
+    )
     zoom += (zoomTarget - zoom) * Math.min(1, dt * 8)
     camTarget.set(state.pos.x, state.pos.y + 1, state.pos.z)
     const desired = camTarget.clone().addScaledVector(camOffsetDir, CAM_DIST * zoom)
@@ -532,6 +575,9 @@ export function createPlayer(
     setAutoWalk(target) {
       autoTarget = dead ? null : target
     },
+    setNorthLock(on) {
+      camYaw = on ? NORTH_YAW : CAM_YAW
+    },
   }
   control = myControl
 
@@ -547,7 +593,6 @@ export function createPlayer(
     dispose(): void {
       if (control === myControl) control = null
       announceLook = null
-      offGripEquip()
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)

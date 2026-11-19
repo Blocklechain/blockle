@@ -1,7 +1,9 @@
 /// Blocklings — iOS shell.
 ///
-/// The game itself is the web build served from https://blockle.org/blocklings/
-/// (updated server-side; no app release needed for game updates). This shell is
+/// The game itself is the web build served from https://blocklings.blockle.org/
+/// (updated server-side; no app release needed for game updates). The marketing
+/// page lives at https://blockle.org/blocklings/ — the app must load the game
+/// host, not the promo path. This shell is
 /// a fullscreen WKWebView plus the ONE thing the web cannot do on iOS: real
 /// StoreKit purchases for GOLD, exposed to the page as `window.blocklingsIAP`.
 ///
@@ -20,7 +22,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-const _gameUrl = 'https://blockle.org/blocklings/';
+const _gameUrl = 'https://blocklings.blockle.org/';
 const _goldSkus = <String>{'gold_100', 'gold_550', 'gold_1200', 'gold_2600'};
 
 void main() {
@@ -73,6 +75,15 @@ class _ShellScreenState extends State<ShellScreen> {
         }
       })
       ..setNavigationDelegate(NavigationDelegate(
+        onPageStarted: (_) {
+          // HARD App Store gate: flag the native-iOS context BEFORE the web
+          // bundle evaluates, so all crypto commerce (buy/sell/send/mint) is
+          // disabled in the app from the first line. The web reads this via
+          // window.__blkNativeIos (see blocklings-web src/platform.ts). iOS only.
+          if (defaultTargetPlatform == TargetPlatform.iOS) {
+            _web.runJavaScript('window.__blkNativeIos = true;');
+          }
+        },
         onPageFinished: (_) {
           _injectIapShim();
           if (mounted) setState(() => _loading = false);
@@ -101,8 +112,14 @@ class _ShellScreenState extends State<ShellScreen> {
   /// window.blocklingsIAP shim: forwards buy() to this shell and awaits the
   /// native resolution routed back through __blkIapSettle.
   void _injectIapShim() {
-    const shim = '''
+    // StoreKit only exists on iOS. On Android (and the sideloaded APK) we do
+    // NOT define window.blocklingsIAP, so the game's gold module falls back to
+    // its PayPal checkout — the external-URL bridge is injected on both.
+    final bool iosIap = defaultTargetPlatform == TargetPlatform.iOS;
+    final shim = '''
       (function () {
+        window.blocklingsOpenURL = function (u) { BlocklingsNavNative.postMessage(String(u)); };
+        ${iosIap ? '''
         if (window.blocklingsIAP) return;
         const pending = new Map();
         let seq = 0;
@@ -112,7 +129,6 @@ class _ShellScreenState extends State<ShellScreen> {
           pending.delete(id);
           ok ? p.resolve(payload) : p.reject(new Error(payload));
         };
-        window.blocklingsOpenURL = function (u) { BlocklingsNavNative.postMessage(String(u)); };
         window.blocklingsIAP = {
           buy: function (sku) {
             return new Promise(function (resolve, reject) {
@@ -122,6 +138,7 @@ class _ShellScreenState extends State<ShellScreen> {
             });
           }
         };
+        ''' : ''}
       })();
     ''';
     _web.runJavaScript(shim);

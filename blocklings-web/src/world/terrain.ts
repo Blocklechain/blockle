@@ -38,14 +38,21 @@ import { BIOME_GROUND, EMBER, FOREST_MOSS, isLand } from './kit'
 import { HALF, HEART_HALF, type CollisionGrid } from './collision'
 
 /**
- * Permanently block the open ocean beyond the coast ring at boot (the
- * streamed zones handle their own interior sea cells as they paint).
- * Only the outer band can be ocean, so scan just max(|ix|,|iz|) >= 640.
+ * Permanently block the open ocean in the outer band at boot (the streamed
+ * zones handle the rest of their own sea cells as they paint — and the player
+ * starts ~1600+ units of solid continent away from any coast, so a zone is
+ * always resident and has blocked its ocean long before it can be reached;
+ * this pass is cheap boot insurance, not a correctness requirement).
+ *
+ * Only the outer band can be ocean, so scan just max(|ix|,|iz|) >= OCEAN_SCAN.
+ * That is ~6.4M cells at HALF=2400 — a one-time ~0.3s boot pass, bounded by
+ * keeping the scan to the outer frame rather than the whole 23M-cell grid.
  */
+const OCEAN_SCAN = 2040
 export function blockOpenSea(grid: CollisionGrid): void {
   for (let ix = -HALF; ix < HALF; ix++) {
     for (let iz = -HALF; iz < HALF; iz++) {
-      if (Math.max(Math.abs(ix), Math.abs(iz)) < 640) continue
+      if (Math.max(Math.abs(ix), Math.abs(iz)) < OCEAN_SCAN) continue
       if (!isLand(ix + 0.5, iz + 0.5)) grid.block(ix, iz)
     }
   }
@@ -249,16 +256,64 @@ export function buildWater(scene: THREE.Scene): WaterRefs {
   return { mesh, material }
 }
 
+/**
+ * Scattered freshwater lakes — more places to fish. Each paints a rough disc
+ * of river surface (banks around the rim), blocks the deep-water cells so you
+ * can't stroll across, and drops a flat water plane. Fishing spots sit on the
+ * banks (see gather/data.ts). Returns the water planes for the shimmer ramp.
+ */
+export const LAKES: readonly { cx: number; cz: number; r: number }[] = [
+  { cx: -30, cz: 44, r: 5 }, // starter meadow pond
+  { cx: 92, cz: 92, r: 6 }, // Greenwood lake
+  { cx: -92, cz: -86, r: 6 }, // Ironhold tarn
+  { cx: 96, cz: 182, r: 6 }, // Forgotten lagoon
+  { cx: -70, cz: 120, r: 5 } // Ashen spring
+]
+
+export function buildLakes(ctx: Ctx, scene: THREE.Scene): WaterRefs[] {
+  const refs: WaterRefs[] = []
+  for (const lake of LAKES) {
+    const { cx, cz, r } = lake
+    for (let ix = cx - r; ix <= cx + r; ix++) {
+      for (let iz = cz - r; iz <= cz + r; iz++) {
+        const d = Math.hypot(ix - cx, iz - cz)
+        if (d > r + 0.5) continue
+        if (d > r - 1) {
+          // bank ring — walkable, you fish from here
+          if (surfaceAt(ctx, ix, iz) === S_GRASS) setSurface(ctx, ix, iz, S_BANK)
+        } else {
+          setSurface(ctx, ix, iz, S_RIVER)
+          ctx.grid.block(ix, iz) // deep water blocks walking
+        }
+      }
+    }
+    const material = new THREE.MeshLambertMaterial({ color: P.WATER, transparent: true, opacity: 0.78 })
+    const mesh = new THREE.Mesh(new THREE.CircleGeometry(r + 0.3, 20), material)
+    mesh.rotation.x = -Math.PI / 2
+    mesh.position.set(cx + 0.5, -0.2, cz + 0.5)
+    mesh.receiveShadow = true
+    scene.add(mesh)
+    refs.push({ mesh, material })
+  }
+  return refs
+}
+
 /** The ocean ring beyond the continent edge (animated like the river). */
 export function buildOcean(scene: THREE.Scene): WaterRefs {
   const material = new THREE.MeshLambertMaterial({
     color: 0x2f6fb8,
     transparent: true,
-    opacity: 0.85
+    opacity: 0.85,
+    // The transparent sea must NOT write depth: with depthWrite on, this giant
+    // plane z-fought the sea-floor horizon plane below it at grazing distance,
+    // flickering the whole ocean blue ("glitchy"). Not writing depth lets the
+    // opaque floor show through cleanly and kills the fight.
+    depthWrite: false
   })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4800, 4800), material)
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(16000, 16000), material)
   mesh.rotation.x = -Math.PI / 2
   mesh.position.set(0, -0.42, 0)
+  mesh.renderOrder = 1 // draw after the opaque floor
   scene.add(mesh)
   return { mesh, material }
 }
@@ -266,10 +321,12 @@ export function buildOcean(scene: THREE.Scene): WaterRefs {
 /** Deep sea-floor plane under everything so the world never shows void. */
 export function buildHorizon(scene: THREE.Scene): void {
   const mesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(5200, 5200),
+    new THREE.PlaneGeometry(17000, 17000),
     new THREE.MeshLambertMaterial({ color: 0x27486b })
   )
   mesh.rotation.x = -Math.PI / 2
-  mesh.position.y = -0.95
+  // Well below the sea surface (-0.42): a generous gap removes any remaining
+  // depth-fight between the two huge planes at grazing distance.
+  mesh.position.y = -4
   scene.add(mesh)
 }

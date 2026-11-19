@@ -53,9 +53,29 @@ const SKUS: readonly GoldSku[] = [
 const ORIGIN = 'https://blockle.org'
 const POLL_MS = 60_000
 
-/** StoreKit bridge injected by the iOS shell (see module doc above). */
+/** StoreKit bridge injected by the iOS shell (see module doc above).
+ *  The shell has historically shipped a `buy(sku)` method; the documented
+ *  contract is `purchase({sku})`. Both are accepted so old and new shells work
+ *  (see resolveNativeBuy). Both resolve to the base64 App Store receipt. */
 export interface BlocklingsIAPBridge {
-  purchase(req: { sku: string }): Promise<{ receipt: string }>
+  purchase?(req: { sku: string }): Promise<{ receipt: string }>
+  buy?(sku: string): Promise<{ receipt: string }>
+  /**
+   * Restore previous StoreKit purchases (Apple requires this for apps with
+   * subscription / non-consumable IAP). The shell re-submits receipts to the
+   * account server for re-entitlement. Resolves with how many were restored.
+   */
+  restore?(): Promise<{ restored: number }>
+}
+
+/** Normalize the shell's purchase method: prefer the documented `purchase({sku})`,
+ *  fall back to the legacy `buy(sku)`. Returns null if neither exists. */
+function resolveNativeBuy(
+  bridge: BlocklingsIAPBridge | undefined
+): ((sku: string) => Promise<{ receipt: string }>) | null {
+  if (bridge && typeof bridge.purchase === 'function') return (sku) => bridge.purchase!({ sku })
+  if (bridge && typeof bridge.buy === 'function') return (sku) => bridge.buy!(sku)
+  return null
 }
 
 interface GoldGlobals {
@@ -176,50 +196,115 @@ const COIN_SVG =
 
 function refreshChip(): void {
   if (!chipEl || !chipAmtEl) return
-  chipEl.style.display = signedIn ? '' : 'none'
+  // Always visible so GOLD is reachable (and reviewable): tap to open the store.
+  // Balance stays honest — 0 until a signed-in session reports otherwise.
+  chipEl.style.display = ''
   chipAmtEl.textContent = cached.toLocaleString()
 }
 
-function mountChip(): void {
-  const chip = document.createElement('div')
-  chip.className = 'bl-gold-chip'
-  chip.title = 'GOLD — premium currency (App Store only)'
-  const icon = document.createElement('span')
-  icon.className = 'bl-gold-icon'
-  icon.innerHTML = COIN_SVG
-  const amt = document.createElement('span')
-  amt.className = 'bl-gold-amt'
-  amt.textContent = '0'
-  const cur = document.createElement('span')
-  cur.className = 'bl-gold-cur'
-  cur.textContent = 'GOLD'
-  chip.appendChild(icon)
-  chip.appendChild(amt)
-  chip.appendChild(cur)
-  chip.style.display = 'none'
-  chipEl = chip
-  chipAmtEl = amt
+// ---------------------------------------------------------------------------
+// GOLD store — the "Get GOLD" sheet (the IAP surface Apple reviews, and the
+// only place GOLD is bought). Lists the four packs; Buy routes through
+// goldApi.purchase() — StoreKit on iOS, PayPal on web/Android.
+// ---------------------------------------------------------------------------
 
-  // Join the HUD's top-right cluster when it exists (its old chip spot);
-  // the HUD may mount after us, so retry briefly, then float standalone.
-  let tries = 0
-  const tryAttach = (): void => {
-    const cluster = document.querySelector('.bl-topright')
-    if (cluster) {
-      cluster.insertBefore(chip, cluster.firstChild)
-      refreshChip()
-      return
-    }
-    if (++tries < 40) {
-      setTimeout(tryAttach, 250)
-      return
-    }
-    chip.classList.add('bl-gold-chip-floating')
-    ;(document.getElementById('ui') ?? document.body).appendChild(chip)
-    refreshChip()
-  }
-  tryAttach()
+let storeEl: HTMLElement | null = null
+
+/** Small label under each pack (bonus framing — purely cosmetic copy). */
+const PACK_NOTE: Record<string, string> = {
+  gold_100: 'Starter pouch',
+  gold_550: 'Best for most',
+  gold_1200: 'Great value',
+  gold_2600: 'Dragon hoard'
 }
+
+function closeStore(): void {
+  storeEl?.remove()
+  storeEl = null
+}
+
+function openStore(): void {
+  if (storeEl) return
+  const back = document.createElement('div')
+  back.className = 'bl-gold-store-back'
+  back.style.pointerEvents = 'auto'
+  back.addEventListener('click', (e) => {
+    if (e.target === back) closeStore()
+  })
+
+  const panel = document.createElement('div')
+  panel.className = 'bl-gold-store'
+
+  const head = document.createElement('div')
+  head.className = 'bl-gold-store-head'
+  head.innerHTML =
+    '<span class="bl-gold-store-title">' + COIN_SVG + ' Get GOLD</span>'
+  const x = document.createElement('button')
+  x.className = 'bl-gold-store-x'
+  x.type = 'button'
+  x.textContent = '×'
+  x.setAttribute('aria-label', 'Close')
+  x.addEventListener('click', () => closeStore())
+  head.appendChild(x)
+  panel.appendChild(head)
+
+  const sub = document.createElement('p')
+  sub.className = 'bl-gold-store-sub'
+  sub.textContent = signedIn
+    ? 'GOLD is the premium currency for the Blockling marketplace. Balance: ' + cached.toLocaleString() + '.'
+    : 'Sign in to a Blockle account to buy and hold GOLD.'
+  panel.appendChild(sub)
+
+  const grid = document.createElement('div')
+  grid.className = 'bl-gold-store-grid'
+  for (const s of SKUS) {
+    const card = document.createElement('div')
+    card.className = 'bl-gold-pack'
+    const amt = document.createElement('div')
+    amt.className = 'bl-gold-pack-amt'
+    amt.innerHTML = COIN_SVG + '<b>' + s.gold.toLocaleString() + '</b>'
+    const note = document.createElement('div')
+    note.className = 'bl-gold-pack-note'
+    note.textContent = PACK_NOTE[s.sku] ?? ''
+    const buy = document.createElement('button')
+    buy.className = 'bl-gold-pack-buy'
+    buy.type = 'button'
+    buy.textContent = '$' + s.usd.toFixed(2)
+    buy.addEventListener('click', async () => {
+      if (buy.disabled) return
+      buy.disabled = true
+      const label = buy.textContent
+      buy.textContent = '…'
+      const r = await goldApi.purchase(s.sku)
+      if (r.ok) {
+        buy.textContent = '✓'
+        sub.textContent = 'Purchased ' + s.gold.toLocaleString() + ' GOLD. Balance: ' + cached.toLocaleString() + '.'
+        setTimeout(() => closeStore(), 900)
+      } else {
+        buy.textContent = label
+        buy.disabled = false
+        sub.textContent =
+          r.error === 'iOS only'
+            ? 'GOLD purchases open in a secure checkout.'
+            : r.error ?? 'Purchase could not be completed.'
+      }
+    })
+    card.append(amt, note, buy)
+    grid.appendChild(card)
+  }
+  panel.appendChild(grid)
+
+  const fine = document.createElement('p')
+  fine.className = 'bl-gold-store-fine'
+  fine.textContent =
+    'GOLD is a non-refundable in-game currency. It is never cashed out and has no real-world value.'
+  panel.appendChild(fine)
+
+  back.appendChild(panel)
+  ;(document.getElementById('ui') ?? document.body).appendChild(back)
+  storeEl = back
+}
+
 
 // ---------------------------------------------------------------------------
 // Spend (server-authoritative debit — vendors, market, anything priced GOLD)
@@ -263,6 +348,65 @@ export async function spendGold(
 // GoldAPI
 // ---------------------------------------------------------------------------
 
+/**
+ * PayPal GOLD top-up (web + sideloaded Android — anywhere without StoreKit).
+ *
+ * Flow: ask the server to mint a CAPTURE order for this SKU, open PayPal's
+ * approval page (a popup in a browser; the external browser via the Android
+ * shell's window.blocklingsOpenURL), and let the server's gold-return page do
+ * the server-side capture + credit. We never credit client-side — we just
+ * watch the server balance and resolve when it rises by the SKU's amount.
+ *
+ * Honest failure everywhere: if the account isn't signed in, PayPal isn't
+ * configured (503), or the player closes PayPal without paying (timeout), we
+ * report it plainly and nothing moves.
+ */
+async function purchaseViaPaypal(def: GoldSku): Promise<{ ok: boolean; error?: string }> {
+  if (!csrf && !bearerToken()) await probeSession()
+  const created = await accountFetch('POST', '/account/api/game/gold/paypal/create', { sku: def.sku })
+  if (!created) return { ok: false, error: 'Network error — PayPal checkout did not start.' }
+  if (created.status === 503) return { ok: false, error: 'PayPal is not available right now.' }
+  if (created.status !== 200 || typeof created.data.approveUrl !== 'string') {
+    const error = typeof created.data.error === 'string' ? created.data.error : 'Could not start PayPal checkout.'
+    return { ok: false, error }
+  }
+  const approveUrl = created.data.approveUrl
+
+  // Open PayPal. Native shell → external browser; plain web → a popup window
+  // (falls back to same-tab navigation if the popup is blocked).
+  const openExternal = (window as unknown as { blocklingsOpenURL?: (u: string) => void }).blocklingsOpenURL
+  let popup: Window | null = null
+  if (typeof openExternal === 'function') {
+    openExternal(approveUrl)
+  } else {
+    popup = window.open(approveUrl, 'blk_gold_paypal', 'width=480,height=720')
+    if (!popup) window.location.href = approveUrl
+  }
+
+  // Wait for the return page to capture + credit server-side: poll the balance
+  // until it climbs by this SKU's gold (success) or we time out (~4 min).
+  const start = cached
+  const deadline = Date.now() + 4 * 60_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2500))
+    const bal = await fetchBalance()
+    if (bal >= start + def.gold) {
+      events.emit('chat:system', {
+        text: `Purchased ${def.gold.toLocaleString()} GOLD. Your wallet feels heavier.`
+      })
+      try { popup?.close() } catch { /* cross-origin close may throw */ }
+      return { ok: true }
+    }
+    if (popup && popup.closed) {
+      // Popup gone and no credit landed — one last check, then give up honestly.
+      const last = await fetchBalance()
+      if (last >= start + def.gold) return { ok: true }
+      return { ok: false, error: 'PayPal window closed before the payment completed.' }
+    }
+  }
+  return { ok: false, error: 'Timed out waiting for PayPal. If you paid, your GOLD will appear shortly.' }
+}
+
 const goldApi: GoldAPI = {
   async balance(): Promise<number> {
     if (!signedIn) return 0
@@ -278,14 +422,25 @@ const goldApi: GoldAPI = {
     if (!def) return { ok: false, error: 'Unknown SKU.' }
     if (!signedIn) return { ok: false, error: 'Sign in to a Blockle account first.' }
     const bridge = (window as unknown as GoldGlobals).blocklingsIAP
-    if (!bridge || typeof bridge.purchase !== 'function') {
-      return { ok: false, error: 'iOS only' }
+    const nativeBuy = resolveNativeBuy(bridge)
+    if (!nativeBuy) {
+      // Apple REQUIRES StoreKit IAP for digital goods inside the iOS app — PayPal
+      // there is a rejection. The iOS shell is a WKWebView (window.webkit.
+      // messageHandlers present) and injects the bridge at document start, so a
+      // missing bridge in that context is a transient error, NEVER a PayPal fall-
+      // back. Web browsers + sideloaded Android (no WKWebView) keep PayPal.
+      const inIosShell =
+        (window as unknown as { webkit?: { messageHandlers?: unknown } }).webkit?.messageHandlers != null
+      if (inIosShell) {
+        return { ok: false, error: 'In-app purchases are still loading — reopen the app and try again.' }
+      }
+      return purchaseViaPaypal(def)
     }
 
-    // 1) Native StoreKit purchase via the shell bridge.
+    // 1) Native StoreKit purchase via the shell bridge (purchase({sku}) or buy(sku)).
     let receipt: string
     try {
-      const out = await bridge.purchase({ sku })
+      const out = await nativeBuy(sku)
       receipt = typeof out?.receipt === 'string' ? out.receipt : ''
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : 'Purchase failed.' }
@@ -304,6 +459,10 @@ const goldApi: GoldAPI = {
     }
     const error = typeof r.data.error === 'string' ? r.data.error : `Purchase could not be credited (HTTP ${r.status}).`
     return { ok: false, error }
+  },
+
+  openStore(): void {
+    openStore()
   }
 }
 
@@ -315,12 +474,31 @@ const goldApi: GoldAPI = {
  * Initialize the GOLD module: HUD chip + server-balance mirror + GoldAPI.
  * The integrator wires the returned GoldAPI to whoever needs it (market, shop).
  */
+/**
+ * Apple "Restore Purchases": ask the iOS shell to replay StoreKit receipts to
+ * the account server for re-entitlement, then re-pull the server GOLD balance.
+ * No-op (with a friendly message) outside the iOS app.
+ */
+export async function restorePurchases(): Promise<{ ok: boolean; restored?: number; error?: string }> {
+  const bridge = (window as unknown as GoldGlobals).blocklingsIAP
+  if (!bridge?.restore) return { ok: false, error: 'Restore Purchases is only available in the iOS app.' }
+  try {
+    const r = await bridge.restore()
+    await fetchBalance() // re-pull server-confirmed GOLD + entitlement
+    return { ok: true, restored: r?.restored ?? 0 }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Restore failed — please try again.' }
+  }
+}
+
 export function initGold(api: GameAPI): GoldModule {
   void api // GOLD renders pure DOM; the GameAPI is accepted per module convention
   if (inited) return goldApi
   inited = true
 
-  mountChip()
+  // The HUD now owns GOLD display inside its 2x2 balances grid (which opens the
+  // store via goldApi.openStore()), so we no longer mount a standalone chip.
+  // Balance/server/store logic below is unchanged; refreshChip() null-guards.
 
   // Auth module drives visibility; we also self-probe once for early boots.
   events.on('auth:changed', ({ signedIn: s }) => {

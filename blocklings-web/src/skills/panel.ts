@@ -28,6 +28,7 @@ export interface SkillsPanelDeps {
 const GLYPHS: Record<string, { ch: string; color: string; flip?: boolean }> = {
   attack: { ch: '⚔︎', color: '#e08c4f' }, // crossed swords
   defense: { ch: '⬟', color: '#6cb8ff', flip: true }, // pentagon -> shield
+  archery: { ch: '➹', color: '#7fd06a' }, // arrow
   magic: { ch: '✦', color: '#b48cff' }, // four-point star
   vitality: { ch: '❤︎', color: '#ff6b6b' }, // heart
   mining: { ch: '⛏︎', color: '#c9a66b' }, // pick
@@ -172,7 +173,7 @@ export function createSkillsPanel(deps: SkillsPanelDeps): { refresh(): void } {
       r.fill.classList.toggle('bl-skill-fill-max', maxed)
       r.fill.style.width = maxed ? '100%' : `${size > 0 ? Math.min(100, (into / size) * 100) : 0}%`
       r.row.title = maxed
-        ? `${cap(r.skill)} — level 99. There is nothing left to prove.`
+        ? `${cap(r.skill)} — level ${MAX_LEVEL}. There is nothing left to prove.`
         : `${cap(r.skill)} — ${into.toLocaleString()} / ${size.toLocaleString()} XP this level (${deps
             .xp(r.skill)
             .toLocaleString()} total)`

@@ -31,7 +31,9 @@
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   padding: 12px 14px;
-  z-index: 30;
+  /* Above the quest rail (z-index 44) so a quest-giver's dialog is never
+     painted under the floating quest tracker / "!" button. */
+  z-index: 60;
 }
 
 .bl-npc-head {

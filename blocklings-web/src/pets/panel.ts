@@ -10,6 +10,7 @@
 import type { ChainId, PetInstance } from '../types'
 import { SPECIES, petDef } from '../ids'
 import { VARIANT_LOOK, variantTileColor } from './palette'
+import { isIosApp, openCryptoWeb } from '../platform'
 import './pets.css'
 
 export interface PetsPanelDeps {
@@ -210,7 +211,13 @@ export function createPetsPanel(deps: PetsPanelDeps): { refresh(): void; flashBu
 
     const unminted = CHAIN_BADGES.filter((b) => !pet.mints.some((m) => m.chain === b.chain))
     if (unminted.length > 0) {
-      if (!pickerOpen) {
+      if (isIosApp()) {
+        // NFT minting is a crypto action — offered on the web (same account), not the app.
+        const webBtn = el('button', 'bl-pet-wide-btn bl-pet-mint-btn', 'Mint as NFT (on the web)')
+        webBtn.type = 'button'
+        webBtn.addEventListener('click', () => openCryptoWeb())
+        detail.appendChild(webBtn)
+      } else if (!pickerOpen) {
         const mintBtn = el('button', 'bl-pet-wide-btn bl-pet-mint-btn', 'MINT as NFT')
         mintBtn.type = 'button'
         mintBtn.disabled = mintBusy

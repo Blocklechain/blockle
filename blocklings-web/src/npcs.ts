@@ -14,5 +14,5 @@
  * 'Wallet required', GOLD reads 'Sign in for Gold'). There is NO soft
  * currency; the old purse/BLOCK-cents ledger is gone.
  */
-export { initNpcs, setQuestsApi, setPay, setGoldPay } from './npcs/index'
+export { initNpcs, setQuestsApi, setPay, setGoldPay, setStableOpener } from './npcs/index'
 export type { VendorPayFn, GoldPayFn } from './npcs/index'

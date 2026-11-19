@@ -80,6 +80,8 @@ body {
 #ui > .wm-root,
 #ui > .bl-title--hidden,
 #ui > .ach-root,
+#ui > .bl-hotbar,
+#ui > .bl-stance,
 #ui > .bl-hud {
   pointer-events: none;
 }
@@ -88,4 +90,57 @@ body {
 #ui textarea {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* "Hide all buttons" clean-UI / screenshot mode (Settings toggle). Keeps the
+   essentials — movement (canvas gestures), the ATK action button, the hotbar,
+   the minimap, the combat-stance panel, and the settings gear — and hides every
+   other floating HUD button so the view is uncluttered. */
+#ui.bl-minimal .wm-btn,
+#ui.bl-minimal .mk-btn,
+#ui.bl-minimal .blkw-toggle,
+#ui.bl-minimal .bl-bagbtn,
+#ui.bl-minimal .bl-pets-btn,
+#ui.bl-minimal .bl-skills-btn,
+#ui.bl-minimal .ach-btn,
+#ui.bl-minimal .bl-stable-btn,
+#ui.bl-minimal .bl-spc-btn,
+#ui.bl-minimal .bl-chip,
+#ui.bl-minimal .bl-wallet {
+  display: none !important;
+}
+
+/* ===== Force portrait on mobile: rotate-to-portrait overlay ============== */
+#bl-rotate { display: none; }
+@media (orientation: landscape) and (pointer: coarse) {
+  #bl-rotate {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 99999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: linear-gradient(180deg, #0f1826 0%, #0a1018 100%);
+    color: #eaf1fb;
+    text-align: center;
+    padding: 24px;
+    font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  }
+  /* a little phone that rocks from landscape to portrait */
+  #bl-rotate .bl-rotate-phone {
+    width: 70px;
+    height: 120px;
+    border: 4px solid #7ed957;
+    border-radius: 14px;
+    box-shadow: 0 0 0 4px rgba(126, 217, 87, 0.15);
+    animation: bl-rotate-rock 1.8s ease-in-out infinite;
+  }
+  #bl-rotate .bl-rotate-title { font-size: 20px; font-weight: 700; color: #7ed957; }
+  #bl-rotate .bl-rotate-sub { font-size: 14px; color: #9fb0c8; }
+}
+@keyframes bl-rotate-rock {
+  0%, 40% { transform: rotate(90deg); }
+  60%, 100% { transform: rotate(0deg); }
 }

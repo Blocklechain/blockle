@@ -13,6 +13,7 @@
  * count every kill of the species (boss included — a boss IS a wolf, legally).
  */
 import type { GameAPI, QuestDef, QuestStep, QuestsAPI } from '../types'
+import { curveXp } from '../skills'
 import { events } from '../events'
 import { saveRegistry } from '../save/registry'
 import { BOSSES, NPCS } from '../ids'
@@ -20,16 +21,17 @@ import { ITEM_NAMES as ITEM_NAMES1, PREREQS as PREREQS1, QUESTS as QUESTS1, ques
 import { ITEM_NAMES2, PREREQS2, QUESTS2, questById2 } from './defs2'
 import { ITEM_NAMES3, PREREQS3, QUESTS3, questById3 } from './defs3'
 import { ITEM_NAMES4, PREREQS4, QUESTS4, questById4 } from './defs4'
+import { EXTRA_QUESTS, EXTRA_PREREQS, EXTRA_ITEM_NAMES } from '../content/packs'
 import { createQuestPanel, type QuestPanel } from './panel'
 import { onTrackedChange, setTracked as setTrackedId, trackedId } from './tracking'
 
 // Wave-3 outer-zone arcs concat straight onto the original book; everything
 // below works off the merged tables under the original names.
-const QUESTS: readonly QuestDef[] = [...QUESTS1, ...QUESTS2, ...QUESTS3, ...QUESTS4]
-const PREREQS: Readonly<Record<string, readonly string[]>> = { ...PREREQS1, ...PREREQS2, ...PREREQS3, ...PREREQS4 }
-const ITEM_NAMES: Readonly<Record<string, string>> = { ...ITEM_NAMES1, ...ITEM_NAMES2, ...ITEM_NAMES3, ...ITEM_NAMES4 }
+const QUESTS: readonly QuestDef[] = [...QUESTS1, ...QUESTS2, ...QUESTS3, ...QUESTS4, ...EXTRA_QUESTS]
+const PREREQS: Readonly<Record<string, readonly string[]>> = { ...PREREQS1, ...PREREQS2, ...PREREQS3, ...PREREQS4, ...EXTRA_PREREQS }
+const ITEM_NAMES: Readonly<Record<string, string>> = { ...ITEM_NAMES1, ...ITEM_NAMES2, ...ITEM_NAMES3, ...ITEM_NAMES4, ...EXTRA_ITEM_NAMES }
 const questById = (id: string): QuestDef | undefined =>
-  questById1(id) ?? questById2(id) ?? questById3(id) ?? questById4(id)
+  questById1(id) ?? questById2(id) ?? questById3(id) ?? questById4(id) ?? EXTRA_QUESTS.find((q) => q.id === id)
 
 interface ActiveState {
   step: number
@@ -103,7 +105,7 @@ function complete(id: string, def: QuestDef): void {
   if (r.xp) {
     for (const [skill, amount] of Object.entries(r.xp)) {
       if (typeof amount === 'number' && amount > 0) {
-        events.emit('xp:gained', { skill, amount })
+        events.emit('xp:gained', { skill, amount: curveXp(skill, amount) })
       }
     }
   }
@@ -317,6 +319,13 @@ export function initQuests(api: GameAPI): QuestsAPI {
       if (!focusId) return null
       const st = active.get(focusId)
       const def = focusId ? questById(focusId) : undefined
+      return st && def ? { def, step: st.step, done: st.done } : null
+    },
+    trackedQuest: () => {
+      const id = trackedId()
+      if (!id) return null
+      const st = active.get(id)
+      const def = questById(id)
       return st && def ? { def, step: st.step, done: st.done } : null
     },
     setFocus: (id) => {

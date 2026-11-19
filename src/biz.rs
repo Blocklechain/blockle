@@ -2738,7 +2738,7 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 </style></head><body>
 <header class="bar"><div class="wrap">
 <a class="brand" href="/"><img class="mark" src="/logo-mark.png" alt="">Blockle</a>
-<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Alien</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#download">Get it</a></nav>
+<nav class="top"><a href="/copilot" style="color:var(--accent);font-weight:700">Alien</a><a href="/wallet">Wallet</a><a href="/dex">DEX</a><a href="/bridge">Bridge</a><a href="/faucet">Faucet</a><a href="/explorer">Explorer</a><a href="/network">Mining</a><a href="#blocklings">Game</a><a href="#download">Get it</a></nav>
 <span class="spacer"></span>
 <a class="btn btn-ghost" href="https://exchange.blockle.org">Exchange</a>
 <a class="btn btn-ghost" id="nav-auth" href="/account/login">Sign in</a>
@@ -2775,6 +2775,36 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <div class="dhead"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="label">Blockle &middot; command</span></div>
 <div class="body"><div class="prompt"><span class="chev">&gt;</span><span class="txt" id="typed"></span><span class="caret" id="caret"></span></div><div id="stage"></div></div>
 </div></div>
+</section>
+<section id="blocklings-top" style="padding:28px 0 6px"><div class="wrap">
+<div class="blf">
+<div class="blf-copy">
+<span class="eyebrow" style="color:var(--accent)">New &middot; now on the App Store &middot; free to play</span>
+<h2 class="blf-h">Blocklings &mdash; our voxel MMORPG just launched on iPhone &amp; iPad.</h2>
+<p class="sub" style="max-width:54ch;margin-top:10px">A browser-first 3D world where you fight, gather, craft and quest &mdash; and every item is a real on-chain NFT that&rsquo;s truly yours. One hero, synced across iPhone, iPad, Android and the web.</p>
+<div class="hero-cta" style="margin-top:20px">
+<a class="btn btn-appstore" href="https://apps.apple.com/us/app/blocklings/id6834539372"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.8 3-.8s1.8.8 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6-.1 0-2.3-.9-2.1-3.5zM14.2 6c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-.9 2.9 1 .1 2-.5 2.6-1.3z"/></svg><span class="asb"><span class="asb-s">Download on the</span><span class="asb-b">App Store</span></span></a>
+<a class="btn btn-primary" href="https://blocklings.blockle.org" style="padding:12px 18px;font-size:15px">Play free in your browser &rarr;</a>
+<a class="btn" href="/assets/blocklings.apk" download style="padding:12px 18px;font-size:15px;border:1px solid var(--line)">Android APK</a>
+</div>
+<a href="https://indie-apps.com/apps/blocklings-539372" target="_blank" rel="noopener" style="display:inline-block;margin-top:18px"><img src="https://indie-apps.com/badge/blocklings-539372" alt="Listed on Indie Apps" width="150" height="56" loading="lazy"></a>
+</div>
+<a class="blf-art" href="https://blocklings.blockle.org" aria-label="Play Blocklings in your browser"><img src="/assets/blocklings-hub.jpg" alt="Blocklings &mdash; voxel MMORPG gameplay in the Kingdom of Beginnings" loading="lazy"></a>
+</div>
+</div>
+<style>
+.blf{display:grid;grid-template-columns:1.04fr .96fr;gap:30px;align-items:center;background:linear-gradient(180deg,var(--surface),var(--surface-2));border:1px solid var(--line);border-radius:20px;padding:28px 30px}
+.blf-h{font-size:clamp(24px,3.3vw,36px);line-height:1.12;margin:8px 0 0}
+.blf-art{display:block;border-radius:14px;overflow:hidden;border:1px solid var(--line)}
+.blf-art img{width:100%;display:block;transition:transform .5s ease}
+.blf-art:hover img{transform:scale(1.03)}
+.btn-appstore{background:#000;color:#fff;border:1px solid #000;padding:9px 16px;font-size:15px;display:inline-flex;align-items:center;gap:9px}
+.btn-appstore:hover{background:#111;color:#fff}
+.btn-appstore .asb{display:flex;flex-direction:column;line-height:1.02;text-align:left}
+.btn-appstore .asb-s{font-size:10px;font-weight:500;opacity:.9;letter-spacing:.02em}
+.btn-appstore .asb-b{font-size:16px;font-weight:700}
+@media(max-width:820px){.blf{grid-template-columns:1fr;padding:22px}.blf-art{order:-1}}
+</style>
 </section>
 <section id="live" style="padding:30px 0 6px"><div class="wrap">
 <div class="livehead"><span class="eyebrow">Live on BLOCK</span><span class="livedot" aria-hidden="true"></span><span class="livelbl">mainnet</span></div>
@@ -2847,6 +2877,17 @@ footer{padding:52px 0 70px}.foot{display:flex;flex-wrap:wrap;gap:26px 48px;justi
 <script src="/backtest-demo.js?v=20261104a"></script>
 <section><div class="wrap"><span class="eyebrow">Supported today</span><div class="shead"><h2>Every major chain, one seed phrase.</h2></div>
 <div class="chains"><span class="chip"><span class="d" style="background:#f7931a"></span>Bitcoin</span><span class="chip"><span class="d" style="background:#627eea"></span>Ethereum &amp; EVM</span><span class="chip"><span class="d" style="background:#9945ff"></span>Solana</span><span class="chip"><span class="d" style="background:#4d8bff"></span>BLOCK</span><span class="chip"><span class="d" style="background:#345d9d"></span>Litecoin</span><span class="chip"><span class="d" style="background:#c2a633"></span>Dogecoin</span><span class="chip"><span class="d" style="background:#2fc08a"></span>USDC / USDT</span><span class="chip">+ WalletConnect &middot; NFTs</span></div></div></section>
+<section id="blocklings"><div class="wrap"><span class="eyebrow">Now playable &middot; crypto-native voxel MMORPG</span>
+<div class="shead"><h2>Blocklings &mdash; a voxel world where the loot is actually yours.</h2><p>A browser-first 3D MMORPG in the Blockle ecosystem. Fight, gather, chop, craft and quest with a comically oversized head. Every item is a real on-chain NFT you can mint and trade; GOLD is the premium currency. Play free in the browser right now.</p></div>
+<a href="https://blocklings.blockle.org" style="display:block;margin-top:30px;border-radius:16px;overflow:hidden;border:1px solid var(--line)"><img src="/assets/blocklings-hub.jpg" alt="Blocklings — voxel MMORPG gameplay in the Kingdom of Beginnings" loading="lazy" style="width:100%;display:block"></a>
+<div class="hero-cta" style="margin-top:26px">
+<a class="btn btn-appstore" href="https://apps.apple.com/us/app/blocklings/id6834539372"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.8 3-.8s1.8.8 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.2-2.6-.1 0-2.3-.9-2.1-3.5zM14.2 6c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-.9 2.9 1 .1 2-.5 2.6-1.3z"/></svg><span class="asb"><span class="asb-s">Download on the</span><span class="asb-b">App Store</span></span></a>
+<a class="btn btn-primary" href="https://blocklings.blockle.org" style="padding:13px 20px;font-size:15px">Play in your browser &rarr;</a>
+<a class="btn" href="/assets/blocklings.apk" download style="padding:13px 20px;font-size:15px;border:1px solid var(--line)">Download Android APK</a>
+<a class="btn" href="https://blocklings.blockle.org/leaderboard" style="padding:13px 20px;font-size:15px;border:1px solid var(--line)">Leaderboard</a>
+</div>
+<p class="micro" style="margin-top:14px">Android APK is sideloaded (enable &ldquo;install unknown apps&rdquo;). The browser version runs on phones, tablets and desktop &mdash; no download needed.</p>
+</div></section>
 <section id="download"><div class="wrap"><span class="eyebrow">Free &middot; no account &middot; open source</span>
 <div class="shead"><h2>Get Blockle.</h2><p>Install on any device. Create a wallet in seconds, or import your seed. You hold the keys from the first second.</p></div>
 <div class="dl">
@@ -2935,7 +2976,7 @@ fn page_network(reg: &Registry) -> String {
 <table><tr><th>pool</th><th>status</th><th>endpoint</th><th>fee</th><th>pool hashrate</th><th>miners</th><th>blocks</th></tr>
 {solo}{pplns}{direct}</table>
 <h2>Merge lanes <span class="badge">one chain · ten proof-of-work lanes</span></h2>
-<p class="sub">BLOCK's consensus accepts a parent block's proof-of-work from any of these ASIC ecosystems in place of a native solution — each lane retargets independently. Parent-chain pools attach BLOCK via the <a href="/mine#operators">merged-mining work API</a>.</p>
+<p class="sub">BLOCK's consensus accepts a parent block's proof-of-work from any of these ASIC ecosystems in place of a native solution. Since block 53,000 all lanes retarget from one shared base difficulty, scaled by each lane's measured energy-per-hash, so every lane spends the same real power per block. Parent-chain pools attach BLOCK via the <a href="/mine#operators">merged-mining work API</a>.</p>
 <table><tr><th>parent ecosystem</th><th>algorithm</th><th>hardware</th><th>consensus</th><th>pool status</th></tr>
 {parents}</table>
 <h2>BLOCK chain</h2>
@@ -4887,7 +4928,7 @@ fn page_explorer(_reg: &Registry) -> String {
 {search}
 <div class="cards">{c1}{c2}{c3}{c4}</div>
 <h2>Proof-of-work lanes</h2>
-<p class="sub">Each algorithm retargets independently, so difficulty differs per lane.</p>
+<p class="sub">Since block 53,000 every lane retargets from <b>one shared base difficulty</b>, scaled by that lane's benchmark energy-per-hash — so the numbers below differ because the hardware differs in power draw, not because the lanes retarget on their own. Each lane spends the same real energy per block. <a href="/fork">How the coupling works</a>.</p>
 <table><tr><th>lane</th><th>blocks</th><th>difficulty</th></tr>{lanes}</table>
 <h2>Recent blocks</h2>
 <table><tr><th>height</th><th>hash</th><th>lane</th><th>difficulty</th><th>txs</th><th>reward</th><th>miner</th></tr>{blocks}</table>"##,

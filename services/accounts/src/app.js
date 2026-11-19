@@ -125,6 +125,21 @@
         stat(u.totpEnabled ? 'On' : 'Off', '2FA') +
         (u.createdAt ? stat(new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }), 'Member since') : '');
 
+      // Blockling "Restore my Blockling" banner — shown when soft-deleted in-game.
+      try {
+        const ch = await api('GET', '/account/api/game/character');
+        if (ch.status === 200 && ch.data && ch.data.deleted) {
+          $('#blkRestore').innerHTML = `<div class="statusline" style="background:rgba(201,146,58,.12);border:1px solid rgba(201,146,58,.5);padding:12px;border-radius:10px;margin:10px 0 2px;gap:10px">
+            <span>Your Blockling is tucked away — you deleted it in-game. Your character and progress are safe.</span>
+            <button class="sm" id="blk-restore-go" style="max-width:200px">Restore my Blockling</button></div>`;
+          $('#blk-restore-go').addEventListener('click', async () => {
+            const r = await api('POST', '/account/api/game/blocklings/restore', {});
+            if (r.status === 200) { show('Your Blockling is back! Jump into the game.', 'ok'); setTimeout(() => location.reload(), 900); }
+            else show(r.data.error || 'Could not restore right now — try again.');
+          });
+        }
+      } catch (e) { /* non-fatal */ }
+
       // security: 2FA
       $('#twofaBox').innerHTML = u.totpEnabled
         ? `<div class="statusline"><span class="on">${ic('check')} Two-factor is on${u.recoveryLeft != null ? ' · ' + u.recoveryLeft + ' recovery code' + (u.recoveryLeft === 1 ? '' : 's') + ' left' : ''}</span><button class="ghost sm" id="regen" style="max-width:210px">Regenerate recovery codes</button></div><div id="regenArea"></div>`

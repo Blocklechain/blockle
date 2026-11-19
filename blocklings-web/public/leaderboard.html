@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Blocklings — Leaderboard</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:#0b1420;color:#eaf1fb;font:15px/1.5 'Trebuchet MS','Segoe UI',system-ui,sans-serif;
+    padding:24px 16px 60px;max-width:760px;margin:0 auto}
+  a{color:#e8c15a;text-decoration:none}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:4px}
+  h1{font-size:26px;margin:0;letter-spacing:.01em}
+  h1 .coin{color:#e8c15a}
+  .sub{color:#9fb0c8;margin:0 0 18px;font-size:14px}
+  .tabs{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px}
+  .tab{padding:7px 12px;border-radius:999px;border:1px solid #23415f;background:#13263b;color:#bcd0e8;
+    font-size:13px;cursor:pointer;text-transform:capitalize}
+  .tab.on{background:#e8c15a;border-color:#e8c15a;color:#1b1405;font-weight:700}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:10px 10px;border-bottom:1px solid #16263a}
+  th{color:#8ea3bd;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  td.rank{color:#7f93ad;width:46px;font-variant-numeric:tabular-nums}
+  td.val{text-align:right;font-weight:800;color:#e8c15a;font-variant-numeric:tabular-nums}
+  td.tot{text-align:right;color:#9fb0c8;font-variant-numeric:tabular-nums}
+  tr:nth-child(1) td.rank{color:#e8c15a}
+  .name{font-weight:600}
+  .empty,.err{color:#8ea3bd;padding:24px 4px;text-align:center}
+  .foot{margin-top:22px;color:#64748b;font-size:12.5px;text-align:center}
+  .back{display:inline-block;margin-bottom:14px;color:#9fb0c8}
+</style>
+</head>
+<body>
+  <a class="back" href="/">← Back to Blocklings</a>
+  <header>
+    <h1><span class="coin">⚔</span> Leaderboard</h1>
+  </header>
+  <p class="sub">Who's the mightiest Blockling? Ranked by total level and by each skill. Sign in to a Blockle account in-game to appear here.</p>
+  <div class="tabs" id="tabs"></div>
+  <div id="board"><p class="empty">Loading…</p></div>
+  <p class="foot">Updates as players level up. <a href="/">Play Blocklings</a></p>
+
+<script>
+(function () {
+  var API = 'https://blockle.org/account/api/game/blocklings/leaderboard';
+  var SKILLS = ['total','attack','defense','archery','magic','vitality','mining','woodcutting','fishing','farming','herbalism','blacksmithing','cooking','alchemy','tailoring'];
+  var LABEL = { total: 'Total', defense: 'Defence', archery: 'Archery' };
+  var tabsEl = document.getElementById('tabs');
+  var boardEl = document.getElementById('board');
+  var current = 'total';
+
+  SKILLS.forEach(function (s) {
+    var b = document.createElement('button');
+    b.className = 'tab' + (s === current ? ' on' : '');
+    b.textContent = LABEL[s] || s;
+    b.dataset.s = s;
+    b.onclick = function () { select(s); };
+    tabsEl.appendChild(b);
+  });
+
+  function select(s) {
+    current = s;
+    Array.prototype.forEach.call(tabsEl.children, function (b) {
+      b.classList.toggle('on', b.dataset.s === s);
+    });
+    load(s);
+  }
+
+  function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+  async function load(metric) {
+    boardEl.innerHTML = '<p class="empty">Loading…</p>';
+    try {
+      var r = await fetch(API + '?metric=' + encodeURIComponent(metric), { cache: 'no-store' });
+      var j = await r.json();
+      var players = (j && j.players) || [];
+      if (!players.length) {
+        boardEl.innerHTML = '<p class="empty">No ranked players yet — be the first! Sign in and start leveling up.</p>';
+        return;
+      }
+      var head = metric === 'total' ? 'Total Level' : (LABEL[metric] || (metric.charAt(0).toUpperCase() + metric.slice(1)));
+      var rows = players.map(function (p, i) {
+        return '<tr><td class="rank">' + (i + 1) + '</td>' +
+          '<td class="name">' + esc(p.name || 'Adventurer') + '</td>' +
+          '<td class="val">' + (p.value | 0) + '</td>' +
+          '<td class="tot">' + (p.total | 0) + '</td></tr>';
+      }).join('');
+      boardEl.innerHTML =
+        '<table><thead><tr><th>#</th><th>Blockling</th><th style="text-align:right">' + esc(head) +
+        '</th><th style="text-align:right">Total</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    } catch (e) {
+      boardEl.innerHTML = '<p class="err">Could not load the leaderboard. Please try again shortly.</p>';
+    }
+  }
+
+  load(current);
+})();
+</script>
+</body>
+</html>

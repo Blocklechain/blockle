@@ -20,6 +20,14 @@ export const ROOF = [0x2f7d46, 0x29703e, 0x38914f] as const
 export const WINDOW_GLOW = 0xffc772
 
 export const LEAF = [0x3f8f3d, 0x55a449, 0x337c38, 0x62b14f] as const
+// Extra tree palettes (more tree types): birch (pale bark), blossom (pink),
+// willow (soft green), autumn (warm), palm (tropical).
+export const BIRCH_WOOD = [0xe7e2d6, 0xd9d3c4, 0xcfc8b7] as const
+export const BIRCH_LEAF = [0x8fcf5f, 0x7cc250, 0x9bd86b] as const
+export const BLOSSOM_LEAF = [0xf4a6c8, 0xf6b9d4, 0xed8fb8, 0xffd0e4] as const
+export const WILLOW_LEAF = [0x7fae5a, 0x8fbd6a, 0x6f9e4c] as const
+export const AUTUMN_LEAF = [0xe08a3c, 0xd46a2e, 0xe8a94a, 0xc85432] as const
+export const PALM_LEAF = [0x3f9d5a, 0x47a862, 0x368a4e] as const
 
 export const WATER = 0x3f87d6
 

@@ -21,6 +21,9 @@ export interface QuestPanelDeps {
   completedTitles(): readonly string[]
   activeCount(): number
   focused(): { def: QuestDef; step: number; done: number } | null
+  /** The TRACKED quest (null when nothing is tracked) — drives the objective
+   *  tracker widget, so untracking removes it. */
+  trackedQuest(): { def: QuestDef; step: number; done: number } | null
   setFocus(id: string): void
   isFocused(id: string): boolean
   /** Guide-trail tracking (./tracking): is this the sparkled quest? */
@@ -196,13 +199,15 @@ export function createQuestPanel(deps: QuestPanelDeps): QuestPanel {
   // Refresh / open-close wiring
   // =========================================================================
   function refreshTracker(): void {
-    const f = deps.focused()
+    // The tracker widget IS the tracked quest's objective window — tracking
+    // shows it, untracking removes it (nothing tracked => hidden).
+    const f = deps.trackedQuest()
     if (!f) {
       tracker.style.display = 'none'
       return
     }
     tracker.style.display = ''
-    trkGlint.style.display = deps.isTracked(f.def.id) ? '' : 'none'
+    trkGlint.style.display = ''
     const step = f.def.steps[f.step]
     trkTitle.textContent = f.def.title
     if (step) {
@@ -231,6 +236,9 @@ export function createQuestPanel(deps: QuestPanelDeps): QuestPanel {
   function setOpen(open: boolean): void {
     panel.style.display = open ? '' : 'none'
     btn.classList.toggle('blq-btn-open', open)
+    // Retract the floating tracker + left-edge stance pills behind the centred
+    // log (shared coordination flag; see hud.css .bl-ui-dialog).
+    uiMount!.classList.toggle('bl-ui-dialog', open)
     if (open) renderBody()
   }
 

@@ -294,6 +294,13 @@ export function buildKindBoxes(kind: string, rng: Rng): BoxSpec[] {
     case 'berry_bush': return berryBush(rng)
     case 'mushroom_cluster': return mushroomCluster(rng)
     case 'clay_pit': return clayPit(rng)
+    // endgame ore veins — tinted from the material-tier palettes
+    case 'obsidian_vein': return vein(rng, 0x2c2c36)
+    case 'dragonbone_vein': return vein(rng, 0xe8dcc2)
+    case 'void_vein': return vein(rng, 0x3a2f6a)
+    case 'astral_vein': return vein(rng, 0x3a6ad0)
+    case 'titan_vein': return vein(rng, 0xd98030)
+    case 'runic_vein': return vein(rng, 0xf4ead0)
     default: return vein(rng, COPPER)
   }
 }

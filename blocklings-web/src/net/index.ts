@@ -34,6 +34,48 @@ import { decodeLook, lookFromName } from '../player/look'
 /** Deployed relay endpoint. */
 export const WS_URL = 'wss://blockle.org/blocklings/ws'
 
+/** Realms shard population for density: 30 realms, 2000 players each. */
+export const REALM_COUNT = 30
+const REALM_KEY = 'blocklings.realm'
+
+/** The realm this client plays in (1..REALM_COUNT, default 1). */
+export function getRealm(): number {
+  try {
+    const n = Math.floor(Number(localStorage.getItem(REALM_KEY)))
+    return n >= 1 && n <= REALM_COUNT ? n : 1
+  } catch { return 1 }
+}
+
+/** Switch realm (persisted). The caller reconnects (reloads) to apply it. */
+export function setRealm(n: number): void {
+  const r = Math.max(1, Math.min(REALM_COUNT, Math.floor(n)))
+  try { localStorage.setItem(REALM_KEY, String(r)) } catch { /* non-fatal */ }
+}
+
+/** The relay WS URL for the current realm. */
+export function realmWsUrl(): string {
+  return `${WS_URL}?realm=${getRealm()}`
+}
+
+/** A realm's live headcount: total connected, signed-in subset, and cap. */
+export interface RealmPop {
+  id: number
+  /** Everyone connected (counts toward the cap). */
+  pop: number
+  /** Signed-in subset (parity with the public leaderboard). Absent on old relays. */
+  acct?: number
+  cap: number
+}
+
+/** Live per-realm population for the realm picker ([] on failure). */
+export async function fetchRealmPops(): Promise<RealmPop[]> {
+  try {
+    const r = await fetch('https://blockle.org/blocklings/realms', { cache: 'no-store' })
+    const j = (await r.json()) as { realms?: RealmPop[] }
+    return Array.isArray(j.realms) ? j.realms : []
+  } catch { return [] }
+}
+
 const POS_INTERVAL_MS = 125 // ~8 Hz
 const STALE_MS = 45_000 // drop remotes the relay stopped updating (AOI culled)
 const BACKOFF_MS = [1000, 2000, 4000, 8000, 15_000] as const
@@ -98,6 +140,8 @@ interface WireMsg {
   y?: number
   lvl?: number
   count?: number
+  /** Signed-in flag sent with our own join. */
+  acct?: boolean
   /** Encoded CharacterLook (only present once the relay echoes looks). */
   look?: string
 }
@@ -287,7 +331,11 @@ export function connect(url: string, name: string, ctx: NetContext): NetHandle {
       }
       open = true
       attempts = 0
-      send({ t: 'join', name, look: ctx.look() })
+      // acct: are we signed in to a Blockle account? The relay tallies this so
+      // the realm picker can split members from guests (see leaderboard parity).
+      let acct = false
+      try { acct = !!localStorage.getItem('blk_token') } catch { acct = false }
+      send({ t: 'join', name, look: ctx.look(), acct })
       // announce ourselves immediately so others see us without waiting a tick
       send({ t: 'pos', x: ctx.local.pos.x, y: ctx.local.pos.z, lvl: ctx.local.level })
     }

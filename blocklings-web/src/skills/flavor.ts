@@ -5,6 +5,7 @@
  * the player's protected traits — only to their life choices.
  */
 import type { SkillId } from '../ids'
+import { MAX_LEVEL } from './curve'
 
 const LINES: Record<SkillId, string[]> = {
   attack: [
@@ -16,6 +17,11 @@ const LINES: Record<SkillId, string[]> = {
     'Defense level {lvl}! Congratulations on getting hit professionally.',
     'Defense level {lvl}. Your strategy of standing there and taking it is finally paying off.',
     'Defense level {lvl}! You are now slightly harder to kill. Emphasis on slightly.',
+  ],
+  archery: [
+    'Archery level {lvl}! You can now miss from much further away.',
+    'Archery level {lvl}. The fletcher nods approvingly. He gets a commission.',
+    'Archery level {lvl}! Your arrows now land roughly where you intended. Roughly.',
   ],
   magic: [
     'Magic level {lvl}! The arcane arts welcome you. The arcane arts have low standards.',
@@ -75,8 +81,8 @@ const LINES: Record<SkillId, string[]> = {
 }
 
 const MAX_LINES = [
-  '{skill} level 99. The grind is over. The void where the grind lived is forever.',
-  'LEVEL 99 {skill}! Absolute mastery achieved. Touch grass responsibly.',
+  '{skill} level {lvl}. The grind is over. The void where the grind lived is forever.',
+  'LEVEL {lvl} {skill}! Absolute mastery achieved. Touch grass responsibly.',
 ]
 
 const GENERIC = [
@@ -91,18 +97,18 @@ function cap(s: string): string {
 /** A celebratory (read: sarcastic) system-chat line for a level-up. */
 export function levelUpLine(skill: string, level: number): string {
   const pool =
-    level >= 99 ? MAX_LINES : (LINES as Record<string, string[]>)[skill] ?? GENERIC
+    level >= MAX_LEVEL ? MAX_LINES : (LINES as Record<string, string[]>)[skill] ?? GENERIC
   const line = pool[Math.floor(Math.random() * pool.length)]!
   return line.replace('{skill}', cap(skill)).replace('{lvl}', String(level))
 }
 
 /** Snarky caption for the total-level flex at the top of the panel. */
 export function totalCaption(total: number): string {
-  if (total >= 1287) return 'maxed. seek help' // 13 × 99
-  if (total >= 1000) return 'certified no-lifer'
-  if (total >= 650) return 'dangerously competent'
-  if (total >= 400) return 'actually trying now'
-  if (total >= 200) return 'mildly employable'
-  if (total >= 60) return 'promising-ish'
+  if (total >= 13986) return 'maxed. seek help' // 14 × 999
+  if (total >= 11000) return 'certified no-lifer'
+  if (total >= 7000) return 'dangerously competent'
+  if (total >= 4000) return 'actually trying now'
+  if (total >= 2000) return 'mildly employable'
+  if (total >= 650) return 'promising-ish'
   return 'certified nobody'
 }

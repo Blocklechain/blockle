@@ -2,10 +2,12 @@
  * Blocklings skill trees — state + SkillTreeAPI implementation.
  *
  * Point economy: 1 perk point per level-up in ANY skill, pooled. Earned
- * points are derived (sum of level-1 across skills), spent points are the
- * count of explicitly chosen perk/capstone nodes — so nothing about points
- * needs its own persistence. Auto nodes are granted free the moment their
- * skill level is reached (also derived, never stored).
+ * points are derived (sum of level-1 across skills); spent points are the sum
+ * of the `cost` of every explicitly chosen perk/capstone node (deep nodes cost
+ * far more than early ones) — so nothing about points needs its own
+ * persistence. Auto nodes are granted free (cost 0) the moment their skill
+ * level is reached (also derived, never stored). A fully maxed player earns
+ * ~13,972 points against a ~41,160-point catalog, so picks stay scarce.
  *
  * Persistence: only the explicit picks, as a string[] of node ids, embedded
  * additively by skills/index.ts into the existing 'skills' save blob under
@@ -63,8 +65,18 @@ function earnedPoints(): number {
   return t
 }
 
+/** Points already committed: the summed `cost` of every explicit pick. */
+function spentPoints(): number {
+  let t = 0
+  for (const id of picked) {
+    const n = treeNode(id)
+    if (n) t += n.cost
+  }
+  return t
+}
+
 function points(): number {
-  return Math.max(0, earnedPoints() - picked.size)
+  return Math.max(0, earnedPoints() - spentPoints())
 }
 
 /** Why a node can't be taken right now ('' = it can). Drives UI copy too. */
@@ -87,7 +99,9 @@ export function chooseBlocker(id: string): string {
       }
     }
   }
-  if (points() <= 0) return 'no perk points — go level something'
+  if (points() < n.cost) {
+    return `costs ${n.cost} perk points — you have ${points()}. Go level something`
+  }
   return ''
 }
 

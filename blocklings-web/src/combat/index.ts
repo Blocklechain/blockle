@@ -16,6 +16,7 @@ import * as THREE from 'three'
 import type { GameAPI, ItemDef, ItemSpecial } from '../types'
 import { events } from '../events'
 import { BOSSES, SPECIES, WAYSTONES, type SpeciesDef } from '../ids'
+import { EXTRA_REGION_SPAWNS, EXTRA_BIOME_SPAWNS } from '../content/mobpacks'
 import {
   animOf, createSpecialButton, fallbackSpecial, tierFxColor, tierOfId,
   type SpecialButton,
@@ -29,6 +30,10 @@ import { BloodSystem } from './blood'
 import { DamageNumbers, HealthBar, makeBossLabel } from './fx'
 import { rollLoot } from './loot'
 import { bossAggroLine, bossKillLine, deathLine, killQuip } from './flavor'
+import { MAX_LEVEL, bracketCost } from '../skills/curve'
+import { attackDpsMult } from '../skills/index'
+import { miniBossForZone, signatureMonstersForZone } from '../minibosses'
+import { actionContext, type ActionOption } from '../action/context'
 
 // ---------------------------------------------------------------------------
 // Public module interface (wired by the integrator in main.ts)
@@ -88,7 +93,9 @@ export interface CombatModule {
    * Current special for HUD use: null when no special weapon is equipped.
    * cdLeft/cdTotal in seconds (cdLeft 0 = ready).
    */
-  specialStatus(): { id: string; name: string; cdLeft: number; cdTotal: number } | null
+  specialStatus(): {
+    id: string; name: string; cdLeft: number; cdTotal: number; mpCost: number; mp: number
+  } | null
   /**
    * Tap-to-attack walking — integrator wires the player module's walker:
    *   combat.setAutoWalk((t) => setAutoWalk(t))
@@ -113,6 +120,20 @@ export interface CombatModule {
    * fractions; cooldown reduction capped at 50%).
    */
   setModifierSource(fn: (key: string) => number): void
+  /**
+   * Current combat style ('melee' | 'archery' | 'magic'). Melee swings up
+   * close; archery/magic fire projectiles at range. Kills train the matching
+   * skill (attack/archery/magic). Wired:
+   *   combat.setStyleSource(() => combatStyle.current())
+   */
+  setStyleSource(fn: () => 'melee' | 'archery' | 'magic'): void
+  /**
+   * Melee sub-stance source ('offense' | 'defense'). Offense presses the
+   * attack and trains Attack; Defense softens incoming blows and trains
+   * Defence. Ignored while a bow/staff drives a ranged style. Wired:
+   *   combat.setStanceSource(() => combatStyle.stance())
+   */
+  setStanceSource(fn: () => 'offense' | 'defense'): void
   /**
    * The player's current fight (tap target, else the auto-retaliate grudge)
    * exposed for the pet companion — integrator wires:
@@ -140,6 +161,7 @@ const SPAWN_RING_MAX = 44
 const DESPAWN_DIST = 75
 const RESPAWN_SECS = 25
 const BOSS_RESPAWN_SECS = 75
+const MINIBOSS_RESPAWN_SECS = 90
 const LEASH_DIST = 18
 const AGGRO_RANGE = 8
 const BOSS_AGGRO_RANGE = 12
@@ -156,12 +178,15 @@ const TAP_ATTACK_COOLDOWN = 0.8 // seconds between automatic tap-target swings
 const TAP_MAX_MS = 350 // press longer than this = not a tap
 const TAP_MAX_PX = 16 // moved farther than this = a drag, not a tap
 
+// Chase speeds, nudged up a notch so monsters feel a bit more threatening — but
+// the fastest (quadruped 3.4) stays well under the player's 4.3 units/s, so you
+// can always out-run them on foot (and easily on a mount).
 const SHAPE_SPEED: Record<SpeciesDef['shape'], number> = {
-  blob: 1.7,
-  quadruped: 3.0,
-  biped: 2.3,
-  crawler: 2.6,
-  flyer: 2.9,
+  blob: 2.0,
+  quadruped: 3.4,
+  biped: 2.7,
+  crawler: 3.0,
+  flyer: 3.3,
 }
 const SHAPE_RADIUS: Record<SpeciesDef['shape'], number> = {
   blob: 0.45,
@@ -315,6 +340,29 @@ export function initCombat(api: GameAPI): CombatModule {
   /** Skill-tree modifier (0 until the integrator wires skillTree.modifier). */
   const mod = (key: string): number => modifierSource?.(key) ?? 0
 
+  // Combat stance: style is weapon-driven (melee/archery/magic); melee also
+  // carries an offense/defense sub-stance that adjusts damage + which skill
+  // kills train. Both are fed in by the stance module.
+  type CombatStyle = 'melee' | 'archery' | 'magic'
+  type MeleeStance = 'offense' | 'defense'
+  let styleSource: (() => CombatStyle) | null = null
+  let stanceSource: (() => MeleeStance) | null = null
+  const currentStyle = (): CombatStyle => styleSource?.() ?? 'melee'
+  const currentStance = (): MeleeStance => stanceSource?.() ?? 'offense'
+  /** Which skill a KILL trains: melee splits by stance; ranged/magic fixed. */
+  const primarySkill = (): 'attack' | 'defense' | 'archery' | 'magic' => {
+    const st = currentStyle()
+    if (st === 'archery') return 'archery'
+    if (st === 'magic') return 'magic'
+    return currentStance() === 'defense' ? 'defense' : 'attack'
+  }
+  /** Melee-only damage multipliers (offense presses, defense holds back). */
+  const meleeOutMult = (): number =>
+    currentStyle() !== 'melee' ? 1 : currentStance() === 'defense' ? 0.8 : 1.1
+  /** Melee-defense incoming-damage softening (1 = no reduction). */
+  const meleeInMult = (): number =>
+    currentStyle() === 'melee' && currentStance() === 'defense' ? 0.75 : 1
+
   // --- auto-retaliate state --------------------------------------------------
   /** The mob the hero is automatically hitting back (null = at peace). */
   let retaliateTarget: Mob | null = null
@@ -349,8 +397,12 @@ export function initCombat(api: GameAPI): CombatModule {
   }
 
   const pickSpecies = (region: { id: string; biome: string }): SpeciesDef | null => {
-    const mix = REGION_MIX[region.id] ?? BIOME_MIX[region.biome]
-    if (!mix) return null
+    // Region (base ++ mobpack extras) wins over biome, mirroring the base
+    // REGION_MIX ?? BIOME_MIX fallback; extras are appended within each scope.
+    const regionMix = [...(REGION_MIX[region.id] ?? []), ...(EXTRA_REGION_SPAWNS[region.id] ?? [])]
+    const biomeMix = [...(BIOME_MIX[region.biome] ?? []), ...(EXTRA_BIOME_SPAWNS[region.biome] ?? [])]
+    const mix = regionMix.length ? regionMix : biomeMix
+    if (mix.length === 0) return null
     let total = 0
     for (const [, w] of mix) total += w
     let roll = rng() * total
@@ -361,24 +413,36 @@ export function initCombat(api: GameAPI): CombatModule {
     return null
   }
 
-  const makeMob = (sp: SpeciesDef, level: number, x: number, z: number, bossId: string | null): Mob => {
+  const makeMob = (
+    sp: SpeciesDef,
+    level: number,
+    x: number,
+    z: number,
+    bossId: string | null,
+    opts?: { name?: string; hpMul?: number; atkMul?: number; sizeMul?: number },
+  ): Mob => {
     const boss = bossId !== null
+    const sizeMul = opts?.sizeMul ?? 1
     const rig = new MobRig(sp, boss)
+    if (sizeMul !== 1) rig.group.scale.multiplyScalar(sizeMul)
     const y = world.groundHeight(x, z)
     rig.group.position.set(x, y, z)
     scene.add(rig.group)
 
-    const scale = boss ? 2.2 : 1
+    const scale = (boss ? 2.2 : 1) * sizeMul
+    const vh = rig.height * sizeMul // visual height after the size quirk
     const bar = new HealthBar(scale)
-    bar.sprite.position.set(x, y + rig.height + 0.25, z)
+    bar.sprite.position.set(x, y + vh + 0.25, z)
     scene.add(bar.sprite)
 
     const bossDef = boss ? BOSSES.find((b) => b.id === bossId) : undefined
-    const name = bossDef?.name ?? sp.name
+    const name = opts?.name ?? bossDef?.name ?? sp.name
+    const hpMul = opts?.hpMul ?? (boss ? 5 : 1)
+    const atkMul = opts?.atkMul ?? (boss ? 1.5 : 1)
     let label: THREE.Sprite | null = null
     if (boss) {
       label = makeBossLabel(`${name}  Lv.${level}`)
-      label.position.set(x, y + rig.height + 0.72, z)
+      label.position.set(x, y + vh + 0.72, z)
       scene.add(label)
     }
 
@@ -389,9 +453,9 @@ export function initCombat(api: GameAPI): CombatModule {
       boss,
       bossId,
       name,
-      maxHp: Math.round((12 + level * 6) * (boss ? 5 : 1)),
-      hp: Math.round((12 + level * 6) * (boss ? 5 : 1)),
-      atk: (2 + level * 1.1) * (boss ? 1.5 : 1),
+      maxHp: Math.round((12 + level * 6) * hpMul),
+      hp: Math.round((12 + level * 6) * hpMul),
+      atk: (2 + level * 1.1) * atkMul,
       x,
       z,
       y,
@@ -415,6 +479,41 @@ export function initCombat(api: GameAPI): CombatModule {
     }
   }
 
+  // A zone's unique mini-boss: spawns at the zone centre when the player is in
+  // range, one alive at a time, long respawn. Elite (2.5x hp) but below a
+  // region boss (5x). Drops its one-of-a-kind trophy on death (see killMob).
+  const maybeSpawnMiniBoss = (now: number): void => {
+    const region = regionAt(player.pos.x, player.pos.z)
+    if (!region) return
+    const mb = miniBossForZone(region)
+    if (mobs.some((m) => m.bossId === mb.id)) return
+    if (now < (bossRespawnAt.get(mb.id) ?? 0)) return
+    let x = mb.den.x
+    let z = mb.den.z
+    if (Math.hypot(player.pos.x - x, player.pos.z - z) > 150) return
+    if (spotBlocked(x, z)) {
+      let ok = false
+      for (let k = 0; k < 14; k++) {
+        const a = rng() * Math.PI * 2
+        const r = 5 + rng() * 14
+        const nx = x + Math.cos(a) * r
+        const nz = z + Math.sin(a) * r
+        if (!spotBlocked(nx, nz)) {
+          x = nx
+          z = nz
+          ok = true
+          break
+        }
+      }
+      if (!ok) return
+    }
+    const sp = speciesById.get(mb.speciesId)
+    if (!sp) return
+    const level = Math.max(1, Math.min(MAX_LEVEL, mb.level))
+    mobs.push(makeMob(sp, level, x, z, mb.id, { name: mb.name, hpMul: 2.5, atkMul: 1.3, sizeMul: 1.5 }))
+    events.emit('chat:system', { text: `A mini-boss prowls this realm: ${mb.name} (Lv.${level}). Good luck. Sincerely, nobody.` })
+  }
+
   const trySpawnOne = (): boolean => {
     for (let attempt = 0; attempt < 10; attempt++) {
       const a = rng() * Math.PI * 2
@@ -426,11 +525,21 @@ export function initCombat(api: GameAPI): CombatModule {
       if (!region) continue
       const sp = pickSpecies(region)
       if (!sp) continue
-      // Zone bands run all the way to the lv-99 coast; clamp the span so a
-      // band like 72-88 never goes negative against a cap.
-      const hi = Math.max(region.minLevel, Math.min(region.maxLevel, 99))
+      // Zone bands run all the way to the lv-MAX_LEVEL coast; clamp the span
+      // so a band like 72-88 never goes negative against a cap.
+      const hi = Math.max(region.minLevel, Math.min(region.maxLevel, MAX_LEVEL))
       const level = region.minLevel + Math.floor(rng() * (hi - region.minLevel + 1))
-      mobs.push(makeMob(sp, level, x, z, null))
+      // ~40% of wild spawns are one of this zone's own SIGNATURE monsters: a
+      // uniquely-named, size-quirked creature found ONLY here. Across ~980
+      // zones that's thousands of distinct beasts, all animated by the rig.
+      const sigs = signatureMonstersForZone(region)
+      if (sigs.length > 0 && rng() < 0.4) {
+        const sig = sigs[Math.floor(rng() * sigs.length)]!
+        const ssp = speciesById.get(sig.speciesId) ?? sp
+        mobs.push(makeMob(ssp, level, x, z, null, { name: sig.name, sizeMul: sig.sizeMul }))
+      } else {
+        mobs.push(makeMob(sp, level, x, z, null))
+      }
       return true
     }
     return false
@@ -541,21 +650,42 @@ export function initCombat(api: GameAPI): CombatModule {
    * `mult` scales the base roll (1 = plain swing); `useInt` adds staff
    * int-scaling; `special` adds the skill-tree special-damage modifier.
    */
-  const applyHit = (m: Mob, mult: number, opts: { useInt?: boolean; special?: boolean } = {}): void => {
+  const applyHit = (
+    m: Mob,
+    mult: number,
+    opts: { useInt?: boolean; special?: boolean; skill?: 'attack' | 'archery' | 'magic' } = {}
+  ): void => {
     if (!m.rig.alive) return
     const stats = statsSource?.() ?? { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
-    const atkLevel = skillsSource?.('attack') ?? 1
+    // Damage scales with the skill behind the blow (melee→attack, bow→archery,
+    // staff→magic), so each combat style grows its own power curve.
+    const lvl = skillsSource?.(opts.skill ?? 'attack') ?? 1
 
     const base = 3 + stats.atk + 0.4 * stats.str + (opts.useInt ? 0.6 * stats.int : 0)
     const crit = rng() < 0.1 + stats.agi * 0.002 + mod('combat.crit')
-    let dmg = base * (1 + (atkLevel - 1) * 0.04) * (0.85 + rng() * 0.3) * mult
+    let dmg = base * attackDpsMult(lvl) * (0.85 + rng() * 0.3) * mult
     dmg *= 1 + mod('combat.damage') + (opts.special ? mod('combat.special_damage') : 0)
     if (crit) dmg *= 1.75
     const dealt = Math.max(1, Math.round(dmg))
+    // XP is earned for DAMAGE DONE, not kills: each hit grants XP equal to the
+    // damage that actually lands (no overkill), training your active combat
+    // skill + a little vitality. A kill is just the last hit, not a bonus.
+    const effective = Math.min(dealt, Math.max(0, m.hp))
 
     m.hp -= dealt
     m.rig.flashHurt()
     m.bar.set(m.hp / m.maxHp)
+
+    if (effective > 0) {
+      // Scale raw damage to the level curve so the combat level actually climbs:
+      // a full equal-level kill grants ~bracketCost(level)/12, i.e. ~12 even-
+      // level kills per level (tougher/higher mobs give proportionally more,
+      // bosses ~5x). Without this, a few XP/hit vanished against the 999 curve.
+      const baseHp = 12 + m.level * 6
+      const gain = Math.max(1, Math.round((effective * bracketCost(m.level)) / (baseHp * 12)))
+      events.emit('xp:gained', { skill: primarySkill(), amount: gain })
+      events.emit('xp:gained', { skill: 'vitality', amount: Math.max(1, Math.ceil(gain * 0.4)) })
+    }
 
     const hitPos = new THREE.Vector3(m.x, m.y + m.rig.height * 0.5, m.z)
     events.emit('mob:hit', {
@@ -607,8 +737,64 @@ export function initCombat(api: GameAPI): CombatModule {
     if (m.hp <= 0) killMob(m)
   }
 
+  const RANGED_RANGE = 16
+
+  /** Fire one arrow (archery) or bolt (magic) at the nearest mob in range. */
+  const rangedStrike = (style: 'archery' | 'magic'): void => {
+    if (playerDead) return
+    // prefer the tapped target, else the nearest living mob in range
+    let target: Mob | null =
+      tapTarget && tapTarget.rig.alive &&
+      Math.hypot(tapTarget.x - player.pos.x, tapTarget.z - player.pos.z) <= RANGED_RANGE
+        ? tapTarget
+        : null
+    if (!target) {
+      let best = RANGED_RANGE * RANGED_RANGE
+      for (const m of mobs) {
+        if (!m.rig.alive) continue
+        const d = (m.x - player.pos.x) ** 2 + (m.z - player.pos.z) ** 2
+        if (d < best) {
+          best = d
+          target = m
+        }
+      }
+    }
+    let adx = Math.sin(player.facing)
+    let adz = Math.cos(player.facing)
+    if (target) {
+      const dx = target.x - player.pos.x
+      const dz = target.z - player.pos.z
+      const d = Math.hypot(dx, dz) || 1
+      adx = dx / d
+      adz = dz / d
+      target.state = 'chase' // shot mobs fight back, like a melee hit
+      retaliateTarget = target
+    }
+    const color = style === 'magic' ? 0x8b5cf6 : 0xd8c38a
+    const group = style === 'magic' ? makeOrb(color, 0xe9d5ff) : makeArrow(color)
+    const x = player.pos.x + adx * 0.6
+    const z = player.pos.z + adz * 0.6
+    const y = world.groundHeight(x, z) + 0.9
+    group.position.set(x, y, z)
+    group.rotation.y = Math.atan2(adx, adz)
+    scene.add(group)
+    projectiles.push({
+      group, x, y, z, dx: adx, dz: adz,
+      speed: style === 'magic' ? 13 : 16,
+      traveled: 0, maxDist: RANGED_RANGE,
+      kind: 'arrow', nova: false, color,
+      skill: style, mult: style === 'magic' ? 1.25 : 1.1, useInt: style === 'magic'
+    })
+  }
+
   const playerStrike = (): void => {
     if (playerDead) return
+    // Ranged styles fire a projectile instead of swinging.
+    const style = currentStyle()
+    if (style !== 'melee') {
+      rangedStrike(style)
+      return
+    }
     const fx = Math.sin(player.facing)
     const fz = Math.cos(player.facing)
 
@@ -627,7 +813,7 @@ export function initCombat(api: GameAPI): CombatModule {
       while (diff < -Math.PI) diff += Math.PI * 2
       if (Math.abs(diff) > PLAYER_ARC && dist > m.radius + 0.5) continue
 
-      applyHit(m, 1)
+      applyHit(m, meleeOutMult())
 
       if (m === retaliateTarget) struckRetaliateTarget = true
       else if (m.hp > 0) struckOther = m
@@ -659,20 +845,27 @@ export function initCombat(api: GameAPI): CombatModule {
       ...(m.boss ? { boss: true } : {}),
     })
 
-    // XP: attack + vitality (fighting makes you hit harder AND thicker)
-    const mult = m.boss ? 5 : 1
-    const attackXp = Math.round((10 + m.level * 5) * mult)
-    events.emit('xp:gained', { skill: 'attack', amount: attackXp })
-    events.emit('xp:gained', { skill: 'vitality', amount: Math.ceil(attackXp * 0.4) })
+    // NOTE: combat XP is NOT awarded here anymore — it's granted per hit in
+    // applyHit (XP for damage DONE, not kills). The kill is just the final blow.
 
     // loot -> spinning drop entities (item:gained fires on walk-over)
-    for (const roll of rollLoot(m.sp.id, m.sp.tier, m.boss, rng)) {
+    for (const roll of rollLoot(m.sp.id, m.sp.tier, m.level, m.boss, rng)) {
       spawnDrop(roll.id, roll.qty, m.x, m.z)
     }
 
     if (m.boss && m.bossId) {
-      bossRespawnAt.set(m.bossId, now + BOSS_RESPAWN_SECS)
-      events.emit('chat:system', { text: bossKillLine(m.bossId, m.name) })
+      if (m.bossId.startsWith('mb_')) {
+        // Mini-boss: grant its ONE-OF-A-KIND trophy + long respawn.
+        const zid = m.bossId.slice(3)
+        events.emit('item:gained', { id: `trophy_${zid}`, qty: 1, source: 'loot' })
+        events.emit('chat:system', {
+          text: `${m.name} falls! It drops its one-of-a-kind trophy — unique to this realm, like your questionable decisions.`,
+        })
+        bossRespawnAt.set(m.bossId, now + MINIBOSS_RESPAWN_SECS)
+      } else {
+        bossRespawnAt.set(m.bossId, now + BOSS_RESPAWN_SECS)
+        events.emit('chat:system', { text: bossKillLine(m.bossId, m.name) })
+      }
     } else {
       respawnQueue.push(now + RESPAWN_SECS)
       if (now - lastQuipAt > 9) {
@@ -705,9 +898,13 @@ export function initCombat(api: GameAPI): CombatModule {
   const hurtPlayer = (m: Mob): void => {
     const stats = statsSource?.() ?? { atk: 0, def: 0, str: 0, int: 0, agi: 0 }
     const raw = m.atk * (0.85 + rng() * 0.3)
-    const dealt = Math.max(1, Math.round(raw * (1 - defenseReduction(stats))))
+    // Melee Defense stance (shield up) softens the blow on top of armor.
+    const dealt = Math.max(1, Math.round(raw * (1 - defenseReduction(stats)) * meleeInMult()))
     if (playerDamageFn) playerDamageFn(dealt, m.name)
     else player.hp = Math.max(0, player.hp - dealt)
+    // Defence also trickles in passively from weathering hits (its main source
+    // is killing in Defense stance — see killMob).
+    events.emit('xp:gained', { skill: 'defense', amount: Math.max(1, Math.round(dealt * 0.5)) })
     events.emit('player:damaged', { amount: dealt, from: m.name })
     numbers.show(
       new THREE.Vector3(player.pos.x, player.pos.y + 0.6, player.pos.z),
@@ -749,6 +946,7 @@ export function initCombat(api: GameAPI): CombatModule {
       player.pos.set(respawn.x, world.groundHeight(respawn.x, respawn.z), respawn.z)
       player.hp = player.maxHp
       playerDead = false
+      events.emit('save:dirty', { why: 'respawn' }) // persist the full-HP respawn
       events.emit('chat:system', {
         text: `You wake up at ${respawn.label}. The dirt tasted like failure.`,
       })
@@ -914,16 +1112,57 @@ export function initCombat(api: GameAPI): CombatModule {
     kind: 'fire' | 'arrow'
     nova: boolean
     color: number
+    /** Damage skill + mult for basic ranged/magic shots (specials omit). */
+    skill?: 'attack' | 'archery' | 'magic'
+    mult?: number
+    useInt?: boolean
   }
   const projectiles: Projectile[] = []
 
-  /** Aim at the tap target when there is one, else where the hero faces. */
+  /** Nearest living mob within `range`, or null. */
+  const nearestMob = (range: number): Mob | null => {
+    let best = range * range
+    let found: Mob | null = null
+    for (const m of mobs) {
+      if (!m.rig.alive) continue
+      const d = (m.x - player.pos.x) ** 2 + (m.z - player.pos.z) ** 2
+      if (d < best) {
+        best = d
+        found = m
+      }
+    }
+    return found
+  }
+
+  /**
+   * Specials AUTO-TARGET — no manual aiming. Priority: the tapped target, else
+   * the current grudge, else the nearest mob around (generous range), else the
+   * hero's facing as a last resort. Squares the hero up to the target so melee
+   * dashes (lunge/bash) and ranged volleys both home in on their own.
+   */
+  /** Movement/charge specials stay MANUALLY aimed (dash where the hero faces) —
+   *  aiming a charge is the fun part; everything else auto-targets. */
+  const MOVEMENT_SPECIALS = new Set(['lunge', 'lunge_nova'])
+  const facingDir = (): { dx: number; dz: number } => ({
+    dx: Math.sin(player.facing),
+    dz: Math.cos(player.facing),
+  })
+
+  const SPECIAL_AIM_RANGE = 24
   const aimDir = (): { dx: number; dz: number } => {
-    if (tapTarget && tapTarget.rig.alive) {
-      const dx = tapTarget.x - player.pos.x
-      const dz = tapTarget.z - player.pos.z
+    let target: Mob | null = tapTarget && tapTarget.rig.alive ? tapTarget : null
+    if (!target && retaliateTarget && retaliateTarget.rig.alive) target = retaliateTarget
+    if (!target) target = nearestMob(SPECIAL_AIM_RANGE)
+    if (target) {
+      const dx = target.x - player.pos.x
+      const dz = target.z - player.pos.z
       const d = Math.hypot(dx, dz)
-      if (d > 0.01) return { dx: dx / d, dz: dz / d }
+      if (d > 0.01) {
+        player.facing = Math.atan2(dx, dz) // square up toward the target
+        target.state = 'chase' // it fights back, like any struck mob
+        retaliateTarget = target
+        return { dx: dx / d, dz: dz / d }
+      }
     }
     return { dx: Math.sin(player.facing), dz: Math.cos(player.facing) }
   }
@@ -945,7 +1184,8 @@ export function initCombat(api: GameAPI): CombatModule {
   const executeSpecial = (id: string, tier: number): void => {
     if (playerDead) return
     const color = tierFxColor(tier)
-    const { dx, dz } = aimDir()
+    // Charges/movement specials aim by facing (manual); AoEs + ranged auto-target.
+    const { dx, dz } = MOVEMENT_SPECIALS.has(id) ? facingDir() : aimDir()
     const px = player.pos.x
     const py = player.pos.y
     const pz = player.pos.z
@@ -1057,12 +1297,36 @@ export function initCombat(api: GameAPI): CombatModule {
     }
   }
 
-  const useSpecial = (): void => {
-    if (playerDead) return
-    const cur = currentSpecial()
-    if (!cur) return
+  /** MP cost of a special, scaling with weapon tier (steel=2 .. mythic=5).
+   *  Tuned so a fresh hero (50 MP) can land ~3 specials before needing to let
+   *  mana recover, and int/magic builds (higher max MP + faster regen) can chain
+   *  more. */
+  const specialMpCost = (tier: number): number => 12 + Math.max(0, tier) * 5
+
+  type ActiveSpecial = { def: ItemSpecial; tier: number }
+
+  /** The special granted by a given slot's equipped item (if any). */
+  const slotSpecial = (slot: 'weapon' | 'shield'): ActiveSpecial | null => {
+    const id = equippedId(slot)
+    if (!id) return null
+    const sp = specialOfItem(id)
+    return sp ? { def: sp, tier: Math.max(0, tierOfId(id)) } : null
+  }
+
+  /** Fire a SPECIFIC special (per-slot). Each has its own cooldown + MP cost. */
+  const useSpecialFor = (cur: ActiveSpecial | null): void => {
+    if (playerDead || !cur) return
     const nowS = performance.now() / 1000
     if (nowS < (specialCdUntil.get(cur.def.id) ?? 0)) return // still cooling
+
+    // MP is THE resource for specials: not enough mana → it fizzles.
+    const mpCost = specialMpCost(cur.tier)
+    if (player.mp < mpCost) {
+      events.emit('chat:system', {
+        text: `Not enough mana — ${cur.def.name} needs ${mpCost} MP. Sip a mana potion or wait for it to refill.`
+      })
+      return
+    }
 
     const fire = (): void => executeSpecial(cur.def.id, cur.tier)
     let started = true
@@ -1070,22 +1334,42 @@ export function initCombat(api: GameAPI): CombatModule {
     else window.setTimeout(fire, 140) // unwired: no anim, strike still lands
     if (!started) return // rig busy mid-swing — nothing spent
 
+    player.mp = Math.max(0, player.mp - mpCost) // spend the mana
     const cd = cur.def.cooldownS * (1 - Math.min(0.5, mod('combat.special_cooldown')))
     specialCdUntil.set(cur.def.id, nowS + cd)
     specialCdTotal.set(cur.def.id, cd)
     events.emit('special:used', { id: cur.def.id })
+    events.emit('save:dirty', { why: 'special' })
   }
 
-  const specialStatus = (): { id: string; name: string; cdLeft: number; cdTotal: number } | null => {
-    const cur = currentSpecial()
+  /** Default fire = weapon special, else shield (desktop Q / right-click). */
+  const useSpecial = (): void => useSpecialFor(currentSpecial())
+
+  /** Ring/label state for one special, or null when the slot has none. */
+  const statusOf = (
+    cur: ActiveSpecial | null
+  ): { cdLeft: number; cdTotal: number; mpCost: number; mp: number; label: string } | null => {
     if (!cur) return null
     const nowS = performance.now() / 1000
     const cdLeft = Math.max(0, (specialCdUntil.get(cur.def.id) ?? 0) - nowS)
     const cdTotal = specialCdTotal.get(cur.def.id) ?? cur.def.cooldownS
-    return { id: cur.def.id, name: cur.def.name, cdLeft, cdTotal }
+    return {
+      cdLeft, cdTotal, mpCost: specialMpCost(cur.tier), mp: player.mp,
+      label: cur.def.name.slice(0, 4).toUpperCase()
+    }
   }
 
-  // --- special inputs: Q key, right-click on the canvas, mobile SPC button --
+  /** GameAPI compat: the primary (weapon-first) special's status. */
+  const specialStatus = (): {
+    id: string; name: string; cdLeft: number; cdTotal: number; mpCost: number; mp: number
+  } | null => {
+    const cur = currentSpecial()
+    const st = statusOf(cur)
+    if (!cur || !st) return null
+    return { id: cur.def.id, name: cur.def.name, cdLeft: st.cdLeft, cdTotal: st.cdTotal, mpCost: st.mpCost, mp: st.mp }
+  }
+
+  // --- special inputs: Q (weapon) / E (shield) keys, right-click, SPC buttons --
   const specialTypingInField = (e: KeyboardEvent): boolean => {
     const t = e.target
     return (
@@ -1095,8 +1379,9 @@ export function initCombat(api: GameAPI): CombatModule {
     )
   }
   const onSpecialKey = (e: KeyboardEvent): void => {
-    if (e.code !== 'KeyQ' || e.repeat || specialTypingInField(e)) return
-    useSpecial()
+    if (e.repeat || specialTypingInField(e)) return
+    if (e.code === 'KeyQ') useSpecialFor(slotSpecial('weapon') ?? slotSpecial('shield'))
+    else if (e.code === 'KeyE') useSpecialFor(slotSpecial('shield'))
   }
   const onSpecialContext = (e: MouseEvent): void => {
     if (!(e.target instanceof HTMLCanvasElement)) return
@@ -1106,14 +1391,27 @@ export function initCombat(api: GameAPI): CombatModule {
   window.addEventListener('keydown', onSpecialKey)
   window.addEventListener('contextmenu', onSpecialContext)
 
-  let specialBtn: SpecialButton | null = null
+  // Two mobile buttons flanking the hotbar: weapon special (right), shield (left).
+  // Each hides when its slot has no special, so a single special shows just one.
+  const BTN_BOTTOM = 'bottom:calc(max(18px, env(safe-area-inset-bottom)) + 74px)'
+  let specialBtnWeapon: SpecialButton | null = null
+  let specialBtnShield: SpecialButton | null = null
   const specialUiRoot = document.getElementById('ui')
   const specialTouchy =
     typeof window.matchMedia === 'function'
       ? window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
       : 'ontouchstart' in window
   if (specialUiRoot && specialTouchy) {
-    specialBtn = createSpecialButton(specialUiRoot, useSpecial)
+    specialBtnShield = createSpecialButton(
+      specialUiRoot,
+      () => useSpecialFor(slotSpecial('shield')),
+      { posCss: `left:calc(50% - 104px);${BTN_BOTTOM};transform:translateX(-50%)`, label: 'SHD' }
+    )
+    specialBtnWeapon = createSpecialButton(
+      specialUiRoot,
+      () => useSpecialFor(slotSpecial('weapon')),
+      { posCss: `left:calc(50% + 104px);${BTN_BOTTOM};transform:translateX(-50%)`, label: 'SPC' }
+    )
   }
   let specialBtnT = 0
 
@@ -1262,6 +1560,19 @@ export function initCombat(api: GameAPI): CombatModule {
     if (m.label) m.label.position.set(m.x, barY + 0.45, m.z)
   }
 
+  // INTERACT button: a stable "attack" option lit only when a real target is
+  // in reach (the button's own default still swings at air otherwise). Wire
+  // through the existing swing path so it animates + resolves like any swing.
+  const attackOption: ActionOption = {
+    priority: 1,
+    icon: 'sword',
+    label: 'Attack',
+    invoke: () => {
+      if (attackTriggerFn) attackTriggerFn()
+      else playerStrike()
+    }
+  }
+
   let raf = 0
   let lastMs = performance.now()
 
@@ -1270,6 +1581,13 @@ export function initCombat(api: GameAPI): CombatModule {
     const dt = Math.min((nowMs - lastMs) / 1000, 0.1)
     lastMs = nowMs
     const now = nowMs / 1000
+
+    // --- mana regen: specials cost MP, so MP ticks back up over time. Scales a
+    //     little with max MP (int/magic builds recover faster). ~6%/s of max.
+    if (!playerDead && player.mp < player.maxMp) {
+      const regen = Math.max(2.5, player.maxMp * 0.06) * dt
+      player.mp = Math.min(player.maxMp, player.mp + regen)
+    }
 
     // --- spawner -----------------------------------------------------------
     spawnTickT += dt
@@ -1282,6 +1600,7 @@ export function initCombat(api: GameAPI): CombatModule {
       const live = mobs.filter((m) => !m.boss).length
       if (live < MOB_CAP && spawnBudget > 0 && trySpawnOne()) spawnBudget--
       maybeSpawnBosses(now)
+      maybeSpawnMiniBoss(now)
     }
 
     // --- despawn sweep (keep the kingdom near the player) --------------------
@@ -1299,7 +1618,16 @@ export function initCombat(api: GameAPI): CombatModule {
     }
 
     // --- mobs ----------------------------------------------------------------
-    for (const m of [...mobs]) updateMob(m, dt, now)
+    let mobInReach = false
+    for (const m of [...mobs]) {
+      updateMob(m, dt, now)
+      if (!mobInReach && m.rig.alive && m.hp > 0) {
+        const d = Math.hypot(m.x - player.pos.x, m.z - player.pos.z)
+        if (d <= PLAYER_RANGE + m.radius) mobInReach = true
+      }
+    }
+    // light the INTERACT button's sword only when something's actually in range
+    actionContext.publish('attack', mobInReach && !playerDead ? attackOption : null)
 
     // --- tap-to-attack: chase the tapped mob + keep swinging -----------------
     if (tapTarget) {
@@ -1433,7 +1761,7 @@ export function initCombat(api: GameAPI): CombatModule {
           }
         }
       } else if (hitMob) {
-        applyHit(hitMob, p.nova ? 0.8 : 0.7, { special: true })
+        applyHit(hitMob, p.mult ?? (p.nova ? 0.8 : 0.7), { special: true, skill: p.skill ?? 'attack', useInt: p.useInt === true })
         fxPool.trail(p.x, p.y, p.z, p.color, 0.14)
       } else {
         fxPool.trail(p.x, p.y, p.z, 0x9aa0a8, 0.1)
@@ -1445,12 +1773,20 @@ export function initCombat(api: GameAPI): CombatModule {
 
     fxPool.update(dt)
 
-    // --- mobile SPC button: visibility + cooldown ring (throttled) -----------
+    // --- mobile special buttons: per-slot visibility + cooldown ring ---------
     specialBtnT += dt
-    if (specialBtn && specialBtnT >= 0.1) {
+    if (specialBtnT >= 0.1) {
       specialBtnT = 0
-      const st = specialStatus()
-      specialBtn.set(st !== null, st !== null && st.cdTotal > 0 ? st.cdLeft / st.cdTotal : 0)
+      const paintBtn = (btn: SpecialButton | null, cur: ActiveSpecial | null): void => {
+        if (!btn) return
+        const st = statusOf(cur)
+        // Ring shows "not ready" on cooldown OR when mana is too low to cast.
+        const ring =
+          st === null ? 0 : st.mp < st.mpCost ? 1 : st.cdTotal > 0 ? st.cdLeft / st.cdTotal : 0
+        btn.set(st !== null, ring, st?.label)
+      }
+      paintBtn(specialBtnWeapon, slotSpecial('weapon'))
+      paintBtn(specialBtnShield, slotSpecial('shield'))
     }
 
     // --- auto-retaliate: hit back while the grudge stays warm ----------------
@@ -1553,6 +1889,12 @@ export function initCombat(api: GameAPI): CombatModule {
     setEquipmentSource(fn) {
       equipmentSource = fn
     },
+    setStyleSource(fn) {
+      styleSource = fn
+    },
+    setStanceSource(fn) {
+      stanceSource = fn
+    },
     setModifierSource(fn) {
       modifierSource = fn
     },
@@ -1569,6 +1911,7 @@ export function initCombat(api: GameAPI): CombatModule {
     },
     dispose() {
       cancelAnimationFrame(raf)
+      actionContext.publish('attack', null)
       offAttuned()
       offTraveled()
       offEquipTracked()
@@ -1577,7 +1920,8 @@ export function initCombat(api: GameAPI): CombatModule {
       window.removeEventListener('pointercancel', onTapUp)
       window.removeEventListener('keydown', onSpecialKey)
       window.removeEventListener('contextmenu', onSpecialContext)
-      specialBtn?.dispose()
+      specialBtnWeapon?.dispose()
+      specialBtnShield?.dispose()
       for (const p of [...projectiles]) disposeProjectile(p.group)
       projectiles.length = 0
       for (const m of [...mobs]) removeMob(m)

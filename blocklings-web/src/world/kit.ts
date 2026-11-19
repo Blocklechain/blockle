@@ -100,26 +100,68 @@ export const BIOME_GROUND: Record<string, readonly number[]> = {
 // Landmass
 // ---------------------------------------------------------------------------
 
-/** Nominal coast ring — open ocean beyond ~|x|,|z| 700 (wobbled shoreline). */
-export const COAST = 696
+/** Nominal coast ring — open ocean beyond ~|x|,|z| 2376 (wobbled shoreline). */
+export const COAST = 2376
 
 /**
- * True when (x, z) is on the landmass of the 1440x1440 world.
+ * OUTER ISLANDS — deterministic land blobs out in the ocean beyond the main
+ * continent's coast. Each is [centreX, centreZ, radius]; the shoreline
+ * wobbles a little so none read as a perfect circle. They sit in the ocean
+ * fringe (and in the big coastal bays the coast formula carves), so the world
+ * is "continent + outer islands" and the zones that tile over them are
+ * walkable. Keep these STABLE — zone bands and waystones lean on the shapes.
+ */
+const ISLANDS: ReadonlyArray<readonly [number, number, number]> = [
+  // Centres all sit at |coord| ~2290 — past the continent's furthest reach
+  // (~2176), so each is genuinely marooned in open ocean.
+  [2290, 420, 120], // east — Gull's Mistake
+  [2290, -1100, 110], // east-south — Pennywhistle Rock
+  [-2290, 650, 120], // west — the Marooning
+  [-2290, -900, 110], // west-north — Nowhere Atoll
+  [500, 2290, 120], // south — the Last Resort
+  [-1300, 2290, 110], // south-west — the Afterthought
+  [300, -2290, 110], // north — Frostbite Cay
+  [1500, -2290, 120], // north-east — Chilblain Key
+  [2290, 2290, 130] // south-east corner — the Overshoot Archipelago
+]
+
+/**
+ * True when (x, z) is on the landmass of the 4800x4800 world.
  *
  * Inside the heart (|x|,|z| <= 240) this is EXACTLY the original rule:
  * the NW and NE bays (|x| > 80 and z < -120) are water, everything else is
  * land — the loved heart coastline is preserved bit-for-bit. Beyond the
- * heart, the new ring is land out to a gently wobbled coast around ±COAST;
- * past that is open ocean. Deterministic (pure function of x, z).
+ * heart, the main continent runs out to an IRREGULAR coast (layered sines, so
+ * it reads as a natural landmass with real gulfs and headlands around ±COAST)
+ * and, past that, a scatter of OUTER ISLANDS dots the open ocean. Pure and
+ * deterministic — ground, beaches, collision and node placement all route
+ * through this one function, so reshaping here reshapes the world uniformly.
  */
 export function isLand(x: number, z: number): boolean {
   if (x < -HALF || x >= HALF || z < -HALF || z >= HALF) return false
   if (x >= -HEART_HALF && x < HEART_HALF && z >= -HEART_HALF && z < HEART_HALF) {
     return !(z < -120 && (x < -80 || x > 80))
   }
-  const wob =
-    Math.sin(x * 0.019 + z * 0.011) * 5 + Math.sin(z * 0.023 - x * 0.007) * 4
-  return Math.max(Math.abs(x), Math.abs(z)) < COAST + wob
+  // Main continent — an organic coastline. Base pulled in from COAST, then
+  // four layered sines (two axis-aligned, two diagonal) swing it in and out
+  // by a few hundred units so the edge grows bays, capes and peninsulas.
+  const coast =
+    COAST -
+    500 +
+    Math.sin(x * 0.0019 + z * 0.0013) * 120 +
+    Math.sin(z * 0.0024 - x * 0.001) * 80 +
+    Math.sin((x + z) * 0.0016) * 60 +
+    Math.sin((x - z) * 0.0012 + 2.1) * 40
+  if (Math.max(Math.abs(x), Math.abs(z)) < coast) return true
+  // Outer islands beyond the coast.
+  for (let i = 0; i < ISLANDS.length; i++) {
+    const is = ISLANDS[i]!
+    const dx = x - is[0]
+    const dz = z - is[1]
+    const r = is[2] + Math.sin(dx * 0.05) * 7 + Math.sin(dz * 0.05) * 7
+    if (dx * dx + dz * dz < r * r) return true
+  }
+  return false
 }
 
 // ---------------------------------------------------------------------------
@@ -185,10 +227,53 @@ export interface TreeOpts {
  * The village's round-canopy tree (identical geometry + rng sequence when
  * called with no opts — the village ring uses exactly this).
  */
+/**
+ * Every tree the world lays down, recorded (trunk cell + which log it drops)
+ * so the gather system can turn ALL of them into choppable woodcutting nodes —
+ * not just the handful of dedicated oak clusters. Drained incrementally by the
+ * gather ticker, so streamed-zone trees (which call kitTree as they bake) also
+ * become choppable the moment their zone builds.
+ */
+export interface TreeMark {
+  x: number
+  z: number
+  kind: 'oak_tree' | 'pine_tree'
+  /** Instance [start,end) ranges in each baked batch, so a chopped tree can be
+   *  hidden (zero-scaled) until it respawns. Empty range = that batch unused. */
+  wood: [number, number]
+  leaf: [number, number]
+  misc: [number, number]
+}
+export const treeRegistry: TreeMark[] = []
+
+/** Record a finished tree + the instance ranges it just added (for chop-hide). */
+function markTree(
+  ctx: Ctx,
+  ix: number,
+  iz: number,
+  kind: 'oak_tree' | 'pine_tree',
+  w0: number,
+  l0: number,
+  m0: number
+): void {
+  const b = ctx.batches
+  treeRegistry.push({
+    x: ix,
+    z: iz,
+    kind,
+    wood: [w0, b.wood.count],
+    leaf: [l0, b.leaf.count],
+    misc: [m0, b.misc.count]
+  })
+}
+
 export function kitTree(ctx: Ctx, ix: number, iz: number, opts: TreeOpts = {}): void {
   const { rng, batches, grid } = ctx
   const leaves = opts.leaves ?? P.LEAF
   const h = 2 + rng.int(3) // trunk height 2-4
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
   batches.wood.add(ix + 0.2, 0, iz + 0.2, 0.6, h, 0.6, rng.pick(P.WOOD))
   grid.block(ix, iz)
 
@@ -203,6 +288,7 @@ export function kitTree(ctx: Ctx, ix: number, iz: number, opts: TreeOpts = {}): 
     }
   }
   batches.leaf.voxel(ix, h + 2, iz, rng.pick(leaves))
+  markTree(ctx, ix, iz, 'oak_tree', w0, l0, m0)
 }
 
 export interface PineOpts {
@@ -215,6 +301,9 @@ export function kitPine(ctx: Ctx, ix: number, iz: number, opts: PineOpts = {}): 
   const { rng, batches, grid } = ctx
   const leaves = opts.leaves ?? PINE_LEAF
   const h = opts.tall ? 3 + rng.int(2) : 2 + rng.int(2)
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
   batches.wood.add(ix + 0.25, 0, iz + 0.25, 0.5, h, 0.5, rng.pick(P.WOOD))
   grid.block(ix, iz)
   let r = opts.tall ? 2 : 1
@@ -229,12 +318,16 @@ export function kitPine(ctx: Ctx, ix: number, iz: number, opts: PineOpts = {}): 
     y++
     r--
   }
+  markTree(ctx, ix, iz, 'pine_tree', w0, l0, m0)
 }
 
 /** Bare twisted tree for the wastes / dungeon approaches. */
 export function kitDeadTree(ctx: Ctx, ix: number, iz: number): void {
   const { rng, batches, grid } = ctx
   const h = 2 + rng.int(3)
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
   batches.wood.add(ix + 0.25, 0, iz + 0.25, 0.5, h, 0.5, rng.pick(DEAD_WOOD))
   grid.block(ix, iz)
   const arms = 2 + rng.int(2)
@@ -248,6 +341,75 @@ export function kitDeadTree(ctx: Ctx, ix: number, iz: number): void {
     }
   }
   batches.wood.add(ix + 0.32, h, iz + 0.32, 0.36, 0.9, 0.36, rng.pick(DEAD_WOOD))
+  markTree(ctx, ix, iz, 'oak_tree', w0, l0, m0)
+}
+
+// --- extra tree types (all choppable — they register with the tree registry) ---
+
+/** Slender birch — pale bark, airy light-green canopy. */
+export function kitBirch(ctx: Ctx, ix: number, iz: number): void {
+  const { rng, batches, grid } = ctx
+  const h = 3 + rng.int(3)
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
+  batches.wood.add(ix + 0.3, 0, iz + 0.3, 0.4, h, 0.4, rng.pick(P.BIRCH_WOOD))
+  grid.block(ix, iz)
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dz = -1; dz <= 1; dz++) {
+      if (Math.abs(dx) === 1 && Math.abs(dz) === 1 && rng.next() < 0.6) continue
+      batches.leaf.voxel(ix + dx, h, iz + dz, rng.pick(P.BIRCH_LEAF))
+    }
+  }
+  batches.leaf.voxel(ix, h + 1, iz, rng.pick(P.BIRCH_LEAF))
+  markTree(ctx, ix, iz, 'oak_tree', w0, l0, m0)
+}
+
+/** Spring blossom tree — rounded pink canopy, a few fallen petals. */
+export function kitBlossom(ctx: Ctx, ix: number, iz: number): void {
+  const { rng, batches, grid } = ctx
+  const h = 2 + rng.int(2)
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
+  batches.wood.add(ix + 0.25, 0, iz + 0.25, 0.5, h, 0.5, rng.pick(P.WOOD))
+  grid.block(ix, iz)
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dz = -2; dz <= 2; dz++) {
+      const r = Math.abs(dx) + Math.abs(dz)
+      if (r > 2 || (r === 2 && rng.next() < 0.5)) continue
+      batches.leaf.voxel(ix + dx, h, iz + dz, rng.pick(P.BLOSSOM_LEAF))
+      if (r <= 1) batches.leaf.voxel(ix + dx, h + 1, iz + dz, rng.pick(P.BLOSSOM_LEAF))
+    }
+  }
+  // a couple of fallen petals at the base
+  batches.misc.add(ix + rng.range(0, 0.6), 0.04, iz + rng.range(0, 0.6), 0.2, 0.04, 0.2, rng.pick(P.BLOSSOM_LEAF))
+  markTree(ctx, ix, iz, 'oak_tree', w0, l0, m0)
+}
+
+/** Weeping willow — broad soft canopy with drooping fronds. */
+export function kitWillow(ctx: Ctx, ix: number, iz: number): void {
+  const { rng, batches, grid } = ctx
+  const h = 3 + rng.int(2)
+  const w0 = batches.wood.count
+  const l0 = batches.leaf.count
+  const m0 = batches.misc.count
+  batches.wood.add(ix + 0.25, 0, iz + 0.25, 0.5, h, 0.5, rng.pick(P.WOOD))
+  grid.block(ix, iz)
+  for (let dx = -2; dx <= 2; dx++) {
+    for (let dz = -2; dz <= 2; dz++) {
+      if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue
+      batches.leaf.voxel(ix + dx, h, iz + dz, rng.pick(P.WILLOW_LEAF))
+    }
+  }
+  // drooping fronds along the canopy edge
+  for (const [ex, ez] of [[-2, 0], [2, 0], [0, -2], [0, 2]] as const) {
+    const drop = 1 + rng.int(2)
+    for (let d = 0; d < drop; d++) {
+      batches.leaf.voxel(ix + ex, h - 1 - d, iz + ez, rng.pick(P.WILLOW_LEAF))
+    }
+  }
+  markTree(ctx, ix, iz, 'oak_tree', w0, l0, m0)
 }
 
 // ---------------------------------------------------------------------------

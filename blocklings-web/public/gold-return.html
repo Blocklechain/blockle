@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Blocklings — GOLD</title>
+<style>
+  :root{color-scheme:dark}
+  html,body{margin:0;height:100%}
+  body{background:#0d1b2a;color:#eaf1fb;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
+  .card{max-width:360px;width:100%;background:#14263b;border:1px solid #23415f;border-radius:16px;
+    padding:30px 26px;box-shadow:0 24px 60px -30px rgba(0,0,0,.7)}
+  .coin{width:54px;height:54px;margin:0 auto 14px;display:block}
+  h1{font-size:20px;margin:0 0 8px}
+  p{margin:0 0 6px;color:#aebfd4;font-size:14.5px}
+  .ok h1{color:#e8c15a}.err h1{color:#ff8a94}
+  .spin{width:34px;height:34px;margin:4px auto 14px;border-radius:50%;
+    border:3px solid #2a456a;border-top-color:#e8c15a;animation:s 1s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  button{margin-top:16px;background:#e8c15a;color:#2a1f05;border:0;border-radius:10px;padding:11px 18px;
+    font:600 14px system-ui;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="card" id="card">
+  <svg class="coin" viewBox="0 0 24 24" aria-hidden="true">
+    <circle cx="12" cy="12" r="10" fill="#e8c15a" stroke="#8a6508" stroke-width="2"/>
+    <circle cx="12" cy="12" r="6.2" fill="none" stroke="#b8860b" stroke-width="1.6"/>
+    <rect x="10.9" y="8.2" width="2.2" height="7.6" rx="1.1" fill="#b8860b"/>
+  </svg>
+  <div class="spin" id="spin"></div>
+  <h1 id="title">Finishing your purchase…</h1>
+  <p id="msg">Confirming the payment with PayPal.</p>
+</div>
+<script>
+(function () {
+  var ORIGIN = 'https://blockle.org';
+  var qs = new URLSearchParams(location.search);
+  var sku = qs.get('sku') || '';
+  var orderId = qs.get('token') || qs.get('orderId') || '';
+  var cancelled = qs.get('cancel') === '1';
+  var card = document.getElementById('card');
+  var spin = document.getElementById('spin');
+
+  function show(ok, title, msg, closeable) {
+    spin.style.display = 'none';
+    card.className = 'card ' + (ok ? 'ok' : 'err');
+    document.getElementById('title').textContent = title;
+    document.getElementById('msg').textContent = msg;
+    if (closeable) {
+      var b = document.createElement('button');
+      b.textContent = 'Return to the game';
+      b.onclick = function () { try { window.close(); } catch (e) {} if (!window.closed) location.href = '/blocklings/'; };
+      card.appendChild(b);
+    }
+    // Nudge an opener (web popup) to re-sync its balance immediately.
+    try { if (window.opener) window.opener.postMessage({ blocklingsGold: ok ? 'credited' : 'failed' }, '*'); } catch (e) {}
+    if (ok) { try { setTimeout(function () { window.close(); }, 1600); } catch (e) {} }
+  }
+
+  function token() { try { return localStorage.getItem('blk_token'); } catch (e) { return null; } }
+
+  async function capture() {
+    if (cancelled) { show(false, 'Payment cancelled', 'No GOLD was purchased. You can close this window.', true); return; }
+    if (!sku || !orderId) { show(false, 'Missing order', 'This page was opened without a valid PayPal order.', true); return; }
+
+    var headers = { 'Content-Type': 'application/json', 'x-blockle-client': 'blocklings' };
+    var tok = token();
+    var creds = 'include';
+    if (tok) { headers['Authorization'] = 'Bearer ' + tok; creds = 'omit'; }
+    else {
+      // Cookie session: fetch CSRF so the authed POST is accepted.
+      try {
+        var me = await fetch(ORIGIN + '/account/api/me', { credentials: 'include' });
+        var mj = await me.json();
+        if (mj && mj.csrf) headers['x-csrf-token'] = mj.csrf;
+      } catch (e) {}
+    }
+
+    try {
+      var r = await fetch(ORIGIN + '/account/api/game/gold/paypal/capture', {
+        method: 'POST', headers: headers, credentials: creds,
+        body: JSON.stringify({ orderId: orderId, sku: sku })
+      });
+      var j = {}; try { j = await r.json(); } catch (e) {}
+      if (r.status === 200 && j.ok) {
+        show(true, 'GOLD added!', (j.credited ? j.credited.toLocaleString() + ' GOLD' : 'Your GOLD') + ' is in your wallet.', false);
+      } else if (r.status === 409) {
+        show(true, 'Already credited', 'This payment was already added to your wallet.', true);
+      } else {
+        show(false, 'Could not finish', (j && j.error) ? j.error : 'The payment could not be credited. If you were charged, your GOLD will appear shortly.', true);
+      }
+    } catch (e) {
+      show(false, 'Network trouble', 'We could not reach the server. If you were charged, your GOLD will appear shortly.', true);
+    }
+  }
+  capture();
+})();
+</script>
+</body>
+</html>

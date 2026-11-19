@@ -1,25 +1,28 @@
 /**
  * Blocklings skills — the XP curve.
  *
- * RS-flavored: gently exponential, levels 1..99. The cost of a level
- * bracket doubles every 10 levels:
+ * A smooth power curve, levels 1..999. The cost of a level bracket grows
+ * polynomially instead of doubling, so the cumulative total never overflows
+ * (an exponential doubling curve blows past Number.MAX_SAFE_INTEGER long
+ * before 999 — this one tops out at a tidy ~9.9 billion):
  *
- *   bracketCost(L) = floor(100 * 2^((L - 1) / 10))   // XP from L -> L+1
+ *   bracketCost(L) = floor(80 * L^1.85)              // XP from L -> L+1
  *
- *   L1 -> 2 : 100 xp        L50 -> 51 : 2,985 xp
- *   L10->11 : 186 xp        L75 -> 76 : 16,889 xp
- *   L25->26 : 527 xp        L98 -> 99 : 83,174 xp
+ *   L1  -> 2  : 80 xp         L50  -> 51  : 111,220 xp
+ *   L10 -> 11 : 5,663 xp      L99  -> 100 : 393,563 xp
+ *   L25 -> 26 : 30,851 xp     L998 -> 999 : 28,280,135 xp
  *
- * Total XP for 99 = 1,240,582 per skill (half of it after level 90) —
- * a long grind, not a second job.
+ * Total XP for 99 = 13,474,943 per skill; total XP for 999 (XP_CAP) =
+ * 9,917,152,857 — safely under 9e15, and small enough to print. A very
+ * long grind, not a heat-death-of-the-universe one.
  */
 
-export const MAX_LEVEL = 99
+export const MAX_LEVEL = 999
 
 /** XP needed to climb from `level` to `level + 1` (0 at the cap). */
 export function bracketCost(level: number): number {
   if (level < 1 || level >= MAX_LEVEL) return 0
-  return Math.floor(100 * Math.pow(2, (level - 1) / 10))
+  return Math.floor(80 * Math.pow(level, 1.85))
 }
 
 /** Cumulative XP threshold at which `level` is reached (level 1 = 0). */
@@ -33,23 +36,28 @@ const THRESHOLDS: number[] = (() => {
   return t
 })()
 
-/** Total XP required to have reached `level` (clamped 1..99). */
+/** Total XP required to have reached `level` (clamped 1..MAX_LEVEL). */
 export function xpForLevel(level: number): number {
   const lvl = Math.max(1, Math.min(MAX_LEVEL, Math.floor(level)))
   return THRESHOLDS[lvl]!
 }
 
-/** Hard cap on stored XP (the level-99 threshold). */
+/** Hard cap on stored XP (the MAX_LEVEL threshold). */
 export const XP_CAP = xpForLevel(MAX_LEVEL)
 
-/** Level for a total-XP amount (1..99). */
+/** Level for a total-XP amount (1..MAX_LEVEL). */
 export function levelForXp(xp: number): number {
   const x = Math.max(0, xp)
-  // 99 entries — linear scan is instant and obviously correct.
-  for (let lvl = MAX_LEVEL; lvl >= 2; lvl--) {
-    if (x >= THRESHOLDS[lvl]!) return lvl
+  // Binary search over the monotonic THRESHOLDS table for the highest level
+  // whose threshold is <= x. THRESHOLDS is indexed by level (1..MAX_LEVEL).
+  let lo = 1
+  let hi = MAX_LEVEL
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (x >= THRESHOLDS[mid]!) lo = mid
+    else hi = mid - 1
   }
-  return 1
+  return lo
 }
 
 /** Progress inside the current bracket: xp earned + bracket size. */

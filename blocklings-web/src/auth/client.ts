@@ -74,6 +74,15 @@ export function me(token: string): Promise<ApiResult> {
   return req('GET', '/account/api/me', undefined, token)
 }
 
+/**
+ * Soft-delete the signed-in Blockling account. The account + character data are
+ * PRESERVED server-side (recoverable from the blockle.org/account dashboard);
+ * this only flags it hidden. Returns `{ ok }` on success.
+ */
+export function deleteBlockling(token: string): Promise<ApiResult> {
+  return req('POST', '/account/api/game/blocklings/delete', {}, token)
+}
+
 /** Human error text from an API reply ('' when the server said nothing). */
 export function errorText(r: ApiResult): string {
   const e = r.data.error ?? r.data.message

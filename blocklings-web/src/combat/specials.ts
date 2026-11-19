@@ -75,31 +75,46 @@ export function tierFxColor(tier: number): number {
 // ---------------------------------------------------------------------------
 
 export interface SpecialButton {
-  /** Show/hide + repaint the cooldown ring (cd 0 = ready, 1 = just used). */
-  set(visible: boolean, cdFrac: number): void
+  /** Show/hide + repaint the cooldown ring (cd 0 = ready, 1 = just used).
+   *  Optional label updates the short caption (e.g. the ability's short name). */
+  set(visible: boolean, cdFrac: number, label?: string): void
   dispose(): void
 }
 
-const SIZE = 66 // px (a notch smaller than the 84px ATK button below it)
+export interface SpecialButtonOpts {
+  /** CSS position fragment (e.g. "right:27px;bottom:120px"). Defaults to the
+   *  single bottom-right slot above the ATK button. */
+  posCss?: string
+  /** Initial short caption. */
+  label?: string
+}
+
+const SIZE = 54 // px (a notch smaller than the 68px ATK button)
 
 /**
- * Round SPC button above the ATK button, bottom-right. Fires on
- * pointerdown; hidden entirely while no special weapon is equipped.
- * The cooldown ring is a conic-gradient repaint on a tiny canvas.
+ * Round special button. Fires on pointerdown; hidden entirely while its slot has
+ * no special. With multiple specials equipped, two of these flank the hotbar
+ * (weapon right, shield left). The cooldown ring is a canvas-arc repaint.
  */
-export function createSpecialButton(root: HTMLElement, fire: () => void): SpecialButton {
+export function createSpecialButton(
+  root: HTMLElement,
+  fire: () => void,
+  opts: SpecialButtonOpts = {}
+): SpecialButton {
+  const pos = opts.posCss ??
+    `right:max(27px, env(safe-area-inset-right));bottom:calc(max(32px, env(safe-area-inset-bottom)) + 98px)`
   const btn = document.createElement('div')
+  btn.className = 'bl-spc-btn' // hideable via the "Hide buttons" setting
   btn.style.cssText = [
     'position:fixed',
-    'right:max(27px, env(safe-area-inset-right))',
-    `bottom:calc(max(32px, env(safe-area-inset-bottom)) + 98px)`,
+    pos,
     `width:${SIZE}px`,
     `height:${SIZE}px`,
     'border-radius:50%',
     'background:rgba(16,22,34,0.35)',
     'border:2px solid rgba(255,210,62,0.45)',
     'color:rgba(255,210,62,0.9)',
-    'font:bold 12px "Courier New", monospace',
+    'font:bold 11px "Courier New", monospace',
     'letter-spacing:1px',
     'display:none',
     'align-items:center',
@@ -111,7 +126,11 @@ export function createSpecialButton(root: HTMLElement, fire: () => void): Specia
     '-webkit-user-select:none',
     '-webkit-tap-highlight-color:transparent',
   ].join(';')
-  btn.textContent = 'SPC'
+
+  const labelEl = document.createElement('span')
+  labelEl.style.cssText = 'position:relative;z-index:1;text-align:center;line-height:1'
+  labelEl.textContent = opts.label ?? 'SPC'
+  btn.appendChild(labelEl)
 
   const ring = document.createElement('canvas')
   ring.width = SIZE
@@ -153,9 +172,12 @@ export function createSpecialButton(root: HTMLElement, fire: () => void): Specia
   root.appendChild(btn)
 
   return {
-    set(visible, cdFrac) {
+    set(visible, cdFrac, label) {
       btn.style.display = visible ? 'flex' : 'none'
-      if (visible) paint(cdFrac)
+      if (visible) {
+        if (label !== undefined && label !== labelEl.textContent) labelEl.textContent = label
+        paint(cdFrac)
+      }
     },
     dispose() {
       btn.remove()

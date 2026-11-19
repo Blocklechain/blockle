@@ -20,8 +20,15 @@
  */
 import * as THREE from 'three'
 import type { GameAPI, InventoryAPI, SkillTreeAPI } from '../types'
+import { curveXp } from '../skills'
+
+/** Gathering grind constant: higher = faster to 999. ~70 targets roughly two
+ *  months of dedicated effort to cap a gathering skill while keeping early levels
+ *  quick (the divisor only bites as the level climbs). */
+const GATHER_GRIND = 70
 import { events } from '../events'
 import { MATERIALS, NODE_KINDS } from '../ids'
+import { treeRegistry, type TreeMark } from '../world/kit'
 // PURE lookups only (sanctioned): zone defs + side-effect-free regionAt.
 import { regionOrZoneAt } from '../world/index'
 import { ZONES, type ZoneDef } from '../world/zones/registry'
@@ -40,12 +47,38 @@ import { NodeProps } from './props'
 import { makeGatherRng, placeNodes, placeZoneNodes } from './placement'
 import { createGatherUI, type GatherPromptUI } from './ui'
 import { maybeSuccessLine, noToolLine, underTierLine } from './flavor'
+import { actionContext, type ActionIcon } from '../action/context'
+
+/** Pick the INTERACT glyph for a node: kind overrides (berry/mushroom/clay
+ * are bare-hands) win over the profession's tool icon. */
+function iconForNode(n: LiveNode): ActionIcon {
+  const id = n.kind.id
+  if (id === 'berry_bush' || id === 'mushroom_cluster' || id === 'clay_pit') return 'hand'
+  switch (n.kind.skill) {
+    case 'woodcutting':
+      return 'axe'
+    case 'mining':
+      return 'pick'
+    case 'fishing':
+      return 'hook'
+    case 'herbalism':
+    case 'farming':
+      return 'sickle'
+    default:
+      return 'hand'
+  }
+}
 
 export interface GatherModule {
   /** Wire the inventory so tool gating can read the equipped 'tool' slot. */
   setInventory(inv: InventoryAPI): void
-  /** Wire the player's arm-swing (integrator passes player.triggerAttack). */
-  setSwing(fn: () => void): void
+  /**
+   * Wire the per-profession gather animation. The integrator maps the skill to
+   * a distinct rig pose (woodcutting→chop, mining→mine, fishing→cast,
+   * herbalism→scythe, farming→pluck), so every gathering skill animates
+   * uniquely instead of sharing one swing.
+   */
+  setGatherAnim(fn: (skill: string) => void): void
   /** Wire talent trees (gatherSpeed / doubleOre modifiers). Optional. */
   setSkillTree(st: SkillTreeAPI): void
   /**
@@ -91,6 +124,35 @@ export function initGather(api: GameAPI): GatherModule {
   const heartProps = new NodeProps()
   const nodes: LiveNode[] = []
 
+  // "Every tree is choppable": world trees (kitTree/kitPine/kitDeadTree/…) are
+  // baked into static batches, but each TreeMark records its exact instance
+  // ranges, so a chopped tree ZERO-SCALES those instances (vanishes) and
+  // restores on respawn — via world.chopTree/growTree. Each tree gets its own
+  // props closing over its mark. The registry grows as streamed zones bake, so
+  // we drain it from the ticker.
+  const treeWorld = api.world as unknown as {
+    chopTree(m: TreeMark): void
+    growTree(m: TreeMark): void
+  }
+  const makeTreeProps = (mark: TreeMark): NodeProps =>
+    ({
+      deplete: () => treeWorld.chopTree(mark),
+      restore: () => treeWorld.growTree(mark),
+      setVisible() {},
+      build() {}
+    }) as unknown as NodeProps
+  let treeCursor = 0
+  const MAX_TREE_NODES = 6000 // bounds the per-frame nearest-node scan
+  const drainTreeRegistry = (): void => {
+    while (treeCursor < treeRegistry.length) {
+      const t = treeRegistry[treeCursor++]
+      if (!t) continue
+      if (nodes.length >= MAX_TREE_NODES) break
+      // Trunk cell center; INTERACT_RADIUS makes it reachable from any side.
+      pushNode(makeTreeProps(t), t.kind, t.x + 0.5, t.z + 0.5, -1)
+    }
+  }
+
   const pushNode = (
     batch: NodeProps,
     kindId: string,
@@ -113,6 +175,7 @@ export function initGather(api: GameAPI): GatherModule {
     pushNode(heartProps, p.kindId, p.x, p.z, prop)
   }
   heartProps.build(api.scene)
+  drainTreeRegistry() // make every eagerly-built tree choppable right away
 
   // --- streamed zones: density pass on residency ---------------------------
   const zoneIndex = new Map<string, ZoneDef>(ZONES.map((z) => [z.id, z]))
@@ -154,8 +217,13 @@ export function initGather(api: GameAPI): GatherModule {
   const ui: GatherPromptUI | null = uiMount ? createGatherUI(uiMount) : null
 
   let inv: InventoryAPI | null = null
-  let swing: (() => void) | null = null
+  let gatherAnim: ((skill: string) => void) | null = null
   let skillTree: SkillTreeAPI | null = null
+
+  /** Fishing is special: a continuous, hands-off loop. You cast once, then keep
+   *  pulling fish forever (no node depletion, no respawn wait) until you walk
+   *  away — truly AFK. Every other gather kind is one-harvest-then-deplete. */
+  const isFishing = (n: LiveNode): boolean => n.kind.id === 'fishing_spot'
 
   let near: LiveNode | null = null
   let active: LiveNode | null = null
@@ -222,16 +290,11 @@ export function initGather(api: GameAPI): GatherModule {
     gatherDur = dur
     nextSwingAt = 0
     ui?.progress(0)
+    if (isFishing(n)) gatherAnim?.(n.kind.skill) // opening cast; re-cast after each catch
   }
 
-  const completeGather = (n: LiveNode): void => {
-    cancelGather()
-    const now = performance.now() / 1000
-    n.harvested = true
-    const [rMin, rMax] = n.tune.respawn ?? [RESPAWN_MIN, RESPAWN_MAX]
-    n.respawnAt = now + rMin + rng() * (rMax - rMin)
-    n.props.deplete(n.prop, n.tune.style, now)
-
+  /** Grant one harvest's items + xp + events (no node state change). */
+  const grantHarvest = (n: LiveNode): void => {
     // skill tree: 'doubleOre' (mining) + '<skill>.double' (any profession)
     let qty = n.tune.qty
     const dblChance =
@@ -239,8 +302,41 @@ export function initGather(api: GameAPI): GatherModule {
     if (dblChance > 0 && Math.random() < dblChance) qty *= 2
 
     events.emit('item:gained', { id: n.kind.itemId, qty, source: 'gather' })
-    events.emit('xp:gained', { skill: n.kind.skill, amount: n.tune.xp })
+    // Gathering to 999 is a long-haul grind (~2 months of dedicated effort). Early
+    // levels stay snappy; the late game stretches out. We derive the skill level
+    // from the curved amount (curveXp = flat * level^1.85) and divide by a gently
+    // level-scaling factor so harvests-per-level climb toward the cap.
+    const curved = curveXp(n.kind.skill, n.tune.xp)
+    const lvlEst = Math.pow(Math.max(1, curved / n.tune.xp), 1 / 1.85)
+    const gatherXp = Math.max(1, Math.round(curved / (1 + lvlEst / GATHER_GRIND)))
+    events.emit('xp:gained', { skill: n.kind.skill, amount: gatherXp })
     events.emit('gather:done', { nodeType: n.kind.id, itemId: n.kind.itemId, skill: n.kind.skill })
+  }
+
+  const completeGather = (n: LiveNode): void => {
+    // Fishing: hook a fish, then immediately cast again — the spot never
+    // depletes, so you keep reeling them in forever while standing there (AFK).
+    if (isFishing(n)) {
+      grantHarvest(n)
+      if (Math.random() < 0.12) {
+        const quip = maybeSuccessLine(n.kind.skill)
+        if (quip) events.emit('chat:system', { text: quip })
+      }
+      gatherT = 0
+      nextSwingAt = 0
+      ui?.progress(0)
+      gatherAnim?.(n.kind.skill) // re-cast for the next fish
+      return // stay active — do NOT cancel or deplete
+    }
+
+    cancelGather()
+    const now = performance.now() / 1000
+    n.harvested = true
+    const [rMin, rMax] = n.tune.respawn ?? [RESPAWN_MIN, RESPAWN_MAX]
+    n.respawnAt = now + rMin + rng() * (rMax - rMin)
+    n.props.deplete(n.prop, n.tune.style, now)
+
+    grantHarvest(n)
     const quip = maybeSuccessLine(n.kind.skill)
     if (quip) events.emit('chat:system', { text: quip })
   }
@@ -310,6 +406,10 @@ export function initGather(api: GameAPI): GatherModule {
       if (next) buildZone(next.zone)
     }
 
+    // streamed-zone trees bake in over time — fold any new ones into the
+    // choppable set (cheap: a cursor walk, usually zero work per frame).
+    if (treeCursor < treeRegistry.length) drainTreeRegistry()
+
     // respawns — regrow pop via props.restore
     for (const n of nodes) {
       if (n.harvested && now >= n.respawnAt) {
@@ -342,9 +442,11 @@ export function initGather(api: GameAPI): GatherModule {
         cancelGather()
       } else {
         gatherT += dt
-        if (gatherT >= nextSwingAt) {
+        // Per-skill gather pose every 0.6s (chop/mine/scythe/pluck). Fishing
+        // animates via its cast, played per cycle in start/completeGather.
+        if (!isFishing(active) && gatherT >= nextSwingAt) {
           nextSwingAt += 0.6
-          swing?.()
+          gatherAnim?.(active.kind.skill)
         }
         if (gatherT >= gatherDur) completeGather(active)
         else ui?.progress(gatherT / gatherDur)
@@ -362,6 +464,15 @@ export function initGather(api: GameAPI): GatherModule {
       }
     }
 
+    // INTERACT button: offer the nearest node with a profession-flavored glyph
+    const nearNode = near
+    actionContext.publish(
+      'gather',
+      nearNode
+        ? { priority: 2, icon: iconForNode(nearNode), label: nearNode.tune.verb, invoke: activate }
+        : null
+    )
+
     heartProps.update(now)
     for (const b of zoneBatches) if (b.visible) b.props.update(now)
   }
@@ -371,8 +482,8 @@ export function initGather(api: GameAPI): GatherModule {
     setInventory(i: InventoryAPI): void {
       inv = i
     },
-    setSwing(fn: () => void): void {
-      swing = fn
+    setGatherAnim(fn: (skill: string) => void): void {
+      gatherAnim = fn
     },
     setSkillTree(st: SkillTreeAPI): void {
       skillTree = st
@@ -383,6 +494,7 @@ export function initGather(api: GameAPI): GatherModule {
     },
     dispose(): void {
       cancelAnimationFrame(raf)
+      actionContext.publish('gather', null)
       window.removeEventListener('keydown', onKeyDown)
       heartProps.dispose(api.scene)
       for (const b of zoneBatches) b.props.dispose(api.scene)

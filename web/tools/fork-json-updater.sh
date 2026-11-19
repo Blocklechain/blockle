@@ -7,7 +7,7 @@
 set -euo pipefail
 
 OUT="${FORK_JSON_OUT:-/opt/blockle/web/fork.json}"
-RPC="${BLOCKLE_RPC:-http://127.0.0.1:8445/}"
+RPC="${BLOCKLE_RPC:-http://127.0.0.1:9790/}"
 ACT_DEFAULT=53000
 
 RESP="$(curl -s --max-time 8 -H 'content-type: application/json' \

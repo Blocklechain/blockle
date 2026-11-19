@@ -56,6 +56,10 @@ struct Client {
     address: Option<Address>,
     worker: String,
     share_target: U256,
+    /// Set true once share_target has been seeded from the live network target
+    /// on the first job push (so it starts balanced, not at the blind per-algo
+    /// default). Vardiff refines from there.
+    net_init: bool,
     window_start: Instant,
     window_shares: u32,
     accepted: u64,
@@ -123,7 +127,12 @@ fn initial_diff(algo: &str) -> u64 {
         // a multi-TH/s rig. Start at 65536 (vardiff refines from here; genuinely
         // small solo miners get eased down by ease_idle_miners).
         "sha256d" => 65536,
-        "scrypt" => 16,
+        // scrypt ASICs here are small (Antminer L3-class, ~250-500 MH/s). A
+        // floor of diff 16 means ~275 s/share at 250 MH/s — far too sparse to
+        // accumulate shares or estimate hashrate. Start at diff 1 (~17 s/share
+        // for an L3); vardiff raises it for bigger rigs, ease_idle lowers it for
+        // tiny ones.
+        "scrypt" => 1,
         "x11" => 64,
         "kheavyhash" | "blake3" => 1024,
         "eaglesong" | "blake2b" | "blake2s" => 256,
@@ -136,6 +145,29 @@ fn floor_target(state: &DirectState) -> U256 {
         .opts
         .share_floor_target
         .unwrap_or_else(|| diff1() / U256::from(initial_diff(state.algo)))
+}
+
+/// Average shares a miner submits per block at the balanced default difficulty.
+/// Pool (share) difficulty targets network_difficulty / N and is hard-capped so
+/// a share is NEVER harder than finding an actual block.
+const TARGET_SHARES_PER_BLOCK: u64 = 32;
+
+/// Balanced share-target bounds derived from the LIVE network block target
+/// (`lane_target`, the current lane's nbits). Returns `(default_start, hardest)`
+/// in target space (bigger target = EASIER = lower difficulty):
+///   - `hardest` = `lane_target` → share difficulty can never exceed the network
+///     block difficulty (the old fixed per-algo floor ignored the live target, so
+///     on a low-difficulty lane like blake2s it demanded HARDER work than a block
+///     and miners only scored when they'd actually found one — the imbalance).
+///   - `default_start` ≈ `lane_target * N` → ~1/N of block difficulty, so miners
+///     get steady shares; capped to `pow_limit` (the easiest possible target).
+fn balanced_targets(lane_target: U256, pow_limit: U256) -> (U256, U256) {
+    let hardest = lane_target.max(U256::one());
+    let start = hardest
+        .checked_mul(U256::from(TARGET_SHARES_PER_BLOCK))
+        .unwrap_or(pow_limit)
+        .min(pow_limit);
+    (start.max(hardest), hardest)
 }
 
 /// Serve a direct BLOCK pool for one fixed-header parent algorithm.
@@ -223,7 +255,12 @@ fn job_loop(state: Arc<DirectState>) {
             if state.opts.mode == PoolMode::Pplns {
                 if let Some(job) = build_direct_job(&state, state.opts.pool_address) {
                     let n = state.next_job.fetch_add(1, Ordering::SeqCst);
-                    let job_id = format!("p{n:x}");
+                    // Plain fixed-width hex job id (no prefix / no dash): the most
+                    // widely-compatible stratum convention. Some proxies (e.g.
+                    // Mining-Rig-Rentals) mangle prefixed/dashed ids and resubmit
+                    // against an id the pool never issued -> "unknown job" rejects.
+                    // `n` is globally monotonic so this is unique across all jobs.
+                    let job_id = format!("{n:08x}");
                     let params = notify_params_for(&job_id, &job);
                     let lane_target = compact_to_target(job.nbits).unwrap_or_default();
                     state.jobs.lock().unwrap().insert(job_id.clone(), (n, job));
@@ -247,8 +284,11 @@ fn job_loop(state: Arc<DirectState>) {
                 }
             }
             let mut jobs = state.jobs.lock().unwrap();
-            if jobs.len() > 256 {
-                let min_keep = state.next_job.load(Ordering::SeqCst).saturating_sub(256);
+            // Keep a generous recent-job window: BLOCK aux jobs churn every
+            // ~30-60s, and a lagging proxy may submit against a slightly stale
+            // id — a larger window lets those valid shares still resolve.
+            if jobs.len() > 1024 {
+                let min_keep = state.next_job.load(Ordering::SeqCst).saturating_sub(1024);
                 jobs.retain(|_, (n, _)| *n >= min_keep);
             }
         }
@@ -381,12 +421,23 @@ fn send_notify(client: &Client, params: &Value, _lane_target: U256, clean: bool)
 fn push_job(state: &Arc<DirectState>, client_id: u64, addr: Address, clean: bool) {
     let Some(job) = build_direct_job(state, addr) else { return };
     let n = state.next_job.fetch_add(1, Ordering::SeqCst);
-    let job_id = format!("{n:x}-{client_id:x}");
+    // Dash-free fixed-width hex (see the broadcast path): `n` is globally unique,
+    // so the per-client id needs no client_id suffix and stays proxy-friendly.
+    let job_id = format!("{n:08x}");
     let params = notify_params_for(&job_id, &job);
     let lane_target = compact_to_target(job.nbits).unwrap_or_default();
     state.jobs.lock().unwrap().insert(job_id, (n, job));
-    let clients = state.clients.lock().unwrap();
-    if let Some(client) = clients.get(&client_id) {
+    let pow_limit = state.node.params().pow_limit;
+    let mut clients = state.clients.lock().unwrap();
+    if let Some(client) = clients.get_mut(&client_id) {
+        // Seed the share difficulty from the LIVE network target on first job so
+        // it starts balanced (~1/N of block difficulty, never harder than a
+        // block) instead of the blind per-algo default. Vardiff refines it.
+        if !client.net_init && !lane_target.is_zero() {
+            let (start, _hardest) = balanced_targets(lane_target, pow_limit);
+            client.share_target = start;
+            client.net_init = true;
+        }
         send_notify(client, &params, lane_target, clean);
     }
 }
@@ -417,6 +468,7 @@ fn handle_client(state: Arc<DirectState>, stream: TcpStream) {
             address: None,
             worker: String::new(),
             share_target: floor_target(&state),
+            net_init: false,
             window_start: Instant::now(),
             window_shares: 0,
             accepted: 0,
@@ -734,8 +786,8 @@ fn handle_request(
     }
 }
 
-fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, _lane_t: U256) {
-    let floor = floor_target(state);
+fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, lane_t: U256) {
+    let pow_limit = state.node.params().pow_limit;
     let mut clients = state.clients.lock().unwrap();
     let Some(c) = clients.get_mut(&client_id) else { return };
     c.accepted += 1;
@@ -760,7 +812,15 @@ fn record_share_and_retarget(state: &Arc<DirectState>, client_id: u64, _lane_t: 
         // reconstruct a U256 from the f64 magnitude (coarse is fine here)
         let exp = scaled.log2().clamp(10.0, 255.0) as u32;
         t = (U256::one() << exp) | (U256::one() << exp.saturating_sub(1));
-        c.share_target = t.min(floor);
+        // Balance against the LIVE network block target: a share is never harder
+        // than a block (share_target >= lane_t) and never easier than pow_limit.
+        // Falls back to the per-algo floor only if there's no live target.
+        c.share_target = if lane_t.is_zero() {
+            t.min(floor_target(state))
+        } else {
+            let (_, hardest) = balanced_targets(lane_t, pow_limit);
+            t.max(hardest).min(pow_limit)
+        };
     }
     c.window_start = Instant::now();
     c.window_shares = 0;

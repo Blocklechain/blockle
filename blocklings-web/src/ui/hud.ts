@@ -19,8 +19,13 @@
  *
  * Every control shipped here works — nothing is decorative.
  */
-import type { GameAPI, WalletInfo } from '../types'
+import type { GameAPI, GoldAPI, WalletInfo } from '../types'
+import { events } from '../events'
+import { restorePurchases } from '../gold'
+import { getRealm, setRealm, REALM_COUNT, fetchRealmPops } from '../net/index'
 import { AudioManager } from './audio'
+
+const MAX_REALM_CAP = 2000
 import { createChat } from './chat'
 import './hud.css'
 
@@ -57,16 +62,38 @@ export interface HUDOptions {
    * Fallback global: `window.blocklingsSignOut`. No hook = no button.
    */
   signOut?: () => unknown
+
+  /**
+   * GOLD module API (balance + store opener). When present, the top-right
+   * balances grid shows a GOLD cell whose tap opens the 'Get GOLD' sheet.
+   */
+  gold?: GoldAPI
+
+  /**
+   * Snap-to-North hook (true = camera faces North and holds). Fallback global:
+   * `window.blocklingsSetNorthLock`. No hook = no row. Defaults OFF.
+   */
+  setNorthLock?: (on: boolean) => void
 }
 
 /** Window-global hooks other modules may expose (duck-typed, not declared). */
+interface ChainLeg {
+  address: string
+  balance: number
+}
+interface HudWallet {
+  info(): Promise<WalletInfo>
+  chains?(): Promise<Partial<Record<string, ChainLeg>>>
+}
 interface HudGlobals {
-  blocklingsWallet?: { info(): Promise<WalletInfo> }
+  blocklingsWallet?: HudWallet
   blocklingsSetQuality?: (high: boolean) => void
   blocklingsSetAutoRetaliate?: (on: boolean) => void
   blocklingsSetAlwaysDay?: (on: boolean) => void
   blocklingsSetMinimap?: (visible: boolean) => void
+  blocklingsSetNorthLock?: (on: boolean) => void
   blocklingsSignOut?: () => unknown
+  blocklingsDeleteBlockling?: () => Promise<{ ok: boolean; error?: string }>
 }
 
 const QUALITY_KEY = 'blocklings.quality.high'
@@ -148,45 +175,159 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
   }
 
   // =========================================================================
-  // Top-right: BLOCK balance chip + settings gear
+  // Top-right: collapsible 2x2 balances grid (GOLD / BLOCK / ETH / SOL)
+  // + settings gear
   // =========================================================================
   const topRight = el('div', 'bl-topright')
 
-  const chip = el('div', 'bl-chip')
-  chip.style.display = 'none' // hidden until a wallet hook answers
-  const chipIcon = el('span', 'bl-chip-icon', 'B')
-  const chipAmt = el('span', 'bl-chip-amt', '—')
-  const chipCur = el('span', 'bl-chip-cur', 'BLOCK')
-  const chipLock = el('span', 'bl-chip-lock', 'locked')
-  chipLock.style.display = 'none'
-  chip.appendChild(chipIcon)
-  chip.appendChild(chipAmt)
-  chip.appendChild(chipCur)
-  chip.appendChild(chipLock)
-  chip.title = ''
+  // --- currency cell icons (custom inline SVG — no emoji, per product rule) --
+  const ICON: Record<'gold' | 'block' | 'eth' | 'sol', string> = {
+    gold:
+      '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<circle cx="12" cy="12" r="10" fill="#e8c15a" stroke="#8a6508" stroke-width="2"/>' +
+      '<circle cx="12" cy="12" r="6.2" fill="none" stroke="#b8860b" stroke-width="1.6"/>' +
+      '<rect x="10.9" y="8.2" width="2.2" height="7.6" rx="1.1" fill="#b8860b"/></svg>',
+    block:
+      '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<rect x="3" y="3" width="18" height="18" rx="4" fill="#f2a93b"/>' +
+      '<path d="M8.6 7.2h4.1c1.8 0 2.9.8 2.9 2.3 0 1-.5 1.7-1.4 2 .1 0 1.7.5 1.7 2.2 0 1.6-1.2 2.5-3.1 2.5H8.6V7.2Zm2.1 1.7v2.1h1.7c.8 0 1.2-.4 1.2-1 0-.7-.4-1.1-1.2-1.1h-1.7Zm0 3.6v2.3h1.9c.8 0 1.3-.4 1.3-1.1 0-.8-.5-1.2-1.4-1.2h-1.8Z" fill="#1b1405"/></svg>',
+    eth:
+      '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<path d="M12 2 5.5 12.2 12 16l6.5-3.8L12 2Z" fill="#8aa0ff"/>' +
+      '<path d="M12 17.1 5.5 13.3 12 22l6.5-8.7L12 17.1Z" fill="#6c82e0"/></svg>',
+    sol:
+      '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+      '<rect x="3" y="3" width="18" height="18" rx="4" fill="#14152a"/>' +
+      '<path d="M7 9.2c.1-.2.3-.3.5-.3h9.2c.3 0 .5.4.3.6l-1.5 1.5c-.1.1-.3.2-.5.2H5.9c-.3 0-.5-.4-.3-.6L7 9.2Z" fill="#14f195"/>' +
+      '<path d="M7 15.3c.1-.1.3-.2.5-.2h9.2c.3 0 .5.4.3.6l-1.5 1.5c-.1.1-.3.2-.5.2H5.9c-.3 0-.5-.4-.3-.6L7 15.3Z" fill="#9945ff"/></svg>'
+  }
 
+  const wallet = el('div', 'bl-wallet')
+  const COLLAPSE_KEY = 'blocklings.balances.collapsed'
+  const startCollapsed = (() => {
+    try {
+      return localStorage.getItem(COLLAPSE_KEY) === '1'
+    } catch {
+      return false
+    }
+  })()
+
+  // Toggle header: chevron + a compact summary (shown when collapsed).
+  const walletToggle = el('button', 'bl-wallet-toggle')
+  walletToggle.type = 'button'
+  const walletChevron = el('span', 'bl-wallet-chevron', '▾')
+  const walletTitle = el('span', 'bl-wallet-title', 'Balances')
+  const walletSummary = el('span', 'bl-wallet-summary', '')
+  walletToggle.appendChild(walletChevron)
+  walletToggle.appendChild(walletTitle)
+  walletToggle.appendChild(walletSummary)
+
+  const grid = el('div', 'bl-wallet-grid')
+
+  type CurKey = 'gold' | 'block' | 'eth' | 'sol'
+  interface Cell {
+    amt: HTMLElement
+  }
+  const cells: Record<CurKey, Cell> = {} as Record<CurKey, Cell>
+
+  function makeCell(k: CurKey, label: string, clickable: boolean): void {
+    const cell = el('div', `bl-wallet-cell bl-wallet-${k}`)
+    if (clickable) {
+      cell.classList.add('bl-wallet-clickable')
+      cell.setAttribute('role', 'button')
+      cell.tabIndex = 0
+    }
+    const icon = el('span', 'bl-wallet-icon')
+    icon.innerHTML = ICON[k]
+    const body = el('span', 'bl-wallet-body')
+    const lab = el('span', 'bl-wallet-label', label)
+    const amt = el('span', 'bl-wallet-amt', '—')
+    body.appendChild(lab)
+    body.appendChild(amt)
+    cell.appendChild(icon)
+    cell.appendChild(body)
+    grid.appendChild(cell)
+    cells[k] = { amt }
+    if (clickable) {
+      const open = (): void => opts?.gold?.openStore()
+      cell.addEventListener('click', open)
+      cell.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          open()
+        }
+      })
+    }
+  }
+
+  makeCell('gold', 'GOLD', true) // tap opens the 'Get GOLD' store (IAP surface)
+  makeCell('block', 'BLOCK', false)
+  makeCell('eth', 'ETH', false)
+  makeCell('sol', 'SOL', false)
+
+  wallet.appendChild(walletToggle)
+  wallet.appendChild(grid)
+
+  function applyCollapsed(collapsed: boolean): void {
+    wallet.classList.toggle('collapsed', collapsed)
+    walletChevron.textContent = collapsed ? '▸' : '▾'
+    walletToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true')
+  }
+  applyCollapsed(startCollapsed)
+  walletToggle.addEventListener('click', () => {
+    const next = !wallet.classList.contains('collapsed')
+    applyCollapsed(next)
+    try {
+      localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0')
+    } catch {
+      /* non-fatal */
+    }
+    uiTick()
+  })
+
+  // -- balance formatting + data --------------------------------------------
+  const fmtGold = (v: number): string => Math.round(v).toLocaleString()
+  const fmtCrypto = (v: number): string =>
+    v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+
+  function setGold(v: number): void {
+    cells.gold.amt.textContent = fmtGold(v)
+    walletSummary.textContent = fmtGold(v) + ' GOLD'
+  }
+
+  // GOLD: initial pull + live bus updates (server-authoritative).
+  if (opts?.gold) {
+    void opts.gold
+      .balance()
+      .then((v) => setGold(v))
+      .catch(() => {
+        /* signed out → stays 0; the cell shows — until a value arrives */
+      })
+    events.on('gold:changed', ({ balance }) => setGold(balance))
+  }
+
+  // BLOCK / ETH / SOL: poll the tri-chain wallet on the shared timer.
   let walletBusy = false
-  async function pollWallet(): Promise<void> {
-    const wallet = g.blocklingsWallet
-    if (!wallet || walletBusy) return
+  async function pollChains(): Promise<void> {
+    const w = g.blocklingsWallet
+    if (!w || walletBusy) return
     walletBusy = true
     try {
-      const info = await wallet.info()
-      chipAmt.textContent = info.balance.toLocaleString(undefined, {
-        maximumFractionDigits: 4
-      })
-      chipLock.style.display = info.locked ? '' : 'none'
-      chip.title = info.address
-      // Zero-balance chip is just clutter — show it once there's real crypto.
-      chip.style.display = info.balance > 0 ? '' : 'none'
+      const legs = w.chains ? await w.chains() : null
+      const block = legs?.['blockle']?.balance
+      const eth = legs?.['ethereum']?.balance
+      const sol = legs?.['solana']?.balance
+      cells.block.amt.textContent = typeof block === 'number' ? fmtCrypto(block) : '—'
+      cells.eth.amt.textContent = typeof eth === 'number' ? fmtCrypto(eth) : '—'
+      cells.sol.amt.textContent = typeof sol === 'number' ? fmtCrypto(sol) : '—'
     } catch {
-      chip.style.display = 'none'
+      /* offline / signer unavailable — leave the last shown values */
     } finally {
       walletBusy = false
     }
   }
-  void pollWallet()
-  const walletTimer = window.setInterval(() => void pollWallet(), WALLET_POLL_MS)
+  void pollChains()
+  const walletTimer = window.setInterval(() => void pollChains(), WALLET_POLL_MS)
   void walletTimer // kept for symmetry; HUD lives for the page's lifetime
 
   // -- settings gear + panel ------------------------------------------------
@@ -264,6 +405,89 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
     return row
   }
 
+  // "Hide buttons" clean-UI mode — toggles #ui.bl-minimal (keeps movement, the
+  // ATK action button, hotbar, minimap, combat stance + the gear). Persisted.
+  const MINIMAL_KEY = 'blocklings.hideButtons'
+  const minimalOn = (): boolean => {
+    try { return localStorage.getItem(MINIMAL_KEY) === '1' } catch { return false }
+  }
+  const applyMinimal = (on: boolean): void => { uiMount!.classList.toggle('bl-minimal', on) }
+  applyMinimal(minimalOn())
+  panel.appendChild(
+    makeToggleRow('Hide buttons', minimalOn(), (on) => {
+      try { localStorage.setItem(MINIMAL_KEY, on ? '1' : '0') } catch { /* non-fatal */ }
+      applyMinimal(on)
+    })
+  )
+
+  // Realm picker — shard population (2000/realm, 30 realms). Switch reloads.
+  const realmRow = el('div', 'bl-set-row')
+  realmRow.appendChild(el('span', 'bl-set-label', 'Realm'))
+  const realmBtn = el('button', 'bl-set-signout')
+  realmBtn.type = 'button'
+  realmBtn.textContent = `Realm ${getRealm()}`
+  realmBtn.addEventListener('click', () => void openRealmPicker())
+  realmRow.appendChild(realmBtn)
+  panel.appendChild(realmRow)
+
+  async function openRealmPicker(): Promise<void> {
+    const back = el('div', 'bl-realm-back')
+    const card = el('div', 'bl-realm-card')
+    card.appendChild(el('div', 'bl-realm-title', 'Choose a Realm'))
+    card.appendChild(el('div', 'bl-realm-sub', `Up to ${MAX_REALM_CAP} Blocklings per realm. Switching reloads the world.`))
+    const grid = el('div', 'bl-realm-grid')
+    card.appendChild(grid)
+    const closeR = el('button', 'bl-realm-x', '×')
+    closeR.type = 'button'
+    closeR.addEventListener('click', () => back.remove())
+    card.appendChild(closeR)
+    back.appendChild(card)
+    back.addEventListener('click', (e) => { if (e.target === back) back.remove() })
+    uiMount!.appendChild(back)
+
+    const cur = getRealm()
+    const pops = await fetchRealmPops()
+    const popOf = (id: number): { pop: number; acct: number; cap: number } => {
+      const r = pops.find((p) => p.id === id)
+      return { pop: r?.pop ?? 0, acct: r?.acct ?? 0, cap: r?.cap ?? MAX_REALM_CAP }
+    }
+    // Is the local player signed in? Their own realm is floored to count them,
+    // as a member or a guest, so it never reads 0 while they stand in it.
+    let selfAcct = false
+    try { selfAcct = !!localStorage.getItem('blk_token') } catch { selfAcct = false }
+    grid.innerHTML = ''
+    for (let i = 1; i <= REALM_COUNT; i++) {
+      const raw = popOf(i)
+      const cap = raw.cap
+      // Floor the current realm at 1 (you're in it — relay count may race your
+      // join, or you may be an offline guest not yet in its roster).
+      const pop = i === cur ? Math.max(1, raw.pop) : raw.pop
+      const acct = i === cur && selfAcct ? Math.max(1, raw.acct) : Math.min(raw.acct, pop)
+      const guests = Math.max(0, pop - acct)
+      const full = pop >= cap
+      const cell = el('button', 'bl-realm-cell' + (i === cur ? ' on' : '') + (full ? ' full' : ''))
+      cell.type = 'button'
+      // Total headcount is the headline (it's what the cap measures); the
+      // members/guests split reconciles it with the signed-in leaderboard.
+      const split =
+        pop === 0 ? 'empty'
+        : guests === 0 ? `${acct} signed in`
+        : acct === 0 ? `${guests} guest${guests === 1 ? '' : 's'}`
+        : `${acct} member${acct === 1 ? '' : 's'} · ${guests} guest${guests === 1 ? '' : 's'}`
+      cell.innerHTML =
+        `<span class="bl-realm-n">Realm ${i}</span>` +
+        `<span class="bl-realm-pop">${pop}/${cap}</span>` +
+        `<span class="bl-realm-split">${split}</span>`
+      if (i === cur) cell.disabled = true
+      else if (full) cell.disabled = true
+      else cell.addEventListener('click', () => {
+        setRealm(i)
+        location.reload()
+      })
+      grid.appendChild(cell)
+    }
+  }
+
   /**
    * A persisted on/off setting whose backing hook may register after boot
    * (modules boot in integrator order). Each ensure():
@@ -327,8 +551,43 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
     false,
     () => opts?.setAlwaysDay ?? g.blocklingsSetAlwaysDay
   )
+  const ensureNorthLockRow = hookToggle(
+    'Snap to North',
+    'blocklings.snapNorth.on',
+    false, // off by default
+    () => opts?.setNorthLock ?? g.blocklingsSetNorthLock
+  )
 
   // -- sign-out (only when the auth module published its hook) --------------
+  // Apple requires a visible "Restore Purchases" control for IAP apps. Shown
+  // only inside the iOS shell (which injects window.blocklingsIAP).
+  let restoreRow: HTMLElement | null = null
+  function ensureRestoreRow(): void {
+    if (restoreRow || !(window as { blocklingsIAP?: unknown }).blocklingsIAP) return
+    restoreRow = el('div', 'bl-set-row bl-set-signoutrow')
+    const btn = el('button', 'bl-set-signout', 'Restore Purchases')
+    btn.type = 'button'
+    btn.addEventListener('click', () => {
+      btn.disabled = true
+      btn.textContent = 'Restoring…'
+      void restorePurchases().then((r) => {
+        btn.disabled = false
+        btn.textContent = 'Restore Purchases'
+        api.onChat?.(
+          'System',
+          r.ok
+            ? r.restored
+              ? `Restored ${r.restored} purchase${r.restored === 1 ? '' : 's'}.`
+              : 'Nothing to restore — your purchases are already active.'
+            : r.error ?? 'Restore failed.'
+        )
+      })
+      uiTick()
+    })
+    restoreRow.appendChild(btn)
+    panel.appendChild(restoreRow)
+  }
+
   let signOutRow: HTMLElement | null = null
   function ensureSignOutRow(): void {
     const hook = opts?.signOut ?? g.blocklingsSignOut
@@ -345,13 +604,132 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
     panel.appendChild(signOutRow)
   }
 
+  // --- Delete Account (soft delete — 7 confirmations + a math gate) ----------
+  const DELETE_STEPS = [
+    'Delete your account? Your Blockling will be put away in a little box.',
+    'Are you SURE? There is a lot of box-related paperwork involved.',
+    'Like… actually sure? We already told the box. The box is excited now.',
+    'Your Blocklings will cry tiny voxel tears. Blocky, cuboid tears. Still sure?',
+    'The ancient Get-GOLD prophecy foretold this exact click. Proceed anyway?',
+    'Final warning: a wizard somewhere will feel a vague sense of loss. Continue?',
+    'Okay. Last one. Pinky-promise-cross-your-heart-no-takebacks sure?'
+  ]
+  const DELETE_MATHS = [
+    { q: 'Prove you are serious (and sentient). What is 7 + 5?', a: 12 },
+    { q: 'One more sanity check: what is 9 + 4?', a: 13 },
+    { q: 'For the paperwork: what is 6 + 8?', a: 14 }
+  ]
+
+  let deleteRow: HTMLElement | null = null
+  function ensureDeleteRow(): void {
+    // Same gate as sign-out: only signed-in accounts can delete (+restore).
+    const canDelete = (opts?.signOut ?? g.blocklingsSignOut) && g.blocklingsDeleteBlockling
+    if (!canDelete || deleteRow) return
+    deleteRow = el('div', 'bl-set-row bl-set-signoutrow')
+    const btn = el('button', 'bl-set-danger', 'Delete Account')
+    btn.type = 'button'
+    btn.addEventListener('click', () => {
+      panel.style.display = 'none'
+      uiTick()
+      runDeleteFlow()
+    })
+    deleteRow.appendChild(btn)
+    panel.appendChild(deleteRow)
+  }
+
+  function runDeleteFlow(): void {
+    const back = el('div', 'bl-del-back')
+    const card = el('div', 'bl-del-card')
+    back.appendChild(card)
+    back.addEventListener('click', (e) => { if (e.target === back) back.remove() })
+    uiMount!.appendChild(back)
+
+    const close = (): void => back.remove()
+
+    const step = (i: number): void => {
+      card.innerHTML = ''
+      card.appendChild(el('div', 'bl-del-title', `Really? (${i + 1}/7)`))
+      card.appendChild(el('div', 'bl-del-msg', DELETE_STEPS[i] ?? 'Sure?'))
+      const row = el('div', 'bl-del-actions')
+      const no = el('button', 'bl-del-no', 'No, take me back')
+      no.type = 'button'
+      no.addEventListener('click', close)
+      const yes = el('button', 'bl-del-yes', i < 6 ? 'Yes, continue' : 'Yes, I am certain')
+      yes.type = 'button'
+      yes.addEventListener('click', () => { if (i < 6) step(i + 1); else mathStep() })
+      row.appendChild(no)
+      row.appendChild(yes)
+      card.appendChild(row)
+    }
+
+    const mathStep = (): void => {
+      const problem = DELETE_MATHS[api.player.name.length % DELETE_MATHS.length] ?? DELETE_MATHS[0]!
+      card.innerHTML = ''
+      card.appendChild(el('div', 'bl-del-title', 'One tiny maths problem'))
+      card.appendChild(el('div', 'bl-del-msg', problem.q))
+      const input = document.createElement('input')
+      input.type = 'number'
+      input.className = 'bl-del-input'
+      input.inputMode = 'numeric'
+      card.appendChild(input)
+      const err = el('div', 'bl-del-err', '')
+      card.appendChild(err)
+      const row = el('div', 'bl-del-actions')
+      const no = el('button', 'bl-del-no', 'Cancel')
+      no.type = 'button'
+      no.addEventListener('click', close)
+      const go = el('button', 'bl-del-yes', 'Delete my account')
+      go.type = 'button'
+      go.addEventListener('click', () => {
+        if (Number(input.value) !== problem.a) {
+          err.textContent = "That's not it. Maybe your Blockling should keep doing the maths."
+          return
+        }
+        void doDelete()
+      })
+      row.appendChild(no)
+      row.appendChild(go)
+      card.appendChild(row)
+      input.focus()
+    }
+
+    const doDelete = async (): Promise<void> => {
+      card.innerHTML = ''
+      card.appendChild(el('div', 'bl-del-title', 'Tidying up…'))
+      card.appendChild(el('div', 'bl-del-msg', 'Folding your Blockling into its little box.'))
+      const hook = g.blocklingsDeleteBlockling
+      const r = hook ? await hook() : { ok: false, error: 'Unavailable.' }
+      if (!r.ok) {
+        card.innerHTML = ''
+        card.appendChild(el('div', 'bl-del-title', 'Hmm.'))
+        card.appendChild(el('div', 'bl-del-msg', r.error ?? 'Could not delete right now — try again.'))
+        const row = el('div', 'bl-del-actions')
+        const ok = el('button', 'bl-del-no', 'Close')
+        ok.type = 'button'
+        ok.addEventListener('click', close)
+        row.appendChild(ok)
+        card.appendChild(row)
+        return
+      }
+      close()
+      api.onChat?.('System', 'Your Blockling has been tucked away. Restore it anytime at blockle.org/account.')
+      const signOut = opts?.signOut ?? g.blocklingsSignOut
+      if (signOut) void signOut()
+    }
+
+    step(0)
+  }
+
   /** Mount every row whose hook exists (safe to call repeatedly, in order). */
   function ensureRows(): void {
     ensureQualityRow()
     ensureMinimapRow()
     ensureRetaliateRow()
     ensureAlwaysDayRow()
+    ensureNorthLockRow()
+    ensureRestoreRow()
     ensureSignOutRow()
+    ensureDeleteRow()
   }
   ensureRows()
 
@@ -366,7 +744,9 @@ export function createHUD(api: GameAPI, opts?: HUDOptions): { update(): void } {
     uiTick()
   })
 
-  topRight.appendChild(chip)
+  // Balances live under the character plate (below the HP/MP/XP bars), not in
+  // the top-right cluster — only the settings gear stays top-right.
+  plate.appendChild(wallet)
   topRight.appendChild(gearBtn)
 
   // =========================================================================

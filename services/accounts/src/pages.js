@@ -148,6 +148,7 @@ const BODIES = {
   account: () => `<div class="card dash" style="max-width:720px">
 <div class="dhead">${brand}<span class="badge" id="role" style="display:none"></span></div>
 <p class="sub" id="email"></p>
+<div id="blkRestore"></div>
 <div class="tabnav" id="tabnav">
   <button data-tab="portfolio" class="on">Portfolio</button>
   <button data-tab="markets">Markets</button>

@@ -124,11 +124,12 @@
 
 .bl-inv-body {
   position: relative;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 12px 14px 16px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 12px 14px 0;
 }
 
 .bl-inv-sect {
@@ -220,12 +221,149 @@
   color: var(--bl-gold);
 }
 
+/* ===== bag filter bar =================================================== */
+
+.bl-inv-filter {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.bl-inv-filter-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.bl-inv-filter-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bl-text-dim);
+  flex: none;
+}
+
+.bl-inv-filter-sel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 26px 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--bl-text);
+  background:
+    linear-gradient(45deg, transparent 50%, var(--bl-gold) 50%) calc(100% - 13px) 50% / 6px 6px no-repeat,
+    rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--bl-edge-dim);
+  border-radius: 8px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  touch-action: manipulation;
+}
+.bl-inv-filter-sel:hover {
+  border-color: var(--bl-edge);
+}
+.bl-inv-filter-sel:focus-visible {
+  outline: 2px solid var(--bl-edge);
+  outline-offset: 1px;
+}
+.bl-inv-filter-sel option {
+  color: var(--bl-text);
+  background: #151924;
+}
+
+/* ===== bag scroll region =============================================== */
+
+.bl-inv-bagscroll {
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(212, 175, 55, 0.35) transparent;
+}
+.bl-inv-bagscroll::-webkit-scrollbar {
+  width: 8px;
+}
+.bl-inv-bagscroll::-webkit-scrollbar-thumb {
+  background: rgba(212, 175, 55, 0.32);
+  border-radius: 8px;
+}
+.bl-inv-bagscroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* ===== bag grid ========================================================= */
 
 .bl-inv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  /* Fixed 5 columns — paginated to a 5×5 (25-cell) page by the UI. */
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
+}
+
+/* ===== bag pager (5×5 pages) =========================================== */
+
+.bl-inv-pager {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 8px 4px 2px;
+}
+.bl-inv-pager:empty {
+  display: none;
+}
+.bl-inv-pagebtn {
+  width: 34px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--bl-gold);
+  background: rgba(0, 0, 0, 0.4);
+  border: 1.5px solid rgba(212, 175, 55, 0.35);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.bl-inv-pagebtn:hover:not(:disabled) {
+  filter: brightness(1.2);
+}
+.bl-inv-pagebtn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.bl-inv-pagebtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.bl-inv-pagelabel {
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e9e3cf;
+  min-width: 92px;
+  text-align: center;
+}
+.bl-inv-pagecount {
+  position: absolute;
+  right: 18px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(233, 227, 207, 0.55);
 }
 
 .bl-inv-cell {
@@ -403,6 +541,63 @@
   background: rgba(198, 47, 34, 0.18);
 }
 
+/* Break Down — constructive teal, distinct from Drop's red and Mint's gold. */
+.bl-inv-act.bl-salvage {
+  color: #9fe8d4;
+  border-color: rgba(64, 196, 160, 0.5);
+  background: rgba(40, 150, 125, 0.18);
+}
+
+/* Mint NFT — amber accent. NB: the variant class is `bl-mintbtn`, NOT `bl-mint`,
+   which is the absolutely-positioned mint MODAL panel in minting.css — reusing
+   it here floated the button over the item stats. */
+.bl-inv-act.bl-mintbtn {
+  color: #ffd98a;
+  border-color: rgba(242, 193, 78, 0.55);
+  background: rgba(242, 193, 78, 0.16);
+}
+
+/* ===== bulk breakdown bar ============================================== */
+
+.bl-inv-bulk {
+  display: flex;
+  flex: 0 0 auto;
+  padding: 2px 0 8px;
+}
+.bl-inv-bulkbtn {
+  flex: 1 1 auto;
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9fe8d4;
+  background: rgba(40, 150, 125, 0.16);
+  border: 1px solid rgba(64, 196, 160, 0.42);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter 0.12s ease, background 0.15s ease, color 0.15s ease;
+}
+.bl-inv-bulkbtn:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.bl-inv-bulkbtn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Armed (one tap in): flips to a red "confirm" state for 4s. */
+.bl-inv-bulkbtn.armed {
+  color: #ffd7cc;
+  background: rgba(198, 47, 34, 0.26);
+  border-color: rgba(198, 47, 34, 0.7);
+  animation: bl-bulk-pulse 1s ease-in-out infinite;
+}
+@keyframes bl-bulk-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.3); }
+}
+
 /* ===== small screens ==================================================== */
 
 @media (max-width: 640px) {
@@ -412,6 +607,15 @@
     top: calc(50% - 34px);
   }
   .bl-inv-grid {
-    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    /* Still 5 columns on narrow screens — cells shrink, page stays 5×5. */
+    grid-template-columns: repeat(5, 1fr);
+    gap: 5px;
+  }
+  .bl-inv-cell {
+    min-height: 56px;
+    font-size: 10px;
+  }
+  .bl-inv-pagecount {
+    display: none; /* no room beside the controls on a phone */
   }
 }

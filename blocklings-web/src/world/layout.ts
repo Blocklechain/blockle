@@ -104,6 +104,9 @@ export interface Ctx {
     window: VoxelBatch
     leaf: VoxelBatch
     misc: VoxelBatch
+    /** Castle keep roof + upper tiers — baked to its OWN mesh so it can be
+     *  hidden while the player is inside the enterable throne hall. */
+    castleRoof: VoxelBatch
   }
 }
 

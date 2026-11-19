@@ -14,6 +14,7 @@
  */
 import type { ChainId, QuestDef, QuestsAPI } from '../types'
 import { railPrices, fmtRail, type RailPrice, type StockEntry } from './vendors'
+import { isIosApp } from '../platform'
 import { payFailLine, buyOkLine } from './flavor'
 
 export interface DialogHooks {
@@ -62,6 +63,7 @@ export class DialogPanel {
   private readonly textEl: HTMLDivElement
   private readonly actionsEl: HTMLDivElement
   private readonly shopEl: HTMLDivElement
+  private readonly mount: HTMLElement
   private readonly hooks: DialogHooks
 
   private current: DialogOpenOpts | null = null
@@ -76,6 +78,7 @@ export class DialogPanel {
   private fullText = ''
 
   constructor(mount: HTMLElement, hooks: DialogHooks) {
+    this.mount = mount
     this.hooks = hooks
 
     this.panel = document.createElement('div')
@@ -144,6 +147,7 @@ export class DialogPanel {
     this.portraitBox.replaceChildren(opts.portrait)
     opts.portrait.className = 'bl-npc-pix'
     this.panel.style.display = ''
+    this.mount.classList.add('bl-ui-dialog')
     this.setText(opts.greeting)
     this.renderActions()
     this.renderShop()
@@ -158,6 +162,7 @@ export class DialogPanel {
     this.armed = null
     this.stopTyping()
     this.panel.style.display = 'none'
+    this.mount.classList.remove('bl-ui-dialog')
     this.hooks.closed(id)
   }
 
@@ -332,6 +337,9 @@ export class DialogPanel {
       } else {
         // expanded: one button per rail; picking arms it, picking again pays
         for (const p of rails) {
+          // iOS App Store build: GOLD-only (IAP). Crypto prices still SHOW in the
+          // badges above (view), but the app offers no crypto buy buttons.
+          if (isIosApp() && p.rail !== 'gold') continue
           const b = document.createElement('button')
           const isGold = p.rail === 'gold'
           const isArmed = this.armed !== null && this.armed.rail === p.rail

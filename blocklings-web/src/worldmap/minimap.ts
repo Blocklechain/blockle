@@ -22,6 +22,7 @@ import type { GameAPI } from '../types'
 import { NPCS, regionAt as heartRegionAt } from '../ids'
 import { zoneAt } from '../world/zones/registry'
 import { surfaceTypeAt, S_GRASS, S_COBBLE, S_RIVER, S_BANK, S_SOIL, S_BRIDGE, S_SAND } from '../world/surface'
+import { isLand } from '../world/kit'
 import { BUILDINGS, STALL, WELL } from '../world/layout'
 import { BIOME_MINI, ALL_WAYSTONES, BOSS_SPOTS } from './data'
 import { drawPlayerArrow, drawWaystone, drawSkull, drawPaw, hashStr, rng } from './draw'
@@ -210,7 +211,9 @@ export function createMinimap(
         const wx = tx * TILE + i + 0.5
         const s = surfaceTypeAt(wx, wz)
         let col: readonly [number, number, number]
-        if (s < 0) {
+        if (s < 0 || !isLand(wx, wz)) {
+          // Off-grid, or an unstamped ocean cell inside the grid (bays, the
+          // straits between the continent and the outer islands) — open sea.
           col = seaRgb
         } else if (s !== S_GRASS && SURF_COLOR[s]) {
           col = rgb(SURF_COLOR[s]!)

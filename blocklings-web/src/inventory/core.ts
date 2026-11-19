@@ -134,7 +134,10 @@ export class InventoryCore implements InventoryAPI {
     const def = this.def(id)
     if (!isGearSlot(def.slot)) return false
     if (this.count(id) < 1) return false
-    if ((def.levelReq ?? 1) > this.gameApi.player.level) return false
+    // Trinkets (accessory slot — rings/amulets/charms/trophies) are minor stat
+    // boosts you already had to EARN, so they're never level-gated: if you own
+    // it, you can wear it. Weapons/armor/tools keep their level requirement.
+    if (def.slot !== 'accessory' && (def.levelReq ?? 1) > this.gameApi.player.level) return false
 
     this.take(id, 1)
     const prev = this.equipMap[def.slot]

@@ -1,0 +1,5 @@
+# blocklings.blockle.org — crawl policy
+User-agent: *
+Allow: /
+
+Sitemap: https://blocklings.blockle.org/sitemap.xml

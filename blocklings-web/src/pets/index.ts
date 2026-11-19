@@ -28,6 +28,7 @@ import type { ChainId, GameAPI, MintRecord, PetInstance, PetVariant, WalletAPI2 
 import { PET_VARIANTS, SPECIES, petDef } from '../ids'
 import { events } from '../events'
 import { newUid } from '../uid'
+import { isIosApp } from '../platform'
 import { saveRegistry } from '../save/registry'
 import { Companion, type MobMeshSource, type PetTarget } from './companion'
 import { applyVariantPalette } from './palette'
@@ -161,6 +162,7 @@ export function initPets(api: GameAPI): PetsModule {
     uid: string,
     chain: ChainId
   ): Promise<{ ok: boolean; token?: string; tx?: string; error?: string }> {
+    if (isIosApp()) return { ok: false, error: 'Mint on the web (same account at blocklings.blockle.org).' }
     const pet = byUid(uid)
     if (!pet) return { ok: false, error: 'Unknown pet.' }
     if (pet.mints.some((m) => m.chain === chain)) {

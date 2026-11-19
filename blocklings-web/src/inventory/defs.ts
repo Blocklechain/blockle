@@ -39,7 +39,14 @@ export const RARITY_NAMES = [
   'Rare',
   'Epic',
   'Legendary',
-  'Mythical'
+  'Mythical',
+  // --- beyond Mythical: the late-game material tiers (obsidian..runic) ---
+  'Ancient',
+  'Relic',
+  'Divine',
+  'Cosmic',
+  'Transcendent',
+  'Eternal'
 ] as const
 
 export const RARITY_COLORS = [
@@ -48,7 +55,13 @@ export const RARITY_COLORS = [
   '#6cb8ff', // rare — blue
   '#b07df2', // epic — purple
   '#ffb04f', // legendary — orange
-  '#ff5c8a' // mythical — pink
+  '#ff5c8a', // mythical — pink
+  '#8a5cff', // ancient (obsidian) — violet
+  '#ff5c5c', // relic (dragonbone) — crimson
+  '#9b6aff', // divine (void) — deep violet glow
+  '#5cc8ff', // cosmic (astral) — starlight blue
+  '#ff8a3c', // transcendent (titan) — molten orange
+  '#f2e6a8' // eternal (runic) — radiant ivory-gold
 ] as const
 
 function hash(s: string): number {
@@ -117,6 +130,7 @@ const DESC: Record<string, readonly string[]> = {
 // --- id-convention parsing --------------------------------------------------
 
 const SLOT_BY_PREFIX: Record<string, ItemSlot> = {
+  trophy: 'accessory', // mini-boss unique drops (one per zone)
   sword: 'weapon',
   axe: 'weapon',
   bow: 'weapon',
@@ -125,6 +139,42 @@ const SLOT_BY_PREFIX: Record<string, ItemSlot> = {
   helm: 'helm',
   chest: 'chest',
   boots: 'boots',
+  // existing light/cloth armor families (ranger hood-set, mage robe-set)
+  hood: 'helm',
+  leathers: 'chest',
+  treads: 'boots',
+  mhat: 'helm',
+  robe: 'chest',
+  slippers: 'boots',
+  // new armor families — one prefix per piece (helm / chest / boots).
+  // knight
+  greathelm: 'helm',
+  cuirass: 'chest',
+  sabatons: 'boots',
+  // samurai
+  kabuto: 'helm',
+  doumaru: 'chest',
+  suneate: 'boots',
+  // barbarian
+  horned: 'helm',
+  furplate: 'chest',
+  furboots: 'boots',
+  // royal
+  crown: 'helm',
+  regalia: 'chest',
+  regalboots: 'boots',
+  // assassin
+  cowl: 'helm',
+  shroud: 'chest',
+  creepers: 'boots',
+  // shaman
+  totemmask: 'helm',
+  spiritweave: 'chest',
+  spiritboots: 'boots',
+  // dragoon
+  wyrmhelm: 'helm',
+  wyrmscale: 'chest',
+  wyrmboots: 'boots',
   ring: 'accessory',
   amulet: 'accessory',
   charm: 'accessory',
@@ -137,11 +187,13 @@ const SLOT_BY_PREFIX: Record<string, ItemSlot> = {
   elixir: 'consumable'
 }
 
-/** Materials ladder index found inside the id, else 0 (common). */
+/** Materials ladder index found inside the id, else 0 (common). The late-game
+ *  tiers (obsidian..runic) sit past index 5, but rarity maxes at Mythical, so
+ *  clamp to 5 — otherwise rarity-indexed UI (names/colors) would fall off. */
 function tierOf(id: string): Rarity {
   for (let i = MATERIALS.length - 1; i >= 0; i--) {
     const m = MATERIALS[i]
-    if (m && id.includes(m)) return i as Rarity
+    if (m && id.includes(m)) return Math.min(i, 5) as Rarity
   }
   return 0
 }
@@ -154,7 +206,9 @@ function titleCase(id: string): string {
     .join(' ')
 }
 
-const LEVEL_REQ = [1, 5, 10, 15, 20, 30] as const
+// 12 tiers (copper..runic) — mirrors the catalog ladder so fallback-generated
+// gear requires the right level all the way to 999.
+const LEVEL_REQ = [1, 5, 10, 20, 30, 40, 80, 150, 260, 420, 640, 999] as const
 
 /** Deterministic fallback ItemDef from the id conventions alone. */
 export function synthDef(id: string): ItemDef {

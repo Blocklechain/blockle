@@ -53,7 +53,15 @@ export const TUNING: Record<string, KindTuning> = {
   // wave-2 node kinds (ids.ts appends)
   berry_bush: { verb: 'Pick', tool: null, minTier: 0, xp: 9, qty: 2, style: 'wilt', respawn: [26, 34] },
   mushroom_cluster: { verb: 'Forage', tool: null, minTier: 0, xp: 11, qty: 1, style: 'wilt', respawn: [30, 40] },
-  clay_pit: { verb: 'Dig', tool: null, minTier: 0, xp: 9, qty: 1, style: 'wilt', respawn: [22, 30] }
+  clay_pit: { verb: 'Dig', tool: null, minTier: 0, xp: 9, qty: 1, style: 'wilt', respawn: [22, 30] },
+  // endgame mining: each needs the PREVIOUS tier's pick, forming a gather→smelt→
+  // craft-better-pick chain up to Runic. minTier = required pick material index.
+  obsidian_vein: { verb: 'Mine', tool: 'pick', minTier: 4, xp: 70, qty: 1, style: 'crumble', respawn: [90, 120] },
+  dragonbone_vein: { verb: 'Mine', tool: 'pick', minTier: 6, xp: 110, qty: 1, style: 'crumble', respawn: [110, 150] },
+  void_vein: { verb: 'Mine', tool: 'pick', minTier: 7, xp: 160, qty: 1, style: 'crumble', respawn: [140, 185] },
+  astral_vein: { verb: 'Mine', tool: 'pick', minTier: 8, xp: 230, qty: 1, style: 'crumble', respawn: [170, 220] },
+  titan_vein: { verb: 'Mine', tool: 'pick', minTier: 9, xp: 320, qty: 1, style: 'crumble', respawn: [210, 270] },
+  runic_vein: { verb: 'Mine', tool: 'pick', minTier: 10, xp: 450, qty: 1, style: 'crumble', respawn: [260, 330] }
 }
 
 /** Base harvest time; each tool tier above the requirement shaves 0.15s. */
@@ -124,7 +132,78 @@ export const CLUSTERS: readonly ClusterSpec[] = [
   // --- Kingdom of Beginnings edges: starter trees + herbs outside the fence
   { kind: 'oak_tree', cx: -60, cz: 50, r: 10, count: 3 },
   { kind: 'oak_tree', cx: -50, cz: -60, r: 10, count: 3 },
-  { kind: 'herb_patch', cx: 20, cz: -60, r: 6, count: 2 }
+  { kind: 'herb_patch', cx: 20, cz: -60, r: 6, count: 2 },
+  // --- Farm plots near EVERY heart waystone (so you can farm wherever you
+  // teleport) plus a few scattered across the land. farm_plot needs no tool.
+  { kind: 'farm_plot', cx: 14, cz: 6, r: 4, count: 3 }, // Village Waystone
+  { kind: 'farm_plot', cx: 138, cz: 16, r: 5, count: 3 }, // Greenwood Waystone
+  { kind: 'farm_plot', cx: -122, cz: 18, r: 5, count: 3 }, // Ironhold Waystone
+  { kind: 'farm_plot', cx: 14, cz: -132, r: 5, count: 3 }, // Capital Waystone
+  { kind: 'farm_plot', cx: -102, cz: 158, r: 5, count: 3 }, // Ashen Waystone
+  { kind: 'farm_plot', cx: 118, cz: 158, r: 5, count: 3 }, // Forgotten Waystone
+  { kind: 'farm_plot', cx: 60, cz: 70, r: 8, count: 3 }, // scattered
+  { kind: 'farm_plot', cx: -40, cz: 90, r: 8, count: 3 },
+  { kind: 'farm_plot', cx: 80, cz: -40, r: 8, count: 2 },
+
+  // =======================================================================
+  // CONTENT PASS — gathering density expansion. More of every node kind
+  // spread across the whole world so no skill ever runs out of things to
+  // harvest, and the three wave-2 kinds (berry/mushroom/clay) finally get
+  // fixed, findable clusters instead of only the streamed-density sprinkle.
+  // =======================================================================
+
+  // --- Mining: deeper Ironhold seams + a scorched Ashen belt ---
+  { kind: 'copper_vein', cx: -95, cz: -90, r: 14, count: 6 },
+  { kind: 'copper_vein', cx: -145, cz: -95, r: 12, count: 5 },
+  { kind: 'copper_vein', cx: -80, cz: 110, r: 12, count: 5 },
+  { kind: 'iron_vein', cx: -185, cz: -70, r: 12, count: 5 },
+  { kind: 'iron_vein', cx: -120, cz: -120, r: 12, count: 4 },
+  { kind: 'iron_vein', cx: -210, cz: 110, r: 12, count: 5 },
+  { kind: 'gold_vein', cx: -225, cz: -20, r: 10, count: 4 },
+  { kind: 'gold_vein', cx: -175, cz: 150, r: 10, count: 4 },
+  { kind: 'gold_vein', cx: -240, cz: 80, r: 9, count: 3 },
+  { kind: 'crystal_node', cx: -235, cz: -110, r: 8, count: 3 },
+  { kind: 'crystal_node', cx: -245, cz: 150, r: 8, count: 3 },
+  { kind: 'crystal_node', cx: -120, cz: 230, r: 9, count: 3 },
+
+  // --- Clay pits: wet ground near the rivers and lake banks (no tool) ---
+  { kind: 'clay_pit', cx: 40, cz: 0, r: 6, count: 4 },
+  { kind: 'clay_pit', cx: 48, cz: 95, r: 6, count: 4 },
+  { kind: 'clay_pit', cx: -32, cz: 44, r: 5, count: 3 },
+  { kind: 'clay_pit', cx: 92, cz: 92, r: 7, count: 4 },
+  { kind: 'clay_pit', cx: 48, cz: 150, r: 6, count: 3 },
+  { kind: 'clay_pit', cx: -92, cz: -86, r: 6, count: 3 },
+
+  // --- Woodcutting: fill out Greenwood + a northern tree-line ---
+  { kind: 'oak_tree', cx: 90, cz: 120, r: 20, count: 6 },
+  { kind: 'oak_tree', cx: 160, cz: 140, r: 20, count: 6 },
+  { kind: 'oak_tree', cx: 240, cz: -30, r: 18, count: 5 },
+  { kind: 'oak_tree', cx: 60, cz: -110, r: 16, count: 4 },
+  { kind: 'pine_tree', cx: 230, cz: 110, r: 20, count: 6 },
+  { kind: 'pine_tree', cx: 250, cz: -60, r: 18, count: 5 },
+  { kind: 'pine_tree', cx: 130, cz: -130, r: 18, count: 5 },
+  { kind: 'pine_tree', cx: 180, cz: 180, r: 20, count: 6 },
+
+  // --- Herbalism: more glades, plus berry bushes and mushroom rings ---
+  { kind: 'herb_patch', cx: 90, cz: -110, r: 8, count: 4 },
+  { kind: 'herb_patch', cx: 210, cz: 140, r: 8, count: 4 },
+  { kind: 'herb_patch', cx: -50, cz: 130, r: 7, count: 3 },
+  { kind: 'herb_patch', cx: 40, cz: 110, r: 7, count: 3 },
+  { kind: 'berry_bush', cx: 115, cz: -10, r: 8, count: 5 },
+  { kind: 'berry_bush', cx: 175, cz: 100, r: 8, count: 5 },
+  { kind: 'berry_bush', cx: -30, cz: -40, r: 7, count: 4 },
+  { kind: 'berry_bush', cx: 55, cz: 40, r: 7, count: 4 },
+  { kind: 'mushroom_cluster', cx: 150, cz: 40, r: 8, count: 4 },
+  { kind: 'mushroom_cluster', cx: 200, cz: -40, r: 7, count: 4 },
+  { kind: 'mushroom_cluster', cx: -70, cz: 185, r: 8, count: 4 }, // Ashen gloom
+  { kind: 'mushroom_cluster', cx: -40, cz: 70, r: 6, count: 3 },
+
+  // --- Farming: more open plots so the Harvest loop is never a walk ---
+  { kind: 'farm_plot', cx: 120, cz: -60, r: 8, count: 3 },
+  { kind: 'farm_plot', cx: -70, cz: -30, r: 8, count: 3 },
+  { kind: 'farm_plot', cx: 170, cz: 20, r: 8, count: 3 },
+  { kind: 'farm_plot', cx: -150, cz: 80, r: 8, count: 3 },
+  { kind: 'farm_plot', cx: 100, cz: 100, r: 8, count: 3 }
 ] as const
 
 /**
@@ -209,18 +288,25 @@ export const BIOME_NODES: Record<string, readonly ZoneMix[]> = {
     { kind: 'copper_vein', min: 2, max: 3 },
     { kind: 'iron_vein', min: 3, max: 4 },
     { kind: 'gold_vein', min: 3, max: 4 },
-    { kind: 'crystal_node', min: 2, max: 3 }
+    { kind: 'crystal_node', min: 2, max: 3 },
+    { kind: 'obsidian_vein', min: 1, max: 2 },
+    { kind: 'titan_vein', min: 0, max: 1 }
   ],
   canyon: [
     { kind: 'copper_vein', min: 4, max: 5 },
     { kind: 'iron_vein', min: 3, max: 4 },
-    { kind: 'gold_vein', min: 3, max: 4 }
+    { kind: 'gold_vein', min: 3, max: 4 },
+    { kind: 'dragonbone_vein', min: 1, max: 2 },
+    { kind: 'titan_vein', min: 0, max: 1 }
   ],
   crystal: [
     { kind: 'crystal_node', min: 5, max: 6 },
     { kind: 'gold_vein', min: 2, max: 3 },
     { kind: 'iron_vein', min: 2, max: 3 },
-    { kind: 'pine_tree', min: 1, max: 2 }
+    { kind: 'pine_tree', min: 1, max: 2 },
+    { kind: 'void_vein', min: 1, max: 2 },
+    { kind: 'astral_vein', min: 1, max: 1 },
+    { kind: 'runic_vein', min: 0, max: 1 }
   ],
   lagoon: [
     { kind: 'fishing_spot', min: 5, max: 6, water: true },
@@ -243,7 +329,9 @@ export const BIOME_NODES: Record<string, readonly ZoneMix[]> = {
     { kind: 'pine_tree', min: 2, max: 3 },
     { kind: 'iron_vein', min: 3, max: 4 },
     { kind: 'crystal_node', min: 2, max: 3 },
-    { kind: 'copper_vein', min: 3, max: 3 }
+    { kind: 'copper_vein', min: 3, max: 3 },
+    { kind: 'astral_vein', min: 1, max: 2 },
+    { kind: 'void_vein', min: 0, max: 1 }
   ],
   desert: [
     { kind: 'gold_vein', min: 4, max: 5 },
@@ -255,7 +343,10 @@ export const BIOME_NODES: Record<string, readonly ZoneMix[]> = {
     { kind: 'iron_vein', min: 4, max: 5 },
     { kind: 'copper_vein', min: 3, max: 4 },
     { kind: 'mushroom_cluster', min: 2, max: 3 },
-    { kind: 'gold_vein', min: 1, max: 2 }
+    { kind: 'gold_vein', min: 1, max: 2 },
+    { kind: 'obsidian_vein', min: 1, max: 2 },
+    { kind: 'dragonbone_vein', min: 0, max: 1 },
+    { kind: 'runic_vein', min: 0, max: 1 }
   ],
   dungeon: [
     { kind: 'iron_vein', min: 4, max: 4 },
@@ -303,5 +394,29 @@ export const FIXED: readonly FixedSpec[] = [
   { kind: 'farm_plot', x: -22, z: 28 },
   { kind: 'farm_plot', x: -28, z: 31 },
   { kind: 'farm_plot', x: -25, z: 31 },
-  { kind: 'farm_plot', x: -22, z: 31 }
+  { kind: 'farm_plot', x: -22, z: 31 },
+  // Fishing on the new lakes (world/terrain.ts LAKES): stand on the bank, the
+  // bobber (ox/oz) floats out over the water toward each lake's centre.
+  { kind: 'fishing_spot', x: -36, z: 44, ox: 1.6 }, // meadow pond (-30,44)
+  { kind: 'fishing_spot', x: -24, z: 44, ox: -1.6 },
+  { kind: 'fishing_spot', x: 85, z: 92, ox: 1.6 }, // Greenwood lake (92,92)
+  { kind: 'fishing_spot', x: 99, z: 92, ox: -1.6 },
+  { kind: 'fishing_spot', x: -99, z: -86, ox: 1.6 }, // Ironhold tarn (-92,-86)
+  { kind: 'fishing_spot', x: -85, z: -86, ox: -1.6 },
+  { kind: 'fishing_spot', x: 89, z: 182, ox: 1.6 }, // Forgotten lagoon (96,182)
+  { kind: 'fishing_spot', x: 103, z: 182, ox: -1.6 },
+  { kind: 'fishing_spot', x: -76, z: 120, ox: 1.6 }, // Ashen spring (-70,120)
+  { kind: 'fishing_spot', x: -64, z: 120, ox: -1.6 },
+  // Content pass — more fishing all along both rivers so the rod always has
+  // a spot within a short walk, plus a second seat on each lake.
+  { kind: 'fishing_spot', x: 43, z: 100, ox: 1.6 },
+  { kind: 'fishing_spot', x: 53, z: 90, ox: -1.6 },
+  { kind: 'fishing_spot', x: 43, z: -70, ox: 1.6 },
+  { kind: 'fishing_spot', x: 53, z: -50, ox: -1.6 },
+  { kind: 'fishing_spot', x: 43, z: -200, ox: 1.6 },
+  { kind: 'fishing_spot', x: 53, z: 230, ox: -1.6 },
+  { kind: 'fishing_spot', x: -30, z: 38, ox: 0, oz: -1.6 }, // meadow pond north seat
+  { kind: 'fishing_spot', x: 92, z: 86, ox: 0, oz: -1.6 }, // Greenwood lake north seat
+  { kind: 'fishing_spot', x: -92, z: -92, ox: 0, oz: 1.6 }, // Ironhold tarn south seat
+  { kind: 'fishing_spot', x: 96, z: 176, ox: 0, oz: 1.6 } // Forgotten lagoon south seat
 ] as const

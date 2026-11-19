@@ -140,6 +140,50 @@ export async function primeAccounts(secretHex: string): Promise<Required<ChainAd
   return addrs
 }
 
+// --- private-key export (BACKUP ONLY; never leaves the browser) -------------
+
+/**
+ * The Ethereum private key for index 0 ('0x'+32-byte secp256k1 hex), derived
+ * from the unlocked BLOCK secret via the same seed + path the wallet signs
+ * with (m/44'/60'/0'/0/0). VERIFIED against the live ETH address so the
+ * exported key always re-imports to the same account. Backup use only.
+ */
+export async function ethPrivateKey(secretHex: string): Promise<string> {
+  const seed = await deriveSeed(secretHex)
+  const V = await vendorReady()
+  const node = V.HD.derivePath(seed, "m/44'/60'/0'/0/0")
+  if (!node.privateKey) throw new Error('could not derive the Ethereum key')
+  const addr = V.Addr.evmAddress(node.publicKey)
+  const known = (await primeAccounts(secretHex)).ethereum
+  if (addr.toLowerCase() !== known.toLowerCase()) {
+    throw new Error('derived Ethereum key failed to verify against your address')
+  }
+  return '0x' + V.BLKCrypto.bytesToHex(node.privateKey)
+}
+
+/**
+ * The Solana private key, base58 of the 64-byte ed25519 secret
+ * (seed32 ‖ pubkey32) — the standard Phantom/`solana-keygen` export format, so
+ * it re-imports directly. Derived via SLIP-0010 (m/44'/501'/0'/0') and VERIFIED
+ * against the live SOL address. Backup use only.
+ */
+export async function solPrivateKey(secretHex: string): Promise<string> {
+  const seed = await deriveSeed(secretHex)
+  const V = await vendorReady()
+  const { key } = V.SolanaAdapter.deriveSlip10(seed, V.SolanaAdapter.DEFAULT_PATH)
+  const pub = V.Ed25519.publicKey(key)
+  const addr = V.BLKCrypto.base58encode(pub)
+  const known = (await primeAccounts(secretHex)).solana
+  if (addr !== known) throw new Error('derived Solana key failed to verify against your address')
+  const secret64 = new Uint8Array(64)
+  secret64.set(key, 0)
+  secret64.set(pub, 32)
+  const out = V.BLKCrypto.base58encode(secret64)
+  secret64.fill(0)
+  key.fill(0)
+  return out
+}
+
 // --- balances (30s cache, offline-tolerant) ---------------------------------
 
 interface BalCacheEntry {

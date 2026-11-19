@@ -1,18 +1,32 @@
 /**
- * ZONE REGISTRY — the 90 wilderness zones ringing the preserved 6-region
- * heart (|x|,|z| <= 240) out to the coast (|x|,|z| <= 720).
+ * ZONE REGISTRY — the hand-authored inner continent PLUS a programmatically
+ * generated outer continent + islands.
  *
- * Tiling: a global grid with 11 columns and 9 rows whose lines pass exactly
- * through +/-240 and +/-720; the central 3x3 block is the heart and is NOT a
- * zone. 11*9 - 9 = 90 cells, zero gaps, zero overlaps, all integers.
+ * INNER (hand-authored, 90 zones): a global grid with 11 columns and 9 rows
+ * whose lines pass exactly through +/-240 and +/-720; the central 3x3 block is
+ * the heart and is NOT a zone. 11*9 - 9 = 90 cells, zero gaps, overlaps, all
+ * integers. These 90 are PINNED — ids/bands/waystones are persisted and
+ * referenced across saves, so they are never reshaped.
  *
  *   X columns: -720,-600,-480,-360,-240 | -80,80 | 240,360,480,600,720
  *   Z rows:    -720,-520,-360,-240 | -80,80 | 240,360,520,720
  *
- * North is -z (the Capital's side), so glaciers top the map and deserts
- * bake the south. Difficulty radiates outward from the heart:
- * inner ring lv 10-30, middle lv 25-60, outer lv 45-99.
+ * OUTER (generated, ~890 zones): the world grew to |x|,|z| <= HALF (2400), so
+ * the annulus between the old ±720 ring and the new ±2400 coast is tiled by
+ * `generateOuterZones()` below — concentric square ring-frames, each sliced
+ * into ~140u cells, biome/name/desc/level-band assigned by sector + ring, with
+ * a sprinkling of waystones on the land ones so fast-travel reaches the new
+ * continent and its outer islands. Generation is deterministic (ids derive
+ * from ring/side/index), so the generated ids are ALSO save-stable.
+ *
+ * North is -z (the Capital's side), so glaciers top the map and deserts bake
+ * the south. Difficulty radiates outward from the heart: hand-authored inner
+ * ring lv 10-30 → outer ~45-99; the generated continent then climbs from
+ * ~100 at the old coast to the 999 cap at the far shore and islands.
  */
+
+import { HALF } from '../collision'
+import { isLand } from '../kit'
 
 export type ZoneBiome =
   | 'meadow'
@@ -51,7 +65,8 @@ export type ZoneDef = {
   waystone?: { id: string; name: string; x: number; z: number }
 }
 
-export const ZONES: readonly ZoneDef[] = [
+/** The 90 PINNED hand-authored inner zones (never reshaped). */
+const HAND_ZONES: readonly ZoneDef[] = [
   // ───────────────────────── FAR NORTH (z -720..-520) ─────────────────────────
   {
     id: 'nope_shelf', name: 'The Nope Shelf', biome: 'glacier',
@@ -539,11 +554,190 @@ export const ZONES: readonly ZoneDef[] = [
     x0: 600, z0: 520, x1: 720, z1: 720, minLevel: 65, maxLevel: 80,
     desc: 'A black-glass beach where the waves hiss and the sand was born yesterday, literally.',
   },
+]
+
+// ───────────────────────────────────────────────────────────────────────────
+// OUTER CONTINENT GENERATOR — tiles the ±720 → ±HALF annulus into ~890 zones.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Outer edge of the hand-authored inner zones (they fill heart..GEN_INNER). */
+const GEN_INNER = 720
+/** Concentric square ring-frames filling GEN_INNER → HALF. */
+const GEN_RINGS = 10
+/** Depth of each ring frame = (2400-720)/10 = 168u (a sensible zone size). */
+const RING_STEP = (HALF - GEN_INNER) / GEN_RINGS
+/** Nominal zone length along a ring band (zones come out ~140 x 168u). */
+const CELL_TARGET = 140
+
+/** Mean/funny adjectives for generated place names. */
+const GEN_ADJ = [
+  'Forsaken', 'Wretched', 'Unspeakable', 'Bleak', 'Spiteful', 'Ravenous',
+  'Godforsaken', 'Abysmal', 'Grim', 'Cursed', 'Ill-Advised', 'Regrettable',
+  'Hostile', 'Merciless', 'Desolate', 'Festering', 'Ruinous', 'Doomed',
+  'Thankless', 'Unlovable', 'Overconfident', 'Tetchy', 'Clammy', 'Smug',
+  'Last-Ditch', 'Needlessly', 'Aggressively', 'Faintly Judgmental',
 ] as const
 
+/** Biome → pool of flavorful nouns for the second half of a generated name. */
+const GEN_NOUN: Record<ZoneBiome, readonly string[]> = {
+  meadow: ['Pasture', 'Commons', 'Greensward', 'Field', 'Lea'],
+  forest: ['Thicket', 'Woodland', 'Deepwood', 'Boughs', 'Undergrowth'],
+  mountain: ['Crag', 'Spires', 'Massif', 'Ridgeline', 'Teeth'],
+  dungeon: ['Oubliette', 'Catacomb', 'Vault', 'Undercroft', 'Pit'],
+  city: ['Holdfast', 'Market', 'Quarter', 'Wharf', 'Bastion'],
+  wastes: ['Barrens', 'Blight', 'Nothing', 'Expanse', 'Scour'],
+  swamp: ['Mire', 'Quag', 'Fen', 'Bog', 'Sump'],
+  desert: ['Dunes', 'Scorch', 'Bakepan', 'Thirstflat', 'Sandsea'],
+  tundra: ['Steppe', 'Flats', 'Chillreach', 'Permafrost', 'Numbland'],
+  volcanic: ['Caldera', 'Cinders', 'Emberfield', 'Firepit', 'Slag'],
+  crystal: ['Shards', 'Prism', 'Glitterfault', 'Facets', 'Glowcut'],
+  ruins: ['Ruins', 'Remnant', 'Wreckage', 'Leavings', 'Relics'],
+  beach: ['Shore', 'Strand', 'Sandbar', 'Tideline', 'Coast'],
+  mushroom: ['Sporefield', 'Toadstools', 'Mycelium', 'Capland', 'Fungus'],
+  cherry: ['Blossoms', 'Petalfall', 'Pinkwood', 'Bloomrise', 'Orchard'],
+  savanna: ['Plains', 'Veldt', 'Grasslands', 'Rangeland', 'Scrub'],
+  canyon: ['Gorge', 'Gulch', 'Ravine', 'Rift', 'Chasm'],
+  lagoon: ['Lagoon', 'Shallows', 'Reefward', 'Cove', 'Atoll'],
+  graveyard: ['Boneyard', 'Necropolis', 'Restless Rows', 'Plots', 'Mausoleum'],
+  glacier: ['Icefall', 'Floes', 'Frostreach', 'Glacier', 'Shiverplain'],
+}
+
+/** Mean one-liner descriptions, picked by hash (the realm's honest voice). */
+const GEN_DESC = [
+  'Nobody charted this far out on purpose; you are correcting a historical oversight, fatally.',
+  'The local wildlife has never seen a hero and would very much like to keep that streak alive.',
+  'Out here the map just says "here be consequences," and for once the map is not exaggerating.',
+  'The air itself seems personally offended that you are still breathing it.',
+  'Everything that lives this far from home has given up on being nice and leaned hard into teeth.',
+  'A place so remote the Capital denies it exists, mostly to avoid the paperwork of your death.',
+  'The ground remembers every adventurer it has swallowed, and it is a little peckish.',
+  'Weather, terrain, and residents have formed a loose coalition against your continued existence.',
+  'So far from the last waystone that even your shadow is thinking about turning back.',
+  'The kind of frontier where the welcome sign is just a pile of previous welcome signs.',
+  'Beautiful, in the way a predator is beautiful right before the part you remember less fondly.',
+  'This is what is beyond the edge of the world: more world, and it is in a worse mood.',
+] as const
+
+function hashStr(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+function pickFrom<T>(arr: readonly T[], i: number): T {
+  return arr[((i % arr.length) + arr.length) % arr.length]!
+}
+
+/** Biome pools per compass sector (geographically coherent with the inner map:
+ *  cold north, baked south, green/wet east, crystal/mountain west). Index 0 is
+ *  the "coastal" fallback used when a tile's centre is open ocean or an isle. */
+const SECTOR_BIOMES: Record<string, readonly ZoneBiome[]> = {
+  coast: ['beach', 'lagoon', 'beach', 'lagoon'],
+  n: ['glacier', 'tundra', 'mountain', 'glacier'],
+  ne: ['glacier', 'ruins', 'cherry', 'tundra'],
+  e: ['forest', 'cherry', 'lagoon', 'forest'],
+  se: ['savanna', 'canyon', 'volcanic', 'savanna'],
+  s: ['desert', 'volcanic', 'canyon', 'desert'],
+  sw: ['swamp', 'mushroom', 'graveyard', 'swamp'],
+  w: ['crystal', 'mountain', 'swamp', 'ruins'],
+  nw: ['mountain', 'crystal', 'tundra', 'mountain'],
+}
+
+/** Far-ring (endgame) biome spice injected on the outer rings for variety. */
+const FAR_BIOMES: readonly ZoneBiome[] = ['volcanic', 'crystal', 'dungeon', 'wastes', 'glacier', 'ruins']
+
+function sectorOf(cx: number, cz: number): string {
+  const ax = Math.abs(cx), az = Math.abs(cz)
+  const diag = Math.min(ax, az) > Math.max(ax, az) * 0.42 // roughly diagonal
+  if (cz < 0) {
+    if (diag) return cx < 0 ? 'nw' : 'ne'
+    return az >= ax ? 'n' : cx < 0 ? 'w' : 'e'
+  }
+  if (cz > 0) {
+    if (diag) return cx < 0 ? 'sw' : 'se'
+    return az >= ax ? 's' : cx < 0 ? 'w' : 'e'
+  }
+  return cx < 0 ? 'w' : 'e'
+}
+
+function genZone(
+  side: string, ring: number, idx: number,
+  x0: number, z0: number, x1: number, z1: number,
+  wsCounter: { n: number },
+): ZoneDef {
+  const id = `gen_r${ring}_${side}_${idx}`
+  const cx = Math.round((x0 + x1) / 2)
+  const cz = Math.round((z0 + z1) / 2)
+  const h = hashStr(id)
+
+  const centreLand = isLand(cx + 0.5, cz + 0.5)
+  const sector = centreLand ? sectorOf(cx, cz) : 'coast'
+  let biome = pickFrom(SECTOR_BIOMES[sector]!, (h >>> 3) ^ ring)
+  // outer rings get occasional endgame spice (but keep coastal tiles coastal)
+  if (centreLand && ring >= 6 && (h & 7) === 0) biome = pickFrom(FAR_BIOMES, h >>> 5)
+
+  const t = ring / (GEN_RINGS - 1)
+  const minLevel = Math.round(100 + t * 800)
+  const maxLevel = Math.min(999, Math.round(160 + t * 839))
+
+  const adj = pickFrom(GEN_ADJ, h)
+  const noun = pickFrom(GEN_NOUN[biome], h >>> 7)
+  const name = `The ${adj} ${noun}`
+  const desc = pickFrom(GEN_DESC, h >>> 11)
+
+  // waystone: roughly every 15th LAND zone, so fast-travel threads the new
+  // continent + islands without littering stones over open ocean.
+  let ws: ZoneDef['waystone']
+  if (centreLand) {
+    wsCounter.n++
+    if (wsCounter.n % 15 === 0) {
+      ws = { id: `ws_${id}`, name: `${name} Waystone`, x: cx, z: cz }
+    }
+  }
+
+  return {
+    id, name, biome, x0, z0, x1, z1, minLevel, maxLevel, desc,
+    ...(ws ? { waystone: ws } : {}),
+  }
+}
+
+/** Tile the GEN_INNER→HALF annulus into ring-frame zones (gapless, no overlap,
+ *  no overlap with the heart or the hand-authored ±720 zones). */
+function generateOuterZones(): ZoneDef[] {
+  const out: ZoneDef[] = []
+  const wsCounter = { n: 0 }
+  for (let r = 0; r < GEN_RINGS; r++) {
+    const a = Math.round(GEN_INNER + r * RING_STEP) // inner half-extent
+    const b = Math.round(GEN_INNER + (r + 1) * RING_STEP) // outer half-extent
+    const n = Math.max(1, Math.round((2 * b) / CELL_TARGET)) // N/S band slices
+    const m = Math.max(1, Math.round((2 * a) / CELL_TARGET)) // W/E band slices
+    const xedge = (i: number): number => Math.round(-b + (2 * b * i) / n)
+    const zedge = (j: number): number => Math.round(-a + (2 * a * j) / m)
+    // top (z:[-b,-a]) + bottom (z:[a,b]) bands span the full x:[-b,b]
+    for (let i = 0; i < n; i++) {
+      out.push(genZone('n', r, i, xedge(i), -b, xedge(i + 1), -a, wsCounter))
+      out.push(genZone('s', r, i, xedge(i), a, xedge(i + 1), b, wsCounter))
+    }
+    // left (x:[-b,-a]) + right (x:[a,b]) bands span only the middle z:[-a,a]
+    for (let j = 0; j < m; j++) {
+      out.push(genZone('w', r, j, -b, zedge(j), -a, zedge(j + 1), wsCounter))
+      out.push(genZone('e', r, j, a, zedge(j), b, zedge(j + 1), wsCounter))
+    }
+  }
+  return out
+}
+
+/** All wilderness zones: 90 pinned inner + the generated outer continent. */
+export const ZONES: readonly ZoneDef[] = [...HAND_ZONES, ...generateOuterZones()]
+
 /**
- * The 90 zone ids partitioned into 15 geographic batches of 6 — neighbors
- * grouped together so streaming/builder work can proceed region by region.
+ * The 90 hand-authored zone ids partitioned into 15 geographic batches of 6 —
+ * neighbors grouped together so streaming/builder work can proceed region by
+ * region. (Generated outer zones are not batched; they stream on demand and
+ * fall back to the default ground-only builder until an agent authors them.)
  */
 export const ZONE_BATCHES: string[][] = [
   // 1. Northwest corner (far NW glacier/tundra + west coast north)

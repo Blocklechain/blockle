@@ -57,13 +57,18 @@ export type GripStyle = 'upright' | 'forward' | 'bow' | 'shield'
 const GRIP_POSE: Record<GripStyle, readonly [number, number, number]> = {
   upright: [-0.18, 0, 0],
   forward: [1.3, 0, 0],
-  bow: [-0.12, -0.55, 0.22],
+  bow: [-0.12 + Math.PI / 2, -0.55, 0.22], // +90° pitch so the bow hangs facing down while walking
   shield: [0, -Math.PI / 2, 0],
 }
 const GRIP_DEFAULT: readonly [number, number, number] = [-0.35, 0, 0]
 
 /** Named special-attack animations (combat picks one per ability). */
-export type SpecialAnim = 'spin' | 'lunge' | 'cast' | 'volley' | 'bash'
+// Combat specials + the per-profession GATHER poses (chop/mine/scythe/pluck;
+// fishing reuses 'cast'). Gathering drives these so every skill animates
+// distinctly instead of sharing one swing.
+export type SpecialAnim =
+  | 'spin' | 'lunge' | 'cast' | 'volley' | 'bash'
+  | 'chop' | 'mine' | 'scythe' | 'pluck'
 
 /** [duration seconds, strike point 0..1] per special animation. */
 const SPECIAL_TIMING: Record<SpecialAnim, readonly [number, number]> = {
@@ -72,6 +77,10 @@ const SPECIAL_TIMING: Record<SpecialAnim, readonly [number, number]> = {
   cast: [0.55, 0.5],
   volley: [0.45, 0.5],
   bash: [0.35, 0.4],
+  chop: [0.5, 0.55],   // woodcutting — diagonal axe swing
+  mine: [0.5, 0.6],    // mining — overhead pick slam
+  scythe: [0.55, 0.5], // herbalism — low sickle sweep
+  pluck: [0.6, 0.55],  // farming — bend down and tug
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +217,6 @@ interface BodyParts {
   /** Swaying cape pivot (null when look.cape === 0). */
   capePivot: THREE.Group | null
   anchors: Record<string, THREE.Group>
-  bootAnchorR: THREE.Group
   defaultSword: THREE.Group
   defaultBoots: THREE.Mesh[]
 }
@@ -218,6 +226,8 @@ const HIP_Y = 0.45
 const SHOULDER_Y = HIP_Y + 0.48
 const NECK_Y = HIP_Y + 0.5
 const HEAD_SIZE = 0.72
+/** How much bigger a mount renders while ridden (the user wanted them large). */
+const MOUNT_RIDE_SCALE = 1.8
 
 function buildBodyParts(look: CharacterLook): BodyParts {
   const broad = look.body !== 'slender'
@@ -317,27 +327,28 @@ function buildBodyParts(look: CharacterLook): BodyParts {
   const shieldAnchor = new THREE.Group()
   shieldAnchor.position.set(-0.13, -0.4, 0.03)
   shieldAnchor.rotation.y = -Math.PI / 2
-  shieldAnchor.scale.setScalar(0.8)
+  shieldAnchor.scale.setScalar(1.15)
   armL.add(shieldAnchor)
   anchors['shield'] = shieldAnchor
 
   // --- torso overlay anchor (origin at torso base, just above the belt) ---
   const chestAnchor = new THREE.Group()
-  chestAnchor.position.set(0, 0.49, 0)
-  chestAnchor.scale.setScalar(0.9)
+  // Scaled up + seated slightly lower so the plate actually covers the torso
+  // (0.5-wide mesh was rendering at 0.45 against a 0.52–0.62 body).
+  chestAnchor.position.set(0, 0.44, 0)
+  chestAnchor.scale.setScalar(1.18)
   body.add(chestAnchor)
   anchors['chest'] = chestAnchor
 
-  // --- boot anchors (one per foot; right side gets a clone) ---------------
-  const makeBootAnchor = (pivot: THREE.Group): THREE.Group => {
-    const a = new THREE.Group()
-    a.position.set(0, -0.46, 0.02)
-    a.scale.setScalar(0.45)
-    pivot.add(a)
-    return a
-  }
-  anchors['boots'] = makeBootAnchor(legL)
-  const bootAnchorR = makeBootAnchor(legR)
+  // --- boots anchor -------------------------------------------------------
+  // buildBoots() returns BOTH boots (feet at x=±0.15), so it mounts ONCE on a
+  // body-centered anchor at foot height — not one shrunk pair per leg, which
+  // rendered four tiny clumped boots. Scaled ~body so the boots read full-size.
+  const bootsAnchor = new THREE.Group()
+  bootsAnchor.position.set(0, 0.02, 0.02)
+  bootsAnchor.scale.setScalar(1.05)
+  body.add(bootsAnchor)
+  anchors['boots'] = bootsAnchor
 
   // --- cape (simple back-plane voxels; the rig sways the pivot) -----------
   let capePivot: THREE.Group | null = null
@@ -373,8 +384,10 @@ function buildBodyParts(look: CharacterLook): BodyParts {
 
   // --- head-top helm anchor (base sits above the eyes, covers the hair) ---
   const helmAnchor = new THREE.Group()
-  helmAnchor.position.set(0, 0.62, 0)
-  helmAnchor.scale.setScalar(0.85)
+  // Seated lower and scaled up so the helm actually wraps the (large) 0.72
+  // head — the natural helm mesh is cap-sized, so at 0.85x it perched on top.
+  helmAnchor.position.set(0, 0.42, 0)
+  helmAnchor.scale.setScalar(1.6)
   headPivot.add(helmAnchor)
   anchors['helm'] = helmAnchor
 
@@ -388,7 +401,6 @@ function buildBodyParts(look: CharacterLook): BodyParts {
     legR,
     capePivot,
     anchors,
-    bootAnchorR,
     defaultSword: sword,
     defaultBoots
   }
@@ -585,6 +597,8 @@ export class CharacterRig {
   private torso!: THREE.Mesh
   private armL!: THREE.Group
   private armR!: THREE.Group
+  /** Defense-stance guard: hold the shield arm raised in front. */
+  private guard = false
   private legL!: THREE.Group
   private legR!: THREE.Group
   private capePivot: THREE.Group | null = null
@@ -592,11 +606,12 @@ export class CharacterRig {
   private readonly neckY = NECK_Y
   private t = Math.random() * 10 // desync idle cycles between characters
   private phase = 0
+  private mPhase = 0 // mount gallop/bob cycle
+  private seatY = 0 // rider seat height while mounted (0 = on foot)
   private lookNow: CharacterLook
 
   // --- equipment attach points (anchors scale/orient gear for the rig) ----
   private anchors: Record<string, THREE.Group> = {}
-  private bootAnchorR!: THREE.Group
   private readonly equipped = new Map<string, THREE.Object3D[]>()
   private defaultSword!: THREE.Group
   private defaultBoots: THREE.Mesh[] = []
@@ -639,7 +654,6 @@ export class CharacterRig {
     this.legR = parts.legR
     this.capePivot = parts.capePivot
     this.anchors = parts.anchors
-    this.bootAnchorR = parts.bootAnchorR
     this.defaultSword = parts.defaultSword
     this.defaultBoots = parts.defaultBoots
     this.armL.rotation.z = 0.06
@@ -711,13 +725,10 @@ export class CharacterRig {
     }
     if (!mesh) return
 
+    // boots: buildBoots() already contains BOTH feet, mounted once on the
+    // single centered boots anchor — no per-leg clone.
     const added: THREE.Object3D[] = [mesh]
     anchor.add(mesh)
-    if (slot === 'boots') {
-      const clone = mesh.clone()
-      this.bootAnchorR.add(clone)
-      added.push(clone)
-    }
     this.equipped.set(slot, added)
   }
 
@@ -732,6 +743,31 @@ export class CharacterRig {
     if (!anchor) return
     const [rx, ry, rz] = style ? GRIP_POSE[style] : GRIP_DEFAULT
     anchor.rotation.set(rx, ry, rz)
+  }
+
+  private mountMesh: THREE.Object3D | null = null
+
+  /**
+   * Ride (or dismount): pass a mount mesh to sit the rider on top of it, or
+   * null to put feet back on the ground. The mount is parented to the rig root
+   * (feet origin, facing +Z) so it turns + moves with the character.
+   */
+  setMount(mesh: THREE.Group | null): void {
+    if (this.mountMesh) {
+      this.mountMesh.removeFromParent()
+      disposeObject(this.mountMesh)
+      this.mountMesh = null
+    }
+    if (mesh) {
+      mesh.scale.multiplyScalar(MOUNT_RIDE_SCALE) // mounts are a LOT bigger when ridden
+      this.mountMesh = mesh
+      this.group.add(mesh)
+      this.seatY = 0.72 * MOUNT_RIDE_SCALE // lift the rider onto the bigger saddle
+      this.body.position.y = this.seatY
+    } else {
+      this.seatY = 0
+      this.body.position.y = 0
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -916,6 +952,43 @@ export class CharacterRig {
         this.legR.rotation.x = 0.5 * bell
         break
       }
+      case 'mine': {
+        // overhead pick: both arms rear up high, then slam straight down
+        const x = p < 0.4 ? -2.3 * (p / 0.4) : -2.3 + 3.1 * ((p - 0.4) / 0.6)
+        this.armR.rotation.x = x
+        this.armL.rotation.x = x * 0.7 // two-handed grip
+        this.body.rotation.x = p > 0.4 ? 0.3 * ((p - 0.4) / 0.6) : 0 // drop into the hit
+        break
+      }
+      case 'chop': {
+        // woodcutting: wind the axe over the shoulder, swing down and across
+        const x = p < 0.35 ? -1.7 * (p / 0.35) : -1.7 + 2.7 * ((p - 0.35) / 0.65)
+        this.armR.rotation.x = x
+        this.armR.rotation.z = -0.15 - 0.55 * bell
+        this.armL.rotation.x = x * 0.55
+        this.body.rotation.y = -0.32 * bell // twist shoulders into the chop
+        this.body.rotation.x = 0.16 * bell
+        break
+      }
+      case 'scythe': {
+        // herbalism: bend low and sweep the sickle across the ground
+        const sweep = Math.sin(p * Math.PI)
+        this.body.rotation.x = 0.34 * bell
+        this.body.rotation.y = -0.55 * sweep
+        this.armR.rotation.x = 0.55 + 0.45 * bell
+        this.armR.rotation.z = -0.2 - 0.8 * sweep
+        this.armL.rotation.x = 0.3 * bell
+        break
+      }
+      case 'pluck': {
+        // farming: crouch, reach down, tug the crop up
+        const reach = p < 0.5 ? p / 0.5 : 1 - (p - 0.5) / 0.5
+        this.body.rotation.x = 0.6 * bell
+        this.body.position.y = this.seatY - 0.13 * bell
+        this.armR.rotation.x = 0.95 * reach
+        this.armL.rotation.x = 0.95 * reach
+        break
+      }
     }
 
     if (!this.specialStrikeFired && p >= strikeAt) {
@@ -1004,11 +1077,38 @@ export class CharacterRig {
       }
     }
 
+    // Mounted: the rider sits on the (bigger) mount, which gallops + bobs.
+    // Overrides the on-foot body bob set in the moving/idle branch above.
+    if (this.mountMesh) {
+      const spd = Math.min(1, Math.max(0, speed01))
+      this.mPhase += dt * (moving ? 12 + 6 * spd : 2.4)
+      const amp = moving ? 0.06 + 0.1 * spd : 0.02
+      const bob = Math.sin(this.mPhase) * amp
+      this.mountMesh.position.y = bob
+      this.mountMesh.rotation.x = Math.sin(this.mPhase * 2) * (moving ? 0.07 : 0.015)
+      this.body.position.y = this.seatY + bob
+      // relaxed riding legs instead of the walk kick
+      this.legL.rotation.x += (0.22 - this.legL.rotation.x) * damp
+      this.legR.rotation.x += (0.22 - this.legR.rotation.x) * damp
+    }
+
+    // Defense stance: hold the left (shield) arm raised in front. Specials
+    // reclaim the arm; attacks only use the right arm, so you can still swing.
+    if (this.guard && this.specialT < 0) {
+      this.armL.rotation.x += (-1.5 - this.armL.rotation.x) * damp
+      this.armL.rotation.z += (0.5 - this.armL.rotation.z) * damp
+    }
+
     // layered on top: the attack swing stomps the right arm, specials stomp
     // whatever they need, hurt flash fades
     this.updateAttack(dt)
     this.updateSpecial(dt)
     this.updateHurt(dt)
+  }
+
+  /** Defense stance: raise the shield arm in front (held until cleared). */
+  setGuard(on: boolean): void {
+    this.guard = on
   }
 
   /** Free GPU resources (geometries, materials, textures). */

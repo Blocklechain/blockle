@@ -15,7 +15,7 @@ import type { GameAPI, SkillsAPI } from '../types'
 import { SKILLS, type SkillId } from '../ids'
 import { events } from '../events'
 import { saveRegistry } from '../save/registry'
-import { MAX_LEVEL, XP_CAP, bracketProgress, levelForXp, xpForLevel } from './curve'
+import { MAX_LEVEL, XP_CAP, bracketCost, bracketProgress, levelForXp, xpForLevel } from './curve'
 import { levelUpLine } from './flavor'
 import { createSkillsPanel } from './panel'
 import { skillTreeApi, initSkillTree, dumpTree, loadTree, invalidateTree } from './tree/core'
@@ -37,9 +37,27 @@ function skillXp(skill: string): number {
 // Combat hooks (derived getters — the integrator reads these)
 // ---------------------------------------------------------------------------
 
-/** Extra max HP from vitality: +4 per level above 1 (0 at Lv1, +392 at Lv99). */
+/**
+ * Extra max HP from vitality. Full +4/level through 100 (0 at Lv1, +392 at
+ * Lv99 — identical to the original curve), then a gentle +1/level past 100 so
+ * a maxed Lv999 bruiser is tanky (+1295) without being a hundred times the
+ * HP of a Lv99 one.
+ */
 export function maxHpBonus(): number {
-  return (levelForXp(skillXp('vitality')) - 1) * 4
+  const lvl = levelForXp(skillXp('vitality'))
+  const capped = Math.min(lvl, 100)
+  return (capped - 1) * 4 + Math.max(0, lvl - 100) * 1
+}
+
+/**
+ * Attack-skill DPS/damage multiplier applied to a swing. Full +4%/level
+ * through 100 (1.0 at Lv1, 4.92x at Lv99 — identical to the original curve),
+ * then a gentler +1%/level past 100 so a Lv999 attacker hits hard (~13.95x)
+ * instead of an absurd 40x. Shared by every player-swing resolver.
+ */
+export function attackDpsMult(level: number): number {
+  const capped = Math.min(level, 100)
+  return 1 + (capped - 1) * 0.04 + Math.max(0, level - 100) * 0.01
 }
 
 /**
@@ -115,7 +133,7 @@ export const skillsApi: SkillsAPI = {
   xp(skill: string): number {
     return skillXp(skill)
   },
-  /** XP still needed to reach the next level (0 at the 99 cap). */
+  /** XP still needed to reach the next level (0 at the MAX_LEVEL cap). */
   xpToNext(skill: string): number {
     if (!isSkillId(skill)) return 0
     const x = xpBySkill.get(skill)!
@@ -132,7 +150,7 @@ export const skillsApi: SkillsAPI = {
  * maxed skill's total XP to 0 (back to level 1) so it can be re-ground for a
  * permanent Mastery star — the prestige module owns the star/perk bookkeeping.
  *
- * Guarded to level 99 so nothing else can wipe progress through here. Reuses
+ * Guarded to MAX_LEVEL so nothing else can wipe progress through here. Reuses
  * the exact same state + refresh machinery as a normal XP change (the private
  * `xpBySkill` map, `onChanged`, the 'save:dirty' emit) and invalidates the
  * talent-tree caches (a straight-to-zero reset fires no 'level:up', so the
@@ -154,6 +172,21 @@ export function prestigeResetSkill(skill: string): boolean {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
+
+/**
+ * Scale a flat (level-99-era) XP reward onto the level-999 curve so that the
+ * number of actions needed per level stays constant at every level instead of
+ * vanishing as the curve steepens. Multiplies the flat amount by
+ * bracketCost(currentLevel) / bracketCost(1): identical at level 1, growing with
+ * the curve thereafter. Used by gathering/crafting/quests (combat scales its own
+ * damage-based XP separately). ~`bracketCost(1)/flatXp` actions per level, so a
+ * richer action (higher flat XP) levels faster — exactly as the flat values intend.
+ */
+const BASE_BRACKET = bracketCost(1) // === 80
+export function curveXp(skill: string, flatXp: number): number {
+  const lvl = isSkillId(skill) ? levelForXp(xpBySkill.get(skill)!) : 1
+  return Math.max(1, Math.round((flatXp * bracketCost(lvl)) / BASE_BRACKET))
+}
 
 let inited = false
 

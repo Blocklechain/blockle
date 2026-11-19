@@ -30,6 +30,7 @@ import { StoneRig } from './monolith'
 import { TravelPanel, FadeVeil, type TravelOption } from './panel'
 import { attuneLine, arrivalLine, dormantTapLine } from './flavor'
 import { playAttuneChime, playArrivalChime } from './chime'
+import { actionContext } from '../action/context'
 import './waystones.css'
 
 // ---------------------------------------------------------------------------
@@ -181,18 +182,9 @@ export function initWaystones(api: GameAPI): WaystonesModule {
     panel.open(s.def.id, s.def.name, options)
   }
 
-  // --- proximity Travel button (mobile-first; harmless on desktop) --------
-  const goBtn = document.createElement('button')
-  goBtn.className = 'bl-ws-go'
-  goBtn.style.display = 'none'
-  goBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (nearest && nearestDist <= USE_RANGE && attuned.has(nearest.def.id) && !panel.isOpen) {
-      openPanel(nearest)
-    }
-  })
-  uiMount.appendChild(goBtn)
+  // The former proximity Travel button is gone: the shared context-aware
+  // INTERACT button offers travel now (published from the tick below). The
+  // travel panel, tap-on-stone, and desktop E key are unchanged.
 
   // --- tap-on-stone (raycast; drags and long-presses don't count) ---------
   const ray = new THREE.Raycaster()
@@ -270,12 +262,20 @@ export function initWaystones(api: GameAPI): WaystonesModule {
       if (d <= ANIM_RANGE) s.rig.update(dt)
     }
 
-    // proximity Travel button
+    // INTERACT button: offer Travel at an attuned stone in range (dormant
+    // stones auto-attune on approach, so in practice this lights once lit)
     if (!panel.isOpen && !veil.active && nearest && nearestDist <= USE_RANGE && attuned.has(nearest.def.id)) {
-      goBtn.textContent = `Travel — ${nearest.def.name}`
-      goBtn.style.display = ''
+      const s = nearest
+      actionContext.publish('waystone', {
+        priority: 3,
+        icon: 'portal',
+        label: attuned.has(s.def.id) ? 'Travel' : 'Attune',
+        invoke: () => {
+          if (!panel.isOpen && !veil.active && attuned.has(s.def.id)) openPanel(s)
+        }
+      })
     } else {
-      goBtn.style.display = 'none'
+      actionContext.publish('waystone', null)
     }
 
     // wandering off mid-browse closes the menu; the stone doesn't chase you

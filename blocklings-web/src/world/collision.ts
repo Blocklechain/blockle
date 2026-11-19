@@ -1,15 +1,20 @@
 /**
  * Coarse walkability grid — 1 cell per voxel column over the full
- * 1440x1440 world. Cell (ix, iz) covers world-space [ix, ix+1) x [iz, iz+1).
+ * 4800x4800 world. Cell (ix, iz) covers world-space [ix, ix+1) x [iz, iz+1).
  * Outside the grid is always blocked (the open ocean).
  *
  * The ORIGINAL 6-region continent (the "heart") is the central
- * |x|,|z| <= HEART_HALF square and stays eagerly built; the ring beyond it
- * out to the coast is streamed in zone-by-zone (see ./stream). Collision
- * marks are GLOBAL and PERMANENT: once a streamed zone has built at least
- * once, its marks stay even after its visuals are disposed.
+ * |x|,|z| <= HEART_HALF square and stays eagerly built; the continent and
+ * outer islands beyond it out to the coast are streamed in zone-by-zone
+ * (see ./stream). Collision marks are GLOBAL and PERMANENT: once a streamed
+ * zone has built at least once, its marks stay even after its visuals are
+ * disposed.
+ *
+ * The grid is one flat Uint8Array(SIZE*SIZE). At HALF=2400 that is
+ * 4800*4800 = ~23 MB — deliberately NOT scaled 10x with the world AREA
+ * (that would be 414 MB); the linear ~3.3x growth keeps mobile memory safe.
  */
-export const HALF = 720
+export const HALF = 2400
 export const SIZE = HALF * 2
 
 /** Half-extent of the original, always-resident 6-region heart. */

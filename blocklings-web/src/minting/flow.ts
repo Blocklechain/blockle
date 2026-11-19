@@ -8,6 +8,7 @@
  */
 import type { ChainId, InventoryAPI, ItemDef, MintRecord, WalletAPI2 } from '../types'
 import { events } from '../events'
+import { isIosApp, openCryptoWeb } from '../platform'
 import { newUid } from '../uid'
 import { MintStore, type NftInstance } from './store'
 import './minting.css'
@@ -20,7 +21,7 @@ export const CHAIN_BADGES: readonly { chain: ChainId; glyph: string; label: stri
 
 /** Rarity colors (same values as the inventory module — kept local so the
  *  module boundary stays clean; the pair must not drift visually). */
-const RARITY_COLORS = ['#9aa0a6', '#7ed957', '#6cb8ff', '#b07df2', '#ffb04f', '#ff5c8a'] as const
+import { RARITY_COLORS } from '../inventory/defs'
 
 const MINT_LINES = [
   (n: string, c: string) => `${n} is now an NFT on ${c}. Immortalized. Unlike you.`,
@@ -103,6 +104,12 @@ export function createMintFlow(deps: MintFlowDeps): MintFlow {
   }
 
   function open(id: string, def?: ItemDef): void {
+    if (isIosApp()) {
+      // NFT minting is a crypto action — not offered in the App Store build.
+      events.emit('chat:system', { text: 'Minting collectibles as NFTs is available on the web — sign in to your same account at blocklings.blockle.org in a browser.' })
+      openCryptoWeb()
+      return
+    }
     curId = id
     curDef = def ?? null
     status = null
@@ -115,6 +122,7 @@ export function createMintFlow(deps: MintFlowDeps): MintFlow {
   // --- the actual mint ------------------------------------------------------
 
   async function doMint(target: { kind: 'new'; qty: number } | { kind: 'uid'; uid: string }, chain: ChainId): Promise<void> {
+    if (isIosApp()) return // never mint (crypto) in the App Store build — belt + suspenders
     if (busy || !curId) return
     const id = curId
     const def = curDef

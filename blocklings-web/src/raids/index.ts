@@ -33,6 +33,7 @@ import * as THREE from 'three'
 import type { GameAPI } from '../types'
 import { events } from '../events'
 import { saveRegistry } from '../save/registry'
+import { attackDpsMult } from '../skills/index'
 import { RAID_BOSSES, raidBossById, type RaidBossDef, type RaidPattern } from './bosses'
 import { RaidBossRig } from './model'
 import { RaidFx } from './fx'
@@ -440,7 +441,7 @@ export function initRaids(api: GameAPI): RaidsModule {
     const atkLevel = skillsFn?.('attack') ?? 1
     const base = 3 + s.atk + 0.4 * s.str
     const crit = rng() < 0.1 + s.agi * 0.002 + mod('combat.crit')
-    let dmg = base * (1 + (atkLevel - 1) * 0.04) * (0.85 + rng() * 0.3)
+    let dmg = base * attackDpsMult(atkLevel) * (0.85 + rng() * 0.3)
     dmg *= 1 + mod('combat.damage')
     if (crit) dmg *= 1.75
     return { dmg: Math.max(1, Math.round(dmg)), crit }

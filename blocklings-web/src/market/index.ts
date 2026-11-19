@@ -33,11 +33,19 @@ import type {
 } from '../types'
 import { events } from '../events'
 import { petDef } from '../ids'
+import { isIosApp } from '../platform'
 import { createMarketUI } from './ui'
 
 const ORIGIN = 'https://blockle.org'
 const POLL_MS = 30_000
 const PAID_RETRIES = 8
+
+/** Treasury fee addresses per chain (must match the server's MARKET_TREASURY). */
+const MARKET_TREASURY: Partial<Record<ChainId, string>> = {
+  blockle: 'block1yyvhau7c2kwy4s60kqrysz6prf2k693kvyx94h9ve4qa8fulwy8q99vvdh',
+  ethereum: '0x8f55FbeDb99389aADa2B06f12c9567552C7892F5',
+  solana: 'CHxVpuE297p7YLttya8vLrxrfFNKXp8SRk4rfVd48PdM',
+}
 const PAID_RETRY_MS = 5_000
 
 // ---------------------------------------------------------------------------
@@ -370,26 +378,45 @@ export function initMarket(api: GameAPI): MarketModule {
         return { ok: false, error: typeof r.data.error === 'string' ? r.data.error : `Purchase failed (HTTP ${r.status}).` }
       }
 
-      // ---- CRYPTO rail: real wallet-signed payment to the seller -----------
+      // ---- CRYPTO rail: two real wallet-signed payments (non-custodial split) --
+      //   • 2% marketplace fee -> the treasury  (paid FIRST — no fee, no sale)
+      //   • 99% of the price   -> the seller
+      // Buyer pays 101% total; the seller nets 99% (1% maker fee) and the buyer's
+      // extra 1% is the taker fee. The server REQUIRES both before completing.
+      // Defense-in-depth: crypto buys are never offered in the iOS App Store build
+      // (the UI blocks them too). Belt + suspenders for a real-money path.
+      if (isIosApp()) return { ok: false, error: 'Crypto purchases are available on the web (same account at blocklings.blockle.org).' }
       const chain = w.price.chain as ChainId
-      const amount = w.price.amount ?? 0
+      const price = w.price.amount ?? 0
       const address = w.price.address
-      if (!chain || !amount || !address) return { ok: false, error: 'Listing has no valid crypto price.' }
+      if (!chain || !price || !address) return { ok: false, error: 'Listing has no valid crypto price.' }
       if (!wallet) return { ok: false, error: 'Connect your wallet to pay with crypto.' }
+      const treasury = MARKET_TREASURY[chain]
+      if (!treasury) return { ok: false, error: 'No treasury address configured for this chain.' }
+      const ceil8 = (n: number): number => Math.ceil(n * 1e8) / 1e8
+      const feeAmt = ceil8(price * 0.02)
+      const sellerAmt = ceil8(price * 0.99)
 
-      const sent = await wallet.sendOn(chain, address, amount)
-      if (!sent.ok || !sent.tx) return { ok: false, error: sent.error || 'Payment failed — nothing was sent.' }
+      // Fee FIRST — no fee, no sale.
+      const feeSent = await wallet.sendOn(chain, treasury, feeAmt)
+      if (!feeSent.ok || !feeSent.tx) return { ok: false, error: feeSent.error || 'Marketplace fee payment failed — no sale.' }
+      // Then the seller's 99%.
+      const sent = await wallet.sendOn(chain, address, sellerAmt)
+      if (!sent.ok || !sent.tx) {
+        return { ok: false, tx: feeSent.tx, error: `${sent.error || 'Seller payment failed'}. Your fee tx ${feeSent.tx} is recorded — retry the purchase from My Listings.` }
+      }
 
       // Attest + (BLOCK) wait for on-chain verification. Retries are idempotent.
       for (let i = 0; i < PAID_RETRIES; i++) {
-        const r = await accountFetch('POST', '/account/api/game/market/paid', { id: listingId, tx: sent.tx })
+        const r = await accountFetch('POST', '/account/api/game/market/paid', { id: listingId, tx: sent.tx, feeTx: feeSent.tx })
         if (r && r.status === 200 && r.data.ok === true) {
           const sold = (r.data.listing as unknown as WireListing) ?? w
           deliver(sold)
           known.set(listingId, sold)
           events.emit('market:sold', { listingId })
           const how = sold.payment === 'verified' ? 'verified on-chain' : 'payment attested'
-          events.emit('chat:system', { text: `Bought ${goodsName(sold, defSource)} for ${amount} ${chain === 'blockle' ? 'BLOCK' : chain === 'ethereum' ? 'ETH' : 'SOL'} (${how}).` })
+          const unit = chain === 'blockle' ? 'BLOCK' : chain === 'ethereum' ? 'ETH' : 'SOL'
+          events.emit('chat:system', { text: `Bought ${goodsName(sold, defSource)} for ${price} ${unit} + 1% fee (${how}).` })
           return { ok: true, tx: sent.tx }
         }
         if (r && r.status === 202) {

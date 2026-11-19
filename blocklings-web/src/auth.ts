@@ -28,6 +28,7 @@ import {
   errorText,
   needsTotp,
   displayNameOf,
+  deleteBlockling as clientDeleteBlockling,
   type ApiResult
 } from './auth/client'
 import { createTitleScreen, type TitleScreen } from './auth/title'
@@ -211,10 +212,33 @@ export async function signOut(): Promise<void> {
   // Pre-entry "switch account" must not read as a world entry downstream —
   // 'auth:changed' only fires here when a signed-in session actually ends.
   if (wasSigned) events.emit('auth:changed', { signedIn: false })
+  // CRITICAL: the stateful modules (save, inventory, skills, world) initialize
+  // ONCE per page load and hold the signed-in account's identity + character in
+  // memory. Switching accounts in-session would otherwise keep the previous
+  // hero and, worse, SAVE it under the newly signed-in email — corrupting it.
+  // A full reload guarantees the next login re-boots cleanly and loads the right
+  // character from the cloud. (No-op cost when switching before entering a world.)
+  if (typeof window !== 'undefined' && window.location) {
+    window.location.reload()
+    return
+  }
   if (title) {
     title.show()
     title.showForms()
   }
+}
+
+/**
+ * Soft-delete the signed-in Blockling account. Character data is PRESERVED
+ * server-side (recoverable from the blockle.org/account dashboard); this just
+ * flags it hidden. The caller signs out afterwards.
+ */
+export async function deleteBlockling(): Promise<{ ok: boolean; error?: string }> {
+  const token = read(TOKEN_KEY)
+  if (!token) return { ok: false, error: 'You are not signed in to a Blockle account.' }
+  const r = await clientDeleteBlockling(token)
+  if (r.ok) return { ok: true }
+  return { ok: false, error: errorText(r) || 'Could not delete the account — try again.' }
 }
 
 /**
@@ -241,6 +265,7 @@ export function initAuth(mount: HTMLElement): AuthAPI {
     void restore()
     // Duck-typed settings hook, same pattern as blocklingsSetQuality.
     ;(window as unknown as Record<string, unknown>).blocklingsSignOut = signOut
+    ;(window as unknown as Record<string, unknown>).blocklingsDeleteBlockling = deleteBlockling
   }
   return {
     signedIn: () => signed,

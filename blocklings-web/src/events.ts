@@ -39,6 +39,11 @@ export interface GameEvents {
   'xp:gained': { skill: string; amount: number }
   /** A skill reached a new level. */
   'level:up': { skill: string; level: number }
+  'style:changed': { style: 'melee' | 'archery' | 'magic' }
+  /** Melee sub-stance changed (offense/defense); drives guard pose + XP routing. */
+  'stance:changed': { stance: 'offense' | 'defense' }
+  /** The active mount changed (id null = dismounted). */
+  'mount:changed': { id: string | null }
 
   /** The player finished a dialog with an NPC. */
   'npc:talked': { npcId: string }
@@ -62,6 +67,12 @@ export interface GameEvents {
   'chat:system': { text: string }
   /** Any persistent state changed; the save module debounces writes on this. */
   'save:dirty': { why: string }
+  /** A full save envelope was just applied (local load OR async account sync);
+   *  consumers recompute derived state (character level, max HP) from fresh skills. */
+  'save:applied': Record<string, never>
+  /** Signed-in boot found NO character for this account (cloud + local empty) →
+   *  the UI should run character creation (the world is already up). */
+  'save:needsCreator': Record<string, never>
 
   /* ---- wave-2 appends (NFTs, pets, gold, market, auth, specials) ---- */
 

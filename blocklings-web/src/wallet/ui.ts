@@ -12,6 +12,10 @@ import { lock } from './index'
 
 const PANEL_ID = 'blkw-panel'
 
+// iOS App Store build: wallet is VIEW-ONLY for crypto (no send / no MoonPay);
+// crypto lives on the web, same account. See src/platform.ts (lazy gate).
+import { isIosApp, openCryptoWeb } from '../platform'
+
 /** Display config for the two classical chains shown as cards. */
 const CHAIN_CARDS: { id: ChainId; label: string; unit: string; hint: string }[] = [
   { id: 'ethereum', label: 'Ethereum', unit: 'ETH', hint: '0x…' },
@@ -135,11 +139,7 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
     wireCommon()
     on('[data-act=copy-backup]', () => void copyText(backup, '[data-act=copy-backup]', 'Copied!'))
     on('[data-act=dl-backup]', () => {
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(new Blob([backup + '\n'], { type: 'text/plain' }))
-      a.download = 'blocklings-wallet-backup.txt'
-      a.click()
-      URL.revokeObjectURL(a.href)
+      void downloadText('blocklings-wallet-backup.txt', backup + '\n', '[data-act=dl-backup]')
     })
     on('[data-act=backup-done]', () => {
       if (!(byId('blkw-ack') as HTMLInputElement).checked) {
@@ -229,6 +229,10 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
       `<div class="blkw-sub" style="margin-bottom:4px">Other realms (same keys, same vault)</div>` +
       `<div id="blkw-chains"><p class="blkw-note">Consulting foreign ledgers…</p></div>` +
       `<div class="blkw-sep"></div>` +
+      `<div class="blkw-sub" style="margin-bottom:4px">Back up your keys</div>` +
+      `<div id="blkw-backup"><button type="button" class="blkw-btn" data-act="reveal-open">Show private keys (for backup)</button>` +
+      `<p class="blkw-note">Your private keys live only on this device. Save them somewhere safe and offline.</p></div>` +
+      `<div class="blkw-sep"></div>` +
       `<div class="blkw-banner">Your keys never leave this browser. Every transaction is signed on this device — nothing custodial, nothing phoned home.</div>` +
       `<button type="button" class="blkw-btn" data-act="lock">Lock purse</button>` +
       `<p class="blkw-note">Fee 0.0001 BLOCK · signed on this device · nothing custodial.</p>` +
@@ -241,7 +245,106 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
       viewUnlock()
     })
     on('[data-act=send]', () => void confirmSend(info.address))
+    on('[data-act=reveal-open]', () => void openReveal(info.address))
     void renderChains()
+  }
+
+  // --- key backup: press-and-hold reveal per chain ---------------------------
+
+  async function openReveal(blockAddr: string): Promise<void> {
+    const host = panel.querySelector('#blkw-backup') as HTMLElement | null
+    if (!host) return
+    host.innerHTML = `<p class="blkw-note">Decrypting your keys on this device…</p>`
+    let keys: { blockle: string; ethereum: string; solana: string } | null
+    try {
+      keys = await api.revealKeys()
+    } catch (e) {
+      host.innerHTML = `<p class="blkw-note">Could not read keys: ${esc(msg(e))}</p>`
+      return
+    }
+    if (!keys) {
+      host.innerHTML = `<p class="blkw-note">Unlock your purse to reveal keys.</p>`
+      return
+    }
+    // best-effort addresses for the two classical chains
+    let snaps: Partial<Record<ChainId, { address: string; balance: number }>> = {}
+    try {
+      snaps = await api.chains()
+    } catch {
+      /* addresses are optional context */
+    }
+    const rows: { key: string; label: string; addr: string; fmt: string }[] = [
+      { key: keys.blockle, label: 'BLOCK', addr: blockAddr, fmt: 'blockling-key-v1 backup (restores all three chains)' },
+      { key: keys.ethereum, label: 'Ethereum', addr: snaps.ethereum?.address ?? '', fmt: '0x secp256k1 private key' },
+      { key: keys.solana, label: 'Solana', addr: snaps.solana?.address ?? '', fmt: 'base58 ed25519 secret (Phantom import)' }
+    ]
+    host.innerHTML =
+      `<div class="blkw-warn"><b>SELF-CUSTODY WARNING.</b> Your private key IS your money. Anyone who sees it can take your funds. ` +
+      `Never share it or type it into any site. Back it up offline.</div>` +
+      rows
+        .map(
+          (r, i) =>
+            `<div class="blkw-keyrow">` +
+            `<div class="blkw-keyhead"><b>${esc(r.label)}</b>` +
+            (r.addr ? ` <code title="${esc(r.addr)}">${esc(shortAddr(r.addr))}</code>` : '') +
+            `</div>` +
+            `<div class="blkw-keybox" id="blkw-key-${i}" aria-live="polite">••••••••  —  hold the button to reveal</div>` +
+            `<div class="blkw-keybtns">` +
+            `<button type="button" class="blkw-btn small blkw-hold" data-reveal="${i}">Hold to reveal</button>` +
+            `<button type="button" class="blkw-btn small" data-copy="${i}" style="display:none">Copy</button>` +
+            `</div><div class="blkw-note">${esc(r.fmt)}</div></div>`
+        )
+        .join('') +
+      `<button type="button" class="blkw-btn small" data-act="reveal-hide" style="margin-top:6px">Done</button>`
+
+    const HOLD_MS = 400
+    rows.forEach((r, i) => {
+      const box = panel.querySelector(`#blkw-key-${i}`) as HTMLElement | null
+      const btn = panel.querySelector(`[data-reveal="${i}"]`) as HTMLButtonElement | null
+      const copy = panel.querySelector(`[data-copy="${i}"]`) as HTMLButtonElement | null
+      if (!box || !btn) return
+      let timer: number | null = null
+      let shown = false
+      const reveal = (): void => {
+        box.textContent = r.key
+        shown = true
+        if (copy) copy.style.display = ''
+        btn.classList.remove('on')
+        btn.classList.add('shown')
+        btn.textContent = 'Hide key'
+      }
+      const hide = (): void => {
+        box.textContent = '••••••••  —  hold the button to reveal'
+        shown = false
+        if (copy) copy.style.display = 'none'
+        btn.classList.remove('on', 'shown')
+        btn.textContent = 'Hold to reveal'
+      }
+      // Press-and-HOLD to reveal; once the hold completes it STAYS shown after
+      // you let go. Tap it again to hide.
+      const start = (e: Event): void => {
+        e.preventDefault()
+        if (shown) { hide(); return } // tap while revealed → hide
+        btn.classList.add('on')
+        timer = window.setTimeout(() => {
+          timer = null
+          reveal()
+        }, HOLD_MS)
+      }
+      // Releasing only cancels a hold that hasn't completed — it never re-hides
+      // an already-revealed key.
+      const cancelHold = (): void => {
+        if (timer !== null) { clearTimeout(timer); timer = null }
+        if (!shown) btn.classList.remove('on')
+      }
+      btn.addEventListener('pointerdown', start)
+      btn.addEventListener('pointerup', cancelHold)
+      btn.addEventListener('pointerleave', cancelHold)
+      btn.addEventListener('pointercancel', cancelHold)
+      btn.addEventListener('contextmenu', (e) => e.preventDefault())
+      if (copy) copy.addEventListener('click', () => void copyText(r.key, `[data-copy="${i}"]`, 'Copied!'))
+    })
+    on('[data-act=reveal-hide]', () => viewMain())
   }
 
   // --- per-chain cards (Ethereum + Solana) -----------------------------------
@@ -313,6 +416,12 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
   }
 
   async function doChainSend(chain: ChainId): Promise<void> {
+    const err0 = byId(`blkw-cherr-${chain}`)
+    if (isIosApp()) {
+      err0.textContent = 'Sending crypto isn’t available in the app — do it on the web (same account at blocklings.blockle.org).'
+      openCryptoWeb()
+      return
+    }
     const to = (byId(`blkw-chto-${chain}`) as HTMLInputElement).value.trim()
     const amt = Number((byId(`blkw-chamt-${chain}`) as HTMLInputElement).value)
     const err = byId(`blkw-cherr-${chain}`)
@@ -345,16 +454,33 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
   async function openMoonpay(kind: 'buy' | 'sell', chain: ChainId): Promise<void> {
     const err = byId(`blkw-cherr-${chain}`)
     err.textContent = ''
+    if (isIosApp()) {
+      // Not offered in the app — same account on the web does buy/sell crypto.
+      err.textContent = 'Buy/Sell crypto on the web: sign in to your same account at blocklings.blockle.org in a browser.'
+      openCryptoWeb()
+      return
+    }
     const url = await api.moonpayUrl(kind, chain)
     if (!url) {
       err.textContent = `MoonPay ${kind} is not available for this chain right now.`
       return
     }
-    // blockle.org is whitelisted for embedding in the MoonPay dashboard, so
-    // the preferred path is the in-game overlay (best UX). The Safari bridge
-    // stays as an automatic fallback — a 'Open in Safari instead' link appears
-    // in the overlay, and any 3-D Secure bank page that still refuses to embed
-    // can be escaped there.
+    // iOS (and the in-app WebView) can't show MoonPay in an IFRAME — MoonPay
+    // refuses to embed there, so the overlay just white-screens. Open the widget
+    // at the TOP LEVEL instead: the native browser via the app bridge, or a fresh
+    // Safari tab on mobile web. Desktop keeps the nicer in-app iframe overlay.
+    const bridge = (window as unknown as { blocklingsOpenURL?: (u: string) => void }).blocklingsOpenURL
+    const ua = navigator.userAgent || ''
+    const iOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document)
+    if (bridge) {
+      bridge(url) // in-app: hand off to the native browser (SafariViewController)
+      return
+    }
+    if (iOS) {
+      const w = window.open(url, '_blank', 'noopener')
+      if (!w) window.location.href = url
+      return
+    }
     openMoonpayOverlay(url, kind)
   }
 
@@ -377,10 +503,15 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
 
 
   async function confirmSend(_from: string): Promise<void> {
-    const to = (byId('blkw-to') as HTMLInputElement).value.trim()
-    const amt = Number((byId('blkw-amt') as HTMLInputElement).value)
     const err = byId('blkw-err')
     err.textContent = ''
+    if (isIosApp()) {
+      err.textContent = 'Sending crypto isn’t available in the app — do it on the web (same account at blocklings.blockle.org).'
+      openCryptoWeb()
+      return
+    }
+    const to = (byId('blkw-to') as HTMLInputElement).value.trim()
+    const amt = Number((byId('blkw-amt') as HTMLInputElement).value)
     byId('blkw-good').textContent = ''
     if (!/^block1/.test(to)) return void (err.textContent = 'Recipient must be a block1… address.')
     if (!Number.isFinite(amt) || amt <= 0)
@@ -464,6 +595,41 @@ export function initWalletUI(mount: HTMLElement, api: WalletAPI2): { update(dt: 
       }
     } catch {
       /* clipboard denied — the value is visible/selectable in the UI */
+    }
+  }
+
+  /** Robust text download. The old one-liner failed widely: the <a> was never
+   *  added to the DOM and the object URL was revoked on the SAME tick, so the
+   *  download was cancelled (desktop/Android) and iOS WebViews can't save blobs
+   *  at all. We append the anchor, delay the revoke, and — if the environment
+   *  silently can't download (iOS in-app WebView) — fall back to the clipboard so
+   *  the user never loses their backup. */
+  async function downloadText(filename: string, text: string, btnSel: string): Promise<void> {
+    // iOS in-app WebViews (WKWebView) don't trigger blob/anchor downloads at all,
+    // and Safari handling is flaky — copy to clipboard there instead.
+    const ua = navigator.userAgent || ''
+    const iOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document)
+    const standaloneOrWebView = iOS && !/Safari/.test(ua) // in-app WKWebView lacks the Safari token
+    if (standaloneOrWebView) {
+      // No blob downloads in an in-app WebView — copy instead so the key is never lost.
+      await copyText(text, btnSel, 'Copied — paste & save!')
+      return
+    }
+    try {
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.rel = 'noopener'
+      a.style.display = 'none'
+      document.body.appendChild(a)
+      a.click()
+      setTimeout(() => {
+        a.remove()
+        URL.revokeObjectURL(url)
+      }, 2000)
+    } catch {
+      await copyText(text, btnSel, 'Copied — save it!')
     }
   }
 
@@ -556,6 +722,15 @@ function injectStyles(): void {
 .blkw-note { font-size: 12px; opacity: .8; margin: 8px 0; }
 .blkw-warn { background: #f8d7c0; border: 1.5px solid #b4541e; border-radius: 8px; padding: 9px;
   font-size: 12.5px; line-height: 1.45; margin: 8px 0; }
+.blkw-keyrow { border: 1px solid #d8c29a; border-radius: 8px; padding: 8px; margin: 8px 0; background: rgba(255,255,255,.35); }
+.blkw-keyhead { font-size: 12.5px; margin-bottom: 5px; }
+.blkw-keyhead code { font-size: 11px; opacity: .8; }
+.blkw-keybox { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.4;
+  word-break: break-all; user-select: all; background: #2a2016; color: #f0e6d2; border-radius: 6px; padding: 7px 8px;
+  min-height: 34px; }
+.blkw-keybtns { display: flex; gap: 6px; margin-top: 6px; }
+.blkw-hold { touch-action: none; -webkit-user-select: none; user-select: none; }
+.blkw-hold.on { background: #b4541e; color: #fff; }
 .blkw-err { color: #9c2b12; font-size: 12.5px; min-height: 16px; margin-top: 6px; font-weight: 700; }
 .blkw-good { color: #2f6b1d; font-size: 12.5px; margin-top: 4px; font-weight: 700; }
 .blkw-addr { font-size: 12px; margin: 9px 0; }

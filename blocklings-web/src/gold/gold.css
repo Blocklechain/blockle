@@ -57,3 +57,111 @@
   right: max(12px, env(safe-area-inset-right));
   z-index: 30;
 }
+
+/* "+" affordance on the chip */
+.bl-gold-plus {
+  margin-left: 2px;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1;
+  color: #e8c15a;
+  opacity: 0.85;
+}
+
+/* Get GOLD store — modal sheet (temporary; appended/removed on open/close) */
+.bl-gold-store-back {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(6, 9, 14, 0.62);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.bl-gold-store {
+  width: min(440px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #14181f;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.85);
+  padding: 18px 18px 16px;
+  font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
+  color: #efe9d8;
+}
+.bl-gold-store-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.bl-gold-store-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.bl-gold-store-title svg { width: 20px; height: 20px; }
+.bl-gold-store-x {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #b9b2a0;
+  font-size: 22px;
+  cursor: pointer;
+}
+.bl-gold-store-x:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+.bl-gold-store-sub { margin: 2px 2px 14px; font-size: 13.5px; color: #b9b2a0; line-height: 1.5; }
+.bl-gold-store-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.bl-gold-pack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 16px 10px 14px;
+  background: rgba(212, 175, 55, 0.06);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  border-radius: 14px;
+}
+.bl-gold-pack-amt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 20px;
+}
+.bl-gold-pack-amt svg { width: 22px; height: 22px; }
+.bl-gold-pack-amt b { color: #e8c15a; font-variant-numeric: tabular-nums; }
+.bl-gold-pack-note {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a937f;
+}
+.bl-gold-pack-buy {
+  margin-top: 2px;
+  min-width: 92px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #e8c15a, #cf9f34);
+  color: #2a1f05;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.bl-gold-pack-buy:hover { filter: brightness(1.06); }
+.bl-gold-pack-buy:disabled { opacity: 0.7; cursor: default; }
+.bl-gold-store-fine { margin: 14px 2px 2px; font-size: 11.5px; color: #7f7a6c; line-height: 1.5; }

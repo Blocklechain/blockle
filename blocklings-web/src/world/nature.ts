@@ -5,14 +5,19 @@
 import * as THREE from 'three'
 import { RIVER_X0, RIVER_X1, S_GRASS, VILLAGE_HALF, surfaceAt, type Ctx } from './layout'
 import * as P from './palette'
-import { kitTree } from './kit'
+import { kitTree, kitBirch, kitBlossom, kitWillow } from './kit'
 
 // ---------------------------------------------------------------------------
 // Trees (village ring — the shared kitTree IS the village tree)
 // ---------------------------------------------------------------------------
 
 function buildTree(ctx: Ctx, ix: number, iz: number): void {
-  kitTree(ctx, ix, iz)
+  // Mix in the new tree types so the home meadow isn't all oaks.
+  const r = ctx.rng.next()
+  if (r < 0.58) kitTree(ctx, ix, iz)
+  else if (r < 0.74) kitBirch(ctx, ix, iz)
+  else if (r < 0.88) kitBlossom(ctx, ix, iz)
+  else kitWillow(ctx, ix, iz)
 }
 
 function treeSpotOk(ctx: Ctx, ix: number, iz: number): boolean {
@@ -79,15 +84,15 @@ function buildFlowers(ctx: Ctx): void {
 function buildMountains(ctx: Ctx, scene: THREE.Scene): void {
   const { rng } = ctx
   const peaks: Array<{ x: number; z: number; r: number; h: number }> = []
-  const count = 14
+  const count = 20
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + rng.range(-0.15, 0.15)
-    const dist = rng.range(840, 980) // island peaks beyond the new coast ring
+    const dist = rng.range(2800, 3300) // distant peaks beyond the new coast ring
     peaks.push({
       x: Math.cos(angle) * dist,
       z: Math.sin(angle) * dist,
-      r: rng.range(26, 48),
-      h: rng.range(36, 80)
+      r: rng.range(90, 170),
+      h: rng.range(130, 280)
     })
   }
 

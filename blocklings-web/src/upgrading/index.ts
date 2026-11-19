@@ -23,6 +23,7 @@ import {
   successChance, type MatCost, type Stats
 } from './data'
 import { anvilSpot } from './station'
+import { actionContext } from '../action/context'
 import {
   createUpgradingUI, type AscTab, type MatView, type PanelVM,
   type SelectedView, type UpgradeTabView, type EnchantTabView, type ReforgeTabView
@@ -52,8 +53,7 @@ export interface UpgradingModule {
 /** Slots the anvil will work on (tools are crafting-land, not combat gear). */
 const UPGRADE_SLOTS = new Set(['weapon', 'shield', 'helm', 'chest', 'boots', 'accessory'])
 
-const RARITY_NAMES = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary', 'Mythical'] as const
-const RARITY_COLORS = ['#9aa0a6', '#7ed957', '#6cb8ff', '#b07df2', '#ffb04f', '#ff5c8a'] as const
+import { RARITY_NAMES, RARITY_COLORS } from '../inventory/defs'
 
 const INTERACT_RADIUS = 3.4
 const LEAVE_RADIUS = 4.8
@@ -407,9 +407,15 @@ export function initUpgrading(api: GameAPI): UpgradingModule {
     const d2 = dx * dx + dz * dz
     if (ui.isOpen()) {
       if (d2 > LEAVE_RADIUS * LEAVE_RADIUS) closePanel()
+      actionContext.publish('upgrade', null)
+    } else if (d2 < INTERACT_RADIUS * INTERACT_RADIUS) {
+      ui.showPrompt('Use the Anvil of Ascension')
+      // Context INTERACT button: an anvil glyph opens the Ascension panel
+      // (so it works on mobile, where there is no E key — this was the bug).
+      actionContext.publish('upgrade', { priority: 3, icon: 'anvil', label: 'Ascend', invoke: openPanel })
     } else {
-      if (d2 < INTERACT_RADIUS * INTERACT_RADIUS) ui.showPrompt('Use the Anvil of Ascension')
-      else ui.hidePrompt()
+      ui.hidePrompt()
+      actionContext.publish('upgrade', null)
     }
   }
   raf = requestAnimationFrame(tick)
@@ -422,6 +428,7 @@ export function initUpgrading(api: GameAPI): UpgradingModule {
     bonusFor: (id, base) => state.bonusFor(id, base),
     dispose() {
       cancelAnimationFrame(raf)
+      actionContext.publish('upgrade', null)
       window.removeEventListener('keydown', onKeyDown)
       offGained()
       offRemoved()

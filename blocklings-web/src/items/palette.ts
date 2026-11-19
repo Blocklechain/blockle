@@ -22,7 +22,13 @@ export interface TierPalette {
   opacity?: number
 }
 
-/** Index = material tier = rarity (copper, iron, steel, gold, crystal, mythic). */
+/**
+ * Index = material tier. The first six (copper, iron, steel, gold, crystal,
+ * mythic) map 1:1 onto rarity. Tiers 6..11 are the late-game mesh tiers
+ * (obsidian, dragonbone, void, astral, titan, runic) — each a distinct,
+ * attractive set, with glow (`emissive`) on the top tiers so endgame armor
+ * reads as genuinely otherworldly. The first six colors are UNCHANGED.
+ */
 export const TIER_PALETTES: readonly TierPalette[] = [
   { main: 0xb87333, dark: 0x8a5425, light: 0xd98e4f, accent: 0x6e4320 },
   { main: 0x9aa0a8, dark: 0x6f757d, light: 0xbfc5cc, accent: 0x565b63 },
@@ -30,6 +36,19 @@ export const TIER_PALETTES: readonly TierPalette[] = [
   { main: 0xf2c14e, dark: 0xc29226, light: 0xffe08a, accent: 0x8f6a1a },
   { main: 0x6fe3e8, dark: 0x3aa7b0, light: 0xb9f6f8, accent: 0x2a7f86, emissive: 0x1b6f74, opacity: 0.85 },
   { main: 0x9b59d0, dark: 0x6a2fa0, light: 0xc98df0, accent: 0x4a1f73, emissive: 0x3d1266 },
+  // --- late-game tiers (6..11) ---------------------------------------------
+  // 6 obsidian — volcanic glass-black with a violet sheen (no glow, pure menace)
+  { main: 0x2c2c36, dark: 0x16161d, light: 0x4a4a59, accent: 0x7a4ad0 },
+  // 7 dragonbone — bleached ivory bone with a crimson wyrm-blood accent
+  { main: 0xe8dcc2, dark: 0xb09a76, light: 0xf6eedd, accent: 0xb5202a },
+  // 8 void — deep indigo nothing, lit from within by violet
+  { main: 0x2a1f4a, dark: 0x150f2c, light: 0x5a3fa6, accent: 0x9b6aff, emissive: 0x3a1f7a },
+  // 9 astral — cosmic blue starlight, faintly glowing
+  { main: 0x3a6ad0, dark: 0x23489a, light: 0x8ab6ff, accent: 0xb9e0ff, emissive: 0x2a5ad0 },
+  // 10 titan — molten bronze-orange, radiating heat
+  { main: 0xd98030, dark: 0xa85a1e, light: 0xffb060, accent: 0xffd98a, emissive: 0xff6a1a },
+  // 11 runic — radiant ivory-gold etched with cyan runes (strongest glow, top tier)
+  { main: 0xf4ead0, dark: 0xc9b98a, light: 0xffffff, accent: 0x6fe3ff, emissive: 0x9fe8ff },
 ] as const
 
 /** Render opts a palette implies (glow + translucency for high tiers). */

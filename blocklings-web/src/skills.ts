@@ -19,7 +19,9 @@ export {
   initSkills,
   skillsApi,
   maxHpBonus,
+  attackDpsMult,
   damageReduction,
+  curveXp,
   skillTree,
   prestigeResetSkill,
   setPrestigeXpBonus

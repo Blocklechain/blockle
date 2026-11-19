@@ -21,12 +21,14 @@
  * ./stations.ts (the world-side hook world/index.ts calls at build time).
  */
 import type { GameAPI, InventoryAPI, ItemDef, SkillsAPI, SkillTreeAPI } from '../types'
+import { curveXp } from '../skills'
 import { events } from '../events'
 import { audio } from '../audio/engine'
 import { stationSpots, type StationKind, type StationSpot } from './stations'
 import { recipesFor, type CraftSkill, type Recipe } from './recipes'
 import { burntLine, lockedLine, maybeSuccessLine } from './flavor'
 import { createCraftingUI, type CraftPanelData, type CraftRowView } from './ui'
+import { actionContext } from '../action/context'
 
 export interface CraftingModule {
   /** Wire the inventory for have/need counts (mutations stay event-driven). */
@@ -209,11 +211,19 @@ export function initCrafting(api: GameAPI): CraftingModule {
     }
     const speed = mod(SPEED_KEY[skill])
     const dur = Math.max(MIN_TIME, BASE_TIME / (1 + Math.max(0, speed)))
+    // "Make All" passes Infinity: craft as many as the inputs allow. For a
+    // finite request use it as-is. canAfford was just checked, so max >= 1.
+    const maxBatch = recipe.inputs.length
+      ? Math.min(...recipe.inputs.map((i) => Math.floor(count(i.id) / Math.max(1, i.qty))))
+      : 1
+    const total = Number.isFinite(requested) && requested >= 1
+      ? Math.max(1, Math.floor(requested))
+      : Math.max(1, maxBatch)
     active = {
       station: openStation,
       recipe,
       done: 0,
-      total: Math.max(1, Math.floor(requested)),
+      total,
       t: 0,
       dur,
       nextTickSfxAt: 0,
@@ -266,7 +276,7 @@ export function initCrafting(api: GameAPI): CraftingModule {
         : 0
     if (burnChance > 0 && Math.random() < burnChance) {
       events.emit('item:gained', { id: 'food_burnt', qty: 1, source: 'craft' })
-      events.emit('xp:gained', { skill, amount: Math.max(1, Math.round(rec.xp / 2)) })
+      events.emit('xp:gained', { skill, amount: curveXp(skill, Math.max(1, Math.round(rec.xp / 2))) })
       events.emit('save:dirty', { why: 'craft' })
       events.emit('chat:system', { text: burntLine() })
       audio.sfx.play('error-buzz', { vel: 0.5, pitch: 0.9 })
@@ -281,7 +291,7 @@ export function initCrafting(api: GameAPI): CraftingModule {
       events.emit('chat:system', { text: 'Bonus batch! The cauldron refuses to explain itself.' })
     }
     events.emit('item:gained', { id: rec.output.id, qty: outQty, source: 'craft' })
-    events.emit('xp:gained', { skill, amount: rec.xp })
+    events.emit('xp:gained', { skill, amount: curveXp(skill, rec.xp) })
     events.emit('save:dirty', { why: 'craft' })
     audio.sfx.play('equip-clack', { vel: 0.8 })
     const quip = maybeSuccessLine(skill)
@@ -351,6 +361,13 @@ export function initCrafting(api: GameAPI): CraftingModule {
       else ui.hidePrompt()
     }
 
+    // INTERACT button: offer Craft at a station in range (panel closed)
+    if (near && !(ui?.isOpen() ?? false)) {
+      actionContext.publish('craft', { priority: 3, icon: 'anvil', label: 'Craft', invoke: activate })
+    } else {
+      actionContext.publish('craft', null)
+    }
+
     // wandered off? the station keeps your place exactly nowhere
     if (openStation && distSq(openStation) > LEAVE_RADIUS * LEAVE_RADIUS) {
       ui?.closePanel() // fires onClose → stopCraft
@@ -411,6 +428,7 @@ export function initCrafting(api: GameAPI): CraftingModule {
     },
     dispose(): void {
       cancelAnimationFrame(raf)
+      actionContext.publish('craft', null)
       window.removeEventListener('keydown', onKeyDown)
       offGained()
       offRemoved()

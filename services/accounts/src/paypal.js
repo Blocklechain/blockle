@@ -24,6 +24,56 @@ export function makePaypal(config, deps = {}) {
 
   return {
     stub: false,
+    // --- One-time Orders (GOLD top-ups) -------------------------------------
+    // Create a CAPTURE order for an exact USD amount. custom_id binds it to the
+    // buyer + sku so capture can re-check who/what; we still re-verify the
+    // captured amount/currency server-side before ever crediting.
+    async createOrder({ userId, sku, usd, returnUrl, cancelUrl }) {
+      const t = await token();
+      const value = Number(usd).toFixed(2);
+      const r = await fetchFn(`${base}/v2/checkout/orders`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          intent: 'CAPTURE',
+          purchase_units: [{
+            custom_id: `${userId}:${sku}`,
+            description: `Blocklings GOLD (${sku})`,
+            amount: { currency_code: 'USD', value },
+          }],
+          application_context: {
+            brand_name: 'Blocklings', shipping_preference: 'NO_SHIPPING',
+            user_action: 'PAY_NOW', return_url: returnUrl, cancel_url: cancelUrl,
+          },
+        }),
+      });
+      if (!r.ok) throw new Error(`paypal order ${r.status}`);
+      const j = await r.json();
+      const approve = (j.links || []).find((l) => l.rel === 'approve');
+      return { id: j.id, approveUrl: approve?.href };
+    },
+    // Capture an approved order. Returns a NORMALIZED result the host re-checks
+    // before crediting: { ok, captureId, amount, currency, custom }. Never
+    // credits here — crediting is the caller's atomic, replay-guarded job.
+    async captureOrder(orderId) {
+      const t = await token();
+      const r = await fetchFn(`${base}/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return { ok: false, status: r.status, error: j?.name || `capture ${r.status}` };
+      const pu = (j.purchase_units || [])[0] || {};
+      const cap = ((pu.payments || {}).captures || [])[0] || {};
+      return {
+        ok: j.status === 'COMPLETED' && cap.status === 'COMPLETED',
+        status: j.status,
+        captureId: cap.id || null,
+        amount: cap.amount?.value || null,
+        currency: cap.amount?.currency_code || null,
+        custom: cap.custom_id || pu.custom_id || null,
+      };
+    },
     async createSubscription(userId, returnUrl, cancelUrl, planId) {
       const t = await token();
       const r = await fetchFn(`${base}/v1/billing/subscriptions`, {
@@ -67,6 +117,8 @@ export function makePaypal(config, deps = {}) {
 function disabledGateway() {
   return {
     stub: false, disabled: true,
+    async createOrder() { throw new Error('billing not configured'); },
+    async captureOrder() { return { ok: false, error: 'billing not configured' }; },
     async createSubscription() { throw new Error('billing not configured'); },
     async verifyWebhook() { return false; },
   };
@@ -75,8 +127,22 @@ function disabledGateway() {
 // Deterministic stub: createSubscription returns a fake approve URL; verifyWebhook trusts a
 // shared test marker. Lets the full entitlement flow be tested without network/creds.
 function stubGateway() {
+  const stubOrders = new Map(); // id -> { amount, custom } so capture echoes the real money
   return {
     stub: true,
+    async createOrder({ userId, sku, usd }) {
+      const id = `ORDER-STUB-${userId}-${sku}`;
+      stubOrders.set(id, { amount: Number(usd).toFixed(2), custom: `${userId}:${sku}` });
+      return { id, approveUrl: `https://sandbox.example/approve/${userId}/${sku}` };
+    },
+    // Deterministic capture: echoes a COMPLETED capture mirroring the created order
+    // (exact amount + custom_id) so the full credit + replay-guard path is testable
+    // without network/creds. Unknown ids fail closed.
+    async captureOrder(orderId) {
+      const o = stubOrders.get(orderId);
+      if (!o) return { ok: false, status: 'NOT_FOUND', error: 'unknown order' };
+      return { ok: true, status: 'COMPLETED', captureId: `CAP-${orderId}`, amount: o.amount, currency: 'USD', custom: o.custom };
+    },
     async createSubscription(userId) {
       return { id: `SUB-STUB-${userId}`, approveUrl: `https://sandbox.example/approve/${userId}` };
     },

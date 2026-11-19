@@ -3,9 +3,10 @@
  * card with its live rotating 3D viewer. Medieval-dark styling matching
  * hud.css; every control works; everything is finger-sized.
  */
-import type { GameAPI, ItemDef } from '../types'
+import type { GameAPI, ItemDef, ItemSlot } from '../types'
 import { events } from '../events'
 import { GEAR_SLOTS, RARITY_COLORS, RARITY_NAMES, isGearSlot } from './defs'
+import { canSalvage, salvageYield, scaleYield, type SalvageItem } from './salvage'
 import type { InventoryCore } from './core'
 import { ItemViewer } from './viewer'
 import './inventory.css'
@@ -50,6 +51,69 @@ const STAT_LABELS = [
   ['agi', 'AGI']
 ] as const
 
+/** The bag is unlimited, but it paginates: a fixed 5×5 = 25 cells per page. */
+const BAG_PAGE_SIZE = 25
+
+// --- bag filters (rarity + type) -------------------------------------------
+
+const RARITY_FILTER_KEY = 'blocklings.inv.filter.rarity'
+const TYPE_FILTER_KEY = 'blocklings.inv.filter.type'
+
+/** Player-facing type groups collapsing the raw ItemSlot ladder. */
+const TYPE_GROUPS: readonly { key: string; label: string; slots: readonly ItemSlot[] }[] = [
+  { key: 'weapons', label: 'Weapons', slots: ['weapon', 'shield'] },
+  { key: 'armor', label: 'Armor', slots: ['helm', 'chest', 'boots'] },
+  { key: 'tools', label: 'Tools', slots: ['tool'] },
+  { key: 'consumables', label: 'Consumables', slots: ['consumable'] },
+  { key: 'materials', label: 'Materials', slots: ['material'] },
+  { key: 'accessories', label: 'Accessories', slots: ['accessory'] },
+  { key: 'mounts', label: 'Mounts', slots: ['mount'] }
+]
+
+function sanitizeRarity(v: string | null): string {
+  return v && (v === 'all' || /^[0-5]$/.test(v)) ? v : 'all'
+}
+function sanitizeType(v: string | null): string {
+  return v === 'all' || (v !== null && TYPE_GROUPS.some((g) => g.key === v)) ? (v as string) : 'all'
+}
+function groupOf(slot: ItemSlot): string {
+  for (const g of TYPE_GROUPS) if ((g.slots as readonly string[]).includes(slot)) return g.key
+  return 'materials'
+}
+function persistFilter(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* quota — filter preference is best-effort */
+  }
+}
+
+function makeFilterSelect(
+  label: string,
+  options: readonly { value: string; label: string }[],
+  current: string,
+  onChange: (v: string) => void
+): HTMLLabelElement {
+  const wrap = document.createElement('label')
+  wrap.className = 'bl-inv-filter-field'
+  const lbl = document.createElement('span')
+  lbl.className = 'bl-inv-filter-lbl'
+  lbl.textContent = label
+  wrap.appendChild(lbl)
+  const sel = document.createElement('select')
+  sel.className = 'bl-inv-filter-sel'
+  for (const o of options) {
+    const opt = document.createElement('option')
+    opt.value = o.value
+    opt.textContent = o.label
+    if (o.value === current) opt.selected = true
+    sel.appendChild(opt)
+  }
+  sel.addEventListener('change', () => onChange(sel.value))
+  wrap.appendChild(sel)
+  return wrap
+}
+
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   cls: string,
@@ -72,6 +136,7 @@ function sys(text: string): void {
 export interface InventoryUI {
   viewer: ItemViewer
   setMintHooks(hooks: MintHooks): void
+  setHotbarPin(fn: (id: string) => number | null): void
 }
 
 export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryUI {
@@ -81,6 +146,7 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
   const root = el('div', 'bl-invroot')
   const viewer = new ItemViewer()
   let mintHooks: MintHooks | null = null
+  let hotbarPin: ((id: string) => number | null) | null = null
 
   // =========================================================================
   // Bag button
@@ -122,8 +188,149 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
   body.appendChild(statsRow)
   const bagSect = el('div', 'bl-inv-sect', 'The Bag')
   body.appendChild(bagSect)
+
+  // Filter bar — rarity + type, pinned above the scrolling bag grid.
+  let fRarity = sanitizeRarity(localStorage.getItem(RARITY_FILTER_KEY))
+  let fType = sanitizeType(localStorage.getItem(TYPE_FILTER_KEY))
+
+  function matchFilter(def: ItemDef): boolean {
+    if (fRarity !== 'all' && String(def.rarity) !== fRarity) return false
+    if (fType !== 'all' && groupOf(def.slot) !== fType) return false
+    return true
+  }
+
+  const filterBar = el('div', 'bl-inv-filter')
+  filterBar.appendChild(
+    makeFilterSelect(
+      'Rarity',
+      [
+        { value: 'all', label: 'All rarities' },
+        ...RARITY_NAMES.map((n, i) => ({ value: String(i), label: n }))
+      ],
+      fRarity,
+      (v) => {
+        fRarity = v
+        persistFilter(RARITY_FILTER_KEY, v)
+        page = 0
+        disarmBulk()
+        renderGrid()
+      }
+    )
+  )
+  filterBar.appendChild(
+    makeFilterSelect(
+      'Type',
+      [
+        { value: 'all', label: 'All types' },
+        ...TYPE_GROUPS.map((g) => ({ value: g.key, label: g.label }))
+      ],
+      fType,
+      (v) => {
+        fType = v
+        persistFilter(TYPE_FILTER_KEY, v)
+        page = 0
+        disarmBulk()
+        renderGrid()
+      }
+    )
+  )
+  body.appendChild(filterBar)
+
+  // --- bulk breakdown: scrap everything matching the active filter ---------
+  // "Select all by rarity + type" == whatever the filters currently show.
+  // First tap arms (shows the count), second tap within 4s confirms.
+  const bulkBar = el('div', 'bl-inv-bulk')
+  const bulkBtn = el('button', 'bl-inv-bulkbtn', 'Break Down Filtered')
+  bulkBtn.type = 'button'
+  bulkBar.appendChild(bulkBtn)
+  body.appendChild(bulkBar)
+
+  let bulkArmed = false
+  let bulkTimer: ReturnType<typeof setTimeout> | null = null
+
+  function yieldText(y: readonly SalvageItem[]): string {
+    return y.map((x) => `${x.qty}× ${core.def(x.id).name}`).join(', ')
+  }
+
+  /** Bag stacks that match the active filter AND can actually be scrapped. */
+  function salvageTargets(): { id: string; qty: number }[] {
+    const byId = new Map<string, number>()
+    for (const s of core.items()) {
+      const def = core.def(s.id)
+      if (!matchFilter(def) || !canSalvage(def)) continue
+      byId.set(s.id, (byId.get(s.id) ?? 0) + s.qty)
+    }
+    return [...byId.entries()].map(([id, qty]) => ({ id, qty }))
+  }
+
+  function setBulkLabel(): void {
+    if (bulkArmed) return
+    const total = salvageTargets().reduce((n, t) => n + t.qty, 0)
+    bulkBtn.textContent = total > 0 ? `Break Down Filtered (${total})` : 'Break Down Filtered'
+    bulkBtn.disabled = total === 0
+  }
+
+  function disarmBulk(): void {
+    bulkArmed = false
+    bulkBtn.classList.remove('armed')
+    if (bulkTimer) {
+      clearTimeout(bulkTimer)
+      bulkTimer = null
+    }
+    setBulkLabel()
+  }
+
+  function doBulkSalvage(targets: { id: string; qty: number }[]): void {
+    const gained = new Map<string, number>()
+    let scrapped = 0
+    for (const t of targets) {
+      const per = salvageYield(core.def(t.id))
+      if (!core.remove(t.id, t.qty)) continue
+      scrapped += t.qty
+      for (const y of per) gained.set(y.id, (gained.get(y.id) ?? 0) + y.qty * t.qty)
+    }
+    for (const [id, qty] of gained) core.add(id, qty, 'craft')
+    const out = [...gained.entries()].map(([id, qty]) => ({ id, qty }))
+    sys(
+      scrapped > 0
+        ? `Broke down ${scrapped} item${scrapped === 1 ? '' : 's'} into ${yieldText(out) || 'a sad pile of nothing'}.`
+        : 'Nothing got scrapped. The bag mocks you.'
+    )
+  }
+
+  bulkBtn.addEventListener('click', () => {
+    const targets = salvageTargets()
+    const total = targets.reduce((n, t) => n + t.qty, 0)
+    if (total === 0) {
+      sys("Nothing here can be broken down. Mounts and raw materials don't count.")
+      disarmBulk()
+      return
+    }
+    if (!bulkArmed) {
+      bulkArmed = true
+      bulkBtn.classList.add('armed')
+      bulkBtn.textContent = `Confirm — scrap ${total}?`
+      if (bulkTimer) clearTimeout(bulkTimer)
+      bulkTimer = setTimeout(disarmBulk, 4000)
+      return
+    }
+    disarmBulk()
+    doBulkSalvage(targets)
+  })
+
+  // Dedicated scroll region so a full bag scrolls while the doll / stats /
+  // filter stay pinned above it.
+  const bagScroll = el('div', 'bl-inv-bagscroll')
   const grid = el('div', 'bl-inv-grid')
-  body.appendChild(grid)
+  bagScroll.appendChild(grid)
+  body.appendChild(bagScroll)
+
+  // Pager — one 5×5 page at a time. Pinned below the grid; hidden on a single
+  // page. `page` is clamped on every render so filters/mutations can't strand
+  // the view on a page that no longer exists.
+  let page = 0
+  const pager = el('div', 'bl-inv-pager')
+  body.appendChild(pager)
 
   function renderDoll(): void {
     doll.textContent = ''
@@ -174,39 +381,104 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
     cell.appendChild(dots)
   }
 
+  type BagEntry =
+    | { kind: 'stack'; id: string; qty: number }
+    | { kind: 'bundle'; id: string; qty: number; chains: readonly string[] }
+
   function renderGrid(): void {
     grid.textContent = ''
-    const stacks = core.items()
-    const bundles = mintHooks?.bundles() ?? []
+    pager.textContent = ''
+    setBulkLabel()
+    const allStacks = core.items()
+    const allBundles = mintHooks?.bundles() ?? []
+    const stacks = allStacks.filter((s) => matchFilter(core.def(s.id)))
+    const bundles = allBundles.filter((b) => matchFilter(core.def(b.id)))
     if (stacks.length === 0 && bundles.length === 0) {
-      const empty = el('div', 'bl-inv-empty', 'Nothing but lint and broken dreams. Go hit something.')
+      page = 0
+      const bagEmpty = allStacks.length === 0 && allBundles.length === 0
+      const empty = el(
+        'div',
+        'bl-inv-empty',
+        bagEmpty
+          ? 'Nothing but lint and broken dreams. Go hit something.'
+          : 'Nothing here matches that filter. Loosen up.'
+      )
       grid.appendChild(empty)
       return
     }
-    for (const stack of stacks) {
-      const def = core.def(stack.id)
-      const cell = el('button', 'bl-inv-cell', def.name)
-      cell.type = 'button'
-      cell.style.borderColor = rarityColor(def)
-      cell.style.color = rarityColor(def)
-      if (stack.qty > 1) cell.appendChild(el('span', 'bl-inv-qty', `×${stack.qty}`))
-      if (mintHooks) mintDots(cell, mintHooks.chainsOf(stack.id))
-      cell.addEventListener('click', () => openDetail(stack.id, null))
-      grid.appendChild(cell)
+
+    // One flat list — stacks first, then minted NFT bundles — sliced into
+    // fixed 25-cell pages. The bag holds unlimited items; the grid shows a page.
+    const entries: BagEntry[] = [
+      ...stacks.map((s): BagEntry => ({ kind: 'stack', id: s.id, qty: s.qty })),
+      ...bundles.map((b): BagEntry => ({ kind: 'bundle', id: b.id, qty: b.qty, chains: b.chains }))
+    ]
+    const pageCount = Math.max(1, Math.ceil(entries.length / BAG_PAGE_SIZE))
+    page = Math.min(Math.max(0, page), pageCount - 1)
+    const start = page * BAG_PAGE_SIZE
+    const slice = entries.slice(start, start + BAG_PAGE_SIZE)
+
+    for (const entry of slice) {
+      const def = core.def(entry.id)
+      if (entry.kind === 'stack') {
+        const cell = el('button', 'bl-inv-cell', def.name)
+        cell.type = 'button'
+        cell.style.borderColor = rarityColor(def)
+        cell.style.color = rarityColor(def)
+        if (entry.qty > 1) cell.appendChild(el('span', 'bl-inv-qty', `×${entry.qty}`))
+        if (mintHooks) mintDots(cell, mintHooks.chainsOf(entry.id))
+        cell.addEventListener('click', () => openDetail(entry.id, null))
+        grid.appendChild(cell)
+      } else {
+        // Minted quantity-bundle: unstackable NFT item that left the stacks.
+        const cell = el('button', 'bl-inv-cell bl-inv-cell-bundle', def.name)
+        cell.type = 'button'
+        cell.style.borderColor = rarityColor(def)
+        cell.style.color = rarityColor(def)
+        cell.appendChild(el('span', 'bl-inv-qty', `×${entry.qty}`))
+        cell.appendChild(el('span', 'bl-inv-bundletag', 'NFT'))
+        mintDots(cell, entry.chains)
+        cell.addEventListener('click', () => mintHooks?.open(entry.id, def))
+        grid.appendChild(cell)
+      }
     }
-    // Minted quantity-bundles: unstackable NFT items that left the stacks.
-    for (const b of bundles) {
-      const def = core.def(b.id)
-      const cell = el('button', 'bl-inv-cell bl-inv-cell-bundle', def.name)
-      cell.type = 'button'
-      cell.style.borderColor = rarityColor(def)
-      cell.style.color = rarityColor(def)
-      cell.appendChild(el('span', 'bl-inv-qty', `×${b.qty}`))
-      cell.appendChild(el('span', 'bl-inv-bundletag', 'NFT'))
-      mintDots(cell, b.chains)
-      cell.addEventListener('click', () => mintHooks?.open(b.id, def))
-      grid.appendChild(cell)
-    }
+
+    renderPager(entries.length, pageCount)
+  }
+
+  function renderPager(total: number, pageCount: number): void {
+    pager.textContent = ''
+    if (pageCount <= 1) return // single page — no controls needed
+
+    const prev = el('button', 'bl-inv-pagebtn', '‹')
+    prev.type = 'button'
+    prev.setAttribute('aria-label', 'Previous page')
+    prev.disabled = page <= 0
+    prev.addEventListener('click', () => {
+      if (page > 0) {
+        page--
+        renderGrid()
+      }
+    })
+
+    const label = el('span', 'bl-inv-pagelabel', `Page ${page + 1} / ${pageCount}`)
+    const count = el('span', 'bl-inv-pagecount', `${total} item${total === 1 ? '' : 's'}`)
+
+    const next = el('button', 'bl-inv-pagebtn', '›')
+    next.type = 'button'
+    next.setAttribute('aria-label', 'Next page')
+    next.disabled = page >= pageCount - 1
+    next.addEventListener('click', () => {
+      if (page < pageCount - 1) {
+        page++
+        renderGrid()
+      }
+    })
+
+    pager.appendChild(prev)
+    pager.appendChild(label)
+    pager.appendChild(next)
+    pager.appendChild(count)
   }
 
   function renderAll(): void {
@@ -381,6 +653,10 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
       }
       if (def.slot === 'consumable') {
         actions.appendChild(actionBtn('Use', 'bl-primary', () => useConsumable(def)))
+        if (hotbarPin) {
+          const pin = hotbarPin
+          actions.appendChild(actionBtn('Pin to Hotbar', '', () => void pin(id)))
+        }
       }
       actions.appendChild(
         actionBtn('Drop', 'bl-danger', () => {
@@ -398,12 +674,36 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
           })
         )
       }
+      // Break Down — reclaim some (never all) of the materials. Every item
+      // except mounts and raw materials can go back into the forge.
+      if (canSalvage(def)) {
+        const per = salvageYield(def)
+        actions.appendChild(
+          actionBtn('Break Down', 'bl-salvage', () => {
+            if (!core.remove(id, 1)) return
+            for (const y of per) core.add(y.id, y.qty, 'craft')
+            sys(`${def.name} broken down into ${yieldText(per) || 'worthless scrap'}.`)
+          })
+        )
+        if (bagCount > 1) {
+          actions.appendChild(
+            actionBtn(`Break Down All (${bagCount})`, 'bl-salvage', () => {
+              const n = core.count(id)
+              if (!core.remove(id, n)) return
+              const scaled = scaleYield(per, n)
+              for (const y of scaled) core.add(y.id, y.qty, 'craft')
+              sys(`All ${n} ${def.name} broken down into ${yieldText(scaled) || 'worthless scrap'}.`)
+              closeDetail()
+            })
+          )
+        }
+      }
     }
     // The one Mint button — hands off to the shared mint flow (chain picker,
     // lazy uid, bundles for stackables). Any item can become an NFT.
     if (mintHooks) {
       const hooks = mintHooks
-      actions.appendChild(actionBtn('Mint NFT', 'bl-mint', () => hooks.open(id, def)))
+      actions.appendChild(actionBtn('Mint NFT', 'bl-mintbtn', () => hooks.open(id, def)))
     }
     card.appendChild(actions)
   }
@@ -469,6 +769,10 @@ export function createInventoryUI(api: GameAPI, core: InventoryCore): InventoryU
         renderAll()
         if (cardItem) renderDetail()
       }
+    },
+    setHotbarPin(fn) {
+      hotbarPin = fn
+      if (open && cardItem) renderDetail()
     }
   }
 }

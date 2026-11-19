@@ -2,8 +2,12 @@
  * Gather prompt UI — one tappable pill above the hotbar area:
  *   [E]  Mine Copper Vein        (desktop hint + mobile tap target)
  * with a progress fill while harvesting and a dimmed "needs a better
- * tool" state. Lives in the #ui overlay; pointer-events re-enable via
- * the #ui > * rule in style.css.
+ * tool" state. Lives in the #ui overlay.
+ *
+ * It is a DISPLAY-ONLY hint (pointer-events: none): the mobile tap action
+ * moved to the shared context-aware INTERACT button, and desktop harvests
+ * with the E key. The onActivate wiring is retained for API stability but
+ * the pill itself no longer receives taps/clicks.
  */
 import './gather.css'
 
@@ -23,6 +27,8 @@ export function createGatherUI(mount: HTMLElement): GatherPromptUI {
   root.type = 'button'
   root.className = 'gather-prompt'
   root.style.display = 'none'
+  // display-only hint — the INTERACT button owns the tap now
+  root.style.pointerEvents = 'none'
 
   const key = document.createElement('span')
   key.className = 'gather-key'

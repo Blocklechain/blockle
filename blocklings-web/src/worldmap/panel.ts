@@ -18,8 +18,10 @@
  * count as taps.
  */
 import type { GameAPI } from '../types'
-import { REGIONS, BOSSES } from '../ids'
-import { ZONES } from '../world/zones/registry'
+import { REGIONS, BOSSES, regionAt } from '../ids'
+import { ZONES, zoneAt } from '../world/zones/registry'
+import { isLand } from '../world/kit'
+import { ALL_MINIBOSSES } from '../minibosses'
 import {
   ROUTES,
   BRIDGES,
@@ -74,6 +76,54 @@ interface StoneHit {
   y: number
   stoneId: string
   attuned: boolean
+}
+
+const PARCHMENT = '#e8d9b0'
+
+/**
+ * Real-landmass mask, sampled ONCE from the world's own `isLand(x, z)` on a
+ * fixed grid over [-WORLD_HALF, WORLD_HALF]². Land pixels are opaque, ocean
+ * pixels transparent, so the base layer can punch the organic continent + its
+ * nine outer islands out of the parchment with a single `destination-in` blit
+ * (no per-frame sampling). One cell ≈ 24 world units — fine enough to carve the
+ * bays, capes and marooned islets the coast formula actually produces.
+ */
+const LAND_GN = 200
+let landMaskCache: HTMLCanvasElement | null = null
+function landMask(): HTMLCanvasElement {
+  if (landMaskCache) return landMaskCache
+  const c = document.createElement('canvas')
+  c.width = LAND_GN
+  c.height = LAND_GN
+  const g = c.getContext('2d')
+  if (!g) return c
+  const img = g.createImageData(LAND_GN, LAND_GN)
+  const d = img.data
+  const cell = (2 * WORLD_HALF) / LAND_GN
+  for (let j = 0; j < LAND_GN; j++) {
+    const wz = -WORLD_HALF + (j + 0.5) * cell
+    for (let i = 0; i < LAND_GN; i++) {
+      const wx = -WORLD_HALF + (i + 0.5) * cell
+      const o = (j * LAND_GN + i) * 4
+      if (isLand(wx, wz)) {
+        d[o] = 232
+        d[o + 1] = 217
+        d[o + 2] = 176
+        d[o + 3] = 255
+      } else {
+        d[o + 3] = 0
+      }
+    }
+  }
+  g.putImageData(img, 0, 0)
+  landMaskCache = c
+  return c
+}
+
+/** Difficulty shade: outer (higher-level) zones get inked darker so the rising
+ *  danger reads as a gradient from the bright heart to the far shore. */
+function levelShade(minLevel: number): number {
+  return Math.min(0.42, (minLevel / 999) * 0.46)
 }
 
 export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
@@ -154,6 +204,9 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
 
   // ---- base layer ---------------------------------------------------------
   const base = document.createElement('canvas')
+  // Offscreen scratch where land + biome zones are composited and then masked
+  // to the real coastline before being blitted onto the base.
+  const landLayer = document.createElement('canvas')
 
   function onScreen(x0: number, z0: number, x1: number, z1: number, pad = 24): boolean {
     return !(toX(x1) < -pad || toX(x0) > cssW + pad || toY(z1) < -pad || toY(z0) > cssH + pad)
@@ -168,15 +221,56 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     g.fillStyle = SEA
     g.fillRect(0, 0, cssW, cssH)
 
-    // The continent: one parchment landmass with a wobbly hand-inked coast.
-    const coast = poly('the_coastline', -WORLD_HALF, -WORLD_HALF, WORLD_HALF, WORLD_HALF)
-    tracePoly(g, coast, toX, toY)
-    g.closePath()
-    g.fillStyle = '#e8d9b0'
-    g.fill()
-    g.strokeStyle = 'rgba(40, 62, 80, 0.8)'
-    g.lineWidth = 2.5
-    g.stroke()
+    // ---- LAND + ZONES, masked to the REAL coastline ----------------------
+    // Everything land-side is painted into an offscreen layer (parchment base,
+    // then every zone + heart region as a flat biome rect, shaded darker by
+    // level so danger rises outward). We then punch that layer down to the
+    // actual landmass with a single `destination-in` blit of the precomputed
+    // `isLand` mask — so the organic continent and the nine outer islands show
+    // through, and the tiled ocean/coast zone cells simply fall into the sea.
+    const lg = landLayer.getContext('2d')
+    if (!lg) return
+    lg.setTransform(dpr, 0, 0, dpr, 0, 0)
+    lg.globalCompositeOperation = 'source-over'
+    lg.globalAlpha = 1
+    lg.clearRect(0, 0, cssW, cssH)
+    lg.fillStyle = PARCHMENT
+    lg.fillRect(0, 0, cssW, cssH)
+
+    const fillRect = (x0: number, z0: number, x1: number, z1: number): void => {
+      const sx = toX(x0)
+      const sy = toY(z0)
+      lg.fillRect(sx, sy, toX(x1) - sx, toY(z1) - sy)
+    }
+    // Wilderness zones (all ~978; the generated ring-frames tile the whole
+    // square — the land mask carves them). Biome color, then a level-band ink.
+    for (const zn of ZONES) {
+      if (!onScreen(zn.x0, zn.z0, zn.x1, zn.z1)) continue
+      lg.fillStyle = BIOME_FILL[zn.biome] ?? '#b9a97e'
+      fillRect(zn.x0, zn.z0, zn.x1, zn.z1)
+      const shade = levelShade(zn.minLevel)
+      if (shade > 0.01) {
+        lg.fillStyle = `rgba(42, 31, 20, ${shade.toFixed(3)})`
+        fillRect(zn.x0, zn.z0, zn.x1, zn.z1)
+      }
+    }
+    // Heart regions on top (hand-inked wobble — only a handful, cheap).
+    for (const reg of REGIONS) {
+      if (!onScreen(reg.x0, reg.z0, reg.x1, reg.z1)) continue
+      tracePoly(lg, poly(reg.id, reg.x0, reg.z0, reg.x1, reg.z1), toX, toY)
+      lg.closePath()
+      lg.fillStyle = BIOME_FILL[reg.biome] ?? '#b9a97e'
+      lg.fill()
+    }
+    // Carve to the real coast: keep painted pixels only where there is land.
+    lg.imageSmoothingEnabled = true
+    lg.globalCompositeOperation = 'destination-in'
+    lg.drawImage(landMask(), toX(-WORLD_HALF), toY(-WORLD_HALF), 2 * WORLD_HALF * zoom, 2 * WORLD_HALF * zoom)
+    lg.globalCompositeOperation = 'source-over'
+    // Blit the finished landmass onto the base (device pixels, 1:1).
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.drawImage(landLayer, 0, 0)
+    g.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Seeded parchment speckles (screen-space; the blank sheet stays alive).
     const r = rng(0xb10c)
@@ -184,29 +278,6 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     for (let i = 0; i < 260; i++) {
       g.fillRect(r() * cssW, r() * cssH, 1.6, 1.6)
     }
-
-    // Wilderness zones, then heart regions on top, all hand-inked wobble.
-    const paint = (
-      id: string,
-      x0: number,
-      z0: number,
-      x1: number,
-      z1: number,
-      biome: string
-    ): void => {
-      if (!onScreen(x0, z0, x1, z1)) return
-      tracePoly(g, poly(id, x0, z0, x1, z1), toX, toY)
-      g.closePath()
-      g.fillStyle = BIOME_FILL[biome] ?? '#b9a97e'
-      g.globalAlpha = 0.82
-      g.fill()
-      g.globalAlpha = 1
-      g.strokeStyle = 'rgba(58, 47, 34, 0.75)'
-      g.lineWidth = Math.max(1.2, Math.min(2, zoom * 2))
-      g.stroke()
-    }
-    for (const zn of ZONES) paint(zn.id, zn.x0, zn.z0, zn.x1, zn.z1, zn.biome)
-    for (const reg of REGIONS) paint(reg.id, reg.x0, reg.z0, reg.x1, reg.z1, reg.biome)
 
     // The great river (heart-only north→south band) + bridge decks.
     const half = RIVER_WIDTH / 2
@@ -259,6 +330,9 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     if (zoom >= ZONE_LABEL_ZOOM) {
       const fade = Math.min(1, (zoom - ZONE_LABEL_ZOOM) / 0.25)
       for (const zn of ZONES) {
+        // Only the 90 pinned/named inner zones label on the sheet; the ~888
+        // generated outer zones would bury the map — they reveal on hover.
+        if (zn.id.startsWith('gen_')) continue
         if (!onScreen(zn.x0, zn.z0, zn.x1, zn.z1)) continue
         const cx = toX((zn.x0 + zn.x1) / 2)
         const cy = toY((zn.z0 + zn.z1) / 2)
@@ -298,6 +372,21 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     }
     g.textAlign = 'left'
 
+    // Mini-boss dens — one per zone (~980). Small skulls, drawn only when
+    // zoomed in enough to be legible and only those on-screen, so they never
+    // carpet the whole-world view. No labels (there are hundreds of them).
+    if (zoom > 0.22) {
+      const ms = Math.max(7, Math.min(14, zoom * 9))
+      g.globalAlpha = 0.72
+      for (const mb of ALL_MINIBOSSES) {
+        const mx = toX(mb.den.x)
+        const my = toY(mb.den.z)
+        if (mx < -20 || mx > cssW + 20 || my < -20 || my > cssH + 20) continue
+        drawSkull(g, mx, my, ms * 0.5)
+      }
+      g.globalAlpha = 1
+    }
+
     // Inked double frame.
     g.strokeStyle = INK
     g.lineWidth = 3
@@ -315,6 +404,8 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     canvas.height = Math.round(cssH * dpr)
     base.width = canvas.width
     base.height = canvas.height
+    landLayer.width = canvas.width
+    landLayer.height = canvas.height
     const pad = 18
     minZoom = Math.min((cssW - pad * 2) / (MAP_MAX - MAP_MIN), (cssH - pad * 2) / (MAP_MAX - MAP_MIN))
     if (zoom < minZoom) zoom = minZoom
@@ -324,6 +415,17 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
 
   // ---- dynamic layer ------------------------------------------------------
   let hits: StoneHit[] = []
+  // Hover readout (set on mouse-move over land) — the only way the ~888
+  // generated zones surface their names without crowding the sheet.
+  let hover: { text: string; x: number; y: number } | null = null
+
+  function nameAt(wx: number, wz: number): string | null {
+    if (!isLand(wx, wz)) return null
+    const reg = regionAt(wx, wz)
+    if (reg) return reg.name
+    const zn = zoneAt(wx, wz)
+    return zn ? zn.name : null
+  }
 
   function drawDynamic(): void {
     const g = canvas.getContext('2d')
@@ -355,6 +457,29 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     }
     g.textAlign = 'left'
 
+    // Hover readout: a small ink pill naming the zone/region under the cursor.
+    if (hover) {
+      g.font = `700 12px ${FONT}`
+      const tw = g.measureText(hover.text).width
+      const padX = 7
+      const w = tw + padX * 2
+      const h = 20
+      let bx = hover.x + 14
+      let by = hover.y - h - 6
+      if (bx + w > cssW - 4) bx = hover.x - w - 14
+      if (by < 4) by = hover.y + 14
+      g.fillStyle = 'rgba(26, 21, 14, 0.86)'
+      g.fillRect(bx, by, w, h)
+      g.strokeStyle = 'rgba(212, 175, 55, 0.6)'
+      g.lineWidth = 1
+      g.strokeRect(bx, by, w, h)
+      g.fillStyle = '#f0e6cf'
+      g.textAlign = 'left'
+      g.textBaseline = 'middle'
+      g.fillText(hover.text, bx + padX, by + h / 2 + 0.5)
+      g.textBaseline = 'alphabetic'
+    }
+
     // Player blip + facing arrow (white/gold, impossible to miss).
     const p = api.player
     drawPlayerArrow(g, toX(p.pos.x), toY(p.pos.z), 9, p.facing)
@@ -383,6 +508,7 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
     zoom = minZoom
     camX = 0
     camZ = 0
+    hover = null
     camDirty = true
     raf = requestAnimationFrame(loop)
   }
@@ -434,12 +560,17 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
   canvas.addEventListener('pointermove', (e) => {
     const f = fingers.get(e.pointerId)
     if (!f) {
-      // hover cursor (mouse, no button down)
+      // hover cursor (mouse, no button down) + zone/region name readout
       const { x, y } = localXY(e)
       const h = hitAt(x, y)
       canvas.style.cursor = h?.attuned ? 'pointer' : 'grab'
+      const wx = camX + (x - cssW / 2) / zoom
+      const wz = camZ + (y - cssH / 2) / zoom
+      const nm = nameAt(wx, wz)
+      hover = nm ? { text: nm, x, y } : null
       return
     }
+    hover = null // dragging — hide the readout
     const { x, y } = localXY(e)
     const dx = x - f.x
     const dy = y - f.y
@@ -475,6 +606,7 @@ export function createMapPanel(api: GameAPI, deps: PanelDeps): MapPanel {
   }
   canvas.addEventListener('pointerup', endPointer)
   canvas.addEventListener('pointercancel', endPointer)
+  canvas.addEventListener('pointerleave', () => { hover = null })
 
   canvas.addEventListener(
     'wheel',

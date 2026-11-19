@@ -8,7 +8,8 @@
  *      provider); everything inferred from biome/level-band tables is 'area'
  *      and guides to the region, never pretending precision.
  *   2. PATHFINDING — coarse A* over the global walkability grid downsampled
- *      4x (360x360 cells over the 1440-unit continent), with a road bias
+ *      4x (grid sized to the world — 1200x1200 cells over the 4800-unit
+ *      continent), with a road bias
  *      (cobble/bridge cells cost 0.45 vs 1 for open ground) so trails
  *      naturally follow the King's roads. Capped at ~20k node expansions;
  *      straight-line chain fallback; string-pulled smooth; recomputed at
@@ -28,6 +29,7 @@ import type { GameAPI, QuestDef, QuestStep } from '../types'
 import { events } from '../events'
 import { BOSSES, NPCS, NODE_KINDS, REGIONS } from '../ids'
 import { ZONES } from '../world/zones/registry'
+import { HALF } from '../world/collision'
 import { surfaceTypeAt, S_COBBLE, S_BRIDGE } from '../world/surface'
 // PURE data tables only (same sanctioned-leaf precedent as world/surface):
 // where gather nodes live, per biome + the hand-placed heart clusters.
@@ -245,7 +247,7 @@ function speciesKnown(sp: string): boolean {
 // ---------------------------------------------------------------------------
 
 const CELL = 4 // world units per coarse cell
-const GHALF = 180 // coarse cells per half-axis -> 360x360 grid
+const GHALF = HALF / CELL // coarse cells per half-axis -> tracks the world (1200x1200)
 const GSIZE = GHALF * 2
 const ROAD_COST = 0.45 // cobble/bridge cells — trails hug the roads
 const OPEN_COST = 1
@@ -489,9 +491,9 @@ function currentTrackedStep(): { def: QuestDef; step: QuestStep } | null {
 // Trail + beacon render (one InstancedMesh, one draw call, no lights)
 // ---------------------------------------------------------------------------
 
-const ORB_SPACING = 2.5 // world units between orbs
+const ORB_SPACING = 1.4 // world units between orbs (denser = smoother path)
 const TRAIL_SPAN = 80 // guide the next ~80 units of path
-const ORB_MAX = 32 // 80 / 2.5
+const ORB_MAX = 58 // ceil(80 / 1.4)
 const INST_CAP = ORB_MAX + 1 // + the beacon column
 const GOLD = new THREE.Color(0xe8c15a) // the UI gold
 const GREEN = new THREE.Color(0x9fdd62) // leaning gold-green down the trail
@@ -513,7 +515,7 @@ export function initQuestGuide(api: GameAPI): void {
   worldRef = api.world
 
   // --- instanced mesh --------------------------------------------------------
-  const geo = new THREE.OctahedronGeometry(0.3)
+  const geo = new THREE.OctahedronGeometry(0.22)
   const mat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
@@ -634,17 +636,22 @@ export function initQuestGuide(api: GameAPI): void {
     } else if (fireworks.length > 0) {
       fireworks = []
     } else {
-      // trail orbs: bob + pulse + staggered fade-in, gold -> green down-trail
+      // trail orbs: a bright crest sweeps from the player toward the target so
+      // the path READS as a direction, not just a dotted line. Denser + smaller
+      // orbs + the travelling highlight = a smoother, clearer trail.
+      const crestHead = (now * 11) % (orbs.length + 8) // index the highlight sits on
       for (let i = 0; i < orbs.length; i++) {
         const o = orbs[i]!
-        const fade = Math.min(1, Math.max(0, (now - o.bornAt) / 0.35))
+        const fade = Math.min(1, Math.max(0, (now - o.bornAt) / 0.3))
         if (fade <= 0) continue
-        const bob = Math.sin(now * 2.4 + i * 0.7) * 0.16
-        const pulse = 0.85 + 0.2 * Math.sin(now * 3.1 - i * 0.9)
-        m4.makeScale(pulse, pulse, pulse)
-        m4.setPosition(o.x, o.y + 0.6 + bob, o.z)
+        const d = i - crestHead
+        const crest = Math.exp(-(d * d) / 5) // 0..1 bump as the wave passes
+        const bob = Math.sin(now * 2.2 + i * 0.5) * 0.1
+        const scale = 0.72 + 0.45 * crest
+        m4.makeScale(scale, scale, scale)
+        m4.setPosition(o.x, o.y + 0.55 + bob + crest * 0.25, o.z)
         mesh.setMatrixAt(n, m4)
-        col.copy(GOLD).lerp(GREEN, (i / ORB_MAX) * 0.6).multiplyScalar(fade * pulse)
+        col.copy(GOLD).lerp(GREEN, (i / ORB_MAX) * 0.6).multiplyScalar(fade * (0.6 + 0.9 * crest))
         mesh.setColorAt(n, col)
         n++
       }

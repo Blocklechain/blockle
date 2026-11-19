@@ -64,7 +64,10 @@
   font-family: 'Trebuchet MS', 'Segoe UI', Verdana, system-ui, sans-serif;
   color: #efe9d8;
   -webkit-font-smoothing: antialiased;
-  z-index: 40;
+  /* Above the floating HUD buttons (stable/pets/etc. live at z 40-45) so the
+     full-screen backdrop covers them instead of the stable button poking
+     through the crafting panel. Matches the stable/mint modal layer (60). */
+  z-index: 60;
 }
 
 .bl-craft-panel {
@@ -271,4 +274,24 @@
   border-radius: 6px;
   background: linear-gradient(180deg, #ffe9a6 0%, #d4af37 100%);
   transition: width 0.1s linear;
+}
+
+/* Craftable-now filter toggle + empty state */
+.bl-craft-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 4px;
+  font: 600 13px/1 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  color: #cdd7e6;
+  cursor: pointer;
+  user-select: none;
+}
+.bl-craft-filter input { width: 16px; height: 16px; accent-color: #e8c15a; cursor: pointer; }
+.bl-craft-empty {
+  padding: 22px 16px;
+  color: #8ea3bd;
+  font-size: 13.5px;
+  text-align: center;
+  line-height: 1.5;
 }

@@ -10,6 +10,13 @@
  * Coordinates are world units (1 voxel = 1 unit), X east, Z south.
  */
 
+// Register every mob content pack BEFORE the SPECIES/PET_VARIANTS consts below
+// are built — ES import hoisting guarantees this side-effect runs first, so the
+// snapshotted catalogs include pack extras. (mobpacks_all imports only type-only
+// from ids, so there is no runtime import cycle.) See src/content/mobpacks.ts.
+import './content/mobpacks_all'
+import { EXTRA_SPECIES, EXTRA_PETS } from './content/mobpacks'
+
 export interface RegionDef {
   id: string
   name: string
@@ -59,7 +66,7 @@ export interface SpeciesDef {
   shape: 'blob' | 'quadruped' | 'biped' | 'crawler' | 'flyer'
 }
 
-export const SPECIES: readonly SpeciesDef[] = [
+const BASE_SPECIES: readonly SpeciesDef[] = [
   { id: 'slime', name: 'Slime', tier: 1, color: 0x7ed957, shape: 'blob' },
   { id: 'mushroom', name: 'Shroomling', tier: 1, color: 0xd96459, shape: 'blob' },
   { id: 'crab', name: 'Pebble Crab', tier: 1, color: 0xe08c4f, shape: 'crawler' },
@@ -74,6 +81,13 @@ export const SPECIES: readonly SpeciesDef[] = [
   { id: 'orc', name: 'Orc', tier: 4, color: 0x4f7a45, shape: 'biped' },
   { id: 'wisp', name: 'Grave Wisp', tier: 4, color: 0x7fd4ff, shape: 'flyer' },
 ] as const
+
+/**
+ * The live species catalog: the hand-authored base PLUS every mobpack extra.
+ * Snapshotted once at module eval (packs already registered above), so the
+ * `new Map(SPECIES.map(...))` tables modules build at their own eval see them.
+ */
+export const SPECIES: readonly SpeciesDef[] = [...BASE_SPECIES, ...EXTRA_SPECIES]
 
 /** One named boss per combat region. */
 export const BOSSES: readonly { id: string; name: string; regionId: string; species: string; level: number }[] = [
@@ -99,6 +113,7 @@ export const NPCS: readonly NpcDef[] = [
   { id: 'merchant_hilda', name: 'Merchant Hilda', role: 'vendor', regionId: 'beginnings', x: 8, z: 7 },
   { id: 'farmer_bram', name: 'Farmer Bram', role: 'quests', regionId: 'beginnings', x: -14, z: 16 },
   { id: 'guard_tomas', name: 'Guard Tomas', role: 'flavor', regionId: 'beginnings', x: 0, z: 20 },
+  { id: 'stablemaster_jeb', name: 'Stablemaster Jeb', role: 'vendor', regionId: 'beginnings', x: 15, z: -11 },
   { id: 'scout_wren', name: 'Scout Wren', role: 'quests', regionId: 'greenwood', x: 110, z: 0 },
   { id: 'herbalist_moss', name: 'Herbalist Moss', role: 'vendor', regionId: 'greenwood', x: 150, z: 40 },
   { id: 'ranger_kael', name: 'Ranger Kael', role: 'trainer', regionId: 'greenwood', x: 190, z: -60 },
@@ -147,13 +162,20 @@ export const NODE_KINDS: readonly { id: string; skill: string; itemId: string; n
   { id: 'berry_bush', skill: 'herbalism', itemId: 'berry_red', name: 'Berry Bush' },
   { id: 'mushroom_cluster', skill: 'herbalism', itemId: 'mushroom_brown', name: 'Mushroom Cluster' },
   { id: 'clay_pit', skill: 'mining', itemId: 'clay_lump', name: 'Clay Pit' },
+  // endgame mining nodes (gated by pick tier; feed the level-80..999 gear ladder)
+  { id: 'obsidian_vein', skill: 'mining', itemId: 'ore_obsidian', name: 'Obsidian Vein' },
+  { id: 'dragonbone_vein', skill: 'mining', itemId: 'ore_dragonbone', name: 'Dragonbone Seam' },
+  { id: 'void_vein', skill: 'mining', itemId: 'ore_void', name: 'Void Rift' },
+  { id: 'astral_vein', skill: 'mining', itemId: 'ore_astral', name: 'Astral Node' },
+  { id: 'titan_vein', skill: 'mining', itemId: 'ore_titan', name: 'Titan Lode' },
+  { id: 'runic_vein', skill: 'mining', itemId: 'ore_runic', name: 'Runic Monolith' },
 ] as const
 
 /**
  * Skill ids. Combat skills level from fighting; professions from gathering/crafting.
  */
 export const SKILLS = [
-  'attack', 'defense', 'magic', 'vitality',
+  'attack', 'defense', 'archery', 'magic', 'vitality',
   'mining', 'woodcutting', 'fishing', 'farming', 'herbalism',
   'blacksmithing', 'cooking', 'alchemy', 'tailoring',
 ] as const
@@ -166,10 +188,20 @@ export type SkillId = (typeof SKILLS)[number]
  *   tools    pick_<material>, hatchet_<material>, rod_basic
  *   mats     ore_*, bar_*, wood_*, herb_*, fish_*, hide_*, crystal_*
  *   consum.  food_*, potion_*
- * Materials ladder: copper, iron, steel, gold, crystal, mythic (maps to the
- * six rarity tiers common..mythical).
+ * Materials ladder. The FIRST SIX (copper..mythic) map 1:1 onto the six rarity
+ * tiers common..mythical and are the ONLY tiers the base-catalog ladder()
+ * generates gear for (see items/catalog.ts). The six LATE-GAME tiers after
+ * mythic (obsidian..runic) exist for the content phase to mint distinct voxel
+ * armor/weapons against: they carry their own mesh palettes (items/palette.ts)
+ * so they render with unique colors, but their RARITY clamps to Mythical (5)
+ * — rarity maxes out, the material/mesh tier keeps climbing for the look.
+ * Id convention is unchanged: `<familyPrefix>_<tier>` (e.g. `cuirass_obsidian`).
  */
-export const MATERIALS = ['copper', 'iron', 'steel', 'gold', 'crystal', 'mythic'] as const
+export const MATERIALS = [
+  'copper', 'iron', 'steel', 'gold', 'crystal', 'mythic',
+  // late-game mesh tiers (rarity-clamped to 5; see palette.ts for their colors)
+  'obsidian', 'dragonbone', 'void', 'astral', 'titan', 'runic',
+] as const
 
 /* ========================================================================== *
  *  WAVE-2 APPENDS — pet catalog.                                             *
@@ -192,7 +224,7 @@ export function petIdOf(species: string, variant: PetVariant): string {
  * golden/shadow ~1/3000, boss babies 1/40 off the boss itself).
  * A drop emits 'pet:dropped' and creates a PetInstance with a fresh uid.
  */
-export const PET_VARIANTS: readonly PetDef[] = [
+const BASE_PET_VARIANTS: readonly PetDef[] = [
   // slime
   { species: 'slime', variant: 'base', name: 'Goober', dropOneIn: 400 },
   { species: 'slime', variant: 'ember', name: 'Crème Goulée', dropOneIn: 1200 },
@@ -264,6 +296,9 @@ export const PET_VARIANTS: readonly PetDef[] = [
   { species: 'skeleton', variant: 'boss', name: 'Skeleton Prince (Unpaid)', dropOneIn: 40 },
   { species: 'orc', variant: 'boss', name: "Grukk's Nephew Kevin", dropOneIn: 40 },
 ] as const
+
+/** The live pet catalog: hand-authored base PLUS every mobpack pet extra. */
+export const PET_VARIANTS: readonly PetDef[] = [...BASE_PET_VARIANTS, ...EXTRA_PETS]
 
 /** Lookup a catalog entry by canonical petId (`species.variant`). */
 export function petDef(petId: string): PetDef | undefined {

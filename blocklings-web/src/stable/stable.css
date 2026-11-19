@@ -1,0 +1,182 @@
+/* The Stable — gold mount shop. Dark-gold medieval theme, matches the HUD. */
+
+.bl-stable-btn {
+  position: absolute;
+  right: 12px;
+  bottom: max(528px, calc(env(safe-area-inset-bottom) + 516px));
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 44px;
+  padding: 0 14px;
+  z-index: 40;
+  pointer-events: auto;
+  background: var(--bl-panel, rgba(13, 15, 22, 0.78));
+  border: 1px solid var(--bl-edge-dim, rgba(212, 175, 55, 0.28));
+  border-radius: 10px;
+  color: var(--bl-gold, #e8c15a);
+  font: 600 13px/1 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.bl-stable-btn:hover { border-color: var(--bl-edge, rgba(212, 175, 55, 0.55)); }
+@media (pointer: fine) {
+  #ui .bl-stable-btn { bottom: max(292px, calc(env(safe-area-inset-bottom) + 280px)); }
+}
+
+.bl-stable-back {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 8, 12, 0.6);
+  pointer-events: auto;
+}
+
+.bl-stable {
+  width: min(460px, 94vw);
+  max-height: min(86vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: #10141d;
+  border: 1px solid var(--bl-edge, rgba(212, 175, 55, 0.55));
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  color: var(--bl-text, #efe9d8);
+  overflow: hidden;
+}
+
+.bl-stable-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 14px;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.18);
+}
+.bl-stable-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: 700 17px/1 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  color: var(--bl-gold, #e8c15a);
+}
+.bl-stable-bal {
+  margin-left: auto;
+  font: 700 14px/1 'Trebuchet MS', sans-serif;
+  color: var(--bl-gold, #e8c15a);
+  font-variant-numeric: tabular-nums;
+}
+.bl-stable-x {
+  background: none;
+  border: none;
+  color: #9fb0c8;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.bl-stable-x:hover { color: #fff; }
+
+.bl-stable-sub {
+  margin: 0;
+  padding: 10px 14px 4px;
+  color: var(--bl-text-dim, #b9b2a0);
+  font-size: 12.5px;
+}
+
+.bl-stable-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 14px 10px;
+}
+.bl-stable-canvas {
+  width: 104px;
+  height: 104px;
+  flex: none;
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 38%, rgba(232, 193, 90, 0.1), rgba(10, 14, 22, 0.6));
+  border: 1px solid rgba(212, 175, 55, 0.2);
+}
+.bl-stable-selwrap { min-width: 0; }
+.bl-stable-selname { font: 700 16px/1.2 'Trebuchet MS', sans-serif; }
+.bl-stable-seldesc { margin-top: 5px; color: var(--bl-text-dim, #b9b2a0); font-size: 12.5px; line-height: 1.45; }
+
+.bl-stable-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bl-stable-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.bl-stable-row:hover { border-color: rgba(212, 175, 55, 0.4); background: rgba(232, 193, 90, 0.06); }
+.bl-stable-info { flex: 1; min-width: 0; }
+.bl-stable-name { font: 700 14px/1.2 'Trebuchet MS', sans-serif; display: flex; align-items: center; gap: 8px; }
+.bl-stable-owned {
+  font: 700 10px/1 'Trebuchet MS', sans-serif;
+  color: #0d1117;
+  background: var(--bl-gold, #e8c15a);
+  padding: 2px 6px;
+  border-radius: 999px;
+  letter-spacing: 0.03em;
+}
+.bl-stable-rarity { margin-top: 3px; color: var(--bl-text-dim, #b9b2a0); font-size: 11.5px; }
+.bl-stable-price {
+  font: 700 13px/1 'Trebuchet MS', sans-serif;
+  color: var(--bl-gold, #e8c15a);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.bl-stable-buy {
+  flex: none;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: none;
+  background: var(--bl-gold, #e8c15a);
+  color: #1b1405;
+  font: 700 13px/1 'Trebuchet MS', sans-serif;
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.bl-stable-buy:hover { filter: brightness(1.08); }
+.bl-stable-buy:disabled { opacity: 0.6; cursor: default; }
+
+.bl-stable-foot {
+  margin: 0;
+  padding: 10px 14px 14px;
+  border-top: 1px solid rgba(212, 175, 55, 0.14);
+  text-align: center;
+}
+.bl-stable-getgold {
+  background: none;
+  border: 1px solid var(--bl-edge-dim, rgba(212, 175, 55, 0.28));
+  color: var(--bl-gold, #e8c15a);
+  padding: 7px 14px;
+  border-radius: 8px;
+  font: 600 12.5px/1 'Trebuchet MS', sans-serif;
+  cursor: pointer;
+}
+.bl-stable-getgold:hover { border-color: var(--bl-edge, rgba(212, 175, 55, 0.55)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-stable-btn, .bl-stable-row, .bl-stable-buy { transition: none; }
+}

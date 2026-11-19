@@ -1,0 +1,132 @@
+/* Consumable hotbar — small bottom-centre bar, clear of joystick + INTERACT. */
+.bl-hotbar {
+  position: fixed;
+  left: 50%;
+  bottom: max(18px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  z-index: 38;
+  pointer-events: none; /* only the slots take taps */
+}
+
+.bl-hb-slot {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: rgba(16, 22, 34, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #eaf1fb;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: border-color 0.12s, background 0.12s, transform 0.08s;
+}
+.bl-hb-slot:active { transform: scale(0.94); }
+.bl-hb-slot:not(.bl-hb-empty) { border-color: rgba(120, 170, 255, 0.55); }
+.bl-hb-slot.bl-hb-depleted { opacity: 0.5; }
+
+.bl-hb-key {
+  position: absolute;
+  top: 2px;
+  left: 5px;
+  font: 600 10px/1 ui-monospace, Menlo, monospace;
+  color: rgba(255, 255, 255, 0.5);
+}
+.bl-hb-icon { display: flex; align-items: center; justify-content: center; }
+.bl-hb-plus { font-size: 26px; font-weight: 300; color: rgba(255, 255, 255, 0.35); }
+
+.bl-hb-count {
+  position: absolute;
+  right: 3px;
+  bottom: 1px;
+  font: 700 12px/1 ui-monospace, Menlo, monospace;
+  color: #fff;
+  text-shadow: 0 1px 2px #000;
+}
+
+.bl-hb-clear {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: #1a2334;
+  color: #cdd7e6;
+  font: 700 13px/1 system-ui;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.bl-hb-slot:not(.bl-hb-empty):hover .bl-hb-clear { display: flex; }
+
+/* picker — a compact panel floating just above the bar */
+.bl-hb-picker {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  transform: translateX(-50%);
+  width: min(300px, 86vw);
+  max-height: 46vh;
+  overflow-y: auto;
+  background: rgba(14, 20, 32, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.8);
+  padding: 8px;
+  pointer-events: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.bl-hb-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 600 12px/1.2 system-ui;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9fb0c8;
+  padding: 4px 6px 8px;
+}
+.bl-hb-picker-x {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: #cdd7e6;
+  font-size: 16px;
+  cursor: pointer;
+}
+.bl-hb-picker-hint { color: #7f8ca3; font-size: 12.5px; padding: 2px 6px 8px; }
+.bl-hb-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #eaf1fb;
+  font: 500 14px/1.2 system-ui;
+  cursor: pointer;
+  text-align: left;
+}
+.bl-hb-picker-row:hover { background: rgba(120, 170, 255, 0.14); }
+.bl-hb-picker-name { flex: 1; }
+.bl-hb-picker-qty { font: 600 12px/1 ui-monospace, Menlo, monospace; color: #9fb0c8; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bl-hb-slot { transition: none; }
+}

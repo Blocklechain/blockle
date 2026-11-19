@@ -30,11 +30,14 @@
 import * as THREE from 'three'
 import type { ChainId, GameAPI, QuestsAPI } from '../types'
 import { NPCS, type NpcDef } from '../ids'
+import { EXTRA_NPCS } from '../content/packs'
 import { events } from '../events'
+import { isIosApp } from '../platform'
 import { NpcRig, makePortrait, type NpcLook } from './rig'
 import { DialogPanel } from './dialog'
 import { ROLE_TAGS, greeting, tooFarLine } from './flavor'
 import { VENDOR_STOCK, fmtRail, type StockEntry } from './vendors'
+import { actionContext } from '../action/context'
 import './npcs.css'
 
 /**
@@ -105,7 +108,37 @@ const LOOKS: Record<string, NpcLook> = {
   hermit_vex: { tunicHue: 80, hairIdx: 4, beard: true, robe: true, held: 'staff' }
 }
 
-const FALLBACK_LOOK: NpcLook = { tunicHue: 200, hairIdx: 0 }
+/** Deterministic UNIQUE look for any NPC without a hand-authored entry — so the
+ *  hundreds of pack/outpost NPCs each read as their own person (distinct tunic
+ *  hue, hair, facial hair, outfit + headgear) instead of all sharing one look.
+ *  Pure function of the id, so an NPC looks the same on every load/device. */
+function npcHash(s: string): number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return h >>> 0
+}
+
+function lookFor(id: string): NpcLook {
+  const fixed = LOOKS[id]
+  if (fixed) return fixed
+  const h = npcHash(id)
+  const look: NpcLook = { tunicHue: h % 360, hairIdx: (h >>> 9) % 6 }
+  if ((h >>> 3) % 3 === 0) look.beard = true
+  const outfit = (h >>> 5) % 4 // 0 robe · 1 apron · 2 helmet · 3 plain
+  if (outfit === 0) look.robe = true
+  else if (outfit === 1) look.apron = true
+  else if (outfit === 2) look.helmet = true
+  if (outfit !== 2) {
+    const head = (h >>> 7) % 4 // 0 hat · 1 headband · 2/3 none (skip if helmeted)
+    if (head === 0) look.hat = true
+    else if (head === 1) look.headband = true
+  }
+  if ((h >>> 11) % 5 === 0) look.held = (h >>> 13) % 2 ? 'staff' : 'spear'
+  return look
+}
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -138,6 +171,13 @@ export function setQuestsApi(q: QuestsAPI): void {
   questsApi = q
 }
 
+/** Opens the Stable (gold mount shop). Wired from the stable module; talking
+ *  to Stablemaster Jeb calls it instead of the normal dialog. */
+let stableOpener: (() => void) | null = null
+export function setStableOpener(fn: () => void): void {
+  stableOpener = fn
+}
+
 let inited = false
 
 // ---------------------------------------------------------------------------
@@ -154,8 +194,8 @@ export function initNpcs(api: GameAPI): void {
   const list: NpcRuntime[] = []
   const hitMeshes: THREE.Mesh[] = []
 
-  for (const def of NPCS) {
-    const look = LOOKS[def.id] ?? FALLBACK_LOOK
+  for (const def of [...NPCS, ...EXTRA_NPCS]) {
+    const look = lookFor(def.id)
     const rig = new NpcRig(def.name, look)
     const spot = findWalkable(api, def.x, def.z)
     rig.group.position.set(spot.x, api.world.groundHeight(spot.x, spot.z), spot.z)
@@ -178,6 +218,7 @@ export function initNpcs(api: GameAPI): void {
     walletReady: () => payFn !== null,
     goldReady: () => goldPayFn !== null && goldAuthed,
     pay: async (entry: StockEntry, price: { chain: ChainId; amount: number }) => {
+      if (isIosApp()) return { ok: false, error: 'Pay with GOLD in the app, or crypto on the web (same account).' }
       const fn = payFn
       if (!fn) return { ok: false, error: 'Wallet required' }
       // REAL crypto leaves the player's wallet here; the result is the
@@ -214,7 +255,13 @@ export function initNpcs(api: GameAPI): void {
   })
 
   function openDialog(n: NpcRuntime): void {
-    const look = LOOKS[n.def.id] ?? FALLBACK_LOOK
+    // The Stablemaster isn't a chat/vendor NPC — talking to him opens the
+    // Stable (gold mount shop) panel directly, replacing the old HUD button.
+    if (n.def.id === 'stablemaster_jeb' && stableOpener) {
+      stableOpener()
+      return
+    }
+    const look = lookFor(n.def.id)
     dialog.open({
       id: n.def.id,
       name: n.def.name,
@@ -344,6 +391,21 @@ export function initNpcs(api: GameAPI): void {
       talkBtn.style.display = ''
     } else {
       talkBtn.style.display = 'none'
+    }
+
+    // INTERACT button: offer Talk when an NPC is in talk range
+    if (!dialog.isOpen && nearest && nearestDist <= TALK_RANGE) {
+      const n = nearest
+      actionContext.publish('npc', {
+        priority: 3,
+        icon: 'talk',
+        label: 'Talk',
+        invoke: () => {
+          if (!dialog.isOpen) openDialog(n)
+        }
+      })
+    } else {
+      actionContext.publish('npc', null)
     }
 
     // walking away mid-conversation is a statement; the NPC takes the hint

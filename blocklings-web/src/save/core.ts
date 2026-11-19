@@ -37,6 +37,11 @@ export interface SaveEnvelope {
   mp: number
   /** Per-module blobs keyed by saveRegistry key ('inv', 'skills', ...). */
   mods: Record<string, unknown>
+  /** Account id (sub/username) that owns this save. Absent = guest/local-only.
+   *  Used so an explicit sign-in loads the ACCOUNT character even when a newer
+   *  guest/other-device local save exists (your account owns the hero, not the
+   *  device). Same-owner copies still resolve by newest `t`. */
+  acct?: string
 }
 
 const LOCAL_KEY = 'blocklings_save_v1'
@@ -72,6 +77,17 @@ function bearerToken(): string | null {
 /** CSRF from /account/api/me — cookie-session PUTs require it; bearer doesn't. */
 let csrf: string | null = null
 let sessionOk = false
+/** True only when THIS session signed in explicitly (gates all account sync). */
+let accountEnabled = false
+/** The signed-in account's stable id (sub/username), captured from /me. Tags
+ *  every envelope so we can tell "my account's hero" from a guest/other save. */
+let accountId: string | null = null
+// CRITICAL safety: for a signed-in session we must NOT write the account's cloud
+// OR local slot until bootAccountSync has CONFIRMED the character state (loaded the
+// existing hero, or verified the account is genuinely new). Otherwise a transient
+// character-fetch failure at boot leaves the in-memory hero at defaults and a save
+// would overwrite the real save with an empty character — the "reset" bug.
+let loadConfirmed = false
 
 async function accountFetch(
   method: 'GET' | 'PUT',
@@ -141,7 +157,7 @@ function buildEnvelope(): SaveEnvelope {
       console.error(`[save] provider '${key}' dump() threw`, e)
     }
   }
-  return {
+  const env: SaveEnvelope = {
     v: 1,
     t: Date.now(),
     name: p.name,
@@ -150,6 +166,9 @@ function buildEnvelope(): SaveEnvelope {
     mp: Math.round(p.mp),
     mods
   }
+  // Stamp ownership so the account copy is recognizable across devices.
+  if (accountId) env.acct = accountId
+  return env
 }
 
 /** Apply the player-level fields of an envelope to live state. */
@@ -162,8 +181,13 @@ function applyPlayer(env: SaveEnvelope): void {
       p.pos.set(x, api!.world.groundHeight(x, z), z)
     }
   }
-  if (Number.isFinite(env.hp)) p.hp = Math.max(1, Math.min(p.maxHp, env.hp))
-  if (Number.isFinite(env.mp)) p.mp = Math.max(0, Math.min(p.maxMp, env.mp))
+  // DON'T clamp to p.maxHp/maxMp here: at load time these are still the BASE
+  // defaults (100/50) — vitality/skills recompute the real maxima a moment
+  // later (applyVitality on 'save:applied'). Clamping now capped a vitality
+  // hero's saved 250/300 HP down to 100, which read as "HP reverts to 100 on
+  // reopen". We only floor; the real cap is applied once maxHp is known.
+  if (Number.isFinite(env.hp)) p.hp = Math.max(1, env.hp)
+  if (Number.isFinite(env.mp)) p.mp = Math.max(0, env.mp)
 }
 
 /** Apply an envelope: player fields now, mod blobs to whoever has registered
@@ -184,11 +208,22 @@ function applyEnvelope(env: SaveEnvelope, withPlayer = true): void {
       }
     }
   }
+  // Skills/vitality just changed — tell consumers to recompute derived state.
+  // Critical cross-device: the async account sync applies here, LONG after the
+  // boot-time character-level sync ran, so without this the hero shows Lv 1.
+  events.emit('save:applied', {})
 }
 
-function readLocal(): SaveEnvelope | null {
+// Per-account local slot: once signed in, the cache key is scoped to the account
+// id so two emails on the SAME device never share a character. Guests use the
+// bare key. `activeKey` is promoted to the account-scoped key the moment the
+// session establishes (see bootAccountSync).
+const acctKey = (id: string): string => `${LOCAL_KEY}:acct:${id}`
+let activeKey = LOCAL_KEY
+
+function readLocal(key: string = activeKey): SaveEnvelope | null {
   try {
-    const raw = localStorage.getItem(LOCAL_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
     return isEnvelope(parsed) ? parsed : null
@@ -202,16 +237,69 @@ function writeLocal(env: SaveEnvelope): string {
   if (json.length > MAX_BYTES) {
     console.warn(`[save] envelope is ${json.length}B (budget ${MAX_BYTES}B) — trim provider dumps`)
   }
+  // Signed in but the account-scoped key isn't established yet, OR the character
+  // hasn't been confirmed-loaded → DON'T write. Writing defaults to the shared
+  // slot leaked characters across emails; writing defaults to the account slot
+  // could win over the real cloud save on the next boot. Both are the "reset" bug.
+  if (accountEnabled && (activeKey === LOCAL_KEY || !loadConfirmed)) return json
   try {
-    localStorage.setItem(LOCAL_KEY, json)
+    localStorage.setItem(activeKey, json)
   } catch {
     /* quota/private mode — account copy still gets it */
   }
   return json
 }
 
+/**
+ * Establish (or re-establish) the account session: confirm /account/api/me and
+ * capture the CSRF token. Idempotent and retryable — a transient boot hiccup no
+ * longer permanently wedges `sessionOk=false` (which used to silently no-op every
+ * cloud push for the rest of the session, the cross-device data-loss bug). Only
+ * ever runs for an EXPLICITLY signed-in session; guests stay local-only.
+ */
+let establishing: Promise<boolean> | null = null
+async function ensureSession(): Promise<boolean> {
+  if (!accountEnabled) return false
+  if (sessionOk) return true
+  if (establishing) return establishing
+  establishing = (async () => {
+    const me = await accountFetch('GET', '/account/api/me')
+    if (me && me.user) {
+      if (typeof me.csrf === 'string') csrf = me.csrf
+      const user = me.user as Record<string, unknown>
+      // /me returns { id, email, username, sub(=SUBSCRIPTION obj, NOT an id) }.
+      // Use the stable user id (fallback email/username) — NEVER `sub`, which is
+      // a truthy object that silently defeated this and left every email sharing
+      // one local slot (the "same character across emails" bug).
+      const id = user.id ?? user.email ?? user.username
+      if (typeof id === 'string' && id) {
+        accountId = id
+        activeKey = acctKey(id) // from now on, local cache is this account's slot
+      }
+      sessionOk = true
+      return true
+    }
+    return false
+  })()
+  try {
+    return await establishing
+  } finally {
+    establishing = null
+  }
+}
+
 async function pushAccount(env: SaveEnvelope, keepalive = false): Promise<void> {
-  if (!sessionOk) return
+  if (!accountEnabled) return // guest / local-only — never touch the account
+  if (!loadConfirmed) { accountDirty = true; return } // not safe to write yet
+  // Lazily (re)establish the session so a transient boot failure can't disable
+  // cloud sync for the whole session. keepalive (page-hide) flushes skip the
+  // async /me round-trip and rely on an already-established session.
+  if (!sessionOk) {
+    if (keepalive || !(await ensureSession())) {
+      accountDirty = true
+      return
+    }
+  }
   const now = Date.now()
   if (!keepalive && now - lastAccountPut < ACCOUNT_MIN_GAP_MS) {
     accountDirty = true
@@ -242,24 +330,62 @@ function doSave(keepalive = false): void {
   }
 }
 
-/** Boot-time account sync: if signed in and the account copy is newer, it wins. */
-async function bootAccountSync(localT: number): Promise<void> {
-  const me = await accountFetch('GET', '/account/api/me')
-  if (!me || !me.user) return
-  if (typeof me.csrf === 'string') csrf = me.csrf
-  sessionOk = true
-  const r = await accountFetch('GET', '/account/api/game/character')
-  const remote: unknown = r?.character
-  if (isEnvelope(remote) && remote.t > localT) {
-    // Player fields only if the player hasn't started moving yet — a slow
-    // account fetch must never teleport someone mid-adventure.
-    const moved = bootPos ? api!.player.pos.distanceTo(bootPos) > 1.5 : true
-    applyEnvelope(remote, !moved)
-    writeLocal(remote)
-    events.emit('chat:system', { text: 'Cloud save loaded. Welcome back, you beautiful disaster.' })
-  } else if (dirty || localT > 0) {
-    // Local is king — seed/refresh the account copy so other devices see it.
-    void pushAccount(buildEnvelope())
+/** Boot-time account sync. The character is attached to the EMAIL, not the device.
+ *
+ *  Characters are stored per-account both in the cloud and in a per-account local
+ *  slot (`activeKey`, promoted to acctKey once the session establishes). The cloud
+ *  copy is authoritative; the per-account local slot is just an offline cache for
+ *  THIS email. Because the slot is account-scoped, a different email on the same
+ *  device can never see or adopt this character — fixing the "same character across
+ *  multiple emails" bug. The game booted at defaults (initSave does NOT apply the
+ *  shared guest slot for signed-in sessions), so an email with no cloud character
+ *  simply keeps those defaults as its fresh hero. */
+let syncing = false
+async function bootAccountSync(): Promise<void> {
+  if (syncing || loadConfirmed) return
+  syncing = true
+  try {
+    if (!(await ensureSession())) return
+    // activeKey is now the account slot — read THIS email's cached character only.
+    const localA = readLocal(activeKey)
+    const r = await accountFetch('GET', '/account/api/game/character')
+    // FETCH FAILED (null = non-OK / network error, NOT a genuine empty character,
+    // which is `{character:null}`). Do NOT load defaults and do NOT confirm — bail
+    // so the cloud save is never overwritten; the autosave belt retries this.
+    if (!r) return
+    const remote: unknown = r.character
+    // Player fields only if the player hasn't started moving yet — a slow account
+    // fetch must never teleport someone mid-adventure (mods still apply).
+    const moved = (): boolean => (bootPos ? api!.player.pos.distanceTo(bootPos) > 1.5 : true)
+
+    if (isEnvelope(remote)) {
+      // Offline progress this device made (same email) that the cloud hasn't seen.
+      if (localA && localA.t >= remote.t) {
+        applyEnvelope(localA, !moved())
+        loadConfirmed = true
+        void pushAccount(buildEnvelope())
+        return
+      }
+      const owned: SaveEnvelope =
+        accountId && remote.acct !== accountId ? { ...remote, acct: accountId } : remote
+      applyEnvelope(owned, !moved())
+      writeLocal(owned)
+      loadConfirmed = true
+      events.emit('chat:system', { text: 'Cloud save loaded. Welcome back, you beautiful disaster.' })
+    } else if (localA) {
+      // No cloud copy yet but this email has an offline cache here — use it + seed.
+      applyEnvelope(localA, !moved())
+      loadConfirmed = true
+      void pushAccount(buildEnvelope())
+    } else {
+      // Fetch SUCCEEDED and there is genuinely no character anywhere for this email
+      // (cloud + local empty) → brand-new hero. Confirm + run character creation.
+      loadConfirmed = true
+      events.emit('save:needsCreator', {})
+      void pushAccount(buildEnvelope())
+    }
+  } finally {
+    syncing = false
   }
 }
 
@@ -276,14 +402,23 @@ export function saveNow(): void {
  * Initialize persistence. MUST be called first among the stateful modules
  * (after world + player state exist on the GameAPI).
  */
-export function initSave(gameApi: GameAPI): { saveNow(): void } {
+export function initSave(gameApi: GameAPI, signedIn = false): { saveNow(): void } {
   if (inited) return { saveNow }
   inited = true
   api = gameApi
+  // Only an EXPLICIT Blockle sign-in this session enables account cloud-sync.
+  // A lingering `blk_token` on a device (e.g. after choosing Guest) must NOT
+  // auto-pull someone's account — that's the no-auto-login rule.
+  accountEnabled = signedIn
 
-  // 1) Load the local envelope and apply what we can right now.
-  const local = readLocal()
-  if (local) applyEnvelope(local)
+  // 1) Load the local envelope and apply what we can right now. For a SIGNED-IN
+  //    boot we must NOT apply the shared guest slot — it may belong to a different
+  //    email on this device. The account's own character loads a moment later from
+  //    the cloud / its per-account slot (bootAccountSync). Guests use the slot.
+  if (!accountEnabled) {
+    const local = readLocal(LOCAL_KEY)
+    if (local) applyEnvelope(local)
+  }
 
   // 2) Late-binding apply: hand each module its blob the moment it registers.
   const origRegister = saveRegistry.register.bind(saveRegistry)
@@ -300,9 +435,10 @@ export function initSave(gameApi: GameAPI): { saveNow(): void } {
     }
   }
 
-  // 3) Account copy (async, never blocks the game).
+  // 3) Account copy (async, never blocks the game) — ONLY when explicitly
+  //    signed in this session. Guest / lingering-token boots stay local.
   bootPos = gameApi.player.pos.clone()
-  void bootAccountSync(local?.t ?? 0)
+  if (accountEnabled) void bootAccountSync()
 
   // 4) Debounced writes on 'save:dirty'.
   events.on('save:dirty', () => {
@@ -314,12 +450,22 @@ export function initSave(gameApi: GameAPI): { saveNow(): void } {
   // 5) Belt: autosave every 30s (position drifts without emitting dirty) and
   //    flush any throttled account push.
   setInterval(() => {
+    // Signed-in but the character hasn't been confirmed-loaded yet (boot fetch
+    // failed / still pending) → keep retrying the load. NEVER save until it's
+    // confirmed, so a transient failure can't overwrite the real save.
+    if (accountEnabled && !loadConfirmed) {
+      void bootAccountSync()
+      return
+    }
     if (dirty) {
       doSave()
     } else {
       const env = buildEnvelope()
       writeLocal(env)
-      if (accountDirty) void pushAccount(env)
+      // Flush a throttled push, OR recover a never-established session: a
+      // signed-in session that failed to establish at boot (network hiccup)
+      // keeps retrying here so the cloud copy isn't silently abandoned.
+      if (accountDirty || (accountEnabled && !sessionOk)) void pushAccount(env)
     }
   }, AUTOSAVE_MS)
 

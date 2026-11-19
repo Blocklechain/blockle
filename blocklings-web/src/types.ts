@@ -159,13 +159,15 @@ export interface WalletAPI {
  *  src/<name>/ directories.                                                  *
  * ========================================================================== */
 
-/** Six rarity tiers, common..mythical (index = tier). */
-export type Rarity = 0 | 1 | 2 | 3 | 4 | 5
+/** Twelve rarity tiers (index = tier), common..eternal — the first six map onto
+ *  materials copper..mythic, the next six onto the late-game materials
+ *  obsidian..runic so endgame armor keeps climbing all the way to level 999. */
+export type Rarity = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
 
 /** Equipment + item slots. */
 export type ItemSlot =
   | 'weapon' | 'shield' | 'helm' | 'chest' | 'boots' | 'accessory'
-  | 'tool' | 'consumable' | 'material'
+  | 'tool' | 'consumable' | 'material' | 'mount'
 
 /** Static item definition (catalog entry). */
 export interface ItemDef {
@@ -192,6 +194,12 @@ export interface ItemDef {
    * Absent = builder default for the slot.
    */
   gripStyle?: 'upright' | 'forward' | 'bow' | 'shield'
+
+  /**
+   * For slot 'mount': the movement-speed BONUS granted while mounted, as a
+   * fraction (0.4 = +40% speed). Mounts are toggled from the hotbar.
+   */
+  mountSpeed?: number
 
   /**
    * Active special ability granted while this item is equipped. Fired by the
@@ -399,6 +407,15 @@ export interface WalletAPI2 extends WalletAPI {
 
   /** MoonPay widget URL for fiat on/off-ramp, or null when unavailable. */
   moonpayUrl(kind: 'buy' | 'sell', chain: ChainId): Promise<string | null>
+
+  /**
+   * BACKUP ONLY — reveal the per-chain PRIVATE keys currently held in memory,
+   * so the user can save them off-device. Never sent anywhere. Returns null if
+   * the wallet is locked or absent. `blockle` is the `blockling-key-v1:…` backup
+   * string (restores all three chains); `ethereum` is '0x'+hex secp256k1;
+   * `solana` is base58 of the 64-byte ed25519 secret (Phantom-import format).
+   */
+  revealKeys(): Promise<{ blockle: string; ethereum: string; solana: string } | null>
 }
 
 /** A purchasable GOLD pack (App Store IAP SKU). */
@@ -423,6 +440,8 @@ export interface GoldAPI {
   buySkus(): GoldSku[]
   /** Buy one SKU via StoreKit; grant happens server-side on receipt. */
   purchase(sku: string): Promise<{ ok: boolean; error?: string }>
+  /** Open the 'Get GOLD' store sheet (the IAP surface). */
+  openStore(): void
 }
 
 /** Listing price: GOLD, or real crypto on one chain (crypto ⇒ minted goods only). */
@@ -475,12 +494,18 @@ export interface TreeNode {
   id: string
   /** SkillId this node belongs to. */
   skill: string
-  /** 'auto' = granted free at lvlReq; 'perk' = costs a point; 'capstone' = big finisher pick. */
+  /** 'auto' = granted free at lvlReq; 'perk' = costs points; 'capstone' = big finisher pick. */
   kind: 'auto' | 'perk' | 'capstone'
   /** Skill level required before this node can be taken. */
   lvlReq: number
   name: string
   desc: string
+  /**
+   * Perk-point price. autos are 0 (granted free); perks/capstones scale with
+   * rank/level so deep nodes cost far more than early ones — a fully maxed
+   * player can afford only ~1/3 of the whole catalog, so picks matter.
+   */
+  cost: number
   /** Numeric effects, keyed by modifier id (e.g. 'mining.speed': 0.15 = +15%). */
   effects: Record<string, number>
 }
@@ -491,7 +516,7 @@ export interface SkillTreeAPI {
   nodes(skill: string): readonly TreeNode[]
   /** Ids of every chosen/granted node. */
   chosen(): readonly string[]
-  /** True if id's lvlReq is met, prerequisites hold, and a point is available (perk/capstone). */
+  /** True if id's lvlReq is met, prerequisites hold, and enough points are banked (perk/capstone). */
   canChoose(id: string): boolean
   /** Take the node. Returns false (and changes nothing) if not choosable. */
   choose(id: string): boolean

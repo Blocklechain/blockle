@@ -16,10 +16,26 @@ const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.PORT || 8932);
 const AOI = Number(process.env.AOI || 1600); // area-of-interest radius (px)
-const MAX_PLAYERS = Number(process.env.MAX_PLAYERS || 500);
+// Realms shard population for density. 30 realms, 2000 players each.
+const REALMS = Number(process.env.REALMS || 30);
+const MAX_PER_REALM = Number(process.env.MAX_PER_REALM || 2000);
 
-const players = new Map(); // id -> {ws, name, x, y, lvl, last}
+const players = new Map(); // id -> {ws, name, x, y, lvl, realm, last}
 let seq = 1;
+
+function realmOf(reqUrl) {
+  try {
+    const q = new URL(reqUrl, 'http://x').searchParams.get('realm');
+    const n = Math.floor(Number(q));
+    return n >= 1 && n <= REALMS ? n : 1;
+  } catch { return 1; }
+}
+
+function realmCount(realm) {
+  let n = 0;
+  for (const p of players.values()) if (p.realm === realm) n++;
+  return n;
+}
 
 function sanitizeName(s) {
   return String(s || 'wanderer').replace(/[^\w \-]/g, '').slice(0, 20) || 'wanderer';
@@ -37,14 +53,26 @@ function send(ws, obj) {
 function broadcastNear(self, obj) {
   for (const p of players.values()) {
     if (p.id === self.id) continue;
+    if (p.realm !== self.realm) continue; // realms never see each other
     if (near(self, p)) send(p.ws, obj);
   }
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url === '/blocklings/health' || req.url === '/health') {
+  const path = (req.url || '').split('?')[0];
+  if (path === '/blocklings/health' || path === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, players: players.size }));
+    res.end(JSON.stringify({ ok: true, players: players.size, realms: REALMS }));
+    return;
+  }
+  // Per-realm population (for the in-game realm picker). CORS-open read.
+  if (path === '/blocklings/realms') {
+    const counts = new Array(REALMS + 1).fill(0);
+    for (const p of players.values()) counts[p.realm] = (counts[p.realm] || 0) + 1;
+    const list = [];
+    for (let i = 1; i <= REALMS; i++) list.push({ id: i, pop: counts[i] || 0, cap: MAX_PER_REALM });
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    res.end(JSON.stringify({ realms: list }));
     return;
   }
   res.writeHead(404);
@@ -53,16 +81,17 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/blocklings/ws' });
 
-wss.on('connection', (ws) => {
-  if (players.size >= MAX_PLAYERS) {
-    send(ws, { t: 'full' });
+wss.on('connection', (ws, req) => {
+  const realm = realmOf(req && req.url);
+  if (realmCount(realm) >= MAX_PER_REALM) {
+    send(ws, { t: 'full', realm }); // realm is at capacity — client picks another
     ws.close();
     return;
   }
   const id = 'p' + seq++;
-  const self = { id, ws, name: 'wanderer', x: 0, y: 0, lvl: 1, last: Date.now() };
+  const self = { id, ws, name: 'wanderer', x: 0, y: 0, lvl: 1, realm, last: Date.now() };
   players.set(id, self);
-  send(ws, { t: 'welcome', id, count: players.size });
+  send(ws, { t: 'welcome', id, count: realmCount(realm), realm });
 
   ws.on('message', (buf) => {
     let m;
@@ -89,7 +118,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     players.delete(id);
-    for (const p of players.values()) send(p.ws, { t: 'left', id });
+    for (const p of players.values()) if (p.realm === realm) send(p.ws, { t: 'left', id });
   });
   ws.on('error', () => {});
 });

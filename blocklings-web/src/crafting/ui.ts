@@ -62,6 +62,8 @@ export function createCraftingUI(mount: HTMLElement): CraftingUI {
   prompt.type = 'button'
   prompt.className = 'bl-craft-prompt'
   prompt.style.display = 'none'
+  // display-only hint — the shared INTERACT button owns the tap now
+  prompt.style.pointerEvents = 'none'
   const promptKey = document.createElement('span')
   promptKey.className = 'bl-craft-key'
   promptKey.textContent = 'E'
@@ -101,6 +103,20 @@ export function createCraftingUI(mount: HTMLElement): CraftingUI {
   head.appendChild(skillChip)
   head.appendChild(closeBtn)
   panel.appendChild(head)
+
+  // "Craftable now" filter — on by default so the list shows only what you can
+  // make right now; toggle off to browse the full recipe book.
+  let craftableOnly = true
+  const filterBar = document.createElement('label')
+  filterBar.className = 'bl-craft-filter'
+  const filterChk = document.createElement('input')
+  filterChk.type = 'checkbox'
+  filterChk.checked = true
+  const filterTxt = document.createElement('span')
+  filterTxt.textContent = 'Craftable now'
+  filterBar.appendChild(filterChk)
+  filterBar.appendChild(filterTxt)
+  panel.appendChild(filterBar)
 
   const list = document.createElement('div')
   list.className = 'bl-craft-list'
@@ -147,11 +163,27 @@ export function createCraftingUI(mount: HTMLElement): CraftingUI {
   }
   window.addEventListener('keydown', onKeyDown)
 
+  let lastData: CraftPanelData | null = null
+  filterChk.addEventListener('change', () => {
+    craftableOnly = filterChk.checked
+    if (lastData) render(lastData)
+  })
+
   const render = (data: CraftPanelData): void => {
+    lastData = data
     title.textContent = data.stationName
     skillChip.textContent = `${data.skillLabel} ${data.skillLevel}`
     list.textContent = ''
-    for (const row of data.rows) {
+    const shown = craftableOnly ? data.rows.filter((r) => r.craftable) : data.rows
+    if (shown.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'bl-craft-empty'
+      empty.textContent = craftableOnly
+        ? 'Nothing craftable right now — gather or smelt some materials, or toggle off to see every recipe.'
+        : 'No recipes here yet.'
+      list.appendChild(empty)
+    }
+    for (const row of shown) {
       const el = document.createElement('div')
       el.className = 'bl-craft-row' + (row.locked ? ' bl-craft-locked' : '')
 
@@ -205,7 +237,9 @@ export function createCraftingUI(mount: HTMLElement): CraftingUI {
           return b
         }
         actions.appendChild(mk('Craft', 1))
-        actions.appendChild(mk('x5', 5))
+        // Infinity = "as many as the materials allow" (startCraft computes the
+        // real max and the craft loop stops the moment inputs run out).
+        actions.appendChild(mk('Make All', Infinity))
         el.appendChild(actions)
       }
       list.appendChild(el)

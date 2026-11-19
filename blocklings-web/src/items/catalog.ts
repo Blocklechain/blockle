@@ -11,10 +11,23 @@
  */
 import type { ItemDef, ItemSlot, ItemSpecial, Rarity } from '../types'
 import { MATERIALS } from '../ids'
+import { MOUNT_SPECS } from './mounts'
 
-const MAT_NAME = ['Copper', 'Iron', 'Steel', 'Gold', 'Crystal', 'Mythic'] as const
-const TIER_LEVEL = [1, 5, 10, 20, 30, 40] as const
-const TIER_VALUE = [15, 45, 140, 450, 1500, 6000] as const
+// Full 12-material ladder (copper..runic). The first six map 1:1 onto the
+// classic rarity tiers; the latter six (obsidian..runic) are the endgame set
+// that carries gear progression all the way to level 999.
+const MAT_NAME = [
+  'Copper', 'Iron', 'Steel', 'Gold', 'Crystal', 'Mythic',
+  'Obsidian', 'Dragonbone', 'Void', 'Astral', 'Titan', 'Runic'
+] as const
+const TIER_LEVEL = [1, 5, 10, 20, 30, 40, 80, 150, 260, 420, 640, 999] as const
+const TIER_VALUE = [
+  15, 45, 140, 450, 1500, 6000,
+  18_000, 48_000, 120_000, 280_000, 650_000, 1_500_000
+] as const
+/** Stat multiplier vs the mythic (t=5) baseline for the endgame tiers 6..11.
+ *  Below 6 it's 1 (hand-tuned arrays are used verbatim). */
+const TIER_GROWTH = [1, 1, 1, 1, 1, 1, 1.45, 2.05, 2.95, 4.2, 6.0, 8.6] as const
 
 type Stats = NonNullable<ItemDef['stats']>
 type SixStrings = readonly [string, string, string, string, string, string]
@@ -35,17 +48,35 @@ interface LadderSpec {
 }
 
 function ladder(spec: LadderSpec): ItemDef[] {
-  return MATERIALS.map((mat, t) => {
-    const special = spec.specials?.[t]
+  // Gear now spans ALL twelve materials (copper..runic). Tiers 0..5 use the
+  // hand-tuned stat ramps / descs verbatim; tiers 6..11 extrapolate stats from
+  // the mythic baseline (TIER_GROWTH), inherit the top special, and get a
+  // material-flavored fallback desc — so the ladder climbs cleanly to level 999.
+  return MAT_NAME.map((name, t) => {
+    const mat = MATERIALS[t]!
+    const special = spec.specials?.[Math.min(t, 5)]
+    let stats: Stats
+    if (t <= 5) {
+      stats = spec.stats(t)
+    } else {
+      const base = spec.stats(5)
+      const g = TIER_GROWTH[t]!
+      stats = Object.fromEntries(
+        Object.entries(base).map(([k, v]) => [k, Math.max(1, Math.round((v as number) * g))])
+      ) as Stats
+    }
+    const desc =
+      spec.descs[t] ??
+      `${name}-forged ${spec.noun.toLowerCase()}. Endgame craftsmanship for heroes who left legends behind.`
     return {
       id: `${spec.kind}_${mat}`,
-      name: `${MAT_NAME[t]!} ${spec.noun}`,
+      name: `${name} ${spec.noun}`,
       slot: spec.slot,
       rarity: t as Rarity,
-      stats: spec.stats(t),
+      stats,
       levelReq: TIER_LEVEL[t]!,
       value: Math.round(TIER_VALUE[t]! * spec.valueMul),
-      desc: spec.descs[t]!,
+      desc,
       ...(spec.grip !== undefined ? { gripStyle: spec.grip } : {}),
       ...(special !== undefined ? { special } : {}),
     }
@@ -114,6 +145,20 @@ const BOOTS_DEF = [1, 3, 5, 8, 13, 19] as const
 const BOOTS_AGI = [1, 1, 2, 3, 4, 6] as const
 const TOOL_ATK = [2, 3, 5, 8, 12, 17] as const
 const TOOL_STR = [1, 1, 2, 3, 4, 6] as const
+// Ranger (light leather) — less def than plate, trades it for agility.
+const HOOD_DEF = [1, 3, 5, 8, 12, 18] as const
+const HOOD_AGI = [1, 2, 4, 6, 9, 13] as const
+const LEATHERS_DEF = [3, 6, 10, 15, 23, 34] as const
+const LEATHERS_AGI = [1, 2, 3, 5, 7, 10] as const
+const TREADS_DEF = [1, 2, 4, 6, 10, 15] as const
+const TREADS_AGI = [2, 3, 5, 8, 12, 17] as const
+// Mage (cloth robes) — least def of all, but channels intellect.
+const MHAT_DEF = [1, 2, 4, 6, 9, 14] as const
+const MHAT_INT = [2, 4, 7, 11, 16, 24] as const
+const ROBE_DEF = [2, 4, 7, 11, 17, 25] as const
+const ROBE_INT = [3, 6, 10, 15, 22, 32] as const
+const SLIP_DEF = [1, 2, 3, 5, 8, 12] as const
+const SLIP_INT = [1, 2, 4, 6, 9, 13] as const
 
 const WEAPONS_AND_ARMOR: ItemDef[] = [
   ...ladder({
@@ -217,6 +262,80 @@ const WEAPONS_AND_ARMOR: ItemDef[] = [
       "They've walked through hell. Your commute will be fine.",
     ],
   }),
+  // --- Ranger set: light leather. Low-ish defense, real agility. --------------
+  ...ladder({
+    kind: 'hood', slot: 'helm', noun: 'Hood', valueMul: 1.3,
+    stats: t => ({ def: HOOD_DEF[t]!, agi: HOOD_AGI[t]! }),
+    descs: [
+      'A floppy leather hood. Mysterious from the front, silly from the back.',
+      'Keeps rain, sun, and eye-contact off your face.',
+      'Oiled leather, stitched quiet. The goblins never hear you coming.',
+      'Gold-threaded hood. Stealthy AND tacky. A bold combination.',
+      'Crystal-laced cowl. Faintly glows, utterly ruining the sneaking.',
+      'Shadow itself, cut to fit. You are a rumor with a face.',
+    ],
+  }),
+  ...ladder({
+    kind: 'leathers', slot: 'chest', noun: 'Leathers', valueMul: 1.7,
+    stats: t => ({ def: LEATHERS_DEF[t]!, agi: LEATHERS_AGI[t]! }),
+    descs: [
+      'Boiled leather jerkin. Stops a knife, maybe, if it asks nicely.',
+      'Studded leathers. Light enough to run, tough enough to matter.',
+      'Hunter-grade leathers, silent on every seam.',
+      'Gilded leathers for the archer who also wants to be SEEN.',
+      'Crystal-studded leathers. Arrows slide off like bad reviews.',
+      'Leathers forged from something that used to hunt YOU.',
+    ],
+  }),
+  ...ladder({
+    kind: 'treads', slot: 'boots', noun: 'Treads', valueMul: 1.1,
+    stats: t => ({ def: TREADS_DEF[t]!, agi: TREADS_AGI[t]! }),
+    descs: [
+      'Soft leather treads. You could sneak up on your own shadow.',
+      "Light boots that leave barely a print. The trackers hate it.",
+      'Ranger treads, broken in over a thousand quiet miles.',
+      'Gold-laced treads. Silent, swift, and faintly ridiculous.',
+      'Crystal treads. You move like a rumor and glow like a nightlight.',
+      'Treads that have outrun death. Twice. It is bitter about it.',
+    ],
+  }),
+  // --- Mage set: cloth robes. Least defense, most intellect. ------------------
+  ...ladder({
+    kind: 'mhat', slot: 'helm', noun: 'Hat', valueMul: 1.3,
+    stats: t => ({ def: MHAT_DEF[t]!, int: MHAT_INT[t]! }),
+    descs: [
+      'A pointy cloth hat. Grants +0 power, +100 wizard credibility.',
+      "Wide brim, taller point. The hat does the intimidating for you.",
+      'Enchanted felt. Keeps your thoughts warm and your spells warmer.',
+      'Gold-trimmed hat. You have read three books and will mention them.',
+      'Crystal-threaded hat. The brim hums with barely-legal voltage.',
+      'A hat woven from a storm. It still thinks it is one.',
+    ],
+  }),
+  ...ladder({
+    kind: 'robe', slot: 'chest', noun: 'Robe', valueMul: 1.7,
+    stats: t => ({ def: ROBE_DEF[t]!, int: ROBE_INT[t]! }),
+    descs: [
+      'A plain cloth robe. Breezy. Deeply flammable. Worth it.',
+      'Apprentice robes. The sleeves are far too long. That is the point.',
+      'Runed robes that channel mana straight to your fingertips.',
+      'Gold-embroidered robes for the mage with a signature move and a cape budget.',
+      'Crystal-woven robes. Barriers shimmer where arrows wish they could.',
+      'Robes stitched from raw aurora. Reality takes them as a suggestion.',
+    ],
+  }),
+  ...ladder({
+    kind: 'slippers', slot: 'boots', noun: 'Slippers', valueMul: 1.1,
+    stats: t => ({ def: SLIP_DEF[t]!, int: SLIP_INT[t]! }),
+    descs: [
+      'Curled cloth slippers. Terrible in a fight, wonderful for pacing dramatically.',
+      'Soft-soled slippers. You glide. You do not stomp. You are above stomping.',
+      'Runed slippers that hum faintly when you cast. Cozy AND arcane.',
+      'Gold-threaded slippers. Impractical footwear for a very practical wizard.',
+      'Crystal slippers. One wrong step and you refract someone.',
+      'Slippers that walk between worlds. Also great on cold dungeon floors.',
+    ],
+  }),
 ]
 
 const TOOLS: ItemDef[] = [
@@ -265,6 +384,20 @@ const MATERIALS_CATALOG: ItemDef[] = [
   mat('bar_steel', 'Steel Bar', 2, 80, 'Iron that went to the gym.'),
   mat('bar_gold', 'Gold Bar', 3, 220, "Solid gold. Yes, you're going to make armor out of money."),
   mat('bar_mythic', 'Mythic Bar', 5, 1800, 'Took three days and one eyebrow to smelt.'),
+  // --- endgame ores + bars (obsidian..runic, rarity 6..11) — gathered from the
+  //     late-game mining nodes and smelted into the level-80..999 gear ladder.
+  mat('ore_obsidian', 'Obsidian Chunk', 6, 2600, 'Volcanic glass, still faintly warm, extremely judgmental about your pickaxe.'),
+  mat('bar_obsidian', 'Obsidian Bar', 6, 5200, 'Smelting it took a forge, a prayer, and a new pair of eyebrows.'),
+  mat('ore_dragonbone', 'Dragonbone Shard', 7, 5200, "A sliver of dragon. It is, legally, still cross about this."),
+  mat('bar_dragonbone', 'Dragonbone Ingot', 7, 10_400, 'Bone and metal, fused. Hums a low note only dragons find rude.'),
+  mat('ore_void', 'Voidstone', 8, 10_400, 'A pebble of pure nothing. Do not put it in your other pocket.'),
+  mat('bar_void', 'Void Bar', 8, 21_000, 'Cold, heavy, and faintly convinced it should be somewhere else.'),
+  mat('ore_astral', 'Astralite', 9, 21_000, 'Condensed starlight. Mildly radiant, extremely smug.'),
+  mat('bar_astral', 'Astral Bar', 9, 42_000, 'Forged under a sky that has never once asked how you are doing.'),
+  mat('ore_titan', 'Titan Slag', 10, 42_000, 'A nugget that outweighs a cottage. Your knees have filed a grievance.'),
+  mat('bar_titan', 'Titan Bar', 10, 84_000, 'Titan-forged. The anvil did not survive the experience.'),
+  mat('ore_runic', 'Runic Fragment', 11, 84_000, 'Etched with glowing runes that spell, approximately, "do not".'),
+  mat('bar_runic', 'Runic Bar', 11, 168_000, 'The strongest alloy in the realm. It glows. It hums. It judges your life choices.'),
   mat('crystal_raw', 'Raw Crystal', 4, 400, "Hums with mana. Don't use it as a nightlight unless you enjoy dreaming in math."),
   mat('crystal_cut', 'Cut Crystal', 4, 700, 'Precision-cut. The jeweler wept. Twice.'),
   mat('crystal_shard', 'Crystal Shard', 3, 150, 'A splinter of crystal. Pointy end toward enemies, ideally.'),
@@ -311,6 +444,14 @@ const FOODS: ItemDef[] = [
   food('food_cake', 'Victory Cake', 3, 40, 60, 20, "Eat it before you've earned it. We won't tell."),
   food('food_pufferfish', 'Puffer Sashimi', 3, 80, 90, 0, '9 out of 10 survivors recommend it.'),
   food('food_feast', 'Royal Feast', 4, 200, 120, 60, 'A royal feast in a box. The box is doing a lot of work.'),
+  // --- expanded cooking menu ---
+  food('food_mushroom_soup', 'Mushroom Soup', 1, 9, 28, 0, 'Earthy, warm, and only slightly sentient.'),
+  food('food_berry_tart', 'Berry Tart', 1, 11, 22, 12, 'Flaky, jammy, dangerously moreish.'),
+  food('food_trail_mix', 'Trail Mix', 1, 7, 18, 8, 'Berries, nuts, and the one raisin nobody wanted.'),
+  food('food_fish_chowder', 'Fish Chowder', 2, 17, 48, 10, 'Creamy, hearty, smells like a harbour at dawn.'),
+  food('food_herb_roast', 'Herb Roast', 2, 19, 52, 0, 'Slow-roasted with a garden of herbs. The boar forgives you. It does not.'),
+  food('food_honey_glazed', 'Honey-Glazed Ham', 3, 44, 70, 20, 'Sticky, golden, worth the bee grudges.'),
+  food('food_golden_fillet', 'Golden Fillet', 4, 180, 110, 50, 'Seared golden fish on a bed of gold-leaf herbs. Absurd. Delicious.'),
 ]
 
 const POTIONS: ItemDef[] = [
@@ -325,6 +466,11 @@ const POTIONS: ItemDef[] = [
   food('potion_elixir', 'Golden Elixir', 4, 300, 150, 150, 'Fixes everything except your personality.'),
   food('potion_regret', 'Potion of Regret', 0, 1, 1, 0, 'Restores 1 HP. It knows what it did.'),
   food('potion_mystery', 'Mystery Potion', 2, 30, 50, 50, 'Could be healing. Could be soup. One way to find out.'),
+  // --- expanded alchemy shelf ---
+  food('potion_stamina', 'Stamina Draught', 0, 12, 20, 20, 'Fizzy green pick-me-up. Legs optional, enthusiasm mandatory.'),
+  food('potion_vigor', 'Vigor Tonic', 1, 28, 70, 40, 'Red-and-blue swirl. Tastes like a sunrise and a double espresso.'),
+  food('potion_clarity', 'Clarity Brew', 2, 55, 20, 140, 'The fog in your head files for early retirement.'),
+  food('potion_restoration', 'Restoration Potion', 3, 150, 160, 160, 'Full-body reset. Side effects include feeling fantastic.'),
 ]
 
 function acc(id: string, name: string, rarity: Rarity, value: number, stats: Stats, desc: string, levelReq?: number): ItemDef {
@@ -466,6 +612,28 @@ const LEGENDARIES: ItemDef[] = [
 ]
 
 /** The whole catalog, frozen at module load. */
+// ---------------------------------------------------------------------------
+// Mounts — ULTRA-RARE. Each grants +40% movement speed while mounted (toggled
+// from the hotbar). Obtained two ways: bought with GOLD in the Stable, or
+// dropped at 1/8000 off any kill. Mintable as NFTs + sellable like any item.
+// ---------------------------------------------------------------------------
+
+const MOUNTS: ItemDef[] = MOUNT_SPECS.map((mt) => ({
+  id: mt.id,
+  name: mt.name,
+  slot: 'mount' as ItemSlot,
+  rarity: 5 as Rarity,
+  mountSpeed: 0.4,
+  // Purchasable mounts carry a higher vendor value; drop-only ones are prized too.
+  levelReq: 5,
+  value: mt.buy ? Math.round(mt.buy * 12) : 16000,
+  desc: mt.desc
+}))
+
+// Re-export the mount registry surface so existing importers (loot table, the
+// Stable shop) keep resolving these from the catalog.
+export { MOUNT_IDS, STARTER_MOUNT_ID, PURCHASABLE_MOUNTS } from './mounts'
+
 export const CATALOG: readonly ItemDef[] = [
   ...WEAPONS_AND_ARMOR,
   ...TOOLS,
@@ -474,4 +642,5 @@ export const CATALOG: readonly ItemDef[] = [
   ...POTIONS,
   ...ACCESSORIES,
   ...LEGENDARIES,
+  ...MOUNTS,
 ]

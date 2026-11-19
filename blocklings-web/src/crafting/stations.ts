@@ -15,6 +15,7 @@
  *   forge_ironhold  (-154, 32)  beside Smith Orin's camp forge, Ironhold
  *   forge_village   ( 15, -10)  south of the village Blacksmith's door
  *   stove_village   (-11,  -7)  by the Sleeping Blockling Inn's east door
+ *   alchemy_village (-14,   3)  west crafting row, by Farmer Bram's herb plots
  *   alchemy_capital (-28, -187) at the foot of Archmage Lyra's tower
  *   loom_village    (-11,  13)  by Cottage A, across from the farm
  */
@@ -172,6 +173,7 @@ const STATIONS: readonly StationDef[] = [
   { id: 'forge_village', kind: 'forge', name: 'Village Forge', px: 15, pz: -10, w: 3, d: 2, build: buildForge },
   { id: 'forge_ironhold', kind: 'forge', name: 'Ironhold Forge', px: -154, pz: 32, w: 3, d: 2, build: buildForge },
   { id: 'stove_village', kind: 'stove', name: 'Inn Stove', px: -11, pz: -7, w: 2, d: 2, build: buildStove },
+  { id: 'alchemy_village', kind: 'alchemy', name: 'Alchemy Bench', px: -14, pz: 3, w: 2, d: 2, build: buildAlchemyTable },
   { id: 'alchemy_capital', kind: 'alchemy', name: 'Alchemy Table', px: -28, pz: -187, w: 2, d: 2, build: buildAlchemyTable },
   { id: 'loom_village', kind: 'loom', name: 'Village Loom', px: -11, pz: 13, w: 2, d: 2, build: buildLoom }
 ]

@@ -21,7 +21,10 @@ import { createWorld, regionAt, regionOrZoneAt } from './world'
 import {
   createPlayer,
   setEquipmentMesh,
+  setWeaponGrip,
   setGripStyleSource,
+  setGuardPose,
+  setNorthLock,
   setAutoWalk,
   triggerAttack,
   triggerSpecial,
@@ -32,16 +35,28 @@ import {
 import { initAuth } from './auth'
 import { needsCreator, showCreator, installAppearanceHook } from './creator'
 import { applyLook } from './player/index'
+import './content' // MUST be first: registers every content pack before consumers load
 import { initSave } from './save'
 import { initItems, itemsApi } from './items'
-import { initSkills, skillsApi, skillTree, maxHpBonus } from './skills'
+import { initSkills, skillsApi, skillTree, maxHpBonus, attackDpsMult } from './skills'
+import { bracketProgress } from './skills/curve'
 import { initInventory } from './inventory'
+import { initHotbar } from './hotbar'
+import {
+  initMounts,
+  mountsApi,
+  setMountMeshSource,
+  setMountDefSource,
+  setMountOwnership
+} from './mounts'
 import { initUpgrading } from './upgrading'
 import { initMinting } from './minting'
 import { initQuests } from './quests'
 import { initQuestGuide } from './quests/guide'
-import { initNpcs, setQuestsApi, setPay, setGoldPay } from './npcs'
+import { initNpcs, setQuestsApi, setPay, setGoldPay, setStableOpener } from './npcs'
 import { initCombat, setAutoRetaliate } from './combat'
+import { initCombatStyle, currentStyle, currentStance } from './stance'
+import { initLeaderboardReport } from './leaderboard/report'
 import { MobRig } from './combat/mobs'
 import { initRaids } from './raids'
 import { initDungeon } from './dungeon'
@@ -65,6 +80,7 @@ import {
 import { initAchievements } from './achievements'
 import { initGold, spendGold } from './gold'
 import { initMarket } from './market'
+import { initStable } from './stable'
 import { wallet } from './wallet/index'
 import { initWalletUI } from './wallet/ui'
 import { createHUD } from './ui'
@@ -236,13 +252,23 @@ updateSun()
 renderer.render(scene, camera)
 
 let entered = false
+// Whether THIS session was entered via an explicit Blockle sign-in (vs guest).
+// Gates account cloud-sync so a lingering token never auto-loads the account.
+let bootedSignedIn = false
 events.on('auth:changed', ({ signedIn, name }) => {
   if (signedIn && name) player.name = name
   if (!entered) {
     entered = true
-    if (needsCreator()) {
-      // First entry on this device: pick a look, THEN enter — the rig is
-      // born wearing it (and the look rides the save from then on).
+    bootedSignedIn = signedIn
+    if (signedIn) {
+      // Signed in: ENTER immediately. The async account sync owns the character —
+      // it loads the hero (look + gear + levels) from the cloud, or, only if this
+      // email truly has no character anywhere, emits 'save:needsCreator' (handled
+      // below). This stops the creator wrongly appearing for an existing cloud
+      // character (e.g. right after a reinstall, when nothing is cached locally).
+      enterWorld()
+    } else if (needsCreator()) {
+      // Guest first entry on this device: pick a look, THEN enter.
       showCreator((look) => {
         applyLook(look)
         enterWorld()
@@ -251,6 +277,14 @@ events.on('auth:changed', ({ signedIn, name }) => {
       enterWorld()
     }
   }
+})
+
+// Signed-in account with no character anywhere → run creation now (world is up).
+let creatorShown = false
+events.on('save:needsCreator', () => {
+  if (creatorShown) return
+  creatorShown = true
+  showCreator((look) => applyLook(look))
 })
 
 // ---------------------------------------------------------------------------
@@ -270,7 +304,7 @@ function enterWorld(): void {
   // --- save (FIRST stateful module: loads the envelope, applies player
   //     pos/hp, then late-applies each provider's blob as it registers) ------
 
-  initSave(api)
+  initSave(api, bootedSignedIn)
 
   // --- items (static catalog + voxel mesh builders) -------------------------
 
@@ -279,6 +313,8 @@ function enterWorld(): void {
   // --- skills (xp/levels + the 312-node skill tree; save providers) ---------
 
   initSkills(api)
+  // Report skill levels to the public leaderboard (signed-in players only).
+  initLeaderboardReport((s) => skillsApi.level(s), () => player.name)
 
   // Vitality -> max HP. Applied now (after the save loaded skills) and again
   // on every vitality level-up; HP is clamped, and a fresh vitality level
@@ -297,13 +333,56 @@ function enterWorld(): void {
     if (skill === 'vitality') applyVitality(4)
   })
 
-
+  // Character level + the HUD XP bar. Combat awards 'attack' XP on EVERY kill
+  // (however the mob died), so the hero's shown level tracks the attack skill —
+  // it climbs the moment you start fighting instead of being frozen at Lv 1.
+  // Resync on attack XP gains and any level-up; the skills module registered
+  // its own 'xp:gained' listener at initSkills() above, so by the time ours
+  // runs the XP is already applied and skillsApi reads fresh.
+  // Combat awards Attack (offense stance) or Defence (defense stance), so the
+  // shown level + bar follow whichever combat skill you've trained more — both
+  // stances visibly level you up.
+  const COMBAT_SKILLS = ['attack', 'defense', 'archery', 'magic']
+  function syncCharacterLevel(): void {
+    const best = Math.max(...COMBAT_SKILLS.map((s) => skillsApi.xp(s)))
+    const bp = bracketProgress(best)
+    player.level = bp.level
+    player.xp = bp.into
+    player.xpToNext = bp.size > 0 ? bp.size : 1
+  }
+  syncCharacterLevel()
+  events.on('xp:gained', ({ skill }) => {
+    if (COMBAT_SKILLS.includes(skill)) syncCharacterLevel()
+  })
+  events.on('level:up', ({ skill }) => {
+    if (COMBAT_SKILLS.includes(skill)) syncCharacterLevel()
+  })
+  // A save envelope just applied (incl. the ASYNC cross-device account sync,
+  // which lands after this boot code ran) — recompute level + max HP from the
+  // freshly-loaded skills so stats never appear baseline until the next XP tick.
+  events.on('save:applied', () => {
+    syncCharacterLevel()
+    applyVitality(0)
+  })
 
   // --- inventory (+ real catalog defs + live 3D item viewer) ----------------
 
   const inv = initInventory(api)
   inv.setMeshSource((id) => itemsApi.buildMesh(id))
   inv.setDefSource((id) => itemsApi.def(id))
+
+  // --- consumable hotbar (3 quick-use slots, bottom-centre) -----------------
+  const hotbar = initHotbar(api)
+  hotbar.setInventory(inv)
+  hotbar.setDefSource((id) => itemsApi.def(id))
+  inv.setHotbarPin((id) => hotbar.pin(id))
+
+  // --- mounts (ultra-rare +40% rides; toggled from the hotbar) --------------
+  initMounts(api)
+  setMountMeshSource((id) => itemsApi.buildMesh(id))
+  setMountDefSource((id) => itemsApi.def(id))
+  setMountOwnership((id) => inv.count(id) > 0)
+  hotbar.setMountToggle((id) => mountsApi.toggle(id))
 
   // Equipment -> character: build the item's voxel mesh and hang it on the
   // rig's attach points whenever a slot changes, plus one pass for loaded
@@ -312,11 +391,21 @@ function enterWorld(): void {
   setGripStyleSource((itemId) => itemsApi.def(itemId)?.gripStyle)
   function applyEquipMesh(slot: string, id: string | null): void {
     setEquipmentMesh(slot, id ? itemsApi.buildMesh(id) : null)
+    // Apply the grip rest-pose on the SAME path as the mesh so the silent
+    // load-restore pass below can't attach a weapon without orienting it.
+    if (slot === 'weapon') setWeaponGrip(id)
   }
   events.on('item:equipped', ({ slot, id }) => applyEquipMesh(slot, id))
   for (const [slot, id] of Object.entries(inv.equipment())) {
     if (id) applyEquipMesh(slot, id)
   }
+  // A save just applied (incl. the ASYNC account load, which lands after the pass
+  // above). `restore()` sets the equip map WITHOUT emitting 'item:equipped', so
+  // re-attach every equipped mesh here — otherwise restored armor/weapons stay
+  // equipped in the bag but invisible on the hero until a manual re-equip.
+  events.on('save:applied', () => {
+    for (const [slot, id] of Object.entries(inv.equipment())) applyEquipMesh(slot, id)
+  })
 
   // --- minting (the ALL-ITEMS NFT framework; inventory card Mint buttons) ---
 
@@ -362,9 +451,24 @@ function enterWorld(): void {
 
   // --- combat (mobs, bosses, loot, specials, tap-to-attack, death flow) -----
 
+  // Weapon-driven stance: a bow → ranged, a staff → magic, a blade/barehanded
+  // → melee with an Offense/Defense sub-stance. Grip resolver lets named
+  // legendaries read correctly (gripStyle, not just the id family).
+  initCombatStyle(
+    api,
+    (id) => itemsApi.def(id)?.gripStyle,
+    () => inv.equipment()['weapon'] ?? null
+  )
   const combat = initCombat(api)
   combat.setStatsSource(() => inv.equippedStats())
   combat.setSkillsSource((s) => skillsApi.level(s))
+  combat.setStyleSource(() => currentStyle())
+  combat.setStanceSource(() => currentStance())
+  // Melee Defense stance raises the shield; everything else lowers it.
+  const refreshGuard = (): void =>
+    setGuardPose(currentStyle() === 'melee' && currentStance() === 'defense')
+  events.on('style:changed', refreshGuard)
+  events.on('stance:changed', refreshGuard)
   combat.setMeshSource((id) => itemsApi.buildMesh(id))
   combat.setDefSource((id) => itemsApi.def(id))
   combat.setEquipmentSource(() => inv.equipment())
@@ -374,6 +478,10 @@ function enterWorld(): void {
   // the hit and play the hero's hurt flash/knockback.
   combat.setPlayerDamage((amount) => {
     player.hp = Math.max(0, player.hp - amount)
+    // Persist the HP change (debounced) so your current HP survives a close —
+    // damage used to only reach the save via the 30s autosave / pagehide flush,
+    // which on mobile app-kill never fired, so you'd reopen at full HP.
+    events.emit('save:dirty', { why: 'hp' })
     playerHurt()
   })
   combat.setPlayerDeath((onDown) => playerDie(onDown))
@@ -399,6 +507,10 @@ function enterWorld(): void {
   raids.setInventory(inv)
   raids.setPlayerDamage((amount) => {
     player.hp = Math.max(0, player.hp - amount)
+    // Persist the HP change (debounced) so your current HP survives a close —
+    // damage used to only reach the save via the 30s autosave / pagehide flush,
+    // which on mobile app-kill never fired, so you'd reopen at full HP.
+    events.emit('save:dirty', { why: 'hp' })
     playerHurt()
   })
   raids.setPlayerDeath((onDown) => playerDie(onDown))
@@ -425,6 +537,10 @@ function enterWorld(): void {
   dungeon.setInventory(inv)
   dungeon.setPlayerDamage((amount) => {
     player.hp = Math.max(0, player.hp - amount)
+    // Persist the HP change (debounced) so your current HP survives a close —
+    // damage used to only reach the save via the 30s autosave / pagehide flush,
+    // which on mobile app-kill never fired, so you'd reopen at full HP.
+    events.emit('save:dirty', { why: 'hp' })
     playerHurt()
   })
   dungeon.setPlayerDeath((onDown) => playerDie(onDown))
@@ -444,14 +560,27 @@ function enterWorld(): void {
   pets.setPlayerDpsSource(() => {
     const s = inv.equippedStats()
     const atkLevel = skillsApi.level('attack')
-    return ((3 + s.atk + 0.4 * s.str) * (1 + (atkLevel - 1) * 0.04)) / 1.2
+    return ((3 + s.atk + 0.4 * s.str) * attackDpsMult(atkLevel)) / 1.2
   })
 
   // --- gathering (streamed wilderness zones; reads the equipped tool) -------
 
   const gather = initGather(api)
   gather.setInventory(inv)
-  gather.setSwing(() => triggerAttack())
+  // Each profession gets its own rig pose (fishing's cast loops while AFK).
+  // Unknown skills fall back to the plain attack swing.
+  const GATHER_POSE: Record<string, string> = {
+    woodcutting: 'chop',
+    mining: 'mine',
+    fishing: 'cast',
+    herbalism: 'scythe',
+    farming: 'pluck'
+  }
+  gather.setGatherAnim((skill) => {
+    const pose = GATHER_POSE[skill]
+    if (pose) triggerSpecial(pose)
+    else triggerAttack()
+  })
   gather.setSkillTree(skillTree)
   // (zone node registration self-runs off gather's 1 Hz residency poll)
 
@@ -482,6 +611,12 @@ function enterWorld(): void {
   const worldmap = initWorldmap(api)
   worldmap.setAttuned(waystones.attunedStones())
   worldmap.setRequestTravel((stoneId) => waystones.travelTo(stoneId))
+  // Keep the map's lit waystones in sync: re-seed after the ASYNC account load
+  // (which restores the attuned set long after the line above ran — otherwise the
+  // map forgets everywhere you'd visited between logins) and on any new attune.
+  const refreshMapStones = (): void => worldmap.setAttuned(waystones.attunedStones())
+  events.on('save:applied', refreshMapStones)
+  events.on('waystone:attuned', refreshMapStones)
 
   // --- atmosphere (real-time CST day/night; owns sky/fog/sun from here) -----
 
@@ -530,6 +665,16 @@ function enterWorld(): void {
 
   const gold = initGold(api)
 
+  // --- the Stable (buy mounts with GOLD; mounts also drop + mint as NFTs) ----
+  const stable = initStable(api)
+  stable.setGold(gold)
+  stable.setSpend(spendGold)
+  // No HUD button — Stablemaster Jeb in the starting village opens the Stable.
+  setStableOpener(() => stable.open())
+  stable.setInventory(inv)
+  stable.setDefSource((id) => itemsApi.def(id))
+  stable.setMeshSource((id) => itemsApi.buildMesh(id))
+
   // --- marketplace (gold + 3-chain crypto rails; goods escrow) --------------
 
   const market = initMarket(api)
@@ -570,7 +715,9 @@ function enterWorld(): void {
   const hud = createHUD(api, {
     setQuality,
     setAutoRetaliate: (on) => setAutoRetaliate(on),
-    setAlwaysDay: (on) => atmo.setAlwaysDay(on)
+    setAlwaysDay: (on) => atmo.setAlwaysDay(on),
+    setNorthLock: (on) => setNorthLock(on),
+    gold
     // setMinimap + signOut resolve via the window hooks worldmap/auth publish
   })
 
@@ -602,6 +749,7 @@ function enterWorld(): void {
     const dt = Math.min((now - last) / 1000, 0.1)
     last = now
     world.update(dt) // water shimmer, window flicker
+    world.updateInteriorReveal(player.pos.x, player.pos.z) // lift the castle roof inside
     hero.update(dt) // movement, net, camera follow
     pollRegion(dt) // 'region:entered' on border crossings (every ~0.5s)
     walletPanel.update(dt)

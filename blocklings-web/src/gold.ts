@@ -11,4 +11,4 @@
  * (window.blocklingsIAP — see src/gold/index.ts for the bridge contract).
  * Never earned in-game, never cashed out, no gold->crypto bridge.
  */
-export { initGold, spendGold, type GoldModule, type BlocklingsIAPBridge } from './gold/index'
+export { initGold, spendGold, restorePurchases, type GoldModule, type BlocklingsIAPBridge } from './gold/index'

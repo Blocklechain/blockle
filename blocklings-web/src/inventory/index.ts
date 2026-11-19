@@ -27,6 +27,13 @@ export interface InventoryModule extends InventoryAPI {
    */
   setMintHooks(hooks: MintHooks): void
   /**
+   * Wire the hotbar's pin action into the detail card:
+   *   inv.setHotbarPin((id) => hotbar.pin(id))
+   * Adds a "Pin to Hotbar" button on consumable items. Until wired, the button
+   * is simply not shown.
+   */
+  setHotbarPin(fn: (id: string) => number | null): void
+  /**
    * Wire the upgrading module's per-item delta into equippedStats:
    *   inv.setUpgradeBonus(upgrading.bonusFor)
    * The delta (from +levels / enchants / reforge) is summed on top of the
@@ -56,6 +63,7 @@ export function initInventory(api: GameAPI): InventoryModule {
     setMeshSource: (fn) => viewer.viewer.setMeshSource(fn),
     setDefSource: (fn) => core.setDefSource(fn),
     setMintHooks: (hooks) => viewer.setMintHooks(hooks),
+    setHotbarPin: (fn) => viewer.setHotbarPin(fn),
     setUpgradeBonus: (fn) => core.setUpgradeBonus(fn)
   }
 }

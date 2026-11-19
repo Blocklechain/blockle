@@ -17,7 +17,7 @@
 
   var FORK_HEIGHT = 53000;
   var DATA_URL = "https://blockle.org/fork.json";
-  var INFO_URL = "https://blockle.org/fork";
+  var INFO_URL = "https://blockle.org/fork.html";
 
   var css = ""
     + "#blk-fork{position:fixed;top:0;left:0;right:0;z-index:2147483000;"

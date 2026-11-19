@@ -27,6 +27,7 @@
 .bl-hud input,
 .bl-plate,
 .bl-chip,
+.bl-wallet,
 .bl-settings,
 .bl-chat {
   pointer-events: auto;
@@ -47,6 +48,7 @@
 .bl-settings,
 .bl-chat,
 .bl-chip,
+.bl-wallet,
 .bl-gear {
   background: var(--bl-panel);
   border: 1px solid var(--bl-edge-dim);
@@ -398,7 +400,7 @@
 .bl-chat {
   position: absolute;
   left: max(12px, env(safe-area-inset-left));
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: max(2px, calc(env(safe-area-inset-bottom) - 10px));
   width: min(380px, calc(100vw - 24px));
   display: flex;
   flex-direction: column;
@@ -615,12 +617,24 @@
     padding: 8px 10px 9px;
   }
   .bl-chat {
-    /* Reserve a ~110px right rail so the chat never slides under the
-       bottom-right button stack (ATK/SPC/bag). */
-    width: min(320px, calc(100vw - 134px));
+    /* The whole bottom edge belongs to the joystick (left), the special
+       buttons + hotbar (centre) and the ATK/bag stack (right); the top-left
+       corner is the player plate and the top-right is the chips + mini-map.
+       The one free pocket on a phone is the LEFT band between the plate and
+       the stance pills — dock chat there, growing DOWNWARD, and cap its
+       height so it never reaches the stance (and shrinks on short/landscape
+       screens). */
+    top: max(230px, calc(env(safe-area-inset-top) + 230px));
+    bottom: auto;
+    left: max(8px, env(safe-area-inset-left));
+    width: min(290px, calc(100vw - 24px));
+    max-height: min(196px, calc(100dvh - 300px));
   }
   .bl-chat-log {
-    height: 92px;
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    max-height: 92px;
   }
   .bl-chip-cur {
     display: none; /* icon + amount is enough on a phone */
@@ -630,6 +644,19 @@
   }
 }
 
+/* ===== centre-modal coordination ======================================
+   NPC dialogs and the quest log open centred. While one is up, #ui carries
+   .bl-ui-dialog (toggled by the dialog / quest-log open+close). That lets us
+   retract the floating quest tracker + left-edge stance pills so nothing
+   pokes out beside the popup at any width ("fits in any combination"). The
+   popup itself is lifted above the quest rail (NPC panel z-index 60; the
+   quest log paints over its own tracker as a later sibling). */
+#ui.bl-ui-dialog .blq-tracker,
+#ui.bl-ui-dialog .blq-btn,
+#ui.bl-ui-dialog .bl-stance {
+  display: none !important;
+}
+
 /* ========================================================================
    WAVE-2 OVERLAY COORDINATION (owned here by the UI module).
    The gold chip, paw, storefront and special buttons mount themselves from
@@ -637,11 +664,14 @@
    safe-areas so nothing collides on phone-sized screens.
 
    Right-edge column (right: 12):           Bottom-right stack (coarse):
-     12  .bl-topright  (chips + gear)         32  ATK   (84px, inline-styled)
-     60  .wm-mini      (140px circle)        130  SPC   (56px, inline-styled)
-    208  .wm-btn | .mk-btn | .blkw-toggle    192  .bl-bagbtn
-         (12)     (60)      (108)            252  .bl-pets-btn
-                                             312  .bl-skills-btn
+     12  .bl-topright  (chips + gear)         32  ATK   (68px, inline-styled)
+     60  .wm-mini      (140px circle)        192  .bl-bagbtn
+    208  .wm-btn | .mk-btn | .blkw-toggle    252  .bl-pets-btn
+         (12)     (60)      (108)            312  .bl-skills-btn
+    256  .blq-btn   304  .blq-tracker
+   The weapon/shield specials (SPC/SHD, 54px) flank the centred hotbar at
+   bottom+74, translateX(-50%) around left:calc(50% ± 104px) — no longer in
+   the bottom-right stack.
    ======================================================================== */
 
 /* Wallet toggle: it used to sit at top:12/right:12 and clipped under the
@@ -721,24 +751,198 @@
   }
 }
 
-/* Short screens (phone landscape): the vertical stack can't fit, so bag /
-   paw / skills form a horizontal row to the left of the ATK button. */
-@media (pointer: coarse) and (max-height: 520px) {
-  #ui .bl-bagbtn {
-    right: calc(max(18px, env(safe-area-inset-right)) + 96px);
-    bottom: max(32px, env(safe-area-inset-bottom));
+/* Short screens (landscape): the vertical stack can't fit, so bag / paw /
+   skills / feats / stable form a horizontal row to the left of the ATK button.
+   Keyed on orientation+height (not pointer) so every short-landscape viewport
+   reflows — phones, tablets, and resized desktop windows alike. */
+@media (orientation: landscape) and (max-height: 560px) {
+  /* Strip the text labels so Stable/Pets/Feats become compact square icons
+     (their variable widths are what made fixed offsets collide). */
+  #ui .bl-stable-btn-label, #ui .bl-pets-btn-label, #ui .ach-btn-label { display: none; }
+  #ui .bl-stable-btn, #ui .bl-pets-btn, #ui .ach-btn {
+    width: 44px; min-width: 44px; padding: 0; justify-content: center; gap: 0;
   }
-  #ui .bl-pets-btn {
-    right: calc(max(18px, env(safe-area-inset-right)) + 160px);
-    bottom: max(32px, env(safe-area-inset-bottom));
-  }
+  /* One bottom row, marching left from the ATK action button (ATK stays at
+     right:12, 84px wide). Offsets leave a gap between every button. */
+  #ui .bl-spc-btn    { right: calc(max(18px, env(safe-area-inset-right)) + 108px) !important;
+                       bottom: max(32px, env(safe-area-inset-bottom)) !important; }
+  #ui .bl-bagbtn     { right: calc(max(18px, env(safe-area-inset-right)) + 172px);
+                       bottom: max(32px, env(safe-area-inset-bottom)); }
+  #ui .bl-pets-btn   { right: calc(max(18px, env(safe-area-inset-right)) + 228px);
+                       bottom: max(32px, env(safe-area-inset-bottom)); }
+  #ui .bl-skills-btn { right: calc(max(18px, env(safe-area-inset-right)) + 284px);
+                       bottom: max(32px, env(safe-area-inset-bottom)); }
+  #ui .ach-btn       { right: calc(max(18px, env(safe-area-inset-right)) + 340px);
+                       bottom: max(32px, env(safe-area-inset-bottom)); }
+  #ui .bl-stable-btn { right: calc(max(18px, env(safe-area-inset-right)) + 396px);
+                       bottom: max(32px, env(safe-area-inset-bottom)); }
+  /* Panels open above the row. */
   #ui .bl-pets {
     right: max(12px, env(safe-area-inset-right));
     bottom: calc(max(32px, env(safe-area-inset-bottom)) + 56px);
     max-height: min(70vh, 300px);
   }
-  #ui .bl-skills-btn {
-    right: calc(max(18px, env(safe-area-inset-right)) + 276px);
-    bottom: max(32px, env(safe-area-inset-bottom));
-  }
+  /* Top-right map/market/wallet row drops clear of the mini-map. */
+  #ui .blkw-toggle, #ui .wm-btn, #ui .mk-btn { top: 196px; }
 }
+
+/* ===== top-right balances grid (GOLD / BLOCK / ETH / SOL) ============== */
+.bl-wallet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  margin-top: 8px;
+  padding: 6px 0 0;
+  gap: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bl-wallet-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 4px;
+  border-radius: 7px;
+  color: var(--bl-text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.bl-wallet-toggle:hover { color: var(--bl-text); }
+
+.bl-wallet-chevron {
+  display: inline-flex;
+  width: 12px;
+  justify-content: center;
+  color: var(--bl-gold);
+  font-size: 10px;
+}
+.bl-wallet-summary { display: none; color: var(--bl-gold); letter-spacing: 0.03em; }
+.bl-wallet.collapsed .bl-wallet-title { display: none; }
+.bl-wallet.collapsed .bl-wallet-summary { display: inline; }
+.bl-wallet.collapsed .bl-wallet-grid { display: none; }
+
+.bl-wallet-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.bl-wallet-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  background: var(--bl-panel-soft);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  min-width: 0;
+}
+.bl-wallet-clickable { cursor: pointer; }
+.bl-wallet-clickable:hover { border-color: var(--bl-edge-dim); }
+
+.bl-wallet-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.bl-wallet-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+.bl-wallet-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--bl-text-dim);
+}
+.bl-wallet-amt {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--bl-text);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bl-wallet-gold .bl-wallet-amt { color: var(--bl-gold); }
+
+/* Realm picker (Settings → Realm) */
+.bl-realm-back {
+  position: fixed; inset: 0; z-index: 60; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 9, 14, 0.66); backdrop-filter: blur(3px);
+}
+.bl-realm-card {
+  position: relative; width: min(440px, 92vw); max-height: 80vh; overflow-y: auto;
+  background: #121926; border: 1px solid rgba(255,255,255,0.12); border-radius: 14px;
+  padding: 18px 16px 16px; color: #eaf1fb;
+  font: 14px/1.4 'Trebuchet MS','Segoe UI',system-ui,sans-serif;
+}
+.bl-realm-title { font-size: 18px; font-weight: 700; }
+.bl-realm-sub { color: #9fb0c8; font-size: 12.5px; margin: 4px 0 12px; }
+.bl-realm-x {
+  position: absolute; top: 10px; right: 12px; width: 30px; height: 30px;
+  background: none; border: none; color: #9fb0c8; font-size: 22px; cursor: pointer;
+}
+.bl-realm-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.bl-realm-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 4px; border-radius: 9px; cursor: pointer;
+  background: #182438; border: 1px solid #27415f; color: #cfe0f5;
+}
+.bl-realm-cell:hover:not(:disabled) { border-color: #e8c15a; }
+.bl-realm-cell.on { background: #e8c15a; color: #1b1405; border-color: #e8c15a; font-weight: 700; }
+.bl-realm-cell.full { opacity: 0.45; cursor: not-allowed; }
+.bl-realm-n { font-size: 12.5px; font-weight: 600; }
+.bl-realm-pop { font-size: 11px; color: inherit; opacity: 0.85; font-variant-numeric: tabular-nums; }
+.bl-realm-split { font-size: 9.5px; color: inherit; opacity: 0.6; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+
+/* Delete Account — danger button + funny confirmation modal */
+.bl-set-danger {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(201, 58, 58, 0.14);
+  border: 1px solid rgba(201, 58, 58, 0.5);
+  color: #ff8c8c;
+  font: 700 13px/1 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+}
+.bl-set-danger:hover { background: rgba(201, 58, 58, 0.24); border-color: #e05a5a; }
+.bl-del-back {
+  position: fixed; inset: 0; z-index: 70; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 9, 14, 0.72); backdrop-filter: blur(3px);
+}
+.bl-del-card {
+  width: min(420px, 92vw);
+  background: #141019; border: 1px solid rgba(201, 58, 58, 0.4); border-radius: 14px;
+  padding: 20px 18px 16px; color: #eaf1fb;
+  font: 14px/1.5 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.bl-del-title { font-size: 17px; font-weight: 800; color: #ff8c8c; margin-bottom: 8px; }
+.bl-del-msg { color: #d7dee8; }
+.bl-del-input {
+  width: 100%; margin-top: 12px; padding: 9px 11px; border-radius: 8px;
+  background: #0d1117; border: 1px solid #2a3344; color: #eaf1fb; font-size: 15px;
+}
+.bl-del-err { color: #ff8c8c; font-size: 12.5px; margin-top: 7px; min-height: 1.1em; }
+.bl-del-actions { display: flex; gap: 8px; margin-top: 14px; }
+.bl-del-no, .bl-del-yes {
+  flex: 1; padding: 10px 12px; border-radius: 9px; font: 700 13px/1 'Trebuchet MS','Segoe UI',system-ui,sans-serif;
+  cursor: pointer; border: 1px solid transparent;
+}
+.bl-del-no { background: #1c2636; border-color: #33415a; color: #cfe0f5; }
+.bl-del-no:hover { border-color: #5a7193; }
+.bl-del-yes { background: rgba(201, 58, 58, 0.18); border-color: rgba(201, 58, 58, 0.55); color: #ff8c8c; }
+.bl-del-yes:hover { background: rgba(201, 58, 58, 0.3); border-color: #e05a5a; }

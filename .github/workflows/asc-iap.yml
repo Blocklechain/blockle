@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
       - name: Create Gold IAP products
         env:
           ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
@@ -120,6 +121,50 @@ jobs:
                       'availableTerritories': {'data':
                           [{'type': 'territories', 'id': t} for t in terrs]}}}}))
               print(f'  availability: {r.status_code}' + ('' if r.status_code == 201 else ' ' + r.text[:500]))
+
+          # Review screenshot: every GOLD product needs one app-review screenshot
+          # before it can be submitted. Upload the committed "Get GOLD" store shot
+          # to each SKU via the ASC asset flow (reserve -> upload parts -> commit
+          # with md5). Idempotent-ish: skips a SKU that already has a screenshot.
+          import hashlib
+          shot_path = '.github/assets/gold-review.jpg'
+          try:
+              img = open(shot_path, 'rb').read()
+          except FileNotFoundError:
+              img = None
+              print('!! review screenshot missing at', shot_path, '- skipping screenshot upload')
+          if img is not None:
+              md5 = hashlib.md5(img).hexdigest()
+              for sku in [s[0] for s in SKUS]:
+                  r = requests.get(B+f'/v1/apps/{app_id}/inAppPurchasesV2', headers=H,
+                                   params={'filter[productId]': sku, 'limit': 1})
+                  data = r.json().get('data', [])
+                  if not data:
+                      print(f'  [shot] {sku}: product not found, skip'); continue
+                  iap_id = data[0]['id']
+                  # already has a screenshot?
+                  ex = requests.get(B+f'/v2/inAppPurchases/{iap_id}/appStoreReviewScreenshot', headers=H)
+                  if ex.status_code == 200 and ex.json().get('data'):
+                      print(f'  [shot] {sku}: already has a screenshot, skip'); continue
+                  # 1) reserve
+                  rr = requests.post(B+'/v1/inAppPurchaseAppStoreReviewScreenshots', headers=H, data=json.dumps({
+                      'data': {'type': 'inAppPurchaseAppStoreReviewScreenshots',
+                        'attributes': {'fileName': 'gold-review.jpg', 'fileSize': len(img)},
+                        'relationships': {'inAppPurchaseV2': {'data': {'type': 'inAppPurchases', 'id': iap_id}}}}}))
+                  if rr.status_code not in (200, 201):
+                      print(f'  [shot] {sku}: reserve failed {rr.status_code} {rr.text[:300]}'); continue
+                  scr = rr.json()['data']
+                  for op in scr['attributes'].get('uploadOperations', []):
+                      hdrs = {h['name']: h['value'] for h in op.get('requestHeaders', [])}
+                      chunk = img[op['offset']:op['offset'] + op['length']]
+                      up = requests.request(op['method'], op['url'], headers=hdrs, data=chunk)
+                      if up.status_code >= 300:
+                          print(f'  [shot] {sku}: part upload {up.status_code}')
+                  # 3) commit
+                  pc = requests.patch(B+f"/v1/inAppPurchaseAppStoreReviewScreenshots/{scr['id']}", headers=H, data=json.dumps({
+                      'data': {'type': 'inAppPurchaseAppStoreReviewScreenshots', 'id': scr['id'],
+                        'attributes': {'uploaded': True, 'sourceFileChecksum': md5}}}))
+                  print(f'  [shot] {sku}: commit {pc.status_code}' + ('' if pc.status_code == 200 else ' ' + pc.text[:300]))
 
           # Final state listing.
           r = requests.get(B+f'/v1/apps/{app_id}/inAppPurchasesV2', headers=H, params={'limit': 20})

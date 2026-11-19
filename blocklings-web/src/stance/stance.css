@@ -1,0 +1,57 @@
+/* Combat stance toggle — bottom-left, above the joystick, two compact buttons. */
+.bl-stance {
+  position: fixed;
+  left: max(16px, env(safe-area-inset-left));
+  bottom: calc(max(32px, env(safe-area-inset-bottom)) + 300px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 37;
+  pointer-events: none;
+}
+.bl-stance-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 8px;
+  width: 98px;
+  border-radius: 10px;
+  background: rgba(16, 22, 34, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  color: #cdd7e6;
+  font: 600 12px/1 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.bl-stance-btn svg { flex: none; }
+.bl-stance-btn.on {
+  color: #0d1117;
+  background: #e8c15a;
+  border-color: #e8c15a;
+}
+.bl-stance-btn[data-s='archery'].on {
+  color: #0d1117;
+  background: #7fd06a;
+  border-color: #7fd06a;
+}
+.bl-stance-btn[data-s='magic'].on {
+  color: #0d1117;
+  background: #b98fe8;
+  border-color: #b98fe8;
+}
+.bl-stance-btn[data-s='offense'].on {
+  color: #0d1117;
+  background: #e8a24a;
+  border-color: #e8a24a;
+}
+.bl-stance-btn[data-s='defense'].on {
+  color: #0d1117;
+  background: #6cb8ff;
+  border-color: #6cb8ff;
+}
+.bl-stance-btn:not(.on):hover { border-color: rgba(255, 255, 255, 0.4); color: #eaf1fb; }
+@media (prefers-reduced-motion: reduce) { .bl-stance-btn { transition: none; } }

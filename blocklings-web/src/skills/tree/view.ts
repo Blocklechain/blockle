@@ -145,22 +145,37 @@ export function openTreeView(skill: string, deps: TreeViewDeps): void {
   let armed = false // two-tap confirm
   let raf = 0
 
-  // content bounds (for pan clamping)
+  // id -> node (edge parents resolve through this, not a per-frame scan — the
+  // extended trees carry ~240 nodes each, so the old nodes.find() was O(n²)).
+  const byId = new Map<string, TreeNodeDef>()
+  for (const n of nodes) byId.set(n.id, n)
+
+  // content bounds (for pan clamping), recomputed from the real node positions
+  let minX = Infinity
+  let minY = Infinity
   let maxX = 0
   let maxY = 0
   for (const n of nodes) {
     const p = nodePos(n)
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
     maxX = Math.max(maxX, p.x)
     maxY = Math.max(maxY, p.y)
   }
+  if (!Number.isFinite(minX)) minX = 0
+  if (!Number.isFinite(minY)) minY = 0
 
   function clampPan(): void {
     const w = canvasWrap.clientWidth
     const h = canvasWrap.clientHeight
-    const minPanX = Math.min(0, w - (maxX + PAD))
-    const minPanY = Math.min(0, h - (maxY + PAD + 60))
-    panX = Math.max(minPanX, Math.min(40, panX))
-    panY = Math.max(minPanY, Math.min(40, panY))
+    // allow panning until the far (right/bottom) edge reaches the viewport, and
+    // never past the near (left/top) edge of the actual content.
+    const maxPanX = Math.max(40, minX - PAD + 40)
+    const maxPanY = Math.max(40, minY - PAD + 40)
+    const minPanX = Math.min(maxPanX, w - (maxX + PAD))
+    const minPanY = Math.min(maxPanY, h - (maxY + PAD + 60))
+    panX = Math.max(minPanX, Math.min(maxPanX, panX))
+    panY = Math.max(minPanY, Math.min(maxPanY, panY))
   }
 
   // ---- drawing ------------------------------------------------------------
@@ -193,7 +208,7 @@ export function openTreeView(skill: string, deps: TreeViewDeps): void {
       for (const r of n.requires) parents.push({ id: r, hard: true })
       if (n.vis) parents.push({ id: n.vis, hard: false })
       for (const p of parents) {
-        const from = nodes.find((m) => m.id === p.id)
+        const from = byId.get(p.id)
         if (!from) continue
         const fp = nodePos(from)
         const lit = chosen.has(n.id) && chosen.has(from.id)
@@ -262,7 +277,7 @@ export function openTreeView(skill: string, deps: TreeViewDeps): void {
     const kindLabel =
       n.kind === 'auto' ? 'automatic' : n.kind === 'capstone' ? 'capstone' : 'perk'
     cardMeta.textContent = `${kindLabel} · ${cap(n.skill)} Lv ${n.lvlReq}${
-      n.kind !== 'auto' ? ' · 1 point' : ''
+      n.kind !== 'auto' ? ` · ${n.cost} point${n.cost === 1 ? '' : 's'}` : ''
     }`
     cardDesc.textContent = n.desc
     cardFx.textContent = Object.entries(n.effects)

@@ -106,11 +106,11 @@ export const BIOME_MINI: Readonly<Record<string, string>> = {
   glacier: '#5f707a'
 }
 
-/** Land extends to the coast at |x|,|z| = 720; beyond that, sea. */
-export const WORLD_HALF = 720
+/** Land extends to the coast at |x|,|z| = 2400; beyond that, sea. */
+export const WORLD_HALF = 2400
 /** World extent the map frames (land + a ribbon of sea). */
-export const MAP_MIN = -744
-export const MAP_MAX = 744
+export const MAP_MIN = -2424
+export const MAP_MAX = 2424
 /** The great river only flows through the heart (z band, world units). */
 export const RIVER_Z0 = -240
 export const RIVER_Z1 = 240

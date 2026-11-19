@@ -260,39 +260,62 @@ function buildCastle(ctx: Ctx): void {
   batches.stone.add(-5, 4.4, -188.2, 10, 1.4, 1.4, STONE[1]!)
   batches.wood.add(-3, 3.4, -187.9, 6, 1, 0.3, WOOD_DARK) // raised portcullis
 
-  // --- The keep: three tiers + great tower ---
-  batches.stone.add(-14, 0, -222, 28, 7, 20, STONE[1]!) // base
-  batches.stone.add(-14.4, 0, -222.4, 28.8, 1.2, 20.8, STONE[0]!) // plinth
-  batches.stone.add(-9, 7, -218, 18, 5, 12, STONE[2]!) // tier 2
-  batches.stone.add(-4, 12, -214, 8, 10, 8, STONE[1]!) // great tower
-  grid.blockRect(-14, -222, 28, 20)
-  // crenellations on each tier rim
+  // --- The keep: three tiers + great tower. The ground floor is an ENTERABLE
+  // throne hall — perimeter walls + ceiling with an open south doorway (x -2..2)
+  // — instead of a solid block; the upper tiers rest on the ceiling as before.
+  batches.stone.add(-14, 0, -222, 1, 7, 20, STONE[1]!) // west wall
+  batches.stone.add(13, 0, -222, 1, 7, 20, STONE[1]!) // east wall
+  batches.stone.add(-14, 0, -222, 28, 7, 1, STONE[1]!) // north (back) wall
+  batches.stone.add(-14, 0, -202, 12, 7, 1, STONE[1]!) // south wall, west of door
+  batches.stone.add(2, 0, -202, 12, 7, 1, STONE[1]!) // south wall, east of door
+  batches.stone.add(-2, 4, -202, 4, 3, 1, STONE[1]!) // lintel over the doorway
+  // Roof + upper tiers go in the toggleable castleRoof batch so they vanish
+  // while you're inside the hall (world.updateInteriorReveal).
+  batches.castleRoof.add(-14, 6.6, -222, 28, 0.4, 20, STONE[2]!) // ceiling slab
+  batches.castleRoof.add(-9, 7, -218, 18, 5, 12, STONE[2]!) // tier 2
+  batches.castleRoof.add(-4, 12, -214, 8, 10, 8, STONE[1]!) // great tower
+  // throne hall interior: red runner from the door to a stone throne at the back
+  batches.misc.add(-1.4, 0.03, -220, 2.8, 0.06, 16, CRIMSON)
+  batches.stone.add(-2.4, 0, -220.6, 4.8, 0.4, 2.2, STONE[2]!) // dais
+  batches.stone.add(-1.5, 0.4, -221.2, 3, 2.8, 0.9, STONE[0]!) // throne back
+  batches.stone.add(-1.4, 0.4, -220.4, 2.8, 1, 1.3, STONE[1]!) // throne seat
+  batches.misc.add(-1.7, 3.0, -221.1, 0.32, 0.5, 0.32, GOLD) // finial L
+  batches.misc.add(1.3, 3.0, -221.1, 0.32, 0.5, 0.32, GOLD) // finial R
+  // interior wall sconces so the hall isn't pitch dark
+  for (const sx of [-10, -5, 4, 9]) batches.window.add(sx, 3.4, -221.75, 0.5, 0.8, 0.3, WINDOW_GLOW)
+  // block ONLY the walls — the interior and the south doorway (x -2..2) stay walkable
+  grid.blockRect(-14, -222, 1, 20) // west
+  grid.blockRect(13, -222, 1, 20) // east
+  grid.blockRect(-14, -222, 28, 1) // north
+  grid.blockRect(-14, -202, 12, 1) // south, west of door
+  grid.blockRect(2, -202, 12, 1) // south, east of door
+  // crenellations on each tier rim (part of the toggleable roof)
   for (let i = 0; i < 28; i += 2) {
-    batches.stone.add(-14 + i + 0.15, 7, -222 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
-    batches.stone.add(-14 + i + 0.15, 7, -202 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-14 + i + 0.15, 7, -222 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-14 + i + 0.15, 7, -202 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
   }
   for (let i = 0; i < 18; i += 2) {
-    batches.stone.add(-9 + i + 0.15, 12, -218 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
-    batches.stone.add(-9 + i + 0.15, 12, -206 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-9 + i + 0.15, 12, -218 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-9 + i + 0.15, 12, -206 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
   }
   for (let i = 0; i < 8; i += 2) {
-    batches.stone.add(-4 + i + 0.15, 22, -214 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
-    batches.stone.add(-4 + i + 0.15, 22, -206 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
-    batches.stone.add(-4 + 0.15, 22, -214 + i + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
-    batches.stone.add(4 - 0.85, 22, -214 + i + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-4 + i + 0.15, 22, -214 + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-4 + i + 0.15, 22, -206 - 0.85, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(-4 + 0.15, 22, -214 + i + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
+    batches.castleRoof.add(4 - 0.85, 22, -214 + i + 0.15, 0.7, 0.7, 0.7, rng.pick(STONE))
   }
-  // green royal spire + gold finial + the great banner
+  // green royal spire + gold finial + the great banner (toggleable roof)
   let rw = 8.6
   let y = 22.6
   let off = -4.3
   while (rw > 1) {
-    batches.roof.add(off, y, -214.3 + (8.6 - rw) / 2, rw, 0.65, rw, rng.pick([0x2f7d46, 0x38914f] as const))
+    batches.castleRoof.add(off, y, -214.3 + (8.6 - rw) / 2, rw, 0.65, rw, rng.pick([0x2f7d46, 0x38914f] as const))
     y += 0.65
     rw -= 1.3
     off += 0.65
   }
-  batches.misc.add(-0.15, y, -210.15, 0.3, 1.6, 0.3, GOLD)
-  batches.misc.add(0.15, y + 0.9, -210.1, 1.6, 0.9, 0.12, CRIMSON)
+  batches.castleRoof.add(-0.15, y, -210.15, 0.3, 1.6, 0.3, GOLD)
+  batches.castleRoof.add(0.15, y + 0.9, -210.1, 1.6, 0.9, 0.12, CRIMSON)
   // hanging banners on the keep's south face
   for (const bx of [-11, 7]) {
     batches.misc.add(bx, 2.2, -201.95, 1.2, 4.2, 0.14, CRIMSON)
@@ -309,9 +332,13 @@ function buildCastle(ctx: Ctx): void {
   for (const wy of [14.2, 17.4]) {
     batches.window.add(-1.6, wy, -206.15, 1.2, 1.6, 0.3, WINDOW_GLOW)
   }
-  // grand door + arch + steps
-  batches.stone.add(-2.6, 0, -202.5, 5.2, 3.9, 0.6, STONE[0]!)
-  batches.wood.add(-2, 0.12, -202.45, 4, 3.2, 0.5, WOOD_DARK)
+  // grand doorway: open arch (jambs + lintel) framing the walk-in entrance,
+  // flanked by the two door leaves swung open, with steps up to the threshold
+  batches.stone.add(-2.6, 0, -202.55, 0.6, 3.9, 0.7, STONE[0]!) // left jamb
+  batches.stone.add(2, 0, -202.55, 0.6, 3.9, 0.7, STONE[0]!) // right jamb
+  batches.stone.add(-2.6, 3.6, -202.55, 5.2, 0.6, 0.7, STONE[0]!) // lintel
+  batches.wood.add(-2.55, 0.12, -202.2, 0.5, 3.2, 0.5, WOOD_DARK) // door leaf, open L
+  batches.wood.add(2.05, 0.12, -202.2, 0.5, 3.2, 0.5, WOOD_DARK) // door leaf, open R
   batches.stone.add(-3, 0, -201.6, 6, 0.12, 1.6, CAP_STONE[2]!)
   // corner turrets
   for (const [tx, tz] of [

@@ -12,6 +12,15 @@ export interface BatchBuildOpts {
   receiveShadow?: boolean
   transparent?: boolean
   opacity?: number
+  /**
+   * Terrain-height hook: given a box's footprint centre (cx, cz) in world
+   * space, return how far to lift it in Y. Lets the ground cubes AND every
+   * prop/tree/hut baked on top of them ride the heightfield together, with a
+   * single callback at bake time — no per-builder edits. Omit (flat world) to
+   * bake at the authored Y. Returns ~0 across the flat heart, so the eager
+   * heart bake is byte-identical to the flat world.
+   */
+  offsetY?: (cx: number, cz: number) => number
 }
 
 interface Item {
@@ -75,9 +84,12 @@ export class VoxelBatch {
     const s = new THREE.Vector3()
     const c = new THREE.Color()
 
+    const offsetY = opts.offsetY
     for (let i = 0; i < this.items.length; i++) {
       const it = this.items[i] as Item
-      p.set(it.x + it.sx / 2, it.y + it.sy / 2, it.z + it.sz / 2)
+      const cx = it.x + it.sx / 2
+      const cz = it.z + it.sz / 2
+      p.set(cx, it.y + it.sy / 2 + (offsetY ? offsetY(cx, cz) : 0), cz)
       s.set(it.sx, it.sy, it.sz)
       m.compose(p, q, s)
       mesh.setMatrixAt(i, m)

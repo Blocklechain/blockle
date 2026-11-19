@@ -5,12 +5,13 @@
  * resident scene; waystones "teleport" the player by writing api.player.pos.
  * We do the same: on entry we remember where the player stood, then move them
  * to a self-contained voxel arena built FRESH at a far, OUT-OF-WORLD centre
- * (3000,3000). Two facts make that safe and self-contained:
- *   1. The world collision grid reports everything outside |x|,|z|<720 as
+ * (HALF+600 on each axis). Two facts make that safe and self-contained:
+ *   1. The world collision grid reports everything outside |x|,|z|<HALF as
  *      blocked, and the open-world combat spawner bails wherever regionAt is
  *      null (both true out there) — so no wild mobs spawn in the arena and
- *      far-away mobs despawn. The continent is 1280+ units away: beyond the
- *      camera far-plane and fully fogged, so the player sees ONLY the arena.
+ *      far-away mobs despawn. The continent coast is 600 units away: far
+ *      beyond the camera far-plane and fully fogged, so the player sees ONLY
+ *      the arena.
  *   2. We wrap api.world.isBlocked ONCE at init with a pass-through that only
  *      diverts to the arena's own walls while a run is live (arena != null);
  *      idle, it is byte-identical to the original. The player module calls
@@ -35,7 +36,9 @@ import type { GameAPI } from '../types'
 import { SPECIES, type SpeciesDef } from '../ids'
 import { events } from '../events'
 import { saveRegistry } from '../save/registry'
+import { attackDpsMult } from '../skills/index'
 import { kitDungeonEntrance } from '../world/kit'
+import { HALF } from '../world/collision'
 import { buildArena, type Arena } from './arena'
 import { DungeonMob, type MobRigLike } from './mob'
 import {
@@ -86,7 +89,11 @@ export interface DungeonModule {
 // Tunables
 // ---------------------------------------------------------------------------
 
-const ARENA_CENTER = new THREE.Vector3(3000, 0, 3000) // far out-of-world
+// Far out-of-world: past the ±HALF coast (collision reports everything out
+// here as blocked and regionAt is null, so no wild mobs spawn) and well
+// beyond the fog, so the player sees only the arena. Tracks HALF so it stays
+// outside the world no matter how the continent grows.
+const ARENA_CENTER = new THREE.Vector3(HALF + 600, 0, HALF + 600)
 const ENTRANCE = new THREE.Vector3(-150, 0, 196) // in the Ashen Dungeons region
 const USE_RANGE = 3.0
 const STRIKE_RANGE = 2.2
@@ -397,7 +404,7 @@ export function initDungeon(api: GameAPI): DungeonModule {
     const atkLevel = skillsFn?.('attack') ?? 1
     const base = 3 + s.atk + 0.4 * s.str
     const crit = rng() < 0.1 + s.agi * 0.002 + mod('combat.crit')
-    let dmg = base * (1 + (atkLevel - 1) * 0.04) * (0.85 + rng() * 0.3)
+    let dmg = base * attackDpsMult(atkLevel) * (0.85 + rng() * 0.3)
     dmg *= 1 + mod('combat.damage')
     if (crit) dmg *= 1.75
     return { dmg: Math.max(1, Math.round(dmg)), crit }

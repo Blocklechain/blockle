@@ -236,3 +236,43 @@ test('gold spend requires CSRF on cookie sessions', async () => {
     assert.equal(r.status, 403);
   });
 });
+
+test('gold PayPal order credits once, replay-guarded, amount-verified (stub gateway)', async () => {
+  await withServer(async ({ call, loginFresh }) => {
+    const csrf = await loginFresh();
+    const h = { 'X-CSRF-Token': csrf };
+
+    // create a PayPal order for 550 gold ($4.99)
+    const create = await call('POST', '/account/api/game/gold/paypal/create', { sku: 'gold_550' }, h);
+    assert.equal(create.status, 200);
+    assert.ok(create.data.orderId, 'returns an order id');
+    assert.ok(create.data.approveUrl, 'returns an approval url');
+
+    // capture it -> credits exactly 550
+    const cap = await call('POST', '/account/api/game/gold/paypal/capture', { orderId: create.data.orderId, sku: 'gold_550' }, h);
+    assert.equal(cap.status, 200);
+    assert.equal(cap.data.ok, true);
+    assert.equal(cap.data.credited, 550);
+    assert.equal(cap.data.balance, 550);
+    assert.equal((await call('GET', '/account/api/game/gold')).data.balance, 550);
+
+    // same capture again -> 409, balance unchanged (replay guard)
+    const again = await call('POST', '/account/api/game/gold/paypal/capture', { orderId: create.data.orderId, sku: 'gold_550' }, h);
+    assert.equal(again.status, 409);
+    assert.equal((await call('GET', '/account/api/game/gold')).data.balance, 550);
+
+    // capturing the 550 order while CLAIMING it was gold_100 -> amount mismatch, no credit
+    const c2 = await call('POST', '/account/api/game/gold/paypal/create', { sku: 'gold_1200' }, h);
+    const mism = await call('POST', '/account/api/game/gold/paypal/capture', { orderId: c2.data.orderId, sku: 'gold_100' }, h);
+    assert.equal(mism.status, 400);
+    assert.equal((await call('GET', '/account/api/game/gold')).data.balance, 550);
+  });
+});
+
+test('gold PayPal create requires CSRF on cookie sessions', async () => {
+  await withServer(async ({ call, loginFresh }) => {
+    await loginFresh();
+    const r = await call('POST', '/account/api/game/gold/paypal/create', { sku: 'gold_100' });
+    assert.equal(r.status, 403);
+  });
+});
