@@ -90,6 +90,23 @@ const GLOW       := Color("#ffe9a8")
 const UI_BG      := Color("#2b1e35")
 const UI_EDGE    := Color("#4a3358")
 
+
+# Sun-tint a material triple. The sun sits up-left, so the TOP face catches warm
+# gold, the left face (facing it) stays near-true, and the right face falls away
+# into a cool shadow. Applying this one relationship to every surface in the
+# scene is what makes a flat palette suddenly look LIT.
+static func sun(m: Array, strength: float = 1.0) -> Array:
+	return [
+		m[0].lerp(GOLD, 0.16 * strength),
+		m[1].lerp(CREAM, 0.05 * strength),
+		m[2].lerp(INK_SOFT, 0.18 * strength)]
+
+# Push a material toward the sky as it recedes — aerial perspective. Distant
+# ground reads as further away without moving a single pixel.
+static func haze(m: Array, amount: float) -> Array:
+	var a: float = clampf(amount, 0.0, 1.0)
+	return [m[0].lerp(SKY_LO, a * 0.30), m[1].lerp(SKY_LO, a * 0.26), m[2].lerp(SKY_LO, a * 0.22)]
+
 # A material triple: [top, left, right] faces of an iso cube.
 static func mat(name: String) -> Array:
 	match name:

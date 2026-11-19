@@ -81,5 +81,9 @@ func box(ci: CanvasItem, at: Vector2, size: Vector2, col: Color) -> void:
 	ci.draw_rect(Rect2(at.round(), size.round()), col)
 
 # A soft elliptical contact shadow on the ground under something.
-func shadow(ci: CanvasItem, c: Vector2, w: float = TILE_W * 0.8) -> void:
-	diamond(ci, c, Color(Pal.INK.r, Pal.INK.g, Pal.INK.b, 0.22), w, w * 0.5)
+func shadow(ci: CanvasItem, c: Vector2, w: float = TILE_W * 0.8, h: float = 0.0) -> void:
+	# cast DOWN-RIGHT, away from the up-left sun, and stretch with the caster's
+	# height — a shadow that leans is worth more than a hundred shaded faces
+	var off := Vector2(4.0 + h * 1.5, 2.0 + h * 0.7)
+	diamond(ci, c + off, Color(Pal.INK.r, Pal.INK.g, Pal.INK.b, 0.20),
+		w * (1.0 + h * 0.06), w * 0.5)

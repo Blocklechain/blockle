@@ -80,7 +80,9 @@ func _generate() -> void:
 		{"kind": "cottage", "n": 3},
 		{"kind": "tree", "n": 11},
 		{"kind": "rock", "n": 6},
-		{"kind": "flower", "n": 22},
+		{"kind": "bush", "n": 9},
+		{"kind": "mushroom", "n": 7},
+		{"kind": "flower", "n": 20},
 	]
 	var pick := 0
 	for w in want:
@@ -107,6 +109,40 @@ func _generate() -> void:
 				_props.append({"gx": c.x, "gy": c.y, "z": float(tl["h"]) + 1.0,
 					"kind": String(w["kind"]), "s": pick})
 				break
+	_carve_path()
+
+# How far back a tile sits, 0 (nearest the camera) .. 1 (far horizon edge).
+# Drives aerial haze so the island has real depth across its own surface.
+func _back(gx: float, gy: float) -> float:
+	return clampf(0.5 - (gx + gy) / (float(R) * 4.0), 0.0, 1.0)
+
+# A worn dirt path wandering between the cottages — the single strongest cue
+# that someone LIVES here rather than the props being scattered at random.
+func _carve_path() -> void:
+	var homes: Array = []
+	for p in _props:
+		if String(p["kind"]) == "cottage":
+			homes.append(Vector2(float(p["gx"]), float(p["gy"])))
+	if homes.size() < 2:
+		return
+	homes.sort_custom(func(a, b): return a.x + a.y < b.x + b.y)
+	for i in range(homes.size() - 1):
+		var a: Vector2 = homes[i]
+		var b: Vector2 = homes[i + 1]
+		var steps := int(maxf(absf(b.x - a.x), absf(b.y - a.y)) * 2.0) + 2
+		for st in range(steps + 1):
+			var f := float(st) / float(steps)
+			# a slight sideways wander so the path is never a ruled line
+			var wob := sin(f * PI) * (_rf("pw%d" % i) * 1.6 - 0.8)
+			var pt := a.lerp(b, f) + Vector2(wob, -wob) * 0.6
+			var key := Vector2i(int(round(pt.x)), int(round(pt.y)))
+			if _tiles.has(key) and not bool(_tiles[key].get("water", false)):
+				_tiles[key]["path"] = true
+				# widen here and there so the trail isn't a single-tile thread
+				var side := Vector2i(key.x + (1 if _rf("pwz%d_%d" % [key.x, key.y]) > 0.5 else 0),
+					key.y + (1 if _rf("pwy%d_%d" % [key.x, key.y]) > 0.62 else 0))
+				if _tiles.has(side) and not bool(_tiles[side].get("water", false)):
+					_tiles[side]["path"] = true
 
 # ---- drawing -----------------------------------------------------------------
 
@@ -130,7 +166,8 @@ func _draw() -> void:
 			var tl: Dictionary = _tiles[k]
 			if int(tl["deep"]) < lvl:
 				continue
-			Iso.cube(self, k.x, k.y, float(tl["h"]) - float(lvl), 1.0, m)
+			Iso.cube(self, k.x, k.y, float(tl["h"]) - float(lvl), 1.0,
+				Pal.haze(m, _back(k.x, k.y) * 0.5))
 	# TOP: soil band + grass cap, back to front
 	for k in keys:
 		_draw_column(k)
@@ -192,14 +229,21 @@ func _draw_column(k: Vector2i) -> void:
 	var tl: Dictionary = _tiles[k]
 	var h: float = tl["h"]
 	# a band of soil directly under the turf, then the grass cap
-	Iso.cube(self, k.x, k.y, h - 1.0, 1.0, Pal.mat("soil"))
+	Iso.cube(self, k.x, k.y, h - 1.0, 1.0, Pal.haze(Pal.sun(Pal.mat("soil"), 0.6), _back(k.x, k.y)))
 	# Per-tile grass variation: a large flat field of one green reads as empty, so
 	# each tile shifts slightly and some wear to a lighter, sandier patch.
 	var v := _rf("g%d_%d" % [k.x, k.y])
 	if bool(tl.get("water", false)):
-		Iso.cube(self, k.x, k.y, h, 1.0, Pal.mat("water"))
+		Iso.cube(self, k.x, k.y, h, 1.0, Pal.haze(Pal.sun(Pal.mat("water"), 0.5), _back(k.x, k.y)))
 		# a glint that drifts across the surface
 		var wc := Iso.to_screen(k.x, k.y, h + 1.0)
+		# lily pads: a couple of flat green discs with an occasional bloom
+		if _rf("lp%d_%d" % [k.x, k.y]) > 0.62:
+			var lc := Iso.to_screen(k.x, k.y, h + 1.0)
+			var bob := sin(t * 0.8 + float(k.x * 3 + k.y)) * 0.8
+			Iso.diamond(self, lc + Vector2(0, bob), Pal.LEAF_T.lerp(Pal.GRASS_T, 0.3), 13.0, 7.0)
+			if _rf("lb%d_%d" % [k.x, k.y]) > 0.6:
+				Iso.box(self, lc + Vector2(-1, bob - 3), Vector2(3, 3), Pal.BLOSSOM)
 		var gl := 0.5 + 0.5 * sin(t * 1.3 + float(k.x + k.y) * 0.9)
 		if gl > 0.72:
 			Iso.box(self, wc + Vector2(-4, -1), Vector2(8, 2),
@@ -207,6 +251,15 @@ func _draw_column(k: Vector2i) -> void:
 		return
 	var g := Pal.mat("grass")
 	var m: Array = g
+	# a sandy shore wherever the turf meets the pond
+	var shore := false
+	for o in [Vector2i(1,0), Vector2i(-1,0), Vector2i(0,1), Vector2i(0,-1)]:
+		var nk := Vector2i(k.x + o.x, k.y + o.y)
+		if _tiles.has(nk) and bool(_tiles[nk].get("water", false)):
+			shore = true
+			break
+	if shore:
+		m = [Color("#e8d6a8"), Color("#c4ad7e"), Color("#95805a")]
 	if v > 0.88:
 		m = [g[0].lerp(Pal.SOIL_T, 0.35), g[1].lerp(Pal.SOIL_L, 0.3), g[2].lerp(Pal.SOIL_R, 0.3)]
 	elif v > 0.62:
@@ -217,7 +270,11 @@ func _draw_column(k: Vector2i) -> void:
 	# instead of its edge dissolving into the sky.
 	if not _tiles.has(Vector2i(k.x + 1, k.y)) or not _tiles.has(Vector2i(k.x, k.y + 1)):
 		m = [m[0].darkened(0.06), m[1], m[2]]
-	Iso.cube(self, k.x, k.y, h, 1.0, m)
+	if bool(tl.get("path", false)):
+		var pm := [Color("#e0c89a"), Color("#bda173"), Color("#8f7652")]
+		Iso.cube(self, k.x, k.y, h, 1.0, Pal.haze(Pal.sun(pm), _back(k.x, k.y)))
+		return
+	Iso.cube(self, k.x, k.y, h, 1.0, Pal.haze(Pal.sun(m), _back(k.x, k.y)))
 	# a couple of pixel grass tufts, so the turf has texture up close
 	if v > 0.30 and v < 0.62:
 		var c := Iso.to_screen(k.x, k.y, h + 1.0)
@@ -235,13 +292,15 @@ func _draw_prop(p: Dictionary) -> void:
 		"cottage": _cottage(gx, gy, z, s)
 		"rock": _rock(gx, gy, z, s)
 		"flower": _flower(gx, gy, z, s)
+		"bush": _bush(gx, gy, z, s)
+		"mushroom": _mushroom(gx, gy, z, s)
 
 # ---- props (all built from Iso cubes so they sit on the grid) ----------------
 
 func _tree(gx: float, gy: float, z: float, s: int) -> void:
 	# A tree must read instantly against the grass, so: a TALL visible trunk and
 	# a canopy in a deeper, bluer green than the turf (never the same family).
-	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.9)
+	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.95, 1.6)
 	# Every tree is its own size and species — a grove of identical trees is the
 	# fastest way to make a world look stamped out.
 	var sz: float = 0.78 + _rf("tz%d" % s) * 0.5
@@ -251,8 +310,9 @@ func _tree(gx: float, gy: float, z: float, s: int) -> void:
 		m = Pal.mat("autumn")
 	elif kind > 0.70:
 		m = [Pal.BLOSSOM, Pal.BLOSSOM.darkened(0.18), Pal.BLOSSOM.darkened(0.34)]
+	m = Pal.haze(Pal.sun(m), _back(gx, gy) * 0.7)
 	var trunk := 1.5 * sz
-	Iso.cube(self, gx, gy, z, trunk, Pal.mat("wood"), 0.28)
+	Iso.cube(self, gx, gy, z, trunk, Pal.sun(Pal.mat("wood"), 0.7), 0.28)
 	var base := z + trunk - 0.2
 	if kind < 0.24:
 		# a tall narrow conifer
@@ -267,14 +327,15 @@ func _tree(gx: float, gy: float, z: float, s: int) -> void:
 		Iso.cube(self, gx, gy, base + 2.8 * sz, 1.0 * sz, m, 0.48 * sz)
 
 func _cottage(gx: float, gy: float, z: float, s: int) -> void:
+	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 1.5, 2.0)
 	# walls
-	Iso.cube(self, gx, gy, z, 2.0, Pal.mat("stone"), 1.6)
+	Iso.cube(self, gx, gy, z, 2.0, Pal.sun(Pal.mat("stone")), 1.6)
 	# roof: two shrinking blue cubes read as a pitched roof at this scale
 	# a stepped pyramid reads as a pitched roof far better than two slabs
-	Iso.cube(self, gx, gy, z + 2.0, 0.55, Pal.mat("roof"), 1.95)
-	Iso.cube(self, gx, gy, z + 2.55, 0.5, Pal.mat("roof"), 1.5)
-	Iso.cube(self, gx, gy, z + 3.05, 0.45, Pal.mat("roof"), 1.05)
-	Iso.cube(self, gx, gy, z + 3.5, 0.4, Pal.mat("roof"), 0.6)
+	Iso.cube(self, gx, gy, z + 2.0, 0.55, Pal.sun(Pal.mat("roof")), 1.95)
+	Iso.cube(self, gx, gy, z + 2.55, 0.5, Pal.sun(Pal.mat("roof")), 1.5)
+	Iso.cube(self, gx, gy, z + 3.05, 0.45, Pal.sun(Pal.mat("roof")), 1.05)
+	Iso.cube(self, gx, gy, z + 3.5, 0.4, Pal.sun(Pal.mat("roof")), 0.6)
 	# a warm window on the left face + a chimney
 	var c := Iso.to_screen(gx, gy, z + 1.2)
 	Iso.box(self, c + Vector2(-12, -4), Vector2(5, 5), Pal.GLOW)      # lit window
@@ -292,14 +353,44 @@ func _cottage(gx: float, gy: float, z: float, s: int) -> void:
 
 func _rock(gx: float, gy: float, z: float, s: int) -> void:
 	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.62)
-	Iso.cube(self, gx, gy, z, 0.45, Pal.mat("boulder"), 0.62)
-	Iso.cube(self, gx + 0.18, gy + 0.12, z + 0.4, 0.3, Pal.mat("boulder"), 0.36)
+	Iso.cube(self, gx, gy, z, 0.45, Pal.sun(Pal.mat("boulder")), 0.62)
+	Iso.cube(self, gx + 0.18, gy + 0.12, z + 0.4, 0.3, Pal.sun(Pal.mat("boulder")), 0.36)
+
+func _bush(gx: float, gy: float, z: float, s: int) -> void:
+	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.6, 0.4)
+	var m := Pal.haze(Pal.sun(Pal.mat("leaf")), _back(gx, gy) * 0.6)
+	var sz: float = 0.7 + _rf("bz%d" % s) * 0.4
+	Iso.cube(self, gx, gy, z, 0.8 * sz, m, 0.78 * sz)
+	Iso.cube(self, gx + 0.12, gy - 0.1, z + 0.7 * sz, 0.6 * sz, m, 0.5 * sz)
+	# a few berries
+	if _rf("bb%d" % s) > 0.5:
+		var c := Iso.to_screen(gx, gy, z + 1.0)
+		for i in range(3):
+			Iso.box(self, c + Vector2(-5 + i * 4, -6 + (i % 2) * 3), Vector2(2, 2), Pal.GOLD_DEEP)
+
+func _mushroom(gx: float, gy: float, z: float, s: int) -> void:
+	var c := Iso.to_screen(gx, gy, z)
+	Iso.shadow(self, c, Iso.TILE_W * 0.3, 0.2)
+	var red := _rf("mr%d" % s) > 0.45
+	var cap_col: Color = Color("#d9534f") if red else Color("#e8cfa8")
+	for i in range(2):
+		var ox := -4.0 + float(i) * 7.0
+		var hh := 4.0 + _rf("mh%d_%d" % [s, i]) * 3.0
+		Iso.box(self, c + Vector2(ox, -hh), Vector2(2, hh), Pal.CREAM)
+		Iso.box(self, c + Vector2(ox - 2, -hh - 3), Vector2(6, 3), cap_col)
+		Iso.box(self, c + Vector2(ox - 1, -hh - 4), Vector2(2, 1), cap_col.lightened(0.3))
 
 func _flower(gx: float, gy: float, z: float, s: int) -> void:
 	var c := Iso.to_screen(gx, gy, z)
 	var sway := sin(t * 1.6 + float(s) * 1.7) * 1.0
-	var cols := [Pal.BLOSSOM, Pal.GOLD, Pal.CREAM, Pal.WATER_T]
+	var cols := [Pal.BLOSSOM, Pal.GOLD, Pal.CREAM, Pal.WATER_T, Color("#c98bdb")]
 	var col: Color = cols[s % cols.size()]
-	Iso.box(self, c + Vector2(-1, -8), Vector2(2, 8), Pal.LEAF_R)
-	Iso.box(self, c + Vector2(-3 + sway, -13), Vector2(6, 6), col)
-	Iso.box(self, c + Vector2(-1 + sway, -11), Vector2(1, 1), col.lightened(0.45))
+	# a little cluster, never a lone stem
+	for i in range(3):
+		var ox := -6.0 + float(i) * 6.0 + _rf("fx%d_%d" % [s, i]) * 2.0
+		var oy := -1.0 + _rf("fy%d_%d" % [s, i]) * 3.0
+		var hgt := 6.0 + _rf("fh%d_%d" % [s, i]) * 4.0
+		var sw := sway * (0.6 + float(i) * 0.25)
+		Iso.box(self, c + Vector2(ox, oy - hgt), Vector2(1, hgt), Pal.LEAF_R)
+		Iso.box(self, c + Vector2(ox - 2 + sw, oy - hgt - 4), Vector2(5, 5), col)
+		Iso.box(self, c + Vector2(ox + sw, oy - hgt - 2), Vector2(1, 1), col.lightened(0.5))
