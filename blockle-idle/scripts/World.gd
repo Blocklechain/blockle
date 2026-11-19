@@ -16,10 +16,14 @@ var world_seed: int = 12345
 var _tiles: Dictionary = {}       # Vector2i -> {h: top elevation, deep: rock depth}
 var _props: Array = []            # [{gx, gy, z, kind, seed}]
 var _kin: Array = []              # the Blocklings living here (see Kin.gd)
+var ghost_kind := ""              # set by Main while a tray item is being dragged
+var ghost_tile := Vector2i(9999, 9999)
+var ghost_ok := false
 var t := 0.0
 # Time of day, 0 = midnight, .25 dawn, .5 noon, .75 dusk. A full day takes
 # DAY_SECONDS of real time; the whole island is tinted from this one number.
 const DAY_SECONDS := 240.0
+const GROW_MINUTES := 4.0      # seed -> full size, in real minutes
 var tod := 0.34
 var _tod_set := false          # true when a caller pins the time (screenshots)
 var _L: Array = []             # this frame's [sky_hi, sky_mid, sky_lo, warm, cool, strength]
@@ -32,6 +36,11 @@ func _process(delta: float) -> void:
 	if not _tod_set:
 		tod = fposmod(tod + delta / DAY_SECONDS, 1.0)
 	_tick_kin(delta)
+	# Continuous, very slow growth: a freshly planted thing takes GROW_MINUTES of
+	# real time to reach maturity, and keeps creeping while you watch.
+	for p in _props:
+		if float(p.get("g", 1.0)) < 1.0:
+			p["g"] = minf(1.0, float(p["g"]) + delta / (GROW_MINUTES * 60.0))
 	queue_redraw()                # the scene is small; a full redraw is cheap
 
 # ---- generation --------------------------------------------------------------
@@ -216,6 +225,8 @@ func _draw() -> void:
 			_draw_kin(d["kin"])
 		else:
 			_draw_prop(d["p"])
+	if ghost_kind != "":
+		draw_ghost(ghost_kind, ghost_tile, ghost_ok)
 
 func _draw_sky() -> void:
 	# A banded vertical gradient — banding is a pixel-art virtue, not a flaw.
@@ -344,13 +355,76 @@ func _draw_prop(p: Dictionary) -> void:
 	var gy: float = p["gy"]
 	var z: float = p["z"]
 	var s: int = p["s"]
+	var g: float = float(p.get("g", 1.0))
+	# eased so a sprout starts gently and fills out toward the end
+	var gv: float = g * g * (3.0 - 2.0 * g)
 	match String(p["kind"]):
-		"tree": _tree(gx, gy, z, s)
-		"cottage": _cottage(gx, gy, z, s)
+		"tree": _tree(gx, gy, z, s, gv)
+		"cottage": _cottage(gx, gy, z, s, gv)
 		"rock": _rock(gx, gy, z, s)
-		"flower": _flower(gx, gy, z, s)
-		"bush": _bush(gx, gy, z, s)
+		"flower": _flower(gx, gy, z, s, gv)
+		"bush": _bush(gx, gy, z, s, gv)
 		"mushroom": _mushroom(gx, gy, z, s)
+
+# ---- planting (what the inventory tray drives) ------------------------------
+
+# Which tile a screen point lands on. Walks the candidate tiles and picks the
+# one whose drawn top face actually contains the point, so tall ground near the
+# crown doesn't mis-target the tile behind it.
+func tile_at(local_pos: Vector2) -> Vector2i:
+	var best := Vector2i(9999, 9999)
+	var best_k := -1e9
+	for k in _tiles.keys():
+		var kk: Vector2i = k
+		var h: float = float(_tiles[kk]["h"])
+		var c := Iso.to_screen(kk.x, kk.y, h + 1.0)
+		var d := local_pos - c
+		# inside the 2:1 diamond?
+		if absf(d.x) / (Iso.TILE_W * 0.5) + absf(d.y) / (Iso.TILE_H * 0.5) <= 1.0:
+			var key := float(kk.x + kk.y) * 64.0 + h
+			if key > best_k:
+				best_k = key
+				best = kk
+	return best
+
+func has_tile(k: Vector2i) -> bool:
+	return _tiles.has(k)
+
+# May something be planted here? Water, the worn path and occupied tiles say no.
+func can_plant(k: Vector2i) -> Dictionary:
+	if not _tiles.has(k):
+		return {"ok": false, "why": "there is only sky there"}
+	if bool(_tiles[k].get("water", false)):
+		return {"ok": false, "why": "that is the pond"}
+	for p in _props:
+		if int(p["gx"]) == k.x and int(p["gy"]) == k.y:
+			return {"ok": false, "why": "something already grows here"}
+	return {"ok": true, "why": ""}
+
+# Plant a fresh thing: it starts as a seed and grows from there.
+func plant(kind: String, k: Vector2i) -> bool:
+	var chk := can_plant(k)
+	if not bool(chk["ok"]):
+		return false
+	_props.append({"gx": k.x, "gy": k.y, "z": float(_tiles[k]["h"]) + 1.0,
+		"kind": kind, "s": 9000 + _props.size(), "g": 0.0})
+	return true
+
+# The ghost preview the tray draws while a finger is dragging over the world.
+func draw_ghost(kind: String, k: Vector2i, ok: bool) -> void:
+	if not _tiles.has(k):
+		return
+	var h: float = float(_tiles[k]["h"])
+	var c := Iso.to_screen(k.x, k.y, h + 1.0)
+	var tint: Color = Color(0.6, 1.0, 0.7, 0.55) if ok else Color(1.0, 0.45, 0.45, 0.5)
+	Iso.diamond(self, c, tint, Iso.TILE_W, Iso.TILE_H)
+	# a pulsing outline so the target tile is unmistakable
+	var pulse: float = 0.6 + 0.4 * sin(t * 6.0)
+	var hw := Iso.TILE_W * 0.5
+	var hh := Iso.TILE_H * 0.5
+	var pts := PackedVector2Array([c + Vector2(0, -hh), c + Vector2(hw, 0),
+		c + Vector2(0, hh), c + Vector2(-hw, 0), c + Vector2(0, -hh)])
+	draw_polyline(pts, Color(tint.r, tint.g, tint.b, pulse), 1.0)
 
 # ---- the Blocklings ---------------------------------------------------------
 
@@ -458,13 +532,20 @@ func _draw_kin(k: Kin) -> void:
 
 # ---- props (all built from Iso cubes so they sit on the grid) ----------------
 
-func _tree(gx: float, gy: float, z: float, s: int) -> void:
+func _tree(gx: float, gy: float, z: float, s: int, g: float = 1.0) -> void:
 	# A tree must read instantly against the grass, so: a TALL visible trunk and
 	# a canopy in a deeper, bluer green than the turf (never the same family).
 	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.95, 1.6)
 	# Every tree is its own size and species — a grove of identical trees is the
 	# fastest way to make a world look stamped out.
-	var sz: float = 0.78 + _rf("tz%d" % s) * 0.5
+	var sz: float = (0.78 + _rf("tz%d" % s) * 0.5) * maxf(0.16, g)
+	if g < 0.22:
+		# a sapling: two leaves on a stem, before it is a tree at all
+		var sc := Iso.to_screen(gx, gy, z)
+		Iso.box(self, sc + Vector2(-1, -7), Vector2(2, 7), _lit(Pal.mat("wood"))[0])
+		Iso.box(self, sc + Vector2(-5, -10), Vector2(4, 3), _lit(Pal.mat("leaf"))[0])
+		Iso.box(self, sc + Vector2(1, -12), Vector2(4, 3), _lit(Pal.mat("leaf"))[0])
+		return
 	var kind := _rf("tk%d" % s)
 	var m := Pal.mat("leaf")
 	if kind > 0.84:
@@ -487,7 +568,16 @@ func _tree(gx: float, gy: float, z: float, s: int) -> void:
 		Iso.cube(self, gx, gy, base + 1.6 * sz, 1.3 * sz, m, 0.84 * sz)
 		Iso.cube(self, gx, gy, base + 2.8 * sz, 1.0 * sz, m, 0.48 * sz)
 
-func _cottage(gx: float, gy: float, z: float, s: int) -> void:
+func _cottage(gx: float, gy: float, z: float, s: int, g: float = 1.0) -> void:
+	if g < 0.99:
+		# under construction: a timber frame that rises into the finished house
+		var fc := Iso.to_screen(gx, gy, z)
+		Iso.shadow(self, fc, Iso.TILE_W * 1.3, 1.0)
+		var wm := _lit(Pal.mat("wood"))
+		Iso.cube(self, gx, gy, z, maxf(0.2, 2.6 * g), wm, 1.5)
+		for i in range(3):
+			Iso.box(self, fc + Vector2(-14 + i * 13, -int(22 * g)), Vector2(2, int(22 * g) + 1), wm[2])
+		return
 	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 1.5, 2.0)
 	# walls
 	Iso.cube(self, gx, gy, z, 2.0, _lit(Pal.mat("stone")), 1.6)
@@ -527,10 +617,10 @@ func _rock(gx: float, gy: float, z: float, s: int) -> void:
 	Iso.cube(self, gx, gy, z, 0.45, _lit(Pal.mat("boulder")), 0.62)
 	Iso.cube(self, gx + 0.18, gy + 0.12, z + 0.4, 0.3, _lit(Pal.mat("boulder")), 0.36)
 
-func _bush(gx: float, gy: float, z: float, s: int) -> void:
+func _bush(gx: float, gy: float, z: float, s: int, g: float = 1.0) -> void:
 	Iso.shadow(self, Iso.to_screen(gx, gy, z), Iso.TILE_W * 0.6, 0.4)
 	var m := _hz(_lit(Pal.mat("leaf")), _back(gx, gy) * 0.6)
-	var sz: float = 0.7 + _rf("bz%d" % s) * 0.4
+	var sz: float = (0.7 + _rf("bz%d" % s) * 0.4) * maxf(0.2, g)
 	Iso.cube(self, gx, gy, z, 0.8 * sz, m, 0.78 * sz)
 	Iso.cube(self, gx + 0.12, gy - 0.1, z + 0.7 * sz, 0.6 * sz, m, 0.5 * sz)
 	# a few berries
@@ -551,7 +641,7 @@ func _mushroom(gx: float, gy: float, z: float, s: int) -> void:
 		Iso.box(self, c + Vector2(ox - 2, -hh - 3), Vector2(6, 3), cap_col)
 		Iso.box(self, c + Vector2(ox - 1, -hh - 4), Vector2(2, 1), cap_col.lightened(0.3))
 
-func _flower(gx: float, gy: float, z: float, s: int) -> void:
+func _flower(gx: float, gy: float, z: float, s: int, g: float = 1.0) -> void:
 	var c := Iso.to_screen(gx, gy, z)
 	var sway := sin(t * 1.6 + float(s) * 1.7) * 1.0
 	var cols := [Pal.BLOSSOM, Pal.GOLD, Pal.CREAM, Pal.WATER_T, Color("#c98bdb")]
@@ -560,7 +650,7 @@ func _flower(gx: float, gy: float, z: float, s: int) -> void:
 	for i in range(3):
 		var ox := -6.0 + float(i) * 6.0 + _rf("fx%d_%d" % [s, i]) * 2.0
 		var oy := -1.0 + _rf("fy%d_%d" % [s, i]) * 3.0
-		var hgt := 6.0 + _rf("fh%d_%d" % [s, i]) * 4.0
+		var hgt := (6.0 + _rf("fh%d_%d" % [s, i]) * 4.0) * maxf(0.25, g)
 		var sw := sway * (0.6 + float(i) * 0.25)
 		Iso.box(self, c + Vector2(ox, oy - hgt), Vector2(1, hgt), Pal.LEAF_R)
 		Iso.box(self, c + Vector2(ox - 2 + sw, oy - hgt - 4), Vector2(5, 5), col)
