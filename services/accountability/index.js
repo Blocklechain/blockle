@@ -68,7 +68,14 @@ function rateIp(ip) {
 const bodyFor = (ev, alias, detail) => {
   const who = alias ? `${alias}` : 'Someone you know';
   switch (ev) {
-    case 'relapse': return `${who} just turned OFF their gambling-site block during an active commitment.\n\nThis is the moment they asked you to check in. A short, kind message can make a real difference right now.`;
+    // `detail` names the exact filters the app saw switched off. Do not go back
+    // to a hardcoded sentence here: the app watches six separate blockers and
+    // reports disables whether or not a commitment is running, so claiming
+    // "gambling block, during an active commitment" was wrong in most cases.
+    case 'relapse': return detail
+      ? `${who} switched protection off.\n\n${detail}\n\nThis is the moment they asked you to check in. A short, kind message can make a real difference right now.`
+      : `${who} switched one of their site blocks off.\n\nThis is the moment they asked you to check in. A short, kind message can make a real difference right now.`;
+    case 'restored': return `${who} switched protection back on.\n\n${detail || ''}`.trimEnd();
     case 'progress': return `Good news — ${who} is staying strong. ${detail || ''}\n\nA word of encouragement goes a long way.`;
     case 'completed': return `${who} completed their gambling-blocking commitment. That's a real milestone — consider celebrating it with them.`;
     case 'started': return `${who} started a gambling-blocking commitment and chose you as their accountability partner. You'll get a note if they turn the block off, and the occasional progress update.`;

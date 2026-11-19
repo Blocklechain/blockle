@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 import UIKit
 
 struct IdentifiableURL: Identifiable { let id = UUID(); let url: URL }
@@ -10,6 +11,30 @@ struct ShareSheet: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: [url], applicationActivities: nil)
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+/// Quick Look preview for a decrypted file. Used by the vault's "View file"
+/// action so a protected document can actually be read in the app - previously
+/// the only thing you could do with a protected item was share a proof of it.
+struct FilePreview: UIViewControllerRepresentable {
+    let url: URL
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let c = QLPreviewController()
+        c.dataSource = context.coordinator
+        return c
+    }
+    func updateUIViewController(_ c: QLPreviewController, context: Context) {}
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+        init(url: URL) { self.url = url }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewController(_ controller: QLPreviewController,
+                               previewItemAt index: Int) -> QLPreviewItem {
+            url as NSURL
+        }
+    }
 }
 
 // MARK: - Home
@@ -106,6 +131,8 @@ struct VaultContent: View {
     @StateObject private var store = VaultStore()
     @State private var picking = false
     @State private var proofShare: IdentifiableURL?
+    /// Decrypted copy currently open in the previewer; cleared and deleted on dismiss.
+    @State private var revealed: IdentifiableURL?
     @State private var syncing = false
     @State private var syncMsg: String?
     @State private var showPaywall = false
@@ -141,6 +168,12 @@ struct VaultContent: View {
             Task { await importAndProtect(url) }
         }
         .sheet(item: $proofShare) { ShareSheet(url: $0.url) }
+        // The decrypted copy is deleted the moment the viewer closes. A
+        // plaintext left behind in /tmp outlives the user's intent, which is
+        // precisely what this app exists to prevent.
+        .sheet(item: $revealed, onDismiss: { store.discardRevealed(revealed?.url) }) {
+            FilePreview(url: $0.url)
+        }
         .sheet(isPresented: $showPaywall) { PaywallView() }
     }
 
@@ -222,6 +255,9 @@ struct VaultContent: View {
                     .font(.caption).foregroundStyle(Brand.muted)
                 if let tx = item.txid {
                     Text("anchor tx \(String(tx.prefix(12)))…").font(.caption2.monospaced()).foregroundStyle(Brand.redSoft)
+                }
+                Button { if let u = store.reveal(item) { revealed = IdentifiableURL(url: u) } } label: {
+                    Label("View file", systemImage: "eye.fill")
                 }
                 Button { if let u = store.exportProof(item) { proofShare = IdentifiableURL(url: u) } } label: {
                     Label("Share verification proof", systemImage: "checkmark.seal")

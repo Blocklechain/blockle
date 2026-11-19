@@ -24,6 +24,17 @@ final class CustomBlockStore: ObservableObject {
     @Published var message: String?
     @Published var syncing = false
 
+    /// Is the "My List" Safari extension actually switched on in iOS Settings?
+    /// nil until first checked. When this is false the user's list blocks
+    /// NOTHING, however many sites they have added - and nothing else in the
+    /// app would otherwise tell them, because reloadContentBlocker() succeeds
+    /// silently on a disabled extension.
+    @Published var extensionEnabled: Bool?
+
+    /// Set when the rule list could not be handed to the extension at all
+    /// (App Group container unavailable). Also silent before.
+    @Published var writeFailed = false
+
     /// The full, de-duplicated set that is actually blocked.
     var all: [String] { Array(Set(local + family)).sorted() }
 
@@ -74,10 +85,35 @@ final class CustomBlockStore: ObservableObject {
     /// ask Safari to recompile the ShieldCustom extension.
     func apply() {
         let data = Self.packed(all)
-        if let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) {
-            try? data.write(to: dir.appendingPathComponent("custom-blockerList.json"), options: .atomic)
+        guard let dir = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) else {
+            // No App Group container: the extension can never see the list.
+            // Previously this was `if let` with a `try?` write, so the whole
+            // feature failed in total silence.
+            writeFailed = true
+            message = "Couldn't reach the shared storage the blocker reads. Reinstall, or contact support."
+            return
+        }
+        do {
+            try data.write(to: dir.appendingPathComponent("custom-blockerList.json"),
+                           options: .atomic)
+            writeFailed = false
+        } catch {
+            writeFailed = true
+            message = "Couldn't save your block list: \(error.localizedDescription)"
+            return
         }
         SFContentBlockerManager.reloadContentBlocker(withIdentifier: Self.blockerID) { _ in }
+        refreshExtensionState()
+    }
+
+    /// Ask iOS whether the My List extension is enabled. A disabled extension
+    /// is the single most likely reason a user's own sites are not blocked.
+    func refreshExtensionState() {
+        SFContentBlockerManager.getStateOfContentBlocker(withIdentifier: Self.blockerID) { [weak self] state, _ in
+            let on = state?.isEnabled ?? false
+            Task { @MainActor in self?.extensionEnabled = on }
+        }
     }
 
     /// One `block` rule per chunk of ≤200 domains (via `if-domain`, which also

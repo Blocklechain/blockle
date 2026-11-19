@@ -120,6 +120,13 @@ final class CommitmentLockModel: ObservableObject {
                       var c = self.commitment else { return }
                 c.inviteId = r.inviteId; c.ownerToken = r.ownerToken
                 self.commitment = c; self.save()
+                // Also store it outside the commitment. `finish()` nils the
+                // commitment out, which used to forget the partner along with
+                // it — so disabling a filter after a commitment ended emailed
+                // nobody. Accountability outlives one commitment; this is
+                // cleared only when the user removes the partner.
+                PartnerStore.save(PartnerLink(inviteId: r.inviteId, ownerToken: r.ownerToken,
+                                              partnerName: partnerName))
             }
         }
         return key
@@ -191,9 +198,11 @@ final class CommitmentLockModel: ObservableObject {
                 self.notifyTamper(c)
                 ProtectState.log(icon: "exclamationmark.triangle.fill", title: "Gambling block turned off",
                                  detail: c.partnerName.map { "During your commitment — consider telling \($0)." } ?? "During your active commitment.")
-                if let id = c.inviteId, let t = c.ownerToken {
-                    Task { await AccountabilityClient.notify(inviteId: id, ownerToken: t, event: "relapse") }
-                }
+                // The partner email is NOT sent from here. DisableWatch watches
+                // every filter app-wide and names which one changed; sending
+                // from both paths would race for the service's rate limit and
+                // the vaguer message could win. This path keeps the commitment
+                // bookkeeping (tamperCount) and the local nag only.
             }
         }
     }

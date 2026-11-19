@@ -39,6 +39,17 @@ final class SafariShieldModel: ObservableObject {
                      title: "Adult Content (4 of 4)",
                      detail: "Pornography and adult sites — part 4.",
                      count: "238,000+ sites"),
+        // "My List" MUST be here. It was omitted originally, and because this
+        // screen is the only place the app reports a blocker's real Safari
+        // state, a user could add custom sites, see them listed as blocked in
+        // the app, and never be told the extension itself was switched off in
+        // iOS Settings — so nothing was ever blocked. reloadContentBlocker()
+        // succeeds silently on a disabled extension, so there was no error to
+        // notice either.
+        ShieldFilter(id: CustomBlockStore.blockerID,
+                     title: "My List",
+                     detail: "The sites you add yourself, plus any shared by your family or team. Must be on for your own list to block anything.",
+                     count: "your own sites"),
     ]
     @Published var enabled: [String: Bool] = [:]
     @Published var refreshing = false

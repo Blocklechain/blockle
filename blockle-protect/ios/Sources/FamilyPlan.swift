@@ -19,7 +19,29 @@ final class Entitlement: ObservableObject {
     static let shared = Entitlement()
     @Published var unlocked = false
 
+    /// DEMO BUILD ONLY — every paid feature is unlocked without a purchase.
+    ///
+    /// Built for App Review so the reviewer can exercise the full app without
+    /// transacting. Gated behind the `DEMO_UNLOCK` compile flag, which is set
+    /// ONLY by the `demo` build configuration, so it cannot reach a build
+    /// uploaded for public release — this is a compile-time guarantee, not a
+    /// runtime check someone has to remember to flip back.
+    ///
+    /// The UI shows a persistent "DEMO: PAID CONTENT UNLOCKED" banner whenever
+    /// this is active, so a demo build can never be mistaken for a real one.
+    static var isDemoUnlock: Bool {
+        #if DEMO_UNLOCK
+        return true
+        #else
+        return false
+        #endif
+    }
+
     func refresh() async {
+        if Self.isDemoUnlock {
+            unlocked = true
+            return
+        }
         // StoreKit ownership (also true for Family-Shared purchases).
         var owned = false
         for await result in Transaction.currentEntitlements {
@@ -44,6 +66,7 @@ final class FamilyStore: ObservableObject {
         await refreshOwned()
     }
     func refreshOwned() async {
+        if Entitlement.isDemoUnlock { owned = true; return }
         for await result in Transaction.currentEntitlements {
             if case .verified(let t) = result, t.productID == Self.productID, t.revocationDate == nil { owned = true; return }
         }
@@ -107,9 +130,13 @@ enum HouseholdClient {
         return Household(role: .member, householdId: id, hoHAlias: o["hoHAlias"] as? String,
                          ownerToken: nil, code: nil, joinUrl: nil, memberId: mid, memberToken: mt)
     }
-    static func alert(_ h: Household, event: String) async {
+    /// `detail` names exactly what changed. The service already renders it into
+    /// the email body; before this it was never sent, so the head of household
+    /// got "turned off a block" with no way to know which one.
+    static func alert(_ h: Household, event: String, detail: String = "") async {
         guard h.role == .member, let mid = h.memberId, let mt = h.memberToken else { return }
-        _ = await post("/household/alert", ["householdId": h.householdId, "memberId": mid, "memberToken": mt, "event": event])
+        _ = await post("/household/alert", ["householdId": h.householdId, "memberId": mid,
+                                            "memberToken": mt, "event": event, "detail": detail])
     }
 
     /// Shared family blocklist. `action` is add / remove / set / get; every call
@@ -146,17 +173,14 @@ final class HouseholdModel: ObservableObject {
     }
     func leave() { household = nil; save(); Task { await Entitlement.shared.refresh() } }
 
-    /// If this is a MEMBER device and the gambling block is off, alert the head
-    /// of household (locally rate-limited to once/hour). Call on foreground.
+    /// Check every protected filter and alert whoever is owed an email.
+    ///
+    /// This used to watch `shieldCore` alone and fire only while the Family
+    /// screen was on screen, which missed the four adult lists, missed "My
+    /// List" entirely, and missed the ordinary case of someone disabling a
+    /// filter and never opening this tab. `DisableWatch` owns that job now and
+    /// runs app-wide; this stays so the Family screen refreshes on appear.
     func checkAndAlert() {
-        guard var h = household, h.role == .member else { return }
-        if let last = h.lastAlertAt, Date().timeIntervalSince(last) < 3600 { return }
-        SFContentBlockerManager.getStateOfContentBlocker(withIdentifier: "org.blockle.protect.shieldCore") { state, _ in
-            guard state?.isEnabled == false else { return }
-            Task { @MainActor in
-                await HouseholdClient.alert(h, event: "relapse")
-                h.lastAlertAt = Date(); self.household = h; self.save()
-            }
-        }
+        Task { await DisableWatch.shared.check() }
     }
 }

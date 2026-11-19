@@ -179,6 +179,57 @@ final class VaultStore: ObservableObject {
     // MARK: - Portable verification proof
 
     /// Build the portable proof a third party verifies at protect.blockle.org/verify
+    /// Decrypt a protected item to a temporary file so it can be viewed in the
+    /// app, and return that file's URL.
+    ///
+    /// Protecting a file you can never open again is not protection, it is
+    /// deletion with extra steps - the vault previously offered only "share
+    /// verification proof", with no way back to the content.
+    ///
+    /// The plaintext is written to the system temporary directory, NOT into the
+    /// vault and NOT anywhere iCloud syncs, and should be removed as soon as
+    /// the viewer closes (see `discardRevealed`). It is deliberately the
+    /// shortest-lived copy the app ever makes.
+    func reveal(_ item: ProtectedItem) -> URL? {
+        do {
+            let manURL = dir.appendingPathComponent(item.manifestPath)
+            let cipherURL = dir.appendingPathComponent(item.cipherPath)
+            // The on-disk manifest is the SIGNED wrapper; decode it and take
+            // the inner manifest. `unprotect` re-verifies the GCM tag and the
+            // SHA-384 fingerprint, so a tampered file throws rather than
+            // silently opening as garbage.
+            let signed = try JSONDecoder().decode(SignedManifest.self,
+                                                  from: Data(contentsOf: manURL))
+            let id = try VaultIdentity.loadOrCreate()
+            let plain = try Protector.unprotect(
+                ciphertext: Data(contentsOf: cipherURL),
+                manifest: signed.manifest,
+                holder: Protector.Holder(kemPrivateKey: id.kemPrivateKey,
+                                         recipientId: id.recipientId))
+
+            // Keep the original name so the previewer picks the right handler;
+            // a unique directory avoids collisions between two files of the
+            // same name and makes cleanup a single removeItem.
+            let box = FileManager.default.temporaryDirectory
+                .appendingPathComponent("reveal-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: box, withIntermediateDirectories: true)
+            let out = box.appendingPathComponent(item.name)
+            try plain.write(to: out, options: [.atomic, .completeFileProtection])
+            return out
+        } catch {
+            lastError = "Couldn't open \(item.name): \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Delete a revealed plaintext and its containing directory. Call as soon
+    /// as the viewer is dismissed - a decrypted copy left in /tmp outlives the
+    /// user's intent and is exactly what this app exists to prevent.
+    func discardRevealed(_ url: URL?) {
+        guard let url else { return }
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+
     /// (or fully offline): the signed manifest + the single-leaf Merkle inclusion
     /// + the on-chain anchor reference. Writes a .json and returns its URL.
     /// Contains NO plaintext and NO keys — only the public, verifiable record.
