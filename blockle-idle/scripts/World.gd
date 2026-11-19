@@ -15,6 +15,7 @@ const R := 8                      # island radius in tiles
 var world_seed: int = 12345
 var _tiles: Dictionary = {}       # Vector2i -> {h: top elevation, deep: rock depth}
 var _props: Array = []            # [{gx, gy, z, kind, seed}]
+var _kin: Array = []              # the Blocklings living here (see Kin.gd)
 var t := 0.0
 # Time of day, 0 = midnight, .25 dawn, .5 noon, .75 dusk. A full day takes
 # DAY_SECONDS of real time; the whole island is tinted from this one number.
@@ -30,6 +31,7 @@ func _process(delta: float) -> void:
 	t += delta
 	if not _tod_set:
 		tod = fposmod(tod + delta / DAY_SECONDS, 1.0)
+	_tick_kin(delta)
 	queue_redraw()                # the scene is small; a full redraw is cheap
 
 # ---- generation --------------------------------------------------------------
@@ -118,6 +120,7 @@ func _generate() -> void:
 					"kind": String(w["kind"]), "s": pick})
 				break
 	_carve_path()
+	_spawn_kin()
 
 # Pin the clock (used by the screenshot harness to inspect each hour).
 func set_time_of_day(v: float) -> void:
@@ -199,10 +202,20 @@ func _draw() -> void:
 	for k in keys:
 		_draw_column(k)
 	# props, same key so they interleave correctly with the ground
-	var props := _props.duplicate()
-	props.sort_custom(func(a, b): return (a["gx"] + a["gy"]) < (b["gx"] + b["gy"]))
-	for p in props:
-		_draw_prop(p)
+	# props AND kin share one back-to-front pass, so a Blockling correctly walks
+	# behind a cottage and in front of the tree beyond it.
+	var draws: Array = []
+	for p in _props:
+		draws.append({"k": float(p["gx"]) + float(p["gy"]), "p": p})
+	for o in _kin:
+		var kk: Kin = o
+		draws.append({"k": kk.gx + kk.gy + 0.01, "kin": kk})
+	draws.sort_custom(func(a, b): return float(a["k"]) < float(b["k"]))
+	for d in draws:
+		if d.has("kin"):
+			_draw_kin(d["kin"])
+		else:
+			_draw_prop(d["p"])
 
 func _draw_sky() -> void:
 	# A banded vertical gradient — banding is a pixel-art virtue, not a flaw.
@@ -338,6 +351,110 @@ func _draw_prop(p: Dictionary) -> void:
 		"flower": _flower(gx, gy, z, s)
 		"bush": _bush(gx, gy, z, s)
 		"mushroom": _mushroom(gx, gy, z, s)
+
+# ---- the Blocklings ---------------------------------------------------------
+
+func _walkable(k: Vector2i) -> bool:
+	return _tiles.has(k) and not bool(_tiles[k].get("water", false))
+
+func _spawn_kin() -> void:
+	var homes: Array = []
+	for p in _props:
+		if String(p["kind"]) == "cottage":
+			homes.append(Vector2(float(p["gx"]), float(p["gy"])))
+	var n := 10
+	for i in range(n):
+		var k := Kin.new()
+		k.seedv = 7000 + i
+		# start on a walkable tile near a home
+		var hm: Vector2 = homes[i % homes.size()] if homes.size() > 0 else Vector2.ZERO
+		k.home = hm
+		k.gx = hm.x + _rf("kx%d" % i) * 2.0 - 1.0
+		k.gy = hm.y + _rf("ky%d" % i) * 2.0 - 1.0
+		k.tx = k.gx
+		k.ty = k.gy
+		# seeded colouring: a warm smock over the kin base tone
+		var hue := _rf("kc%d" % i)
+		var smock: Color = [Color("#e07a5f"), Color("#5f8fe0"), Color("#71b36a"),
+			Color("#d9a441"), Color("#9b6fd4"), Color("#4fb3a8")][int(hue * 6.0) % 6]
+		k.body = [smock, smock.darkened(0.18), smock.darkened(0.34)]
+		if _rf("kh%d" % i) > 0.55:
+			k.hat = [Pal.GOLD, Pal.BLOSSOM, Pal.CREAM, Pal.WATER_T][int(_rf("kt%d" % i) * 4.0) % 4]
+		k.speed = 0.42 + _rf("ks%d" % i) * 0.30
+		k.bob = _rf("kb%d" % i) * TAU
+		k.pause = _rf("kp%d" % i) * 3.0
+		_kin.append(k)
+
+func _tick_kin(delta: float) -> void:
+	# after dusk everyone drifts home; by day they wander and loiter
+	var night: bool = tod > 0.80 or tod < 0.20
+	for o in _kin:
+		var k: Kin = o
+		k.bob += delta * 6.0
+		if k.pause > 0.0:
+			k.pause -= delta
+			continue
+		var d := Vector2(k.tx - k.gx, k.ty - k.gy)
+		if d.length() < 0.06:
+			# arrived: choose somewhere new
+			if night and not k.going_home:
+				k.going_home = true
+				k.tx = k.home.x
+				k.ty = k.home.y
+			elif night:
+				k.pause = 4.0                      # tucked in for the night
+			else:
+				k.going_home = false
+				for attempt in range(8):
+					var nx := k.gx + _rf("w%d_%f" % [k.seedv, k.bob + float(attempt)]) * 6.0 - 3.0
+					var ny := k.gy + _rf("v%d_%f" % [k.seedv, k.bob + float(attempt)]) * 6.0 - 3.0
+					var key := Vector2i(int(round(nx)), int(round(ny)))
+					if _walkable(key) and Vector2(nx, ny).length() < float(R) * 0.78:
+						k.tx = nx
+						k.ty = ny
+						break
+				k.pause = _rf("pz%d_%f" % [k.seedv, k.bob]) * 2.4
+			continue
+		var step := d.normalized() * k.speed * delta
+		k.gx += step.x
+		k.gy += step.y
+		# screen-space facing: moving +x or -y heads screen-right
+		var sdx := (step.x - step.y)
+		if absf(sdx) > 0.0001:
+			k.facing = signf(sdx)
+		var key2 := Vector2i(int(round(k.gx)), int(round(k.gy)))
+		if _tiles.has(key2):
+			k.z = float(_tiles[key2]["h"]) + 1.0
+
+func _draw_kin(k: Kin) -> void:
+	var c := Iso.to_screen(k.gx, k.gy, k.z)
+	var moving: bool = Vector2(k.tx - k.gx, k.ty - k.gy).length() > 0.06 and k.pause <= 0.0
+	var hop: float = (absf(sin(k.bob)) * 2.0) if moving else 0.0
+	Iso.shadow(self, c, 11.0, 0.3)
+	var b := _lit(k.body)
+	var bc: Color = b[0]
+	var bs: Color = b[2]
+	var y := -hop
+	# legs (two pixels that alternate while walking)
+	var sw: float = sin(k.bob) * 1.5 if moving else 0.0
+	Iso.box(self, c + Vector2(-4 + sw, y - 4), Vector2(3, 4), bs)
+	Iso.box(self, c + Vector2(1 - sw, y - 4), Vector2(3, 4), bs)
+	# body, with one arm swinging
+	Iso.box(self, c + Vector2(-4, y - 11), Vector2(8, 7), bc)
+	Iso.box(self, c + Vector2(-5, y - 10 + sw * 0.6), Vector2(2, 5), bs)
+	Iso.box(self, c + Vector2(4, y - 10 - sw * 0.6), Vector2(2, 5), bs)
+	# head
+	var head := _lit(Pal.mat("kin"))
+	Iso.box(self, c + Vector2(-4, y - 17), Vector2(8, 6), head[0])
+	Iso.box(self, c + Vector2(-4, y - 17), Vector2(8, 1), head[1])
+	# eyes, looking the way it walks
+	var ex := 1.0 if k.facing > 0.0 else -3.0
+	Iso.box(self, c + Vector2(ex, y - 14), Vector2(1, 2), Pal.INK)
+	Iso.box(self, c + Vector2(ex + 2, y - 14), Vector2(1, 2), Pal.INK)
+	if k.hat.a > 0.0:
+		var hl := _lit([k.hat, k.hat, k.hat])
+		Iso.box(self, c + Vector2(-5, y - 19), Vector2(10, 2), hl[0])
+		Iso.box(self, c + Vector2(-3, y - 22), Vector2(6, 3), hl[0])
 
 # ---- props (all built from Iso cubes so they sit on the grid) ----------------
 
