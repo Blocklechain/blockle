@@ -107,6 +107,58 @@ static func haze(m: Array, amount: float) -> Array:
 	var a: float = clampf(amount, 0.0, 1.0)
 	return [m[0].lerp(SKY_LO, a * 0.30), m[1].lerp(SKY_LO, a * 0.26), m[2].lerp(SKY_LO, a * 0.22)]
 
+
+# ---- TIME OF DAY -------------------------------------------------------------
+# Four keyed moods. The world lerps between them, and because every surface is
+# tinted through sun()/haze() from these same values, the entire island changes
+# character together instead of the sky alone shifting.
+#   [sky_hi, sky_mid, sky_lo, sun_warm, shadow_cool, strength]
+const TOD_NIGHT := [Color("#141d3a"), Color("#1f2b4d"), Color("#36406b"),
+	Color("#9fb8e8"), Color("#0d1026"), 0.40]
+const TOD_DAWN  := [Color("#5d7fc4"), Color("#e89a7a"), Color("#f6d2a8"),
+	Color("#ffb877"), Color("#3c2a4a"), 0.85]
+const TOD_DAY   := [Color("#4fc4c4"), Color("#7fd8cc"), Color("#d9f2e0"),
+	Color("#ffc96b"), Color("#4a3358"), 1.00]
+const TOD_DUSK  := [Color("#44407e"), Color("#d4746a"), Color("#f0b183"),
+	Color("#ff9d5c"), Color("#2e2347"), 0.58]
+
+# Blend the four moods for a time 0..1 (0 = midnight, .25 = dawn, .5 = noon,
+# .75 = dusk) and return the keyed set for this instant.
+static func tod_mix(tod: float) -> Array:
+	var x: float = fposmod(tod, 1.0)
+	var a: Array = TOD_NIGHT
+	var b: Array = TOD_NIGHT
+	var f := 0.0
+	if x < 0.22:        a = TOD_NIGHT; b = TOD_DAWN;  f = x / 0.22
+	elif x < 0.36:      a = TOD_DAWN;  b = TOD_DAY;   f = (x - 0.22) / 0.14
+	elif x < 0.64:      a = TOD_DAY;   b = TOD_DAY;   f = 0.0
+	elif x < 0.80:      a = TOD_DAY;   b = TOD_DUSK;  f = (x - 0.64) / 0.16
+	else:               a = TOD_DUSK;  b = TOD_NIGHT; f = (x - 0.80) / 0.20
+	f = f * f * (3.0 - 2.0 * f)
+	return [
+		(a[0] as Color).lerp(b[0], f), (a[1] as Color).lerp(b[1], f),
+		(a[2] as Color).lerp(b[2], f), (a[3] as Color).lerp(b[3], f),
+		(a[4] as Color).lerp(b[4], f), lerpf(float(a[5]), float(b[5]), f)]
+
+# Sun-tint a material with an EXPLICIT light (warm key + cool shadow + strength),
+# so dawn gold and dusk amber reach every surface, not just the sky.
+static func lit(m: Array, warm: Color, cool: Color, strength: float, k: float = 1.0) -> Array:
+	var s: float = clampf(strength * k, 0.0, 1.6)
+	# How far from full daylight we are. This is the lever that actually carries
+	# dusk and night onto the GROUND — tinting only the sky left the island
+	# sitting in flat noon green under a purple sunset.
+	var dark: float = clampf(1.0 - strength, 0.0, 1.0)
+	var out: Array = []
+	for i in range(3):
+		var c: Color = m[i]
+		c = c.lerp(cool, dark * 0.62)          # everything drifts into the ambient
+		c = c.darkened(dark * 0.30)            # and loses light
+		out.append(c)
+	out[0] = (out[0] as Color).lerp(warm, 0.22 * s)   # warm key on the top face
+	out[1] = (out[1] as Color).lerp(warm, 0.08 * s)
+	out[2] = (out[2] as Color).lerp(cool, 0.18)       # shadow side stays cool
+	return out
+
 # A material triple: [top, left, right] faces of an iso cube.
 static func mat(name: String) -> Array:
 	match name:
