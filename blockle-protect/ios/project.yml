@@ -81,6 +81,18 @@ targets:
         com.apple.developer.icloud-container-identifiers: [iCloud.org.blockle.protect]
         com.apple.developer.ubiquity-container-identifiers: [iCloud.org.blockle.protect]
         com.apple.developer.icloud-services: [CloudDocuments]
+        # REQUIRED for a distribution-signed build to resolve the ubiquity
+        # container at all. Without it the entitlements look complete, the build
+        # signs and uploads cleanly, and then
+        # FileManager.url(forUbiquityContainerIdentifier:) returns nil on the
+        # device — so iCloud backup reported "not available" on TestFlight while
+        # working in a development build.
+        #
+        # "Production" is correct here because the only signed builds come from
+        # CI and go to TestFlight/App Store. A locally development-signed build
+        # wants "Development"; if you ever need that, override it for the Debug
+        # configuration rather than changing this value.
+        com.apple.developer.icloud-container-environment: Production
         # Shared container so the app can hand a user-authored (and family-synced)
         # blocklist to the dynamic ShieldCustom content-blocker extension.
         com.apple.security.application-groups: [group.org.blockle.protect]

@@ -221,7 +221,19 @@ struct VaultContent: View {
             if !backup { store.reload() }
             syncMsg = backup ? "Backed up \(n) file(s) to iCloud." : "Restored \(n) file(s) from iCloud."
         } catch {
-            syncMsg = (error as? LocalizedError)?.errorDescription ?? "iCloud isn't available on this device."
+            // Say WHICH problem it is. "iCloud isn't available" reads as "go
+            // turn iCloud on", which is wrong — and unfixable by the user —
+            // when the real cause is this build failing to reach its own
+            // container.
+            switch await Task.detached(operation: { VaultSync.probe() }).value {
+            case .noAccount:
+                syncMsg = "Sign in to iCloud in Settings, then try again."
+            case .containerUnavailable:
+                syncMsg = "This build can't reach its iCloud container, so backup is unavailable. Your protected files are untouched on this device."
+            case .ready:
+                syncMsg = (error as? LocalizedError)?.errorDescription
+                    ?? "Backup failed: \(error.localizedDescription)"
+            }
         }
     }
 

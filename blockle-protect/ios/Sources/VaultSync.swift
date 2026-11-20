@@ -18,7 +18,39 @@ enum VaultSync {
         return docs
     }
 
-    static var isAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
+    /// Why iCloud is or is not usable.
+    ///
+    /// THE DISTINCTION MATTERS: one of these is the user's to fix and the other
+    /// is ours. The UI used to collapse both into "Sign in to iCloud", which
+    /// sends someone who is already signed in to Settings to hunt for a switch
+    /// that is on — while the real cause was the app's own container
+    /// entitlement failing to resolve in a distribution build.
+    enum Availability: Equatable {
+        case ready
+        case noAccount             // not signed in, or iCloud Drive is off
+        case containerUnavailable  // signed in, but OUR container will not resolve
+    }
+
+    /// Cheap and main-thread safe: only inspects the account token.
+    static var isSignedIn: Bool { FileManager.default.ubiquityIdentityToken != nil }
+
+    /// MUST be called off the main thread — resolving the container can block.
+    static func probe() -> Availability {
+        guard isSignedIn else { return .noAccount }
+        return containerDocuments() != nil ? .ready : .containerUnavailable
+    }
+
+    /// What to tell the user, honestly, for each case.
+    static func explain(_ a: Availability) -> String {
+        switch a {
+        case .ready: return "Available"
+        case .noAccount: return "Sign in to iCloud"
+        case .containerUnavailable: return "Unavailable in this build"
+        }
+    }
+
+    @available(*, deprecated, message: "Use probe() — isAvailable cannot tell a signed-out user from a broken container.")
+    static var isAvailable: Bool { isSignedIn }
 
     private static func copyAll(from src: URL, to dst: URL) throws -> Int {
         let fm = FileManager.default

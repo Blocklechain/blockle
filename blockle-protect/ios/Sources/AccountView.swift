@@ -43,6 +43,8 @@ final class DonationStore: ObservableObject {
 
 struct AccountView: View {
     @StateObject private var donation = DonationStore()
+    /// nil until probed. See the iCloud row in `statusCard`.
+    @State private var iCloud: VaultSync.Availability?
 
     var body: some View {
         ScrollView {
@@ -59,6 +61,9 @@ struct AccountView: View {
         .background(Brand.bg.ignoresSafeArea())
         .navigationTitle("Account")
         .task { await donation.load() }
+        // Detached: VaultSync.probe() resolves the ubiquity container, which
+        // blocks, and must not run on the main actor.
+        .task { iCloud = await Task.detached { VaultSync.probe() }.value }
     }
 
     private var identityCard: some View {
@@ -84,7 +89,16 @@ struct AccountView: View {
                 statusRow("key.horizontal.fill", "Recovery key", ProtectState.recoveryConfigured ? "Saved" : "Not set up", ProtectState.recoveryConfigured)
                 NavigationLink { RecoveryKeyView() } label: { Text(ProtectState.recoveryConfigured ? "Manage recovery key" : "Set up recovery key").font(.footnote.weight(.medium)) }.tint(Brand.red)
                 Divider().overlay(Brand.line)
-                statusRow("icloud.fill", "iCloud backup", VaultSync.isAvailable ? "Available" : "Sign in to iCloud", VaultSync.isAvailable)
+                // Probed off the main thread, because resolving the ubiquity
+                // container blocks. Starts as nil ("Checking…") rather than
+                // guessing, so the row never briefly claims the wrong thing.
+                statusRow("icloud.fill", "iCloud backup",
+                          iCloud.map(VaultSync.explain) ?? "Checking…",
+                          iCloud == .ready)
+                if iCloud == .containerUnavailable {
+                    Text("This build cannot reach its iCloud container, so backup is disabled. Your protected files are unaffected and stay on this device. Nothing for you to fix — please report it.")
+                        .font(.footnote).foregroundStyle(Brand.muted)
+                }
             }
         }
     }
