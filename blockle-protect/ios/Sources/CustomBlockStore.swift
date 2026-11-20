@@ -35,6 +35,14 @@ final class CustomBlockStore: ObservableObject {
     /// (App Group container unavailable). Also silent before.
     @Published var writeFailed = false
 
+    /// Error from the last reloadContentBlocker call, if Safari refused the list.
+    @Published var reloadError: String?
+    /// Size of the rule list handed over, so "0 bytes" is visible rather than implied.
+    @Published var bytesWritten = 0
+    /// What the extension said it served last time Safari ran it. nil = never run,
+    /// or the extension cannot reach the App Group at all.
+    @Published var lastServed: String?
+
     /// The full, de-duplicated set that is actually blocked.
     var all: [String] { Array(Set(local + family)).sorted() }
 
@@ -103,8 +111,55 @@ final class CustomBlockStore: ObservableObject {
             message = "Couldn't save your block list: \(error.localizedDescription)"
             return
         }
-        SFContentBlockerManager.reloadContentBlocker(withIdentifier: Self.blockerID) { _ in }
+        bytesWritten = data.count
+        // The reload error was previously thrown away with `{ _ in }`. It is the
+        // ONE signal iOS gives about whether Safari actually accepted and
+        // compiled the list — if the rules are malformed or oversized Safari
+        // keeps the old ones and reports it here, and discarding it is why this
+        // feature could fail with no indication anywhere.
+        SFContentBlockerManager.reloadContentBlocker(withIdentifier: Self.blockerID) { [weak self] error in
+            Task { @MainActor in
+                self?.reloadError = error?.localizedDescription
+                self?.readBreadcrumb()
+            }
+        }
         refreshExtensionState()
+    }
+
+    /// What the extension reported serving on its last run. Safari offers no way
+    /// to read back compiled rules, so the extension leaves this behind.
+    /// See CustomBlockerRequestHandler.
+    func readBreadcrumb() {
+        guard let dir = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup),
+              let data = try? Data(contentsOf: dir.appendingPathComponent("custom-blocker-last-run.json")),
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { lastServed = nil; return }
+        let served = o["served"] as? String ?? "?"
+        let bytes = o["bytes"] as? Int ?? 0
+        let detail = o["detail"] as? String ?? ""
+        lastServed = served == "shared"
+            ? "your list (\(bytes) bytes)"
+            : "the empty fallback\(detail.isEmpty ? "" : " — \(detail)")"
+    }
+
+    /// One-line summary of whether this feature is actually working, for the UI.
+    /// Deliberately blunt: "nothing is being blocked" beats a green checkmark
+    /// that means nothing.
+    var diagnosis: String {
+        if all.isEmpty { return "No sites added yet." }
+        if writeFailed { return "Your list could not be handed to the blocker." }
+        if extensionEnabled == false {
+            return "“My List” is OFF in Settings → Safari → Extensions, so none of your \(all.count) sites are blocked."
+        }
+        if let e = reloadError { return "Safari rejected the list: \(e)" }
+        if let s = lastServed, s.hasPrefix("the empty fallback") {
+            return "The blocker ran but served \(s) — your sites are NOT being blocked."
+        }
+        if lastServed == nil {
+            return "Safari has not run the blocker yet. Visit a site in Safari, then reopen this screen."
+        }
+        return "Blocking \(all.count) site\(all.count == 1 ? "" : "s") — the blocker last served \(lastServed ?? "?")."
     }
 
     /// Ask iOS whether the My List extension is enabled. A disabled extension

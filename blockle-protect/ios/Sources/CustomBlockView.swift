@@ -12,6 +12,41 @@ struct CustomBlockView: View {
 
     private var inFamily: Bool { hh.household != nil }
 
+    /// Says plainly whether the list is actually in force. Without this the
+    /// screen happily showed a list of sites that were not being blocked, with
+    /// no way for anyone — user or developer — to tell the difference.
+    private var statusCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                let broken = store.writeFailed
+                    || store.extensionEnabled == false
+                    || store.reloadError != nil
+                    || (store.lastServed?.hasPrefix("the empty fallback") ?? false)
+                HStack(spacing: 8) {
+                    Image(systemName: broken ? "exclamationmark.triangle.fill" : "checkmark.shield.fill")
+                        .foregroundStyle(broken ? Brand.red : Brand.redSoft)
+                    Text(broken ? "Not blocking" : "Status").font(.headline).foregroundStyle(Brand.ink)
+                }
+                Text(store.diagnosis).font(.subheadline).foregroundStyle(Brand.inkSoft)
+
+                if store.extensionEnabled == false {
+                    Text("Open Settings → Safari → Extensions and switch on “Blockle Shield — My List”.")
+                        .font(.footnote).foregroundStyle(Brand.muted)
+                }
+                // Enough detail to diagnose a report without a debug build.
+                Text("extension: \(store.extensionEnabled.map { $0 ? "on" : "off" } ?? "unknown")  ·  rules: \(store.bytesWritten) bytes  ·  last run: \(store.lastServed ?? "never")")
+                    .font(.caption2).foregroundStyle(Brand.muted)
+
+                Button {
+                    store.apply()
+                    store.readBreadcrumb()
+                } label: {
+                    Label("Re-apply and re-check", systemImage: "arrow.clockwise")
+                }.buttonStyle(.bordered).tint(Brand.red)
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -44,6 +79,8 @@ struct CustomBlockView: View {
                         }
                     }
                 }
+
+                statusCard
 
                 if inFamily {
                     HStack(spacing: 8) {
