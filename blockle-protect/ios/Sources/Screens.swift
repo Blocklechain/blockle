@@ -171,8 +171,23 @@ struct VaultContent: View {
         // The decrypted copy is deleted the moment the viewer closes. A
         // plaintext left behind in /tmp outlives the user's intent, which is
         // precisely what this app exists to prevent.
-        .sheet(item: $revealed, onDismiss: { store.discardRevealed(revealed?.url) }) {
-            FilePreview(url: $0.url)
+        // A bare QLPreviewController draws NO dismiss control of its own in a
+        // SwiftUI sheet (it only gets one when UIKit presents it inside a
+        // navigation controller), and its content view swallows the sheet's
+        // swipe-down — so the viewer had no way out at all. The explicit Done
+        // button does not depend on QuickLook's chrome.
+        .sheet(item: $revealed, onDismiss: { store.discardRevealed() }) { item in
+            NavigationStack {
+                FilePreview(url: item.url)
+                    .ignoresSafeArea(edges: .bottom)
+                    .navigationTitle(item.url.lastPathComponent)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { revealed = nil }
+                        }
+                    }
+            }
         }
         .sheet(isPresented: $showPaywall) { PaywallView() }
     }

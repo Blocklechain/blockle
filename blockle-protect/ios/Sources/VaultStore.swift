@@ -190,6 +190,10 @@ final class VaultStore: ObservableObject {
     /// vault and NOT anywhere iCloud syncs, and should be removed as soon as
     /// the viewer closes (see `discardRevealed`). It is deliberately the
     /// shortest-lived copy the app ever makes.
+    /// The decrypted copy currently open in the previewer, if any. Owned by the
+    /// store, not the view — see `discardRevealed()`.
+    private(set) var revealedURL: URL?
+
     func reveal(_ item: ProtectedItem) -> URL? {
         do {
             let manURL = dir.appendingPathComponent(item.manifestPath)
@@ -215,6 +219,10 @@ final class VaultStore: ObservableObject {
             try FileManager.default.createDirectory(at: box, withIntermediateDirectories: true)
             let out = box.appendingPathComponent(item.name)
             try plain.write(to: out, options: [.atomic, .completeFileProtection])
+            // Any copy still open is replaced, so a second reveal cannot orphan
+            // the first one's plaintext in the temp directory.
+            discardRevealed()
+            revealedURL = out
             return out
         } catch {
             lastError = "Couldn't open \(item.name): \(error.localizedDescription)"
@@ -222,12 +230,19 @@ final class VaultStore: ObservableObject {
         }
     }
 
-    /// Delete a revealed plaintext and its containing directory. Call as soon
+    /// Delete the revealed plaintext and its containing directory. Call as soon
     /// as the viewer is dismissed - a decrypted copy left in /tmp outlives the
     /// user's intent and is exactly what this app exists to prevent.
-    func discardRevealed(_ url: URL?) {
-        guard let url else { return }
+    ///
+    /// Takes no argument ON PURPOSE. It used to take the URL from view state,
+    /// which silently never deleted anything: SwiftUI's `.sheet(item:)` clears
+    /// its binding as part of dismissal, so by the time `onDismiss` ran the
+    /// URL it read was already nil. The store owns the path instead, so
+    /// cleanup cannot depend on view-teardown ordering.
+    func discardRevealed() {
+        guard let url = revealedURL else { return }
         try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+        revealedURL = nil
     }
 
     /// (or fully offline): the signed manifest + the single-leaf Merkle inclusion
