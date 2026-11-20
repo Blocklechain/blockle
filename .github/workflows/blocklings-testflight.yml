@@ -25,10 +25,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 26 (iOS 26 SDK required by App Store Connect)
+      - name: Select newest Xcode (26 or later)
         run: |
-          XC="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)"
-          [ -n "$XC" ] && sudo xcode-select -s "$XC/Contents/Developer" || true
+          set -eo pipefail
+          # Pick the NEWEST installed Xcode whose major version is >= 26.
+          #
+          # This used to glob Xcode_26*.app, which pinned the build to 26 even on
+          # a runner that had something newer. Apple's ITMS-90725 says uploads
+          # built with older than the iOS 27 SDK are rejected from April 2027, so
+          # a hard pin would have quietly kept shipping 26 right up to the day
+          # uploads started failing. 26 is the FLOOR (the PQ crypto needs iOS 26
+          # CryptoKit for ML-KEM/ML-DSA), never the target.
+          XC=""
+          for cand in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V -r); do
+            ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+                   "$cand/Contents/version.plist" 2>/dev/null || true)"
+            [ -z "$ver" ] && continue
+            if [ "${ver%%.*}" -ge 26 ] 2>/dev/null; then
+              XC="$cand"; echo "selected Xcode $ver -> $cand"; break
+            fi
+          done
+          # Fail loudly rather than the old `|| true`, which fell back to the
+          # runner default and produced a confusing failure much later.
+          if [ -z "$XC" ]; then
+            echo "::error::No Xcode 26 or newer on this runner."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XC/Contents/Developer"
           xcodebuild -version
 
       - uses: subosito/flutter-action@v2
