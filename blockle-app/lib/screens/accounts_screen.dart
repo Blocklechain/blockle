@@ -1953,6 +1953,11 @@ class _CustomNetworkEditScreenState extends State<CustomNetworkEditScreen> {
 /// MoonPay runs the entire KYC + card/bank payment flow inside this webview and
 /// delivers the purchased crypto to the wallet address baked into the URL — the
 /// wallet itself never sees card numbers or PII.
+/// Pops a [MoonPayTxn] when the SERVER (verified webhook) confirmed an
+/// outcome, so a caller driving a multi-step flow can advance on fact rather
+/// than asking the user to self-report. Pops null when the user left before
+/// any authoritative status arrived — which is normal, since a payout can
+/// land days later.
 class MoonPayBuyScreen extends StatelessWidget {
   const MoonPayBuyScreen(
       {super.key, required this.url, required this.assetLabel});
@@ -2120,7 +2125,10 @@ class _MoonPayRampScreenState extends State<_MoonPayRampScreen> {
               Expanded(child: Text(text, style: const TextStyle(color: Bk.text, fontSize: 13))),
               if (_done)
                 TextButton(
-                    onPressed: () => Navigator.of(context).maybePop(),
+                    // Hand the authoritative status back. A caller running a
+                    // checkout flow uses it to complete the step itself.
+                    onPressed: () =>
+                        Navigator.of(context).maybePop<MoonPayTxn?>(_status),
                     child: const Text('Done')),
             ]),
           ),

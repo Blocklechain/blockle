@@ -84,14 +84,28 @@ class AppState extends ChangeNotifier {
   /// Index of the in-app Browser tab in HomeScreen's navigation.
   static const browserTabIndex = 3;
 
+  /// Set when the browser was opened to complete a CHECKOUT, so the page
+  /// can offer to fill the delivery details on arrival instead of making
+  /// the user hunt through a menu while standing in a payment form.
+  ///
+  /// It is an OFFER, never an action: the browser still asks, still names
+  /// the site, and still never submits. See shop/delivery.dart.
+  bool pendingCheckoutAutofill = false;
+
   /// Switch to the in-app browser and load [url].
-  void openBrowser(String url) {
+  void openBrowser(String url, {bool offerAutofill = false}) {
     pendingBrowserUrl = url;
+    pendingCheckoutAutofill = offerAutofill;
     tabIndex = browserTabIndex;
     notifyListeners();
   }
 
   void consumedBrowserUrl() => pendingBrowserUrl = null;
+
+  void consumedCheckoutAutofill() {
+    pendingCheckoutAutofill = false;
+    notifyListeners();
+  }
 
   Future<void> syncWalletFlag() async {
     hasWallet = await store.exists();

@@ -301,6 +301,14 @@ void main() {
       expect(kAffiliateDisclosure.toLowerCase(), contains('paid link'));
     });
 
+    test('names the LEGAL ENTITY, not the trading name', () {
+      // The disclosure identifies who holds the Associates account and
+      // receives the commission. "Blockle" is a product name and would
+      // leave that ambiguous.
+      expect(kAffiliateDisclosure, contains('Alienbeing LLC'));
+      expect(kAffiliateDisclosure, isNot(contains('Blockle earns')));
+    });
+
     test('every affiliate listing is labelled as paid', () {
       final p = Affiliate.listing(
           ref: Affiliate.parse('https://www.amazon.com/dp/B08N5WRWNW')!,

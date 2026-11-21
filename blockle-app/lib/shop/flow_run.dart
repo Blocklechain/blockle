@@ -103,6 +103,40 @@ Map<String, String> _paramsFor(Leg leg) => switch (leg) {
       _ => const {},
     };
 
+/// What a provider's reported status should do to the current step.
+enum LegOutcome {
+  /// Confirmed done by a source we trust more than the user's memory.
+  advance,
+
+  /// Confirmed failed, with a reason worth recording.
+  fail,
+
+  /// Nothing authoritative yet — leave the step exactly as it is.
+  hold,
+}
+
+/// Decide an outcome from a MoonPay status string.
+///
+/// PURE, AND SEPARATE FROM THE SCREEN, because getting it wrong is
+/// expensive in both directions: advancing on an unconfirmed payout leaves
+/// someone waiting days for money nobody sent, and holding on a confirmed
+/// one makes them repeat a transaction they already completed.
+///
+/// `hold` is the default for a reason. A user who closes the ramp before
+/// anything settles is the NORMAL case — a bank payout can confirm days
+/// later — so an unknown status must never be read as either outcome.
+LegOutcome outcomeForMoonPayStatus(String? status) {
+  final s = status?.trim().toLowerCase();
+  if (s == null || s.isEmpty) return LegOutcome.hold;
+  if (s == 'completed') return LegOutcome.advance;
+  // MoonPay reports several flavours of failure.
+  if (s.contains('fail') || s == 'cancelled' || s == 'canceled') {
+    return LegOutcome.fail;
+  }
+  // 'pending', 'waitingPayment', 'waitingAuthorization' and anything new.
+  return LegOutcome.hold;
+}
+
 /// One step of a run, as stored.
 class RunStep {
   RunStep({

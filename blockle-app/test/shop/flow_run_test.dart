@@ -213,6 +213,45 @@ void main() {
     });
   });
 
+  group('confirming a step from MoonPay, not from the user', () {
+    // The ramp screen polls the status the VERIFIED webhook recorded
+    // server-side, so the app already knows. Both wrong answers here are
+    // expensive: advancing on an unconfirmed payout leaves someone waiting
+    // days for money nobody sent; holding on a confirmed one makes them
+    // repeat a transaction they already did.
+    test('a completed transaction advances the step', () {
+      expect(outcomeForMoonPayStatus('completed'), LegOutcome.advance);
+      expect(outcomeForMoonPayStatus('COMPLETED'), LegOutcome.advance);
+    });
+
+    test('a failure fails it', () {
+      expect(outcomeForMoonPayStatus('failed'), LegOutcome.fail);
+      expect(outcomeForMoonPayStatus('cancelled'), LegOutcome.fail);
+    });
+
+    test('LEAVING EARLY HOLDS — it is the normal case, not an outcome', () {
+      // A bank payout can confirm days after the user closes the sheet.
+      expect(outcomeForMoonPayStatus(null), LegOutcome.hold);
+      expect(outcomeForMoonPayStatus(''), LegOutcome.hold);
+      expect(outcomeForMoonPayStatus('pending'), LegOutcome.hold);
+      expect(outcomeForMoonPayStatus('waitingPayment'), LegOutcome.hold);
+    });
+
+    test('an unrecognised status holds rather than guessing', () {
+      // MoonPay can add states. A new one must not be read as success.
+      expect(outcomeForMoonPayStatus('someNewState'), LegOutcome.hold);
+    });
+
+    test('a held step is left completely untouched', () async {
+      final runs = FlowRuns(store: FakeStore());
+      final run = await runs.start(getPlan(), id: 'r');
+      final before = run.current!.state;
+      expect(outcomeForMoonPayStatus('pending'), LegOutcome.hold);
+      expect(run.current!.state, before);
+      expect(run.doneCount, 0);
+    });
+  });
+
   group('open runs', () {
     test('a finished run drops off the shop screen', () async {
       final runs = FlowRuns(store: FakeStore());

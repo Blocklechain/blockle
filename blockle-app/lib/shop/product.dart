@@ -49,8 +49,11 @@ extension ProductSourceLabel on ProductSource {
 /// prominently wherever Amazon links are shown, and the FTC separately
 /// requires the paid relationship to be obvious BEFORE the link. Kept as one
 /// constant so every surface says the same thing.
+/// Names the LEGAL ENTITY, Alienbeing LLC, not the product. The disclosure
+/// identifies who holds the Associates account and receives the commission;
+/// "Blockle" is a trading name and would leave that ambiguous.
 const String kAffiliateDisclosure =
-    'As an Amazon Associate, Blockle earns from qualifying purchases. '
+    'As an Amazon Associate, Alienbeing LLC earns from qualifying purchases. '
     'Links to retailers are paid links.';
 
 /// Stock state. `unknown` is a real answer and the commonest one — most pages

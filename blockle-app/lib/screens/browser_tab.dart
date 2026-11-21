@@ -44,6 +44,10 @@ class _BrowserTabState extends State<BrowserTab> {
   String? _inpage;
   bool _canBack = false, _canFwd = false;
 
+  /// Shows the one-tap "fill my details" banner, set when the browser was
+  /// opened to finish a checkout.
+  bool _offerAutofill = false;
+
   // EVM (EIP-1193) dApp session state for the injected window.ethereum.
   final Set<String> _evmConnected = {};
   String _evmChainId = '0x1'; // default Ethereum mainnet; dApp may switch it
@@ -1028,6 +1032,36 @@ class _BrowserTabState extends State<BrowserTab> {
             ),
           ),
           if (_loading && !_atHome) const LinearProgressIndicator(minHeight: 2, color: Bk.accent, backgroundColor: Bk.surface2),
+          if (_offerAutofill && !_atHome)
+            Material(
+              color: Bk.surface2,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                child: Row(children: [
+                  const Icon(Icons.badge_outlined, size: 18, color: Bk.accent),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text('Fill your delivery details on this page?',
+                        style: TextStyle(fontSize: 13, color: Bk.text)),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _offerAutofill = false),
+                    child: const Text('Not now',
+                        style: TextStyle(color: Bk.faint)),
+                  ),
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 34),
+                        padding: const EdgeInsets.symmetric(horizontal: 14)),
+                    onPressed: () {
+                      setState(() => _offerAutofill = false);
+                      _autofill();
+                    },
+                    child: const Text('Fill'),
+                  ),
+                ]),
+              ),
+            ),
           Expanded(
             child: Stack(children: [
             InAppWebView(
@@ -1085,6 +1119,13 @@ class _BrowserTabState extends State<BrowserTab> {
                   _title = await c.getTitle();
                 } catch (_) {}
                 if (mounted) setState(() => _loading = false);
+                // Arrived here from a checkout flow: raise the offer rather
+                // than making them find it in a menu mid-payment. Still an
+                // offer — _autofill names the site and asks.
+                if (mounted && context.read<AppState>().pendingCheckoutAutofill) {
+                  context.read<AppState>().consumedCheckoutAutofill();
+                  setState(() => _offerAutofill = true);
+                }
               },
               onReceivedError: (c, req, err) {
                 if (mounted) setState(() => _loading = false);

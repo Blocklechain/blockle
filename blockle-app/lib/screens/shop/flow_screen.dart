@@ -7,10 +7,22 @@
 // non-custodial wallet cannot do on their behalf. Only the treasury swap is
 // executed by Blockle.
 //
-// So each step opens the right place, and the user confirms what happened.
-// The confirm button is worded "I've done this" rather than "Next" for a
-// reason: tapping it records the user's statement, and on the payout leg a
-// wrong tap means waiting days for money that was never sent.
+// So each step opens the right place. WHAT HAPPENS NEXT DEPENDS ON WHETHER
+// THE APP CAN KNOW THE ANSWER:
+//
+//   - MoonPay legs CONFIRM THEMSELVES. The ramp screen polls the status the
+//     verified MoonPay webhook recorded server-side, so the app already
+//     knows; asking the user to self-report would be both friction and a
+//     worse source of truth. A completed status advances the step, a failed
+//     one fails it with the reason.
+//   - The swap and the retail purchase stay user-confirmed, because nothing
+//     reports back to us. The button says "I've done this" rather than
+//     "Next" for a reason: it records the user's statement, and a wrong tap
+//     on the payout leg means waiting days for money nobody sent.
+//
+// Leaving before MoonPay confirms anything is normal — a payout can land
+// days later — so a null status leaves the step open rather than guessing
+// either way.
 //
 // THE PROGRESS IS SAVED AFTER EVERY STEP. "Pay with BLOCK" spans a bank
 // payout of one to three business days, so the user will close the app in the
@@ -20,6 +32,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/moonpay.dart';
+import '../../shop/delivery.dart';
 import '../../shop/flow_run.dart';
 import '../../shop/ui.dart';
 import '../../state/app_state.dart';
@@ -27,6 +40,7 @@ import '../../state/multichain_controller.dart';
 import '../../theme.dart';
 import '../accounts_screen.dart' show MoonPayBuyScreen, MoonPaySellScreen;
 import '../liquidity_screen.dart';
+import 'delivery_screen.dart';
 
 class FlowScreen extends StatelessWidget {
   const FlowScreen({super.key, required this.runId});
@@ -79,10 +93,10 @@ class FlowScreen extends StatelessWidget {
               // this for them will close it and wait for something that never
               // happens.
               const ShopNote(
-                  'Blockle guides these steps but does not perform them for '
-                  'you. Your funds stay in your wallet and your accounts '
-                  'throughout — each step opens the place where you complete '
-                  'it yourself.',
+                  'Your funds stay in your wallet and your own accounts '
+                  'throughout — Blockle never holds them. Steps that MoonPay '
+                  'confirms tick themselves off; the rest open the place '
+                  'where you complete them.',
                   icon: Icons.account_balance_wallet_outlined),
 
             if (!run.complete) ...[
@@ -305,10 +319,11 @@ class _StepCardState extends State<_StepCard> {
         );
         if (url == null) throw Exception('MoonPay cannot sell $coin here');
         if (!mounted) return;
-        await Navigator.push(
+        final txn = await Navigator.push<MoonPayTxn?>(
             context,
             MaterialPageRoute(
                 builder: (_) => MoonPayBuyScreen(url: url, assetLabel: coin)));
+        _settleFromMoonPay(txn);
 
       case LegAction.moonpaySell:
         final coin = s.params['coin'] ?? '';
@@ -324,10 +339,12 @@ class _StepCardState extends State<_StepCard> {
         );
         if (url == null) throw Exception('MoonPay cannot cash out $coin here');
         if (!mounted) return;
-        await Navigator.push(
+        final txn = await Navigator.push<MoonPayTxn?>(
             context,
             MaterialPageRoute(
-                builder: (_) => MoonPaySellScreen(url: url, assetLabel: coin)));
+                builder: (_) =>
+                    MoonPaySellScreen(url: url, assetLabel: coin)));
+        _settleFromMoonPay(txn);
 
       case LegAction.treasurySwap:
         if (!mounted) return;
@@ -340,8 +357,70 @@ class _StepCardState extends State<_StepCard> {
           throw Exception('this flow has no store link');
         }
         // The user's own checkout, in the in-app browser. Blockle fills
-        // nothing and submits nothing here.
-        context.read<AppState>().openBrowser(url);
+        // nothing and submits nothing here — but it does make sure the
+        // details are READY first, because discovering an empty address
+        // book while standing in a payment form is the worst moment to
+        // find out.
+        await _ensureDelivery();
+        if (!mounted) return;
+        // offerAutofill: the browser raises a one-tap banner when the page
+        // loads, so the address is filled without digging through a menu.
+        context.read<AppState>().openBrowser(url, offerAutofill: true);
+    }
+  }
+
+  /// Complete or fail the step from the SERVER-VERIFIED MoonPay status.
+  ///
+  /// This is the seam worth automating: the ramp screen polls the status the
+  /// verified webhook recorded, so the app already knows the answer and
+  /// asking the user to self-report would be both friction and a worse
+  /// source of truth. A null status means they left before anything was
+  /// confirmed — common, since a bank payout can land days later — so the
+  /// step stays open and manual rather than being guessed either way.
+  void _settleFromMoonPay(MoonPayTxn? txn) {
+    if (!mounted) return;
+    final runs = context.read<FlowRuns>();
+    switch (outcomeForMoonPayStatus(txn?.status)) {
+      case LegOutcome.advance:
+        runs.advance(widget.run);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('MoonPay confirmed this step. Moving on.')));
+      case LegOutcome.fail:
+        runs.fail(widget.run,
+            'MoonPay reported this transaction as ${txn!.status}.');
+      case LegOutcome.hold:
+        // Left before anything settled. The step stays open and manual;
+        // guessing in either direction costs the user real money or real
+        // days.
+        break;
+    }
+  }
+
+  /// Make sure there is an address to fill before sending them to a checkout.
+  Future<void> _ensureDelivery() async {
+    final book = context.read<DeliveryBook>();
+    await book.load();
+    if (!mounted || !book.profile.isEmpty) return;
+    final add = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: const Text('Add your delivery details first?'),
+        content: const Text(
+            'Save them once and Blockle can fill them in at the checkout, '
+            'instead of you typing an address on a phone keyboard.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('Skip')),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('Add them')),
+        ],
+      ),
+    );
+    if (add == true && mounted) {
+      await Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DeliveryScreen()));
     }
   }
 
