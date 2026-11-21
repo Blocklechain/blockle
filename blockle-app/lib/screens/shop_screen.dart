@@ -24,10 +24,14 @@ import 'package:provider/provider.dart';
 
 import '../shop/catalog.dart';
 import '../shop/flow.dart';
+import '../shop/delivery.dart';
+import '../shop/flow_run.dart';
 import '../shop/product.dart';
 import '../shop/ui.dart';
 import '../state/liquidity_controller.dart';
 import '../theme.dart';
+import 'shop/delivery_screen.dart';
+import 'shop/flow_screen.dart';
 import 'shop/sell_screen.dart';
 
 class ShopScreen extends StatefulWidget {
@@ -92,9 +96,17 @@ class _ShopScreenState extends State<ShopScreen> {
             ),
 
             const SizedBox(height: 20),
+            // UNFINISHED MONEY MOVEMENTS COME FIRST. A half-done flow is the
+            // most important thing on this screen — more important than
+            // starting a new one — and a user must never have to go looking
+            // for one they started days ago.
+            const _OpenRuns(),
             const _FlowCard(kind: _FlowKind.getBlock),
             const SizedBox(height: 12),
             const _FlowCard(kind: _FlowKind.payWithBlock),
+
+            const SizedBox(height: 14),
+            const _DeliveryRow(),
 
             const SizedBox(height: 28),
             ShopSection(_searched ? 'Results' : 'Listings'),
@@ -111,6 +123,94 @@ class _ShopScreenState extends State<ShopScreen> {
         ),
       ),
     );
+  }
+}
+
+/// The saved delivery address, and a nudge to add one before checkout rather
+/// than while standing in a payment form.
+class _DeliveryRow extends StatelessWidget {
+  const _DeliveryRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.watch<DeliveryBook>().profile;
+    final t = Theme.of(context).textTheme;
+    final set = !p.isEmpty;
+
+    return ShopCard(
+      padding: const EdgeInsets.all(14),
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DeliveryScreen())),
+      child: Row(children: [
+        Icon(set ? Icons.local_shipping_outlined : Icons.add_location_alt_outlined,
+            size: 20, color: set ? Bk.accent : Bk.faint),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(set ? 'Delivery details' : 'Add delivery details',
+                    style: t.titleSmall),
+                const SizedBox(height: 3),
+                Text(
+                    set
+                        ? p.summary
+                        : 'Fill any checkout without typing your address.',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: t.bodySmall?.copyWith(color: Bk.muted)),
+              ]),
+        ),
+        if (set && p.missing.isNotEmpty)
+          const ShopPill('Incomplete', tone: PillTone.warn),
+        const SizedBox(width: 6),
+        const Icon(Icons.chevron_right, size: 18, color: Bk.faint),
+      ]),
+    );
+  }
+}
+
+/// Flows the user started and has not finished.
+class _OpenRuns extends StatelessWidget {
+  const _OpenRuns();
+
+  @override
+  Widget build(BuildContext context) {
+    final open = context.watch<FlowRuns>().open;
+    if (open.isEmpty) return const SizedBox.shrink();
+    final t = Theme.of(context).textTheme;
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const ShopSection('In progress'),
+      for (final r in open)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: ShopCard(
+            highlight: true,
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => FlowScreen(runId: r.id))),
+            child: Row(children: [
+              Icon(r.stalled ? Icons.error_outline : Icons.timelapse,
+                  size: 20, color: r.stalled ? Bk.bad : Bk.accent),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(r.title, style: t.titleSmall),
+                      const SizedBox(height: 3),
+                      Text(
+                          r.current?.name ?? 'Waiting',
+                          style: t.bodySmall?.copyWith(color: Bk.muted)),
+                    ]),
+              ),
+              ShopPill('${r.doneCount}/${r.steps.length}',
+                  tone: r.stalled ? PillTone.bad : PillTone.accent),
+            ]),
+          ),
+        ),
+      const SizedBox(height: 10),
+    ]);
   }
 }
 
@@ -296,12 +396,19 @@ class _FlowCard extends StatelessWidget {
     );
   }
 
-  void _start(BuildContext context, FlowPlan plan) {
-    // The legs run through the existing Liquidity and MoonPay screens; this
-    // card's job is to decide whether they CAN run and to say what will
-    // happen. Wiring the hand-off is the next slice.
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('${plan.title}: ${plan.legs.length} steps, '
-            '${plan.takes.human}.')));
+  /// Turn the plan into a tracked run and open it.
+  ///
+  /// The run is PERSISTED before the screen opens, so a flow survives the app
+  /// being closed mid-way — which "Pay with BLOCK" guarantees, since it waits
+  /// on a bank payout of one to three business days.
+  Future<void> _start(BuildContext context, FlowPlan plan) async {
+    final runs = context.read<FlowRuns>();
+    // Identified by when it started rather than by content: the same user
+    // buying the same thing twice is two runs, not one overwritten.
+    final id = DateTime.now().toUtc().microsecondsSinceEpoch.toRadixString(16);
+    final run = await runs.start(plan, id: id);
+    if (!context.mounted) return;
+    await Navigator.push(context,
+        MaterialPageRoute(builder: (_) => FlowScreen(runId: run.id)));
   }
 }

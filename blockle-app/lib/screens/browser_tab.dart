@@ -19,7 +19,9 @@ import '../services/agent_service.dart' show AgentService, SiteScreening;
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../services/open_url.dart';
+import '../shop/delivery.dart';
 import '../theme.dart';
+import 'shop/delivery_screen.dart';
 import 'wallet/security_sheet.dart';
 
 const _home = 'https://blockle.org';
@@ -358,6 +360,100 @@ class _BrowserTabState extends State<BrowserTab> {
       ),
     );
     return res ?? false;
+  }
+
+  /// Fill the delivery fields of the checkout the user is looking at.
+  ///
+  /// EXPLICIT, CONFIRMED, AND NEVER SUBMITTED. The user taps the menu item,
+  /// is shown exactly which address is about to be typed and onto which
+  /// site, and only then is the script run. It fills inputs and stops — the
+  /// order is reviewed and placed by the user, in their own browser. The
+  /// rules about what it refuses to touch (cards, passwords, seed phrases)
+  /// live in shop/delivery.dart with the tests that execute them.
+  Future<void> _autofill() async {
+    final book = context.read<DeliveryBook>();
+    await book.load();
+    if (!mounted) return;
+
+    final p = book.profile;
+    if (p.isEmpty) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (d) => AlertDialog(
+          title: const Text('No delivery details saved'),
+          content: const Text(
+              'Save your name and address once and Blockle can fill them in '
+              'at any checkout.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(d, false),
+                child: const Text('Not now')),
+            TextButton(
+                onPressed: () => Navigator.pop(d, true),
+                child: const Text('Add details')),
+          ],
+        ),
+      );
+      if (go == true && mounted) {
+        await Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const DeliveryScreen()));
+      }
+      return;
+    }
+
+    // NAME THE SITE. The user must see which third party is about to receive
+    // their home address — that is the whole decision being made here.
+    final host = Uri.tryParse(_origin)?.host ?? _origin;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: Text('Fill your details on $host?'),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(p.fullName, style: const TextStyle(color: Bk.text)),
+              const SizedBox(height: 4),
+              Text(p.summary,
+                  style: const TextStyle(fontSize: 13, color: Bk.muted)),
+              if (p.email.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(p.email,
+                    style: const TextStyle(fontSize: 13, color: Bk.muted)),
+              ],
+              const SizedBox(height: 12),
+              const Text(
+                  'Blockle fills the delivery fields only. It never fills '
+                  'card or password fields, and never submits the order.',
+                  style: TextStyle(fontSize: 12, color: Bk.faint)),
+            ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d, false),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('Fill')),
+        ],
+      ),
+    );
+    if (ok != true || _ctrl == null || !mounted) return;
+
+    final raw = await _ctrl!.evaluateJavascript(source: Autofill.script(p));
+    if (!mounted) return;
+    // REPORT WHAT ACTUALLY HAPPENED. A checkout this does not understand is
+    // common, and a silent no-op reads as a broken feature.
+    var n = 0;
+    try {
+      final r = raw is String ? jsonDecode(raw) : raw;
+      n = (r is Map ? r['filled'] : 0) as int? ?? 0;
+    } catch (_) {}
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(n == 0
+            ? 'No delivery fields recognised on this page — you will need to '
+                'type them.'
+            : 'Filled $n field${n == 1 ? '' : 's'}. Check them before you '
+                'place the order.')));
   }
 
   void _emitEvm(String event, dynamic data) {
@@ -901,6 +997,9 @@ class _BrowserTabState extends State<BrowserTab> {
                       case 'connect':
                         _connect();
                         break;
+                      case 'autofill':
+                        _autofill();
+                        break;
                     }
                   },
                   itemBuilder: (_) => [
@@ -916,6 +1015,13 @@ class _BrowserTabState extends State<BrowserTab> {
                       const PopupMenuItem(
                           value: 'connect',
                           child: _MenuRow(Icons.link, 'Connect dApp')),
+                    // Checkout autofill. Behind an explicit tap, never a page
+                    // hook — see shop/delivery.dart.
+                    if (!_atHome)
+                      const PopupMenuItem(
+                          value: 'autofill',
+                          child: _MenuRow(Icons.badge_outlined,
+                              'Fill delivery details')),
                   ],
                 ),
               ],

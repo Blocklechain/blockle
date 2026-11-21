@@ -14,13 +14,18 @@
 // pumps the real screen and reads what a user would see.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:provider/provider.dart';
 
 import 'package:blockle_app/screens/shop_screen.dart';
+import 'package:blockle_app/liquidity/liquidity_pool.dart';
 import 'package:blockle_app/shop/catalog.dart';
+import 'package:blockle_app/shop/flow.dart';
+import 'package:blockle_app/shop/delivery.dart';
+import 'package:blockle_app/shop/flow_run.dart';
 import 'package:blockle_app/shop/product.dart';
 import 'package:blockle_app/state/liquidity_controller.dart';
 import 'package:blockle_app/theme.dart';
@@ -179,12 +184,15 @@ void main() {
 
     // Forbidden from calling CatalogSource directly — it must observe what a
     // user sees, or it cannot catch a screen wired to something else.
-    Widget app(Catalog c, MerchantStore s) => MultiProvider(
+    Widget app(Catalog c, MerchantStore s, {FlowRuns? runs}) => MultiProvider(
           providers: [
             ChangeNotifierProvider<Catalog>.value(value: c),
             ChangeNotifierProvider<MerchantStore>.value(value: s),
             ChangeNotifierProvider<LiquidityService>.value(
                 value: LiquidityService.instance),
+            ChangeNotifierProvider<FlowRuns>.value(
+                value: runs ?? FlowRuns()),
+            ChangeNotifierProvider<DeliveryBook>(create: (_) => DeliveryBook()),
           ],
           child: MaterialApp(theme: Bk.theme(), home: const ShopScreen()),
         );
@@ -226,6 +234,36 @@ void main() {
       expect(find.text('In stock'), findsOneWidget);
     });
 
+    testWidgets('an unfinished money flow is surfaced, not buried',
+        (tester) async {
+      // THE WIRING GUARD. FlowRuns is unit-tested on its own; this checks the
+      // shop screen actually reads it. A run the user started days ago and
+      // cannot see is the same as a lost run.
+      final runs = FlowRuns(store: _MemStore());
+      await runs.start(
+          MoneyFlow.getBlock(
+              usd: 50,
+              solToBlock: SwapQuote(
+                  ok: true,
+                  amountIn: 0.25,
+                  amountOut: 40000,
+                  assetIn: 'SOL',
+                  assetOut: 'BLOCK',
+                  blockPriceUsd: 0.001),
+              blockReserve: 1000000,
+              onchainSettlement: true,
+              buyEnabled: true,
+              buyable: const {'SOL', 'USDC', 'ETH', 'BTC'}),
+          id: 'r1');
+      final s = MerchantStore();
+      await tester.pumpWidget(
+          app(Catalog([MerchantLinkSource(s)]), s, runs: runs));
+      await tester.pump();
+
+      expect(find.text('IN PROGRESS'), findsOneWidget);
+      expect(find.text('0/2'), findsOneWidget);
+    });
+
     testWidgets('a listing with no price says so instead of showing \$0.00',
         (tester) async {
       final s = MerchantStore();
@@ -247,6 +285,19 @@ void main() {
       expect(find.textContaining(r'$0'), findsNothing);
     });
   });
+}
+
+/// In-memory storage so a run can be started in a widget test without
+/// touching the platform keychain.
+class _MemStore extends FlutterSecureStorage {
+  const _MemStore();
+  @override
+  Future<void> write({required String key, required String? value, iOptions,
+      aOptions, lOptions, webOptions, mOptions, wOptions}) async {}
+  @override
+  Future<String?> read({required String key, iOptions, aOptions, lOptions,
+          webOptions, mOptions, wOptions}) async =>
+      null;
 }
 
 class _ThrowingSource extends CatalogSource {

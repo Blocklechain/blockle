@@ -12,6 +12,8 @@ import 'state/liquidity_controller.dart';
 import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
 import 'shop/catalog.dart';
+import 'shop/delivery.dart';
+import 'shop/flow_run.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
@@ -69,6 +71,15 @@ void main() {
         // on the store, so it is built from it rather than beside it.
         ChangeNotifierProvider<MerchantStore>(
           create: (_) => MerchantStore()..load(),
+        ),
+        // Money flows in progress. Loaded at startup because a "Pay with
+        // BLOCK" run spans a bank payout of days — the user WILL have closed
+        // the app in the middle of one, and it has to still be there.
+        ChangeNotifierProvider<FlowRuns>(create: (_) => FlowRuns()..load()),
+        // Delivery details for checkout autofill. Secure storage — it is a
+        // home address.
+        ChangeNotifierProvider<DeliveryBook>(
+          create: (_) => DeliveryBook()..load(),
         ),
         ChangeNotifierProvider<Catalog>(
           create: (ctx) => Catalog([
