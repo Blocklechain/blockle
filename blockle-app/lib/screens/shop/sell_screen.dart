@@ -13,9 +13,16 @@
 // than being quietly left blank for them to discover later.
 //
 // This screen is for a seller listing their OWN products. It is not a way to
-// add Amazon's catalogue to Blockle — see catalog.dart for why that needs an
-// approved feed instead, and note the UI says so out loud rather than letting
-// a seller paste a link they have no right to list.
+// add Amazon's catalogue: that is a separate screen (picks_screen.dart) with
+// separate rules — curated affiliate links, no price, nothing read off
+// Amazon's pages. The UI says so here rather than letting a seller paste a
+// link they have no right to list and only finding out later.
+//
+// IMPORTING A WHOLE SHOP is the big one. Shopify and WooCommerce both
+// publish a public, read-only catalogue endpoint, so a merchant pastes their
+// shop address and gets everything listed with real prices — which is also
+// why the crypto-price display works for these and not for Amazon. See
+// shop/bulk.dart.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -59,9 +66,13 @@ class _SellScreenState extends State<SellScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           children: [
-            const ShopHeader('List a product',
-                subtitle: 'Paste a link to one of your own product pages. '
-                    'We fill in what the page states — you correct the rest.'),
+            const ShopHeader('List your products',
+                subtitle: 'Paste your shop address to import everything at '
+                    'once, or a single product page to add one.'),
+
+            const _BulkImport(),
+            const SizedBox(height: 26),
+            ShopSection('Or add one product'),
 
             // --- the paste box ---
             TextField(
@@ -102,9 +113,10 @@ class _SellScreenState extends State<SellScreen> {
             // who pastes an Amazon link and gets a draft would reasonably
             // assume listing it was allowed.
             const ShopNote(
-                'Only your own product pages. Listings for large retailers '
-                'come from their official product feeds, not from links — '
-                'pasting one here will not create a listing you can sell.',
+                'Only your own shop. Amazon and other large retailers are '
+                'added as curated links from the Shop screen instead — they '
+                'have their own rules and show their price on the '
+                'retailer\'s page.',
                 icon: Icons.gavel_outlined),
 
             if (store.error != null) ...[
@@ -130,6 +142,151 @@ class _SellScreenState extends State<SellScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Import a whole storefront from its public catalogue.
+///
+/// Shopify and WooCommerce both publish one at a fixed path, with no key and
+/// no login — see shop/bulk.dart. For a merchant with 200 products this is
+/// the difference between onboarding and not bothering.
+class _BulkImport extends StatefulWidget {
+  const _BulkImport();
+
+  @override
+  State<_BulkImport> createState() => _BulkImportState();
+}
+
+class _BulkImportState extends State<_BulkImport> {
+  final _store = TextEditingController();
+
+  @override
+  void dispose() {
+    _store.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.watch<MerchantStore>();
+    final t = Theme.of(context).textTheme;
+    final found = s.bulkFound;
+
+    return ShopCard(
+      highlight: found.isNotEmpty,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.storefront_outlined, size: 18, color: Bk.accent),
+          const SizedBox(width: 8),
+          Text('Import your whole shop', style: t.titleMedium),
+        ]),
+        const SizedBox(height: 4),
+        Text('Works automatically with Shopify and WooCommerce.',
+            style: t.bodySmall?.copyWith(color: Bk.muted)),
+        const SizedBox(height: 14),
+
+        TextField(
+          controller: _store,
+          enabled: !s.bulkBusy,
+          keyboardType: TextInputType.url,
+          autocorrect: false,
+          onSubmitted: (v) => s.importStore(v),
+          decoration: const InputDecoration(
+            hintText: 'https://yourstore.com',
+            prefixIcon: Icon(Icons.link, color: Bk.faint),
+          ),
+        ),
+        const SizedBox(height: 10),
+        FilledButton(
+          onPressed: s.bulkBusy || _store.text.trim().isEmpty
+              ? null
+              : () => s.importStore(_store.text),
+          child: s.bulkBusy
+              ? const SizedBox(
+                  height: 18,
+                  width: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : const Text('Read my catalogue'),
+        ),
+
+        if (s.bulkError != null) ...[
+          const SizedBox(height: 12),
+          ShopNote(s.bulkError!, tone: PillTone.bad, icon: Icons.error_outline),
+        ],
+
+        if (found.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          ShopNote(
+              'Found ${found.length} product${found.length == 1 ? '' : 's'}'
+              '${s.bulkCurrency != null ? ' priced in ${s.bulkCurrency}' : ''}.',
+              tone: PillTone.good,
+              icon: Icons.check_circle_outline),
+
+          // THE CURRENCY TRAP, surfaced. Shopify does not state a currency,
+          // so rather than assume dollars the prices were dropped — and the
+          // merchant is asked, because they know.
+          if (s.bulkDroppedPrices > 0) ...[
+            const SizedBox(height: 8),
+            ShopNote(
+                '${s.bulkDroppedPrices} price'
+                '${s.bulkDroppedPrices == 1 ? ' was' : 's were'} left out '
+                'because your shop does not publish which currency it uses. '
+                'Tell us and we will read it again — guessing would put your '
+                'shop online at the wrong price.',
+                tone: PillTone.warn,
+                icon: Icons.attach_money),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: ['USD', 'EUR', 'GBP', 'CAD', 'AUD']
+                  .map((c) => ActionChip(
+                        label: Text(c),
+                        onPressed: () => s.importStore(_store.text,
+                            currencyOverride: c),
+                      ))
+                  .toList(),
+            ),
+          ],
+
+          if (s.bulkTruncated) ...[
+            const SizedBox(height: 8),
+            // NO SILENT CAP. A merchant whose 3000-product shop imports 1250
+            // must be told, or they will assume the rest failed to sell.
+            ShopNote(
+                'Only the first ${found.length} products were read. Import '
+                'again later to pick up the rest.',
+                tone: PillTone.warn,
+                icon: Icons.layers_outlined),
+          ],
+
+          const SizedBox(height: 14),
+          Row(children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: s.discardBulk,
+                child: const Text('Discard'),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton(
+                onPressed: () {
+                  final r = s.publishBulk();
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(r.skipped == 0
+                          ? 'Published ${r.published} products.'
+                          : 'Published ${r.published}. ${r.skipped} were '
+                              'held back for a missing price, image or '
+                              'description.')));
+                },
+                child: Text('Publish ${found.length}'),
+              ),
+            ),
+          ]),
+        ],
+      ]),
     );
   }
 }

@@ -37,6 +37,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'affiliate.dart';
+import 'bulk.dart';
 import 'ingest.dart';
 import 'product.dart';
 
@@ -320,6 +321,150 @@ class MerchantStore extends ChangeNotifier {
     // A draft is NEVER auto-published. Everything here was read off a page by
     // a parser, and the seller is the only one who knows if it is right.
     state = draft!.listable ? DraftState.ready : DraftState.needsWork;
+    notifyListeners();
+  }
+
+  // --- bulk import -----------------------------------------------------
+
+  /// Products found by reading a whole storefront, awaiting the merchant's OK.
+  List<Product> bulkFound = const [];
+  bool bulkBusy = false;
+  String? bulkError;
+  StorePlatform bulkPlatform = StorePlatform.unknown;
+  String? bulkCurrency;
+  int bulkDroppedPrices = 0;
+
+  /// Hard ceiling on pages. A catalogue of a quarter of a million products
+  /// is not something to pull onto a phone, and an unbounded loop against
+  /// someone else's server is rude as well as fragile. What is skipped is
+  /// REPORTED rather than silently truncated.
+  static const int maxPages = 5;
+  bool bulkTruncated = false;
+
+  /// Read a merchant's entire storefront from its public catalogue endpoint.
+  ///
+  /// Shopify and WooCommerce both publish one; see bulk.dart for why this is
+  /// the best coverage available without a gatekeeper, and for the currency
+  /// trap that makes this more than a loop.
+  /// [currencyOverride] re-runs the read with a currency the merchant has
+  /// stated, for the Shopify stores whose /meta.json does not say. It has to
+  /// re-fetch rather than patch the previous result: once a price has been
+  /// dropped for having no currency, the raw figure is gone, and inventing a
+  /// way to put it back would defeat the point of dropping it.
+  Future<void> importStore(String storeUrl, {String? currencyOverride}) async {
+    bulkBusy = true;
+    bulkError = null;
+    bulkFound = const [];
+    bulkTruncated = false;
+    bulkDroppedPrices = 0;
+    notifyListeners();
+
+    final candidates = BulkImport.catalogUrls(storeUrl);
+    if (candidates.isEmpty) {
+      bulkBusy = false;
+      bulkError = 'That does not look like a web address. Paste your shop\'s '
+          'address, like https://yourstore.com';
+      notifyListeners();
+      return;
+    }
+
+    // Shopify omits the currency from its catalogue entirely, so ask the
+    // store for it FIRST — a failure here costs prices, not the import.
+    String? currency = currencyOverride?.trim().toUpperCase();
+    if (currency != null && currency.length != 3) currency = null;
+    final meta = currency != null ? null : BulkImport.metaUrl(storeUrl);
+    if (meta != null) {
+      try {
+        final r = await _client.get(meta).timeout(const Duration(seconds: 8));
+        if (r.statusCode == 200) {
+          currency = BulkImport.currencyFromMeta(r.body);
+        }
+      } catch (_) {}
+    }
+
+    final found = <Product>[];
+    var dropped = 0;
+    var platform = StorePlatform.unknown;
+
+    for (var page = 1; page <= maxPages; page++) {
+      final urls = page == 1
+          ? candidates
+          : BulkImport.catalogUrls(storeUrl, page: page)
+              .where((u) =>
+                  platform == StorePlatform.shopify
+                      ? u.path.endsWith('products.json')
+                      : u.path.contains('wc/store'))
+              .toList();
+
+      BulkResult? best;
+      for (final u in urls) {
+        try {
+          final r = await _client.get(u, headers: {
+            'User-Agent': 'BlockleShop/1.0 (+https://blockle.org/sellers)',
+            'Accept': 'application/json',
+          }).timeout(const Duration(seconds: 12));
+          if (r.statusCode != 200) continue;
+          final parsed =
+              BulkImport.parse(r.body, storeUrl, currency: currency);
+          if (parsed.platform != StorePlatform.unknown) {
+            best = parsed;
+            break;
+          }
+        } catch (_) {
+          // Try the next candidate endpoint rather than failing the import.
+        }
+      }
+
+      if (best == null || best.products.isEmpty) break;
+      platform = best.platform;
+      found.addAll(best.products);
+      dropped += best.droppedPrices;
+      // A short page is the last page.
+      if (best.products.length < 100) break;
+      if (page == maxPages) bulkTruncated = true;
+    }
+
+    bulkBusy = false;
+    bulkPlatform = platform;
+    bulkCurrency = currency;
+    bulkDroppedPrices = dropped;
+    bulkFound = found;
+    if (found.isEmpty) {
+      bulkError = 'No public product catalogue was found at that address. '
+          'Blockle can import automatically from Shopify and WooCommerce '
+          'stores; otherwise add products one link at a time.';
+    }
+    notifyListeners();
+  }
+
+  /// Publish everything from the import that is actually listable.
+  ///
+  /// Returns how many went live and how many were held back, so the merchant
+  /// is told rather than wondering why their 247-product shop shows 203.
+  ({int published, int skipped}) publishBulk() {
+    var published = 0, skipped = 0;
+    for (final p in bulkFound) {
+      if (!p.listable) {
+        skipped++;
+        continue;
+      }
+      final at = listings.indexWhere((x) => x.id == p.id);
+      if (at >= 0) {
+        listings[at] = p;
+      } else {
+        listings.add(p);
+      }
+      published++;
+    }
+    bulkFound = const [];
+    _persist();
+    notifyListeners();
+    return (published: published, skipped: skipped);
+  }
+
+  void discardBulk() {
+    bulkFound = const [];
+    bulkError = null;
     notifyListeners();
   }
 
