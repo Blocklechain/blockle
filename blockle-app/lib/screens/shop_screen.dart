@@ -35,6 +35,7 @@ import 'shop/delivery_screen.dart';
 import 'shop/flow_screen.dart';
 import 'shop/orders_screen.dart';
 import 'shop/picks_screen.dart';
+import 'shop/sources_screen.dart';
 import 'shop/sell_screen.dart';
 
 class ShopScreen extends StatefulWidget {
@@ -73,6 +74,13 @@ class _ShopScreenState extends State<ShopScreen> {
               'Shop',
               subtitle: 'Buy real things. Pay with crypto.',
               trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton.filledTonal(
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SourcesScreen())),
+                  icon: const Icon(Icons.tune),
+                  tooltip: 'Product sources',
+                ),
+                const SizedBox(width: 8),
                 IconButton.filledTonal(
                   onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute(builder: (_) => const PicksScreen())),
@@ -284,15 +292,15 @@ class _Results extends StatelessWidget {
         icon: searched ? Icons.search_off : Icons.storefront_outlined,
         title: searched ? 'No listings matched' : 'No listings yet',
         body: searched
-            ? 'Nothing a Blockle seller has listed matches that. Large '
-                'retailers are not searchable yet.'
-            : 'Sellers list products by pasting a link to their own product '
-                'page. Nothing is shown here until the products and prices '
-                'are real ones.',
+            ? 'No connected source has that. Connecting a retailer '
+                'catalogue makes the whole shop searchable.'
+            : 'Connect a retailer catalogue and the shop fills with real '
+                'products at live prices. Nothing is shown here until the '
+                'products and prices are real ones.',
         action: FilledButton.tonal(
           onPressed: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => const SellScreen())),
-          child: const Text('List a product'),
+              .push(MaterialPageRoute(builder: (_) => const SourcesScreen())),
+          child: const Text('Connect a catalogue'),
         ),
       );
     }

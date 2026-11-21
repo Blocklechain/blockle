@@ -24,6 +24,7 @@ import 'package:blockle_app/screens/shop_screen.dart';
 import 'package:blockle_app/liquidity/liquidity_pool.dart';
 import 'package:blockle_app/shop/affiliate.dart';
 import 'package:blockle_app/shop/catalog.dart';
+import 'package:blockle_app/shop/feeds/retail_feed.dart';
 import 'package:blockle_app/shop/flow.dart';
 import 'package:blockle_app/shop/delivery.dart';
 import 'package:blockle_app/shop/flow_run.dart';
@@ -76,15 +77,28 @@ void main() {
       expect(f.unavailableReason, isNotNull);
       // The reason is shown to a shopper verbatim, so it has to read like a
       // sentence rather than a flag name.
-      expect(f.unavailableReason, contains('datafeed'));
+      expect(f.unavailableReason, contains('No retailer catalogue'));
       expect(await f.search('headphones'), isEmpty);
     });
 
-    test('it never fabricates a sample product to look alive', () async {
-      // The failure this guards: a placeholder catalogue that ships because
-      // it makes the screenshot look finished.
-      expect(await FeedSource(credentialsPresent: true).search('anything'),
-          isEmpty);
+    test('an unconfigured feed names itself and says how to turn it on',
+        () async {
+      final f = FeedSource(feed: _FakeFeed(configured: false));
+      expect(f.name, 'Test Retailer');
+      expect(f.unavailableReason, contains('not connected'));
+      expect(f.unavailableReason, contains('Paste a key'));
+      expect(await f.search('headphones'), isEmpty);
+    });
+
+    test('A CONFIGURED FEED IS WHAT MAKES THE SHOP READ LIKE A SHOP',
+        () async {
+      // The whole point of the feed layer: a search returns real products
+      // without anyone curating a link first.
+      final f = FeedSource(feed: _FakeFeed(configured: true));
+      expect(f.unavailableReason, isNull);
+      final r = await f.search('headphones');
+      expect(r, hasLength(2));
+      expect(r.first.hasPrice, isTrue);
     });
 
     test('Catalog reports which sources it could not consult', () async {
@@ -235,9 +249,9 @@ void main() {
       await tester.pump();
 
       expect(find.text('No listings yet'), findsOneWidget);
-      // And it says WHY the automatic retailer catalogue is absent, rather
-      // than looking like a shop that simply has nothing today.
-      expect(find.textContaining('datafeed'), findsOneWidget);
+      // And it says WHY the shop is empty, rather than looking like a shop
+      // that simply has nothing today.
+      expect(find.textContaining('No retailer catalogue'), findsOneWidget);
     });
 
     testWidgets('renders a real listing, with the price it was given',
@@ -420,6 +434,35 @@ class _MemStore extends FlutterSecureStorage {
   Future<String?> read({required String key, iOptions, aOptions, lOptions,
           webOptions, mOptions, wOptions}) async =>
       null;
+}
+
+/// A retailer catalogue that needs no network.
+class _FakeFeed extends RetailFeed {
+  _FakeFeed({required bool configured}) : _on = configured;
+  final bool _on;
+
+  @override
+  String get name => 'Test Retailer';
+  @override
+  bool get configured => _on;
+  @override
+  String get howToEnable => 'Paste a key in Shop → Sources.';
+  @override
+  Future<List<Product>> search(String query, {int limit = 24}) async => _on
+      ? [
+          for (var i = 0; i < 2; i++)
+            Product(
+                id: 'f$i',
+                title: 'Headphones $i',
+                merchant: 'Test Retailer',
+                url: 'https://retailer.test/$i',
+                source: ProductSource.feed,
+                priceMinor: 9999,
+                currency: 'USD',
+                description: 'd',
+                imageUrl: 'https://retailer.test/$i.jpg'),
+        ]
+      : const [];
 }
 
 class _ThrowingSource extends CatalogSource {

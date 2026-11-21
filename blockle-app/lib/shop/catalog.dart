@@ -38,6 +38,7 @@ import 'package:http/http.dart' as http;
 
 import 'affiliate.dart';
 import 'bulk.dart';
+import 'feeds/retail_feed.dart';
 import 'ingest.dart';
 import 'product.dart';
 
@@ -117,32 +118,41 @@ class AffiliateLinkSource extends CatalogSource {
   }
 }
 
-/// Retailer feeds — a network datafeed or a retailer's own API.
+/// A real retailer catalogue, searched live.
 ///
-/// DELIBERATELY INERT. It reports why it is off rather than returning sample
-/// products, because a sample product in a shopping app is indistinguishable
-/// from a real one until someone tries to buy it. When a feed is approved,
-/// this class gets a client and the reason goes away; nothing else changes.
+/// This is what makes the shop read like a shop: a query returns real
+/// products at real current prices, with no curation step. It is a thin
+/// bridge onto RetailFeed — see shop/feeds/retail_feed.dart for which
+/// retailers permit this and which do not (Amazon does not).
+///
+/// When the feed has no credential it reports WHY and returns nothing. It
+/// never substitutes examples: a sample product in a shopping app is
+/// indistinguishable from a real one until someone tries to buy it.
 class FeedSource extends CatalogSource {
-  FeedSource({this.retailer = 'Retailer feeds', this.credentialsPresent = false});
+  FeedSource({RetailFeed? feed}) : _feed = feed;
 
-  final String retailer;
-
-  /// Set by whatever configures the approved key. Until then: off.
-  final bool credentialsPresent;
+  final RetailFeed? _feed;
 
   @override
-  String get name => retailer;
+  String get name => _feed?.name ?? 'Retailer feeds';
 
   @override
-  String? get unavailableReason => credentialsPresent
-      ? null
-      : 'Automatic retailer catalogues with live prices need an approved '
-          'product datafeed. Retailer products added by hand still show '
-          'here — their price is shown on the retailer\'s own page.';
+  String? get unavailableReason {
+    final f = _feed;
+    if (f == null) {
+      return 'No retailer catalogue is connected yet, so the shop only '
+          'shows products that sellers have listed themselves.';
+    }
+    if (!f.configured) return '${f.name} is not connected. ${f.howToEnable}';
+    return null;
+  }
 
   @override
-  Future<List<Product>> search(String query) async => const [];
+  Future<List<Product>> search(String query) async {
+    final f = _feed;
+    if (f == null || !f.configured) return const [];
+    return f.search(query);
+  }
 }
 
 /// Everything the shop can search, with the honest empty states preserved.
@@ -159,13 +169,15 @@ class Catalog extends ChangeNotifier {
   factory Catalog.standard({
     required MerchantStore merchants,
     required AffiliateStore picks,
+    RetailFeed? feed,
   }) =>
       Catalog([
+        // A live retailer catalogue first — it is the only source that makes
+        // an unsearched shop feel populated. Off until a key exists, and it
+        // says so rather than returning examples.
+        FeedSource(feed: feed),
         MerchantLinkSource(merchants),
         AffiliateLinkSource(picks),
-        // Inert until an approved datafeed exists; reports why rather than
-        // returning sample products.
-        FeedSource(),
       ]);
 
   final List<CatalogSource> sources;

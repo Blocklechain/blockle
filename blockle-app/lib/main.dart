@@ -13,6 +13,8 @@ import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
 import 'shop/affiliate.dart';
 import 'shop/catalog.dart';
+import 'shop/feeds/bestbuy.dart';
+import 'shop/feeds/retail_feed.dart';
 import 'shop/delivery.dart';
 import 'shop/orders.dart';
 import 'shop/flow_run.dart';
@@ -84,6 +86,11 @@ void main() {
         // BLOCK" run spans a bank payout of days — the user WILL have closed
         // the app in the middle of one, and it has to still be there.
         ChangeNotifierProvider<FlowRuns>(create: (_) => FlowRuns()..load()),
+        // Retailer API keys. Loaded before Catalog so a configured feed is
+        // live on the first frame rather than after a restart.
+        ChangeNotifierProvider<FeedSettings>(
+          create: (_) => FeedSettings()..load(),
+        ),
         // Delivery details for checkout autofill. Secure storage — it is a
         // home address.
         ChangeNotifierProvider<DeliveryBook>(
@@ -94,10 +101,19 @@ void main() {
         ChangeNotifierProvider<Orders>(create: (_) => Orders()..load()),
         // The source list lives in Catalog.standard so a test can assert
         // what the shipped app actually searches — see catalog.dart.
-        ChangeNotifierProvider<Catalog>(
+        // Catalog is REBUILT when the feed keys change, via ProxyProvider:
+        // pasting a Best Buy key must populate the shop immediately, not on
+        // the next launch. Catalog.standard decides the source list — see
+        // catalog.dart.
+        ChangeNotifierProxyProvider<FeedSettings, Catalog>(
           create: (ctx) => Catalog.standard(
             merchants: ctx.read<MerchantStore>(),
             picks: ctx.read<AffiliateStore>(),
+          ),
+          update: (ctx, feeds, _) => Catalog.standard(
+            merchants: ctx.read<MerchantStore>(),
+            picks: ctx.read<AffiliateStore>(),
+            feed: BestBuyFeed(apiKey: feeds.keyFor('bestbuy') ?? ''),
           ),
         ),
       ],
