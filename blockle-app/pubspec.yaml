@@ -34,6 +34,11 @@ dependencies:
   # hands a CONNECT/MINT request to the wallet via the relay-poll handshake.
   # Handles both the cold-start initial link and links received while running.
   app_links: ^6.3.2
+  # Device passcode / Face ID / Touch ID. Used to gate ERASING the app, which
+  # is irreversible and otherwise reachable in two taps from the LOCK screen.
+  # Authenticated with biometricOnly:false so the phone passcode is accepted
+  # when biometrics are unavailable or fail.
+  local_auth: ^2.3.0
 
 dev_dependencies:
   flutter_lints: ^4.0.0

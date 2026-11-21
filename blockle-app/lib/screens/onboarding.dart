@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
+import '../services/device_auth.dart';
 import '../theme.dart';
 import '../widgets/blockle_3d_logo.dart';
 
@@ -315,6 +316,16 @@ class _UnlockScreenState extends State<UnlockScreen> {
     );
   }
 
+  /// Erase everything — behind the phone's own lock.
+  ///
+  /// THIS IS THE MOST DESTRUCTIVE ACTION IN THE APP and it sits on the
+  /// UNLOCK screen, so before this gate existed it did not even require the
+  /// wallet to be unlocked: anyone holding the phone could wipe every wallet
+  /// in two taps. If the seed is not backed up, that is the funds gone.
+  ///
+  /// Order matters. The warning is shown FIRST, so the user knows what they
+  /// are authenticating for before the system sheet appears — a passcode
+  /// prompt with no context invites a reflexive thumb.
   Future<void> _confirmReset(BuildContext context, AppState app) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -322,20 +333,84 @@ class _UnlockScreenState extends State<UnlockScreen> {
         backgroundColor: Bk.surface,
         title: const Text('Reset the app?'),
         content: const Text(
-            'This erases all wallets from this device. Only do this if you have '
-            'backed up your wallet files — they cannot be recovered otherwise.'),
+            'This erases all wallets from this device. Only do this if you '
+            'have backed up your wallet files — they cannot be recovered '
+            'otherwise.\n\nYou will be asked for your phone passcode.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Erase', style: TextStyle(color: Bk.bad)),
+            child: const Text('Continue', style: TextStyle(color: Bk.bad)),
           ),
         ],
       ),
     );
-    if (ok == true) {
-      await app.store.reset();
-      await app.syncWalletFlag();
+    if (ok != true || !context.mounted) return;
+
+    final auth = await DeviceAuth.instance
+        .confirm('Confirm it is you before erasing every wallet on this '
+            'device. This cannot be undone.');
+    if (!context.mounted) return;
+
+    switch (auth) {
+      case DeviceAuthResult.ok:
+        break;
+      case DeviceAuthResult.denied:
+        // Say nothing more. A denied check is the gate working.
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Not erased — the device check did not pass.')));
+        return;
+      case DeviceAuthResult.unavailable:
+        // No passcode on the phone, so there is nothing to check against.
+        // Neither silently allowing nor permanently refusing is right, so
+        // fall back to something deliberate enough that it cannot be a
+        // mis-tap.
+        final typed = await _typeToErase(context);
+        if (typed != true) return;
     }
+    if (!context.mounted) return;
+
+    await app.store.reset();
+    await app.syncWalletFlag();
+  }
+
+  /// The no-device-lock fallback: type the word, in full.
+  Future<bool?> _typeToErase(BuildContext context) {
+    final c = TextEditingController();
+    return showDialog<bool>(
+      context: context,
+      builder: (d) => StatefulBuilder(
+        builder: (d2, setLocal) => AlertDialog(
+          backgroundColor: Bk.surface,
+          title: const Text('No passcode on this phone'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text(
+                'This device has no passcode or Face ID set up, so Blockle '
+                'cannot check that it is you. Setting a passcode protects '
+                'your wallet from anyone who picks up your phone.\n\n'
+                'To erase anyway, type ERASE below.',
+                style: TextStyle(fontSize: 13, color: Bk.muted)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: c,
+              autocorrect: false,
+              onChanged: (_) => setLocal(() {}),
+              decoration: const InputDecoration(hintText: 'ERASE'),
+            ),
+          ]),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(d2, false),
+                child: const Text('Cancel')),
+            TextButton(
+              onPressed: c.text.trim().toUpperCase() == 'ERASE'
+                  ? () => Navigator.pop(d2, true)
+                  : null,
+              child: const Text('Erase', style: TextStyle(color: Bk.bad)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

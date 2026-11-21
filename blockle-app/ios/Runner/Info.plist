@@ -55,6 +55,11 @@
 	<string>Blockle can save images such as your receive QR code to your photo library.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Required before iOS will show the Face ID prompt at all; without it
+	     the authenticate() call fails and the erase gate would fall through
+	     to its typed fallback on every Face ID device. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Blockle uses Face ID to confirm it is you before erasing your wallets.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
