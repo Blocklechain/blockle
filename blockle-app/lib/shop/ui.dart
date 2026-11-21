@@ -349,6 +349,35 @@ class ProductImage extends StatelessWidget {
   }
 }
 
+/// The Amazon Associates disclosure.
+///
+/// REQUIRED, not courtesy. The Operating Agreement obliges an associate to
+/// state the relationship clearly and prominently wherever Amazon links are
+/// shown, and the FTC separately requires the paid relationship to be
+/// obvious BEFORE the link. So this renders above the listings rather than
+/// in a settings page, and each affiliate card additionally carries a "paid
+/// link" chip — a statement at the top of a long scroll is not "before the
+/// link" for someone who scrolled past it.
+class AffiliateDisclosure extends StatelessWidget {
+  const AffiliateDisclosure({super.key});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Icon(Icons.campaign_outlined, size: 14, color: Bk.faint),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(kAffiliateDisclosure,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Bk.faint)),
+          ),
+        ]),
+      );
+}
+
 /// Stock state as a chip, including the honest `unknown` case.
 class AvailabilityPill extends StatelessWidget {
   const AvailabilityPill(this.availability, {super.key});

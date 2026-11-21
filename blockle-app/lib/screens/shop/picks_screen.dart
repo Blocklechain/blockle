@@ -108,6 +108,7 @@ class _PicksScreenState extends State<PicksScreen> {
             const ShopHeader('Add a retailer product',
                 subtitle: 'Paste an Amazon product link. Shoppers buy on '
                     'Amazon; Blockle earns the commission.'),
+            const AffiliateDisclosure(),
 
             TextField(
               controller: _link,

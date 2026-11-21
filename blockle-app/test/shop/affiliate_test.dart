@@ -240,6 +240,76 @@ void main() {
     });
   });
 
+  group('a price from ELSEWHERE must not land on an Amazon link', () {
+    // The realistic future bug, now that the catalogue mixes priced
+    // merchant listings with unpriced Amazon links in one list: a
+    // price-match or "cheaper elsewhere" feature borrows a figure from a
+    // Shopify merchant and renders it beside an Amazon buy button.
+    //
+    // That is not just non-compliant. It is WRONG — another retailer's
+    // price is not Amazon's price, and the shopper is charged something
+    // else on tap-through.
+    test('a price forced onto an affiliate listing is still not reported',
+        () {
+      const contaminated = Product(
+          id: 'amz_amazon.com_B08N5WRWNW',
+          title: 'Echo Dot',
+          merchant: 'Amazon US',
+          url: 'https://www.amazon.com/dp/B08N5WRWNW?tag=blockle-20',
+          source: ProductSource.affiliateLink,
+          // Borrowed from somewhere that is not Amazon.
+          priceMinor: 4900,
+          currency: 'USD');
+      expect(contaminated.hasPrice, isFalse);
+      expect(contaminated.priceLivesAtRetailer, isTrue);
+    });
+
+    test('a price cannot be revived through storage either', () {
+      final revived = Product.fromJson({
+        'id': 'amz_amazon.com_B08N5WRWNW',
+        'title': 'Echo Dot',
+        'merchant': 'Amazon US',
+        'url': 'https://www.amazon.com/dp/B08N5WRWNW',
+        'source': 'affiliateLink',
+        'priceMinor': 4900,
+        'currency': 'USD',
+      });
+      expect(revived.hasPrice, isFalse);
+    });
+
+    test('merchant listings are untouched by the guard', () {
+      // The rule must not leak: a Shopify merchant's own price is real and
+      // must still display, which is what makes the crypto price work there.
+      const own = Product(
+          id: 'shop_x',
+          title: 'Lamp',
+          merchant: 'Hale & Co',
+          url: 'https://hale.test/lamp',
+          source: ProductSource.merchantLink,
+          priceMinor: 4900,
+          currency: 'USD');
+      expect(own.hasPrice, isTrue);
+      expect(own.price, 49.0);
+    });
+  });
+
+  group('the required disclosure', () {
+    test('names the Associates relationship and the paid link', () {
+      // Required by the Operating Agreement, and separately by the FTC.
+      expect(kAffiliateDisclosure, contains('Amazon Associate'));
+      expect(kAffiliateDisclosure, contains('qualifying purchases'));
+      expect(kAffiliateDisclosure.toLowerCase(), contains('paid link'));
+    });
+
+    test('every affiliate listing is labelled as paid', () {
+      final p = Affiliate.listing(
+          ref: Affiliate.parse('https://www.amazon.com/dp/B08N5WRWNW')!,
+          title: 'Echo Dot',
+          tag: 'blockle-20');
+      expect(p.source.label, 'paid link');
+    });
+  });
+
   group('short links', () {
     test('are followed to the product, and the BODY IS IGNORED', () async {
       // The response carries a title and a price. Resolving must take the

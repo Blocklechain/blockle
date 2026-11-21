@@ -124,6 +124,11 @@ class _ShopScreenState extends State<ShopScreen> {
 
             const SizedBox(height: 28),
             ShopSection(_searched ? 'Results' : 'Listings'),
+            // Shown whenever a paid retailer link is in the list, and ABOVE
+            // it — required by the Associates agreement and the FTC.
+            if (catalog.results
+                .any((p) => p.source == ProductSource.affiliateLink))
+              const AffiliateDisclosure(),
             _Results(catalog: catalog, searched: _searched),
 
             // WHAT IS MISSING FROM THESE RESULTS, stated rather than implied.

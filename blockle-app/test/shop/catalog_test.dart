@@ -348,6 +348,42 @@ void main() {
           findsNothing,
           reason: 'rendered a crypto conversion of an Amazon price — still '
               'a displayed price');
+
+      // The disclosure is REQUIRED wherever Amazon links are shown, by the
+      // Operating Agreement and separately by the FTC. It renders above the
+      // listings, and each card carries a "paid link" chip because a
+      // statement at the top of a long scroll is not "before the link" for
+      // someone who scrolled past it.
+      expect(find.textContaining('Amazon Associate'), findsOneWidget);
+      expect(find.descendant(of: card, matching: find.text('paid link')),
+          findsOneWidget);
+    });
+
+    testWidgets('no disclosure is shown when there are no paid links',
+        (tester) async {
+      // It must not appear on a shop with only merchant listings — a
+      // disclosure about a relationship that is not in play is noise, and
+      // noise is what gets disclosures ignored.
+      final s = MerchantStore();
+      s.listings.add(const Product(
+          id: 'a',
+          title: 'Walnut Desk Lamp',
+          merchant: 'Hale & Co',
+          url: 'https://e.com',
+          source: ProductSource.merchantEdited,
+          priceMinor: 4900,
+          currency: 'USD',
+          description: 'd',
+          imageUrl: 'https://e.com/i.jpg'));
+      final c = Catalog([MerchantLinkSource(s)]);
+      await tester.pumpWidget(app(c, s));
+      await c.search('');
+      await tester.pump();
+
+      expect(find.textContaining('Amazon Associate'), findsNothing);
+      // And the merchant's own price still shows, which is the whole point
+      // of keeping the two sources distinct.
+      expect(find.text(r'$49.00'), findsOneWidget);
     });
 
     testWidgets('a listing with no price says so instead of showing \$0.00',

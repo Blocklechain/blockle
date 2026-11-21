@@ -39,9 +39,19 @@ extension ProductSourceLabel on ProductSource {
         ProductSource.merchantLink => 'read from the seller’s page',
         ProductSource.merchantEdited => 'provided by the seller',
         ProductSource.feed => 'from a retailer feed',
-        ProductSource.affiliateLink => 'sold by the retailer',
+        // Says PAID, because the FTC requires the paid relationship to be
+        // obvious before the link, not only in a statement further up.
+        ProductSource.affiliateLink => 'paid link',
       };
 }
+
+/// The Associates Operating Agreement requires this to be stated clearly and
+/// prominently wherever Amazon links are shown, and the FTC separately
+/// requires the paid relationship to be obvious BEFORE the link. Kept as one
+/// constant so every surface says the same thing.
+const String kAffiliateDisclosure =
+    'As an Amazon Associate, Blockle earns from qualifying purchases. '
+    'Links to retailers are paid links.';
 
 /// Stock state. `unknown` is a real answer and the commonest one — most pages
 /// do not say, and claiming "In stock" because nothing said otherwise is how
@@ -99,7 +109,22 @@ class Product {
   final String? affiliateUrl;
   final DateTime? fetchedAt;
 
-  bool get hasPrice => priceMinor != null && currency != null;
+  /// DEFENCE IN DEPTH, now that the catalogue mixes priced and unpriced
+  /// sources in one list.
+  ///
+  /// `Affiliate.listing` already takes no price argument, so a curated
+  /// retailer listing cannot be built with one. This closes the other doors:
+  /// a Product constructed directly, revived from tampered storage, or —
+  /// the realistic one — produced by some future price-match or
+  /// "cheaper elsewhere" feature that borrows a figure from a Shopify
+  /// merchant and attaches it to an Amazon link.
+  ///
+  /// That last case is not merely non-compliant, it is WRONG: another
+  /// retailer's price is not Amazon's price, and a shopper who sees $49 and
+  /// is charged $62 on tap-through has been misled by us. So a listing whose
+  /// price lives at the retailer reports no price, whatever it is carrying.
+  bool get hasPrice =>
+      priceMinor != null && currency != null && !priceLivesAtRetailer;
 
   /// True when this listing is not allowed to show a price here, as opposed
   /// to simply not having one yet. Drives the difference between "Price not
