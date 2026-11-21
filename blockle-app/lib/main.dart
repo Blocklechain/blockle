@@ -13,6 +13,7 @@ import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
 import 'shop/catalog.dart';
 import 'shop/delivery.dart';
+import 'shop/orders.dart';
 import 'shop/flow_run.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
@@ -81,6 +82,9 @@ void main() {
         ChangeNotifierProvider<DeliveryBook>(
           create: (_) => DeliveryBook()..load(),
         ),
+        // Orders + tracking. Blockle is not in the delivery path; this keeps
+        // the list and links out to the carrier. See shop/orders.dart.
+        ChangeNotifierProvider<Orders>(create: (_) => Orders()..load()),
         ChangeNotifierProvider<Catalog>(
           create: (ctx) => Catalog([
             MerchantLinkSource(ctx.read<MerchantStore>()),

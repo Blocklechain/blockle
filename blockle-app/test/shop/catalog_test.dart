@@ -26,6 +26,7 @@ import 'package:blockle_app/shop/catalog.dart';
 import 'package:blockle_app/shop/flow.dart';
 import 'package:blockle_app/shop/delivery.dart';
 import 'package:blockle_app/shop/flow_run.dart';
+import 'package:blockle_app/shop/orders.dart';
 import 'package:blockle_app/shop/product.dart';
 import 'package:blockle_app/state/liquidity_controller.dart';
 import 'package:blockle_app/theme.dart';
@@ -184,7 +185,9 @@ void main() {
 
     // Forbidden from calling CatalogSource directly — it must observe what a
     // user sees, or it cannot catch a screen wired to something else.
-    Widget app(Catalog c, MerchantStore s, {FlowRuns? runs}) => MultiProvider(
+    Widget app(Catalog c, MerchantStore s,
+            {FlowRuns? runs, Orders? orders}) =>
+        MultiProvider(
           providers: [
             ChangeNotifierProvider<Catalog>.value(value: c),
             ChangeNotifierProvider<MerchantStore>.value(value: s),
@@ -193,6 +196,7 @@ void main() {
             ChangeNotifierProvider<FlowRuns>.value(
                 value: runs ?? FlowRuns()),
             ChangeNotifierProvider<DeliveryBook>(create: (_) => DeliveryBook()),
+            ChangeNotifierProvider<Orders>.value(value: orders ?? Orders()),
           ],
           child: MaterialApp(theme: Bk.theme(), home: const ShopScreen()),
         );
@@ -262,6 +266,24 @@ void main() {
 
       expect(find.text('IN PROGRESS'), findsOneWidget);
       expect(find.text('0/2'), findsOneWidget);
+    });
+
+    testWidgets('parcels on the way are counted on the shop screen',
+        (tester) async {
+      // Wiring guard, same reason as the flow one: Orders is unit-tested
+      // separately, and this checks the screen actually reads it.
+      final orders = Orders(store: const _MemStore());
+      await orders.add(Order(
+          id: 'o1',
+          merchant: 'Hale & Co',
+          placedAt: DateTime.utc(2026, 11, 1),
+          state: OrderState.shipped));
+      final s = MerchantStore();
+      await tester.pumpWidget(
+          app(Catalog([MerchantLinkSource(s)]), s, orders: orders));
+      await tester.pump();
+
+      expect(find.text('1 on the way'), findsOneWidget);
     });
 
     testWidgets('a listing with no price says so instead of showing \$0.00',

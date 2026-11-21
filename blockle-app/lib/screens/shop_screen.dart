@@ -26,12 +26,14 @@ import '../shop/catalog.dart';
 import '../shop/flow.dart';
 import '../shop/delivery.dart';
 import '../shop/flow_run.dart';
+import '../shop/orders.dart';
 import '../shop/product.dart';
 import '../shop/ui.dart';
 import '../state/liquidity_controller.dart';
 import '../theme.dart';
 import 'shop/delivery_screen.dart';
 import 'shop/flow_screen.dart';
+import 'shop/orders_screen.dart';
 import 'shop/sell_screen.dart';
 
 class ShopScreen extends StatefulWidget {
@@ -106,6 +108,8 @@ class _ShopScreenState extends State<ShopScreen> {
             const _FlowCard(kind: _FlowKind.payWithBlock),
 
             const SizedBox(height: 14),
+            const _OrdersRow(),
+            const SizedBox(height: 10),
             const _DeliveryRow(),
 
             const SizedBox(height: 28),
@@ -122,6 +126,45 @@ class _ShopScreenState extends State<ShopScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Parcels on the way, summarised. Tapping opens the full list.
+class _OrdersRow extends StatelessWidget {
+  const _OrdersRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final orders = context.watch<Orders>();
+    final n = orders.inFlight.length;
+    final t = Theme.of(context).textTheme;
+
+    return ShopCard(
+      padding: const EdgeInsets.all(14),
+      onTap: () => Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const OrdersScreen())),
+      child: Row(children: [
+        Icon(Icons.inventory_2_outlined,
+            size: 20, color: n > 0 ? Bk.accent : Bk.faint),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Orders', style: t.titleSmall),
+                const SizedBox(height: 3),
+                Text(
+                    n == 0
+                        ? 'Track deliveries in one place.'
+                        : '$n on the way',
+                    style: t.bodySmall?.copyWith(color: Bk.muted)),
+              ]),
+        ),
+        if (n > 0) ShopPill('$n', tone: PillTone.accent),
+        const SizedBox(width: 6),
+        const Icon(Icons.chevron_right, size: 18, color: Bk.faint),
+      ]),
     );
   }
 }
