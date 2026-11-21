@@ -48,6 +48,14 @@ struct CustomBlockView: View {
     }
 
     var body: some View {
+        content
+            // Checked on open, not on first add: the old screen looked
+            // healthy until the user had already typed in a site and
+            // assumed it was being blocked.
+            .onAppear { store.preflight() }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Card {

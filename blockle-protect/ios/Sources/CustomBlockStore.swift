@@ -98,8 +98,14 @@ final class CustomBlockStore: ObservableObject {
             // No App Group container: the extension can never see the list.
             // Previously this was `if let` with a `try?` write, so the whole
             // feature failed in total silence.
+            // NOT "reinstall" — this is a signing/entitlement fault in the
+            // build on the device, and reinstalling the same build cannot
+            // change it. Sending a user round a loop that cannot work is
+            // worse than telling them plainly that it is our problem.
             writeFailed = true
-            message = "Couldn't reach the shared storage the blocker reads. Reinstall, or contact support."
+            message = "This build is missing its App Group entitlement, so the "
+                + "blocker cannot see your list. This is a build fault, not "
+                + "something you can fix on the phone."
             return
         }
         do {
@@ -146,7 +152,36 @@ final class CustomBlockStore: ObservableObject {
     /// One-line summary of whether this feature is actually working, for the UI.
     /// Deliberately blunt: "nothing is being blocked" beats a green checkmark
     /// that means nothing.
+    /// Is the shared container reachable AT ALL?
+    ///
+    /// Checked up front rather than discovered on the first add. When the App
+    /// Group entitlement is missing from the signed build this is nil, and
+    /// NOTHING about the feature can work — so the screen has to say so before
+    /// the user types a site in and believes they are protected. A blocking
+    /// app that silently fails open is worse than one that admits it is off.
+    var containerReachable: Bool {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroup) != nil
+    }
+
+    /// Everything the screen can learn without the user doing anything.
+    func preflight() {
+        if !containerReachable {
+            writeFailed = true
+        }
+        refreshExtensionState()
+        readBreadcrumb()
+    }
+
     var diagnosis: String {
+        // THE BUILD ITSELF IS WRONG — said first, because it outranks
+        // everything below it and because the advice is completely different.
+        if !containerReachable {
+            return "This build cannot reach its shared storage, so no site "
+                + "you add here can be blocked. The App Group entitlement is "
+                + "missing from the installed app — reinstalling will not fix "
+                + "it and a new build is needed."
+        }
         if all.isEmpty { return "No sites added yet." }
         if writeFailed { return "Your list could not be handed to the blocker." }
         if extensionEnabled == false {
