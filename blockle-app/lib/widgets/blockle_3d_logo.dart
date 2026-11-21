@@ -7,6 +7,15 @@ import 'package:model_viewer_plus/model_viewer_plus.dart';
 /// Rendered with Google's <model-viewer> web component inside a webview, so it
 /// works on iOS, Android and web with one asset. The model + its JS are bundled
 /// (no network needed). Transparent background blends into the splash.
+///
+/// DO NOT ADD AN `orientation:` HERE. The GLB originally shipped lying flat —
+/// Blender exported the curve with its extrusion depth along Y, and glTF is
+/// Y-up, so the mark lay face-down on the ground plane and `autoRotate` spun
+/// it like a coin on a table (auto-rotate only moves the camera's azimuth;
+/// the 78deg polar angle never changes, so it never stood up). That is fixed
+/// in the ASSET, as a node rotation, so every consumer of the GLB gets it
+/// right. Correcting it again here would rotate it twice and lay it back
+/// down. `test/widgets/logo_glb_upright_test.dart` guards the asset.
 class Blockle3DLogo extends StatelessWidget {
   const Blockle3DLogo({super.key, this.size = 200});
   final double size;
