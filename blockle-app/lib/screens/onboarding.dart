@@ -30,7 +30,7 @@ class OnboardingScreen extends StatelessWidget {
               const Spacer(),
               const Blockle3DLogo(size: 200),
               const SizedBox(height: 28),
-              const Text('Blockle Wallet',
+              const Text('Blockle',
                   style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
               const SizedBox(height: 10),
               const Text(

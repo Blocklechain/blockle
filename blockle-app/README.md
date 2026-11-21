@@ -1,6 +1,6 @@
 # blockle_app
 
-Blockle Wallet — post-quantum BLOCK wallet, explorer & dApp browser
+Blockle — shop with crypto: post-quantum wallet, marketplace & dApp browser
 
 ## Getting Started
 

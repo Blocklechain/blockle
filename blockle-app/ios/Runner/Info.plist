@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Blockle App</string>
+	<string>Blockle</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -46,13 +46,13 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>Blockle Wallet uses the camera to scan QR codes — wallet addresses, WalletConnect sessions, and dApp connections — and to take a profile photo.</string>
+	<string>Blockle uses the camera to scan QR codes — wallet addresses, WalletConnect sessions, and dApp connections — and to take a profile photo.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Blockle Wallet may request the microphone during identity verification when buying crypto with a card.</string>
+	<string>Blockle may request the microphone during identity verification when buying crypto with a card.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Blockle Wallet needs access to your photos so you can import a QR code image, choose a profile picture, or add a logo when launching a token.</string>
+	<string>Blockle needs access to your photos so you can import a QR code image, choose a profile picture, or add a logo when launching a token.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Blockle Wallet can save images such as your receive QR code to your photo library.</string>
+	<string>Blockle can save images such as your receive QR code to your photo library.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>CFBundleURLTypes</key>

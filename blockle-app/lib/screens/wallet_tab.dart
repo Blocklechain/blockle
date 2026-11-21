@@ -221,7 +221,7 @@ class _WalletTabState extends State<WalletTab> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Blockle Wallet',
+                      Text('Blockle',
                           style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                       // No BLOCK/USD oracle exists — BLOCK is shown in BLOCK, never $.
                       Text('Native BLOCK network',

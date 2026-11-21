@@ -162,7 +162,7 @@ class AppState extends ChangeNotifier {
 
       case 'blockle_connect':
         {
-          if (address == null) return _err(4100, 'No wallet is set up in Blockle Wallet');
+          if (address == null) return _err(4100, 'No wallet is set up in Blockle');
           if (isConnected(origin)) return {'result': [address]};
           final dec = await (onApproval?.call(ApprovalRequest('connect', origin)) ??
               Future.value(ApprovalResult(false)));

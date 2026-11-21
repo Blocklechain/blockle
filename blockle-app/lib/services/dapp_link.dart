@@ -131,7 +131,7 @@ class DappLink {
   Future<Map<String, dynamic>> _doConnect() async {
     final addr = app.store.address;
     if (addr == null || addr.isEmpty) {
-      throw Exception('No wallet is set up in Blockle Wallet');
+      throw Exception('No wallet is set up in Blockle');
     }
     return {'status': 'approved', 'address': addr};
   }
@@ -141,7 +141,7 @@ class DappLink {
   Future<Map<String, dynamic>> _doMint(Map<String, dynamic> payload) async {
     final addr = app.store.address;
     if (addr == null || addr.isEmpty) {
-      throw Exception('No wallet is set up in Blockle Wallet');
+      throw Exception('No wallet is set up in Blockle');
     }
     final uid = '${payload['uid'] ?? ''}';
     final rawName = '${payload['name'] ?? ''}'.trim();

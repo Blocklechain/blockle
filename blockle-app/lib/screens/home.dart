@@ -11,6 +11,7 @@ import 'wallet/wallet_screen.dart';
 import 'liquidity_screen.dart';
 import 'blockshot_screen.dart';
 import 'alien_chat_screen.dart';
+import 'shop_screen.dart';
 
 /// A single navigation destination (icon + label), the one source of truth for
 /// both the collapsible side menu and the minimal bottom bar.
@@ -39,6 +40,7 @@ class HomeScreen extends StatelessWidget {
     LiquidityScreen(), // 6  (Blockle Liquidity)
     BlockshotScreen(), // 7  (Blockshot — launch + trade BLOCK-20s)
     AlienChatScreen(), // 8  (Blockle Alien chat — on-device/hosted AI)
+    ShopScreen(), // 9  (Shop — buy real things with crypto)
   ];
 
   static const _dests = <_Dest>[
@@ -52,11 +54,21 @@ class HomeScreen extends StatelessWidget {
     _Dest(Icons.water_drop_outlined, Icons.water_drop, 'Liquidity'),
     _Dest(Icons.rocket_launch_outlined, Icons.rocket_launch, 'Blockshot'),
     _Dest(Icons.auto_awesome_outlined, Icons.auto_awesome, 'Alien'),
+    _Dest(Icons.storefront_outlined, Icons.storefront, 'Shop'),
   ];
 
   /// The few destinations that get an icon-only button on the bottom bar; the
   /// full set always lives in the side menu.
-  static const _bottomPrimary = <int>[0, 1, 2, 3]; // Wallet, Accounts, Bots, Browser
+  ///
+  /// SHOP LEADS. The wallet came first historically and shopping came last,
+  /// which is backwards for what this app is for — buying real things with
+  /// crypto, carrying a very good wallet while it does.
+  ///
+  /// Shop is index 9 rather than 0 ON PURPOSE. AppState hardcodes
+  /// browserTabIndex == 3 against this list, so inserting at the front would
+  /// silently send every browser deep-link to the wrong page. Appending the
+  /// page and reordering only the BAR gets shopping-first with no renumbering.
+  static const _bottomPrimary = <int>[9, 0, 2, 3]; // Shop, Wallet, Bots, Browser
 
   @override
   Widget build(BuildContext context) {
@@ -108,7 +120,7 @@ class _SideMenu extends StatelessWidget {
                   ),
                   const SizedBox(width: 12),
                   const Expanded(
-                    child: Text('Blockle Wallet',
+                    child: Text('Blockle',
                         style: TextStyle(
                             fontWeight: FontWeight.w800, fontSize: 16)),
                   ),

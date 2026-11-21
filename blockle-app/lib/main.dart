@@ -93,7 +93,7 @@ class BlockleApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Blockle Wallet',
+      title: 'Blockle',
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey,
       theme: Bk.theme(),
@@ -171,7 +171,7 @@ class _Splash extends StatelessWidget {
           children: [
             Blockle3DLogo(size: 220),
             SizedBox(height: 24),
-            Text('Blockle Wallet',
+            Text('Blockle',
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
             SizedBox(height: 8),
             Text('starting the post-quantum engine…',

@@ -231,7 +231,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const ListTile(
                   dense: true,
-                  title: Text('Blockle Wallet'),
+                  title: Text('Blockle'),
                   subtitle: Text('Non-custodial · keys stay on this device'),
                 ),
               ],
