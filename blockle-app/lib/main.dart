@@ -11,6 +11,7 @@ import 'state/wallet_controller.dart';
 import 'state/liquidity_controller.dart';
 import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
+import 'shop/affiliate.dart';
 import 'shop/catalog.dart';
 import 'shop/delivery.dart';
 import 'shop/orders.dart';
@@ -73,6 +74,12 @@ void main() {
         ChangeNotifierProvider<MerchantStore>(
           create: (_) => MerchantStore()..load(),
         ),
+        // Curated big-retailer links. Needs no Amazon API — see
+        // shop/affiliate.dart for why that is the permanent design and not a
+        // stopgap.
+        ChangeNotifierProvider<AffiliateStore>(
+          create: (_) => AffiliateStore()..load(),
+        ),
         // Money flows in progress. Loaded at startup because a "Pay with
         // BLOCK" run spans a bank payout of days — the user WILL have closed
         // the app in the middle of one, and it has to still be there.
@@ -85,14 +92,13 @@ void main() {
         // Orders + tracking. Blockle is not in the delivery path; this keeps
         // the list and links out to the carrier. See shop/orders.dart.
         ChangeNotifierProvider<Orders>(create: (_) => Orders()..load()),
+        // The source list lives in Catalog.standard so a test can assert
+        // what the shipped app actually searches — see catalog.dart.
         ChangeNotifierProvider<Catalog>(
-          create: (ctx) => Catalog([
-            MerchantLinkSource(ctx.read<MerchantStore>()),
-            // Inert until a product-advertising or affiliate account is
-            // approved — it reports why rather than returning sample
-            // products. See catalog.dart.
-            FeedSource(),
-          ]),
+          create: (ctx) => Catalog.standard(
+            merchants: ctx.read<MerchantStore>(),
+            picks: ctx.read<AffiliateStore>(),
+          ),
         ),
       ],
       child: const BlockleApp(),

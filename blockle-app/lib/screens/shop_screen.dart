@@ -34,6 +34,7 @@ import '../theme.dart';
 import 'shop/delivery_screen.dart';
 import 'shop/flow_screen.dart';
 import 'shop/orders_screen.dart';
+import 'shop/picks_screen.dart';
 import 'shop/sell_screen.dart';
 
 class ShopScreen extends StatefulWidget {
@@ -71,12 +72,21 @@ class _ShopScreenState extends State<ShopScreen> {
             ShopHeader(
               'Shop',
               subtitle: 'Buy real things. Pay with crypto.',
-              trailing: IconButton.filledTonal(
-                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => const SellScreen())),
-                icon: const Icon(Icons.storefront_outlined),
-                tooltip: 'Sell on Blockle',
-              ),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                IconButton.filledTonal(
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const PicksScreen())),
+                  icon: const Icon(Icons.add_shopping_cart_outlined),
+                  tooltip: 'Add a retailer product',
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SellScreen())),
+                  icon: const Icon(Icons.storefront_outlined),
+                  tooltip: 'Sell on Blockle',
+                ),
+              ]),
             ),
 
             TextField(

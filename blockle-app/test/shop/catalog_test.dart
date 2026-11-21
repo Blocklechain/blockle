@@ -22,12 +22,14 @@ import 'package:provider/provider.dart';
 
 import 'package:blockle_app/screens/shop_screen.dart';
 import 'package:blockle_app/liquidity/liquidity_pool.dart';
+import 'package:blockle_app/shop/affiliate.dart';
 import 'package:blockle_app/shop/catalog.dart';
 import 'package:blockle_app/shop/flow.dart';
 import 'package:blockle_app/shop/delivery.dart';
 import 'package:blockle_app/shop/flow_run.dart';
 import 'package:blockle_app/shop/orders.dart';
 import 'package:blockle_app/shop/product.dart';
+import 'package:blockle_app/shop/ui.dart';
 import 'package:blockle_app/state/liquidity_controller.dart';
 import 'package:blockle_app/theme.dart';
 
@@ -46,13 +48,35 @@ MerchantStore storeReturning(String body, {int code = 200}) => MerchantStore(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  group('what the shipped app actually searches', () {
+    test('Catalog.standard includes the Amazon source', () {
+      // Guards main.dart's real wiring, not a Catalog the test built. A
+      // source that exists, is unit-tested, and is missing from the app is
+      // the exact failure this repo keeps hitting.
+      final c = Catalog.standard(
+          merchants: MerchantStore(),
+          picks: AffiliateStore(store: const _MemStore()));
+      expect(c.sources.whereType<AffiliateLinkSource>(), hasLength(1));
+      expect(c.sources.whereType<MerchantLinkSource>(), hasLength(1));
+      expect(c.sources.whereType<FeedSource>(), hasLength(1));
+    });
+
+    test('the two live sources are live, and the feed is not', () {
+      final c = Catalog.standard(
+          merchants: MerchantStore(),
+          picks: AffiliateStore(store: const _MemStore()));
+      expect(c.anyLive, isTrue);
+      expect(c.offline.whereType<FeedSource>(), hasLength(1));
+    });
+  });
+
   group('retailer feeds are off, and say so', () {
     test('an unapproved feed returns nothing and explains why', () async {
       final f = FeedSource();
       expect(f.unavailableReason, isNotNull);
       // The reason is shown to a shopper verbatim, so it has to read like a
       // sentence rather than a flag name.
-      expect(f.unavailableReason, contains('affiliate'));
+      expect(f.unavailableReason, contains('datafeed'));
       expect(await f.search('headphones'), isEmpty);
     });
 
@@ -186,7 +210,7 @@ void main() {
     // Forbidden from calling CatalogSource directly — it must observe what a
     // user sees, or it cannot catch a screen wired to something else.
     Widget app(Catalog c, MerchantStore s,
-            {FlowRuns? runs, Orders? orders}) =>
+            {FlowRuns? runs, Orders? orders, AffiliateStore? picks}) =>
         MultiProvider(
           providers: [
             ChangeNotifierProvider<Catalog>.value(value: c),
@@ -197,6 +221,8 @@ void main() {
                 value: runs ?? FlowRuns()),
             ChangeNotifierProvider<DeliveryBook>(create: (_) => DeliveryBook()),
             ChangeNotifierProvider<Orders>.value(value: orders ?? Orders()),
+            ChangeNotifierProvider<AffiliateStore>.value(
+                value: picks ?? AffiliateStore(store: const _MemStore())),
           ],
           child: MaterialApp(theme: Bk.theme(), home: const ShopScreen()),
         );
@@ -209,9 +235,9 @@ void main() {
       await tester.pump();
 
       expect(find.text('No listings yet'), findsOneWidget);
-      // And it says WHY the big retailers are absent rather than looking
-      // like a shop that simply has nothing today.
-      expect(find.textContaining('affiliate'), findsOneWidget);
+      // And it says WHY the automatic retailer catalogue is absent, rather
+      // than looking like a shop that simply has nothing today.
+      expect(find.textContaining('datafeed'), findsOneWidget);
     });
 
     testWidgets('renders a real listing, with the price it was given',
@@ -284,6 +310,44 @@ void main() {
       await tester.pump();
 
       expect(find.text('1 on the way'), findsOneWidget);
+    });
+
+    testWidgets('an Amazon pick reaches the shop and shows NO PRICE',
+        (tester) async {
+      // Two guards in one. First the wiring: AffiliateLinkSource is unit
+      // tested, but the shop must actually include it in its Catalog.
+      // Second the contract: with no Creators API we may not render an
+      // Amazon price, so the card must say where the price lives instead of
+      // showing a number — and must never show a crypto conversion of one,
+      // since a converted price is still a displayed price.
+      final picks = AffiliateStore(
+          store: const _MemStore(),
+          settings: AffiliateSettings(store: const _MemStore()));
+      await picks.add(
+          ref: Affiliate.parse('https://www.amazon.com/dp/B08N5WRWNW')!,
+          title: 'Echo Dot (5th Gen)');
+
+      final s = MerchantStore();
+      final c = Catalog([MerchantLinkSource(s), AffiliateLinkSource(picks)]);
+      await tester.pumpWidget(app(c, s, picks: picks));
+      await c.search('');
+      await tester.pump();
+
+      expect(find.text('Echo Dot (5th Gen)'), findsOneWidget);
+      expect(find.text('See price on Amazon US'), findsOneWidget);
+
+      // Scoped to the product's own card: the flow cards elsewhere on this
+      // screen legitimately show "\$50", so a screen-wide search for a
+      // dollar sign would fail for the wrong reason and then get deleted.
+      final card = find.ancestor(
+          of: find.text('Echo Dot (5th Gen)'), matching: find.byType(ShopCard));
+      expect(find.descendant(of: card, matching: find.textContaining(r'\$')),
+          findsNothing,
+          reason: 'rendered an Amazon price');
+      expect(find.descendant(of: card, matching: find.textContaining('≈')),
+          findsNothing,
+          reason: 'rendered a crypto conversion of an Amazon price — still '
+              'a displayed price');
     });
 
     testWidgets('a listing with no price says so instead of showing \$0.00',

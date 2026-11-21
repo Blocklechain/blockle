@@ -22,6 +22,16 @@ enum ProductSource {
 
   /// An affiliate network or retailer API.
   feed,
+
+  /// A curated affiliate link — the product lives on a big retailer and the
+  /// shopper is sent there to buy it.
+  ///
+  /// THE PRICE IS INTENTIONALLY ABSENT for these, not missing. Amazon's
+  /// Operating Agreement permits showing a price only when Amazon serves the
+  /// link displaying it or it came from the Creators API; with neither, a
+  /// rendered price would breach it. So `missing` must not nag about a price
+  /// here and `listable` must not require one. See shop/affiliate.dart.
+  affiliateLink,
 }
 
 extension ProductSourceLabel on ProductSource {
@@ -29,6 +39,7 @@ extension ProductSourceLabel on ProductSource {
         ProductSource.merchantLink => 'read from the seller’s page',
         ProductSource.merchantEdited => 'provided by the seller',
         ProductSource.feed => 'from a retailer feed',
+        ProductSource.affiliateLink => 'sold by the retailer',
       };
 }
 
@@ -90,6 +101,12 @@ class Product {
 
   bool get hasPrice => priceMinor != null && currency != null;
 
+  /// True when this listing is not allowed to show a price here, as opposed
+  /// to simply not having one yet. Drives the difference between "Price not
+  /// listed" (a gap the seller should fill) and "See price on Amazon" (the
+  /// correct, permanent state for a curated affiliate link).
+  bool get priceLivesAtRetailer => source == ProductSource.affiliateLink;
+
   double? get price => priceMinor == null ? null : priceMinor! / 100.0;
 
   double? get originalPrice =>
@@ -108,7 +125,8 @@ class Product {
   List<String> get missing {
     final out = <String>[];
     if (title.trim().isEmpty) out.add('title');
-    if (!hasPrice) out.add('price');
+    // Not asked for when the retailer is the only place it may be shown.
+    if (!hasPrice && !priceLivesAtRetailer) out.add('price');
     if (imageUrl == null) out.add('image');
     if (description == null || description!.trim().isEmpty) {
       out.add('description');

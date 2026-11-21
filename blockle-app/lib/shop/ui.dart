@@ -159,10 +159,22 @@ class PriceText extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
     if (!product.hasPrice) {
-      // No invented "$0.00" and no "Free". A listing without a price is
-      // incomplete, and the word for that is not a number.
-      return Text('Price not listed',
-          style: t.bodyMedium?.copyWith(color: Bk.faint));
+      // Two different absences, said differently. A curated retailer link is
+      // COMPLETE without a price — Amazon's terms permit showing one only
+      // from their own API or their own embed, so "see it there" is the
+      // correct permanent state, not a gap. A seller's own listing with no
+      // price really is unfinished.
+      //
+      // Either way: no invented "$0.00" and no "Free".
+      return Text(
+          product.priceLivesAtRetailer
+              ? 'See price on ${product.merchant}'
+              : 'Price not listed',
+          style: t.bodyMedium?.copyWith(
+              color: product.priceLivesAtRetailer ? Bk.accent : Bk.faint,
+              fontWeight: product.priceLivesAtRetailer
+                  ? FontWeight.w600
+                  : FontWeight.w400));
     }
     final money = _format(product.price!, product.currency!);
     final was = product.originalPrice == null

@@ -7,19 +7,23 @@
 // source that can say "I have nothing", and a UI that is required to say so
 // rather than fill the gap.
 //
-// TWO ADAPTERS BEHIND ONE INTERFACE, with very different legal footing:
+// THREE ADAPTERS BEHIND ONE INTERFACE, with very different legal footing:
 //
 //   MerchantLinkSource — a business pastes a link to a product on THEIR OWN
 //     site. That is an invitation, so we read the page (see ingest.dart) and
 //     hand them a draft to correct. Live now.
 //
-//   FeedSource — big retailers. These CANNOT be onboarded by pasting a link,
-//     whatever the product brief says: reading Amazon's pages is both against
-//     their terms and a breach of the trust of a shopper who assumes the price
-//     is current. They arrive through PA-API or an affiliate network, each of
-//     which needs an application, an approved account, and a signed key. Until
-//     one is approved this adapter reports itself unavailable and the shop
-//     shows no products at all. NOT a stub that returns examples.
+//   AffiliateLinkSource — curated links to big retailers. Needs no API and no
+//     credentials, so this is how Amazon works TODAY. It reads nothing from
+//     Amazon and shows no price: the Associates agreement permits a price
+//     only from Amazon's own embed or the Creators API, and the Creators API
+//     will not issue credentials below 10 qualifying sales in a rolling 30
+//     days. Live now. See affiliate.dart.
+//
+//   FeedSource — an automatic catalogue with live prices, from a network
+//     datafeed or a retailer's own API. Needs an approved account, so it
+//     reports itself unavailable rather than returning sample products. NOT a
+//     stub that returns examples.
 //
 // The interface is deliberately allowed to return nothing. `unavailableReason`
 // exists so the screen can explain itself in a sentence instead of rendering
@@ -32,6 +36,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'affiliate.dart';
 import 'ingest.dart';
 import 'product.dart';
 
@@ -78,7 +83,40 @@ class MerchantLinkSource extends CatalogSource {
   }
 }
 
-/// Retailer feeds — Amazon PA-API, affiliate networks.
+/// Curated affiliate links — Amazon and friends, with no API at all.
+///
+/// THIS IS THE ONE THAT WORKS TODAY for big retailers. Affiliate links need
+/// no credentials, so a curated storefront is compliant and earns commission
+/// immediately — and it is the only thing that can produce the sales that
+/// unlock Amazon's Creators API, which requires 10 qualifying sales in a
+/// rolling 30 days before it will issue credentials.
+///
+/// Listings here carry NO PRICE, by construction rather than by omission.
+/// See affiliate.dart for the clause that requires it.
+class AffiliateLinkSource extends CatalogSource {
+  AffiliateLinkSource(this._store);
+  final AffiliateStore _store;
+
+  @override
+  String get name => 'Retailer picks';
+
+  @override
+  String? get unavailableReason => null;
+
+  @override
+  Future<List<Product>> search(String query) async {
+    final q = query.trim().toLowerCase();
+    final all = _store.listings;
+    if (q.isEmpty) return all.toList();
+    return all
+        .where((p) =>
+            p.title.toLowerCase().contains(q) ||
+            p.merchant.toLowerCase().contains(q))
+        .toList();
+  }
+}
+
+/// Retailer feeds — a network datafeed or a retailer's own API.
 ///
 /// DELIBERATELY INERT. It reports why it is off rather than returning sample
 /// products, because a sample product in a shopping app is indistinguishable
@@ -98,9 +136,9 @@ class FeedSource extends CatalogSource {
   @override
   String? get unavailableReason => credentialsPresent
       ? null
-      : 'Large-retailer listings need an approved product-advertising or '
-          'affiliate account. Until one is connected, Blockle only shows '
-          'products that sellers have listed themselves.';
+      : 'Automatic retailer catalogues with live prices need an approved '
+          'product datafeed. Retailer products added by hand still show '
+          'here — their price is shown on the retailer\'s own page.';
 
   @override
   Future<List<Product>> search(String query) async => const [];
@@ -109,6 +147,25 @@ class FeedSource extends CatalogSource {
 /// Everything the shop can search, with the honest empty states preserved.
 class Catalog extends ChangeNotifier {
   Catalog(this.sources);
+
+  /// The app's real source list.
+  ///
+  /// THIS EXISTS SO IT CAN BE TESTED. When main.dart assembled the list
+  /// inline, a test could only check a Catalog it had built itself — which
+  /// would have passed just as happily on a release where someone dropped a
+  /// source from the app's own wiring. This repo has shipped
+  /// built-tested-but-unwired more than once.
+  factory Catalog.standard({
+    required MerchantStore merchants,
+    required AffiliateStore picks,
+  }) =>
+      Catalog([
+        MerchantLinkSource(merchants),
+        AffiliateLinkSource(picks),
+        // Inert until an approved datafeed exists; reports why rather than
+        // returning sample products.
+        FeedSource(),
+      ]);
 
   final List<CatalogSource> sources;
 
