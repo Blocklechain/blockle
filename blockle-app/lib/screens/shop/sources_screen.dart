@@ -25,6 +25,7 @@ class SourcesScreen extends StatefulWidget {
 
 class _SourcesScreenState extends State<SourcesScreen> {
   final _bestBuy = TextEditingController();
+  final _bbAffiliate = TextEditingController();
   bool _loaded = false;
 
   @override
@@ -37,12 +38,14 @@ class _SourcesScreenState extends State<SourcesScreen> {
     final f = context.read<FeedSettings>();
     await f.load();
     _bestBuy.text = f.keyFor('bestbuy') ?? '';
+    _bbAffiliate.text = f.keys['bestbuy.affiliate'] ?? '';
     if (mounted) setState(() => _loaded = true);
   }
 
   @override
   void dispose() {
     _bestBuy.dispose();
+    _bbAffiliate.dispose();
     super.dispose();
   }
 
@@ -98,6 +101,26 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     hintText: 'from developer.bestbuy.com',
                   ),
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _bbAffiliate,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Affiliate link template (optional)',
+                    hintText: 'https://goto.bestbuy.com/c/…?u={url}',
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                    feeds.templateFor('bestbuy') == null
+                        ? 'Not set — these listings work, but earn nothing '
+                            'yet. Paste your Impact tracking link with {url} '
+                            'where the product address goes.'
+                        : 'Set — listings now earn commission.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: feeds.templateFor('bestbuy') == null
+                            ? Bk.warn
+                            : Bk.good)),
                 const SizedBox(height: 10),
                 Row(children: [
                   Expanded(
@@ -113,6 +136,8 @@ class _SourcesScreenState extends State<SourcesScreen> {
                     child: FilledButton(
                       onPressed: () async {
                         await feeds.setKey('bestbuy', _bestBuy.text);
+                        await feeds.setKey(
+                            'bestbuy.affiliate', _bbAffiliate.text);
                         if (!context.mounted) return;
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                             content: Text(_bestBuy.text.trim().isEmpty

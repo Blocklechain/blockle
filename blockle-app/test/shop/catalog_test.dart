@@ -90,6 +90,14 @@ void main() {
       expect(await f.search('headphones'), isEmpty);
     });
 
+    test('an unsearched shop shows the FRONT PAGE, not nothing', () async {
+      // The difference between a store and a search box.
+      final f = FeedSource(feed: _FakeFeed(configured: true));
+      final r = await f.search('');
+      expect(r, hasLength(2));
+      expect(r.first.title, startsWith('Popular'));
+    });
+
     test('A CONFIGURED FEED IS WHAT MAKES THE SHOP READ LIKE A SHOP',
         () async {
       // The whole point of the feed layer: a search returns real products
@@ -447,13 +455,12 @@ class _FakeFeed extends RetailFeed {
   bool get configured => _on;
   @override
   String get howToEnable => 'Paste a key in Shop → Sources.';
-  @override
-  Future<List<Product>> search(String query, {int limit = 24}) async => _on
+  List<Product> _rows(String label) => _on
       ? [
           for (var i = 0; i < 2; i++)
             Product(
                 id: 'f$i',
-                title: 'Headphones $i',
+                title: '$label $i',
                 merchant: 'Test Retailer',
                 url: 'https://retailer.test/$i',
                 source: ProductSource.feed,
@@ -463,6 +470,13 @@ class _FakeFeed extends RetailFeed {
                 imageUrl: 'https://retailer.test/$i.jpg'),
         ]
       : const [];
+
+  @override
+  Future<List<Product>> search(String query, {int limit = 24}) async =>
+      _rows('Headphones');
+
+  @override
+  Future<List<Product>> featured({int limit = 24}) async => _rows('Popular');
 }
 
 class _ThrowingSource extends CatalogSource {

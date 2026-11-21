@@ -50,6 +50,18 @@ class _ShopScreenState extends State<ShopScreen> {
   bool _searched = false;
 
   @override
+  void initState() {
+    super.initState();
+    // THE FRONT PAGE. Without this the shop is a blank search box on open,
+    // which is a database, not a store. An empty query asks the catalogue
+    // for its featured products.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final c = context.read<Catalog>();
+      if (!c.loaded) c.search('');
+    });
+  }
+
+  @override
   void dispose() {
     _search.dispose();
     super.dispose();
@@ -131,7 +143,7 @@ class _ShopScreenState extends State<ShopScreen> {
             const _DeliveryRow(),
 
             const SizedBox(height: 28),
-            ShopSection(_searched ? 'Results' : 'Listings'),
+            ShopSection(_searched ? 'Results' : 'Popular right now'),
             // Shown whenever a paid retailer link is in the list, and ABOVE
             // it — required by the Associates agreement and the FTC.
             if (catalog.results

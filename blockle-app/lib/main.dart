@@ -113,7 +113,12 @@ void main() {
           update: (ctx, feeds, _) => Catalog.standard(
             merchants: ctx.read<MerchantStore>(),
             picks: ctx.read<AffiliateStore>(),
-            feed: BestBuyFeed(apiKey: feeds.keyFor('bestbuy') ?? ''),
+            feed: BestBuyFeed(
+              apiKey: feeds.keyFor('bestbuy') ?? '',
+              // Null until an affiliate template is saved, which keeps the
+              // "these links earn nothing yet" state truthful.
+              affiliateWrap: feeds.wrapFor('bestbuy'),
+            ),
           ),
         ),
       ],

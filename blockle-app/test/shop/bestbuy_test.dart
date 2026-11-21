@@ -14,6 +14,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'package:blockle_app/shop/catalog.dart';
 import 'package:blockle_app/shop/feeds/bestbuy.dart';
 import 'package:blockle_app/shop/feeds/retail_feed.dart';
 import 'package:blockle_app/shop/product.dart';
@@ -155,6 +158,97 @@ void main() {
     });
   });
 
+  group('the front page', () {
+    // Without this the shop is a blank search box on open, which is a
+    // database rather than a store.
+    test('featured filters for popular, in-stock products', () {
+      final u = BestBuyFeed(apiKey: 'K').featuredUri();
+      expect(u.toString(), contains('onlineAvailability=true'));
+      expect(u.toString(), contains('sort=customerReviewCount.desc'));
+      // It is a filter, not someone's guess at a search term.
+      expect(u.toString(), isNot(contains('search=')));
+      // And nothing percent-encoded in the path that Best Buy might not
+      // decode — the sort does the work a '>' filter would have.
+      expect(u.path, isNot(contains('%3E')));
+    });
+
+    test('an empty query asks for the front page, not for nothing', () async {
+      var hit = '';
+      final feed = BestBuyFeed(
+          apiKey: 'K',
+          client: MockClient((req) async {
+            hit = req.url.toString();
+            return http.Response(body([item()]), 200);
+          }));
+      final src = FeedSource(feed: feed);
+      final r = await src.search('');
+      expect(r, hasLength(1));
+      expect(hit, contains('onlineAvailability=true'),
+          reason: 'an unsearched shop must show the featured slice');
+      expect(hit, isNot(contains('search=')));
+    });
+
+    test('a real query still searches', () async {
+      var hit = '';
+      final feed = BestBuyFeed(
+          apiKey: 'K',
+          client: MockClient((req) async {
+            hit = req.url.toString();
+            return http.Response(body([item()]), 200);
+          }));
+      await FeedSource(feed: feed).search('headphones');
+      expect(hit, contains('search=headphones'));
+    });
+
+    test('featured makes no request when unconfigured', () async {
+      var called = false;
+      final feed = BestBuyFeed(
+          apiKey: '',
+          client: MockClient((_) async {
+            called = true;
+            return http.Response('', 200);
+          }));
+      expect(await feed.featured(), isEmpty);
+      expect(called, isFalse);
+    });
+  });
+
+  group('the affiliate template', () {
+    FeedSettings settings(Map<String, String> k) {
+      final s = FeedSettings(store: const _NoStore());
+      s.keys = k;
+      return s;
+    }
+
+    test('a template with {url} produces a working wrap', () {
+      final w = settings({
+        'bestbuy.affiliate': 'https://goto.bestbuy.com/c/1?u={url}'
+      }).wrapFor('bestbuy')!;
+      final out = w('https://www.bestbuy.com/site/x/1.p');
+      expect(out, startsWith('https://goto.bestbuy.com/c/1?u='));
+      // The destination is encoded, or the tracker drops everything after
+      // the first & in the product URL.
+      expect(out, contains('https%3A%2F%2Fwww.bestbuy.com'));
+    });
+
+    test('a template WITHOUT {url} is refused rather than silently useless',
+        () {
+      // Pasting a bare click URL would send every shopper to the same
+      // landing page instead of the product they tapped.
+      final s = settings({'bestbuy.affiliate': 'https://goto.bestbuy.com/c/1'});
+      expect(s.templateFor('bestbuy'), isNull);
+      expect(s.wrapFor('bestbuy'), isNull);
+    });
+
+    test('no template means the feed reports that it earns nothing', () {
+      final s = settings({'bestbuy': 'KEY'});
+      final feed =
+          BestBuyFeed(apiKey: 'KEY', affiliateWrap: s.wrapFor('bestbuy'));
+      expect(feed.configured, isTrue, reason: 'products still load');
+      expect(feed.earns, isFalse, reason: 'but they earn nothing yet');
+    });
+  });
+
   group('the request', () {
     test('ANDs the search terms in Best Buy\'s grammar', () {
       final u = BestBuyFeed(apiKey: 'KEY').searchUri('wireless headphones');
@@ -229,4 +323,16 @@ void main() {
       expect(FeedParse.wasPrice(null, 99.99), isNull);
     });
   });
+}
+
+/// Settings with no disk behind them.
+class _NoStore extends FlutterSecureStorage {
+  const _NoStore();
+  @override
+  Future<String?> read({required String key, iOptions, aOptions, lOptions,
+          webOptions, mOptions, wOptions}) async =>
+      null;
+  @override
+  Future<void> write({required String key, required String? value, iOptions,
+      aOptions, lOptions, webOptions, mOptions, wOptions}) async {}
 }

@@ -79,6 +79,38 @@ class BestBuyFeed extends RetailFeed {
         'customerReviewCount,onlineAvailability');
   }
 
+  /// The shop's front page: genuinely popular, in-stock, well-reviewed
+  /// products.
+  ///
+  /// A filter plus a sort, rather than a search term, so this is a real
+  /// slice of the catalogue and not a query someone picked.
+  ///
+  /// Sorting by review count descending already surfaces the popular items,
+  /// so there is deliberately NO `customerReviewCount>500` filter: `>` is
+  /// not legal in a URI path and would travel percent-encoded, which I
+  /// cannot verify Best Buy decodes without a live key. The sort achieves
+  /// the same ordering with nothing to get wrong.
+  Uri featuredUri({int limit = 24}) => Uri.parse(
+      'https://api.bestbuy.com/v1/products'
+      '((onlineAvailability=true))'
+      '?apiKey=${Uri.encodeQueryComponent(_key)}'
+      '&format=json'
+      '&pageSize=$limit'
+      '&sort=customerReviewCount.desc'
+      '&show=sku,name,salePrice,regularPrice,onSale,image,url,'
+      'shortDescription,manufacturer,customerReviewAverage,'
+      'customerReviewCount,onlineAvailability');
+
+  @override
+  Future<List<Product>> featured({int limit = 24}) async {
+    if (!configured) return const [];
+    final res = await _client
+        .get(featuredUri(limit: limit))
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) return const [];
+    return parse(res.body, affiliateWrap: affiliateWrap);
+  }
+
   @override
   Future<List<Product>> search(String query, {int limit = 24}) async {
     if (!configured || query.trim().isEmpty) return const [];

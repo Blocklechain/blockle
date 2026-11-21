@@ -53,6 +53,14 @@ abstract class RetailFeed {
   /// Search the live catalogue. Returns empty on no match; throws only on a
   /// transport failure, which Catalog already isolates per-source.
   Future<List<Product>> search(String query, {int limit});
+
+  /// What to show before anyone has searched.
+  ///
+  /// WITHOUT THIS THE SHOP IS BLANK ON OPEN, which is the difference between
+  /// a catalogue and a search box. A real shop has a front page; a shopper
+  /// who has to think of a query first has been handed a database, not a
+  /// store.
+  Future<List<Product>> featured({int limit});
 }
 
 /// Shared normalising helpers, so every adapter drops bad data the same way
@@ -142,6 +150,26 @@ class FeedSettings extends ChangeNotifier {
         notifyListeners();
       }
     } catch (_) {}
+  }
+
+  /// A tracking-link template, e.g. an Impact click URL with {url} where
+  /// the destination goes.
+  ///
+  /// STORED RATHER THAN COMPILED IN so that the day the affiliate account
+  /// is approved, the catalogue starts earning by pasting one string —
+  /// no release, no rebuild. Until then links are untracked and the UI
+  /// says so rather than implying commission is flowing.
+  String? templateFor(String feedId) {
+    final v = keys['$feedId.affiliate'];
+    return (v == null || !v.contains('{url}')) ? null : v.trim();
+  }
+
+  /// Turn a template into the wrap function a feed takes. Null when no
+  /// usable template is set, which keeps `earns` honest.
+  String Function(String)? wrapFor(String feedId) {
+    final t = templateFor(feedId);
+    if (t == null) return null;
+    return (url) => t.replaceAll('{url}', Uri.encodeQueryComponent(url));
   }
 
   Future<void> setKey(String feedId, String value) async {

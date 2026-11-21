@@ -151,7 +151,8 @@ class FeedSource extends CatalogSource {
   Future<List<Product>> search(String query) async {
     final f = _feed;
     if (f == null || !f.configured) return const [];
-    return f.search(query);
+    // An empty query is the shop's FRONT PAGE, not a search for nothing.
+    return query.trim().isEmpty ? f.featured() : f.search(query);
   }
 }
 
@@ -192,6 +193,11 @@ class Catalog extends ChangeNotifier {
 
   bool get anyLive => sources.any((s) => s.unavailableReason == null);
 
+  /// True once the catalogue has been asked for anything, including the
+  /// front page. Lets the shop tell "not loaded yet" apart from "really
+  /// empty", which are different things to put on screen.
+  bool loaded = false;
+
   Future<void> search(String query) async {
     searching = true;
     notifyListeners();
@@ -207,6 +213,7 @@ class Catalog extends ChangeNotifier {
     }
     results = out;
     searching = false;
+    loaded = true;
     notifyListeners();
   }
 }
