@@ -1,0 +1,328 @@
+// Where listings come from, and the promise that none of them are invented.
+//
+// A shopping app has exactly one unforgivable failure: showing a product at a
+// price nobody can buy it at. It is also the easiest failure to ship, because
+// placeholder data looks like a working feature in every screenshot and only
+// breaks when a real person taps Buy. So the catalogue is built around a
+// source that can say "I have nothing", and a UI that is required to say so
+// rather than fill the gap.
+//
+// TWO ADAPTERS BEHIND ONE INTERFACE, with very different legal footing:
+//
+//   MerchantLinkSource — a business pastes a link to a product on THEIR OWN
+//     site. That is an invitation, so we read the page (see ingest.dart) and
+//     hand them a draft to correct. Live now.
+//
+//   FeedSource — big retailers. These CANNOT be onboarded by pasting a link,
+//     whatever the product brief says: reading Amazon's pages is both against
+//     their terms and a breach of the trust of a shopper who assumes the price
+//     is current. They arrive through PA-API or an affiliate network, each of
+//     which needs an application, an approved account, and a signed key. Until
+//     one is approved this adapter reports itself unavailable and the shop
+//     shows no products at all. NOT a stub that returns examples.
+//
+// The interface is deliberately allowed to return nothing. `unavailableReason`
+// exists so the screen can explain itself in a sentence instead of rendering
+// an ambiguous empty list.
+
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+
+import 'ingest.dart';
+import 'product.dart';
+
+/// One source of listings.
+abstract class CatalogSource {
+  String get name;
+
+  /// Null when this source can serve requests. A sentence a shopper can
+  /// understand when it cannot — shown verbatim, so it is written for them and
+  /// not for a log file.
+  String? get unavailableReason;
+
+  /// Listings matching `query`; empty when there are none. An empty list and
+  /// an unavailable source are different states and the UI distinguishes them.
+  Future<List<Product>> search(String query);
+}
+
+/// Products submitted by businesses, one link at a time.
+///
+/// This is the live source. It holds what merchants have actually listed, so
+/// an empty result means no merchant has listed a match — which is true, and
+/// says so, rather than being covered up with examples.
+class MerchantLinkSource extends CatalogSource {
+  MerchantLinkSource(this._store);
+  final MerchantStore _store;
+
+  @override
+  String get name => 'Blockle sellers';
+
+  @override
+  String? get unavailableReason => null;
+
+  @override
+  Future<List<Product>> search(String query) async {
+    final q = query.trim().toLowerCase();
+    final listed = _store.listings.where((p) => p.listable);
+    if (q.isEmpty) return listed.toList();
+    return listed
+        .where((p) =>
+            p.title.toLowerCase().contains(q) ||
+            p.merchant.toLowerCase().contains(q) ||
+            (p.brand?.toLowerCase().contains(q) ?? false))
+        .toList();
+  }
+}
+
+/// Retailer feeds — Amazon PA-API, affiliate networks.
+///
+/// DELIBERATELY INERT. It reports why it is off rather than returning sample
+/// products, because a sample product in a shopping app is indistinguishable
+/// from a real one until someone tries to buy it. When a feed is approved,
+/// this class gets a client and the reason goes away; nothing else changes.
+class FeedSource extends CatalogSource {
+  FeedSource({this.retailer = 'Retailer feeds', this.credentialsPresent = false});
+
+  final String retailer;
+
+  /// Set by whatever configures the approved key. Until then: off.
+  final bool credentialsPresent;
+
+  @override
+  String get name => retailer;
+
+  @override
+  String? get unavailableReason => credentialsPresent
+      ? null
+      : 'Large-retailer listings need an approved product-advertising or '
+          'affiliate account. Until one is connected, Blockle only shows '
+          'products that sellers have listed themselves.';
+
+  @override
+  Future<List<Product>> search(String query) async => const [];
+}
+
+/// Everything the shop can search, with the honest empty states preserved.
+class Catalog extends ChangeNotifier {
+  Catalog(this.sources);
+
+  final List<CatalogSource> sources;
+
+  List<Product> results = const [];
+  bool searching = false;
+
+  /// Sources that could not be consulted, so the screen can say what is
+  /// missing from the results rather than implying they are complete.
+  List<CatalogSource> get offline =>
+      sources.where((s) => s.unavailableReason != null).toList();
+
+  bool get anyLive => sources.any((s) => s.unavailableReason == null);
+
+  Future<void> search(String query) async {
+    searching = true;
+    notifyListeners();
+    final out = <Product>[];
+    for (final s in sources) {
+      if (s.unavailableReason != null) continue;
+      try {
+        out.addAll(await s.search(query));
+      } catch (_) {
+        // A source that throws is a source that returned nothing. It must not
+        // take the other sources' results down with it.
+      }
+    }
+    results = out;
+    searching = false;
+    notifyListeners();
+  }
+}
+
+// --- the seller's side -------------------------------------------------
+
+/// A listing in progress, from pasted link to published product.
+enum DraftState { empty, reading, needsWork, ready, failed }
+
+/// Holds what businesses have submitted, and runs the paste-a-link flow.
+///
+/// FETCHING IS SEPARATED FROM PARSING on purpose: Ingest.parse is pure and
+/// fully tested against fixture HTML, and this class owns only the network and
+/// the storage. The parser never has to be tested over a socket.
+class MerchantStore extends ChangeNotifier {
+  MerchantStore({http.Client? client}) : _client = client ?? http.Client();
+
+  static const _key = 'blockle_merchant_listings_v1';
+  final _store = const FlutterSecureStorage();
+  final http.Client _client;
+
+  final List<Product> listings = [];
+
+  DraftState state = DraftState.empty;
+  Product? draft;
+  String? error;
+
+  /// Which reader produced the draft — shown to the merchant, because "we read
+  /// your structured data" vs "we could only read your page title" tells them
+  /// whether fixing their own site would improve the result.
+  String? readFrom;
+
+  Future<void> load() async {
+    try {
+      final raw = await _store.read(key: _key);
+      if (raw == null) return;
+      final list = jsonDecode(raw);
+      if (list is! List) return;
+      listings
+        ..clear()
+        ..addAll(list.whereType<Map<String, dynamic>>().map(Product.fromJson));
+      notifyListeners();
+    } catch (_) {
+      // Unreadable storage must not block the seller from listing again.
+    }
+  }
+
+  Future<void> _persist() async {
+    try {
+      await _store.write(
+          key: _key,
+          value: jsonEncode(listings.map((p) => p.toJson()).toList()));
+    } catch (_) {}
+  }
+
+  /// Fetch a seller's own product page and turn it into a draft.
+  ///
+  /// The URL comes from the seller, about their own site. It is still fetched
+  /// defensively: a redirect chain, a 10s ceiling and a size cap, because a
+  /// pasted link is the most user-controlled input in the app.
+  Future<void> readLink(String url) async {
+    state = DraftState.reading;
+    error = null;
+    draft = null;
+    readFrom = null;
+    notifyListeners();
+
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null ||
+        (uri.scheme != 'http' && uri.scheme != 'https') ||
+        uri.host.isEmpty) {
+      state = DraftState.failed;
+      error = 'That does not look like a web address. Paste the full link to '
+          'one of your product pages, starting with https://';
+      notifyListeners();
+      return;
+    }
+
+    String html;
+    try {
+      final res = await _client
+          .get(uri, headers: {
+            // Identifying ourselves honestly, with a contact, is both correct
+            // and what lets a seller allow us through their own WAF.
+            'User-Agent': 'BlockleShop/1.0 (+https://blockle.org/sellers)',
+            'Accept': 'text/html,application/xhtml+xml',
+          })
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode >= 400) {
+        state = DraftState.failed;
+        error = 'That page returned ${res.statusCode}. Check the link opens '
+            'for someone who is not signed in to your store.';
+        notifyListeners();
+        return;
+      }
+      // 2 MB is generous for a product page and stops a pathological response
+      // from exhausting memory on a phone.
+      html = res.body.length > 2 * 1024 * 1024
+          ? res.body.substring(0, 2 * 1024 * 1024)
+          : res.body;
+    } on TimeoutException {
+      state = DraftState.failed;
+      error = 'That page took too long to load. Try again, or add the details '
+          'yourself.';
+      notifyListeners();
+      return;
+    } catch (_) {
+      state = DraftState.failed;
+      error = 'We could not reach that page. Check the link and your '
+          'connection.';
+      notifyListeners();
+      return;
+    }
+
+    final result = Ingest.parse(html, uri.toString());
+    if (!result.ok) {
+      state = DraftState.failed;
+      error = result.error;
+      notifyListeners();
+      return;
+    }
+    draft = result.product;
+    readFrom = result.readFrom;
+    // A draft is NEVER auto-published. Everything here was read off a page by
+    // a parser, and the seller is the only one who knows if it is right.
+    state = draft!.listable ? DraftState.ready : DraftState.needsWork;
+    notifyListeners();
+  }
+
+  /// Apply the seller's corrections. Marks the listing as theirs rather than
+  /// ours, which is what the shopper is shown.
+  void edit({
+    String? title,
+    int? priceMinor,
+    String? currency,
+    String? description,
+    String? imageUrl,
+    Availability? availability,
+  }) {
+    final d = draft;
+    if (d == null) return;
+    draft = d.copyWith(
+      title: title,
+      priceMinor: priceMinor,
+      currency: currency,
+      description: description,
+      imageUrl: imageUrl,
+      availability: availability,
+      source: ProductSource.merchantEdited,
+    );
+    state = draft!.listable ? DraftState.ready : DraftState.needsWork;
+    notifyListeners();
+  }
+
+  /// Publish. Refuses an incomplete listing — a product with no price is not a
+  /// listing, it is a dead end a shopper taps into.
+  bool publish() {
+    final d = draft;
+    if (d == null || !d.listable) return false;
+    // Same id for the same URL, so re-submitting a link updates the listing
+    // instead of creating a second one.
+    final at = listings.indexWhere((p) => p.id == d.id);
+    if (at >= 0) {
+      listings[at] = d;
+    } else {
+      listings.add(d);
+    }
+    draft = null;
+    readFrom = null;
+    state = DraftState.empty;
+    _persist();
+    notifyListeners();
+    return true;
+  }
+
+  void remove(String id) {
+    listings.removeWhere((p) => p.id == id);
+    _persist();
+    notifyListeners();
+  }
+
+  void discard() {
+    draft = null;
+    error = null;
+    readFrom = null;
+    state = DraftState.empty;
+    notifyListeners();
+  }
+}

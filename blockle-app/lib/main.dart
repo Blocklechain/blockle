@@ -11,6 +11,7 @@ import 'state/wallet_controller.dart';
 import 'state/liquidity_controller.dart';
 import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
+import 'shop/catalog.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
@@ -63,6 +64,21 @@ void main() {
         ChangeNotifierProvider<LiquidityService>.value(value: LiquidityService.instance),
         // Developer mode gate (off by default) — Developer Tools + testnets.
         ChangeNotifierProvider<DevSettings>.value(value: DevSettings.instance),
+        // The shop. MerchantStore holds what sellers have listed (paste-a-link
+        // onboarding); Catalog is what the Shop tab searches. Catalog depends
+        // on the store, so it is built from it rather than beside it.
+        ChangeNotifierProvider<MerchantStore>(
+          create: (_) => MerchantStore()..load(),
+        ),
+        ChangeNotifierProvider<Catalog>(
+          create: (ctx) => Catalog([
+            MerchantLinkSource(ctx.read<MerchantStore>()),
+            // Inert until a product-advertising or affiliate account is
+            // approved — it reports why rather than returning sample
+            // products. See catalog.dart.
+            FeedSource(),
+          ]),
+        ),
       ],
       child: const BlockleApp(),
     ),

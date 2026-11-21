@@ -148,6 +148,60 @@ class Product {
         affiliateUrl: affiliateUrl,
         fetchedAt: fetchedAt,
       );
+
+  /// Round-trips through storage WITHOUT inventing defaults.
+  ///
+  /// The temptation in a fromJson is `json['price'] ?? 0` to avoid a null
+  /// check downstream. That would resurrect a listing whose price failed to
+  /// persist as a free product. Everything optional stays nullable here, and
+  /// a stored field of the wrong type reads as absent rather than throwing —
+  /// one corrupt row must not make a seller's whole catalogue unloadable.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'merchant': merchant,
+        'url': url,
+        'source': source.name,
+        if (priceMinor != null) 'priceMinor': priceMinor,
+        if (currency != null) 'currency': currency,
+        if (originalPriceMinor != null) 'originalPriceMinor': originalPriceMinor,
+        if (description != null) 'description': description,
+        if (brand != null) 'brand': brand,
+        if (imageUrl != null) 'imageUrl': imageUrl,
+        'availability': availability.name,
+        if (rating != null) 'rating': rating,
+        if (reviewCount != null) 'reviewCount': reviewCount,
+        if (affiliateUrl != null) 'affiliateUrl': affiliateUrl,
+        if (fetchedAt != null) 'fetchedAt': fetchedAt!.toIso8601String(),
+      };
+
+  static Product fromJson(Map<String, dynamic> j) => Product(
+        id: _s(j['id']) ?? '',
+        title: _s(j['title']) ?? '',
+        merchant: _s(j['merchant']) ?? '',
+        url: _s(j['url']) ?? '',
+        source: ProductSource.values.firstWhere(
+            (e) => e.name == j['source'],
+            orElse: () => ProductSource.merchantEdited),
+        priceMinor: _i(j['priceMinor']),
+        currency: _s(j['currency']),
+        originalPriceMinor: _i(j['originalPriceMinor']),
+        description: _s(j['description']),
+        brand: _s(j['brand']),
+        imageUrl: _s(j['imageUrl']),
+        availability: Availability.values.firstWhere(
+            (e) => e.name == j['availability'],
+            orElse: () => Availability.unknown),
+        rating: _d(j['rating']),
+        reviewCount: _i(j['reviewCount']),
+        affiliateUrl: _s(j['affiliateUrl']),
+        fetchedAt:
+            j['fetchedAt'] is String ? DateTime.tryParse(j['fetchedAt']) : null,
+      );
+
+  static String? _s(dynamic v) => v is String && v.isNotEmpty ? v : null;
+  static int? _i(dynamic v) => v is int ? v : (v is num ? v.toInt() : null);
+  static double? _d(dynamic v) => v is num ? v.toDouble() : null;
 }
 
 /// A fiat price expressed in a crypto asset, for display only.

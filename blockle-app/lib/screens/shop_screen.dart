@@ -9,18 +9,26 @@
 //
 // WHAT THIS SCREEN WILL NOT DO
 //
-// It will not show a product until a real catalogue is wired to it. An
-// invented listing — a plausible price on a plausible retailer — is the one
-// thing a shopping app can do that destroys trust permanently, and it is very
-// easy to do by accident when the provider is not ready. So the product area
-// says plainly that it is not connected yet. See ShopCatalog.
+// It will not invent a product. Search runs against the real Catalog — which
+// today means listings sellers have actually submitted — and when a source is
+// unavailable the screen names it and says why, instead of quietly returning
+// a short list that looks complete. A plausible price on a plausible retailer
+// is the one thing a shopping app can do that destroys trust permanently, and
+// it is very easy to do by accident when the provider is not ready.
+//
+// Every style here comes from theme.dart via shop/ui.dart. No inline
+// TextStyles — that is what made this screen feel bolted on.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../theme.dart';
+import '../shop/catalog.dart';
 import '../shop/flow.dart';
+import '../shop/product.dart';
+import '../shop/ui.dart';
 import '../state/liquidity_controller.dart';
+import '../theme.dart';
+import 'shop/sell_screen.dart';
 
 class ShopScreen extends StatefulWidget {
   const ShopScreen({super.key});
@@ -31,6 +39,7 @@ class ShopScreen extends StatefulWidget {
 
 class _ShopScreenState extends State<ShopScreen> {
   final _search = TextEditingController();
+  bool _searched = false;
 
   @override
   void dispose() {
@@ -38,30 +47,66 @@ class _ShopScreenState extends State<ShopScreen> {
     super.dispose();
   }
 
+  Future<void> _run() async {
+    setState(() => _searched = true);
+    await context.read<Catalog>().search(_search.text);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final catalog = context.watch<Catalog>();
+
     return Scaffold(
       backgroundColor: Bk.bg,
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
-            const Text('Shop',
-                style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white)),
-            const SizedBox(height: 4),
-            const Text('Buy real things. Pay with crypto.',
-                style: TextStyle(fontSize: 14, color: Bk.faint)),
-            const SizedBox(height: 16),
-            _SearchBar(controller: _search),
+            ShopHeader(
+              'Shop',
+              subtitle: 'Buy real things. Pay with crypto.',
+              trailing: IconButton.filledTonal(
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => const SellScreen())),
+                icon: const Icon(Icons.storefront_outlined),
+                tooltip: 'Sell on Blockle',
+              ),
+            ),
+
+            TextField(
+              controller: _search,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (_) => _run(),
+              decoration: InputDecoration(
+                hintText: 'Search listings',
+                prefixIcon: const Icon(Icons.search, color: Bk.faint),
+                suffixIcon: catalog.searching
+                    ? const Padding(
+                        padding: EdgeInsets.all(14),
+                        child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2)))
+                    : null,
+              ),
+            ),
+
             const SizedBox(height: 20),
             const _FlowCard(kind: _FlowKind.getBlock),
             const SizedBox(height: 12),
             const _FlowCard(kind: _FlowKind.payWithBlock),
-            const SizedBox(height: 24),
-            const _CatalogPlaceholder(),
+
+            const SizedBox(height: 28),
+            ShopSection(_searched ? 'Results' : 'Listings'),
+            _Results(catalog: catalog, searched: _searched),
+
+            // WHAT IS MISSING FROM THESE RESULTS, stated rather than implied.
+            // A shopper who searches "headphones" and sees two results should
+            // know whether that is the whole internet or two local sellers.
+            for (final s in catalog.offline) ...[
+              const SizedBox(height: 12),
+              ShopNote(s.unavailableReason!, icon: Icons.inventory_2_outlined),
+            ],
           ],
         ),
       ),
@@ -69,32 +114,83 @@ class _ShopScreenState extends State<ShopScreen> {
   }
 }
 
-class _SearchBar extends StatelessWidget {
-  const _SearchBar({required this.controller});
-  final TextEditingController controller;
+class _Results extends StatelessWidget {
+  const _Results({required this.catalog, required this.searched});
+  final Catalog catalog;
+  final bool searched;
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      controller: controller,
-      style: const TextStyle(color: Colors.white),
-      decoration: InputDecoration(
-        hintText: 'Search for anything',
-        hintStyle: const TextStyle(color: Bk.faint),
-        prefixIcon: const Icon(Icons.search, color: Bk.faint),
-        filled: true,
-        fillColor: Bk.surface,
-        contentPadding: const EdgeInsets.symmetric(vertical: 16),
-        border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: Bk.border)),
-        enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(color: Bk.border)),
-      ),
-      // Nothing is wired behind this yet and the screen says so below; a
-      // search box that silently returns nothing reads as a broken app.
-      enabled: false,
+    if (catalog.results.isEmpty) {
+      return ShopEmpty(
+        icon: searched ? Icons.search_off : Icons.storefront_outlined,
+        title: searched ? 'No listings matched' : 'No listings yet',
+        body: searched
+            ? 'Nothing a Blockle seller has listed matches that. Large '
+                'retailers are not searchable yet.'
+            : 'Sellers list products by pasting a link to their own product '
+                'page. Nothing is shown here until the products and prices '
+                'are real ones.',
+        action: FilledButton.tonal(
+          onPressed: () => Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => const SellScreen())),
+          child: const Text('List a product'),
+        ),
+      );
+    }
+    return Column(
+      children: [
+        for (final p in catalog.results)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _ProductRow(product: p),
+          ),
+      ],
+    );
+  }
+}
+
+class _ProductRow extends StatelessWidget {
+  const _ProductRow({required this.product});
+  final Product product;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final svc = context.watch<LiquidityService>();
+    // The estimate uses the SAME live price feed the swap screens use, so the
+    // number here and the number at checkout come from one source.
+    final rate = svc.priceOf('BLOCK');
+    final crypto = product.hasPrice
+        ? CryptoPrice.from(usd: product.price!, asset: 'BLOCK', rateUsd: rate)
+        : null;
+
+    return ShopCard(
+      padding: const EdgeInsets.all(12),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        ProductImage(product.imageUrl, size: 76),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(product.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: t.titleSmall),
+                const SizedBox(height: 3),
+                Text(product.merchant,
+                    style: t.bodySmall?.copyWith(color: Bk.faint)),
+                const SizedBox(height: 8),
+                PriceText(product, crypto: crypto),
+                const SizedBox(height: 8),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  AvailabilityPill(product.availability),
+                  ShopPill(product.source.label),
+                ]),
+              ]),
+        ),
+      ]),
     );
   }
 }
@@ -115,14 +211,9 @@ class _FlowCard extends StatelessWidget {
     final svc = context.watch<LiquidityService>();
     final plan = _plan(svc);
     final blocked = plan.firstBlocker;
+    final t = Theme.of(context).textTheme;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Bk.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Bk.border),
-      ),
+    return ShopCard(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Icon(
@@ -132,17 +223,13 @@ class _FlowCard extends StatelessWidget {
               color: Bk.accent,
               size: 20),
           const SizedBox(width: 8),
-          Text(plan.title,
-              style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white)),
-          const Spacer(),
+          Expanded(child: Text(plan.title, style: t.titleMedium)),
           // THE TIMING, ALWAYS. "Pay with BLOCK" contains a bank payout and
           // takes days; presenting it beside a two-minute action without
           // saying so is the single most misleading thing this screen could
           // do.
-          _Pill(plan.takes.human, slow: plan.isSlow),
+          ShopPill(plan.takes.human,
+              tone: plan.isSlow ? PillTone.neutral : PillTone.accent),
         ]),
         const SizedBox(height: 10),
         for (final leg in plan.legs)
@@ -150,42 +237,22 @@ class _FlowCard extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 6),
             child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Padding(
-                  padding: EdgeInsets.only(top: 6, right: 8),
+                  padding: EdgeInsets.only(top: 7, right: 8),
                   child: Icon(Icons.circle, size: 5, color: Bk.faint)),
               Expanded(
                   child: Text(leg.describe,
-                      style: const TextStyle(
-                          fontSize: 13, color: Bk.faint, height: 1.35))),
+                      style: t.bodySmall?.copyWith(color: Bk.muted))),
             ]),
           ),
-        const SizedBox(height: 8),
-        if (blocked != null)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-                color: Bk.surface2,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Bk.border)),
-            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Icon(Icons.info_outline, size: 16, color: Bk.faint),
-              const SizedBox(width: 8),
-              Expanded(
-                  child: Text(blocked.reason,
-                      style: const TextStyle(
-                          fontSize: 12.5, color: Bk.faint, height: 1.35))),
-            ]),
-          ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: FilledButton(
-            style: FilledButton.styleFrom(
-                backgroundColor: Bk.accent,
-                padding: const EdgeInsets.symmetric(vertical: 14)),
-            onPressed: plan.ready ? () => _start(context, plan) : null,
-            child: Text(plan.ready ? plan.title : 'Unavailable'),
-          ),
+        if (blocked != null) ...[
+          const SizedBox(height: 6),
+          ShopNote(blocked.reason,
+              tone: blocked.fixable ? PillTone.warn : PillTone.neutral),
+        ],
+        const SizedBox(height: 14),
+        FilledButton(
+          onPressed: plan.ready ? () => _start(context, plan) : null,
+          child: Text(plan.ready ? plan.title : 'Unavailable'),
         ),
       ]),
     );
@@ -234,63 +301,7 @@ class _FlowCard extends StatelessWidget {
     // card's job is to decide whether they CAN run and to say what will
     // happen. Wiring the hand-off is the next slice.
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: Bk.surface2,
         content: Text('${plan.title}: ${plan.legs.length} steps, '
             '${plan.takes.human}.')));
   }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill(this.text, {required this.slow});
-  final String text;
-  final bool slow;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(
-            color: slow ? Bk.surface3 : Bk.accentGhost,
-            borderRadius: BorderRadius.circular(20)),
-        child: Text(text,
-            style: TextStyle(
-                fontSize: 11,
-                color: slow ? Bk.faint : Bk.accent,
-                fontWeight: FontWeight.w600)),
-      );
-}
-
-/// Where the catalogue will go.
-///
-/// SAYS IT IS EMPTY AND WHY. The alternative — seeding it with illustrative
-/// products — is how a shopping app ends up quoting a price nobody can buy
-/// at, from a retailer that never listed it. Once a provider is connected
-/// this whole widget is deleted.
-class _CatalogPlaceholder extends StatelessWidget {
-  const _CatalogPlaceholder();
-
-  @override
-  Widget build(BuildContext context) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-            color: Bk.bg2,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Bk.line)),
-        child: const Column(children: [
-          Icon(Icons.inventory_2_outlined, color: Bk.faint, size: 28),
-          SizedBox(height: 10),
-          Text('No product catalogue connected',
-              style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white)),
-          SizedBox(height: 6),
-          Text(
-              'Search and listings switch on once a retail data provider is '
-              'connected. Nothing is shown here until the prices and '
-              'retailers are real ones.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12.5, color: Bk.faint, height: 1.4)),
-        ]),
-      );
 }
