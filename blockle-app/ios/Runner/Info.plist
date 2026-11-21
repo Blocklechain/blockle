@@ -62,12 +62,17 @@
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
 			<string>org.blockle.wallet</string>
-			<!-- `blockle` is the dApp deep-link scheme (blockle://dapp?req=…);
-			     `blockle_app` is kept for backward compatibility. -->
+			<!-- `blockle` is the dApp deep-link scheme (blockle://dapp?req=…).
+			     Do NOT add a scheme containing an underscore: Apple rejects
+			     the upload with ITMS-90158, since RFC1738 allows only
+			     alphanumerics, '.', '-' and '+'. A `blockle_app` scheme was
+			     added here once "for backward compatibility" and silently
+			     blocked every TestFlight upload until it was removed —
+			     nothing ever referenced it, and dapp_link.dart only ever
+			     acted on the `blockle` scheme. -->
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>blockle</string>
-				<string>blockle_app</string>
 			</array>
 		</dict>
 	</array>
