@@ -40,11 +40,11 @@ winterfell = "0.13"
 bech32 = "0.11"
 clap = { version = "4", features = ["derive"] }
 
-blockle-core = { path = "crates/core", version = "0.1.14" }
-blockle-zk = { path = "crates/zk", version = "0.1.14" }
-blockle-pow = { path = "crates/pow", version = "0.1.14" }
-blockle-chain = { path = "crates/chain", version = "0.1.14" }
-blockle-vm = { path = "crates/vm", version = "0.1.14" }
+blockle-core = { path = "crates/core", version = "0.1.16" }
+blockle-zk = { path = "crates/zk", version = "0.1.16" }
+blockle-pow = { path = "crates/pow", version = "0.1.16" }
+blockle-chain = { path = "crates/chain", version = "0.1.16" }
+blockle-vm = { path = "crates/vm", version = "0.1.16" }
 
 [profile.release]
 lto = "thin"
