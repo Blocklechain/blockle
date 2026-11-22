@@ -12,6 +12,10 @@ Run with ``blockle-qt`` (``pip install blockle[qt]``).
 from __future__ import annotations
 
 import argparse
+# asyncio: the pre-send security gate runs the read-only decode through
+# multichain.security.inspect_transaction, which is async
+# (_inspect_block_send / _inspect_shielded).
+import asyncio
 import sys
 from pathlib import Path
 
@@ -19,6 +23,7 @@ try:
     from PySide6.QtCore import Qt, QThread, QTimer, Signal, QSettings
     from PySide6.QtGui import QFont, QGuiApplication, QIcon
     from PySide6.QtWidgets import (
+    QDialog,
         QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
         QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
         QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox,
@@ -547,21 +552,104 @@ class WalletWindow(QMainWindow):
         self.refresh()
         return result
 
+    def _block_security_ctx(self) -> dict:
+        """ctx for the BLOCK pre-send inspection. Reuses the multi-chain
+        controller's shared security config (denylist / thresholds) when the
+        ADDITIVE panels are present, so a flagged BLOCK recipient is caught;
+        an empty config otherwise (``merge_config`` supplies defaults — never a
+        fabricated all-clear)."""
+        try:
+            for widget, _title in (self._mc_tabs or []):
+                ctrl = getattr(widget, "ctrl", None)
+                if ctrl is not None and hasattr(ctrl, "_security_config"):
+                    return {"config": ctrl._security_config()}
+        except Exception:
+            pass
+        return {"config": {}}
+
     def _do_send(self):
         to, amount = self.send_to.text().strip(), self.send_amount.text().strip()
         if not to or not amount:
             QMessageBox.warning(self, "Blockle", "Recipient and amount are required.")
             return
-        if QMessageBox.question(
-            self, "Confirm send",
-            f"Send {amount} BLOCK to\n{to}\n(fee {self.send_fee.text()})?",
-        ) != QMessageBox.Yes:
+        fee = self.send_fee.text().strip()
+        # SECURITY GATE: BEFORE the BLOCK signer sends, decode the transfer
+        # (security.inspect_transaction -> decode_block, read-only) and route it
+        # through the shared confirm sheet. A DANGER (e.g. a denylisted recipient)
+        # forces the explicit "I understand the risk" confirm; a reject aborts
+        # WITHOUT signing. A clean inspection simply shows no warnings — still run
+        # it, for a uniform decoded preview.
+        try:
+            inspection = self._inspect_block_send(to, amount, fee)
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
             return
+        if not self._confirm_block_send(inspection):
+            return   # rejected / danger un-acknowledged -> abort WITHOUT signing
         self.wallet.node = self.node.p2p_address if self.node.running else None
-        if self._guarded(lambda: self.wallet.send(to, amount, self.send_fee.text().strip()),
+        if self._guarded(lambda: self.wallet.send(to, amount, fee),
                          "Transaction submitted."):
             self.send_to.clear()
             self.send_amount.clear()
+
+    def _inspect_block_send(self, to: str, amount: str, fee: str) -> dict:
+        """Run the read-only BLOCK decode through the security suite. BLOCK uses
+        8 decimals; the human amount/fee are converted to EXACT base units so the
+        preview summary shows the real amount (never a misleading 0)."""
+        from .qtwalletui import to_base_units
+        from .multichain import security as security_mod
+        amount_base = to_base_units(amount, 8)
+        fee_base = to_base_units(fee, 8) if fee else None
+        tx = {
+            "chain": "block", "to": to,
+            "amount": str(amount_base),
+            "fee": None if fee_base is None else str(fee_base),
+            "asset": {"chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8},
+            "_recipient": to,
+        }
+        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
+
+    def _confirm_block_send(self, inspection: dict) -> bool:
+        """Show the shared security confirm sheet; returns True iff the user
+        accepted (a danger required the explicit extra confirm inside the sheet)."""
+        return self._confirm_security(inspection, "Review BLOCK send")
+
+    def _confirm_security(self, inspection: dict, title: str) -> bool:
+        """Show the shared security confirm sheet; returns True iff the user
+        accepted. A danger severity forces the explicit "I understand the risk"
+        confirm INSIDE the sheet (see qtwalletui.SecurityConfirmSheet) — this
+        helper never bypasses it. Runs on the GUI thread."""
+        from .qtwalletui import SecurityConfirmSheet, TOKENS_DARK
+        sheet = SecurityConfirmSheet(
+            TOKENS_DARK, inspection, title=title, parent=self)
+        return sheet.exec() == QDialog.Accepted
+
+    def _inspect_shielded(self, *, to: str, amount: str | None, fee: str | None,
+                          external: bool) -> dict:
+        """Read-only decode of a shielded operation through the security suite
+        (``security.inspect_transaction`` -> ``decode_block``), mirroring the
+        transparent BLOCK send gate. BLOCK uses 8 decimals; the human amount/fee
+        are converted to EXACT base units so the preview shows the real amount.
+
+        ``shield``/``unshield`` move value between the user's OWN pools, so there
+        is no external recipient — this is a decoded preview + confirm. ``zsend``
+        has an EXTERNAL, user-typed ``zblockpk`` recipient, so ``_recipient`` is
+        set and the full denylist / new-recipient warnings apply (a flagged
+        recipient decodes to DANGER and forces the explicit confirm)."""
+        from .qtwalletui import to_base_units
+        from .multichain import security as security_mod
+        amount_base = to_base_units(amount, 8) if amount else 0
+        fee_base = to_base_units(fee, 8) if fee else None
+        tx = {
+            "chain": "block", "to": to,
+            "amount": str(amount_base),
+            "fee": None if fee_base is None else str(fee_base),
+            "asset": {"chain": "block", "kind": "native", "symbol": "BLOCK", "decimals": 8},
+        }
+        if external:
+            # externally-influenced recipient -> run the recipient-facing checks
+            tx["_recipient"] = to
+        return asyncio.run(security_mod.inspect_transaction(tx, self._block_security_ctx()))
 
     def _selected_note(self) -> int | None:
         rows = self.notes.selectionModel().selectedRows()
@@ -572,14 +660,38 @@ class WalletWindow(QMainWindow):
 
     def _do_shield(self):
         amount, ok = QInputDialog.getText(self, "Shield", "Amount to move into the shielded pool:")
-        if ok and amount.strip():
-            self.wallet.node = self.node.p2p_address if self.node.running else None
-            self._guarded(lambda: self.wallet.shield(amount.strip()), "Funds shielded.")
+        if not (ok and amount.strip()):
+            return
+        amount = amount.strip()
+        # SECURITY GATE: decode the move into the shielded pool (read-only) and
+        # route it through the shared confirm sheet BEFORE signing/broadcasting.
+        # No external recipient — own-pool move — so this is a decoded preview +
+        # confirm. A reject aborts WITHOUT calling wallet.shield.
+        try:
+            inspection = self._inspect_shielded(
+                to="(your shielded pool)", amount=amount, fee="0.0001", external=False)
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
+            return
+        if not self._confirm_security(inspection, "Review shield"):
+            return   # rejected -> nothing signed or broadcast
+        self.wallet.node = self.node.p2p_address if self.node.running else None
+        self._guarded(lambda: self.wallet.shield(amount), "Funds shielded.")
 
     def _do_unshield(self):
         note = self._selected_note()
         if note is None:
             return
+        # SECURITY GATE: decode the unshield (whole note back to the user's own
+        # transparent address — no external recipient) and confirm BEFORE signing.
+        try:
+            inspection = self._inspect_shielded(
+                to="(your transparent address)", amount=None, fee="0.0001", external=False)
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
+            return
+        if not self._confirm_security(inspection, "Review unshield"):
+            return   # rejected -> nothing signed or broadcast
         self.wallet.node = self.node.p2p_address if self.node.running else None
         self._guarded(lambda: self.wallet.unshield(note), "Note unshielded to your address.")
 
@@ -596,9 +708,24 @@ class WalletWindow(QMainWindow):
                                           "Amount (empty = whole note minus fee):")
         if not ok:
             return
+        to, amount = to.strip(), amount.strip()
+        # SECURITY GATE: a private send has an EXTERNAL, user-typed zblockpk
+        # recipient, so run the FULL inspection (denylist / new-recipient checks)
+        # with danger-forces-confirm BEFORE wallet.zsend signs/broadcasts. An
+        # empty recipient is an out-of-band voucher (no on-chain recipient yet).
+        has_recipient = bool(to)
+        try:
+            inspection = self._inspect_shielded(
+                to=to or "(out-of-band voucher)", amount=amount or None,
+                fee="0.0001", external=has_recipient)
+        except Exception as e:
+            QMessageBox.critical(self, "Blockle", f"Could not prepare review:\n{e}")
+            return
+        if not self._confirm_security(inspection, "Review private send"):
+            return   # rejected / danger un-acknowledged -> nothing signed or broadcast
         self.wallet.node = self.node.p2p_address if self.node.running else None
         result = self._guarded(
-            lambda: self.wallet.zsend(note, amount.strip() or None, to.strip() or None),
+            lambda: self.wallet.zsend(note, amount or None, to or None),
             "Private transfer submitted — amounts are hidden on chain.")
         if result and result.get("voucher"):
             dlg = QMessageBox(self)

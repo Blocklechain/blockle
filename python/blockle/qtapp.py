@@ -32,11 +32,14 @@ from .qtmultichain import build_tabs
 
 def build_app_window(block_wallet: Any, datadir: Any,
                      extra_tabs: Optional[List[Tuple[QWidget, str]]] = None,
-                     title: str = "Blockle Wallet") -> QMainWindow:
+                     title: str = "Blockle Wallet",
+                     bot_strategy: Optional[str] = None,
+                     copy_bot: Optional[str] = None) -> QMainWindow:
     """Build the full desktop window: a :class:`QMainWindow` whose central widget
     is a :class:`QTabWidget` of every panel. ``extra_tabs`` (e.g. the native
-    BLOCK wallet) are prepended before the multichain tabs. Does NOT call
-    ``show()``/``exec()`` — safe to build headless."""
+    BLOCK wallet) are prepended before the multichain tabs. ``bot_strategy`` /
+    ``copy_bot`` are optional Bots deep-links (web ``?strategy=`` / ``?copyBot=``
+    equivalents). Does NOT call ``show()``/``exec()`` — safe to build headless."""
     win = QMainWindow()
     win.setWindowTitle(title)
     tabw = QTabWidget()
@@ -44,7 +47,8 @@ def build_app_window(block_wallet: Any, datadir: Any,
     for widget, label in (extra_tabs or []):
         if widget is not None:
             tabw.addTab(widget, label)
-    for widget, label in build_tabs(block_wallet, datadir):
+    for widget, label in build_tabs(block_wallet, datadir,
+                                    bot_strategy=bot_strategy, copy_bot=copy_bot):
         tabw.addTab(widget, label)
     win.setCentralWidget(tabw)
     # Persistent network-upgrade notice: the cross-algorithm difficulty coupling
@@ -105,6 +109,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--listen", default=None, help="P2P listen address for the embedded BLOCK node")
     ap.add_argument("--no-block-tab", action="store_true",
                     help="skip the native BLOCK wallet tab (multichain panels only)")
+    # Bots deep-links — the desktop equivalents of the web ?strategy= / ?copyBot=.
+    ap.add_argument("--bot-strategy", default=None,
+                    help="preselect a Bots strategy in the create panel (e.g. rsi, macd, grid)")
+    ap.add_argument("--copy-bot", default=None,
+                    help="prefill the Bots create panel from another trader's bot id (config only)")
     args = ap.parse_args(argv)
 
     from PySide6.QtGui import QFont, QIcon
@@ -135,7 +144,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if block_tab is not None:
             extra.append((block_tab, "BLOCK"))
 
-    win = build_app_window(wallet, datadir, extra_tabs=extra, title="Blockle Wallet")
+    win = build_app_window(wallet, datadir, extra_tabs=extra, title="Blockle Wallet",
+                           bot_strategy=args.bot_strategy, copy_bot=args.copy_bot)
     win.resize(1240, 860)
     win.show()
     return app.exec()
