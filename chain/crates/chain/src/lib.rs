@@ -9,11 +9,16 @@ pub mod contracts;
 pub mod genesis;
 pub mod intel;
 pub mod intel_consensus;
+pub mod mempool;
 pub mod miner;
 pub mod params;
 pub mod pools;
 
 pub use chain::{Chain, ChainError, UtxoEntry};
+pub use mempool::{
+    ancestor_count, pending_spends, pending_view, spendable_with_pending, topo_order,
+    MAX_PENDING_CHAIN,
+};
 pub use contracts::{contract_id, CallResult, ContractInfo};
 pub use miner::{build_template, build_template_split, mine_block, mine_block_cancellable};
 pub use params::ChainParams;

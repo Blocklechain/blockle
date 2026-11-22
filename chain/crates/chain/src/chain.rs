@@ -435,6 +435,14 @@ impl Chain {
             .collect()
     }
 
+    /// Can this entry be spent at the next height? Public because the mempool
+    /// view (see `crate::mempool`) has to make the same maturity judgement
+    /// the funding path does, and two copies of a coinbase-maturity rule is
+    /// one copy too many.
+    pub fn is_spendable_now(&self, entry: &UtxoEntry) -> bool {
+        self.is_mature(entry, self.blocks.len() as u64)
+    }
+
     fn is_mature(&self, entry: &UtxoEntry, spend_height: u64) -> bool {
         // Genesis premine is an allocation, not a mining reward — exempt.
         if !entry.coinbase || entry.height == 0 {

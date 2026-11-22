@@ -1008,11 +1008,19 @@ fn build_funded_tx(
         .and_then(|v| v.checked_add(z_out))
         .ok_or_else(|| anyhow!("amount overflow"))?;
 
-    // Exclude utxos already referenced by pending mempool txs.
-    let pending: Vec<OutPoint> = mempool
-        .iter()
-        .flat_map(|tx| tx.inputs.iter().map(|i| i.prev))
-        .collect();
+    // SPEND OWN UNCONFIRMED CHANGE.
+    //
+    // This drew inputs from chain.spendable_utxos() — confirmed outputs only
+    // — and then excluded anything a pending transaction already spent. After
+    // one send that is everything: the coins are spent by the pending tx and
+    // the change it creates exists only in the mempool, so a second send
+    // reported "insufficient spendable funds" for money the wallet plainly
+    // had. One payment per block, which is not a rule anyone wrote.
+    //
+    // The pending view includes mempool-created outputs and removes
+    // mempool-spent ones, so chained sends fund correctly. Confirmed coins
+    // are offered first (see spendable_with_pending), which keeps the
+    // unconfirmed chain as short as it can be.
 
     // Cap inputs per tx so a many-coin payment can't build a transaction larger than a block
     // can hold (post-quantum signatures are ~13KB each). The cap scales with the block-size
@@ -1024,10 +1032,9 @@ fn build_funded_tx(
     let max_funding_inputs = (block_cap.saturating_sub(100_000) / 13_000).max(1);
     let mut selected = Vec::new();
     let mut total: u64 = 0;
-    for (outpoint, entry) in chain.spendable_utxos(&kp.address()) {
-        if pending.contains(&outpoint) {
-            continue;
-        }
+    for (outpoint, entry, _confirmed) in
+        blockle_chain::spendable_with_pending(chain, mempool, &kp.address())
+    {
         total += entry.output.amount;
         selected.push(outpoint);
         if total >= needed {
@@ -1041,15 +1048,33 @@ fn build_funded_tx(
         }
     }
     if total < needed {
+        // Reported from the SAME view the funding used, including pending
+        // change, or the error names a figure that disagrees with the
+        // refusal — which reads as the node being confused about the balance.
+        let available: Vec<(OutPoint, blockle_chain::UtxoEntry, bool)> =
+            blockle_chain::spendable_with_pending(chain, mempool, &kp.address());
+        let settled: u64 = available
+            .iter()
+            .filter(|(_, _, c)| *c)
+            .map(|(_, e, _)| e.output.amount)
+            .sum();
+        let unconfirmed: u64 = available
+            .iter()
+            .filter(|(_, _, c)| !*c)
+            .map(|(_, e, _)| e.output.amount)
+            .sum();
+        let immature = chain.balance(&kp.address()).saturating_sub(settled);
+        let mut notes: Vec<String> = Vec::new();
+        if unconfirmed > 0 {
+            notes.push(format!("{} unconfirmed change", format_amount(unconfirmed)));
+        }
+        if immature > 0 {
+            notes.push(format!("{} immature", format_amount(immature)));
+        }
         bail!(
             "insufficient spendable funds: have {} spendable{}, need {} (coinbase rewards mature after {} blocks)",
             format_amount(total),
-            {
-                let immature = chain.balance(&kp.address()).saturating_sub(
-                    chain.spendable_utxos(&kp.address()).iter().map(|(_, e)| e.output.amount).sum::<u64>(),
-                );
-                if immature > 0 { format!(" ({} immature)", format_amount(immature)) } else { String::new() }
-            },
+            if notes.is_empty() { String::new() } else { format!(" ({})", notes.join(", ")) },
             format_amount(needed),
             chain.params.coinbase_maturity
         );

@@ -44,7 +44,20 @@ pub fn build_template(
     let mut included_ids = Vec::new();
     let mut fees: u64 = 0;
     let mut gas_total: u64 = 0;
-    for tx in candidates {
+    // IN DEPENDENCY ORDER. Selection validates each candidate against the
+    // scratch view and skips whatever does not apply, so a transaction
+    // spending another candidate's output is dropped if it is considered
+    // first. The mempool is usually already ordered — the parent was
+    // submitted earlier — but that breaks on reload from disk, on gossip
+    // arriving out of order, and after a reorg, and the failure is silent:
+    // the payment just does not appear in the block.
+    //
+    // Note this changes WHICH valid transactions get selected, never which
+    // blocks are valid. A parent-before-child block has always been
+    // acceptable to every node, because connect_block applies each
+    // transaction's effects before validating the next, exactly as this does.
+    let order = crate::mempool::topo_order(candidates);
+    for tx in order.into_iter().map(|i| &candidates[i]) {
         let gas = tx.contract.as_ref().map(|a| a.gas_limit()).unwrap_or(0);
         if gas_total + gas > chain.params.block_gas_limit {
             continue;

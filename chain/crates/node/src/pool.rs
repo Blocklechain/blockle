@@ -1001,21 +1001,48 @@ fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
             // Spendable (mature) outputs, so a light wallet can build inputs.
             // txid is RAW hex (not display-reversed) so it round-trips straight
             // back into an OutPoint when the wallet rebuilds the transaction.
-            let spendable = chain.spendable_utxos(&addr);
-            let total: u64 = spendable.iter().map(|(_, e)| e.output.amount).sum();
-            let utxos: Vec<Value> = spendable
-                .into_iter()
-                .map(|(op, e)| {
+            //
+            // THE MEMPOOL IS INCLUDED, and that is what lets a phone wallet
+            // make a second payment without being updated. This served
+            // confirmed outputs and did not subtract the ones the mempool had
+            // already spent, so after one send a wallet would faithfully
+            // rebuild a transaction spending its own pending input — which the
+            // node then rejected as a double-spend. Meanwhile the change from
+            // that first send, the only money it had left, was not listed at
+            // all. Both halves are fixed by serving the pending view.
+            //
+            // `confirmations` is per-entry so a wallet CAN tell settled funds
+            // from its own pending change; `spendable` stays the confirmed
+            // total so any balance already drawn from it does not jump. Both
+            // are additions — a client reading txid/vout/amount is unaffected.
+            let entries = blockle_chain::spendable_with_pending(&chain, &mempool, &addr);
+            let settled: u64 = entries
+                .iter()
+                .filter(|(_, _, c)| *c)
+                .map(|(_, e, _)| e.output.amount)
+                .sum();
+            let pending_total: u64 = entries
+                .iter()
+                .filter(|(_, _, c)| !*c)
+                .map(|(_, e, _)| e.output.amount)
+                .sum();
+            let utxos: Vec<Value> = entries
+                .iter()
+                .map(|(op, e, confirmed)| {
                     json!({
                         "txid": hex::encode(op.txid),
                         "vout": op.vout,
                         "amount": e.output.amount,
+                        "confirmations": if *confirmed { 1 } else { 0 },
+                        "unconfirmed": !*confirmed,
                     })
                 })
                 .collect();
             ok(json!({
                 "address": addr_s,
-                "spendable": total,
+                "spendable": settled,
+                "pending": pending_total,
+                "fundable": settled + pending_total,
                 "count": utxos.len(),
                 "utxos": utxos,
             }))

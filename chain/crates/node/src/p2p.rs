@@ -888,14 +888,27 @@ impl Node {
             println!("[mempool] rejected tx {}: {} bytes exceeds the {}-byte limit", display_hash(&txid), tx.serialized_size(), max_tx);
             return false;
         }
-        // Reject double-spends against pending transactions (no unconfirmed
-        // chaining in the prototype mempool).
-        let pending: Vec<OutPoint> = st
-            .mempool
-            .iter()
-            .flat_map(|t| t.inputs.iter().map(|i| i.prev))
-            .collect();
-        if tx.inputs.iter().any(|i| pending.contains(&i.prev)) {
+        // A TRUE DOUBLE-SPEND is still refused: two transactions spending the
+        // same outpoint cannot both stand, and whichever arrived first keeps
+        // the claim.
+        //
+        // WHAT IS NO LONGER REFUSED is a transaction spending an output
+        // another pending transaction CREATED. That was rejected outright —
+        // the comment here used to say "no unconfirmed chaining in the
+        // prototype mempool" — and it is why a wallet could only make one
+        // payment per block: the second send spends the change from the first,
+        // which has not confirmed yet.
+        //
+        // This is mempool policy, not consensus. Such a block was always
+        // valid: build_template and connect_block both apply each
+        // transaction's effects before validating the next, so a child after
+        // its parent has always been accepted by every node on the network.
+        let spent = blockle_chain::pending_spends(&st.mempool);
+        if tx.inputs.iter().any(|i| spent.contains(&i.prev)) {
+            println!(
+                "[mempool] rejected tx {}: double-spends a pending input",
+                display_hash(&txid)
+            );
             return false;
         }
         // Same for shielded nullifiers.
@@ -904,8 +917,22 @@ impl Node {
         if tx.nullifiers().iter().any(|n| pending_nullifiers.contains(n)) {
             return false;
         }
+        // Bounded depth, so a chain of unconfirmed spends cannot be used to
+        // make admission and pruning arbitrarily expensive.
+        let ancestors = blockle_chain::ancestor_count(&st.mempool, &tx);
+        if ancestors >= blockle_chain::MAX_PENDING_CHAIN {
+            println!(
+                "[mempool] rejected tx {}: {} unconfirmed ancestors exceeds the limit of {}",
+                display_hash(&txid), ancestors, blockle_chain::MAX_PENDING_CHAIN
+            );
+            return false;
+        }
         let height = st.chain.blocks.len() as u64;
-        if let Err(e) = st.chain.check_transaction(&tx, &st.chain.utxos, height) {
+        // VALIDATED AGAINST THE MEMPOOL'S VIEW, not the confirmed set alone.
+        // Against the confirmed set a child's input simply does not exist yet,
+        // so the transaction is rejected as spending nothing.
+        let view = blockle_chain::pending_view(&st.chain, &st.mempool);
+        if let Err(e) = st.chain.check_transaction(&tx, &view, height) {
             println!("[mempool] rejected tx {}: {e}", display_hash(&txid));
             return false;
         }
@@ -918,11 +945,42 @@ impl Node {
     }
 
     /// Drop mempool entries that no longer validate against the tip.
+    ///
+    /// WALKED IN DEPENDENCY ORDER against a view that grows as it goes, so a
+    /// transaction spending another pending transaction's output survives.
+    /// Checking each one against the confirmed set alone evicted every
+    /// chained child on the next tick — which would have undone the
+    /// admission fix within a second of it working.
     fn prune_mempool(&self, st: &mut SharedState) {
         let height = st.chain.blocks.len() as u64;
-        let chain = &st.chain;
-        st.mempool
-            .retain(|tx| chain.check_transaction(tx, &chain.utxos, height).is_ok());
+        let order = blockle_chain::topo_order(&st.mempool);
+        let mut view = st.chain.utxos.clone();
+        let mut keep: Vec<Transaction> = Vec::with_capacity(st.mempool.len());
+        for i in order {
+            let tx = st.mempool[i].clone();
+            if st.chain.check_transaction(&tx, &view, height).is_err() {
+                // Dropped, and its outputs never enter the view — so anything
+                // that depended on it is dropped on this same pass rather
+                // than lingering as an orphan.
+                continue;
+            }
+            let txid = tx.txid();
+            for inp in &tx.inputs {
+                view.remove(&inp.prev);
+            }
+            for (vout, out) in tx.outputs.iter().enumerate() {
+                view.insert(
+                    blockle_core::OutPoint { txid, vout: vout as u32 },
+                    blockle_chain::UtxoEntry {
+                        output: out.clone(),
+                        height,
+                        coinbase: false,
+                    },
+                );
+            }
+            keep.push(tx);
+        }
+        st.mempool = keep;
         let _ = storage::save_mempool(&self.config.datadir, &st.mempool);
     }
 
