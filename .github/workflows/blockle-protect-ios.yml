@@ -116,9 +116,15 @@ jobs:
           # xcodebuild looks. All three outcomes are progress — including a 403,
           # which finally answers whether this key has the Admin / App Manager
           # role rather than leaving it to inference.
-          python3 -m pip install --quiet --disable-pip-version-check \
+          # A VENV, because the runner's Python is PEP 668 "externally
+          # managed" and refuses a system-wide install outright:
+          #   error: externally-managed-environment   (run 45130798305)
+          # --break-system-packages would also work and is exactly the kind of
+          # flag that breaks a different runner image later.
+          python3 -m venv .ascvenv
+          ./.ascvenv/bin/pip install --quiet --disable-pip-version-check \
             'pyjwt[crypto]'
-          python3 asc_profiles.py --out profiles.json
+          ./.ascvenv/bin/python asc_profiles.py --out profiles.json
           echo "--- profiles.json ---"
           cat profiles.json
 
