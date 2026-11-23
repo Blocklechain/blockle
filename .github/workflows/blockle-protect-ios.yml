@@ -205,6 +205,32 @@ jobs:
           # every run up to 44927460372. What changed is that the app now ASKS
           # for the App Group and the iCloud container, so export has to find a
           # profile that grants them instead of one that grants nothing.
+          #
+          # WHAT THE LOG SHOWED (run 45121886490), and it is not authentication:
+          #
+          #     status code: 200 (no error)
+          #             "errors" : [ ],
+          #
+          # Apple answered HTTP 200 with an empty error list. The key
+          # authenticated. The PROFILE QUERY CAME BACK EMPTY, and Xcode reports
+          # an empty result as "Authentication failed" — which sent this
+          # investigation after the credentials for three runs.
+          #
+          # So what is missing is an App Store distribution profile that grants
+          # the App Group across all seven bundle ids (and iCloud on the main
+          # app), and `-allowProvisioningUpdates` is not creating one. Two ways
+          # forward, neither of them a code change here:
+          #
+          #   * create the profiles in the Developer portal with App Groups
+          #     enabled, then switch ExportOptions.plist to manual signing and
+          #     name them per bundle id; or
+          #   * confirm the ASC key's role is Admin or App Manager — a key that
+          #     can upload builds cannot necessarily CREATE profiles, and the
+          #     empty 200 is consistent with exactly that.
+          #
+          # Until one of those happens this step fails here, deliberately, which
+          # means no new TestFlight build. That is the intended trade: the builds
+          # it replaced all shipped with My List unable to read its own rules.
           if ! xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
