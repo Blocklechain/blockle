@@ -125,23 +125,49 @@ jobs:
           # ask Apple for anything and fell back to searching for local
           # DEVELOPMENT profiles — and those are what need registered devices.
           #
-          # CODE_SIGN_IDENTITY is forced because the project sets only
-          # CODE_SIGN_STYLE=Automatic, which resolves to "Apple Development" and
-          # would request that same device-bound profile. App Store distribution
-          # profiles need no devices, which is why export has been creating them
-          # for all six targets on every run — the step below does what export
-          # already proves works.
+          # SIGNED AD HOC, which is the only identity available at archive time.
+          # Four approaches were tried in front of this one; each is closed by
+          # something that cannot be worked around from here:
           #
-          # Re-signing after export was also tried, and cannot work: cloud
-          # signing keeps the key in its own keychain, so the runner reports
-          # "0 valid identities found" and codesign has no private key to use
-          # (run 45117853957).
+          #   unsigned                 Xcode skips CODE_SIGN_ENTITLEMENTS
+          #                            entirely. This was the original bug.
+          #   automatic                resolves `archive` to a DEVELOPMENT
+          #                            profile, and Apple will not issue one to
+          #                            a team with no registered devices
+          #                            (run 45113805102).
+          #   automatic + forced
+          #     distribution identity  "has conflicting provisioning settings …
+          #                            automatically signed for development, but
+          #                            a conflicting code signing identity Apple
+          #                            Distribution has been manually specified"
+          #                            — with automatic signing Xcode picks the
+          #                            identity and rejects an override
+          #                            (run 45118597006, all seven targets).
+          #   manual distribution      needs the certificate AND private key in
+          #                            the keychain; cloud signing keeps them in
+          #                            its own, so the runner reports "0 valid
+          #                            identities found" (run 45117853957).
+          #
+          # Ad-hoc signing ("-") needs no certificate, no private key and no
+          # provisioning profile, so none of the above applies — but it IS
+          # signing, so Xcode processes CODE_SIGN_ENTITLEMENTS and the
+          # entitlements end up embedded in the binary. Export then re-signs
+          # with the real distribution identity via cloud signing and carries
+          # those entitlements across, which is the one thing it cannot do from
+          # an unsigned archive.
+          #
+          # CODE_SIGNING_REQUIRED=NO is what permits an ad-hoc signature on iOS;
+          # CODE_SIGNING_ALLOWED stays YES, because NO is what skipped the
+          # entitlements in the first place.
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS" \
             CURRENT_PROJECT_VERSION="$BN" \
-            CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Distribution"
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="-" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGNING_REQUIRED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
 
           # FAIL HERE, NOT AFTER UPLOAD. Export cannot add an entitlement the
           # archive does not have, so if the App Group is missing at this point
