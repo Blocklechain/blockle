@@ -64,15 +64,36 @@ echo "==> copying to the box"
 ssh "$BOX" 'install -d /opt/blockle/exchange-bootstrap /opt/blockle/exchange-custody \
                         /etc/blockle /var/lib/exchange-bootstrap'
 
-# node_modules is needed at runtime (better-sqlite3 is native), so it ships too.
+# SHIP dist + package.json ONLY, THEN INSTALL DEPS ON THE BOX.
+#
+# The earlier version rsynced node_modules from here, which is wrong and fails
+# at runtime: better-sqlite3 is a NATIVE module, so the shipped
+# build/Release/better_sqlite3.node was a Mach-O arm64 binary that Linux cannot
+# load. It presents as ERR_DLOPEN_FAILED the first time anything opens the
+# ledger — i.e. not at deploy time, but later, from the service.
+#
+# Worse, a naive `require("better-sqlite3")` check APPEARED to succeed; only
+# actually opening a database surfaced it. So this is installed where it runs.
 for src in bootstrap custody; do
 	rsync -az --delete \
 		--exclude '.git' --exclude 'test' \
 		"$REPO/exchange/$src/dist" \
 		"$REPO/exchange/$src/package.json" \
-		"$REPO/exchange/$src/node_modules" \
 		"$BOX:/opt/blockle/exchange-$src/"
 done
+
+echo "==> installing native deps ON the box (not shipped from macOS)"
+ssh "$BOX" 'set -e
+for d in /opt/blockle/exchange-bootstrap /opt/blockle/exchange-custody; do
+	cd "$d"
+	npm install --omit=dev --no-audit --no-fund >/tmp/npm-$(basename $d).log 2>&1 \
+		|| { tail -5 /tmp/npm-$(basename $d).log >&2; exit 1; }
+done
+# Prove the native module works HERE, by opening a database rather than just
+# requiring the package — require alone can pass on a broken binary.
+cd /opt/blockle/exchange-custody
+node -e '"'"'const D=require("better-sqlite3");new D(":memory:").exec("create table t(x)");console.log("   native sqlite verified on the box")'"'"'
+'
 rsync -az "$REPO/exchange/bootstrap/public/" "$BOX:/opt/blockle/exchange-bootstrap/public/"
 # The console's step actions reference the deploy tree by absolute path.
 rsync -az "$REPO/deploy/" "$BOX:/opt/blockle/deploy/"
@@ -153,6 +174,21 @@ REMOTE
 echo "==> installing the nginx vhosts"
 ssh "$BOX" 'bash -s' <<'REMOTE'
 set -e
+# REMOVE DANGLING SYMLINKS FIRST.
+#
+# nginx's sites-enabled glob picks up broken links and refuses to start:
+#   open() ".../nginx-exchange.blockle.org.conf" failed (2: No such file)
+# A failed RELOAD is survivable (the old config keeps serving), but the next
+# genuine START — a reboot — takes every site on the box down. Earlier runs of
+# this very script left one behind by installing a vhost that was later
+# renamed, so this cleanup is not hypothetical.
+for f in /etc/nginx/sites-enabled/*; do
+	if [ -L "$f" ] && [ ! -e "$f" ]; then
+		echo "   removing dangling symlink: $(basename "$f")"
+		rm -f "$f"
+	fi
+done
+
 install -m644 /opt/blockle/deploy/exchange/nginx-admin.blockle.org.conf /etc/nginx/sites-available/
 install -m644 /opt/blockle/deploy/exchange/nginx-blockle.org.conf       /etc/nginx/sites-available/
 ln -sf /etc/nginx/sites-available/nginx-admin.blockle.org.conf /etc/nginx/sites-enabled/
