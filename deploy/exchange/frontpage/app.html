@@ -144,6 +144,31 @@
           <table><tbody id="bals"></tbody></table>
           <p class="note" id="balnote"></p>
         </div>
+        <div class="panel">
+          <h2>Withdraw</h2>
+          <div class="msg hidden" id="wderr"></div>
+          <div class="pad stack">
+            <div><label for="wasset">Asset</label><select id="wasset"></select></div>
+            <div>
+              <label for="wnet">Network</label>
+              <select id="wnet"></select>
+            </div>
+            <div><label for="wamount">Amount</label><input id="wamount" inputmode="decimal" placeholder="0"></div>
+            <div><label for="waddr">Destination address</label><input id="waddr" placeholder="address on the chosen network"></div>
+            <div class="kv"><span>Available on this network</span><span id="wavail">—</span></div>
+            <button id="dowd">Request withdrawal</button>
+          </div>
+          <p class="note">
+            A stablecoin on two chains is two different tokens, so the network
+            you pick decides which inventory pays you. Chains without liquidity
+            are shown as unavailable here rather than failing after you commit.
+          </p>
+        </div>
+        <div class="panel">
+          <h2>Pending withdrawals</h2>
+          <table><tbody id="wdlist"></tbody></table>
+          <p class="note" id="wdnote"></p>
+        </div>
         <div class="panel" id="faucetpanel">
           <h2>Testnet funding</h2>
           <div class="pad stack">
@@ -406,11 +431,14 @@ async function refresh() {
       row(t, [b.asset, b.available]);
     }
     $("balnote").textContent = nonzero.length ? "" : "No balances yet — use testnet funding.";
-    const sel = $("fasset");
-    if (sel.options.length === 0) {
-      for (const b of bals) {
-        const o = document.createElement("option");
-        o.value = b.asset; o.textContent = b.asset; sel.appendChild(o);
+    for (const id of ["fasset", "wasset"]) {
+      const sel = $(id);
+      if (sel.options.length === 0) {
+        for (const b of bals) {
+          const o = document.createElement("option");
+          o.value = b.asset; o.textContent = b.asset; sel.appendChild(o);
+        }
+        if (id === "wasset") await loadWithdrawOptions();
       }
     }
   } catch (e) { $("balnote").textContent = "Balances unavailable: " + e.message; }
@@ -449,6 +477,15 @@ async function refresh() {
   } catch (e) { $("ordnote").textContent = "Orders unavailable: " + e.message; }
 
   try {
+    const ws = await api("/v1/withdrawals");
+    const t = $("wdlist"); t.innerHTML = "";
+    for (const w of ws.slice(0, 8)) {
+      row(t, [w.amount + " " + w.asset, w.network || w.asset, w.state]);
+    }
+    $("wdnote").textContent = ws.length ? "" : "None in progress.";
+  } catch (e) { $("wdnote").textContent = "Unavailable: " + e.message; }
+
+  try {
     const tr = await api("/public/trades/" + MKT.symbol);
     const t = $("tape"); t.innerHTML = "";
     for (const x of tr.slice(0, 12)) {
@@ -459,6 +496,66 @@ async function refresh() {
     $("lastpx").textContent = last ? "last " + last.price : "";
   } catch (e) { $("tapenote").textContent = "Tape unavailable: " + e.message; }
 }
+
+// ---- withdrawals --------------------------------------------------------
+let WOPTS = null;
+
+async function loadWithdrawOptions() {
+  const asset = $("wasset").value;
+  if (!asset) return;
+  try {
+    WOPTS = await api("/v1/withdrawal-options?asset=" + encodeURIComponent(asset));
+    const sel = $("wnet");
+    sel.innerHTML = "";
+    for (const n of WOPTS.networks) {
+      const o = document.createElement("option");
+      o.value = n.network;
+      // The option text carries the availability, so the constraint is visible
+      // at the moment of choosing rather than after submitting.
+      o.textContent = n.label + (n.open ? "  (" + n.available + " available)" : "  — unavailable");
+      o.disabled = !n.open;
+      sel.appendChild(o);
+    }
+    // Default to the first chain that can actually pay.
+    const firstOpen = WOPTS.networks.find((n) => n.open);
+    if (firstOpen) sel.value = firstOpen.network;
+    showAvail();
+  } catch (e) { $("wavail").textContent = "unavailable"; }
+}
+function showAvail() {
+  if (!WOPTS) return;
+  const n = WOPTS.networks.find((x) => x.network === $("wnet").value);
+  $("wavail").textContent = n
+    ? (n.open ? n.available + " " + WOPTS.asset : (n.note || "unavailable"))
+    : "—";
+}
+$("wasset").onchange = loadWithdrawOptions;
+$("wnet").onchange = showAvail;
+
+$("dowd").onclick = async () => {
+  hide($("wderr"));
+  $("dowd").disabled = true;
+  try {
+    const r = await api("/v1/withdrawals", {
+      method: "POST",
+      data: {
+        asset: $("wasset").value,
+        network: $("wnet").value,
+        amount: $("wamount").value.trim(),
+        address: $("waddr").value.trim(),
+        // A per-click id, so a double-click is ONE withdrawal rather than two.
+        requestId: "w" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+      },
+    });
+    show($("wderr"),
+      "Requested: " + r.amount + " " + r.asset + " over " + (r.network || r.asset) + ".",
+      true);
+    $("wamount").value = "";
+    await loadWithdrawOptions();
+    await refresh();
+  } catch (e) { show($("wderr"), e.message, false); }
+  finally { $("dowd").disabled = false; }
+};
 
 async function boot() {
   try {

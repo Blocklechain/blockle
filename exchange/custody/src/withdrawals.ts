@@ -58,6 +58,7 @@
 
 import type { Database } from "better-sqlite3";
 
+import { assetDef } from "./assets";
 import {
 	AccountKind,
 	InsufficientFunds,
@@ -214,6 +215,8 @@ export interface Withdrawal {
 	readonly id: number;
 	readonly userId: string;
 	readonly asset: string;
+	/** The chain it is routed over; undefined for single-chain assets. */
+	readonly network: string | undefined;
 	readonly amount: bigint;
 	readonly address: string;
 	readonly state: State;
@@ -232,6 +235,11 @@ CREATE TABLE IF NOT EXISTS withdrawal (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id        TEXT    NOT NULL,
   asset          TEXT    NOT NULL,
+  -- WHICH CHAIN this withdrawal is routed over, e.g. 'TRC20'. NULL for
+  -- single-chain assets. Without this column the liquidity view cannot tell
+  -- how much of each chain's inventory is already spoken for, and would
+  -- over-report availability — promising the same units to two customers.
+  network        TEXT,
   -- base units as TEXT; see ledger.ts on SQLite's 64-bit INTEGER limit
   amount         TEXT    NOT NULL,
   address        TEXT    NOT NULL,
@@ -283,6 +291,7 @@ interface Row {
 	id: number;
 	user_id: string;
 	asset: string;
+	network: string | null;
 	amount: string;
 	address: string;
 	state: string;
@@ -385,10 +394,27 @@ export class Withdrawals {
 	request(args: {
 		userId: string;
 		asset: string;
+		/**
+		 * The chain to pay over. REQUIRED for multi-network assets, refused
+		 * for single-chain ones.
+		 *
+		 * This is not a preference. USDT on Tron and USDT on Ethereum are
+		 * different tokens and are paid from different inventories, so a
+		 * withdrawal that does not name a chain is not a withdrawal anyone can
+		 * execute. See assets.ts.
+		 */
+		network?: string;
 		amount: bigint;
 		address: string;
 		/** Derived from the customer's request, so a double-submit is one row. */
 		idempotencyKey: string;
+		/**
+		 * Liquidity gate, injected. Returns a refusal reason when this chain
+		 * cannot pay the amount right now. Omitted in tests that are not about
+		 * liquidity.
+		 */
+		checkLiquidity?: (asset: string, network: string | undefined, amount: bigint) =>
+			{ ok: true } | { ok: false; reason: string };
 	}): Withdrawal {
 		const run = this.db.transaction((): Withdrawal => {
 			const existing = this.byIdempotencyKey(args.idempotencyKey);
@@ -411,6 +437,37 @@ export class Withdrawals {
 				throw new WithdrawalError(
 					`${args.amount} exceeds the ${args.asset} per-request limit of ${max}`,
 				);
+			}
+
+			// THE CHAIN MUST BE NAMED WHEN THERE IS A CHOICE, and must not be
+			// when there is not. Accepting an unqualified multi-network
+			// withdrawal would leave the payer guessing which inventory to
+			// draw from; accepting a qualified single-chain one invents a
+			// route that does not exist.
+			const def = assetDef(args.asset);
+			if (def.networks.length > 0) {
+				if (args.network === undefined) {
+					throw new WithdrawalError(
+						`${args.asset} exists on ${def.networks.length} chains — choose one: ` +
+							def.networks.map((n) => n.id).join(", "),
+					);
+				}
+				if (!def.networks.some((n) => n.id === args.network)) {
+					throw new WithdrawalError(
+						`${args.asset} is not available on ${args.network} — choose one of: ` +
+							def.networks.map((n) => n.id).join(", "),
+					);
+				}
+			} else if (args.network !== undefined) {
+				throw new WithdrawalError(`${args.asset} is single-chain; do not name a network`);
+			}
+
+			// LIQUIDITY, before the debit. Telling a customer afterwards that
+			// the chain they chose cannot pay is the failure this whole model
+			// exists to avoid.
+			if (args.checkLiquidity !== undefined) {
+				const liq = args.checkLiquidity(args.asset, args.network, args.amount);
+				if (!liq.ok) throw new WithdrawalError(liq.reason);
 			}
 
 			if (
@@ -439,13 +496,14 @@ export class Withdrawals {
 			const info = this.db
 				.prepare(
 					`INSERT INTO withdrawal
-					   (user_id, asset, amount, address, state, request_tx_id,
+					   (user_id, asset, network, amount, address, state, request_tx_id,
 					    idempotency_key, created_at, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					args.userId,
 					args.asset,
+					args.network ?? null,
 					args.amount.toString(),
 					args.address,
 					State.REQUESTED,
@@ -834,6 +892,7 @@ function hydrate(r: Row): Withdrawal {
 		id: r.id,
 		userId: r.user_id,
 		asset: r.asset,
+		network: r.network ?? undefined,
 		amount: BigInt(r.amount),
 		address: r.address,
 		state: r.state as State,

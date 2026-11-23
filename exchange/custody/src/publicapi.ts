@@ -44,6 +44,9 @@ import Database from "better-sqlite3";
 import { format, parse } from "./amount";
 import { ASSETS, assetDef } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, quoteFor } from "./venue";
+import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
+import { canPay } from "./liquidity";
+import { pinAndVerify } from "./ipv4";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { Ledger } from "./ledger";
 import {
@@ -125,9 +128,25 @@ function commitmentsFrom(db: Database.Database): CommitmentSource {
 					const id = r.network === null ? symbol : `${symbol}.${r.network}`;
 					out.set(id, (out.get(id) ?? 0n) + BigInt(r.amount));
 				}
-			} catch {
-				// No withdrawal table yet, or no `network` column yet. Nothing
-				// is in flight, so nothing is committed.
+			} catch (e) {
+				// DISTINGUISH "no table yet" FROM "the query is broken".
+				//
+				// The previous version swallowed everything, and that hid a real
+				// bug: the withdrawal table had no `network` column, so this threw
+				// "no such column" on every call and silently reported ZERO
+				// committed units. Liquidity then OVER-REPORTED availability — the
+				// exact promising-the-same-coins-twice failure this design exists
+				// to prevent, masked by a catch-all.
+				//
+				// An absent table is legitimate on a fresh install. Anything else
+				// is a bug and must be loud.
+				const msg = e instanceof Error ? e.message : String(e);
+				if (!/no such table/i.test(msg)) {
+					console.error(
+						`committedByNetwork(${symbol}) FAILED: ${msg} — liquidity is ` +
+							`OVER-REPORTING availability until this is fixed.`,
+					);
+				}
 			}
 			return out;
 		},
@@ -240,6 +259,8 @@ async function venueRoute(
 	url: URL,
 	venue: Venue,
 	ledger: Ledger,
+	wd: Withdrawals,
+	liquidityOf: (symbol: string) => ReturnType<typeof assetLiquidity>,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 	const bearer = (req.headers.authorization ?? "").startsWith("Bearer ")
@@ -341,6 +362,82 @@ async function venueRoute(
 			return;
 		}
 
+		// ---- withdrawals --------------------------------------------------
+		//
+		// GET returns the NETWORK CHOICES WITH LIVE AVAILABILITY, because the
+		// honest moment to tell someone a chain cannot pay them is before they
+		// pick it, not after they commit.
+		if (p === "/withdrawal-options" && req.method === "GET") {
+			me();
+			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
+			const def = assetDef(asset);
+			const liq = liquidityOf(asset);
+			json(res, 200, {
+				asset,
+				decimals: def.decimals,
+				networks: liq.networks.map((n) => ({
+					network: n.network,
+					label: n.label,
+					available: fmt(n.available, def.decimals),
+					open: n.open,
+					...(n.closedReason !== undefined ? { note: n.closedReason } : {}),
+				})),
+				maxSingleWithdrawal: fmt(liq.maxSingleWithdrawal, def.decimals),
+			}, 0);
+			return;
+		}
+
+		if (p === "/withdrawals" && req.method === "POST") {
+			const who = me();
+			const b = await body(req);
+			const asset = str(b, "asset").toUpperCase();
+			const def = assetDef(asset);
+			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
+			const network = typeof b.network === "string" && b.network !== ""
+				? b.network
+				: undefined;
+
+			const w = wd.request({
+				userId: who,
+				asset,
+				...(network !== undefined ? { network } : {}),
+				amount,
+				address: str(b, "address"),
+				// Keyed on the customer's own request so a double-click is one
+				// withdrawal rather than two.
+				idempotencyKey: str(b, "requestId"),
+				// THE LIQUIDITY GATE. Checked before the debit, so a chain that
+				// cannot pay refuses up front instead of stranding funds in
+				// INFLIGHT while someone works out why.
+				checkLiquidity: (a, net, amt) => {
+					const r = canPay(liquidityOf(a), net ?? a, amt);
+					return r.ok ? { ok: true } : { ok: false, reason: r.reason };
+				},
+			});
+			json(res, 200, {
+				id: w.id,
+				state: w.state,
+				asset: w.asset,
+				network: w.network ?? null,
+				amount: fmt(w.amount, def.decimals),
+				address: w.address,
+			}, 0);
+			return;
+		}
+
+		if (p === "/withdrawals" && req.method === "GET") {
+			const who = me();
+			json(res, 200, wd.pending()
+				.filter((w) => w.userId === who)
+				.map((w) => ({
+					id: w.id, asset: w.asset, network: w.network ?? null,
+					amount: fmt(w.amount, assetDef(w.asset).decimals),
+					address: w.address, state: w.state,
+					reason: w.reason ?? null, createdAt: w.createdAt,
+				})), 0);
+			return;
+		}
+
 		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
 		if (cancel !== null && req.method === "POST") {
 			const who = me();
@@ -413,6 +510,32 @@ export function start(): void {
 		mainnetEnabled: gate().mainnetEnabled,
 	});
 
+	// WITHDRAWAL POLICY. Every asset listed here needs BOTH a per-request
+	// ceiling and a 24h velocity cap, and anything absent is UNWITHDRAWABLE —
+	// with no human in the loop, a missing config entry must not mean
+	// "unlimited". Testnet figures; tighten before mainnet.
+	const wdPolicy: WdPolicy = {
+		autoApprove: true,
+		approvalThreshold: {},
+		maxPerRequest: {
+			BTC: 10n ** 9n, ETH: 100n * 10n ** 18n, USDT: 100_000n * 10n ** 6n,
+			USDC: 100_000n * 10n ** 6n, SOL: 10_000n * 10n ** 9n,
+			DOGE: 10_000_000n * 10n ** 8n, BLOCK: 10_000n * 10n ** 8n,
+			PERBUG: 10_000n * 10n ** 8n,
+		},
+		velocityCap24h: {
+			BTC: 5n * 10n ** 9n, ETH: 500n * 10n ** 18n, USDT: 500_000n * 10n ** 6n,
+			USDC: 500_000n * 10n ** 6n, SOL: 50_000n * 10n ** 9n,
+			DOGE: 50_000_000n * 10n ** 8n, BLOCK: 50_000n * 10n ** 8n,
+			PERBUG: 50_000n * 10n ** 8n,
+		},
+		requireAllowlistedAddress: false,
+	};
+	const wd = new Withdrawals(wdb, wledger, wdPolicy);
+	const wdCommitments = commitmentsFrom(wdb);
+	const liquidityOf = (symbol: string) =>
+		assetLiquidity(wledger, symbol, wdCommitments, haltsFrom());
+
 	const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 		void (async () => {
 			try {
@@ -422,7 +545,7 @@ export function start(): void {
 				// Everything under /public stays GET-only, so the split is
 				// visible in the URL rather than buried in a handler.
 				if (url.pathname.startsWith("/v1/")) {
-					await venueRoute(req, res, url, venue, wledger);
+					await venueRoute(req, res, url, venue, wledger, wd, liquidityOf);
 					return;
 				}
 
@@ -584,6 +707,16 @@ export function start(): void {
 				json(res, 500, { error: e instanceof Error ? e.message : String(e) });
 			}
 		})();
+	});
+
+	// IPv4 ONLY. The BitGo token is whitelisted to this host's IPv4 address and
+	// the box also has IPv6, so an unpinned request can leave over v6 and come
+	// back as a 401 that reads exactly like a bad token. Verified by opening a
+	// real socket, not just by setting a flag.
+	void pinAndVerify("app.bitgo-test.com").catch((e: unknown) => {
+		console.error(
+			`IPv4 pin check failed: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	});
 
 	server.listen(PORT, HOST, () => {

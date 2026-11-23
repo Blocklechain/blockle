@@ -180,6 +180,14 @@ export class Venue {
 		db.exec(SCHEMA);
 	}
 
+	/** The venue's own connection — withdrawals must share it, not open another. */
+	get database(): Database {
+		return this.db;
+	}
+	get book_ledger(): Ledger {
+		return this.ledger;
+	}
+
 	private now(): string {
 		return new Date(this.opts.now?.() ?? Date.now()).toISOString();
 	}
