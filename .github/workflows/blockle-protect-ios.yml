@@ -138,6 +138,49 @@ jobs:
             -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
           ls -lh build/ipa/*.ipa
 
+          # ---- RE-SIGN WITH THE ENTITLEMENTS THE PROFILE ALREADY GRANTS -----
+          #
+          # The archive is unsigned (it has to be — see above), so export
+          # re-signs from scratch and the app ends up claiming NOTHING from
+          # BlockleProtect.entitlements. The profile Apple issues is not the
+          # problem: run 45115725262 decoded it and it grants
+          # application-groups, icloud-container-identifiers and
+          # icloud-services. The app simply never asked for them.
+          #
+          # So ask. Re-signing with --entitlements is safe precisely because
+          # the profile permits every key in those files — a claim the profile
+          # did NOT allow would be rejected at install, which is the failure
+          # this would otherwise hide.
+          #
+          # NESTED CODE FIRST, OUTER BUNDLE LAST: signing the .app re-seals it
+          # over its PlugIns, so an extension signed afterwards invalidates the
+          # seal and the app will not launch.
+          IPA="$(ls build/ipa/*.ipa | head -1)"
+          ID="$(security find-identity -v -p codesigning \
+                 | grep -m1 'Apple Distribution' | awk -F'"' '{print $2}')"
+          if [ -z "$ID" ]; then
+            echo "::error::no Apple Distribution identity in the keychain after export"
+            security find-identity -v -p codesigning || true
+            exit 1
+          fi
+          echo "re-signing with: $ID"
+          rm -rf build/resign && mkdir -p build/resign
+          unzip -q "$IPA" -d build/resign
+          APP="$(ls -d build/resign/Payload/*.app | head -1)"
+          # Only ShieldCustom needs the group; the static blockers are left
+          # exactly as export signed them.
+          EXT="$APP/PlugIns/ShieldCustom.appex"
+          if [ -e "$EXT" ]; then
+            codesign -f -s "$ID" --timestamp \
+              --entitlements ShieldCustom.entitlements "$EXT"
+          fi
+          codesign -f -s "$ID" --timestamp \
+            --entitlements BlockleProtect.entitlements "$APP"
+          codesign --verify --deep --strict "$APP"
+          rm -f "$IPA"
+          ( cd build/resign && zip -qry "../ipa/$(basename "$IPA")" Payload )
+          ls -lh build/ipa/*.ipa
+
       - name: Verify the App Group reached BOTH signed binaries
         working-directory: blockle-protect/ios
         run: |
