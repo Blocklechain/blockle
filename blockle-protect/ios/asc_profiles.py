@@ -67,8 +67,18 @@ BUNDLES = [
 ]
 
 PROFILE_TYPE = "IOS_APP_STORE"
-# Apple's name for a distribution certificate in the profiles API.
-CERT_TYPES = ("DISTRIBUTION", "IOS_DISTRIBUTION")
+# ANY certificate whose type mentions distribution.
+#
+# NOT a fixed tuple. The first version of this script filtered on exactly
+# ("DISTRIBUTION", "IOS_DISTRIBUTION") and reported "distribution certificates
+# visible: 0" — which it then declared meant the account had none. That was
+# almost certainly the filter's fault, not the account's: Xcode's cloud signing
+# issues a certificate of type DISTRIBUTION_MANAGED, and builds signed with it
+# have been uploading to TestFlight from this very workflow. Matching on the
+# substring takes whatever Apple actually calls it, and every type is printed
+# below so the answer is visible rather than inferred.
+def is_distribution(cert_type: str) -> bool:
+    return "DISTRIBUTION" in (cert_type or "").upper()
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -149,18 +159,24 @@ def main() -> int:
     print("authenticated against App Store Connect")
 
     # ---- what the key can see -------------------------------------------
-    certs = [c for c in paged(tok, "/certificates?limit=200")
-             if c["attributes"].get("certificateType") in CERT_TYPES]
-    print(f"distribution certificates visible: {len(certs)}")
-    for c in certs:
+    all_certs = paged(tok, "/certificates?limit=200")
+    # EVERY certificate, with its type, before any filtering. A count of zero
+    # after a filter says nothing about the account until the unfiltered list
+    # is on screen too.
+    print(f"certificates the key can see: {len(all_certs)}")
+    for c in all_certs:
         a = c["attributes"]
-        print(f"  {a.get('certificateType'):18} {a.get('name')}  "
-              f"expires {a.get('expirationDate', '?')[:10]}")
+        print(f"  {str(a.get('certificateType')):24} {a.get('name')}  "
+              f"expires {str(a.get('expirationDate'))[:10]}")
+    certs = [c for c in all_certs
+             if is_distribution(c["attributes"].get("certificateType", ""))]
+    print(f"...of which distribution-capable: {len(certs)}")
     if not certs:
-        die("no distribution certificate in the account — cloud signing has "
-            "nothing to build a profile around. Create one in Xcode "
-            "(Settings -> Accounts -> Manage Certificates -> +) or in the "
-            "Developer portal, then re-run.")
+        die("the key can see no distribution certificate. If the list above is "
+            "EMPTY the account has none — create one in Xcode (Settings -> "
+            "Accounts -> Manage Certificates -> +). If the list above has "
+            "entries, their type strings are printed and this filter needs to "
+            "accept one of them.")
 
     bundles = {b["attributes"]["identifier"]: b["id"]
                for b in paged(tok, "/bundleIds?limit=200")}
