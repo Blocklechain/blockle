@@ -148,34 +148,40 @@ jobs:
           #                            its own, so the runner reports "0 valid
           #                            identities found" (run 45117853957).
           #
-          # Ad-hoc signing ("-") needs no certificate, no private key and no
-          # provisioning profile, so none of the above applies — but it IS
-          # signing, so Xcode processes CODE_SIGN_ENTITLEMENTS and the
-          # entitlements end up embedded in the binary. Export then re-signs
-          # with the real distribution identity via cloud signing and carries
-          # those entitlements across, which is the one thing it cannot do from
-          # an unsigned archive.
+          #   ad-hoc via build settings  CODE_SIGN_STYLE=Manual archives fine and
+          #                            DOES embed the entitlements, but the style
+          #                            is recorded in the archive and export then
+          #                            tries to sign manually too, losing the
+          #                            cloud provisioning that had been working:
+          #                            "No profiles for 'org.blockle.protect'
+          #                            were found" (run 45119756967).
           #
-          # CODE_SIGNING_REQUIRED=NO is what permits an ad-hoc signature on iOS;
-          # CODE_SIGNING_ALLOWED stays YES, because NO is what skipped the
-          # entitlements in the first place.
+          # So the archive stays unsigned and is ad-hoc signed AFTERWARDS, below.
+          # Ad-hoc is the one identity that needs no certificate, no private key
+          # and no provisioning profile, and `codesign -s -` applies it without
+          # touching any build setting — so the project's signing style stays
+          # Automatic and export keeps behaving exactly as it already does.
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
             CURRENT_PROJECT_VERSION="$BN" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="-" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=NO \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+          # ---- PUT THE ENTITLEMENTS INTO THE ARCHIVE ------------------------
+          # NESTED CODE FIRST, OUTER BUNDLE LAST: signing the .app re-seals it
+          # over its PlugIns, so an extension signed afterwards breaks the seal.
+          ARCH_APP="build/App.xcarchive/Products/Applications/BlockleProtect.app"
+          EXT="$ARCH_APP/PlugIns/ShieldCustom.appex"
+          if [ -e "$EXT" ]; then
+            codesign -f -s - --entitlements ShieldCustom.entitlements "$EXT"
+          fi
+          codesign -f -s - --entitlements BlockleProtect.entitlements "$ARCH_APP"
 
           # FAIL HERE, NOT AFTER UPLOAD. Export cannot add an entitlement the
           # archive does not have, so if the App Group is missing at this point
           # every later step is building a broken binary. Checking the archive
           # separates "the entitlements never got in" from "export dropped them".
           GROUP="group.org.blockle.protect"
-          ARCH_APP="build/App.xcarchive/Products/Applications/BlockleProtect.app"
-          for t in "$ARCH_APP" "$ARCH_APP/PlugIns/ShieldCustom.appex"; do
+          for t in "$ARCH_APP" "$EXT"; do
             [ -e "$t" ] || { echo "::error::not in the archive: $t"; exit 1; }
             if codesign -d --entitlements :- "$t" 2>/dev/null | grep -q "$GROUP"; then
               echo "archive OK: $(basename "$t") carries $GROUP"
