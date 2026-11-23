@@ -156,17 +156,35 @@ jobs:
           # over its PlugIns, so an extension signed afterwards invalidates the
           # seal and the app will not launch.
           IPA="$(ls build/ipa/*.ipa | head -1)"
-          ID="$(security find-identity -v -p codesigning \
-                 | grep -m1 'Apple Distribution' | awk -F'"' '{print $2}')"
-          if [ -z "$ID" ]; then
-            echo "::error::no Apple Distribution identity in the keychain after export"
-            security find-identity -v -p codesigning || true
-            exit 1
-          fi
-          echo "re-signing with: $ID"
           rm -rf build/resign && mkdir -p build/resign
           unzip -q "$IPA" -d build/resign
           APP="$(ls -d build/resign/Payload/*.app | head -1)"
+
+          # TAKE THE IDENTITY FROM THE SIGNATURE EXPORT JUST APPLIED.
+          #
+          # Cloud signing picks the certificate itself and makes no promise
+          # about its name, so matching one by `grep 'Apple Distribution'`
+          # guesses at something we can simply read: the app in front of us is
+          # already signed, correctly, by whatever Xcode chose. Its leaf
+          # Authority IS that identity, and it is in the keychain by
+          # construction because it was just used.
+          #
+          # Note the `|| true`. A failing pipeline inside a `VAR="$(...)"`
+          # assignment makes the ASSIGNMENT return non-zero, so under
+          # `set -eo pipefail` the script dies there and any `if [ -z "$ID" ]`
+          # check below it never runs. That cost run 45116608743, which
+          # archived and exported a perfectly good IPA and then exited 1
+          # without printing a single line about why.
+          echo "codesigning identities available:"
+          security find-identity -v -p codesigning || true
+          ID="$(codesign -d --verbose=4 "$APP" 2>&1 \
+                 | awk -F'Authority=' '/^Authority=/{print $2; exit}')" || true
+          if [ -z "$ID" ]; then
+            echo "::error::could not read the signing identity off the exported app"
+            codesign -d --verbose=4 "$APP" 2>&1 | head -20 || true
+            exit 1
+          fi
+          echo "re-signing with: $ID"
           # Only ShieldCustom needs the group; the static blockers are left
           # exactly as export signed them.
           EXT="$APP/PlugIns/ShieldCustom.appex"
