@@ -193,10 +193,37 @@ jobs:
             fi
           done
 
-          xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
+          # WHEN EXPORT FAILS, READ WHAT XCODE WROTE DOWN.
+          #
+          # `exportArchive` prints two lines — "Authentication failed" and "No
+          # profiles for 'org.blockle.protect' were found" — and neither says
+          # which capability it could not provision. It also writes a full log
+          # bundle and tells you the path, which every run so far has discarded.
+          #
+          # This matters because the obvious reading of those two lines is wrong:
+          # the ASC key is NOT broken. It has uploaded builds successfully on
+          # every run up to 44927460372. What changed is that the app now ASKS
+          # for the App Group and the iCloud container, so export has to find a
+          # profile that grants them instead of one that grants nothing.
+          if ! xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
+            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS" \
+            2>&1 | tee build/export.log; then
+            echo "::group::what Xcode actually tried (xcdistributionlogs)"
+            for d in $(ls -dt "${TMPDIR:-/tmp}"/BlockleProtect_*.xcdistributionlogs \
+                              /var/folders/*/*/T/BlockleProtect_*.xcdistributionlogs \
+                              2>/dev/null | head -2); do
+              echo "=== $d"
+              for f in "$d"/*; do
+                echo "--- $(basename "$f")"
+                tail -150 "$f" 2>/dev/null || true
+              done
+            done
+            echo "::endgroup::"
+            echo "::error::export failed — see the xcdistributionlogs group above."
+            exit 1
+          fi
           ls -lh build/ipa/*.ipa
 
       - name: Verify the App Group reached BOTH signed binaries
