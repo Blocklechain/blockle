@@ -97,6 +97,31 @@ jobs:
             -destination "platform=iOS Simulator,name=$SIM,OS=latest" \
             CODE_SIGNING_ALLOWED=NO | tail -80
 
+      - name: Ensure App Store profiles exist (ASC API)
+        working-directory: blockle-protect/ios
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -eo pipefail
+          # ASK THE API INSTEAD OF HOPING -allowProvisioningUpdates WILL.
+          #
+          # Export fails with "Authentication failed" + "No profiles ... were
+          # found" while the log underneath says `status code: 200` and
+          # `"errors": []`. The key authenticates; the PROFILE LIST comes back
+          # empty, and Xcode reports empty as an auth failure.
+          #
+          # asc_profiles.py lists what the key can see, creates any missing
+          # IOS_APP_STORE profile, and installs the .mobileprovision where
+          # xcodebuild looks. All three outcomes are progress — including a 403,
+          # which finally answers whether this key has the Admin / App Manager
+          # role rather than leaving it to inference.
+          python3 -m pip install --quiet --disable-pip-version-check \
+            'pyjwt[crypto]'
+          python3 asc_profiles.py --out profiles.json
+          echo "--- profiles.json ---"
+          cat profiles.json
+
       - name: Archive + export IPA (cloud-signed)
         working-directory: blockle-protect/ios
         env:
@@ -231,8 +256,16 @@ jobs:
           # Until one of those happens this step fails here, deliberately, which
           # means no new TestFlight build. That is the intended trade: the builds
           # it replaced all shipped with My List unable to read its own rules.
+          # EXPORT OPTIONS ARE GENERATED, not checked in: the profile names
+          # come from the step above, and a plist naming profiles that were
+          # never installed fails later and less clearly than automatic
+          # signing does.
+          python3 gen_export_options.py profiles.json \
+            ExportOptions.generated.plist
+          cat ExportOptions.generated.plist
+
           if ! xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
-            -exportOptionsPlist ExportOptions.plist \
+            -exportOptionsPlist ExportOptions.generated.plist \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS" \
             2>&1 | tee build/export.log; then
