@@ -172,11 +172,28 @@ def main() -> int:
              if is_distribution(c["attributes"].get("certificateType", ""))]
     print(f"...of which distribution-capable: {len(certs)}")
     if not certs:
-        die("the key can see no distribution certificate. If the list above is "
-            "EMPTY the account has none — create one in Xcode (Settings -> "
-            "Accounts -> Manage Certificates -> +). If the list above has "
-            "entries, their type strings are printed and this filter needs to "
-            "accept one of them.")
+        print("::error::THE ACCOUNT HAS NO DISTRIBUTION CERTIFICATE. That is "
+              "the root of this whole failure, and nothing in CI can fix it.")
+        print("  Measured (run 45132373653): three certificates exist and all "
+              "three are DEVELOPMENT, every one of them named")
+        print("  \"Apple Development: Created via API\" — i.e. created by "
+              "these runs, by -allowProvisioningUpdates, which is why it kept")
+        print("  resolving `archive` to a DEVELOPMENT profile from the very "
+              "first attempt. Development certs were all it could get.")
+        print("  Without a distribution certificate no App Store profile can "
+              "exist, so the profile list is empty, and Xcode reports an empty")
+        print("  list as \"Authentication failed\".")
+        print("  FIX, one of:")
+        print("   * Xcode -> Settings -> Accounts -> (team) -> Manage "
+              "Certificates -> + -> Apple Distribution; or")
+        print("   * Developer portal -> Certificates -> + -> Apple "
+              "Distribution; or")
+        print("   * let this script create one with --create-certificate, "
+              "which generates a CSR and posts it. NOT the default: a")
+        print("     certificate is a signing identity and Apple caps how many "
+              "an account may hold, so spending a slot is the account")
+        print("     owner's call, not CI's.")
+        sys.exit(1)
 
     bundles = {b["attributes"]["identifier"]: b["id"]
                for b in paged(tok, "/bundleIds?limit=200")}
