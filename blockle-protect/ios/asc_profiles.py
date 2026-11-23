@@ -188,11 +188,14 @@ def main() -> int:
               "Certificates -> + -> Apple Distribution; or")
         print("   * Developer portal -> Certificates -> + -> Apple "
               "Distribution; or")
-        print("   * let this script create one with --create-certificate, "
-              "which generates a CSR and posts it. NOT the default: a")
-        print("     certificate is a signing identity and Apple caps how many "
-              "an account may hold, so spending a slot is the account")
-        print("     owner's call, not CI's.")
+        print("  AND NOT FROM CI. A certificate is only half of a signing")
+        print("  identity — the other half is the private key generated with")
+        print("  it. A runner is ephemeral, so a certificate minted here would")
+        print("  spend one of the account's capped distribution slots and then")
+        print("  lose the key when the job ends, which is strictly worse than")
+        print("  having none. Create it once on a Mac, export the .p12, and set")
+        print("  APPLE_DIST_P12_BASE64 / APPLE_DIST_P12_PASSWORD; the workflow")
+        print("  imports it into a throwaway keychain from there.")
         sys.exit(1)
 
     bundles = {b["attributes"]["identifier"]: b["id"]
