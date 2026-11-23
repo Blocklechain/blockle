@@ -1,0 +1,321 @@
+<title>Blockle Exchange — Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<style>
+  /* Blockle: deep space ground, cyan signal accent, amber for "your turn".
+     Single-theme on purpose — this is an operator console that lives on a dark
+     terminal-adjacent surface, not a document anyone reads in daylight. */
+  :root {
+    --ground:   #090d14;
+    --panel:    #111722;
+    --panel-2:  #161d2b;
+    --line:     #232c3d;
+    --ink:      #e8edf6;
+    --ink-dim:  #8b97ad;
+    --ink-faint:#5a6578;
+    --signal:   #35d6e8;
+    --you:      #f5a524;
+    --ok:       #3fd68c;
+    --bad:      #ff5c6c;
+    --gate:     #a78bfa;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 20px 80px; }
+
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+  header img { width: 38px; height: 38px; border-radius: 9px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; font-weight: 650; }
+  .sub { color: var(--ink-dim); font-size: 13px; margin: 0; }
+
+  /* The banner is the point of the page: it names the ONE thing the operator
+     must do, and nothing competes with it visually. */
+  .yourturn {
+    margin: 24px 0 8px; padding: 18px 20px; border-radius: 12px;
+    background: linear-gradient(180deg, #221a08, #171205);
+    border: 1px solid #4a3a12; border-left: 3px solid var(--you);
+  }
+  .yourturn h2 { margin: 0 0 6px; font-size: 15px; color: var(--you); }
+  .yourturn p { margin: 0 0 14px; color: #e4d6b6; font-size: 14px; }
+  .drop {
+    border: 1.5px dashed #5c4a1c; border-radius: 10px; padding: 22px;
+    text-align: center; color: var(--ink-dim); font-size: 14px;
+    background: #0f0c04; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--you); background: #171205; color: var(--ink); }
+  .drop strong { color: var(--you); }
+
+  .bar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin: 22px 0 18px; padding: 14px 16px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  }
+  button {
+    font: inherit; font-size: 13px; font-weight: 550; cursor: pointer;
+    padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--ink); transition: all .12s;
+  }
+  button:hover:not(:disabled) { border-color: var(--signal); color: var(--signal); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--signal); color: #04151a; border-color: var(--signal); }
+  button.primary:hover:not(:disabled) { filter: brightness(1.12); color: #04151a; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+
+  .counts { margin-left: auto; display: flex; gap: 14px; font-family: var(--mono); font-size: 12px; }
+  .counts span { color: var(--ink-faint); }
+  .counts b { font-weight: 600; }
+
+  .phase { margin-top: 26px; }
+  .phase > h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--ink-faint); margin: 0 0 10px; font-weight: 600;
+  }
+
+  .step {
+    display: grid; grid-template-columns: 22px 1fr auto; gap: 12px;
+    align-items: start; padding: 13px 16px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel); margin-bottom: 7px;
+  }
+  .step .dot {
+    width: 9px; height: 9px; border-radius: 50%; margin-top: 7px;
+    background: var(--ink-faint); justify-self: center;
+  }
+  .step[data-s="ok"]             .dot { background: var(--ok); }
+  .step[data-s="failed"]         .dot { background: var(--bad); }
+  .step[data-s="blocked_on_you"] .dot { background: var(--you); box-shadow: 0 0 0 4px #f5a52422; }
+  .step[data-s="gate"]           .dot { background: var(--gate); }
+  .step[data-s="running"]        .dot { background: var(--signal); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) { .step[data-s="running"] .dot { animation: none; } }
+
+  .step[data-s="blocked_on_you"] { border-color: #4a3a12; background: #13100a; }
+  .step[data-s="failed"]         { border-color: #4a1f24; background: #140d0f; }
+
+  .t { font-weight: 550; font-size: 14px; }
+  .w { color: var(--ink-faint); font-size: 12.5px; margin-top: 3px; }
+  .d {
+    font-family: var(--mono); font-size: 12px; margin-top: 6px;
+    color: var(--ink-dim); word-break: break-word;
+  }
+  .step[data-s="failed"]         .d { color: #ff9aa5; }
+  .step[data-s="blocked_on_you"] .d { color: var(--you); }
+  .step[data-s="gate"]           .d { color: #c4b5fd; }
+
+  .tag {
+    font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+    letter-spacing: .06em; padding: 3px 7px; border-radius: 5px;
+    border: 1px solid var(--line); color: var(--ink-faint); white-space: nowrap;
+  }
+  .tag.irr { color: var(--bad); border-color: #4a1f24; }
+
+  .gatebox {
+    margin-top: 28px; padding: 16px 18px; border-radius: 12px;
+    background: #140f1f; border: 1px solid #2f2447; border-left: 3px solid var(--gate);
+  }
+  .gatebox h3 { color: var(--gate); margin: 0 0 4px; font-size: 14px; }
+  .gatebox p { margin: 0; color: #c4b5fd; font-size: 13px; }
+
+  footer { margin-top: 40px; color: var(--ink-faint); font-size: 12px; }
+  code { font-family: var(--mono); font-size: 12px; color: var(--signal); }
+</style>
+
+<div class="wrap">
+  <header>
+    <img src="logo.png" alt="">
+    <div>
+      <h1>Blockle Exchange — Setup</h1>
+      <p class="sub">admin.blockle.org · <span id="env">testnet</span> · nothing here can accept real funds</p>
+    </div>
+  </header>
+
+  <div class="yourturn" id="yourturn" hidden>
+    <h2>Your turn — one thing</h2>
+    <p id="yourturn-text"></p>
+    <div class="drop" id="drop">
+      <strong>Drop the TradeXPro 3.2.0 zip here</strong><br>
+      or click to choose · log in to Envato → Downloads → item 39228546
+      <input type="file" id="file" accept=".zip" hidden>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="run">Run everything I can</button>
+    <button id="refresh">Re-check</button>
+    <button class="danger" id="runirr">Run irreversible steps</button>
+    <div class="counts" id="counts"></div>
+  </div>
+
+  <div id="phases"></div>
+
+  <div class="gatebox" id="gatebox" hidden>
+    <h3>Gates — these are not mine to clear</h3>
+    <p>No amount of software satisfies these. They stay open until a human
+       records the answer, and the venue stays on testnet until they do.</p>
+  </div>
+
+  <footer>
+    Steps are idempotent — re-running is safe. Each one is verified after it
+    runs, so a step that claims success without changing anything is reported
+    as failed rather than green.
+  </footer>
+</div>
+
+<script>
+const PHASES = [
+  ["preflight", "Preflight — the host"],
+  ["artifact",  "The build"],
+  ["install",   "Install"],
+  ["harden",    "Harden"],
+  ["custody",   "Custody"],
+  ["gate",      "Legal gates"],
+];
+const LABEL = {
+  ok: "ok", failed: "failed", blocked_on_you: "you", gate: "gate",
+  running: "running", ready: "ready", waiting: "waiting",
+};
+
+let busy = false;
+
+// ALL PATHS ARE RELATIVE. The console is served under /setup/ behind nginx,
+// so an absolute "/api/state" resolves to the Laravel root's /api/state and
+// 404s. Relative paths resolve against the mount point, so the same build
+// works at /setup/ or at /.
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: "same-origin", ...opts });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+function render(data) {
+  const { steps, states, summary, env } = data;
+  document.getElementById("env").textContent = env || "testnet";
+
+  const byId = Object.fromEntries(states.map(s => [s.id, s]));
+  const host = document.getElementById("phases");
+  host.innerHTML = "";
+
+  for (const [phase, title] of PHASES) {
+    const mine = steps.filter(s => s.phase === phase);
+    if (!mine.length) continue;
+    const sec = document.createElement("section");
+    sec.className = "phase";
+    sec.innerHTML = `<h3>${title}</h3>`;
+    for (const step of mine) {
+      const st = byId[step.id] || { status: "waiting", detail: "" };
+      const el = document.createElement("div");
+      el.className = "step";
+      el.dataset.s = st.status;
+      el.innerHTML = `
+        <div class="dot"></div>
+        <div>
+          <div class="t"></div>
+          <div class="w"></div>
+          <div class="d"></div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          ${step.destructive ? '<span class="tag irr">irreversible</span>' : ""}
+          <span class="tag">${LABEL[st.status] || st.status}</span>
+        </div>`;
+      // textContent, not innerHTML — step details carry subprocess output and
+      // provider error strings, which must never be interpreted as markup.
+      el.querySelector(".t").textContent = step.title;
+      el.querySelector(".w").textContent = step.why;
+      el.querySelector(".d").textContent = st.detail || "";
+      sec.appendChild(el);
+    }
+    host.appendChild(sec);
+  }
+
+  const c = document.getElementById("counts");
+  c.innerHTML = "";
+  const parts = [
+    ["ok", summary.ok, "var(--ok)"],
+    ["you", summary.blocked, "var(--you)"],
+    ["failed", summary.failed, "var(--bad)"],
+    ["gates", summary.gates, "var(--gate)"],
+  ];
+  for (const [k, v, col] of parts) {
+    const s = document.createElement("span");
+    s.innerHTML = `${k} <b style="color:${col}">${v}</b>`;
+    c.appendChild(s);
+  }
+
+  // Surface the operator's blocking step, and only the first one — a console
+  // that lists five things you must do is a console you close.
+  const mineNow = states.find(s => s.status === "blocked_on_you");
+  const box = document.getElementById("yourturn");
+  if (mineNow) {
+    const step = steps.find(s => s.id === mineNow.id);
+    document.getElementById("yourturn-text").textContent =
+      `${step.title} — ${mineNow.detail}`;
+    document.getElementById("drop").hidden = mineNow.id !== "tradexpro-archive";
+    box.hidden = false;
+  } else {
+    box.hidden = true;
+  }
+
+  document.getElementById("gatebox").hidden = summary.gates === 0;
+}
+
+async function reload() { render(await api("api/state")); }
+
+async function act(fn) {
+  if (busy) return;
+  busy = true;
+  for (const b of document.querySelectorAll("button")) b.disabled = true;
+  try { await fn(); } catch (e) { alert(String(e.message || e)); }
+  finally {
+    busy = false;
+    for (const b of document.querySelectorAll("button")) b.disabled = false;
+    await reload();
+  }
+}
+
+document.getElementById("run").onclick = () =>
+  act(() => api("api/run-all", { method: "POST" }));
+document.getElementById("refresh").onclick = () => act(reload);
+document.getElementById("runirr").onclick = () => act(async () => {
+  if (!confirm(
+    "Irreversible steps drop the plaintext wallet_key columns and rewrite " +
+    "column precision. On a populated database this cannot be undone. Continue?"
+  )) return;
+  await api("api/run-all?destructive=1", { method: "POST" });
+});
+
+const drop = document.getElementById("drop");
+const file = document.getElementById("file");
+drop.onclick = () => file.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+};
+file.onchange = () => { if (file.files[0]) upload(file.files[0]); };
+
+function upload(f) {
+  act(async () => {
+    drop.textContent = `uploading ${f.name} (${(f.size / 1048576).toFixed(0)} MB)…`;
+    // RAW PUT, not FormData. The TradeXPro archive is a few hundred megabytes;
+    // multipart would make the server buffer and parse the whole thing in
+    // memory for no benefit. A File is a Blob, so this streams.
+    const res = await api("api/archive", {
+      method: "PUT",
+      headers: { "Content-Type": "application/zip" },
+      body: f,
+    });
+    drop.textContent = res.detail || "uploaded";
+  });
+}
+
+reload();
+// Poll while anything is in motion. Cheap: /api/state only probes, never acts.
+setInterval(() => { if (!busy) reload().catch(() => {}); }, 5000);
+</script>

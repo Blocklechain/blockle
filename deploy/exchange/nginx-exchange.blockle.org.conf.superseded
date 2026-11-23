@@ -1,0 +1,127 @@
+# -----------------------------------------------------------------------------
+# exchange.blockle.org — the customer-facing venue (TradeXPro UserPortal, Next.js)
+#
+# Two upstreams behind one host:
+#   /            -> Next.js (the trading UI)
+#   /api/        -> Laravel (orders, balances, auth)
+#   /ws          -> the market-data socket
+#
+# The reason they share a host rather than sitting on separate subdomains is
+# cookies: a session cookie scoped to this exact host cannot be sent anywhere
+# else, which removes a whole class of cross-subdomain session leakage. It also
+# means no CORS preflight on the hot path.
+# -----------------------------------------------------------------------------
+
+# Auth endpoints get their own bucket — credential stuffing against a crypto
+# exchange is constant and automated, not hypothetical.
+limit_req_zone $binary_remote_addr zone=ex_auth:10m   rate=10r/m;
+limit_req_zone $binary_remote_addr zone=ex_api:10m    rate=600r/m;
+limit_req_zone $binary_remote_addr zone=ex_public:10m rate=1200r/m;
+
+upstream exchange_ui  { server 127.0.0.1:3100; keepalive 32; }
+upstream exchange_api { server unix:/run/php/php8.2-fpm-exchange.sock; }
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name exchange.blockle.org;
+    location /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name exchange.blockle.org;
+
+    ssl_certificate     /etc/letsencrypt/live/exchange.blockle.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/exchange.blockle.org/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:ex_ssl:10m;
+    ssl_session_tickets off;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+    # DENY, not SAMEORIGIN: a trading UI must never be framed, because a
+    # clickjacked order form places real orders.
+    add_header X-Frame-Options "DENY" always;
+
+    # CSP is deliberately strict and WILL need widening for whatever the
+    # UserPortal actually loads — widen it against observed violations from
+    # report-only mode, not preemptively. Note `connect-src` must list the
+    # MoonPay origin for the fiat ramp, and nothing else external.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' wss://exchange.blockle.org https://api.moonpay.com; frame-src https://buy.moonpay.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+
+    client_max_body_size 16m;
+
+    # ---- auth: tight bucket -------------------------------------------------
+    location ~ ^/api/(login|register|password|verify-email|two-factor) {
+        limit_req zone=ex_auth burst=5 nodelay;
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+
+    # ---- API ----------------------------------------------------------------
+    location /api/ {
+        limit_req zone=ex_api burst=200 nodelay;
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+
+    # ---- market-data socket -------------------------------------------------
+    location /ws {
+        proxy_pass http://exchange_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        # Long-lived by design; the default 60s would drop an idle order book.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # ---- public market data, for the blockle.org hero widget ----------------
+    #
+    # Read-only and CORS-open ON PURPOSE, and the ONLY thing on this host that
+    # is: the front page is a different origin and needs to read it. Scoped to
+    # one path and one method so opening it cannot reach anything with a
+    # session behind it. Carries no cookies — see the CEX architecture doc §8
+    # on why the widget contains no TradeXPro code.
+    location /api/public/ {
+        limit_req zone=ex_public burst=300 nodelay;
+        add_header Access-Control-Allow-Origin "https://blockle.org" always;
+        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+        add_header Cache-Control "public, max-age=2" always;
+        if ($request_method = OPTIONS) { return 204; }
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+
+    # ---- Next.js build output ----------------------------------------------
+    location /_next/static/ {
+        proxy_pass http://exchange_ui;
+        proxy_set_header Host $host;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # ---- the UI -------------------------------------------------------------
+    location / {
+        proxy_pass http://exchange_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ~ /\. { deny all; return 404; }
+
+    access_log /var/log/nginx/exchange.blockle.org.access.log;
+    error_log  /var/log/nginx/exchange.blockle.org.error.log warn;
+}
