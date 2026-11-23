@@ -106,14 +106,41 @@ jobs:
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
-          # archive UNSIGNED — avoids automatic signing picking an iOS *development*
-          # profile (a fresh team has no registered devices, so that lookup fails).
-          # Distribution signing happens at export, where the ASC API key creates the
-          # device-less App Store cert + profile on demand.
+          # ARCHIVE SIGNED, AUTHENTICATED — and this is load-bearing.
+          #
+          # This used to archive with CODE_SIGNING_ALLOWED=NO and let export do
+          # all the signing, to dodge automatic signing picking an iOS
+          # *development* profile (a device-less team fails that lookup). It
+          # dodged it, and it silently threw away every declared entitlement:
+          # with signing disabled Xcode never processes CODE_SIGN_ENTITLEMENTS,
+          # so the archive carries none, and `-exportArchive` then re-signs from
+          # scratch with only the baseline the profile implies.
+          #
+          # The signed result contained exactly four keys — application-identifier,
+          # beta-reports-active, team-identifier, get-task-allow — and NOTHING
+          # from BlockleProtect.entitlements. So on every TestFlight build to
+          # date: no App Group (My List could not read its own rules) and no
+          # iCloud container (backup reported unavailable, which was "fixed"
+          # once by adding icloud-container-environment — a fix that could not
+          # have taken effect, because the whole file was being dropped).
+          #
+          # Passing the ASC key and -allowProvisioningUpdates HERE lets Xcode
+          # mint the distribution profile at archive time, so entitlements and
+          # profile are resolved together and the entitlements survive.
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
             CURRENT_PROJECT_VERSION="$BN" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
+          # Fail loudly here rather than three steps later: if the archive's own
+          # product lost its entitlements, export cannot put them back.
+          AR_APP="$(ls -d build/App.xcarchive/Products/Applications/*.app | head -1)"
+          if ! codesign -d --entitlements :- "$AR_APP" 2>/dev/null | grep -q "group.org.blockle.protect"; then
+            echo "::error::the ARCHIVE lost its entitlements — export cannot restore them."
+            codesign -d --entitlements :- "$AR_APP" 2>/dev/null | sed -n '1,40p'
+            exit 1
+          fi
+          echo "archive carries its entitlements"
           xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
