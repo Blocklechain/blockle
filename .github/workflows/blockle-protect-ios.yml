@@ -106,97 +106,65 @@ jobs:
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
-          # ARCHIVE UNSIGNED. Not a shortcut — the only thing that works here.
+          # ARCHIVE SIGNED FOR DISTRIBUTION. The entitlements can only enter the
+          # build here.
           #
-          # Signing the archive was tried and fails: automatic signing resolves
-          # `archive` to an iOS App *Development* profile, and this team has no
-          # registered devices, so Apple refuses to issue one —
-          #   "Your team has no devices from which to generate a provisioning
-          #    profile" (every target, run 45113805102).
-          # Distribution signing therefore has to happen at export, where the
-          # ASC API key creates the device-less App Store profile on demand.
+          # Xcode processes CODE_SIGN_ENTITLEMENTS only when it signs. The
+          # archive used to be built with CODE_SIGNING_ALLOWED=NO, so it carried
+          # no entitlements, and `-exportArchive` — which can only preserve what
+          # it finds — re-signed it with four generic keys. Nothing from
+          # BlockleProtect.entitlements survived: no App Group (My List could not
+          # read its own rules) and no iCloud container (backup "unavailable").
+          # That was true of every signed build this project has ever produced.
           #
-          # THE COST, which went unnoticed for every build so far: with signing
-          # disabled Xcode never processes CODE_SIGN_ENTITLEMENTS, so the
-          # archive carries no entitlements and export re-signs from scratch.
-          # The signed result had four keys and nothing from
-          # BlockleProtect.entitlements — no App Group (My List could not read
-          # its own rules) and no iCloud container (backup "unavailable").
+          # Signing the archive was tried once and failed with "Your team has no
+          # devices from which to generate a provisioning profile" (run
+          # 45113805102), which was read at the time as archives requiring a
+          # development profile. They do not. The archive command simply was not
+          # given `-allowProvisioningUpdates` or the ASC key, so Xcode could not
+          # ask Apple for anything and fell back to searching for local
+          # DEVELOPMENT profiles — and those are what need registered devices.
           #
-          # Which half is at fault is what the profile dump below settles: if
-          # the profile Apple issues CONTAINS the App Group then the entitlements
-          # file is simply not being applied and the fix is local; if it does
-          # not, no amount of local work helps and the App ID capability has not
-          # propagated into profile generation.
+          # CODE_SIGN_IDENTITY is forced because the project sets only
+          # CODE_SIGN_STYLE=Automatic, which resolves to "Apple Development" and
+          # would request that same device-bound profile. App Store distribution
+          # profiles need no devices, which is why export has been creating them
+          # for all six targets on every run — the step below does what export
+          # already proves works.
+          #
+          # Re-signing after export was also tried, and cannot work: cloud
+          # signing keeps the key in its own keychain, so the runner reports
+          # "0 valid identities found" and codesign has no private key to use
+          # (run 45117853957).
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS" \
             CURRENT_PROJECT_VERSION="$BN" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+            CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="Apple Distribution"
+
+          # FAIL HERE, NOT AFTER UPLOAD. Export cannot add an entitlement the
+          # archive does not have, so if the App Group is missing at this point
+          # every later step is building a broken binary. Checking the archive
+          # separates "the entitlements never got in" from "export dropped them".
+          GROUP="group.org.blockle.protect"
+          ARCH_APP="build/App.xcarchive/Products/Applications/BlockleProtect.app"
+          for t in "$ARCH_APP" "$ARCH_APP/PlugIns/ShieldCustom.appex"; do
+            [ -e "$t" ] || { echo "::error::not in the archive: $t"; exit 1; }
+            if codesign -d --entitlements :- "$t" 2>/dev/null | grep -q "$GROUP"; then
+              echo "archive OK: $(basename "$t") carries $GROUP"
+            else
+              echo "::error::the ARCHIVE lost its entitlements — export cannot restore them."
+              echo "  $(basename "$t") does not claim $GROUP."
+              codesign -d --entitlements :- "$t" 2>&1 | head -30 || true
+              exit 1
+            fi
+          done
+
           xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
             -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
-          ls -lh build/ipa/*.ipa
-
-          # ---- RE-SIGN WITH THE ENTITLEMENTS THE PROFILE ALREADY GRANTS -----
-          #
-          # The archive is unsigned (it has to be — see above), so export
-          # re-signs from scratch and the app ends up claiming NOTHING from
-          # BlockleProtect.entitlements. The profile Apple issues is not the
-          # problem: run 45115725262 decoded it and it grants
-          # application-groups, icloud-container-identifiers and
-          # icloud-services. The app simply never asked for them.
-          #
-          # So ask. Re-signing with --entitlements is safe precisely because
-          # the profile permits every key in those files — a claim the profile
-          # did NOT allow would be rejected at install, which is the failure
-          # this would otherwise hide.
-          #
-          # NESTED CODE FIRST, OUTER BUNDLE LAST: signing the .app re-seals it
-          # over its PlugIns, so an extension signed afterwards invalidates the
-          # seal and the app will not launch.
-          IPA="$(ls build/ipa/*.ipa | head -1)"
-          rm -rf build/resign && mkdir -p build/resign
-          unzip -q "$IPA" -d build/resign
-          APP="$(ls -d build/resign/Payload/*.app | head -1)"
-
-          # TAKE THE IDENTITY FROM THE SIGNATURE EXPORT JUST APPLIED.
-          #
-          # Cloud signing picks the certificate itself and makes no promise
-          # about its name, so matching one by `grep 'Apple Distribution'`
-          # guesses at something we can simply read: the app in front of us is
-          # already signed, correctly, by whatever Xcode chose. Its leaf
-          # Authority IS that identity, and it is in the keychain by
-          # construction because it was just used.
-          #
-          # Note the `|| true`. A failing pipeline inside a `VAR="$(...)"`
-          # assignment makes the ASSIGNMENT return non-zero, so under
-          # `set -eo pipefail` the script dies there and any `if [ -z "$ID" ]`
-          # check below it never runs. That cost run 45116608743, which
-          # archived and exported a perfectly good IPA and then exited 1
-          # without printing a single line about why.
-          echo "codesigning identities available:"
-          security find-identity -v -p codesigning || true
-          ID="$(codesign -d --verbose=4 "$APP" 2>&1 \
-                 | awk -F'Authority=' '/^Authority=/{print $2; exit}')" || true
-          if [ -z "$ID" ]; then
-            echo "::error::could not read the signing identity off the exported app"
-            codesign -d --verbose=4 "$APP" 2>&1 | head -20 || true
-            exit 1
-          fi
-          echo "re-signing with: $ID"
-          # Only ShieldCustom needs the group; the static blockers are left
-          # exactly as export signed them.
-          EXT="$APP/PlugIns/ShieldCustom.appex"
-          if [ -e "$EXT" ]; then
-            codesign -f -s "$ID" --timestamp \
-              --entitlements ShieldCustom.entitlements "$EXT"
-          fi
-          codesign -f -s "$ID" --timestamp \
-            --entitlements BlockleProtect.entitlements "$APP"
-          codesign --verify --deep --strict "$APP"
-          rm -f "$IPA"
-          ( cd build/resign && zip -qry "../ipa/$(basename "$IPA")" Payload )
           ls -lh build/ipa/*.ipa
 
       - name: Verify the App Group reached BOTH signed binaries
