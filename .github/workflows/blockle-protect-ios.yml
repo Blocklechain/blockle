@@ -106,41 +106,32 @@ jobs:
         run: |
           set -eo pipefail
           KEY="$HOME/.appstoreconnect/private_keys/AuthKey_${KID}.p8"
-          # ARCHIVE SIGNED, AUTHENTICATED — and this is load-bearing.
+          # ARCHIVE UNSIGNED. Not a shortcut — the only thing that works here.
           #
-          # This used to archive with CODE_SIGNING_ALLOWED=NO and let export do
-          # all the signing, to dodge automatic signing picking an iOS
-          # *development* profile (a device-less team fails that lookup). It
-          # dodged it, and it silently threw away every declared entitlement:
-          # with signing disabled Xcode never processes CODE_SIGN_ENTITLEMENTS,
-          # so the archive carries none, and `-exportArchive` then re-signs from
-          # scratch with only the baseline the profile implies.
+          # Signing the archive was tried and fails: automatic signing resolves
+          # `archive` to an iOS App *Development* profile, and this team has no
+          # registered devices, so Apple refuses to issue one —
+          #   "Your team has no devices from which to generate a provisioning
+          #    profile" (every target, run 45113805102).
+          # Distribution signing therefore has to happen at export, where the
+          # ASC API key creates the device-less App Store profile on demand.
           #
-          # The signed result contained exactly four keys — application-identifier,
-          # beta-reports-active, team-identifier, get-task-allow — and NOTHING
-          # from BlockleProtect.entitlements. So on every TestFlight build to
-          # date: no App Group (My List could not read its own rules) and no
-          # iCloud container (backup reported unavailable, which was "fixed"
-          # once by adding icloud-container-environment — a fix that could not
-          # have taken effect, because the whole file was being dropped).
+          # THE COST, which went unnoticed for every build so far: with signing
+          # disabled Xcode never processes CODE_SIGN_ENTITLEMENTS, so the
+          # archive carries no entitlements and export re-signs from scratch.
+          # The signed result had four keys and nothing from
+          # BlockleProtect.entitlements — no App Group (My List could not read
+          # its own rules) and no iCloud container (backup "unavailable").
           #
-          # Passing the ASC key and -allowProvisioningUpdates HERE lets Xcode
-          # mint the distribution profile at archive time, so entitlements and
-          # profile are resolved together and the entitlements survive.
+          # Which half is at fault is what the profile dump below settles: if
+          # the profile Apple issues CONTAINS the App Group then the entitlements
+          # file is simply not being applied and the fix is local; if it does
+          # not, no amount of local work helps and the App ID capability has not
+          # propagated into profile generation.
           xcodebuild -project BlockleProtect.xcodeproj -scheme BlockleProtect -configuration Release \
             -destination 'generic/platform=iOS' -archivePath build/App.xcarchive archive \
             CURRENT_PROJECT_VERSION="$BN" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
-          # Fail loudly here rather than three steps later: if the archive's own
-          # product lost its entitlements, export cannot put them back.
-          AR_APP="$(ls -d build/App.xcarchive/Products/Applications/*.app | head -1)"
-          if ! codesign -d --entitlements :- "$AR_APP" 2>/dev/null | grep -q "group.org.blockle.protect"; then
-            echo "::error::the ARCHIVE lost its entitlements — export cannot restore them."
-            codesign -d --entitlements :- "$AR_APP" 2>/dev/null | sed -n '1,40p'
-            exit 1
-          fi
-          echo "archive carries its entitlements"
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
           xcodebuild -exportArchive -archivePath build/App.xcarchive -exportPath build/ipa \
             -exportOptionsPlist ExportOptions.plist \
             -allowProvisioningUpdates \
@@ -170,6 +161,17 @@ jobs:
           # -allowProvisioningUpdates above. This step is what proves it landed.
           GROUP="group.org.blockle.protect"
           IPA="$(ls build/ipa/*.ipa | head -1)"
+          # WHAT APPLE ACTUALLY ISSUED. The embedded profile is the authority on
+          # what this app is ALLOWED to claim; the entitlements are what it does
+          # claim. Printing both turns "the App Group is missing" into a
+          # decidable question instead of a guess about whose fault it is.
+          dump_profile() {
+            local prov="$1/embedded.mobileprovision"
+            [ -e "$prov" ] || { echo "   (no embedded.mobileprovision)"; return; }
+            security cms -D -i "$prov" 2>/dev/null \
+              | plutil -extract Entitlements xml1 -o - - 2>/dev/null \
+              | grep -E "application-groups|icloud|<string>|<key>" | head -24
+          }
           rm -rf build/verify && mkdir -p build/verify
           unzip -q "$IPA" -d build/verify
           APP="$(ls -d build/verify/Payload/*.app | head -1)"
@@ -179,6 +181,8 @@ jobs:
             if [ ! -e "$target" ]; then
               echo "::error::missing from the IPA: $target"; fail=1; continue
             fi
+            echo "--- $(basename "$target"): profile allows:"
+            dump_profile "$target"
             ents="$(codesign -d --entitlements :- "$target" 2>/dev/null || true)"
             if printf '%s' "$ents" | grep -q "$GROUP"; then
               echo "OK   $(basename "$target") carries $GROUP"
