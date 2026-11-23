@@ -120,6 +120,61 @@ jobs:
             -authenticationKeyPath "$KEY" -authenticationKeyID "$KID" -authenticationKeyIssuerID "$ISS"
           ls -lh build/ipa/*.ipa
 
+      - name: Verify the App Group reached BOTH signed binaries
+        working-directory: blockle-protect/ios
+        run: |
+          set -eo pipefail
+          # "MY LIST" IS THE ONE BLOCKER THAT READS ITS RULES AT RUNTIME.
+          #
+          # Every other Safari blocker ships a static list inside its own bundle.
+          # My List does not: the app writes custom-blockerList.json into the
+          # shared App Group container and the ShieldCustom extension reads it
+          # back (CustomBlockStore.swift, CustomBlockerRequestHandler.swift). So
+          # the entitlement has to be on TWO code signatures, and if it is on
+          # the app alone the app writes a file the extension cannot see.
+          #
+          # That failure is SILENT. Safari just does not block the user's sites,
+          # there is no error anywhere, and the only way to find out is to add a
+          # site and watch it load. It has already cost one round of debugging.
+          #
+          # Entitlements are baked in at SIGNING time, so enabling the capability
+          # in the Developer portal changes nothing about a build that already
+          # exists — it takes effect on the next export, which is this one, via
+          # -allowProvisioningUpdates above. This step is what proves it landed.
+          GROUP="group.org.blockle.protect"
+          IPA="$(ls build/ipa/*.ipa | head -1)"
+          rm -rf build/verify && mkdir -p build/verify
+          unzip -q "$IPA" -d build/verify
+          APP="$(ls -d build/verify/Payload/*.app | head -1)"
+          EXT="$APP/PlugIns/ShieldCustom.appex"
+          fail=0
+          for target in "$APP" "$EXT"; do
+            if [ ! -e "$target" ]; then
+              echo "::error::missing from the IPA: $target"; fail=1; continue
+            fi
+            ents="$(codesign -d --entitlements :- "$target" 2>/dev/null || true)"
+            if printf '%s' "$ents" | grep -q "$GROUP"; then
+              echo "OK   $(basename "$target") carries $GROUP"
+            else
+              echo "::error::$(basename "$target") is MISSING the $GROUP App Group."
+              echo "  Enable App Groups on this App ID in the Developer portal"
+              echo "  (Identifiers -> the bundle id -> App Groups -> Configure)"
+              echo "  and re-run. My List cannot work without it on BOTH."
+              printf '%s\n' "$ents" | sed -n '1,40p'
+              fail=1
+            fi
+          done
+          # The static blockers deliberately have NO App Group — a shared
+          # container they never read is capability surface for nothing.
+          for s in ShieldCore ShieldAdult1 ShieldAdult2 ShieldAdult3 ShieldAdult4; do
+            a="$APP/PlugIns/$s.appex"
+            [ -e "$a" ] || continue
+            if codesign -d --entitlements :- "$a" 2>/dev/null | grep -q "$GROUP"; then
+              echo "::warning::$s carries the App Group but does not need it"
+            fi
+          done
+          exit $fail
+
       - name: Upload to TestFlight
         working-directory: blockle-protect/ios
         env:
