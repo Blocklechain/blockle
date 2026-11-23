@@ -1,0 +1,489 @@
+<title>Trade — Blockle Exchange</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+
+<!--
+  THE TRADING INTERFACE.
+
+  Two rules this page follows that most trading UIs do not:
+
+  1. EVERY AMOUNT IS A STRING, END TO END. Values arrive from the API as decimal
+     strings and are sent back as decimal strings. They are never passed through
+     parseFloat, never summed in JavaScript, never formatted with toFixed. A
+     double cannot hold 18-decimal wei or a large USDT balance, and the whole
+     reason this venue has its own backend is that the alternative stack lost a
+     unit on `x + 0`. It would be absurd to reintroduce that in the browser.
+
+  2. THE ORDER TICKET SHOWS THE FEE AND THE PROCEEDS BEFORE YOU COMMIT.
+     Computed by the server, not guessed here — a client-side estimate that
+     disagrees with settlement by a sub-unit is worse than no estimate, because
+     it teaches people to distrust the number.
+-->
+
+<style>
+  :root {
+    --ground:#070b12; --raise:#0e1420; --raise-2:#141c2b; --line:#1f2938;
+    --line-soft:#19212e; --ink:#eaeff7; --ink-dim:#94a1b8; --ink-faint:#5d6a7f;
+    --signal:#35d6e8; --up:#3fd68c; --down:#ff5c6c; --warn:#f5a524;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans: system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+       font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:var(--signal);text-decoration:none}
+  :focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:4px}
+
+  .banner{background:#241a06;border-bottom:1px solid #4a3a12;color:#f3dca8;
+          font-size:12.5px;text-align:center;padding:8px 20px}
+  .banner b{color:var(--warn)}
+
+  nav{display:flex;align-items:center;gap:18px;padding:12px 20px;
+      border-bottom:1px solid var(--line-soft)}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:15px;color:var(--ink)}
+  .brand img{width:26px;height:26px;border-radius:6px}
+  nav .right{margin-left:auto;display:flex;gap:10px;align-items:center;font-size:13px}
+  #who{color:var(--ink-dim);font-family:var(--mono);font-size:12px}
+
+  button{font:inherit;font-size:13px;font-weight:550;cursor:pointer;padding:7px 13px;
+         border-radius:8px;border:1px solid var(--line);background:var(--raise-2);
+         color:var(--ink);transition:all .12s}
+  button:hover:not(:disabled){border-color:var(--signal);color:var(--signal)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.buy{background:var(--up);color:#04170d;border-color:var(--up)}
+  button.sell{background:var(--down);color:#1a0406;border-color:var(--down)}
+  button.buy:hover:not(:disabled),button.sell:hover:not(:disabled){filter:brightness(1.1);color:inherit}
+  button.ghost{padding:4px 9px;font-size:12px}
+
+  input,select{font:inherit;font-size:13px;padding:8px 10px;border-radius:8px;
+    border:1px solid var(--line);background:#0a0f18;color:var(--ink);width:100%}
+  input:focus,select:focus{border-color:var(--signal);outline:none}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+        color:var(--ink-faint);margin:0 0 5px;font-weight:600}
+
+  .wrap{max-width:1360px;margin:0 auto;padding:18px 20px 60px}
+  .cols{display:grid;gap:14px;grid-template-columns:300px 1fr 300px}
+  @media (max-width:1100px){.cols{grid-template-columns:1fr}}
+
+  .panel{border:1px solid var(--line);border-radius:12px;background:var(--raise);overflow:hidden}
+  .panel > h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;
+    color:var(--ink-faint);margin:0;padding:11px 15px;border-bottom:1px solid var(--line-soft);
+    font-weight:600;display:flex;align-items:center;gap:8px}
+  .panel > h2 .sp{margin-left:auto;font-weight:400;text-transform:none;letter-spacing:0}
+  .pad{padding:14px 15px}
+  .stack{display:flex;flex-direction:column;gap:11px}
+
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:right;padding:5px 15px;font-size:12.5px}
+  th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);
+     font-weight:600;padding-top:9px}
+  td:first-child,th:first-child{text-align:left}
+  td{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  tr.ask td.px{color:var(--down)} tr.bid td.px{color:var(--up)}
+  .spread{padding:7px 15px;font-family:var(--mono);font-size:13px;
+    border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+    background:var(--raise-2);display:flex;justify-content:space-between}
+
+  .tabs{display:flex;gap:6px;padding:12px 15px 0}
+  .tabs button{flex:1}
+  .tabs button[aria-pressed="true"]{border-color:var(--signal);color:var(--signal)}
+
+  .msg{margin:0 15px 14px;padding:9px 11px;border-radius:8px;font-size:12.5px;
+       border:1px solid #4a1f24;background:#140d0f;color:#ff9aa5}
+  .msg.ok{border-color:#1d4a35;background:#0c1611;color:var(--up)}
+  .hidden{display:none}
+
+  .kv{display:flex;justify-content:space-between;font-size:12.5px;padding:3px 0}
+  .kv span:first-child{color:var(--ink-dim)}
+  .kv span:last-child{font-family:var(--mono)}
+  .mkt{display:flex;gap:7px;flex-wrap:wrap;padding:12px 15px 0}
+  .mkt button{flex:none;padding:5px 10px;font-size:12px}
+  .mkt button[aria-pressed="true"]{border-color:var(--signal);color:var(--signal)}
+  .note{font-size:11.5px;color:var(--ink-faint);padding:0 15px 13px}
+</style>
+
+<div class="banner" id="banner">
+  <b>Testnet.</b> Balances here are test units. This venue is not licensed to
+  hold customer funds and cannot accept real deposits.
+</div>
+
+<nav>
+  <a class="brand" href="/"><img src="logo.png" alt="">Blockle Exchange</a>
+  <div class="right">
+    <span id="who"></span>
+    <a href="/" class="hidden" id="homelink">Home</a>
+    <button id="signout" class="hidden">Sign out</button>
+  </div>
+</nav>
+
+<div class="wrap">
+  <!-- ---------------- signed out ---------------- -->
+  <div id="auth" class="panel hidden" style="max-width:420px;margin:40px auto">
+    <h2 id="authtitle">Sign in</h2>
+    <div class="msg hidden" id="autherr"></div>
+    <div class="pad stack">
+      <div><label for="email">Email</label><input id="email" type="email" autocomplete="username"></div>
+      <div><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"></div>
+      <button id="dosignin">Sign in</button>
+      <button id="doregister">Create an account</button>
+      <p class="note" style="padding:0">
+        Passwords must be at least 12 characters. Length is what makes a
+        password hard to crack; character rules mostly make them hard to
+        remember.
+      </p>
+    </div>
+  </div>
+
+  <!-- ---------------- signed in ---------------- -->
+  <div id="app" class="hidden">
+    <div class="cols">
+      <!-- left: balances + faucet -->
+      <div class="stack">
+        <div class="panel">
+          <h2>Balances</h2>
+          <table><tbody id="bals"></tbody></table>
+          <p class="note" id="balnote"></p>
+        </div>
+        <div class="panel" id="faucetpanel">
+          <h2>Testnet funding</h2>
+          <div class="pad stack">
+            <div><label for="fasset">Asset</label><select id="fasset"></select></div>
+            <div><label for="famount">Amount</label><input id="famount" value="10000" inputmode="decimal"></div>
+            <button id="dofund">Add test funds</button>
+          </div>
+          <p class="note">
+            Test units only, and the server refuses this outright once the
+            mainnet gate is on — real balances must arrive on chain.
+          </p>
+        </div>
+      </div>
+
+      <!-- middle: book + ticket -->
+      <div class="stack">
+        <div class="panel">
+          <h2>Order book <span class="sp" id="lastpx"></span></h2>
+          <div class="mkt" id="markets"></div>
+          <table>
+            <thead><tr><th>Price</th><th>Amount</th></tr></thead>
+            <tbody id="asks"></tbody>
+          </table>
+          <div class="spread"><span id="spreadmid">—</span><span id="spreadtxt"></span></div>
+          <table><tbody id="bids"></tbody></table>
+          <p class="note" id="booknote"></p>
+        </div>
+
+        <div class="panel">
+          <h2>Place an order</h2>
+          <div class="tabs">
+            <button id="tbuy" aria-pressed="true">Buy</button>
+            <button id="tsell" aria-pressed="false">Sell</button>
+          </div>
+          <div class="msg hidden" id="orderr"></div>
+          <div class="pad stack">
+            <div><label for="price">Price</label><input id="price" inputmode="decimal" placeholder="0"></div>
+            <div><label for="amount">Amount</label><input id="amount" inputmode="decimal" placeholder="0"></div>
+            <div class="kv"><span>Order value</span><span id="ovalue">—</span></div>
+            <div class="kv"><span>Fee (0.20%)</span><span id="ofee">—</span></div>
+            <div class="kv"><span id="oproclabel">You receive</span><span id="oproceeds">—</span></div>
+            <button id="place" class="buy">Buy</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- right: my orders + tape -->
+      <div class="stack">
+        <div class="panel">
+          <h2>Your orders</h2>
+          <table><tbody id="myorders"></tbody></table>
+          <p class="note" id="ordnote"></p>
+        </div>
+        <div class="panel">
+          <h2>Recent trades</h2>
+          <table><tbody id="tape"></tbody></table>
+          <p class="note" id="tapenote"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// AMOUNTS ARE STRINGS. parseFloat appears nowhere in this file.
+//
+// Where arithmetic is unavoidable (the order ticket's value and fee preview) it
+// is done on BigInt base units, scaled by the market's declared decimals that
+// the server sends. A double cannot hold 18-decimal wei, and this venue exists
+// partly because the alternative stack lost a unit adding zero.
+// ---------------------------------------------------------------------------
+
+let TOK = sessionStorage.getItem("blockle_tok") || "";
+let MARKETS = [], MKT = null, SIDE = "buy", FEE_BPS = 20n, DECIMALS = {};
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, { method = "GET", data } = {}) {
+  const opt = { method, headers: {}, cache: "no-store" };
+  if (TOK) opt.headers["Authorization"] = "Bearer " + TOK;
+  if (data !== undefined) {
+    opt.headers["Content-Type"] = "application/json";
+    opt.body = JSON.stringify(data);
+  }
+  const r = await fetch(path, opt);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+
+// ---- exact decimal <-> base-unit conversion, on BigInt -------------------
+function toBase(dec, decimals) {
+  const s = String(dec == null ? "" : dec).trim();
+  if (s === "" || !/^\d*(\.\d*)?$/.test(s)) throw new Error("enter a number");
+  const [w, f = ""] = s.split(".");
+  if (f.length > decimals) throw new Error("too many decimal places for this asset");
+  return BigInt((w || "0") + f.padEnd(decimals, "0"));
+}
+function fromBase(v, decimals) {
+  const neg = v < 0n, a = neg ? -v : v, p = 10n ** BigInt(decimals);
+  const w = a / p, f = (a % p).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return (neg ? "-" : "") + w + (f ? "." + f : "");
+}
+
+function show(el, text, ok) {
+  el.textContent = text;
+  el.className = "msg" + (ok ? " ok" : "");
+  el.classList.remove("hidden");
+  if (ok) setTimeout(() => el.classList.add("hidden"), 4000);
+}
+function hide(el) { el.classList.add("hidden"); }
+
+// ---- auth ---------------------------------------------------------------
+function signedIn() { return TOK !== ""; }
+function renderAuth() {
+  $("auth").classList.toggle("hidden", signedIn());
+  $("app").classList.toggle("hidden", !signedIn());
+  $("signout").classList.toggle("hidden", !signedIn());
+  $("homelink").classList.toggle("hidden", !signedIn());
+}
+async function doAuth(path) {
+  hide($("autherr"));
+  try {
+    const r = await api("/v1/" + path, {
+      method: "POST",
+      data: { email: $("email").value, password: $("pw").value },
+    });
+    TOK = r.token;
+    sessionStorage.setItem("blockle_tok", TOK);
+    $("pw").value = "";
+    renderAuth();
+    await boot();
+  } catch (e) { show($("autherr"), e.message, false); }
+}
+$("dosignin").onclick = () => doAuth("login");
+$("doregister").onclick = () => doAuth("register");
+$("signout").onclick = async () => {
+  try { await api("/v1/logout", { method: "POST" }); } catch {}
+  TOK = ""; sessionStorage.removeItem("blockle_tok"); renderAuth();
+};
+
+// ---- market selection ---------------------------------------------------
+function renderMarkets() {
+  const host = $("markets");
+  host.innerHTML = "";
+  for (const m of MARKETS) {
+    const b = document.createElement("button");
+    b.textContent = m.symbol;
+    b.setAttribute("aria-pressed", String(m.symbol === MKT.symbol));
+    b.onclick = () => { MKT = m; renderMarkets(); refresh(); };
+    host.appendChild(b);
+  }
+  $("booknote").textContent =
+    "Minimum order " + MKT.minBase + " " + MKT.base + ". Prices in " + MKT.quote + ".";
+}
+
+// ---- order ticket -------------------------------------------------------
+function setSide(s) {
+  SIDE = s;
+  $("tbuy").setAttribute("aria-pressed", String(s === "buy"));
+  $("tsell").setAttribute("aria-pressed", String(s === "sell"));
+  const btn = $("place");
+  btn.textContent = s === "buy" ? "Buy " + MKT.base : "Sell " + MKT.base;
+  btn.className = s === "buy" ? "buy" : "sell";
+  $("oproclabel").textContent = "You receive";
+  ticket();
+}
+$("tbuy").onclick = () => setSide("buy");
+$("tsell").onclick = () => setSide("sell");
+
+// The preview mirrors the server's rule exactly: the fee comes out of what you
+// RECEIVE, and it rounds DOWN. If this ever disagrees with settlement it is
+// this code that is wrong.
+function ticket() {
+  const out = (v) => { $("ovalue").textContent = v; };
+  try {
+    const bd = MKT.baseDecimals, qd = MKT.quoteDecimals;
+    const amt = toBase($("amount").value, bd);
+    const px = toBase($("price").value, qd);
+    if (amt <= 0n || px <= 0n) throw new Error("");
+    const quote = (amt * px) / (10n ** BigInt(bd));
+    out(fromBase(quote, qd) + " " + MKT.quote);
+    if (SIDE === "buy") {
+      const fee = (amt * FEE_BPS) / 10000n;
+      $("ofee").textContent = fromBase(fee, bd) + " " + MKT.base;
+      $("oproceeds").textContent = fromBase(amt - fee, bd) + " " + MKT.base;
+    } else {
+      const fee = (quote * FEE_BPS) / 10000n;
+      $("ofee").textContent = fromBase(fee, qd) + " " + MKT.quote;
+      $("oproceeds").textContent = fromBase(quote - fee, qd) + " " + MKT.quote;
+    }
+  } catch {
+    out("—"); $("ofee").textContent = "—"; $("oproceeds").textContent = "—";
+  }
+}
+$("price").oninput = ticket;
+$("amount").oninput = ticket;
+
+$("place").onclick = async () => {
+  hide($("orderr"));
+  $("place").disabled = true;
+  try {
+    const r = await api("/v1/orders", {
+      method: "POST",
+      data: {
+        market: MKT.symbol, side: SIDE,
+        price: $("price").value.trim(), amount: $("amount").value.trim(),
+      },
+    });
+    show($("orderr"),
+      r.fills > 0
+        ? "Filled " + r.filled + " of " + r.total + " " + MKT.base + " in " + r.fills + " trade(s)."
+        : "Order resting on the book: " + r.total + " " + MKT.base + ".",
+      true);
+    $("amount").value = "";
+    ticket();
+    await refresh();
+  } catch (e) { show($("orderr"), e.message, false); }
+  finally { $("place").disabled = false; }
+};
+
+// ---- faucet -------------------------------------------------------------
+$("dofund").onclick = async () => {
+  $("dofund").disabled = true;
+  try {
+    await api("/v1/testnet-fund", {
+      method: "POST",
+      data: { asset: $("fasset").value, amount: $("famount").value.trim() },
+    });
+    await refresh();
+  } catch (e) { alert(e.message); }
+  finally { $("dofund").disabled = false; }
+};
+
+// ---- rendering ----------------------------------------------------------
+function row(tbody, cells, cls) {
+  const tr = document.createElement("tr");
+  if (cls) tr.className = cls;
+  for (const [i, c] of cells.entries()) {
+    const td = document.createElement("td");
+    if (i === 0 && cls) td.className = "px";
+    // textContent — these come off the wire.
+    td.textContent = c;
+    tr.appendChild(td);
+  }
+  tbody.appendChild(tr);
+  return tr;
+}
+
+async function refresh() {
+  if (!signedIn() || !MKT) return;
+  // Each section fails independently: one dead endpoint must not blank the
+  // whole screen.
+  try {
+    const bals = await api("/v1/balances");
+    const t = $("bals"); t.innerHTML = "";
+    const nonzero = bals.filter((b) => b.available !== "0");
+    for (const b of (nonzero.length ? nonzero : bals.slice(0, 4))) {
+      row(t, [b.asset, b.available]);
+    }
+    $("balnote").textContent = nonzero.length ? "" : "No balances yet — use testnet funding.";
+    const sel = $("fasset");
+    if (sel.options.length === 0) {
+      for (const b of bals) {
+        const o = document.createElement("option");
+        o.value = b.asset; o.textContent = b.asset; sel.appendChild(o);
+      }
+    }
+  } catch (e) { $("balnote").textContent = "Balances unavailable: " + e.message; }
+
+  try {
+    const b = await api("/public/book/" + MKT.symbol);
+    const asks = $("asks"), bids = $("bids");
+    asks.innerHTML = ""; bids.innerHTML = "";
+    for (const a of b.asks.slice(0, 8).reverse()) row(asks, [a.price, a.base], "ask");
+    for (const d of b.bids.slice(0, 8)) row(bids, [d.price, d.base], "bid");
+    const bestBid = b.bids[0], bestAsk = b.asks[0];
+    $("spreadmid").textContent = bestBid && bestAsk
+      ? bestBid.price + "  /  " + bestAsk.price
+      : (bestBid ? "bid " + bestBid.price : (bestAsk ? "ask " + bestAsk.price : "no orders"));
+    $("spreadtxt").textContent = bestBid && bestAsk ? "bid / ask" : "";
+  } catch (e) { $("booknote").textContent = "Book unavailable: " + e.message; }
+
+  try {
+    const os = await api("/v1/orders");
+    const t = $("myorders"); t.innerHTML = "";
+    const open = os.filter((o) => o.state === "open");
+    for (const o of os.slice(0, 10)) {
+      const tr = row(t, [o.side + " " + o.market, o.filled + "/" + o.total, o.price]);
+      if (o.state === "open") {
+        const td = document.createElement("td");
+        const b = document.createElement("button");
+        b.className = "ghost"; b.textContent = "cancel";
+        b.onclick = async () => {
+          try { await api("/v1/orders/" + o.id + "/cancel", { method: "POST" }); await refresh(); }
+          catch (e) { alert(e.message); }
+        };
+        td.appendChild(b); tr.appendChild(td);
+      }
+    }
+    $("ordnote").textContent = os.length ? open.length + " open" : "No orders yet.";
+  } catch (e) { $("ordnote").textContent = "Orders unavailable: " + e.message; }
+
+  try {
+    const tr = await api("/public/trades/" + MKT.symbol);
+    const t = $("tape"); t.innerHTML = "";
+    for (const x of tr.slice(0, 12)) {
+      row(t, [x.base, x.price], x.takerSide === "buy" ? "bid" : "ask");
+    }
+    $("tapenote").textContent = tr.length ? "" : "This market has not traded yet.";
+    const last = tr[0];
+    $("lastpx").textContent = last ? "last " + last.price : "";
+  } catch (e) { $("tapenote").textContent = "Tape unavailable: " + e.message; }
+}
+
+async function boot() {
+  try {
+    const st = await api("/public/status");
+    if (st.live === true) $("banner").hidden = true;
+  } catch { /* banner stays — failing closed */ }
+  try {
+    const f = await api("/public/fees");
+    if (typeof f.takerBps === "number") FEE_BPS = BigInt(f.takerBps);
+  } catch { /* 20 bps default stands */ }
+  try {
+    MARKETS = await api("/public/markets");
+    MKT = MARKETS[0];
+    renderMarkets();
+    setSide("buy");
+  } catch (e) { alert("Could not load markets: " + e.message); return; }
+
+  if (signedIn()) {
+    try { await api("/v1/balances"); } catch { TOK = ""; sessionStorage.removeItem("blockle_tok"); }
+  }
+  renderAuth();
+  $("who").textContent = signedIn() ? "signed in" : "";
+  await refresh();
+  setInterval(() => { refresh().catch(() => {}); }, 4000);
+}
+
+boot();
+</script>

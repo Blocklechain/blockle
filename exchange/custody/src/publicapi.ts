@@ -41,8 +41,9 @@ import { extname, join, normalize } from "node:path";
 import { pipeline } from "node:stream/promises";
 import Database from "better-sqlite3";
 
-import { format } from "./amount";
-import { ASSETS } from "./assets";
+import { format, parse } from "./amount";
+import { ASSETS, assetDef } from "./assets";
+import { MARKETS as VENUE_MARKETS, Venue, VenueError, quoteFor } from "./venue";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { Ledger } from "./ledger";
 import {
@@ -194,6 +195,171 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolea
 	return true;
 }
 
+/** Read a JSON body, with a hard cap so a huge POST cannot exhaust memory. */
+async function body(req: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
+	const chunks: Buffer[] = [];
+	let n = 0;
+	for await (const c of req) {
+		n += (c as Buffer).length;
+		if (n > limit) throw new VenueError("request body too large", 413);
+		chunks.push(c as Buffer);
+	}
+	if (n === 0) return {};
+	try {
+		const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null) {
+			throw new VenueError("body must be a JSON object");
+		}
+		return parsed as Record<string, unknown>;
+	} catch (e) {
+		if (e instanceof VenueError) throw e;
+		throw new VenueError("body is not valid JSON");
+	}
+}
+
+const str = (o: Record<string, unknown>, k: string): string => {
+	const v = o[k];
+	if (typeof v !== "string" || v.trim() === "") {
+		throw new VenueError(`${k} is required`);
+	}
+	return v;
+};
+
+/**
+ * THE TRADING SURFACE. The only part of this process that writes.
+ *
+ * Amounts arrive as DECIMAL STRINGS and are parsed with amount.ts, which
+ * REFUSES precision it cannot represent rather than rounding. So an order for
+ * "0.000000001 BTC" is rejected with an explanation instead of silently
+ * becoming zero — the failure mode that would otherwise let someone place a
+ * free order.
+ */
+async function venueRoute(
+	req: IncomingMessage,
+	res: ServerResponse,
+	url: URL,
+	venue: Venue,
+	ledger: Ledger,
+): Promise<void> {
+	const p = url.pathname.slice("/v1".length);
+	const bearer = (req.headers.authorization ?? "").startsWith("Bearer ")
+		? (req.headers.authorization ?? "").slice(7)
+		: "";
+	const me = (): string => venue.authenticate(bearer);
+
+	try {
+		if (p === "/register" && req.method === "POST") {
+			const b = await body(req);
+			const { id } = venue.register(str(b, "email"), str(b, "password"));
+			// Log them straight in; a separate login round-trip after signup
+			// adds a failure point and no security.
+			const s = venue.login(str(b, "email"), str(b, "password"));
+			json(res, 200, { accountId: id, token: s.token }, 0);
+			return;
+		}
+		if (p === "/login" && req.method === "POST") {
+			const b = await body(req);
+			const s = venue.login(str(b, "email"), str(b, "password"));
+			json(res, 200, s, 0);
+			return;
+		}
+		if (p === "/logout" && req.method === "POST") {
+			venue.logout(bearer);
+			json(res, 200, { ok: true }, 0);
+			return;
+		}
+
+		if (p === "/balances" && req.method === "GET") {
+			const who = me();
+			json(res, 200, venue.balances(who).map((b) => ({
+				asset: b.asset,
+				available: fmt(b.available, b.decimals),
+				decimals: b.decimals,
+			})), 0);
+			return;
+		}
+
+		// TESTNET FAUCET. The venue itself refuses this when the mainnet gate
+		// is on, so the guard is not merely in this handler.
+		if (p === "/testnet-fund" && req.method === "POST") {
+			const who = me();
+			const b = await body(req);
+			const asset = str(b, "asset").toUpperCase();
+			const def = assetDef(asset);
+			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
+			// Multi-network assets need a chain for the custody side.
+			const custodyId = def.networks.length === 0
+				? asset
+				: `${asset}.${def.networks[0]!.id}`;
+			venue.testnetCredit(who, asset, amount, custodyId);
+			json(res, 200, { ok: true, asset, credited: fmt(amount, def.decimals) }, 0);
+			return;
+		}
+
+		if (p === "/orders" && req.method === "POST") {
+			const who = me();
+			const b = await body(req);
+			const m = VENUE_MARKETS.find((x) => x.symbol === str(b, "market"));
+			if (m === undefined) throw new VenueError("unknown market", 404);
+			const side = str(b, "side");
+			if (side !== "buy" && side !== "sell") {
+				throw new VenueError('side must be "buy" or "sell"');
+			}
+			const bd = assetDef(m.base).decimals;
+			const qd = assetDef(m.quote).decimals;
+			const r = venue.placeOrder({
+				accountId: who,
+				market: m.symbol,
+				side,
+				price: parse(str(b, "price"), { symbol: m.quote, decimals: qd }),
+				baseAmount: parse(str(b, "amount"), { symbol: m.base, decimals: bd }),
+			});
+			json(res, 200, {
+				id: r.order.id,
+				state: r.order.state,
+				fills: r.fills,
+				filled: fmt(r.order.baseFilled, bd),
+				total: fmt(r.order.baseTotal, bd),
+			}, 0);
+			return;
+		}
+
+		if (p === "/orders" && req.method === "GET") {
+			const who = me();
+			json(res, 200, venue.myOrders(who).map((o) => {
+				const m = VENUE_MARKETS.find((x) => x.symbol === o.market)!;
+				const bd = assetDef(m.base).decimals;
+				const qd = assetDef(m.quote).decimals;
+				return {
+					id: o.id, market: o.market, side: o.side, state: o.state,
+					price: fmt(o.price, qd),
+					filled: fmt(o.baseFilled, bd),
+					total: fmt(o.baseTotal, bd),
+					createdAt: o.createdAt,
+				};
+			}), 0);
+			return;
+		}
+
+		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
+		if (cancel !== null && req.method === "POST") {
+			const who = me();
+			json(res, 200, { state: venue.cancelOrder(who, cancel[1]!).state }, 0);
+			return;
+		}
+
+		json(res, 404, { error: "not found" });
+	} catch (e) {
+		if (e instanceof VenueError) {
+			json(res, e.status, { error: e.message }, 0);
+			return;
+		}
+		// Anything else: report the message, not a stack. A stack on a public
+		// endpoint leaks paths and dependency versions.
+		json(res, 400, { error: e instanceof Error ? e.message : String(e) }, 0);
+	}
+}
+
 export function start(): void {
 	// READ-ONLY at the SQLite level. A handler that tried to write would fail
 	// rather than succeed, which is a stronger guarantee than "we only wrote
@@ -202,24 +368,68 @@ export function start(): void {
 	// `fileMustExist: false` would create an empty database; we want a clear
 	// failure instead if the path is wrong, but we also must not crash-loop
 	// before the ledger exists, so absence is handled explicitly.
-	let ledger: Ledger | undefined;
-	let db: Database.Database | undefined;
-	if (existsSync(DB_PATH)) {
-		db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
-		ledger = new Ledger(db);
-	}
+	// ORDER MATTERS HERE, and getting it wrong makes the public dashboard
+	// silently empty forever.
+	//
+	// The first version opened the READ-ONLY handle first, guarded by
+	// existsSync(DB_PATH). On a fresh install the file does not exist yet, so
+	// `ledger` stayed undefined — and /public/reserves and /public/liquidity
+	// then returned `{assets: []}` for the lifetime of the process, even after
+	// the venue created the database and real trades settled into it. The
+	// symptom was a reserves panel that stayed blank while trading worked
+	// perfectly, which is the worst kind of bug on a transparency page: it
+	// looks like the venue has nothing to disclose.
+	//
+	// So the WRITABLE handle is opened first — that creates the file and the
+	// schema — and the read-only handle is opened against a database that is
+	// then guaranteed to exist.
+	const wdb0 = new Database(DB_PATH);
+	wdb0.pragma("journal_mode = WAL");
+	wdb0.pragma("busy_timeout = 5000");
+	// Constructing a Ledger applies its schema, so the read-only handle below
+	// finds the tables it needs.
+	new Ledger(wdb0);
+
+	const db: Database.Database = new Database(DB_PATH, {
+		readonly: true,
+		fileMustExist: true,
+	});
+	const ledger: Ledger | undefined = new Ledger(db);
 
 	const commitments = db !== undefined ? commitmentsFrom(db) : { committedByNetwork: () => new Map<string, bigint>() };
+
+	// THE VENUE NEEDS A SEPARATE, WRITABLE HANDLE.
+	//
+	// The public read path above is deliberately read-only so a bug there
+	// cannot write. Trading must write, so it gets its own connection rather
+	// than relaxing that guarantee for every handler in the process.
+	//
+	// WAL mode so readers and the writer do not block each other: the public
+	// endpoints are polled every few seconds by every open front page, and
+	// without WAL a single order would stall all of them.
+	const wdb = wdb0;
+	const wledger = new Ledger(wdb);
+	const venue = new Venue(wdb, wledger, undefined, {
+		mainnetEnabled: gate().mainnetEnabled,
+	});
 
 	const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 		void (async () => {
 			try {
-				// Read-only service: anything but GET/HEAD is a category error.
+				const url = new URL(req.url ?? "/", `http://${HOST}`);
+
+				// TRADING LIVES UNDER /v1 AND IS THE ONLY MUTABLE SURFACE.
+				// Everything under /public stays GET-only, so the split is
+				// visible in the URL rather than buried in a handler.
+				if (url.pathname.startsWith("/v1/")) {
+					await venueRoute(req, res, url, venue, wledger);
+					return;
+				}
+
 				if (req.method !== "GET" && req.method !== "HEAD") {
 					json(res, 405, { error: "this API is read-only" });
 					return;
 				}
-				const url = new URL(req.url ?? "/", `http://${HOST}`);
 				const p = url.pathname.replace(/^\/public/, "") || "/";
 
 				if (p === "/status") {
@@ -246,21 +456,71 @@ export function start(): void {
 				}
 
 				if (p === "/tickers") {
-					// NO PRICES EXIST YET. Returning nulls rather than zeroes is
-					// the difference between "we have no market" and "the market
-					// is at zero". The front page renders null as an em dash.
+					// A REAL last price once the market has traded, and null
+					// when it has not. Null is not zero: "no market" and "the
+					// market is at zero" are different claims, and only one of
+					// them is true before the first fill.
 					json(
 						res,
 						200,
-						MARKETS.map((m) => ({
-							pair: `${m.base}/${m.quote}`,
-							base: m.base,
-							quote: m.quote,
-							last: null,
-							change24h: null,
-							volume24h: null,
-						})),
+						VENUE_MARKETS.map((m) => {
+							const last = venue.lastPrice(m.symbol);
+							const qd = assetDef(m.quote).decimals;
+							const book = venue.book(m.symbol, 1);
+							return {
+								pair: `${m.base}/${m.quote}`,
+								market: m.symbol,
+								base: m.base,
+								quote: m.quote,
+								last: last === undefined ? null : fmt(last, qd),
+								bid: book.bids[0] === undefined ? null : fmt(book.bids[0].price, qd),
+								ask: book.asks[0] === undefined ? null : fmt(book.asks[0].price, qd),
+								change24h: null,
+								volume24h: null,
+							};
+						}),
 					);
+					return;
+				}
+
+				// Public order book and trade tape — no account needed to look.
+				const bookMatch = /^\/book\/([A-Z0-9-]+)$/.exec(p);
+				if (bookMatch !== null) {
+					const sym = bookMatch[1]!;
+					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
+					if (m === undefined) { json(res, 404, { error: "unknown market" }); return; }
+					const bd = assetDef(m.base).decimals;
+					const qd = assetDef(m.quote).decimals;
+					const b = venue.book(sym);
+					json(res, 200, {
+						market: sym,
+						bids: b.bids.map((x) => ({ price: fmt(x.price, qd), base: fmt(x.base, bd) })),
+						asks: b.asks.map((x) => ({ price: fmt(x.price, qd), base: fmt(x.base, bd) })),
+					});
+					return;
+				}
+				const tradeMatch = /^\/trades\/([A-Z0-9-]+)$/.exec(p);
+				if (tradeMatch !== null) {
+					const sym = tradeMatch[1]!;
+					const m = VENUE_MARKETS.find((x) => x.symbol === sym);
+					if (m === undefined) { json(res, 404, { error: "unknown market" }); return; }
+					const bd = assetDef(m.base).decimals;
+					const qd = assetDef(m.quote).decimals;
+					json(res, 200, venue.recentTrades(sym).map((t) => ({
+						price: fmt(t.price, qd),
+						base: fmt(t.base, bd),
+						takerSide: t.takerSide,
+						at: t.at,
+					})));
+					return;
+				}
+				if (p === "/markets") {
+					json(res, 200, VENUE_MARKETS.map((m) => ({
+						symbol: m.symbol, base: m.base, quote: m.quote,
+						baseDecimals: assetDef(m.base).decimals,
+						quoteDecimals: assetDef(m.quote).decimals,
+						minBase: fmt(m.minBase, assetDef(m.base).decimals),
+					})), 300);
 					return;
 				}
 
