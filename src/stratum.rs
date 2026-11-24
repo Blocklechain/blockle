@@ -21,6 +21,10 @@ use crate::ledger::{Ledger, Scheme};
 const TARGET_SHARE_SECS: u64 = 10;
 const RETARGET_SECS: u64 = 30;
 const JOB_POLL_MS: u64 = 2000;
+/// Ceiling for the template-poll backoff. Long enough that a node spending
+/// minutes loading its block index is left alone, short enough that a pool
+/// picks work back up promptly once it is ready.
+const MAX_POLL_BACKOFF_MS: u64 = 60_000;
 /// Disconnect a miner after this many consecutive invalid shares.
 const BAN_AFTER_REJECTS: u32 = 20;
 
@@ -53,6 +57,8 @@ pub struct Engine {
     /// Parent-chain PoW algorithm (e.g. "sha256d", "x11"). Empty for the
     /// native BLOCK equihash pools, which the site groups as equihash.
     pub algorithm: String,
+    /// Consecutive failed template polls, for backoff and for thinning the log.
+    poll_failures: AtomicU64,
 }
 
 impl Engine {
@@ -76,6 +82,7 @@ impl Engine {
             next_session: AtomicU64::new(1),
             stratum_listen: stratum_listen.to_string(),
             algorithm: algorithm.to_string(),
+            poll_failures: AtomicU64::new(0),
         })
     }
 
@@ -98,15 +105,45 @@ impl Engine {
         }
         {
             let engine = self.clone();
-            thread::spawn(move || loop {
-                engine.poll_once(false);
-                thread::sleep(Duration::from_millis(JOB_POLL_MS));
+            thread::spawn(move || {
+                // BACK OFF WHEN THE CHAIN IS NOT ANSWERING.
+                //
+                // A fixed 2s poll is right when the node is healthy and wrong
+                // in the one case that matters: a daemon that has just
+                // restarted spends minutes on "Loading block index...", and
+                // every pool pointed at it keeps asking 30 times a minute.
+                // On this host that filled dogecoind's HTTP work queue, so it
+                // answered 500 to EVERYTHING — including the operator checking
+                // whether an RPC credential still worked, which made a healthy
+                // node look like a broken one.
+                //
+                // On consecutive failures the interval doubles to a 60s
+                // ceiling, and resets the moment a template comes back. A
+                // loading node is left alone to load.
+                let mut fails: u32 = 0;
+                loop {
+                    if engine.poll_once(false) {
+                        fails = 0;
+                    } else {
+                        fails = fails.saturating_add(1);
+                    }
+                    let backoff = JOB_POLL_MS
+                        .saturating_mul(1u64 << fails.min(5))
+                        .min(MAX_POLL_BACKOFF_MS);
+                    thread::sleep(Duration::from_millis(if fails == 0 {
+                        JOB_POLL_MS
+                    } else {
+                        backoff
+                    }));
+                }
             });
         }
         Ok(())
     }
 
-    fn poll_once(&self, refresh: bool) {
+    /// Returns whether the chain answered. The caller uses that to decide how
+    /// long to wait before asking again; see the backoff in `start`.
+    fn poll_once(&self, refresh: bool) -> bool {
         let result = self.adapter.lock().unwrap().poll_job(refresh);
         match result {
             Ok(Some(job)) => {
@@ -133,9 +170,19 @@ impl Engine {
                 *self.current_job.lock().unwrap() = Some(job.clone());
                 self.broadcast_job(&job);
             }
-            Ok(None) => {}
-            Err(e) => println!("[pool] template poll failed: {e}"),
+            Ok(None) => return true,
+            Err(e) => {
+                // One line per failure at 2s intervals is 30 lines a minute of
+                // the same message. Report the first, then thin out.
+                let n = self.poll_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 10 == 0 {
+                    println!("[pool] template poll failed (x{n}, backing off): {e}");
+                }
+                return false;
+            }
         }
+        self.poll_failures.store(0, Ordering::Relaxed);
+        true
     }
 
     fn notify_msg(job: &Job) -> String {
