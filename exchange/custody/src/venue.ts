@@ -226,7 +226,18 @@ export class Venue {
 		private readonly db: Database,
 		private readonly ledger: Ledger,
 		private readonly fees: FeeSchedule = DEFAULT_FEES,
-		private readonly opts: { mainnetEnabled?: boolean; now?: () => number } = {},
+		private readonly opts: {
+			mainnetEnabled?: boolean;
+			/**
+			 * True when a LIVE CUSTODIAN backs this venue — a real BitGo
+			 * account, whether it holds mainnet or testnet coins.
+			 *
+			 * Separate from `mainnetEnabled` because it gates a different
+			 * thing. See `testnetCredit`.
+			 */
+			liveCustodian?: boolean;
+			now?: () => number;
+		} = {},
 	) {
 		db.exec(SCHEMA);
 	}
@@ -429,6 +440,35 @@ export class Venue {
 		if (this.opts.mainnetEnabled === true) {
 			throw new VenueError(
 				"testnet funding is disabled on mainnet — deposits must arrive on chain",
+				403,
+			);
+		}
+		/*
+		 * AND REFUSED WHENEVER A LIVE CUSTODIAN BACKS THE VENUE, mainnet or not.
+		 *
+		 * Look at what this method posts: it credits CUSTODY as well as the
+		 * user, because the ledger's invariant requires the liability to be
+		 * backed. But no coins arrive. So the books claim custody holds
+		 * something the custodian does not, and reconciliation — comparing
+		 * books against what the custodian actually reports — correctly calls
+		 * that a SHORTFALL and halts withdrawals of that asset. Permanently,
+		 * since nothing ever un-credits it.
+		 *
+		 * That is why this is NOT covered by the mainnet gate alone. A
+		 * production BitGo account holding testnet coins is exactly the setup
+		 * an operator wants for a dry run, and it is exactly the setup where
+		 * one faucet click silently bricks reconciliation for that asset.
+		 *
+		 * The faucet is for a venue reconciling against a declared treasury
+		 * file. Once a real custodian is wired, deposits come from the chain.
+		 */
+		if (this.opts.liveCustodian === true) {
+			throw new VenueError(
+				"testnet funding is disabled because a live custodian is " +
+					"configured. This endpoint credits CUSTODY as well as your " +
+					"balance, and the custodian would not report those coins — " +
+					"reconciliation would read the difference as a shortfall and " +
+					"halt withdrawals of that asset. Deposit on chain instead.",
 				403,
 			);
 		}

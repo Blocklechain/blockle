@@ -50,6 +50,14 @@ export interface JobConfig {
 	readonly mainnetEnabled: boolean;
 	/** Declared testnet holdings, keyed by qualified custody id. */
 	readonly testnetTreasuryFile: string;
+	/**
+	 * Explicit source of external holdings. Omit to derive it from
+	 * `mainnetEnabled`, which is the historical behaviour.
+	 *
+	 * `"bitgo"` with the gate still shut is the dry run: reconcile for real
+	 * against the custodian before any customer money is involved.
+	 */
+	readonly source?: "bitgo" | "declared";
 }
 
 /**
@@ -107,14 +115,47 @@ export interface JobResult {
  * even though no single chain covers it. Per-chain shortfalls are a LIQUIDITY
  * question, which liquidity.ts answers; this is a SOLVENCY question.
  */
+/**
+ * RECONCILE_SOURCE, validated. An unrecognised value is refused rather than
+ * silently falling back to the declared file, which would turn a typo into a
+ * reconciliation that proves nothing.
+ */
+export function sourceFromEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): "bitgo" | "declared" | undefined {
+	const raw = (env.RECONCILE_SOURCE ?? "").trim().toLowerCase();
+	if (raw === "") return undefined;
+	if (raw === "bitgo" || raw === "declared") return raw;
+	throw new Error(
+		`RECONCILE_SOURCE must be "bitgo" or "declared", got "${raw}"`,
+	);
+}
+
 export async function runOnce(
 	ledger: Ledger,
 	cfg: JobConfig,
 	log: (s: string) => void = console.log,
 ): Promise<JobResult> {
-	const source: HoldingsSource = cfg.mainnetEnabled
-		? bitgoSummed()
+	/*
+	 * WHICH SOURCE OF TRUTH, chosen explicitly where it is set.
+	 *
+	 * The original rule was "mainnet reconciles against BitGo, testnet against
+	 * a declared file", which is right for both of the states that existed
+	 * then. It cannot express the one in between: a PRODUCTION BitGo account
+	 * holding TESTNET coins, reconciled against for real, while the venue's
+	 * mainnet gate is still shut. That is the dry run worth doing before going
+	 * live — real account, real API, real wallet policies — and under the old
+	 * rule it would have silently compared the books against a file a human
+	 * wrote, which proves nothing about the custodian.
+	 *
+	 * So RECONCILE_SOURCE selects it, and when unset the old derivation stands.
+	 */
+	const source: HoldingsSource =
+		cfg.source === "bitgo" ? bitgoSummed()
+		: cfg.source === "declared" ? testnetTreasury(cfg.testnetTreasuryFile)
+		: cfg.mainnetEnabled ? bitgoSummed()
 		: testnetTreasury(cfg.testnetTreasuryFile);
+	const usedCustodian = source.name !== "testnet-declared";
 
 	const report = await reconcile(ledger, source, cfg.assets, {
 		// A surplus within one base unit is rounding noise from a chain's own
@@ -132,11 +173,20 @@ export async function runOnce(
 
 	const text = formatReport(report);
 	log(text);
-	if (!cfg.mainnetEnabled) {
+	// THE CAVEAT TRACKS THE SOURCE ACTUALLY USED, not the mainnet flag. A dry
+	// run against a real custodian DOES prove solvency against it, and saying
+	// otherwise would undersell the only check that matters.
+	if (!usedCustodian) {
 		log(
 			"  NOTE: external holdings came from the DECLARED TESTNET TREASURY, " +
 				"not from a custodian. This pass proves the books are internally " +
 				"consistent; it does NOT prove solvency.",
+		);
+	} else if (!cfg.mainnetEnabled) {
+		log(
+			`  NOTE: reconciled against ${source.name} while the venue's mainnet ` +
+				"gate is still shut — a deliberate dry run against the real " +
+				"custodian. These figures DO reflect what the custodian reports.",
 		);
 	}
 	return {
@@ -220,6 +270,7 @@ export async function main(): Promise<void> {
 		mainnetEnabled,
 		testnetTreasuryFile:
 			process.env.TESTNET_TREASURY ?? "/etc/blockle/testnet-treasury.json",
+		...(sourceFromEnv() === undefined ? {} : { source: sourceFromEnv()! }),
 	});
 
 	// EXIT NON-ZERO ON A HALT, so systemd records a failure and the operator's

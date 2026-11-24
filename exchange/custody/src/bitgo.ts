@@ -26,9 +26,35 @@
 // which is exactly the moment it should disagree.
 // -----------------------------------------------------------------------------
 
+import { bitgoTicker, networkOf, settlementAsset } from "./assets";
 import type { HoldingsSource } from "./reconcile";
 
 export type BitGoEnv = "test" | "prod";
+
+/**
+ * Which SET OF COIN TICKERS to use, separately from which BitGo system we talk
+ * to.
+ *
+ * WHY THESE ARE TWO SETTINGS AND NOT ONE.
+ *
+ * They were one. `BITGO_ENV=prod` meant both "talk to app.bitgo.com" and "ask
+ * for mainnet coins", which reads as obviously right and quietly forbids a
+ * combination an operator genuinely wants: a PRODUCTION BitGo account holding
+ * TESTNET coins, so the venue can be exercised end-to-end against the real
+ * custody system — real account, real API, real wallet policies, real
+ * approvals — without real money moving.
+ *
+ * BitGo's two systems are entirely separate installations with separate
+ * accounts and separate tokens. A test token gets a flat 401 from
+ * app.bitgo.com and vice versa; there is no single token that spans them. So
+ * "use a production token for both modes" means: point at the production
+ * system, and choose the coin set per mode.
+ *
+ * `coins` DEFAULTS TO MATCHING `env`, because that is the common case and an
+ * operator who sets neither should get the safe pairing. Overriding it is
+ * deliberate and is logged.
+ */
+export type BitGoCoins = "mainnet" | "testnet";
 
 const BASE_URL: Readonly<Record<BitGoEnv, string>> = {
 	test: "https://app.bitgo-test.com/api/v2",
@@ -54,8 +80,8 @@ export class BitGoError extends Error {
  * Assets absent from this table are NOT silently passed through. A typo or an
  * unlisted asset must be an error, not a confident zero.
  */
-const TICKERS: Readonly<Record<BitGoEnv, Readonly<Record<string, string>>>> = {
-	prod: {
+const TICKERS: Readonly<Record<BitGoCoins, Readonly<Record<string, string>>>> = {
+	mainnet: {
 		BTC: "btc",
 		ETH: "eth",
 		USDC: "usdc",
@@ -68,7 +94,7 @@ const TICKERS: Readonly<Record<BitGoEnv, Readonly<Record<string, string>>>> = {
 		XRP: "xrp",
 		XLM: "xlm",
 	},
-	test: {
+	testnet: {
 		BTC: "tbtc",
 		ETH: "teth",
 		// BitGo's test tokens live under the test chain's token namespace.
@@ -105,13 +131,41 @@ const NOT_BITGO: Readonly<Record<string, string>> = {
 };
 
 export interface BitGoConfig {
+	/** Which BitGo installation to talk to. Decides the host and the token. */
 	readonly env: BitGoEnv;
+	/**
+	 * Which coin tickers to ask for. Defaults to matching `env`: a test system
+	 * holds testnet coins, a production one holds mainnet coins. Set explicitly
+	 * to run testnet coins on a production account.
+	 */
+	readonly coins?: BitGoCoins;
 	/**
 	 * Optional enterprise filter. Supply it once there is more than one
 	 * enterprise on the account, or balances from an unrelated enterprise will
 	 * be summed in and overstate holdings.
 	 */
 	readonly enterprise?: string;
+	/**
+	 * WHICH WALLETS ARE THE EXCHANGE'S.
+	 *
+	 * Required in practice, and the reason is concrete. The production account
+	 * this venue uses also holds wallets for other projects and a personal one
+	 * — `Perbug BTC`, `FROGE XRP`, `epic2epic@gmail.com` — with real balances
+	 * in them. BitGo's account-wide balance call sums every wallet for a coin,
+	 * so without a scope the reconciler counts somebody else's XRP as exchange
+	 * custody. Books would then show LESS than custody, which reads as a
+	 * SURPLUS, which is tolerated, which means a genuine shortfall of up to
+	 * that size is invisible. The one check that exists to catch insolvency,
+	 * defeated by a shared account.
+	 *
+	 * Either form may be given:
+	 *   - `walletIds`: exact BitGo wallet ids. Unambiguous; preferred.
+	 *   - `labelPrefix`: every wallet whose label starts with it.
+	 *
+	 * Neither given is NOT "use everything" — see `holdings`.
+	 */
+	readonly walletIds?: readonly string[];
+	readonly labelPrefix?: string;
 	readonly timeoutMs?: number;
 	/** Injected for tests. Defaults to global fetch. */
 	readonly fetchImpl?: typeof fetch;
@@ -131,7 +185,10 @@ export class BitGoHoldings implements HoldingsSource {
 	private readonly token: string;
 	private readonly base: string;
 	private readonly env: BitGoEnv;
+	private readonly coins: BitGoCoins;
 	private readonly enterprise: string | undefined;
+	private readonly walletIds: ReadonlySet<string> | undefined;
+	private readonly labelPrefix: string | undefined;
 	private readonly timeoutMs: number;
 	private readonly fetchImpl: typeof fetch;
 
@@ -146,11 +203,27 @@ export class BitGoHoldings implements HoldingsSource {
 		}
 		this.token = token.trim();
 		this.env = cfg.env;
+		// Defaults to the safe pairing; see the note on BitGoCoins.
+		this.coins = cfg.coins ?? (cfg.env === "prod" ? "mainnet" : "testnet");
 		this.base = BASE_URL[cfg.env];
 		this.enterprise = cfg.enterprise;
+		this.walletIds =
+			cfg.walletIds !== undefined && cfg.walletIds.length > 0
+				? new Set(cfg.walletIds)
+				: undefined;
+		this.labelPrefix =
+			cfg.labelPrefix !== undefined && cfg.labelPrefix.trim() !== ""
+				? cfg.labelPrefix.trim()
+				: undefined;
 		this.timeoutMs = cfg.timeoutMs ?? 15_000;
 		this.fetchImpl = cfg.fetchImpl ?? globalThis.fetch;
-		this.name = `bitgo:${cfg.env}`;
+		// THE NAME CARRIES BOTH, because it is what the reconciler logs and
+		// what the admin console shows. "bitgo:prod" alone would not tell an
+		// operator whether the figures underneath are real money.
+		this.name =
+			this.coins === (cfg.env === "prod" ? "mainnet" : "testnet")
+				? `bitgo:${cfg.env}`
+				: `bitgo:${cfg.env}/${this.coins}`;
 
 		if (typeof this.fetchImpl !== "function") {
 			throw new BitGoError("no fetch implementation available (Node >= 20 required)");
@@ -176,25 +249,218 @@ export class BitGoHoldings implements HoldingsSource {
 		if (raw !== "test" && raw !== "prod") {
 			throw new BitGoError(`BITGO_ENV must be "test" or "prod", got "${raw}"`);
 		}
+		const coinsRaw = (env.BITGO_COINS ?? "").trim().toLowerCase();
+		if (coinsRaw !== "" && coinsRaw !== "mainnet" && coinsRaw !== "testnet") {
+			throw new BitGoError(
+				`BITGO_COINS must be "mainnet" or "testnet", got "${coinsRaw}"`,
+			);
+		}
 		const ent = env.BITGO_ENTERPRISE?.trim();
+		// Wallet scope. Comma/space separated ids, and/or a label prefix.
+		const ids = (env.BITGO_WALLETS ?? "")
+			.split(/[,\s]+/)
+			.map((x) => x.trim())
+			.filter((x) => x !== "");
+		const prefix = (env.BITGO_WALLET_PREFIX ?? "").trim();
 		return new BitGoHoldings(token, {
 			env: raw,
+			...(coinsRaw === "" ? {} : { coins: coinsRaw }),
 			...(ent !== undefined && ent !== "" ? { enterprise: ent } : {}),
+			...(ids.length > 0 ? { walletIds: ids } : {}),
+			...(prefix !== "" ? { labelPrefix: prefix } : {}),
 		});
 	}
 
-	/** The BitGo ticker for one of our asset symbols, in this environment. */
+	/** Which BitGo installation and coin set this instance is bound to. */
+	describe(): { env: BitGoEnv; coins: BitGoCoins; realMoney: boolean } {
+		return {
+			env: this.env,
+			coins: this.coins,
+			// THE ONLY QUESTION THAT MATTERS for a safety check: would a mistake
+			// here move real money? Production coins on the production system
+			// is the only combination where it would.
+			realMoney: this.env === "prod" && this.coins === "mainnet",
+		};
+	}
+
+	/**
+	 * Confirm the token belongs to the configured environment, and say which
+	 * one it DOES belong to when it does not.
+	 *
+	 * This exists because the two installations return an indistinguishable
+	 * 401 for "wrong environment", "IP not whitelisted" and "revoked token" —
+	 * a token pointed at the wrong host reads exactly like a bad token, and
+	 * that cost real time to work out by hand. Now it is one call that names
+	 * the answer.
+	 */
+	async verifyEnvironment(): Promise<{
+		ok: boolean;
+		env: BitGoEnv;
+		belongsTo: BitGoEnv | undefined;
+		detail: string;
+	}> {
+		const tryOne = async (e: BitGoEnv): Promise<boolean> => {
+			try {
+				const res = await this.fetchImpl(`${BASE_URL[e]}/user/me`, {
+					method: "GET",
+					headers: { Authorization: `Bearer ${this.token}` },
+				});
+				return res.ok;
+			} catch {
+				return false;
+			}
+		};
+
+		if (await tryOne(this.env)) {
+			return {
+				ok: true,
+				env: this.env,
+				belongsTo: this.env,
+				detail: `token authenticates against ${BASE_URL[this.env]}`,
+			};
+		}
+		const other: BitGoEnv = this.env === "prod" ? "test" : "prod";
+		if (await tryOne(other)) {
+			return {
+				ok: false,
+				env: this.env,
+				belongsTo: other,
+				detail:
+					`BITGO_ENV=${this.env} but this token authenticates against the ` +
+					`${other} installation (${BASE_URL[other]}). BitGo's two systems ` +
+					"are separate accounts with separate tokens; one token never " +
+					`spans them. Either set BITGO_ENV=${other}, or supply a ` +
+					`${this.env} token.`,
+			};
+		}
+		return {
+			ok: false,
+			env: this.env,
+			belongsTo: undefined,
+			detail:
+				"this token authenticates against NEITHER installation. That is a " +
+				"revoked token, a typo, or — most often on this box — an IP that is " +
+				"not on the token's whitelist. BitGo returns the same 401 for all " +
+				"three.",
+		};
+	}
+
+	/**
+	 * The BitGo ticker for one of our asset ids.
+	 *
+	 * HANDLES CHAIN-QUALIFIED IDS, which is the form custody actually uses.
+	 * `USDT.TRC20` is a different BitGo coin from `USDT.ERC20` (`trx:usdt` and
+	 * `eth:usdt`), and the per-network mapping already lives in assets.ts
+	 * beside the network definition. Looking a qualified id up in the flat
+	 * table here returned undefined and threw "no ticker mapped", so every
+	 * multi-network custody check failed for a reason that sounded like a
+	 * missing entry rather than a missing lookup.
+	 */
 	ticker(asset: string): string {
-		const refusal = NOT_BITGO[asset.toUpperCase()];
+		const sym = settlementAsset(asset).toUpperCase();
+		const refusal = NOT_BITGO[sym];
 		if (refusal !== undefined) throw new BitGoError(refusal);
-		const t = TICKERS[this.env][asset.toUpperCase()];
+
+		if (networkOf(asset) !== undefined) {
+			// Qualified: the mapping is the network's own.
+			return bitgoTicker(asset, this.coins === "mainnet" ? "prod" : "test");
+		}
+		const t = TICKERS[this.coins][sym];
 		if (t === undefined) {
 			throw new BitGoError(
-				`no BitGo ticker mapped for ${asset} in the ${this.env} environment — ` +
+				`no BitGo ticker mapped for ${asset} in the ${this.coins} coin set — ` +
 					"add it to TICKERS rather than letting it read as a zero balance",
 			);
 		}
 		return t;
+	}
+
+	/**
+	 * Wallets for a coin that belong to THE EXCHANGE.
+	 *
+	 * Fails closed in both directions, and the two refusals are deliberately
+	 * different because the fixes are different:
+	 *
+	 *  - NO SCOPE CONFIGURED: refuse, and list what is on the account. Summing
+	 *    everything would silently fold other projects' balances into exchange
+	 *    custody (see the note on `walletIds`).
+	 *  - SCOPE MATCHES NOTHING: refuse. Zero matching wallets means the wallet
+	 *    has not been created or the scope is wrong, and reporting 0n would
+	 *    present as a total shortfall and halt the asset.
+	 */
+	private async scopedWallets(coin: string): Promise<
+		{ id: string; label: string; balance: bigint }[]
+	> {
+		// The enterprise filter still narrows the LIST, which is a second,
+		// coarser scope than the wallet allowlist and worth keeping: on an
+		// account with several enterprises it stops the list including wallets
+		// this deployment has no business reading at all.
+		const qs = new URLSearchParams();
+		if (this.enterprise !== undefined) qs.set("enterprise", this.enterprise);
+		const suffix = qs.toString() === "" ? "" : `?${qs.toString()}`;
+		const body = await this.get<{
+			wallets?: {
+				id?: string;
+				label?: string;
+				confirmedBalanceString?: string;
+				balanceString?: string;
+			}[];
+		}>(`/${coin}/wallet${suffix}`);
+		const all = (body.wallets ?? []).filter(
+			(w): w is { id: string; label?: string; confirmedBalanceString?: string; balanceString?: string } =>
+				typeof w.id === "string",
+		);
+
+		if (this.walletIds === undefined && this.labelPrefix === undefined) {
+			throw new BitGoError(
+				`no exchange wallet scope is configured, and the account has ` +
+					`${all.length} ${coin} wallet(s): ` +
+					all.map((w) => `${w.label ?? "?"} (${w.id})`).join(", ") +
+					". Refusing to treat all of them as exchange custody — this " +
+					"account also holds wallets for other projects, and counting " +
+					"those would make a real shortfall look like a surplus. Set " +
+					"BITGO_WALLETS or BITGO_WALLET_PREFIX.",
+			);
+		}
+
+		const mine = all.filter((w) => {
+			if (this.walletIds !== undefined && this.walletIds.has(w.id)) return true;
+			if (
+				this.labelPrefix !== undefined &&
+				(w.label ?? "").startsWith(this.labelPrefix)
+			) {
+				return true;
+			}
+			return false;
+		});
+
+		if (mine.length === 0) {
+			throw new BitGoError(
+				`no exchange wallet matched the configured scope for ${coin}. The ` +
+					`account has: ${all.map((w) => `${w.label ?? "?"} (${w.id})`).join(", ") || "(none)"}. ` +
+					"Reporting zero here would present as a total shortfall and halt " +
+					"the asset, so this is an error instead.",
+			);
+		}
+
+		return mine.map((w) => ({
+			id: w.id,
+			label: w.label ?? "",
+			// CONFIRMED only. An unconfirmed deposit is not ours to count yet,
+			// and counting it would let a reorg turn a balanced book into a
+			// shortfall.
+			balance: parseBaseUnits(
+				w.confirmedBalanceString ?? w.balanceString ?? "0",
+				coin,
+			),
+		}));
+	}
+
+	/** The exchange's wallets for an asset, for the admin console. */
+	async exchangeWallets(
+		asset: string,
+	): Promise<{ id: string; label: string; balance: bigint }[]> {
+		return this.scopedWallets(this.ticker(asset));
 	}
 
 	/**
@@ -207,34 +473,24 @@ export class BitGoHoldings implements HoldingsSource {
 	 */
 	async holdings(asset: string): Promise<bigint> {
 		const coin = this.ticker(asset);
-		const qs = new URLSearchParams({ coin, excludeEmptyBalances: "false" });
-		if (this.enterprise !== undefined) qs.set("enterprise", this.enterprise);
-
-		const body = await this.get<BalancesResponse>(`/wallet/balances?${qs}`);
-		const rows = body.balances ?? [];
-
-		// Match on the ticker we asked for. The endpoint can return several rows
-		// (subtokens), and summing them all would conflate, say, ETH with every
-		// ERC-20 held in the same wallet.
-		const row = rows.find((r) => r.coin === coin);
-		if (row === undefined) {
-			// Genuinely absent is distinct from zero: it means BitGo has no wallet
-			// for this coin at all, which is a configuration error worth raising
-			// rather than a balance.
-			throw new BitGoError(
-				`BitGo returned no balance row for ${coin} — is a ${coin} wallet ` +
-					`set up on this ${this.env} account?`,
-			);
-		}
-
-		const s = row.confirmedBalanceString ?? row.balanceString;
-		if (s === undefined) {
-			throw new BitGoError(
-				`BitGo returned a ${coin} row with no confirmedBalanceString; ` +
-					"refusing to fall back to the lossy numeric field",
-			);
-		}
-		return parseBaseUnits(s, coin);
+		/*
+		 * SUMMED OVER THE EXCHANGE'S WALLETS ONLY.
+		 *
+		 * This used to call `/wallet/balances?coin=…`, which is an
+		 * ACCOUNT-WIDE total. On a dedicated account that is the same number
+		 * and the simpler call. On the account this venue actually uses it is
+		 * not: that account also holds `Perbug BTC`, `FROGE XRP` and a personal
+		 * wallet, with real balances. The account-wide figure therefore
+		 * included other people's money as exchange custody — books below
+		 * custody, reported as a SURPLUS, which reconcile tolerates, which
+		 * means a genuine shortfall up to that size would never have been
+		 * flagged. Found by listing the account's wallets rather than assuming
+		 * it was ours alone.
+		 */
+		const mine = await this.scopedWallets(coin);
+		let total = 0n;
+		for (const w of mine) total += w.balance;
+		return total;
 	}
 
 	/** Verify the token works and report who it belongs to. Read-only. */

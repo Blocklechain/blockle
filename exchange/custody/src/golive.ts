@@ -118,7 +118,22 @@ export interface PreflightDeps {
 		byCustodyId(): Promise<Map<string, bigint>>;
 	};
 	readonly env: Readonly<Record<string, string | undefined>>;
+	/**
+	 * Confirms the custody token belongs to the configured installation.
+	 * Absent means UNKNOWN, which this preflight treats as a failure.
+	 */
+	readonly verifyCustodyEnv?: () => Promise<{ ok: boolean; detail: string }>;
 	readonly now?: () => number;
+}
+
+/** Does the gate file already say live? Used only to reason about the faucet. */
+function gateIsLive(path: string): boolean {
+	const g = readGate(path);
+	const o = (g.value ?? {}) as Record<string, unknown>;
+	return (
+		o.mainnetEnabled === true &&
+		(o.legalReview as Record<string, unknown> | undefined)?.completed === true
+	);
 }
 
 function ok(id: string, title: string, evidence: string, critical = false): Check {
@@ -196,18 +211,84 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 
 	// ---- 3. CUSTODY IS REAL AND REACHABLE ---------------------------------
 
-	const bitgoEnv = deps.env.BITGO_ENV ?? "";
-	checks.push(bitgoEnv === "prod"
-		? ok("custody:env", "Custodian is in production", "BITGO_ENV=prod", true)
-		: no("custody:env", "Custodian is in production",
-			`BITGO_ENV=${bitgoEnv || "(unset)"}. Test-environment wallets hold ` +
-				"testnet coins. Going live against them means the books record " +
-				"real customer liabilities backed by worthless test assets.", true));
+	const bitgoEnv = (deps.env.BITGO_ENV ?? "").trim().toLowerCase();
+	const bitgoCoins = (deps.env.BITGO_COINS ?? "").trim().toLowerCase() ||
+		(bitgoEnv === "prod" ? "mainnet" : "testnet");
+	// REAL MONEY IS THE CONJUNCTION. The production installation holding
+	// testnet coins is a perfectly good dry run and is NOT a live venue; the
+	// mainnet gate must not open on it, or the books would record real
+	// liabilities against test assets.
+	const realMoney = bitgoEnv === "prod" && bitgoCoins === "mainnet";
+	checks.push(realMoney
+		? ok("custody:env", "Custodian holds real assets",
+			"BITGO_ENV=prod, BITGO_COINS=mainnet", true)
+		: no("custody:env", "Custodian holds real assets",
+			`BITGO_ENV=${bitgoEnv || "(unset)"}, BITGO_COINS=${bitgoCoins}. ` +
+				"A live venue needs the production installation AND mainnet coins. " +
+				"Either alone is a dry run: going live against testnet coins means " +
+				"the books record real customer liabilities backed by worthless " +
+				"test assets.", true));
 
 	checks.push((deps.env.BITGO_ACCESS_TOKEN ?? "") !== ""
 		? ok("custody:token", "Custodian credentials present", "token is set", true)
 		: no("custody:token", "Custodian credentials present",
 			"BITGO_ACCESS_TOKEN is unset — nothing can be sent or read.", true));
+
+	// THE TOKEN BELONGS TO THE ENVIRONMENT IT IS POINTED AT. BitGo's two
+	// installations return an indistinguishable 401 for "wrong environment",
+	// "IP not whitelisted" and "revoked", so without this the commonest
+	// misconfiguration there is reads as a broken token.
+	if (deps.verifyCustodyEnv !== undefined) {
+		try {
+			const v = await deps.verifyCustodyEnv();
+			checks.push(v.ok
+				? ok("custody:envmatch", "Token matches the configured environment",
+					v.detail, true)
+				: no("custody:envmatch", "Token matches the configured environment",
+					v.detail, true));
+		} catch (e) {
+			checks.push(no("custody:envmatch", "Token matches the configured environment",
+				e instanceof Error ? e.message : String(e), true));
+		}
+	} else {
+		checks.push(no("custody:envmatch", "Token matches the configured environment",
+			"not checked — no custodian was constructed, so this is UNKNOWN, " +
+				"which is a failure here rather than a pass.", true));
+	}
+
+	// ---- THE FAUCET MUST BE SHUT ------------------------------------------
+	//
+	// It credits CUSTODY alongside the user's balance, and a live custodian
+	// would not report those coins. Reconciliation reads the difference as a
+	// shortfall and halts that asset permanently. One click is enough.
+	// Keyed on the RECONCILE SOURCE, which is the precise condition — a token
+	// being configured while the reconciler still reads a declared file leaves
+	// the faucet harmless.
+	const effectiveSource =
+		(deps.env.RECONCILE_SOURCE ?? "").trim().toLowerCase() ||
+		(gateIsLive(deps.configPath) ? "bitgo" : "declared");
+	const faucetShut = effectiveSource === "bitgo";
+	checks.push(faucetShut
+		? ok("faucet:shut", "The testnet faucet is disabled",
+			`RECONCILE_SOURCE is ${effectiveSource}, so the venue refuses it ` +
+				"outright", true)
+		: no("faucet:shut", "The testnet faucet is disabled",
+			"the faucet is still reachable because reconciliation reads a " +
+				"DECLARED FILE rather than the custodian. Set " +
+				"RECONCILE_SOURCE=bitgo: that both reconciles for real and shuts " +
+				"the faucet, which credits custody the custodian does not hold.",
+			true));
+
+	// AND RECONCILING AGAINST A FILE IS NOT RECONCILING. A live venue checked
+	// against numbers a human typed proves the books are self-consistent and
+	// nothing about solvency.
+	checks.push(effectiveSource === "bitgo"
+		? ok("reconcile:source", "Reconciliation compares against the custodian",
+			"RECONCILE_SOURCE=bitgo", true)
+		: no("reconcile:source", "Reconciliation compares against the custodian",
+			`source is "${effectiveSource}" — holdings come from a file a human ` +
+				"writes, which is tautological for a live venue. It proves the " +
+				"books are internally consistent and nothing about solvency.", true));
 
 	if (deps.holdings !== undefined) {
 		try {
@@ -230,6 +311,30 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 			"no custodian configured in this preflight run, so wallet coverage is " +
 				"UNKNOWN. Unknown is a failure here, not a pass.", true));
 	}
+
+	// ---- 3b. WHOSE MONEY IS IT? -------------------------------------------
+	//
+	// The production account this venue uses also holds wallets for other
+	// projects and a personal one, with real balances. Without a wallet scope
+	// the holdings adapter would count those as exchange custody: books below
+	// custody, read as a tolerated SURPLUS, hiding a genuine shortfall of up to
+	// that size. The adapter now refuses outright, so this check exists to say
+	// WHY before an operator meets the refusal.
+	const scoped =
+		(deps.env.BITGO_WALLETS ?? "").trim() !== "" ||
+		(deps.env.BITGO_WALLET_PREFIX ?? "").trim() !== "";
+	checks.push(scoped
+		? ok("custody:scope", "Exchange wallets are identified",
+			(deps.env.BITGO_WALLETS ?? "").trim() !== ""
+				? `BITGO_WALLETS lists ${(deps.env.BITGO_WALLETS ?? "").split(/[,\s]+/).filter((x) => x !== "").length} wallet id(s)`
+				: `BITGO_WALLET_PREFIX="${(deps.env.BITGO_WALLET_PREFIX ?? "").trim()}"`,
+			true)
+		: no("custody:scope", "Exchange wallets are identified",
+			"neither BITGO_WALLETS nor BITGO_WALLET_PREFIX is set. The custody " +
+				"account is shared with other projects, so without this the " +
+				"reconciler cannot tell the exchange's coins from anyone else's — " +
+				"and the direction of that error (books below custody) is the one " +
+				"reconcile tolerates, which would hide a real shortfall.", true));
 
 	// ---- 4. THE BOOKS ------------------------------------------------------
 

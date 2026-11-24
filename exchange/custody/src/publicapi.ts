@@ -738,8 +738,28 @@ export function start(): void {
 	// without WAL a single order would stall all of them.
 	const wdb = wdb0;
 	const wledger = new Ledger(wdb);
+	/*
+	 * IS THE RECONCILER COMPARING AGAINST A LIVE CUSTODIAN?
+	 *
+	 * This, not the presence of a token, is what makes the faucet dangerous.
+	 * The faucet credits CUSTODY alongside the user's balance; if the
+	 * reconciler compares that against a real custodian, the coins it credited
+	 * are not there and the difference reads as a shortfall, which halts that
+	 * asset permanently.
+	 *
+	 * My first version keyed this off BITGO_ACCESS_TOKEN being set, which was
+	 * too blunt — a token can be configured while the reconciler still runs
+	 * against the declared treasury file, and in that combination the faucet is
+	 * harmless and is the only way to fund a test account. Keying on the
+	 * reconcile source is the precise condition.
+	 */
+	const reconcileSource =
+		(process.env.RECONCILE_SOURCE ?? "").trim().toLowerCase() ||
+		(gate().mainnetEnabled ? "bitgo" : "declared");
+	const liveCustodian = reconcileSource === "bitgo";
 	const venue = new Venue(wdb, wledger, undefined, {
 		mainnetEnabled: gate().mainnetEnabled,
+		liveCustodian,
 	});
 
 	// WITHDRAWAL POLICY. Every asset listed here needs BOTH a per-request
@@ -891,6 +911,9 @@ export function start(): void {
 						legalReviewCompleted: g.legalReviewCompleted,
 						network: g.mainnetEnabled ? "mainnet" : "testnet",
 						ledgerPresent: ledger !== undefined,
+						// So the deposit screen can hide the faucet rather than
+						// offering a button that always 403s.
+						faucetAvailable: !g.mainnetEnabled && !liveCustodian,
 					});
 					return;
 				}

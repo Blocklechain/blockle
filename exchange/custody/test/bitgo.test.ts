@@ -48,8 +48,31 @@ function fakeFetch(
 	return { impl, calls };
 }
 
-function holdingsOf(coin: string, confirmed: string) {
-	return { balances: [{ coin, confirmedBalanceString: confirmed, balanceString: confirmed }] };
+/**
+ * A wallet-list response for one exchange wallet.
+ *
+ * `holdings` reads the EXCHANGE'S WALLETS rather than the account-wide balance
+ * endpoint it used to call. That change was not cosmetic: the production
+ * account this venue uses also holds other projects' wallets, so the
+ * account-wide figure counted their coins as exchange custody. These helpers
+ * moved with it.
+ */
+function walletList(
+	label: string,
+	confirmed: string,
+	id = "w_exchange_1",
+): unknown {
+	return {
+		wallets: [{ id, label, confirmedBalanceString: confirmed, balanceString: confirmed }],
+	};
+}
+
+/** The scope every test uses: wallets labelled for the exchange. */
+const SCOPE = { labelPrefix: "Blockle Exchange" } as const;
+const LBL = "Blockle Exchange BTC";
+
+function holdingsOf(_coin: string, confirmed: string): unknown {
+	return walletList(LBL, confirmed);
 }
 
 test("confirmed holdings are read from the STRING field, exactly", async () => {
@@ -57,7 +80,7 @@ test("confirmed holdings are read from the STRING field, exactly", async () => {
 	// whole point of the adapter is that it is not.
 	const huge = "123456789000000000000000001";
 	const { impl } = fakeFetch(() => ({ body: holdingsOf("teth", huge) }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 
 	assert.equal(await bg.holdings("ETH"), BigInt(huge));
 });
@@ -67,12 +90,12 @@ test("the numeric `balance` field is never consulted", async () => {
 	// adapter ever reads `balance`, this test fails.
 	const { impl } = fakeFetch(() => ({
 		body: {
-			balances: [
-				{ coin: "teth", balance: 1, confirmedBalanceString: "999", balanceString: "999" },
+			wallets: [
+				{ id: "w1", label: LBL, balance: 1, confirmedBalanceString: "999", balanceString: "999" },
 			],
 		},
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	assert.equal(await bg.holdings("ETH"), 999n);
 });
 
@@ -81,10 +104,12 @@ test("CONFIRMED balance is preferred over the unconfirmed total", async () => {
 	// can still be reorged away.
 	const { impl } = fakeFetch(() => ({
 		body: {
-			balances: [{ coin: "teth", balanceString: "5000", confirmedBalanceString: "3000" }],
+			wallets: [
+				{ id: "w1", label: LBL, balanceString: "5000", confirmedBalanceString: "3000" },
+			],
 		},
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	assert.equal(await bg.holdings("ETH"), 3000n);
 });
 
@@ -93,20 +118,22 @@ test("TESTNET TICKERS ARE USED IN THE TEST ENVIRONMENT", async () => {
 	// a zero balance and therefore as a shortfall against real books. The ticker
 	// table is what prevents that.
 	const { impl, calls } = fakeFetch(() => ({ body: holdingsOf("teth", "100") }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await bg.holdings("ETH");
 
 	assert.match(calls[0]!.url, /app\.bitgo-test\.com/);
-	assert.match(calls[0]!.url, /coin=teth/);
+	// The coin is in the PATH now, not a query parameter: the exchange's own
+	// wallets are listed per coin rather than the account totalled.
+	assert.match(calls[0]!.url, /\/teth\/wallet$/);
 });
 
 test("production tickers and base URL differ", async () => {
 	const { impl, calls } = fakeFetch(() => ({ body: holdingsOf("eth", "100") }));
-	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl, ...SCOPE });
 	await bg.holdings("ETH");
 
 	assert.match(calls[0]!.url, /app\.bitgo\.com/);
-	assert.match(calls[0]!.url, /coin=eth/);
+	assert.match(calls[0]!.url, /\/eth\/wallet$/);
 	assert.doesNotMatch(calls[0]!.url, /bitgo-test/);
 });
 
@@ -115,7 +142,7 @@ test("BLOCK and BLOCK-20 are REFUSED, not reported as zero", async () => {
 	// reconciler flag the entire BLOCK book as a shortfall and halt withdrawals
 	// for a reason unrelated to reality.
 	const { impl } = fakeFetch(() => ({ body: { balances: [] } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 
 	await assert.rejects(() => bg.holdings("BLOCK"), /self-custodied, not held at BitGo/);
 	await assert.rejects(() => bg.holdings("BLOCK20"), /self-custodied/);
@@ -123,38 +150,114 @@ test("BLOCK and BLOCK-20 are REFUSED, not reported as zero", async () => {
 
 test("an unmapped asset is an error, not a confident zero", async () => {
 	const { impl } = fakeFetch(() => ({ body: { balances: [] } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("DOGECOIN"), /no BitGo ticker mapped/);
 });
 
-test("a missing balance row THROWS rather than returning zero", async () => {
+test("NO MATCHING WALLET THROWS rather than returning zero", async () => {
 	// This is the single most important failure in the file. The reconciler
 	// treats a throw as UNAVAILABLE ("we do not know") and a zero as a real
 	// balance. Returning 0n on a config problem would halt withdrawals.
-	const { impl } = fakeFetch(() => ({ body: { balances: [] } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
-	await assert.rejects(() => bg.holdings("ETH"), /no balance row for teth/);
+	const { impl } = fakeFetch(() => ({ body: { wallets: [] } }));
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
+	await assert.rejects(
+		() => bg.holdings("ETH"),
+		/no exchange wallet matched the configured scope for teth/,
+	);
 });
 
-test("the row for the requested coin is selected, not the first or the sum", async () => {
-	// Summing every row would conflate ETH with every ERC-20 in the same wallet.
+test("SOMEBODY ELSE'S WALLETS ARE NOT COUNTED AS EXCHANGE CUSTODY", async () => {
+	// The reason this adapter stopped using the account-wide balance call. The
+	// production account genuinely holds `Perbug BTC`, `FROGE XRP` and a
+	// personal wallet; counting them would put books BELOW custody, which
+	// reconcile reads as a tolerated surplus — hiding a real shortfall of up to
+	// that size.
 	const { impl } = fakeFetch(() => ({
 		body: {
-			balances: [
-				{ coin: "teth:usdc", confirmedBalanceString: "500000" },
-				{ coin: "teth", confirmedBalanceString: "42" },
-				{ coin: "tbtc", confirmedBalanceString: "77" },
+			wallets: [
+				{ id: "w1", label: "Blockle Exchange ETH", confirmedBalanceString: "42" },
+				{ id: "w2", label: "FROGE ETH", confirmedBalanceString: "1000000" },
+				{ id: "w3", label: "epic2epic@gmail.com", confirmedBalanceString: "500" },
+			],
+		},
+	}));
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
+	assert.equal(await bg.holdings("ETH"), 42n, "ours only");
+});
+
+test("several exchange wallets for one coin are summed", async () => {
+	const { impl } = fakeFetch(() => ({
+		body: {
+			wallets: [
+				{ id: "w1", label: "Blockle Exchange ETH hot", confirmedBalanceString: "40" },
+				{ id: "w2", label: "Blockle Exchange ETH cold", confirmedBalanceString: "2" },
+				{ id: "w3", label: "FROGE ETH", confirmedBalanceString: "9999" },
+			],
+		},
+	}));
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
+	assert.equal(await bg.holdings("ETH"), 42n);
+});
+
+test("WITH NO SCOPE CONFIGURED IT REFUSES, and lists what it found", async () => {
+	// Not "use everything". An unscoped adapter on a shared account is the bug
+	// this whole mechanism exists to prevent, so the unconfigured case fails
+	// closed and names the wallets so the operator can pick.
+	const { impl } = fakeFetch(() => ({
+		body: {
+			wallets: [
+				{ id: "w2", label: "FROGE ETH", confirmedBalanceString: "1000000" },
+				{ id: "w3", label: "epic2epic@gmail.com", confirmedBalanceString: "500" },
 			],
 		},
 	}));
 	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
-	assert.equal(await bg.holdings("ETH"), 42n);
-	assert.equal(await bg.holdings("USDC"), 500000n);
+	await assert.rejects(() => bg.holdings("ETH"), (e: unknown) => {
+		const m = String(e);
+		assert.match(m, /no exchange wallet scope is configured/);
+		assert.match(m, /FROGE ETH \(w2\)/);
+		assert.match(m, /make a real shortfall look like a surplus/);
+		assert.match(m, /BITGO_WALLETS or BITGO_WALLET_PREFIX/);
+		return true;
+	});
+});
+
+test("an explicit wallet id list scopes as precisely as a prefix", async () => {
+	const { impl } = fakeFetch(() => ({
+		body: {
+			wallets: [
+				{ id: "keep-me", label: "anything at all", confirmedBalanceString: "7" },
+				{ id: "not-mine", label: "Blockle Exchange ETH", confirmedBalanceString: "1000" },
+			],
+		},
+	}));
+	const bg = new BitGoHoldings(TOKEN, {
+		env: "test",
+		fetchImpl: impl,
+		walletIds: ["keep-me"],
+	});
+	assert.equal(await bg.holdings("ETH"), 7n);
+});
+
+test("A CHAIN-QUALIFIED ASSET RESOLVES TO THE RIGHT BITGO COIN", async () => {
+	// USDT.TRC20 and USDT.ERC20 are different BitGo coins. The flat ticker
+	// table had no entry for a qualified id, so every multi-network custody
+	// check threw "no ticker mapped" — which read as a missing table entry
+	// rather than a missing lookup. The mapping lives per-network in assets.ts.
+	const { impl, calls } = fakeFetch(() => ({ body: walletList(LBL, "1000000") }));
+	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl, ...SCOPE });
+
+	assert.equal(bg.ticker("USDT.TRC20"), "trx:usdt");
+	assert.equal(bg.ticker("USDT.ERC20"), "eth:usdt");
+	assert.equal(bg.ticker("USDC.SOL"), "sol:usdc");
+
+	await bg.holdings("USDT.TRC20");
+	assert.match(calls[0]!.url, /\/trx:usdt\/wallet$/);
 });
 
 test("A NETWORK FAILURE THROWS — it must not look like a zero balance", async () => {
 	const { impl } = fakeFetch(() => new Error("ECONNREFUSED"));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), BitGoError);
 });
 
@@ -162,7 +265,7 @@ test("THE TOKEN IS NEVER ECHOED IN AN ERROR", async () => {
 	// A bearer token in an error message is a leaked credential: it lands in
 	// logs, crash reports, and whatever aggregates them.
 	const { impl } = fakeFetch(() => new Error(`request failed with Bearer ${TOKEN}`));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 
 	await assert.rejects(
 		() => bg.holdings("ETH"),
@@ -180,7 +283,7 @@ test("the token is not echoed in an HTTP error body either", async () => {
 		status: 400,
 		body: `bad request, token=${TOKEN}`,
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(
 		() => bg.holdings("ETH"),
 		(e: unknown) => {
@@ -193,7 +296,7 @@ test("the token is not echoed in an HTTP error body either", async () => {
 test("the token travels in the Authorization header, never the URL", async () => {
 	// A token in a query string is logged by every proxy and server in the path.
 	const { impl, calls } = fakeFetch(() => ({ body: holdingsOf("teth", "1") }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await bg.holdings("ETH");
 
 	const { url, init } = calls[0]!;
@@ -216,7 +319,7 @@ test("an IP-whitelist 401 points at the source address, not the token", async ()
 			name: "Unauthorized",
 		},
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), (e: unknown) => {
 		const m = String(e);
 		assert.match(m, /not on its whitelist/);
@@ -234,7 +337,7 @@ test('a "No access token" 401 points at the WRONG ENVIRONMENT', async () => {
 		status: 401,
 		body: { error: "No access token", name: "Unauthorized" },
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), (e: unknown) => {
 		const m = String(e);
 		assert.match(m, /SEPARATE tokens/);
@@ -245,19 +348,19 @@ test('a "No access token" 401 points at the WRONG ENVIRONMENT', async () => {
 
 test("any other 401 still reads as an invalid or revoked token", async () => {
 	const { impl } = fakeFetch(() => ({ status: 401, body: { error: "unauthorized" } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), /invalid, expired, or revoked/);
 });
 
 test("a 403 is about scopes and roles, not the whitelist", async () => {
 	const { impl } = fakeFetch(() => ({ status: 403, body: { error: "forbidden" } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), /scopes and the acting user's wallet role/);
 });
 
 test("a 429 says to back off rather than retry", async () => {
 	const { impl } = fakeFetch(() => ({ status: 429, body: { error: "slow down" } }));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	await assert.rejects(() => bg.holdings("ETH"), /rate limited; back off/);
 });
 
@@ -295,6 +398,7 @@ test("the enterprise filter is passed through when configured", async () => {
 		env: "test",
 		enterprise: "ent123",
 		fetchImpl: impl,
+		...SCOPE,
 	});
 	await bg.holdings("ETH");
 	assert.match(calls[0]!.url, /enterprise=ent123/);
@@ -362,7 +466,7 @@ test("whoami verifies the token without touching funds", async () => {
 	const { impl, calls } = fakeFetch(() => ({
 		body: { id: "user123", username: "ops@example.com" },
 	}));
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 	const me = await bg.whoami();
 
 	assert.equal(me.id, "user123");
@@ -377,9 +481,9 @@ test("EVERY REQUEST THIS ADAPTER MAKES IS A GET", async () => {
 			? { body: { id: "u" } }
 			: url.includes("/wallet/balances")
 				? { body: holdingsOf("teth", "1") }
-				: { body: { wallets: [{ id: "w1", label: "hot" }] } },
+				: { body: { wallets: [{ id: "w1", label: LBL, confirmedBalanceString: "1" }] } },
 	);
-	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl });
+	const bg = new BitGoHoldings(TOKEN, { env: "test", fetchImpl: impl, ...SCOPE });
 
 	await bg.whoami();
 	await bg.holdings("ETH");
@@ -411,6 +515,7 @@ test("the adapter drops into the reconciler and a BitGo outage reads UNAVAILABLE
 	const down = new BitGoHoldings(TOKEN, {
 		env: "test",
 		fetchImpl: fakeFetch(() => new Error("ECONNREFUSED")).impl,
+		...SCOPE,
 	});
 	const outage = await reconcile(l, down, ["ETH"]);
 	assert.equal(outage.assets[0]!.status, Status.UNAVAILABLE);
@@ -420,6 +525,7 @@ test("the adapter drops into the reconciler and a BitGo outage reads UNAVAILABLE
 	const up = new BitGoHoldings(TOKEN, {
 		env: "test",
 		fetchImpl: fakeFetch(() => ({ body: holdingsOf("teth", "1000") })).impl,
+		...SCOPE,
 	});
 	const good = await reconcile(l, up, ["ETH"]);
 	assert.equal(good.assets[0]!.status, Status.OK);

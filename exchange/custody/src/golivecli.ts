@@ -37,10 +37,15 @@ async function main(): Promise<void> {
 	// The custodian is optional ONLY in the sense that its absence is reported
 	// as a failed check rather than a crash. It is never treated as a pass.
 	let holdings: PreflightDeps["holdings"];
+	let verify: PreflightDeps["verifyCustodyEnv"];
 	try {
 		const bg = BitGoHoldings.fromEnv();
+		verify = async () => {
+			const v = await bg.verifyEnvironment();
+			return { ok: v.ok, detail: v.detail };
+		};
 		holdings = {
-			name: `bitgo:${process.env.BITGO_ENV ?? "?"}`,
+			name: bg.name,
 			// Built from the per-chain holdings call, so a chain the custodian
 			// does not know about is ABSENT from the map rather than present
 			// with a zero — the preflight distinguishes "no wallet" from "an
@@ -68,6 +73,7 @@ async function main(): Promise<void> {
 		ledger,
 		configPath,
 		...(holdings === undefined ? {} : { holdings }),
+		...(verify === undefined ? {} : { verifyCustodyEnv: verify }),
 		env: process.env,
 	};
 
