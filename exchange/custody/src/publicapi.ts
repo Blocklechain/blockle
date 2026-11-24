@@ -45,13 +45,14 @@ import { format, parse } from "./amount";
 import { ASSETS, assetDef } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
+import { Deposits, describeDeposit } from "./deposits";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { Ledger } from "./ledger";
 import { LIVE_GAS_COSTS, type GasGateDeps } from "./gasgate";
-import { BlockleAuth } from "./blockleauth";
+import { AuthError, BlockleAuth } from "./blockleauth";
 import {
 	SCHEMA as ADMIN_SCHEMA,
 	adminRoute,
@@ -81,18 +82,31 @@ const DB_PATH = process.env.CUSTODY_DB ?? "/var/lib/exchange-custody/ledger.db";
 const STATIC_DIR = process.env.PUBLIC_STATIC_DIR ?? "";
 const CONFIG_PATH = process.env.EXCHANGE_CONFIG ?? "/etc/blockle/exchange.json";
 
-/** Assets offered to customers. Order is the order the front page lists them. */
-const LISTED = ["BTC", "ETH", "USDT", "USDC", "BLOCK", "PERBUG", "SOL", "DOGE"];
+/**
+ * Assets offered to customers, DERIVED FROM THE MARKETS.
+ *
+ * Hand-maintained alongside the venue's market table, this list drifted: it
+ * named eight assets while the venue traded six markets, so the front page
+ * offered assets with nowhere to trade them and omitted ones it listed. An
+ * asset is offered if and only if there is a market in it.
+ */
+const LISTED: readonly string[] = (() => {
+	const seen = new Set<string>();
+	for (const m of VENUE_MARKETS) {
+		seen.add(m.base);
+		seen.add(m.quote);
+	}
+	// Quotes first — they are what people deposit to trade with — then the rest
+	// alphabetically, so the order is stable as assets are added.
+	const quotes = ["USDT", "BLOCK"].filter((q) => seen.has(q));
+	const rest = [...seen].filter((a) => !quotes.includes(a)).sort();
+	return [...quotes, ...rest];
+})();
 
-/** Markets, as pairs. No prices until there is trading. */
-const MARKETS: readonly { base: string; quote: string }[] = [
-	{ base: "BLOCK", quote: "BTC" },
-	{ base: "PERBUG", quote: "BTC" },
-	{ base: "BTC", quote: "USDT" },
-	{ base: "ETH", quote: "USDT" },
-	{ base: "SOL", quote: "USDT" },
-	{ base: "DOGE", quote: "USDT" },
-];
+/** Markets, as pairs. The venue's own table; no second copy to drift. */
+const MARKETS: readonly { base: string; quote: string }[] = VENUE_MARKETS.map(
+	(m) => ({ base: m.base, quote: m.quote }),
+);
 
 const fmt = (b: bigint, d: number): string => format(b, { symbol: "", decimals: d });
 
@@ -235,7 +249,19 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolea
 		"Cache-Control": extname(file) === ".html" ? "no-cache" : "public, max-age=3600",
 		"X-Content-Type-Options": "nosniff",
 	});
-	await pipeline(createReadStream(file), res);
+	try {
+		await pipeline(createReadStream(file), res);
+	} catch (e) {
+		// A CLIENT THAT GOES AWAY MID-DOWNLOAD IS NOT AN ERROR. Browsers
+		// abandon requests constantly — navigating away, reloading, cancelling
+		// a stylesheet. Letting that propagate made every one of them a 500
+		// attempt on a committed response, and so a process exit.
+		const code = (e as { code?: string }).code;
+		if (code !== "ERR_STREAM_PREMATURE_CLOSE" && code !== "EPIPE" && code !== "ECONNRESET") {
+			console.error(`serving ${urlPath}: ${e instanceof Error ? e.message : String(e)}`);
+		}
+		res.destroy();
+	}
 	return true;
 }
 
@@ -285,41 +311,52 @@ async function venueRoute(
 	venue: Venue,
 	ledger: Ledger,
 	wd: Withdrawals,
+	auth: BlockleAuth,
 	liquidityOf: (symbol: string) => ReturnType<typeof assetLiquidity>,
 	feeTable: typeof LIVE_FEES,
 	gasPricing: GasPricing,
 	mm: MarketMaker,
+	deposits: Deposits,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
-	const bearer = (req.headers.authorization ?? "").startsWith("Bearer ")
-		? (req.headers.authorization ?? "").slice(7)
-		: "";
-	const me = (): string => venue.authenticate(bearer);
+
+	/*
+	 * IDENTITY IS THE BLOCKLE ACCOUNT, NOT A VENUE ACCOUNT.
+	 *
+	 * The venue grew its own register/login/sessions, and it worked, and it was
+	 * wrong: two account systems on one brand means two places to reset a
+	 * password, two 2FA enrolments, and an account that holds your BLOCK which
+	 * is not the account that trades it. Those endpoints are gone. The session
+	 * cookie is scoped to .blockle.org, which this host is inside, so the
+	 * browser sends it with no extra work and this service forwards it to the
+	 * accounts service and believes the answer.
+	 *
+	 * An unreachable accounts service is a 503, never an anonymous session —
+	 * see blockleauth.ts.
+	 */
+	const cached = new Map<string, string>();
+	const me = async (): Promise<string> => {
+		const cookie = req.headers.cookie ?? "";
+		const hit = cached.get(cookie);
+		if (hit !== undefined) return hit;
+		const u = await auth.whoami(cookie);
+		cached.set(cookie, u.id);
+		return u.id;
+	};
 
 	try {
-		if (p === "/register" && req.method === "POST") {
-			const b = await body(req);
-			const { id } = venue.register(str(b, "email"), str(b, "password"));
-			// Log them straight in; a separate login round-trip after signup
-			// adds a failure point and no security.
-			const s = venue.login(str(b, "email"), str(b, "password"));
-			json(res, 200, { accountId: id, token: s.token }, 0);
-			return;
-		}
-		if (p === "/login" && req.method === "POST") {
-			const b = await body(req);
-			const s = venue.login(str(b, "email"), str(b, "password"));
-			json(res, 200, s, 0);
-			return;
-		}
-		if (p === "/logout" && req.method === "POST") {
-			venue.logout(bearer);
-			json(res, 200, { ok: true }, 0);
+		if (p === "/me" && req.method === "GET") {
+			const u = await auth.whoami(req.headers.cookie ?? "");
+			json(res, 200, {
+				accountId: u.id,
+				email: u.email ?? null,
+				twoFactor: u.twoFactor ?? null,
+			}, 0);
 			return;
 		}
 
 		if (p === "/balances" && req.method === "GET") {
-			const who = me();
+			const who = await me();
 			json(res, 200, venue.balances(who).map((b) => ({
 				asset: b.asset,
 				// THREE FIGURES, NOT ONE. "available" alone cannot explain why a
@@ -333,10 +370,26 @@ async function venueRoute(
 			return;
 		}
 
+		// DEPOSIT ADDRESS. Returns an address or an explanation, never a guess —
+		// a deposit to a wrong address is unrecoverable by anyone. See
+		// deposits.ts.
+		if (p === "/deposit-address" && req.method === "GET") {
+			const who = await me();
+			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
+			const netRaw = url.searchParams.get("network");
+			json(res, 200, describeDeposit(
+				deposits,
+				who,
+				asset,
+				netRaw === null || netRaw === "" ? undefined : netRaw,
+			), 0);
+			return;
+		}
+
 		// TESTNET FAUCET. The venue itself refuses this when the mainnet gate
 		// is on, so the guard is not merely in this handler.
 		if (p === "/testnet-fund" && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			const b = await body(req);
 			const asset = str(b, "asset").toUpperCase();
 			const def = assetDef(asset);
@@ -351,7 +404,7 @@ async function venueRoute(
 		}
 
 		if (p === "/orders" && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			const b = await body(req);
 			const m = VENUE_MARKETS.find((x) => x.symbol === str(b, "market"));
 			if (m === undefined) throw new VenueError("unknown market", 404);
@@ -379,7 +432,7 @@ async function venueRoute(
 		}
 
 		if (p === "/orders" && req.method === "GET") {
-			const who = me();
+			const who = await me();
 			json(res, 200, venue.myOrders(who).map((o) => {
 				const m = VENUE_MARKETS.find((x) => x.symbol === o.market)!;
 				const bd = assetDef(m.base).decimals;
@@ -401,7 +454,7 @@ async function venueRoute(
 		// honest moment to tell someone a chain cannot pay them is before they
 		// pick it, not after they commit.
 		if (p === "/withdrawal-options" && req.method === "GET") {
-			me();
+			await me();
 			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
 			const def = assetDef(asset);
 			const liq = liquidityOf(asset);
@@ -425,7 +478,7 @@ async function venueRoute(
 		// that prices the real withdrawal, because a preview computed by
 		// different code is a preview that will eventually disagree.
 		if (p === "/withdrawal-quote" && req.method === "GET") {
-			me();
+			await me();
 			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
 			const def = assetDef(asset);
 			const network = url.searchParams.get("network");
@@ -457,7 +510,7 @@ async function venueRoute(
 		}
 
 		if (p === "/withdrawals" && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			const b = await body(req);
 			const asset = str(b, "asset").toUpperCase();
 			const def = assetDef(asset);
@@ -497,7 +550,7 @@ async function venueRoute(
 		}
 
 		if (p === "/withdrawals" && req.method === "GET") {
-			const who = me();
+			const who = await me();
 			json(res, 200, wd.pending()
 				.filter((w) => w.userId === who)
 				.map((w) => ({
@@ -518,7 +571,7 @@ async function venueRoute(
 		// both legs, so the quote carries the break-even and the UI has to show
 		// it rather than implying makers earn a rebate they do not get.
 		if (p === "/liquidity/quote" && req.method === "GET") {
-			me();
+			await me();
 			const symbol = url.searchParams.get("market") ?? "";
 			const m = marketDef(symbol);
 			const bd = assetDef(m.base).decimals;
@@ -545,7 +598,7 @@ async function venueRoute(
 		}
 
 		if (p === "/liquidity" && req.method === "GET") {
-			const who = me();
+			const who = await me();
 			json(res, 200, mm.list(who).map((pos) => {
 				const m = marketDef(pos.market);
 				const bd = assetDef(m.base).decimals;
@@ -567,7 +620,7 @@ async function venueRoute(
 		}
 
 		if (p === "/liquidity" && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			const b = await body(req);
 			const symbol = str(b, "market");
 			const m = marketDef(symbol);
@@ -602,7 +655,7 @@ async function venueRoute(
 
 		const closePos = /^\/liquidity\/(mm_[a-f0-9]+)\/close$/.exec(p);
 		if (closePos !== null && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			const r = mm.close(who, closePos[1]!);
 			json(res, 200, {
 				cancelled: r.cancelled,
@@ -615,14 +668,18 @@ async function venueRoute(
 
 		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
 		if (cancel !== null && req.method === "POST") {
-			const who = me();
+			const who = await me();
 			json(res, 200, { state: venue.cancelOrder(who, cancel[1]!).state }, 0);
 			return;
 		}
 
 		json(res, 404, { error: "not found" });
 	} catch (e) {
-		if (e instanceof VenueError) {
+		// AN AUTH FAILURE KEEPS ITS OWN STATUS. Flattening a 401 to a 400 makes
+		// the UI unable to tell "sign in" from "that order was invalid", and
+		// flattening the 503 from an unreachable accounts service would send
+		// customers round a sign-in loop that cannot succeed.
+		if (e instanceof AuthError || e instanceof VenueError) {
 			json(res, e.status, { error: e.message }, 0);
 			return;
 		}
@@ -692,17 +749,23 @@ export function start(): void {
 	const wdPolicy: WdPolicy = {
 		autoApprove: true,
 		approvalThreshold: {},
+		// EVERY LISTED ASSET NEEDS BOTH FIGURES. An asset with a market but no
+		// limits is tradable and not withdrawable, which is a worse trap than
+		// not listing it — so adding a market without coming here would strand
+		// customer funds. Checked at startup below.
 		maxPerRequest: {
 			BTC: 10n ** 9n, ETH: 100n * 10n ** 18n, USDT: 100_000n * 10n ** 6n,
 			USDC: 100_000n * 10n ** 6n, SOL: 10_000n * 10n ** 9n,
 			DOGE: 10_000_000n * 10n ** 8n, BLOCK: 10_000n * 10n ** 8n,
-			PERBUG: 10_000n * 10n ** 8n,
+			PERBUG: 10_000n * 10n ** 8n, TRX: 1_000_000n * 10n ** 6n,
+			XRP: 500_000n * 10n ** 6n, BNB: 1_000n * 10n ** 18n,
 		},
 		velocityCap24h: {
 			BTC: 5n * 10n ** 9n, ETH: 500n * 10n ** 18n, USDT: 500_000n * 10n ** 6n,
 			USDC: 500_000n * 10n ** 6n, SOL: 50_000n * 10n ** 9n,
 			DOGE: 50_000_000n * 10n ** 8n, BLOCK: 50_000n * 10n ** 8n,
-			PERBUG: 50_000n * 10n ** 8n,
+			PERBUG: 50_000n * 10n ** 8n, TRX: 5_000_000n * 10n ** 6n,
+			XRP: 2_500_000n * 10n ** 6n, BNB: 5_000n * 10n ** 18n,
 		},
 		requireAllowlistedAddress: false,
 	};
@@ -739,6 +802,21 @@ export function start(): void {
 		table: LIVE_GAS_COSTS,
 	};
 
+	// A LISTED ASSET WITH NO WITHDRAWAL LIMITS IS A TRAP. It would trade fine
+	// and then refuse to pay out, which is the one failure a customer cannot
+	// work around. Logged loudly at startup rather than discovered by them.
+	for (const asset of LISTED) {
+		const missing: string[] = [];
+		if (wdPolicy.maxPerRequest[asset] === undefined) missing.push("maxPerRequest");
+		if (wdPolicy.velocityCap24h[asset] === undefined) missing.push("velocityCap24h");
+		if (missing.length > 0) {
+			console.error(
+				`CONFIG: ${asset} is listed for trading but has no ${missing.join(" or ")} ` +
+					"— it CANNOT BE WITHDRAWN. Customers can buy it and not get it out.",
+			);
+		}
+	}
+
 	const wd: Withdrawals = new Withdrawals(wdb, wledger, wdPolicy, {
 		feeTable: LIVE_FEES,
 		pricing,
@@ -749,6 +827,7 @@ export function start(): void {
 	});
 	// Market-maker ladders share the venue's book and its writable handle.
 	const mm = new MarketMaker(wdb, venue);
+	const deposits = new Deposits(wdb);
 	const wdCommitments = commitmentsFrom(wdb);
 	const liquidityOf = (symbol: string) =>
 		assetLiquidity(wledger, symbol, wdCommitments, haltsFrom());
@@ -760,12 +839,16 @@ export function start(): void {
 	// moves money. See adminapi.ts. An EMPTY allowlist means nobody is an
 	// administrator, which is the correct default for an unconfigured box.
 	wdb.exec(ADMIN_SCHEMA);
+	// ONE accounts client, shared by the trading API and the admin API. Two
+	// would mean two caches and two timeout settings for the same service.
+	const accountsAuth = new BlockleAuth({
+		base: process.env.ACCOUNTS_BASE ?? "https://blockle.org",
+	});
+
 	const adminDeps: AdminDeps = {
 		db: wdb,
 		ledger: wledger,
-		auth: new BlockleAuth({
-			base: process.env.ACCOUNTS_BASE ?? "https://blockle.org",
-		}),
+		auth: accountsAuth,
 		gas: gasDeps,
 		feeTable: LIVE_FEES,
 		pricing,
@@ -787,7 +870,8 @@ export function start(): void {
 				// visible in the URL rather than buried in a handler.
 				if (url.pathname.startsWith("/v1/")) {
 					await venueRoute(
-						req, res, url, venue, wledger, wd, liquidityOf, LIVE_FEES, pricing, mm,
+						req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
+						LIVE_FEES, pricing, mm, deposits,
 					);
 					return;
 				}
@@ -971,7 +1055,22 @@ export function start(): void {
 				if (await serveStatic(res, url.pathname)) return;
 				json(res, 404, { error: "not found" });
 			} catch (e) {
-				// A thrown handler must not take down the front page's data.
+				const why = e instanceof Error ? e.stack ?? e.message : String(e);
+				// THE ORIGINAL ERROR IS LOGGED, ALWAYS. This catch used to
+				// swallow it and reply 500; when the failure happened AFTER the
+				// response was committed — a client disconnecting mid-download
+				// is the common case — writing that 500 threw
+				// ERR_HTTP_HEADERS_SENT from inside an async function, which is
+				// an unhandled rejection, which exits the process. So a dropped
+				// connection could restart the exchange, and the log said
+				// nothing about what actually went wrong.
+				console.error(`request ${req.method} ${req.url} failed: ${why}`);
+				if (res.headersSent) {
+					// Nothing can be said to this client any more; just stop
+					// holding the socket open.
+					res.destroy();
+					return;
+				}
 				json(res, 500, { error: e instanceof Error ? e.message : String(e) });
 			}
 		})();

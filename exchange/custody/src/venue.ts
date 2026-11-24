@@ -53,14 +53,65 @@ export interface Market {
 	readonly minBase: bigint;
 }
 
-export const MARKETS: readonly Market[] = [
-	{ symbol: "BTC-USDT", base: "BTC", quote: "USDT", minBase: 1_000n },
-	{ symbol: "ETH-USDT", base: "ETH", quote: "USDT", minBase: 10n ** 13n },
-	{ symbol: "BLOCK-BTC", base: "BLOCK", quote: "BTC", minBase: 100_000n },
-	{ symbol: "PERBUG-BTC", base: "PERBUG", quote: "BTC", minBase: 100_000n },
-	{ symbol: "SOL-USDT", base: "SOL", quote: "USDT", minBase: 1_000_000n },
-	{ symbol: "DOGE-USDT", base: "DOGE", quote: "USDT", minBase: 100_000_000n },
-];
+/**
+ * Smallest tradable amount, PER BASE ASSET rather than per market.
+ *
+ * It is a property of the asset: the dust floor for BTC is the same whether it
+ * is priced in USDT or in BLOCK. Keeping it per-market meant the figure had to
+ * be repeated for every new pair, which is how one pair ends up with a floor a
+ * thousand times off and nobody notices until an order behaves oddly.
+ *
+ * Each is roughly "the smallest amount worth the gas of eventually moving it",
+ * erring large: a market full of dust orders is a market nobody can read.
+ */
+const MIN_BASE: Readonly<Record<string, bigint>> = {
+	BTC: 1_000n,                  // 0.00001 BTC
+	ETH: 10n ** 13n,              // 0.00001 ETH
+	USDT: 1_000_000n,             // 1 USDT
+	USDC: 1_000_000n,             // 1 USDC
+	SOL: 1_000_000n,              // 0.001 SOL
+	DOGE: 100_000_000n,           // 1 DOGE
+	TRX: 1_000_000n,              // 1 TRX
+	XRP: 1_000_000n,              // 1 XRP
+	BNB: 10n ** 15n,              // 0.001 BNB
+	BLOCK: 100_000n,              // 0.001 BLOCK
+	PERBUG: 100_000n,             // 0.001 PERBUG
+};
+
+/**
+ * EVERY LISTED ASSET TRADES AGAINST USDT AND AGAINST BLOCK.
+ *
+ * USDT is the senior quote because that is what people price things in. BLOCK
+ * is the second quote on purpose: it is the chain's own asset, and a venue that
+ * lists its own token only against a stablecoin gives nobody a reason to hold
+ * it.
+ *
+ * GENERATED RATHER THAN LISTED, because a hand-written table is how an asset
+ * ends up listed with one market instead of two — the pair that is missing is
+ * never the one anybody notices. The generator also refuses to emit a pair
+ * against itself, and emits BLOCK-USDT rather than both that and USDT-BLOCK,
+ * which would be the same market twice with the prices inverted.
+ */
+const QUOTES = ["USDT", "BLOCK"] as const;
+
+function buildMarkets(): readonly Market[] {
+	const out: Market[] = [];
+	const seen = new Set<string>();
+	for (const quote of QUOTES) {
+		for (const base of Object.keys(MIN_BASE)) {
+			if (base === quote) continue;
+			// Skip the inverse of a pair already emitted: once BLOCK-USDT
+			// exists, USDT-BLOCK is the same market read backwards.
+			if (seen.has(`${quote}-${base}`)) continue;
+			const symbol = `${base}-${quote}`;
+			out.push({ symbol, base, quote, minBase: MIN_BASE[base]! });
+			seen.add(symbol);
+		}
+	}
+	return out;
+}
+
+export const MARKETS: readonly Market[] = buildMarkets();
 
 export function market(symbol: string): Market {
 	const m = MARKETS.find((x) => x.symbol === symbol);
