@@ -437,13 +437,34 @@
    * and then hand the freshly-authenticated session to another site. Only a
    * path on this host is accepted, and anything else falls back to the app.
    */
+  /*
+   * ONE ALLOWLISTED DESTINATION BESIDES OUR OWN ORIGIN.
+   *
+   * The guard here is against an open redirect: anything can put a `return`
+   * in a URL, so an unchecked one turns this page into a credential-phishing
+   * springboard that borrows our domain's credibility. Same-origin only was
+   * the right default and stays the default.
+   *
+   * But the operator console lives on admin.blockle.org and sends people here
+   * to sign in, and rejecting its return dumped every operator on the TRADING
+   * APP instead of back at the console — which is exactly what it looked like
+   * from outside: "admin.blockle.org just takes you to the exchange".
+   *
+   * So: the console's own path on its own host, and nothing else. An
+   * allowlist of one is still an allowlist.
+   */
+  var OPERATOR_CONSOLE = "https://admin.blockle.org";
+
   function destination() {
     var raw = new URLSearchParams(location.search).get("return") || "";
     if (raw === "") return "app.html";
     try {
       var u = new URL(raw, location.origin);
-      if (u.origin !== location.origin) return "app.html";
-      return u.pathname + u.search + u.hash;
+      if (u.origin === location.origin) return u.pathname + u.search + u.hash;
+      if (u.origin === OPERATOR_CONSOLE && u.pathname.indexOf("/admin/") === 0) {
+        return u.href;
+      }
+      return "app.html";
     } catch (e) {
       return "app.html";
     }

@@ -169,7 +169,12 @@ test('registry: Cardano adapter registered, enabled, endpoint, derives', async (
   const reg = REG.createRegistry({});
   assert.ok(reg.has('cardano'));
   assert.ok(reg.enabled().includes('cardano'));
-  assert.strictEqual(reg.endpoints('cardano').koios, 'https://api.koios.rest/api/v1');
+  // THE RELAY, NOT THE UPSTREAM. The browser cannot reach Koios
+  // directly (it blocks browser CORS), so the registry overrides the adapter's
+  // default with a same-origin path. This asserted the upstream and so
+  // failed against the behaviour the wallet actually ships.
+  assert.strictEqual(reg.endpoints('cardano').koios,
+    'https://blockle.org/account/api/px/koios/api/v1');
   const ent = entropy();
   reg.unlock({ entropy: ent, seed: ent });
   const acct = await reg.get('cardano').deriveAccount({ entropy: ent });

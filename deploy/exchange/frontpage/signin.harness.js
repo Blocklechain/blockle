@@ -157,6 +157,36 @@ function run(responses, opts = {}) {
   assert.equal(ok.assigned, '/app.html#/balances', `did not redirect: ${ok.assigned}`);
   assert.equal(ok.nodes.password.value, '', 'the password is cleared');
 
+  // 4b. THE OPERATOR CONSOLE IS THE ONE ALLOWED CROSS-ORIGIN RETURN.
+  //
+  //     admin.blockle.org sends operators here to sign in. Rejecting its
+  //     return as "cross-origin" dumped every one of them on the trading app,
+  //     which read from outside as "admin.blockle.org just takes you to the
+  //     exchange".
+  const toConsole = await run(
+    [{ status: 200, body: { ok: true, csrf: 'c', user: { id: 'u1' } } }],
+    { search: '?as=operator&return=' +
+        encodeURIComponent('https://admin.blockle.org/admin/') },
+  );
+  assert.equal(toConsole.assigned, 'https://admin.blockle.org/admin/',
+    `operator was not returned to the console: ${toConsole.assigned}`);
+
+  // 4c. AND NOTHING ELSE IS. An unchecked `return` turns this page into a
+  //     phishing springboard borrowing our domain's credibility, so every
+  //     other origin — including a lookalike host and the right host on the
+  //     wrong path — falls back to the app.
+  for (const evil of [
+    'https://evil.example/steal',
+    'https://admin.blockle.org.evil.example/admin/',
+    'https://admin.blockle.org/not-the-console',
+    '//evil.example/x',
+    'javascript:alert(1)',
+  ]) {
+    const r = await run([{ status: 200, body: { ok: true, csrf: 'c', user: { id: 'u1' } } }],
+      { search: '?return=' + encodeURIComponent(evil) });
+    assert.equal(r.assigned, 'app.html', `open redirect to ${evil}`);
+  }
+
   // 5. Ordinary failures show the service's own sentence, unchanged — guessing
   //    between "wrong password" and "no such account" would make this an
   //    account-enumeration oracle.
@@ -214,5 +244,5 @@ function run(responses, opts = {}) {
   assert.equal(locked.nodes.go.disabled, true, 'the button is held');
   assert.match(locked.nodes.go.textContent, /^Wait/);
 
-  console.log('signin: 11 flows correct — totp field, message precedence, redirect, failures');
+  console.log('signin: 13 flows correct — totp field, message precedence, redirect, failures');
 })().catch((e) => { console.error('FAILED:', e.message); process.exit(1); });

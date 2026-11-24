@@ -155,7 +155,12 @@ test('registry: TON adapter registered, enabled, endpoint + USDT jetton', async 
   const reg = REG.createRegistry({});
   assert.ok(reg.has('ton'));
   assert.ok(reg.enabled().includes('ton'));
-  assert.strictEqual(reg.endpoints('ton').api, 'https://toncenter.com/api/v2');
+  // THE RELAY, NOT THE UPSTREAM. The browser cannot reach toncenter
+  // directly (keyless requests 429; the server injects the key), so the registry overrides the adapter's
+  // default with a same-origin path. This asserted the upstream and so
+  // failed against the behaviour the wallet actually ships.
+  assert.strictEqual(reg.endpoints('ton').api,
+    'https://blockle.org/account/api/px/toncenter/api/v2');
   assert.ok(reg.tokensFor('ton').some((t) => t.kind === 'jetton' && t.symbol === 'USDT'
     && t.master === V.network.jettonMasters.USDT));
   const seed = HD.mnemonicToSeed(V.mnemonic, V.passphrase || '');

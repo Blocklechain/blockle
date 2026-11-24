@@ -316,10 +316,24 @@
     row.appendChild(td);
   }
 
+  /**
+   * THE STATUS TRAVELS WITH THE ERROR.
+   *
+   * This threw a bare Error, so `e.status` was always undefined downstream and
+   * the landing page fell through to its generic branch — telling a signed-in
+   * operator "not signed in" when the truth was "signed in, but this account
+   * is not on the allowlist". The three cases the page carefully distinguishes
+   * (401 / 404 / 503) were unreachable because the one thing that tells them
+   * apart was being dropped here.
+   */
   async function get(path) {
     const r = await fetch(API + path, { credentials: "same-origin" });
     const body = await r.json().catch(() => ({ error: r.statusText }));
-    if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+    if (!r.ok) {
+      const err = new Error(body.error || ("HTTP " + r.status));
+      err.status = r.status;
+      throw err;
+    }
     return body;
   }
 
@@ -331,7 +345,11 @@
       body: JSON.stringify(payload),
     });
     const body = await r.json().catch(() => ({ error: r.statusText }));
-    if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+    if (!r.ok) {
+      const err = new Error(body.error || ("HTTP " + r.status));
+      err.status = r.status;
+      throw err;
+    }
     return body;
   }
 
@@ -559,8 +577,14 @@
        *
        * Now it offers the sign-in, and distinguishes the cases it can.
        */
-      $("who").textContent = "not signed in";
       const status = Number(e.status) || 0;
+      // 404 means the session is VALID and simply not an operator. Saying
+      // "not signed in" there sends someone to sign in again, repeatedly,
+      // with the same account and the same result.
+      $("who").textContent =
+        status === 404 ? "signed in — not an operator"
+        : status === 503 ? "account service unreachable"
+        : "not signed in";
       for (const el of document.querySelectorAll("details.card")) el.remove();
 
       const host = $("banner");
