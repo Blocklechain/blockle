@@ -20,6 +20,24 @@ classifiers = [
 
 [project.optional-dependencies]
 qt = ["PySide6>=6.6"]
+# The multichain wallet's actual imports. There was NO `multichain` extra,
+# while CI has been installing `./python[multichain]` — and pip only *warns*
+# about an unknown extra, so it silently installed nothing and 45 test modules
+# failed to import on `base58`. CI has been red on that ever since, with the
+# cause invisible: conftest's sessionfinish calls os._exit, which discards
+# pytest's ERRORS section, so the log said "45 errors" and nothing else.
+#
+# Every name here is a module actually imported under blockle/multichain/.
+multichain = [
+    "base58>=2.1",
+    "coincurve>=20",
+    "cryptography>=42",
+    # provides the `Crypto` package; _core.py needs Crypto.Hash.keccak for
+    # Ethereum's pre-NIST Keccak-256, which hashlib does not offer
+    "pycryptodome>=3.20",
+    "PyNaCl>=1.5",
+    "websockets>=12",
+]
 
 [project.scripts]
 blockle = "blockle.cli:main"
