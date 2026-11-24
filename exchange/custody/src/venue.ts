@@ -31,7 +31,7 @@ import type { Database } from "better-sqlite3";
 
 import { assetDef } from "./assets";
 import { DEFAULT_FEES, Side, fillKey, fillPostings, type FeeSchedule } from "./fees";
-import { AccountKind, Reason, type Ledger } from "./ledger";
+import { AccountKind, InsufficientFunds, Reason, type Ledger } from "./ledger";
 
 export class VenueError extends Error {
 	constructor(
@@ -280,21 +280,90 @@ export class Venue {
 
 	// ------------------------------------------------------------- balances
 
-	balances(accountId: string): { asset: string; available: bigint; decimals: number }[] {
+	/**
+	 * Funds an account's OPEN ORDERS have already laid claim to, per asset.
+	 *
+	 * A resting buy has claimed quote for the part of it still unfilled, at its
+	 * own limit price; a resting sell has claimed that much base. Derived from
+	 * the order rows rather than tracked in a column, so it cannot drift out of
+	 * step with the book.
+	 */
+	reserved(accountId: string): Map<string, bigint> {
+		const rows = this.db
+			.prepare(
+				`SELECT market, side, price, base_total, base_filled FROM ord
+				  WHERE account_id = ? AND state = 'open'`,
+			)
+			.all(accountId) as {
+			market: string;
+			side: string;
+			price: string;
+			base_total: string;
+			base_filled: string;
+		}[];
+
+		const out = new Map<string, bigint>();
+		for (const r of rows) {
+			const m = MARKETS.find((x) => x.symbol === r.market);
+			if (m === undefined) continue;
+			const left = BigInt(r.base_total) - BigInt(r.base_filled);
+			if (left <= 0n) continue;
+			const asset = r.side === "buy" ? m.quote : m.base;
+			const amount =
+				r.side === "buy"
+					? quoteFor(left, BigInt(r.price), assetDef(m.base).decimals)
+					: left;
+			out.set(asset, (out.get(asset) ?? 0n) + amount);
+		}
+		return out;
+	}
+
+	/**
+	 * Balances, with what is already committed to resting orders separated out.
+	 *
+	 * THE FIRST VERSION REPORTED THE LEDGER BALANCE AS "available" AND RESERVED
+	 * NOTHING, which was not merely cosmetic. `placeOrder` checked that same
+	 * raw balance, so one account holding 1 BTC could rest five separate 1 BTC
+	 * asks — each individually passing the check — and every incoming buy that
+	 * reached past the first then failed, because settling the second fill
+	 * overdrew a balance the ledger correctly refused. One account could make a
+	 * whole market unusable for the price of one BTC, and nothing was stolen,
+	 * which is exactly why it would have taken a while to notice.
+	 */
+	balances(accountId: string): {
+		asset: string;
+		/** Ledger balance: everything the account owns. */
+		total: bigint;
+		/** Committed to resting orders. */
+		reserved: bigint;
+		/** total − reserved. What a new order may use. */
+		available: bigint;
+		decimals: number;
+	}[] {
 		const assets = new Set<string>();
 		for (const m of MARKETS) {
 			assets.add(m.base);
 			assets.add(m.quote);
 		}
-		return [...assets].sort().map((asset) => ({
-			asset,
-			available: this.ledger.balance({
+		const held = this.reserved(accountId);
+		return [...assets].sort().map((asset) => {
+			const total = this.ledger.balance({
 				kind: AccountKind.USER,
 				owner: accountId,
 				asset,
-			}),
-			decimals: assetDef(asset).decimals,
-		}));
+			});
+			const reserved = held.get(asset) ?? 0n;
+			return {
+				asset,
+				total,
+				reserved,
+				// Clamped at zero. A negative "available" could only come from a
+				// legacy overcommitted order, and rendering it negative would be
+				// alarming without being actionable.
+				available: total > reserved ? total - reserved : 0n,
+				decimals: assetDef(asset).decimals,
+			};
+		});
 	}
 
 	/**
@@ -361,14 +430,22 @@ export class Venue {
 				? quoteFor(args.baseAmount, args.price, baseDec)
 				: args.baseAmount;
 			const needAsset = args.side === "buy" ? m.quote : m.base;
-			const have = this.ledger.balance({
+			// AGAINST AVAILABLE, NOT THE RAW BALANCE. Checking the ledger
+			// balance alone lets the same funds back any number of resting
+			// orders — see the note on `balances`.
+			const total = this.ledger.balance({
 				kind: AccountKind.USER,
 				owner: args.accountId,
 				asset: needAsset,
 			});
+			const committed = this.reserved(args.accountId).get(needAsset) ?? 0n;
+			const have = total > committed ? total - committed : 0n;
 			if (have < need) {
 				throw new VenueError(
-					`insufficient ${needAsset}: need ${need}, have ${have}`,
+					`insufficient ${needAsset}: need ${need}, have ${have}` +
+						(committed > 0n
+							? ` (${total} held, ${committed} already committed to open orders)`
+							: ""),
 				);
 			}
 
@@ -438,9 +515,7 @@ export class Venue {
 			const sellerId = incoming.side === "buy" ? r.account_id : incoming.account_id!;
 			const tradeId = `t_${randomBytes(9).toString("hex")}`;
 
-			// Settlement goes through the tested fee + ledger path. If it
-			// throws — insufficient funds because a resting order's owner spent
-			// elsewhere — the whole transaction unwinds and no fill is recorded.
+			// Settlement goes through the tested fee + ledger path.
 			const { postings } = fillPostings(
 				{
 					base: m.base,
@@ -459,12 +534,44 @@ export class Venue {
 				},
 				this.fees,
 			);
-			this.ledger.post({
-				reason: Reason.TRADE,
-				postings,
-				idempotencyKey: fillKey(tradeId),
-				actor: "engine",
-			});
+			// A MAKER WHO CANNOT DELIVER IS REMOVED FROM THE BOOK, AND THE
+			// TAKER IS NOT PUNISHED.
+			//
+			// Reservation (see `balances`) is what stops an account resting more
+			// than it holds, so this should be unreachable for any order placed
+			// after that fix. It is here because it was NOT unreachable before:
+			// a throw at this point unwound the entire incoming order, so one
+			// overcommitted resting order made every buy that reached it fail,
+			// and the person whose order failed had done nothing wrong and
+			// could not tell why.
+			//
+			// Orders that predate the fix are still on the live book, and a
+			// maker can also be left short by an operator correction. So the
+			// failure is contained rather than propagated: cancel the maker,
+			// skip the fill, carry on down the book.
+			try {
+				this.ledger.post({
+					reason: Reason.TRADE,
+					postings,
+					idempotencyKey: fillKey(tradeId),
+					actor: "engine",
+				});
+			} catch (e) {
+				if (e instanceof InsufficientFunds) {
+					// SAVEPOINT, not the outer transaction: we are inside one
+					// already and must undo only this fill's attempt.
+					this.db
+						.prepare(`UPDATE ord SET state = 'cancelled' WHERE id = ?`)
+						.run(r.id);
+					console.error(
+						`matching ${m.symbol}: cancelled resting order ${r.id} — its ` +
+							`owner cannot cover the fill (${e.message}). The incoming ` +
+							"order continues against the rest of the book.",
+					);
+					continue;
+				}
+				throw e;
+			}
 
 			this.db
 				.prepare(

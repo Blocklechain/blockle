@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 
 import { parse } from "../src/amount";
-import { AccountKind, Ledger } from "../src/ledger";
+import { AccountKind, Ledger, Reason } from "../src/ledger";
 import { Venue, VenueError, quoteFor } from "../src/venue";
 
 const BTC = { symbol: "BTC", decimals: 8 };
@@ -332,4 +332,206 @@ test("A FULL SESSION OF TRADING STAYS SOLVENT TO THE UNIT", () => {
 	assert.ok(placed > 20, `expected most orders to place, got ${placed}`);
 	assert.ok(v.recentTrades("BTC-USDT", 200).length > 0, "some trades must have happened");
 	assertSolvent(l, ["BTC", "USDT"]);
+});
+
+// -----------------------------------------------------------------------------
+// FUNDS RESERVATION.
+//
+// Added after finding that `placeOrder` checked the raw ledger balance and
+// reserved nothing, so the same funds could back any number of resting orders.
+// Nothing could be stolen — the ledger refuses an overdraw — but the SETTLEMENT
+// then failed, and because it failed inside the incoming order's transaction it
+// unwound that order entirely. One account with 1 BTC could rest five 1 BTC
+// asks and every buy that reached past the first failed, for no visible reason,
+// for anyone. A market denial of service costing one BTC.
+// -----------------------------------------------------------------------------
+
+/** Credit a balance directly, bypassing the faucet's asset table. */
+function fundUser(l: Ledger, who: string, asset: string, amt: bigint, key: string): void {
+	const custodyId = asset === "USDT" ? "USDT.TRC20" : asset;
+	l.post({
+		reason: Reason.DEPOSIT,
+		postings: [
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: custodyId }, delta: -amt },
+			{ account: { kind: AccountKind.CUSTODY, owner: "", asset: custodyId }, delta: amt },
+			{ account: { kind: AccountKind.USER, owner: who, asset }, delta: amt },
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: custodyId }, delta: -amt },
+		],
+		idempotencyKey: `fu:${key}`,
+		actor: "test",
+	});
+}
+
+test("THE SAME FUNDS CANNOT BACK TWO RESTING ORDERS", () => {
+	const { l, v } = setup();
+	const a = v.register("a@x.com", "correct horse battery staple").id;
+	fundUser(l, a, "BTC", 100_000_000n, "r1"); // exactly 1 BTC
+
+	v.placeOrder({
+		accountId: a,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 100_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+	assert.throws(
+		() =>
+			v.placeOrder({
+				accountId: a,
+				market: "BTC-USDT",
+				side: "sell",
+				price: 100_000n * 10n ** 6n,
+				baseAmount: 100_000_000n,
+			}),
+		(e: unknown) => {
+			// And the refusal explains itself, rather than claiming the account
+			// is empty when it visibly holds a bitcoin.
+			assert.match(String(e), /already committed to open orders/);
+			return true;
+		},
+	);
+});
+
+test("balances separate total, reserved and available", () => {
+	const { l, v } = setup();
+	const a = v.register("a@x.com", "correct horse battery staple").id;
+	fundUser(l, a, "BTC", 100_000_000n, "r2");
+
+	const before = v.balances(a).find((b) => b.asset === "BTC")!;
+	assert.equal(before.total, 100_000_000n);
+	assert.equal(before.reserved, 0n);
+	assert.equal(before.available, 100_000_000n);
+
+	v.placeOrder({
+		accountId: a,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 100_000n * 10n ** 6n,
+		baseAmount: 40_000_000n,
+	});
+
+	const after = v.balances(a).find((b) => b.asset === "BTC")!;
+	assert.equal(after.total, 100_000_000n, "the coins are still theirs");
+	assert.equal(after.reserved, 40_000_000n, "but committed to the book");
+	assert.equal(after.available, 60_000_000n);
+});
+
+test("a buy reserves QUOTE at its own limit price", () => {
+	const { l, v } = setup();
+	const a = v.register("a@x.com", "correct horse battery staple").id;
+	fundUser(l, a, "USDT", 100_000n * 10n ** 6n, "r3");
+
+	v.placeOrder({
+		accountId: a,
+		market: "BTC-USDT",
+		side: "buy",
+		price: 50_000n * 10n ** 6n,
+		baseAmount: 100_000_000n, // 1 BTC at 50k = 50,000 USDT
+	});
+	const b = v.balances(a).find((x) => x.asset === "USDT")!;
+	assert.equal(b.reserved, 50_000n * 10n ** 6n);
+	assert.equal(b.available, 50_000n * 10n ** 6n);
+});
+
+test("cancelling releases the reservation", () => {
+	const { l, v } = setup();
+	const a = v.register("a@x.com", "correct horse battery staple").id;
+	fundUser(l, a, "BTC", 100_000_000n, "r4");
+	const r = v.placeOrder({
+		accountId: a,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 100_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+	v.cancelOrder(a, r.order.id);
+	assert.equal(v.balances(a).find((b) => b.asset === "BTC")!.available, 100_000_000n);
+});
+
+test("a PARTIAL fill releases only the filled portion's reservation", () => {
+	const { l, v } = setup();
+	const maker = v.register("m@x.com", "correct horse battery staple").id;
+	const taker = v.register("t@x.com", "correct horse battery staple").id;
+	fundUser(l, maker, "BTC", 100_000_000n, "r5");
+	fundUser(l, taker, "USDT", 200_000n * 10n ** 6n, "r6");
+
+	v.placeOrder({
+		accountId: maker,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 100_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+	// Take a quarter of it.
+	v.placeOrder({
+		accountId: taker,
+		market: "BTC-USDT",
+		side: "buy",
+		price: 100_000n * 10n ** 6n,
+		baseAmount: 25_000_000n,
+	});
+
+	const b = v.balances(maker).find((x) => x.asset === "BTC")!;
+	assert.equal(b.total, 75_000_000n, "a quarter of a BTC was sold");
+	assert.equal(b.reserved, 75_000_000n, "the rest is still on the book");
+	assert.equal(b.available, 0n);
+});
+
+test("A MAKER WHO CANNOT DELIVER IS CANCELLED, AND THE TAKER STILL TRADES", () => {
+	// Reservation makes this unreachable for new orders, but orders placed
+	// before the fix are still on the live book and an operator correction can
+	// also leave a maker short. The failure must be contained to that maker.
+	const { l, v, db } = setup();
+	const bad = v.register("bad@x.com", "correct horse battery staple").id;
+	const good = v.register("good@x.com", "correct horse battery staple").id;
+	const taker = v.register("t@x.com", "correct horse battery staple").id;
+	fundUser(l, bad, "BTC", 100_000_000n, "c1");
+	fundUser(l, good, "BTC", 100_000_000n, "c2");
+	fundUser(l, taker, "USDT", 500_000n * 10n ** 6n, "c3");
+
+	// `bad` rests a legitimate ask at the better price...
+	const badOrder = v.placeOrder({
+		accountId: bad,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 90_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+	// `good` rests behind it.
+	const goodOrder = v.placeOrder({
+		accountId: good,
+		market: "BTC-USDT",
+		side: "sell",
+		price: 95_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+
+	// ...and then the BTC leaves their account behind the engine's back, which
+	// is what a pre-fix overcommitment or a correction looks like at fill time.
+	l.post({
+		reason: Reason.ADJUSTMENT,
+		postings: [
+			{ account: { kind: AccountKind.USER, owner: bad, asset: "BTC" }, delta: -100_000_000n },
+			{ account: { kind: AccountKind.CUSTODY, owner: "", asset: "BTC" }, delta: 100_000_000n },
+		],
+		idempotencyKey: "seize",
+		actor: "ops",
+		note: "simulating a maker left short",
+	});
+
+	const r = v.placeOrder({
+		accountId: taker,
+		market: "BTC-USDT",
+		side: "buy",
+		price: 95_000n * 10n ** 6n,
+		baseAmount: 100_000_000n,
+	});
+
+	// THE TAKER TRADED, against the order that could actually deliver.
+	assert.equal(r.fills, 1, "the taker was not punished for someone else's shortfall");
+	assert.equal(v.order(goodOrder.order.id)?.state, "filled");
+	// And the maker that could not deliver is off the book rather than left
+	// there to break the next order too.
+	assert.equal(v.order(badOrder.order.id)?.state, "cancelled");
+	void db;
 });

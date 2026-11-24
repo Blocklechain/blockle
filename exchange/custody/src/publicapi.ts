@@ -43,7 +43,8 @@ import Database from "better-sqlite3";
 
 import { format, parse } from "./amount";
 import { ASSETS, assetDef } from "./assets";
-import { MARKETS as VENUE_MARKETS, Venue, VenueError, quoteFor } from "./venue";
+import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
+import { MarketMaker, quote as mmQuote } from "./mm";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
@@ -287,6 +288,7 @@ async function venueRoute(
 	liquidityOf: (symbol: string) => ReturnType<typeof assetLiquidity>,
 	feeTable: typeof LIVE_FEES,
 	gasPricing: GasPricing,
+	mm: MarketMaker,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 	const bearer = (req.headers.authorization ?? "").startsWith("Bearer ")
@@ -320,6 +322,11 @@ async function venueRoute(
 			const who = me();
 			json(res, 200, venue.balances(who).map((b) => ({
 				asset: b.asset,
+				// THREE FIGURES, NOT ONE. "available" alone cannot explain why a
+				// visible balance will not place an order; "reserved" is the
+				// answer, and the balances screen shows it beside the total.
+				total: fmt(b.total, b.decimals),
+				reserved: fmt(b.reserved, b.decimals),
 				available: fmt(b.available, b.decimals),
 				decimals: b.decimals,
 			})), 0);
@@ -504,6 +511,108 @@ async function venueRoute(
 			return;
 		}
 
+		// ---- liquidity (market-maker ladders) -----------------------------
+		//
+		// "Add liquidity" on an order book is a ladder of resting orders, not a
+		// pool. See mm.ts — and note that a maker here PAYS the 0.20% fee on
+		// both legs, so the quote carries the break-even and the UI has to show
+		// it rather than implying makers earn a rebate they do not get.
+		if (p === "/liquidity/quote" && req.method === "GET") {
+			me();
+			const symbol = url.searchParams.get("market") ?? "";
+			const m = marketDef(symbol);
+			const bd = assetDef(m.base).decimals;
+			const qd = assetDef(m.quote).decimals;
+			const q = mmQuote({
+				market: symbol,
+				mid: parse(url.searchParams.get("mid") ?? "0", { symbol: m.quote, decimals: qd }),
+				spreadBps: Number(url.searchParams.get("spreadBps") ?? "0"),
+				rungs: Number(url.searchParams.get("rungs") ?? "0"),
+				baseCapital: parse(url.searchParams.get("base") ?? "0", { symbol: m.base, decimals: bd }),
+				quoteCapital: parse(url.searchParams.get("quote") ?? "0", { symbol: m.quote, decimals: qd }),
+			});
+			json(res, 200, {
+				market: symbol,
+				breakEvenBps: q.breakEvenBps,
+				loses: q.loses,
+				note: q.note,
+				baseNeeded: fmt(q.baseNeeded, bd),
+				quoteNeeded: fmt(q.quoteNeeded, qd),
+				bids: q.bids.map((b) => ({ price: fmt(b.price, qd), amount: fmt(b.base, bd) })),
+				asks: q.asks.map((a) => ({ price: fmt(a.price, qd), amount: fmt(a.base, bd) })),
+			}, 0);
+			return;
+		}
+
+		if (p === "/liquidity" && req.method === "GET") {
+			const who = me();
+			json(res, 200, mm.list(who).map((pos) => {
+				const m = marketDef(pos.market);
+				const bd = assetDef(m.base).decimals;
+				const qd = assetDef(m.quote).decimals;
+				return {
+					id: pos.id,
+					market: pos.market,
+					state: pos.state,
+					mid: fmt(pos.mid, qd),
+					spreadBps: pos.spreadBps,
+					rungs: pos.rungs,
+					orders: pos.orderIds.length,
+					filled: fmt(pos.filledBase, bd),
+					resting: fmt(pos.restingBase, bd),
+					createdAt: pos.createdAt,
+				};
+			}), 0);
+			return;
+		}
+
+		if (p === "/liquidity" && req.method === "POST") {
+			const who = me();
+			const b = await body(req);
+			const symbol = str(b, "market");
+			const m = marketDef(symbol);
+			const bd = assetDef(m.base).decimals;
+			const qd = assetDef(m.quote).decimals;
+			const r = mm.open({
+				accountId: who,
+				market: symbol,
+				mid: parse(str(b, "mid"), { symbol: m.quote, decimals: qd }),
+				spreadBps: Number(b.spreadBps),
+				rungs: Number(b.rungs),
+				baseCapital: parse(
+					typeof b.base === "string" && b.base !== "" ? b.base : "0",
+					{ symbol: m.base, decimals: bd },
+				),
+				quoteCapital: parse(
+					typeof b.quote === "string" && b.quote !== "" ? b.quote : "0",
+					{ symbol: m.quote, decimals: qd },
+				),
+				// EXPLICIT, and only ever set by the user ticking the box after
+				// reading the break-even. Never defaulted true.
+				acceptLoss: b.acceptLoss === true,
+			});
+			json(res, 200, {
+				id: r.position.id,
+				orders: r.position.orderIds.length,
+				loses: r.quote.loses,
+				note: r.quote.note,
+			}, 0);
+			return;
+		}
+
+		const closePos = /^\/liquidity\/(mm_[a-f0-9]+)\/close$/.exec(p);
+		if (closePos !== null && req.method === "POST") {
+			const who = me();
+			const r = mm.close(who, closePos[1]!);
+			json(res, 200, {
+				cancelled: r.cancelled,
+				// Named rather than hidden: a ladder that did its job is mostly
+				// filled, and those fills are real trades that are NOT undone.
+				alreadyFilledOrGone: r.alreadyGone,
+			}, 0);
+			return;
+		}
+
 		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
 		if (cancel !== null && req.method === "POST") {
 			const who = me();
@@ -638,6 +747,8 @@ export function start(): void {
 		// loud refusal, not tokens withdrawing with no gas check at all.
 		requireGasGate: true,
 	});
+	// Market-maker ladders share the venue's book and its writable handle.
+	const mm = new MarketMaker(wdb, venue);
 	const wdCommitments = commitmentsFrom(wdb);
 	const liquidityOf = (symbol: string) =>
 		assetLiquidity(wledger, symbol, wdCommitments, haltsFrom());
@@ -676,7 +787,7 @@ export function start(): void {
 				// visible in the URL rather than buried in a handler.
 				if (url.pathname.startsWith("/v1/")) {
 					await venueRoute(
-						req, res, url, venue, wledger, wd, liquidityOf, LIVE_FEES, pricing,
+						req, res, url, venue, wledger, wd, liquidityOf, LIVE_FEES, pricing, mm,
 					);
 					return;
 				}
