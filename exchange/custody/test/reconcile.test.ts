@@ -438,3 +438,88 @@ test("reconciliation reads the books before the custodian", async () => {
 	assert.equal(booksReadFirst, true);
 	assert.equal(r.assets[0]!.status, Status.OK);
 });
+
+// ---------------------------------------------------------------------------
+// MULTI-NETWORK REGRESSION.
+//
+// Every test above uses a single-chain asset, where the bare and qualified
+// asset ids coincide. That is exactly why they all passed while reconciliation
+// was broken for USDT: the old code walked `ledger.balances(asset)`, which
+// matches the asset column EXACTLY, so it saw `user:alice:USDT` but never
+// `custody::USDT.TRC20`. It reported a permanent INTERNAL_BREAK and would have
+// halted USDT and USDC withdrawals forever.
+//
+// Found by running the real reconciliation job against a seeded ledger, not by
+// reading the code. These tests exist so it cannot return.
+// ---------------------------------------------------------------------------
+
+test("MULTI-NETWORK: qualified custody is counted, not reported as a break", async () => {
+	const l = fresh();
+	const U = 1_000_000n;
+	// 5000 USDT arriving over Tron: custody is USDT.TRC20, liability is USDT.
+	l.post({
+		reason: Reason.DEPOSIT,
+		postings: [
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "USDT.TRC20" }, delta: -5000n * U },
+			{ account: { kind: AccountKind.CUSTODY, owner: "", asset: "USDT.TRC20" }, delta: 5000n * U },
+			{ account: { kind: AccountKind.USER, owner: "alice", asset: "USDT" }, delta: 5000n * U },
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "USDT.TRC20" }, delta: -5000n * U },
+		],
+		idempotencyKey: "dep:usdt:trx",
+		actor: "test",
+	});
+
+	const r = await reconcile(l, source({ USDT: 5000n * U }), ["USDT"]);
+	const a = r.assets[0]!;
+	assert.equal(a.status, Status.OK, a.detail);
+	assert.equal(a.liabilities, 5000n * U);
+	assert.equal(a.booksCustody, 5000n * U, "qualified custody must be counted");
+	assert.equal(a.internalDelta, 0n, "NOT an internal break");
+	assert.equal(a.haltWithdrawals, false);
+});
+
+test("MULTI-NETWORK: holdings across chains SUM against one liability", async () => {
+	// A venue holding 300 on Ethereum and 150 on Tron holds 450 USDT and is
+	// solvent against a 450 liability, even though no single chain covers it.
+	// Solvency is per asset; payability per chain is liquidity's question.
+	const l = fresh();
+	const U = 1_000_000n;
+	for (const [net, amt, ref] of [["TRC20", 150n, "a"], ["ERC20", 300n, "b"]] as const) {
+		l.post({
+			reason: Reason.DEPOSIT,
+			postings: [
+				{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: `USDT.${net}` }, delta: -amt * U },
+				{ account: { kind: AccountKind.CUSTODY, owner: "", asset: `USDT.${net}` }, delta: amt * U },
+				{ account: { kind: AccountKind.USER, owner: "alice", asset: "USDT" }, delta: amt * U },
+				{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: `USDT.${net}` }, delta: -amt * U },
+			],
+			idempotencyKey: `dep:${ref}`,
+			actor: "test",
+		});
+	}
+	const r = await reconcile(l, source({ USDT: 450n * U }), ["USDT"]);
+	assert.equal(r.assets[0]!.status, Status.OK);
+	assert.equal(r.assets[0]!.booksCustody, 450n * U);
+});
+
+test("MULTI-NETWORK: a real shortfall on a multi-network asset still halts", async () => {
+	// The fix must not have traded a false positive for a false negative.
+	const l = fresh();
+	const U = 1_000_000n;
+	l.post({
+		reason: Reason.DEPOSIT,
+		postings: [
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "USDT.TRC20" }, delta: -5000n * U },
+			{ account: { kind: AccountKind.CUSTODY, owner: "", asset: "USDT.TRC20" }, delta: 5000n * U },
+			{ account: { kind: AccountKind.USER, owner: "alice", asset: "USDT" }, delta: 5000n * U },
+			{ account: { kind: AccountKind.EXTERNAL, owner: "", asset: "USDT.TRC20" }, delta: -5000n * U },
+		],
+		idempotencyKey: "dep:usdt",
+		actor: "test",
+	});
+	// The custodian only confirms 4000 of the 5000 the books claim.
+	const r = await reconcile(l, source({ USDT: 4000n * U }), ["USDT"]);
+	assert.equal(r.assets[0]!.status, Status.SHORTFALL);
+	assert.equal(r.assets[0]!.externalDelta, -1000n * U);
+	assert.deepEqual(r.halted, ["USDT"]);
+});

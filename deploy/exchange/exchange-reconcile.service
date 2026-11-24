@@ -1,0 +1,35 @@
+# One reconciliation pass. Driven by exchange-reconcile.timer.
+#
+# Exit codes are meaningful and systemd records them:
+#   0  books and custody agree (or holdings unknown — see below)
+#   1  the job could not RUN, or found a non-halting discrepancy (a surplus)
+#   2  a HALT was published — a shortfall or an internal break
+#
+# 1 and 2 are deliberately distinct. "Could not reach the custodian" is not
+# "funds are missing", and conflating them makes a network blip look like a
+# theft.
+
+[Unit]
+Description=Blockle Exchange reconciliation (books vs custody; publishes the withdrawal halt set)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/blockle/exchange-custody
+ExecStart=/usr/bin/node dist/src/reconcilejob.js
+Environment=CUSTODY_DB=/var/lib/exchange-custody/ledger.db
+Environment=EXCHANGE_CONFIG=/etc/blockle/exchange.json
+Environment=HALT_FILE=/run/blockle/exchange-halts.json
+Environment=TESTNET_TREASURY=/etc/blockle/testnet-treasury.json
+# Opens the ledger read-only; needs write only for the halt file.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/blockle/exchange-custody /var/lib/exchange-custody /etc/blockle
+ReadWritePaths=/run/blockle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exchange-reconcile

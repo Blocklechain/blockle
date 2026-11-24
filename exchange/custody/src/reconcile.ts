@@ -142,27 +142,28 @@ export async function reconcile(
 	const reports: AssetReport[] = [];
 
 	for (const asset of assets) {
-		const balances = ledger.balances(asset);
-
-		let liabilities = 0n;
+		// SETTLEMENT-ASSET AWARE, and it has to be.
+		//
+		// The first version walked `ledger.balances(asset)`, which matches the
+		// asset column EXACTLY. For a multi-network asset the custody postings
+		// are qualified — `custody::USDT.TRC20`, not `custody::USDT` — so that
+		// query found the liabilities and none of the holdings, and reported a
+		// permanent INTERNAL_BREAK: "custody holds 0 but liabilities total
+		// 5000000000". In production that would have halted USDT and USDC
+		// withdrawals forever, for a reason that was entirely our own bug.
+		//
+		// It survived the unit tests because every one of them used a
+		// single-chain asset, where qualified and unqualified coincide. Running
+		// the actual job against a seeded multi-network ledger is what caught
+		// it.
+		//
+		// `liabilities()` and `custodyByNetwork()` both match `asset = ? OR
+		// asset LIKE ?.%`, which is the settlement-asset grouping the ledger's
+		// own invariant uses. Using them here keeps the two in step by
+		// construction rather than by memory.
+		const liabilities = ledger.liabilities(asset);
 		let booksCustody = 0n;
-		for (const [id, amount] of balances) {
-			// account_id is "kind:owner:asset"; the kind is the first field.
-			const kind = id.slice(0, id.indexOf(":")) as AccountKind;
-			switch (kind) {
-				case AccountKind.USER:
-				case AccountKind.FEES:
-				case AccountKind.INFLIGHT:
-					liabilities += amount;
-					break;
-				case AccountKind.CUSTODY:
-					booksCustody += amount;
-					break;
-				case AccountKind.EXTERNAL:
-					// The outside world is not a liability and not a holding.
-					break;
-			}
-		}
+		for (const v of ledger.custodyByNetwork(asset).values()) booksCustody += v;
 
 		const internalDelta = booksCustody - liabilities;
 
