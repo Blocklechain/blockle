@@ -452,6 +452,135 @@
     </section>
 
     <!-- ------------------------------------------------------------ account -->
+    <!-- ----------------------------------------------------------- API keys -->
+    <section class="screen" id="s-api">
+      <div class="head">
+        <div>
+          <h1>API</h1>
+          <p>
+            Trade from your own code. A key reads your balances and places
+            orders; <b>no key can withdraw</b>, and there is no setting that
+            changes that.
+          </p>
+        </div>
+        <div class="right">
+          <button class="btn pri" id="api-new">New key</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <header>
+          <h2>Your keys</h2>
+          <span class="note" id="api-note"></span>
+        </header>
+        <div class="body tight scroll">
+          <table id="t-apikeys">
+            <thead>
+              <tr><th>Label</th><th>Key</th><th>Scopes</th><th class="num">Rate</th>
+                  <th>Last used</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- The new-key form. Hidden until asked for, because most visits to this
+           screen are to copy an endpoint, not to mint a credential. -->
+      <div class="panel hidden" id="api-form" style="margin-top:14px">
+        <header><h2>New key</h2></header>
+        <div class="body">
+          <div class="grid g3">
+            <label class="f">
+              <span>Label</span>
+              <input id="api-label" placeholder="grid bot on the VPS" maxlength="64" />
+              <em class="note">For you. So you know which key to revoke later.</em>
+            </label>
+            <label class="f">
+              <span>Access</span>
+              <select id="api-scopes">
+                <option value="read">Read only — balances, orders, fills</option>
+                <option value="read,trade" selected>Read and trade — place and cancel orders</option>
+              </select>
+              <em class="note">Withdrawal is not on this list and cannot be added.</em>
+            </label>
+            <label class="f">
+              <span>Requests a minute</span>
+              <input id="api-rate" type="number" min="1" max="1200" value="120" />
+              <em class="note">Per key. A runaway loop stops itself instead of your other bots.</em>
+            </label>
+          </div>
+          <div class="actions" style="margin-top:12px">
+            <button class="btn pri" id="api-create">Create key</button>
+            <button class="btn ghost" id="api-cancel">Cancel</button>
+          </div>
+          <p class="msg hidden" id="api-msg"></p>
+        </div>
+      </div>
+
+      <!-- Shown once, immediately after creation. -->
+      <div class="panel hidden" id="api-secret" style="margin-top:14px;border-color:var(--warn)">
+        <header><h2>Copy your secret now</h2></header>
+        <div class="body">
+          <p style="margin:0 0 10px">
+            This is the only time it is shown. We keep what we need to check your
+            signatures; we cannot show you this string again.
+          </p>
+          <div class="kv"><span>Key ID</span><code class="mono" id="api-new-id">—</code></div>
+          <div class="kv"><span>Secret</span><code class="mono" id="api-new-secret">—</code></div>
+          <div class="actions" style="margin-top:12px">
+            <button class="btn" id="api-copy">Copy secret</button>
+            <button class="btn ghost" id="api-done">I have saved it</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <header><h2>How to use it</h2></header>
+        <div class="body">
+          <p style="margin:0 0 10px">
+            Every request carries three headers. The signature is HMAC-SHA256
+            over one string, so a captured request cannot be replayed, retargeted
+            at another endpoint, or have its amounts edited in flight.
+          </p>
+          <div class="kv"><span>Base URL</span><code class="mono" id="api-base">—</code></div>
+          <div class="kv"><span>String to sign</span>
+            <code class="mono">timestamp + METHOD + path + sha256hex(body)</code></div>
+          <div class="kv"><span>X-Blockle-Key</span><code class="mono">your key id</code></div>
+          <div class="kv"><span>X-Blockle-Timestamp</span>
+            <code class="mono">milliseconds since the epoch, within 30s of ours</code></div>
+          <div class="kv"><span>X-Blockle-Signature</span>
+            <code class="mono">hex HMAC-SHA256(secret, string to sign)</code></div>
+
+          <p class="note" style="margin:12px 0 6px">
+            <code>path</code> includes the query string. <code>METHOD</code> is
+            upper-case. An empty body still hashes — sha256 of the empty string.
+            Each signature is accepted once: sign every request freshly rather
+            than re-sending one.
+          </p>
+
+          <div class="tabs" id="api-tabs">
+            <button class="tab on" data-lang="node">Node</button>
+            <button class="tab" data-lang="python">Python</button>
+            <button class="tab" data-lang="curl">curl</button>
+          </div>
+          <pre class="code"><code id="api-sample">Loading…</code></pre>
+
+          <h3 style="margin:18px 0 8px;font-size:13px;letter-spacing:.04em;
+                     text-transform:uppercase;color:var(--ink-dim)">Endpoints</h3>
+          <table id="t-apiendpoints">
+            <thead><tr><th>Method</th><th>Path</th><th>Needs</th><th>Does</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <p class="note" style="margin-top:10px">
+            Public market data — <code class="mono">/public/tickers</code>,
+            <code class="mono">/public/markets</code>,
+            <code class="mono">/public/fees</code> — needs no key and no
+            signature.
+          </p>
+        </div>
+      </div>
+    </section>
+
     <section class="screen" id="s-account">
       <div class="head">
         <div>

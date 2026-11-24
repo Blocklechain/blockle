@@ -65,7 +65,7 @@
     wrap.appendChild(mark.firstChild);
     var txt = el("div");
     txt.appendChild(el("div", "tk", symbol));
-    txt.appendChild(el("div", "nm", network ? coinIcon.network(network) : coinIcon.name(symbol)));
+    txt.appendChild(el("div", "nm", network ? coinIcon.network(network) : coinIcon.fullName(symbol)));
     wrap.appendChild(txt);
     td.appendChild(wrap);
     row.appendChild(td);
@@ -168,6 +168,7 @@
     orders: '<path d="M8 6.5h11M8 12h11M8 17.5h11"/><circle cx="5" cy="6.5" r="1.2"/><circle cx="5" cy="12" r="1.2"/><circle cx="5" cy="17.5" r="1.2"/>',
     listing: '<path d="M6.5 3.5h8L18 7v13.5H6.5z"/><path d="M14 3.5V7h3.8"/><path d="M9 11.5h6M9 15h6"/>',
     fees: '<path d="M12 4v16M6 20h12"/><path d="M4.5 8h15M12 4.5L5 8M12 4.5L19 8"/><path d="M5 8l-2.3 4.8a2.8 2.8 0 004.6 0zM19 8l-2.3 4.8a2.8 2.8 0 004.6 0z"/>',
+    api: '<path d="M9.5 7.5L5 12l4.5 4.5M14.5 7.5L19 12l-4.5 4.5"/>',
     account: '<circle cx="12" cy="8.5" r="3.4"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/>',
   };
   function icon(name) {
@@ -190,6 +191,7 @@
     { id: "withdraw", label: "Withdraw", group: null, auth: true },
     { id: "fees", label: "Fees", group: "Venue" },
     { id: "listing", label: "List a coin", group: null },
+    { id: "api", label: "API", group: null, auth: true },
     { id: "account", label: "Account", group: null },
   ];
 
@@ -211,7 +213,11 @@
     var foot = el("div", "foot");
     // ABSOLUTE, to blockle.org. The exchange lives on its own subdomain and
     // these pages live on the main site; relative paths would 404 here.
-    [["Back to blockle.org", "https://blockle.org/"],
+    // The coin pages are the public, crawlable side of the venue, and someone
+    // inside the app wanting to know "what else do you list, and when" should
+    // not have to leave through a search engine to find them.
+    [["All coins + listing queue", "/coins"],
+     ["Back to blockle.org", "https://blockle.org/"],
      ["Support", "https://blockle.org/contact"],
      ["Terms", "https://blockle.org/terms"],
      ["Privacy", "https://blockle.org/privacy"]]
@@ -283,7 +289,7 @@
     var q = ($("mkt-search").value || "").trim().toUpperCase();
     var body = $("t-markets").tBodies[0];
     var rows = STATE.tickers.filter(function (t) {
-      return !q || t.pair.indexOf(q) >= 0 || coinIcon.name(t.base).toUpperCase().indexOf(q) >= 0;
+      return !q || t.pair.indexOf(q) >= 0 || coinIcon.fullName(t.base).toUpperCase().indexOf(q) >= 0;
     });
     clear(body);
     if (!rows.length) { emptyRow(body, 7, "No market matches that."); return; }
@@ -1086,6 +1092,247 @@
       .then(function () { btn.disabled = false; });
   }
 
+  // ----------------------------------------------------------------- API keys
+  //
+  // THIS SCREEN HANDS OUT A CREDENTIAL, so it is the one screen where the
+  // 8-second poll has to be held off: a refresh that redraws while the secret
+  // is on screen would take it away before it had been copied, and it cannot be
+  // shown again. `API_BUSY` is that hold.
+
+  var API_BUSY = false;
+  var API_LANG = "node";
+
+  RENDER.api = function () {
+    $("api-base").textContent = location.origin + "/v1";
+    drawApiSample();
+    drawApiEndpoints();
+    if (API_BUSY) return;             // a form or a secret is on screen
+    priv("api-keys").then(function (r) {
+      var body = $("t-apikeys").tBodies[0];
+      clear(body);
+      var live = 0;
+      (r.keys || []).forEach(function (k) {
+        var tr = body.insertRow();
+        cell(tr, k.label);
+        var id = cell(tr, k.keyId);
+        id.className = "mono";
+        cell(tr, k.scopes.join(" + "));
+        cell(tr, String(k.ratePerMin) + "/min", "num");
+        // "never" is the useful word here: an unused key is one to revoke.
+        cell(tr, k.revokedAt ? "revoked" : (k.lastUsedAt ? when(k.lastUsedAt) : "never"));
+        var td = cell(tr, "");
+        if (k.revokedAt) {
+          tr.style.opacity = ".55";
+        } else {
+          live += 1;
+          var b = el("button", "btn sm danger", "Revoke");
+          b.onclick = function () { revokeKey(k); };
+          td.appendChild(b);
+        }
+      });
+      if (!(r.keys || []).length) {
+        emptyRow(body, 6, "No keys yet. Create one to trade from your own code.");
+      }
+      badge("api", live);
+      $("api-note").textContent = r.signing && r.signing.cannotWithdraw
+        ? "read and trade only — withdrawals are not available to any key"
+        : "";
+    }).catch(function (e) {
+      emptyRow($("t-apikeys").tBodies[0], 6, e.message);
+    });
+  };
+
+  /** A timestamp as something human. Exact date once it is not today. */
+  function when(iso) {
+    var t = Date.parse(iso);
+    if (!t) return iso;
+    var mins = Math.floor((Date.now() - t) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return mins + "m ago";
+    if (mins < 24 * 60) return Math.floor(mins / 60) + "h ago";
+    return new Date(t).toLocaleDateString();
+  }
+
+  function apiForm(on) {
+    API_BUSY = on;
+    $("api-form").classList.toggle("hidden", !on);
+    hide($("api-msg"));
+    if (on) $("api-label").focus();
+  }
+
+  function createKey() {
+    var label = $("api-label").value.trim();
+    var msg = $("api-msg");
+    if (!label) { show(msg, "Give the key a label so you know what it is.", "bad"); return; }
+    var btn = $("api-create");
+    btn.disabled = true;
+    hide(msg);
+    priv("api-keys", {
+      method: "POST",
+      data: {
+        label: label,
+        scopes: $("api-scopes").value.split(","),
+        ratePerMin: parseInt($("api-rate").value, 10) || 120,
+      },
+    }).then(function (r) {
+      $("api-form").classList.add("hidden");
+      $("api-label").value = "";
+      // SHOWN ONCE. API_BUSY stays true until dismissed, so no poll can wipe it.
+      API_BUSY = true;
+      $("api-new-id").textContent = r.keyId;
+      $("api-new-secret").textContent = r.secret;
+      $("api-secret").classList.remove("hidden");
+      drawApiSample(r.keyId, r.secret);
+    }).catch(function (e) {
+      show(msg, e.message, "bad");
+    }).then(function () { btn.disabled = false; });
+  }
+
+  function secretDone() {
+    // Wiped from the DOM as well as hidden: leaving it in the page for the rest
+    // of the session serves nobody.
+    $("api-new-secret").textContent = "—";
+    $("api-new-id").textContent = "—";
+    $("api-secret").classList.add("hidden");
+    API_BUSY = false;
+    drawApiSample();
+    RENDER.api();
+  }
+
+  function revokeKey(k) {
+    // No confirm() dialog — revoking is the safe direction, and a key that
+    // should not have been revoked is replaced in ten seconds. The irreversible
+    // thing would be leaving a leaked key alive while reading a modal.
+    var row = { label: k.label, id: k.keyId };
+    priv("api-keys/" + encodeURIComponent(k.keyId), { method: "DELETE" })
+      .then(function () { RENDER.api(); })
+      .catch(function (e) {
+        emptyRow($("t-apikeys").tBodies[0], 6,
+          "Could not revoke " + row.label + ": " + e.message);
+      });
+  }
+
+  /**
+   * The worked example, in three languages.
+   *
+   * Filled with the real key id and secret right after creation, because a
+   * sample someone has to edit is a sample they get wrong — and the first thing
+   * they would get wrong is the hash of an empty body.
+   */
+  function drawApiSample(keyId, secret) {
+    var id = keyId || "YOUR_KEY_ID";
+    var sec = secret || "YOUR_SECRET";
+    var base = location.origin;
+    var samples = {
+      node:
+        "// Node 18+, no dependencies.\n" +
+        "import { createHmac, createHash } from \"node:crypto\";\n\n" +
+        "const BASE = \"" + base + "\";\n" +
+        "const KEY = \"" + id + "\";\n" +
+        "const SECRET = \"" + sec + "\";\n\n" +
+        "async function call(method, path, body) {\n" +
+        "  const raw = body === undefined ? \"\" : JSON.stringify(body);\n" +
+        "  const ts = String(Date.now());\n" +
+        "  const digest = createHash(\"sha256\").update(raw).digest(\"hex\");\n" +
+        "  const sig = createHmac(\"sha256\", SECRET)\n" +
+        "    .update(ts + method.toUpperCase() + path + digest)\n" +
+        "    .digest(\"hex\");\n" +
+        "  const res = await fetch(BASE + path, {\n" +
+        "    method,\n" +
+        "    headers: {\n" +
+        "      \"content-type\": \"application/json\",\n" +
+        "      \"X-Blockle-Key\": KEY,\n" +
+        "      \"X-Blockle-Timestamp\": ts,\n" +
+        "      \"X-Blockle-Signature\": sig,\n" +
+        "    },\n" +
+        "    // SEND THE SAME BYTES YOU SIGNED. Re-serialising here would change\n" +
+        "    // key order or spacing and the signature would not match.\n" +
+        "    body: raw === \"\" ? undefined : raw,\n" +
+        "  });\n" +
+        "  if (!res.ok) throw new Error((await res.json()).error);\n" +
+        "  return res.json();\n" +
+        "}\n\n" +
+        "console.log(await call(\"GET\", \"/v1/balances\"));\n" +
+        "console.log(await call(\"POST\", \"/v1/orders\", {\n" +
+        "  market: \"BTC-USDT\", side: \"buy\", price: \"60000.00\", amount: \"0.001\",\n" +
+        "}));",
+      python:
+        "# Python 3, requests.\n" +
+        "import hashlib, hmac, json, time, requests\n\n" +
+        "BASE = \"" + base + "\"\n" +
+        "KEY = \"" + id + "\"\n" +
+        "SECRET = \"" + sec + "\"\n\n" +
+        "def call(method, path, body=None):\n" +
+        "    raw = \"\" if body is None else json.dumps(body, separators=(\",\", \":\"))\n" +
+        "    ts = str(int(time.time() * 1000))\n" +
+        "    digest = hashlib.sha256(raw.encode()).hexdigest()\n" +
+        "    sig = hmac.new(SECRET.encode(),\n" +
+        "                   (ts + method.upper() + path + digest).encode(),\n" +
+        "                   hashlib.sha256).hexdigest()\n" +
+        "    r = requests.request(method, BASE + path,\n" +
+        "        headers={\"content-type\": \"application/json\",\n" +
+        "                 \"X-Blockle-Key\": KEY,\n" +
+        "                 \"X-Blockle-Timestamp\": ts,\n" +
+        "                 \"X-Blockle-Signature\": sig},\n" +
+        "        # the exact bytes that were signed\n" +
+        "        data=raw.encode() if raw else None, timeout=20)\n" +
+        "    r.raise_for_status()\n" +
+        "    return r.json()\n\n" +
+        "print(call(\"GET\", \"/v1/balances\"))\n" +
+        "print(call(\"POST\", \"/v1/orders\", {\n" +
+        "    \"market\": \"BTC-USDT\", \"side\": \"buy\",\n" +
+        "    \"price\": \"60000.00\", \"amount\": \"0.001\"}))",
+      curl:
+        "# One signed GET. bash + openssl.\n" +
+        "KEY=" + id + "\n" +
+        "SECRET=" + sec + "\n" +
+        "PATH_=/v1/balances\n" +
+        "TS=$(( $(date +%s) * 1000 ))\n" +
+        "# sha256 of an EMPTY body — still part of the string to sign.\n" +
+        "DIGEST=$(printf '' | openssl dgst -sha256 -hex | awk '{print $NF}')\n" +
+        "SIG=$(printf '%s' \"$TS\"GET\"$PATH_$DIGEST\" \\\n" +
+        "      | openssl dgst -sha256 -hmac \"$SECRET\" -hex | awk '{print $NF}')\n" +
+        "curl -s " + base + "$PATH_ \\\n" +
+        "  -H \"X-Blockle-Key: $KEY\" \\\n" +
+        "  -H \"X-Blockle-Timestamp: $TS\" \\\n" +
+        "  -H \"X-Blockle-Signature: $SIG\"",
+    };
+    var text = samples[API_LANG] || samples.node;
+    // ONLY TOUCH THE DOM IF THE TEXT CHANGED. This screen re-renders every few
+    // seconds, and reassigning textContent collapses a selection — so copying
+    // the sample by hand would fail on the poll tick.
+    if ($("api-sample").textContent !== text) $("api-sample").textContent = text;
+    Array.prototype.forEach.call($("api-tabs").children, function (b) {
+      b.classList.toggle("on", b.getAttribute("data-lang") === API_LANG);
+    });
+  }
+
+  var API_ENDPOINTS = [
+    ["GET", "/v1/balances", "read", "total, reserved and available per asset"],
+    ["GET", "/v1/orders", "read", "your open and recent orders"],
+    ["GET", "/v1/deposits", "read", "credited and in-flight deposits"],
+    ["GET", "/v1/deposit-address?asset=BTC", "read", "your deposit address for an asset"],
+    ["POST", "/v1/orders", "trade", "place a limit order"],
+    ["POST", "/v1/orders/{id}/cancel", "trade", "cancel one of your orders"],
+    ["POST", "/v1/liquidity", "trade", "open a maker ladder"],
+    ["GET", "/public/tickers", "nothing", "last, bid, ask per market — unsigned"],
+    ["POST", "/v1/withdrawals", "not available to keys",
+      "withdrawals need your session and second factor, on the site"],
+  ];
+
+  function drawApiEndpoints() {
+    var body = $("t-apiendpoints").tBodies[0];
+    if (body.rows.length) return;  // static
+    API_ENDPOINTS.forEach(function (r) {
+      var tr = body.insertRow();
+      cell(tr, r[0]).className = "mono";
+      cell(tr, r[1]).className = "mono";
+      var need = cell(tr, r[2]);
+      if (r[2].indexOf("not available") === 0) need.className = "down";
+      cell(tr, r[3]);
+    });
+  }
+
   // ------------------------------------------------------------------- account
 
   RENDER.account = function () {
@@ -1196,6 +1443,36 @@
     $("lq-go").onclick = lqOpen;
 
     $("lst-form").addEventListener("submit", submitListing);
+
+    $("api-new").onclick = function () { apiForm(true); };
+    $("api-cancel").onclick = function () { apiForm(false); };
+    $("api-create").onclick = createKey;
+    $("api-done").onclick = secretDone;
+    $("api-copy").onclick = function () {
+        var t = $("api-new-secret").textContent;
+        var btn = $("api-copy");
+        // Feedback on the button rather than a toast: the eye is already here.
+        var done = function (ok) {
+            btn.textContent = ok ? "Copied" : "Select it and copy manually";
+            setTimeout(function () { btn.textContent = "Copy secret"; }, 2500);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t).then(function () { done(true); },
+                                                  function () { done(false); });
+        } else {
+            done(false);
+        }
+    };
+    Array.prototype.forEach.call($("api-tabs").children, function (b) {
+        b.onclick = function () {
+            API_LANG = b.getAttribute("data-lang");
+            // Keep whatever is on screen: if the secret panel is up, the sample
+            // still carries the real key.
+            var id = $("api-new-id").textContent;
+            var sec = $("api-new-secret").textContent;
+            if (id && id !== "\u2014") drawApiSample(id, sec); else drawApiSample();
+        };
+    });
     $("signin-dismiss").onclick = function () { curtain(false); };
     window.addEventListener("hashchange", route);
     window.addEventListener("resize", function () {

@@ -89,6 +89,79 @@
       '<circle cx="12" cy="7" r="1.9" fill="#fff"/>' +
       '<path d="M10.4 5.4L9 4M13.6 5.4L15 4" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>' +
       '<path d="M7.8 10.4L5.2 9.2M7.6 13.4H4.8M7.9 16.3l-2.4 1.4M16.2 10.4l2.6-1.2M16.4 13.4h2.8M16.1 16.3l2.4 1.4" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/>'],
+
+    // ---- the small proof-of-work listings ---------------------------------
+    //
+    // DRAWN, NOT TRACED. These are not the projects' logo files: a logo is
+    // someone else's trademark and shipping a copy of it invites a complaint
+    // we would deserve. Each is a geometric mark that reads as the coin at
+    // 16px — the initial, the shape of the thing it is named after — in the
+    // project's own colour, which is a fact about the brand rather than a
+    // reproduction of it.
+    //
+    // They exist because the lettered-disc fallback, while never blank, makes
+    // a dozen coins look like a dozen placeholders. On a page we are asking a
+    // miner to trust with their coins, that reads as unfinished.
+
+    RTM: ["#1a4e8a", "#fff",
+      // A dinosaur claw: three talons from a joint. Raptor, raptoreum.
+      '<path d="M8.4 5.6c2.6.4 4.6 2.2 5.6 4.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<path d="M6.6 9.4c2.9-.1 5.3 1.3 6.9 3.8" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<path d="M6.2 13.6c2.8-.7 5.3.2 7.3 2.3" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>' +
+      '<circle cx="16.2" cy="17.4" r="2.1"/>'],
+
+    PEP: ["#3d8b37", "#fff",
+      // A frog: two eyes over a wide mouth.
+      '<circle cx="9.1" cy="9.4" r="2.5"/>' +
+      '<circle cx="14.9" cy="9.4" r="2.5"/>' +
+      '<circle cx="9.1" cy="9.4" r="1" fill="#3d8b37"/>' +
+      '<circle cx="14.9" cy="9.4" r="1" fill="#3d8b37"/>' +
+      '<path d="M5.6 13.2c1.4 3.2 4 4.8 6.4 4.8s5-1.6 6.4-4.8" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>'],
+
+    NEOX: ["#00c2a8", "#06201d",
+      // An X built from two strokes, with the corners cut — the "neo" angle.
+      '<path d="M6.6 6.6l10.8 10.8M17.4 6.6L6.6 17.4" fill="none" stroke="#06201d" stroke-width="2.3" stroke-linecap="round"/>' +
+      '<circle cx="12" cy="12" r="2.6" fill="#00c2a8" stroke="#06201d" stroke-width="1.6"/>'],
+
+    MEWC: ["#f0a81e", "#2a1a04",
+      // A cat's head: ears, whiskers, eyes.
+      '<path d="M6.4 9.6L5.6 5.4l3.7 2.2M17.6 9.6l.8-4.2-3.7 2.2" fill="none" stroke="#2a1a04" stroke-width="1.6" stroke-linejoin="round"/>' +
+      '<path d="M12 7.4c3.4 0 6 2.6 6 5.6s-2.6 5.6-6 5.6-6-2.6-6-5.6 2.6-5.6 6-5.6z" fill="none" stroke="#2a1a04" stroke-width="1.6"/>' +
+      '<circle cx="9.8" cy="12" r=".95"/><circle cx="14.2" cy="12" r=".95"/>' +
+      '<path d="M4.6 13.4h2.2M4.8 15.6l2.1-.7M19.4 13.4h-2.2M19.2 15.6l-2.1-.7" fill="none" stroke="#2a1a04" stroke-width="1.3" stroke-linecap="round"/>'],
+
+    DINGO: ["#c8691f", "#fff",
+      // A dog's head in profile: muzzle and one upright ear.
+      '<path d="M7.2 8.2l1.1-3.4 2.6 2.3" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>' +
+      '<path d="M8.1 7.6c3.4-.6 6.4 1 7.6 3.6l3.1 1.3-2.4 1.5.4 3.2-3.6-1.2c-2.8.6-5.2-.6-6.1-3-.8-2.4.3-4.8 1-5.4z" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>' +
+      '<circle cx="11" cy="11.6" r=".9"/>'],
+
+    RXD: ["#ff2e63", "#fff",
+      // Radiating lines from a core — "radiant".
+      '<circle cx="12" cy="12" r="3.1"/>' +
+      '<path d="M12 3.4v2.8M12 17.8v2.8M3.4 12h2.8M17.8 12h2.8M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round"/>'],
+
+    XEL: ["#1f6feb", "#fff",
+      // A node graph: a blockDAG, not a chain — three parents into one child.
+      '<circle cx="6.3" cy="7.6" r="2"/><circle cx="6.3" cy="16.4" r="2"/>' +
+      '<circle cx="13" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>' +
+      '<path d="M8 8.6l3.3 2.4M8 15.4l3.3-2.4M15 12h2" fill="none" stroke="#fff" stroke-width="1.5"/>'],
+
+    ZEPH: ["#1ca9a0", "#042220",
+      // Three curling wind lines — zephyr.
+      '<path d="M4.6 8.6h9.1a2.3 2.3 0 10-2.3-2.3" fill="none" stroke="#042220" stroke-width="1.8" stroke-linecap="round"/>' +
+      '<path d="M4.6 12.4h11.6a2.3 2.3 0 11-2.3 2.3" fill="none" stroke="#042220" stroke-width="1.8" stroke-linecap="round"/>' +
+      '<path d="M4.6 16.2h6.3" fill="none" stroke="#042220" stroke-width="1.8" stroke-linecap="round"/>'],
+
+    OCTA: ["#5b5ef4", "#fff",
+      // An octagon, for octa, with a core.
+      '<path d="M9.1 4.6h5.8l4.5 4.5v5.8l-4.5 4.5H9.1l-4.5-4.5V9.1z" fill="none" stroke="#fff" stroke-width="1.7"/>' +
+      '<circle cx="12" cy="12" r="2.4"/>'],
+
+    EPIC: ["#1a1a1a", "#f2c200",
+      // A shield with a bar — the mimblewimble "cut-through".
+      '<path d="M12 4.3l6.4 2.2v5.2c0 3.6-2.6 6.4-6.4 8-3.8-1.6-6.4-4.4-6.4-8V6.5z" fill="none" stroke="#f2c200" stroke-width="1.7" stroke-linejoin="round"/>' +
+      '<path d="M8.4 11.4h7.2" fill="none" stroke="#f2c200" stroke-width="1.9" stroke-linecap="round"/>'],
   };
 
   /** Stable hue for an unlisted ticker, so it never changes between screens. */
@@ -167,9 +240,35 @@
     XRP: "XRP",
     BLOCK: "Blockle",
     PERBUG: "Perbug",
+    RTM: "Raptoreum",
+    PEP: "Pepecoin",
+    NEOX: "Neoxa",
+    MEWC: "Meowcoin",
+    DINGO: "Dingocoin",
+    RXD: "Radiant",
+    XEL: "Xelis",
+    ZEPH: "Zephyr Protocol",
+    OCTA: "OctaSpace",
+    EPIC: "Epic Cash",
   };
-  coinIcon.name = function (symbol) {
+  /*
+   * `fullName`, NOT `name`.
+   *
+   * This was `coinIcon.name = function …` and it broke the whole file. A
+   * function already HAS a `name` property, and it is not writable — so under
+   * the "use strict" at the top of this IIFE the assignment threw a TypeError,
+   * the module never finished executing, `window.coinIcon` was never assigned,
+   * and every call site failed. The symptom was that NO coin mark rendered
+   * anywhere on the exchange, which looked like a CSS problem and was not.
+   *
+   * Found by asking the live page for `typeof window.coinIcon` and getting
+   * "undefined". Worth remembering: in sloppy mode that assignment fails
+   * silently, so the same mistake elsewhere would be even quieter.
+   */
+  coinIcon.fullName = function (symbol) {
     var sym = String(symbol || "").toUpperCase();
+    var dot = sym.indexOf(".");
+    if (dot > 0) sym = sym.slice(0, dot);
     return NAMES[sym] || sym;
   };
 

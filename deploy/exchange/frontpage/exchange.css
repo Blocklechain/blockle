@@ -278,6 +278,14 @@ tbody tr:last-child td { border-bottom: 0; }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover td { background: var(--raise-2); }
 td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* A monospaced CELL is just the face — it must not pick up the boxed look of
+ * the standalone `code.mono` chips, which would put a border inside a border. */
+td.mono {
+  font-family: var(--mono); font-size: 12px;
+  background: none; border: 0; border-bottom: 1px solid var(--line-soft);
+  padding: 10px 12px; user-select: all;
+}
+tbody tr:last-child td.mono { border-bottom: 0; }
 .empty { padding: 26px 14px; text-align: center; color: var(--ink-faint); font-size: 13px; }
 
 /* Asset cell: mark + ticker + name. */
@@ -337,6 +345,10 @@ select { cursor: pointer; }
 .btn.ghost { background: none; }
 .btn.ghost:hover { background: var(--raise-2); }
 .btn.block { width: 100%; }
+/* Revoke, close, cancel. Outline rather than filled: destructive and ORDINARY
+ * — a solid red button on every row reads as an alarm. */
+.btn.danger { color: var(--down); border-color: rgba(255, 86, 104, 0.4); background: none; }
+.btn.danger:hover { background: var(--down-dim); }
 
 /* Segmented control, for buy/sell and for time ranges. */
 .seg { display: inline-flex; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 2px; gap: 2px; }
@@ -355,6 +367,42 @@ select { cursor: pointer; }
 .kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 12.5px; }
 .kv > :last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .kv.big { font-size: 14px; font-weight: 600; padding-top: 9px; border-top: 1px solid var(--line-soft); margin-top: 4px; }
+
+/* ---------------------------------------------------------------- API screen
+ *
+ * A credential and a code sample are both things people COPY, so both get a
+ * monospace face, a selectable surface, and room to wrap — a secret that
+ * overflows its panel is a secret that gets copied half-way.
+ */
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+code.mono, .mono {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--raise-2); border: 1px solid var(--line-soft);
+  border-radius: 4px; padding: 2px 6px;
+  /* anywhere, because a base64 secret has no spaces to break at */
+  word-break: break-all; user-select: all;
+}
+.kv > code.mono { max-width: 68%; text-align: right; }
+
+pre.code {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  background: var(--raise-2); border: 1px solid var(--line-soft);
+  border-top: 0; border-radius: 0 0 6px 6px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.65;
+  color: var(--ink);
+}
+pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-select: all; }
+
+.tabs { display: flex; gap: 2px; margin-top: 4px; }
+.tabs .tab {
+  font: inherit; font-size: 12px; cursor: pointer;
+  padding: 6px 12px; color: var(--ink-dim);
+  background: var(--raise); border: 1px solid var(--line-soft); border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+}
+.tabs .tab.on { color: var(--ink); background: var(--raise-2); }
+.tabs .tab:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
 
 .msg {
   border-radius: 5px; padding: 10px 12px; font-size: 12.5px;

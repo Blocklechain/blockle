@@ -42,13 +42,17 @@ import { pipeline } from "node:stream/promises";
 import Database from "better-sqlite3";
 
 import { format, parse } from "./amount";
-import { ASSETS, assetDef } from "./assets";
+import { ASSETS, assetDef, settlementAsset } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
 import { Deposits, describeDeposit } from "./deposits";
 import { BitGoDeposits } from "./bitgodeposits";
 import { BitGoHoldings } from "./bitgo";
+import { BlockAddressPool } from "./blockaddresspool";
+import { bumpDeclared } from "./declaredtreasury";
 import { depositsFor } from "./depositwatcher";
+import { nodeAdapters, nodeDepositAddress } from "./custodyrouting";
+import { ApiKeyError, ApiKeys, SCOPES, SIGNING_ALGORITHM, SKEW_MS, type Scope } from "./apikeys";
 import { Listings, QUESTIONS, sendmailMailer } from "./listings";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { canPay } from "./liquidity";
@@ -85,6 +89,9 @@ const HOST = process.env.PUBLIC_API_HOST ?? "127.0.0.1";
 const DB_PATH = process.env.CUSTODY_DB ?? "/var/lib/exchange-custody/ledger.db";
 const STATIC_DIR = process.env.PUBLIC_STATIC_DIR ?? "";
 const CONFIG_PATH = process.env.EXCHANGE_CONFIG ?? "/etc/blockle/exchange.json";
+/** Must match the reconciler's: they are the two halves of one agreement. */
+const TREASURY_FILE =
+	process.env.TESTNET_TREASURY ?? "/etc/blockle/testnet-treasury.json";
 
 /**
  * Assets offered to customers, DERIVED FROM THE MARKETS.
@@ -224,9 +231,18 @@ const MIME: Record<string, string> = {
 	".svg": "image/svg+xml",
 	".ico": "image/x-icon",
 	".json": "application/json; charset=utf-8",
+	// The coin pages and their sitemap. A sitemap served as octet-stream is a
+	// sitemap a crawler ignores.
+	".xml": "application/xml; charset=utf-8",
+	".txt": "text/plain; charset=utf-8",
 };
 
-async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolean> {
+async function serveStatic(
+	req: IncomingMessage,
+	res: ServerResponse,
+	urlPath: string,
+	status = 200,
+): Promise<boolean> {
 	if (STATIC_DIR === "") return false;
 	// `/admin/` maps to admin.html. The trailing slash matters: the console
 	// fetches its API at the RELATIVE path `api/`, so serving it at `/admin`
@@ -236,21 +252,75 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolea
 		urlPath === "/" ? "/index.html"
 		: urlPath === "/admin" || urlPath === "/admin/" ? "/admin.html"
 		: urlPath;
-	const rel = normalize(wanted).replace(
-		/^(\.\.[/\\])+/,
-		"",
-	);
-	const file = join(STATIC_DIR, rel);
-	// Containment check, not just normalize — this is what stops traversal.
-	if (!file.startsWith(STATIC_DIR)) return false;
-	if (!existsSync(file)) return false;
-	const st = statSync(file);
-	if (!st.isFile()) return false;
 
-	res.writeHead(200, {
-		"Content-Type": MIME[extname(file)] ?? "application/octet-stream",
+	/*
+	 * EXTENSIONLESS URLS FOR THE COIN PAGES.
+	 *
+	 * `/coins` and `/trade/raptoreum-rtm` are the published, canonical links,
+	 * so they have to resolve without a suffix — a `.html` on a link somebody
+	 * has shared is a hosting decision that can never be taken back. They are
+	 * generated as `<path>/index.html`, which is the one directory-index
+	 * convention this serves, and ONLY for a path with no extension: anything
+	 * that looks like a file must 404 rather than quietly becoming a directory
+	 * lookup.
+	 */
+	const candidates = extname(wanted) === ""
+		? [wanted, `${wanted.replace(/\/$/, "")}/index.html`]
+		: [wanted];
+	let file = "";
+	for (const candidate of candidates) {
+		const rel = normalize(candidate).replace(
+			/^(\.\.[/\\])+/,
+			"",
+		);
+		const path = join(STATIC_DIR, rel);
+		// Containment check, not just normalize — this is what stops traversal.
+		if (!path.startsWith(STATIC_DIR)) return false;
+		if (!existsSync(path)) continue;
+		if (!statSync(path).isFile()) continue;
+		file = path;
+		break;
+	}
+	if (file === "") return false;
+	const st = statSync(file);
+
+	/*
+	 * CODE REVALIDATES; PICTURES DO NOT.
+	 *
+	 * This used to serve every non-HTML asset with `max-age=3600`, and that
+	 * caused a real hour-long outage of its own: a broken coins.js was fixed,
+	 * deployed, and verified by curl — and the browser kept running the old
+	 * copy, because it had been told it could. Worse, the HTML is `no-cache`,
+	 * so a reload can pair NEW markup with an HOUR-OLD script, which is a
+	 * combination nobody tested.
+	 *
+	 * So the app's code — js, css, and the generated html — must be
+	 * revalidated. With a validator that costs a 304 and a round trip, not a
+	 * re-download. Images and the logo keep the long cache: they change when
+	 * they are renamed.
+	 */
+	const ext = extname(file);
+	const code = ext === ".html" || ext === ".js" || ext === ".css" || ext === ".xml";
+	// Size and mtime together. Not a content hash — this has to be cheap on
+	// every request, and the pair changes on any edit a deploy can make.
+	const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+	const lastModified = st.mtime.toUTCString();
+
+	const inm = req.headers["if-none-match"];
+	const ims = req.headers["if-modified-since"];
+	if (inm === etag || (inm === undefined && ims === lastModified)) {
+		// 304 CARRIES NO BODY. Content-Length here would be a protocol error.
+		res.writeHead(304, { ETag: etag, "Cache-Control": "no-cache" });
+		res.end();
+		return true;
+	}
+
+	res.writeHead(status, {
+		"Content-Type": MIME[ext] ?? "application/octet-stream",
 		"Content-Length": st.size,
-		"Cache-Control": extname(file) === ".html" ? "no-cache" : "public, max-age=3600",
+		"Cache-Control": code ? "no-cache" : "public, max-age=3600",
+		ETag: etag,
+		"Last-Modified": lastModified,
 		"X-Content-Type-Options": "nosniff",
 	});
 	try {
@@ -269,8 +339,24 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolea
 	return true;
 }
 
-/** Read a JSON body, with a hard cap so a huge POST cannot exhaust memory. */
-async function body(req: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
+/** One header, or undefined. Node gives arrays for repeats; take the first. */
+function header(req: IncomingMessage, name: string): string | undefined {
+	const v = req.headers[name];
+	const s = Array.isArray(v) ? v[0] : v;
+	if (s === undefined) return undefined;
+	const t = s.trim();
+	return t === "" ? undefined : t;
+}
+
+/**
+ * Read the body AS BYTES, with a hard cap so a huge POST cannot exhaust memory.
+ *
+ * Separate from parsing because AN API SIGNATURE COVERS THE EXACT BYTES. Parse
+ * then re-serialise and the hash changes — key order, spacing, number
+ * formatting — so every signed POST would fail for reasons the client could
+ * not see. The raw string is what gets hashed and what gets parsed.
+ */
+async function rawBodyOf(req: IncomingMessage, limit = 64 * 1024): Promise<string> {
 	const chunks: Buffer[] = [];
 	let n = 0;
 	for await (const c of req) {
@@ -278,9 +364,14 @@ async function body(req: IncomingMessage, limit = 64 * 1024): Promise<Record<str
 		if (n > limit) throw new VenueError("request body too large", 413);
 		chunks.push(c as Buffer);
 	}
-	if (n === 0) return {};
+	return n === 0 ? "" : Buffer.concat(chunks).toString("utf8");
+}
+
+/** Parse a body already read by `rawBodyOf`. An empty body is an empty object. */
+function parseBody(raw: string): Record<string, unknown> {
+	if (raw.trim() === "") return {};
 	try {
-		const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+		const parsed = JSON.parse(raw) as unknown;
 		if (typeof parsed !== "object" || parsed === null) {
 			throw new VenueError("body must be a JSON object");
 		}
@@ -289,6 +380,11 @@ async function body(req: IncomingMessage, limit = 64 * 1024): Promise<Record<str
 		if (e instanceof VenueError) throw e;
 		throw new VenueError("body is not valid JSON");
 	}
+}
+
+/** Read and parse in one step, for routes that do not verify a signature. */
+async function body(req: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
+	return parseBody(await rawBodyOf(req, limit));
 }
 
 const str = (o: Record<string, unknown>, k: string): string => {
@@ -325,6 +421,7 @@ async function venueRoute(
 	provisionAddress:
 		| ((userId: string, asset: string, network: string | undefined) => Promise<void>)
 		| undefined,
+	apiKeys: ApiKeys,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 
@@ -343,12 +440,80 @@ async function venueRoute(
 	 * see blockleauth.ts.
 	 */
 	const cached = new Map<string, string>();
-	const me = async (): Promise<string> => {
+
+	/*
+	 * READ ONCE, BEFORE ANYTHING ELSE. A signature covers the exact bytes, and
+	 * the stream can only be consumed once, so the raw body is captured here
+	 * and the routes parse that string instead of re-reading the request.
+	 */
+	const rawBody = await rawBodyOf(req);
+
+	/**
+	 * Who is calling: a browser session, or a signed API key.
+	 *
+	 * `need` is the scope a KEY must hold. A browser session is not scoped —
+	 * it is a person on the site with their own second factor available — so
+	 * the parameter only constrains programmatic callers.
+	 *
+	 * SESSION FIRST, because that is the common case and costs one cached
+	 * lookup. A request carrying API-key headers is treated as an API request
+	 * outright rather than falling back to the session: a bot whose signature
+	 * is wrong must see the signature error, not silently succeed because a
+	 * cookie happened to be present.
+	 */
+	const caller = async (need: Scope = "read"): Promise<string> => {
+		const keyId = header(req, "x-blockle-key");
+		if (keyId !== undefined) {
+			const signature = header(req, "x-blockle-signature");
+			const timestamp = header(req, "x-blockle-timestamp");
+			if (signature === undefined || timestamp === undefined) {
+				throw new ApiKeyError(
+					"an API request needs X-Blockle-Key, X-Blockle-Timestamp and " +
+						"X-Blockle-Signature",
+				);
+			}
+			const r = apiKeys.authenticate({
+				keyId,
+				signature,
+				timestamp,
+				method: req.method ?? "GET",
+				// THE PATH AS SIGNED INCLUDES THE QUERY STRING, because the query
+				// is part of what the request does — a signature over the path
+				// alone could be moved onto a different market or amount.
+				path: url.pathname + (url.search === "" ? "" : url.search),
+				body: rawBody,
+				need,
+			});
+			return r.userId;
+		}
 		const cookie = req.headers.cookie ?? "";
 		const hit = cached.get(cookie);
 		if (hit !== undefined) return hit;
 		const u = await auth.whoami(cookie);
 		cached.set(cookie, u.id);
+		return u.id;
+	};
+	const me = async (): Promise<string> => caller("read");
+
+	/**
+	 * A BROWSER SESSION, AND NOTHING ELSE. For the routes an API key must never
+	 * reach: withdrawals, and creating or revoking keys.
+	 *
+	 * Key management is on this list because a key that can mint keys is a key
+	 * that can escalate itself — the scope list would stop it granting
+	 * withdrawal, but it could still hand out trading access that the owner
+	 * never sees in their key list until they look.
+	 */
+	const sessionOnly = async (what: string): Promise<string> => {
+		if (header(req, "x-blockle-key") !== undefined) {
+			throw new ApiKeyError(
+				`an API key cannot ${what}. Sign in at exchange.blockle.org and do ` +
+					"this from the site; API keys are limited to reading and trading " +
+					"on purpose, so a leaked key cannot move money or create more keys.",
+				403,
+			);
+		}
+		const u = await auth.whoami(req.headers.cookie ?? "");
 		return u.id;
 	};
 
@@ -443,7 +608,7 @@ async function venueRoute(
 		}
 		if (p === "/testnet-fund" && req.method === "POST") {
 			const who = await me();
-			const b = await body(req);
+			const b = parseBody(rawBody);
 			const asset = str(b, "asset").toUpperCase();
 			const def = assetDef(asset);
 			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
@@ -451,14 +616,44 @@ async function venueRoute(
 			const custodyId = def.networks.length === 0
 				? asset
 				: `${asset}.${def.networks[0]!.id}`;
+			/*
+			 * THE DECLARATION MOVES FIRST.
+			 *
+			 * The faucet credits CUSTODY as well as the customer, and the
+			 * declared treasury file is what reconciliation compares custody
+			 * against on testnet. Without this the two drift apart on every
+			 * click and the reconciler reports a permanent shortfall — which
+			 * is exactly what had happened to BLOCK on the live box: books
+			 * 15,000, declaration 5,000, withdrawals halted all day.
+			 *
+			 * Bumped BEFORE the post so a failure leaves the file overstating
+			 * holdings (a benign surplus) rather than understating them (a
+			 * shortfall, which halts the asset). See declaredtreasury.ts.
+			 */
+			try {
+				bumpDeclared(TREASURY_FILE, custodyId, amount);
+			} catch (e) {
+				// FAIL CLOSED, AND SAY WHY. If the declaration cannot be kept in
+				// step, the credit must not happen: it would leave the books
+				// ahead of the declaration, which is a shortfall and halts the
+				// asset. Better a faucet that refuses than one that bricks
+				// reconciliation.
+				throw new VenueError(
+					"the testnet treasury declaration could not be updated, so this " +
+						"credit was NOT made. Crediting without it would make the " +
+						"books disagree with the declaration and halt withdrawals " +
+						`for ${asset}. Detail: ${e instanceof Error ? e.message : String(e)}`,
+					503,
+				);
+			}
 			venue.testnetCredit(who, asset, amount, custodyId);
 			json(res, 200, { ok: true, asset, credited: fmt(amount, def.decimals) }, 0);
 			return;
 		}
 
 		if (p === "/orders" && req.method === "POST") {
-			const who = await me();
-			const b = await body(req);
+			const who = await caller("trade");
+			const b = parseBody(rawBody);
 			const m = VENUE_MARKETS.find((x) => x.symbol === str(b, "market"));
 			if (m === undefined) throw new VenueError("unknown market", 404);
 			const side = str(b, "side");
@@ -563,8 +758,13 @@ async function venueRoute(
 		}
 
 		if (p === "/withdrawals" && req.method === "POST") {
-			const who = await me();
-			const b = await body(req);
+			// A KEY CANNOT REACH THIS ROUTE AT ALL. apikeys.ts has no withdrawal
+			// scope to grant, so `who()` would already refuse; this is the second
+			// lock, on the route itself, because the consequence of one mistake
+			// here is a stolen key emptying an account. Moving money needs the
+			// person, their session and their second factor.
+			const who = await sessionOnly("withdraw");
+			const b = parseBody(rawBody);
 			const asset = str(b, "asset").toUpperCase();
 			const def = assetDef(asset);
 			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
@@ -673,8 +873,8 @@ async function venueRoute(
 		}
 
 		if (p === "/liquidity" && req.method === "POST") {
-			const who = await me();
-			const b = await body(req);
+			const who = await caller("trade");
+			const b = parseBody(rawBody);
 			const symbol = str(b, "market");
 			const m = marketDef(symbol);
 			const bd = assetDef(m.base).decimals;
@@ -708,7 +908,7 @@ async function venueRoute(
 
 		const closePos = /^\/liquidity\/(mm_[a-f0-9]+)\/close$/.exec(p);
 		if (closePos !== null && req.method === "POST") {
-			const who = await me();
+			const who = await caller("trade");
 			const r = mm.close(who, closePos[1]!);
 			json(res, 200, {
 				cancelled: r.cancelled,
@@ -719,9 +919,80 @@ async function venueRoute(
 			return;
 		}
 
+		// ---- programmatic trading keys ------------------------------------
+		//
+		// Session-only, all three. See `sessionOnly` for why minting keys is on
+		// that list.
+		if (p === "/api-keys" && req.method === "GET") {
+			const owner = await sessionOnly("list API keys");
+			json(res, 200, {
+				keys: apiKeys.list(owner).map((k) => ({
+					keyId: k.keyId,
+					label: k.label,
+					scopes: k.scopes,
+					ratePerMin: k.ratePerMin,
+					createdAt: k.createdAt,
+					lastUsedAt: k.lastUsedAt,
+					revokedAt: k.revokedAt,
+				})),
+				// The client needs these to sign, and reading them from the server
+				// means the page and the verifier cannot drift apart.
+				signing: {
+					algorithm: SIGNING_ALGORITHM,
+					skewMs: SKEW_MS,
+					stringToSign: "timestamp + METHOD + path + sha256hex(body)",
+					headers: {
+						key: "X-Blockle-Key",
+						timestamp: "X-Blockle-Timestamp",
+						signature: "X-Blockle-Signature",
+					},
+					scopes: SCOPES,
+					// Said out loud on the endpoint that lists keys, not just in
+					// the docs, so nobody writes a withdrawal bot and finds out
+					// later.
+					cannotWithdraw: true,
+				},
+			}, 0);
+			return;
+		}
+
+		if (p === "/api-keys" && req.method === "POST") {
+			const owner = await sessionOnly("create an API key");
+			const b = parseBody(rawBody);
+			const scopes = Array.isArray(b.scopes)
+				? b.scopes.map((x) => String(x))
+				: ["read"];
+			const made = apiKeys.create({
+				userId: owner,
+				label: str(b, "label"),
+				scopes,
+				...(typeof b.ratePerMin === "number" ? { ratePerMin: b.ratePerMin } : {}),
+			});
+			json(res, 200, {
+				keyId: made.keyId,
+				// SHOWN ONCE. Not retrievable afterwards, and the UI says so
+				// before the dialog can be dismissed.
+				secret: made.secret,
+				scopes: made.key.scopes,
+				ratePerMin: made.key.ratePerMin,
+				warning:
+					"This is the only time the secret is shown. Store it somewhere " +
+					"your bot can read and nobody else can.",
+			}, 0);
+			return;
+		}
+
+		const revokeKey = /^\/api-keys\/(bk_[a-z0-9]+)$/.exec(p);
+		if (revokeKey !== null && req.method === "DELETE") {
+			const owner = await sessionOnly("revoke an API key");
+			apiKeys.revoke(owner, revokeKey[1]!);
+			json(res, 200, { ok: true, revoked: revokeKey[1] }, 0);
+			return;
+		}
+
 		const cancel = /^\/orders\/([A-Za-z0-9_]+)\/cancel$/.exec(p);
 		if (cancel !== null && req.method === "POST") {
-			const who = await me();
+			const who = await caller("trade");
 			json(res, 200, { state: venue.cancelOrder(who, cancel[1]!).state }, 0);
 			return;
 		}
@@ -732,7 +1003,7 @@ async function venueRoute(
 		// the UI unable to tell "sign in" from "that order was invalid", and
 		// flattening the 503 from an unreachable accounts service would send
 		// customers round a sign-in loop that cannot succeed.
-		if (e instanceof AuthError || e instanceof VenueError) {
+		if (e instanceof AuthError || e instanceof VenueError || e instanceof ApiKeyError) {
 			json(res, e.status, { error: e.message }, 0);
 			return;
 		}
@@ -917,13 +1188,96 @@ export function start(): void {
 	 */
 	const bitgoToken = (process.env.BITGO_ACCESS_TOKEN ?? "").trim();
 	const bitgoEnv = (process.env.BITGO_ENV ?? "test").trim().toLowerCase();
+
+	/*
+	 * NODE-CUSTODIED COINS ISSUE THEIR OWN ADDRESSES.
+	 *
+	 * BitGo will not hold Raptoreum, so for those coins the daemon we run is
+	 * the custodian and `getnewaddress` is the address source. Built here once
+	 * so a per-request call does not reconnect, and empty when nothing is
+	 * configured — which is the normal state of a planned listing.
+	 */
+	/*
+	 * BLOCK DEPOSIT ADDRESSES COME FROM A POOL, NOT FROM A SEED HERE.
+	 *
+	 * The chain can derive unlimited addresses, but ML-DSA has no watch-only
+	 * derivation — deriving requires the key that can spend. This process is
+	 * the most exposed one in the system, so it gets the addresses and never
+	 * the seed: an operator derives a batch on the wallet host and loads it
+	 * (see blockpoolcli.ts). With no pool loaded, BLOCK deposits are closed
+	 * and say so.
+	 */
+	const blockPool = new BlockAddressPool(wdb);
+	const nodeChains = nodeAdapters({ env: process.env, blockPool });
+	{
+		const s = blockPool.status();
+		if (s.total > 0) {
+			console.log(
+				`  block pool: ${s.free} free of ${s.total}${s.low ? "  <= LOW" : ""}`,
+			);
+		}
+	}
+	if (nodeChains.size > 0) {
+		console.log(`  nodes:  ${[...nodeChains.keys()].join(", ")}`);
+	}
+
 	let provisionAddress:
 		| ((userId: string, asset: string, network: string | undefined) => Promise<void>)
 		| undefined;
+
+	/*
+	 * ONE FUNCTION, TWO CUSTODIANS. The caller asks for an address; which
+	 * custodian answers is decided here, by the asset, and never guessed by
+	 * the caller.
+	 */
+	const provisionFromNode = async (
+		userId: string,
+		asset: string,
+		network: string | undefined,
+	): Promise<boolean> => {
+		const adapter = nodeChains.get(settlementAsset(asset));
+		if (adapter === undefined) return false;
+		if (network !== undefined) {
+			// These coins are single-chain by definition — a qualified id for
+			// one means the caller has confused it with a token.
+			throw new VenueError(`${asset} is a single-chain coin; drop the network`);
+		}
+		/*
+		 * A SYNCING NODE MUST NOT HAND OUT ADDRESSES.
+		 *
+		 * The address would be valid, and the deposit to it would be invisible
+		 * to us until the node caught up — during which the customer sees
+		 * nothing credited and we have no way to tell them when it will be.
+		 * Refusing is the kinder answer, and it says which it is.
+		 */
+		const cap = await adapter.probe();
+		if (!cap.reachable || !cap.synced) {
+			throw new VenueError(
+				`${asset} deposits are temporarily closed: our ${asset} node is ` +
+					`${cap.reachable ? "still syncing" : "unreachable"}. An address ` +
+					"issued now would receive coins we could not credit until it " +
+					"caught up.",
+				503,
+			);
+		}
+		const made = await nodeDepositAddress({ adapter, userId });
+		deposits.provision({
+			userId,
+			asset,
+			network,
+			address: made.address,
+			source: made.source,
+		});
+		return true;
+	};
+
 	if (bitgoToken !== "" && (bitgoEnv === "test" || bitgoEnv === "prod")) {
 		const depositClient = new BitGoDeposits(bitgoToken, { env: bitgoEnv });
 		const holdingsForScope = BitGoHoldings.fromEnv();
 		provisionAddress = async (userId, asset, network) => {
+			// Node coins first: BitGo has no wallet for them, and asking would
+			// fail with a message about the wrong custodian.
+			if (await provisionFromNode(userId, asset, network)) return;
 			const custodyId = network === undefined ? asset : `${asset}.${network}`;
 			const coin = holdingsForScope.ticker(custodyId);
 			const wallets = await holdingsForScope.exchangeWallets(custodyId);
@@ -951,7 +1305,35 @@ export function start(): void {
 				source: `bitgo:${bitgoEnv}:${wallet.id}`,
 			});
 		};
+	} else if (nodeChains.size > 0) {
+		/*
+		 * NO CUSTODIAN TOKEN, BUT WE DO RUN SOME NODES.
+		 *
+		 * Those coins can still take deposits — they do not depend on BitGo at
+		 * all. An asset with no node here falls through to a refusal that names
+		 * the reason, rather than to a BitGo call that cannot be made.
+		 */
+		provisionAddress = async (userId, asset, network) => {
+			if (await provisionFromNode(userId, asset, network)) return;
+			throw new VenueError(
+				`no custodian is configured for ${asset}, so no deposit address can ` +
+					"be issued for it. Deposits are open for: " +
+					[...nodeChains.keys()].join(", "),
+				503,
+			);
+		};
 	}
+	/*
+	 * PROGRAMMATIC TRADING KEYS. Same database as withdrawals because a key
+	 * must be revocable in the same transaction scope as the rest of a
+	 * customer's state, and because there is no scenario where the keys
+	 * survive a restore that the balances did not.
+	 *
+	 * read + trade only. There is no withdrawal scope and no way to add one
+	 * from here — see apikeys.ts.
+	 */
+	const apiKeys = new ApiKeys(wdb);
+
 	// Listing applications. The row is the record; the email is a notification.
 	const listings = new Listings(wdb, {
 		mailer: sendmailMailer(),
@@ -1067,6 +1449,7 @@ export function start(): void {
 					await venueRoute(
 						req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
 						LIVE_FEES, pricing, mm, deposits, wdb, provisionAddress,
+						apiKeys,
 					);
 					return;
 				}
@@ -1300,7 +1683,34 @@ export function start(): void {
 					res.end();
 					return;
 				}
-				if (await serveStatic(res, url.pathname)) return;
+				/*
+				 * ONE URL PER PAGE. `/trade/x/index.html` serves the same bytes
+				 * as `/trade/x`, which is two addresses for one page — a split
+				 * in whatever ranking the page earns, and a second link for
+				 * people to share. The canonical tag is a hint; a 301 is not.
+				 */
+				if (url.pathname.endsWith("/index.html")) {
+					res.writeHead(301, {
+						Location: url.pathname.slice(0, -"index.html".length).replace(/\/$/, "") || "/",
+					});
+					res.end();
+					return;
+				}
+				if (await serveStatic(req, res, url.pathname)) return;
+
+				/*
+				 * A PERSON GETS A PAGE, A PROGRAM GETS JSON.
+				 *
+				 * Someone following a stale link to a coin we renamed used to
+				 * land on `{"error":"not found"}` in a browser window, which
+				 * tells them nothing and offers them nowhere to go. A navigation
+				 * request gets the 404 page — with the right status, so it is
+				 * not indexed as content.
+				 */
+				const accepts = header(req, "accept") ?? "";
+				if (req.method === "GET" && accepts.includes("text/html")) {
+					if (await serveStatic(req, res, "/404.html", 404)) return;
+				}
 				json(res, 404, { error: "not found" });
 			} catch (e) {
 				const why = e instanceof Error ? e.stack ?? e.message : String(e);
