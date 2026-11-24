@@ -657,13 +657,31 @@ export const LIVE_FEES: FeeTable = {
 	PERBUG: { gas: 100_000n, gasBufferBps: 5_000, margin: 1_000_000n, marginBps: 0 },
 };
 
-/** Public fee-schedule disclosure, for the fees page and the withdraw ticket. */
-export function discloseWithdrawalFees(table: FeeTable = LIVE_FEES): readonly {
+/**
+ * Public fee-schedule disclosure, for the fees page and the withdraw ticket.
+ *
+ * PRICED THE SAME WAY THE REAL FEE IS. The first version of this computed the
+ * allowance from `cfg.gas` — the collapse floor — because it had no rate
+ * source to hand. It therefore published 2.20 USDT for a TRC-20 withdrawal
+ * that would actually be charged around 13, which is precisely the kind of
+ * quietly-wrong number a published schedule exists to prevent. It now calls
+ * the same `priceGas` the charge goes through.
+ *
+ * A chain that cannot be priced is marked UNAVAILABLE rather than quoted
+ * cheaply. It cannot be withdrawn over either, so saying so is just accurate.
+ */
+export function discloseWithdrawalFees(
+	table: FeeTable = LIVE_FEES,
+	pricing: GasPricing = FLOOR_PRICING,
+): readonly {
 	asset: string;
 	network: string | undefined;
 	fee: string;
 	minimum: string;
 	gasAsset: string;
+	available: boolean;
+	plusBps?: number;
+	note?: string;
 }[] {
 	const out: {
 		asset: string;
@@ -671,32 +689,61 @@ export function discloseWithdrawalFees(table: FeeTable = LIVE_FEES): readonly {
 		fee: string;
 		minimum: string;
 		gasAsset: string;
+		available: boolean;
+		plusBps?: number;
+		note?: string;
 	}[] = [];
+
 	for (const key of Object.keys(table)) {
 		const asset = settlementAsset(key);
 		const network = networkOf(key);
 		const u = unit(asset);
 		const cfg = table[key]!;
+		const gasAsset = gasAssetFor(asset, network);
+
 		try {
 			assertSane(key, cfg);
-		} catch {
-			// A broken row is omitted from the published schedule rather than
-			// crashing the fees page — but it still cannot be withdrawn, because
-			// quoteWithdrawal checks the same thing.
-			continue;
+			const priced = priceGas(asset, network, gasAsset, cfg, pricing);
+			// Solve for the minimum FIRST — the fee grows with the amount
+			// wherever there is a proportional component, so the minimum and the
+			// fee are mutually dependent — then quote the fee AT that minimum.
+			// Quoting `allowance + flat margin` and calling the proportional
+			// part negligible is how a published figure ends up a hair under
+			// what is charged, which is the same class of error as publishing it
+			// wildly under.
+			const scale = 10_000n - BigInt(MIN_NET_SHARE_BPS) - BigInt(cfg.marginBps);
+			const base = priced.allowance + cfg.margin;
+			const minimum = (base * 10_000n + scale - 1n) / scale;
+			const fee = base + (minimum * BigInt(cfg.marginBps)) / 10_000n;
+			out.push({
+				asset,
+				network,
+				fee: format(fee, u),
+				minimum: format(minimum, u),
+				gasAsset,
+				available: true,
+				// Stated rather than left implicit: on these chains a larger
+				// withdrawal pays slightly more, because a larger send genuinely
+				// costs more to build.
+				...(cfg.marginBps > 0 ? { plusBps: cfg.marginBps } : {}),
+				...(cfg.subsidised === true
+					? { note: "currently subsidised — we are paying the network cost" }
+					: {}),
+			});
+		} catch (e) {
+			// Published as unavailable WITH the reason, rather than omitted. A
+			// chain missing from the table reads as "not offered"; a chain shown
+			// as unavailable reads as "offered, not right now", which is true.
+			out.push({
+				asset,
+				network,
+				fee: "—",
+				minimum: "—",
+				gasAsset,
+				available: false,
+				note: e instanceof Error ? e.message : String(e),
+			});
 		}
-		const gasAllowance = cfg.gas + (cfg.gas * BigInt(cfg.gasBufferBps)) / 10_000n;
-		const scale = 10_000n - BigInt(MIN_NET_SHARE_BPS) - BigInt(cfg.marginBps);
-		const minimum = ((gasAllowance + cfg.margin) * 10_000n + scale - 1n) / scale;
-		out.push({
-			asset,
-			network,
-			// Quoted at the minimum, where the proportional part is negligible;
-			// the real figure is always shown on the ticket before confirming.
-			fee: format(gasAllowance + cfg.margin, u),
-			minimum: format(minimum, u),
-			gasAsset: gasAssetFor(asset, network),
-		});
 	}
 	return out;
 }

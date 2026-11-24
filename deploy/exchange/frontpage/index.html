@@ -330,6 +330,30 @@
            <span data-fee-taker>0.20%</span> taker, taken from what you receive
            rather than charged separately. Fees round down, so the sub-unit
            stays with you.</p>
+        <!--
+          THE WITHDRAWAL FEE, PUBLISHED. A venue that will not say what a
+          withdrawal costs until you are mid-withdrawal is not being straight
+          with anyone — and a withdrawal fee is the one charge people are most
+          often surprised by, because it is the one they only notice after the
+          money has moved.
+        -->
+        <details id="wdfees" style="margin-top:14px">
+          <summary style="cursor:pointer;color:var(--signal);font-size:13px">
+            Withdrawal fees, per chain
+          </summary>
+          <div style="overflow-x:auto;margin-top:10px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="text-align:left;padding:6px 8px">Asset</th>
+                <th style="text-align:left;padding:6px 8px">Chain</th>
+                <th style="text-align:right;padding:6px 8px">Fee</th>
+                <th style="text-align:right;padding:6px 8px">Minimum</th>
+              </tr></thead>
+              <tbody id="wdfee-rows"><tr><td colspan="4" style="padding:6px 8px">loading…</td></tr></tbody>
+            </table>
+          </div>
+          <p class="note" id="wdfee-note" style="font-size:12px;margin-top:8px"></p>
+        </details>
       </div>
       <div class="card" style="cursor:default">
         <h3>Withdrawals are automatic</h3>
@@ -362,7 +386,7 @@
           <li><a href="/app.html">Trade</a></li>
           <li><a href="/app.html">Open an account</a></li>
           <li><a href="/app.html">Sign in</a></li>
-          <li><a href="/fees">Fees</a></li>
+          <li><a href="/#wdfees">Fees</a></li>
         </ul>
       </div>
       <div>
@@ -537,6 +561,56 @@ const api = async (path) => {
       : "Attention: " + short.map(a => a.asset).join(", ") + " not fully backed.";
     if (short.length > 0) el.style.color = "var(--down)";
   } catch { /* leave it blank */ }
+})();
+
+// ---- withdrawal fees ------------------------------------------------------
+//
+// Rendered as the strings the API sent. The fee for a token chain moves with
+// the gas price, so these are fetched rather than written into the page — a
+// hard-coded fee table is a fee table that will be wrong.
+(async function withdrawalFees() {
+  const body = document.getElementById("wdfee-rows");
+  if (!body) return;
+  try {
+    const r = await api("withdrawal-fees");
+    body.textContent = "";
+    // Cheapest chains first for each asset, which is also the order the
+    // withdraw screen offers them in.
+    const rows = r.fees.slice().sort((a, b) =>
+      a.asset === b.asset
+        ? (a.minimum.length - b.minimum.length) || a.minimum.localeCompare(b.minimum)
+        : a.asset.localeCompare(b.asset)
+    );
+    for (const f of rows) {
+      const tr = document.createElement("tr");
+      for (const [v, align] of [
+        [f.asset, "left"],
+        [f.network || "native", "left"],
+        [f.fee + " " + f.asset, "right"],
+        [f.minimum + " " + f.asset, "right"],
+      ]) {
+        const td = document.createElement("td");
+        td.style.cssText =
+          "text-align:" + align + ";padding:6px 8px;border-top:1px solid var(--line-soft)";
+        td.appendChild(document.createTextNode(v));
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+    const note = document.getElementById("wdfee-note");
+    if (note) note.textContent = r.note;
+  } catch (e) {
+    body.textContent = "";
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 4;
+    td.style.padding = "6px 8px";
+    // Said plainly rather than left as a spinner. A fee table that silently
+    // fails to load reads as "there are no fees".
+    td.appendChild(document.createTextNode("Fee schedule unavailable: " + e.message));
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
 })();
 
 // ---- fees -----------------------------------------------------------------

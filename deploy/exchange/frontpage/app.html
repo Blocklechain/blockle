@@ -156,9 +156,11 @@
             <div><label for="wamount">Amount</label><input id="wamount" inputmode="decimal" placeholder="0"></div>
             <div><label for="waddr">Destination address</label><input id="waddr" placeholder="address on the chosen network"></div>
             <div class="kv"><span>Available on this network</span><span id="wavail">—</span></div>
+            <div class="kv"><span>Network fee</span><span id="wfee">—</span></div>
+            <div class="kv"><span><strong>You receive</strong></span><span id="wnet-out"><strong>—</strong></span></div>
             <button id="dowd">Request withdrawal</button>
           </div>
-          <p class="note">
+          <p class="note" id="wfeenote">
             A stablecoin on two chains is two different tokens, so the network
             you pick decides which inventory pays you. Chains without liquidity
             are shown as unavailable here rather than failing after you commit.
@@ -520,6 +522,7 @@ async function loadWithdrawOptions() {
     const firstOpen = WOPTS.networks.find((n) => n.open);
     if (firstOpen) sel.value = firstOpen.network;
     showAvail();
+    quoteWithdrawal();
   } catch (e) { $("wavail").textContent = "unavailable"; }
 }
 function showAvail() {
@@ -530,7 +533,61 @@ function showAvail() {
     : "—";
 }
 $("wasset").onchange = loadWithdrawOptions;
-$("wnet").onchange = showAvail;
+$("wnet").onchange = () => { showAvail(); quoteWithdrawal(); };
+
+/*
+ * QUOTE THE FEE BEFORE THEY COMMIT.
+ *
+ * The fee is withheld from the amount, so the number that matters to someone
+ * withdrawing is not what they typed — it is what arrives. Showing only the
+ * amount would mean the first time they learn the fee is when they count what
+ * landed, which is the moment at which a correct fee still feels like a trick.
+ *
+ * Quoted by the SERVER, from the same function that prices the real
+ * withdrawal. Recomputing it here would mean a preview that eventually
+ * disagrees with the charge, and in JavaScript it would also mean doing money
+ * arithmetic in doubles.
+ */
+let QUOTE_SEQ = 0;
+async function quoteWithdrawal() {
+  const amount = $("wamount").value.trim();
+  const asset = $("wasset").value;
+  const net = $("wnet").value;
+  const fee = $("wfee");
+  const out = $("wnet-out");
+  if (!amount || !asset) {
+    fee.textContent = "—";
+    out.innerHTML = "<strong>—</strong>";
+    return;
+  }
+  // Only the latest request's answer is rendered: typing produces several in
+  // flight and a slow earlier one must not overwrite a newer figure.
+  const seq = ++QUOTE_SEQ;
+  try {
+    const q = await api(
+      "/v1/withdrawal-quote?asset=" + encodeURIComponent(asset) +
+      "&network=" + encodeURIComponent(net || "") +
+      "&amount=" + encodeURIComponent(amount)
+    );
+    if (seq !== QUOTE_SEQ) return;
+    // The strings the server sent, verbatim. No parseFloat.
+    fee.textContent = q.fee + " " + q.asset;
+    out.innerHTML = "<strong>" + q.youReceive + " " + q.asset + "</strong>";
+    $("wfeenote").textContent = q.note;
+  } catch (e) {
+    if (seq !== QUOTE_SEQ) return;
+    // A refusal here is usually the real answer — below the minimum, or the
+    // chain cannot be priced — so it belongs on screen rather than swallowed.
+    fee.textContent = "—";
+    out.innerHTML = "<strong>—</strong>";
+    $("wfeenote").textContent = e.message;
+  }
+}
+let QUOTE_TIMER = null;
+$("wamount").oninput = () => {
+  clearTimeout(QUOTE_TIMER);
+  QUOTE_TIMER = setTimeout(quoteWithdrawal, 250);
+};
 
 $("dowd").onclick = async () => {
   hide($("wderr"));
@@ -548,7 +605,8 @@ $("dowd").onclick = async () => {
       },
     });
     show($("wderr"),
-      "Requested: " + r.amount + " " + r.asset + " over " + (r.network || r.asset) + ".",
+      "Requested: " + r.amount + " " + r.asset + " over " + (r.network || r.asset) +
+      ". Fee " + r.fee + ", you receive " + r.youReceive + " " + r.asset + ".",
       true);
     $("wamount").value = "";
     await loadWithdrawOptions();

@@ -715,7 +715,7 @@ export function start(): void {
 				// not being straight with anyone.
 				if (p === "/withdrawal-fees") {
 					json(res, 200, {
-						fees: discloseWithdrawalFees(LIVE_FEES),
+						fees: discloseWithdrawalFees(LIVE_FEES, pricing),
 						note:
 							"The fee is withheld from the amount, so you receive the " +
 							"amount minus the fee. It covers the network cost of " +

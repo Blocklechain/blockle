@@ -278,13 +278,55 @@ test("a self-funding chain involves no conversion", () => {
 	assert.equal(c.covered, true);
 });
 
-test("the published schedule lists every chain with its minimum", () => {
-	const rows = discloseWithdrawalFees(LIVE_FEES);
+test("THE PUBLISHED SCHEDULE QUOTES WHAT WILL ACTUALLY BE CHARGED", () => {
+	// The first version computed this from the configured collapse floor rather
+	// than the derived allowance, and published 2.20 USDT for a TRC-20
+	// withdrawal that would be charged around 13. A published schedule that is
+	// cheaper than the charge is worse than no schedule.
+	const rows = discloseWithdrawalFees(LIVE_FEES, FLOOR);
 	assert.equal(rows.length, Object.keys(LIVE_FEES).length);
+
+	for (const row of rows) {
+		assert.equal(row.available, true, `${row.asset}/${row.network}: ${row.note}`);
+		// Quote at the published minimum and check the real fee is not higher.
+		const q = quoteWithdrawal({
+			asset: row.asset,
+			network: row.network,
+			amount: parse(row.minimum, {
+				symbol: row.asset,
+				decimals: assetDef(row.asset).decimals,
+			}),
+			table: LIVE_FEES,
+			pricing: FLOOR,
+		});
+		assert.equal(
+			q.display.fee,
+			row.fee,
+			`${row.asset}/${row.network ?? "native"}: published ${row.fee} but ` +
+				`charges ${q.display.fee}`,
+		);
+	}
+
 	const erc = rows.find((r) => r.asset === "USDT" && r.network === "ERC20");
 	assert.ok(erc !== undefined);
 	assert.equal(erc.gasAsset, "ETH", "customers should know what pays the gas");
-	assert.ok(Number(erc.minimum) > 0);
+});
+
+test("an unpriceable chain is published as UNAVAILABLE, not quoted cheaply", () => {
+	// It cannot be withdrawn over either, so saying so is simply accurate —
+	// and quoting a cheap fee for a chain that refuses every withdrawal would
+	// be the worst of both.
+	const rows = discloseWithdrawalFees(LIVE_FEES, {
+		sources: [], // no rate anywhere
+	});
+	const erc = rows.find((r) => r.asset === "USDT" && r.network === "ERC20")!;
+	assert.equal(erc.available, false);
+	assert.equal(erc.fee, "—");
+	assert.match(String(erc.note), /no fresh ETH\/USDT rate/);
+
+	// A self-funding chain needs no rate and stays available.
+	const btc = rows.find((r) => r.asset === "BTC")!;
+	assert.equal(btc.available, true);
 });
 
 test("every configured chain covers its gas at the policy floor", () => {
