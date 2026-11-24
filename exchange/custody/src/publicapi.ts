@@ -49,6 +49,7 @@ import { Deposits, describeDeposit } from "./deposits";
 import { BitGoDeposits } from "./bitgodeposits";
 import { BitGoHoldings } from "./bitgo";
 import { BlockAddressPool } from "./blockaddresspool";
+import { Customers } from "./customers";
 import { bumpDeclared } from "./declaredtreasury";
 import { depositsFor } from "./depositwatcher";
 import { nodeAdapters, nodeDepositAddress } from "./custodyrouting";
@@ -1334,6 +1335,14 @@ export function start(): void {
 	 */
 	const apiKeys = new ApiKeys(wdb);
 
+	/*
+	 * THE CUSTOMER DIRECTORY, for the operator console.
+	 *
+	 * Reads the venue's own tables — it has no customer table of its own, so
+	 * it cannot drift out of step with the ledger.
+	 */
+	const customers = new Customers(wdb, wledger);
+
 	// Listing applications. The row is the record; the email is a notification.
 	const listings = new Listings(wdb, {
 		mailer: sendmailMailer(),
@@ -1365,6 +1374,7 @@ export function start(): void {
 		pricing,
 		rates: pricing.sources ?? [],
 		allowlist: allowlistFrom(process.env.EXCHANGE_ADMINS),
+		customers,
 		totpSecrets: totpSecretsFrom(process.env.EXCHANGE_ADMIN_TOTP),
 		houseAccountId: process.env.EXCHANGE_HOUSE_ACCOUNT ?? "house",
 	};

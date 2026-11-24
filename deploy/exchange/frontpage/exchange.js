@@ -1353,6 +1353,37 @@
       a.href = "https://blockle.org/account/";
       a.appendChild(tx("Manage at blockle.org"));
       body.appendChild(a);
+
+      /*
+       * SIGN OUT, HERE.
+       *
+       * There was no way out of the venue short of clearing cookies — which
+       * matters more here than on most sites: this is the screen someone
+       * reaches on a shared or borrowed machine, and leaving a session that
+       * can place orders behind them is a real cost.
+       *
+       * It ends the session at the ACCOUNTS SERVICE, not just in this tab.
+       * Dropping the cookie locally would leave the session valid for anyone
+       * who still had it.
+       */
+      var out = el("button", "btn danger block", "Sign out");
+      out.style.marginTop = "8px";
+      out.onclick = function () {
+        out.disabled = true;
+        out.textContent = "Signing out…";
+        api("account/api/logout", { method: "POST", data: {} })
+          .catch(function () {
+            // A failed call must not strand someone signed in. The cookie may
+            // already be gone, or the service may be unreachable; either way
+            // the next screen decides, and it checks with the server.
+            return null;
+          })
+          .then(function () {
+            SIGNED_IN = false;
+            location.href = "signin.html";
+          });
+      };
+      body.appendChild(out);
     }).catch(function (e) {
       clear(body);
       body.appendChild(el("div", "msg warn", e.message));

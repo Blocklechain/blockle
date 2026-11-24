@@ -277,6 +277,32 @@
     </div>
   </details>
 
+  <details class="card" id="customers-card">
+    <summary>Customers <span class="note">read-only · lookup by anything</span></summary>
+    <div class="card-body">
+      <p class="lead">
+        Everyone with a balance, a deposit address or a withdrawal. Derived from
+        the ledger at read time, so it cannot disagree with the books. Nothing
+        on this screen changes a customer's state — freezing and crediting have
+        their own code-gated actions.
+      </p>
+      <form class="act" id="cust-form">
+        <div style="flex:1 1 320px"><label for="cust-q">
+          Account id, deposit address, withdrawal id, destination address or txid</label>
+          <input id="cust-q" placeholder="paste whatever they gave you" autocomplete="off"
+                 style="width:100%" /></div>
+        <button type="submit">Look up</button>
+      </form>
+      <div class="out" id="cust-out"></div>
+      <div class="scroll" style="margin-top:14px"><table id="customers">
+        <thead><tr><th>Account</th><th>Balances</th><th class="num">Addresses</th>
+                   <th class="num">Withdrawals</th><th>Last activity</th></tr></thead>
+        <tbody><tr><td colspan="5">loading…</td></tr></tbody>
+      </table></div>
+      <div id="cust-more"></div>
+    </div>
+  </details>
+
   <details class="card">
     <summary>Action journal <span class="note">append-only</span></summary>
     <div class="card-body">
@@ -527,6 +553,140 @@
     }
   }
 
+  /*
+   * THE CUSTOMER DIRECTORY.
+   *
+   * Paged rather than "all of them": this table grows with the venue, and a
+   * screen that quietly stops being usable at ten thousand rows is a screen
+   * nobody trusts during an incident.
+   */
+  let custOffset = 0;
+
+  function balancesCell(balances) {
+    if (!balances.length) return "—";
+    return balances.map((b) => b.amount + " " + b.asset).join(", ");
+  }
+
+  async function loadCustomers(offset) {
+    custOffset = offset || 0;
+    const tb = document.querySelector("#customers tbody");
+    const r = await get("/customers?limit=25&offset=" + custOffset);
+    tb.textContent = "";
+    if (!r.customers.length) {
+      const tr = tb.insertRow();
+      const td = tr.insertCell();
+      td.colSpan = 5;
+      td.appendChild(txt(custOffset ? "No more." : "No customers yet."));
+    }
+    for (const c of r.customers) {
+      const tr = tb.insertRow();
+      const id = tr.insertCell();
+      const link = document.createElement("a");
+      link.href = "#";
+      link.className = "mono";
+      link.appendChild(txt(c.accountId));
+      link.addEventListener("click", (e) => { e.preventDefault(); lookup(c.accountId); });
+      id.appendChild(link);
+      tr.insertCell().appendChild(txt(balancesCell(c.balances)));
+      const a = tr.insertCell(); a.className = "num"; a.appendChild(txt(String(c.depositAddresses)));
+      const w = tr.insertCell(); w.className = "num";
+      w.appendChild(txt(c.withdrawals.pending
+        ? c.withdrawals.total + " (" + c.withdrawals.pending + " pending)"
+        : String(c.withdrawals.total)));
+      tr.insertCell().appendChild(txt(c.lastActivity ? c.lastActivity.slice(0, 19).replace("T", " ") : "—"));
+    }
+    const more = document.getElementById("cust-more");
+    more.textContent = "";
+    const shown = Math.min(custOffset + 25, r.total);
+    const note = document.createElement("span");
+    note.className = "note";
+    note.appendChild(txt(r.total ? (custOffset + 1) + "–" + shown + " of " + r.total + "  " : ""));
+    more.appendChild(note);
+    if (custOffset > 0) {
+      const b = document.createElement("button");
+      b.appendChild(txt("Previous"));
+      b.addEventListener("click", () => loadCustomers(Math.max(0, custOffset - 25)));
+      more.appendChild(b);
+    }
+    if (shown < r.total) {
+      const b = document.createElement("button");
+      b.appendChild(txt("Next"));
+      b.addEventListener("click", () => loadCustomers(custOffset + 25));
+      more.appendChild(b);
+    }
+  }
+
+  /** One customer, in full. */
+  async function lookup(q) {
+    const out = document.getElementById("cust-out");
+    out.textContent = "";
+    if (!String(q || "").trim()) return;
+    let r;
+    try {
+      r = await get("/customer-lookup?q=" + encodeURIComponent(q));
+    } catch (e) {
+      out.className = "out bad";
+      out.appendChild(txt(e.message || String(e)));
+      return;
+    }
+    if (!r.detail) {
+      // NO FUZZY FALLBACK. A near-miss that resolved to someone else would
+      // put one person's balances under another's question.
+      out.className = "out";
+      out.appendChild(txt("Nothing matches " + JSON.stringify(r.query) +
+        " exactly — account ids, addresses and references are matched in full."));
+      return;
+    }
+    const d = r.detail;
+    out.className = "out";
+    const h = document.createElement("div");
+    h.innerHTML = "";
+    const line = (label, value) => {
+      const p = document.createElement("div");
+      const b = document.createElement("b");
+      b.appendChild(txt(label + ": "));
+      p.appendChild(b);
+      p.appendChild(txt(value));
+      return p;
+    };
+    h.appendChild(line("Account", d.accountId + "  (matched by " + r.matchedBy + ")"));
+    h.appendChild(line("Balances", balancesCell(d.balances)));
+    h.appendChild(line("Last activity", d.lastActivity || "never"));
+    out.appendChild(h);
+
+    const section = (title, rows, cols, cells) => {
+      if (!rows.length) return;
+      const t = document.createElement("div");
+      t.className = "note";
+      t.style.marginTop = "10px";
+      t.appendChild(txt(title));
+      out.appendChild(t);
+      const tbl = document.createElement("table");
+      const thead = tbl.createTHead().insertRow();
+      for (const c of cols) { const th = document.createElement("th"); th.appendChild(txt(c)); thead.appendChild(th); }
+      const body = tbl.createTBody();
+      for (const row of rows) {
+        const tr = body.insertRow();
+        for (const v of cells(row)) tr.insertCell().appendChild(txt(v));
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "scroll";
+      wrap.appendChild(tbl);
+      out.appendChild(wrap);
+    };
+
+    section("Deposit addresses", d.addresses,
+      ["Asset", "Network", "Address", "Memo", "Issued"],
+      (a) => [a.asset, a.network || "native", a.address, a.memo || "—", a.createdAt.slice(0, 10)]);
+    section("Withdrawals", d.recentWithdrawals,
+      ["#", "Asset", "Net", "State", "To", "Reference", "When"],
+      (w) => [String(w.id), w.asset + (w.network ? "." + w.network : ""), w.net, w.state,
+              w.address, w.providerRef || "—", w.requestedAt.slice(0, 19).replace("T", " ")]);
+    section("Recent ledger activity", d.recentEntries,
+      ["When", "Reason", "Asset", "Delta"],
+      (e) => [e.at.slice(0, 19).replace("T", " "), e.reason, e.asset, e.delta]);
+  }
+
   async function loadActions() {
     const body = $("actions").tBodies[0];
     try {
@@ -690,6 +850,15 @@
     } catch {
       return; // no session: the banner already says so
     }
-    await Promise.all([loadRevenue(), loadGas(), loadCoverage(), loadActions()]);
+    const custForm = document.getElementById("cust-form");
+    if (custForm) {
+      custForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        lookup(document.getElementById("cust-q").value);
+      });
+    }
+    await Promise.all([
+      loadRevenue(), loadGas(), loadCoverage(), loadActions(), loadCustomers(0),
+    ]);
   })();
 </script>

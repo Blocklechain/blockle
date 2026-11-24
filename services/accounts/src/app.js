@@ -180,13 +180,16 @@
       });
 
       // plan
+      // BLOCKLE ALIEN AND ALIEN PRO ARE FREE — nothing to upgrade to. An
+      // existing subscription is still shown, because it is still charging
+      // for something now included and the owner should know to cancel it.
       $('#subBox').innerHTML = u.sub && u.sub.active
-        ? `<div class="statusline"><span class="on">${ic('check')} ${esc(plan)} active</span></div>`
-        : `<div class="statusline"><span class="off">Free plan</span><button class="sm" id="sub" style="max-width:220px">Upgrade to ${esc(plan)} — ${esc(price)} ${esc(ccy)}/mo</button></div>`;
-      const subBtn = $('#sub'); if (subBtn) subBtn.addEventListener('click', async () => {
-        const r = await api('POST', '/account/api/subscribe', {});
-        if (r.data.approveUrl) location.href = r.data.approveUrl; else show(r.data.error || 'Billing is not configured yet.');
-      });
+        ? `<div class="statusline"><span class="on">${ic('check')} Blockle Alien is included free</span></div>`
+          + `<p class="note">You still have an active paid subscription from when this `
+          + `was a paid plan — you do not need it any more. Cancel it in PayPal, or `
+          + `<a href="/account/support">ask us</a> and we will cancel it for you.</p>`
+        : `<div class="statusline"><span class="on">${ic('check')} Blockle Alien and Alien Pro are included free</span></div>`
+          + `<p class="note">Every feature, every strategy, every chain. There is no paid tier.</p>`;
 
       // quick links
       const links = [

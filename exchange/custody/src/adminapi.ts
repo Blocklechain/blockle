@@ -48,6 +48,7 @@ import { assetDef, settlementAsset } from "./assets";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { gasPositions, type GasGateDeps } from "./gasgate";
 import { type RateSource } from "./gasrates";
+import type { Customers } from "./customers";
 import { AccountKind, type Ledger } from "./ledger";
 import { estimateTotal, fundGasFloat, revenue, sweep } from "./revenue";
 import { TotpVerifier } from "./totp";
@@ -99,6 +100,8 @@ export interface AdminDeps {
 	 * a Blockle account can see the venue's revenue and sweep its fees".
 	 */
 	readonly allowlist: readonly string[];
+	/** The customer directory — see customers.ts. Read-only by construction. */
+	readonly customers: Customers;
 	/**
 	 * Base32 TOTP secret for admin mutations, per account id.
 	 *
@@ -314,6 +317,39 @@ export async function adminRoute(
 					takerBps: DEFAULT_FEES.takerBps,
 				},
 			});
+			return true;
+		}
+
+		/*
+		 * THE CUSTOMER DIRECTORY. READ-ONLY, DELIBERATELY.
+		 *
+		 * This is the most sensitive read in the venue — every balance and
+		 * address for everyone — so it sits behind the same operator allowlist
+		 * as the rest, and it offers no way to change anything. Freezing or
+		 * crediting an account needs its own TOTP-gated endpoint and its own
+		 * audit row; putting those on a browsing screen is how a mis-click
+		 * becomes a loss.
+		 */
+		if (p === "/customers" && req.method === "GET") {
+			const limit = Number(url.searchParams.get("limit") ?? "50");
+			const offset = Number(url.searchParams.get("offset") ?? "0");
+			send(res, 200, deps.customers.list({
+				limit: Number.isFinite(limit) ? limit : 50,
+				offset: Number.isFinite(offset) ? offset : 0,
+			}));
+			return true;
+		}
+
+		if (p === "/customer-lookup" && req.method === "GET") {
+			// Whatever the operator was given: an account id, a deposit
+			// address, a withdrawal id, a destination address, a txid.
+			send(res, 200, deps.customers.lookup(url.searchParams.get("q") ?? ""));
+			return true;
+		}
+
+		const customer = /^\/customers\/([A-Za-z0-9_.:-]{1,128})$/.exec(p);
+		if (customer !== null && req.method === "GET") {
+			send(res, 200, deps.customers.detail(customer[1]!));
 			return true;
 		}
 

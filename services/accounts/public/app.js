@@ -121,7 +121,9 @@
       $('#stats').innerHTML =
         stat(social ? social.blockUnits : '—', 'BLOCK') +
         stat(social ? fmtk(social.karma) : '—', 'Karma') +
-        stat(u.sub && u.sub.active ? (u.sub.tier === 'copilot_pro' ? 'Blockle Alien Pro' : u.sub.tier === 'copilot' ? 'Blockle Alien' : 'Pro') : 'Free', 'Plan') +
+        // NO PLAN TIER HERE. Blockle Alien and Alien Pro are free, so naming
+        // them as a "plan" told people they were on something they could lose
+        // — or sold them something they already have.
         stat(u.totpEnabled ? 'On' : 'Off', '2FA') +
         (u.createdAt ? stat(new Date(u.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }), 'Member since') : '');
 
@@ -164,30 +166,32 @@
         await api('POST', '/account/api/logout-all', {}); location.href = '/account/login';
       });
 
-      // plan / Blockle Copilot subscription tiers
+      /*
+       * BLOCKLE ALIEN AND ALIEN PRO ARE FREE.
+       *
+       * This box used to sell them: a tier list, prices, a checkout, and a
+       * deep link that auto-started a PayPal flow from /copilot. All of that
+       * is gone — there is nothing to buy, so offering to sell it is just a
+       * lie with a button on it.
+       *
+       * THE ONE THING STILL WORTH SAYING is addressed to anyone who signed up
+       * while it WAS paid: their PayPal subscription is still live and still
+       * charging them for something now included. Hiding the box would hide
+       * that, so an active subscription is shown with how to stop paying.
+       */
       const subBox = $('#subBox');
-      const startCheckout = async (tier) => {
-        const r = await api('POST', '/account/api/subscribe', tier ? { tier } : {});
-        if (r.data.approveUrl) location.href = r.data.approveUrl; else show(r.data.error || 'Billing is not configured yet.');
-      };
       if (u.sub && u.sub.active) {
-        subBox.innerHTML = `<div class="statusline"><span class="on">${ic('check')} ${esc(u.sub.plan || plan)} active</span></div>`;
+        subBox.innerHTML =
+          `<div class="statusline"><span class="on">${ic('check')} Blockle Alien is included free</span></div>`
+          + `<p class="note">You still have an active paid subscription`
+          + (u.sub.plan ? ` (${esc(u.sub.plan)})` : '')
+          + ` from when this was a paid plan. You do not need it any more — `
+          + `cancel it in PayPal, or <a href="/account/support">ask us</a> and `
+          + `we will cancel it for you. Nothing you use today depends on it.</p>`;
       } else {
-        const plans = ((await api('GET', '/account/api/plans')).data || {}).plans || [];
-        if (!plans.length) {
-          subBox.innerHTML = `<div class="statusline"><span class="off">Free plan</span></div><p class="note">Paid plans are coming soon.</p>`;
-        } else {
-          subBox.innerHTML = `<div class="statusline"><span class="off">Free plan</span></div>`
-            + `<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;max-width:340px">`
-            + plans.map((p) => `<button class="sm planbtn" data-tier="${esc(p.tier)}">Get ${esc(p.name)} — ${esc(p.price)} ${esc(p.ccy)}/mo</button>`).join('')
-            + `</div>`;
-          subBox.querySelectorAll('.planbtn').forEach((b) => b.addEventListener('click', () => startCheckout(b.dataset.tier)));
-        }
-        // deep link from the /copilot landing: ?plan=<tier> (or a localStorage fallback that
-        // survives the login redirect) auto-starts that tier's checkout once signed in.
-        let want = new URLSearchParams(location.search).get('plan');
-        try { if (!want) want = localStorage.getItem('blk_copilot_plan'); localStorage.removeItem('blk_copilot_plan'); } catch (e) {}
-        if (want && plans.some((p) => p.tier === want)) startCheckout(want);
+        subBox.innerHTML =
+          `<div class="statusline"><span class="on">${ic('check')} Blockle Alien and Alien Pro are included free</span></div>`
+          + `<p class="note">Every feature, every strategy, every chain. There is no paid tier.</p>`;
       }
 
       // quick links

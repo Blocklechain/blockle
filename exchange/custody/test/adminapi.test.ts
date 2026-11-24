@@ -20,6 +20,7 @@ import { SCHEMA, adminRoute, allowlistFrom, totpSecretsFrom, type AdminDeps } fr
 import { BlockleAuth } from "../src/blockleauth";
 import { LIVE_GAS_COSTS } from "../src/gasgate";
 import { GAS_PRICE_FLOOR, StaticRates } from "../src/gasrates";
+import { Customers } from "../src/customers";
 import { Ledger } from "../src/ledger";
 import { currentCode, generateSecret } from "../src/totp";
 import { LIVE_FEES, type GasPricing } from "../src/withdrawalfees";
@@ -93,6 +94,7 @@ async function call(
 		pricing,
 		rates: [new StaticRates(GAS_PRICE_FLOOR)],
 		allowlist: opts.allowlist ?? [adminId],
+		customers: new Customers(db, ledger),
 		totpSecrets: opts.secrets ?? { [adminId]: SECRET },
 		houseAccountId: "house",
 	};
