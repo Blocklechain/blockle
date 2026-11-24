@@ -111,7 +111,18 @@ const TRON: Network = {
 const ETHEREUM: Network = {
 	id: "ERC20",
 	label: "Ethereum (ERC-20)",
-	bitgo: { prod: "eth:usdt", test: "teth:usdt" },
+	/*
+	 * `usdt`, NOT `eth:usdt`.
+	 *
+	 * Every other chain here uses the `chain:token` form, so ERC-20 looked like
+	 * it should too — and the production API rejects it outright:
+	 * `{"error":"Coin unsupported: eth:usdt"}`. BitGo's original stablecoin
+	 * listings predate that convention and remain top-level coins. Found by
+	 * probing the live API rather than reasoning from the pattern; the watcher
+	 * had been reporting "no exchange wallet" for both Ethereum stablecoins and
+	 * the cause was this, not a missing wallet.
+	 */
+	bitgo: { prod: "usdt", test: "teth:usdt" },
 	costHint: "high",
 	gasAsset: "ETH",
 };
@@ -150,7 +161,8 @@ export const ASSETS: Readonly<Record<string, AssetDef>> = {
 		symbol: "USDC",
 		decimals: 6,
 		networks: [
-			{ ...ETHEREUM, bitgo: { prod: "eth:usdc", test: "teth:usdc" } },
+			// Top-level `usdc` for the same reason as USDT above.
+			{ ...ETHEREUM, bitgo: { prod: "usdc", test: "teth:usdc" } },
 			{ ...SOLANA, bitgo: { prod: "sol:usdc", test: "tsol:usdc" } },
 			{ ...TRON, bitgo: { prod: "trx:usdc", test: "ttrx:usdc" } },
 		],

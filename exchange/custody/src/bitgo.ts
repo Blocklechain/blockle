@@ -27,9 +27,14 @@
 // -----------------------------------------------------------------------------
 
 import { bitgoTicker, networkOf, settlementAsset } from "./assets";
+import { BASE_URL, BitGoError, BitGoHttp, redact, type BitGoEnv } from "./bitgohttp";
+
+// Re-exported so existing importers keep working: these were defined here
+// before the HTTP core was split out for the deposit client.
+export { BASE_URL, BitGoError, redact };
+export type { BitGoEnv };
 import type { HoldingsSource } from "./reconcile";
 
-export type BitGoEnv = "test" | "prod";
 
 /**
  * Which SET OF COIN TICKERS to use, separately from which BitGo system we talk
@@ -56,17 +61,7 @@ export type BitGoEnv = "test" | "prod";
  */
 export type BitGoCoins = "mainnet" | "testnet";
 
-const BASE_URL: Readonly<Record<BitGoEnv, string>> = {
-	test: "https://app.bitgo-test.com/api/v2",
-	prod: "https://app.bitgo.com/api/v2",
-};
 
-export class BitGoError extends Error {
-	constructor(message: string) {
-		super(message);
-		this.name = "BitGoError";
-	}
-}
 
 /**
  * Our venue-wide asset symbols mapped to BitGo coin tickers.
@@ -93,6 +88,12 @@ const TICKERS: Readonly<Record<BitGoCoins, Readonly<Record<string, string>>>> = 
 		TRX: "trx",
 		XRP: "xrp",
 		XLM: "xlm",
+		// BNB Smart Chain's gas token. BitGo calls the chain `bsc` and the
+		// native coin shares that ticker. Added because the deposit watcher
+		// reported "no BitGo ticker mapped for BNB" — BNB had been added to
+		// the asset registry for BEP-20 gas accounting without a custody
+		// mapping to go with it.
+		BNB: "bsc",
 	},
 	testnet: {
 		BTC: "tbtc",
@@ -183,6 +184,7 @@ export class BitGoHoldings implements HoldingsSource {
 	readonly name: string;
 
 	private readonly token: string;
+	private readonly http: BitGoHttp;
 	private readonly base: string;
 	private readonly env: BitGoEnv;
 	private readonly coins: BitGoCoins;
@@ -202,6 +204,11 @@ export class BitGoHoldings implements HoldingsSource {
 			throw new BitGoError("a BitGo access token is required");
 		}
 		this.token = token.trim();
+		this.http = new BitGoHttp(token, {
+			env: cfg.env,
+			...(cfg.timeoutMs === undefined ? {} : { timeoutMs: cfg.timeoutMs }),
+			...(cfg.fetchImpl === undefined ? {} : { fetchImpl: cfg.fetchImpl }),
+		});
 		this.env = cfg.env;
 		// Defaults to the safe pairing; see the note on BitGoCoins.
 		this.coins = cfg.coins ?? (cfg.env === "prod" ? "mainnet" : "testnet");
@@ -513,97 +520,16 @@ export class BitGoHoldings implements HoldingsSource {
 			.map((w) => ({ id: w.id, label: w.label }));
 	}
 
+	/**
+	 * GET ONLY. This class is the reconciler's dependency, and that it cannot
+	 * issue a write is a structural guarantee rather than a convention — see
+	 * bitgohttp.ts. Deposits, which must POST, use a separate client.
+	 */
 	private async get<T>(path: string): Promise<T> {
-		const url = `${this.base}${path}`;
-		const ac = new AbortController();
-		const timer = setTimeout(() => ac.abort(), this.timeoutMs);
-		try {
-			const res = await this.fetchImpl(url, {
-				method: "GET",
-				headers: {
-					Authorization: `Bearer ${this.token}`,
-					Accept: "application/json",
-				},
-				signal: ac.signal,
-			});
-
-			if (!res.ok) {
-				const text = await res.text().catch(() => "");
-				const body = redact(text, this.token);
-				throw new BitGoError(
-					`BitGo ${res.status} ${res.statusText} for ${path}` +
-						(body === "" ? "" : `: ${body.slice(0, 400)}`) +
-						hint(res.status, body),
-				);
-			}
-
-			return (await res.json()) as T;
-		} catch (e) {
-			if (e instanceof BitGoError) throw e;
-			if (e instanceof Error && e.name === "AbortError") {
-				throw new BitGoError(`BitGo request to ${path} timed out after ${this.timeoutMs}ms`);
-			}
-			// Redact unconditionally: a fetch error can echo the request, headers
-			// included, and that is how a bearer token ends up in a log file.
-			throw new BitGoError(
-				`BitGo request to ${path} failed: ${redact(
-					e instanceof Error ? e.message : String(e),
-					this.token,
-				)}`,
-			);
-		} finally {
-			clearTimeout(timer);
-		}
+		return this.http.request<T>("GET", path);
 	}
 }
 
-/**
- * Turn a BitGo HTTP failure into an actionable hint.
- *
- * WRITTEN AGAINST OBSERVED RESPONSES, not assumptions. The first version of
- * this code attributed IP-whitelist rejections to HTTP 403 and treated every
- * 401 as "the token is invalid, expired, or revoked" — which would have sent a
- * developer hunting for a dead token when the real problem was the source
- * address. BitGo actually returns **401** for both cases and distinguishes them
- * only in the body:
- *
- *   401 {"error":"Attempt to use IP-restricted token from an unauthorized IP
- *        address","name":"Unauthorized"}          <- whitelist mismatch
- *   401 {"error":"No access token","name":"Unauthorized"}
- *                                                 <- wrong environment, or no
- *                                                    such token
- *
- * That second one is worth calling out: BitGo's test and production
- * environments hold SEPARATE tokens, so a test token presented to
- * app.bitgo.com reads as "No access token" rather than as a permissions error.
- */
-function hint(status: number, body: string): string {
-	if (status === 401) {
-		if (/IP-restricted|unauthorized IP/i.test(body)) {
-			return (
-				" — the token is valid but this source IP is not on its whitelist. " +
-				"Check the EGRESS address actually used: if the host has IPv6, the " +
-				"request may have left over IPv6 from a different address than the " +
-				"whitelisted IPv4. Force IPv4 to confirm."
-			);
-		}
-		if (/No access token/i.test(body)) {
-			return (
-				" — BitGo does not recognise this token in this environment. Test and " +
-				"production hold SEPARATE tokens; check BITGO_ENV matches where the " +
-				"token was created."
-			);
-		}
-		return " — the token is invalid, expired, or revoked";
-	}
-	if (status === 403) {
-		return " — forbidden: check the token's scopes and the acting user's wallet role";
-	}
-	if (status === 429) {
-		return " — rate limited; back off rather than retrying immediately";
-	}
-	return "";
-}
 
 /**
  * Parse a BitGo base-unit string to bigint.
@@ -628,8 +554,4 @@ export function parseBaseUnits(s: string, coin: string): bigint {
 	return v;
 }
 
-/** Remove the token from any string about to be logged or thrown. */
-export function redact(text: string, token: string): string {
-	if (token === "") return text;
-	return text.split(token).join("[REDACTED]");
-}
+

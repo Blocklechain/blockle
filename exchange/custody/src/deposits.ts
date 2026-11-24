@@ -225,6 +225,37 @@ export class Deposits {
 		return this.addressFor(args.userId, sym, net === "" ? undefined : net)!;
 	}
 
+	/**
+	 * WHO OWNS THIS ADDRESS? The reverse lookup the watcher attributes on.
+	 *
+	 * Matched on the address AND the asset/chain it was issued for, not on the
+	 * address alone. Address formats collide across chains — an Ethereum
+	 * address is a valid BNB Chain address and vice versa — so an
+	 * address-only lookup could attribute a BEP-20 deposit to the customer who
+	 * was issued the same string on Ethereum. The amounts would even look
+	 * plausible.
+	 *
+	 * Returns undefined rather than guessing. The watcher parks an
+	 * unattributable deposit instead of crediting the nearest candidate.
+	 */
+	ownerOfAddress(
+		address: string,
+		asset: string,
+		network: string | undefined,
+	): string | undefined {
+		const addr = address.trim();
+		if (addr === "") return undefined;
+		const row = this.db
+			.prepare(
+				`SELECT user_id FROM deposit_address
+				  WHERE address = ? AND asset = ? AND network = ?`,
+			)
+			.get(addr, settlementAsset(asset), network ?? "") as
+			| { user_id: string }
+			| undefined;
+		return row?.user_id;
+	}
+
 	/** Count, for the admin view: how much of the registry is populated. */
 	provisionedCount(): number {
 		const r = this.db

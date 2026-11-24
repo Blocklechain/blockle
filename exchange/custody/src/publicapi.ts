@@ -46,6 +46,9 @@ import { ASSETS, assetDef } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
 import { Deposits, describeDeposit } from "./deposits";
+import { BitGoDeposits } from "./bitgodeposits";
+import { BitGoHoldings } from "./bitgo";
+import { depositsFor } from "./depositwatcher";
 import { Listings, QUESTIONS, sendmailMailer } from "./listings";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { canPay } from "./liquidity";
@@ -318,6 +321,10 @@ async function venueRoute(
 	gasPricing: GasPricing,
 	mm: MarketMaker,
 	deposits: Deposits,
+	wdbForReads: Database.Database,
+	provisionAddress:
+		| ((userId: string, asset: string, network: string | undefined) => Promise<void>)
+		| undefined,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 
@@ -378,12 +385,48 @@ async function venueRoute(
 			const who = await me();
 			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
 			const netRaw = url.searchParams.get("network");
-			json(res, 200, describeDeposit(
-				deposits,
-				who,
-				asset,
-				netRaw === null || netRaw === "" ? undefined : netRaw,
-			), 0);
+			const net = netRaw === null || netRaw === "" ? undefined : netRaw;
+
+			/*
+			 * ISSUED ON DEMAND, ONCE.
+			 *
+			 * A receive address on the pooled wallet, created the first time
+			 * this customer asks for this chain and then reused forever —
+			 * `Deposits.provision` refuses to replace an existing one, so a
+			 * reload or a double-click cannot orphan coins already on their way
+			 * to the old address.
+			 *
+			 * If provisioning fails we fall through to `describeDeposit`, which
+			 * explains that no address exists and names a chain that works.
+			 * Showing an address we are not certain of is the one outcome that
+			 * loses money irrecoverably, so a failure here is a refusal, never
+			 * a guess.
+			 */
+			if (
+				provisionAddress !== undefined &&
+				deposits.addressFor(who, asset, net) === undefined
+			) {
+				try {
+					await provisionAddress(who, asset, net);
+				} catch (e) {
+					console.error(
+						`deposit address for ${who} ${asset}${net === undefined ? "" : "." + net}: ` +
+							`${e instanceof Error ? e.message : String(e)}`,
+					);
+				}
+			}
+
+			json(res, 200, describeDeposit(deposits, who, asset, net), 0);
+			return;
+		}
+
+		// A customer's deposits in flight. This is what makes "where is my
+		// deposit" answerable without an operator: a transfer appears here from
+		// the first time the custodian mentions it, with how many
+		// confirmations it still needs.
+		if (p === "/deposits" && req.method === "GET") {
+			const who = await me();
+			json(res, 200, { deposits: depositsFor(wdbForReads, who) }, 0);
 			return;
 		}
 
@@ -858,6 +901,57 @@ export function start(): void {
 	// Market-maker ladders share the venue's book and its writable handle.
 	const mm = new MarketMaker(wdb, venue);
 	const deposits = new Deposits(wdb);
+
+	/*
+	 * ADDRESS PROVISIONING, wired only when a custodian is configured.
+	 *
+	 * Undefined without a token, in which case the deposit screen says no
+	 * address is provisioned and names a chain that works — which is true, and
+	 * is the only honest thing to show. The alternative (a placeholder, an
+	 * omnibus address) loses deposits permanently.
+	 *
+	 * The wallet comes from the HOLDINGS adapter's scope, because that is where
+	 * "which wallets are the exchange's" is configured. Creating an address on
+	 * a wallet outside that scope would be issuing a deposit address for
+	 * another project.
+	 */
+	const bitgoToken = (process.env.BITGO_ACCESS_TOKEN ?? "").trim();
+	const bitgoEnv = (process.env.BITGO_ENV ?? "test").trim().toLowerCase();
+	let provisionAddress:
+		| ((userId: string, asset: string, network: string | undefined) => Promise<void>)
+		| undefined;
+	if (bitgoToken !== "" && (bitgoEnv === "test" || bitgoEnv === "prod")) {
+		const depositClient = new BitGoDeposits(bitgoToken, { env: bitgoEnv });
+		const holdingsForScope = BitGoHoldings.fromEnv();
+		provisionAddress = async (userId, asset, network) => {
+			const custodyId = network === undefined ? asset : `${asset}.${network}`;
+			const coin = holdingsForScope.ticker(custodyId);
+			const wallets = await holdingsForScope.exchangeWallets(custodyId);
+			const wallet = wallets[0];
+			if (wallet === undefined) {
+				throw new Error(
+					`no exchange wallet in scope for ${custodyId} — cannot issue a ` +
+						"receive address",
+				);
+			}
+			const created = await depositClient.createReceiveAddress({
+				coin,
+				walletId: wallet.id,
+				// The account id is in the label so an operator can see whose
+				// address it is in BitGo's own UI — which matters precisely when
+				// our database is the thing under investigation.
+				label: `blockle-ex:${userId}`,
+			});
+			deposits.provision({
+				userId,
+				asset,
+				network,
+				address: created.address,
+				...(created.memo === undefined ? {} : { memo: created.memo }),
+				source: `bitgo:${bitgoEnv}:${wallet.id}`,
+			});
+		};
+	}
 	// Listing applications. The row is the record; the email is a notification.
 	const listings = new Listings(wdb, {
 		mailer: sendmailMailer(),
@@ -972,7 +1066,7 @@ export function start(): void {
 				if (url.pathname.startsWith("/v1/")) {
 					await venueRoute(
 						req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
-						LIVE_FEES, pricing, mm, deposits,
+						LIVE_FEES, pricing, mm, deposits, wdb, provisionAddress,
 					);
 					return;
 				}

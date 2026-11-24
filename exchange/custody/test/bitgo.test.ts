@@ -248,8 +248,14 @@ test("A CHAIN-QUALIFIED ASSET RESOLVES TO THE RIGHT BITGO COIN", async () => {
 	const bg = new BitGoHoldings(TOKEN, { env: "prod", fetchImpl: impl, ...SCOPE });
 
 	assert.equal(bg.ticker("USDT.TRC20"), "trx:usdt");
-	assert.equal(bg.ticker("USDT.ERC20"), "eth:usdt");
 	assert.equal(bg.ticker("USDC.SOL"), "sol:usdc");
+	assert.equal(bg.ticker("USDT.BEP20"), "bsc:usdt");
+	// ERC-20 IS THE EXCEPTION, and it is not a typo. Every other chain uses
+	// `chain:token`, but BitGo production rejects `eth:usdt` with
+	// "Coin unsupported" — its original stablecoin listings predate that
+	// convention and are top-level coins. Probed against the live API.
+	assert.equal(bg.ticker("USDT.ERC20"), "usdt");
+	assert.equal(bg.ticker("USDC.ERC20"), "usdc");
 
 	await bg.holdings("USDT.TRC20");
 	assert.match(calls[0]!.url, /\/trx:usdt\/wallet$/);

@@ -215,6 +215,25 @@
             <div id="d-out" style="margin-top:14px"></div>
           </div>
         </div>
+        <div class="panel" id="d-inflight-panel">
+          <header><h2>Deposits in flight</h2><span class="note" id="d-inflight-note"></span></header>
+          <div class="body tight scroll">
+            <table id="t-deposits">
+              <thead>
+                <tr><th>Asset</th><th>Chain</th><th class="num">Amount</th>
+                    <th class="num">Confirmations</th><th>State</th></tr>
+              </thead>
+              <tbody><tr><td colspan="5" class="empty">Nothing arriving.</td></tr></tbody>
+            </table>
+          </div>
+          <div class="body" style="padding-top:0">
+            <p class="note">
+              A deposit appears here as soon as the chain shows it, and is
+              credited once it is deep enough to be safe from a reorg. The
+              confirmations column is how far it has to go.
+            </p>
+          </div>
+        </div>
         <div class="panel" id="faucet-panel">
           <header><h2>Testnet funding</h2></header>
           <div class="body">

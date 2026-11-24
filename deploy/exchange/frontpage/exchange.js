@@ -608,8 +608,48 @@
   RENDER.deposit = function () {
     fillAssetSelect($("d-asset"));
     fillAssetSelect($("f-asset"));
-    depositNets();
+    if (!$("d-net").options.length) depositNets();
+    drawInflight();
   };
+
+  /**
+   * Deposits the chain has shown but we have not credited yet.
+   *
+   * This is the screen that answers "where is my deposit" without a support
+   * ticket: the row exists from the moment the custodian first mentions the
+   * transfer, so waiting looks like waiting rather than like nothing happened.
+   */
+  function drawInflight() {
+    priv("deposits").then(function (r) {
+      var body = $("t-deposits").tBodies[0];
+      var rows = r.deposits || [];
+      var waiting = rows.filter(function (d) { return d.outcome === "pending"; });
+      $("d-inflight-note").textContent = waiting.length
+        ? waiting.length + " waiting to confirm"
+        : "";
+      badge("deposit", waiting.length);
+      if (!rows.length) { emptyRow(body, 5, "Nothing arriving."); return; }
+      clear(body);
+      rows.forEach(function (d) {
+        var tr = body.insertRow();
+        assetCell(tr, d.asset, d.network);
+        cell(tr, d.network ? coinIcon.network(d.network) : "native", "dim");
+        cell(tr, d.amount, "num");
+        // The detail carries "N of M confirmations" for a pending deposit,
+        // which is more use than the bare count.
+        cell(tr, d.outcome === "pending" && d.detail ? d.detail : d.confirmations, "num");
+        pill(
+          tr,
+          d.outcome === "credited" ? "credited"
+            : d.outcome === "pending" ? "confirming"
+            : d.outcome === "unattributed" ? "needs review"
+            : d.outcome,
+          d.outcome === "credited" ? "ok"
+            : d.outcome === "pending" ? "mute" : "warn"
+        );
+      });
+    }).catch(function () { /* signed out: the curtain covers it */ });
+  }
 
   function depositNets() {
     var asset = $("d-asset").value;
@@ -1222,25 +1262,64 @@
       alert("Could not load markets: " + e.message);
     });
 
-    // Who are we? Determines whether the rail's private screens work and
-    // whether the curtain goes up.
+    // Who are we? Determines whether the private screens work, and whether a
+    // signed-out visitor is sent to the sign-in page.
     priv("me").then(function (u) {
       SIGNED_IN = true;
       $("tb-who").textContent = u.email || u.accountId;
       refreshBalances();
     }).catch(function (e) {
       SIGNED_IN = false;
-      $("tb-who").textContent = "not signed in";
+
+      /*
+       * A SIGNED-OUT VISITOR GOES TO THE SIGN-IN PAGE.
+       *
+       * The first version only raised the curtain when someone navigated to a
+       * screen that needs an account — and since the default route is the
+       * public markets list, arriving signed out just showed "not signed in"
+       * in the corner with no way forward. A label is not a call to action.
+       *
+       * Not a trap, though: the sign-in page offers "browse markets without
+       * signing in", which comes back with ?browse=1. That is remembered for
+       * the tab, so navigating around afterwards does not bounce again.
+       */
+      var browsing = false;
+      try {
+        if (new URLSearchParams(location.search).get("browse") === "1") {
+          sessionStorage.setItem("blockle.ex.browse", "1");
+        }
+        browsing = sessionStorage.getItem("blockle.ex.browse") === "1";
+      } catch (err) {
+        // Storage denied (private mode): treat it as browsing rather than
+        // redirecting on every single navigation.
+        browsing = true;
+      }
+
       if (e.status === 503) {
-        // NOT "signed out". The accounts service is unreachable and we refuse
-        // to guess — telling someone to sign in would send them round a loop
-        // that cannot succeed.
+        // NOT "signed out", and NOT a redirect. The accounts service is
+        // unreachable and we refuse to guess; sending someone to sign in would
+        // be a loop that cannot succeed. Public market data still works, so
+        // say that and let them use it.
+        $("tb-who").textContent = "account service unreachable";
         $("signin-why").textContent =
           "The Blockle account service is not reachable right now, so we cannot " +
-          "tell who you are. Public market data below is unaffected. " +
-          "Detail: " + e.message;
+          "tell who you are. Public market data is unaffected. Detail: " + e.message;
+        var needs503 = SCREENS.filter(function (s) {
+          return s.auth && location.hash.indexOf("#/" + s.id) === 0;
+        }).length > 0;
+        if (needs503) curtain(true);
+        return;
       }
-      // Only curtain the screens that need an account.
+
+      $("tb-who").textContent = "not signed in";
+      if (!browsing) {
+        location.replace(
+          "signin.html?return=" +
+            encodeURIComponent(location.pathname + location.search + location.hash)
+        );
+        return;
+      }
+      // Browsing deliberately: only curtain the screens that need an account.
       var needsAuth = SCREENS.filter(function (s) {
         return s.auth && location.hash.indexOf("#/" + s.id) === 0;
       }).length > 0;
