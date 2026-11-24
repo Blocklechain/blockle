@@ -122,13 +122,15 @@ cmd_check() {
 cmd_install() {
 	local sym="${1:-}"
 	[[ -n "$sym" ]] || die "usage: provision.sh install <SYMBOL>"
-	local name fam ram disk daemon port
+	local name fam ram disk daemon port p2p
 	name="$(jq_get "$sym" name)";   [[ -n "$name" ]] || die "unknown coin $sym"
 	fam="$(jq_get "$sym" family)"
 	ram="$(jq_get "$sym" ramGb)"
 	disk="$(jq_get "$sym" diskGb)"
 	daemon="$(jq_get "$sym" daemon)"
 	port="$(jq_get "$sym" rpcPort)"
+	p2p="$(jq_get "$sym" p2pPort)"
+	[[ -n "$p2p" ]] || die "$sym has no p2pPort in nodes.json"
 
 	# THE GUARD. Before anything is downloaded, let alone started.
 	local avail
@@ -198,7 +200,7 @@ EOF
 	done
 	echo "    installed $dir/$daemon"
 
-	write_conf "$sym" "$fam" "$user" "$datadir" "$port"
+	write_conf "$sym" "$fam" "$user" "$datadir" "$port" "$p2p"
 	write_unit "$sym" "$fam" "$user" "$dir" "$datadir" "$daemon" "$ram"
 
 	systemctl daemon-reload
@@ -214,7 +216,7 @@ EOF
 }
 
 write_conf() {
-	local sym="$1" fam="$2" user="$3" datadir="$4" port="$5"
+	local sym="$1" fam="$2" user="$3" datadir="$4" port="$5" p2p="$6"
 	local pass; pass="$(head -c 32 /dev/urandom | base64 | tr -d '/+=')"
 	case "$fam" in
 		bitcoin-rpc)
@@ -230,6 +232,10 @@ txindex=1
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 rpcport=$port
+# ASSIGNED, not defaulted. Meowcoin and Neoxa are both Ravencoin forks and
+# both default this to 8788, so the second one installed died on "Unable to
+# bind". Every coin here gets its own P2P port from nodes.json.
+port=$p2p
 rpcuser=blockle
 rpcpassword=$pass
 dbcache=256
@@ -241,6 +247,7 @@ EOF
 data-dir=$datadir
 rpc-bind-ip=127.0.0.1
 rpc-bind-port=$port
+p2p-bind-port=$p2p
 confirm-external-bind=0
 log-level=0
 EOF
