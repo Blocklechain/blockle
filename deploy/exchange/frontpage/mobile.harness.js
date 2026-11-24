@@ -155,6 +155,43 @@ for (const block of blocks) {
 	}
 }
 
+// ------------------------------------------- sticky headers vs the top bar
+//
+// THE BUG THIS EXISTS FOR, because it is invisible in the source unless you
+// know to look for it:
+//
+// `thead th { position: sticky; top: 0 }` sticks to the nearest SCROLLING
+// ANCESTOR. On desktop that is the `.work` pane, so the header parks below
+// the brand bar — correct. The phone breakpoint hands scrolling to the page
+// instead (`.work { overflow: visible }`), which silently changes the anchor
+// to the viewport: `top: 0` becomes the top of the SCREEN, where the brand
+// bar and nav strip live, and `z-index: 1` paints the header over them.
+//
+// Nothing about either rule looks wrong on its own. The bug is the pairing,
+// so that is what this checks.
+{
+	const stickyTop = /position:\s*sticky[^}]*top:\s*0|top:\s*0[^}]*position:\s*sticky/;
+	const hasStickyTop = stickyTop.test(appCss);
+	// Does any phone breakpoint hand scrolling back to the page?
+	const pageScrolls = phoneBlocks(appCss).concat(
+		// The 900px shell rule is the one that does it, and it is wider than
+		// the "phone" cutoff above, so it is matched directly.
+		(/@media[^{]*max-width:\s*900px[^{]*\{([\s\S]*?)\n\}/.exec(appCss) || [, ""])[1],
+	);
+	const releasing = pageScrolls.filter((b) => /\.work\s*\{[^}]*overflow:\s*visible/.test(b));
+
+	for (const block of releasing) {
+		const neutralised = /thead\s+th\s*\{[^}]*position:\s*(static|relative)/.test(block);
+		if (hasStickyTop && !neutralised) {
+			fail(
+				"a breakpoint sets .work{overflow:visible} — the PAGE scrolls there — " +
+					"while thead th is still sticky at top:0, so the table header will " +
+					"cover the brand bar and nav. Neutralise it in that block.",
+			);
+		}
+	}
+}
+
 // ------------------------------------------------------------------- report
 
 const checked = PAGES.filter((p) => fs.existsSync(path.join(DIR, p)));
@@ -164,5 +201,5 @@ if (failures > 0) {
 }
 console.log(
 	`mobile: ${checked.length} pages clean — viewport, table scrolling, no pinned ` +
-		`widths, 44px targets, 16px inputs`,
+		`widths, 44px targets, 16px inputs, no header over the top bar`,
 );

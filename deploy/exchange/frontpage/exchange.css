@@ -512,6 +512,33 @@ pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-sel
   .g2, .g3, .g4 { grid-template-columns: 1fr; }
   body { overflow: auto; }
   .work { overflow: visible; }
+
+  /*
+   * THE TABLE HEADER MUST NOT STICK TO THE SCREEN HERE.
+   *
+   * On desktop `.work` is the scroll container, so `thead th { position:
+   * sticky; top: 0 }` sticks to the top of the WORK AREA — below the brand
+   * bar, which is what it is for.
+   *
+   * Two lines up, this breakpoint hands scrolling to the page instead. That
+   * changes what the header sticks TO: the nearest scrolling ancestor is now
+   * the viewport, so `top: 0` is the top of the SCREEN — exactly where the
+   * brand bar and the nav strip are. With `z-index: 1` against their auto,
+   * the header of whatever table you were looking at rode up and painted
+   * over the chrome.
+   *
+   * It cannot simply be offset instead: the chrome is two grid items, and a
+   * sticky grid item is clamped to its own grid area, so the bar cannot be
+   * made to stick down the page to meet it. The honest fix at this width is
+   * that the header scrolls away with its table, which is what a phone does
+   * everywhere else.
+   */
+  thead th { position: static; }
+
+  /* And if anything here ever becomes sticky again, it loses to the chrome
+   * rather than covering it. */
+  .brand { z-index: 3; }
+  .rail { z-index: 2; }
 }
 
 /* ---------------------------------------------------------------- phones
