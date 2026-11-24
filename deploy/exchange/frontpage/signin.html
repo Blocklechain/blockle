@@ -8,10 +8,15 @@
   hold its own sign-in does not look like one you would leave money with.
 
   IT IS STILL THE SAME ONE ACCOUNT. There is no second account system here —
-  this page posts to the Blockle accounts service, which is proxied at
-  /account/api/ on this host so the request is same-origin and the session
-  cookie (scoped to .blockle.org) is set for both hosts at once. One password,
-  one 2FA enrolment, two front doors.
+  this page posts to the Blockle accounts service, proxied at /account/api/ on
+  this host so the request is same-origin and needs no CORS. One password, one
+  2FA enrolment, two front doors.
+
+  HOW FAR THE SESSION REACHES depends on ACCOUNTS_COOKIE_DOMAIN on the accounts
+  service. Unset, the cookie is HOST-ONLY: signing in here authenticates the
+  exchange and nothing else. Set to `.blockle.org`, one sign-in covers every
+  subdomain — which is what the admin console at admin.blockle.org needs, since
+  it has no sign-in of its own and defers to this page.
 
   THE LOGO IS THE MARK, SAMPLED. The cubic B is drawn to an offscreen canvas
   and its pixels become particle targets, so the particles form the ACTUAL mark
@@ -481,11 +486,22 @@
     };
     var otp = $("otp").value.trim();
     if (otp !== "") {
-      // Sent under several names because the accounts service has used more
-      // than one; the extras are ignored by whichever it is.
-      body.otp = otp;
-      body.token = otp;
-      body.code = otp;
+      /*
+       * THE FIELD IS `totp`. Read from the accounts service, not guessed.
+       *
+       * The first version sent `otp`, `token` and `code` on the theory that one
+       * of them would land — and none of them is what the server reads, so
+       * every code was rejected and the prompt simply reappeared. That is the
+       * "says 2fa and never logs in" symptom exactly: the page looked like it
+       * was asking again, because it was.
+       *
+       * Sending speculative aliases was the mistake, not just the wrong name.
+       * One field, confirmed against src/server.js.
+       *
+       * A RECOVERY CODE GOES IN THE SAME FIELD — the server tries the
+       * authenticator first and then the recovery list, consuming the code.
+       */
+      body.totp = otp;
     }
 
     // SAME-ORIGIN. /account/api/ is proxied on this host, so the session cookie
@@ -513,16 +529,33 @@
         return;
       }
 
-      var err = res.d.error || res.d.message || "";
-      // A 2FA challenge is a prompt, not a failure.
-      if (/two.?factor|2fa|otp|authenticat/i.test(err) || res.d.twoFactorRequired) {
+      /*
+       * `message` FIRST, then `error`.
+       *
+       * The accounts service answers a failed second factor with
+       * `{error: "2fa", message: "Enter your 6-digit code."}` — `error` is a
+       * MACHINE CODE and `message` is the sentence meant for a person. Showing
+       * `error` put the literal text "2fa" on screen as the explanation, which
+       * is how the page ended up saying nothing useful at the exact moment it
+       * most needed to.
+       */
+      var err = res.d.message || res.d.error || "";
+      var code = String(res.d.error || "");
+      // A 2FA CHALLENGE IS A PROMPT, NOT A FAILURE. Matched on the error CODE
+      // the service returns rather than by pattern-matching prose, which
+      // changes.
+      if (code === "2fa" || code === "2fa_setup_required" || res.d.twoFactorRequired) {
         $("otp-wrap").classList.remove("hidden");
         $("otp").focus();
+        $("otp").select();
         show(
           otp === ""
-            ? "This account has two-factor enabled. Enter the current code."
-            : err || "That code was not accepted. Try the next one.",
-          ""
+            ? "This account has two-factor enabled. Enter the current 6-digit " +
+              "code — or one of your recovery codes."
+            : "That code was not accepted. Codes last 30 seconds, so wait for " +
+              "the next one rather than retyping this one. A recovery code " +
+              "works here too.",
+          otp === "" ? "" : "bad"
         );
       } else {
         // THE SERVICE'S OWN WORDING. Guessing between "wrong password" and "no
