@@ -27,3 +27,16 @@ exchange/contracts/**/target/
 
 # blockle-miner build artifacts
 blockle-miner/target/
+
+# SECRETS — never commit. Custody credentials (BitGo access tokens, signer
+# material) live in the environment or in root-only files on the host, never in
+# the repository. There was no .env rule here before the custody work; a single
+# committed token is a loss-of-funds event.
+.env
+.env.*
+!.env.example
+*.env
+secrets/
+*.p12
+*.pem
+*.key

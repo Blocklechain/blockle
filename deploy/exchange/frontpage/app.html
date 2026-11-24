@@ -1,0 +1,642 @@
+<!--
+  BLOCKLE EXCHANGE — TRADING APPLICATION
+  ======================================
+
+  A dedicated screen per job, reachable by URL, behind a persistent rail:
+
+    #/markets    every pair, searchable, grouped by quote
+    #/trade/X-Y  depth ladder, chart, order ticket, your orders, the tape
+    #/balances   total / reserved / available per asset
+    #/deposit    per asset and chain, plus the testnet faucet
+    #/withdraw   chain picker with live availability and a real fee quote
+    #/liquidity  market-maker ladders: open, monitor, close
+    #/orders     open orders and fills
+    #/fees       the published schedule, trading and withdrawal
+    #/account    who you are signed in as, and what the venue holds
+
+  WHY SCREENS AND NOT ONE PAGE OF PANELS. The previous version stacked
+  everything into two columns, so the withdraw form sat beside the order book
+  and neither had room. Screens also give every view a URL, so a trade page can
+  be bookmarked and a support conversation can say "open #/liquidity" and mean
+  something.
+
+  NO ACCOUNT SYSTEM HERE. Identity is the ordinary Blockle session on
+  .blockle.org — there is no login form on this page, and a signed-out visitor
+  gets a prompt pointing at the one sign-in this brand has.
+
+  MARKUP RULES THAT MATTER. Numbers carry class="n" so they land in the tabular
+  monospace; money is rendered from the strings the API sent and never parsed
+  into a double (the one exception is plotting the chart, where the value
+  becomes a pixel coordinate and is marked as such). Panels holding detail are
+  <details> so they collapse without script and keyboard-navigate for free.
+-->
+<title>Blockle Exchange</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<link rel="stylesheet" href="exchange.css" />
+<link rel="icon" href="logo.png" />
+
+<div class="shell">
+  <header class="brand">
+    <img src="logo.png" alt="" />
+    <b>Blockle</b>
+    <span class="env" id="env" title="Trading environment">TESTNET</span>
+  </header>
+
+  <!-- Market strip: the numbers worth having visible from every screen. -->
+  <div class="topbar" id="topbar">
+    <div class="stat"><span class="lbl">Market</span><span class="v" id="tb-market">—</span></div>
+    <div class="stat"><span class="lbl">Last</span><span class="v" id="tb-last">—</span></div>
+    <div class="stat"><span class="lbl">Bid</span><span class="v up" id="tb-bid">—</span></div>
+    <div class="stat"><span class="lbl">Ask</span><span class="v down" id="tb-ask">—</span></div>
+    <div class="stat"><span class="lbl">Spread</span><span class="v" id="tb-spread">—</span></div>
+    <div class="spacer"></div>
+    <div class="stat"><span class="lbl">Fees</span><span class="v" id="tb-fees">—</span></div>
+    <div class="stat"><span class="lbl">Signed in</span><span class="v" id="tb-who">—</span></div>
+  </div>
+
+  <nav class="rail" id="rail" aria-label="Sections">
+    <!-- Built by exchange.js from one table, so the rail, the routes and the
+         screens cannot disagree about what exists. -->
+  </nav>
+
+  <main class="work" id="work">
+    <!-- ------------------------------------------------------------ markets -->
+    <section class="screen" id="s-markets">
+      <div class="head">
+        <div>
+          <h1>Markets</h1>
+          <p>
+            Every listed asset trades against USDT and against BLOCK. A price of
+            — means the pair has not traded yet; it does not mean zero.
+          </p>
+        </div>
+        <div class="right">
+          <input id="mkt-search" placeholder="Filter…" style="width:190px" aria-label="Filter markets" />
+        </div>
+      </div>
+      <div class="panel">
+        <div class="body tight scroll">
+          <table id="t-markets">
+            <thead>
+              <tr>
+                <th>Market</th><th class="num">Last</th><th class="num">Bid</th>
+                <th class="num">Ask</th><th class="num">Spread</th><th>Quote</th><th></th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="7" class="empty">Loading markets…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------------------- trade -->
+    <section class="screen" id="s-trade">
+      <div class="trade">
+        <section>
+          <div class="ladder" id="ladder">
+            <div class="heads"><span>Price</span><span>Amount</span><span>Total</span></div>
+            <div id="asks"></div>
+            <div class="spread">
+              <span class="px n" id="lad-last">—</span>
+              <span class="lbl" id="lad-spread"></span>
+            </div>
+            <div id="bids"></div>
+          </div>
+        </section>
+
+        <section class="mid">
+          <div class="chartwrap">
+            <canvas id="chart"></canvas>
+            <div class="nodata" id="chart-empty">No trades yet on this market.</div>
+          </div>
+          <details class="panel" open style="border:0;border-radius:0;border-top:1px solid var(--line)">
+            <summary>Your orders on this market <span class="note" id="myord-note"></span></summary>
+            <div class="body tight scroll">
+              <table id="t-myorders">
+                <thead>
+                  <tr><th>Side</th><th class="num">Price</th><th class="num">Amount</th>
+                      <th class="num">Filled</th><th>State</th><th></th></tr>
+                </thead>
+                <tbody><tr><td colspan="6" class="empty">Nothing open here.</td></tr></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+
+        <section class="tapecol">
+          <div class="panel" style="border:0;border-radius:0">
+            <header><h2>Order ticket</h2></header>
+            <div class="ticket">
+              <div class="seg full" role="group" aria-label="Side">
+                <button id="side-buy" class="buy" aria-pressed="true">Buy</button>
+                <button id="side-sell" class="sell" aria-pressed="false">Sell</button>
+              </div>
+              <label class="f"><span id="lbl-price">Price</span>
+                <input id="t-price" inputmode="decimal" placeholder="0" /></label>
+              <label class="f"><span id="lbl-amount">Amount</span>
+                <input id="t-amount" inputmode="decimal" placeholder="0" /></label>
+              <div>
+                <div class="kv"><span class="dim">Available</span><span id="t-avail">—</span></div>
+                <div class="kv"><span class="dim">Fee (<span id="t-feepct">0.20%</span> taker)</span><span id="t-fee">—</span></div>
+                <div class="kv big"><span>Order value</span><span id="t-total">—</span></div>
+              </div>
+              <button class="btn buy block" id="t-submit">Buy</button>
+              <div class="msg hidden" id="t-msg"></div>
+              <p class="note">
+                Limit orders only. The fee comes out of what you receive, so a
+                buy of 1 BTC credits 1 BTC less the fee rather than charging you
+                separately.
+              </p>
+            </div>
+          </div>
+          <div class="panel" style="border:0;border-radius:0;border-top:1px solid var(--line)">
+            <header><h2>Recent trades</h2></header>
+            <div class="tape">
+              <div class="row lbl"><span>Price</span><span>Amount</span><span>Time</span></div>
+              <div id="tape"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- balances -->
+    <section class="screen" id="s-balances">
+      <div class="head">
+        <div>
+          <h1>Balances</h1>
+          <p>
+            <strong>Reserved</strong> is committed to your resting orders. It is
+            still yours — cancel the order and it returns — but a new order
+            cannot use it.
+          </p>
+        </div>
+        <div class="right">
+          <a class="btn sm ghost" href="#/deposit">Deposit</a>
+          <a class="btn sm ghost" href="#/withdraw">Withdraw</a>
+        </div>
+      </div>
+      <div class="tiles" id="bal-tiles"></div>
+      <div class="panel" style="margin-top:14px">
+        <header><h2>All assets</h2><span class="note" id="bal-note"></span></header>
+        <div class="body tight scroll">
+          <table id="t-balances">
+            <thead>
+              <tr><th>Asset</th><th class="num">Total</th><th class="num">Reserved</th>
+                  <th class="num">Available</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ deposit -->
+    <section class="screen" id="s-deposit">
+      <div class="head">
+        <div>
+          <h1>Deposit</h1>
+          <p>
+            Pick the asset and the chain. A token on two chains is two different
+            tokens — TRC-20 USDT sent to an Ethereum address does not arrive,
+            and nobody can recover it.
+          </p>
+        </div>
+      </div>
+      <div class="grid g2" id="deposit-grid">
+        <div class="panel">
+          <header><h2>Deposit address</h2></header>
+          <div class="body">
+            <div class="inline">
+              <label class="f"><span>Asset</span><select id="d-asset"></select></label>
+              <label class="f"><span>Network</span><select id="d-net"></select></label>
+            </div>
+            <div id="d-out" style="margin-top:14px"></div>
+          </div>
+        </div>
+        <div class="panel" id="d-inflight-panel">
+          <header><h2>Deposits in flight</h2><span class="note" id="d-inflight-note"></span></header>
+          <div class="body tight scroll">
+            <table id="t-deposits">
+              <thead>
+                <tr><th>Asset</th><th>Chain</th><th class="num">Amount</th>
+                    <th class="num">Confirmations</th><th>State</th></tr>
+              </thead>
+              <tbody><tr><td colspan="5" class="empty">Nothing arriving.</td></tr></tbody>
+            </table>
+          </div>
+          <div class="body" style="padding-top:0">
+            <p class="note">
+              A deposit appears here as soon as the chain shows it, and is
+              credited once it is deep enough to be safe from a reorg. The
+              confirmations column is how far it has to go.
+            </p>
+          </div>
+        </div>
+        <div class="panel" id="faucet-panel">
+          <header><h2>Testnet funding</h2></header>
+          <div class="body">
+            <div class="inline">
+              <label class="f"><span>Asset</span><select id="f-asset"></select></label>
+              <label class="f"><span>Amount</span><input id="f-amount" value="10000" inputmode="decimal" /></label>
+              <button class="btn fit" id="f-go">Add test funds</button>
+            </div>
+            <div class="msg hidden" id="f-msg" style="margin-top:10px"></div>
+            <p class="note" style="margin-top:12px">
+              Test units only. The server refuses this outright once the mainnet
+              gate is on, so it cannot be left switched on by accident.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ----------------------------------------------------------- withdraw -->
+    <section class="screen" id="s-withdraw">
+      <div class="head">
+        <div>
+          <h1>Withdraw</h1>
+          <p>
+            The fee is withheld from the amount, so you receive the amount minus
+            the fee. Both figures are shown before you confirm.
+          </p>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="panel">
+          <header><h2>Request a withdrawal</h2></header>
+          <div class="body">
+            <div class="inline">
+              <label class="f"><span>Asset</span><select id="w-asset"></select></label>
+              <label class="f"><span>Network</span><select id="w-net"></select></label>
+            </div>
+            <label class="f" style="margin-top:10px"><span>Amount</span>
+              <input id="w-amount" inputmode="decimal" placeholder="0" /></label>
+            <label class="f" style="margin-top:10px"><span>Destination address</span>
+              <input id="w-addr" placeholder="address on the chosen network" /></label>
+            <div style="margin-top:12px">
+              <div class="kv"><span class="dim">Available on this chain</span><span id="w-avail">—</span></div>
+              <div class="kv"><span class="dim">Network fee</span><span id="w-fee">—</span></div>
+              <div class="kv"><span class="dim">Minimum</span><span id="w-min">—</span></div>
+              <div class="kv big"><span>You receive</span><span id="w-net-out">—</span></div>
+            </div>
+            <button class="btn pri block" id="w-go" style="margin-top:12px">Request withdrawal</button>
+            <div class="msg hidden" id="w-msg" style="margin-top:10px"></div>
+            <p class="note" id="w-note" style="margin-top:12px"></p>
+          </div>
+        </div>
+        <div class="panel">
+          <header><h2>In progress</h2><span class="note" id="w-count"></span></header>
+          <div class="body tight scroll">
+            <table id="t-withdrawals">
+              <thead>
+                <tr><th>Asset</th><th>Chain</th><th class="num">Amount</th>
+                    <th class="num">You get</th><th>State</th></tr>
+              </thead>
+              <tbody><tr><td colspan="5" class="empty">Nothing in progress.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------------------------------------- liquidity -->
+    <section class="screen" id="s-liquidity">
+      <div class="head">
+        <div>
+          <h1>Liquidity</h1>
+          <p>
+            Adding liquidity here places a ladder of resting orders around a
+            price you choose. You earn the <em>spread</em> — not the fee.
+          </p>
+        </div>
+      </div>
+      <div class="msg warn" id="lq-breakeven" style="margin-bottom:14px"></div>
+      <div class="grid g2">
+        <div class="panel">
+          <header><h2>Add liquidity</h2></header>
+          <div class="body">
+            <div class="inline">
+              <label class="f"><span>Market</span><select id="lq-market"></select></label>
+              <label class="f"><span>Centre price</span><input id="lq-mid" inputmode="decimal" placeholder="0" /></label>
+            </div>
+            <div class="inline" style="margin-top:10px">
+              <label class="f"><span>Spread (bps)</span><input id="lq-spread" inputmode="numeric" value="100" /></label>
+              <label class="f"><span>Rungs</span><input id="lq-rungs" inputmode="numeric" value="3" /></label>
+            </div>
+            <div class="inline" style="margin-top:10px">
+              <label class="f"><span id="lq-base-lbl">Base capital</span><input id="lq-base" inputmode="decimal" placeholder="0" /></label>
+              <label class="f"><span id="lq-quote-lbl">Quote capital</span><input id="lq-quote" inputmode="decimal" placeholder="0" /></label>
+            </div>
+            <div id="lq-preview" style="margin-top:12px"></div>
+            <label style="display:flex;gap:9px;align-items:flex-start;margin-top:10px;font-size:12.5px"
+                   class="hidden" id="lq-accept-wrap">
+              <input type="checkbox" id="lq-accept" style="width:auto;margin-top:2px" />
+              <span>I understand this spread is below break-even and loses money on every round trip.</span>
+            </label>
+            <button class="btn pri block" id="lq-go" style="margin-top:12px">Place ladder</button>
+            <div class="msg hidden" id="lq-msg" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <header><h2>Your positions</h2><span class="note" id="lq-count"></span></header>
+          <div class="body tight scroll">
+            <table id="t-liquidity">
+              <thead>
+                <tr><th>Market</th><th class="num">Spread</th><th class="num">Rungs</th>
+                    <th class="num">Filled</th><th class="num">Resting</th><th>State</th><th></th></tr>
+              </thead>
+              <tbody><tr><td colspan="7" class="empty">No positions.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------- orders -->
+    <section class="screen" id="s-orders">
+      <div class="head">
+        <div><h1>Orders</h1><p>Everything you have working, across every market.</p></div>
+      </div>
+      <div class="panel">
+        <header><h2>Open and recent</h2><span class="note" id="ord-note"></span></header>
+        <div class="body tight scroll">
+          <table id="t-orders">
+            <thead>
+              <tr><th>Market</th><th>Side</th><th class="num">Price</th>
+                  <th class="num">Amount</th><th class="num">Filled</th>
+                  <th>State</th><th>Placed</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="empty">No orders.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- --------------------------------------------------------------- fees -->
+    <section class="screen" id="s-fees">
+      <div class="head">
+        <div><h1>Fees</h1><p>Published in full, including the minimums.</p></div>
+      </div>
+      <div class="tiles" id="fee-tiles"></div>
+      <div class="panel" style="margin-top:14px">
+        <header><h2>Withdrawal fees by chain</h2></header>
+        <div class="body tight scroll">
+          <table id="t-wdfees">
+            <thead>
+              <tr><th>Asset</th><th>Chain</th><th class="num">Fee</th>
+                  <th class="num">Minimum</th><th>Gas paid in</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="note" id="fee-note" style="margin-top:12px"></p>
+    </section>
+
+    <!-- ------------------------------------------------------------ listing -->
+    <section class="screen" id="s-listing">
+      <div class="head">
+        <div>
+          <h1>Apply for a listing</h1>
+          <p>
+            We are specifically interested in working proof-of-work chains that
+            have nowhere to trade. Tell us what the node is and we will tell you
+            honestly whether we can list it and how long it would take.
+          </p>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="panel">
+          <header><h2>Your project</h2></header>
+          <div class="body">
+            <form id="lst-form" autocomplete="off">
+              <div id="lst-fields"></div>
+              <!-- Honeypot: positioned off-screen rather than display:none,
+                   which some bots check for. No human sees or tabs to it. -->
+              <div style="position:absolute;left:-9999px" aria-hidden="true">
+                <label>Website<input name="website_url" tabindex="-1" /></label>
+              </div>
+              <button class="btn pri block" type="submit" style="margin-top:14px">
+                Send application
+              </button>
+            </form>
+            <div class="msg hidden" id="lst-msg" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <header><h2>What happens next</h2></header>
+          <div class="body">
+            <div class="kv"><span class="dim">Where it goes</span><span>alex@blockle.org</span></div>
+            <div class="kv"><span class="dim">Listing fee</span><span>None</span></div>
+            <div class="kv"><span class="dim">Trading fee</span><span id="lst-fee">—</span></div>
+            <p class="note" style="margin-top:14px">
+              The question that decides most of the work is what your node is a
+              fork of. A Bitcoin Core or go-ethereum fork reuses an adapter we
+              already run. A bespoke codebase needs a custom one, and we will
+              say so rather than quote a date we cannot keep.
+            </p>
+            <p class="note" style="margin-top:10px">
+              We run our own node for every listed chain. We will not custody an
+              asset against someone else's hosted RPC, because then their outage
+              is our customers' frozen balance.
+            </p>
+            <p class="note" style="margin-top:10px">
+              Every asset trades against USDT and BLOCK. A pair with no
+              liquidity helps nobody, so tell us who intends to quote it.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ account -->
+    <!-- ----------------------------------------------------------- API keys -->
+    <section class="screen" id="s-api">
+      <div class="head">
+        <div>
+          <h1>API</h1>
+          <p>
+            Trade from your own code. A key reads your balances and places
+            orders; <b>no key can withdraw</b>, and there is no setting that
+            changes that.
+          </p>
+        </div>
+        <div class="right">
+          <button class="btn pri" id="api-new">New key</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <header>
+          <h2>Your keys</h2>
+          <span class="note" id="api-note"></span>
+        </header>
+        <div class="body tight scroll">
+          <table id="t-apikeys">
+            <thead>
+              <tr><th>Label</th><th>Key</th><th>Scopes</th><th class="num">Rate</th>
+                  <th>Last used</th><th></th></tr>
+            </thead>
+            <tbody><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- The new-key form. Hidden until asked for, because most visits to this
+           screen are to copy an endpoint, not to mint a credential. -->
+      <div class="panel hidden" id="api-form" style="margin-top:14px">
+        <header><h2>New key</h2></header>
+        <div class="body">
+          <div class="grid g3">
+            <label class="f">
+              <span>Label</span>
+              <input id="api-label" placeholder="grid bot on the VPS" maxlength="64" />
+              <em class="note">For you. So you know which key to revoke later.</em>
+            </label>
+            <label class="f">
+              <span>Access</span>
+              <select id="api-scopes">
+                <option value="read">Read only — balances, orders, fills</option>
+                <option value="read,trade" selected>Read and trade — place and cancel orders</option>
+              </select>
+              <em class="note">Withdrawal is not on this list and cannot be added.</em>
+            </label>
+            <label class="f">
+              <span>Requests a minute</span>
+              <input id="api-rate" type="number" min="1" max="1200" value="120" />
+              <em class="note">Per key. A runaway loop stops itself instead of your other bots.</em>
+            </label>
+          </div>
+          <div class="actions" style="margin-top:12px">
+            <button class="btn pri" id="api-create">Create key</button>
+            <button class="btn ghost" id="api-cancel">Cancel</button>
+          </div>
+          <p class="msg hidden" id="api-msg"></p>
+        </div>
+      </div>
+
+      <!-- Shown once, immediately after creation. -->
+      <div class="panel hidden" id="api-secret" style="margin-top:14px;border-color:var(--warn)">
+        <header><h2>Copy your secret now</h2></header>
+        <div class="body">
+          <p style="margin:0 0 10px">
+            This is the only time it is shown. We keep what we need to check your
+            signatures; we cannot show you this string again.
+          </p>
+          <div class="kv"><span>Key ID</span><code class="mono" id="api-new-id">—</code></div>
+          <div class="kv"><span>Secret</span><code class="mono" id="api-new-secret">—</code></div>
+          <div class="actions" style="margin-top:12px">
+            <button class="btn" id="api-copy">Copy secret</button>
+            <button class="btn ghost" id="api-done">I have saved it</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px">
+        <header><h2>How to use it</h2></header>
+        <div class="body">
+          <p style="margin:0 0 10px">
+            Every request carries three headers. The signature is HMAC-SHA256
+            over one string, so a captured request cannot be replayed, retargeted
+            at another endpoint, or have its amounts edited in flight.
+          </p>
+          <div class="kv"><span>Base URL</span><code class="mono" id="api-base">—</code></div>
+          <div class="kv"><span>String to sign</span>
+            <code class="mono">timestamp + METHOD + path + sha256hex(body)</code></div>
+          <div class="kv"><span>X-Blockle-Key</span><code class="mono">your key id</code></div>
+          <div class="kv"><span>X-Blockle-Timestamp</span>
+            <code class="mono">milliseconds since the epoch, within 30s of ours</code></div>
+          <div class="kv"><span>X-Blockle-Signature</span>
+            <code class="mono">hex HMAC-SHA256(secret, string to sign)</code></div>
+
+          <p class="note" style="margin:12px 0 6px">
+            <code>path</code> includes the query string. <code>METHOD</code> is
+            upper-case. An empty body still hashes — sha256 of the empty string.
+            Each signature is accepted once: sign every request freshly rather
+            than re-sending one.
+          </p>
+
+          <div class="tabs" id="api-tabs">
+            <button class="tab on" data-lang="node">Node</button>
+            <button class="tab" data-lang="python">Python</button>
+            <button class="tab" data-lang="curl">curl</button>
+          </div>
+          <pre class="code"><code id="api-sample">Loading…</code></pre>
+
+          <h3 style="margin:18px 0 8px;font-size:13px;letter-spacing:.04em;
+                     text-transform:uppercase;color:var(--ink-dim)">Endpoints</h3>
+          <table id="t-apiendpoints">
+            <thead><tr><th>Method</th><th>Path</th><th>Needs</th><th>Does</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <p class="note" style="margin-top:10px">
+            Public market data — <code class="mono">/public/tickers</code>,
+            <code class="mono">/public/markets</code>,
+            <code class="mono">/public/fees</code> — needs no key and no
+            signature.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" id="s-account">
+      <div class="head">
+        <div>
+          <h1>Account</h1>
+          <p>
+            This exchange has no accounts of its own — you are signed in with
+            your Blockle account, and your password and two-factor settings live
+            there.
+          </p>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="panel">
+          <header><h2>Session</h2></header>
+          <div class="body" id="acct-body">Checking…</div>
+        </div>
+        <div class="panel">
+          <header><h2>Venue</h2></header>
+          <div class="body" id="venue-body">Checking…</div>
+        </div>
+      </div>
+      <details class="panel" style="margin-top:14px">
+        <summary>Reserves <span class="note">what we owe against what we hold</span></summary>
+        <div class="body tight scroll">
+          <table id="t-reserves">
+            <thead><tr><th>Asset</th><th class="num">Owed to customers</th>
+                       <th class="num">Held in custody</th><th>Status</th></tr></thead>
+            <tbody><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+  </main>
+</div>
+
+<!-- Signed-out curtain. Not a login form: there is one sign-in for Blockle and
+     it is not here. -->
+<div id="signin" class="hidden" style="position:fixed;inset:0;background:rgba(4,6,10,.88);
+     display:grid;place-items:center;padding:24px;z-index:50">
+  <div class="panel" style="max-width:420px">
+    <header><h2>Sign in to trade</h2></header>
+    <div class="body">
+      <p style="margin:0 0 12px;color:var(--ink-dim);font-size:13px" id="signin-why">
+        Markets, prices and reserves are public. Balances, orders and
+        withdrawals need your Blockle account.
+      </p>
+      <a class="btn pri block" id="signin-go" href="signin.html">Sign in</a>
+      <button class="btn ghost block" id="signin-dismiss" style="margin-top:8px">Keep looking around</button>
+      <p class="note" style="margin-top:12px">
+        The same account as the wallet and everything else on blockle.org — we
+        do not keep a separate password for the exchange. You sign in here and
+        stay here.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script src="coins.js"></script>
+<script src="exchange.js"></script>

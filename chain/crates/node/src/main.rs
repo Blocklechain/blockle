@@ -150,6 +150,13 @@ enum Cmd {
         to: String,
         #[arg(long)]
         amount: String,
+        /// Spend from a DERIVED address instead of the wallet's main one.
+        ///
+        /// The index from `wallet derive`. Funds at that address are spent and
+        /// its change returns to it — this moves one derived address's money,
+        /// it does not pool every address in the wallet.
+        #[arg(long)]
+        from_index: Option<u32>,
         #[arg(long, default_value = "0.0001")]
         fee: String,
         /// P2P address of a running node to submit through.
@@ -263,6 +270,28 @@ enum WalletCmd {
         source: String,
         #[arg(long)]
         force: bool,
+    },
+    /// Adopt an HD master seed, so this wallet can derive addresses.
+    ///
+    /// The existing key and address are left alone: derived addresses are in
+    /// addition to it, not a replacement, so nothing that already holds coins
+    /// moves. Refuses if a seed is already present.
+    InitSeed {
+        /// Restore a known seed (64 hex chars) instead of generating one.
+        #[arg(long)]
+        seed: Option<String>,
+    },
+    /// Derive receive addresses from the master seed.
+    ///
+    /// Deterministic: the same seed and index always give the same address,
+    /// so these need no backing up beyond the seed itself.
+    Derive {
+        /// Which index. Omit to take the next unused one and advance.
+        #[arg(long)]
+        index: Option<u32>,
+        /// How many consecutive addresses to print.
+        #[arg(long, default_value_t = 1)]
+        count: u32,
     },
     /// Sign a message with the wallet key (`signmessage`).
     SignMessage { message: String },
@@ -517,7 +546,9 @@ fn main() -> Result<()> {
         ),
         Cmd::Mine { blocks, address } => mine_cmd(&datadir, params, blocks, address),
         Cmd::Balance { address } => balance(&datadir, params, address),
-        Cmd::Send { to, amount, fee, node } => send(&datadir, params, &to, &amount, &fee, node),
+        Cmd::Send { to, amount, from_index, fee, node } => {
+            send(&datadir, params, &to, &amount, from_index, &fee, node)
+        }
         Cmd::Info => info(&datadir, params),
         Cmd::Validate => validate(&datadir, params),
         Cmd::Contract { cmd } => contract_cmd(&datadir, params, cmd),
@@ -567,6 +598,21 @@ fn load_wallet(datadir: &Path) -> Result<Keypair> {
     let (secret, _) = wf.secrets(passphrase().as_deref())?;
     Keypair::from_bytes(&secret, &hex::decode(&wf.public_hex)?)
         .map_err(|_| anyhow!("corrupt wallet key material"))
+}
+
+/// The keypair at a derived index, for spending what arrived there.
+///
+/// Separate from `load_wallet` rather than folded into it: the default must
+/// stay the wallet's main key, so an existing command cannot start spending
+/// from somewhere else because of a stray argument.
+fn load_derived(datadir: &Path, index: u32) -> Result<Keypair> {
+    let wf = read_wallet_file(datadir)?;
+    let seed = wf.master_seed(passphrase().as_deref())?.ok_or_else(|| {
+        anyhow!(
+            "this wallet has no master seed, so index {index} does not exist here.              `wallet init-seed` adds derivation; it does not recover an address              derived from some other seed."
+        )
+    })?;
+    Ok(Keypair::derive(&seed, index))
 }
 
 fn load_or_create_wallet(datadir: &Path) -> Result<Keypair> {
@@ -922,10 +968,14 @@ fn send(
     params: ChainParams,
     to: &str,
     amount: &str,
+    from_index: Option<u32>,
     fee: &str,
     node: Option<String>,
 ) -> Result<()> {
-    let kp = load_wallet(datadir)?;
+    let kp = match from_index {
+        None => load_wallet(datadir)?,
+        Some(index) => load_derived(datadir, index)?,
+    };
     let chain = storage::load_chain(datadir, params)?;
     let mut mempool = storage::load_mempool(datadir)?;
     let recipient = decode_address(to).map_err(|e| anyhow!("{e}"))?;
@@ -2095,12 +2145,29 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
         WalletCmd::Export => {
             let wf = read_wallet_file(datadir)?;
             let (secret, kem) = wf.secrets(passphrase().as_deref())?;
+            /*
+             * THE SEED GOES IN THE EXPORT, and it has to.
+             *
+             * Without it this blob restores one address while every derived
+             * address stays unreachable — and `wallet init-seed` tells the
+             * user that export now covers them all, which would have been a
+             * false promise. A backup that silently omits most of the money
+             * is worse than no backup, because it is trusted.
+             *
+             * `next_index` travels too. It is only a cursor, but restoring
+             * without it makes a wallet hand out addresses it has already
+             * used, which for an exchange means two customers sharing a
+             * deposit address.
+             */
+            let seed = wf.master_seed(passphrase().as_deref())?;
             let payload = json!({
                 "secret_hex": hex::encode(secret),
                 "public_hex": wf.public_hex,
                 "address": wf.address,
                 "kem_public_hex": wf.kem_public_hex,
                 "kem_secret_hex": hex::encode(kem),
+                "seed_hex": seed.map(hex::encode).unwrap_or_default(),
+                "next_index": wf.next_index,
             });
             let blob = format!("{EXPORT_PREFIX}{}", hex::encode(payload.to_string()));
             emit_json(json!({"ok": true, "export": blob}));
@@ -2137,20 +2204,121 @@ fn wallet_cmd(datadir: &Path, cmd: WalletCmd) -> Result<()> {
             let kp = Keypair::from_bytes(&secret, &public)
                 .map_err(|_| anyhow!("import key material is invalid"))?;
             let address = encode_address(&kp.address());
+            // A seed in the blob restores the whole derived family; one
+            // without (an older export, or a wallet that never adopted a
+            // seed) restores just the single key, which is what it is.
+            let seed_hex = get("seed_hex");
+            if !seed_hex.is_empty() && hex::decode(&seed_hex).map(|b| b.len()) != Ok(32) {
+                bail!("import has a malformed master seed (expected 64 hex characters)");
+            }
+            let next_index = parsed
+                .get("next_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .min(u64::from(u32::MAX)) as u32;
             let wf = WalletFile {
                 secret_hex: hex::encode(&secret),
                 public_hex: hex::encode(&public),
                 address: address.clone(),
                 kem_public_hex: get("kem_public_hex"),
                 kem_secret_hex: get("kem_secret_hex"),
+                seed_hex: seed_hex.clone(),
+                next_index,
                 ..WalletFile::default()
             };
             fs::create_dir_all(datadir)?;
             write_wallet_file(datadir, &wf)?;
-            emit_json(json!({"ok": true, "address": address}));
+            emit_json(json!({
+                "ok": true,
+                "address": address,
+                "seed_restored": !seed_hex.is_empty(),
+                "next_index": next_index,
+            }));
             if !json_mode() {
                 println!("wallet imported: {address}");
+                if seed_hex.is_empty() {
+                    println!(
+                        "(no master seed in this export — single-address wallet. \
+                         `wallet init-seed` adds derivation for future addresses.)"
+                    );
+                } else {
+                    println!("master seed restored; derived addresses resume at {next_index}");
+                }
                 println!("(run `blockle wallet encrypt` to protect it with a passphrase)");
+            }
+            Ok(())
+        }
+        WalletCmd::InitSeed { seed } => {
+            let mut wf = read_wallet_file(datadir)?;
+            let pass = passphrase();
+            let bytes: [u8; 32] = match seed.as_deref() {
+                Some(hexed) => {
+                    let raw = hex::decode(hexed.trim())
+                        .map_err(|_| anyhow!("--seed must be 64 hex characters"))?;
+                    raw.as_slice().try_into().map_err(|_| {
+                        anyhow!("--seed must be 32 bytes (64 hex characters), got {}", raw.len())
+                    })?
+                }
+                None => blockle_node::walletfile::fresh_master_seed(),
+            };
+            wf.set_master_seed(&bytes, pass.as_deref())?;
+            write_wallet_file(datadir, &wf)?;
+            emit_json(json!({
+                "ok": true,
+                "seeded": true,
+                "restored": seed.is_some(),
+                // The seed itself is NOT echoed. It is spending authority for
+                // every address it will ever derive, and a terminal scrollback
+                // is not where that belongs — `wallet export` is the deliberate
+                // way to take it out.
+                "address": wf.address,
+            }));
+            if !json_mode() {
+                println!(
+                    "master seed {}. Derived addresses are available via `wallet derive`.",
+                    if seed.is_some() { "restored" } else { "generated" }
+                );
+                println!(
+                    "BACK IT UP: `wallet export` now covers every address this wallet \
+                     will ever derive, not just {}.",
+                    wf.address
+                );
+            }
+            Ok(())
+        }
+        WalletCmd::Derive { index, count } => {
+            if count == 0 || count > 1000 {
+                bail!("--count must be between 1 and 1000");
+            }
+            let mut wf = read_wallet_file(datadir)?;
+            let seed = wf.master_seed(passphrase().as_deref())?.ok_or_else(|| {
+                anyhow!(
+                    "this wallet has no master seed, so it cannot derive addresses.                      Run `wallet init-seed` — it adds one without touching the key                      you already have."
+                )
+            })?;
+            let start = index.unwrap_or(wf.next_index);
+            let mut out = Vec::new();
+            for i in 0..count {
+                let at = start.checked_add(i).ok_or_else(|| anyhow!("index overflow"))?;
+                let kp = Keypair::derive(&seed, at);
+                out.push(json!({"index": at, "address": encode_address(&kp.address())}));
+            }
+            // Only advance the counter when the caller did NOT pick an index:
+            // an explicit --index is a lookup, and bumping the cursor there
+            // would silently skip addresses the caller never asked for.
+            if index.is_none() {
+                wf.next_index = start.checked_add(count).ok_or_else(|| anyhow!("index overflow"))?;
+                write_wallet_file(datadir, &wf)?;
+            }
+            emit_json(json!({"ok": true, "addresses": out, "next_index": wf.next_index}));
+            if !json_mode() {
+                for entry in &out {
+                    println!(
+                        "{:>6}  {}",
+                        entry["index"].as_u64().unwrap_or(0),
+                        entry["address"].as_str().unwrap_or("")
+                    );
+                }
             }
             Ok(())
         }

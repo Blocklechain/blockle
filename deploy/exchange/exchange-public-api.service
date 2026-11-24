@@ -1,0 +1,50 @@
+# Public read-only market-data API + exchange front page.
+#
+# Read-only by construction: it opens the ledger database with SQLite's
+# readonly flag, so a handler that tried to write would fail rather than
+# succeed. It holds no credentials and needs none — everything it serves is
+# intended to be world-readable.
+#
+# Install to /etc/systemd/system/exchange-public-api.service
+
+[Unit]
+Description=Blockle Exchange public market-data API + front page (loopback :3100, read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Unprivileged: it reads one database file and serves static assets. Nothing
+# here needs root, so nothing here gets it.
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/blockle/exchange-custody
+ExecStart=/usr/bin/node dist/src/publicapi.js
+
+Environment=PUBLIC_API_PORT=3100
+Environment=PUBLIC_API_HOST=127.0.0.1
+Environment=CUSTODY_DB=/var/lib/exchange-custody/ledger.db
+Environment=EXCHANGE_CONFIG=/etc/blockle/exchange.json
+Environment=PUBLIC_STATIC_DIR=/var/www/exchange-frontpage
+Environment=HALT_FILE=/run/blockle/exchange-halts.json
+
+Restart=always
+RestartSec=3
+
+# Hardened, because unlike the setup console this service genuinely needs
+# nothing outside its own tree.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/blockle/exchange-custody /var/www/exchange-frontpage /etc/blockle
+ReadWritePaths=
+# The ledger is opened read-only; the directory needs to be readable only.
+ReadOnlyPaths=/var/lib/exchange-custody
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exchange-public-api
+
+[Install]
+WantedBy=multi-user.target

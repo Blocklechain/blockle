@@ -1,0 +1,46 @@
+# -----------------------------------------------------------------------------
+# The payout runner. ONE PASS PER INVOCATION, driven by the timer beside it.
+#
+# This is the only unit on the box that can move money OUT. Two consequences:
+#
+#  * It needs BITGO_WALLET_PASSPHRASE, which nothing else does. Without it the
+#    runner refuses loudly and exits 3 — a distinct code, because customer
+#    funds are already debited and waiting, and that must not be buried among
+#    ordinary transients.
+#  * The same hardening as the API, and the only writable path is the ledger
+#    directory.
+#
+# A one-shot rather than a daemon: a wedged loop reports "active" to systemd
+# while paying nobody, and "active" is what an operator checks. The heartbeat
+# written after each completed pass is what the go-live preflight reads.
+# -----------------------------------------------------------------------------
+[Unit]
+Description=Blockle Exchange payout runner (send approved withdrawals, settle them)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/blockle/exchange-custody
+ExecStart=/usr/bin/node dist/src/payoutrunnercli.js
+
+Environment=CUSTODY_DB=/var/lib/exchange-custody/ledger.db
+Environment=EXCHANGE_CONFIG=/etc/blockle/exchange.json
+# Custody credentials, shared with the API and the deposit watcher so the token
+# has ONE place to be rotated. The signing passphrase lives in its own file,
+# read only by this unit — nothing else needs the ability to sign.
+EnvironmentFile=-/etc/blockle/exchange-bitgo.env
+EnvironmentFile=-/etc/blockle/exchange-signing.env
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/exchange-custody
+
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

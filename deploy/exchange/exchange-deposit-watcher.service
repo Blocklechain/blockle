@@ -1,0 +1,45 @@
+# -----------------------------------------------------------------------------
+# The deposit watcher. ONE PASS PER INVOCATION, driven by the timer beside it.
+#
+# A one-shot rather than a daemon with an internal loop, deliberately: a
+# long-lived loop that wedges on a socket read keeps reporting "active" to
+# systemd while crediting nothing, and "active" is exactly what an operator
+# would check. A unit that must be restarted every cycle cannot pretend to be
+# alive, and the heartbeat it writes after each completed pass is what the
+# go-live preflight actually reads.
+#
+# WHY IT NEEDS THE SAME HARDENING AS THE API. It holds the custody token and
+# writes to the ledger. The only paths it may write are the ledger directory —
+# not the spool, not anything else.
+# -----------------------------------------------------------------------------
+[Unit]
+Description=Blockle Exchange deposit watcher (credit on-chain deposits to accounts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/blockle/exchange-custody
+ExecStart=/usr/bin/node dist/src/depositwatchercli.js
+
+Environment=CUSTODY_DB=/var/lib/exchange-custody/ledger.db
+Environment=EXCHANGE_CONFIG=/etc/blockle/exchange.json
+# BitGo credentials come from the same root-only drop-in the API uses, so there
+# is one place to rotate the token rather than two that can disagree.
+EnvironmentFile=-/etc/blockle/exchange-bitgo.env
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/exchange-custody
+
+# A pass that cannot run at all exits 1 and systemd records the failure. A
+# per-chain transient exits 0 and is logged — alerting on those teaches an
+# operator to ignore the alert.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+# -----------------------------------------------------------------------------
+# Every minute. Frequent enough that a deposit is credited within a confirmation
+# or two of becoming safe, cheap enough that it costs one BitGo call per chain.
+#
+# Persistent=false on purpose: a missed window does not need catching up,
+# because the next pass re-reads recent transfers anyway and crediting is
+# idempotent on the transfer id.
+# -----------------------------------------------------------------------------
+[Unit]
+Description=Poll for exchange deposits every minute
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10
+Persistent=false
+Unit=exchange-deposit-watcher.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Small proof-of-work coin exchange — trade mined coins | Blockle Exchange</title>
+<meta name="description" content="Blockle Exchange lists proof-of-work coins with real miners and almost nowhere to sell. Every coin trades against USDT and BLOCK. See which coins are live and which are still being integrated." />
+<link rel="canonical" href="https://exchange.blockle.org/coins" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Small proof-of-work coin exchange — trade mined coins | Blockle Exchange" />
+<meta property="og:description" content="Blockle Exchange lists proof-of-work coins with real miners and almost nowhere to sell. Every coin trades against USDT and BLOCK. See which coins are live and which are still being integrated." />
+<meta property="og:url" content="https://exchange.blockle.org/coins" />
+<meta property="og:site_name" content="Blockle Exchange" />
+<meta name="twitter:card" content="summary" />
+<link rel="icon" href="/logo.png" />
+<style>:root{
+  --bg:#070a0f;--panel:#0d1219;--line:#1e2735;--line-soft:#161d27;
+  --ink:#e9eef6;--ink-dim:#93a0b6;--ink-faint:#5e6b80;
+  --signal:#35d6e8;--signal-ink:#04171b;--ok:#2fd48a;--warn:#f5a524;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 var(--sans);
+  -webkit-font-smoothing:antialiased}
+a{color:var(--signal)}
+.wrap{max-width:860px;margin:0 auto;padding:0 20px 72px}
+header.top{border-bottom:1px solid var(--line);margin-bottom:34px}
+header.top .wrap{display:flex;align-items:center;gap:12px;padding:14px 20px}
+header.top img{width:26px;height:26px;border-radius:6px}
+header.top b{font-size:15px;letter-spacing:.01em}
+header.top nav{margin-left:auto;display:flex;gap:18px;font-size:13.5px}
+header.top nav a{color:var(--ink-dim);text-decoration:none}
+header.top nav a:hover{color:var(--ink)}
+.crumb{font-size:12.5px;color:var(--ink-faint);margin:0 0 14px}
+.crumb a{color:var(--ink-faint)}
+h1{font-size:30px;line-height:1.2;margin:0 0 6px;letter-spacing:-.012em;text-wrap:balance}
+.sub{color:var(--ink-dim);font-size:15px;margin:0 0 20px;max-width:62ch}
+.badge{display:inline-flex;align-items:center;gap:7px;font-size:12px;
+  border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--ink-dim);
+  margin-bottom:16px}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink-faint)}
+.badge.ok{color:var(--ok);border-color:rgba(47,212,138,.35)}
+.badge.ok::before{background:var(--ok)}
+.badge.warn{color:var(--warn);border-color:rgba(245,165,36,.35)}
+.badge.warn::before{background:var(--warn)}
+.cta{display:inline-block;background:var(--signal);color:var(--signal-ink);
+  font:600 14px var(--sans);padding:11px 20px;border-radius:7px;text-decoration:none}
+.cta.quiet{background:none;color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:22px 0 34px}
+section{border-top:1px solid var(--line-soft);padding-top:26px;margin-top:30px}
+h2{font-size:13px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-dim);
+  margin:0 0 14px;font-weight:600}
+dl.specs{margin:0;display:grid;gap:1px;background:var(--line-soft);
+  border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+.spec{display:flex;justify-content:space-between;gap:16px;background:var(--panel);
+  padding:11px 14px}
+.spec dt{color:var(--ink-dim);font-size:13.5px;margin:0}
+.spec dd{margin:0;font-family:var(--mono);font-size:13px;text-align:right}
+.titlerow{display:flex;align-items:center;gap:13px;margin-bottom:6px}
+.titlerow h1{margin:0}
+.mark{flex:none;display:inline-flex;line-height:0}
+.mark svg{border-radius:50%}
+table.coins td .mark{vertical-align:middle;margin-right:9px}
+.pairs{display:flex;gap:8px;flex-wrap:wrap}
+.pair{font-family:var(--mono);font-size:13px;border:1px solid var(--line);
+  border-radius:6px;padding:7px 12px;color:var(--ink);text-decoration:none}
+.pair.off{color:var(--ink-faint);border-style:dashed}
+p{max-width:68ch}
+.note{font-size:13px;color:var(--ink-faint);border-left:2px solid var(--line);
+  padding-left:12px;margin:18px 0}
+ul.steps{padding-left:18px;color:var(--ink-dim);max-width:66ch}
+ul.steps li{margin:7px 0}
+ul.steps b{color:var(--ink);font-weight:600}
+table.coins{width:100%;border-collapse:collapse;font-size:14px}
+table.coins th{text-align:left;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;padding:0 10px 9px;border-bottom:1px solid var(--line)}
+table.coins td{padding:11px 10px;border-bottom:1px solid var(--line-soft)}
+table.coins tr:last-child td{border-bottom:0}
+table.coins a{text-decoration:none;font-weight:600}
+table.coins .sym{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim)}
+footer{border-top:1px solid var(--line);margin-top:48px;padding-top:20px;
+  font-size:12.5px;color:var(--ink-faint)}
+footer a{color:var(--ink-faint);margin-right:16px}
+@media (max-width:620px){
+  h1{font-size:25px}
+  .spec{flex-direction:column;gap:3px}
+  .spec dd{text-align:left}
+  header.top nav{display:none}
+}</style>
+<script type="application/ld+json">[{"@context":"https://schema.org","@type":"CollectionPage","name":"Coins on Blockle Exchange","url":"https://exchange.blockle.org/coins","publisher":{"@type":"Organization","name":"Blockle Exchange","url":"https://exchange.blockle.org","parentOrganization":{"@type":"Organization","name":"Alienbeing LLC"}},"mainEntity":{"@type":"ItemList","numberOfItems":12,"itemListElement":[{"@type":"ListItem","position":1,"name":"Blockle (BLOCK)","url":"https://exchange.blockle.org/trade/blockle-block"},{"@type":"ListItem","position":2,"name":"Perbug (PERBUG)","url":"https://exchange.blockle.org/trade/perbug"},{"@type":"ListItem","position":3,"name":"Raptoreum (RTM)","url":"https://exchange.blockle.org/trade/raptoreum-rtm"},{"@type":"ListItem","position":4,"name":"Pepecoin (PEP)","url":"https://exchange.blockle.org/trade/pepecoin-pep"},{"@type":"ListItem","position":5,"name":"Neoxa (NEOX)","url":"https://exchange.blockle.org/trade/neoxa-neox"},{"@type":"ListItem","position":6,"name":"Meowcoin (MEWC)","url":"https://exchange.blockle.org/trade/meowcoin-mewc"},{"@type":"ListItem","position":7,"name":"Dingocoin (DINGO)","url":"https://exchange.blockle.org/trade/dingocoin-dingo"},{"@type":"ListItem","position":8,"name":"Radiant (RXD)","url":"https://exchange.blockle.org/trade/radiant-rxd"},{"@type":"ListItem","position":9,"name":"Xelis (XEL)","url":"https://exchange.blockle.org/trade/xelis-xel"},{"@type":"ListItem","position":10,"name":"Zephyr Protocol (ZEPH)","url":"https://exchange.blockle.org/trade/zephyr-zeph"},{"@type":"ListItem","position":11,"name":"OctaSpace (OCTA)","url":"https://exchange.blockle.org/trade/octaspace-octa"},{"@type":"ListItem","position":12,"name":"Epic Cash (EPIC)","url":"https://exchange.blockle.org/trade/epic-cash"}]}}]</script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <img src="/logo.png" alt="" width="26" height="26" />
+  <b>Blockle Exchange</b>
+  <nav>
+    <a href="/coins">Coins</a>
+    <a href="/app.html#/markets">Markets</a>
+    <a href="/app.html#/listing">List a coin</a>
+    <a href="/app.html#/api">API</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <h1>Coins on Blockle Exchange</h1>
+  <p class="sub">
+    We list proof-of-work coins that people actually mine and can barely sell —
+    the ones a hobbyist finds on a pool and then discovers have two thin
+    markets anywhere. Every coin trades against USDT and against BLOCK.
+  </p>
+  <div class="row">
+    <a class="cta" href="/app.html#/markets">Open the exchange</a>
+    <a class="cta quiet" href="/app.html#/listing">List your coin</a>
+  </div>
+
+  <section>
+    <h2>The list</h2>
+    <table class="coins">
+      <thead><tr><th>Coin</th><th>Algorithm</th><th>Status</th></tr></thead>
+      <tbody>
+      <tr>
+        <td><span class="mark sm" data-coin="BLOCK"></span>
+            <a href="/trade/blockle-block">Blockle</a>
+            <span class="sym">BLOCK</span></td>
+        <td>Equihash, with ten merge-mined auxiliary lanes</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="PERBUG"></span>
+            <a href="/trade/perbug">Perbug</a>
+            <span class="sym">PERBUG</span></td>
+        <td>SHA-256d</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="RTM"></span>
+            <a href="/trade/raptoreum-rtm">Raptoreum</a>
+            <span class="sym">RTM</span></td>
+        <td>GhostRider — a CPU algorithm</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="PEP"></span>
+            <a href="/trade/pepecoin-pep">Pepecoin</a>
+            <span class="sym">PEP</span></td>
+        <td>Scrypt</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="NEOX"></span>
+            <a href="/trade/neoxa-neox">Neoxa</a>
+            <span class="sym">NEOX</span></td>
+        <td>KawPow — the same algorithm as Ravencoin</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="MEWC"></span>
+            <a href="/trade/meowcoin-mewc">Meowcoin</a>
+            <span class="sym">MEWC</span></td>
+        <td>KawPow</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="DINGO"></span>
+            <a href="/trade/dingocoin-dingo">Dingocoin</a>
+            <span class="sym">DINGO</span></td>
+        <td>Scrypt</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="RXD"></span>
+            <a href="/trade/radiant-rxd">Radiant</a>
+            <span class="sym">RXD</span></td>
+        <td>SHA512/256d</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="XEL"></span>
+            <a href="/trade/xelis-xel">Xelis</a>
+            <span class="sym">XEL</span></td>
+        <td>XelisHash — GPU, ASIC-resistant</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="ZEPH"></span>
+            <a href="/trade/zephyr-zeph">Zephyr Protocol</a>
+            <span class="sym">ZEPH</span></td>
+        <td>RandomX — CPU</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="OCTA"></span>
+            <a href="/trade/octaspace-octa">OctaSpace</a>
+            <span class="sym">OCTA</span></td>
+        <td>Ethash</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      <tr>
+        <td><span class="mark sm" data-coin="EPIC"></span>
+            <a href="/trade/epic-cash">Epic Cash</a>
+            <span class="sym">EPIC</span></td>
+        <td>ProgPow</td>
+        <td><span class="badge idle">Planned — not yet tradeable</span></td>
+      </tr>
+      </tbody>
+    </table>
+    <p class="note">
+      "Planned" means exactly that: no deposits, no market, nothing to send.
+      Each coin's page says where it stands. We would rather publish the queue
+      than imply a market that is not open.
+    </p>
+  </section>
+
+  <section>
+    <h2>Why a venue for these</h2>
+    <p>
+      A coin can have a healthy network, a dozen pools and a few thousand
+      miners, and still have nowhere to sell — because listing fees are written
+      for projects with a treasury, and these chains mostly do not have one. So
+      the mining carries on and the coin accumulates in wallets.
+    </p>
+    <p>
+      Listing here costs a conversation, not a fee that has to be funded. In
+      exchange we are strict about the part that actually goes wrong: we run the
+      node ourselves, we reconcile what customers are owed against what we hold
+      on every pass, and we halt withdrawals on a shortfall rather than paying
+      the fastest few people out of everyone else's coins.
+    </p>
+  </section>
+
+<script src="/coins.js"></script>
+<script>
+  /* The marks are decoration added after the fact: the page is complete
+     without this, so a blocked or slow script costs an icon, not content. */
+  (function () {
+    if (typeof window.coinIcon !== "function") return;
+    var nodes = document.querySelectorAll(".mark[data-coin]");
+    for (var i = 0; i < nodes.length; i++) {
+      var big = !nodes[i].classList.contains("sm");
+      nodes[i].innerHTML = window.coinIcon(nodes[i].getAttribute("data-coin"), big ? 40 : 20);
+    }
+  })();
+</script>
+<footer>
+  <a href="/coins">All coins</a>
+  <a href="/app.html">Exchange</a>
+  <a href="https://blockle.org/">blockle.org</a>
+  <a href="https://blockle.org/terms">Terms</a>
+  <p style="margin:14px 0 0;max-width:68ch">
+    Blockle Exchange is operated by Alienbeing LLC. Nothing on this page is
+    investment advice, and no price, volume or market-capitalisation figure is
+    quoted here — only what the chain is and how we handle it.
+  </p>
+</footer>
+</div>
+</body>
+</html>

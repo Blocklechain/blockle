@@ -1,0 +1,671 @@
+<!--
+  BLOCKLE EXCHANGE — OPERATOR CONSOLE
+  ===================================
+
+  Four questions, in the order an operator asks them:
+
+    1. How much have we made?        — per asset, exact, plus one estimated total
+    2. Can we still pay gas?         — runway in WITHDRAWALS, not in coins
+    3. Is any chain losing money?    — fee versus gas cost, with the arithmetic
+    4. What has been done here?      — the append-only action journal
+
+  THREE RULES THIS PAGE FOLLOWS.
+
+  * NUMBERS ARE RENDERED AS THE STRINGS THE API SENT. No parseFloat anywhere on
+    this page. A USDT balance past ~9e15 base units does not survive a JavaScript
+    double, and the one place that must never round is the page that reports the
+    money.
+
+  * A WARNING OUTRANKS A FIGURE. If the revenue report says it did not
+    reconcile, the banner says so at the top and the totals are visibly marked
+    unverified. A profit number whose arithmetic did not check out is worse than
+    no number, because it will be believed.
+
+  * EVERY ACTION ASKS FOR A CODE. Sweeping revenue and funding a gas float each
+    require a current authenticator code on the request itself — not a session
+    that was 2FA'd an hour ago.
+
+  Sign-in is the ordinary Blockle account session on .blockle.org; this page has
+  no login form because it has no separate accounts. A session that is not on
+  the operator allowlist gets a 404, same as a stranger.
+-->
+<title>Blockle Exchange — Operator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+
+<style>
+  :root {
+    --ground:    #070b12;
+    --raise:     #0e1420;
+    --raise-2:   #141c2b;
+    --line:      #1f2938;
+    --ink:       #eaeff7;
+    --ink-dim:   #94a1b8;
+    --ink-faint: #5d6a7f;
+    --signal:    #35d6e8;
+    --up:        #3fd68c;
+    --down:      #ff5c6c;
+    --warn:      #f5a524;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 15px; line-height: 1.5;
+  }
+  .wrap { max-width: 1140px; margin: 0 auto; padding: 24px 20px 72px; }
+
+  header.bar {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--line); padding-bottom: 14px; margin-bottom: 22px;
+  }
+  header.bar h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+  header.bar .tag {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--signal); border: 1px solid var(--signal); border-radius: 3px;
+    padding: 4px 7px;
+  }
+  header.bar .who { margin-left: auto; color: var(--ink-dim); font: 12px/1 var(--mono); }
+
+  .banner {
+    border: 1px solid var(--down); background: rgba(255, 92, 108, 0.08);
+    border-radius: 6px; padding: 12px 14px; margin-bottom: 20px;
+  }
+  .banner h3 { margin: 0 0 6px; font-size: 13px; color: var(--down); }
+  .banner ul { margin: 0; padding-left: 18px; color: var(--ink-dim); font-size: 13px; }
+  .banner.ok { border-color: var(--line); background: var(--raise); }
+  .banner.ok h3 { color: var(--up); }
+
+  details.card {
+    background: var(--raise); border: 1px solid var(--line); border-radius: 8px;
+    margin-bottom: 14px;
+  }
+  details.card > summary {
+    cursor: pointer; padding: 13px 16px; display: flex; align-items: center;
+    gap: 10px; font-weight: 600; font-size: 14px; list-style: none;
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::before {
+    content: "▸"; color: var(--ink-faint); font-size: 11px; transition: transform .12s;
+  }
+  details.card[open] > summary::before { transform: rotate(90deg); }
+  details.card > summary .note {
+    margin-left: auto; font: 11px/1 var(--mono); color: var(--ink-faint);
+    font-weight: 400;
+  }
+  .card-body { padding: 0 16px 16px; }
+  .card-body > p.lead { margin: 0 0 14px; color: var(--ink-dim); font-size: 13px; }
+
+  .figures { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .figure {
+    flex: 1 1 170px; background: var(--raise-2); border: 1px solid var(--line);
+    border-radius: 6px; padding: 12px 14px;
+  }
+  .figure .k {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .figure .v {
+    font: 600 22px/1.2 var(--mono); margin-top: 7px; font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .figure .v.good { color: var(--up); }
+  .figure .v.bad  { color: var(--down); }
+  .figure .sub { font-size: 11px; color: var(--ink-faint); margin-top: 5px; }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th {
+    font: 600 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  tr.loss td { background: rgba(255, 92, 108, 0.06); }
+  .pill {
+    display: inline-block; font: 600 10px/1 var(--mono); letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 3px 6px; border-radius: 3px;
+    border: 1px solid currentColor;
+  }
+  .pill.ok   { color: var(--up); }
+  .pill.bad  { color: var(--down); }
+  .pill.warn { color: var(--warn); }
+
+  form.act { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  form.act label { display: block; font-size: 11px; color: var(--ink-faint); margin-bottom: 4px; }
+  input, select {
+    background: var(--ground); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 5px; padding: 8px 10px; font: 13px var(--mono); min-width: 0;
+  }
+  input:focus, select:focus { outline: 2px solid var(--signal); outline-offset: 1px; }
+  button {
+    background: var(--signal); color: #04161a; border: 0; border-radius: 5px;
+    padding: 9px 15px; font: 600 13px var(--sans); cursor: pointer;
+  }
+  button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  button[disabled] { opacity: .5; cursor: default; }
+  .out { font: 12px/1.5 var(--mono); margin-top: 10px; color: var(--ink-dim); white-space: pre-wrap; }
+  .out.bad { color: var(--down); }
+  .out.ok { color: var(--up); }
+  .caveat {
+    font-size: 12px; color: var(--ink-faint); border-left: 2px solid var(--line);
+    padding-left: 10px; margin-top: 12px;
+  }
+  @media (prefers-color-scheme: light) {
+    /* Deliberately single-theme: this is an operations console that lives on a
+       dark trading desk beside the exchange's own dark UI. Inverting it would
+       make the two read as different products. */
+  }
+</style>
+
+<div class="wrap">
+  <header class="bar">
+    <h1>Blockle Exchange</h1>
+    <span class="tag">Operator</span>
+    <span class="who" id="who">checking session…</span>
+  </header>
+
+  <div id="banner"></div>
+
+  <details class="card" open>
+    <summary>Profit <span class="note" id="profit-note"></span></summary>
+    <div class="card-body">
+      <p class="lead">
+        Fee revenue less the gas we spent earning it. Per-asset figures are exact
+        and derived from the ledger; the combined total is converted at the rates
+        shown and is an estimate.
+      </p>
+      <div class="figures" id="totals"></div>
+      <div class="scroll"><table id="revenue">
+        <thead><tr>
+          <th>Asset</th><th>Trading fees</th><th>Withdrawal fees</th>
+          <th>Gas spent</th><th>Net profit</th><th>Unswept</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6">loading…</td></tr></tbody>
+      </table></div>
+      <p class="caveat" id="caveat"></p>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Gas floats <span class="note" id="gas-note"></span></summary>
+    <div class="card-body">
+      <p class="lead">
+        Sending a token costs a different coin — ERC-20 USDT burns ETH. Runway is
+        how many more withdrawals the float pays for above its reserve; at zero,
+        that chain stops accepting withdrawals rather than accepting ones it
+        cannot send.
+      </p>
+      <div class="scroll"><table id="gas">
+        <thead><tr>
+          <th>Chain</th><th>Pays gas in</th><th>Float</th><th>In custody</th>
+          <th>Per withdrawal</th><th>Reserve</th><th>Runway</th><th>State</th>
+        </tr></thead>
+        <tbody><tr><td colspan="8">loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Fee coverage <span class="note" id="cov-note"></span></summary>
+    <div class="card-body">
+      <p class="lead">
+        For each chain: what the gas costs, what we charge, and the headroom
+        between them. A negative headroom means that chain loses money on every
+        withdrawal.
+      </p>
+      <div class="scroll"><table id="coverage">
+        <thead><tr>
+          <th>Chain</th><th>Gas cost</th><th>Allowance</th><th>Margin</th>
+          <th>Fee</th><th>Headroom</th><th>Priced at</th><th>State</th>
+        </tr></thead>
+        <tbody><tr><td colspan="8">loading…</td></tr></tbody>
+      </table></div>
+      <p class="caveat" id="trading-fees"></p>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Sweep revenue <span class="note">needs a code</span></summary>
+    <div class="card-body">
+      <p class="lead">
+        Moves accrued fees from the fee account into the house account, where
+        they can be traded or withdrawn like any other balance. The gas float is
+        held back automatically — sweeping it would book a profit the venue then
+        cannot pay withdrawals out of.
+      </p>
+      <form class="act" id="sweep-form">
+        <div><label for="sw-asset">Asset</label>
+          <input id="sw-asset" value="USDT" size="8" autocomplete="off" /></div>
+        <div><label for="sw-amount">Amount</label>
+          <input id="sw-amount" placeholder="0.00" size="14" autocomplete="off" /></div>
+        <div><label for="sw-code">Authenticator code</label>
+          <input id="sw-code" inputmode="numeric" placeholder="123456" size="8"
+                 autocomplete="one-time-code" /></div>
+        <button type="submit">Sweep</button>
+      </form>
+      <div class="out" id="sweep-out"></div>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Fund a gas float <span class="note">needs a code</span></summary>
+    <div class="card-body">
+      <p class="lead">
+        Records a treasury transfer into the gas float. This moves the BOOKS, not
+        the coins — send the asset to the custody wallet as well, or
+        reconciliation will correctly report a shortfall.
+      </p>
+      <form class="act" id="fund-form">
+        <div><label for="fg-asset">Gas asset</label>
+          <select id="fg-asset">
+            <option>ETH</option><option>TRX</option><option>SOL</option><option>BNB</option>
+          </select></div>
+        <div><label for="fg-amount">Amount</label>
+          <input id="fg-amount" placeholder="0.00" size="14" autocomplete="off" /></div>
+        <div><label for="fg-code">Authenticator code</label>
+          <input id="fg-code" inputmode="numeric" placeholder="123456" size="8"
+                 autocomplete="one-time-code" /></div>
+        <button type="submit">Record funding</button>
+      </form>
+      <div class="out" id="fund-out"></div>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Action journal <span class="note">append-only</span></summary>
+    <div class="card-body">
+      <div class="scroll"><table id="actions">
+        <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Detail</th><th>Outcome</th></tr></thead>
+        <tbody><tr><td colspan="5">loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </details>
+</div>
+
+<script>
+  "use strict";
+
+  // Mount-relative, so this page works whether it is served at /admin/ or at a
+  // path behind a proxy. An absolute /admin/api/... would break the moment the
+  // mount point changes, which it already did once.
+  const API = "api/";
+
+  const $ = (id) => document.getElementById(id);
+  const txt = (s) => document.createTextNode(s == null ? "—" : String(s));
+
+  function cell(row, value, cls) {
+    const td = document.createElement("td");
+    if (cls) td.className = cls;
+    td.appendChild(txt(value));
+    row.appendChild(td);
+    return td;
+  }
+
+  function pill(row, label, kind) {
+    const td = document.createElement("td");
+    const span = document.createElement("span");
+    span.className = "pill " + kind;
+    span.appendChild(txt(label));
+    td.appendChild(span);
+    row.appendChild(td);
+  }
+
+  async function get(path) {
+    const r = await fetch(API + path, { credentials: "same-origin" });
+    const body = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+    return body;
+  }
+
+  async function post(path, payload, code) {
+    const r = await fetch(API + path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", "x-admin-totp": code },
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+    return body;
+  }
+
+  /** A request id so a double-submit is one action, not two. */
+  function requestId() {
+    const a = new Uint8Array(12);
+    crypto.getRandomValues(a);
+    return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function setBanner(report) {
+    const host = $("banner");
+    host.textContent = "";
+    const div = document.createElement("div");
+    const warnings = report.warnings || [];
+    if (report.reconciles && warnings.length === 0) {
+      div.className = "banner ok";
+      const h = document.createElement("h3");
+      h.appendChild(txt("Books reconcile"));
+      div.appendChild(h);
+      const p = document.createElement("ul");
+      const li = document.createElement("li");
+      li.appendChild(txt(
+        "Every fee-account posting is classified, and the classified postings " +
+        "sum exactly to the fee balances."
+      ));
+      p.appendChild(li);
+      div.appendChild(p);
+    } else {
+      // A WARNING OUTRANKS A FIGURE. If the arithmetic did not check out, that
+      // is the most important thing on the page.
+      div.className = "banner";
+      const h = document.createElement("h3");
+      h.appendChild(txt(
+        report.reconciles
+          ? "Read these before quoting any figure"
+          : "THE PROFIT FIGURES BELOW ARE NOT VERIFIED"
+      ));
+      div.appendChild(h);
+      const ul = document.createElement("ul");
+      for (const w of warnings) {
+        const li = document.createElement("li");
+        li.appendChild(txt(w));
+        ul.appendChild(li);
+      }
+      div.appendChild(ul);
+    }
+    host.appendChild(div);
+  }
+
+  function isNegative(s) {
+    return typeof s === "string" && s.trim().startsWith("-");
+  }
+
+  function renderTotals(total, reconciles) {
+    const host = $("totals");
+    host.textContent = "";
+    const items = [
+      ["Net profit", total.netProfit, true],
+      ["Trading fees", total.tradingFees, false],
+      ["Withdrawal fees", total.withdrawalFees, false],
+      ["Gas spent", total.gasSpent, false],
+    ];
+    for (const [k, v, emphasise] of items) {
+      const box = document.createElement("div");
+      box.className = "figure";
+      const kk = document.createElement("div");
+      kk.className = "k";
+      kk.appendChild(txt(k));
+      const vv = document.createElement("div");
+      vv.className = "v" + (emphasise ? (isNegative(v) ? " bad" : " good") : "");
+      // The string the API sent, verbatim. No parseFloat on this page.
+      vv.appendChild(txt(v + " " + total.currency));
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.appendChild(txt(reconciles ? "estimate" : "estimate — unverified"));
+      box.append(kk, vv, sub);
+      host.appendChild(box);
+    }
+  }
+
+  async function loadRevenue() {
+    const body = $("revenue").tBodies[0];
+    try {
+      const r = await get("revenue");
+      setBanner(r);
+      renderTotals(r.total, r.reconciles);
+      $("caveat").textContent = r.total.caveat;
+      $("profit-note").textContent =
+        r.assets.length + (r.assets.length === 1 ? " asset" : " assets");
+
+      body.textContent = "";
+      if (r.assets.length === 0) {
+        const tr = body.insertRow();
+        cell(tr, "No fees have been earned yet.").colSpan = 6;
+        return;
+      }
+      for (const a of r.assets) {
+        const tr = body.insertRow();
+        if (a.loss) tr.className = "loss";
+        cell(tr, a.asset);
+        cell(tr, a.tradingFees, "num");
+        cell(tr, a.withdrawalFees, "num");
+        cell(tr, a.gasSpent, "num");
+        cell(tr, a.netProfit, "num").style.color =
+          a.loss ? "var(--down)" : "var(--up)";
+        cell(tr, a.balance, "num");
+      }
+    } catch (e) {
+      body.textContent = "";
+      const tr = body.insertRow();
+      cell(tr, String(e.message || e)).colSpan = 6;
+    }
+  }
+
+  async function loadGas() {
+    const body = $("gas").tBodies[0];
+    try {
+      const r = await get("gas");
+      body.textContent = "";
+      let dry = 0;
+      for (const p of r.positions) {
+        const tr = body.insertRow();
+        if (!p.healthy) { tr.className = "loss"; dry++; }
+        cell(tr, p.chain);
+        cell(tr, p.gasAsset);
+        cell(tr, p.float, "num");
+        cell(tr, p.custody, "num");
+        cell(tr, p.perWithdrawal, "num");
+        cell(tr, p.floor, "num");
+        cell(tr, p.runway, "num");
+        pill(tr, p.healthy ? "paying" : "paused", p.healthy ? "ok" : "bad");
+      }
+      $("gas-note").textContent =
+        dry === 0 ? "all chains paying" : dry + " paused";
+    } catch (e) {
+      body.textContent = "";
+      const tr = body.insertRow();
+      cell(tr, String(e.message || e)).colSpan = 8;
+    }
+  }
+
+  async function loadCoverage() {
+    const body = $("coverage").tBodies[0];
+    try {
+      const r = await get("fee-coverage");
+      body.textContent = "";
+      for (const c of r.chains) {
+        const tr = body.insertRow();
+        if (!c.covered) tr.className = "loss";
+        cell(tr, c.chain);
+        cell(tr, c.gasCost, "num");
+        cell(tr, c.gasAllowance, "num");
+        cell(tr, c.margin, "num");
+        cell(tr, c.fee, "num");
+        cell(tr, c.headroom, "num");
+        cell(tr, c.rate === "—" ? c.rateSource : c.rate + " (" + c.rateSource + ")");
+        pill(
+          tr,
+          c.subsidised ? "subsidised" : c.covered ? "covered" : "losing",
+          c.subsidised ? "warn" : c.covered ? "ok" : "bad"
+        );
+      }
+      $("cov-note").textContent =
+        r.uncovered.length === 0
+          ? "every chain covers its gas"
+          : r.uncovered.join(", ") + " not covered";
+      $("trading-fees").textContent =
+        "Trading: " + r.tradingFees.makerPct + " maker, " +
+        r.tradingFees.takerPct + " taker. " + r.tradingFees.note;
+    } catch (e) {
+      body.textContent = "";
+      const tr = body.insertRow();
+      cell(tr, String(e.message || e)).colSpan = 8;
+    }
+  }
+
+  async function loadActions() {
+    const body = $("actions").tBodies[0];
+    try {
+      const r = await get("actions");
+      body.textContent = "";
+      if (r.actions.length === 0) {
+        const tr = body.insertRow();
+        cell(tr, "Nothing has been done here yet.").colSpan = 5;
+        return;
+      }
+      for (const a of r.actions) {
+        const tr = body.insertRow();
+        cell(tr, a.at);
+        cell(tr, a.actor);
+        cell(tr, a.action);
+        cell(tr, a.detail);
+        cell(tr, a.outcome);
+      }
+    } catch (e) {
+      body.textContent = "";
+      const tr = body.insertRow();
+      cell(tr, String(e.message || e)).colSpan = 5;
+    }
+  }
+
+  async function loadMe() {
+    try {
+      const me = await get("me");
+      $("who").textContent =
+        (me.email || me.accountId) +
+        (me.canAct ? "" : " — view only (no authenticator enrolled)");
+      if (!me.canAct) {
+        for (const b of document.querySelectorAll("form.act button")) {
+          b.disabled = true;
+          b.title = "Enrol an authenticator to act";
+        }
+      }
+    } catch (e) {
+      /*
+       * A LANDING PAGE, NOT AN ERROR.
+       *
+       * This used to render "not signed in as an operator / No operator
+       * session / Detail: not found" over an otherwise empty console, which is
+       * both ugly and unhelpful: "not found" is the deliberate response to a
+       * valid session that is not on the allowlist (confirming the endpoint
+       * exists is information), so the one message covered three different
+       * situations and told you what to do about none of them.
+       *
+       * Now it offers the sign-in, and distinguishes the cases it can.
+       */
+      $("who").textContent = "not signed in";
+      const status = Number(e.status) || 0;
+      for (const el of document.querySelectorAll("details.card")) el.remove();
+
+      const host = $("banner");
+      host.textContent = "";
+      const card = document.createElement("div");
+      card.className = "banner ok";
+      card.style.maxWidth = "520px";
+
+      const h = document.createElement("h3");
+      h.style.color = "var(--ink)";
+      h.appendChild(txt(
+        status === 404 ? "This account is not an operator"
+        : status === 503 ? "Cannot reach the account service"
+        : "Operator sign-in required"
+      ));
+      card.appendChild(h);
+
+      const p = document.createElement("p");
+      p.style.cssText = "margin:0 0 14px;color:var(--ink-dim);font-size:13px";
+      p.appendChild(txt(
+        status === 404
+          ? "You are signed in, but this account is not on the operator " +
+            "allowlist. Admin rights are granted to a Blockle account id — " +
+            "there is no separate operator login to try."
+          : status === 503
+            ? "The Blockle account service is not answering, so we cannot tell " +
+              "who you are and will not guess. Nothing here is available until " +
+              "it is back. Detail: " + (e.message || e)
+            : "The console uses your ordinary Blockle account. Sign in, and if " +
+              "that account is on the operator allowlist you will land here."
+      ));
+      card.appendChild(p);
+
+      if (status !== 503) {
+        const a = document.createElement("a");
+        a.href =
+          "https://exchange.blockle.org/signin.html?as=operator&return=" +
+          encodeURIComponent("https://admin.blockle.org/admin/");
+        a.style.cssText =
+          "display:inline-flex;align-items:center;justify-content:center;" +
+          "background:var(--signal);color:#04161a;text-decoration:none;" +
+          "font-weight:600;padding:10px 16px;border-radius:5px";
+        a.appendChild(txt(status === 404 ? "Sign in as a different account" : "Sign in"));
+        card.appendChild(a);
+      }
+      host.appendChild(card);
+      throw e;
+    }
+  }
+
+  function wireAction(formId, outId, path, collect, after) {
+    $(formId).addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const out = $(outId);
+      const button = ev.target.querySelector("button");
+      const { payload, code, codeField } = collect();
+      if (!code) {
+        out.className = "out bad";
+        out.textContent = "A current authenticator code is required.";
+        return;
+      }
+      button.disabled = true;
+      out.className = "out";
+      out.textContent = "working…";
+      try {
+        const r = await post(path, { ...payload, requestId: requestId() }, code);
+        out.className = "out ok";
+        out.textContent = r.note ? "Done. " + r.note : "Done.";
+        // The code is single-use, so clear it rather than leaving a dead code
+        // in the field for someone to retry with.
+        $(codeField).value = "";
+        await after();
+      } catch (e) {
+        out.className = "out bad";
+        out.textContent = String(e.message || e);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
+  wireAction("sweep-form", "sweep-out", "sweep", () => ({
+    payload: {
+      asset: $("sw-asset").value.trim().toUpperCase(),
+      amount: $("sw-amount").value.trim(),
+    },
+    code: $("sw-code").value.trim(),
+    codeField: "sw-code",
+  }), async () => { await Promise.all([loadRevenue(), loadGas(), loadActions()]); });
+
+  wireAction("fund-form", "fund-out", "fund-gas", () => ({
+    payload: {
+      gasAsset: $("fg-asset").value,
+      amount: $("fg-amount").value.trim(),
+    },
+    code: $("fg-code").value.trim(),
+    codeField: "fg-code",
+  }), async () => { await Promise.all([loadGas(), loadRevenue(), loadActions()]); });
+
+  (async () => {
+    try {
+      await loadMe();
+    } catch {
+      return; // no session: the banner already says so
+    }
+    await Promise.all([loadRevenue(), loadGas(), loadCoverage(), loadActions()]);
+  })();
+</script>

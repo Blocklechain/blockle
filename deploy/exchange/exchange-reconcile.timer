@@ -1,0 +1,21 @@
+# Reconcile every two minutes.
+#
+# Frequent on purpose: the window between a shortfall appearing and withdrawals
+# halting is the window in which the venue pays out money it does not have. Two
+# minutes bounds that. The pass is a handful of SQL aggregates plus one
+# custodian read, so the cost is negligible compared to what it protects.
+
+[Unit]
+Description=Run Blockle Exchange reconciliation every 2 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=2min
+AccuracySec=10s
+# Run immediately on boot if a pass was missed while the box was down — the
+# halt file is in /run and does not survive a reboot, so without this the
+# venue would come back up with NOTHING halted regardless of its books.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

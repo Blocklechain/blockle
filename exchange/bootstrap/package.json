@@ -1,0 +1,19 @@
+{
+  "name": "@blockle/exchange-bootstrap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Setup console for admin.blockle.org. Runs the exchange bring-up as an idempotent dependency graph; one step needs a human (the Envato download), and the legal gates are deliberately unsatisfiable.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/src/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/",
+    "start": "node dist/src/server.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": { "node": ">=20" }
+}

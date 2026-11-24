@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Blockle Wallet",
-  "version": "0.1.0",
+  "version": "0.7.8",
   "description": "Post-quantum BLOCK + multi-chain wallet (ETH/Base/BTC/LTC/DOGE) with a configurable in-wallet AI trading agent. Only BLOCK is post-quantum; other chains use ECDSA.",
   "action": {
     "default_popup": "popup.html",
@@ -15,7 +15,11 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["storage", "alarms", "tabs"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs"
+  ],
   "host_permissions": [
     "https://blockle.org/*",
     "https://ethereum-rpc.publicnode.com/*",
@@ -29,18 +33,31 @@
     "https://api.openai.com/*",
     "https://api.githubcopilot.com/*"
   ],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inpage.js"],
-      "matches": ["http://*/*", "https://*/*"]
+      "resources": [
+        "inpage.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
     }
   ],
   "content_security_policy": {

@@ -1,0 +1,42 @@
+# Setup console for admin.blockle.org.
+#
+# THIS UNIT IS MEANT TO BE TURNED OFF. It can install software, drop database
+# columns and restart services, so it exists for the setup window and nothing
+# longer. The server itself starts refusing actions once every automatable step
+# is OK, but disable the unit as well:
+#
+#   systemctl disable --now exchange-bootstrap
+#
+# Install to /etc/systemd/system/exchange-bootstrap.service
+
+[Unit]
+Description=Blockle Exchange setup console (loopback :8099 — installs software; disable after setup)
+After=network-online.target mysql.service redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root, because the steps install packages, write to /var/www and /etc, and
+# restart units. That is precisely why the server binds to loopback only and
+# refuses to start without a token.
+User=root
+WorkingDirectory=/opt/blockle/exchange-bootstrap
+ExecStart=/usr/bin/node dist/src/server.js
+Restart=on-failure
+RestartSec=5
+
+# BOOTSTRAP_TOKEN lives in a root-only env file, never in this unit (unit files
+# are world-readable by default) and never in the repository.
+EnvironmentFile=/etc/blockle/exchange-bootstrap.env
+
+# Deliberately NOT hardened with ProtectSystem/ReadOnlyPaths: its whole job is
+# to write outside its own tree. The containment is the loopback bind, the
+# token, and the vhost's IP allowlist — not the sandbox.
+NoNewPrivileges=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=exchange-bootstrap
+
+[Install]
+WantedBy=multi-user.target

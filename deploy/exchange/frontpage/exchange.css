@@ -1,0 +1,515 @@
+/* ---------------------------------------------------------------------------
+   BLOCKLE EXCHANGE — TRADING APPLICATION
+   ======================================
+
+   This is a tool, not a page. It is operated rather than read, so the craft
+   goes into information density and legibility of numbers, not into a hero.
+
+   THE RULES THIS STYLESHEET IS BUILT ON:
+
+   1. EVERY NUMBER IS MONOSPACED AND TABULAR. A column of prices that does not
+      align is a column you cannot scan, and scanning is the whole job. All
+      numerics carry `font-variant-numeric: tabular-nums`.
+
+   2. SEMANTIC COLOUR IS SEPARATE FROM THE ACCENT. Cyan is the brand and marks
+      what is interactive. Green and red mean bid/ask and up/down and nothing
+      else — never "primary action". An exchange where the Buy button is the
+      same green as a rising price teaches people to read colour wrong.
+
+   3. SINGLE-THEME, DELIBERATELY. Trading screens are used for hours in dim
+      rooms and every venue worth copying is dark. This is a choice, not an
+      omission — a light variant of a depth ladder is worse at the one thing a
+      depth ladder does.
+
+   4. DENSITY WITHOUT NOISE. Hairline rules, no shadows except where something
+      genuinely floats, and no border radius above 8px. Rounded cards with
+      drop shadows read as a marketing site.
+
+   Layout is a fixed left rail plus a scrolling work area. Grid and gap do the
+   spacing; per-element margins are avoided because they collapse unpredictably
+   between the panels that get composed into each screen.
+   --------------------------------------------------------------------------- */
+
+:root {
+  /* Ground up. Slight blue bias in the neutrals so the cyan sits in the same
+     family rather than on top of a dead grey. */
+  --ground:   #070a10;
+  --sunk:     #04060a;
+  --raise:    #0d121b;
+  --raise-2:  #131a26;
+  --raise-3:  #1a2331;
+  --line:     #1e2735;
+  --line-soft:#171e29;
+
+  --ink:      #e9eef6;
+  --ink-dim:  #93a0b6;
+  --ink-faint:#5e6b80;
+
+  /* Brand / interactive. */
+  --signal:   #35d6e8;
+  --signal-dk:#0e5a64;
+  --signal-ink:#04171b;
+
+  /* Semantic. Bid/ask and up/down ONLY. */
+  --up:       #2fd48a;
+  --up-dim:   rgba(47, 212, 138, 0.11);
+  --down:     #ff5668;
+  --down-dim: rgba(255, 86, 104, 0.11);
+  --warn:     #f5a524;
+  --warn-dim: rgba(245, 165, 36, 0.10);
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+
+  --rail: 232px;
+  --r: 7px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden; /* the work area scrolls, not the document */
+}
+
+/* Numbers. Applied by class rather than globally so labels stay in the sans. */
+.n {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.up { color: var(--up); }
+.down { color: var(--down); }
+.dim { color: var(--ink-dim); }
+.faint { color: var(--ink-faint); }
+
+.lbl {
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---------------------------------------------------------------- shell */
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail) 1fr;
+  grid-template-rows: 54px 1fr;
+  grid-template-areas: "brand top" "rail work";
+  height: 100%;
+}
+
+.brand {
+  grid-area: brand;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 16px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--raise);
+}
+.brand img { width: 26px; height: 26px; border-radius: 6px; }
+.brand b { font-size: 15px; letter-spacing: -0.015em; }
+.brand .env {
+  margin-left: auto;
+  font: 600 9px/1 var(--mono);
+  letter-spacing: 0.12em;
+  padding: 4px 6px; border-radius: 3px;
+  border: 1px solid var(--warn); color: var(--warn);
+}
+.brand .env.live { border-color: var(--up); color: var(--up); }
+
+.topbar {
+  grid-area: top;
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--raise);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.topbar::-webkit-scrollbar { display: none; }
+.topbar .stat { display: flex; flex-direction: column; gap: 3px; flex: none; }
+.topbar .stat .v { font: 600 13px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.topbar .spacer { margin-left: auto; }
+
+.rail {
+  grid-area: rail;
+  border-right: 1px solid var(--line);
+  background: var(--raise);
+  padding: 10px 8px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.rail .group { padding: 14px 10px 6px; }
+.rail a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: var(--r);
+  color: var(--ink-dim); text-decoration: none;
+  font-weight: 500; font-size: 13.5px;
+}
+.rail a:hover { background: var(--raise-2); color: var(--ink); }
+.rail a.on { background: var(--raise-3); color: var(--ink); }
+.rail a.on svg { color: var(--signal); }
+.rail a svg { flex: none; color: var(--ink-faint); }
+.rail a:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+.rail .count {
+  margin-left: auto;
+  font: 600 10px/1 var(--mono);
+  background: var(--raise-3); color: var(--ink-dim);
+  padding: 3px 6px; border-radius: 10px;
+}
+.rail .foot { margin-top: auto; padding: 12px 10px; }
+.rail .foot a { padding: 5px 0; font-size: 12px; color: var(--ink-faint); }
+.rail .foot a:hover { background: none; color: var(--signal); }
+
+.work {
+  grid-area: work;
+  overflow-y: auto;
+  padding: 18px;
+}
+.work.flush { padding: 0; }
+
+/* --------------------------------------------------------------- screens */
+
+.screen { display: none; }
+.screen.on { display: block; }
+
+.head {
+  display: flex; align-items: flex-end; gap: 14px;
+  margin-bottom: 16px; flex-wrap: wrap;
+}
+.head h1 {
+  margin: 0; font-size: 19px; font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.head p { margin: 4px 0 0; color: var(--ink-dim); font-size: 13px; max-width: 62ch; }
+.head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---------------------------------------------------------------- panels */
+
+.panel {
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.panel > header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.panel > header h2 {
+  margin: 0; font-size: 13px; font-weight: 650; letter-spacing: -0.01em;
+}
+.panel > header .note { margin-left: auto; font: 11px var(--mono); color: var(--ink-faint); }
+.panel .body { padding: 14px; }
+.panel .body.tight { padding: 0; }
+
+/* Collapsible panel. <details> so it works with no JS and keyboard-navigates
+   for free; the marker is replaced rather than hidden so the state is still
+   visible to someone who turns off CSS animations. */
+details.panel > summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px; cursor: pointer; list-style: none;
+  font-size: 13px; font-weight: 650;
+}
+details.panel > summary::-webkit-details-marker { display: none; }
+details.panel > summary::before {
+  content: ""; flex: none;
+  width: 0; height: 0;
+  border-left: 5px solid var(--ink-faint);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform .13s ease;
+}
+details.panel[open] > summary::before { transform: rotate(90deg) translateX(1px); }
+details.panel[open] > summary { border-bottom: 1px solid var(--line-soft); }
+details.panel > summary .note { margin-left: auto; font: 11px var(--mono); color: var(--ink-faint); font-weight: 400; }
+details.panel > summary:focus-visible { outline: 2px solid var(--signal); outline-offset: -2px; }
+
+.grid { display: grid; gap: 14px; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* ------------------------------------------------------------- stat tiles */
+
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.tile {
+  background: var(--raise); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 13px 15px;
+}
+.tile .k { font: 600 10px/1 var(--mono); letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-faint); }
+.tile .v {
+  margin-top: 8px;
+  font: 600 21px/1.15 var(--mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+.tile .s { margin-top: 5px; font-size: 11.5px; color: var(--ink-faint); }
+
+/* ---------------------------------------------------------------- tables */
+
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--raise);
+  font: 600 10px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ink-faint);
+  text-align: right; padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+thead th:first-child, tbody td:first-child { text-align: left; }
+tbody td {
+  text-align: right; padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover td { background: var(--raise-2); }
+td.num, th.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* A monospaced CELL is just the face — it must not pick up the boxed look of
+ * the standalone `code.mono` chips, which would put a border inside a border. */
+td.mono {
+  font-family: var(--mono); font-size: 12px;
+  background: none; border: 0; border-bottom: 1px solid var(--line-soft);
+  padding: 10px 12px; user-select: all;
+}
+tbody tr:last-child td.mono { border-bottom: 0; }
+.empty { padding: 26px 14px; text-align: center; color: var(--ink-faint); font-size: 13px; }
+
+/* Asset cell: mark + ticker + name. */
+.asset { display: flex; align-items: center; gap: 9px; }
+.asset .coin { flex: none; border-radius: 50%; }
+.asset .tk { font-weight: 600; }
+.asset .nm { color: var(--ink-faint); font-size: 12px; }
+
+.pill {
+  display: inline-block;
+  font: 600 10px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 3px 6px; border-radius: 3px; border: 1px solid currentColor;
+}
+.pill.ok { color: var(--up); }
+.pill.bad { color: var(--down); }
+.pill.warn { color: var(--warn); }
+.pill.mute { color: var(--ink-faint); }
+
+/* ---------------------------------------------------------------- forms */
+
+label.f { display: block; }
+label.f > span {
+  display: block; margin-bottom: 5px;
+  font: 600 10px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+input, select {
+  width: 100%;
+  background: var(--sunk); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 9px 11px;
+  font: 13.5px var(--mono); font-variant-numeric: tabular-nums;
+}
+input:focus, select:focus { outline: 2px solid var(--signal); outline-offset: -1px; border-color: var(--signal-dk); }
+input::placeholder { color: var(--ink-faint); }
+select { cursor: pointer; }
+.inline { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.inline > * { flex: 1 1 130px; }
+.inline > .fit { flex: 0 0 auto; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  background: var(--raise-3); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 9px 14px;
+  font: 600 13px var(--sans); cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--line); }
+.btn:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+.btn[disabled] { opacity: .45; cursor: default; }
+.btn.pri { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+.btn.pri:hover { filter: brightness(1.08); }
+.btn.buy { background: var(--up); border-color: var(--up); color: #04150d; }
+.btn.sell { background: var(--down); border-color: var(--down); color: #1b0407; }
+.btn.sm { padding: 6px 10px; font-size: 12px; }
+.btn.ghost { background: none; }
+.btn.ghost:hover { background: var(--raise-2); }
+.btn.block { width: 100%; }
+/* Revoke, close, cancel. Outline rather than filled: destructive and ORDINARY
+ * — a solid red button on every row reads as an alarm. */
+.btn.danger { color: var(--down); border-color: rgba(255, 86, 104, 0.4); background: none; }
+.btn.danger:hover { background: var(--down-dim); }
+
+/* Segmented control, for buy/sell and for time ranges. */
+.seg { display: inline-flex; background: var(--sunk); border: 1px solid var(--line); border-radius: 6px; padding: 2px; gap: 2px; }
+.seg button {
+  background: none; border: 0; color: var(--ink-dim);
+  padding: 7px 14px; border-radius: 4px; cursor: pointer;
+  font: 600 12.5px var(--sans);
+}
+.seg button:hover { color: var(--ink); }
+.seg button[aria-pressed="true"] { background: var(--raise-3); color: var(--ink); }
+.seg button[aria-pressed="true"].buy { background: var(--up); color: #04150d; }
+.seg button[aria-pressed="true"].sell { background: var(--down); color: #1b0407; }
+.seg.full { display: flex; }
+.seg.full button { flex: 1; }
+
+.kv { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 12.5px; }
+.kv > :last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.kv.big { font-size: 14px; font-weight: 600; padding-top: 9px; border-top: 1px solid var(--line-soft); margin-top: 4px; }
+
+/* ---------------------------------------------------------------- API screen
+ *
+ * A credential and a code sample are both things people COPY, so both get a
+ * monospace face, a selectable surface, and room to wrap — a secret that
+ * overflows its panel is a secret that gets copied half-way.
+ */
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+code.mono, .mono {
+  font-family: var(--mono); font-size: 12px;
+  background: var(--raise-2); border: 1px solid var(--line-soft);
+  border-radius: 4px; padding: 2px 6px;
+  /* anywhere, because a base64 secret has no spaces to break at */
+  word-break: break-all; user-select: all;
+}
+.kv > code.mono { max-width: 68%; text-align: right; }
+
+pre.code {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  background: var(--raise-2); border: 1px solid var(--line-soft);
+  border-top: 0; border-radius: 0 0 6px 6px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.65;
+  color: var(--ink);
+}
+pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-select: all; }
+
+.tabs { display: flex; gap: 2px; margin-top: 4px; }
+.tabs .tab {
+  font: inherit; font-size: 12px; cursor: pointer;
+  padding: 6px 12px; color: var(--ink-dim);
+  background: var(--raise); border: 1px solid var(--line-soft); border-bottom: 0;
+  border-radius: 5px 5px 0 0;
+}
+.tabs .tab.on { color: var(--ink); background: var(--raise-2); }
+.tabs .tab:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+
+.msg {
+  border-radius: 5px; padding: 10px 12px; font-size: 12.5px;
+  border: 1px solid var(--line); background: var(--raise-2);
+}
+.msg.bad { border-color: var(--down); background: var(--down-dim); }
+.msg.ok { border-color: var(--up); background: var(--up-dim); }
+.msg.warn { border-color: var(--warn); background: var(--warn-dim); }
+.msg + .msg { margin-top: 8px; }
+.hidden { display: none !important; }
+
+.note {
+  font-size: 12px; color: var(--ink-faint); line-height: 1.55;
+  border-left: 2px solid var(--line); padding-left: 10px;
+}
+
+/* ------------------------------------------------------------ trade screen */
+
+.trade {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 300px;
+  gap: 1px;
+  background: var(--line);
+  height: 100%;
+}
+.trade > section { background: var(--ground); overflow-y: auto; min-width: 0; }
+.trade .mid { display: flex; flex-direction: column; }
+
+/* Depth ladder. The row background is the cumulative-size bar — the depth is
+   the chart, so no separate chart is needed for it. */
+.ladder { font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.ladder .row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px; padding: 3px 12px; position: relative; cursor: pointer;
+}
+.ladder .row > * { position: relative; z-index: 1; text-align: right; }
+.ladder .row > :first-child { text-align: left; }
+.ladder .row .bar {
+  position: absolute; top: 0; bottom: 0; right: 0; z-index: 0;
+  border-radius: 2px 0 0 2px;
+}
+.ladder .ask .bar { background: var(--down-dim); }
+.ladder .bid .bar { background: var(--up-dim); }
+.ladder .ask > :first-child { color: var(--down); }
+.ladder .bid > :first-child { color: var(--up); }
+.ladder .row:hover { background: var(--raise-2); }
+.ladder .heads {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+  padding: 8px 12px 6px;
+  font: 600 9.5px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.ladder .heads > * { text-align: right; }
+.ladder .heads > :first-child { text-align: left; }
+.ladder .spread {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 9px 12px; margin: 4px 0;
+  border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);
+}
+.ladder .spread .px { font: 600 16px var(--mono); font-variant-numeric: tabular-nums; }
+
+/* Price chart: a canvas, because hand-authored SVG paths for a live series is
+   a lot of string building for no benefit. */
+.chartwrap { position: relative; height: 300px; border-bottom: 1px solid var(--line); }
+.chartwrap canvas { display: block; width: 100%; height: 100%; }
+.chartwrap .nodata {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-faint); font-size: 13px; text-align: center; padding: 20px;
+}
+
+.ticket { padding: 14px; display: flex; flex-direction: column; gap: 11px; }
+.tape { font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+.tape .row { display: grid; grid-template-columns: 1.1fr 1fr .7fr; gap: 8px; padding: 3px 12px; }
+.tape .row > :nth-child(2) { text-align: right; }
+.tape .row > :last-child { text-align: right; color: var(--ink-faint); }
+
+/* --------------------------------------------------------------- responsive */
+
+@media (max-width: 1180px) {
+  .trade { grid-template-columns: 250px minmax(0, 1fr); }
+  .trade .tapecol { display: none; }
+}
+@media (max-width: 900px) {
+  :root { --rail: 0px; }
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: 54px auto 1fr;
+    grid-template-areas: "brand" "top" "work";
+  }
+  .brand { border-right: 0; }
+  .rail {
+    grid-area: top;
+    flex-direction: row; overflow-x: auto;
+    border-right: 0; border-bottom: 1px solid var(--line);
+    padding: 7px 8px;
+  }
+  .rail a { flex: none; }
+  .rail a span.t { display: none; }
+  .rail .group, .rail .foot, .rail .count { display: none; }
+  .topbar { display: none; }
+  .trade { grid-template-columns: 1fr; height: auto; }
+  .g2, .g3, .g4 { grid-template-columns: 1fr; }
+  body { overflow: auto; }
+  .work { overflow: visible; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

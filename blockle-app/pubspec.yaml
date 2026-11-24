@@ -1,7 +1,7 @@
 name: blockle_app
 description: "Blockle — shop with crypto: post-quantum wallet, marketplace & dApp browser"
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.7.8+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

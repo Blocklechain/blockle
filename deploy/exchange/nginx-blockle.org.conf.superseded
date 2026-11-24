@@ -1,0 +1,313 @@
+# =============================================================================
+# SUPERSEDED — DO NOT ENABLE.
+#
+# This config made the exchange take over blockle.org's root and pushed the
+# existing site to coin.blockle.org. That plan was dropped: the exchange stays
+# on exchange.blockle.org and blockle.org keeps the site it has.
+#
+# It was never symlinked into sites-enabled, so there is nothing to undo on the
+# box. Kept rather than deleted because it is the worked-out answer to a hard
+# problem — which paths compiled into already-shipped wallets must survive a
+# root takeover (/api/, /account/api/, /px/, /tx/, /explorer, /assets/, and the
+# MoonPay webhook, which is registered on MoonPay's side and cannot be moved).
+# If the takeover is ever revisited, start here rather than from scratch.
+#
+# Enabling this file as it stands would move blockle.org out from under every
+# shipped wallet and the live MoonPay webhook.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# blockle.org — THE EXCHANGE TAKES THE ROOT.
+#
+# The chain/wallet/games site moves to coin.blockle.org. The exchange UI serves
+# `/`. But a large set of paths MUST NOT MOVE, and that is the whole difficulty
+# of this file.
+#
+# ============================== READ THIS FIRST ==============================
+#
+# SHIPPED SOFTWARE HAS blockle.org PATHS COMPILED INTO IT. iOS and Android
+# builds in the app stores, the published Chrome extension, and the desktop
+# wallets all call absolute https://blockle.org/... URLs. Those users cannot be
+# force-upgraded — an old iOS build will keep calling these paths for years.
+#
+# Verified present in shipped client source:
+#
+#   /api/...              explorer, token, signals, inference, dex, dapp, amm,
+#                         agent-telemetry
+#   /account/api/...      moonpay (config, sign, swap, commerce, webhook), me,
+#                         bots/copy, backtest
+#   /px/...               browser RPC proxies (koios, toncenter, bch)
+#   /tx/<hash>            transaction deep links — 9 separate references
+#   /explorer, /explorer/search
+#   /assets/...           token icons, wallet-ai-models.json
+#   /logo.png, /usdb-token.svg, /world-token.svg
+#   /done, /sellers, /usdb
+#
+# These are served IN PLACE from the existing upstreams below. They are NOT
+# redirected, because a 301 is fine for a browser and is not reliably followed
+# by an HTTP client in a mobile app — and a silent failure in a wallet's price
+# or balance lookup is indistinguishable, to the user, from the wallet being
+# broken.
+#
+# THE MOONPAY WEBHOOK IS THE SHARPEST EDGE. /account/api/moonpay/webhook is
+# registered on MoonPay's side, pointing at this host. If it moves or starts
+# redirecting, MoonPay's callbacks stop arriving and fiat purchases fail with
+# no error anyone sees until a customer complains.
+#
+# Everything else that belongs to the old site (/wallet, /blocklings, /dex,
+# /buy, /whitepaper, …) 301s to coin.blockle.org, which is browser traffic and
+# safe to redirect.
+# =============================================================================
+
+# WebSocket upgrade plumbing. Without this map, `$connection_upgrade` is
+# undefined and `nginx -t` fails outright — and the naive fix (hardcoding
+# `Connection: upgrade`) breaks every ordinary request by telling keep-alive
+# connections to upgrade to a protocol they never asked for.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+upstream exchange_ui   { server 127.0.0.1:3100; keepalive 32; }
+upstream exchange_api  { server unix:/run/php/php8.2-fpm-exchange.sock; }
+# The existing site service — unchanged, still serving every preserved path.
+upstream legacy_site   { server 127.0.0.1:8080; keepalive 16; }
+
+limit_req_zone $binary_remote_addr zone=root_auth:10m   rate=10r/m;
+limit_req_zone $binary_remote_addr zone=root_api:10m    rate=600r/m;
+limit_req_zone $binary_remote_addr zone=root_public:10m rate=1200r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name blockle.org www.blockle.org exchange.blockle.org coin.blockle.org;
+    location /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+# --- exchange.blockle.org keeps working, as an alias of the root -------------
+# The name was announced and may be in links; retiring it outright would break
+# them for no benefit.
+server {
+    # Plain `ssl`, no http2 here. The directive form (`http2 on;`) needs
+    # nginx >= 1.25.1 and this box runs 1.24.0. The `listen ... http2` form
+    # parses, but protocol options are per-LISTEN-SOCKET and another vhost on
+    # this box already sets them for :443 — so repeating it only produced
+    # "protocol options redefined" warnings while changing nothing. HTTP/2 is
+    # still active on the socket.
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name exchange.blockle.org www.blockle.org;
+    ssl_certificate     /etc/letsencrypt/live/blockle.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/blockle.org/privkey.pem;
+    return 301 https://blockle.org$request_uri;
+}
+
+# --- coin.blockle.org — the former blockle.org, intact ----------------------
+server {
+    # Plain `ssl`, no http2 here. The directive form (`http2 on;`) needs
+    # nginx >= 1.25.1 and this box runs 1.24.0. The `listen ... http2` form
+    # parses, but protocol options are per-LISTEN-SOCKET and another vhost on
+    # this box already sets them for :443 — so repeating it only produced
+    # "protocol options redefined" warnings while changing nothing. HTTP/2 is
+    # still active on the socket.
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name coin.blockle.org;
+
+    ssl_certificate     /etc/letsencrypt/live/blockle.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/blockle.org/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    client_max_body_size 32m;
+
+    # The whole old site, unchanged — including the API paths, so anything that
+    # gets updated to point at coin.blockle.org also works.
+    location / {
+        proxy_pass http://legacy_site;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s;
+    }
+
+    access_log /var/log/nginx/coin.blockle.org.access.log;
+}
+
+# --- blockle.org — the exchange, with the preserved paths carved out --------
+server {
+    # Plain `ssl`, no http2 here. The directive form (`http2 on;`) needs
+    # nginx >= 1.25.1 and this box runs 1.24.0. The `listen ... http2` form
+    # parses, but protocol options are per-LISTEN-SOCKET and another vhost on
+    # this box already sets them for :443 — so repeating it only produced
+    # "protocol options redefined" warnings while changing nothing. HTTP/2 is
+    # still active on the socket.
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name blockle.org;
+
+    ssl_certificate     /etc/letsencrypt/live/blockle.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/blockle.org/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:root_ssl:10m;
+    ssl_session_tickets off;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+    # A trading UI must never be framed — a clickjacked order form places real
+    # orders.
+    add_header X-Frame-Options "DENY" always;
+
+    client_max_body_size 32m;
+
+    # =====================================================================
+    # PRESERVED IN PLACE. Order matters: these must match before the `/`
+    # location hands anything to the exchange. Do not add a redirect to any
+    # of them.
+    # =====================================================================
+
+    # MoonPay webhook FIRST and most specific. Registered on MoonPay's side;
+    # it must reach the existing handler exactly, with no redirect, no rate
+    # limit (MoonPay retries are not abuse), and no interference.
+    location = /account/api/moonpay/webhook {
+        proxy_pass http://legacy_site;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /account/api/ {
+        limit_req zone=root_api burst=200 nodelay;
+        proxy_pass http://legacy_site;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # Browser RPC proxies (koios / toncenter / bch) — the web and extension
+    # wallets cannot reach those providers directly (CORS / 403 / bot walls).
+    location /px/ {
+        limit_req zone=root_api burst=200 nodelay;
+        proxy_pass http://legacy_site;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 60s;
+    }
+
+    # Chain/token/bot/inference API. NOTE: the exchange's own API lives under
+    # /exchange-api/ precisely so it cannot collide with this namespace.
+    location /api/ {
+        limit_req zone=root_api burst=200 nodelay;
+        proxy_pass http://legacy_site;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # Explorer and transaction deep links. /tx/<hash> appears nine times in
+    # shipped client code; it stays here forever.
+    location /tx/     { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location /explorer { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location /assets/ { proxy_pass http://legacy_site; proxy_set_header Host $host; expires 1h; }
+
+    # Individual files shipped clients fetch by absolute URL.
+    location = /logo.png        { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /usdb-token.svg  { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /world-token.svg { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /done            { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /sellers         { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /site.webmanifest { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /robots.txt      { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+    location = /sitemap.xml     { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+
+    # The non-custodial web wallet. Deep-linked from the apps and from the
+    # stores' support URLs; kept in place rather than redirected.
+    location /wallet { proxy_pass http://legacy_site; proxy_set_header Host $host; }
+
+    # =====================================================================
+    # ADAPTED OVER — these keep their blockle.org URLs but are now served by
+    # the EXCHANGE, because the exchange is the thing at this domain and needs
+    # its own versions. The old copies remain reachable on coin.blockle.org.
+    #
+    # /privacy and /terms must be the EXCHANGE's policies: a custodial venue
+    # with KYC, deposits and withdrawals makes materially different
+    # representations than a non-custodial wallet site. Serving the old
+    # non-custodial text at these URLs would be a false statement about what
+    # the business now does.
+    # =====================================================================
+    location = /privacy { proxy_pass http://exchange_ui; proxy_set_header Host $host; }
+    location = /terms   { proxy_pass http://exchange_ui; proxy_set_header Host $host; }
+    location = /support { proxy_pass http://exchange_ui; proxy_set_header Host $host; }
+
+    # =====================================================================
+    # MOVED to coin.blockle.org. Browser traffic only, so a 301 is correct and
+    # preserves search ranking. 301 (permanent), not 302 — this is not coming
+    # back.
+    # =====================================================================
+    location ~ ^/(blocklings|dex|buy|usdb|whitepaper|faucet|launch|market|traders|intelligence|android|ios|bridge|fork|token|agents|contact|downloads|geoblock|studio|tools)(/|$) {
+        return 301 https://coin.blockle.org$request_uri;
+    }
+
+    # =====================================================================
+    # THE EXCHANGE.
+    # =====================================================================
+    location ~ ^/exchange-api/(login|register|password|verify-email|two-factor) {
+        limit_req zone=root_auth burst=5 nodelay;
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+    location /exchange-api/ {
+        limit_req zone=root_api burst=200 nodelay;
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+    # Public market data, read-only. Same-origin now that the exchange owns the
+    # root, so no CORS header is needed for the hero widget any more.
+    location /exchange-api/public/ {
+        limit_req zone=root_public burst=300 nodelay;
+        add_header Cache-Control "public, max-age=2" always;
+        include /etc/nginx/snippets/exchange-fastcgi.conf;
+    }
+    location /ws {
+        proxy_pass http://exchange_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+    location /_next/static/ {
+        proxy_pass http://exchange_ui;
+        proxy_set_header Host $host;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    location / {
+        proxy_pass http://exchange_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location ~ /\. { deny all; return 404; }
+
+    access_log /var/log/nginx/blockle.org.access.log;
+    error_log  /var/log/nginx/blockle.org.error.log warn;
+}
