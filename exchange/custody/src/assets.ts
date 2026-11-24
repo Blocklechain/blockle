@@ -74,6 +74,20 @@ export interface Network {
 	 * as an actual fee — the real fee comes from the chain at send time.
 	 */
 	readonly costHint: "low" | "medium" | "high";
+	/**
+	 * THE ASSET THE CHAIN TAKES ITS FEE IN — which is not the asset being sent.
+	 *
+	 * Sending USDT over Ethereum costs ETH. The USDT moves; the ETH is burned
+	 * out of custody. Booking that gas against USDT — which the first version of
+	 * `confirm()` did — debits a custody holding that never moved, producing a
+	 * permanent phantom USDT shortfall and a phantom ETH surplus. Since a
+	 * shortfall halts withdrawals via the reconciliation interlock, that is not
+	 * a cosmetic error: every token withdrawal would move the venue one step
+	 * closer to halting itself.
+	 *
+	 * Undefined means "the asset itself" — a BTC send pays its fee in BTC.
+	 */
+	readonly gasAsset?: string;
 }
 
 /** Asset definitions: decimals, and the networks it exists on. */
@@ -92,24 +106,28 @@ const TRON: Network = {
 	label: "Tron (TRC-20)",
 	bitgo: { prod: "trx:usdt", test: "ttrx:usdt" },
 	costHint: "low",
+	gasAsset: "TRX",
 };
 const ETHEREUM: Network = {
 	id: "ERC20",
 	label: "Ethereum (ERC-20)",
 	bitgo: { prod: "eth:usdt", test: "teth:usdt" },
 	costHint: "high",
+	gasAsset: "ETH",
 };
 const SOLANA: Network = {
 	id: "SOL",
 	label: "Solana (SPL)",
 	bitgo: { prod: "sol:usdt", test: "tsol:usdt" },
 	costHint: "low",
+	gasAsset: "SOL",
 };
 const BSC: Network = {
 	id: "BEP20",
 	label: "BNB Smart Chain (BEP-20)",
 	bitgo: { prod: "bsc:usdt", test: "tbsc:usdt" },
 	costHint: "low",
+	gasAsset: "BNB",
 };
 
 /**
@@ -142,6 +160,9 @@ export const ASSETS: Readonly<Record<string, AssetDef>> = {
 	SOL: { symbol: "SOL", decimals: 9, networks: [] },
 	DOGE: { symbol: "DOGE", decimals: 8, networks: [] },
 	TRX: { symbol: "TRX", decimals: 6, networks: [] },
+	// Listed because BEP-20 withdrawals burn BNB as gas, and gas we spend has
+	// to have somewhere to be booked even before BNB itself is tradeable.
+	BNB: { symbol: "BNB", decimals: 18, networks: [] },
 	XRP: { symbol: "XRP", decimals: 6, networks: [] },
 	BLOCK: { symbol: "BLOCK", decimals: 8, networks: [] },
 	PERBUG: { symbol: "PERBUG", decimals: 8, networks: [] },
@@ -280,4 +301,36 @@ export function withdrawalNetworks(symbol: string): readonly Network[] {
 	return [...(ASSETS[symbol]?.networks ?? [])].sort(
 		(a, b) => order[a.costHint] - order[b.costHint],
 	);
+}
+
+/**
+ * The asset a withdrawal's gas is actually paid in.
+ *
+ *     gasAssetFor("USDT", "ERC20") === "ETH"
+ *     gasAssetFor("USDT", "TRC20") === "TRX"
+ *     gasAssetFor("BTC",  undefined) === "BTC"
+ *
+ * This exists because the asset leaving custody as a fee is routinely NOT the
+ * asset the customer asked for, and the ledger has to debit the holding that
+ * genuinely moved. See the note on `Network.gasAsset`.
+ */
+export function gasAssetFor(symbol: string, network: string | undefined): string {
+	const def = assetDef(symbol);
+	if (def.networks.length === 0) {
+		if (network !== undefined) {
+			throw new AssetError(`${symbol} is single-chain; do not name a network`);
+		}
+		return symbol;
+	}
+	if (network === undefined) {
+		throw new AssetError(
+			`${symbol} is multi-network, so its gas asset depends on the chain — ` +
+				"name one",
+		);
+	}
+	const net = def.networks.find((n) => n.id === network);
+	if (net === undefined) {
+		throw new AssetError(`${symbol} is not available on ${network}`);
+	}
+	return net.gasAsset ?? symbol;
 }

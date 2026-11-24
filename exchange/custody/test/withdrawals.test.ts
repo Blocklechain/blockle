@@ -22,6 +22,7 @@ import {
 	type Policy,
 } from "../src/withdrawals";
 import { Status, reconcile, type HoldingsSource } from "../src/reconcile";
+import type { FeeTable } from "../src/withdrawalfees";
 
 const ETH = "ETH";
 
@@ -62,13 +63,28 @@ const feesAcct = (asset = ETH): AccountRef => ({
 	asset,
 });
 
+/*
+ * A FEE TABLE THAT CHARGES NOTHING, so that the tests in this file keep
+ * testing the state machine rather than the fee arithmetic.
+ *
+ * Declared `subsidised` because a zero fee is otherwise refused outright (see
+ * withdrawalfees.ts) — which is the behaviour we want in production and would
+ * be the wrong thing to quietly switch off for a test. Fees have their own
+ * suite: withdrawalfees.test.ts.
+ */
+const FREE: FeeTable = {
+	ETH: { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
+	XRP: { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
+	BTC: { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
+};
+
 function setup(
 	policy: Policy = POLICY,
 	opts: { interlock?: Interlock; now?: () => number } = {},
 ): { l: Ledger; w: Withdrawals; db: Database.Database } {
 	const db = new Database(":memory:");
 	const l = new Ledger(db);
-	return { l, w: new Withdrawals(db, l, policy, opts), db };
+	return { l, w: new Withdrawals(db, l, policy, { ...opts, feeTable: FREE }), db };
 }
 
 function fund(l: Ledger, who: string, amt: bigint, ref = "0x1"): void {

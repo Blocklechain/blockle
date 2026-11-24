@@ -90,6 +90,18 @@ export enum Reason {
 	WITHDRAWAL_REVERSE = "withdrawal_reverse",
 	TRADE = "trade",
 	FEE = "fee",
+	/**
+	 * Moving accrued fee revenue out of FEES into an account the venue can
+	 * actually trade or withdraw from.
+	 *
+	 * Its own reason rather than an ADJUSTMENT so that the profit report can
+	 * tell a transfer apart from income. Classified as neither: a sweep moves
+	 * money the venue already owned, and counting it as revenue would let the
+	 * same earnings be reported twice.
+	 */
+	FEE_SWEEP = "fee_sweep",
+	/** Treasury putting its own funds in — notably to top up a gas float. */
+	TREASURY_FUNDING = "treasury_funding",
 	/** Operator-initiated. Always requires `actor` to name a human. */
 	ADJUSTMENT = "adjustment",
 	/** Equal-and-opposite reversal of a prior transaction. */

@@ -49,6 +49,22 @@ import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { Ledger } from "./ledger";
+import { LIVE_GAS_COSTS, type GasGateDeps } from "./gasgate";
+import { BlockleAuth } from "./blockleauth";
+import {
+	SCHEMA as ADMIN_SCHEMA,
+	adminRoute,
+	allowlistFrom,
+	totpSecretsFrom,
+	type AdminDeps,
+} from "./adminapi";
+import { BookRates, GAS_PRICE_FLOOR, StaticRates, type RateSource } from "./gasrates";
+import {
+	LIVE_FEES,
+	discloseWithdrawalFees,
+	quoteWithdrawal,
+	type GasPricing,
+} from "./withdrawalfees";
 import {
 	NOTHING_HALTED,
 	assetLiquidity,
@@ -193,7 +209,15 @@ const MIME: Record<string, string> = {
 
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolean> {
 	if (STATIC_DIR === "") return false;
-	const rel = normalize(urlPath === "/" ? "/index.html" : urlPath).replace(
+	// `/admin/` maps to admin.html. The trailing slash matters: the console
+	// fetches its API at the RELATIVE path `api/`, so serving it at `/admin`
+	// without the slash would resolve that to `/api/` at the root and 404 —
+	// the same mount-relative mistake the setup console made once already.
+	const wanted =
+		urlPath === "/" ? "/index.html"
+		: urlPath === "/admin" || urlPath === "/admin/" ? "/admin.html"
+		: urlPath;
+	const rel = normalize(wanted).replace(
 		/^(\.\.[/\\])+/,
 		"",
 	);
@@ -261,6 +285,8 @@ async function venueRoute(
 	ledger: Ledger,
 	wd: Withdrawals,
 	liquidityOf: (symbol: string) => ReturnType<typeof assetLiquidity>,
+	feeTable: typeof LIVE_FEES,
+	gasPricing: GasPricing,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 	const bearer = (req.headers.authorization ?? "").startsWith("Bearer ")
@@ -387,6 +413,42 @@ async function venueRoute(
 			return;
 		}
 
+		// QUOTE BEFORE COMMITTING. The ticket needs the exact fee, the exact
+		// net, and the rate it was priced at — computed by the SAME function
+		// that prices the real withdrawal, because a preview computed by
+		// different code is a preview that will eventually disagree.
+		if (p === "/withdrawal-quote" && req.method === "GET") {
+			me();
+			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
+			const def = assetDef(asset);
+			const network = url.searchParams.get("network");
+			const amount = parse(url.searchParams.get("amount") ?? "0", {
+				symbol: asset,
+				decimals: def.decimals,
+			});
+			const q = quoteWithdrawal({
+				asset,
+				network: network === null || network === "" ? undefined : network,
+				amount,
+				table: feeTable,
+				pricing: gasPricing,
+			});
+			json(res, 200, {
+				asset: q.asset,
+				network: q.network ?? null,
+				amount: q.display.amount,
+				fee: q.display.fee,
+				youReceive: q.display.net,
+				minimum: q.display.minimum,
+				gasAsset: q.gasAsset,
+				note: q.display.note,
+				...(q.rateUsed === undefined
+					? {}
+					: { pricedAt: q.rateUsed.price, priceSource: q.rateUsed.source }),
+			}, 0);
+			return;
+		}
+
 		if (p === "/withdrawals" && req.method === "POST") {
 			const who = me();
 			const b = await body(req);
@@ -420,6 +482,8 @@ async function venueRoute(
 				asset: w.asset,
 				network: w.network ?? null,
 				amount: fmt(w.amount, def.decimals),
+				fee: fmt(w.fee, def.decimals),
+				youReceive: fmt(w.net, def.decimals),
 				address: w.address,
 			}, 0);
 			return;
@@ -432,6 +496,8 @@ async function venueRoute(
 				.map((w) => ({
 					id: w.id, asset: w.asset, network: w.network ?? null,
 					amount: fmt(w.amount, assetDef(w.asset).decimals),
+					fee: fmt(w.fee, assetDef(w.asset).decimals),
+					youReceive: fmt(w.net, assetDef(w.asset).decimals),
 					address: w.address, state: w.state,
 					reason: w.reason ?? null, createdAt: w.createdAt,
 				})), 0);
@@ -531,21 +597,87 @@ export function start(): void {
 		},
 		requireAllowlistedAddress: false,
 	};
-	const wd = new Withdrawals(wdb, wledger, wdPolicy);
+	// GAS PRICING. The venue's own book first, the configured policy floor
+	// second, and the WORST of the two is what the fee is computed from. See
+	// gasrates.ts for why disagreement resolves toward safety.
+	const bestAsk = (from: string, to: string): bigint | undefined => {
+		const m = VENUE_MARKETS.find((x) => x.base === from && x.quote === to);
+		if (m === undefined) return undefined;
+		return venue.book(m.symbol, 1).asks[0]?.price;
+	};
+	const pricing: GasPricing = {
+		sources: [new BookRates(bestAsk), new StaticRates(GAS_PRICE_FLOOR)] as RateSource[],
+	};
+
+	/**
+	 * How many withdrawals over each chain are already accepted and unsent.
+	 *
+	 * Each will burn gas before the next one does, so without this a burst of
+	 * withdrawals each pass a check that the batch as a whole fails.
+	 */
+	// Reads `wd`, which is constructed BELOW with this very function. That is a
+	// genuine circularity — the gate needs the withdrawal table and the
+	// withdrawals object owns it — resolved lazily: this closure only runs on a
+	// request, long after the binding is initialised.
+	const pendingOnChain = (asset: string, network: string | undefined): number =>
+		wd.pending().filter(
+			(w) => w.asset === asset && (w.network ?? undefined) === network,
+		).length;
+
+	const gasDeps: GasGateDeps = {
+		ledger: wledger,
+		pendingOnChain,
+		table: LIVE_GAS_COSTS,
+	};
+
+	const wd: Withdrawals = new Withdrawals(wdb, wledger, wdPolicy, {
+		feeTable: LIVE_FEES,
+		pricing,
+		gas: gasDeps,
+		// The live service insists on the gate. Forgetting to wire it must be a
+		// loud refusal, not tokens withdrawing with no gas check at all.
+		requireGasGate: true,
+	});
 	const wdCommitments = commitmentsFrom(wdb);
 	const liquidityOf = (symbol: string) =>
 		assetLiquidity(wledger, symbol, wdCommitments, haltsFrom());
+
+	// ---- admin ------------------------------------------------------------
+	//
+	// Reuses the Blockle account system (no second login) plus an allowlist of
+	// account ids, and requires a fresh authenticator code for anything that
+	// moves money. See adminapi.ts. An EMPTY allowlist means nobody is an
+	// administrator, which is the correct default for an unconfigured box.
+	wdb.exec(ADMIN_SCHEMA);
+	const adminDeps: AdminDeps = {
+		db: wdb,
+		ledger: wledger,
+		auth: new BlockleAuth({
+			base: process.env.ACCOUNTS_BASE ?? "https://blockle.org",
+		}),
+		gas: gasDeps,
+		feeTable: LIVE_FEES,
+		pricing,
+		rates: pricing.sources ?? [],
+		allowlist: allowlistFrom(process.env.EXCHANGE_ADMINS),
+		totpSecrets: totpSecretsFrom(process.env.EXCHANGE_ADMIN_TOTP),
+		houseAccountId: process.env.EXCHANGE_HOUSE_ACCOUNT ?? "house",
+	};
 
 	const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 		void (async () => {
 			try {
 				const url = new URL(req.url ?? "/", `http://${HOST}`);
 
+				if (await adminRoute(req, res, url, adminDeps)) return;
+
 				// TRADING LIVES UNDER /v1 AND IS THE ONLY MUTABLE SURFACE.
 				// Everything under /public stays GET-only, so the split is
 				// visible in the URL rather than buried in a handler.
 				if (url.pathname.startsWith("/v1/")) {
-					await venueRoute(req, res, url, venue, wledger, wd, liquidityOf);
+					await venueRoute(
+						req, res, url, venue, wledger, wd, liquidityOf, LIVE_FEES, pricing,
+					);
 					return;
 				}
 
@@ -575,6 +707,24 @@ export function start(): void {
 						{ ...disclose(DEFAULT_FEES), makerBps: DEFAULT_FEES.makerBps, takerBps: DEFAULT_FEES.takerBps },
 						300,
 					);
+					return;
+				}
+
+				// THE WITHDRAWAL FEE SCHEDULE, published. A venue that will not
+				// say what a withdrawal costs until you are mid-withdrawal is
+				// not being straight with anyone.
+				if (p === "/withdrawal-fees") {
+					json(res, 200, {
+						fees: discloseWithdrawalFees(LIVE_FEES),
+						note:
+							"The fee is withheld from the amount, so you receive the " +
+							"amount minus the fee. It covers the network cost of " +
+							"sending — which for a token is paid in a different asset " +
+							"(ERC-20 USDT costs ETH) — plus our margin. Minimums exist " +
+							"because below them the fee would be most of the " +
+							"withdrawal; the exact fee is always shown before you " +
+							"confirm.",
+					}, 120);
 					return;
 				}
 
@@ -700,6 +850,13 @@ export function start(): void {
 					return;
 				}
 
+				// /admin redirects to /admin/ so the console's relative API
+				// paths resolve under it.
+				if (url.pathname === "/admin") {
+					res.writeHead(302, { Location: "/admin/" });
+					res.end();
+					return;
+				}
 				if (await serveStatic(res, url.pathname)) return;
 				json(res, 404, { error: "not found" });
 			} catch (e) {

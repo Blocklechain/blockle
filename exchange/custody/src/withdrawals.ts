@@ -58,7 +58,15 @@
 
 import type { Database } from "better-sqlite3";
 
-import { assetDef } from "./assets";
+import { assetDef, gasAssetFor } from "./assets";
+import { checkGas, type GasGateDeps } from "./gasgate";
+import {
+	LIVE_FEES,
+	quoteWithdrawal,
+	type FeeTable,
+	type GasPricing,
+	type WithdrawalQuote,
+} from "./withdrawalfees";
 import {
 	AccountKind,
 	InsufficientFunds,
@@ -217,7 +225,12 @@ export interface Withdrawal {
 	readonly asset: string;
 	/** The chain it is routed over; undefined for single-chain assets. */
 	readonly network: string | undefined;
+	/** GROSS — what the customer asked for and what was debited. */
 	readonly amount: bigint;
+	/** Withheld by the venue: gas allowance plus margin. */
+	readonly fee: bigint;
+	/** What goes on chain. `amount - fee`. */
+	readonly net: bigint;
 	readonly address: string;
 	readonly state: State;
 	readonly requestTxId: number;
@@ -241,7 +254,14 @@ CREATE TABLE IF NOT EXISTS withdrawal (
   -- over-report availability — promising the same units to two customers.
   network        TEXT,
   -- base units as TEXT; see ledger.ts on SQLite's 64-bit INTEGER limit
+  -- GROSS: what the customer asked for and what was debited.
   amount         TEXT    NOT NULL,
+  -- The fee withheld, and the amount that actually goes on chain. Stored
+  -- rather than recomputed because the fee depends on a rate observed at
+  -- request time: recomputing it later would produce a different number and
+  -- make the settlement postings fail to balance.
+  fee            TEXT    NOT NULL DEFAULT '0',
+  net            TEXT    NOT NULL DEFAULT '0',
   address        TEXT    NOT NULL,
   state          TEXT    NOT NULL,
   request_tx_id  INTEGER NOT NULL,
@@ -293,6 +313,8 @@ interface Row {
 	asset: string;
 	network: string | null;
 	amount: string;
+	fee: string | null;
+	net: string | null;
 	address: string;
 	state: string;
 	request_tx_id: number;
@@ -330,6 +352,10 @@ export class Withdrawals {
 	private readonly interlock: Interlock;
 	private readonly now: () => number;
 
+	private readonly feeTable: FeeTable;
+	private readonly pricing: GasPricing | undefined;
+	private readonly gas: GasGateDeps | undefined;
+
 	constructor(
 		private readonly db: Database,
 		private readonly ledger: Ledger,
@@ -339,11 +365,70 @@ export class Withdrawals {
 			interlock?: Interlock;
 			/** Clock, injectable so the velocity window is testable. */
 			now?: () => number;
+			/** Fee schedule. Defaults to the live table. */
+			feeTable?: FeeTable;
+			/** Gas pricing for the fee. Defaults to the configured policy floor. */
+			pricing?: GasPricing;
+			/**
+			 * Gas-float gate. When supplied, a token withdrawal is refused unless
+			 * we hold enough of the GAS asset to send it — see gasgate.ts.
+			 *
+			 * Optional only so that tests about other things need not construct a
+			 * gas position. In production it is always wired, and
+			 * `requireGasGate` makes its absence loud rather than silent.
+			 */
+			gas?: GasGateDeps;
+			/**
+			 * Refuse every withdrawal when no gas gate is configured.
+			 *
+			 * The live service sets this. Without it, forgetting to wire the gate
+			 * means tokens withdraw with no gas check at all — a silent
+			 * regression that only shows up as stuck withdrawals.
+			 */
+			requireGasGate?: boolean;
 		} = {},
 	) {
 		db.exec(SCHEMA);
+		this.migrate();
 		this.interlock = opts.interlock ?? OPEN;
 		this.now = opts.now ?? ((): number => Date.now());
+		this.feeTable = opts.feeTable ?? LIVE_FEES;
+		this.pricing = opts.pricing;
+		this.gas = opts.gas;
+		this.requireGasGate = opts.requireGasGate ?? false;
+	}
+
+	private readonly requireGasGate: boolean;
+
+	/**
+	 * Add columns that post-date the first deployment.
+	 *
+	 * `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists,
+	 * so a new column in SCHEMA is invisible to any database that has already
+	 * been created — which, for a venue that is already taking withdrawals,
+	 * means every real one.
+	 */
+	private migrate(): void {
+		const cols = (
+			this.db.prepare(`PRAGMA table_info(withdrawal)`).all() as { name: string }[]
+		).map((c) => c.name);
+		const add = (name: string, def: string): void => {
+			if (!cols.includes(name)) {
+				this.db.exec(`ALTER TABLE withdrawal ADD COLUMN ${name} ${def}`);
+			}
+		};
+		add("network", "TEXT");
+		add("fee", "TEXT NOT NULL DEFAULT '0'");
+		add("net", "TEXT NOT NULL DEFAULT '0'");
+		// Backfill rows that predate fees: nothing was withheld, so the whole
+		// amount was the net. A zero net on a non-zero amount is not a real
+		// state — it can only be an unmigrated row.
+		this.db
+			.prepare(
+				`UPDATE withdrawal SET net = amount
+				  WHERE net = '0' AND fee = '0' AND amount != '0'`,
+			)
+			.run();
 	}
 
 	/**
@@ -462,11 +547,40 @@ export class Withdrawals {
 				throw new WithdrawalError(`${args.asset} is single-chain; do not name a network`);
 			}
 
+			// THE FEE. Quoted here, inside the transaction, so that the rate it
+			// was priced at is the rate that gets stored — and refusing outright
+			// if the chain cannot be priced, because a fee we cannot compute is
+			// gas we cannot prove we covered.
+			const quote = quoteWithdrawal({
+				asset: args.asset,
+				network: args.network,
+				amount: args.amount,
+				table: this.feeTable,
+				...(this.pricing === undefined ? {} : { pricing: this.pricing }),
+			});
+
+			// THE GAS GATE. Before the debit, because a withdrawal we cannot pay
+			// the gas for has to be a refusal and not a stuck payment. See
+			// gasgate.ts.
+			if (this.gas !== undefined) {
+				const g = checkGas({ asset: args.asset, network: args.network }, this.gas);
+				if (!g.ok) throw new WithdrawalError(g.reason);
+			} else if (this.requireGasGate) {
+				throw new WithdrawalError(
+					"no gas gate is configured, so we cannot tell whether this " +
+						"withdrawal can actually be sent — refusing rather than " +
+						"accepting one that may get stuck",
+				);
+			}
+
 			// LIQUIDITY, before the debit. Telling a customer afterwards that
 			// the chain they chose cannot pay is the failure this whole model
 			// exists to avoid.
+			//
+			// Checked against the NET, since that is what leaves custody. The fee
+			// stays with us and never needs to be on the chain.
 			if (args.checkLiquidity !== undefined) {
-				const liq = args.checkLiquidity(args.asset, args.network, args.amount);
+				const liq = args.checkLiquidity(args.asset, args.network, quote.net);
 				if (!liq.ok) throw new WithdrawalError(liq.reason);
 			}
 
@@ -482,11 +596,30 @@ export class Withdrawals {
 
 			// THE DEBIT. Inside the ledger's row lock, so a concurrent request for
 			// the same balance fails here rather than racing through.
+			//
+			// THE FEE IS RECOGNISED HERE, NOT ON CONFIRMATION. The customer is
+			// debited the gross; the net becomes a liability we owe the chain
+			// (INFLIGHT) and the fee becomes ours (FEES). Deferring the fee to
+			// settlement would mean a reversal has to know whether the fee had
+			// been taken yet, and a half-reversed withdrawal is how a customer
+			// gets refunded 100 having been debited 100 and charged 1.
 			const tx = this.ledger.post({
 				reason: Reason.WITHDRAWAL_REQUEST,
 				postings: [
 					{ account: userAcct(args.userId, args.asset), delta: -args.amount },
-					{ account: inflight(args.asset), delta: args.amount },
+					{ account: inflight(args.asset), delta: quote.net },
+					...(quote.fee > 0n
+						? [
+								{
+									account: {
+										kind: AccountKind.FEES,
+										owner: "",
+										asset: args.asset,
+									},
+									delta: quote.fee,
+								},
+							]
+						: []),
 				],
 				idempotencyKey: `wd:req:${args.idempotencyKey}`,
 				actor: args.userId,
@@ -496,15 +629,17 @@ export class Withdrawals {
 			const info = this.db
 				.prepare(
 					`INSERT INTO withdrawal
-					   (user_id, asset, network, amount, address, state, request_tx_id,
-					    idempotency_key, created_at, updated_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					   (user_id, asset, network, amount, fee, net, address, state,
+					    request_tx_id, idempotency_key, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					args.userId,
 					args.asset,
 					args.network ?? null,
 					args.amount.toString(),
+					quote.fee.toString(),
+					quote.net.toString(),
 					args.address,
 					State.REQUESTED,
 					tx.id,
@@ -703,23 +838,43 @@ export class Withdrawals {
 				throw new WithdrawalError("a network fee cannot be negative");
 			}
 
+			// THE NET IS WHAT WENT ON CHAIN. The fee never left — it was moved to
+			// FEES at request time and stays there.
+			const custodyId =
+				w.network === undefined ? w.asset : `${w.asset}.${w.network}`;
+			// THE EXTERNAL LEGS NAME THE CHAIN TOO. Both sides of an on-chain
+			// movement happened on a specific chain, and the ledger refuses an
+			// unqualified multi-network custody or external holding — see
+			// assets.ts. The first version of this used the bare symbol and
+			// every token withdrawal failed to settle.
 			const postings = [
-				{ account: inflight(w.asset), delta: -w.amount },
-				{ account: externalAcct(w.asset), delta: w.amount },
-				{ account: custodyAcct(w.asset), delta: -w.amount },
-				{ account: externalAcct(w.asset), delta: w.amount },
+				{ account: inflight(w.asset), delta: -w.net },
+				{ account: externalAcct(custodyId), delta: w.net },
+				{ account: custodyAcct(custodyId), delta: -w.net },
+				{ account: externalAcct(custodyId), delta: w.net },
 			];
 
 			// JOURNAL THE NETWORK FEE. Omitting it is the most common cause of a
 			// persistent, slowly-growing reconciliation shortfall: the chain took
-			// it from custody and the books never recorded it. The venue absorbs
-			// it out of fee revenue.
+			// it from custody and the books never recorded it.
+			//
+			// BOOKED IN THE GAS ASSET, which for a token is NOT the asset being
+			// sent. Sending USDT over Ethereum burns ETH, so debiting USDT
+			// custody by the gas would invent a USDT shortfall that no on-chain
+			// event matches — and a shortfall halts withdrawals. The venue
+			// absorbs the cost out of its own holding of the gas asset: the FEES
+			// balance, which is what the gas gate checks before accepting the
+			// withdrawal in the first place.
 			if (networkFee > 0n) {
+				const gasAsset = gasAssetFor(w.asset, w.network);
 				postings.push(
-					{ account: custodyAcct(w.asset), delta: -networkFee },
-					{ account: externalAcct(w.asset), delta: networkFee },
-					{ account: { kind: AccountKind.FEES, owner: "", asset: w.asset }, delta: -networkFee },
-					{ account: externalAcct(w.asset), delta: networkFee },
+					{ account: custodyAcct(gasAsset), delta: -networkFee },
+					{ account: externalAcct(gasAsset), delta: networkFee },
+					{
+						account: { kind: AccountKind.FEES, owner: "", asset: gasAsset },
+						delta: -networkFee,
+					},
+					{ account: externalAcct(gasAsset), delta: networkFee },
 				);
 			}
 
@@ -767,10 +922,26 @@ export class Withdrawals {
 			// is refused before any money moves.
 			this.transition(id, w.state, to, actor, reason);
 
+			// THE WHOLE THING COMES BACK, FEE INCLUDED. Nothing was sent, so there
+			// is no gas to recover and no service to charge for. Keeping the fee
+			// on a failed withdrawal would be charging a customer for a payment
+			// they never received.
 			const tx = this.ledger.post({
 				reason: Reason.WITHDRAWAL_REVERSE,
 				postings: [
-					{ account: inflight(w.asset), delta: -w.amount },
+					{ account: inflight(w.asset), delta: -w.net },
+					...(w.fee > 0n
+						? [
+								{
+									account: {
+										kind: AccountKind.FEES,
+										owner: "",
+										asset: w.asset,
+									},
+									delta: -w.fee,
+								},
+							]
+						: []),
 					{ account: userAcct(w.userId, w.asset), delta: w.amount },
 				],
 				// Keyed on the withdrawal, so a second reversal is a replay rather
@@ -894,6 +1065,10 @@ function hydrate(r: Row): Withdrawal {
 		asset: r.asset,
 		network: r.network ?? undefined,
 		amount: BigInt(r.amount),
+		// Rows written before fees existed have no fee; treating that as zero is
+		// correct — nothing was withheld from them.
+		fee: BigInt(r.fee ?? "0"),
+		net: BigInt(r.net ?? r.amount),
 		address: r.address,
 		state: r.state as State,
 		requestTxId: r.request_tx_id,
