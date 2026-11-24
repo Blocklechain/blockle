@@ -1,6 +1,6 @@
 [package]
 name = "blockle-wasm"
-version = "0.7.8"
+version = "0.8.0"
 edition = "2021"
 description = "WASM bindings for Blockle post-quantum (ML-DSA-44) keys, addresses, signing and transaction building — used by the browser-extension wallet."
 

@@ -144,7 +144,22 @@ pub struct NodeConfig {
 }
 
 struct SharedState {
-    chain: Chain,
+    /// BEHIND AN Arc ON PURPOSE.
+    ///
+    /// `snapshot()` is called on every RPC method, every explorer request and
+    /// every stratum job across all 18 pools. When this was a plain `Chain`,
+    /// each of those deep-copied the entire chain — 441 MB at 75k blocks — and
+    /// then dropped it. Hundreds of MB allocated and freed per request, spread
+    /// across ~113 connection threads, is the exact workload glibc malloc
+    /// handles worst: every thread claims its own arena, each arena grows a
+    /// 64 MB heap to fit one transient, and a non-main arena heap is never
+    /// returned to the OS. The mainnet node reached 24.8 GB RSS holding a
+    /// 441 MB chain, 17.3 GB of it sitting in 236 empty 64 MB arena heaps.
+    ///
+    /// With an Arc, readers clone a pointer. The chain is copied once per
+    /// block connect (copy-on-write via `Arc::make_mut`) — every 600 s instead
+    /// of every request.
+    chain: Arc<Chain>,
     mempool: Vec<Transaction>,
 }
 
@@ -201,7 +216,7 @@ impl Node {
         let known: HashSet<String> = seeds.clone();
         Arc::new(Node {
             config,
-            state: Mutex::new(SharedState { chain, mempool }),
+            state: Mutex::new(SharedState { chain: Arc::new(chain), mempool }),
             peers: Mutex::new(HashMap::new()),
             syncs: Mutex::new(HashMap::new()),
             known_addrs: Mutex::new(known),
@@ -244,9 +259,13 @@ impl Node {
     }
 
     /// Snapshot (chain, mempool) for template building.
-    pub fn snapshot(&self) -> (Chain, Vec<Transaction>) {
+    /// A consistent, immutable view of the chain plus the current mempool.
+    ///
+    /// O(1) in the chain: the Arc is cloned, not the chain. Callers keep using
+    /// it as a `Chain` through `Deref`. See `SharedState::chain`.
+    pub fn snapshot(&self) -> (Arc<Chain>, Vec<Transaction>) {
         let st = self.state.lock().unwrap();
-        (st.chain.clone(), st.mempool.clone())
+        (Arc::clone(&st.chain), st.mempool.clone())
     }
 
     /// Build an unsolved block template for external miners.
@@ -772,8 +791,9 @@ impl Node {
         // blocks onto the existing validated chain is byte-for-byte identical.
         if start == st.chain.blocks.len() {
             let old_height = st.chain.height();
+            let chain = Arc::make_mut(&mut st.chain);
             for b in blocks {
-                if let Err(e) = st.chain.connect_block(b.clone()) {
+                if let Err(e) = chain.connect_block(b.clone()) {
                     println!("[p2p] peer {peer_id} block failed validation during sync: {e}");
                     break; // keep what connected; the next heartbeat fetches the rest
                 }
@@ -817,7 +837,7 @@ impl Node {
             return;
         }
         let old_height = st.chain.height();
-        st.chain = candidate;
+        st.chain = Arc::new(candidate);
         let _ = storage::save_chain(&self.config.datadir, &st.chain.blocks);
         self.prune_mempool(&mut st);
         self.tip_version.fetch_add(1, Ordering::SeqCst);
@@ -848,7 +868,7 @@ impl Node {
             }
             return false;
         }
-        match st.chain.connect_block(block.clone()) {
+        match Arc::make_mut(&mut st.chain).connect_block(block.clone()) {
             Ok(()) => {
                 let height = st.chain.height().unwrap();
                 let _ = storage::append_block(&self.config.datadir, &block);

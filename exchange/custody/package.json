@@ -1,6 +1,6 @@
 {
   "name": "@blockle/exchange-custody",
-  "version": "0.7.8",
+  "version": "0.8.0",
   "private": true,
   "description": "Custody + double-entry ledger service for the Blockle exchange. Holds no key material: BitGo holds key shares and enforces the withdrawal approval policy. Testnet-only until mainnetEnabled + legalReview.completed.",
   "license": "MIT",

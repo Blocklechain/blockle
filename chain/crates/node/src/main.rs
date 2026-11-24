@@ -518,7 +518,57 @@ enum ContractCmd {
 
 use blockle_node::walletfile::WalletFile;
 
+
+// ---------------------------------------------------------------------------
+// Bound the allocator before anything else runs.
+//
+// This node is thread-per-connection: 18 stratum pools, the aux-work HTTP
+// server, the explorer and every P2P peer get their own thread, and the
+// mainnet node sits at ~113 of them. glibc malloc gives each thread that
+// contends for the main arena its own arena instead (up to 8 x ncores, so 80
+// here), grows each one in 64 MB heaps, and NEVER returns a non-main arena
+// heap to the OS — only the top of the main heap is ever trimmed.
+//
+// The result was measured, not guessed: the mainnet node held 24.8 GB RSS for
+// a 441 MB chain, with 17.3 GB of it resident in 236 empty 64 MB arena heaps.
+// The transients that grew them are gone (see `SharedState::chain`), but the
+// shape that turns transients into permanent RSS is a property of the
+// allocator and the thread count, so it is capped here rather than left to
+// the next piece of code that allocates something large.
+//
+// Two arenas keep almost all of the lock-contention benefit — the pathology is
+// dozens of arenas, not two — and pinning the mmap threshold stops glibc from
+// raising it dynamically, so genuinely large allocations go to mmap and are
+// handed back with munmap on free instead of being cached in an arena forever.
+//
+// Declared directly rather than pulling in the `libc` crate for three ints.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn bound_allocator() {
+    // <malloc.h>: these parameter numbers are glibc ABI.
+    const M_TRIM_THRESHOLD: i32 = -1;
+    const M_MMAP_THRESHOLD: i32 = -3;
+    const M_ARENA_MAX: i32 = -8;
+
+    unsafe extern "C" {
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+
+    // SAFETY: mallopt only sets allocator tunables and is called here before
+    // any thread is spawned, so there is no concurrent allocation to race.
+    unsafe {
+        mallopt(M_ARENA_MAX, 2);
+        mallopt(M_MMAP_THRESHOLD, 1 << 20); // 1 MiB, pinned (disables auto-raise)
+        mallopt(M_TRIM_THRESHOLD, 4 << 20); // return the main heap top eagerly
+    }
+}
+
+/// Other platforms: musl, macOS and Windows do not have glibc's per-thread
+/// arena behaviour, so there is nothing to cap.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn bound_allocator() {}
+
 fn main() -> Result<()> {
+    bound_allocator();
     let cli = Cli::parse();
     let params = ChainParams::by_name(&cli.network)
         .ok_or_else(|| anyhow!("unknown network {:?} (mainnet or regtest)", cli.network))?;

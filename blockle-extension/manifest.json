@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Blockle Wallet",
-  "version": "0.7.8",
+  "version": "0.8.0",
   "description": "Post-quantum BLOCK + multi-chain wallet (ETH/Base/BTC/LTC/DOGE) with a configurable in-wallet AI trading agent. Only BLOCK is post-quantum; other chains use ECDSA.",
   "action": {
     "default_popup": "popup.html",

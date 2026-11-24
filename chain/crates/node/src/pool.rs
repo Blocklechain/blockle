@@ -103,7 +103,6 @@ pub fn spawn_explorer_writer(node: Arc<Node>, path: PathBuf) {
 /// - `submitauxblock [hash, auxpow]` → `true` once the parent proof is
 ///   attached and the block connects.
 pub fn spawn_aux_http(node: Arc<Node>, listen: String) {
-    spawn_snapshot_refresher(node.clone());
     let pending: Arc<Mutex<HashMap<String, (Block, String, u64)>>> = Arc::new(Mutex::new(HashMap::new()));
     thread::spawn(move || {
         let listener = match TcpListener::bind(&listen) {
@@ -773,42 +772,19 @@ fn block_summary(chain: &Chain, height: usize, b: &Block) -> Value {
     })
 }
 
-/// Explorer requests NEVER clone the chain. snapshot() deep-clones the whole
-/// chain (multi-GB at 36k blocks of ~13 KB post-quantum txs, 10s+ of memcpy)
-/// under the consensus lock — doing that on the request path, even shared
-/// behind a mutex, serialized every GET behind an endless clone cycle and hung
-/// the explorer. Instead a BACKGROUND thread refreshes one Arc'd snapshot
-/// every 15 s and requests just read the latest. 15 s of staleness is
-/// invisible on a 600 s block time.
-static EXPLORER_SNAP: std::sync::OnceLock<std::sync::RwLock<Option<Arc<(Chain, Vec<Transaction>)>>>> =
-    std::sync::OnceLock::new();
-
-fn snap_cell() -> &'static std::sync::RwLock<Option<Arc<(Chain, Vec<Transaction>)>>> {
-    EXPLORER_SNAP.get_or_init(|| std::sync::RwLock::new(None))
-}
-
-/// Spawned once from spawn_aux_http: keeps the shared explorer snapshot fresh.
-fn spawn_snapshot_refresher(node: Arc<Node>) {
-    thread::spawn(move || loop {
-        let snap = Arc::new(node.snapshot());
-        *snap_cell().write().unwrap() = Some(snap);
-        thread::sleep(Duration::from_secs(15));
-    });
-}
-
-fn snapshot_shared(node: &Arc<Node>) -> Arc<(Chain, Vec<Transaction>)> {
-    if let Some(s) = snap_cell().read().unwrap().clone() {
-        return s;
-    }
-    // Startup only (refresher hasn't published yet): take one directly.
-    let s = Arc::new(node.snapshot());
-    *snap_cell().write().unwrap() = Some(s.clone());
-    s
-}
-
+/// Explorer requests do not clone the chain, and no longer need a cache to
+/// avoid it.
+///
+/// `Node::snapshot()` used to deep-copy the whole chain, so the explorer kept
+/// a background thread that refreshed one shared copy every 15 s and served
+/// every request from it — accepting 15 s of staleness to keep a multi-hundred-MB
+/// memcpy off the request path. The chain now lives behind an Arc, so a
+/// snapshot is a pointer clone: the cache bought nothing but staleness, and
+/// the refresher churned a full chain copy every 15 s for nobody. Both are
+/// gone, and the explorer reads the live tip.
 fn explorer_get(node: &Arc<Node>, path: &str) -> (&'static str, String) {
-    let snap = snapshot_shared(node);
-    let (chain, mempool) = (&snap.0, &snap.1);
+    let (chain, mempool) = node.snapshot();
+    let (chain, mempool) = (&chain, &mempool);
     let ok = |v: Value| ("200 OK", v.to_string());
     let err404 = |m: &str| ("404 Not Found", json!({"error": m}).to_string());
     let (route, query) = path.split_once('?').unwrap_or((path, ""));
