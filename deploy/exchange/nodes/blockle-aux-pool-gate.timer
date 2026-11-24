@@ -1,0 +1,10 @@
+[Unit]
+Description=Check every 10 minutes whether an aux pool's parent chain is ready
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

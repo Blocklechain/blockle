@@ -204,10 +204,18 @@ export const LISTED: readonly ListedCoin[] = [
 		slug: "pepecoin-pep",
 		status: "planned",
 		custody: "bitcoin-rpc",
-		decimals: undefined,
+		// Confirmed against our own pepecoind, not read off a site: every
+		// output amount in a sampled block encodes exactly as an 8-byte
+		// little-endian integer at 10^8 in the bytes the node serialized, and
+		// no other scale matches.
+		decimals: 8,
 		confirmations: undefined,
 		homepage: "https://pepecoin.org/",
-		algorithm: f("Scrypt", "the project's documentation"),
+		// Measured, not quoted. The block ID is sha256d of the header (as it is
+		// for every Dogecoin-lineage chain) while the PROOF OF WORK is scrypt —
+		// confirmed by checking which hash lands under the block's own
+		// difficulty target. That is what makes it mergeable with BLOCK.
+		algorithm: f("Scrypt", "measured against our own node: scrypt(header) satisfies the block's target"),
 		blockTime: undefined,
 		pitch:
 			"Scrypt, so the same hardware that mines Litecoin and Dogecoin mines " +
@@ -252,10 +260,17 @@ export const LISTED: readonly ListedCoin[] = [
 		slug: "dingocoin-dingo",
 		status: "planned",
 		custody: "bitcoin-rpc",
-		decimals: undefined,
+		// Confirmed against our own dingocoind by the same method as PEP.
+		decimals: 8,
 		confirmations: undefined,
 		homepage: "https://dingocoin.com/",
-		algorithm: f("Scrypt", "the project's own repository"),
+		// Measured. Dingocoin is itself AuxPoW-capable, so a merge-mined block
+		// carries its work in an embedded parent header and the coin's own
+		// header hashes to nothing under target — this chain measured as scrypt
+		// at one height and as "unknown" a few thousand blocks later purely by
+		// how the tip happened to be mined. Sampling a range of blocks resolves
+		// it to scrypt, which is what makes it mergeable with BLOCK.
+		algorithm: f("Scrypt", "measured against our own node across a range of blocks"),
 		blockTime: f("1 minute", "the project's own repository"),
 		pitch:
 			"A one-minute Scrypt chain with per-block difficulty retargeting, so " +

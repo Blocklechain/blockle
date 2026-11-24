@@ -1,0 +1,17 @@
+# Starts any configured aux pool whose parent coin node has finished syncing.
+#
+# A pool cannot build a block template while its parent is in initial block
+# download, so the pools are created stopped. Rather than let systemd
+# restart-loop them in front of miners for the hours an IBD takes — or rely on
+# someone remembering to come back — this runs on a timer and starts each pool
+# the moment its chain reports initialblockdownload=false.
+#
+# It is idempotent: already-running pools are skipped, and a pool whose parent
+# is still syncing is simply reported and left alone.
+[Unit]
+Description=Start Blockle aux pools whose parent chain has finished syncing
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/blockle/deploy/exchange/nodes/aux-pool.sh gate
