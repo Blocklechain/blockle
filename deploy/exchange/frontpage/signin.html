@@ -466,6 +466,73 @@
     }
   })();
 
+  /*
+   * REMEMBER WHICH ACCOUNTS USE 2FA, so the code field is there BEFORE the
+   * first submit.
+   *
+   * Without this the page had to post the password alone to discover that 2FA
+   * was on — a throwaway request that the server counted as a failed attempt.
+   * Every sign-in therefore burned one against a lockout threshold of four, so
+   * two typos and the exponential backoff engaged. The server no longer counts
+   * an absent code, and this removes the wasted round trip as well: after the
+   * first time, a 2FA sign-in is one request.
+   *
+   * Local to the browser and nothing more than "this address uses 2FA" — the
+   * same thing the next sign-in reveals anyway. Cleared if a later sign-in
+   * succeeds without a code, so disabling 2FA does not leave a stale prompt.
+   */
+  var TFA_KEY = "blockle.ex.2fa";
+  function knownTfa() {
+    try {
+      return JSON.parse(localStorage.getItem(TFA_KEY) || "[]");
+    } catch (e) { return []; }
+  }
+  function rememberTfa(email, on) {
+    try {
+      var list = knownTfa().filter(function (e) { return e !== email; });
+      if (on) list.push(email);
+      localStorage.setItem(TFA_KEY, JSON.stringify(list.slice(-8)));
+    } catch (e) { /* storage denied: the probe path still works */ }
+  }
+  function maybeRevealTfa() {
+    var email = $("email").value.trim().toLowerCase();
+    if (email !== "" && knownTfa().indexOf(email) >= 0) {
+      $("otp-wrap").classList.remove("hidden");
+    }
+  }
+  $("email").addEventListener("change", maybeRevealTfa);
+  $("email").addEventListener("blur", maybeRevealTfa);
+  // Covers the browser autofilling a remembered address before any event.
+  setTimeout(maybeRevealTfa, 150);
+
+  /*
+   * A LOCKOUT COUNTS DOWN INSTEAD OF INVITING ANOTHER ATTEMPT.
+   *
+   * The server now reports `retryAfter`. Leaving the button live during a
+   * lockout is actively harmful: each attempt doubles the next delay, so a
+   * person hammering it digs themselves in.
+   */
+  var cooldown = null;
+  function holdFor(seconds) {
+    var btn = $("go");
+    var left = seconds;
+    clearInterval(cooldown);
+    btn.disabled = true;
+    var tick = function () {
+      if (left <= 0) {
+        clearInterval(cooldown);
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+        return;
+      }
+      btn.textContent =
+        "Wait " + (left < 60 ? left + "s" : Math.ceil(left / 60) + " min");
+      left--;
+    };
+    tick();
+    cooldown = setInterval(tick, 1000);
+  }
+
   function show(text, kind) {
     var m = $("msg");
     m.className = "msg " + (kind || "");
@@ -522,6 +589,9 @@
       $("password").value = "";
 
       if (res.ok) {
+        // Remember whether this account needed a code, so the next sign-in
+        // asks up front rather than probing.
+        rememberTfa(body.email.toLowerCase(), otp !== "");
         show("Signed in. Taking you through…", "ok");
         // THE ONE NON-AMBIENT ANIMATION: converge, then burst, then hand over.
         if (!reduced) { mode = "assembling"; modeAt = performance.now(); }
@@ -545,6 +615,7 @@
       // the service returns rather than by pattern-matching prose, which
       // changes.
       if (code === "2fa" || code === "2fa_setup_required" || res.d.twoFactorRequired) {
+        rememberTfa(body.email.toLowerCase(), true);
         $("otp-wrap").classList.remove("hidden");
         $("otp").focus();
         $("otp").select();
@@ -557,6 +628,13 @@
               "works here too.",
           otp === "" ? "" : "bad"
         );
+      } else if (res.status === 429) {
+        // The server tells us how long. Hold the button for exactly that, so
+        // the next press cannot make the backoff worse.
+        var wait = Number(res.d.retryAfter) || 30;
+        show(err || "Too many attempts.", "bad");
+        holdFor(wait);
+        return;
       } else {
         // THE SERVICE'S OWN WORDING. Guessing between "wrong password" and "no
         // such account" would make this form an account-enumeration oracle,
@@ -570,8 +648,12 @@
         "bad"
       );
     }).then(function () {
-      btn.disabled = false;
-      btn.textContent = "Sign in";
+      // A cooldown owns the button while it runs; re-enabling here would undo
+      // the hold the moment it was set.
+      if ($("go").textContent.indexOf("Wait") !== 0) {
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
     });
   });
 

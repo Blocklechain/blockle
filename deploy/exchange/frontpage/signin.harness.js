@@ -83,6 +83,17 @@ function run(responses, opts = {}) {
     requestAnimationFrame: () => 0,
     setTimeout: (fn) => { fn(); return 0; },
     crypto: { getRandomValues: (a) => a },
+    localStorage: (() => {
+      const m = new Map();
+      return {
+        getItem: (k) => (m.has(k) ? m.get(k) : null),
+        setItem: (k, v) => m.set(k, String(v)),
+        removeItem: (k) => m.delete(k),
+        _dump: () => Object.fromEntries(m),
+      };
+    })(),
+    setInterval: () => 0,
+    clearInterval: () => {},
     fetch: (url, init) => {
       if (String(url).includes('/v1/me')) return Promise.resolve({ ok: false, status: 401 });
       if (String(url).includes('public/status')) {
@@ -93,12 +104,17 @@ function run(responses, opts = {}) {
       return Promise.resolve({ ok: r.status === 200, status: r.status, json: () => Promise.resolve(r.body) });
     },
   };
+  if (opts.store) {
+    for (const [k, v] of Object.entries(opts.store)) sandbox.localStorage.setItem(k, v);
+  }
   vm.createContext(sandbox);
   vm.runInContext(js, sandbox);
   return new Promise((res) => {
     get('form').onsubmit({ preventDefault(){}, target: { querySelector: () => get('btn'),
       querySelectorAll: () => [] } });
-    setImmediate(() => setImmediate(() => res({ nodes, sent, assigned, replaced })));
+    setImmediate(() => setImmediate(() => res({
+      nodes, sent, assigned, replaced, store: sandbox.localStorage._dump(),
+    })));
   });
 }
 
@@ -160,5 +176,43 @@ function run(responses, opts = {}) {
   const rl = await run([{ status: 429, body: { error: 'Too many attempts. Try again later.' } }]);
   assert.match(rl.nodes.msg.textContent, /Too many attempts/);
 
-  console.log('signin: 7 flows correct — totp field, message precedence, redirect, failures');
+  // 8. THE PROBE IS ELIMINATED FOR A REMEMBERED ACCOUNT. This is the fix for
+  //    "too quick to say too many attempts": a throwaway password-only request
+  //    used to be needed to discover 2FA, and the server counted it.
+  const remembered = await run(
+    [{ status: 200, body: { ok: true, csrf: 'c', user: { id: 'u1' } } }],
+    { otp: '654321', store: { 'blockle.ex.2fa': JSON.stringify(['a@b.com']) } },
+  );
+  assert.equal(remembered.sent.length, 1, 'one request, no probe');
+  assert.equal(remembered.sent[0].totp, '654321');
+  assert.ok(!remembered.nodes['otp-wrap'].classList.contains('hidden'),
+    'the code field was revealed before submitting');
+
+  // 9. A 2FA challenge is remembered, so the NEXT sign-in skips the probe.
+  const learn = await run(
+    [{ status: 401, body: { error: '2fa', message: 'Enter your 6-digit code.' } }],
+  );
+  assert.match(learn.store['blockle.ex.2fa'] || '', /a@b\.com/,
+    'the address was remembered as needing 2FA');
+
+  // 10. A successful sign-in with NO code FORGETS, so turning 2FA off does not
+  //     leave a stale prompt forever.
+  const forget = await run(
+    [{ status: 200, body: { ok: true, csrf: 'c', user: { id: 'u1' } } }],
+    { store: { 'blockle.ex.2fa': JSON.stringify(['a@b.com']) } },
+  );
+  assert.ok(!(forget.store['blockle.ex.2fa'] || '').includes('a@b.com'),
+    'forgotten once a code was not needed');
+
+  // 11. A LOCKOUT HOLDS THE BUTTON for exactly as long as the server said.
+  //     Leaving it live is harmful: each attempt doubles the next delay.
+  const locked = await run([{ status: 429, body: {
+    error: 'Too many attempts.', message: 'Too many attempts. Try again in 2 minutes.',
+    retryAfter: 120,
+  } }]);
+  assert.match(locked.nodes.msg.textContent, /Try again in 2 minutes/);
+  assert.equal(locked.nodes.go.disabled, true, 'the button is held');
+  assert.match(locked.nodes.go.textContent, /^Wait/);
+
+  console.log('signin: 11 flows correct — totp field, message precedence, redirect, failures');
 })().catch((e) => { console.error('FAILED:', e.message); process.exit(1); });
