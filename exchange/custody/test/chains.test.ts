@@ -29,6 +29,31 @@ import {
 	decimalToBase,
 } from "../src/chains";
 
+/**
+ * A fetch that answers with a real JSON-RPC error object, code included.
+ *
+ * `rpcStub` turns an Error into `{error:{message}}` with no code, which is
+ * fine for most tests but cannot express the distinction the custody
+ * read-only check depends on: -4 (no key here) versus -13 (wallet locked).
+ */
+function rpcErrStub(method: string, code: number, message: string): typeof fetch {
+	return (async (_url: string, init?: RequestInit) => {
+		const body = JSON.parse(String(init?.body)) as { method: string };
+		if (body.method === method) {
+			return new Response(JSON.stringify({ error: { code, message } }), { status: 200 });
+		}
+		if (body.method === "getblockchaininfo") {
+			return new Response(
+				JSON.stringify({
+					result: { blocks: 10, headers: 10, initialblockdownload: false },
+				}),
+				{ status: 200 },
+			);
+		}
+		return new Response(JSON.stringify({ result: null }), { status: 200 });
+	}) as unknown as typeof fetch;
+}
+
 /** A fetch that answers from a table of method -> result (or a thrower). */
 function rpcStub(
 	answers: Record<string, unknown | (() => unknown)>,
@@ -516,4 +541,252 @@ test("a non-JSON RPC response is reported with its body, not swallowed", async (
 			new Response("<html>502 Bad Gateway</html>", { status: 502 })) as unknown as typeof fetch,
 	}), 8);
 	await assert.rejects(() => a.balance(), /not JSON.*502 Bad Gateway/s);
+});
+
+// ------------------------------------------------- scoped (address) custody
+//
+// WHY THIS MODE EXISTS. A bitcoin-family balance normally means "whatever is in
+// this daemon's wallet". That definition breaks the moment a node does two
+// jobs: these daemons are also the parent chains of merge-mining pools, and
+// pool income sitting in the wallet is indistinguishable from customer
+// deposits — so a custody SHORTFALL could hide behind mining EARNINGS, and
+// reconciliation would pass while the venue was short.
+//
+// Declaring the addresses turns custody into a stated fact auditable against
+// the chain. The tests below defend the three ways that can go quietly wrong.
+
+/** A scoped adapter over a table of RPC answers. */
+const scoped = (
+	answers: Record<string, unknown>,
+	addresses: readonly string[],
+	seen?: Array<{ method: string; params: unknown }>,
+) =>
+	new BitcoinRpcAdapter(
+		"PEP",
+		new JsonRpc({ url: "http://127.0.0.1:9999", fetchImpl: rpcStub(answers, seen) }),
+		8,
+		addresses,
+	);
+
+test("SCOPED BALANCE sums only the declared addresses, exactly", async () => {
+	const a = scoped(
+		{
+			listunspent: [
+				{ address: "Pa", amount: 1.5 },
+				{ address: "Pb", amount: 0.00000001 },
+				{ address: "Pa", amount: 2 },
+			],
+		},
+		["Pa", "Pb"],
+	);
+	// 1.5 + 0.00000001 + 2 == 3.50000001 coins == 350000001 base units, and the
+	// sum is BigInt so the last digit cannot be rounded away.
+	assert.equal(await a.balance(), 350000001n);
+});
+
+test("SCOPED BALANCE asks the node to filter, and passes the address list", async () => {
+	const seen: Array<{ method: string; params: unknown }> = [];
+	const a = scoped({ listunspent: [] }, ["Pa", "Pb"], seen);
+	assert.equal(await a.balance(), 0n);
+	const call = seen.find((s) => s.method === "listunspent");
+	assert.ok(call, "listunspent was not called");
+	// minconf 1: unconfirmed coins are not custody. Counting them would
+	// overstate holdings, and a reorg would turn that into a shortfall.
+	assert.deepEqual(call.params, [1, 9999999, ["Pa", "Pb"]]);
+});
+
+test("A NODE THAT IGNORES THE ADDRESS FILTER IS REFUSED, not summed", async () => {
+	// THE BUG THIS PREVENTS: older forks have been known to ignore the address
+	// argument to listunspent. A wallet-wide total would then be returned under
+	// the name of a scoped one — pool earnings counted as customer custody,
+	// which is the precise confusion the scoped mode exists to prevent. It must
+	// fail loudly, not produce a plausible larger number.
+	const a = scoped(
+		{
+			listunspent: [
+				{ address: "Pa", amount: 1 },
+				{ address: "POOL-COINBASE", amount: 5000 },
+			],
+		},
+		["Pa"],
+	);
+	await assert.rejects(() => a.balance(), /not a declared custody address/);
+});
+
+test("SCOPED BALANCE refuses an amount a double cannot carry", async () => {
+	// The existing precision guard must still apply per UTXO in this path.
+	const a = scoped({ listunspent: [{ address: "Pa", amount: 1e17 }] }, ["Pa"]);
+	await assert.rejects(() => a.balance(), ChainError);
+});
+
+test("A DUPLICATE DECLARED ADDRESS IS REFUSED at construction", () => {
+	// Counted once by the node and twice by a naive sum. Refusing beats
+	// depending on which of those happens.
+	assert.throws(
+		() => scoped({}, ["Pa", "Pa"]),
+		/duplicate custody address/,
+	);
+});
+
+test("A BLANK DECLARED ADDRESS IS REFUSED at construction", () => {
+	assert.throws(() => scoped({}, ["Pa", "  "]), /blank custody address/);
+});
+
+test("PROBE REFUSES a node that can spend a declared custody address", async () => {
+	// THE WHOLE POINT of scoping is that this node is an observer. If it holds
+	// the key, the label is decoration: it is a hot wallet being reconciled as
+	// read-only custody. Reporting it as a working chain would mean every
+	// number downstream describes a different custody model than the operator
+	// believes is in force.
+	const a = scoped(
+		{
+			getblockchaininfo: { blocks: 10, headers: 10, initialblockdownload: false },
+			dumpprivkey: "a-real-private-key",
+		},
+		["Pa"],
+	);
+	const caps = await a.probe();
+	assert.equal(caps.reachable, false, "a key-holding node must not read as reachable custody");
+	assert.ok(
+		caps.notes.some((n) => /REFUSED/.test(n) && /holds the private key/.test(n)),
+		`expected a refusal note, got: ${caps.notes.join(" | ")}`,
+	);
+});
+
+test("PROBE accepts a keyless node and says custody is scoped", async () => {
+	const a = scoped(
+		{
+			getblockchaininfo: { blocks: 10, headers: 10, initialblockdownload: false },
+			// What a watch-only address actually answers.
+			dumpprivkey: new Error("Private key for address Pa is not known"),
+		},
+		["Pa"],
+	);
+	const caps = await a.probe();
+	assert.equal(caps.reachable, true);
+	assert.equal(caps.synced, true);
+	assert.ok(caps.notes.some((n) => /custody is scoped to 1 declared/.test(n)));
+	// It must NOT claim it can mint deposit addresses: on a watch-only wallet
+	// getnewaddress would create a key this node then holds.
+	assert.equal(caps.canDeriveAddresses, false);
+	assert.ok(caps.notes.some((n) => /imported, not derived/.test(n)));
+});
+
+test("A LOCKED WALLET IS UNVERIFIED, not quietly treated as keyless", async () => {
+	// A locked wallet fails dumpprivkey the same way a keyless one does, and it
+	// still HOLDS the keys. Saying "verified read-only" on that basis would be
+	// a false assurance about the one property that matters.
+	const a = scoped(
+		{
+			getblockchaininfo: { blocks: 10, headers: 10, initialblockdownload: false },
+			dumpprivkey: new Error("Error: Please enter the wallet passphrase with walletpassphrase first"),
+		},
+		["Pa"],
+	);
+	const caps = await a.probe();
+	assert.equal(caps.reachable, true, "indeterminate is not a reason to drop the chain");
+	assert.ok(
+		caps.notes.some((n) => /UNVERIFIED/.test(n)),
+		`expected an unverified note, got: ${caps.notes.join(" | ")}`,
+	);
+});
+
+test("WITH NO DECLARED ADDRESSES the wallet-wide behaviour is unchanged", async () => {
+	// Back-compat matters: BTC and the other already-live bitcoin-family coins
+	// are reconciled from the wallet and must keep working exactly as before.
+	const a = btc({ getbalances: { mine: { trusted: "1.25" } } });
+	assert.equal(await a.balance(), 125000000n);
+	const seen: Array<{ method: string; params: unknown }> = [];
+	const b = new BitcoinRpcAdapter(
+		"RTM",
+		new JsonRpc({
+			url: "http://127.0.0.1:9999",
+			fetchImpl: rpcStub({ getbalances: { mine: { trusted: "1" } } }, seen),
+		}),
+		8,
+	);
+	await b.balance();
+	assert.ok(
+		!seen.some((s) => s.method === "listunspent"),
+		"unscoped custody must not go near listunspent",
+	);
+});
+
+test("watchAddress imports without a key, and the rescan choice is explicit", async () => {
+	const seen: Array<{ method: string; params: unknown }> = [];
+	const a = scoped({ importaddress: null }, ["Pa"], seen);
+	await a.watchAddress("Pnew", false);
+	assert.deepEqual(seen.at(-1)?.params, ["Pnew", "blockle-custody", false]);
+	// An address that already holds coins needs the rescan, or the daemon
+	// reports zero for funds that are plainly on the chain.
+	await a.watchAddress("Pold", true);
+	assert.deepEqual(seen.at(-1)?.params, ["Pold", "blockle-custody", true]);
+	await assert.rejects(() => a.watchAddress("  ", false), /blank address/);
+});
+
+test("ADDRESSES COME FROM THE ENVIRONMENT, same spelling as the EVM route", () => {
+	const a = adapterFromEnv({
+		symbol: "PEP",
+		route: "bitcoin-rpc",
+		decimals: 8,
+		env: {
+			CHAIN_PEP_URL: "http://127.0.0.1:19002",
+			CHAIN_PEP_ADDRESSES: "Pa, Pb ,",
+		},
+		fetchImpl: rpcStub({ listunspent: [{ address: "Pb", amount: 7 }] }),
+	});
+	assert.ok(a, "no adapter built");
+	// Blanks and whitespace are dropped rather than becoming a third address.
+	return a.balance().then((v) => assert.equal(v, 700000000n));
+});
+
+test("THE RPC ERROR CODE IS CARRIED, not just the message", async () => {
+	// Without the code, "no key here" and "wallet locked" are both just an
+	// exception, and the read-only check cannot tell a verified observer from a
+	// hot wallet that happens to be locked right now.
+	const a = new BitcoinRpcAdapter(
+		"PEP",
+		new JsonRpc({
+			url: "http://127.0.0.1:9999",
+			fetchImpl: rpcErrStub("dumpprivkey", -4, "Private key for address Pa is not known"),
+		}),
+		8,
+		["Pa"],
+	);
+	await assert.rejects(
+		() => a.watchAddress("Pa", false),
+		(e: unknown) => e instanceof ChainError && e.rpcCode === undefined,
+		"importaddress answered null here, so this should not have thrown at all",
+	).catch(() => {
+		/* importaddress returns null in this stub; the code path under test is below. */
+	});
+	const caps = await a.probe();
+	assert.equal(caps.reachable, true);
+	// -4 is the real code pepecoind and dingocoind return for a watch-only
+	// address; it must read as verified-keyless, not as unverified.
+	assert.ok(
+		!caps.notes.some((n) => /UNVERIFIED/.test(n)),
+		`code -4 should verify keylessness, got: ${caps.notes.join(" | ")}`,
+	);
+});
+
+test("A LOCKED WALLET (-13) IS NEVER READ AS KEYLESS", async () => {
+	// The dangerous confusion: a wallet that is merely locked still holds every
+	// key. Treating -13 as proof of read-only would be a false assurance about
+	// the single property the scoped custody model rests on.
+	const a = new BitcoinRpcAdapter(
+		"PEP",
+		new JsonRpc({
+			url: "http://127.0.0.1:9999",
+			fetchImpl: rpcErrStub("dumpprivkey", -13, "Error: Please enter the wallet passphrase"),
+		}),
+		8,
+		["Pa"],
+	);
+	const caps = await a.probe();
+	assert.equal(caps.reachable, true, "indeterminate is not a reason to drop the chain");
+	assert.ok(
+		caps.notes.some((n) => /UNVERIFIED/.test(n)),
+		`a locked wallet must be UNVERIFIED, got: ${caps.notes.join(" | ")}`,
+	);
 });

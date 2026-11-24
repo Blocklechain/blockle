@@ -57,6 +57,18 @@ export class ChainError extends Error {
 	constructor(
 		message: string,
 		readonly retryable = false,
+		/**
+		 * The daemon's own JSON-RPC error code, where there was one.
+		 *
+		 * Kept because some decisions must not rest on English prose. Asking
+		 * "can this node spend a custody address?" is answered by `dumpprivkey`
+		 * failing, and the difference between "there is no key here" (-4) and
+		 * "the wallet is locked" (-13) is the difference between verified
+		 * read-only and merely unverified. Both arrive as an exception; only the
+		 * code tells them apart without matching a message that a fork is free
+		 * to reword.
+		 */
+		readonly rpcCode: number | undefined = undefined,
 	) {
 		super(message);
 		this.name = "ChainError";
@@ -267,6 +279,8 @@ export class JsonRpc {
 		if (body.error !== undefined && body.error !== null) {
 			throw new ChainError(
 				`${method} failed: ${body.error.message ?? JSON.stringify(body.error)}`,
+				false,
+				typeof body.error.code === "number" ? body.error.code : undefined,
 			);
 		}
 		if (body.result === undefined) {
@@ -306,9 +320,84 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 		readonly symbol: string,
 		private readonly rpc: JsonRpc,
 		private readonly decimals: number,
+		/**
+		 * The addresses whose coins are this venue's, when custody is scoped to
+		 * an explicit list rather than to "whatever is in the node's wallet".
+		 *
+		 * WHY THIS EXISTS. A bitcoin-family balance normally comes from the
+		 * wallet, which means custody is defined as "everything this daemon can
+		 * see". That is wrong for any node that does more than one job: these
+		 * same daemons are the parents of merge-mining pools, and pool income in
+		 * the wallet would be indistinguishable from customer deposits — a
+		 * custody shortfall could sit hidden behind mining earnings.
+		 *
+		 * Declaring the addresses makes custody a stated fact that can be
+		 * audited against the chain, the way BLOCK already works. Empty means
+		 * the old wallet-wide behaviour, unchanged.
+		 */
+		private readonly custodyAddresses: readonly string[] = [],
 	) {
 		if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
 			throw new ChainError(`${symbol}: implausible decimals ${decimals}`);
+		}
+		const seen = new Set<string>();
+		for (const a of custodyAddresses) {
+			if (a.trim() === "") throw new ChainError(`${symbol}: blank custody address`);
+			if (seen.has(a)) {
+				// A duplicate would be counted once by the node and twice by a
+				// naive sum; refuse it rather than rely on which happens.
+				throw new ChainError(`${symbol}: duplicate custody address ${a}`);
+			}
+			seen.add(a);
+		}
+	}
+
+	/** Custody is scoped to a declared address list rather than to the wallet. */
+	private get scoped(): boolean {
+		return this.custodyAddresses.length > 0;
+	}
+
+	/**
+	 * Can this node spend the custody addresses?
+	 *
+	 * The scoped model only means anything if the answer is no, so it is ASKED
+	 * rather than assumed — `dumpprivkey` on a watch-only address fails because
+	 * the key is not there.
+	 *
+	 * A locked wallet also makes it fail, for an entirely different reason, and
+	 * that case is reported as INDETERMINATE rather than quietly counted as
+	 * proof. A wallet that is merely locked still holds the keys.
+	 */
+	private async spendability(): Promise<"keyless" | "holds-keys" | "indeterminate"> {
+		const addr = this.custodyAddresses[0];
+		if (addr === undefined) return "indeterminate";
+		try {
+			const k = await this.rpc.call<unknown>("dumpprivkey", [addr]);
+			if (typeof k === "string" && k.trim() !== "") return "holds-keys";
+			return "indeterminate";
+		} catch (e) {
+			/*
+			 * DECIDE ON THE CODE, verified against the actual daemons.
+			 *
+			 * pepecoind and dingocoind answer a watch-only address with
+			 * {"code":-4,"message":"Private key for address X is not known"}.
+			 * -4 is RPC_WALLET_ERROR and -13 is RPC_WALLET_UNLOCK_NEEDED; a
+			 * locked wallet still HOLDS its keys, so it is not evidence of
+			 * anything and must not be read as such.
+			 *
+			 * The message check stays as a fallback for a fork that returns a
+			 * code we do not recognise, but it is no longer what the safety
+			 * property rests on.
+			 */
+			const code = e instanceof ChainError ? e.rpcCode : undefined;
+			if (code === -13) return "indeterminate"; // locked, not keyless
+			if (code === -32601) return "keyless"; // no wallet RPC at all
+			if (code === -4) return "keyless";
+			const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+			if (msg.includes("passphrase") || msg.includes("locked")) return "indeterminate";
+			if (msg.includes("not known") || msg.includes("no private key")) return "keyless";
+			if (msg.includes("method not found") || msg.includes("disabled")) return "keyless";
+			return "indeterminate";
 		}
 	}
 
@@ -347,18 +436,66 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 			};
 		}
 
-		// CAN IT ISSUE AN ADDRESS? Asked, not assumed: a descriptor wallet with
-		// no keys answers this with an error, and finding that out at deposit
-		// time means a customer waiting on an address that will never come.
+		/*
+		 * SCOPED CUSTODY: say so, and prove the part that makes it safe.
+		 *
+		 * The whole point of declaring addresses is that this node cannot spend
+		 * them. If it turns out it can, the scoping is decoration — the node is
+		 * a hot wallet wearing a read-only label — and that is reported as
+		 * unreachable rather than as a working chain, because every number
+		 * downstream would be describing a different custody model than the one
+		 * the operator thinks is in force.
+		 */
 		let canDeriveAddresses = false;
-		try {
-			await this.rpc.call<string>("getnewaddress", ["blockle-probe"]);
-			canDeriveAddresses = true;
-		} catch (e) {
+		if (this.scoped) {
 			notes.push(
-				"getnewaddress failed, so per-customer deposit addresses are not " +
-					`available: ${e instanceof Error ? e.message : String(e)}`,
+				`custody is scoped to ${this.custodyAddresses.length} declared ` +
+					"address(es); the node's wallet total is not used",
 			);
+			const spend = await this.spendability();
+			if (spend === "holds-keys") {
+				return {
+					reachable: false,
+					synced: false,
+					height,
+					decimals: undefined,
+					canDeriveAddresses: false,
+					canSend: false,
+					notes: [
+						...notes,
+						"REFUSED: this node holds the private key for a declared custody " +
+							"address, so it is not the read-only observer the scoped model " +
+							"assumes. Either move the keys off it or stop calling it custody.",
+					],
+				};
+			}
+			if (spend === "indeterminate") {
+				notes.push(
+					"could not confirm the node is keyless for the custody addresses " +
+						"(a locked wallet fails the same way a keyless one does), so " +
+						"read-only status is UNVERIFIED rather than established",
+				);
+			}
+			// Deposit addresses are derived elsewhere and imported here, the same
+			// shape BLOCK uses. Asking getnewaddress would be worse than useless:
+			// on a watch-only wallet it would mint a key this node then holds.
+			notes.push(
+				"deposit addresses are imported, not derived here — `watchAddress` " +
+					"tracks an externally derived address without a key",
+			);
+		} else {
+			// CAN IT ISSUE AN ADDRESS? Asked, not assumed: a descriptor wallet with
+			// no keys answers this with an error, and finding that out at deposit
+			// time means a customer waiting on an address that will never come.
+			try {
+				await this.rpc.call<string>("getnewaddress", ["blockle-probe"]);
+				canDeriveAddresses = true;
+			} catch (e) {
+				notes.push(
+					"getnewaddress failed, so per-customer deposit addresses are not " +
+						`available: ${e instanceof Error ? e.message : String(e)}`,
+				);
+			}
 		}
 
 		let canSend = false;
@@ -389,6 +526,7 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 	}
 
 	async balance(): Promise<bigint> {
+		if (this.scoped) return this.scopedBalance();
 		/*
 		 * `getbalances` where available, because it reports under `mine.trusted`
 		 * and distinguishes confirmed from pending — crediting unconfirmed
@@ -414,6 +552,67 @@ export class BitcoinRpcAdapter implements ChainAdapter {
 		if (trusted !== undefined) return this.toBase(trusted);
 		const v = await this.rpc.call<unknown>("getbalance", ["*", 1]);
 		return this.toBase(v);
+	}
+
+	/**
+	 * The confirmed value of the declared custody addresses, from the chain.
+	 *
+	 * `listunspent` filtered to those addresses, rather than any wallet total:
+	 * the pool's coinbase address is simply never declared, so its earnings are
+	 * invisible here no matter what else the node is doing.
+	 *
+	 * Not `scantxoutset`, which would have been the obvious choice and is the
+	 * one this was first designed around — it is absent from Pepecoin and
+	 * Dingocoin, the two oldest forks on the list and the two that matter most.
+	 * `listunspent` over imported watch-only addresses works on every fork here
+	 * and is incremental rather than a full UTXO scan per call.
+	 *
+	 * minconf 1: unconfirmed coins are not custody. Counting them would
+	 * overstate holdings and, worse, a reorg would turn the overstatement into
+	 * a shortfall.
+	 */
+	private async scopedBalance(): Promise<bigint> {
+		const rows = await this.rpc.call<Array<{ amount?: unknown; address?: string }>>(
+			"listunspent",
+			[1, 9_999_999, this.custodyAddresses],
+		);
+		if (!Array.isArray(rows)) {
+			throw new ChainError(`${this.symbol}: listunspent did not return a list`);
+		}
+		const declared = new Set(this.custodyAddresses);
+		let total = 0n;
+		for (const r of rows) {
+			/*
+			 * TRUST THE FILTER, THEN CHECK IT. Older forks have been known to
+			 * ignore the address argument; if that happened, a wallet-wide total
+			 * would be returned under the name of a scoped one, which is exactly
+			 * the confusion this method exists to prevent.
+			 */
+			if (typeof r.address !== "string" || !declared.has(r.address)) {
+				throw new ChainError(
+					`${this.symbol}: listunspent returned an output at ${String(r.address)}, ` +
+						"which is not a declared custody address — the node ignored the " +
+						"address filter, so this balance is not scoped and is refused",
+				);
+			}
+			// Each UTXO converts exactly or `toBase` refuses it; the sum is BigInt.
+			total += this.toBase(r.amount);
+		}
+		return total;
+	}
+
+	/**
+	 * Track an address without being able to spend it.
+	 *
+	 * `rescan` is the caller's decision and an expensive one: false is right for
+	 * a freshly derived deposit address that cannot have history, and true is
+	 * required for an address that already holds coins — a daemon will happily
+	 * import without rescanning and then report a zero balance for funds that
+	 * are plainly on the chain.
+	 */
+	async watchAddress(address: string, rescan: boolean): Promise<void> {
+		if (address.trim() === "") throw new ChainError(`${this.symbol}: blank address`);
+		await this.rpc.call<unknown>("importaddress", [address, "blockle-custody", rescan]);
 	}
 
 	async newAddress(label: string): Promise<string> {
@@ -998,19 +1197,21 @@ export function adapterFromEnv(args: {
 		...(args.fetchImpl === undefined ? {} : { fetchImpl: args.fetchImpl }),
 	};
 	const rpc = new JsonRpc(cfg);
+	// Same spelling the EVM route already uses, so an operator configuring a
+	// second chain does not have to learn a second name for the same idea.
+	const declaredAddresses = (args.env[`${pre}ADDRESSES`] ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s !== "");
 	switch (args.route) {
 		case "bitcoin-rpc":
-			return new BitcoinRpcAdapter(args.symbol, rpc, args.decimals);
+			return new BitcoinRpcAdapter(args.symbol, rpc, args.decimals, declaredAddresses);
 		case "monero-rpc":
 			return new MoneroRpcAdapter(args.symbol, rpc, args.decimals);
 		case "evm-rpc": {
-			const addrs = (args.env[`${pre}ADDRESSES`] ?? "")
-				.split(",")
-				.map((s) => s.trim())
-				.filter((s) => s !== "");
 			return new EvmRpcAdapter(args.symbol, rpc, {
 				decimals: args.decimals,
-				addresses: addrs,
+				addresses: declaredAddresses,
 				...(token === undefined ? {} : { token }),
 			});
 		}

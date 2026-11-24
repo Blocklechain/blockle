@@ -371,6 +371,24 @@ cmd_envfile() {
 					echo "CHAIN_${sym}_URL=http://127.0.0.1:$port"
 					echo "CHAIN_${sym}_USER=blockle"
 					echo "CHAIN_${sym}_PASS=$pass"
+					# SCOPED CUSTODY, left empty on purpose.
+					#
+					# Set this to a comma-separated address list and the adapter
+					# stops reading the node's WALLET total and sums only these
+					# addresses instead (listunspent, minconf 1). That is what
+					# lets one daemon be both an exchange node and a merge-mining
+					# pool's parent chain without pool income being counted as
+					# customer custody.
+					#
+					# Turning it on needs two things besides the list:
+					#   * the node's wallet enabled (disablewallet=0) — listunspent
+					#     is a wallet RPC, and PEP and DINGO have no scantxoutset;
+					#   * each address imported watch-only, rescan=true if it already
+					#     holds coins, or the daemon reports zero for funds that are
+					#     plainly on the chain.
+					# The node must NOT hold the keys: probe() asks dumpprivkey and
+					# refuses the chain outright if it answers with one.
+					echo "# CHAIN_${sym}_ADDRESSES="
 					;;
 				monero-rpc)
 					echo "CHAIN_${sym}_URL=http://127.0.0.1:$port/json_rpc"
