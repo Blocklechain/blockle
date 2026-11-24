@@ -165,6 +165,68 @@ body {
   padding: 3px 6px; border-radius: 10px;
 }
 .rail .foot { margin-top: auto; padding: 12px 10px; }
+
+/* -------------------------------------------------------- collapsible rail
+ *
+ * TWO STATES, ONE MECHANISM. The rail is either labelled (232px) or icons
+ * (56px), and the body carries exactly which — set by script from the screen
+ * width and then from whatever the person chose. Having JS pick one of two
+ * explicit classes, rather than CSS defaulting and JS overriding, means there
+ * is no third "unset" state to reason about when the two disagree.
+ *
+ * A width fallback stays on :root so a no-script load still gets a sane rail
+ * at either size.
+ */
+body.nav-labels { --rail: 232px; }
+body.nav-icons  { --rail: 56px; }
+
+body.nav-icons .rail a span.t,
+body.nav-icons .rail .group,
+body.nav-icons .rail .foot { display: none; }
+body.nav-icons .rail { padding: 8px 6px; }
+body.nav-icons .rail a { justify-content: center; padding: 11px 0; min-height: 44px; }
+
+/* The badge has nowhere to sit beside a hidden label, so it becomes a corner
+ * marker rather than disappearing — an unread count you cannot see is worse
+ * than a slightly cramped one. */
+body.nav-icons .rail a { position: relative; }
+body.nav-icons .rail .count {
+  position: absolute; top: 3px; right: 5px; margin: 0;
+  min-width: 15px; padding: 2px 4px; font-size: 9px; text-align: center;
+}
+
+/*
+ * THE BRAND CELL SITS IN THE RAIL'S COLUMN, so collapsing the rail shrinks it
+ * to 56px. Only one thing fits, and it has to be the control that expands the
+ * rail again — a collapsed nav with no way out is a trap.
+ *
+ * The environment badge is the casualty, and it is the one piece here that
+ * matters: it says whether this is real money. So on a desktop it lives in
+ * the topbar instead, which is always visible at that width; the brand keeps
+ * it only on a phone, where the topbar is hidden and the brand spans the full
+ * width anyway. One of the two is shown at any size, never both.
+ */
+.brand .env { display: none; }
+body.nav-icons .brand { justify-content: center; padding: 0 8px; }
+body.nav-icons .brand img,
+body.nav-icons .brand b { display: none; }
+body.nav-icons .navtoggle { margin-left: 0; }
+
+.navtoggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; margin-left: -6px;
+  background: none; border: 1px solid transparent; border-radius: 6px;
+  color: var(--ink-dim); cursor: pointer;
+}
+.navtoggle:hover { background: var(--raise-2); color: var(--ink); }
+.navtoggle:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+
+/* Only meaningful while the rail is overlaying the page on a phone. */
+.scrim {
+  position: fixed; inset: 54px 0 0 0; z-index: 25;
+  background: rgba(4, 6, 10, .6);
+}
+.scrim[hidden] { display: none; }
 .rail .foot a { padding: 5px 0; font-size: 12px; color: var(--ink-faint); }
 .rail .foot a:hover { background: none; color: var(--signal); }
 
@@ -491,54 +553,72 @@ pre.code code { background: 0; border: 0; padding: 0; white-space: pre; user-sel
   .trade .tapecol { display: none; }
 }
 @media (max-width: 900px) {
-  :root { --rail: 0px; }
+  /*
+   * A LEFT BAR, NOT A TOP STRIP.
+   *
+   * The rail used to become a horizontal row of icons under the header. That
+   * cost a band of vertical space on the screen with the least of it, and it
+   * put the navigation in the one place a thumb cannot reach on a phone held
+   * one-handed. As a left bar it is narrow, always visible, and sits where
+   * the thumb already is.
+   *
+   * The brand spans both columns so the header still reads as one bar.
+   */
+  :root { --rail: 56px; }
   .shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: 54px auto 1fr;
-    grid-template-areas: "brand" "top" "work";
+    grid-template-columns: var(--rail) 1fr;
+    grid-template-rows: 54px 1fr;
+    grid-template-areas: "brand brand" "rail work";
+    /* dvh tracks the browser's disappearing toolbar; vh is the fallback for
+     * anything that does not support it, and is only wrong while the toolbar
+     * is visible. */
+    height: 100vh;
+    height: 100dvh;
   }
   .brand { border-right: 0; }
   .rail {
-    grid-area: top;
-    flex-direction: row; overflow-x: auto;
-    border-right: 0; border-bottom: 1px solid var(--line);
-    padding: 7px 8px;
+    flex-direction: column;
+    overflow-y: auto; overflow-x: hidden;
+    border-right: 1px solid var(--line); border-bottom: 0;
   }
-  .rail a { flex: none; }
-  .rail a span.t { display: none; }
-  .rail .group, .rail .foot, .rail .count { display: none; }
   .topbar { display: none; }
+  /* The topbar is gone here, so the badge comes back to the brand — which
+   * spans the full width at this size and has room for it. */
+  .brand .env { display: inline-flex; }
   .trade { grid-template-columns: 1fr; height: auto; }
   .g2, .g3, .g4 { grid-template-columns: 1fr; }
-  body { overflow: auto; }
-  .work { overflow: visible; }
 
   /*
-   * THE TABLE HEADER MUST NOT STICK TO THE SCREEN HERE.
+   * THE APP-SHELL SCROLL MODEL, back again on purpose.
    *
-   * On desktop `.work` is the scroll container, so `thead th { position:
-   * sticky; top: 0 }` sticks to the top of the WORK AREA — below the brand
-   * bar, which is what it is for.
+   * This breakpoint used to hand scrolling to the page (`body: auto`,
+   * `.work: visible`). A left bar cannot survive that — the whole shell
+   * scrolls, so the "always visible" bar leaves the screen on the first
+   * flick. Scrolling the work pane instead keeps the bar put.
    *
-   * Two lines up, this breakpoint hands scrolling to the page instead. That
-   * changes what the header sticks TO: the nearest scrolling ancestor is now
-   * the viewport, so `top: 0` is the top of the SCREEN — exactly where the
-   * brand bar and the nav strip are. With `z-index: 1` against their auto,
-   * the header of whatever table you were looking at rode up and painted
-   * over the chrome.
-   *
-   * It cannot simply be offset instead: the chrome is two grid items, and a
-   * sticky grid item is clamped to its own grid area, so the bar cannot be
-   * made to stick down the page to meet it. The honest fix at this width is
-   * that the header scrolls away with its table, which is what a phone does
-   * everywhere else.
+   * It also un-breaks the sticky table header. With the page scrolling, the
+   * header's nearest scrolling ancestor was the viewport, so it stuck to the
+   * top of the SCREEN and painted over the brand bar. With `.work` scrolling
+   * again it sticks to the top of the work pane, which is what it was always
+   * for — so the `position: static` workaround that fix needed is gone.
    */
-  thead th { position: static; }
+  body { overflow: hidden; }
+  .work { overflow-y: auto; }
 
-  /* And if anything here ever becomes sticky again, it loses to the chrome
-   * rather than covering it. */
-  .brand { z-index: 3; }
-  .rail { z-index: 2; }
+  /*
+   * OPENING THE RAIL OVERLAYS, IT DOES NOT PUSH.
+   *
+   * 232px of labels beside content on a 390px screen leaves 158px, which is
+   * not a usable column. So on a phone the labelled rail floats over the
+   * work area with a scrim, and the grid column stays at icon width
+   * underneath it.
+   */
+  body.nav-labels { --rail: 56px; }
+  body.nav-labels .rail {
+    position: fixed; top: 54px; bottom: 0; left: 0; width: 232px;
+    z-index: 30;
+  }
+  body.nav-labels .rail a { min-height: 44px; }
 }
 
 /* ---------------------------------------------------------------- phones

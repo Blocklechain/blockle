@@ -1430,6 +1430,79 @@
     c.classList.toggle("hidden", !n);
   }
 
+  /*
+   * THE RAIL: LABELS OR ICONS.
+   *
+   * Exactly one of two classes is always on the body, chosen here rather
+   * than defaulted in CSS — a third "unset" state is the thing that makes
+   * responsive navigation confusing to reason about when the stylesheet and
+   * the script disagree.
+   *
+   * The default follows the screen: labels on a desktop, icons on a phone.
+   * A deliberate choice is remembered, because someone who collapses the
+   * rail for chart room wants it collapsed next time too. The phone's drawer
+   * is NOT remembered — it overlays the content, so starting a session with
+   * it open would hide the thing you came for.
+   */
+  var NARROW = window.matchMedia("(max-width: 900px)");
+  var NAV_KEY = "blk_nav";
+
+  function navDefault() {
+    return NARROW.matches ? "icons" : "labels";
+  }
+
+  function setNav(mode, remember) {
+    var icons = mode === "icons";
+    document.body.classList.toggle("nav-icons", icons);
+    document.body.classList.toggle("nav-labels", !icons);
+
+    var btn = $("navtoggle");
+    if (btn) btn.setAttribute("aria-expanded", String(!icons));
+    // The scrim only means anything while the rail is floating over the work
+    // area, which is the narrow + labels combination.
+    var scrim = $("scrim");
+    if (scrim) scrim.hidden = !(NARROW.matches && !icons);
+
+    if (remember) {
+      try {
+        // Only a desktop choice persists; see above.
+        if (NARROW.matches) localStorage.removeItem(NAV_KEY);
+        else localStorage.setItem(NAV_KEY, mode);
+      } catch (e) {
+        // Private browsing. The class is already applied; losing the
+        // preference is not worth failing the click over.
+      }
+    }
+  }
+
+  function navInit() {
+    var stored = null;
+    try { stored = localStorage.getItem(NAV_KEY); } catch (e) { stored = null; }
+    setNav(!NARROW.matches && (stored === "icons" || stored === "labels")
+      ? stored : navDefault(), false);
+
+    var toggle = function () {
+      setNav(document.body.classList.contains("nav-icons") ? "labels" : "icons", true);
+    };
+    var btn = $("navtoggle");
+    if (btn) btn.onclick = toggle;
+    var scrim = $("scrim");
+    if (scrim) scrim.onclick = function () { setNav("icons", false); };
+
+    // Picking a destination closes the drawer: leaving it open over the
+    // screen you just asked for would mean two taps for every move.
+    $("rail").addEventListener("click", function (e) {
+      if (NARROW.matches && e.target.closest("a")) setNav("icons", false);
+    });
+
+    // Rotating a phone, or dragging a window across the breakpoint, should
+    // land on that size's sensible default rather than keeping a state that
+    // only made sense at the old width.
+    var onChange = function () { setNav(navDefault(), false); };
+    if (NARROW.addEventListener) NARROW.addEventListener("change", onChange);
+    else if (NARROW.addListener) NARROW.addListener(onChange);
+  }
+
   function curtain(on) {
     // OUR OWN SIGN-IN, carrying where they were trying to go. Bouncing to
     // blockle.org and back is where people give up, and a venue that cannot
@@ -1515,6 +1588,7 @@
 
   function boot() {
     buildRail();
+    navInit();
     wire();
 
     // THE BANNER FAILS CLOSED. Anything other than an explicit "live" leaves
@@ -1525,6 +1599,11 @@
         var e = $("env");
         e.textContent = "LIVE";
         e.className = "env live";
+        // The topbar copy carries the same word. Only one of the two is
+        // visible at a given width, but a stale "TESTNET" on the hidden one
+        // would surface the moment someone resized.
+        var te = $("tb-env");
+        if (te) { te.textContent = "LIVE"; te.className = "v up"; }
       }
       // NO TESTNET FURNITURE ON A LIVE VENUE. The faucet panel goes, and so
       // does the copy that mentions it — the server removes the route
