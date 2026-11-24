@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Raptoreum (RTM) — planned listing | Blockle Exchange</title>
+<meta name="description" content="Raptoreum is on our listing list and is not tradeable here yet. There are no deposit addresses for it, and we are not asking you to send anything. This page explains what we intend to do and how to push it up the queue." />
+<link rel="canonical" href="https://exchange.blockle.org/trade/raptoreum-rtm" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Raptoreum (RTM) — planned listing | Blockle Exchange" />
+<meta property="og:description" content="Raptoreum is on our listing list and is not tradeable here yet. There are no deposit addresses for it, and we are not asking you to send anything. This page explains what we intend to do and how to push it up the queue." />
+<meta property="og:url" content="https://exchange.blockle.org/trade/raptoreum-rtm" />
+<meta property="og:site_name" content="Blockle Exchange" />
+<meta name="twitter:card" content="summary" />
+<link rel="icon" href="/logo.png" />
+<style>:root{
+  --bg:#070a0f;--panel:#0d1219;--line:#1e2735;--line-soft:#161d27;
+  --ink:#e9eef6;--ink-dim:#93a0b6;--ink-faint:#5e6b80;
+  --signal:#35d6e8;--signal-ink:#04171b;--ok:#2fd48a;--warn:#f5a524;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.65 var(--sans);
+  -webkit-font-smoothing:antialiased}
+a{color:var(--signal)}
+.wrap{max-width:860px;margin:0 auto;padding:0 20px 72px}
+header.top{border-bottom:1px solid var(--line);margin-bottom:34px}
+header.top .wrap{display:flex;align-items:center;gap:12px;padding:14px 20px}
+header.top img{width:26px;height:26px;border-radius:6px}
+header.top b{font-size:15px;letter-spacing:.01em}
+header.top nav{margin-left:auto;display:flex;gap:18px;font-size:13.5px}
+header.top nav a{color:var(--ink-dim);text-decoration:none}
+header.top nav a:hover{color:var(--ink)}
+.crumb{font-size:12.5px;color:var(--ink-faint);margin:0 0 14px}
+.crumb a{color:var(--ink-faint)}
+h1{font-size:30px;line-height:1.2;margin:0 0 6px;letter-spacing:-.012em;text-wrap:balance}
+.sub{color:var(--ink-dim);font-size:15px;margin:0 0 20px;max-width:62ch}
+.badge{display:inline-flex;align-items:center;gap:7px;font-size:12px;
+  border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--ink-dim);
+  margin-bottom:16px}
+.badge::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink-faint)}
+.badge.ok{color:var(--ok);border-color:rgba(47,212,138,.35)}
+.badge.ok::before{background:var(--ok)}
+.badge.warn{color:var(--warn);border-color:rgba(245,165,36,.35)}
+.badge.warn::before{background:var(--warn)}
+.cta{display:inline-block;background:var(--signal);color:var(--signal-ink);
+  font:600 14px var(--sans);padding:11px 20px;border-radius:7px;text-decoration:none}
+.cta.quiet{background:none;color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:22px 0 34px}
+section{border-top:1px solid var(--line-soft);padding-top:26px;margin-top:30px}
+h2{font-size:13px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-dim);
+  margin:0 0 14px;font-weight:600}
+dl.specs{margin:0;display:grid;gap:1px;background:var(--line-soft);
+  border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+.spec{display:flex;justify-content:space-between;gap:16px;background:var(--panel);
+  padding:11px 14px}
+.spec dt{color:var(--ink-dim);font-size:13.5px;margin:0}
+.spec dd{margin:0;font-family:var(--mono);font-size:13px;text-align:right}
+.titlerow{display:flex;align-items:center;gap:13px;margin-bottom:6px}
+.titlerow h1{margin:0}
+.mark{flex:none;display:inline-flex;line-height:0}
+.mark svg{border-radius:50%}
+table.coins td .mark{vertical-align:middle;margin-right:9px}
+.pairs{display:flex;gap:8px;flex-wrap:wrap}
+.pair{font-family:var(--mono);font-size:13px;border:1px solid var(--line);
+  border-radius:6px;padding:7px 12px;color:var(--ink);text-decoration:none}
+.pair.off{color:var(--ink-faint);border-style:dashed}
+p{max-width:68ch}
+.note{font-size:13px;color:var(--ink-faint);border-left:2px solid var(--line);
+  padding-left:12px;margin:18px 0}
+ul.steps{padding-left:18px;color:var(--ink-dim);max-width:66ch}
+ul.steps li{margin:7px 0}
+ul.steps b{color:var(--ink);font-weight:600}
+table.coins{width:100%;border-collapse:collapse;font-size:14px}
+table.coins th{text-align:left;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:600;padding:0 10px 9px;border-bottom:1px solid var(--line)}
+table.coins td{padding:11px 10px;border-bottom:1px solid var(--line-soft)}
+table.coins tr:last-child td{border-bottom:0}
+table.coins a{text-decoration:none;font-weight:600}
+table.coins .sym{font-family:var(--mono);font-size:12.5px;color:var(--ink-dim)}
+footer{border-top:1px solid var(--line);margin-top:48px;padding-top:20px;
+  font-size:12.5px;color:var(--ink-faint)}
+footer a{color:var(--ink-faint);margin-right:16px}
+@media (max-width:620px){
+  h1{font-size:25px}
+  .spec{flex-direction:column;gap:3px}
+  .spec dd{text-align:left}
+  header.top nav{display:none}
+}</style>
+<script type="application/ld+json">[{"@context":"https://schema.org","@type":"WebPage","name":"Raptoreum (RTM) on Blockle Exchange","description":"Raptoreum is on our listing list and is not tradeable here yet. There are no deposit addresses for it, and we are not asking you to send anything. This page explains what we intend to do and how to push it up the queue.","url":"https://exchange.blockle.org/trade/raptoreum-rtm","isPartOf":{"@type":"WebSite","name":"Blockle Exchange","url":"https://exchange.blockle.org"},"publisher":{"@type":"Organization","name":"Blockle Exchange","url":"https://exchange.blockle.org","parentOrganization":{"@type":"Organization","name":"Alienbeing LLC"}}},{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Coins","item":"https://exchange.blockle.org/coins"},{"@type":"ListItem","position":2,"name":"Raptoreum (RTM)","item":"https://exchange.blockle.org/trade/raptoreum-rtm"}]}]</script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <img src="/logo.png" alt="" width="26" height="26" />
+  <b>Blockle Exchange</b>
+  <nav>
+    <a href="/coins">Coins</a>
+    <a href="/app.html#/markets">Markets</a>
+    <a href="/app.html#/listing">List a coin</a>
+    <a href="/app.html#/api">API</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <p class="crumb"><a href="/coins">Coins</a> &rsaquo; Raptoreum</p>
+  <span class="badge idle">Planned — not yet tradeable</span>
+  <div class="titlerow">
+    <!-- Filled from coins.js, which is where every coin mark in the product
+         lives. Drawing it again here would be a second copy to keep in step,
+         and the mark is decoration: the page reads correctly without it, which
+         is what matters for the crawler that will not run this. -->
+    <span class="mark" data-coin="RTM"></span>
+    <h1>Raptoreum (RTM) on Blockle Exchange</h1>
+  </div>
+  <p class="sub">Raptoreum is on our listing list and is not tradeable here yet. There are no deposit addresses for it, and we are not asking you to send anything. This page explains what we intend to do and how to push it up the queue.</p>
+  <div class="row">
+    <a class="cta" href="https://exchange.blockle.org/app.html#/listing">Ask us to prioritise it</a>
+    <a class="cta quiet" href="https://raptoreum.com/" rel="nofollow noopener">Raptoreum project site</a>
+  </div>
+
+  <section>
+    <h2>Why RTM</h2>
+    <p>One of the few coins a plain CPU still mines competitively, with a smart-node layer on top. Miners have had almost nowhere to sell it.</p>
+      <p class="note">
+        As of 2026-11 we counted 2
+        other venues carrying
+        RTM. That is the reason it is on this list: the mining
+        is healthy and the places to sell are not. We are not claiming to be
+        the only one.
+      </p>
+  </section>
+
+  <section>
+    <h2>The chain</h2>
+    <dl class="specs">
+        <div class="spec"><dt>Algorithm</dt><dd>GhostRider — a CPU algorithm</dd></div>
+    </dl>
+    <p class="note">
+      Only details we have checked are listed. Where a figure is missing it is
+      because nobody here has confirmed it against the chain, and a plausible
+      guess on a reference page is worse than a gap.
+    </p>
+  </section>
+
+  <section>
+    <h2>Markets</h2>
+    <div class="pairs">
+          <span class="pair off">RTM/USDT — not open</span>
+          <span class="pair off">RTM/BLOCK — not open</span>
+    </div>
+    <p class="note">
+      Every coin here trades against USDT for the price people quote in, and
+      against BLOCK because this venue is built around it.
+    </p>
+  </section>
+
+  <section>
+    <h2>How selling RTM here works</h2>
+      <ul class="steps">
+        <li><b>Nothing to deposit yet.</b> There is no RTM
+          address on this exchange, and anything sent in its direction cannot
+          be credited. We would rather say that plainly than collect deposits
+          we cannot account for.</li>
+        <li><b>What we are waiting on.</b> A synced node we run ourselves,
+          confirmed decimals and confirmation depth, and a reconciliation
+          that balances. Until all four hold, this page stays as it is.</li>
+        <li><b>How to speed it up.</b> The listing form reaches a person. A
+          pool operator or project maintainer asking for it moves it up the
+          queue faster than anything else.</li>
+      </ul>
+  </section>
+
+<script src="/coins.js"></script>
+<script>
+  /* The marks are decoration added after the fact: the page is complete
+     without this, so a blocked or slow script costs an icon, not content. */
+  (function () {
+    if (typeof window.coinIcon !== "function") return;
+    var nodes = document.querySelectorAll(".mark[data-coin]");
+    for (var i = 0; i < nodes.length; i++) {
+      var big = !nodes[i].classList.contains("sm");
+      nodes[i].innerHTML = window.coinIcon(nodes[i].getAttribute("data-coin"), big ? 40 : 20);
+    }
+  })();
+</script>
+<footer>
+  <a href="/coins">All coins</a>
+  <a href="/app.html">Exchange</a>
+  <a href="https://blockle.org/">blockle.org</a>
+  <a href="https://blockle.org/terms">Terms</a>
+  <p style="margin:14px 0 0;max-width:68ch">
+    Blockle Exchange is operated by Alienbeing LLC. Nothing on this page is
+    investment advice, and no price, volume or market-capitalisation figure is
+    quoted here — only what the chain is and how we handle it.
+  </p>
+</footer>
+</div>
+</body>
+</html>

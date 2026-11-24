@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /v1/
+Disallow: /public/
+Disallow: /admin.html
+Disallow: /signin.html
+
+Sitemap: https://exchange.blockle.org/sitemap.xml
