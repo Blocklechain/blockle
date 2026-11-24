@@ -9,7 +9,34 @@ homepage = "https://blockle.org"
 readme = "README.md"
 keywords = ["mining", "pool", "stratum", "proof-of-work", "blockchain"]
 categories = ["cryptography::cryptocurrencies", "command-line-utilities"]
-exclude = ["chain/", "python/", ".github/", "tests/"]
+# ALLOWLIST, not a denylist.
+#
+# This crate's directory is the whole monorepo root, so packaging defaults to
+# "everything". It used to carry `exclude = ["chain/", "python/", ".github/",
+# "tests/"]`, which was already losing: the repo has since grown deploy/,
+# services/, exchange/, blockle-app/, unity/, web/ and a dozen more, none of
+# them excluded. The package grew past crates.io's 10 MiB limit and 0.8.0 was
+# rejected with a 413 — which is the harmless way to find out. The harmful way
+# is a directory like deploy/ or services/ riding along into a public,
+# permanent artefact.
+#
+# `include` inverts the default: a new top-level directory is out unless it is
+# named here. The crate is a library plus one binary, so that is all it needs.
+# The leading slashes matter. These are gitignore-style patterns, so an
+# unanchored "README.md" matches a README at ANY depth — which pulled 5,516
+# files from across the monorepo (every vendored Flutter plugin's README and
+# LICENSE) into a package meant to hold a few dozen. Anchored to the root,
+# each pattern means the one file it looks like it means.
+include = [
+    "/src/**/*.rs",
+    # include_bytes!'d by biz.rs, dashboard.rs and explorer.rs, so the crate
+    # does not compile without them. `cargo publish`'s verify step is what
+    # caught their absence; never publish this crate with --no-verify.
+    "/src/assets/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE*",
+]
 
 [[bin]]
 name = "blockle"
