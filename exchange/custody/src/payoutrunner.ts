@@ -38,6 +38,7 @@ import type { Database } from "better-sqlite3";
 import { gasAssetFor, networkOf, settlementAsset } from "./assets";
 import { confirmationsFor } from "./bitgodeposits";
 import { BitGoPayouts } from "./bitgopayouts";
+import type { PayoutRail } from "./noderail";
 import { beat } from "./golive";
 import type { Ledger } from "./ledger";
 import { State, type Withdrawal, type Withdrawals } from "./withdrawals";
@@ -84,7 +85,24 @@ export interface PayoutDeps {
 	readonly db: Database;
 	readonly ledger: Ledger;
 	readonly withdrawals: Withdrawals;
-	readonly client: BitGoPayouts;
+	/**
+	 * The custodian. `BitGoPayouts` satisfies `PayoutRail` unchanged — the
+	 * interface was extracted from what this file was already calling.
+	 */
+	readonly client: PayoutRail;
+	/**
+	 * A DIFFERENT CUSTODIAN PER COIN, where one applies.
+	 *
+	 * BitGo will not hold Raptoreum, so those coins are paid out by a daemon we
+	 * run (see noderail.ts). Routing by asset here means the two models share
+	 * every piece of logic below — the pre-send check, the single reversal
+	 * condition, the attempt log — rather than growing a second runner whose
+	 * safety properties would have to be re-argued.
+	 *
+	 * Absent, or returning undefined, means `client` handles everything, which
+	 * is exactly the old behaviour.
+	 */
+	readonly railFor?: (asset: string) => PayoutRail | undefined;
 	readonly walletFor: (
 		custodyId: string,
 	) => Promise<{ coin: string; walletId: string } | undefined>;
@@ -118,25 +136,49 @@ export async function runOnce(deps: PayoutDeps): Promise<PayoutResult> {
 	 * dashboard looked green, which is the exact failure mode the heartbeat
 	 * exists to prevent — so the heartbeat says so too.
 	 */
-	if (approved.length > 0 && !deps.client.canSend) {
-		const why =
-			`${approved.length} withdrawal(s) are approved and cannot be sent: no ` +
-			"signing passphrase is configured (BITGO_WALLET_PASSPHRASE). Customer " +
-			"funds are debited and waiting.";
-		errors.push(why);
-		refused = approved.length;
-		for (const w of approved) {
-			record(deps.db, w.id, BitGoPayouts.sequenceId(w.id), stamp, "refused", null, null, why);
+	/*
+	 * A RAIL THAT CANNOT SEND REFUSES LOUDLY — PER RAIL, NOT GLOBALLY.
+	 *
+	 * This used to check one client and abandon the whole pass. With two
+	 * custody models that is wrong in both directions: a missing BitGo
+	 * passphrase would stop node payouts that are perfectly able to proceed,
+	 * and a read-only node adapter would be hidden behind a working BitGo.
+	 *
+	 * Customers' balances are already debited and sitting in INFLIGHT, so a
+	 * runner that shrugs and reports success leaves them stranded while every
+	 * dashboard looks green — which is what the heartbeat exists to prevent,
+	 * and why it carries the refusal too.
+	 */
+	const sendable: typeof approved = [];
+	const refusals: string[] = [];
+	for (const w of approved) {
+		const rail = deps.railFor?.(w.asset) ?? deps.client;
+		if (rail.canSend) {
+			sendable.push(w);
+			continue;
 		}
-		beat(deps.db, "payout-runner", `REFUSED: ${why}`);
+		const why =
+			`wd ${w.id} (${w.asset}) is approved and cannot be sent: its custodian ` +
+			`has no signing credential configured (set ${rail.credentialHint ?? "it"}). ` +
+			"The customer is debited and waiting.";
+		errors.push(why);
+		refusals.push(why);
+		refused++;
+		record(deps.db, w.id, BitGoPayouts.sequenceId(w.id), stamp, "refused", null, null, why);
+	}
+	if (refusals.length > 0) {
+		beat(deps.db, "payout-runner", `REFUSED: ${refusals.join(" | ")}`);
+	}
+	if (sendable.length === 0 && submitted.length === 0) {
 		return { sent, recovered, settled, failed, waiting, refused, errors };
 	}
 
 	// ---- phase 1: send ----------------------------------------------------
 
-	for (const w of approved) {
+	for (const w of sendable) {
 		const custodyId = w.network === undefined ? w.asset : `${w.asset}.${w.network}`;
 		const seq = BitGoPayouts.sequenceId(w.id);
+		const rail = deps.railFor?.(w.asset) ?? deps.client;
 
 		let wallet: { coin: string; walletId: string } | undefined;
 		try {
@@ -162,7 +204,7 @@ export async function runOnce(deps: PayoutDeps): Promise<PayoutResult> {
 		 * never read as "nothing is there".
 		 */
 		try {
-			const existing = await deps.client.findBySequenceId({
+			const existing = await rail.findBySequenceId({
 				coin: wallet.coin,
 				walletId: wallet.walletId,
 				sequenceId: seq,
@@ -185,7 +227,7 @@ export async function runOnce(deps: PayoutDeps): Promise<PayoutResult> {
 		}
 
 		try {
-			const { transfer, alreadySent } = await deps.client.send({
+			const { transfer, alreadySent } = await rail.send({
 				coin: wallet.coin,
 				walletId: wallet.walletId,
 				address: w.address,
@@ -232,7 +274,7 @@ export async function runOnce(deps: PayoutDeps): Promise<PayoutResult> {
 
 		let t;
 		try {
-			t = await deps.client.transfer({
+			t = await (deps.railFor?.(w.asset) ?? deps.client).transfer({
 				coin: wallet.coin,
 				walletId: wallet.walletId,
 				transferId: w.providerRef,

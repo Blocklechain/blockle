@@ -20,6 +20,10 @@ import Database from "better-sqlite3";
 import { ASSETS, settlementAsset } from "./assets";
 import { BitGoHoldings } from "./bitgo";
 import { BitGoPayouts } from "./bitgopayouts";
+import { BitcoinRpcAdapter } from "./chains";
+import { nodeAdapters } from "./custodyrouting";
+import { coinBySymbol } from "./listed";
+import { NodePayoutRail, SINGLE_INSTANCE_NOTE } from "./noderail";
 import { pinAndVerify } from "./ipv4";
 import { Ledger } from "./ledger";
 import { runOnce } from "./payoutrunner";
@@ -142,7 +146,54 @@ async function main(): Promise<void> {
 
 	void MARKETS; // the asset list comes from the withdrawal rows themselves
 
-	const r = await runOnce({ db, ledger, withdrawals, client, walletFor });
+	/*
+	 * RAILS FOR THE COINS BITGO DOES NOT HOLD.
+	 *
+	 * `SELF_CUSTODIED` above has always made `walletFor` return undefined for
+	 * these, which stopped the runner attempting them on the wrong custodian —
+	 * correct, but it also meant they could never be paid out at all. Now they
+	 * have a rail of their own; `walletFor` still answers undefined, and the
+	 * node rail ignores the wallet fields anyway.
+	 *
+	 * A coin with no node configured gets no rail and keeps the old behaviour:
+	 * reported as unactionable rather than attempted.
+	 */
+	const nodeRails = new Map<string, NodePayoutRail>();
+	for (const [symbol, adapter] of nodeAdapters({
+		env: process.env,
+		onSkip: (sym, why) => console.log(`  ${sym}: no payout rail (${why})`),
+	})) {
+		if (!(adapter instanceof BitcoinRpcAdapter)) {
+			// Only the bitcoind family has the comment-based idempotency this
+			// rail depends on. Anything else would need its own rail with its
+			// own answer to "has this already been sent", and until it has one
+			// it must not send at all.
+			console.log(
+				`  ${symbol}: ${adapter.route} has no payout rail yet — withdrawals ` +
+					"for it stay unactioned rather than being sent without a " +
+					"double-payment guard",
+			);
+			continue;
+		}
+		const coin = coinBySymbol(symbol);
+		const confirmations = coin?.confirmations;
+		if (confirmations === undefined) {
+			console.log(`  ${symbol}: no confirmed settlement depth, so no payout rail`);
+			continue;
+		}
+		nodeRails.set(symbol, new NodePayoutRail(adapter, confirmations));
+	}
+	if (nodeRails.size > 0) {
+		console.log(`  node rails: ${[...nodeRails.keys()].join(", ")}`);
+		// The weakness relative to BitGo, printed where someone reading the
+		// logs during an incident will see it.
+		console.log(`  NOTE: ${SINGLE_INSTANCE_NOTE}`);
+	}
+
+	const r = await runOnce({
+		db, ledger, withdrawals, client, walletFor,
+		railFor: (asset) => nodeRails.get(asset),
+	});
 	console.log(
 		`payout-runner: ${r.sent} sent, ${r.recovered} recovered, ` +
 			`${r.settled} settled, ${r.failed} reversed, ${r.waiting} confirming` +

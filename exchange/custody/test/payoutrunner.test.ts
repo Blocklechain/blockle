@@ -29,8 +29,10 @@ import type { FeeTable } from "../src/withdrawalfees";
 const POLICY: Policy = {
 	autoApprove: true,
 	approvalThreshold: {},
-	maxPerRequest: { BTC: 10n ** 10n, USDT: 10n ** 12n },
-	velocityCap24h: { BTC: 10n ** 11n, USDT: 10n ** 13n },
+	// DOGE stands in for a coin custodied on a daemon we run rather than at
+	// BitGo — it is in the asset registry, so the ledger will post for it.
+	maxPerRequest: { BTC: 10n ** 10n, USDT: 10n ** 12n, DOGE: 10n ** 10n },
+	velocityCap24h: { BTC: 10n ** 11n, USDT: 10n ** 13n, DOGE: 10n ** 11n },
 	requireAllowlistedAddress: false,
 };
 
@@ -38,6 +40,7 @@ const POLICY: Policy = {
 const FREE: FeeTable = {
 	BTC: { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
 	"USDT.ERC20": { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
+	DOGE: { gas: 0n, gasBufferBps: 0, margin: 0n, marginBps: 0, subsidised: true },
 };
 
 const CLEAN: AddressScreener = { name: "test", screen: async () => ({ allowed: true }) };
@@ -60,6 +63,9 @@ function client(opts: {
 	const existing = { ...(opts.existing ?? {}) };
 	const c = {
 		get canSend() { return opts.canSend !== false; },
+		// The real BitGo rail reports this; the stub does too, so the refusal
+		// message under test is the one an operator would actually see.
+		get credentialHint() { return "BITGO_WALLET_PASSPHRASE"; },
 		async findBySequenceId(a: { sequenceId: string }) {
 			if (opts.findThrows) throw new Error(opts.findThrows);
 			const e = existing[a.sequenceId];
@@ -107,7 +113,11 @@ function client(opts: {
 
 const walletFor = async (custodyId: string) =>
 	({ BTC: { coin: "btc", walletId: "w-btc" },
-	   "USDT.ERC20": { coin: "usdt", walletId: "w-usdt" } } as Record<
+	   "USDT.ERC20": { coin: "usdt", walletId: "w-usdt" },
+	   // A node-custodied coin has no custodian wallet; the rail IS the
+	   // daemon. The runner still asks, so it has to resolve to something —
+	   // these two fields are passed through and ignored by that rail.
+	   DOGE: { coin: "doge", walletId: "node" } } as Record<
 		string, { coin: string; walletId: string }>)[custodyId];
 
 function setup(): { db: Database.Database; l: Ledger; w: Withdrawals } {
@@ -369,8 +379,12 @@ test("NO PASSPHRASE IS A LOUD REFUSAL, not a quiet idle pass", async () => {
 
 	assert.equal(r.refused, 1);
 	assert.equal(r.sent, 0);
-	assert.ok(r.errors.some((e) => /BITGO_WALLET_PASSPHRASE/.test(e)));
+	// IT NAMES THE KNOB. An operator reading this has debited customers
+	// waiting; "no signing credential" without saying which one sends them
+	// to the source.
+	assert.ok(r.errors.some((e) => /set BITGO_WALLET_PASSPHRASE/.test(e)));
 	assert.ok(r.errors.some((e) => /debited and waiting/.test(e)));
+	assert.ok(r.errors.some((e) => /BTC/.test(e)), "and which asset it was");
 	assert.equal(w.get(id)?.state, State.APPROVED);
 	// AND THE HEARTBEAT SAYS SO, so the preflight does not read it as healthy.
 	const hb = db
@@ -378,6 +392,68 @@ test("NO PASSPHRASE IS A LOUD REFUSAL, not a quiet idle pass", async () => {
 		.get() as { detail: string };
 	assert.match(hb.detail, /^REFUSED/);
 	// It is surfaced for an operator rather than only logged.
+	assert.equal(stuckPayouts(db).length, 1);
+});
+
+test("TWO CUSTODIANS AT ONCE: each withdrawal goes to its own rail", async () => {
+	/*
+	 * BitGo holds BTC; a daemon we run holds RTM. Routing by asset is the
+	 * whole point — sending an RTM payout to BitGo would fail with a message
+	 * about the wrong custodian, and the customer would sit in INFLIGHT while
+	 * the logs blamed a missing wallet.
+	 */
+	const { db, l, w } = setup();
+	fund(l, "alice", "BTC", 100_000_000n, "a");
+	fund(l, "alice", "DOGE", 100_000_000n, "b");
+	await approved(w, l);
+	await approved(w, l, { asset: "DOGE", key: "k2" });
+
+	const bitgo = client();
+	const node = client();
+	const r = await runOnce({
+		db, ledger: l, withdrawals: w,
+		client: bitgo.client,
+		railFor: (asset) => (asset === "DOGE" ? node.client : undefined),
+		walletFor,
+	});
+
+	assert.equal(r.sent, 2, r.errors.join("; "));
+	assert.equal(bitgo.sends.length, 1, "BTC went to BitGo");
+	assert.equal(node.sends.length, 1, "DOGE went to the node");
+	// And not to each other.
+	assert.ok(bitgo.sends.every((s) => s.sequenceId.endsWith("-1")));
+	assert.ok(node.sends.every((s) => s.sequenceId.endsWith("-2")));
+});
+
+test("ONE CUSTODIAN BEING UNABLE TO SEND DOES NOT STOP THE OTHER", async () => {
+	/*
+	 * The old check looked at a single client and abandoned the whole pass. In
+	 * a two-custodian world that is wrong in both directions: a missing BitGo
+	 * passphrase would strand node payouts that could proceed, and a read-only
+	 * node would be hidden behind a working BitGo.
+	 */
+	const { db, l, w } = setup();
+	fund(l, "alice", "BTC", 100_000_000n, "a");
+	fund(l, "alice", "DOGE", 100_000_000n, "b");
+	const btcId = await approved(w, l);
+	await approved(w, l, { asset: "DOGE", key: "k2" });
+
+	const bitgo = client({ canSend: false });
+	const node = client();
+	const r = await runOnce({
+		db, ledger: l, withdrawals: w,
+		client: bitgo.client,
+		railFor: (asset) => (asset === "DOGE" ? node.client : undefined),
+		walletFor,
+	});
+
+	assert.equal(r.refused, 1);
+	assert.equal(r.sent, 1, "the node payout still went");
+	assert.equal(node.sends.length, 1);
+	assert.equal(bitgo.sends.length, 0);
+	// The refused one is untouched and surfaced, not quietly dropped.
+	assert.equal(w.get(btcId)?.state, State.APPROVED);
+	assert.ok(r.errors.some((e) => /BTC/.test(e) && /BITGO_WALLET_PASSPHRASE/.test(e)));
 	assert.equal(stuckPayouts(db).length, 1);
 });
 

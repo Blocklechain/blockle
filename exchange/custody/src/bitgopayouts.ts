@@ -99,6 +99,11 @@ export class BitGoPayouts {
 		return this.passphrase !== "";
 	}
 
+	/** Named in the payout runner's refusal, so it points at the right knob. */
+	get credentialHint(): string {
+		return "BITGO_WALLET_PASSPHRASE";
+	}
+
 	/**
 	 * The sequence id for a withdrawal. DETERMINISTIC — that is the whole point.
 	 *

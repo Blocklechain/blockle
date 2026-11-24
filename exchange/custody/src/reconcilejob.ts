@@ -151,10 +151,13 @@ export async function runOnce(
 	 * So RECONCILE_SOURCE selects it, and when unset the old derivation stands.
 	 */
 	const source: HoldingsSource =
-		cfg.source === "bitgo" ? bitgoSummed()
+		cfg.source === "bitgo" ? bitgoAndNodes(log)
 		: cfg.source === "declared" ? testnetTreasury(cfg.testnetTreasuryFile)
-		: cfg.mainnetEnabled ? bitgoSummed()
+		: cfg.mainnetEnabled ? bitgoAndNodes(log)
 		: testnetTreasury(cfg.testnetTreasuryFile);
+	// ANY source that is not the declared file is a real custodian — including
+	// the composite, whose name now lists both. Comparing against "bitgo"
+	// would have quietly reclassified every node-custodied pass as unproven.
 	const usedCustodian = source.name !== "testnet-declared";
 
 	const report = await reconcile(ledger, source, cfg.assets, {
@@ -209,6 +212,32 @@ export async function runOnce(
  * partially summed. A partial sum looks like a shortfall and would halt
  * withdrawals on the strength of an incomplete read.
  */
+/**
+ * Holdings across BOTH custody models: BitGo for the majors, our own daemons
+ * for the small proof-of-work coins BitGo will not hold.
+ *
+ * Previously this was BitGo or nothing, which was right while BitGo held
+ * everything. The moment one coin is custodied on a node we run, asking BitGo
+ * about it returns nothing useful — and an asset routed to the wrong custodian
+ * reconciles as a shortfall and halts a coin that is perfectly fine. See
+ * custodyrouting.ts; an asset with no custodian is reported UNKNOWN, never
+ * zero.
+ */
+function bitgoAndNodes(log: (s: string) => void): HoldingsSource {
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const routing = require("./custodyrouting") as typeof import("./custodyrouting");
+	const nodes = routing.nodeAdapters({
+		env: process.env,
+		onSkip: (symbol, why) => {
+			// Logged, not silent: "this coin has no node" is the normal state of
+			// a planned listing, and it is also exactly what a misconfiguration
+			// looks like. The operator gets to tell them apart.
+			log(`  note: ${symbol} has no usable node (${why})`);
+		},
+	});
+	return routing.routedHoldings({ bitgo: bitgoSummed(), nodes });
+}
+
 function bitgoSummed(): HoldingsSource {
 	// Imported lazily so a testnet run never needs a BitGo token to exist.
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
