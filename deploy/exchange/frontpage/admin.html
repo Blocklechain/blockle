@@ -547,23 +547,66 @@
         }
       }
     } catch (e) {
-      $("who").textContent = "not signed in as an operator";
+      /*
+       * A LANDING PAGE, NOT AN ERROR.
+       *
+       * This used to render "not signed in as an operator / No operator
+       * session / Detail: not found" over an otherwise empty console, which is
+       * both ugly and unhelpful: "not found" is the deliberate response to a
+       * valid session that is not on the allowlist (confirming the endpoint
+       * exists is information), so the one message covered three different
+       * situations and told you what to do about none of them.
+       *
+       * Now it offers the sign-in, and distinguishes the cases it can.
+       */
+      $("who").textContent = "not signed in";
+      const status = Number(e.status) || 0;
+      for (const el of document.querySelectorAll("details.card")) el.remove();
+
       const host = $("banner");
       host.textContent = "";
-      const div = document.createElement("div");
-      div.className = "banner";
+      const card = document.createElement("div");
+      card.className = "banner ok";
+      card.style.maxWidth = "520px";
+
       const h = document.createElement("h3");
-      h.appendChild(txt("No operator session"));
-      div.appendChild(h);
-      const ul = document.createElement("ul");
-      const li = document.createElement("li");
-      li.appendChild(txt(
-        "Sign in at blockle.org with an account on the operator allowlist. " +
-        "Detail: " + (e.message || e)
+      h.style.color = "var(--ink)";
+      h.appendChild(txt(
+        status === 404 ? "This account is not an operator"
+        : status === 503 ? "Cannot reach the account service"
+        : "Operator sign-in required"
       ));
-      ul.appendChild(li);
-      div.appendChild(ul);
-      host.appendChild(div);
+      card.appendChild(h);
+
+      const p = document.createElement("p");
+      p.style.cssText = "margin:0 0 14px;color:var(--ink-dim);font-size:13px";
+      p.appendChild(txt(
+        status === 404
+          ? "You are signed in, but this account is not on the operator " +
+            "allowlist. Admin rights are granted to a Blockle account id — " +
+            "there is no separate operator login to try."
+          : status === 503
+            ? "The Blockle account service is not answering, so we cannot tell " +
+              "who you are and will not guess. Nothing here is available until " +
+              "it is back. Detail: " + (e.message || e)
+            : "The console uses your ordinary Blockle account. Sign in, and if " +
+              "that account is on the operator allowlist you will land here."
+      ));
+      card.appendChild(p);
+
+      if (status !== 503) {
+        const a = document.createElement("a");
+        a.href =
+          "https://exchange.blockle.org/signin.html?as=operator&return=" +
+          encodeURIComponent("https://admin.blockle.org/admin/");
+        a.style.cssText =
+          "display:inline-flex;align-items:center;justify-content:center;" +
+          "background:var(--signal);color:#04161a;text-decoration:none;" +
+          "font-weight:600;padding:10px 16px;border-radius:5px";
+        a.appendChild(txt(status === 404 ? "Sign in as a different account" : "Sign in"));
+        card.appendChild(a);
+      }
+      host.appendChild(card);
       throw e;
     }
   }

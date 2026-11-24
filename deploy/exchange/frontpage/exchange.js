@@ -1113,6 +1113,14 @@
   }
 
   function curtain(on) {
+    // OUR OWN SIGN-IN, carrying where they were trying to go. Bouncing to
+    // blockle.org and back is where people give up, and a venue that cannot
+    // host its own sign-in does not look like one to leave money with.
+    var go = $("signin-go");
+    if (go) {
+      go.href = "signin.html?return=" +
+        encodeURIComponent(location.pathname + location.search + location.hash);
+    }
     $("signin").classList.toggle("hidden", !on);
   }
 

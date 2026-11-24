@@ -1,0 +1,561 @@
+<!--
+  BLOCKLE EXCHANGE — SIGN IN
+  ==========================
+
+  A dedicated page on exchange.blockle.org rather than a bounce to
+  blockle.org. Sending someone to another host to sign in and then back again
+  loses them: the return trip is where people give up, and a venue that cannot
+  hold its own sign-in does not look like one you would leave money with.
+
+  IT IS STILL THE SAME ONE ACCOUNT. There is no second account system here —
+  this page posts to the Blockle accounts service, which is proxied at
+  /account/api/ on this host so the request is same-origin and the session
+  cookie (scoped to .blockle.org) is set for both hosts at once. One password,
+  one 2FA enrolment, two front doors.
+
+  THE LOGO IS THE MARK, SAMPLED. The cubic B is drawn to an offscreen canvas
+  and its pixels become particle targets, so the particles form the ACTUAL mark
+  rather than an artist's impression of it — change the drawing and the
+  particles follow. It responds to the pointer, and on a successful sign-in the
+  particles converge into the solid mark and then burst outward as the page
+  hands over. That moment is the only animation on the page that is not
+  ambient, which is what makes it read as a result rather than decoration.
+
+  WHAT THIS PAGE WILL NOT DO:
+   * It never stores a password, not even in a variable that outlives the
+     request. The field is cleared on both success and failure.
+   * It does not invent a reason for a failure. The accounts service's own
+     message is shown; guessing between "wrong password" and "no such account"
+     would turn this form into an account-enumeration oracle.
+   * `return` is validated as a same-origin path before any redirect, so a
+     crafted link cannot bounce a freshly-signed-in session to another site.
+-->
+<title>Sign in · Blockle Exchange</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<link rel="icon" href="logo.png" />
+
+<style>
+  :root {
+    --ground:   #070a10;
+    --raise:    #0d121b;
+    --raise-2:  #131a26;
+    --line:     #1e2735;
+    --ink:      #e9eef6;
+    --ink-dim:  #93a0b6;
+    --ink-faint:#5e6b80;
+    --signal:   #35d6e8;
+    --signal-ink:#04171b;
+    --down:     #ff5668;
+    --up:       #2fd48a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font: 14px/1.55 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Left: the mark. Right: the form. On a narrow screen the mark becomes a
+     band above the form rather than disappearing — it is the only thing
+     identifying the page as ours. */
+  .stage {
+    position: relative;
+    background:
+      radial-gradient(1200px 600px at 30% 40%, rgba(53,214,232,.10), transparent 60%),
+      linear-gradient(160deg, #060b11, #0a141b 60%, #060b11);
+    border-right: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .stage canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  .stage .cap {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 20px 28px 26px;
+    pointer-events: none;
+  }
+  .stage .cap h2 {
+    margin: 0 0 6px; font-size: 17px; font-weight: 650; letter-spacing: -0.02em;
+  }
+  .stage .cap p { margin: 0; color: var(--ink-dim); font-size: 13px; max-width: 46ch; }
+  .stage .hint {
+    position: absolute; top: 18px; left: 24px;
+    font: 600 10px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-faint); pointer-events: none;
+  }
+
+  .side { display: grid; place-items: center; padding: 28px; }
+  .card { width: 100%; max-width: 380px; }
+
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .brand img { width: 30px; height: 30px; border-radius: 7px; }
+  .brand b { font-size: 16px; letter-spacing: -0.015em; }
+  .brand .env {
+    margin-left: auto;
+    font: 600 9px/1 var(--mono); letter-spacing: 0.12em;
+    padding: 4px 6px; border-radius: 3px;
+    border: 1px solid var(--ink-faint); color: var(--ink-faint);
+  }
+
+  h1 { font-size: 21px; font-weight: 650; letter-spacing: -0.025em; margin: 0 0 6px; }
+  .sub { color: var(--ink-dim); font-size: 13px; margin: 0 0 20px; }
+
+  label { display: block; margin-bottom: 13px; }
+  label span {
+    display: block; margin-bottom: 5px;
+    font: 600 10px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  input {
+    width: 100%; background: #04060a; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 11px 12px; font: 14px var(--sans);
+  }
+  input[inputmode="numeric"] { font-family: var(--mono); letter-spacing: 0.18em; }
+  input:focus { outline: 2px solid var(--signal); outline-offset: -1px; }
+  input::placeholder { color: var(--ink-faint); }
+
+  button.go {
+    width: 100%; margin-top: 4px;
+    background: var(--signal); color: var(--signal-ink);
+    border: 0; border-radius: 6px; padding: 12px 16px;
+    font: 650 14px var(--sans); cursor: pointer;
+  }
+  button.go:hover { filter: brightness(1.07); }
+  button.go:disabled { opacity: .55; cursor: default; }
+  button.go:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  .msg {
+    margin-top: 12px; padding: 10px 12px; border-radius: 6px;
+    font-size: 12.5px; border: 1px solid var(--line); background: var(--raise-2);
+  }
+  .msg.bad { border-color: var(--down); background: rgba(255,86,104,.10); }
+  .msg.ok { border-color: var(--up); background: rgba(47,212,138,.10); }
+  .hidden { display: none !important; }
+
+  .foot { margin-top: 20px; font-size: 12.5px; color: var(--ink-faint); }
+  .foot a { color: var(--signal); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+  .rule { height: 1px; background: var(--line); margin: 18px 0; }
+
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 210px 1fr; }
+    .stage { border-right: 0; border-bottom: 1px solid var(--line); }
+    .stage .cap { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* The particles settle into the mark and stay there. */
+    .stage canvas { }
+  }
+</style>
+
+<div class="stage">
+  <canvas id="fx"></canvas>
+  <div class="hint" id="fx-hint">drag the mark</div>
+  <div class="cap">
+    <h2>One account, every Blockle product</h2>
+    <p>
+      The same sign-in as the wallet. We do not keep a separate password for the
+      exchange, so there is one place to change it and one place to enrol
+      two-factor.
+    </p>
+  </div>
+</div>
+
+<div class="side">
+  <div class="card">
+    <div class="brand">
+      <img src="logo.png" alt="" />
+      <b>Blockle Exchange</b>
+      <span class="env" id="env">TESTNET</span>
+    </div>
+
+    <h1 id="title">Sign in to trade</h1>
+    <p class="sub" id="why">
+      Markets, prices and reserves are public. Balances, orders and withdrawals
+      need your account.
+    </p>
+
+    <form id="form" autocomplete="on">
+      <label>
+        <span>Email</span>
+        <input id="email" type="email" name="email" autocomplete="username"
+               placeholder="you@example.com" required />
+      </label>
+      <label>
+        <span>Password</span>
+        <input id="password" type="password" name="password"
+               autocomplete="current-password" required />
+      </label>
+      <label id="otp-wrap" class="hidden">
+        <span>Authenticator code</span>
+        <input id="otp" inputmode="numeric" autocomplete="one-time-code"
+               placeholder="123456" maxlength="8" />
+      </label>
+      <button class="go" type="submit" id="go">Sign in</button>
+    </form>
+
+    <div class="msg hidden" id="msg"></div>
+
+    <div class="rule"></div>
+    <p class="foot">
+      No account yet?
+      <a href="https://blockle.org/account/" id="create">Create one at blockle.org</a>
+      <br />
+      <a href="app.html">Browse markets without signing in</a>
+    </p>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------------------------------------------------------------- the mark
+  //
+  // Particle targets are SAMPLED FROM THE DRAWN MARK, so the particles form the
+  // real thing and follow any change to the drawing. The alternative — a
+  // hand-typed list of coordinates — drifts away from the logo the moment the
+  // logo changes, and nobody notices until it is subtly wrong.
+
+  function sampleMark(size) {
+    var c = document.createElement("canvas");
+    c.width = c.height = size;
+    var g = c.getContext("2d");
+    var s = size / 24; // the mark is authored on a 24-unit grid
+
+    g.strokeStyle = "#fff";
+    g.lineWidth = 1.7 * s;
+    g.lineJoin = "round";
+    g.lineCap = "round";
+
+    // The cube: a hexagon with the three visible inner edges.
+    g.beginPath();
+    g.moveTo(12 * s, 2.2 * s);
+    g.lineTo(20.4 * s, 7 * s);
+    g.lineTo(20.4 * s, 17 * s);
+    g.lineTo(12 * s, 21.8 * s);
+    g.lineTo(3.6 * s, 17 * s);
+    g.lineTo(3.6 * s, 7 * s);
+    g.closePath();
+    g.stroke();
+
+    g.beginPath();
+    g.moveTo(3.6 * s, 7 * s);
+    g.lineTo(12 * s, 11.8 * s);
+    g.lineTo(20.4 * s, 7 * s);
+    g.moveTo(12 * s, 11.8 * s);
+    g.lineTo(12 * s, 21.8 * s);
+    g.stroke();
+
+    // The B, sitting on the cube's top face so the mark reads as a lettered
+    // block rather than a letter beside a block.
+    g.fillStyle = "#fff";
+    g.font = "700 " + (7.4 * s) + "px ui-monospace, SFMono-Regular, Menlo, monospace";
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText("B", 12 * s, 7.2 * s);
+
+    // Sample on a grid. Step controls particle count; a finer step is a denser
+    // mark and more work per frame.
+    var data = g.getImageData(0, 0, size, size).data;
+    var pts = [];
+    var step = 3;
+    for (var y = 0; y < size; y += step) {
+      for (var x = 0; x < size; x += step) {
+        if (data[(y * size + x) * 4 + 3] > 110) pts.push([x, y]);
+      }
+    }
+    return pts;
+  }
+
+  // ------------------------------------------------------------- the particles
+
+  var canvas = $("fx");
+  var ctx = canvas.getContext("2d");
+  var P = [];
+  var pointer = { x: -1e9, y: -1e9, down: false };
+  var mode = "idle"; // idle -> assembling -> burst
+  var modeAt = 0;
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var dpr = 1, W = 0, H = 0, scale = 1, offX = 0, offY = 0;
+
+  function layout() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth;
+    H = canvas.clientHeight;
+    canvas.width = Math.max(1, Math.floor(W * dpr));
+    canvas.height = Math.max(1, Math.floor(H * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    var side = Math.min(W, H) * 0.56;
+    scale = side / 240;
+    offX = (W - 240 * scale) / 2;
+    offY = (H - 240 * scale) / 2 - H * 0.04;
+    for (var i = 0; i < P.length; i++) {
+      P[i].tx = offX + P[i].sx * scale;
+      P[i].ty = offY + P[i].sy * scale;
+    }
+  }
+
+  function build() {
+    var pts = sampleMark(240);
+    P = pts.map(function (p) {
+      return {
+        sx: p[0], sy: p[1],
+        tx: 0, ty: 0,
+        // Scattered start, so the first thing the page does is pull itself
+        // together.
+        x: Math.random() * Math.max(W, 400),
+        y: Math.random() * Math.max(H, 400),
+        vx: 0, vy: 0,
+        // Per-particle jitter so the swarm does not move as one rigid body.
+        k: 0.014 + Math.random() * 0.018,
+        drag: 0.86 + Math.random() * 0.06,
+        hue: Math.random() < 0.18 ? 1 : 0,
+      };
+    });
+    layout();
+  }
+
+  function frame(t) {
+    ctx.clearRect(0, 0, W, H);
+
+    var burst = mode === "burst";
+    var elapsed = t - modeAt;
+
+    for (var i = 0; i < P.length; i++) {
+      var p = P[i];
+
+      if (burst) {
+        // Outward, from the centre of the mark, decelerating. Not gravity —
+        // this is a hand-off, and something falling would read as a failure.
+        p.vx *= 0.985;
+        p.vy *= 0.985;
+      } else {
+        // Spring to the target.
+        var k = mode === "assembling" ? p.k * 3.2 : p.k;
+        p.vx += (p.tx - p.x) * k;
+        p.vy += (p.ty - p.y) * k;
+
+        // Pointer interaction: push away, or pull in while held. Cheap
+        // inverse-square-ish falloff, clamped so a particle under the cursor
+        // does not acquire absurd velocity.
+        var dx = p.x - pointer.x, dy = p.y - pointer.y;
+        var d2 = dx * dx + dy * dy;
+        if (d2 < 150 * 150) {
+          var d = Math.sqrt(d2) || 1;
+          var f = (1 - d / 150) * (pointer.down ? -2.6 : 3.1);
+          p.vx += (dx / d) * f;
+          p.vy += (dy / d) * f;
+        }
+        p.vx *= p.drag;
+        p.vy *= p.drag;
+      }
+
+      p.x += p.vx;
+      p.y += p.vy;
+
+      var settled = Math.abs(p.x - p.tx) + Math.abs(p.y - p.ty);
+      // Cyan for the minority accent particles and for anything still moving;
+      // the settled mark is near-white, so "assembled" is legible at a glance.
+      var lively = burst || settled > 2.5;
+      ctx.fillStyle = p.hue
+        ? "rgba(53,214,232," + (burst ? 0.9 : 0.95) + ")"
+        : lively
+          ? "rgba(147,160,182,.85)"
+          : "rgba(233,238,246,.95)";
+      var r = burst ? 1.9 : lively ? 1.5 : 1.7;
+      ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+    }
+
+    if (mode === "assembling" && elapsed > 700) {
+      mode = "burst";
+      modeAt = t;
+      var cx = offX + 120 * scale, cy = offY + 120 * scale;
+      for (var j = 0; j < P.length; j++) {
+        var q = P[j];
+        var ax = q.x - cx, ay = q.y - cy;
+        var al = Math.sqrt(ax * ax + ay * ay) || 1;
+        var speed = 7 + Math.random() * 9;
+        q.vx = (ax / al) * speed;
+        q.vy = (ay / al) * speed;
+      }
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  canvas.addEventListener("pointermove", function (e) {
+    var r = canvas.getBoundingClientRect();
+    pointer.x = e.clientX - r.left;
+    pointer.y = e.clientY - r.top;
+  });
+  canvas.addEventListener("pointerleave", function () {
+    pointer.x = pointer.y = -1e9;
+    pointer.down = false;
+  });
+  canvas.addEventListener("pointerdown", function () { pointer.down = true; });
+  window.addEventListener("pointerup", function () { pointer.down = false; });
+  window.addEventListener("resize", layout);
+
+  build();
+  if (reduced) {
+    // Place them on target and draw once: the mark, no motion.
+    for (var i = 0; i < P.length; i++) { P[i].x = P[i].tx; P[i].y = P[i].ty; }
+    ctx.clearRect(0, 0, W, H);
+    for (var j = 0; j < P.length; j++) {
+      ctx.fillStyle = P[j].hue ? "rgba(53,214,232,.95)" : "rgba(233,238,246,.95)";
+      ctx.fillRect(P[j].x - 1.7, P[j].y - 1.7, 3.4, 3.4);
+    }
+    $("fx-hint").textContent = "";
+  } else {
+    requestAnimationFrame(frame);
+  }
+
+  // ------------------------------------------------------------------ sign in
+
+  /**
+   * Where to go after signing in.
+   *
+   * VALIDATED AS A SAME-ORIGIN PATH. A `return` parameter handed straight to
+   * location.assign is an open redirect: a crafted link would sign someone in
+   * and then hand the freshly-authenticated session to another site. Only a
+   * path on this host is accepted, and anything else falls back to the app.
+   */
+  function destination() {
+    var raw = new URLSearchParams(location.search).get("return") || "";
+    if (raw === "") return "app.html";
+    try {
+      var u = new URL(raw, location.origin);
+      if (u.origin !== location.origin) return "app.html";
+      return u.pathname + u.search + u.hash;
+    } catch (e) {
+      return "app.html";
+    }
+  }
+
+  // Tailor the copy to why they were sent here, without inventing anything.
+  (function context() {
+    var p = new URLSearchParams(location.search);
+    if (p.get("as") === "operator") {
+      $("title").textContent = "Operator sign in";
+      $("why").textContent =
+        "The console needs an account on the operator allowlist. It is the " +
+        "same Blockle account — admin rights are granted to the account, not " +
+        "to a separate login.";
+      $("create").parentNode.style.display = "none";
+    }
+    var reason = p.get("reason");
+    if (reason === "expired") {
+      show("Your session has expired. Sign in again to continue.", "");
+    }
+  })();
+
+  function show(text, kind) {
+    var m = $("msg");
+    m.className = "msg " + (kind || "");
+    m.textContent = text;
+  }
+  function hide() { $("msg").className = "msg hidden"; }
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var btn = $("go");
+    hide();
+    btn.disabled = true;
+    btn.textContent = "Signing in…";
+
+    var body = {
+      email: $("email").value.trim(),
+      password: $("password").value,
+    };
+    var otp = $("otp").value.trim();
+    if (otp !== "") {
+      // Sent under several names because the accounts service has used more
+      // than one; the extras are ignored by whichever it is.
+      body.otp = otp;
+      body.token = otp;
+      body.code = otp;
+    }
+
+    // SAME-ORIGIN. /account/api/ is proxied on this host, so the session cookie
+    // (domain .blockle.org) is set for the exchange and the main site at once
+    // and there is no CORS to configure or get wrong.
+    fetch("/account/api/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        return { ok: r.ok, status: r.status, d: d };
+      });
+    }).then(function (res) {
+      // THE PASSWORD IS CLEARED EITHER WAY, so a failed attempt does not leave
+      // it sitting in the DOM for the next person at the machine.
+      $("password").value = "";
+
+      if (res.ok) {
+        show("Signed in. Taking you through…", "ok");
+        // THE ONE NON-AMBIENT ANIMATION: converge, then burst, then hand over.
+        if (!reduced) { mode = "assembling"; modeAt = performance.now(); }
+        setTimeout(function () { location.assign(destination()); }, reduced ? 150 : 1150);
+        return;
+      }
+
+      var err = res.d.error || res.d.message || "";
+      // A 2FA challenge is a prompt, not a failure.
+      if (/two.?factor|2fa|otp|authenticat/i.test(err) || res.d.twoFactorRequired) {
+        $("otp-wrap").classList.remove("hidden");
+        $("otp").focus();
+        show(
+          otp === ""
+            ? "This account has two-factor enabled. Enter the current code."
+            : err || "That code was not accepted. Try the next one.",
+          ""
+        );
+      } else {
+        // THE SERVICE'S OWN WORDING. Guessing between "wrong password" and "no
+        // such account" would make this form an account-enumeration oracle,
+        // and the accounts service already answers both the same way.
+        show(err || ("Sign in failed (HTTP " + res.status + ")."), "bad");
+      }
+    }).catch(function (e) {
+      show(
+        "Could not reach the account service — " + e.message +
+        ". Nothing was sent; try again in a moment.",
+        "bad"
+      );
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "Sign in";
+    });
+  });
+
+  // If they are already signed in, do not make them do it again.
+  fetch("/v1/me", { credentials: "same-origin", cache: "no-store" })
+    .then(function (r) { if (r.ok) location.replace(destination()); })
+    .catch(function () { /* offline or signed out: show the form */ });
+
+  // The testnet badge, failing closed the same way every other surface does.
+  fetch("public/status", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (st) {
+      if (st.live === true) {
+        var e = $("env");
+        e.textContent = "LIVE";
+        e.style.borderColor = "var(--up)";
+        e.style.color = "var(--up)";
+      }
+    })
+    .catch(function () { /* badge stays TESTNET */ });
+})();
+</script>
