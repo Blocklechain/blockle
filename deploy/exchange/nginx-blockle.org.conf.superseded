@@ -1,3 +1,21 @@
+# =============================================================================
+# SUPERSEDED — DO NOT ENABLE.
+#
+# This config made the exchange take over blockle.org's root and pushed the
+# existing site to coin.blockle.org. That plan was dropped: the exchange stays
+# on exchange.blockle.org and blockle.org keeps the site it has.
+#
+# It was never symlinked into sites-enabled, so there is nothing to undo on the
+# box. Kept rather than deleted because it is the worked-out answer to a hard
+# problem — which paths compiled into already-shipped wallets must survive a
+# root takeover (/api/, /account/api/, /px/, /tx/, /explorer, /assets/, and the
+# MoonPay webhook, which is registered on MoonPay's side and cannot be moved).
+# If the takeover is ever revisited, start here rather than from scratch.
+#
+# Enabling this file as it stands would move blockle.org out from under every
+# shipped wallet and the live MoonPay webhook.
+# =============================================================================
+
 # -----------------------------------------------------------------------------
 # blockle.org — THE EXCHANGE TAKES THE ROOT.
 #

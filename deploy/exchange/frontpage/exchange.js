@@ -205,8 +205,12 @@
       rail.appendChild(a);
     });
     var foot = el("div", "foot");
+    // ABSOLUTE, to blockle.org. The exchange lives on its own subdomain and
+    // these pages live on the main site; relative paths would 404 here.
     [["Back to blockle.org", "https://blockle.org/"],
-     ["Support", "/support"], ["Terms", "/terms"], ["Privacy", "/privacy"]]
+     ["Support", "https://blockle.org/contact"],
+     ["Terms", "https://blockle.org/terms"],
+     ["Privacy", "https://blockle.org/privacy"]]
       .forEach(function (p) {
         var a = document.createElement("a");
         a.href = p[1];
