@@ -123,6 +123,12 @@ export interface PreflightDeps {
 	 * Absent means UNKNOWN, which this preflight treats as a failure.
 	 */
 	readonly verifyCustodyEnv?: () => Promise<{ ok: boolean; detail: string }>;
+	/**
+	 * Custody ids a CUSTODIAN wallet is expected for. Supplied by the caller
+	 * because it knows which assets are self-custodied; deriving it here would
+	 * demand a BitGo wallet for our own chains, which BitGo refuses.
+	 */
+	readonly expectCustodyIds?: readonly string[];
 	readonly now?: () => number;
 }
 
@@ -293,7 +299,7 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 	if (deps.holdings !== undefined) {
 		try {
 			const held = await deps.holdings.byCustodyId();
-			const wanted = listed.flatMap((a) => custodyIds(a));
+			const wanted = deps.expectCustodyIds ?? listed.flatMap((a) => custodyIds(a));
 			const missing = wanted.filter((id) => !held.has(id));
 			checks.push(missing.length === 0
 				? ok("custody:wallets", "A custody wallet exists for every listed chain",

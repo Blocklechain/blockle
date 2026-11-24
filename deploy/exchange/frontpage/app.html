@@ -204,7 +204,7 @@
           </p>
         </div>
       </div>
-      <div class="grid g2">
+      <div class="grid g2" id="deposit-grid">
         <div class="panel">
           <header><h2>Deposit address</h2></header>
           <div class="body">
@@ -374,6 +374,62 @@
         </div>
       </div>
       <p class="note" id="fee-note" style="margin-top:12px"></p>
+    </section>
+
+    <!-- ------------------------------------------------------------ listing -->
+    <section class="screen" id="s-listing">
+      <div class="head">
+        <div>
+          <h1>Apply for a listing</h1>
+          <p>
+            We are specifically interested in working proof-of-work chains that
+            have nowhere to trade. Tell us what the node is and we will tell you
+            honestly whether we can list it and how long it would take.
+          </p>
+        </div>
+      </div>
+      <div class="grid g2">
+        <div class="panel">
+          <header><h2>Your project</h2></header>
+          <div class="body">
+            <form id="lst-form" autocomplete="off">
+              <div id="lst-fields"></div>
+              <!-- Honeypot: positioned off-screen rather than display:none,
+                   which some bots check for. No human sees or tabs to it. -->
+              <div style="position:absolute;left:-9999px" aria-hidden="true">
+                <label>Website<input name="website_url" tabindex="-1" /></label>
+              </div>
+              <button class="btn pri block" type="submit" style="margin-top:14px">
+                Send application
+              </button>
+            </form>
+            <div class="msg hidden" id="lst-msg" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <header><h2>What happens next</h2></header>
+          <div class="body">
+            <div class="kv"><span class="dim">Where it goes</span><span>alex@blockle.org</span></div>
+            <div class="kv"><span class="dim">Listing fee</span><span>None</span></div>
+            <div class="kv"><span class="dim">Trading fee</span><span id="lst-fee">—</span></div>
+            <p class="note" style="margin-top:14px">
+              The question that decides most of the work is what your node is a
+              fork of. A Bitcoin Core or go-ethereum fork reuses an adapter we
+              already run. A bespoke codebase needs a custom one, and we will
+              say so rather than quote a date we cannot keep.
+            </p>
+            <p class="note" style="margin-top:10px">
+              We run our own node for every listed chain. We will not custody an
+              asset against someone else's hosted RPC, because then their outage
+              is our customers' frozen balance.
+            </p>
+            <p class="note" style="margin-top:10px">
+              Every asset trades against USDT and BLOCK. A pair with no
+              liquidity helps nobody, so tell us who intends to quote it.
+            </p>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ------------------------------------------------------------ account -->

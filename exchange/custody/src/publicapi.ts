@@ -46,6 +46,7 @@ import { ASSETS, assetDef } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
 import { Deposits, describeDeposit } from "./deposits";
+import { Listings, QUESTIONS, sendmailMailer } from "./listings";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
 import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
@@ -386,8 +387,17 @@ async function venueRoute(
 			return;
 		}
 
-		// TESTNET FAUCET. The venue itself refuses this when the mainnet gate
-		// is on, so the guard is not merely in this handler.
+		// TESTNET FAUCET.
+		//
+		// GONE, not merely refused, once the venue is live: the route stops
+		// existing, so there is nothing to probe and nothing to advertise. The
+		// venue itself ALSO refuses it (Venue.testnetCredit checks the mainnet
+		// gate and the reconcile source independently), so removing the route
+		// is the outermost of three layers rather than the only one.
+		if (p === "/testnet-fund" && gate().mainnetEnabled) {
+			json(res, 404, { error: "not found" }, 0);
+			return;
+		}
 		if (p === "/testnet-fund" && req.method === "POST") {
 			const who = await me();
 			const b = await body(req);
@@ -848,6 +858,11 @@ export function start(): void {
 	// Market-maker ladders share the venue's book and its writable handle.
 	const mm = new MarketMaker(wdb, venue);
 	const deposits = new Deposits(wdb);
+	// Listing applications. The row is the record; the email is a notification.
+	const listings = new Listings(wdb, {
+		mailer: sendmailMailer(),
+		notifyTo: process.env.LISTING_NOTIFY ?? "alex@blockle.org",
+	});
 	const wdCommitments = commitmentsFrom(wdb);
 	const liquidityOf = (symbol: string) =>
 		assetLiquidity(wledger, symbol, wdCommitments, haltsFrom());
@@ -878,6 +893,72 @@ export function start(): void {
 		houseAccountId: process.env.EXCHANGE_HOUSE_ACCOUNT ?? "house",
 	};
 
+	/*
+	 * LIVE MEANS NO TESTNET PLUMBING ANYWHERE. Checked at startup, and a
+	 * failure REFUSES TO BOOT.
+	 *
+	 * Exiting is the right response rather than logging and continuing. Each of
+	 * these combinations is a live, customer-facing venue whose money rails
+	 * point at something fake: real liabilities recorded against testnet coins,
+	 * or solvency "proven" against a file a human wrote. A venue that is down
+	 * is an outage; a venue that is up and wrong takes deposits it cannot
+	 * honour, and it looks healthy while doing it.
+	 *
+	 * These are belt-and-braces over the go-live preflight, which checks the
+	 * same things before the gate is ever opened. The difference is that the
+	 * preflight runs when someone remembers to run it, and this runs every
+	 * single boot — including the one after somebody edits the config by hand.
+	 */
+	if (gate().mainnetEnabled) {
+		const problems: string[] = [];
+		const env = process.env;
+		if ((env.BITGO_ENV ?? "").trim().toLowerCase() !== "prod") {
+			problems.push(
+				`BITGO_ENV=${env.BITGO_ENV ?? "(unset)"} — a live venue must use the ` +
+					"production custody installation",
+			);
+		}
+		if (((env.BITGO_COINS ?? "mainnet").trim().toLowerCase()) !== "mainnet") {
+			problems.push(
+				`BITGO_COINS=${env.BITGO_COINS} — a live venue holding testnet coins ` +
+					"would record real customer liabilities against worthless assets",
+			);
+		}
+		if ((env.BITGO_ACCESS_TOKEN ?? "").trim() === "") {
+			problems.push(
+				"BITGO_ACCESS_TOKEN is unset — nothing could be deposited or sent",
+			);
+		}
+		if (reconcileSource !== "bitgo") {
+			problems.push(
+				`RECONCILE_SOURCE=${reconcileSource} — solvency would be checked ` +
+					"against a declared file rather than the custodian, which proves " +
+					"nothing",
+			);
+		}
+		if (
+			(env.BITGO_WALLETS ?? "").trim() === "" &&
+			(env.BITGO_WALLET_PREFIX ?? "").trim() === ""
+		) {
+			problems.push(
+				"no BITGO_WALLETS or BITGO_WALLET_PREFIX — custody is a shared " +
+					"account, so without a scope other projects' balances would " +
+					"count as exchange custody and hide a shortfall",
+			);
+		}
+		if (problems.length > 0) {
+			console.error(
+				"REFUSING TO START. The mainnet gate is open but the venue still " +
+					"has testnet plumbing:\n" +
+					problems.map((x) => `  - ${x}`).join("\n") +
+					"\nFix these or close the gate. A live venue pointed at " +
+					"anything fake takes deposits it cannot honour, and looks " +
+					"healthy while doing it.",
+			);
+			process.exit(78); // EX_CONFIG
+		}
+	}
+
 	const server = createServer((req: IncomingMessage, res: ServerResponse) => {
 		void (async () => {
 			try {
@@ -893,6 +974,46 @@ export function start(): void {
 						req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
 						LIVE_FEES, pricing, mm, deposits,
 					);
+					return;
+				}
+
+				// ONE MUTATING PUBLIC ROUTE, and it is deliberately outside the
+				// read-only block below rather than a hole punched through it.
+				// It writes to its own table, touches no balance and no ledger,
+				// and needs no account — requiring one would filter out exactly
+				// the project teams we want to hear from.
+				if (url.pathname === "/public/listing-apply" && req.method === "POST") {
+					try {
+						const b = await body(req);
+						const fwd = req.headers["x-forwarded-for"];
+						const fwdStr = (Array.isArray(fwd) ? fwd[0] : fwd) ?? "";
+						const ip =
+							fwdStr.split(",")[0]?.trim() ||
+							req.socket.remoteAddress ||
+							"unknown";
+						const r = await listings.submit({ fields: b, ip });
+						json(res, 200, {
+							ok: true,
+							reference: r.id,
+							// ACCURATE ABOUT WHAT IS KNOWN AT THIS MOMENT. The first
+							// wording said the notification "did not go out", which
+							// was wrong: the mail is detached, so at response time
+							// it has not been ATTEMPTED yet, and the one that
+							// printed that message then delivered fine. Claiming a
+							// failure that has not happened sends someone chasing
+							// support for nothing.
+							note: r.notified
+								? "Received. We will reply to the address you gave."
+								: "Received and recorded under that reference. Email " +
+									"support@blockle.org if you have heard nothing in a " +
+									"few days.",
+						}, 0);
+					} catch (e) {
+						const status = (e as { status?: number }).status ?? 400;
+						json(res, status, {
+							error: e instanceof Error ? e.message : String(e),
+						}, 0);
+					}
 					return;
 				}
 
@@ -943,6 +1064,16 @@ export function start(): void {
 							"withdrawal; the exact fee is always shown before you " +
 							"confirm.",
 					}, 120);
+					return;
+				}
+
+				// THE LISTING QUESTION SET, so the form is generated from the
+				// same list the validator and the email read. A question in the
+				// HTML but not in that list would be silently dropped — the
+				// worst outcome for a form, since the submitter answered and
+				// nobody received it.
+				if (p === "/listing-questions") {
+					json(res, 200, { questions: QUESTIONS }, 600);
 					return;
 				}
 

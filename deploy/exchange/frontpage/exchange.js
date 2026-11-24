@@ -105,6 +105,8 @@
   // ----------------------------------------------------------------- transport
 
   var SIGNED_IN = false;
+  /** Whether the venue still offers a testnet faucet. Set from /public/status. */
+  var FAUCET = true;
 
   function api(path, opts) {
     opts = opts || {};
@@ -164,6 +166,7 @@
     withdraw: '<path d="M12 18V8M8 11.5l4-4 4 4"/><path d="M5 20.5h14"/>',
     liquidity: '<path d="M12 3.5l5.5 7.5a6.6 6.6 0 11-11 0z"/><path d="M6.6 13.5h10.8"/>',
     orders: '<path d="M8 6.5h11M8 12h11M8 17.5h11"/><circle cx="5" cy="6.5" r="1.2"/><circle cx="5" cy="12" r="1.2"/><circle cx="5" cy="17.5" r="1.2"/>',
+    listing: '<path d="M6.5 3.5h8L18 7v13.5H6.5z"/><path d="M14 3.5V7h3.8"/><path d="M9 11.5h6M9 15h6"/>',
     fees: '<path d="M12 4v16M6 20h12"/><path d="M4.5 8h15M12 4.5L5 8M12 4.5L19 8"/><path d="M5 8l-2.3 4.8a2.8 2.8 0 004.6 0zM19 8l-2.3 4.8a2.8 2.8 0 004.6 0z"/>',
     account: '<circle cx="12" cy="8.5" r="3.4"/><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"/>',
   };
@@ -186,6 +189,7 @@
     { id: "deposit", label: "Deposit", group: null, auth: true },
     { id: "withdraw", label: "Withdraw", group: null, auth: true },
     { id: "fees", label: "Fees", group: "Venue" },
+    { id: "listing", label: "List a coin", group: null },
     { id: "account", label: "Account", group: null },
   ];
 
@@ -652,8 +656,9 @@
           "No deposit address is provisioned for this chain yet."));
         out.appendChild(el("p", "note",
           "Deposit addresses are issued per customer by the custodian. Until " +
-          "this chain has one, use another chain for the same asset, or the " +
-          "testnet faucet while the venue is in testnet."));
+          "this chain has one, use another chain for the same asset." +
+          (FAUCET ? " While the venue is in testnet you can also use the " +
+            "testnet faucet." : "")));
       }
     }).catch(function (e) {
       out.appendChild(el("div", "msg bad", e.message));
@@ -975,6 +980,72 @@
     });
   };
 
+  // ------------------------------------------------------------------- listing
+
+  RENDER.listing = function () {
+    if ($("lst-fields").children.length) return; // built once
+    if (STATE.fees) $("lst-fee").textContent =
+      STATE.fees.makerPct + " maker / " + STATE.fees.takerPct + " taker";
+
+    // GENERATED FROM THE SERVER'S QUESTION LIST. A field hard-coded here but
+    // absent from that list would be silently dropped on submit — the worst
+    // outcome for a form, because the applicant answered and nobody got it.
+    pub("listing-questions").then(function (r) {
+      var host = $("lst-fields");
+      clear(host);
+      r.questions.forEach(function (q) {
+        var wrap = el("label", "f");
+        wrap.style.marginTop = "10px";
+        var span = el("span");
+        span.appendChild(tx(q.label + (q.required ? "" : " (optional)")));
+        wrap.appendChild(span);
+        // Long answers get a textarea; the rest a single line. Driven by the
+        // declared maximum rather than a list of field names to keep in step.
+        var input = document.createElement(q.max > 300 ? "textarea" : "input");
+        input.name = q.key;
+        input.maxLength = q.max;
+        if (q.max > 300) input.rows = 4;
+        if (q.required) input.required = true;
+        if (q.key === "contact") input.type = "email";
+        wrap.appendChild(input);
+        if (q.hint) {
+          var hint = el("div", "note", q.hint);
+          hint.style.marginTop = "6px";
+          hint.style.borderLeft = "0";
+          hint.style.paddingLeft = "0";
+          wrap.appendChild(hint);
+        }
+        host.appendChild(wrap);
+      });
+    }).catch(function (e) {
+      $("lst-fields").appendChild(el("div", "msg bad",
+        "Could not load the form: " + e.message +
+        " — email alex@blockle.org directly."));
+    });
+  };
+
+  function submitListing(ev) {
+    ev.preventDefault();
+    var msg = $("lst-msg");
+    var btn = ev.target.querySelector("button[type=submit]");
+    var data = {};
+    Array.prototype.forEach.call(
+      ev.target.querySelectorAll("input,textarea"),
+      function (i) { if (i.name) data[i.name] = i.value; }
+    );
+    btn.disabled = true;
+    hide(msg);
+    // Public, deliberately: requiring an account would filter out exactly the
+    // project teams we want to hear from.
+    api("public/listing-apply", { method: "POST", data: data })
+      .then(function (r) {
+        show(msg, "Reference " + r.reference + ". " + r.note, "ok");
+        ev.target.reset();
+      })
+      .catch(function (e) { show(msg, e.message, "bad"); })
+      .then(function () { btn.disabled = false; });
+  }
+
   // ------------------------------------------------------------------- account
 
   RENDER.account = function () {
@@ -1076,6 +1147,7 @@
     });
     $("lq-go").onclick = lqOpen;
 
+    $("lst-form").addEventListener("submit", submitListing);
     $("signin-dismiss").onclick = function () { curtain(false); };
     window.addEventListener("hashchange", route);
     window.addEventListener("resize", function () {
@@ -1097,6 +1169,22 @@
         var e = $("env");
         e.textContent = "LIVE";
         e.className = "env live";
+      }
+      // NO TESTNET FURNITURE ON A LIVE VENUE. The faucet panel goes, and so
+      // does the copy that mentions it — the server removes the route
+      // entirely, so leaving either on screen would advertise something that
+      // does not exist.
+      if (st.faucetAvailable === false) {
+        FAUCET = false;
+        var fp = $("faucet-panel");
+        if (fp) fp.remove();
+        var dn = document.getElementById("deposit-faucet-note");
+        if (dn) dn.remove();
+      }
+      if (st.live === true) {
+        // Deposit screen widens to fill the space the faucet left.
+        var dg = document.getElementById("deposit-grid");
+        if (dg) dg.className = "grid";
       }
     }).catch(function () {});
 

@@ -11,11 +11,23 @@ import Database from "better-sqlite3";
 
 import { ASSETS, custodyIds, settlementAsset } from "./assets";
 import { BitGoHoldings } from "./bitgo";
+import { pinAndVerify } from "./ipv4";
 import { MARKETS } from "./venue";
 import { flipLive, format, preflight, type PreflightDeps } from "./golive";
 import { Ledger } from "./ledger";
 
-/** Every chain-qualified custody id the venue needs a wallet for. */
+/**
+ * Every chain-qualified custody id the venue needs a BITGO wallet for.
+ *
+ * EXCLUDES OUR OWN CHAINS. BLOCK and PERBUG are self-custodied — BitGo does
+ * not list them and the adapter refuses them outright with a reason. Demanding
+ * a BitGo wallet for them made the coverage check impossible to pass, which
+ * would have left a permanent red line that an operator learns to ignore. They
+ * need their own holdings source; that is a separate check to add when the
+ * self-custody signer is wired, not a BitGo one.
+ */
+const SELF_CUSTODIED = new Set(["BLOCK", "PERBUG"]);
+
 const CUSTODY_IDS: readonly string[] = (() => {
 	const assets = new Set<string>();
 	for (const m of MARKETS) {
@@ -23,11 +35,33 @@ const CUSTODY_IDS: readonly string[] = (() => {
 		assets.add(settlementAsset(m.quote));
 	}
 	return [...assets]
-		.filter((a) => ASSETS[a] !== undefined)
+		.filter((a) => ASSETS[a] !== undefined && !SELF_CUSTODIED.has(a))
 		.flatMap((a) => custodyIds(a));
 })();
 
 async function main(): Promise<void> {
+	/*
+	 * PIN IPv4 BEFORE TOUCHING BITGO.
+	 *
+	 * The access token is whitelisted to this host's IPv4 address and the box
+	 * also has IPv6, so an unpinned request can leave over v6 and come back as
+	 * a 401 that is indistinguishable from a bad token. The web service already
+	 * does this at startup; this CLI did not, and the result was a preflight
+	 * that reported "this token authenticates against NEITHER installation"
+	 * while `curl -4` with the same token succeeded. A check that produces a
+	 * false alarm about a credential is worse than no check — it sends you
+	 * looking for the wrong problem.
+	 */
+	try {
+		await pinAndVerify("app.bitgo.com");
+	} catch (e) {
+		console.error(
+			`WARNING: could not verify IPv4 egress (${
+				e instanceof Error ? e.message : String(e)
+			}). Custody checks below may report a false 401.`,
+		);
+	}
+
 	const dbPath = process.env.CUSTODY_DB ?? "/var/lib/exchange-custody/ledger.db";
 	const configPath = process.env.EXCHANGE_CONFIG ?? "/etc/blockle/exchange.json";
 	const db = new Database(dbPath);
@@ -72,6 +106,7 @@ async function main(): Promise<void> {
 		db,
 		ledger,
 		configPath,
+		expectCustodyIds: CUSTODY_IDS,
 		...(holdings === undefined ? {} : { holdings }),
 		...(verify === undefined ? {} : { verifyCustodyEnv: verify }),
 		env: process.env,
