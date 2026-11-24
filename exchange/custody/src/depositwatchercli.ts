@@ -21,24 +21,36 @@ import Database from "better-sqlite3";
 import { ASSETS, custodyIds, settlementAsset } from "./assets";
 import { BitGoHoldings } from "./bitgo";
 import { BitGoDeposits } from "./bitgodeposits";
+import { nodeAdapters } from "./custodyrouting";
 import { runOnce } from "./depositwatcher";
 import { pinAndVerify } from "./ipv4";
 import { Ledger } from "./ledger";
 import { MARKETS } from "./venue";
 
 /** Assets a BitGo wallet is expected for; our own chains are self-custodied. */
-const SELF_CUSTODIED = new Set(["BLOCK", "PERBUG"]);
-
-function listedAssets(): string[] {
+/**
+ * Assets to poll, and who reports each one's arrivals.
+ *
+ * `SELF_CUSTODIED` used to be an exclusion list: BLOCK and PERBUG were
+ * dropped because BitGo has no feed for them — correct at the time, and it
+ * also meant a deposit to either could never be credited. They are included
+ * now, routed to the daemon that actually sees them.
+ *
+ * An asset with no custodian AND no node is still excluded: polling BitGo for
+ * a coin it does not hold returns nothing useful on every pass.
+ */
+function listedAssets(nodeFeeds: ReadonlyMap<string, unknown>): string[] {
 	const out = new Set<string>();
 	for (const m of MARKETS) {
 		out.add(settlementAsset(m.base));
 		out.add(settlementAsset(m.quote));
 	}
 	return [...out].filter(
-		(a) => ASSETS[a] !== undefined && !SELF_CUSTODIED.has(a),
+		(a) => ASSETS[a] !== undefined && (nodeFeeds.has(a) || !SELF_CUSTODIED.has(a)),
 	);
 }
+
+const SELF_CUSTODIED = new Set(["BLOCK", "PERBUG"]);
 
 async function main(): Promise<void> {
 	// IPv4 FIRST. The token is whitelisted to this host's IPv4 address and the
@@ -116,8 +128,23 @@ async function main(): Promise<void> {
 		return resolved;
 	};
 
-	const assets = listedAssets();
-	const r = await runOnce({ db, ledger, client, walletFor, assets });
+	/*
+	 * THE COINS WE WATCH OURSELVES.
+	 *
+	 * Read-only adapters: this job credits deposits, so it has no business
+	 * being able to spend. `nodeAdapters` builds them from the environment
+	 * and skips anything unconfigured.
+	 */
+	const nodeFeeds = nodeAdapters({
+		env: process.env,
+		onSkip: (symbol, why) => console.log(`  ${symbol}: not watched (${why})`),
+	});
+	if (nodeFeeds.size > 0) {
+		console.log(`  watching our own nodes for: ${[...nodeFeeds.keys()].join(", ")}`);
+	}
+
+	const assets = listedAssets(nodeFeeds);
+	const r = await runOnce({ db, ledger, client, walletFor, assets, nodeFeeds });
 
 	console.log(
 		`deposit-watcher: ${r.scanned} seen, ${r.credited} credited, ` +

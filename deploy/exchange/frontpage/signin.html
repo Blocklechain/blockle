@@ -153,6 +153,20 @@
     .stage { border-right: 0; border-bottom: 1px solid var(--line); }
     .stage .cap { display: none; }
   }
+  /*
+   * PHONES. The 860px rule stacks the particle stage above the form, which is
+   * the right shape; these are the touch sizes. A sign-in field that needs a
+   * second attempt because the tap missed is where people give up, and the
+   * 16px font size is what stops iOS zooming the page on focus.
+   */
+  @media (max-width: 560px) {
+    body { grid-template-rows: 150px 1fr; }
+    .pane { padding: 22px 18px 32px; }
+    input { font-size: 16px; padding: 12px 13px; min-height: 46px; }
+    button.go { min-height: 48px; font-size: 15px; }
+    .foot { font-size: 12px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     /* The particles settle into the mark and stay there. */
     .stage canvas { }

@@ -412,3 +412,98 @@ test("AN UNKNOWN CHAIN FAILS LONG, NOT SHORT", () => {
 	assert.equal(confirmationsFor("SOMECOIN", undefined), 64);
 	assert.ok(confirmationsFor("SOMECOIN", undefined) > confirmationsFor("BTC", undefined));
 });
+
+
+// ------------------------------------------------- the coins we hold ourselves
+
+test("A NODE-CUSTODIED DEPOSIT IS CREDITED, not silently ignored", async () => {
+	/*
+	 * BitGo has no feed for the small proof-of-work coins, so they used to be
+	 * excluded from this job entirely. With addresses and payouts wired for
+	 * them, that left the worst possible gap: an address a customer could
+	 * deposit to, and a deposit nothing would ever credit.
+	 */
+	const { db, l: ledger, d: deposits } = setup();
+	deposits.provision({
+		userId: "alice", asset: "DOGE", network: undefined,
+		address: "DOGEaddr1", source: "bitcoin-rpc:DOGE",
+	});
+
+	const adapter = {
+		symbol: "DOGE",
+		route: "bitcoin-rpc",
+		probe: async () => ({
+			reachable: true, synced: true, height: 10, decimals: 8,
+			canDeriveAddresses: true, canSend: false, notes: [],
+		}),
+		balance: async () => 0n,
+		newAddress: async () => "x",
+		incoming: async () => [
+			{ txid: "dogetx1", address: "DOGEaddr1", amount: 500_000_000n, confirmations: 99 },
+		],
+		send: async () => ({ txid: "" }),
+	};
+
+	const r = await runOnce({
+		db, ledger,
+		client: client({}).client,
+		walletFor: async () => undefined,
+		assets: ["DOGE"],
+		nodeFeeds: new Map([["DOGE", adapter]]),
+	});
+
+	assert.equal(r.credited, 1, r.errors.join("; "));
+	assert.equal(ledger.balance({ kind: AccountKind.USER, owner: "alice", asset: "DOGE" }),
+		500_000_000n);
+});
+
+test("a node deposit below the confirmation depth waits, it is not credited early", async () => {
+	const { db, l: ledger, d: deposits } = setup();
+	deposits.provision({
+		userId: "alice", asset: "DOGE", network: undefined,
+		address: "DOGEaddr1", source: "bitcoin-rpc:DOGE",
+	});
+	const adapter = {
+		symbol: "DOGE", route: "bitcoin-rpc",
+		probe: async () => ({
+			reachable: true, synced: true, height: 10, decimals: 8,
+			canDeriveAddresses: true, canSend: false, notes: [],
+		}),
+		balance: async () => 0n,
+		newAddress: async () => "x",
+		incoming: async () => [
+			{ txid: "dogetx1", address: "DOGEaddr1", amount: 1n, confirmations: 0 },
+		],
+		send: async () => ({ txid: "" }),
+	};
+	const r = await runOnce({
+		db, ledger, client: client({}).client, walletFor: async () => undefined,
+		assets: ["DOGE"], nodeFeeds: new Map([["DOGE", adapter]]),
+	});
+	assert.equal(r.credited, 0);
+	assert.equal(r.pending, 1);
+	assert.equal(ledger.balance({ kind: AccountKind.USER, owner: "alice", asset: "DOGE" }), 0n);
+});
+
+test("AN UNREACHABLE DAEMON CREDITS NOTHING and says so", async () => {
+	// Same rule as a custodian outage: not being able to read the feed is
+	// never a reason to decide a deposit did or did not happen.
+	const { db, l: ledger } = setup();
+	const adapter = {
+		symbol: "DOGE", route: "bitcoin-rpc",
+		probe: async () => ({
+			reachable: false, synced: false, height: undefined, decimals: 8,
+			canDeriveAddresses: false, canSend: false, notes: ["ECONNREFUSED"],
+		}),
+		balance: async () => { throw new Error("unreachable"); },
+		newAddress: async () => "x",
+		incoming: async () => { throw new Error("ECONNREFUSED"); },
+		send: async () => ({ txid: "" }),
+	};
+	const r = await runOnce({
+		db, ledger, client: client({}).client, walletFor: async () => undefined,
+		assets: ["DOGE"], nodeFeeds: new Map([["DOGE", adapter]]),
+	});
+	assert.equal(r.credited, 0);
+	assert.ok(r.errors.some((e) => /transfer feed unavailable/.test(e)), r.errors.join("; "));
+});

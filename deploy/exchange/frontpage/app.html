@@ -72,7 +72,7 @@
           </p>
         </div>
         <div class="right">
-          <input id="mkt-search" placeholder="Filter…" style="width:190px" aria-label="Filter markets" />
+          <input id="mkt-search" class="filter" placeholder="Filter…" aria-label="Filter markets" />
         </div>
       </div>
       <div class="panel">
@@ -567,10 +567,10 @@
 
           <h3 style="margin:18px 0 8px;font-size:13px;letter-spacing:.04em;
                      text-transform:uppercase;color:var(--ink-dim)">Endpoints</h3>
-          <table id="t-apiendpoints">
+          <div class="scroll"><table id="t-apiendpoints">
             <thead><tr><th>Method</th><th>Path</th><th>Needs</th><th>Does</th></tr></thead>
             <tbody></tbody>
-          </table>
+          </table></div>
           <p class="note" style="margin-top:10px">
             Public market data — <code class="mono">/public/tickers</code>,
             <code class="mono">/public/markets</code>,

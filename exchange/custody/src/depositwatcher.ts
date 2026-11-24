@@ -45,6 +45,7 @@ import type { Database } from "better-sqlite3";
 
 import { assetDef, custodyIds, networkOf, qualify, settlementAsset } from "./assets";
 import { confirmationsFor, type BitGoDeposits, type IncomingTransfer } from "./bitgodeposits";
+import type { ChainAdapter } from "./chains";
 import { Deposits } from "./deposits";
 import { beat } from "./golive";
 import { AccountKind, Reason, type Ledger } from "./ledger";
@@ -106,10 +107,56 @@ export interface WatcherDeps {
 	 * the exchange does not own.
 	 */
 	readonly walletFor: (custodyId: string) => Promise<{ coin: string; walletId: string } | undefined>;
+	/**
+	 * Chains we watch ourselves, keyed by settlement asset.
+	 *
+	 * BitGo will not custody the small proof-of-work coins, so their deposits
+	 * arrive at a daemon we run and have to be read from it. Without this the
+	 * address and payout paths were wired for those coins while the crediting
+	 * path was not — an address a customer could deposit to and a deposit
+	 * nothing would ever credit.
+	 *
+	 * Absent means BitGo for everything, which is the old behaviour exactly.
+	 */
+	readonly nodeFeeds?: ReadonlyMap<string, ChainAdapter>;
 	readonly assets: readonly string[];
 	readonly now?: () => number;
 	/** Per-poll page size. */
 	readonly limit?: number;
+}
+
+/**
+ * Read a node's arrivals in the shape the crediting loop already consumes.
+ *
+ * ONE CREDIT PER TRANSFER here, unlike BitGo, whose transfer can credit
+ * several addresses at once. A daemon reports per (txid, address) already, so
+ * the mapping is one-to-one — and the idempotency key downstream is
+ * `deposit:<transferId>:<address>`, which stays unique as long as the
+ * transfer id carries the address. It does: the id is the txid, and a txid
+ * paying two of our addresses yields two rows with different addresses.
+ */
+async function nodeTransfers(
+	adapter: ChainAdapter,
+): Promise<{ transfers: IncomingTransfer[]; nextPrevId: string | undefined }> {
+	const rows = await adapter.incoming();
+	return {
+		transfers: rows.map((r): IncomingTransfer => ({
+			id: r.txid,
+			txid: r.txid,
+			coin: adapter.symbol.toLowerCase(),
+			// The daemon reports a confirmation depth, not a wall-clock time.
+			// This field is for display only; inventing a timestamp would make
+			// a deposit look like it arrived when we happened to poll.
+			createdAt: "",
+			// A daemon reports what it has accepted; anything it has rejected
+			// is simply absent, so there is no "failed" state to filter.
+			state: "confirmed",
+			confirmations: r.confirmations,
+			total: r.amount,
+			credits: [{ address: r.address, amount: r.amount }],
+		})),
+		nextPrevId: undefined,
+	};
 }
 
 /**
@@ -148,7 +195,21 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 		const asset = settlementAsset(custodyId);
 		const network = networkOf(custodyId);
 
-		let wallet: { coin: string; walletId: string } | undefined;
+		/*
+		 * WHO REPORTS THIS COIN'S ARRIVALS? A daemon we run, or BitGo.
+		 *
+		 * Resolved before the wallet lookup, because a node-custodied coin has
+		 * no custodian wallet and asking for one would skip it entirely —
+		 * which is exactly the bug this fixes.
+		 */
+		const node = deps.nodeFeeds?.get(asset);
+
+		let wallet: { coin: string; walletId: string } | undefined =
+			node === undefined ? undefined : { coin: asset, walletId: "node" };
+		if (node !== undefined) {
+			// The daemon is the wallet; the fields above are placeholders the
+			// node path ignores.
+		} else {
 		try {
 			wallet = await deps.walletFor(custodyId);
 		} catch (e) {
@@ -159,6 +220,7 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 			);
 			continue;
 		}
+		}
 		if (wallet === undefined) {
 			// Not an error worth shouting about on every poll: a listed asset
 			// with no wallet yet is already a preflight failure.
@@ -167,14 +229,17 @@ export async function runOnce(deps: WatcherDeps): Promise<WatcherResult> {
 
 		let page: { transfers: IncomingTransfer[]; nextPrevId: string | undefined };
 		try {
-			page = await deps.client.incomingTransfers({
-				coin: wallet.coin,
-				walletId: wallet.walletId,
-				...(deps.limit === undefined ? {} : { limit: deps.limit }),
-			});
+			page = node === undefined
+				? await deps.client.incomingTransfers({
+						coin: wallet.coin,
+						walletId: wallet.walletId,
+						...(deps.limit === undefined ? {} : { limit: deps.limit }),
+					})
+				: await nodeTransfers(node);
 		} catch (e) {
 			// A CUSTODIAN OUTAGE IS NOT A DEPOSIT DECISION. Nothing is credited
-			// and nothing is marked; the next poll tries again.
+			// and nothing is marked; the next poll tries again. Same for a
+			// daemon that will not answer.
 			errors.push(
 				`${custodyId}: transfer feed unavailable (${
 					e instanceof Error ? e.message : String(e)
