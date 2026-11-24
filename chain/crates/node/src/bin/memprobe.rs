@@ -41,6 +41,14 @@ fn rss_bytes() -> u64 {
         .unwrap_or(0)
 }
 
+/// Everywhere else (Windows, the BSDs): the collection counters below are still
+/// the point of the probe and are platform-independent, so report 0 rather than
+/// failing to build. A zero RSS column means "measure this on Linux".
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rss_bytes() -> u64 {
+    0
+}
+
 fn mb(bytes: u64) -> f64 {
     bytes as f64 / 1_048_576.0
 }
