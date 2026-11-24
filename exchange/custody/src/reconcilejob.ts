@@ -273,6 +273,41 @@ export async function main(): Promise<void> {
 		...(sourceFromEnv() === undefined ? {} : { source: sourceFromEnv()! }),
 	});
 
+	/*
+	 * HEARTBEAT FIRST, BEFORE THE EXIT CODE.
+	 *
+	 * A halt is a SUCCESSFUL detection, not a failure to run — the job did
+	 * exactly its job. Beating only on a clean pass would mean the go-live
+	 * preflight reported "reconciler is running: NEVER REPORTED" for a
+	 * reconciler that was running every two minutes and correctly halting an
+	 * asset. Which it did: the check was added after this job was written and
+	 * nothing here ever called it.
+	 *
+	 * So the beat records that a pass COMPLETED, and says what it found. The
+	 * exit code below is the separate question of whether anyone needs to act.
+	 */
+	/*
+	 * NO HEARTBEAT ROW IS WRITTEN HERE, AND THAT IS CORRECT.
+	 *
+	 * Two layers deliberately stop this job writing to the ledger: the handle
+	 * above is opened read-only, and the systemd unit grants ReadWritePaths for
+	 * /run/blockle ALONE. The component that decides whether the venue is
+	 * solvent cannot alter the books it is judging — at the filesystem level,
+	 * not merely by convention.
+	 *
+	 * I tried twice to write a liveness row from here. The first attempt used
+	 * the read-only handle and threw out of main(), so a pass that had
+	 * correctly detected a shortfall and halted BLOCK was reported as
+	 * "reconciliation failed to run". The second opened its own writable
+	 * connection and hit the unit's filesystem restriction instead. Both were
+	 * the wrong shape: the fix is not to let this job write more, it is to read
+	 * liveness from what it is already allowed to produce.
+	 *
+	 * `writeHalts` above runs on EVERY completed pass, empty set included, so
+	 * the halt file's modification time is proof a pass finished. The preflight
+	 * reads that for the reconciler (see golive.ts) and needs nothing else.
+	 */
+
 	// EXIT NON-ZERO ON A HALT, so systemd records a failure and the operator's
 	// usual tooling notices. A reconciliation break that only appears in a log
 	// nobody reads is a break nobody acts on.

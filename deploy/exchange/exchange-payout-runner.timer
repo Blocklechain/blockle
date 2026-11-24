@@ -1,0 +1,21 @@
+# -----------------------------------------------------------------------------
+# Every minute, offset from the deposit watcher so the two are not hammering
+# BitGo in the same instant.
+#
+# Persistent=false: a missed window needs no catching up. Sending is idempotent
+# on a deterministic sequence id, and settlement re-reads the transfer, so the
+# next pass simply does what the missed one would have.
+# -----------------------------------------------------------------------------
+[Unit]
+Description=Send and settle exchange withdrawals every minute
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10
+RandomizedDelaySec=15
+Persistent=false
+Unit=exchange-payout-runner.service
+
+[Install]
+WantedBy=timers.target

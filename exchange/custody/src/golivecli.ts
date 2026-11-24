@@ -107,6 +107,7 @@ async function main(): Promise<void> {
 		ledger,
 		configPath,
 		expectCustodyIds: CUSTODY_IDS,
+		haltFile: process.env.HALT_FILE ?? "/run/blockle/exchange-halts.json",
 		...(holdings === undefined ? {} : { holdings }),
 		...(verify === undefined ? {} : { verifyCustodyEnv: verify }),
 		env: process.env,

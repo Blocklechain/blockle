@@ -33,7 +33,7 @@
 // records whether the MACHINERY can honour it.
 // -----------------------------------------------------------------------------
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Database } from "better-sqlite3";
 
@@ -129,6 +129,11 @@ export interface PreflightDeps {
 	 * demand a BitGo wallet for our own chains, which BitGo refuses.
 	 */
 	readonly expectCustodyIds?: readonly string[];
+	/**
+	 * Where the reconciler writes its halt set. Its mtime is that runner's
+	 * liveness evidence — see the note in the runner loop.
+	 */
+	readonly haltFile?: string;
 	readonly now?: () => number;
 }
 
@@ -169,9 +174,38 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 	// ---- 1. THE RAILS THAT MOVE REAL MONEY ---------------------------------
 
 	for (const r of REQUIRED_RUNNERS) {
-		const row = deps.db
+		let row = deps.db
 			.prepare(`SELECT at, detail, cycles FROM runner_heartbeat WHERE runner = ?`)
 			.get(r.name) as { at: string; detail: string | null; cycles: number } | undefined;
+
+		/*
+		 * THE RECONCILER PROVES ITSELF WITH AN ARTEFACT, NOT A ROW.
+		 *
+		 * It is denied write access to the ledger on purpose — read-only
+		 * handle AND a systemd unit whose only writable path is /run/blockle —
+		 * because the component judging solvency must not be able to alter the
+		 * books. So it cannot write a heartbeat row, and demanding one made
+		 * this check report "NEVER REPORTED" for a reconciler that was running
+		 * every two minutes and correctly halting an asset.
+		 *
+		 * It writes the halt file on every completed pass, empty set included.
+		 * That file's mtime is the evidence, and it is better evidence than a
+		 * row: it is the thing the rest of the system actually consumes, so a
+		 * stale one means the interlock is stale too.
+		 */
+		if (row === undefined && r.name === "reconciler" && deps.haltFile !== undefined) {
+			try {
+				const st = statSync(deps.haltFile);
+				row = {
+					at: new Date(st.mtimeMs).toISOString(),
+					detail: `halt file written at ${new Date(st.mtimeMs).toISOString()}`,
+					cycles: 1,
+				};
+			} catch {
+				// Absent: leave row undefined and fail the check below.
+			}
+		}
+
 		if (row === undefined) {
 			checks.push(no(
 				`runner:${r.name}`,
