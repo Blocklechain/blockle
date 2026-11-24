@@ -1,0 +1,135 @@
+{
+  "_comment": [
+    "Where each listed coin's daemon comes from, and what it costs to run.",
+    "",
+    "Every repo and asset pattern here was resolved against the GitHub release",
+    "API rather than guessed — `provision.sh check` re-resolves them and fails",
+    "if a project has moved or renamed its artifacts.",
+    "",
+    "`ramGb` is what the capacity guard enforces before anything is installed.",
+    "These are ESTIMATES from each chain's family and size, not measurements,",
+    "and they are deliberately not optimistic: the host also runs the exchange,",
+    "and an OOM there is customer funds becoming unreachable. `status` records",
+    "the real RSS once a node is up, which is how these become facts.",
+    "",
+    "`rpcPort` is assigned here rather than taken from each project's default,",
+    "so two chains cannot silently collide on a port and hand the exchange one",
+    "coin's balance under another's name."
+  ],
+
+  "RTM": {
+    "name": "Raptoreum",
+    "family": "bitcoin-rpc",
+    "repo": "Raptor3um/raptoreum",
+    "assetMatch": "raptoreum-ubuntu22-.*\\.tar\\.gz$",
+    "daemon": "raptoreumd",
+    "cli": "raptoreum-cli",
+    "rpcPort": 19001,
+    "ramGb": 2,
+    "diskGb": 15
+  },
+  "PEP": {
+    "name": "Pepecoin",
+    "family": "bitcoin-rpc",
+    "repo": "pepecoinppc/pepecoin",
+    "assetMatch": "pepecoin-.*-x86_64-linux-gnu\\.tar\\.gz$",
+    "daemon": "pepecoind",
+    "cli": "pepecoin-cli",
+    "rpcPort": 19002,
+    "ramGb": 1,
+    "diskGb": 8
+  },
+  "NEOX": {
+    "name": "Neoxa",
+    "family": "bitcoin-rpc",
+    "repo": "NeoxaChain/Neoxa",
+    "assetMatch": "neoxad-.*-linux64\\.zip$",
+    "daemon": "neoxad",
+    "cli": "neoxa-cli",
+    "rpcPort": 19003,
+    "ramGb": 2,
+    "diskGb": 25
+  },
+  "MEWC": {
+    "name": "Meowcoin",
+    "family": "bitcoin-rpc",
+    "repo": "Meowcoin-Foundation/Meowcoin",
+    "assetMatch": "meowcoin-.*-x86_64-linux-gnu\\.tar\\.gz$",
+    "daemon": "meowcoind",
+    "cli": "meowcoin-cli",
+    "rpcPort": 19004,
+    "ramGb": 2,
+    "diskGb": 20
+  },
+  "DINGO": {
+    "name": "Dingocoin",
+    "family": "bitcoin-rpc",
+    "repo": "dingocoin/dingocoin",
+    "assetMatch": "^linux-binaries\\.zip$",
+    "daemon": "dingocoind",
+    "cli": "dingocoin-cli",
+    "rpcPort": 19005,
+    "ramGb": 1,
+    "diskGb": 12
+  },
+  "XEL": {
+    "name": "Xelis",
+    "family": "custom",
+    "repo": "xelis-project/xelis-blockchain",
+    "assetMatch": "x86_64-unknown-linux-gnu\\.tar\\.gz$",
+    "daemon": "xelis_daemon",
+    "cli": "xelis_wallet",
+    "rpcPort": 19006,
+    "ramGb": 2,
+    "diskGb": 10,
+    "note": "Its own RPC, not bitcoind-shaped. chains.ts has no adapter for it, so the exchange will keep reporting it unavailable until one exists — which is the honest state, not a gap to paper over."
+  },
+  "ZEPH": {
+    "name": "Zephyr Protocol",
+    "family": "monero-rpc",
+    "repo": "ZephyrProtocol/zephyr",
+    "assetMatch": "zephyr-cli-linux-.*\\.zip$",
+    "daemon": "zephyrd",
+    "cli": "zephyr-wallet-rpc",
+    "rpcPort": 19007,
+    "ramGb": 4,
+    "diskGb": 40,
+    "note": "Monero-family: the DAEMON serves chain data, and a SEPARATE wallet-rpc process holds the keys and issues subaddresses. Reconciliation needs only the daemon; deposits need both."
+  },
+  "EPIC": {
+    "name": "Epic Cash",
+    "family": "custom",
+    "repo": "EpicCash/epic",
+    "assetMatch": "epic-v.*-linux-amd64\\.tar\\.gz$",
+    "daemon": "epic",
+    "cli": "epic-wallet",
+    "rpcPort": 19008,
+    "ramGb": 2,
+    "diskGb": 10,
+    "note": "MimbleWimble. No adapter in chains.ts either; same honest-unavailable state as XEL."
+  },
+  "RXD": {
+    "name": "Radiant",
+    "family": "bitcoin-rpc",
+    "repo": "RadiantBlockchain/radiant-node",
+    "assetMatch": null,
+    "daemon": "radiantd",
+    "cli": "radiant-cli",
+    "rpcPort": 19009,
+    "ramGb": 2,
+    "diskGb": 25,
+    "note": "NO RELEASE BINARIES — the latest tag ships source only. Left unautomated rather than pointing the installer at somebody's unofficial build of a chain we would hold customer funds on. Build it, then install by hand."
+  },
+  "OCTA": {
+    "name": "OctaSpace",
+    "family": "evm-rpc",
+    "repo": null,
+    "assetMatch": null,
+    "daemon": "geth",
+    "cli": null,
+    "rpcPort": 19010,
+    "ramGb": 8,
+    "diskGb": 80,
+    "note": "An EVM chain, so a geth fork. The repo this was expected at returns 404, and it is also the most expensive node on the list — 8GB of RAM for a coin nobody has deposited yet. Confirm the real source before spending that."
+  }
+}
