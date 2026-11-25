@@ -81,7 +81,10 @@ function marketDefined(coin: ListedCoin): boolean {
 	return MARKETS.some((m) => m.base === coin.symbol || m.quote === coin.symbol);
 }
 
-async function one(coin: ListedCoin, verbose: boolean): Promise<boolean> {
+async function one(
+	coin: ListedCoin,
+	verbose: boolean,
+): Promise<{ promotable: boolean; degraded: boolean }> {
 	const cap = await probe(coin);
 	const blockers = canGoLive(coin, {
 		reachable: cap.reachable,
@@ -92,22 +95,36 @@ async function one(coin: ListedCoin, verbose: boolean): Promise<boolean> {
 		marketDefined: marketDefined(coin),
 		ledgerKnowsAsset: ASSETS[coin.symbol] !== undefined,
 	});
-	const ready = blockers.length === 0;
-	const mark = coin.status === "live" ? "LIVE" : ready ? "READY" : "    ";
+	/*
+	 * "ALREADY LIVE" IS NOT A FAULT, AND MUST NOT BE DISPLAYED AS ONE.
+	 *
+	 * canGoLive answers "may this be promoted", so for a coin that already IS
+	 * live it correctly returns the single reason "it is already marked live".
+	 * Rendered naively that printed `LIVE PEP … 1 blocker`, which reads as a
+	 * healthy coin with something wrong with it — and a status tool that cries
+	 * wolf on its happy path is a status tool people stop reading.
+	 *
+	 * So the tautology is separated from the real blockers. A live coin shows
+	 * none, and the summary counts only coins that are genuinely promotable.
+	 */
+	const realBlockers = blockers.filter((b) => !/already marked live/.test(b));
+	const promotable = blockers.length === 0;
+	const healthy = realBlockers.length === 0;
+	const mark = coin.status === "live" ? (healthy ? "LIVE" : "DEGRADED") : promotable ? "READY" : "    ";
 	console.log(
-		`  ${mark.padEnd(6)}${coin.symbol.padEnd(8)}${coin.custody.padEnd(13)}` +
-			`${coin.status.padEnd(13)}${ready ? "" : `${blockers.length} blocker` +
-				`${blockers.length === 1 ? "" : "s"}`}`,
+		`  ${mark.padEnd(9)}${coin.symbol.padEnd(8)}${coin.custody.padEnd(13)}` +
+			`${coin.status.padEnd(13)}${healthy ? "" : `${realBlockers.length} blocker` +
+				`${realBlockers.length === 1 ? "" : "s"}`}`,
 	);
-	if (verbose || (!ready && process.argv.includes("--why"))) {
-		for (const b of blockers) console.log(`           - ${b}`);
+	if (verbose || (!healthy && process.argv.includes("--why"))) {
+		for (const b of realBlockers) console.log(`           - ${b}`);
 		for (const n of cap.notes) console.log(`           note: ${n}`);
 		if (cap.height !== undefined) console.log(`           height: ${cap.height}`);
 		if (coin.status === "live") {
 			console.log(`           markets: ${marketsFor(coin).join(", ") || "none"}`);
 		}
 	}
-	return ready;
+	return { promotable, degraded: coin.status === "live" && !healthy };
 }
 
 async function main(): Promise<void> {
@@ -122,15 +139,29 @@ async function main(): Promise<void> {
 
 	buildAll();
 	console.log("Listing readiness — the registry's claim, checked against the node.\n");
-	console.log("  STATE SYMBOL  CUSTODY      REGISTRY     BLOCKERS");
+	console.log("  STATE    SYMBOL  CUSTODY      REGISTRY     BLOCKERS");
 	let ready = 0;
+	let degraded = 0;
+	let live = 0;
 	for (const c of coins) {
-		if (await one(c, only !== undefined)) ready += 1;
+		const r = await one(c, only !== undefined);
+		if (r.promotable) ready += 1;
+		if (r.degraded) degraded += 1;
+		if (c.status === "live") live += 1;
 	}
 	console.log(
-		`\n${ready} of ${coins.length} could be promoted. Use --why for the reasons, ` +
-			`or --coin <SYMBOL> for one in full.`,
+		`\n${live} live, ${ready} ready to promote, ${coins.length - live - ready} not ready.`,
 	);
+	if (degraded > 0) {
+		// LOUD, because this is the only line here that means something is wrong
+		// RIGHT NOW with a coin customers can already deposit.
+		console.log(
+			`\n  ** ${degraded} LIVE coin(s) DEGRADED — a chain customers can deposit to is\n` +
+				"     failing a check it passed at promotion. Run --why for which, and\n" +
+				"     expect deposits or withdrawals on it to be refusing.",
+		);
+	}
+	console.log("Use --why for reasons, or --coin <SYMBOL> for one in full.");
 	console.log(
 		"Promotion is a registry edit plus a page regeneration, done deliberately — " +
 			"this command does not do it.",
