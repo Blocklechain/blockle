@@ -33,7 +33,15 @@
 // records whether the MACHINERY can honour it.
 // -----------------------------------------------------------------------------
 
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	chownSync,
+	existsSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { Database } from "better-sqlite3";
 
@@ -112,6 +120,11 @@ export interface PreflightDeps {
 	readonly db: Database;
 	readonly ledger: Ledger;
 	readonly configPath: string;
+	/**
+	 * The account the public API runs as, for the config:service-readable
+	 * check. Defaults to www-data, which is what the unit on the box uses.
+	 */
+	readonly serviceUser?: string;
 	/** Reads live custody holdings. Undefined when no custodian is configured. */
 	readonly holdings?: {
 		readonly name: string;
@@ -509,6 +522,31 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 				"flag then reads false, which fails closed — but it also means the " +
 				"flip below has nothing to write into."));
 
+	/*
+	 * READABLE BY THE SERVICE, NOT JUST BY ME.
+	 *
+	 * This check exists because `config:readable` above passed on a gate file
+	 * the venue could not open. The preflight runs as root; root ignores the
+	 * permission bits; the API runs as www-data. A 0640 root:root gate is
+	 * therefore fully readable here and EACCES there, so a genuine flip —
+	 * mainnetEnabled true, written and read back — left the site serving
+	 * "Testnet" with every check green. Nothing in the report pointed at the
+	 * cause, because no check was asking the question from the consumer's side.
+	 *
+	 * Not funds-critical: the failure direction is closed (the venue refuses to
+	 * be live), which strands nobody's money. It is a liveness bug, and the
+	 * cost is entirely in operator confusion — which is what the evidence
+	 * string is for.
+	 */
+	const svc = readableByService(deps.configPath, deps.serviceUser ?? "www-data");
+	checks.push(svc.ok
+		? ok("config:service-readable", "The API service can read the gate", svc.why)
+		: no("config:service-readable", "The API service can read the gate",
+			`${svc.why}. The service fails closed on an unreadable gate, so the ` +
+				"venue will serve testnet no matter what the file says. Fix with " +
+				`chgrp ${deps.serviceUser ?? "www-data"} ${deps.configPath} (keep it 0640 — ` +
+				"it stays unreadable to every other local account)."));
+
 	const blocking = checks.filter((c) => !c.pass);
 	const criticalBlocking = blocking.filter((c) => c.fundsCritical);
 	const ready = blocking.length === 0;
@@ -536,6 +574,94 @@ function listedAssets(): readonly string[] {
 		seen.add(settlementAsset(m.quote));
 	}
 	return [...seen].filter((a) => ASSETS[a] !== undefined).sort();
+}
+
+/**
+ * Resolve a username to its uid and the full set of gids it holds.
+ *
+ * Parsed out of /etc/passwd and /etc/group rather than taken from a syscall
+ * because node exposes no getpwnam, and because the question being asked is
+ * about a DIFFERENT user than the one running this process.
+ *
+ * Returns null when the user does not exist, which the caller must treat as
+ * "cannot answer" rather than "readable" — see readableByService.
+ */
+function resolveUser(user: string): { uid: number; gids: number[] } | null {
+	try {
+		const line = readFileSync("/etc/passwd", "utf8")
+			.split("\n")
+			.find((l) => l.startsWith(`${user}:`));
+		if (line === undefined) return null;
+		const f = line.split(":");
+		const uid = Number(f[2]);
+		const primary = Number(f[3]);
+		if (!Number.isInteger(uid) || !Number.isInteger(primary)) return null;
+		const gids = new Set<number>([primary]);
+		// Supplementary groups: the member list is the 4th field, comma-separated.
+		for (const g of readFileSync("/etc/group", "utf8").split("\n")) {
+			const gf = g.split(":");
+			const members = gf[3];
+			if (members === undefined) continue;
+			if (members.split(",").some((m) => m.trim() === user)) {
+				const gid = Number(gf[2]);
+				if (Number.isInteger(gid)) gids.add(gid);
+			}
+		}
+		return { uid, gids: [...gids] };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Could `user` read this path, judging by the permission bits?
+ *
+ * WHY THIS EXISTS AND WHY IT IS NOT access(). The preflight runs as root, and
+ * **root bypasses the permission bits entirely** — access(R_OK) returns true
+ * for a 0640 root:root file no matter who the service runs as. So the original
+ * `config:readable` check reported PASS on a gate file the venue itself could
+ * not open, and the venue, correctly failing closed, kept serving "testnet"
+ * after a flip that had genuinely written `mainnetEnabled: true`. The operator
+ * sees a flipped file, a green check, and a testnet banner, with nothing
+ * connecting them.
+ *
+ * So the bits are evaluated against the service account directly. Every parent
+ * directory needs +x too, or the open fails before the file's own mode is ever
+ * consulted — that is a real and easy way to lock a service out of a file whose
+ * mode looks fine.
+ */
+export function readableByService(path: string, user: string): { ok: boolean; why: string } {
+	const u = resolveUser(user);
+	if (u === null) return { ok: false, why: `user ${user} does not exist on this host` };
+	/** The read bit that applies to this user: owner 0400, group 0040, other 0004. */
+	const canRead = (mode: number, uid: number, gid: number): boolean => {
+		const bit = u.uid === uid ? 0o400 : u.gids.includes(gid) ? 0o040 : 0o004;
+		return (mode & bit) !== 0;
+	};
+	try {
+		for (let d = dirname(path); ; d = dirname(d)) {
+			const st = statSync(d);
+			// Search permission on a directory is the x bit, at the same
+			// owner/group/other offset as r.
+			const xb = u.uid === st.uid ? 0o100 : u.gids.includes(st.gid) ? 0o010 : 0o001;
+			if ((st.mode & xb) === 0) {
+				return { ok: false, why: `${user} cannot traverse ${d} (mode ${(st.mode & 0o777).toString(8)})` };
+			}
+			if (d === "/" || dirname(d) === d) break;
+		}
+		const st = statSync(path);
+		if (!canRead(st.mode, st.uid, st.gid)) {
+			return {
+				ok: false,
+				why:
+					`${path} is mode ${(st.mode & 0o777).toString(8)} uid ${st.uid} gid ${st.gid}; ` +
+					`${user} (uid ${u.uid}, gids ${u.gids.join(",")}) has no read bit`,
+			};
+		}
+		return { ok: true, why: `${user} can read ${path} (mode ${(st.mode & 0o777).toString(8)})` };
+	} catch (e) {
+		return { ok: false, why: e instanceof Error ? e.message : String(e) };
+	}
 }
 
 function readGate(path: string): {
@@ -589,8 +715,27 @@ export async function flipLive(deps: PreflightDeps): Promise<{
 		},
 		liveSince: new Date().toISOString(),
 	};
+	/*
+	 * PRESERVE THE OWNERSHIP OF THE FILE BEING REPLACED.
+	 *
+	 * temp-then-rename creates a NEW inode, owned by whoever ran the flip
+	 * (root) with whatever mode is passed here. So a gate file that had been
+	 * chgrp'd to the service account — the thing that lets the API read it at
+	 * all — silently reverts to root:root on the next flip, and the venue drops
+	 * back to serving testnet with no error anywhere. A fix applied by hand
+	 * once is a fix that expires at the next flip, so the write carries the
+	 * ownership forward instead.
+	 */
 	const tmp = join(dirname(deps.configPath), `.${Date.now()}.gate.tmp`);
 	writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode: 0o640 });
+	try {
+		const prev = statSync(deps.configPath);
+		chownSync(tmp, prev.uid, prev.gid);
+		chmodSync(tmp, prev.mode & 0o777);
+	} catch {
+		// No previous file, or not permitted to chown. 0640 root:root stands;
+		// config:service-readable reports it on the next run.
+	}
 	renameSync(tmp, deps.configPath);
 
 	// READ IT BACK AND CHECK IT PARSES AS LIVE, using the same two keys the
@@ -605,6 +750,23 @@ export async function flipLive(deps: PreflightDeps): Promise<{
 		throw new Error(
 			`wrote ${deps.configPath} but it does not read back as live — ` +
 				"refusing to report a flip that did not take effect",
+		);
+	}
+
+	/*
+	 * AND CHECK THE SERVICE CAN STILL READ IT. The read-back above runs as
+	 * root, which proves nothing about the account that actually serves the
+	 * flag: the first time this venue went live the file said mainnetEnabled
+	 * true and the site still said Testnet, because www-data got EACCES. A
+	 * flip the consumer cannot observe is not a flip, so it is reported as the
+	 * failure it is rather than as success.
+	 */
+	const reach = readableByService(deps.configPath, deps.serviceUser ?? "www-data");
+	if (!reach.ok) {
+		throw new Error(
+			`wrote ${deps.configPath} and it reads back live, but ${reach.why}. The ` +
+				"API fails closed on an unreadable gate, so the venue would keep " +
+				"serving testnet. Refusing to report this as a flip.",
 		);
 	}
 	return { flipped: true, report };

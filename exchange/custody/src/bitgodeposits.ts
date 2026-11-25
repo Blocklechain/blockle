@@ -75,6 +75,12 @@ interface AddressResponse {
 	id?: string;
 	label?: string;
 	coinSpecific?: { memoId?: string; destinationTag?: number | string };
+	/**
+	 * BitGo answers a 202 with an `error` field and NO address — the request
+	 * was accepted but nothing was created. See createReceiveAddress.
+	 */
+	error?: string;
+	pendingChainInitialization?: boolean;
 }
 
 interface TransferListResponse {
@@ -136,6 +142,33 @@ export class BitGoDeposits {
 		);
 		const address = (body.address ?? "").trim();
 		if (address === "") {
+			/*
+			 * ACCEPTED IS NOT CREATED.
+			 *
+			 * BitGo answers this POST with **HTTP 202 and an `error` field** when
+			 * the wallet cannot mint an address yet — for Solana,
+			 * `{"error":"wallet pending on-chain initialization"}`, because a
+			 * Solana account does not exist until it is rent-funded, so there is
+			 * nothing to derive from. 202 is a success status, so the response
+			 * sails through to here and the only symptom is a missing address.
+			 *
+			 * The old message blamed BitGo for returning a blank, which sent me
+			 * looking for a parsing bug in a response that was telling me plainly
+			 * what was wrong. The remedy is on the operator's side and specific
+			 * (fund the wallet's root address), so it is reported rather than
+			 * guessed at.
+			 */
+			const reason = (body.error ?? "").trim();
+			if (reason !== "" || body.pendingChainInitialization === true) {
+				throw new BitGoError(
+					`BitGo cannot issue a ${args.coin} receive address yet: ` +
+						`${reason === "" ? "wallet pending on-chain initialization" : reason}. ` +
+						"Account-based chains must exist on-chain before they can derive " +
+						`addresses — send a small amount to the ${args.coin} wallet's own ` +
+						"receive address to activate it, then this will succeed. No " +
+						"customer address is stored in the meantime.",
+				);
+			}
 			throw new BitGoError(
 				`BitGo created an address for ${args.coin} but returned no address ` +
 					"string — refusing to store a blank, which would be shown to a " +
