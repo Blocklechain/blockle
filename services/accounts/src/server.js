@@ -809,6 +809,18 @@ export function createApp(overrides = {}) {
     // alive upstream keeps BCH failing QUIETLY (no connection-refused) until the
     // web UTXO adapter is ported to a Blockbook/Haskoin shape. See notes.
     bch: 'https://bchblockexplorer.com',
+    // The exchange's own coin nodes, via the local coin-esplora shim. These are
+    // OURS, not third-party providers, and they are here for the same reason as
+    // the entries above: the wallets need a reachable HTTPS origin, and giving
+    // each coin its own hostname would mean a DNS record and a certificate per
+    // coin for data that is already public. coin-esplora is read-only plus
+    // broadcast and speaks the Esplora shape the UTXO adapters already use, so
+    // the wallet config for a new coin is one URL.
+    rtm: 'http://127.0.0.1:3070/rtm',
+    pep: 'http://127.0.0.1:3070/pep',
+    neox: 'http://127.0.0.1:3070/neox',
+    mewc: 'http://127.0.0.1:3070/mewc',
+    dingo: 'http://127.0.0.1:3070/dingo',
   };
   async function pxHandler(req, res, _url, m) {
     res.setHeader('access-control-allow-origin', '*');
