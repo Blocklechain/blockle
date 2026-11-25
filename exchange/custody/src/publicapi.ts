@@ -92,6 +92,20 @@ const DB_PATH = process.env.CUSTODY_DB ?? "/var/lib/exchange-custody/ledger.db";
 const STATIC_DIR = process.env.PUBLIC_STATIC_DIR ?? "";
 const CONFIG_PATH = process.env.EXCHANGE_CONFIG ?? "/etc/blockle/exchange.json";
 /** Must match the reconciler's: they are the two halves of one agreement. */
+/*
+ * WITHDRAWALS MUST GO TO A PRE-APPROVED ADDRESS.
+ *
+ * Turned on by the 2026-11-25 audit, which found this false alongside
+ * autoApprove:true and an empty approvalThreshold — so a stolen session could
+ * send to an arbitrary address with no human and no second factor in the way.
+ *
+ * It only works paired with the 24h cooling-off period in withdrawals.ts: an
+ * allowlist an attacker can add to and immediately draw from has cost them one
+ * extra request. Adding an address needs the authenticator; removing one does
+ * not, because removal only narrows what can be paid.
+ */
+const WD_REQUIRE_ALLOWLIST = true;
+
 const TREASURY_FILE =
 	process.env.TESTNET_TREASURY ?? "/etc/blockle/testnet-treasury.json";
 
@@ -981,6 +995,72 @@ async function venueRoute(
 		//
 		// Session-only, all three. See `sessionOnly` for why minting keys is on
 		// that list.
+		// ---- withdrawal address allowlist ----------------------------------
+		//
+		// ADDING AN ADDRESS IS A MONEY CONTROL, so it needs the second factor
+		// for exactly the reason replacing an authenticator does: if a session
+		// alone could add a destination, an attacker holding one would add their
+		// own and the allowlist would have cost them a single extra request.
+		//
+		// REMOVING needs no code. Removal only ever narrows what can be paid, and
+		// a control that is hard to loosen but easy to tighten is the right way
+		// round. A customer who suspects trouble should not be hunting for their
+		// phone to take an address OFF the list.
+
+		if (p === "/allowlist" && req.method === "GET") {
+			const owner = await sessionOnly("read your withdrawal addresses");
+			json(res, 200, {
+				addresses: wd.listAllowlist(owner),
+				cooldownHours: 24,
+				required: WD_REQUIRE_ALLOWLIST,
+				note:
+					"A new address becomes usable 24 hours after you add it. That " +
+					"delay is deliberate: it is what stops someone who has taken " +
+					"over your session from adding their own address and emptying " +
+					"the account before you notice.",
+			}, 0);
+			return;
+		}
+
+		if (p === "/allowlist" && req.method === "POST") {
+			const owner = await sessionOnly("add a withdrawal address");
+			const b = parseBody(rawBody);
+			userTotp.requireCode(
+				owner, header(req, "x-blockle-totp"), "adding a withdrawal address",
+			);
+			const asset = str(b, "asset").toUpperCase();
+			if (asset !== settlementAsset(asset)) {
+				throw new VenueError(
+					"asset must be a settlement symbol with no network suffix",
+				);
+			}
+			assetDef(asset);                       // rejects an unknown asset
+			const address = str(b, "address").trim();
+			if (address === "") throw new VenueError("an address is required");
+			// Bounded: this is stored and echoed back, and no chain this venue
+			// lists has an address anywhere near this long.
+			if (address.length > 128) throw new VenueError("that address is too long");
+			wd.allowlist(owner, asset, address);
+			const st = wd.allowlistStatus(owner, asset, address);
+			json(res, 200, {
+				ok: true,
+				asset,
+				address,
+				usableAt:
+					st.usableAt === undefined ? null : new Date(st.usableAt).toISOString(),
+			}, 0);
+			return;
+		}
+
+		if (p === "/allowlist/remove" && req.method === "POST") {
+			const owner = await sessionOnly("remove a withdrawal address");
+			const b = parseBody(rawBody);
+			const asset = str(b, "asset").toUpperCase();
+			const removed = wd.removeFromAllowlist(owner, asset, str(b, "address").trim());
+			json(res, 200, { ok: true, removed }, 0);
+			return;
+		}
+
 		// ---- second factor ------------------------------------------------
 		//
 		// SESSION-ONLY, all of them, for the same reason key management is: an API
@@ -1253,7 +1333,7 @@ export function start(): void {
 			PERBUG: 50_000n * 10n ** 8n, TRX: 5_000_000n * 10n ** 6n,
 			XRP: 2_500_000n * 10n ** 6n, BNB: 5_000n * 10n ** 18n,
 		},
-		requireAllowlistedAddress: false,
+		requireAllowlistedAddress: WD_REQUIRE_ALLOWLIST,
 	};
 	// GAS PRICING. The venue's own book first, the configured policy floor
 	// second, and the WORST of the two is what the fee is computed from. See

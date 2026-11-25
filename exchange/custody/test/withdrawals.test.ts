@@ -453,20 +453,118 @@ test("an allowlist, when required, blocks unknown destinations", async () => {
 			}),
 		/not an allowlisted ETH destination/,
 	);
-
-	w.allowlist("alice", ETH, "0xknown");
-	const ok = w.request({
-		userId: "alice",
-		asset: ETH,
-		amount: 100n,
-		address: "0xknown",
-		idempotencyKey: "k2",
-	});
-	assert.equal(ok.state, State.REQUESTED);
 	// One customer's allowlist is not another's.
+	w.allowlist("alice", ETH, "0xknown");
 	assert.equal(w.isAllowlisted("bob", ETH, "0xknown"), false);
 	// Nor does it carry across assets.
 	assert.equal(w.isAllowlisted("alice", "BTC", "0xknown"), false);
+});
+
+test("A FRESHLY ADDED ADDRESS CANNOT BE PAID YET", async () => {
+	// THE COOLING-OFF PERIOD IS THE POINT. An allowlist an attacker can add to
+	// and draw from in the same minute has cost them one extra request; the
+	// delay is what forces a stolen session to stay live long enough for the
+	// customer to notice an address they did not add.
+	let t = 1_700_000_000_000;
+	const { l, w } = setup(
+		{ ...POLICY, requireAllowlistedAddress: true },
+		{ now: () => t },
+	);
+	fund(l, "alice", 5_000n);
+	w.allowlist("alice", ETH, "0xmine");
+
+	// On the list, and refused anyway.
+	assert.equal(w.isAllowlisted("alice", ETH, "0xmine"), true);
+	assert.throws(
+		() =>
+			w.request({
+				userId: "alice", asset: ETH, amount: 100n,
+				address: "0xmine", idempotencyKey: "k1",
+			}),
+		/added too recently/,
+	);
+
+	// Still refused one minute short of the window.
+	t += Withdrawals.ALLOWLIST_COOLDOWN_MS - 60_000;
+	assert.throws(
+		() =>
+			w.request({
+				userId: "alice", asset: ETH, amount: 100n,
+				address: "0xmine", idempotencyKey: "k2",
+			}),
+		/added too recently/,
+	);
+
+	// And allowed once it matures.
+	t += 60_001;
+	const ok = w.request({
+		userId: "alice", asset: ETH, amount: 100n,
+		address: "0xmine", idempotencyKey: "k3",
+	});
+	assert.equal(ok.state, State.REQUESTED);
+});
+
+test("REMOVAL IS IMMEDIATE, because it only narrows what can be paid", async () => {
+	// Deliberately asymmetric with adding. A customer who suspects trouble must
+	// not have to wait, or find their authenticator, to take an address off.
+	let t = 1_700_000_000_000;
+	const { l, w } = setup(
+		{ ...POLICY, requireAllowlistedAddress: true },
+		{ now: () => t },
+	);
+	fund(l, "alice", 5_000n);
+	w.allowlist("alice", ETH, "0xmine");
+	t += Withdrawals.ALLOWLIST_COOLDOWN_MS + 1;
+
+	assert.equal(w.removeFromAllowlist("alice", ETH, "0xmine"), true);
+	assert.equal(w.removeFromAllowlist("alice", ETH, "0xmine"), false, "idempotent");
+	assert.throws(
+		() =>
+			w.request({
+				userId: "alice", asset: ETH, amount: 100n,
+				address: "0xmine", idempotencyKey: "k1",
+			}),
+		/not an allowlisted ETH destination/,
+	);
+});
+
+test("re-adding a removed address restarts the clock", async () => {
+	// Otherwise remove-then-re-add would be a way to skip the delay.
+	let t = 1_700_000_000_000;
+	const { l, w } = setup(
+		{ ...POLICY, requireAllowlistedAddress: true },
+		{ now: () => t },
+	);
+	fund(l, "alice", 5_000n);
+	w.allowlist("alice", ETH, "0xmine");
+	t += Withdrawals.ALLOWLIST_COOLDOWN_MS + 1;
+	w.removeFromAllowlist("alice", ETH, "0xmine");
+	w.allowlist("alice", ETH, "0xmine");
+
+	assert.throws(
+		() =>
+			w.request({
+				userId: "alice", asset: ETH, amount: 100n,
+				address: "0xmine", idempotencyKey: "k1",
+			}),
+		/added too recently/,
+	);
+});
+
+test("the listing says when each address becomes usable", async () => {
+	let t = 1_700_000_000_000;
+	const { w } = setup({ ...POLICY, requireAllowlistedAddress: true }, { now: () => t });
+	w.allowlist("alice", ETH, "0xold");
+	t += Withdrawals.ALLOWLIST_COOLDOWN_MS + 1;
+	w.allowlist("alice", ETH, "0xnew");
+
+	const rows = w.listAllowlist("alice");
+	assert.equal(rows.length, 2);
+	const byAddr = new Map(rows.map((r) => [r.address, r]));
+	assert.equal(byAddr.get("0xold")!.usable, true);
+	assert.equal(byAddr.get("0xnew")!.usable, false);
+	// Another customer sees none of it.
+	assert.deepEqual(w.listAllowlist("bob"), []);
 });
 
 test("submission requires a provider reference", async () => {

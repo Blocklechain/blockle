@@ -471,6 +471,21 @@ export class Withdrawals {
 	}
 
 	/** Register a destination address the customer is allowed to withdraw to. */
+	/**
+	 * How long a newly allowlisted address must age before it can be paid.
+	 *
+	 * THE COOLING-OFF PERIOD IS THE POINT OF AN ALLOWLIST. Without it, someone
+	 * holding a stolen session adds their own address and withdraws in the same
+	 * minute, and the control has cost them one extra request. With it, the
+	 * theft needs the session to stay live for a day — long enough for the
+	 * "a new withdrawal address was added" mail to reach a human who did not
+	 * add it.
+	 *
+	 * Note the asymmetry this creates and keep it: adding is slow, REMOVING is
+	 * immediate, because removal only ever narrows what can be paid.
+	 */
+	static readonly ALLOWLIST_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 	allowlist(userId: string, asset: string, address: string): void {
 		this.db
 			.prepare(
@@ -480,6 +495,7 @@ export class Withdrawals {
 			.run(userId, asset, address, this.stamp());
 	}
 
+	/** Membership only. For "can this be paid NOW", use `allowlistStatus`. */
 	isAllowlisted(userId: string, asset: string, address: string): boolean {
 		const row = this.db
 			.prepare(
@@ -488,6 +504,70 @@ export class Withdrawals {
 			)
 			.get(userId, asset, address);
 		return row !== undefined;
+	}
+
+	/**
+	 * Membership AND maturity, which are different questions — an address can be
+	 * on the list and still not payable yet.
+	 */
+	allowlistStatus(
+		userId: string,
+		asset: string,
+		address: string,
+	): { listed: boolean; usableAt: number | undefined } {
+		const row = this.db
+			.prepare(
+				`SELECT added_at FROM allowlisted_address
+				  WHERE user_id = ? AND asset = ? AND address = ?`,
+			)
+			.get(userId, asset, address) as { added_at: string } | undefined;
+		if (row === undefined) return { listed: false, usableAt: undefined };
+		const added = Date.parse(row.added_at);
+		// An unparseable timestamp must not read as "mature". Treating it as
+		// freshly added is the safe direction: it delays a withdrawal rather
+		// than permitting one.
+		const base = Number.isFinite(added) ? added : this.now();
+		return { listed: true, usableAt: base + Withdrawals.ALLOWLIST_COOLDOWN_MS };
+	}
+
+	/** The customer's own addresses, with when each becomes usable. */
+	listAllowlist(userId: string): {
+		asset: string;
+		address: string;
+		addedAt: string;
+		usableAt: string;
+		usable: boolean;
+	}[] {
+		const rows = this.db
+			.prepare(
+				`SELECT asset, address, added_at FROM allowlisted_address
+				  WHERE user_id = ? ORDER BY added_at DESC`,
+			)
+			.all(userId) as { asset: string; address: string; added_at: string }[];
+		const now = this.now();
+		return rows.map((r) => {
+			const added = Date.parse(r.added_at);
+			const base = Number.isFinite(added) ? added : now;
+			const usableAt = base + Withdrawals.ALLOWLIST_COOLDOWN_MS;
+			return {
+				asset: r.asset,
+				address: r.address,
+				addedAt: r.added_at,
+				usableAt: new Date(usableAt).toISOString(),
+				usable: now >= usableAt,
+			};
+		});
+	}
+
+	/** Remove one. Immediate by design — see ALLOWLIST_COOLDOWN_MS. */
+	removeFromAllowlist(userId: string, asset: string, address: string): boolean {
+		const r = this.db
+			.prepare(
+				`DELETE FROM allowlisted_address
+				  WHERE user_id = ? AND asset = ? AND address = ?`,
+			)
+			.run(userId, asset, address);
+		return r.changes > 0;
 	}
 
 	/**
@@ -607,14 +687,34 @@ export class Withdrawals {
 				if (!liq.ok) throw new WithdrawalError(liq.reason);
 			}
 
-			if (
-				this.policy.requireAllowlistedAddress &&
-				!this.isAllowlisted(args.userId, args.asset, args.address)
-			) {
-				throw new WithdrawalError(
-					`${args.address} is not an allowlisted ${args.asset} destination ` +
-						`for this account`,
-				);
+			if (this.policy.requireAllowlistedAddress) {
+				const st = this.allowlistStatus(args.userId, args.asset, args.address);
+				if (!st.listed) {
+					throw new WithdrawalError(
+						`${args.address} is not an allowlisted ${args.asset} destination ` +
+							`for this account`,
+					);
+				}
+				/*
+				 * ON THE LIST IS NOT THE SAME AS PAYABLE YET.
+				 *
+				 * An allowlist with no cooling-off period costs an attacker one
+				 * extra request: add their address, withdraw to it, done. The
+				 * delay is the control — it forces a theft to hold the session
+				 * long enough for the customer to notice an address they did not
+				 * add. See ALLOWLIST_COOLDOWN_MS.
+				 */
+				if (st.usableAt !== undefined && this.now() < st.usableAt) {
+					const mins = Math.ceil((st.usableAt - this.now()) / 60_000);
+					throw new WithdrawalError(
+						`${args.address} was added too recently to withdraw to. New ` +
+							`addresses become usable ` +
+							`${Withdrawals.ALLOWLIST_COOLDOWN_MS / 3_600_000} hours after ` +
+							`being added — about ${mins} minute(s) left. This delay is ` +
+							"what stops someone who has taken over a session from adding " +
+							"their own address and emptying the account before you notice.",
+					);
+				}
 			}
 
 			/*
