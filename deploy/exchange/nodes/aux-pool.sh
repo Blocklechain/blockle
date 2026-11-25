@@ -84,6 +84,28 @@ v=d.get(sys.argv[1],{}).get(sys.argv[2],'')
 print('' if v is None else v)
 " "$1" "$2"; }
 
+# The next unbound TCP port at or after $1.
+#
+# WHY THIS IS NOT JUST ARITHMETIC. The first version computed a port from the
+# coin's index and trusted it. That put Dingocoin's solo pool on 3362 — which
+# the BLOCK node itself already binds, as one of its eight
+# stratum-direct-pplns lanes (3360-3367) — and the pool restart-looped 528
+# times on "Address already in use" before anyone looked.
+#
+# This is the SECOND time a computed port collided in this stack; the first was
+# two Ravencoin forks sharing a P2P default. A formula that does not check is a
+# formula that is wrong eventually, so now it checks.
+free_port() {
+	local p="$1" limit=$(( $1 + 200 ))
+	while [[ $p -lt $limit ]]; do
+		if ! ss -tlnH "sport = :$p" 2>/dev/null | grep -q .; then
+			echo "$p"; return 0
+		fi
+		p=$(( p + 1 ))
+	done
+	die "no free port found at or after $1"
+}
+
 cli_for() {
 	local c="$1"
 	ls "$COINS/$c"/*-cli 2>/dev/null | head -1
@@ -103,8 +125,19 @@ import binascii, hashlib, struct, subprocess, sys
 exe, d, c = sys.argv[1], sys.argv[2], sys.argv[3]
 
 def cli(*a):
-    r = subprocess.run([exe, f"-conf={d}/{c}.conf", f"-datadir={d}", *a],
-                       capture_output=True, text=True, timeout=30)
+    # A DAEMON THAT DOES NOT ANSWER MUST NOT TAKE THE REPORT WITH IT.
+    #
+    # Meowcoin, busy with initial block download, blocked past the timeout and
+    # the raised TimeoutExpired aborted the whole `plan` run — so Dingocoin,
+    # listed after it, was never measured at all. One slow node silently cost
+    # the answer for another.
+    try:
+        r = subprocess.run([exe, f"-conf={d}/{c}.conf", f"-datadir={d}", *a],
+                           capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return ""
+    except OSError:
+        return ""
     return r.stdout.strip()
 
 def val(b):
@@ -126,41 +159,58 @@ if not tip.isdigit():
     print("no-rpc"); sys.exit()
 tip = int(tip)
 
-# SAMPLE A RANGE, NOT JUST THE TIP.
+# SAMPLE RECENT BLOCKS, THEN EARLY ONES.
 #
 # PEP and DINGO are Dogecoin-lineage chains, which means they are themselves
 # AuxPoW-capable: on a merge-mined block the proof-of-work is carried in a
 # PARENT chain's header embedded in the coinbase, so hashing the coin's OWN
-# header does not land under the target. Testing only the tip therefore reports
-# "unsupported" or not purely according to how that one block was mined — the
-# same chain answered scrypt at height 1,888 and unsupported a few thousand
-# blocks later, which is how this was found.
+# header does not land under the target.
 #
-# The chain's native algorithm is whatever satisfies the target on blocks that
-# were mined natively, so walk back until one does.
-step = max(1, tip // 200) or 1
-seen_auxpow = False
-for h in range(tip, max(0, tip - 4000), -step):
-    bh = cli("getblockhash", str(h))
-    if not bh:
-        continue
-    hdr_hex = cli("getblockheader", bh, "false")
-    if not hdr_hex:
-        continue
-    hdr = binascii.unhexlify(hdr_hex)
-    if len(hdr) < 80:
-        continue
-    bits = struct.unpack("<I", hdr[72:76])[0]
-    exp, mant = bits >> 24, bits & 0xffffff
-    if exp < 3:
-        continue
-    target = mant * (1 << (8 * (exp - 3)))
-    for nm, dig in candidates(hdr[:80]):
-        if val(dig) <= target:
-            print(nm); sys.exit()
-    seen_auxpow = True
+# TWO BUGS LIVED HERE, both found by this answering wrongly in production.
+#
+# The first was testing only the tip: the same chain answered scrypt at height
+# 1,888 and unsupported a few thousand blocks later, purely by how that one
+# block happened to be mined.
+#
+# The second was the fix for the first. It strode backwards by `tip // 200`
+# over a 4,000-block window — which at Dingocoin's height of 2.85M is a stride
+# of 14,252, so the loop ran exactly ONCE, on the tip, and reported
+# "unsupported" for a chain that had been correctly measured as scrypt an hour
+# earlier. A sampling window smaller than its own stride samples one point.
+#
+# So: walk back one block at a time over a short window, and if every one of
+# those is merge-mined, fall back to the chain's EARLIEST blocks. Those predate
+# AuxPoW activation on any chain that has it, so they are natively mined and
+# reveal the real algorithm. A chain that is 100% merge-mined today still has a
+# native beginning.
+def scan(heights):
+    for h in heights:
+        bh = cli("getblockhash", str(h))
+        if not bh:
+            continue
+        hdr_hex = cli("getblockheader", bh, "false")
+        if not hdr_hex:
+            continue
+        hdr = binascii.unhexlify(hdr_hex)
+        if len(hdr) < 80:
+            continue
+        bits = struct.unpack("<I", hdr[72:76])[0]
+        exp, mant = bits >> 24, bits & 0xffffff
+        if exp < 3:
+            continue
+        target = mant * (1 << (8 * (exp - 3)))
+        for nm, dig in candidates(hdr[:80]):
+            if val(dig) <= target:
+                return nm
+    return None
 
-print("unsupported")
+recent = range(tip, max(0, tip - 60), -1)
+early = range(1, min(tip, 60))
+found = scan(recent) or scan(early)
+if found:
+    print(found)
+else:
+    print("unsupported")
 PYEOF
 }
 
@@ -277,6 +327,9 @@ cmd_create() {
 	idx=$(( rpcport - 19000 ))
 	if [[ "$scheme" == solo ]]; then base_s=$(( 3357 + idx )); base_d=$(( 4857 + idx ));
 	else base_s=$(( 3377 + idx )); base_d=$(( 4877 + idx )); fi
+	# The convention gives a STARTING point, not a guarantee — see free_port.
+	base_s="$(free_port "$base_s")"
+	base_d="$(free_port "$base_d")"
 	local pool_id="$c"; [[ "$scheme" == pplns ]] && pool_id="$c-2"
 
 	local block_addr
