@@ -209,6 +209,26 @@ const Map<String, UtxoNetwork> networks = {
     explorer: 'https://explorer.dingocoin.org/tx/',
     esplora: 'https://coin.blockle.org/dingo',
   ),
+  'meowcoin': UtxoNetwork(
+    id: 'meowcoin',
+    symbol: 'MEWC',
+    decimals: 8,
+    // Its source sets bech32_hrp = "mewc", but segwit activation is not
+    // implied by an hrp being present and its daemon has never been free
+    // enough to mint one to check. Legacy P2PKH is valid on this chain either
+    // way, so that is what is used until a bech32 address can be verified.
+    hrp: null,
+    p2pkh: 0x32,
+    p2sh: 0x7a,
+    wif: 0x70,
+    segwit: false,
+    // nExtCoinType = 1669 in its own chainparams, AND 1669 in SLIP-44 — the
+    // only coin of this set where the project and the registry agree, so
+    // there is nothing to scan as an alternate.
+    path: "m/44'/1669'/0'/0",
+    explorer: 'https://explorer.mewccrypto.com/tx/',
+    esplora: 'https://coin.blockle.org/mewc',
+  ),
   'perbug': UtxoNetwork(
     id: 'perbug',
     symbol: 'PERBUG',

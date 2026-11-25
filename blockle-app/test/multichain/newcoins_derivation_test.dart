@@ -18,8 +18,14 @@
 // Provenance for every byte and path, including the conflict on RTM, is in
 // deploy/exchange/nodes/address-params.json.
 //
-// Meowcoin is absent on purpose: its daemon was mid initial-block-download and
-// could not be used to verify anything. It is exchange-held only until it can.
+// Meowcoin reached the same standard by a different route. Its daemon has
+// never been idle enough to MINT an address — it is CPU-bound syncing — but
+// `validateaddress` is pure encoding and answers on a syncing node, so the
+// address below was derived here and then ACCEPTED by the live Meowcoin
+// daemon, with a Pepecoin address rejected by it as the control. Its bytes
+// come from its own src/kernel/chainparams.cpp (0x32 / 0x70), and its
+// nExtCoinType of 1669 is the one case in this set where the project and
+// SLIP-44 agree, so it has no alternates to scan.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/multichain/wallet_export.dart' as wx;
 import 'package:blockle_app/multichain/chains/utxo.dart';
@@ -36,6 +42,7 @@ const _vectors = <List<String>>[
   ['pepecoin', 'PEP', "m/44'/3434'/0'/0", 'PsGyoVVSD9VTYoDZGp5FmRB2BSoE69f9ZV'],
   ['neoxa', 'NEOX', "m/44'/1668'/0'/0", 'GddwJKkPxARviA6BmWbuyamqC5kT6SDNzm'],
   ['dingocoin', 'DINGO', "m/44'/3'/0'/0", 'DBus3bamQjgJULBJtYXpEzDWQRwF5iwxgC'],
+  ['meowcoin', 'MEWC', "m/44'/1669'/0'/0", 'MPVmycEv5crFt2oboU8GQRAYBjDusXPkwd'],
   ['perbug', 'PERBUG', "m/84'/0'/0'/0", 'pb1qcr8te4kr609gcawutmrza0j4xv80jy8zpdnqlw'],
 ];
 

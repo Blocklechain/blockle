@@ -61,6 +61,7 @@ const Map<String, ChainBrand> kChainBrands = {
   // Deliberately NOT Dogecoin's gold: Dingocoin shares DOGE's address bytes,
   // so a wallet that makes them look similar invites a lost send.
   'dingocoin': ChainBrand(Color(0xFFB05C2E), 'D'),
+  'meowcoin': ChainBrand(Color(0xFF7A3E9D), 'M'),
   'perbug': ChainBrand(Color(0xFF5A4AE3), 'P'),
 };
 
@@ -122,6 +123,9 @@ const String _mNeox =
 // bytes, so making them look alike in a wallet would be actively dangerous.
 const String _mDingo =
     '<path d="M9.3 6.5h2.6a5.5 5.5 0 010 11H9.3z" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>';
+// Meowcoin — "M".
+const String _mMewc =
+    '<path d="M8.6 17.5V6.5l3.4 6 3.4-6v11" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>';
 // Perbug — ours. A "P" with a bar, to read as a coin mark rather than a letter
 // and to sit apart from Pepecoin's plain P.
 const String _mPerbug =
@@ -186,6 +190,7 @@ final Map<String, BrandMark> kChainLogos = {
   'pepecoin': BrandMark('brand:pepecoin', _disc('#3fa635', _mPep)),
   'neoxa': BrandMark('brand:neoxa', _disc('#1d7a8c', _mNeox)),
   'dingocoin': BrandMark('brand:dingocoin', _disc('#b05c2e', _mDingo)),
+  'meowcoin': BrandMark('brand:meowcoin', _disc('#7a3e9d', _mMewc)),
   'perbug': BrandMark('brand:perbug', _disc('#5a4ae3', _mPerbug)),
   'solana': BrandMark('brand:solana', _disc('#9945ff', _mSol)),
   'tron': BrandMark('brand:tron', _disc('#ef0027', _mTron)),
@@ -277,6 +282,7 @@ String canonChain(String chainId, String? symbol) {
     'pep': 'pepecoin',
     'neox': 'neoxa',
     'dingo': 'dingocoin',
+    'mewc': 'meowcoin',
     // PERBUG is both the chain id and the ticker, so no alias is needed — it
     // is listed here only so the next reader does not go looking for one.
   };

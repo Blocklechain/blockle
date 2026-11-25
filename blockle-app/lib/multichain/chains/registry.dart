@@ -161,6 +161,7 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   'pepecoin': EndpointCfg(esplora: 'https://coin.blockle.org/pep'),
   'neoxa': EndpointCfg(esplora: 'https://coin.blockle.org/neox'),
   'dingocoin': EndpointCfg(esplora: 'https://coin.blockle.org/dingo'),
+  'meowcoin': EndpointCfg(esplora: 'https://coin.blockle.org/mewc'),
   'perbug': EndpointCfg(esplora: 'https://coin.blockle.org/perbug'),
   // publicnode (no key, full RPC incl. sendTransaction) — the official
   // api.mainnet-beta endpoint rate-limits/blocks broadcasts (HTTP 403/429), which
@@ -451,6 +452,7 @@ class ChainRegistry {
             'pepecoin',
             'neoxa',
             'dingocoin',
+            'meowcoin',
             'perbug',
             'solana',
             'tron',
@@ -566,6 +568,7 @@ class ChainRegistry {
       'pepecoin',
       'neoxa',
       'dingocoin',
+      'meowcoin',
       'perbug',
     ]) {
       adapters[id] = UtxoAdapter(id,

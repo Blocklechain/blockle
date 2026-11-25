@@ -32,11 +32,13 @@
     "lookups are one cheap call each against coin.blockle.org. `pathPreferred`",
     "is only the default for a NEW account and for choosing change addresses.",
     "",
-    "MEWC is still absent: its daemon was busy with initial block download on",
-    "every attempt and could not mint an address. SLIP-44 registers MEWC at 1669",
-    "and its sibling Ravencoin fork Neoxa uses 1668 in code, which makes 1669",
-    "plausible — and plausible is exactly what this file refuses to record.",
-    "Re-derive it once that node is synced."
+    "MEWC is now recorded, by a different route. Its daemon has never been idle",
+    "enough to MINT an address, but `validateaddress` is pure encoding and",
+    "answers on a syncing node — so the derived address was ACCEPTED by the live",
+    "Meowcoin daemon, with a Pepecoin address rejected as the control. Its bytes",
+    "come from src/kernel/chainparams.cpp, which is where Meowcoin keeps them",
+    "(the top-level src/chainparams.cpp is a 6 KB stub, which is why an earlier",
+    "read of it found nothing)."
   ],
 
   "PERBUG": {
@@ -56,6 +58,23 @@
     "esplora": "https://coin.blockle.org/perbug",
     "balanceStrategy": "scan",
     "note": "OURS, and the only segwit coin here — getnewaddress returns bech32 (pb1q...), so it needs segwit:true and hrp:'pb', not the legacy base58 path the other five use. Being an unpatched Bitcoin Core fork, its wallet derives under coin type 0 (Bitcoin's) and its xprv version bytes are Bitcoin's 0x0488ADE4. Served by coin-esplora with its strategy PINNED to scan, because its node carries the mining pool wallet and the watch strategy would import addresses into it."
+  },
+  "MEWC": {
+    "name": "Meowcoin",
+    "p2pkh": 50,
+    "p2pkhHex": "0x32",
+    "wif": 112,
+    "wifHex": "0x70",
+    "decimals": 8,
+    "addressExample": "MPVmycEv5crFt2oboU8GQRAYBjDusXPkwd",
+    "addressFirstChar": "M",
+    "pathPreferred": "m/44'/1669'/0'/0",
+    "pathCandidates": ["m/44'/1669'/0'/0"],
+    "pathSource": "src/kernel/chainparams.cpp: nExtCoinType = 1669, which MATCHES the SLIP-44 registration of 1669 — the only coin in this set where the project and the registry agree, so there is nothing to scan as an alternate.",
+    "bytesSource": "src/kernel/chainparams.cpp (50/112) + the live daemon accepting a derived address via validateaddress, with a cross-chain address rejected as control",
+    "esplora": "https://coin.blockle.org/mewc",
+    "balanceStrategy": "addrindex",
+    "note": "Its source sets bech32_hrp = \"mewc\", but an hrp being present does not imply segwit activation and its daemon could not be asked. Legacy P2PKH is valid either way, so that is what the wallet uses until a bech32 address can be verified."
   },
   "RTM": {
     "name": "Raptoreum",
