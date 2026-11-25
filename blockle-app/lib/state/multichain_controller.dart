@@ -154,7 +154,24 @@ class MultichainController extends ChangeNotifier {
   late ChainRegistry registry;
   late Accounts accounts;
   late VenueRegistry venues;
-  late AgentService agent;
+  /// The agent service, available only after [init].
+  ///
+  /// PRIVATE AND NULLABLE ON PURPOSE. This used to be `late AgentService
+  /// agent;`, and reading it before init threw LateInitializationError — which
+  /// is not hypothetical: `BotsController.canGoLive` reads `moonpayBearer`
+  /// (i.e. `agent.acctToken`) to decide whether a LIVE bot can be armed, so
+  /// rendering a live bot before init finished crashed the Bots tab. A widget
+  /// test caught it; a user opening that tab early would have hit the same
+  /// thing. The getter keeps every existing `agent.` call site unchanged while
+  /// letting the few paths that run early check instead of throwing.
+  AgentService? _agent;
+
+  /// The agent service. Throws if read before [init] — use [agentReady] when
+  /// that is possible.
+  AgentService get agent => _agent!;
+
+  /// Whether [agent] is safe to read yet.
+  bool get agentReady => _agent != null;
   late final ExchangeClient exchange;
   late final AppBlockSignerBridge _bridge;
 
@@ -203,7 +220,9 @@ class MultichainController extends ChangeNotifier {
   /// The accounts session bearer for the AUTHED MoonPay proxies (swap/commerce).
   /// Null when no blockle.org account is linked — callers gate those behind a
   /// sign-in prompt (buy/sell via /sign need no account).
-  String? get moonpayBearer => agent.acctToken;
+  /// Null before [init], rather than throwing: callers already treat a null
+  /// bearer as "not signed in", which is the right answer at that point.
+  String? get moonpayBearer => _agent?.acctToken;
 
   /// Load the live MoonPay /config (pk_live_ key + commerce key + feature flags)
   /// and cache it as the source of truth. Fire-and-forget at startup; failures
@@ -265,7 +284,7 @@ class MultichainController extends ChangeNotifier {
             'block17t50a0059gkm7dhrmxv3qn00ewvneayz43njy3lwxe5sc9hqsweqgq6cm0',
       },
     });
-    agent = AgentService(
+    _agent = AgentService(
       accounts: accounts,
       venues: venues,
       telemetry: Telemetry(),
@@ -609,7 +628,7 @@ class MultichainController extends ChangeNotifier {
     final pt = wasUnlocked ? vault.plaintext : null;
     _buildRegistryAndAccounts();
     // Rewire the agent's registry reference through its Accounts facade.
-    agent = AgentService(
+    _agent = AgentService(
       accounts: accounts,
       venues: venues,
       telemetry: Telemetry(),

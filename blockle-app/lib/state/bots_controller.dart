@@ -811,7 +811,12 @@ class BotsController extends ChangeNotifier {
 
   BotDelegationClient get _delegations => BotDelegationClient(
         origin: 'https://blockle.org',
-        bearer: () => _mc.agent.acctToken,
+        // moonpayBearer, NOT agent.acctToken: this getter is reached from
+        // DetailView.build via refreshServerActivity, which can run before the
+        // controller has finished init. Reading `agent` there threw and took
+        // the Bots tab down with it; the bearer getter answers null instead,
+        // which the delegation client already treats as "not signed in".
+        bearer: () => _mc.moonpayBearer,
       );
 
   // EVM lane → chainId + native symbol (for the server runner's price/gate).
