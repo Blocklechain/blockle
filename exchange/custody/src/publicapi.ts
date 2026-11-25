@@ -56,6 +56,7 @@ import { nodeAdapters, nodeDepositAddress } from "./custodyrouting";
 import { ApiKeyError, ApiKeys, SCOPES, SIGNING_ALGORITHM, SKEW_MS, type Scope } from "./apikeys";
 import { Listings, QUESTIONS, sendmailMailer } from "./listings";
 import { Withdrawals, type Policy as WdPolicy } from "./withdrawals";
+import { UserTotp, TwoFactorError } from "./usertotp";
 import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
 import { DEFAULT_FEES, disclose } from "./fees";
@@ -423,6 +424,7 @@ async function venueRoute(
 		| ((userId: string, asset: string, network: string | undefined) => Promise<void>)
 		| undefined,
 	apiKeys: ApiKeys,
+	userTotp: UserTotp,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 
@@ -810,6 +812,16 @@ async function venueRoute(
 			// here is a stolen key emptying an account. Moving money needs the
 			// person, their session and their second factor.
 			const who = await sessionOnly("withdraw");
+			/*
+			 * A SECOND FACTOR, ON THIS REQUEST.
+			 *
+			 * Not session-level: one code must not buy a window in which an
+			 * unattended session can keep withdrawing. Same rule the admin console
+			 * has always applied to its own mutations, and the header — rather than
+			 * the body — so that it is required identically by any route added
+			 * later. See usertotp.ts for why "not enrolled" is a refusal.
+			 */
+			userTotp.requireCode(who, header(req, "x-blockle-totp"), "a withdrawal");
 			const b = parseBody(rawBody);
 			const asset = str(b, "asset").toUpperCase();
 			const def = assetDef(asset);
@@ -969,6 +981,57 @@ async function venueRoute(
 		//
 		// Session-only, all three. See `sessionOnly` for why minting keys is on
 		// that list.
+		// ---- second factor ------------------------------------------------
+		//
+		// SESSION-ONLY, all of them, for the same reason key management is: an API
+		// key that could enrol or replace the factor guarding withdrawals would be
+		// a key that escalates itself past the control designed to stop it.
+
+		if (p === "/2fa" && req.method === "GET") {
+			const owner = await sessionOnly("read second-factor status");
+			json(res, 200, { enrolled: userTotp.enrolled(owner) }, 0);
+			return;
+		}
+
+		if (p === "/2fa/begin" && req.method === "POST") {
+			const owner = await sessionOnly("set up a second factor");
+			const b = parseBody(rawBody);
+			const r = userTotp.begin({
+				accountId: owner,
+				issuer: "Blockle Exchange",
+				account: owner,
+				// Only consulted when one is already confirmed — replacing a live
+				// authenticator requires proving you hold it.
+				...(typeof b.currentCode === "string" ? { currentCode: b.currentCode } : {}),
+			});
+			// THE SECRET IS SHOWN EXACTLY ONCE, here, and never stored client-side.
+			// maxAge 0 so no cache keeps a copy.
+			json(res, 200, {
+				secret: r.secret,
+				uri: r.uri,
+				note:
+					"Scan this with an authenticator app, then confirm a code to arm it. " +
+					"Until you confirm, it is not protecting anything.",
+			}, 0);
+			return;
+		}
+
+		if (p === "/2fa/confirm" && req.method === "POST") {
+			const owner = await sessionOnly("confirm a second factor");
+			const b = parseBody(rawBody);
+			userTotp.confirm(owner, str(b, "code"));
+			json(res, 200, { ok: true, enrolled: true }, 0);
+			return;
+		}
+
+		if (p === "/2fa/disable" && req.method === "POST") {
+			const owner = await sessionOnly("turn off a second factor");
+			const b = parseBody(rawBody);
+			userTotp.disable(owner, str(b, "code"));
+			json(res, 200, { ok: true, enrolled: false }, 0);
+			return;
+		}
+
 		if (p === "/api-keys" && req.method === "GET") {
 			const owner = await sessionOnly("list API keys");
 			json(res, 200, {
@@ -1049,7 +1112,16 @@ async function venueRoute(
 		// the UI unable to tell "sign in" from "that order was invalid", and
 		// flattening the 503 from an unreachable accounts service would send
 		// customers round a sign-in loop that cannot succeed.
-		if (e instanceof AuthError || e instanceof VenueError || e instanceof ApiKeyError) {
+		// TwoFactorError belongs here for exactly the reason above: its 403 ("you
+		// have no authenticator, go and enrol one") and its 401 ("that code is
+		// wrong or spent") are different instructions to the customer, and a 400
+		// would tell them neither.
+		if (
+			e instanceof AuthError ||
+			e instanceof VenueError ||
+			e instanceof ApiKeyError ||
+			e instanceof TwoFactorError
+		) {
 			json(res, e.status, { error: e.message }, 0);
 			return;
 		}
@@ -1245,6 +1317,9 @@ export function start(): void {
 		requireReservedCheck: true,
 	});
 	// Market-maker ladders share the venue's book and its writable handle.
+	// CUSTOMER SECOND FACTOR. Same writable handle as the venue, since a
+	// withdrawal checks it inside the same request.
+	const userTotp = new UserTotp(wdb);
 	const mm = new MarketMaker(wdb, venue);
 	const deposits = new Deposits(wdb);
 
@@ -1534,6 +1609,7 @@ export function start(): void {
 						req, res, url, venue, wledger, wd, accountsAuth, liquidityOf,
 						LIVE_FEES, pricing, mm, deposits, wdb, provisionAddress,
 						apiKeys,
+						userTotp,
 					);
 					return;
 				}

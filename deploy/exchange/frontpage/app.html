@@ -294,6 +294,13 @@
               <input id="w-amount" inputmode="decimal" placeholder="0" /></label>
             <label class="f" style="margin-top:10px"><span>Destination address</span>
               <input id="w-addr" placeholder="address on the chosen network" /></label>
+            <!-- THE SECOND FACTOR, ON THIS REQUEST.
+                 Not session-level: one code must not buy a window in which an
+                 unattended session can keep withdrawing. autocomplete=off and
+                 one-time-code so a browser never stores or offers to fill it. -->
+            <label class="f" style="margin-top:10px"><span>Authenticator code</span>
+              <input id="w-totp" inputmode="numeric" maxlength="6" placeholder="6 digits"
+                     autocomplete="one-time-code" spellcheck="false" /></label>
             <div style="margin-top:12px">
               <div class="kv"><span class="dim">Available on this chain</span><span id="w-avail">—</span></div>
               <div class="kv"><span class="dim">Network fee</span><span id="w-fee">—</span></div>
@@ -484,6 +491,56 @@
         </div>
         <div class="right">
           <button class="btn pri" id="api-new">New key</button>
+        </div>
+      </div>
+
+      <!-- ------------------------------------------------- second factor -->
+      <!-- Lives beside the keys because both answer "what can act as me".
+           A withdrawal needs this; no key can withdraw at all. -->
+      <div class="panel">
+        <header>
+          <h2>Authenticator</h2>
+          <span class="note" id="tf-state">checking…</span>
+        </header>
+        <div class="body">
+          <p class="note">
+            A withdrawal needs a current 6-digit code from an authenticator app.
+            This is what stops someone who has got hold of your signed-in
+            session from moving your funds.
+          </p>
+          <div id="tf-off">
+            <button class="btn pri" id="tf-begin" style="margin-top:10px">
+              Set up authenticator</button>
+          </div>
+          <div id="tf-setup" class="hidden" style="margin-top:12px">
+            <p class="note">
+              Add this secret to your authenticator app, then enter a code to
+              turn it on. <b>It is shown once.</b> Until you confirm a code,
+              nothing is protected.
+            </p>
+            <div class="kv"><span class="dim">Secret</span>
+              <code id="tf-secret" style="user-select:all"></code></div>
+            <label class="f" style="margin-top:10px"><span>Code from the app</span>
+              <input id="tf-code" inputmode="numeric" maxlength="6" placeholder="6 digits"
+                     autocomplete="one-time-code" spellcheck="false" /></label>
+            <button class="btn pri block" id="tf-confirm" style="margin-top:10px">
+              Turn it on</button>
+          </div>
+          <div id="tf-on" class="hidden" style="margin-top:10px">
+            <p class="note">
+              An authenticator is on for this account. Replacing or turning it
+              off needs a current code from the one you already have — otherwise
+              a stolen session could simply swap it.
+            </p>
+            <label class="f" style="margin-top:10px"><span>Current code</span>
+              <input id="tf-cur" inputmode="numeric" maxlength="6" placeholder="6 digits"
+                     autocomplete="one-time-code" spellcheck="false" /></label>
+            <div class="row" style="margin-top:10px;gap:8px">
+              <button class="btn" id="tf-replace">Replace it</button>
+              <button class="btn" id="tf-disable">Turn it off</button>
+            </div>
+          </div>
+          <div class="msg hidden" id="tf-msg" style="margin-top:10px"></div>
         </div>
       </div>
 

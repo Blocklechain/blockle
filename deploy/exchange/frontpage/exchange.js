@@ -123,6 +123,14 @@
       init.headers["content-type"] = "application/json";
       init.body = JSON.stringify(opts.data);
     }
+    // Per-request headers, for the authenticator code a withdrawal carries.
+    // A HEADER rather than the body, matching the server, so that every route
+    // which needs a second factor asks for it the same way.
+    if (opts.headers) {
+      for (var h in opts.headers) {
+        if (opts.headers[h]) init.headers[h] = opts.headers[h];
+      }
+    }
     return fetch(path, init).then(function (r) {
       return r.json().catch(function () { return { error: "HTTP " + r.status }; })
         .then(function (body) {
@@ -823,6 +831,12 @@
     var btn = $("w-go");
     hide(msg);
     btn.disabled = true;
+    var code = ($("w-totp") ? $("w-totp").value : "").trim();
+    if (!code) {
+      show(msg, "Enter the 6-digit code from your authenticator app.", "bad");
+      btn.disabled = false;
+      return;
+    }
     priv("withdrawals", {
       method: "POST",
       data: {
@@ -832,11 +846,15 @@
         address: $("w-addr").value.trim(),
         requestId: reqId(),
       },
+      headers: { "x-blockle-totp": code },
     }).then(function (r) {
       show(msg, "Requested " + r.amount + " " + r.asset + " over " +
         (r.network || "its native chain") + ". Fee " + r.fee +
         ", you receive " + r.youReceive + ".", "ok");
       $("w-amount").value = "";
+      // The code is now SPENT server-side. Leaving it on screen invites a
+      // retry that can only fail with a confusing "already used".
+      if ($("w-totp")) $("w-totp").value = "";
       RENDER.withdraw();
     }).catch(function (e) { show(msg, e.message, "bad"); })
       .then(function () { btn.disabled = false; });
@@ -1102,8 +1120,79 @@
   var API_BUSY = false;
   var API_LANG = "node";
 
+  // ------------------------------------------------------------ second factor
+  //
+  // A withdrawal needs a current code. This panel is the only way to enrol one,
+  // and it mirrors the server's rules rather than reimplementing them: the
+  // secret arms nothing until a code is confirmed, and replacing or removing a
+  // live authenticator needs a code from the existing one.
+
+  var TF_BUSY = false;              // a secret is on screen; do not re-render
+
+  function tfShow(which) {
+    ["tf-off", "tf-setup", "tf-on"].forEach(function (id) {
+      $(id).classList.toggle("hidden", id !== which);
+    });
+  }
+
+  function tfRender() {
+    if (TF_BUSY) return;
+    priv("2fa").then(function (r) {
+      $("tf-state").textContent = r.enrolled ? "on" : "not set up";
+      tfShow(r.enrolled ? "tf-on" : "tf-off");
+    }).catch(function (e) {
+      // Never imply it is ON when we could not find out.
+      $("tf-state").textContent = "unavailable — " + e.message;
+      tfShow("tf-off");
+    });
+  }
+
+  function tfBegin(currentCode) {
+    hide($("tf-msg"));
+    priv("2fa/begin", {
+      method: "POST",
+      data: currentCode ? { currentCode: currentCode } : {},
+    }).then(function (r) {
+      TF_BUSY = true;
+      $("tf-secret").textContent = r.secret;
+      $("tf-code").value = "";
+      $("tf-state").textContent = "finish setting up";
+      tfShow("tf-setup");
+    }).catch(function (e) { show($("tf-msg"), e.message, "bad"); });
+  }
+
+  function tfConfirm() {
+    var code = $("tf-code").value.trim();
+    if (!code) { show($("tf-msg"), "Enter the code from your app.", "bad"); return; }
+    priv("2fa/confirm", { method: "POST", data: { code: code } })
+      .then(function () {
+        TF_BUSY = false;
+        // The secret must not linger on screen once it is armed.
+        $("tf-secret").textContent = "";
+        $("tf-code").value = "";
+        show($("tf-msg"), "Authenticator is on. Withdrawals will ask for a code.", "ok");
+        tfRender();
+      })
+      .catch(function (e) { show($("tf-msg"), e.message, "bad"); });
+  }
+
+  function tfDisable() {
+    var code = $("tf-cur").value.trim();
+    if (!code) { show($("tf-msg"), "Enter a current code to turn it off.", "bad"); return; }
+    priv("2fa/disable", { method: "POST", data: { code: code } })
+      .then(function () {
+        $("tf-cur").value = "";
+        show($("tf-msg"),
+          "Authenticator removed. You will not be able to withdraw until you " +
+          "set one up again.", "ok");
+        tfRender();
+      })
+      .catch(function (e) { show($("tf-msg"), e.message, "bad"); });
+  }
+
   RENDER.api = function () {
     $("api-base").textContent = location.origin + "/v1";
+    tfRender();
     drawApiSample();
     drawApiEndpoints();
     if (API_BUSY) return;             // a form or a secret is on screen
@@ -1547,6 +1636,19 @@
     $("lq-go").onclick = lqOpen;
 
     $("lst-form").addEventListener("submit", submitListing);
+
+    $("tf-begin").onclick = function () { tfBegin(null); };
+    $("tf-confirm").onclick = tfConfirm;
+    $("tf-replace").onclick = function () {
+      var code = $("tf-cur").value.trim();
+      if (!code) {
+        show($("tf-msg"), "Enter a current code to replace it.", "bad");
+        return;
+      }
+      $("tf-cur").value = "";
+      tfBegin(code);
+    };
+    $("tf-disable").onclick = tfDisable;
 
     $("api-new").onclick = function () { apiForm(true); };
     $("api-cancel").onclick = function () { apiForm(false); };
