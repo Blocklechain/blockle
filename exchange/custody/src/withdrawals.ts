@@ -355,6 +355,10 @@ export class Withdrawals {
 	private readonly feeTable: FeeTable;
 	private readonly pricing: GasPricing | undefined;
 	private readonly gas: GasGateDeps | undefined;
+	private readonly reservedOf:
+		| ((userId: string, asset: string) => bigint)
+		| undefined;
+	private readonly requireReservedCheck: boolean;
 
 	constructor(
 		private readonly db: Database,
@@ -386,6 +390,23 @@ export class Withdrawals {
 			 * regression that only shows up as stuck withdrawals.
 			 */
 			requireGasGate?: boolean;
+			/**
+			 * How much of an asset this account has RESERVED against open orders.
+			 *
+			 * The ledger cannot answer this. A reservation is not a posting — it
+			 * is derived from the open-order table — so `ledger.post` only ever
+			 * enforces that the TOTAL stays non-negative. Without this, a
+			 * customer can withdraw the collateral behind their own live orders.
+			 */
+			reserved?: (userId: string, asset: string) => bigint;
+			/**
+			 * Refuse every withdrawal when no reservation source is configured.
+			 *
+			 * Same reasoning as `requireGasGate`: the live service sets this, so
+			 * that forgetting to wire `reserved` is a loud refusal rather than a
+			 * silent return to overcommitment.
+			 */
+			requireReservedCheck?: boolean;
 		} = {},
 	) {
 		db.exec(SCHEMA);
@@ -396,6 +417,8 @@ export class Withdrawals {
 		this.pricing = opts.pricing;
 		this.gas = opts.gas;
 		this.requireGasGate = opts.requireGasGate ?? false;
+		this.reservedOf = opts.reserved;
+		this.requireReservedCheck = opts.requireReservedCheck ?? false;
 	}
 
 	private readonly requireGasGate: boolean;
@@ -592,6 +615,46 @@ export class Withdrawals {
 					`${args.address} is not an allowlisted ${args.asset} destination ` +
 						`for this account`,
 				);
+			}
+
+			/*
+			 * AVAILABLE, NOT TOTAL. The ledger cannot enforce this one.
+			 *
+			 * A reservation against an open order is NOT a ledger posting — it is
+			 * derived from the order table — so `ledger.post` below only checks
+			 * that the account's TOTAL stays non-negative. Which means a customer
+			 * with 1,000 USDT entirely committed to a live bid could withdraw all
+			 * 1,000: the ledger saw 1000 - 1000 = 0 and allowed it.
+			 *
+			 * What that produced was not theft — the matching engine refuses a
+			 * fill the owner cannot cover, cancels the resting order and lets the
+			 * taker continue down the book, and the ledger stays consistent. What
+			 * it produced was a FREE SPOOF: post a large bid, withdraw the
+			 * collateral, and the public book advertises depth that costs nothing
+			 * to abandon and can never be hit. Takers route against it and get a
+			 * worse fill than the book promised.
+			 *
+			 * Checked against the GROSS, since the fee leaves the balance too.
+			 */
+			if (this.reservedOf === undefined) {
+				if (this.requireReservedCheck) {
+					throw new WithdrawalError(
+						"no reservation source is configured, so we cannot tell how much " +
+							"of this balance is committed to open orders — refusing rather " +
+							"than letting a withdrawal spend an order's collateral",
+					);
+				}
+			} else {
+				const total = this.ledger.balance(userAcct(args.userId, args.asset));
+				const held = this.reservedOf(args.userId, args.asset);
+				const spendable = total - held > 0n ? total - held : 0n;
+				if (args.amount > spendable) {
+					throw new WithdrawalError(
+						`${args.amount} exceeds the ${args.asset} available to withdraw: ` +
+							`${total} held, ${held} reserved against open orders, ` +
+							`${spendable} available. Cancel an order to free it.`,
+					);
+				}
 			}
 
 			// THE DEBIT. Inside the ledger's row lock, so a concurrent request for

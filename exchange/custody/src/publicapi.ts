@@ -1238,6 +1238,11 @@ export function start(): void {
 		// The live service insists on the gate. Forgetting to wire it must be a
 		// loud refusal, not tokens withdrawing with no gas check at all.
 		requireGasGate: true,
+		// OPEN ORDERS HOLD THEIR COLLATERAL. The venue derives reservations from
+		// the order table, so only it can answer this — see the comment in
+		// `Withdrawals.request`, which explains the spoof this closes.
+		reserved: (userId, asset) => venue.reserved(userId).get(asset) ?? 0n,
+		requireReservedCheck: true,
 	});
 	// Market-maker ladders share the venue's book and its writable handle.
 	const mm = new MarketMaker(wdb, venue);

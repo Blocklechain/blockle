@@ -962,3 +962,79 @@ test("an unscreened withdrawal can never be submitted", async () => {
 	});
 	assert.throws(() => w.markSubmitted(r.id, "ref", "svc"), IllegalTransition);
 });
+
+// --------------------------------------------- reserved collateral (audit)
+
+test("A WITHDRAWAL CANNOT SPEND AN OPEN ORDER'S COLLATERAL", () => {
+	// Found in the 2026-11-25 audit, and reproduced end to end before fixing.
+	//
+	// A reservation is not a ledger posting — it is derived from the open-order
+	// table — so `ledger.post` only enforces that the TOTAL stays non-negative.
+	// A customer with their whole balance committed to a live bid could withdraw
+	// all of it, because the ledger saw total - amount = 0 and allowed it.
+	//
+	// The result was not theft: the matching engine refuses a fill the owner
+	// cannot cover and cancels the resting order. It was a FREE SPOOF — post a
+	// big bid, withdraw the collateral, and the public book shows depth that
+	// costs nothing to abandon and can never be hit.
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+	fund(l, "alice", 5_000n);
+	const w = new Withdrawals(db, l, POLICY, {
+		feeTable: FREE,
+		reserved: () => 5_000n, // every unit committed to an open order
+		requireReservedCheck: true,
+	});
+	assert.throws(
+		() => w.request({
+			userId: "alice", asset: ETH, amount: 5_000n,
+			address: "0xdest", idempotencyKey: "k1",
+		}),
+		/available to withdraw/,
+	);
+	// And nothing was debited on the way to refusing.
+	assert.equal(l.balance(user("alice")), 5_000n);
+});
+
+test("the unreserved part of a balance is still withdrawable", () => {
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+	fund(l, "alice", 5_000n);
+	const w = new Withdrawals(db, l, POLICY, {
+		feeTable: FREE,
+		reserved: () => 3_000n, // 3,000 committed, 2,000 free
+		requireReservedCheck: true,
+	});
+	const got = w.request({
+		userId: "alice", asset: ETH, amount: 2_000n,
+		address: "0xdest", idempotencyKey: "k2",
+	});
+	assert.equal(got.amount, 2_000n);
+	// One unit past available is refused.
+	assert.throws(
+		() => w.request({
+			userId: "alice", asset: ETH, amount: 1n,
+			address: "0xdest", idempotencyKey: "k3",
+		}),
+		/available to withdraw/,
+	);
+});
+
+test("AN UNWIRED RESERVATION SOURCE REFUSES rather than failing open", () => {
+	// The same fail-closed rule as requireGasGate: forgetting to wire this must
+	// be a loud refusal, not a silent return to overcommitment.
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+	fund(l, "alice", 5_000n);
+	const w = new Withdrawals(db, l, POLICY, {
+		feeTable: FREE,
+		requireReservedCheck: true,
+	});
+	assert.throws(
+		() => w.request({
+			userId: "alice", asset: ETH, amount: 1n,
+			address: "0xdest", idempotencyKey: "k4",
+		}),
+		/no reservation source is configured/,
+	);
+});
