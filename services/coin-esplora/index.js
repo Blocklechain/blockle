@@ -60,13 +60,36 @@ const CACHE_MS = Number(process.env.CACHE_MS || 10_000);
 const RATE_PER_MIN = Number(process.env.RATE_PER_MIN || 240);
 const MAX_TX_HEX = 200_000; // ~100 kB of transaction; far above any real send
 
-/** Coins this service will serve, with the RPC port provisioning assigned. */
+/**
+ * Coins this service will serve.
+ *
+ * `port` is the RPC port provisioning assigned. `conf` overrides where the
+ * credentials are read from, for a node this service did not provision.
+ *
+ * `strategyLock` pins the balance strategy instead of probing for it. It exists
+ * for ONE reason: the `watch` strategy calls importaddress, which writes to the
+ * node's wallet. Perbug's node carries the mining pool's wallet, so a probe that
+ * guessed wrong would start importing arbitrary public addresses into a wallet
+ * holding real funds. Pinned to `scan`, it cannot — and if scantxoutset ever
+ * stops answering there, the coin fails loudly rather than falling back onto a
+ * funded wallet.
+ */
 const COINS = {
   rtm: { port: 19001, name: 'Raptoreum', decimals: 8 },
   pep: { port: 19002, name: 'Pepecoin', decimals: 8 },
   neox: { port: 19003, name: 'Neoxa', decimals: 8 },
   mewc: { port: 19004, name: 'Meowcoin', decimals: 8 },
   dingo: { port: 19005, name: 'Dingocoin', decimals: 8 },
+  // Ours: a modern Bitcoin Core fork, so it has scantxoutset. Segwit, bech32
+  // "pb1..." addresses — validateaddress accepts those, so nothing else here
+  // needs to know.
+  perbug: {
+    port: 9342,
+    name: 'Perbug',
+    decimals: 8,
+    conf: '/var/lib/perbug/perbug.conf',
+    strategyLock: 'scan',
+  },
 };
 
 // ---------------------------------------------------------------- credentials
@@ -79,7 +102,7 @@ const COINS = {
  * place is how the two drift and a rotation half-lands.
  */
 function creds(coin) {
-  const f = path.join(NODES_DIR, coin, `${coin}.conf`);
+  const f = COINS[coin].conf || path.join(NODES_DIR, coin, `${coin}.conf`);
   const txt = fs.readFileSync(f, 'utf8');
   const get = (k) => {
     const m = new RegExp(`^${k}=(.*)$`, 'm').exec(txt);
@@ -156,6 +179,12 @@ const strategy = new Map();
  */
 async function probe(coin) {
   if (strategy.has(coin)) return strategy.get(coin);
+  // A pinned strategy is never probed; see COINS.perbug for why.
+  const locked = COINS[coin].strategyLock;
+  if (locked) {
+    strategy.set(coin, locked);
+    return locked;
+  }
   for (const [name, method, params] of [
     ['addrindex', 'getaddressbalance', [{ addresses: [] }]],
     ['scan', 'scantxoutset', []],
@@ -259,6 +288,13 @@ async function utxosOf(coin, addr) {
     }));
   }
   // watch: register the address, then read what the wallet has seen since.
+  if (COINS[coin].strategyLock && COINS[coin].strategyLock !== 'watch') {
+    // Belt and braces for the funded-wallet case: refuse rather than import.
+    throw new RpcError(
+      `${coin} is pinned to ${COINS[coin].strategyLock} and will not import addresses`,
+      -1,
+    );
+  }
   const key = `${coin}:${addr}`;
   if (!watched.has(key)) {
     // rescan=false ON PURPOSE. A rescan of a 1.3M-block chain per unknown

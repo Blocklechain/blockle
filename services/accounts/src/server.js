@@ -821,6 +821,7 @@ export function createApp(overrides = {}) {
     neox: 'http://127.0.0.1:3070/neox',
     mewc: 'http://127.0.0.1:3070/mewc',
     dingo: 'http://127.0.0.1:3070/dingo',
+    perbug: 'http://127.0.0.1:3070/perbug',
   };
   async function pxHandler(req, res, _url, m) {
     res.setHeader('access-control-allow-origin', '*');
