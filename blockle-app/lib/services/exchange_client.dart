@@ -33,8 +33,50 @@ import 'dart:convert';
 
 import 'transports.dart';
 
-/// Default origin. Overridable for tests and for a staging venue.
-const String kExchangeBase = 'https://exchange.blockle.org/v1';
+/// Default ORIGIN — no path. Overridable for tests and for a staging venue.
+///
+/// THE VENUE HAS TWO SURFACES AND THEY ARE NOT INTERCHANGEABLE:
+///
+///   /public/*  read-only market data, no credential ever sent
+///   /v1/*      the account: balances, orders, deposits, withdrawals
+///
+/// This used to be a single base of `…/org/v1` with paths like `/status` hung
+/// off it, which 404'd every public read. The visible symptom was the Exchange
+/// tab reporting "unavailable" on iOS: `status()` threw, the controller stored
+/// a null status, and `tradable` correctly refused to assume a venue it could
+/// not reach was open. The gate was fine; the URL was wrong.
+///
+/// So the surface is now part of each call site rather than baked into the
+/// base, because "which half of the API is this?" is not something a reader
+/// should have to infer.
+const String kExchangeBase = 'https://exchange.blockle.org';
+
+/// Normalise whatever a caller passed into a bare origin.
+///
+/// Strips a trailing slash, and strips a trailing `/v1` or `/public` so that a
+/// caller still holding the OLD convention — where the base included the
+/// surface — lands on the right URLs instead of requesting
+/// `…/v1/public/status`. That is the exact shape of the bug this replaced, so
+/// it is worth absorbing rather than leaving as a trap.
+String _origin(String base) {
+  var b = base.trim();
+  while (b.endsWith('/')) {
+    b = b.substring(0, b.length - 1);
+  }
+  for (final suffix in const ['/v1', '/public']) {
+    if (b.endsWith(suffix)) {
+      b = b.substring(0, b.length - suffix.length);
+      break;
+    }
+  }
+  return b;
+}
+
+/// Read-only market data. Never carries a credential.
+const String _kPublic = '/public';
+
+/// The account surface. Everything here needs a session or an API key.
+const String _kV1 = '/v1';
 
 /// A signed challenge (kept: older callers still reference the type).
 class SignedChallenge {
@@ -191,7 +233,7 @@ class ExchangeClient {
     String base = kExchangeBase,
     HttpSend? send,
     String? Function()? bearer,
-  })  : _base = base.endsWith('/') ? base.substring(0, base.length - 1) : base,
+  })  : _base = _origin(base),
         _send = send ?? httpSend,
         _bearer = bearer;
 
@@ -265,7 +307,7 @@ class ExchangeClient {
   // ------------------------------------------------------------ public reads
 
   Future<ExchangeStatus> status() async {
-    final j = await _req('GET', '/status') as Map<String, dynamic>;
+    final j = await _req('GET', '$_kPublic/status') as Map<String, dynamic>;
     return ExchangeStatus(
       live: j['live'] == true,
       mainnetEnabled: j['mainnetEnabled'] == true,
@@ -276,12 +318,12 @@ class ExchangeClient {
 
   /// Markets merged with their tickers, so one call feeds a market list.
   Future<List<ExchangeMarket>> getMarkets() async {
-    final mkts = await _req('GET', '/markets') as List<dynamic>;
+    final mkts = await _req('GET', '$_kPublic/markets') as List<dynamic>;
     // Tickers are a nicety: a market list is still correct without prices, so
     // a ticker failure must not blank the whole screen.
     List<dynamic> ticks = const [];
     try {
-      ticks = await _req('GET', '/tickers') as List<dynamic>;
+      ticks = await _req('GET', '$_kPublic/tickers') as List<dynamic>;
     } catch (_) {}
     final byMarket = <String, Map<String, dynamic>>{
       for (final t in ticks)
@@ -308,7 +350,7 @@ class ExchangeClient {
   }
 
   Future<OrderBook?> getBook(String market) async {
-    final j = await _req('GET', '/book/${Uri.encodeComponent(market)}');
+    final j = await _req('GET', '$_kPublic/book/${Uri.encodeComponent(market)}');
     if (j is! Map<String, dynamic>) return null;
     List<OrderLevel> side(Object? raw) => (raw is List ? raw : const [])
         .whereType<Map<String, dynamic>>()
@@ -319,14 +361,14 @@ class ExchangeClient {
   }
 
   Future<List<Map<String, dynamic>>> getTrades(String market) async {
-    final j = await _req('GET', '/trades/${Uri.encodeComponent(market)}');
+    final j = await _req('GET', '$_kPublic/trades/${Uri.encodeComponent(market)}');
     return (j is List ? j : const []).whereType<Map<String, dynamic>>().toList();
   }
 
   // ------------------------------------------------------- the account's money
 
   Future<List<ExchangeBalance>> getBalances() async {
-    final j = await _req('GET', '/balances', auth: true);
+    final j = await _req('GET', '$_kV1/balances', auth: true);
     return (j is List ? j : const [])
         .whereType<Map<String, dynamic>>()
         .map((b) => ExchangeBalance(
@@ -348,7 +390,7 @@ class ExchangeClient {
     if (network != null && network.isNotEmpty) {
       q.write('&network=${Uri.encodeComponent(network)}');
     }
-    final j = await _req('GET', '/deposit-address$q', auth: true);
+    final j = await _req('GET', '$_kV1/deposit-address$q', auth: true);
     if (j is! Map<String, dynamic>) {
       throw ExchangeException('the venue returned no deposit information');
     }
@@ -361,7 +403,7 @@ class ExchangeClient {
   }
 
   Future<List<OpenOrder>> getOpenOrders() async {
-    final j = await _req('GET', '/orders', auth: true);
+    final j = await _req('GET', '$_kV1/orders', auth: true);
     final rows = j is List ? j : (j is Map ? (j['orders'] as List? ?? const []) : const []);
     return rows.whereType<Map<String, dynamic>>().map((o) {
       return OpenOrder(
@@ -391,7 +433,7 @@ class ExchangeClient {
     if (type == 'limit' && (price == null || price.isEmpty)) {
       throw ExchangeException('a limit order needs a price');
     }
-    final j = await _req('POST', '/orders', auth: true, body: {
+    final j = await _req('POST', '$_kV1/orders', auth: true, body: {
       'market': market,
       'side': side,
       'type': type,
@@ -404,7 +446,7 @@ class ExchangeClient {
   Future<Map<String, dynamic>> cancelOrder(String orderId) async {
     final j = await _req(
       'POST',
-      '/orders/${Uri.encodeComponent(orderId)}/cancel',
+      '$_kV1/orders/${Uri.encodeComponent(orderId)}/cancel',
       auth: true,
     );
     return j is Map<String, dynamic> ? j : <String, dynamic>{};

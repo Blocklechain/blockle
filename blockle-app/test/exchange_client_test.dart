@@ -18,7 +18,14 @@ HttpSend _stub(
 }) {
   return (HttpReq req) async {
     seen?.add(req);
-    final path = Uri.parse(req.url).path.replaceFirst('/v1', '');
+    // THE SURFACE IS PART OF THE KEY NOW, not stripped.
+    //
+    // This stub used to erase `/v1` before matching, which made it blind to the
+    // bug that shipped: the client asked for `/v1/status`, the real venue
+    // serves that under `/public`, and every public read 404'd in production
+    // while every test here passed. A stub that discards the part of the URL
+    // most likely to be wrong is worse than no stub.
+    final path = Uri.parse(req.url).path;
     final key = '${req.method} $path';
     if (!routes.containsKey(key)) {
       return HttpReply(404, jsonEncode({'error': 'no stub for $key'}));
@@ -36,7 +43,7 @@ void main() {
     // the UI imply live trading on a venue whose legal review is incomplete.
     final c = ExchangeClient(
       send: _stub({
-        'GET /status': {
+        'GET /public/status': {
           'live': false,
           'mainnetEnabled': false,
           'legalReviewCompleted': false,
@@ -54,7 +61,7 @@ void main() {
     for (final missing in ['live', 'mainnetEnabled', 'legalReviewCompleted']) {
       final c = ExchangeClient(
         send: _stub({
-          'GET /status': {
+          'GET /public/status': {
             'live': missing != 'live',
             'mainnetEnabled': missing != 'mainnetEnabled',
             'legalReviewCompleted': missing != 'legalReviewCompleted',
@@ -75,10 +82,10 @@ void main() {
     // of 0 on a chart and a portfolio mark of nothing.
     final c = ExchangeClient(
       send: _stub({
-        'GET /markets': [
+        'GET /public/markets': [
           {'symbol': 'RTM-USDT', 'base': 'RTM', 'quote': 'USDT', 'baseDecimals': 8, 'quoteDecimals': 6, 'minBase': '1'},
         ],
-        'GET /tickers': [
+        'GET /public/tickers': [
           {'market': 'RTM-USDT', 'last': null, 'bid': null, 'ask': null},
         ],
       }),
@@ -96,7 +103,7 @@ void main() {
     // whole screen because one call failed is worse than showing no price.
     final c = ExchangeClient(
       send: _stub({
-        'GET /markets': [
+        'GET /public/markets': [
           {'symbol': 'PEP-BLOCK', 'base': 'PEP', 'quote': 'BLOCK'},
         ],
         // no /tickers stub -> 404
@@ -110,7 +117,7 @@ void main() {
   test('A ONE-SIDED BOOK HAS NO MID, rather than half a number', () async {
     final c = ExchangeClient(
       send: _stub({
-        'GET /book/RTM-USDT': {
+        'GET /public/book/RTM-USDT': {
           'bids': [
             {'price': '0.01', 'base': '100'}
           ],
@@ -127,7 +134,7 @@ void main() {
   test('a two-sided book has a mid', () async {
     final c = ExchangeClient(
       send: _stub({
-        'GET /book/X-Y': {
+        'GET /public/book/X-Y': {
           'bids': [
             {'price': '10', 'base': '1'}
           ],
@@ -165,7 +172,7 @@ void main() {
     // bearer is the only form that works, and the venue only forwards Bearer.
     final seen = <HttpReq>[];
     final c = ExchangeClient(
-      send: _stub({'GET /balances': <Object>[]}, seen: seen),
+      send: _stub({'GET /v1/balances': <Object>[]}, seen: seen),
       bearer: () => 'sess-123',
     );
     await c.getBalances();
@@ -176,7 +183,7 @@ void main() {
   test('public reads carry NO credential', () async {
     final seen = <HttpReq>[];
     final c = ExchangeClient(
-      send: _stub({'GET /status': {'live': true, 'mainnetEnabled': true, 'legalReviewCompleted': true, 'network': 'mainnet'}}, seen: seen),
+      send: _stub({'GET /public/status': {'live': true, 'mainnetEnabled': true, 'legalReviewCompleted': true, 'network': 'mainnet'}}, seen: seen),
       bearer: () => 'sess-123',
     );
     await c.status();
@@ -192,7 +199,7 @@ void main() {
     // its last digits by the time a double holds it.
     final c = ExchangeClient(
       send: _stub({
-        'GET /balances': [
+        'GET /v1/balances': [
           {
             'asset': 'RTM',
             'total': '123456789012345678',
@@ -219,7 +226,7 @@ void main() {
     // instead would invite the user to improvise.
     final c = ExchangeClient(
       send: _stub({
-        'GET /deposit-address': {
+        'GET /v1/deposit-address': {
           'reason': 'RTM deposits are closed until its node finishes syncing',
         }
       }),
@@ -234,7 +241,7 @@ void main() {
   test('a ready deposit target carries the address and its network', () async {
     final c = ExchangeClient(
       send: _stub({
-        'GET /deposit-address': {
+        'GET /v1/deposit-address': {
           'address': 'RASnNhEeAfsrepCLefsugW57A5A1ZLSMW9',
           'network': 'raptoreum',
         }
@@ -251,7 +258,7 @@ void main() {
   test('ORDER AMOUNTS ARE SENT AS STRINGS, never through a double', () async {
     final seen = <HttpReq>[];
     final c = ExchangeClient(
-      send: _stub({'POST /orders': {'id': 'o1', 'state': 'open'}}, seen: seen),
+      send: _stub({'POST /v1/orders': {'id': 'o1', 'state': 'open'}}, seen: seen),
       bearer: () => 't',
     );
     await c.placeOrder(
@@ -283,12 +290,12 @@ void main() {
   test('cancel posts to the order-specific cancel route', () async {
     final seen = <HttpReq>[];
     final c = ExchangeClient(
-      send: _stub({'POST /orders/o1/cancel': {'state': 'cancelled'}}, seen: seen),
+      send: _stub({'POST /v1/orders/o1/cancel': {'state': 'cancelled'}}, seen: seen),
       bearer: () => 't',
     );
     final r = await c.cancelOrder('o1');
     expect(r['state'], 'cancelled');
-    expect(seen.single.url, endsWith('/orders/o1/cancel'));
+    expect(seen.single.url, endsWith('/v1/orders/o1/cancel'));
   });
 
   // ----------------------------------------------------------- price oracle
@@ -300,11 +307,11 @@ void main() {
     // leaving it empty, because a zero looks like a real price.
     final c = ExchangeClient(
       send: _stub({
-        'GET /markets': [
+        'GET /public/markets': [
           {'symbol': 'A-B', 'base': 'A', 'quote': 'B'},
           {'symbol': 'C-D', 'base': 'C', 'quote': 'D'},
         ],
-        'GET /tickers': [
+        'GET /public/tickers': [
           {'market': 'A-B', 'last': '1.5'},
           {'market': 'C-D', 'last': null},
         ],
@@ -334,5 +341,83 @@ void main() {
           .having((e) => e.message, 'message', contains('halted'))
           .having((e) => e.status, 'status', 503)),
     );
+  });
+
+  // --------------------------------------------------------- the surface split
+
+  test('PUBLIC READS GO TO /public AND ACCOUNT CALLS TO /v1', () async {
+    // THE BUG THIS PINS. The client was built with a single base of
+    // `https://exchange.blockle.org/v1` and paths like `/status` hung off it. The
+    // venue serves market data under `/public` and only the account under `/v1`,
+    // so every public read 404'd — and because `status()` threw, the controller
+    // stored a null status and the Exchange tab reported "unavailable" on iOS.
+    // The gate logic was right; it never got an answer to gate on.
+    //
+    // Asserting the full path, because the surface is the part that was wrong and
+    // the old test stub erased it before matching.
+    final seen = <HttpReq>[];
+    final c = ExchangeClient(
+      send: _stub({
+        'GET /public/status': {
+          'live': false, 'mainnetEnabled': false,
+          'legalReviewCompleted': false, 'network': 'testnet',
+        },
+        'GET /public/markets': <Object>[],
+        'GET /public/tickers': <Object>[],
+        'GET /public/book/X-Y': {'bids': <Object>[], 'asks': <Object>[]},
+        'GET /public/trades/X-Y': <Object>[],
+        'GET /v1/balances': <Object>[],
+        'GET /v1/orders': <Object>[],
+      }, seen: seen),
+      bearer: () => 'sess',
+    );
+
+    await c.status();
+    await c.getMarkets();
+    await c.getBook('X-Y');
+    await c.getTrades('X-Y');
+    await c.getBalances();
+    await c.getOpenOrders();
+
+    final paths = seen.map((r) => Uri.parse(r.url).path).toList();
+    // Every market-data call on the public surface...
+    expect(paths, contains('/public/status'));
+    expect(paths, contains('/public/markets'));
+    expect(paths, contains('/public/book/X-Y'));
+    expect(paths, contains('/public/trades/X-Y'));
+    // ...and every account call on /v1.
+    expect(paths, contains('/v1/balances'));
+    expect(paths, contains('/v1/orders'));
+    // Nothing may land on the other half: `/v1/status` and `/public/balances`
+    // are both 404s on the real venue.
+    expect(paths.where((p) => p.startsWith('/v1/')).toList(),
+        everyElement(isNot(anyOf(contains('status'), contains('markets'),
+            contains('tickers'), contains('book'), contains('trades')))));
+    expect(paths.where((p) => p.startsWith('/public/')).toList(),
+        everyElement(isNot(anyOf(contains('balances'), contains('orders')))));
+  });
+
+  test('a base still carrying the old /v1 suffix is normalised', () async {
+    // Absorbs the previous convention rather than producing `/v1/public/status`.
+    final seen = <HttpReq>[];
+    for (final base in const [
+      'https://exchange.blockle.org/v1',
+      'https://exchange.blockle.org/',
+      'https://exchange.blockle.org',
+    ]) {
+      final c = ExchangeClient(
+        base: base,
+        send: _stub({
+          'GET /public/status': {
+            'live': false, 'mainnetEnabled': false,
+            'legalReviewCompleted': false, 'network': 'testnet',
+          }
+        }, seen: seen),
+      );
+      await c.status();
+    }
+    for (final r in seen) {
+      expect(Uri.parse(r.url).path, '/public/status', reason: r.url);
+    }
   });
 }
