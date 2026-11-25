@@ -24,6 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:blockle_app/multichain/wallet_export.dart' as wx;
 import 'package:blockle_app/multichain/chains/utxo.dart';
 import 'package:blockle_app/multichain/chains/chain_adapter.dart';
+import 'package:blockle_app/widgets/chain_icon.dart';
 
 const _mnemonic =
     'abandon abandon abandon abandon abandon abandon abandon abandon '
@@ -88,6 +89,8 @@ void main() {
     expect(networks['dingocoin']!.pathAlternates, isNotEmpty);
   });
 
+  logoExpectations();
+
   test('DINGO and DOGE share address bytes and must not be conflated', () {
     // The hazard: Dingocoin kept Dogecoin's version bytes, so a DOGE address
     // passes Dingocoin's checksum and vice versa. Nothing in the encoding can
@@ -99,5 +102,42 @@ void main() {
     // They must at least be distinct chains with distinct endpoints.
     expect(networks['dingocoin']!.id, isNot(networks['dogecoin']!.id));
     expect(networks['dingocoin']!.esplora, isNot(networks['dogecoin']!.esplora));
+  });
+}
+
+// ------------------------------------------------------------------- logos
+//
+// A coin with no mark falls back to a coloured monogram, which is not wrong but
+// does make a wallet look unfinished. More importantly, DINGO and DOGE must not
+// look alike: they share address bytes, so two similar icons in a list is how
+// someone pastes a Dogecoin address into a Dingocoin send.
+
+/// The logo checks, registered from main() above.
+void logoExpectations() {
+  for (final v in _vectors) {
+    final id = v[0], symbol = v[1];
+    test('$symbol has a real brand mark, not a monogram fallback', () {
+      expect(kChainLogos.containsKey(id), isTrue,
+          reason: '$id renders a generated initial-disc with no mark');
+      expect(kChainBrands.containsKey(id), isTrue,
+          reason: '$id has no brand colour for the fallback path');
+      // The ticker must resolve to the chain id, or the icon lookup misses
+      // wherever the UI only has a symbol to hand.
+      expect(canonChain(symbol, null), id);
+    });
+  }
+
+  test('DINGO and DOGE are visually distinct despite sharing address bytes', () {
+    // The hazard is a lost send, not an aesthetic one.
+    expect(kChainBrands['dingocoin']!.color,
+        isNot(kChainBrands['dogecoin']!.color));
+    expect(kChainLogos['dingocoin']!.svg, isNot(kChainLogos['dogecoin']!.svg));
+  });
+
+  test('PEP and PERBUG do not share a mark either', () {
+    // Both are "P" coins in the same wallet; identical marks would be a
+    // coin-flip for the user.
+    expect(kChainLogos['pepecoin']!.svg, isNot(kChainLogos['perbug']!.svg));
+    expect(kChainBrands['pepecoin']!.color, isNot(kChainBrands['perbug']!.color));
   });
 }

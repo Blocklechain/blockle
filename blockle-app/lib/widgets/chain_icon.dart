@@ -53,6 +53,15 @@ const Map<String, ChainBrand> kChainBrands = {
   'avalanche': ChainBrand(Color(0xFFE84142), 'A'),
   'hyperliquid': ChainBrand(Color(0xFF50D2C1), 'H', fg: Color(0xFF06312C)),
   'block': ChainBrand(Color(0xFF7C5CFF), '◈'),
+  // The listed small PoW coins. Colours are ours, for legibility and to keep
+  // these five apart from each other — not official brand colours.
+  'raptoreum': ChainBrand(Color(0xFF2B3A67), 'R'),
+  'pepecoin': ChainBrand(Color(0xFF3FA635), 'P'),
+  'neoxa': ChainBrand(Color(0xFF1D7A8C), 'N'),
+  // Deliberately NOT Dogecoin's gold: Dingocoin shares DOGE's address bytes,
+  // so a wallet that makes them look similar invites a lost send.
+  'dingocoin': ChainBrand(Color(0xFFB05C2E), 'D'),
+  'perbug': ChainBrand(Color(0xFF5A4AE3), 'P'),
 };
 
 /// The brand-color for [chainId], or null for an unknown / custom network.
@@ -85,6 +94,39 @@ const String _mLtc =
 const String _mDoge =
     '<path d="M8.6 6.5h3.2a5.5 5.5 0 010 11H8.6z" fill="none" stroke="#2b2300" stroke-width="1.7" stroke-linejoin="round"/>'
     '<path d="M6.8 12h4.6" fill="none" stroke="#2b2300" stroke-width="1.7" stroke-linecap="round"/>';
+/*
+ * THE BLOCKLE-LISTED SMALL PoW COINS.
+ *
+ * DRAWN, NOT COPIED. Like the Dogecoin "Ð" and Litecoin "Ł" marks above, these
+ * are letterform glyphs we draw in a brand-adjacent colour — not reproductions
+ * of each project's logo artwork. That keeps the set visually consistent, keeps
+ * the icons offline and CSP-safe like every other mark here, and avoids
+ * shipping somebody else's trademarked artwork inside our app.
+ *
+ * The colours are chosen for legibility and to keep the five distinguishable
+ * from each other and from the existing chains. They are NOT claimed to be
+ * official brand colours.
+ */
+// Raptoreum — "R".
+const String _mRtm =
+    '<path d="M9 17.5V6.5h3.4a3.1 3.1 0 010 6.2H9" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+    '<path d="M11.9 12.7l3.3 4.8" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round"/>';
+// Pepecoin — "P".
+const String _mPep =
+    '<path d="M9.2 17.5V6.5h3.5a3.2 3.2 0 010 6.4H9.2" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
+// Neoxa — "N". Its addresses start with G, but the coin is NEOX; the mark
+// follows the ticker, as every other mark here does.
+const String _mNeox =
+    '<path d="M9 17.5V6.5l6 11V6.5" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>';
+// Dingocoin — "D". Deliberately NOT the Dogecoin mark: these two share address
+// bytes, so making them look alike in a wallet would be actively dangerous.
+const String _mDingo =
+    '<path d="M9.3 6.5h2.6a5.5 5.5 0 010 11H9.3z" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>';
+// Perbug — ours. A "P" with a bar, to read as a coin mark rather than a letter
+// and to sit apart from Pepecoin's plain P.
+const String _mPerbug =
+    '<path d="M9.6 17.5V6.5h3.3a3.1 3.1 0 010 6.2H9.6" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+    '<path d="M7.9 9.3h2.4M7.9 14.1h2.4" fill="none" stroke="#ffffff" stroke-width="1.4" stroke-linecap="round"/>';
 const String _mSol =
     '<path d="M8.4 8h8l-1.7 1.7h-8z" fill="#ffffff"/>'
     '<path d="M6.4 11h8l1.7 1.7h-8z" fill="#ffffff"/>'
@@ -140,6 +182,11 @@ final Map<String, BrandMark> kChainLogos = {
   'litecoin': BrandMark('brand:litecoin', _disc('#345d9d', _mLtc)),
   'dogecoin': BrandMark('brand:dogecoin', _disc('#c2a633', _mDoge)),
   'bitcoincash': BrandMark('brand:bitcoincash', _disc('#0ac18e', _mBtc)),
+  'raptoreum': BrandMark('brand:raptoreum', _disc('#2b3a67', _mRtm)),
+  'pepecoin': BrandMark('brand:pepecoin', _disc('#3fa635', _mPep)),
+  'neoxa': BrandMark('brand:neoxa', _disc('#1d7a8c', _mNeox)),
+  'dingocoin': BrandMark('brand:dingocoin', _disc('#b05c2e', _mDingo)),
+  'perbug': BrandMark('brand:perbug', _disc('#5a4ae3', _mPerbug)),
   'solana': BrandMark('brand:solana', _disc('#9945ff', _mSol)),
   'tron': BrandMark('brand:tron', _disc('#ef0027', _mTron)),
   'ton': BrandMark('brand:ton', _disc('#0098ea', _mTon)),
@@ -226,6 +273,12 @@ String canonChain(String chainId, String? symbol) {
     'avax': 'avalanche',
     'bsc': 'bnb', 'binance': 'bnb',
     'hype': 'hyperliquid', 'hyperevm': 'hyperliquid',
+    'rtm': 'raptoreum',
+    'pep': 'pepecoin',
+    'neox': 'neoxa',
+    'dingo': 'dingocoin',
+    // PERBUG is both the chain id and the ticker, so no alias is needed — it
+    // is listed here only so the next reader does not go looking for one.
   };
   return alias[c] ?? alias[(symbol ?? '').toLowerCase()] ?? c;
 }
