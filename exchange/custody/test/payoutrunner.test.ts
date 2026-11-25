@@ -538,3 +538,45 @@ test("the attempt history is kept, which is what support actually needs", async 
 	// A settled payout is no longer "stuck".
 	assert.equal(stuckPayouts(db).length, 0);
 });
+
+test("AN IDLE CYCLE STILL WRITES A HEARTBEAT", async () => {
+	// The bug this pins, found by running the go-live preflight on the live box:
+	// the quiet-path early return skipped the end-of-cycle beat, so a runner
+	// with nothing to do stopped reporting entirely. golive.ts read the stale
+	// row and concluded "treat as absent" — correctly, given what it was told.
+	// The row had been frozen for 22 hours while the timer fired every 90
+	// seconds and exited 0 every time.
+	//
+	// The second cost is the one that matters: without this, "no recent
+	// heartbeat" cannot tell a WEDGED runner from an IDLE one, which is the only
+	// distinction the signal exists to make.
+	const { db, l, w } = setup();
+	void l; void w;
+	const c = client();
+
+	const hb = (): { detail: string; cycles: number } | undefined =>
+		db
+			.prepare(
+				`SELECT detail, cycles FROM runner_heartbeat WHERE runner = 'payout-runner'`,
+			)
+			.get() as { detail: string; cycles: number } | undefined;
+
+	// NB: runner_heartbeat is created by the runner's own schema exec, so it
+	// does not exist until the first cycle — querying before that throws.
+
+	// Nothing approved and nothing submitted: the idle path.
+	const r = await runOnce({
+		db, ledger: l, withdrawals: w, client: c.client, walletFor,
+	});
+	assert.equal(r.sent, 0);
+	assert.equal(c.sends.length, 0);
+
+	const row = hb();
+	assert.ok(row !== undefined, "an idle cycle must report, or it reads as absent");
+	assert.equal(row.cycles, 1);
+	assert.match(row.detail, /nothing to do/);
+
+	// A second idle cycle advances it, so freshness keeps tracking liveness.
+	await runOnce({ db, ledger: l, withdrawals: w, client: c.client, walletFor });
+	assert.equal(hb()!.cycles, 2);
+});

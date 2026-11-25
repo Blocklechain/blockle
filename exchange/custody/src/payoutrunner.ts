@@ -170,6 +170,39 @@ export async function runOnce(deps: PayoutDeps): Promise<PayoutResult> {
 		beat(deps.db, "payout-runner", `REFUSED: ${refusals.join(" | ")}`);
 	}
 	if (sendable.length === 0 && submitted.length === 0) {
+		/*
+		 * AN IDLE CYCLE IS STILL A CYCLE, AND IT MUST SAY SO.
+		 *
+		 * This early return used to skip the end-of-cycle `beat()` below, which
+		 * inverted the exact signal the heartbeat exists to provide. Nothing to
+		 * send and nothing in flight is the NORMAL state of a quiet venue, so the
+		 * runner stopped reporting the moment it had no work — and golive.ts,
+		 * reading a stale row, correctly concluded "has not reported recently,
+		 * treat as absent". On the live box the row froze for 22 hours while the
+		 * timer fired every 90 seconds and exited 0 every time.
+		 *
+		 * Two costs, and the second is worse. The go-live gate could never pass.
+		 * And "no recent heartbeat" stopped distinguishing a WEDGED runner from
+		 * an IDLE one, which is the only thing it was for.
+		 *
+		 * Same wording as the normal exit, so a reader and any parser see one
+		 * format rather than two.
+		 *
+		 * BUT NOT OVER A REFUSAL. An all-refused cycle also has nothing
+		 * sendable, so an unconditional beat here would clobber the `REFUSED:`
+		 * row written above — and that row is the whole reason the preflight can
+		 * tell a refusing runner from a healthy one. Caught by the existing test
+		 * for it, which is what that test is for.
+		 */
+		if (refusals.length === 0) {
+			beat(
+				deps.db,
+				"payout-runner",
+				`${sent} sent, ${recovered} recovered, ${settled} settled, ` +
+					`${failed} reversed, ${waiting} confirming — nothing to do` +
+					(errors.length > 0 ? `, ${errors.length} error(s)` : ""),
+			);
+		}
 		return { sent, recovered, settled, failed, waiting, refused, errors };
 	}
 
