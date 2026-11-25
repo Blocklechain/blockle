@@ -40,6 +40,7 @@ import { dirname, join } from "node:path";
 
 import { format } from "./amount";
 import { ASSETS, custodyIds } from "./assets";
+import { pinAndVerify } from "./ipv4";
 import { Ledger } from "./ledger";
 import { Status, formatReport, reconcile, type HoldingsSource } from "./reconcile";
 
@@ -294,6 +295,45 @@ export function writeHalts(path: string, halts: Record<string, string>): void {
 
 /** Entry point for the systemd timer. */
 export async function main(): Promise<void> {
+	/*
+	 * PIN IPv4 BEFORE TOUCHING BITGO.
+	 *
+	 * This was the ONLY BitGo-touching entry point that did not — the deposit
+	 * watcher, the payout runner, the public API, the wallet generator and the
+	 * preflight all do. The box has IPv6, the BitGo token is restricted to its
+	 * IPv4 address, so an unpinned request leaves over IPv6 and comes back:
+	 *
+	 *   401 "Attempt to use IP-restricted token from an unauthorized IP address"
+	 *
+	 * which reads exactly like a bad token. It surfaced the moment
+	 * RECONCILE_SOURCE was switched to bitgo: every asset reported UNAVAILABLE,
+	 * so the reconciler could not verify a single balance against the custodian
+	 * while looking, from the logs, like a credentials problem.
+	 *
+	 * The prod host explicitly, because pinAndVerify defaults to the TEST one
+	 * and verifying egress against the wrong environment proves nothing about
+	 * the one the token belongs to.
+	 */
+	const bitgoHost =
+		(process.env.BITGO_ENV ?? "").trim().toLowerCase() === "prod"
+			? "app.bitgo.com"
+			: "app.bitgo-test.com";
+	try {
+		await pinAndVerify(bitgoHost);
+	} catch (e) {
+		/*
+		 * NOT FATAL HERE, deliberately, and this differs from the wallet
+		 * generator on purpose. A reconciler that refuses to start reports
+		 * nothing at all; one that starts with a bad pin reports UNAVAILABLE
+		 * per asset, which is the honest answer and keeps the halt set fresh
+		 * for every asset it CAN read.
+		 */
+		console.error(
+			`IPv4 pin failed: ${e instanceof Error ? e.message : String(e)}. ` +
+				"Custody reads will likely fail as IP-restriction 401s.",
+		);
+	}
+
 	const dbPath = process.env.CUSTODY_DB ?? "/var/lib/exchange-custody/ledger.db";
 	const cfgPath = process.env.EXCHANGE_CONFIG ?? "/etc/blockle/exchange.json";
 

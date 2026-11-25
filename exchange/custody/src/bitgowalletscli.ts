@@ -33,7 +33,15 @@ async function main(): Promise<void> {
 	 * and the box also has IPv6; an unpinned request returns a 401 that reads
 	 * exactly like a bad token. Same reason golivecli does this.
 	 */
-	await pinAndVerify();
+	// The PROD host explicitly when that is the environment: pinAndVerify
+	// defaults to the test one, and verifying egress against the wrong
+	// environment proves nothing about the one the token belongs to. (My first
+	// version of this file printed "app.bitgo-test.com" during a prod run.)
+	await pinAndVerify(
+		(process.env.BITGO_ENV ?? "").trim().toLowerCase() === "prod"
+			? "app.bitgo.com"
+			: "app.bitgo-test.com",
+	);
 
 	const bitgoEnv = env("BITGO_ENV") === "prod" ? "prod" : "test";
 	const enterprise = env("BITGO_ENTERPRISE");
