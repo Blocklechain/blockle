@@ -625,93 +625,21 @@ async function venueRoute(
 			return;
 		}
 
-		// TESTNET FAUCET.
-		//
-		// GONE, not merely refused, once the venue is live: the route stops
-		// existing, so there is nothing to probe and nothing to advertise. The
-		// venue itself ALSO refuses it (Venue.testnetCredit checks the mainnet
-		// gate and the reconcile source independently), so removing the route
-		// is the outermost of three layers rather than the only one.
-		if (p === "/testnet-fund" && gate().mainnetEnabled) {
-			json(res, 404, { error: "not found" }, 0);
-			return;
-		}
-		if (p === "/testnet-fund" && req.method === "POST") {
-			const who = await me();
-			const b = parseBody(rawBody);
-			const raw = str(b, "asset").toUpperCase();
-			/*
-			 * THE ASSET MUST BE AN EXACT SETTLEMENT SYMBOL. NOTHING ELSE.
-			 *
-			 * assetDef() IS NOT A VALIDATOR OF THIS STRING. It resolves through
-			 * settlementAsset(), which splits at the FIRST DOT and looks up only
-			 * the part before it — so "USDT../../../etc/passwd" resolves happily
-			 * to the USDT definition and the remainder rides along unchecked.
-			 * This route then built the custody id by concatenating that RAW
-			 * input, and bumpDeclared persisted it as a key in the treasury
-			 * declaration.
-			 *
-			 * NOT HYPOTHETICAL. A scanner hit this endpoint on the live box and
-			 * left two keys in the declared treasury:
-			 *   USDT../{..}/ETC/PASSWD.TRC20
-			 *   USDT..\{..}\WINDOWS\WIN.INI.TRC20
-			 * The traversal could not reach a file — the treasury path is fixed
-			 * and the string was only ever a JSON key — but unvalidated caller
-			 * input reached persisted custody state and shaped the custody id
-			 * that reconciliation keys on. That is enough to fix at the source.
-			 *
-			 * The caller names a SETTLEMENT asset; this route picks the network.
-			 */
-			if (raw !== settlementAsset(raw)) {
-				throw new VenueError(
-					"asset must be a settlement symbol with no network suffix " +
-						`(got "${raw.slice(0, 32)}"). The network is chosen here.`,
-				);
-			}
-			const asset = raw;
-			const def = assetDef(asset);
-			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
-			// Multi-network assets need a chain for the custody side.
-			const custodyId = def.networks.length === 0
-				? asset
-				: `${asset}.${def.networks[0]!.id}`;
-			// Belt and braces: prove the id we built is one the books can
-			// actually account for, before anything persists it.
-			assertCustodyId(custodyId);
-			/*
-			 * THE DECLARATION MOVES FIRST.
-			 *
-			 * The faucet credits CUSTODY as well as the customer, and the
-			 * declared treasury file is what reconciliation compares custody
-			 * against on testnet. Without this the two drift apart on every
-			 * click and the reconciler reports a permanent shortfall — which
-			 * is exactly what had happened to BLOCK on the live box: books
-			 * 15,000, declaration 5,000, withdrawals halted all day.
-			 *
-			 * Bumped BEFORE the post so a failure leaves the file overstating
-			 * holdings (a benign surplus) rather than understating them (a
-			 * shortfall, which halts the asset). See declaredtreasury.ts.
-			 */
-			try {
-				bumpDeclared(TREASURY_FILE, custodyId, amount);
-			} catch (e) {
-				// FAIL CLOSED, AND SAY WHY. If the declaration cannot be kept in
-				// step, the credit must not happen: it would leave the books
-				// ahead of the declaration, which is a shortfall and halts the
-				// asset. Better a faucet that refuses than one that bricks
-				// reconciliation.
-				throw new VenueError(
-					"the testnet treasury declaration could not be updated, so this " +
-						"credit was NOT made. Crediting without it would make the " +
-						"books disagree with the declaration and halt withdrawals " +
-						`for ${asset}. Detail: ${e instanceof Error ? e.message : String(e)}`,
-					503,
-				);
-			}
-			venue.testnetCredit(who, asset, amount, custodyId);
-			json(res, 200, { ok: true, asset, credited: fmt(amount, def.decimals) }, 0);
-			return;
-		}
+		/*
+		 * THE TESTNET FAUCET IS GONE.
+		 *
+		 * Removed on the way to mainnet (2026-11-25). It credited CUSTODY as well
+		 * as the customer — it has to, or the ledger's invariant fails — so every
+		 * click created a liability backed by coins no custodian held. On this box
+		 * an authenticated scanner called it 139 times and minted 1,390,000,000,000
+		 * base units of USDT the venue did not have; those were reversed with
+		 * CORRECTION entries, and the route that made them possible is now deleted
+		 * rather than merely gated.
+		 *
+		 * `Venue.testnetCredit` survives for the test suite, which uses it to fund
+		 * accounts, and keeps its own refusals (mainnet gate, live custodian, and
+		 * the declared-treasury ceiling). Nothing reachable over HTTP calls it.
+		 */
 
 		if (p === "/orders" && req.method === "POST") {
 			const who = await caller("trade");
@@ -1749,9 +1677,10 @@ export function start(): void {
 						legalReviewCompleted: g.legalReviewCompleted,
 						network: g.mainnetEnabled ? "mainnet" : "testnet",
 						ledgerPresent: ledger !== undefined,
-						// So the deposit screen can hide the faucet rather than
-						// offering a button that always 403s.
-						faucetAvailable: !g.mainnetEnabled && !liveCustodian,
+						// ALWAYS FALSE: the faucet route no longer exists. Kept as a
+						// field rather than dropped, because a client reading it as
+						// `undefined` would show the button, and `false` hides it.
+						faucetAvailable: false,
 					});
 					return;
 				}

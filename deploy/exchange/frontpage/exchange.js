@@ -106,7 +106,6 @@
 
   var SIGNED_IN = false;
   /** Whether the venue still offers a testnet faucet. Set from /public/status. */
-  var FAUCET = true;
 
   function api(path, opts) {
     opts = opts || {};
@@ -711,28 +710,13 @@
         out.appendChild(el("p", "note",
           "Deposit addresses are issued per customer by the custodian. Until " +
           "this chain has one, use another chain for the same asset." +
-          (FAUCET ? " While the venue is in testnet you can also use the " +
-            "testnet faucet." : "")));
+""));
       }
     }).catch(function (e) {
       out.appendChild(el("div", "msg bad", e.message));
     });
   }
 
-  function doFaucet() {
-    var msg = $("f-msg");
-    var btn = $("f-go");
-    btn.disabled = true;
-    hide(msg);
-    priv("testnet-fund", {
-      method: "POST",
-      data: { asset: $("f-asset").value, amount: $("f-amount").value.trim() },
-    }).then(function (r) {
-      show(msg, "Credited " + r.credited + " " + r.asset + ".", "ok");
-      refreshBalances();
-    }).catch(function (e) { show(msg, e.message, "bad"); })
-      .then(function () { btn.disabled = false; });
-  }
 
   // ------------------------------------------------------------------ withdraw
 
@@ -1616,7 +1600,6 @@
 
     $("d-asset").onchange = depositNets;
     $("d-net").onchange = depositAddress;
-    $("f-go").onclick = doFaucet;
 
     $("w-asset").onchange = withdrawNets;
     $("w-net").onchange = function () { showAvail(); quoteWithdrawal(); };
@@ -1706,17 +1689,6 @@
         // would surface the moment someone resized.
         var te = $("tb-env");
         if (te) { te.textContent = "LIVE"; te.className = "v up"; }
-      }
-      // NO TESTNET FURNITURE ON A LIVE VENUE. The faucet panel goes, and so
-      // does the copy that mentions it — the server removes the route
-      // entirely, so leaving either on screen would advertise something that
-      // does not exist.
-      if (st.faucetAvailable === false) {
-        FAUCET = false;
-        var fp = $("faucet-panel");
-        if (fp) fp.remove();
-        var dn = document.getElementById("deposit-faucet-note");
-        if (dn) dn.remove();
       }
       if (st.live === true) {
         // Deposit screen widens to fill the space the faucet left.
