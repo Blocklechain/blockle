@@ -1,0 +1,91 @@
+{
+  "_comment": [
+    "Address encoding parameters for the coins the wallets will hold natively.",
+    "",
+    "DERIVED FROM EACH CHAIN'S OWN DAEMON, not copied from a wiki. For each coin",
+    "an address was minted by the coin's own binary in a throwaway offline",
+    "datadir, base58-decoded, and its checksum verified; `wif` came from",
+    "dumpprivkey on that same address. A version byte copied from a third party",
+    "and off by one produces addresses that look plausible, pass no checksum",
+    "anyone else recognises, and lose whatever is sent to them.",
+    "",
+    "`p2pkh` and `wif` are facts about the chain and are safe to rely on.",
+    "",
+    "`bip44` IS NOT A FACT — read the warning on each entry before using it.",
+    "",
+    "MEWC is absent on purpose: its daemon was mid initial-block-download and",
+    "could not mint an address, and guessing its byte is exactly the mistake",
+    "this file exists to avoid. Re-run the derivation once it is synced."
+  ],
+
+  "_bip44Warning": [
+    "A DERIVATION PATH IS A COMMITMENT, NOT A DETAIL.",
+    "",
+    "Change it after anyone has received coins and their balance reads zero —",
+    "the funds are still on-chain, at addresses the wallet no longer derives.",
+    "And if the path does not match what the coin's OWN wallet uses, a user who",
+    "imports their existing seed sees an empty wallet and reasonably concludes",
+    "we lost their money.",
+    "",
+    "Several of these coins have no registered SLIP-44 coin type that could be",
+    "confirmed, so the path below is left null rather than filled with a",
+    "plausible number. Each one needs checking against that project's own",
+    "wallet before it ships — ideally by importing a seed into both and",
+    "comparing the first address. That check is cheap; getting it wrong is not."
+  ],
+
+  "RTM": {
+    "name": "Raptoreum",
+    "p2pkh": 60,
+    "p2pkhHex": "0x3c",
+    "wif": 128,
+    "wifHex": "0x80",
+    "decimals": 8,
+    "addressExample": "RUZ7G6np6dvu...",
+    "addressFirstChar": "R",
+    "bip44": null,
+    "esplora": "https://coin.blockle.org/rtm",
+    "balanceStrategy": "addrindex"
+  },
+  "PEP": {
+    "name": "Pepecoin",
+    "p2pkh": 56,
+    "p2pkhHex": "0x38",
+    "wif": 158,
+    "wifHex": "0x9e",
+    "decimals": 8,
+    "addressExample": "PmAVubh4f8jr...",
+    "addressFirstChar": "P",
+    "bip44": null,
+    "esplora": "https://coin.blockle.org/pep",
+    "balanceStrategy": "watch",
+    "note": "watch strategy: an address is only tracked from its first query; see services/coin-esplora."
+  },
+  "NEOX": {
+    "name": "Neoxa",
+    "p2pkh": 38,
+    "p2pkhHex": "0x26",
+    "wif": 112,
+    "wifHex": "0x70",
+    "decimals": 8,
+    "addressExample": "GStp5PBCaddC...",
+    "addressFirstChar": "G",
+    "bip44": null,
+    "esplora": "https://coin.blockle.org/neox",
+    "balanceStrategy": "addrindex"
+  },
+  "DINGO": {
+    "name": "Dingocoin",
+    "p2pkh": 30,
+    "p2pkhHex": "0x1e",
+    "wif": 158,
+    "wifHex": "0x9e",
+    "decimals": 8,
+    "addressExample": "DE88h9vZ8g6T...",
+    "addressFirstChar": "D",
+    "bip44": null,
+    "esplora": "https://coin.blockle.org/dingo",
+    "balanceStrategy": "watch",
+    "note": "0x1e/0x9e are Dogecoin's own bytes, which is expected of a Dogecoin fork — and is also why a DOGE address will validate against this chain's rules. The wallet must not treat them as interchangeable."
+  }
+}
