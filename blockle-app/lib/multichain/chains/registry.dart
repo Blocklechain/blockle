@@ -145,6 +145,23 @@ const Map<String, EndpointCfg> defaultEndpoints = {
   // Esplora/Fulcrum hosts are all dead/bot-walled; the UtxoAdapter's 'haskoin'
   // apiStyle (on the bitcoincash network) speaks this host's shape.
   'bitcoincash': EndpointCfg(esplora: 'https://api.haskoin.com/bch'),
+  /*
+   * THE BLOCKLE-LISTED SMALL PoW COINS, served from our own nodes.
+   *
+   * coin.blockle.org speaks the Esplora REST shape this adapter already uses,
+   * which is why these are one line each rather than five new adapters. It is
+   * read-only plus broadcast: an allowlist of RPCs with no passthrough.
+   *
+   * Pepecoin and Dingocoin are served by a weaker strategy than the others —
+   * their daemons have neither an address index nor scantxoutset, so an
+   * address is tracked from its first query. Ask /<coin>/status for the honest
+   * answer per coin.
+   */
+  'raptoreum': EndpointCfg(esplora: 'https://coin.blockle.org/rtm'),
+  'pepecoin': EndpointCfg(esplora: 'https://coin.blockle.org/pep'),
+  'neoxa': EndpointCfg(esplora: 'https://coin.blockle.org/neox'),
+  'dingocoin': EndpointCfg(esplora: 'https://coin.blockle.org/dingo'),
+  'perbug': EndpointCfg(esplora: 'https://coin.blockle.org/perbug'),
   // publicnode (no key, full RPC incl. sendTransaction) — the official
   // api.mainnet-beta endpoint rate-limits/blocks broadcasts (HTTP 403/429), which
   // made sends fail with a bare "bad state". publicnode is the same provider used
@@ -430,6 +447,11 @@ class ChainRegistry {
             'litecoin',
             'dogecoin',
             'bitcoincash',
+            'raptoreum',
+            'pepecoin',
+            'neoxa',
+            'dingocoin',
+            'perbug',
             'solana',
             'tron',
             'ton',
@@ -536,6 +558,21 @@ class ChainRegistry {
         esplora: ep['bitcoincash']?.esplora,
         httpGet: getFor(ep['bitcoincash']?.esplora),
         httpPost: postFor(ep['bitcoincash']?.esplora));
+    // The Blockle-listed small PoW coins. Same adapter, same dialect — the
+    // only thing that differs per coin is the base URL and the chain params
+    // in utxo.dart.
+    for (final id in const [
+      'raptoreum',
+      'pepecoin',
+      'neoxa',
+      'dingocoin',
+      'perbug',
+    ]) {
+      adapters[id] = UtxoAdapter(id,
+          esplora: ep[id]?.esplora,
+          httpGet: getFor(ep[id]?.esplora),
+          httpPost: postFor(ep[id]?.esplora));
+    }
     adapters['solana'] = SolanaAdapter(
       rpcUrl: ep['solana']?.rpcUrl,
       rpc: rpcFor(ep['solana']?.rpcUrl),

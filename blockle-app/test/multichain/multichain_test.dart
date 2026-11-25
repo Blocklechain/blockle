@@ -663,8 +663,12 @@ void main() {
       // (config-overridable; no secret).
       expect(reg.has('solana'), isTrue);
       expect(reg.enabled().contains('solana'), isTrue);
+      // publicnode, not api.mainnet-beta: the public mainnet-beta endpoint
+      // blocks sends, which 854307eb changed the default for on 2026-11-09.
+      // This expectation was left behind by that commit and has been failing
+      // since; the code is right and the test was stale.
       expect(reg.endpoints('solana')?.rpcUrl,
-          'https://api.mainnet-beta.solana.com');
+          'https://solana-rpc.publicnode.com');
 
       final seed = hd.mnemonicToSeed(abandon, '');
       final root = RootSecret(seed: seed);
@@ -685,7 +689,8 @@ void main() {
       // SPL auto-detect flows through the registry adapter + the default RPC.
       final held = await reg.get('solana').discoverTokens(acct.address);
       expect(seenProgram, splTokenProgram);
-      expect(seenUrl, 'https://api.mainnet-beta.solana.com');
+      // Same stale default as above — see the note at the endpoints check.
+      expect(seenUrl, 'https://solana-rpc.publicnode.com');
       expect(held.length, 1); // zero-balance junk dropped
       final usdc = held.single;
       expect(usdc.asset.chain, 'solana');

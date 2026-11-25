@@ -36,6 +36,7 @@ class UtxoNetwork {
     this.forkId = false,
     this.cashaddr,
     this.apiStyle = 'esplora',
+    this.pathAlternates = const [],
   });
 
   final String id;
@@ -64,6 +65,17 @@ class UtxoNetwork {
   /// /address/{a}/unspent → [{txid,index,value}], POST /transactions) is used
   /// for Bitcoin Cash, where no public Esplora/Fulcrum host is reliable.
   final String apiStyle;
+
+  /// Other derivation paths this coin's holders may already be using.
+  ///
+  /// `path` is only the PREFERRED one. Where a project's own wallet disagrees
+  /// with the SLIP-44 registry (RTM) or has no BIP44 path at all (PEP, DINGO),
+  /// any single choice strands somebody's seed: the funds stay on-chain at
+  /// addresses this wallet would never derive, which to the holder is
+  /// indistinguishable from losing them. Account discovery scans these too and
+  /// shows the union; `path` decides only where a NEW account starts and where
+  /// change goes.
+  final List<String> pathAlternates;
 }
 
 const Map<String, UtxoNetwork> networks = {
@@ -105,6 +117,115 @@ const Map<String, UtxoNetwork> networks = {
     path: "m/44'/3'/0'/0",
     explorer: 'https://blockchair.com/dogecoin/transaction/',
     esplora: null,
+  ),
+  /*
+   * THE BLOCKLE-LISTED SMALL PoW COINS.
+   *
+   * Every byte below was verified TWICE: an address minted by that coin's own
+   * daemon (base58-decoded, checksum checked) and then cross-checked against
+   * the project's chainparams.cpp. Both agreed in every case. Full provenance,
+   * including the derivation-path evidence, is in
+   * deploy/exchange/nodes/address-params.json — read it before changing a
+   * number here.
+   *
+   * `path` IS THE WEAKEST LINK, not the bytes. A coin type that does not match
+   * what the holder's existing wallet used shows them an empty wallet with
+   * their funds still on-chain. Checking each project rather than trusting the
+   * SLIP-44 registry found a direct conflict on RTM (its own wallet derives
+   * under 200; the registry says 10226) and two coins whose wallets are not
+   * BIP44 at all. `path` here is the PREFERRED one; `pathAlternates` carries
+   * the others, and discovery must scan all of them — see UtxoNetwork.
+   *
+   * Meowcoin is deliberately absent: its daemon was mid initial-block-download
+   * and could not mint an address to verify against. It is held in the
+   * exchange account only until that is done.
+   */
+  'raptoreum': UtxoNetwork(
+    id: 'raptoreum',
+    symbol: 'RTM',
+    decimals: 8,
+    hrp: null,
+    p2pkh: 0x3c,
+    p2sh: 0x10,
+    wif: 0x80,
+    segwit: false,
+    // Raptoreum Core's own nExtCoinType. The SLIP-44 registration (10226)
+    // disagrees, so both are scanned.
+    path: "m/44'/200'/0'/0",
+    pathAlternates: ["m/44'/10226'/0'/0"],
+    explorer: 'https://explorer.raptoreum.com/tx/',
+    esplora: 'https://coin.blockle.org/rtm',
+  ),
+  'pepecoin': UtxoNetwork(
+    id: 'pepecoin',
+    symbol: 'PEP',
+    decimals: 8,
+    hrp: null,
+    p2pkh: 0x38,
+    p2sh: 0x16,
+    wif: 0x9e,
+    segwit: false,
+    // Pepecoin Core is not a BIP44 wallet, so there is no official path. 3434
+    // is its SLIP-44 registration; coin type 3 is included because it kept
+    // Dogecoin's extended-key bytes and a Doge-lineage wallet may use it.
+    path: "m/44'/3434'/0'/0",
+    pathAlternates: ["m/44'/3'/0'/0"],
+    explorer: 'https://pepeblocks.com/tx/',
+    esplora: 'https://coin.blockle.org/pep',
+  ),
+  'neoxa': UtxoNetwork(
+    id: 'neoxa',
+    symbol: 'NEOX',
+    decimals: 8,
+    hrp: null,
+    p2pkh: 0x26,
+    p2sh: 0x7a,
+    wif: 0x70,
+    segwit: false,
+    // The cleanest of the set: stated in chainparams.cpp AND in a comment
+    // there, and unregistered in SLIP-44 so nothing competes.
+    path: "m/44'/1668'/0'/0",
+    explorer: 'https://explorer.neoxa.net/tx/',
+    esplora: 'https://coin.blockle.org/neox',
+  ),
+  'dingocoin': UtxoNetwork(
+    id: 'dingocoin',
+    symbol: 'DINGO',
+    decimals: 8,
+    hrp: null,
+    // IDENTICAL TO DOGECOIN'S, because it is a Dogecoin fork that kept them.
+    // That also means a DOGE address passes Dingocoin's validation: these two
+    // must never be treated as interchangeable, or someone sends DOGE to a
+    // Dingo address and it is gone.
+    p2pkh: 0x1e,
+    p2sh: 0x16,
+    wif: 0x9e,
+    segwit: false,
+    // No nExtCoinType and no SLIP-44 entry, so there is NO authoritative path.
+    // Dogecoin's 3 is preferred on lineage; this is the weakest path evidence
+    // in the set and is why discovery scans alternates.
+    path: "m/44'/3'/0'/0",
+    pathAlternates: ["m/44'/1'/0'/0"],
+    explorer: 'https://explorer.dingocoin.org/tx/',
+    esplora: 'https://coin.blockle.org/dingo',
+  ),
+  'perbug': UtxoNetwork(
+    id: 'perbug',
+    symbol: 'PERBUG',
+    decimals: 8,
+    // OURS, and the only segwit chain here: its node issues bech32 pb1q...
+    hrp: 'pb',
+    p2pkh: 0x37,
+    p2sh: 0x3f,
+    wif: 0xb7,
+    segwit: true,
+    // Asked of its own node with listdescriptors, which reported 44h/0h/0h,
+    // 49h/0h/0h, 84h/0h/0h and 86h/0h/0h — coin type 0, Bitcoin's, because it
+    // is an unpatched Bitcoin Core fork.
+    path: "m/84'/0'/0'/0",
+    pathAlternates: ["m/44'/0'/0'/0", "m/49'/0'/0'/0"],
+    explorer: 'https://explorer.perbug.com/tx/',
+    esplora: 'https://coin.blockle.org/perbug',
   ),
   // Bitcoin Cash — BIP44 P2PKH (coin type 145), CashAddr display, BIP143+FORKID
   // sighash (0x41). NOT segwit; `forkId` selects the BCH signing branch.
