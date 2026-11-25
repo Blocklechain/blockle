@@ -42,7 +42,7 @@ import { pipeline } from "node:stream/promises";
 import Database from "better-sqlite3";
 
 import { format, parse } from "./amount";
-import { ASSETS, assetDef, settlementAsset } from "./assets";
+import { ASSETS, assertCustodyId, assetDef, settlementAsset } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
 import { Deposits, describeDeposit } from "./deposits";
@@ -50,7 +50,7 @@ import { BitGoDeposits } from "./bitgodeposits";
 import { BitGoHoldings } from "./bitgo";
 import { BlockAddressPool } from "./blockaddresspool";
 import { Customers } from "./customers";
-import { bumpDeclared } from "./declaredtreasury";
+import { bumpDeclared, readDeclared } from "./declaredtreasury";
 import { depositsFor } from "./depositwatcher";
 import { nodeAdapters, nodeDepositAddress } from "./custodyrouting";
 import { ApiKeyError, ApiKeys, SCOPES, SIGNING_ALGORITHM, SKEW_MS, type Scope } from "./apikeys";
@@ -623,13 +623,45 @@ async function venueRoute(
 		if (p === "/testnet-fund" && req.method === "POST") {
 			const who = await me();
 			const b = parseBody(rawBody);
-			const asset = str(b, "asset").toUpperCase();
+			const raw = str(b, "asset").toUpperCase();
+			/*
+			 * THE ASSET MUST BE AN EXACT SETTLEMENT SYMBOL. NOTHING ELSE.
+			 *
+			 * assetDef() IS NOT A VALIDATOR OF THIS STRING. It resolves through
+			 * settlementAsset(), which splits at the FIRST DOT and looks up only
+			 * the part before it — so "USDT../../../etc/passwd" resolves happily
+			 * to the USDT definition and the remainder rides along unchecked.
+			 * This route then built the custody id by concatenating that RAW
+			 * input, and bumpDeclared persisted it as a key in the treasury
+			 * declaration.
+			 *
+			 * NOT HYPOTHETICAL. A scanner hit this endpoint on the live box and
+			 * left two keys in the declared treasury:
+			 *   USDT../{..}/ETC/PASSWD.TRC20
+			 *   USDT..\{..}\WINDOWS\WIN.INI.TRC20
+			 * The traversal could not reach a file — the treasury path is fixed
+			 * and the string was only ever a JSON key — but unvalidated caller
+			 * input reached persisted custody state and shaped the custody id
+			 * that reconciliation keys on. That is enough to fix at the source.
+			 *
+			 * The caller names a SETTLEMENT asset; this route picks the network.
+			 */
+			if (raw !== settlementAsset(raw)) {
+				throw new VenueError(
+					"asset must be a settlement symbol with no network suffix " +
+						`(got "${raw.slice(0, 32)}"). The network is chosen here.`,
+				);
+			}
+			const asset = raw;
 			const def = assetDef(asset);
 			const amount = parse(str(b, "amount"), { symbol: asset, decimals: def.decimals });
 			// Multi-network assets need a chain for the custody side.
 			const custodyId = def.networks.length === 0
 				? asset
 				: `${asset}.${def.networks[0]!.id}`;
+			// Belt and braces: prove the id we built is one the books can
+			// actually account for, before anything persists it.
+			assertCustodyId(custodyId);
 			/*
 			 * THE DECLARATION MOVES FIRST.
 			 *
@@ -1098,6 +1130,30 @@ export function start(): void {
 	const venue = new Venue(wdb, wledger, undefined, {
 		mainnetEnabled: gate().mainnetEnabled,
 		liveCustodian,
+		/*
+		 * THE FAUCET'S CEILING, read fresh on every call.
+		 *
+		 * Note the ordering this composes with: the route bumps the declaration
+		 * BEFORE calling testnetCredit, so by the time the cap runs the
+		 * declaration already includes this amount. The check
+		 * `booked + amount > declared` therefore reduces to `booked > declared
+		 * before the bump` — it refuses precisely when the books are ALREADY
+		 * ahead of the declaration, i.e. when a break exists.
+		 *
+		 * So this does not throttle normal use; it stops the faucet compounding
+		 * a drift that is already there, which is how USDT ended up
+		 * 1,390,000,000,000 base units past its declaration with the interlock
+		 * pinned on.
+		 */
+		declaredHoldings: (custodyId) => {
+			try {
+				return readDeclared(TREASURY_FILE)[custodyId];
+			} catch {
+				// An unreadable declaration is not a licence to credit. Undefined
+				// makes testnetCredit refuse and say so.
+				return undefined;
+			}
+		},
 	});
 
 	// WITHDRAWAL POLICY. Every asset listed here needs BOTH a per-request

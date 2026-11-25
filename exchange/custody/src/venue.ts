@@ -236,6 +236,22 @@ export class Venue {
 			 * thing. See `testnetCredit`.
 			 */
 			liveCustodian?: boolean;
+			/**
+			 * What the DECLARED TREASURY says is actually held of a custody
+			 * asset, or undefined if it declares nothing for it.
+			 *
+			 * The testnet faucet is capped against this. Without a cap the
+			 * faucet can post book custody far beyond anything declared, and
+			 * reconciliation then reports a shortfall forever — which is the
+			 * failure mode this venue hit on USDT: 139 faucet credits put the
+			 * books 1,390,000,000,000 base units above the declared treasury,
+			 * the interlock halted USDT withdrawals, and nothing un-credits it.
+			 *
+			 * A PERMANENTLY TRIPPED INTERLOCK IS THE REAL DAMAGE. While it is
+			 * stuck on, it can no longer tell anyone about a genuine USDT
+			 * shortfall — the signal is pinned, so nobody reads it.
+			 */
+			declaredHoldings?: (custodyId: string) => bigint | undefined;
 			now?: () => number;
 		} = {},
 	) {
@@ -473,6 +489,45 @@ export class Venue {
 			);
 		}
 		if (amount <= 0n) throw new VenueError("amount must be positive");
+		/*
+		 * CAPPED AT WHAT THE TREASURY DECLARES IS HELD.
+		 *
+		 * The faucet credits CUSTODY as well as the user, so each click moves
+		 * the books further from the declared treasury and reconciliation reads
+		 * the gap as a shortfall. Refusing here keeps that comparison MEANINGFUL
+		 * — the alternative is what happened to USDT, where the interlock is now
+		 * pinned on and has stopped being able to report anything.
+		 *
+		 * Declaring nothing for an asset means no faucet for it, rather than an
+		 * unlimited one: an undeclared asset is precisely the case where there
+		 * is no number to check against.
+		 */
+		if (this.opts.declaredHoldings !== undefined) {
+			const declared = this.opts.declaredHoldings(custodyId);
+			if (declared === undefined) {
+				throw new VenueError(
+					`testnet funding refused: the declared treasury says nothing about ` +
+						`${custodyId}, so there is no holding to fund against. Declare it ` +
+						"first.",
+					409,
+				);
+			}
+			const booked = this.ledger.balance({
+				kind: AccountKind.CUSTODY,
+				owner: "",
+				asset: custodyId,
+			});
+			if (booked + amount > declared) {
+				throw new VenueError(
+					`testnet funding refused: the books already show ${booked} of ` +
+						`${custodyId} in custody and the declared treasury holds ` +
+						`${declared}. Crediting ${amount} more would put the books above ` +
+						"the declared holding, and reconciliation would halt withdrawals " +
+						"of this asset until someone un-credited it — which nothing does.",
+					409,
+				);
+			}
+		}
 		this.ledger.post({
 			reason: Reason.DEPOSIT,
 			postings: [

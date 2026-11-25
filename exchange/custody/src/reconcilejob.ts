@@ -75,7 +75,26 @@ export interface JobConfig {
 export function testnetTreasury(path: string): HoldingsSource {
 	return {
 		name: "testnet-declared",
-		async holdings(assetId: string): Promise<bigint> {
+		/*
+		 * SUMMED ACROSS NETWORKS, exactly like `bitgoSummed` below.
+		 *
+		 * This used to look up the BARE SYMBOL — `o["USDT"]` — while custody
+		 * postings and the faucet's own declaration are keyed per network
+		 * (`USDT.TRC20`, `USDT.SOL`). Two key spaces for one number, so the
+		 * declaration could never catch up with the books no matter how
+		 * carefully the faucet bumped it.
+		 *
+		 * That is what bricked USDT on the live box: the books held
+		 * 1,485,000,000,000 across TRC20 and SOL, the faucet had dutifully
+		 * declared 1,390,000,000,000 under `USDT.TRC20`, and this function read
+		 * a stale bare `USDT` key worth 95,000,000,000 and called the
+		 * difference a shortfall on every pass. The interlock was not wrong
+		 * about the numbers it was given; it was given the wrong ones.
+		 *
+		 * Single-chain assets are unaffected: `custodyIds` returns `[symbol]`
+		 * for them, which is the bare key this always used.
+		 */
+		async holdings(symbol: string): Promise<bigint> {
 			let raw: string;
 			try {
 				raw = readFileSync(path, "utf8");
@@ -85,16 +104,23 @@ export function testnetTreasury(path: string): HoldingsSource {
 				);
 			}
 			const o = JSON.parse(raw) as Record<string, unknown>;
-			const v = o[assetId];
-			if (typeof v !== "string") {
-				throw new Error(
-					`${assetId} is not declared in ${path} — holdings unknown`,
-				);
+			let total = 0n;
+			for (const id of custodyIds(symbol)) {
+				const v = o[id];
+				if (typeof v !== "string") {
+					// UNDECLARED IS UNKNOWN, NEVER ZERO. Treating a missing leg as
+					// zero would understate holdings and manufacture the very
+					// shortfall this comment is about.
+					throw new Error(
+						`${id} is not declared in ${path} — holdings unknown`,
+					);
+				}
+				if (!/^\d+$/.test(v)) {
+					throw new Error(`${id} in ${path} is not an integer base-unit string`);
+				}
+				total += BigInt(v);
 			}
-			if (!/^\d+$/.test(v)) {
-				throw new Error(`${assetId} in ${path} is not an integer base-unit string`);
-			}
-			return BigInt(v);
+			return total;
 		},
 	};
 }

@@ -110,6 +110,43 @@ test("TESTNET FUNDING IS REFUSED WHEN MAINNET IS ON", () => {
 	);
 });
 
+test("THE FAUCET IS CAPPED BY THE DECLARED TREASURY", () => {
+	// The live failure this prevents: 139 faucet credits put the books
+	// 1,390,000,000,000 base units past the declared treasury, reconciliation
+	// called it a shortfall on every pass, and USDT withdrawals stayed halted.
+	// Nothing un-credits a faucet click, so the interlock was pinned ON — and a
+	// pinned interlock cannot report a REAL shortfall to anyone.
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+	const declared = new Map<string, bigint>([["BTC", 1000n]]);
+	const v = new Venue(db, l, undefined, {
+		declaredHoldings: (id) => declared.get(id),
+	});
+	const { id } = v.register("alice@example.com", "a-sufficiently-long-password");
+
+	// Within the declaration: fine.
+	v.testnetCredit(id, "BTC", 600n, "BTC");
+	assert.equal(bal(l, id, "BTC"), 600n);
+
+	// Past it: refused, and the books are left alone.
+	assert.throws(
+		() => v.testnetCredit(id, "BTC", 500n, "BTC"),
+		/would put the books above the declared holding/,
+	);
+	assert.equal(bal(l, id, "BTC"), 600n, "the refused credit posted nothing");
+
+	// Up to the ceiling exactly: still allowed.
+	v.testnetCredit(id, "BTC", 400n, "BTC");
+	assert.equal(bal(l, id, "BTC"), 1000n);
+
+	// An asset the treasury says nothing about has no ceiling to check, so it
+	// gets no faucet rather than an unlimited one.
+	assert.throws(
+		() => v.testnetCredit(id, "USDT", 1n, "USDT.TRC20"),
+		/declared treasury says nothing about USDT\.TRC20/,
+	);
+});
+
 test("testnet funding credits the balance and stays solvent", () => {
 	const { l, v } = setup();
 	const alice = actor(v, "alice@example.com", "1.5");

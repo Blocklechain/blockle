@@ -436,35 +436,230 @@ test("a malformed address is refused at construction", () => {
 
 // ----------------------------------------------------------------- Monero
 
+/**
+ * A Monero-family adapter over one method table, wallet and daemon alike.
+ *
+ * `daemon: false` builds the unconfigured case on purpose — that is a state an
+ * operator can really deploy, and what it does is part of the contract.
+ */
+function zeph(
+	answers: Record<string, unknown | (() => unknown)>,
+	opts?: { daemon?: false; seen?: Array<{ method: string; params: unknown }> },
+) {
+	const impl = rpcStub(answers, opts?.seen);
+	const wallet = new JsonRpc({ url: "http://127.0.0.1:18082", fetchImpl: impl });
+	const daemon =
+		opts?.daemon === false
+			? undefined
+			: new JsonRpc({ url: "http://127.0.0.1:18081", fetchImpl: impl });
+	return new MoneroRpcAdapter("ZEPH", wallet, 12, 0, daemon);
+}
+
+/** A daemon at the tip with peers — the only state that unlocks the adapter. */
+const SYNCED_DAEMON = {
+	get_info: {
+		height: 500,
+		target_height: 0,
+		synchronized: true,
+		offline: false,
+		outgoing_connections_count: 8,
+		incoming_connections_count: 1,
+	},
+	get_height: { height: 500 },
+};
+
 test("Monero reports atomic units, and large balances survive as strings", async () => {
-	const a = new MoneroRpcAdapter("ZEPH", new JsonRpc({
-		url: "http://127.0.0.1:18082",
-		fetchImpl: rpcStub({ get_balance: { unlocked_balance: "123456789012345678901" } }),
-	}), 12);
+	const a = zeph({
+		...SYNCED_DAEMON,
+		get_balance: { unlocked_balance: "123456789012345678901" },
+	});
 	assert.equal(await a.balance(), 123_456_789_012_345_678_901n);
 });
 
 test("a subaddress is created per customer, which is the attribution", async () => {
 	const seen: Array<{ method: string; params: unknown }> = [];
-	const a = new MoneroRpcAdapter("ZEPH", new JsonRpc({
-		url: "http://127.0.0.1:18082",
-		fetchImpl: rpcStub({ create_address: { address: "ZEPHsub1 " } }, seen),
-	}), 12);
+	const a = zeph({ ...SYNCED_DAEMON, create_address: { address: "ZEPHsub1 " } }, { seen });
 	assert.equal(await a.newAddress("user:alice"), "ZEPHsub1");
-	assert.deepEqual(seen[0]!.params, { account_index: 0, label: "user:alice" });
+	const call = seen.find((s) => s.method === "create_address");
+	assert.deepEqual(call!.params, { account_index: 0, label: "user:alice" });
 });
 
 test("A WALLET RPC IS NEVER CALLED SYNCED on its own word", async () => {
 	// The wallet reports how far IT has scanned. A wallet behind the chain
 	// understates the balance, which reads as a shortfall and halts withdrawals.
-	const a = new MoneroRpcAdapter("ZEPH", new JsonRpc({
-		url: "http://127.0.0.1:18082",
-		fetchImpl: rpcStub({ get_height: { height: 100 }, get_address: { address: "Z" } }),
-	}), 12);
+	const a = zeph(
+		{ get_height: { height: 100 }, get_address: { address: "Z" } },
+		{ daemon: false },
+	);
 	const p = await a.probe();
 	assert.equal(p.reachable, true);
 	assert.equal(p.synced, false);
-	assert.ok(p.notes.some((n) => /only its own scan height/.test(n)));
+	assert.ok(p.notes.some((n) => /no daemon RPC is configured/.test(n)));
+});
+
+test("WITHOUT A DAEMON, every money-touching call REFUSES", async () => {
+	// A wallet alone cannot tell "you hold nothing" from "I scanned nothing",
+	// and it answers the second with a confident zero. Trusting it reports a
+	// custody shortfall, credits no deposits, and hands out addresses on a
+	// chain nobody is watching.
+	const a = zeph(
+		{
+			get_balance: { unlocked_balance: "0" },
+			create_address: { address: "ZEPHsub1" },
+			get_transfers: { in: [] },
+			get_height: { height: 1 },
+		},
+		{ daemon: false },
+	);
+	for (const [what, call] of [
+		["balance", () => a.balance()],
+		["deposit address", () => a.newAddress("user:alice")],
+		["deposit scan", () => a.incoming()],
+	] as const) {
+		await assert.rejects(call, (e: unknown) => {
+			assert.ok(e instanceof ChainError);
+			assert.match(e.message, /no daemon RPC is configured/);
+			assert.match(e.message, new RegExp(what));
+			return true;
+		}, `${what} must refuse`);
+	}
+});
+
+test("A DAEMON WITH NO PEERS IS REFUSED, height 1 and all", async () => {
+	// The live ZEPH case: the node sat at height 1 with zero peers because
+	// every one of the project's mainnet p2p seeds refuses connections. Its
+	// height says nothing about the chain, so neither may the venue.
+	const a = zeph({
+		get_info: {
+			height: 1,
+			target_height: 0,
+			synchronized: true,
+			offline: false,
+			outgoing_connections_count: 0,
+			incoming_connections_count: 0,
+		},
+		get_height: { height: 1 },
+		get_balance: { unlocked_balance: "0" },
+	});
+	await assert.rejects(() => a.balance(), (e: unknown) => {
+		assert.ok(e instanceof ChainError);
+		assert.match(e.message, /no peers/);
+		assert.equal(e.retryable, true, "ask again later, not a bad request");
+		return true;
+	});
+});
+
+test("a daemon still in initial sync is refused", async () => {
+	const a = zeph({
+		get_info: {
+			height: 120_000,
+			target_height: 2_300_000,
+			synchronized: false,
+			offline: false,
+			outgoing_connections_count: 6,
+		},
+		get_height: { height: 120_000 },
+		get_balance: { unlocked_balance: "0" },
+	});
+	await assert.rejects(() => a.balance(), (e: unknown) => {
+		assert.ok(e instanceof ChainError);
+		assert.match(e.message, /still syncing \(120000\/2300000\)/);
+		return true;
+	});
+});
+
+test("AN OFFLINE DAEMON IS REFUSED even if it claims to be synchronized", async () => {
+	// --offline makes a daemon report synchronized against a chain it is not
+	// following. Peers alone would not catch it, so offline is checked first.
+	const a = zeph({
+		get_info: {
+			height: 500,
+			target_height: 0,
+			synchronized: true,
+			offline: true,
+			outgoing_connections_count: 4,
+		},
+		get_height: { height: 500 },
+		get_balance: { unlocked_balance: "0" },
+	});
+	await assert.rejects(() => a.balance(), /offline/);
+});
+
+test("A LAGGING WALLET IS REFUSED even when the daemon is at the tip", async () => {
+	// This is the understated-balance case specifically: the chain is fine and
+	// the wallet simply has not caught up, so its balance is real but partial.
+	const a = zeph({
+		get_info: {
+			height: 500,
+			target_height: 0,
+			synchronized: true,
+			offline: false,
+			outgoing_connections_count: 8,
+		},
+		get_height: { height: 450 },
+		get_balance: { unlocked_balance: "7" },
+	});
+	await assert.rejects(() => a.balance(), (e: unknown) => {
+		assert.ok(e instanceof ChainError);
+		assert.match(e.message, /scanned to 450 but the chain is at 500/);
+		return true;
+	});
+});
+
+test("one block of scan lag is tolerated, so a healthy pair does not flap", async () => {
+	// The two legs are read at different instants; demanding an exact match
+	// would make a working deployment refuse at random.
+	const a = zeph({
+		get_info: {
+			height: 500,
+			target_height: 0,
+			synchronized: true,
+			offline: false,
+			outgoing_connections_count: 8,
+		},
+		get_height: { height: 499 },
+		get_balance: { unlocked_balance: "42" },
+	});
+	assert.equal(await a.balance(), 42n);
+});
+
+test("probe reports synced TRUE only with a healthy daemon, and gates addresses",
+	async () => {
+		const healthy = zeph({ ...SYNCED_DAEMON, get_address: { address: "Z" } });
+		const p = await healthy.probe();
+		assert.equal(p.synced, true);
+		assert.equal(p.canDeriveAddresses, true);
+
+		// get_address answers, but a deposit to it would not be seen.
+		const blind = zeph({
+			get_info: {
+				height: 1,
+				target_height: 0,
+				synchronized: false,
+				offline: false,
+				outgoing_connections_count: 0,
+			},
+			get_height: { height: 1 },
+			get_address: { address: "Z" },
+		});
+		const q = await blind.probe();
+		assert.equal(q.synced, false);
+		assert.equal(q.canDeriveAddresses, false,
+			"a subaddress nobody is watching is a trap, not a capability");
+	});
+
+test("THE DAEMON URL IS NEVER INFERRED from the wallet's", () => {
+	// Falling back to the wallet URL would make the adapter 'have a daemon'
+	// that is really the wallet answering get_info — unreachable, or worse,
+	// answering something. Credentials may fall back; the endpoint may not.
+	const a = adapterFromEnv({
+		symbol: "ZEPH",
+		route: "monero-rpc",
+		decimals: 12,
+		env: { CHAIN_ZEPH_URL: "http://127.0.0.1:19008" },
+	});
+	assert.ok(a !== undefined, "a configured wallet still builds an adapter");
+	assert.rejects(() => a.balance(), /no daemon RPC is configured/);
 });
 
 // ---------------------------------------------------------------- factory

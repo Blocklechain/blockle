@@ -422,7 +422,32 @@ cmd_envfile() {
 					echo "# CHAIN_${sym}_ADDRESSES="
 					;;
 				monero-rpc)
-					echo "CHAIN_${sym}_URL=http://127.0.0.1:$port/json_rpc"
+					# TWO PROCESSES, TWO ENDPOINTS.
+					#
+					# On this family the daemon and the wallet are separate
+					# programs and the adapter needs both. The daemon knows the
+					# chain tip; only the wallet answers get_balance,
+					# create_address and get_transfers. $port is the DAEMON.
+					#
+					# Writing the daemon's port as CHAIN_${sym}_URL — which this
+					# script used to do — aimed every custody call at a process
+					# that cannot answer it.
+					echo "CHAIN_${sym}_DAEMON_URL=http://127.0.0.1:$port/json_rpc"
+					# THE WALLET URL IS LEFT COMMENTED BECAUSE NO WALLET RUNS.
+					#
+					# CHAIN_${sym}_URL is what makes the exchange build an adapter
+					# at all, so leaving it unset is what reports this coin as
+					# unconfigured rather than as a chain with a zero balance.
+					# Uncomment it only once ${lower}-wallet-rpc is actually up on
+					# that port, holding the venue's wallet file:
+					#
+					#   $lower-wallet-rpc --daemon-address 127.0.0.1:$port \\
+					#     --rpc-bind-port $((port + 10)) --wallet-file <file>
+					#
+					# The adapter still refuses every call until the daemon it
+					# points at is at the tip with peers AND the wallet has
+					# scanned up to it, so an early uncomment fails closed.
+					echo "# CHAIN_${sym}_URL=http://127.0.0.1:$((port + 10))/json_rpc"
 					;;
 			esac
 		done

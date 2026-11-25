@@ -36,6 +36,8 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { assertCustodyId } from "./assets";
+
 export class TreasuryError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -82,6 +84,19 @@ export function readDeclared(path: string): Record<string, bigint> {
  */
 export function bumpDeclared(path: string, custodyId: string, delta: bigint): bigint {
 	if (delta <= 0n) throw new TreasuryError("a treasury bump must be positive");
+	/*
+	 * THE KEY IS VALIDATED HERE TOO, not only by the caller.
+	 *
+	 * This function is the boundary where a string stops being a parameter and
+	 * becomes PERSISTED STATE that reconciliation keys on, so it does not get
+	 * to assume its caller checked. It previously did assume that, and a
+	 * scanner pushed two path-traversal payloads through the faucet into this
+	 * file as keys — `USDT../{..}/ETC/PASSWD.TRC20` and a Windows variant.
+	 * Nothing outside the file was ever touched; the lesson is narrower and
+	 * worth keeping: an unrecognised custody id is a bug upstream, and writing
+	 * it down turns that bug into a permanent line in the treasury.
+	 */
+	assertCustodyId(custodyId);
 	const current = readDeclared(path);
 	const next = (current[custodyId] ?? 0n) + delta;
 	current[custodyId] = next;

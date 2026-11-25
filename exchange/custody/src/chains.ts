@@ -1028,7 +1028,103 @@ export class MoneroRpcAdapter implements ChainAdapter {
 		private readonly decimals: number,
 		/** Subaddress account index. 0 unless the operator split accounts. */
 		private readonly accountIndex = 0,
+		/**
+		 * The DAEMON's RPC, separate from the wallet's.
+		 *
+		 * Optional only because the type cannot force an operator to configure
+		 * it — but every money-touching method below refuses without it. See
+		 * `requireSynced`: a wallet alone cannot distinguish "you hold nothing"
+		 * from "I have scanned nothing", and on this family that distinction is
+		 * the whole of custody safety.
+		 */
+		private readonly daemon?: JsonRpc,
 	) {}
+
+	/**
+	 * How far behind the daemon the wallet may be and still be trusted.
+	 *
+	 * Not zero: the wallet polls the daemon on an interval, so the two legs are
+	 * never read at the same instant and an exact match would make this flap on
+	 * a healthy pair. One block of slack costs nothing — a deposit needs
+	 * confirmations before it is credited anyway.
+	 */
+	private static readonly SCAN_LAG_TOLERANCE = 1;
+
+	/**
+	 * Refuse unless the DAEMON is at the chain tip and the WALLET has scanned
+	 * up to it.
+	 *
+	 * This exists because of what a Monero-family wallet returns when it is
+	 * blind: a clean, well-formed, confident ZERO. There is no error, no empty
+	 * marker, nothing for a caller to notice. Three different lies follow from
+	 * trusting it, and only this check stops them:
+	 *
+	 *   - `balance` reads as a custody shortfall, which halts withdrawals for
+	 *     every customer on the venue.
+	 *   - `incoming` reports no deposits, so real money that arrived is never
+	 *     credited.
+	 *   - `newAddress` hands out a deposit subaddress on a chain the wallet
+	 *     cannot see. The key exists, so the funds are not destroyed, but
+	 *     nobody observes them arriving and the customer sees a black hole.
+	 *
+	 * ZEPH is the live case: its daemon sat at height 1 with zero peers for
+	 * days because every one of the project's mainnet p2p seeds refuses
+	 * connections (only its TESTNET seeds answer). Unreachable is not an error
+	 * state this venue gets to paper over, so it is named and refused.
+	 */
+	private async requireSynced(what: string): Promise<void> {
+		if (this.daemon === undefined) {
+			throw new ChainError(
+				`${this.symbol}: ${what} refused — no daemon RPC is configured, so ` +
+					"there is no way to tell a true zero from an unscanned wallet. " +
+					`Set CHAIN_${this.symbol.toUpperCase()}_DAEMON_URL.`,
+			);
+		}
+		const info = await this.daemon.call<{
+			height?: number;
+			target_height?: number;
+			synchronized?: boolean;
+			offline?: boolean;
+			outgoing_connections_count?: number;
+			incoming_connections_count?: number;
+		}>("get_info");
+		const height = info.height ?? 0;
+		// target_height is 0 on a daemon that believes it is caught up, so the
+		// tip is the larger of the two rather than target alone.
+		const tip = Math.max(height, info.target_height ?? 0);
+		const peers =
+			(info.outgoing_connections_count ?? 0) + (info.incoming_connections_count ?? 0);
+
+		// `retryable: true` throughout — none of these are a bad request, they
+		// are "ask again later", and the caller turns them into a 503 rather
+		// than a 400 that a client would stop retrying.
+		if (info.offline === true) {
+			throw new ChainError(`${this.symbol}: ${what} refused — the daemon is offline`, true);
+		}
+		if (peers === 0) {
+			throw new ChainError(
+				`${this.symbol}: ${what} refused — the daemon has no peers, so its ` +
+					`height of ${height} reflects nothing about the chain`,
+				true,
+			);
+		}
+		if (info.synchronized !== true || height < tip) {
+			throw new ChainError(
+				`${this.symbol}: ${what} refused — the daemon is still syncing ` +
+					`(${height}/${tip})`,
+				true,
+			);
+		}
+		const w = await this.rpc.call<{ height?: number }>("get_height");
+		const scanned = w.height ?? 0;
+		if (scanned + MoneroRpcAdapter.SCAN_LAG_TOLERANCE < height) {
+			throw new ChainError(
+				`${this.symbol}: ${what} refused — the wallet has scanned to ` +
+					`${scanned} but the chain is at ${height}`,
+				true,
+			);
+		}
+	}
 
 	async probe(): Promise<ChainCapabilities> {
 		const notes: string[] = [];
@@ -1054,10 +1150,22 @@ export class MoneroRpcAdapter implements ChainAdapter {
 		 * behind shows an understated balance, which reads as a shortfall and
 		 * halts withdrawals.
 		 */
-		notes.push(
-			"a wallet RPC reports only its own scan height; sync is confirmed " +
-				"against the daemon, not here",
-		);
+		let synced = false;
+		if (this.daemon === undefined) {
+			notes.push(
+				"no daemon RPC is configured, so sync cannot be confirmed and every " +
+					"balance, deposit and credit call refuses. Set " +
+					`CHAIN_${this.symbol.toUpperCase()}_DAEMON_URL.`,
+			);
+		} else {
+			try {
+				await this.requireSynced("probe");
+				synced = true;
+			} catch (e) {
+				// Report the reason; never let a failure here read as synced.
+				notes.push(e instanceof Error ? e.message : String(e));
+			}
+		}
 		let canDeriveAddresses = false;
 		try {
 			await this.rpc.call<unknown>("get_address", { account_index: this.accountIndex });
@@ -1067,16 +1175,20 @@ export class MoneroRpcAdapter implements ChainAdapter {
 		}
 		return {
 			reachable: true,
-			synced: false,
+			synced,
 			height,
 			decimals: this.decimals,
-			canDeriveAddresses,
+			// A subaddress is only useful if a deposit to it would be SEEN. While
+			// the pair is behind, deriving one is a trap, so this reports false
+			// even though get_address answered.
+			canDeriveAddresses: canDeriveAddresses && synced,
 			canSend: this.rpc.canSend,
 			notes,
 		};
 	}
 
 	async balance(): Promise<bigint> {
+		await this.requireSynced("balance");
 		const b = await this.rpc.call<{ unlocked_balance?: number | string }>("get_balance", {
 			account_index: this.accountIndex,
 		});
@@ -1088,6 +1200,7 @@ export class MoneroRpcAdapter implements ChainAdapter {
 	}
 
 	async newAddress(label: string): Promise<string> {
+		await this.requireSynced("deposit address");
 		const r = await this.rpc.call<{ address?: string }>("create_address", {
 			account_index: this.accountIndex,
 			label: label.slice(0, 64),
@@ -1099,6 +1212,7 @@ export class MoneroRpcAdapter implements ChainAdapter {
 	}
 
 	async incoming(sinceHeight?: number): Promise<readonly IncomingPayment[]> {
+		await this.requireSynced("deposit scan");
 		const r = await this.rpc.call<{
 			in?: Array<{
 				txid?: string;
@@ -1206,8 +1320,29 @@ export function adapterFromEnv(args: {
 	switch (args.route) {
 		case "bitcoin-rpc":
 			return new BitcoinRpcAdapter(args.symbol, rpc, args.decimals, declaredAddresses);
-		case "monero-rpc":
-			return new MoneroRpcAdapter(args.symbol, rpc, args.decimals);
+		case "monero-rpc": {
+			/*
+			 * The daemon is a SECOND endpoint, because on this family the wallet
+			 * and the node are two processes and only the node knows the tip.
+			 * Credentials fall back to the wallet's, since the usual deployment
+			 * is both on one box behind the same auth — but the URL never does,
+			 * so pointing the adapter at a wallet cannot accidentally be read as
+			 * having configured a daemon.
+			 */
+			const dUrl = args.env[`${pre}DAEMON_URL`];
+			let daemon: JsonRpc | undefined;
+			if (dUrl !== undefined && dUrl.trim() !== "") {
+				const dUser = args.env[`${pre}DAEMON_USER`] ?? user;
+				const dPass = args.env[`${pre}DAEMON_PASS`] ?? pass;
+				daemon = new JsonRpc({
+					url: dUrl.trim(),
+					...(dUser === undefined ? {} : { user: dUser }),
+					...(dPass === undefined ? {} : { password: dPass }),
+					...(args.fetchImpl === undefined ? {} : { fetchImpl: args.fetchImpl }),
+				});
+			}
+			return new MoneroRpcAdapter(args.symbol, rpc, args.decimals, 0, daemon);
+		}
 		case "evm-rpc": {
 			return new EvmRpcAdapter(args.symbol, rpc, {
 				decimals: args.decimals,
