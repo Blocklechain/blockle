@@ -89,7 +89,7 @@ class AppState extends ChangeNotifier {
   /// the user hunt through a menu while standing in a payment form.
   ///
   /// It is an OFFER, never an action: the browser still asks, still names
-  /// the site, and still never submits. See shop/delivery.dart.
+  /// the site, and still never submits. See browser/delivery.dart.
   bool pendingCheckoutAutofill = false;
 
   /// Switch to the in-app browser and load [url].

@@ -19,9 +19,9 @@ import '../services/agent_service.dart' show AgentService, SiteScreening;
 import '../state/app_state.dart';
 import '../state/multichain_controller.dart';
 import '../services/open_url.dart';
-import '../shop/delivery.dart';
+import '../browser/delivery.dart';
 import '../theme.dart';
-import 'shop/delivery_screen.dart';
+import 'browser/delivery_screen.dart';
 import 'wallet/security_sheet.dart';
 
 const _home = 'https://blockle.org';
@@ -373,7 +373,7 @@ class _BrowserTabState extends State<BrowserTab> {
   /// site, and only then is the script run. It fills inputs and stops — the
   /// order is reviewed and placed by the user, in their own browser. The
   /// rules about what it refuses to touch (cards, passwords, seed phrases)
-  /// live in shop/delivery.dart with the tests that execute them.
+  /// live in browser/delivery.dart with the tests that execute them.
   Future<void> _autofill() async {
     final book = context.read<DeliveryBook>();
     await book.load();
@@ -1020,7 +1020,7 @@ class _BrowserTabState extends State<BrowserTab> {
                           value: 'connect',
                           child: _MenuRow(Icons.link, 'Connect dApp')),
                     // Checkout autofill. Behind an explicit tap, never a page
-                    // hook — see shop/delivery.dart.
+                    // hook — see browser/delivery.dart.
                     if (!_atHome)
                       const PopupMenuItem(
                           value: 'autofill',

@@ -11,7 +11,7 @@ import 'wallet/wallet_screen.dart';
 import 'liquidity_screen.dart';
 import 'blockshot_screen.dart';
 import 'alien_chat_screen.dart';
-import 'shop_screen.dart';
+import 'exchange_screen.dart';
 
 /// A single navigation destination (icon + label), the one source of truth for
 /// both the collapsible side menu and the minimal bottom bar.
@@ -40,7 +40,7 @@ class HomeScreen extends StatelessWidget {
     LiquidityScreen(), // 6  (Blockle Liquidity)
     BlockshotScreen(), // 7  (Blockshot — launch + trade BLOCK-20s)
     AlienChatScreen(), // 8  (Blockle Alien chat — on-device/hosted AI)
-    ShopScreen(), // 9  (Shop — buy real things with crypto)
+    ExchangeScreen(), // 9  (Exchange — the Blockle venue, in the app)
   ];
 
   static const _dests = <_Dest>[
@@ -54,21 +54,23 @@ class HomeScreen extends StatelessWidget {
     _Dest(Icons.water_drop_outlined, Icons.water_drop, 'Liquidity'),
     _Dest(Icons.rocket_launch_outlined, Icons.rocket_launch, 'Blockshot'),
     _Dest(Icons.auto_awesome_outlined, Icons.auto_awesome, 'Alien'),
-    _Dest(Icons.storefront_outlined, Icons.storefront, 'Shop'),
+    _Dest(Icons.candlestick_chart_outlined, Icons.candlestick_chart,
+        'Exchange'),
   ];
 
   /// The few destinations that get an icon-only button on the bottom bar; the
   /// full set always lives in the side menu.
   ///
-  /// SHOP LEADS. The wallet came first historically and shopping came last,
-  /// which is backwards for what this app is for — buying real things with
-  /// crypto, carrying a very good wallet while it does.
+  /// EXCHANGE LEADS, in the slot the Shop used to hold. Trading the listed
+  /// coins is what this app is now for, with a very good wallet underneath.
   ///
-  /// Shop is index 9 rather than 0 ON PURPOSE. AppState hardcodes
-  /// browserTabIndex == 3 against this list, so inserting at the front would
-  /// silently send every browser deep-link to the wrong page. Appending the
-  /// page and reordering only the BAR gets shopping-first with no renumbering.
-  static const _bottomPrimary = <int>[9, 0, 2, 3]; // Shop, Wallet, Bots, Browser
+  /// It is index 9 rather than 0 ON PURPOSE, and the Shop was too: AppState
+  /// hardcodes browserTabIndex == 3 against this list, so inserting at the
+  /// front would silently send every browser deep-link to the wrong page.
+  /// Replacing the page in place and reordering only the BAR gets the exchange
+  /// first with no renumbering — and is why swapping Shop for Exchange here
+  /// needed no index changes anywhere else.
+  static const _bottomPrimary = <int>[9, 0, 2, 3]; // Exchange, Wallet, Bots, Browser
 
   @override
   Widget build(BuildContext context) {

@@ -11,7 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:blockle_app/shop/delivery.dart';
+import 'package:blockle_app/browser/delivery.dart';
 
 const me = DeliveryProfile(
   fullName: 'Ada Lovelace',
@@ -30,7 +30,7 @@ Map<String, dynamic> fill(DeliveryProfile p, List<Map<String, dynamic>> fields) 
   final dir = Directory.systemTemp.createTempSync('autofill');
   final f = File('${dir.path}/s.js')..writeAsStringSync(Autofill.script(p));
   final res = Process.runSync(
-      'node', ['test/shop/autofill_dom.js', f.path, jsonEncode(fields)]);
+      'node', ['test/browser/autofill_dom.js', f.path, jsonEncode(fields)]);
   dir.deleteSync(recursive: true);
   if (res.exitCode != 0) {
     fail('script failed to run:\n${res.stderr}');

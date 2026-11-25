@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'state/app_state.dart';
+import 'state/exchange_controller.dart';
 import 'services/dapp_link.dart';
 import 'services/open_url.dart' as ou;
 import 'state/bots_controller.dart';
@@ -11,13 +12,6 @@ import 'state/wallet_controller.dart';
 import 'state/liquidity_controller.dart';
 import 'state/dev_settings.dart';
 import 'services/local_notifications.dart';
-import 'shop/affiliate.dart';
-import 'shop/catalog.dart';
-import 'shop/feeds/bestbuy.dart';
-import 'shop/feeds/retail_feed.dart';
-import 'shop/delivery.dart';
-import 'shop/orders.dart';
-import 'shop/flow_run.dart';
 import 'theme.dart';
 import 'screens/onboarding.dart';
 import 'screens/home.dart';
@@ -70,56 +64,18 @@ void main() {
         ChangeNotifierProvider<LiquidityService>.value(value: LiquidityService.instance),
         // Developer mode gate (off by default) — Developer Tools + testnets.
         ChangeNotifierProvider<DevSettings>.value(value: DevSettings.instance),
-        // The shop. MerchantStore holds what sellers have listed (paste-a-link
-        // onboarding); Catalog is what the Shop tab searches. Catalog depends
-        // on the store, so it is built from it rather than beside it.
-        ChangeNotifierProvider<MerchantStore>(
-          create: (_) => MerchantStore()..load(),
-        ),
-        // Curated big-retailer links. Needs no Amazon API — see
-        // shop/affiliate.dart for why that is the permanent design and not a
-        // stopgap.
-        ChangeNotifierProvider<AffiliateStore>(
-          create: (_) => AffiliateStore()..load(),
-        ),
-        // Money flows in progress. Loaded at startup because a "Pay with
-        // BLOCK" run spans a bank payout of days — the user WILL have closed
-        // the app in the middle of one, and it has to still be there.
-        ChangeNotifierProvider<FlowRuns>(create: (_) => FlowRuns()..load()),
-        // Retailer API keys. Loaded before Catalog so a configured feed is
-        // live on the first frame rather than after a restart.
-        ChangeNotifierProvider<FeedSettings>(
-          create: (_) => FeedSettings()..load(),
-        ),
-        // Delivery details for checkout autofill. Secure storage — it is a
-        // home address.
-        ChangeNotifierProvider<DeliveryBook>(
-          create: (_) => DeliveryBook()..load(),
-        ),
-        // Orders + tracking. Blockle is not in the delivery path; this keeps
-        // the list and links out to the carrier. See shop/orders.dart.
-        ChangeNotifierProvider<Orders>(create: (_) => Orders()..load()),
-        // The source list lives in Catalog.standard so a test can assert
-        // what the shipped app actually searches — see catalog.dart.
-        // Catalog is REBUILT when the feed keys change, via ProxyProvider:
-        // pasting a Best Buy key must populate the shop immediately, not on
-        // the next launch. Catalog.standard decides the source list — see
-        // catalog.dart.
-        ChangeNotifierProxyProvider<FeedSettings, Catalog>(
-          create: (ctx) => Catalog.standard(
-            merchants: ctx.read<MerchantStore>(),
-            picks: ctx.read<AffiliateStore>(),
-          ),
-          update: (ctx, feeds, _) => Catalog.standard(
-            merchants: ctx.read<MerchantStore>(),
-            picks: ctx.read<AffiliateStore>(),
-            feed: BestBuyFeed(
-              apiKey: feeds.keyFor('bestbuy') ?? '',
-              // Null until an affiliate template is saved, which keeps the
-              // "these links earn nothing yet" state truthful.
-              affiliateWrap: feeds.wrapFor('bestbuy'),
-            ),
-          ),
+        // The in-app exchange: markets, order books, your exchange balance.
+        //
+        // It is handed the accounts session so the authenticated routes work on
+        // a phone — the venue has no login of its own, and a SameSite=Lax
+        // cookie does not ride a cross-site fetch. Read lazily through a
+        // closure rather than captured, so signing in or out takes effect
+        // without rebuilding the provider.
+        ChangeNotifierProvider<ExchangeController>(
+          create: (ctx) {
+            final mc = ctx.read<MultichainController>();
+            return ExchangeController(bearer: () => mc.moonpayBearer);
+          },
         ),
       ],
       child: const BlockleApp(),
