@@ -137,7 +137,24 @@ test("AN UNCLASSIFIED POSTING MAKES THE REPORT ADMIT IT IS INCOMPLETE", () => {
 	const u = r.assets.find((a) => a.asset === "USDT")!;
 	assert.equal(u.unclassified, usdt("50"));
 	assert.equal(u.netProfit, 0n, "and it is NOT counted as profit");
+
+	// BUT THE ARITHMETIC STILL HOLDS, and that distinction is the whole point:
+	// an operator adjustment is a legitimate act, not evidence of broken books.
+	// The go-live preflight gates on this flag, not on `reconciles`, because
+	// corrections are permanent in an append-only ledger — keying the gate on
+	// `reconciles` meant a venue that had ever reversed anything failed forever.
+	assert.equal(r.arithmeticHolds, true, "the buckets still sum to the balance");
+	assert.deepEqual(r.unclassifiedByAsset, { USDT: "50" },
+		"and the amount is exposed so a caller can show it rather than hide it");
 });
+
+// NB: there is deliberately no test for "the buckets do not sum to the
+// balance". The ledger refuses to write an unbalanced transaction (triggers
+// plus a zero-sum assertion per asset), so that state cannot be constructed
+// through the public API — which is why `arithmeticHolds` is false only for a
+// ledger that was corrupted out of band, and why verify() is the check that
+// would catch that first.
+
 
 test("GAS IS CHARGED TO THE ASSET IT WAS SPENT IN", () => {
 	// Sending USDT over Ethereum burns ETH. Booking that against USDT would

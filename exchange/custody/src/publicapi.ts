@@ -61,7 +61,7 @@ import { canPay } from "./liquidity";
 import { pinAndVerify } from "./ipv4";
 import { DEFAULT_FEES, disclose } from "./fees";
 import { Ledger } from "./ledger";
-import { LIVE_GAS_COSTS, type GasGateDeps } from "./gasgate";
+import { LIVE_GAS_COSTS, type GasGateDeps, checkGas } from "./gasgate";
 import { AuthError, BlockleAuth } from "./blockleauth";
 import {
 	SCHEMA as ADMIN_SCHEMA,
@@ -439,6 +439,17 @@ async function venueRoute(
 		| undefined,
 	apiKeys: ApiKeys,
 	userTotp: UserTotp,
+	/**
+	 * Can this chain pay its own gas right now?
+	 *
+	 * Injected rather than imported so this function does not need the gas
+	 * schema. Absent means "do not gate on gas", which is the old behaviour and
+	 * is what the tests use.
+	 */
+	gasReadyFor:
+		| ((asset: string, network: string | undefined) =>
+			{ ok: true } | { ok: false; reason: string })
+		| undefined,
 ): Promise<void> {
 	const p = url.pathname.slice("/v1".length);
 
@@ -597,6 +608,42 @@ async function venueRoute(
 			 * loses money irrecoverably, so a failure here is a refusal, never
 			 * a guess.
 			 */
+			/*
+			 * A CHAIN THAT CANNOT PAY ITS GAS DOES NOT TAKE DEPOSITS.
+			 *
+			 * The withdrawal side has always refused when the gas float is
+			 * empty, which protects the venue from accepting a payout it cannot
+			 * send. On its own that is only half the control: issuing a deposit
+			 * address for the same chain invites a customer to hand over coins
+			 * that then cannot leave. The money is not lost, but it is STRANDED,
+			 * and "we are holding your USDT and cannot return it until we fund
+			 * an ETH float" is not a position to put a customer in.
+			 *
+			 * So deposits close with withdrawals, per chain, automatically. That
+			 * is what lets the venue open before every gas float is funded: the
+			 * gasless chains are simply shut, and they open by themselves the
+			 * moment a float arrives.
+			 *
+			 * An EXISTING address is still returned — someone who already
+			 * deposited must be able to see where their coins went.
+			 */
+			if (gasReadyFor !== undefined && deposits.addressFor(who, asset, net) === undefined) {
+				const g = gasReadyFor(asset, net);
+				if (!g.ok) {
+					json(res, 200, {
+						asset,
+						network: net ?? null,
+						address: null,
+						reason:
+							`${asset}${net === undefined ? "" : ` on ${net}`} deposits are ` +
+							`closed until we can pay that chain's network fee. ${g.reason} ` +
+							"We will not hold coins we cannot send back. Another chain for " +
+							"the same asset may be open.",
+					}, 0);
+					return;
+				}
+			}
+
 			if (
 				provisionAddress !== undefined &&
 				deposits.addressFor(who, asset, net) === undefined
@@ -1296,6 +1343,21 @@ export function start(): void {
 		table: LIVE_GAS_COSTS,
 	};
 
+	/*
+	 * THE SAME GAS VERDICT THE WITHDRAWAL PATH USES, handed to the deposit path.
+	 *
+	 * One source of truth deliberately: if deposits and withdrawals could
+	 * disagree about whether a chain can pay its fee, the venue would take coins
+	 * on a chain it refuses to send from — which is the stranding this closes.
+	 */
+	const gasReadyFor = (
+		asset: string,
+		network: string | undefined,
+	): { ok: true } | { ok: false; reason: string } => {
+		const g = checkGas({ asset, network }, gasDeps);
+		return g.ok ? { ok: true } : { ok: false, reason: g.reason };
+	};
+
 	// A LISTED ASSET WITH NO WITHDRAWAL LIMITS IS A TRAP. It would trade fine
 	// and then refuse to pay out, which is the one failure a customer cannot
 	// work around. Logged loudly at startup rather than discovered by them.
@@ -1618,6 +1680,7 @@ export function start(): void {
 						LIVE_FEES, pricing, mm, deposits, wdb, provisionAddress,
 						apiKeys,
 						userTotp,
+						gasReadyFor,
 					);
 					return;
 				}

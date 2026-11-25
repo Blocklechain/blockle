@@ -392,9 +392,35 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 
 	try {
 		const r = revenue(deps.db, deps.ledger);
-		checks.push(r.reconciles
+		/*
+		 * THE ARITHMETIC IS THE GATE; AN OPERATOR CORRECTION IS A NOTE.
+		 *
+		 * This used to key off `r.reconciles`, which is false both when the
+		 * books do not add up AND when any fee movement carries a reason the
+		 * revenue report declines to classify — an operator adjustment or a
+		 * CORRECTION. Those are not the same claim, and only the first is a
+		 * defect.
+		 *
+		 * Because corrections are permanent (the ledger is append-only on
+		 * purpose), the old form meant a venue that had ever reversed anything
+		 * failed this check for the rest of its life. The clearing of the faucet
+		 * liabilities on 2026-11-25 did exactly that: the fee accounts net to
+		 * zero, nothing is wrong, and the line went red forever.
+		 *
+		 * So: FAIL when the buckets do not sum to the balance. PASS, with the
+		 * amount named, when they do and some of it is simply not revenue.
+		 */
+		const unclassified = Object.entries(r.unclassifiedByAsset);
+		checks.push(!r.arithmeticHolds
+			? no("books:revenue", "Fee accounting reconciles",
+				r.warnings.join(" | "))
+			: unclassified.length === 0
 			? ok("books:revenue", "Fee accounting reconciles", "every posting classified")
-			: no("books:revenue", "Fee accounting reconciles", r.warnings.join(" | ")));
+			: ok("books:revenue", "Fee accounting reconciles",
+				`buckets reconcile. ${unclassified.length} asset(s) carry ` +
+					`unclassified movement (${unclassified.map(([a, v]) => `${a} ${v}`).join(", ")}) ` +
+					"from an operator adjustment or correction — excluded from " +
+					"profit, so read the revenue report before quoting a figure."));
 	} catch (e) {
 		checks.push(no("books:revenue", "Fee accounting reconciles",
 			e instanceof Error ? e.message : String(e)));
@@ -408,15 +434,32 @@ export async function preflight(deps: PreflightDeps): Promise<Preflight> {
 		pendingOnChain: () => 0,
 		table: LIVE_GAS_COSTS,
 	};
-	const dry = gasPositions(gasDeps).filter((p) => !p.healthy);
+	/*
+	 * AN UNFUNDED GAS FLOAT CLOSES ITS CHAIN; IT DOES NOT BLOCK THE VENUE.
+	 *
+	 * This used to be a fund-loss check, which made every gas float a
+	 * precondition for opening at all. That is the wrong shape: a chain with no
+	 * float is not dangerous, it is SHUT — withdrawals refuse (withdrawals.ts)
+	 * and, since 2026-11-25, deposits refuse too, so no customer can hand over
+	 * coins on a chain the venue cannot send from. The chain opens by itself the
+	 * moment the float arrives.
+	 *
+	 * SO THE DOWNGRADE IS ONLY HONEST BECAUSE DEPOSITS CLOSE AS WELL. With
+	 * withdrawals-only refusal, opening unfunded would have invited deposits on
+	 * a chain whose coins could not leave — stranded, not lost, which is still
+	 * not a position to put a customer in. If that deposit gate is ever removed,
+	 * this must go back to fund-loss.
+	 */
+	const positions = gasPositions(gasDeps);
+	const dry = positions.filter((p) => !p.healthy);
 	checks.push(dry.length === 0
 		? ok("gas:floats", "Every token chain can pay its gas",
-			`${gasPositions(gasDeps).length} chains funded`, true)
-		: no("gas:floats", "Every token chain can pay its gas",
-			`no gas float on: ${dry.map((p) => p.chain + " (needs " + p.gasAsset + ")").join(", ")}. ` +
-				"Those chains refuse withdrawals rather than accepting ones they " +
-				"cannot send, so nothing is lost — but the asset is advertised and " +
-				"not payable.", true));
+			`${positions.length} chains funded`, true)
+		: ok("gas:floats", "Chains without gas are closed, not broken",
+			`${positions.length - dry.length}/${positions.length} chains funded. ` +
+				`CLOSED until funded: ${dry.map((p) => p.chain + " (needs " + p.gasAsset + ")").join(", ")}. ` +
+				"Both deposits and withdrawals refuse on those chains, so nothing " +
+				"can be stranded; each opens automatically when its float arrives."));
 
 	const uncovered = auditGasCoverage(LIVE_FEES, {
 		sources: [new StaticRates(GAS_PRICE_FLOOR)],

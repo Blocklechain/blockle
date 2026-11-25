@@ -116,6 +116,25 @@ export interface RevenueReport {
 	 * balances. False means READ `warnings` BEFORE QUOTING ANY FIGURE.
 	 */
 	readonly reconciles: boolean;
+	/**
+	 * TRUE WHEN THE ARITHMETIC HOLDS, regardless of unclassified movement.
+	 *
+	 * Split out from `reconciles` because the two say different things and only
+	 * one is a defect:
+	 *
+	 *   - the buckets not summing to the balance means the books DO NOT ADD UP;
+	 *   - unclassified movement means an operator posted an adjustment or a
+	 *     correction, which is a legitimate thing to do and which this file
+	 *     deliberately refuses to fold into a revenue bucket.
+	 *
+	 * `reconciles` conflated them, so any venue that had ever posted a single
+	 * correction failed forever — and the go-live preflight treated that as a
+	 * blocking condition. Profit still excludes unclassified movement and the
+	 * warning still says so; it is simply not evidence of broken accounting.
+	 */
+	readonly arithmeticHolds: boolean;
+	/** Unclassified fee movement per asset, for callers that want to show it. */
+	readonly unclassifiedByAsset: Readonly<Record<string, string>>;
 	readonly warnings: readonly string[];
 	readonly generatedAt: string;
 }
@@ -232,6 +251,8 @@ export function revenue(
 
 	const warnings: string[] = [];
 	let reconciles = true;
+	let arithmeticHolds = true;
+	const unclassifiedByAsset: Record<string, string> = {};
 
 	const assets: AssetRevenue[] = [];
 	for (const [asset, a] of [...byAsset.entries()].sort()) {
@@ -249,6 +270,7 @@ export function revenue(
 			const expected = netProfit + a.funding - a.swept + a.unclassified;
 			if (expected !== balance) {
 				reconciles = false;
+				arithmeticHolds = false;
 				warnings.push(
 					`${asset}: the classified postings sum to ${format(expected, u)} ` +
 						`but the FEES balance is ${format(balance, u)} — a difference ` +
@@ -259,6 +281,7 @@ export function revenue(
 		}
 		if (a.unclassified !== 0n) {
 			reconciles = false;
+			unclassifiedByAsset[asset] = format(a.unclassified, u);
 			warnings.push(
 				`${asset}: ${format(a.unclassified, u)} of fee-account movement ` +
 					"carries a reason the revenue report does not classify " +
@@ -321,6 +344,8 @@ export function revenue(
 		to: opts.to,
 		assets,
 		reconciles,
+		arithmeticHolds,
+		unclassifiedByAsset,
 		warnings,
 		generatedAt: new Date().toISOString(),
 	};

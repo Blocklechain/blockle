@@ -203,3 +203,39 @@ test("every chain in the live gas table is reportable", () => {
 		assert.ok(r.perWithdrawal !== "0", `${r.chain}: a zero budget is not a budget`);
 	}
 });
+
+// ------------------------------------------- deposits close with withdrawals
+
+test("DEPOSITS AND WITHDRAWALS AGREE ABOUT WHETHER A CHAIN CAN PAY", () => {
+	// THE CONTROL THIS PINS, added 2026-11-25 so the venue could open before
+	// every gas float was funded.
+	//
+	// The withdrawal path has always refused when the gas float is empty. On its
+	// own that is half a control: issuing a DEPOSIT address for the same chain
+	// invites a customer to hand over coins that then cannot leave. Not lost —
+	// STRANDED — and "we hold your USDT and cannot return it until we fund an
+	// ETH float" is not a position to put anyone in.
+	//
+	// publicapi builds its deposit gate from this same checkGas, deliberately,
+	// so the two sides cannot drift into disagreeing. This test is the contract
+	// that makes that safe: a token chain with no float must be refused, and the
+	// reason must name the asset that pays.
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+	const deps: GasGateDeps = {
+		ledger: l,
+		pendingOnChain: () => 0,
+		table: LIVE_GAS_COSTS,
+	};
+
+	// No ETH float at all.
+	const dry = checkGas({ asset: "USDT", network: "ERC20" }, deps);
+	assert.equal(dry.ok, false, "an unfunded token chain must refuse");
+	assert.match(dry.ok ? "" : dry.reason, /ETH/,
+		"and must name the asset that pays, so an operator knows what to send");
+
+	// A self-funding chain needs no float: BTC's fee comes out of the BTC sent.
+	const selfFunding = checkGas({ asset: "BTC", network: undefined }, deps);
+	assert.equal(selfFunding.ok, true,
+		"a self-funding chain must not be closed for want of a float it never needs");
+});
