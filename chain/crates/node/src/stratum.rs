@@ -388,6 +388,24 @@ fn handle_client(state: Arc<StratumState>, stream: TcpStream) {
             match reply {
                 Ok(result) => push(client, json!({"id": id, "result": result, "error": null})),
                 Err(msg) => {
+                    /*
+                     * SAY WHY A SHARE WAS REFUSED, in the pool's own log.
+                     *
+                     * The error has always gone back to the miner as
+                     * [20, msg, null], but nothing was recorded here — so a
+                     * miner reporting "I submitted shares and got no response"
+                     * could not be told apart from one whose every share was
+                     * being rejected for a reason the pool knew precisely.
+                     * Some firmware does not surface a stratum error at all,
+                     * which makes a refusal look exactly like silence.
+                     *
+                     * Only for submits: logging every malformed line from an
+                     * internet-facing port is a log-flooding hazard, and a bad
+                     * subscribe is not a share anyone is waiting on.
+                     */
+                    if method == "mining.submit" {
+                        println!("[stratum] miner {client_id} share REJECTED: {msg}");
+                    }
                     push(client, json!({"id": id, "result": null, "error": [20, msg, null]}))
                 }
             }
@@ -407,6 +425,18 @@ fn handle_request(
 ) -> Result<Value, String> {
     match method {
         "mining.subscribe" => {
+            /*
+             * LOG THE AGENT. The bitcoin-dialect lane has always done this; this
+             * one never did, which made "has anyone got a Z9 working on BLOCK?"
+             * unanswerable from the logs — there was no record of what hardware
+             * had ever connected, only miner numbers.
+             */
+            let agent = params
+                .get(0)
+                .and_then(|v| v.as_str())
+                .unwrap_or("(none)")
+                .to_string();
+            println!("[stratum] miner {client_id} subscribe agent={agent:?}");
             let nonce1 = {
                 let mut clients = state.clients.lock().unwrap();
                 let client = clients.get_mut(&client_id).ok_or("gone")?;
@@ -461,7 +491,8 @@ fn handle_request(
             }
             let job_id = p[1].as_str().ok_or("bad job id")?;
             let ntime: [u8; 4] = decode_fixed(p[2].as_str().ok_or("bad ntime")?)?;
-            let nonce2: [u8; 16] = decode_fixed(p[3].as_str().ok_or("bad nonce2")?)?;
+            let nonce2 = hex::decode(p[3].as_str().ok_or("bad nonce2")?)
+                .map_err(|_| "bad nonce2 hex".to_string())?;
             let solution = hex::decode(p[4].as_str().ok_or("bad solution hex")?)
                 .map_err(|_| "bad solution hex".to_string())?;
 
@@ -485,8 +516,7 @@ fn handle_request(
             let solution = strip_compact_size(solution, expected)?;
 
             block.header.time = u32::from_le_bytes(ntime);
-            block.header.nonce[..16].copy_from_slice(&nonce1);
-            block.header.nonce[16..].copy_from_slice(&nonce2);
+            block.header.nonce = split_nonce(&nonce1, &nonce2)?;
             block.header.solution = solution;
 
             // A share must be a valid Equihash solution …
@@ -735,6 +765,108 @@ fn record_share_and_retarget(state: &Arc<StratumState>, client_id: u64, block_t:
             json!({"id": null, "method": "mining.set_target",
                    "params": [target_hex_u256(c.share_target)]}),
         );
+    }
+}
+
+/// Rebuild the 32-byte header nonce from our `nonce1` and the miner's `nonce2`.
+///
+/// THE MINER'S NONCE2 LENGTH DECIDES THE SPLIT, and that is the whole point.
+///
+/// `mining.subscribe` advertises a 16-byte nonce1, and spec-correct firmware
+/// derives `nonce2_len = 32 - len(nonce1)` and sends 16. Older Equihash ASICs
+/// do not: most of the ecosystem's pools use a 4-byte nonce1, and firmware from
+/// that era (Innosilicon Z9 / Z9 mini in particular) assumes a nonce2 width
+/// rather than computing it — so it consumes only the first few bytes of
+/// whatever nonce1 it was handed and submits a longer nonce2.
+///
+/// Against the old fixed `[u8; 16]` decode that failed EVERY share with
+/// "expected 16 bytes", which from the miner's side is indistinguishable from
+/// the pool ignoring it: connect, submit, nothing, restart with no work.
+///
+/// So infer it instead — whatever the miner did NOT send is the prefix of our
+/// nonce1 it must have used. A miner that consumed all 16 sends 16 and gets
+/// `nonce1[..16]`; one that consumed 4 sends 28 and gets `nonce1[..4]`. Both
+/// reconstruct the exact nonce the miner hashed, so both verify, and no miner
+/// that works today stops working.
+///
+/// The 4-byte floor is what keeps nonce1 doing its job: per-connection
+/// uniqueness so two miners do not grind the same search space. `nonce1[..8]`
+/// is the client id and bytes 8..16 are zero padding, so 4 bytes still
+/// distinguishes four billion connections — 0 would let two miners collide.
+fn split_nonce(nonce1: &[u8; 16], nonce2: &[u8]) -> Result<[u8; 32], String> {
+    if nonce2.len() < 16 || nonce2.len() > 28 {
+        return Err(format!(
+            "nonce2 must be 16..=28 bytes (got {}); the 32-byte header nonce is \
+             nonce1 || nonce2 and nonce1 needs at least 4 bytes to keep miners \
+             off each other's search space",
+            nonce2.len()
+        ));
+    }
+    let nonce1_len = 32 - nonce2.len();
+    let mut out = [0u8; 32];
+    out[..nonce1_len].copy_from_slice(&nonce1[..nonce1_len]);
+    out[nonce1_len..].copy_from_slice(nonce2);
+    Ok(out)
+}
+
+#[cfg(test)]
+mod nonce_split_tests {
+    use super::split_nonce;
+
+    fn n1() -> [u8; 16] {
+        let mut a = [0u8; 16];
+        for (i, b) in a.iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        a
+    }
+
+    #[test]
+    fn a_spec_correct_miner_sending_16_is_unchanged() {
+        // The behaviour that works today and must keep working: miners
+        // currently on the lane are accepted at 72/0 and 626/5.
+        let got = split_nonce(&n1(), &[0xAA; 16]).unwrap();
+        assert_eq!(&got[..16], &n1()[..], "our full nonce1 is the prefix");
+        assert_eq!(&got[16..], &[0xAA; 16], "and theirs is the suffix");
+    }
+
+    #[test]
+    fn a_z9_style_miner_sending_28_is_accepted() {
+        // THE FIX. Firmware that assumes a 4-byte nonce1 consumes nonce1[..4]
+        // and submits 28 bytes. This used to fail every share.
+        let got = split_nonce(&n1(), &[0xBB; 28]).unwrap();
+        assert_eq!(&got[..4], &[1, 2, 3, 4], "only the four bytes it used");
+        assert_eq!(&got[4..], &[0xBB; 28]);
+    }
+
+    #[test]
+    fn every_split_in_range_reconstructs_exactly_32_bytes() {
+        for len in 16..=28usize {
+            let n2 = vec![0xCC; len];
+            let got = split_nonce(&n1(), &n2).expect("len in range");
+            let used = 32 - len;
+            assert_eq!(&got[..used], &n1()[..used]);
+            assert_eq!(&got[used..], &n2[..]);
+        }
+    }
+
+    #[test]
+    fn a_nonce2_that_would_leave_no_room_for_uniqueness_is_refused() {
+        // 32 bytes would mean nonce1 contributes nothing and two miners could
+        // grind the identical search space. 29..=32 all cross that line.
+        for len in [29usize, 30, 31, 32] {
+            let err = split_nonce(&n1(), &vec![0u8; len]).unwrap_err();
+            assert!(err.contains("16..=28"), "{err}");
+            assert!(err.contains(&len.to_string()), "names the length it got: {err}");
+        }
+    }
+
+    #[test]
+    fn a_short_nonce2_is_refused_rather_than_zero_padded() {
+        // Padding would silently hash a different nonce than the miner did,
+        // so the share would fail verification for a reason nobody could see.
+        let err = split_nonce(&n1(), &[0u8; 8]).unwrap_err();
+        assert!(err.contains("16..=28"), "{err}");
     }
 }
 
