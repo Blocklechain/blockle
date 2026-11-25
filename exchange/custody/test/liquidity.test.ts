@@ -315,3 +315,37 @@ test("a surplus is still fully backed; a shortfall is not", () => {
 	assert.equal(r.held, "100");
 	assert.equal(r.fullyBacked, false);
 });
+
+test("A SINGLE-CHAIN ASSET IS MARKED native, SO NOBODY PASSES ITS SYMBOL BACK", () => {
+	// THE BUG THIS PINS, and it kept the venue from going live for hours.
+	//
+	// This view needs one row per holding and a row needs a name, so for an
+	// asset with no networks `network` falls back to the SYMBOL. The deposit
+	// screen read that as a chain id, put it in the dropdown, and sent
+	//
+	//     GET /v1/deposit-address?asset=BTC&network=BTC
+	//
+	// which the deposit path refuses outright — a qualified id for a
+	// single-chain coin means the caller has confused it with a token. Every
+	// single-chain asset was therefore impossible to issue an address for: 578
+	// requests, all 400, which is exactly why `deposit:addresses` stayed at
+	// NONE and `golivecli --flip` kept refusing.
+	//
+	// `native` is the flag that makes the two cases distinguishable. A caller
+	// seeing it must send NO network.
+	const db = new Database(":memory:");
+	const l = new Ledger(db);
+
+	const btc = assetLiquidity(l, "BTC", noCommitments);
+	assert.equal(btc.networks.length, 1, "one row for the single holding");
+	assert.equal(btc.networks[0]!.network, "BTC", "named after the asset");
+	assert.equal(btc.networks[0]!.native, true, "and flagged as NOT a chain id");
+
+	// A genuinely multi-chain asset is the opposite: real ids, never native.
+	const usdt = assetLiquidity(l, "USDT", noCommitments);
+	assert.ok(usdt.networks.length > 1, "USDT spans chains");
+	for (const n of usdt.networks) {
+		assert.equal(n.native, false, `${n.network} is a real chain id`);
+		assert.notEqual(n.network, "USDT", "and never the bare symbol");
+	}
+});

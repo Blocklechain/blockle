@@ -45,7 +45,7 @@ import { format, parse } from "./amount";
 import { ASSETS, assertCustodyId, assetDef, settlementAsset } from "./assets";
 import { MARKETS as VENUE_MARKETS, Venue, VenueError, market as marketDef, quoteFor } from "./venue";
 import { MarketMaker, quote as mmQuote } from "./mm";
-import { Deposits, describeDeposit } from "./deposits";
+import { Deposits, describeDeposit, listDepositAddresses } from "./deposits";
 import { BitGoDeposits } from "./bitgodeposits";
 import { BitGoHoldings } from "./bitgo";
 import { BlockAddressPool } from "./blockaddresspool";
@@ -587,6 +587,56 @@ async function venueRoute(
 		// DEPOSIT ADDRESS. Returns an address or an explanation, never a guess —
 		// a deposit to a wrong address is unrecoverable by anyone. See
 		// deposits.ts.
+		/*
+		 * EVERY DEPOSIT ADDRESS AT ONCE, PROVISIONED ON SIGHT.
+		 *
+		 * The single-asset route below is still there and still the one the
+		 * deposit screen uses when someone picks a chain. This exists because a
+		 * customer should not have to discover that their account HAS a Bitcoin
+		 * address by hunting for the right dropdown: the account page asks once
+		 * and shows them all.
+		 *
+		 * THREE THINGS IT WILL NOT DO:
+		 *
+		 *   - It will not skip a closed chain silently. A chain whose gas float
+		 *     is empty comes back with `address: null` and the reason, because
+		 *     "no address shown" and "this chain is shut" look identical on a
+		 *     screen and only one of them is worth waiting out.
+		 *   - It will not let one chain's failure empty the list. Each entry is
+		 *     resolved independently; a BitGo timeout on Solana must not hide
+		 *     the Bitcoin address that already exists.
+		 *   - It will not invent an address. Provisioning that throws leaves
+		 *     `address: null` with the error, exactly like the single route —
+		 *     showing an address we are not certain of is the one outcome that
+		 *     loses money irrecoverably.
+		 */
+		if (p === "/deposit-addresses" && req.method === "GET") {
+			const who = await me();
+			const addresses = await listDepositAddresses({
+				deposits,
+				userId: who,
+				assets: LISTED,
+				networksFor: (asset) => assetDef(asset).networks.map((n) => n.id),
+				...(gasReadyFor === undefined ? {} : { gasReady: gasReadyFor }),
+				...(provisionAddress === undefined
+					? {}
+					: { provision: (asset, net) => provisionAddress(who, asset, net) }),
+				onError: (asset, net, error) => {
+					console.error(
+						`deposit-addresses ${who} ${asset}${net === undefined ? "" : "." + net}: ${error}`,
+					);
+				},
+			});
+			json(res, 200, {
+				addresses,
+				note:
+					"One address per chain, issued to this account and reused forever. " +
+					"Send only the named asset on the named chain: a transfer on the " +
+					"wrong chain cannot be recovered by anyone.",
+			}, 0);
+			return;
+		}
+
 		if (p === "/deposit-address" && req.method === "GET") {
 			const who = await me();
 			const asset = (url.searchParams.get("asset") ?? "").toUpperCase();
@@ -748,6 +798,11 @@ async function venueRoute(
 				decimals: def.decimals,
 				networks: liq.networks.map((n) => ({
 					network: n.network,
+					// A CALLER THAT SEES THIS MUST SEND NO NETWORK. See the field's
+					// comment in liquidity.ts: `network` is a label for a
+					// single-chain asset, not a chain id, and passing it back is
+					// what broke deposit-address issuance for every such asset.
+					native: n.native,
 					label: n.label,
 					available: fmt(n.available, def.decimals),
 					open: n.open,

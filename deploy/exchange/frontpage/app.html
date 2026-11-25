@@ -223,6 +223,26 @@
           </p>
         </div>
       </div>
+      <!-- EVERY ADDRESS, WITHOUT BEING ASKED.
+           A customer should not have to work the dropdowns to discover their
+           account already has a Bitcoin address. This panel loads on sight and
+           lists every chain: the open ones with their address, the closed ones
+           with the reason, so "nothing shown" never has to be guessed at. -->
+      <div class="panel" id="d-all-panel" style="margin-bottom:14px">
+        <header>
+          <h2>Your deposit addresses</h2>
+          <span class="note" id="d-all-note">loading…</span>
+        </header>
+        <div class="body tight scroll">
+          <table id="t-depaddr">
+            <thead>
+              <tr><th>Asset</th><th>Chain</th><th>Address</th><th>Status</th></tr>
+            </thead>
+            <tbody><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
+          <p class="note" style="margin-top:12px" id="d-all-foot"></p>
+        </div>
+      </div>
       <div class="grid g2" id="deposit-grid">
         <div class="panel">
           <header><h2>Deposit address</h2></header>

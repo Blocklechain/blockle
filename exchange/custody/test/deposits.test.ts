@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 
-import { DepositError, Deposits, describeDeposit } from "../src/deposits";
+import { DepositError, Deposits, describeDeposit, listDepositAddresses } from "../src/deposits";
 
 const setup = (): Deposits => new Deposits(new Database(":memory:"));
 
@@ -154,4 +154,96 @@ test("provenance is mandatory", () => {
 		() => d.provision({ userId: "u1", asset: "BTC", network: undefined, address: " ", source: "bitgo" }),
 		/address is required/,
 	);
+});
+
+// ------------------------------------- the whole-account address list
+
+test("A CLOSED CHAIN IS REPORTED, NOT OMITTED", async () => {
+	// "No address shown" and "this chain is shut until we fund its gas" look
+	// identical on a screen, and only one of them is worth waiting out. Dropping
+	// the row is what sends someone to support.
+	const d = setup();
+	const rows = await listDepositAddresses({
+		deposits: d,
+		userId: "u1",
+		assets: ["USDT", "BTC"],
+		networksFor: (a) => (a === "USDT" ? ["TRC20", "ERC20"] : []),
+		gasReady: (_a, net) =>
+			net === "ERC20" ? { ok: false, reason: "no ETH float." } : { ok: true },
+		provision: async (asset, net) => {
+			d.provision({ userId: "u1", asset, network: net, address: `addr-${asset}-${net ?? "native"}`, source: "bitgo" });
+		},
+	});
+
+	// Every chain appears, in order, open or not.
+	assert.deepEqual(rows.map((r) => `${r.asset}/${r.network ?? "native"}`),
+		["USDT/TRC20", "USDT/ERC20", "BTC/native"]);
+
+	const erc = rows.find((r) => r.network === "ERC20")!;
+	assert.equal(erc.open, false);
+	assert.equal(erc.address, null, "never an address for a chain we cannot pay from");
+	assert.match(erc.reason ?? "", /no ETH float/);
+	assert.match(erc.reason ?? "", /cannot send back/);
+
+	// And the open ones were provisioned on sight.
+	assert.equal(rows.find((r) => r.network === "TRC20")!.address, "addr-USDT-TRC20");
+	assert.equal(rows.find((r) => r.asset === "BTC")!.address, "addr-BTC-native");
+});
+
+test("ONE CHAIN'S FAILURE DOES NOT EMPTY THE LIST", async () => {
+	// A custodian timeout on one chain must not hide an address that already
+	// exists on another. The failing chain reports its absence; the rest stand.
+	const d = setup();
+	d.provision({ userId: "u1", asset: "BTC", network: undefined, address: "bc1q-known", source: "bitgo" });
+	const seen: string[] = [];
+
+	const rows = await listDepositAddresses({
+		deposits: d,
+		userId: "u1",
+		assets: ["SOL", "BTC"],
+		networksFor: () => [],
+		provision: async (asset) => {
+			if (asset === "SOL") throw new Error("custodian timeout");
+			d.provision({ userId: "u1", asset, network: undefined, address: `a-${asset}`, source: "bitgo" });
+		},
+		onError: (asset, _net, error) => seen.push(`${asset}: ${error}`),
+	});
+
+	assert.deepEqual(seen, ["SOL: custodian timeout"], "the failure is surfaced");
+	const sol = rows.find((r) => r.asset === "SOL")!;
+	assert.equal(sol.address, null, "and NOT an invented address");
+	assert.equal(sol.open, false);
+	// The pre-existing one is untouched and still shown.
+	assert.equal(rows.find((r) => r.asset === "BTC")!.address, "bc1q-known");
+});
+
+test("an existing address is never re-provisioned", async () => {
+	// Replacing an address would orphan coins already on their way to the old
+	// one. `Deposits.provision` refuses, but this must not even ask.
+	const d = setup();
+	d.provision({ userId: "u1", asset: "BTC", network: undefined, address: "bc1q-first", source: "bitgo" });
+	let asked = 0;
+	const rows = await listDepositAddresses({
+		deposits: d,
+		userId: "u1",
+		assets: ["BTC"],
+		networksFor: () => [],
+		provision: async () => { asked++; },
+	});
+	assert.equal(asked, 0, "provision must not be called for an address we hold");
+	assert.equal(rows[0]!.address, "bc1q-first");
+});
+
+test("one customer's addresses are never another's", async () => {
+	const d = setup();
+	d.provision({ userId: "u1", asset: "BTC", network: undefined, address: "bc1q-u1", source: "bitgo" });
+	const rows = await listDepositAddresses({
+		deposits: d,
+		userId: "u2",
+		assets: ["BTC"],
+		networksFor: () => [],
+		// No provisioner: u2 has none, and must not be shown u1's.
+	});
+	assert.equal(rows[0]!.address, null);
+	assert.equal(rows[0]!.open, false);
 });

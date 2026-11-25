@@ -618,7 +618,75 @@
 
   // ------------------------------------------------------------------- deposit
 
+  /**
+   * Every deposit address for this account, loaded without being asked.
+   *
+   * The server provisions anything missing on an OPEN chain and reports a
+   * CLOSED chain with its reason, so this renders three distinct states rather
+   * than two: an address, "closed until gas", or a failure that names itself.
+   * Collapsing the last two into a blank cell is what sends someone to support.
+   */
+  function drawDepositAddresses() {
+    var body = $("t-depaddr").tBodies[0];
+    priv("deposit-addresses").then(function (r) {
+      var rows = r.addresses || [];
+      clear(body);
+      var open = 0;
+      rows.forEach(function (a) {
+        if (a.open) open++;
+        var tr = body.insertRow();
+        cell(tr, a.asset);
+        cell(tr, a.network || "native");
+
+        var addr = tr.insertCell();
+        if (a.address) {
+          // user-select:all so a tap selects the whole address — a
+          // half-copied address is a lost deposit.
+          var code = el("code", "");
+          code.textContent = a.address;
+          code.style.userSelect = "all";
+          code.style.wordBreak = "break-all";
+          addr.appendChild(code);
+          if (a.memoRequired && a.memo) {
+            var m = el("div", "note");
+            m.textContent = "memo REQUIRED: " + a.memo;
+            addr.appendChild(m);
+          }
+        } else {
+          addr.appendChild(el("span", "dim", "—"));
+        }
+
+        var st = tr.insertCell();
+        if (a.open) {
+          st.appendChild(el("span", "ok", "open"));
+        } else {
+          // The reason, in full. It is the actionable part.
+          st.appendChild(el("span", "dim", a.reason || "closed"));
+        }
+      });
+      if (!rows.length) {
+        var tr0 = body.insertRow();
+        var td = tr0.insertCell();
+        td.colSpan = 4;
+        td.className = "empty";
+        td.textContent = "No chains configured.";
+      }
+      $("d-all-note").textContent = open + " of " + rows.length + " chains open";
+      $("d-all-foot").textContent = r.note || "";
+    }).catch(function (e) {
+      // NEVER an empty table on failure: that reads as "you have no addresses".
+      clear(body);
+      var tr = body.insertRow();
+      var td = tr.insertCell();
+      td.colSpan = 4;
+      td.className = "empty";
+      td.textContent = e.message;
+      $("d-all-note").textContent = "unavailable";
+    });
+  }
+
   RENDER.deposit = function () {
+    drawDepositAddresses();
     fillAssetSelect($("d-asset"));
     fillAssetSelect($("f-asset"));
     if (!$("d-net").options.length) depositNets();
@@ -674,7 +742,13 @@
         sel.appendChild(new Option(asset + " (native chain)", ""));
       } else {
         o.networks.forEach(function (n) {
-          sel.appendChild(new Option(n.label, n.network));
+          // A NATIVE ENTRY CARRIES NO CHAIN ID. For a single-chain asset the
+          // server reports `network` as the SYMBOL — a label for the row, not
+          // a chain — so sending it back produced ?asset=BTC&network=BTC,
+          // which the deposit path refuses (a qualified id for a single-chain
+          // coin means the caller confused it with a token). That 400'd every
+          // single-chain asset, so no address could ever be issued.
+          sel.appendChild(new Option(n.label, n.native ? "" : n.network));
         });
       }
       depositAddress();
@@ -685,8 +759,12 @@
     var out = $("d-out");
     clear(out);
     var asset = $("d-asset").value, net = $("d-net").value;
-    priv("deposit-address?asset=" + encodeURIComponent(asset) +
-         "&network=" + encodeURIComponent(net)).then(function (r) {
+    // OMIT the parameter entirely for a native chain rather than sending an
+    // empty one. The server maps "" to undefined, but not sending it is what
+    // the contract actually means and leaves nothing to interpret.
+    var q = "deposit-address?asset=" + encodeURIComponent(asset) +
+      (net ? "&network=" + encodeURIComponent(net) : "");
+    priv(q).then(function (r) {
       if (r.address) {
         out.appendChild(el("div", "lbl", "Send " + asset + " on " +
           (coinIcon.network(net) || asset) + " to"));

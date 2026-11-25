@@ -60,7 +60,30 @@ export const NOTHING_HALTED: HaltSource = {
 };
 
 export interface NetworkLiquidity {
+	/**
+	 * The chain id — or, for a SINGLE-CHAIN asset, the asset symbol.
+	 *
+	 * The fallback is deliberate here: this view needs one row per holding and
+	 * a row needs a name. But it is NOT a network id a caller may pass back,
+	 * and `native` below is how to tell.
+	 */
 	readonly network: string;
+	/**
+	 * TRUE WHEN THE ASSET HAS NO NETWORKS AT ALL, so `network` above is a label
+	 * rather than a chain.
+	 *
+	 * Added because the deposit screen could not tell the difference. It read
+	 * `network: "BTC"` from /v1/withdrawal-options, put it in the chain
+	 * dropdown, and sent `?asset=BTC&network=BTC` — which the deposit path
+	 * refuses outright, correctly: a qualified id for a single-chain coin means
+	 * the caller has confused it with a token. Every single-chain asset was
+	 * therefore impossible to provision an address for, 578 requests all
+	 * 400-ing, which is what kept `deposit:addresses` at NONE and the go-live
+	 * gate shut.
+	 *
+	 * A caller that sees `native: true` must send NO network.
+	 */
+	readonly native: boolean;
 	readonly label: string;
 	/** Confirmed inventory on this chain, in base units. */
 	readonly held: bigint;
@@ -145,8 +168,10 @@ export function assetLiquidity(
 					: "no liquidity on this network right now";
 		}
 
+		const chain = networkOf(id);
 		return {
-			network: networkOf(id) ?? symbol,
+			network: chain ?? symbol,
+			native: chain === undefined,
 			label,
 			held,
 			committed: promised,

@@ -320,3 +320,98 @@ export function describeDeposit(
 		alternatives: others,
 	};
 }
+
+/**
+ * Every deposit address for one account, provisioning what is missing.
+ *
+ * EXTRACTED FROM THE ROUTE SO IT CAN BE TESTED. It was a loop inside
+ * publicapi, and the three things it must never do are all invisible from
+ * outside: skip a closed chain, let one chain's failure empty the list, or
+ * report an address it is not certain of. A money-facing path that cannot be
+ * exercised in a test is one that gets verified by customers.
+ *
+ * `gasReady` and `provision` are injected: this file has no business knowing
+ * about the gas schema or the custodian.
+ */
+export async function listDepositAddresses(args: {
+	deposits: Deposits;
+	userId: string;
+	/** Settlement assets to cover, in display order. */
+	assets: readonly string[];
+	/** The chains for one asset; empty means the asset is single-chain. */
+	networksFor: (asset: string) => readonly string[];
+	/** Undefined means "do not gate on gas". */
+	gasReady?: (asset: string, network: string | undefined) =>
+		{ ok: true } | { ok: false; reason: string };
+	/** Undefined means "cannot provision", which yields a reason, not a throw. */
+	provision?: (asset: string, network: string | undefined) => Promise<void>;
+	/** Injected so a provisioning failure is observable in tests. */
+	onError?: (asset: string, network: string | undefined, error: string) => void;
+}): Promise<{
+	asset: string;
+	network: string | null;
+	address: string | null;
+	memo: string | null;
+	memoRequired: boolean;
+	open: boolean;
+	reason: string | null;
+}[]> {
+	const out: Awaited<ReturnType<typeof listDepositAddresses>> = [];
+
+	for (const asset of args.assets) {
+		const nets = args.networksFor(asset);
+		const chains: (string | undefined)[] = nets.length === 0 ? [undefined] : [...nets];
+
+		for (const net of chains) {
+			if (args.deposits.addressFor(args.userId, asset, net) === undefined) {
+				/*
+				 * A CLOSED CHAIN IS REPORTED, NOT SKIPPED. "No address shown" and
+				 * "this chain is shut until we fund its gas" look identical on a
+				 * screen, and only one of them is worth waiting out.
+				 */
+				const gas = args.gasReady === undefined
+					? { ok: true as const }
+					: args.gasReady(asset, net);
+				if (!gas.ok) {
+					out.push({
+						asset,
+						network: net ?? null,
+						address: null,
+						memo: null,
+						memoRequired: false,
+						open: false,
+						reason:
+							`Closed until we can pay this chain's network fee. ${gas.reason} ` +
+							"We will not hold coins we cannot send back.",
+					});
+					continue;
+				}
+				if (args.provision !== undefined) {
+					try {
+						await args.provision(asset, net);
+					} catch (e) {
+						/*
+						 * ONE CHAIN'S FAILURE MUST NOT EMPTY THE LIST. A custodian
+						 * timeout on Solana cannot be allowed to hide the Bitcoin
+						 * address that already exists — so this is caught per chain
+						 * and falls through to describeDeposit, which reports the
+						 * absence honestly rather than inventing an address.
+						 */
+						args.onError?.(asset, net, e instanceof Error ? e.message : String(e));
+					}
+				}
+			}
+			const d = describeDeposit(args.deposits, args.userId, asset, net);
+			out.push({
+				asset: d.asset,
+				network: d.network,
+				address: d.address,
+				memo: d.memo,
+				memoRequired: d.memoRequired,
+				open: d.address !== null,
+				reason: d.reason,
+			});
+		}
+	}
+	return out;
+}
