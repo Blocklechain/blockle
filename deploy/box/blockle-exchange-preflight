@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Run the go-live preflight with the SERVICE'S REAL ENVIRONMENT.
+
+Run it as root:  sudo blockle-exchange-preflight [--flip]
+
+WHY THIS WRAPPER EXISTS AT ALL.
+
+Hand-sourcing the env files is how you get a preflight that reports the shell
+you built rather than the system you run. It has produced two separate false
+alarms: "BITGO_ENV is unset, the venue is on testnet" (it was prod) and
+"Operator 2FA is enrolled: FAIL" (alex@blockle.org had been enrolled all along).
+Both times the services were fine and the harness was wrong, and both times the
+first instinct was to go fix the system.
+
+THE BUG THIS VERSION FIXES, which made the wrapper itself unreliable.
+
+It read only `systemctl show -p Environment`. **systemd does not expose
+EnvironmentFile= contents over that interface** — deliberately, and that
+property is load-bearing elsewhere in this deployment: a secret was moved OUT of
+`Environment=` into an `EnvironmentFile=` precisely because the parsed
+`Environment=` block is served over D-Bus to any local caller, 0600 drop-in or
+not. The same privacy that fixed the leak blinded this wrapper.
+
+So everything that actually matters was invisible to it: BITGO_ACCESS_TOKEN,
+EXCHANGE_ADMIN_TOTP, every CHAIN_<SYM>_*, BLOCK_EXPLORER_URL. It had a
+"note: BITGO_ACCESS_TOKEN not found in the unit environment" line papering over
+the gap, which read like a configuration problem rather than a tooling one.
+
+Now it reads the unit's EnvironmentFiles= list and parses those files too, in
+systemd's documented order: files first, `Environment=` last, so an explicit
+unit setting still wins. Needs root, because those files are 0640 root-owned —
+which is also why the note below insists rather than warns.
+"""
+
+import os
+import shlex
+import subprocess
+import sys
+
+UNIT = "exchange-public-api"
+APP = "/opt/blockle/exchange-custody"
+
+if os.geteuid() != 0:
+    sys.exit(
+        "run this as root (sudo). The unit's EnvironmentFile= paths are 0640 and\n"
+        "root-owned; without them the preflight silently checks a half-empty\n"
+        "environment and reports failures that are not real."
+    )
+
+
+def show(prop):
+    return subprocess.run(
+        ["systemctl", "show", UNIT, "-p", prop, "--value"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+env = dict(os.environ)
+
+# ---- 1. EnvironmentFile= entries, in unit order ---------------------------
+#
+# The property renders as a list of "path (ignore_errors=bool)" items. A leading
+# "-" on the unit's own path means optional; systemd reports that as
+# ignore_errors=yes, so the flag is read rather than the path re-parsed.
+files_raw = show("EnvironmentFiles")
+loaded, skipped = [], []
+for item in files_raw.split("\n"):
+    item = item.strip()
+    if not item:
+        continue
+    path = item.split(" (")[0].strip().lstrip("-")
+    optional = "ignore_errors=yes" in item
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                # systemd strips one layer of matching quotes; a shell would not,
+                # which is the BITGO_WALLET_PREFIX="Blockle Exchange" case.
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                    v = v[1:-1]
+                env[k.strip()] = v
+        loaded.append(path)
+    except OSError as e:
+        if not optional:
+            skipped.append(f"{path} ({e.strerror})")
+
+# ---- 2. Environment= last, so a unit setting beats a file -----------------
+for pair in shlex.split(show("Environment")):
+    if "=" in pair:
+        k, v = pair.split("=", 1)
+        env[k] = v
+
+# Defaults matching the unit, so the wrapper works even if a line is missing.
+env.setdefault("CUSTODY_DB", "/var/lib/exchange-custody/ledger.db")
+env.setdefault("EXCHANGE_CONFIG", "/etc/blockle/exchange.json")
+
+print(f"environment: {len(loaded)} file(s) from {UNIT}")
+for p in loaded:
+    print(f"  + {p}")
+for s in skipped:
+    print(f"  ! UNREADABLE {s}")
+
+# A missing credential is reported as a TOOLING problem, loudly, because the
+# alternative is a preflight that blames the venue for the wrapper's blind spot.
+missing = [
+    k for k in ("BITGO_ACCESS_TOKEN", "EXCHANGE_ADMIN_TOTP", "BLOCK_EXPLORER_URL")
+    if not env.get(k)
+]
+if missing:
+    print(
+        f"\n  ** {', '.join(missing)} still not in the environment.\n"
+        "     Any check depending on these will FAIL for that reason and not\n"
+        "     because the venue is misconfigured. Find which EnvironmentFile=\n"
+        "     should carry them before believing the report below.\n"
+    )
+
+# FLUSH FIRST. The child writes straight to fd 1 unbuffered while python's own
+# prints sit in a buffer, so without this the environment header appears AFTER
+# the report it is supposed to qualify — or scrolls off entirely, which is how
+# a "note: credential missing" warning gets missed.
+sys.stdout.flush()
+
+sys.exit(
+    subprocess.run(
+        ["node", "dist/src/golivecli.js", *sys.argv[1:]], cwd=APP, env=env
+    ).returncode
+)
