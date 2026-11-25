@@ -209,6 +209,56 @@ test("AN OPERATOR WITH NO AUTHENTICATOR CAN READ BUT NOT ACT", async () => {
 	assert.match(String(act.body.error), /no authenticator enrolled/);
 });
 
+test("AN AUTHENTICATOR KEYED BY EMAIL WORKS, like the allowlist", async () => {
+	// THE TRAP THIS CLOSES, found on the live box while bringing the venue up.
+	//
+	// `operator()` admits a caller whose id OR email is on EXCHANGE_ADMINS, so
+	// configuring it with an email is the obvious thing to do — and is what the
+	// box actually had. But the TOTP map used to be read by id alone, so that
+	// operator passed the allowlist, could read the console, and would have been
+	// told "no authenticator enrolled" the moment they tried to act.
+	//
+	// The go-live preflight made it worse by only checking that
+	// EXCHANGE_ADMIN_TOTP is a non-empty string: it reported "Operator 2FA is
+	// enrolled" while every mutation would have been refused. A second factor
+	// that is configured and unreachable looks exactly like one that works,
+	// right up until someone needs it.
+	const id = freshAdmin();
+	const email = `${id}@blockle.org`;   // what the test harness's auth returns
+
+	const read = await call("GET", "/admin/api/me", {
+		adminId: id,
+		allowlist: [email],              // allowlisted by EMAIL
+		secrets: { [email]: SECRET },    // and the secret keyed by EMAIL too
+	});
+	assert.equal(read.status, 200);
+	assert.equal(read.body.canAct, true, "canAct must not depend on the key shape");
+
+	const act = await call("POST", "/admin/api/fund-gas", {
+		adminId: id,
+		allowlist: [email],
+		secrets: { [email]: SECRET },
+		code: currentCode(SECRET),
+		body: { gasAsset: "ETH", amount: "1", requestId: "r-email" },
+	});
+	assert.notEqual(act.status, 403, `must not refuse: ${JSON.stringify(act.body)}`);
+});
+
+test("an id-keyed secret still wins over an email-keyed one", async () => {
+	// Id first, so an explicit per-account entry beats a shared email entry.
+	const id = freshAdmin();
+	const email = `${id}@blockle.org`;
+	const other = generateSecret();
+	const act = await call("POST", "/admin/api/fund-gas", {
+		adminId: id,
+		allowlist: [id],
+		secrets: { [id]: SECRET, [email]: other },
+		code: currentCode(SECRET),      // the ID's code
+		body: { gasAsset: "ETH", amount: "1", requestId: "r-id" },
+	});
+	assert.notEqual(act.status, 403, `the id secret must be used: ${JSON.stringify(act.body)}`);
+});
+
 test("funding a gas float works, and says it did not move any coins", async () => {
 	// The two halves of this are easy to conflate, and conflating them produces
 	// a reconciliation shortfall nobody expected.

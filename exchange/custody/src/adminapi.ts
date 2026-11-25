@@ -155,9 +155,37 @@ async function operator(
  * body so it is required identically on every mutation, including ones added
  * later by someone who did not read this comment.
  */
+/**
+ * This operator's TOTP secret, looked up by ACCOUNT ID **or** EMAIL.
+ *
+ * WHY BOTH. `operator()` above admits a caller whose id OR email is on
+ * EXCHANGE_ADMINS, but this map used to be read by id alone. Configure the
+ * allowlist with an email — the obvious thing to do, and what the live box
+ * actually had — and you get an operator who passes the allowlist, can read the
+ * console, and is told "no authenticator enrolled" the moment they try to act.
+ *
+ * Worse, the go-live preflight only checks that EXCHANGE_ADMIN_TOTP is a
+ * non-empty string, so it reported "Operator 2FA is enrolled" while the
+ * mutation path would have refused every action. A second factor that is
+ * configured and unreachable is indistinguishable from one that is missing,
+ * except that nothing warns you.
+ *
+ * Identity for access and identity for the second factor must be the same
+ * question. Id first, so an explicit per-id entry wins over an email.
+ */
+function secretFor(deps: AdminDeps, user: BlockleUser): string {
+	const byId = deps.totpSecrets[user.id];
+	if (byId !== undefined && byId.trim() !== "") return byId.trim();
+	if (user.email !== undefined) {
+		const byEmail = deps.totpSecrets[user.email];
+		if (byEmail !== undefined && byEmail.trim() !== "") return byEmail.trim();
+	}
+	return "";
+}
+
 function requireFreshCode(req: IncomingMessage, deps: AdminDeps, user: BlockleUser): void {
-	const secret = deps.totpSecrets[user.id];
-	if (secret === undefined || secret.trim() === "") {
+	const secret = secretFor(deps, user);
+	if (secret === "") {
 		throw new AdminError(
 			"this operator account has no authenticator enrolled, so it can view " +
 				"but not act. Enrol one before moving funds.",
@@ -265,7 +293,7 @@ export async function adminRoute(
 			send(res, 200, {
 				accountId: user.id,
 				email: user.email ?? null,
-				canAct: (deps.totpSecrets[user.id] ?? "") !== "",
+				canAct: secretFor(deps, user) !== "",
 			});
 			return true;
 		}
