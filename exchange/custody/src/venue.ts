@@ -76,6 +76,17 @@ const MIN_BASE: Readonly<Record<string, bigint>> = {
 	BNB: 10n ** 15n,              // 0.001 BNB
 	BLOCK: 100_000n,              // 0.001 BLOCK
 	PERBUG: 100_000n,             // 0.001 PERBUG
+	/*
+	 * The small-PoW coins. Each floor is set ABOVE that chain's own withdrawal
+	 * fee (LIVE_FEES, itself measured from the daemon's relay rate), which is
+	 * the only floor that means anything: an order smaller than the cost of
+	 * moving the proceeds is an order whose filling loses the customer money.
+	 * DINGO's is large in nominal units because its relay minimum is 1 DINGO
+	 * per kB — that is the chain, not a stray zero.
+	 */
+	PEP: 1_000_000_000n,          // 10 PEP      (fee ~0.12 PEP)
+	DINGO: 100_000_000_000n,      // 1,000 DINGO (fee ~12 DINGO)
+	RTM: 1_000_000_000n,          // 10 RTM      (fee ~0.1 RTM)
 };
 
 /**

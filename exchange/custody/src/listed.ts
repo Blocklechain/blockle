@@ -170,13 +170,13 @@ export const LISTED: readonly ListedCoin[] = [
 		symbol: "PERBUG",
 		name: "Perbug",
 		slug: "perbug",
-		status: "planned",
+		status: "live",
 		custody: "bitcoin-rpc",
 		decimals: 8,
 		confirmations: 6,
 		homepage: "https://perbug.com/",
 		algorithm: f("SHA-256d", "the project's own node, which we run"),
-		blockTime: undefined,
+		blockTime: f("About 10 minutes", "measured: 570.3s mean over the last 1,000 blocks on our own node"),
 		pitch:
 			"A Bitcoin Core fork with BLOCK merge-mining, so a SHA-256 miner " +
 			"earns both from one share.",
@@ -186,13 +186,26 @@ export const LISTED: readonly ListedCoin[] = [
 		symbol: "RTM",
 		name: "Raptoreum",
 		slug: "raptoreum-rtm",
-		status: "planned",
+		status: "live",
 		custody: "bitcoin-rpc",
-		decimals: undefined,
-		confirmations: undefined,
+		/*
+		 * MEASURED 2026-11-25, and this one had been the open question: the
+		 * earlier pass could not resolve RTM because `getblockstats` is absent
+		 * from this fork, and guessing was correctly refused.
+		 *
+		 * Settled by the same method that settled PEP and DINGO, which needs no
+		 * getblockstats: take each output's decimal `value` from a verbose
+		 * block and find which scale makes value*10^d appear as an 8-byte
+		 * little-endian integer in that block's own raw hex. At 10^8 all FOUR
+		 * outputs of block 1,480,621 match, and no other scale matches any.
+		 */
+		decimals: 8,
+		// 123.1s mean over the last 1,000 blocks — half PEP's rate — so 30
+		// confirmations is the same ~62 minutes of depth.
+		confirmations: 30,
 		homepage: "https://raptoreum.com/",
 		algorithm: f("GhostRider — a CPU algorithm", "the project's documentation"),
-		blockTime: undefined,
+		blockTime: f("About 2 minutes", "measured: 123.1s mean over the last 1,000 blocks on our own node"),
 		pitch:
 			"One of the few coins a plain CPU still mines competitively, with a " +
 			"smart-node layer on top. Miners have had almost nowhere to sell it.",
@@ -202,21 +215,32 @@ export const LISTED: readonly ListedCoin[] = [
 		symbol: "PEP",
 		name: "Pepecoin",
 		slug: "pepecoin-pep",
-		status: "planned",
+		status: "live",
 		custody: "bitcoin-rpc",
 		// Confirmed against our own pepecoind, not read off a site: every
 		// output amount in a sampled block encodes exactly as an 8-byte
 		// little-endian integer at 10^8 in the bytes the node serialized, and
 		// no other scale matches.
 		decimals: 8,
-		confirmations: undefined,
+		/*
+		 * ~1 HOUR OF WORK, MEASURED. The mean interval over the last 1,000
+		 * blocks of our own node is 62.5s, so 60 confirmations is ~62 minutes.
+		 *
+		 * The depth target is the same hour for every small-PoW coin here, and
+		 * the count differs only because the block times do. An hour rather
+		 * than the 6 a big chain uses: these chains have thin hashrate, so a
+		 * reorg deeper than a few blocks is a real event rather than a
+		 * thought experiment, and the cost of being wrong is crediting a
+		 * deposit that later un-happens.
+		 */
+		confirmations: 60,
 		homepage: "https://pepecoin.org/",
 		// Measured, not quoted. The block ID is sha256d of the header (as it is
 		// for every Dogecoin-lineage chain) while the PROOF OF WORK is scrypt —
 		// confirmed by checking which hash lands under the block's own
 		// difficulty target. That is what makes it mergeable with BLOCK.
 		algorithm: f("Scrypt", "measured against our own node: scrypt(header) satisfies the block's target"),
-		blockTime: undefined,
+		blockTime: f("About 1 minute", "measured: 62.5s mean over the last 1,000 blocks on our own node"),
 		pitch:
 			"Scrypt, so the same hardware that mines Litecoin and Dogecoin mines " +
 			"it, with a community that has outlasted most of its cohort.",
@@ -258,11 +282,13 @@ export const LISTED: readonly ListedCoin[] = [
 		symbol: "DINGO",
 		name: "Dingocoin",
 		slug: "dingocoin-dingo",
-		status: "planned",
+		status: "live",
 		custody: "bitcoin-rpc",
 		// Confirmed against our own dingocoind by the same method as PEP.
 		decimals: 8,
-		confirmations: undefined,
+		// 62.6s mean over the last 1,000 blocks, so 60 ~= 62 minutes. Same
+		// one-hour depth target as PEP, same reasoning.
+		confirmations: 60,
 		homepage: "https://dingocoin.com/",
 		// Measured. Dingocoin is itself AuxPoW-capable, so a merge-mined block
 		// carries its work in an embedded parent header and the coin's own

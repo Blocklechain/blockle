@@ -15,6 +15,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { ChainAdapter, ChainCapabilities } from "../src/chains";
+import { LISTED } from "../src/listed";
 import {
 	defaultCustodianOf,
 	nodeAdapters,
@@ -190,24 +191,45 @@ test("NOTHING CONFIGURED IS A SKIP, NOT A FAILURE", () => {
 test("ONE COIN'S BAD CONFIGURATION DOES NOT TAKE DOWN THE OTHERS", async () => {
 	// Throwing here would stop the whole process over one environment typo,
 	// while eleven other coins were fine. The broken one becomes unknown.
+	//
+	// THE UNCONFIRMED COIN IS FOUND, NOT NAMED. This test used to hardcode RTM
+	// as its example, and then RTM's decimals were measured against its own
+	// daemon and the test failed — reporting a regression in error handling
+	// when what had actually happened was a coin getting fixed. Every coin here
+	// is on a path to having its decimals confirmed, so any specific name is a
+	// time bomb. Picking one off the registry keeps the assertion about the
+	// BEHAVIOUR, which is not supposed to change, and lets the data move.
+	const unconfirmed = LISTED.find(
+		(c) => c.custody !== "bitgo" && c.symbol !== "BLOCK" && c.decimals === undefined,
+	);
+	assert.ok(
+		unconfirmed !== undefined,
+		"every listed coin now has confirmed decimals — to keep covering this " +
+			"path, point it at a fixture coin instead of a real one",
+	);
+
 	const skips: string[] = [];
 	const map = nodeAdapters({
 		env: {
 			// PERBUG has confirmed decimals, so this one builds.
 			CHAIN_PERBUG_URL: "http://127.0.0.1:1",
-			// RTM's decimals are unconfirmed in the registry, so the factory
-			// refuses — correctly, since a guessed scale misprices everything.
-			CHAIN_RTM_URL: "http://127.0.0.1:2",
+			// This one's decimals are unconfirmed in the registry, so the
+			// factory refuses — correctly, since a guessed scale misprices
+			// every balance on that chain.
+			[`CHAIN_${unconfirmed.symbol}_URL`]: "http://127.0.0.1:2",
 		},
 		onSkip: (s, why) => skips.push(`${s}: ${why}`),
 	});
 	assert.ok(map.has("PERBUG"), "the well-configured coin is present");
-	assert.ok(!map.has("RTM"));
-	assert.ok(skips.some((s) => /^RTM: .*decimals are unconfirmed/.test(s)), skips.join("\n"));
+	assert.ok(!map.has(unconfirmed.symbol));
+	assert.ok(
+		skips.some((s) => new RegExp(`^${unconfirmed.symbol}: .*decimals are unconfirmed`).test(s)),
+		skips.join("\n"),
+	);
 
 	// And the refused one is UNKNOWN downstream, not zero.
 	await assert.rejects(
-		() => routedHoldings({ nodes: map }).holdings("RTM"),
+		() => routedHoldings({ nodes: map }).holdings(unconfirmed.symbol),
 		/no custodian configured/,
 	);
 });

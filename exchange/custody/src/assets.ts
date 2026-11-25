@@ -178,6 +178,48 @@ export const ASSETS: Readonly<Record<string, AssetDef>> = {
 	XRP: { symbol: "XRP", decimals: 6, networks: [] },
 	BLOCK: { symbol: "BLOCK", decimals: 8, networks: [] },
 	PERBUG: { symbol: "PERBUG", decimals: 8, networks: [] },
+
+	/*
+	 * ---- SELF-CUSTODIED SMALL-POW COINS -----------------------------------
+	 *
+	 * These run on our own daemons on the box (see
+	 * deploy/exchange/nodes/provision.sh), not at BitGo, so none of them has a
+	 * `bitgo` field and `custodyIds` must not expect a custodian wallet.
+	 *
+	 * EVERY ONE OF THESE DECIMALS WAS MEASURED, NOT LOOKED UP.
+	 * `adapterFromEnv` refuses to build an adapter for an asset whose decimals
+	 * are unconfirmed, and it is right to: these are small forks of several
+	 * different Bitcoin generations, a table that says "they're all 8" is a
+	 * guess, and a wrong scale misreports a customer's balance by a factor of
+	 * 10^n in whichever direction hurts.
+	 *
+	 * The measurement (2026-11-25, each against the coin's OWN synced daemon):
+	 * take a real output's decimal `value` from a verbose block, then find
+	 * which scale d makes value*10^d appear as an 8-byte little-endian integer
+	 * in that same block's raw hex. That byte sequence is the amount field the
+	 * coin's consensus code actually wrote, so it answers the question instead
+	 * of trusting a pattern. Each was required to match on EVERY output in the
+	 * sampled block, not just one.
+	 *
+	 *   PEP   decimals 8 — 3/3 outputs, block 1,308,606 (tip 1,308,608, synced)
+	 *   DINGO decimals 8 — 1/1 output,  block 2,851,535 (tip 2,851,537, synced)
+	 *   RTM   decimals 8 — 4/4 outputs, block 1,480,621 (tip 1,480,623, synced)
+	 *
+	 * NOT LISTED, and each for a specific measured reason rather than a
+	 * judgement call — being listed here is what lets a customer send real
+	 * coins, so the bar is a synced chain, not a running process:
+	 *   MEWC  daemon is at 630,781 of 2,161,565 (initialblockdownload=true,
+	 *         24.8%). Decimals measure as 8 already, so it is a one-line
+	 *         addition once it finishes — but crediting deposits against a
+	 *         chain still in IBD can confirm a deposit that a later block
+	 *         reorganises away.
+	 *   NEOX  daemon is at height 0 and not advancing.
+	 *   ZEPH  height 1; every mainnet p2p seed compiled into the binary
+	 *         refuses connections. Externally blocked, not misconfigured.
+	 */
+	PEP: { symbol: "PEP", decimals: 8, networks: [] },
+	DINGO: { symbol: "DINGO", decimals: 8, networks: [] },
+	RTM: { symbol: "RTM", decimals: 8, networks: [] },
 };
 
 /**

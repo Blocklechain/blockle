@@ -13,6 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { ASSETS } from "../src/assets";
 import {
 	LISTED,
 	QUOTES,
@@ -52,13 +53,58 @@ const coin = (over: Partial<ListedCoin> = {}): ListedCoin => ({
 
 // ------------------------------------------------------------ the whole point
 
-test("NOTHING IN THE REGISTRY IS LIVE — a market cannot be opened by editing this file", () => {
-	// Promotion goes through canGoLive against a real node. If this ever fails
-	// because someone typed `status: "live"`, that is the thing to investigate,
-	// not the test.
+test("ANYTHING MARKED LIVE SATISFIES EVERY STATIC PRECONDITION OF canGoLive", () => {
+	/*
+	 * This test used to assert the registry contained NO live coin at all — a
+	 * tripwire for the period before anything had launched, when "someone typed
+	 * live" was the only way the string could appear.
+	 *
+	 * On 2026-11-25 PERBUG, RTM, PEP and DINGO were promoted, each after
+	 * listingscli reported READY against its own running daemon, which is the
+	 * documented process: the CLI deliberately does not perform the edit, so
+	 * the edit is the operator's act and this file is where it lands. A test
+	 * that forbids the end state of the intended process is a test that has to
+	 * be deleted the first time the process is used, and deleting a safety test
+	 * under deadline is how the safety goes away permanently.
+	 *
+	 * So it now asserts the thing actually worth protecting. canGoLive's checks
+	 * split in two: some need a live node (reachable, synced, canDeriveAddresses,
+	 * canSend) and cannot be evaluated here; the rest are properties OF THIS
+	 * FILE and of the venue's own tables. Those are exactly what a careless
+	 * hand-edit gets wrong — typing "live" on a coin whose decimals are still
+	 * undefined — and they are checked for every live coin, forever, without
+	 * naming any of them.
+	 */
 	const live = LISTED.filter((c) => c.status === "live");
-	assert.deepEqual(live.map((c) => c.symbol), [],
-		"a coin marked live must have been promoted through canGoLive, not edited in");
+	assert.ok(live.length > 0, "if nothing is live, this test has stopped covering anything");
+
+	for (const c of live) {
+		assert.equal(
+			typeof c.decimals,
+			"number",
+			`${c.symbol} is live with unconfirmed decimals — every balance on it ` +
+				"would be scaled by a guess",
+		);
+		assert.ok(
+			c.confirmations !== undefined && c.confirmations >= 1,
+			`${c.symbol} is live without a credible confirmation count`,
+		);
+		assert.ok(
+			ASSETS[c.symbol] !== undefined,
+			`${c.symbol} is live but the ledger does not know it, so the first ` +
+				"deposit would be credited and then fail to balance",
+		);
+		assert.equal(
+			ASSETS[c.symbol]?.decimals,
+			c.decimals,
+			`${c.symbol}: the registry and assets.ts disagree about decimals`,
+		);
+		assert.ok(
+			marketsFor(c).length > 0,
+			`${c.symbol} is live with no market, so the page advertises trading ` +
+				"that cannot happen",
+		);
+	}
 });
 
 test("A COIN THE LEDGER DOES NOT KNOW CANNOT GO LIVE", () => {

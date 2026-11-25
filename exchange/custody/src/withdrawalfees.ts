@@ -655,6 +655,33 @@ export const LIVE_FEES: FeeTable = {
 	// is the entire point of the fee.
 	BLOCK: { gas: 100_000n, gasBufferBps: 5_000, margin: 1_000_000n, marginBps: 0 },
 	PERBUG: { gas: 100_000n, gasBufferBps: 5_000, margin: 1_000_000n, marginBps: 0 },
+
+	/*
+	 * SMALL-POW COINS, ALSO SELF-FUNDING. All three are 8 decimals (measured —
+	 * see the registry in assets.ts).
+	 *
+	 * `gas` COMES FROM EACH DAEMON, NOT FROM A SENSIBLE-LOOKING NUMBER. Asked
+	 * on 2026-11-25 via getnetworkinfo.relayfee and estimatesmartfee(6), both
+	 * quoted per KILOBYTE:
+	 *
+	 *   PEP    relayfee 0.001   estimate 0.0100206   -> gas 0.02
+	 *   DINGO  relayfee 1.0     estimate unavailable -> gas 2.0
+	 *   RTM    relayfee 0.00001 estimate 0.00001036  -> gas 0.001
+	 *
+	 * Each `gas` is a whole kilobyte at the quoted rate rounded up, so a real
+	 * 1-in-2-out send (~250 bytes) has roughly 4x headroom before the 50%
+	 * buffer even applies. Deliberately generous: these chains have thin
+	 * mempools where a slightly-underpaid transaction can sit for hours, and a
+	 * withdrawal that does not confirm costs more in support than the fee saved.
+	 *
+	 * DINGO'S FEE IS NOT A TYPO. Its relay minimum really is 1.0 DINGO per kB —
+	 * three orders of magnitude above the others in nominal units, because the
+	 * coin's supply is correspondingly large. Its estimator returns -1 (no fee
+	 * data), so the relay floor IS the estimate here rather than a fallback.
+	 */
+	PEP: { gas: 2_000_000n, gasBufferBps: 5_000, margin: 10_000_000n, marginBps: 2 },
+	DINGO: { gas: 200_000_000n, gasBufferBps: 5_000, margin: 1_000_000_000n, marginBps: 2 },
+	RTM: { gas: 100_000n, gasBufferBps: 5_000, margin: 10_000_000n, marginBps: 2 },
 };
 
 /**

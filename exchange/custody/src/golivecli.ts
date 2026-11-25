@@ -26,7 +26,17 @@ import { Ledger } from "./ledger";
  * need their own holdings source; that is a separate check to add when the
  * self-custody signer is wired, not a BitGo one.
  */
-const SELF_CUSTODIED = new Set(["BLOCK", "PERBUG"]);
+const SELF_CUSTODIED = new Set([
+	"BLOCK",
+	"PERBUG",
+	// The small-PoW coins run on our own daemons on this box, for the same
+	// reason: BitGo lists none of them, so requiring a custodian wallet would
+	// fail a check that can never be made to pass. Their holdings come from
+	// their own node via chains.ts, gated on that node being synced.
+	"PEP",
+	"DINGO",
+	"RTM",
+]);
 
 const CUSTODY_IDS: readonly string[] = (() => {
 	const assets = new Set<string>();
