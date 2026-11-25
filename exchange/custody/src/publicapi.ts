@@ -488,10 +488,17 @@ async function venueRoute(
 			return r.userId;
 		}
 		const cookie = req.headers.cookie ?? "";
-		const hit = cached.get(cookie);
+		// The native apps send the accounts session as a Bearer token, because a
+		// SameSite=Lax cookie does not ride a cross-site fetch from a phone.
+		const authz = header(req, "authorization") ?? "";
+		// Cache per CREDENTIAL, not per cookie: keying on the cookie alone would
+		// let two bearer callers with no cookie share one entry and resolve to
+		// each other's account.
+		const ck = `${cookie}\u0000${authz}`;
+		const hit = cached.get(ck);
 		if (hit !== undefined) return hit;
-		const u = await auth.whoami(cookie);
-		cached.set(cookie, u.id);
+		const u = await auth.whoami(cookie, authz);
+		cached.set(ck, u.id);
 		return u.id;
 	};
 	const me = async (): Promise<string> => caller("read");
@@ -514,13 +521,19 @@ async function venueRoute(
 				403,
 			);
 		}
-		const u = await auth.whoami(req.headers.cookie ?? "");
+		const u = await auth.whoami(
+			req.headers.cookie ?? "",
+			header(req, "authorization") ?? "",
+		);
 		return u.id;
 	};
 
 	try {
 		if (p === "/me" && req.method === "GET") {
-			const u = await auth.whoami(req.headers.cookie ?? "");
+			const u = await auth.whoami(
+				req.headers.cookie ?? "",
+				header(req, "authorization") ?? "",
+			);
 			json(res, 200, {
 				accountId: u.id,
 				email: u.email ?? null,

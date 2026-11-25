@@ -95,18 +95,41 @@ export class BlockleAuth {
 	}
 
 	/**
-	 * Resolve the caller from a forwarded Cookie header.
+	 * Resolve the caller from a forwarded Cookie header, or a Bearer token.
 	 *
 	 * Takes the WHOLE header rather than a parsed cookie, because this service
 	 * deliberately does not know which cookie carries the session — that is the
 	 * accounts service's business, and hard-coding its name here would break
 	 * silently the day it changes.
+	 *
+	 * BEARER IS FOR THE NATIVE APPS, and it is not a second auth system. The
+	 * accounts service already accepts `Authorization: Bearer <session id>`
+	 * for exactly this reason, in its own words: a SameSite=Lax cookie will not
+	 * ride a cross-site fetch, so a phone app cannot authenticate the way a
+	 * browser on blockle.org does. Without this the iOS wallet could read the
+	 * public order book and nothing else — no balances, no orders.
+	 *
+	 * Both forms are forwarded verbatim to the SAME endpoint and the answer is
+	 * believed the same way. This service still validates nothing itself, and
+	 * an unreachable accounts service is still a 503 rather than an anonymous
+	 * session.
 	 */
-	async whoami(cookieHeader: string | undefined): Promise<BlockleUser> {
+	async whoami(
+		cookieHeader: string | undefined,
+		authorizationHeader?: string | undefined,
+	): Promise<BlockleUser> {
 		const cookie = (cookieHeader ?? "").trim();
-		if (cookie === "") throw new AuthError("not signed in");
+		const authz = (authorizationHeader ?? "").trim();
+		// Only a Bearer credential is forwarded. Anything else (Basic, a bare
+		// token, an API-key scheme) is not an accounts session and must not be
+		// handed to the accounts service as though it were.
+		const bearer = /^Bearer\s+\S/i.test(authz) ? authz : "";
+		if (cookie === "" && bearer === "") throw new AuthError("not signed in");
 
-		const key = cacheKey(cookie);
+		// Distinct cache keys: the same person via cookie and via bearer are
+		// two credentials, and one being revoked must not leave the other
+		// resolving from a shared entry.
+		const key = cacheKey(bearer === "" ? cookieKey(cookie) : bearerKey(bearer));
 		const hit = this.cache.get(key);
 		if (hit !== undefined && hit.until > this.now()) return hit.user;
 
@@ -116,7 +139,11 @@ export class BlockleAuth {
 		try {
 			res = await this.fetchImpl(`${this.cfg.base}/account/api/me`, {
 				method: "GET",
-				headers: { Cookie: cookie, Accept: "application/json" },
+				headers: {
+					Accept: "application/json",
+					...(cookie === "" ? {} : { Cookie: cookie }),
+					...(bearer === "" ? {} : { Authorization: bearer }),
+				},
 				signal: ac.signal,
 			});
 		} catch (e) {
@@ -152,8 +179,21 @@ export class BlockleAuth {
 	}
 
 	/** Drop a cached session, so a sign-out takes effect immediately. */
-	forget(cookieHeader: string | undefined): void {
-		if (cookieHeader !== undefined) this.cache.delete(cacheKey(cookieHeader));
+	/**
+	 * Drop a cached resolution so a sign-out takes effect at once.
+	 *
+	 * MUST stay in step with the key shape `whoami` uses. It did not, briefly,
+	 * and the existing test caught it: when cookie keys gained a `c:` prefix
+	 * for bearer support, this still deleted the unprefixed key — so a
+	 * signed-out session went on resolving for the rest of the cache TTL. The
+	 * prefixes are built in one place now so they cannot drift again.
+	 */
+	forget(credential: string | undefined): void {
+		if (credential === undefined) return;
+		// A caller may have been seen under either scheme; drop both rather
+		// than require the caller to know which one it used.
+		this.cache.delete(cacheKey(cookieKey(credential)));
+		this.cache.delete(cacheKey(bearerKey(credential)));
 	}
 }
 
@@ -205,6 +245,24 @@ function firstString(...vals: unknown[]): string | undefined {
  * HASHED, so the in-memory map never holds a live session cookie in plaintext
  * where a heap dump or an error serialisation could expose it.
  */
+/*
+ * The two credential namespaces, in one place.
+ *
+ * A cookie and a bearer token are different credentials even for the same
+ * person, so they get separate namespaces. This is DEFENSIVE, not load-bearing:
+ * a cookie header and a "Bearer ..." string already differ, so nothing
+ * currently collides without it — deleting the prefixes breaks no test. It
+ * earns its place by keeping `whoami` and `forget` agreeing on one key shape,
+ * which is the thing that actually broke when bearer support was added and
+ * left signed-out sessions resolving from cache.
+ */
+function cookieKey(v: string): string {
+	return `c:${v}`;
+}
+function bearerKey(v: string): string {
+	return `b:${v}`;
+}
+
 function cacheKey(cookie: string): string {
 	// eslint-disable-next-line @typescript-eslint/no-var-requires
 	const { createHash } = require("node:crypto") as typeof import("node:crypto");
