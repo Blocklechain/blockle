@@ -201,6 +201,27 @@ EOF
 	echo "    installed $dir/$daemon"
 
 	write_conf "$sym" "$fam" "$user" "$datadir" "$port" "$p2p"
+
+	# ADDRESS INDEX AT INSTALL TIME, FOR DAEMONS THAT HAVE IT.
+	#
+	# `getaddressutxos`/`getaddressbalance` need addressindex=1, and that is what
+	# lets a wallet look up a balance by address at all. It must be set BEFORE
+	# the first start: adding it to a running chain makes the daemon refuse to
+	# boot — "You need to rebuild the database using -reindex to change
+	# -addressindex" — and then it is a reindex of the whole chain. Here there is
+	# no chain yet, so it is free.
+	#
+	# Not every fork has it: Pepecoin 1.1 and Dingocoin 1.18 have no such option
+	# and fall back to importaddress+listunspent. So the daemon is ASKED rather
+	# than assumed. This runs here, not in write_conf, because only this scope
+	# knows where the binary was installed.
+	if [[ "$fam" == "bitcoin-rpc" ]] && "$dir/$daemon" -help 2>/dev/null | grep -qi "addressindex"; then
+		sed -i "s/^PLACEHOLDER_ADDRESSINDEX$/addressindex=1/" "$datadir/${lower:-${sym,,}}.conf"
+		echo "    addressindex=1 (daemon supports it; set before first start)"
+	else
+		sed -i "/^PLACEHOLDER_ADDRESSINDEX$/d" "$datadir/${lower:-${sym,,}}.conf"
+		echo "    no addressindex option on this daemon; coin-esplora will use importaddress+listunspent"
+	fi
 	write_unit "$sym" "$fam" "$user" "$dir" "$datadir" "$daemon" "$ram"
 
 	systemctl daemon-reload
@@ -227,7 +248,16 @@ write_conf() {
 server=1
 listen=1
 daemon=0
-disablewallet=1
+# WALLET ON, BUT KEYLESS BY USE.
+#
+# A wallet is needed for two things on the oldest forks: `importaddress` +
+# `listunspent`, which is the only way Pepecoin and Dingocoin can answer "what
+# is the balance of this address" at all (no addressindex option, no
+# scantxoutset), and the same pair backs address-scoped custody. Both only ever
+# IMPORT addresses; nothing here is asked to sign. The custody adapter refuses
+# a chain outright if a declared custody address turns out to be spendable, and
+# coin-esplora issues an allowlist of four RPCs with no passthrough.
+disablewallet=0
 txindex=1
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
@@ -240,6 +270,7 @@ rpcuser=blockle
 rpcpassword=$pass
 dbcache=256
 maxconnections=32
+PLACEHOLDER_ADDRESSINDEX
 EOF
 			;;
 		monero-rpc)
