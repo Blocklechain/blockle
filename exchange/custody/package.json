@@ -11,14 +11,13 @@
     "test": "npm run build && node --test dist/test/"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
-    "bitgo": "^52.9.0",
-    "express": "^4.19.2"
+    "better-sqlite3": "^11.3.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/express": "^4.17.21",
     "@types/node": "^20.14.0",
+    "bitgo": "^52.9.0",
     "typescript": "^5.5.0"
   },
   "engines": {

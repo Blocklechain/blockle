@@ -14,8 +14,31 @@ const fs = require('fs');
 const vm = require('vm');
 const assert = require('assert');
 
-const src = fs.readFileSync('deploy/exchange/frontpage/signin.html', 'utf8');
-const js = src.slice(src.indexOf('<script>') + 8, src.lastIndexOf('</script>'));
+// THE PAGE'S SCRIPT NOW LIVES IN ITS OWN FILE.
+//
+// It used to be an inline <script> that this harness sliced out of the HTML.
+// The 2026-11-25 audit moved every inline block to a file so the CSP could
+// drop script-src 'unsafe-inline', which a scraper of `<script>`…`</script>`
+// silently turns into "parse the surrounding markup as JavaScript" — the
+// failure was `Unexpected identifier 'EXCHANGE'`, i.e. it had grabbed HTML.
+//
+// Reading the file directly is also what the browser does, so the harness now
+// tests the same bytes that ship.
+const JS_PATH = 'deploy/exchange/frontpage/signin.inline.js';
+const HTML_PATH = 'deploy/exchange/frontpage/signin.html';
+const js = fs.readFileSync(JS_PATH, 'utf8');
+// And assert the page actually loads it — an extracted file that nothing
+// references would pass every test below while shipping a dead page.
+const src = fs.readFileSync(HTML_PATH, 'utf8');
+assert.ok(
+  src.includes('src="signin.inline.js"'),
+  'signin.html must load signin.inline.js — otherwise this harness is testing ' +
+    'a file the page never runs',
+);
+assert.ok(
+  !/<script(?![^>]*\bsrc=)[^>]*>\s*\S/.test(src),
+  'signin.html must have no inline script: the CSP no longer allows it',
+);
 
 /** A 2D context stub good enough for sampleMark and the particle loop. */
 function ctx2d() {

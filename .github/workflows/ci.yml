@@ -322,3 +322,23 @@ jobs:
 
       - name: exchange relay — compile (tsc) + unit tests
         run: cd exchange/server && npm install && npm run build && npm test
+
+      # THE CUSTODY SERVICE WAS NOT IN CI AT ALL, which is how a front-end
+      # harness sat broken without anyone noticing. This is the component that
+      # holds the ledger, the withdrawal state machine and the second factor —
+      # the most consequential code in the repo and the least watched.
+      - name: exchange custody — compile (tsc) + unit tests
+        run: cd exchange/custody && npm install && npm run build && npm test
+
+      # Browser-side harnesses. They run under plain node with stubs, no
+      # browser needed, and they pin real security behaviour: the sign-in
+      # flow's 2FA messaging and javascript:-URL rejection, and that the pages
+      # carry NO inline script, which is what lets the CSP drop
+      # script-src 'unsafe-inline'. Run from the repo root — they resolve
+      # their fixtures by repo-relative path.
+      - name: exchange front end — page harnesses
+        run: |
+          for h in deploy/exchange/frontpage/*.harness.js; do
+            echo "── $h"
+            node "$h"
+          done

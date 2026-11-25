@@ -114,18 +114,7 @@ footer a{color:var(--ink-faint);margin-right:16px}
   </div>
 
 <script src="/coins.js"></script>
-<script>
-  /* The marks are decoration added after the fact: the page is complete
-     without this, so a blocked or slow script costs an icon, not content. */
-  (function () {
-    if (typeof window.coinIcon !== "function") return;
-    var nodes = document.querySelectorAll(".mark[data-coin]");
-    for (var i = 0; i < nodes.length; i++) {
-      var big = !nodes[i].classList.contains("sm");
-      nodes[i].innerHTML = window.coinIcon(nodes[i].getAttribute("data-coin"), big ? 40 : 20);
-    }
-  })();
-</script>
+<script src="404.inline.js"></script>
 <footer>
   <a href="/coins">All coins</a>
   <a href="/app.html">Exchange</a>

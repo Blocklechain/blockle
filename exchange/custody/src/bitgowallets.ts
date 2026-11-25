@@ -150,8 +150,38 @@ export async function generate(opts: {
 		throw new WalletGenError("BITGO_ACCESS_TOKEN is not set");
 	}
 
-	// eslint-disable-next-line @typescript-eslint/no-var-requires
-	const { BitGo } = require("bitgo") as { BitGo: new (o: object) => BitGoLike };
+	/*
+	 * THE SDK IS A DEV DEPENDENCY, LOADED LAZILY, AND ONLY HERE.
+	 *
+	 * It is ~1.5 GB and drags in 187 known vulnerabilities (3 critical) through
+	 * its own transitive tree — including Expo, React Native tooling, for coins
+	 * this venue does not list. None of that is reachable from the serving
+	 * process: nothing imports this module, and this `require` runs only when an
+	 * operator invokes the wallet generator by hand.
+	 *
+	 * So after the 2026-11-25 audit it moved to devDependencies, which keeps it
+	 * off the production box entirely rather than installed-but-unused next to
+	 * the custody ledger. The cost is that this tool must be run somewhere with
+	 * dev dependencies installed — an operator machine, not the server — which
+	 * is where "run ONCE on the whitelisted host" was always pointing anyway.
+	 *
+	 * The require is wrapped because the bare failure is `MODULE_NOT_FOUND`,
+	 * which tells an operator holding one irrecoverable passphrase nothing about
+	 * what to do next.
+	 */
+	let BitGo: new (o: object) => BitGoLike;
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		({ BitGo } = require("bitgo") as { BitGo: new (o: object) => BitGoLike });
+	} catch (e) {
+		throw new WalletGenError(
+			"the BitGo SDK is not installed. It is a DEV dependency on purpose — " +
+				"1.5 GB and 187 known vulnerabilities that have no business sitting " +
+				"on the production box — so wallet generation runs from a checkout " +
+				"with dev dependencies installed (`npm install`), not from the " +
+				`server. Detail: ${e instanceof Error ? e.message : String(e)}`,
+		);
+	}
 	const bitgo: BitGoLike =
 		(opts.sdk as BitGoLike | undefined) ??
 		new BitGo({ env: opts.env === "prod" ? "prod" : "test", accessToken: token });
