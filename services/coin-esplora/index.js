@@ -263,9 +263,45 @@ function cached(key, fn) {
   return value;
 }
 
+/**
+ * Refuse to answer balances from a node that has not caught up.
+ *
+ * AN UNSYNCED NODE'S ZERO IS A LIE, and it is the most dangerous kind: a
+ * customer holding the coin opens the wallet, sees 0, and concludes the coin
+ * is gone. Neoxa made this concrete — its node sat at height 0 for hours with
+ * no reachable peers, and every address on it would have answered "0" with
+ * complete confidence.
+ *
+ * So anything that reports money checks first, and a node still in initial
+ * block download gets a 503 with `retry: true` instead. The clients already
+ * treat an error as "unavailable" and an unavailable balance as unknown — which
+ * is the truth — whereas they would treat 0 as a fact.
+ */
+async function requireSynced(coin) {
+  // monero-family and anything without getblockchaininfo is handled by its own
+  // branch; this is the bitcoin-family check.
+  let info;
+  try {
+    info = await rpc(coin, 'getblockchaininfo', []);
+  } catch (e) {
+    throw e; // already a 503-shaped RpcError when loading/unreachable
+  }
+  const blocks = Number(info.blocks || 0);
+  const headers = Number(info.headers || 0);
+  const ibd = info.initialblockdownload === true;
+  if (ibd || headers === 0 || blocks < headers - 1) {
+    throw new RpcError(
+      `${coin} is still syncing (${blocks}/${headers || '?'}); refusing to ` +
+        'report a balance that would read as zero',
+      -28,
+    );
+  }
+}
+
 /** Unspent outputs for one address, in Esplora's shape. */
 async function utxosOf(coin, addr) {
   const how = await probe(coin);
+  await requireSynced(coin);
   const tip = await rpc(coin, 'getblockcount', []);
   if (how === 'addrindex') {
     const rows = await rpc(coin, 'getaddressutxos', [{ addresses: [addr] }]);
@@ -360,10 +396,14 @@ const server = http.createServer(async (req, res) => {
   try {
     // ---- status: what this coin can actually answer, and how completely
     if (parts[1] === 'status' && req.method === 'GET') {
-      let how, height, err;
+      let how, height, err, synced, headers;
       try {
         how = await probe(coin);
-        height = await rpc(coin, 'getblockcount', []);
+        const info = await rpc(coin, 'getblockchaininfo', []);
+        height = Number(info.blocks || 0);
+        headers = Number(info.headers || 0);
+        synced = info.initialblockdownload !== true && headers > 0 &&
+          height >= headers - 1;
       } catch (e) {
         err = e.message;
       }
@@ -372,6 +412,9 @@ const server = http.createServer(async (req, res) => {
         name: COINS[coin].name,
         decimals: COINS[coin].decimals,
         strategy: how || null,
+        // Whether this node will answer balances at all. See requireSynced.
+        synced: synced === undefined ? null : synced,
+        headers: headers === undefined ? null : headers,
         // The honest bit: `watch` only knows an address from its first query.
         complete: how === undefined ? null : how !== 'watch',
         height: height === undefined ? null : height,
